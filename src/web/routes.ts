@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { applyConfigRootToPi, loadConfig } from "../config";
+import { applyConfigRootToPi, getConfigRoot, loadConfig } from "../config";
 
 /**
  * Pure request routing for the web panel. The Bun HTTP server in server.ts is
@@ -41,7 +41,7 @@ async function apiStatus(): Promise<Response> {
   // expect flat .jsonl files and miss the sessions the CLI creates.
   const sessions = await SessionManager.listAll();
   return Response.json({
-    configRoot: process.env.LAZYRESEARCH_CONFIG_DIR ?? null,
+    configRoot: getConfigRoot(),
     model: config.model ?? null,
     sessions: sessions.map((s) => ({
       id: s.id,
