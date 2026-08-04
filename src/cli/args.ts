@@ -10,6 +10,9 @@ export interface ParsedArgs {
 
 const KNOWN_COMMANDS: CliCommand[] = ["new", "run", "web", "help"];
 
+/** Flags that take a value: `--name value` and `--name=value` are equivalent. */
+const VALUE_FLAGS = new Set(["model", "port"]);
+
 export function parseArgs(argv: string[]): ParsedArgs {
   const result: ParsedArgs = { command: "help", positionals: [], flags: {} };
 
@@ -37,6 +40,14 @@ export function parseArgs(argv: string[]): ParsedArgs {
       const eq = arg.indexOf("=");
       if (eq !== -1) {
         result.flags[arg.slice(2, eq)] = arg.slice(eq + 1);
+      } else if (VALUE_FLAGS.has(arg.slice(2))) {
+        const value = rest[i + 1];
+        if (value !== undefined && !value.startsWith("-")) {
+          result.flags[arg.slice(2)] = value;
+          i++;
+        } else {
+          result.flags[arg.slice(2)] = true;
+        }
       } else {
         result.flags[arg.slice(2)] = true;
       }

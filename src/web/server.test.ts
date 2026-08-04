@@ -1,25 +1,29 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ENV_CONFIG_ROOT } from "../config/paths";
+import { ENV_CONFIG_ROOT, ENV_PI_AGENT_DIR } from "../config/paths";
 import { routeRequest } from "./routes";
 
 describe("web routes", () => {
   let dir: string;
   let webuiDist: string;
   const realEnv = process.env[ENV_CONFIG_ROOT];
+  const realPiEnv = process.env[ENV_PI_AGENT_DIR];
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "lazy-web-"));
     webuiDist = mkdtempSync(join(tmpdir(), "lazy-webui-dist-"));
     process.env[ENV_CONFIG_ROOT] = dir;
+    delete process.env[ENV_PI_AGENT_DIR];
     writeFileSync(join(webuiDist, "index.html"), "<div id=\"root\"></div>", "utf-8");
   });
 
   afterEach(() => {
     if (realEnv === undefined) delete process.env[ENV_CONFIG_ROOT];
     else process.env[ENV_CONFIG_ROOT] = realEnv;
+    if (realPiEnv === undefined) delete process.env[ENV_PI_AGENT_DIR];
+    else process.env[ENV_PI_AGENT_DIR] = realPiEnv;
     rmSync(dir, { recursive: true, force: true });
     rmSync(webuiDist, { recursive: true, force: true });
   });
@@ -30,6 +34,40 @@ describe("web routes", () => {
     const body = (await res.json()) as { sessions: unknown[]; configRoot: string };
     expect(body.sessions).toEqual([]);
     expect(body.configRoot).toBe(dir);
+  });
+
+  it("lists sessions from the default subdir layout (--<cwd>--/<file>.jsonl)", async () => {
+    const sessionsDir = join(dir, "agent", "sessions", "--tmp-project--");
+    mkdirSync(sessionsDir, { recursive: true });
+    writeFileSync(
+      join(sessionsDir, "20260804_110000_seed.jsonl"),
+      [
+        JSON.stringify({
+          type: "session",
+          version: 3,
+          id: "seed-001",
+          timestamp: "2026-08-04T11:00:00.000Z",
+          cwd: "/tmp/project",
+        }),
+        JSON.stringify({
+          type: "message",
+          id: "a1",
+          timestamp: "2026-08-04T11:00:01.000Z",
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "Write a paper on fault diagnosis" }],
+          },
+        }),
+      ].join("\n"),
+      "utf-8",
+    );
+
+    const res = await routeRequest(new Request("http://localhost/api/status"), webuiDist);
+    const body = (await res.json()) as { sessions: { id: string; cwd: string; messageCount: number }[] };
+    expect(body.sessions).toHaveLength(1);
+    expect(body.sessions[0]!.id).toBe("seed-001");
+    expect(body.sessions[0]!.cwd).toBe("/tmp/project");
+    expect(body.sessions[0]!.messageCount).toBe(1);
   });
 
   it("serves the webui index.html", async () => {

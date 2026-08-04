@@ -26,6 +26,19 @@ describe("parseArgs", () => {
     });
   });
 
+  it("parses space-separated values for known value flags", () => {
+    expect(parseArgs(["web", "--port", "8080"])).toEqual({
+      command: "web",
+      positionals: [],
+      flags: { port: "8080" },
+    });
+    expect(parseArgs(["run", "--model", "gpt-4o", "topic"])).toEqual({
+      command: "run",
+      positionals: ["topic"],
+      flags: { model: "gpt-4o" },
+    });
+  });
+
   it("parses short flags", () => {
     expect(parseArgs(["run", "-c"])).toEqual({ command: "run", positionals: [], flags: { c: true } });
   });

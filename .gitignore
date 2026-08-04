@@ -7,3 +7,5 @@ src/webui/dist/
 .venv/
 __pycache__/
 *.pyc
+
+.playwright-cli/

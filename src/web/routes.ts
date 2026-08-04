@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { applyConfigRootToPi, getSessionsDir, loadConfig } from "../config";
+import { applyConfigRootToPi, loadConfig } from "../config";
 
 /**
  * Pure request routing for the web panel. The Bun HTTP server in server.ts is
@@ -36,7 +36,10 @@ export async function routeRequest(req: Request, webuiDist: string): Promise<Res
 async function apiStatus(): Promise<Response> {
   applyConfigRootToPi();
   const config = loadConfig();
-  const sessions = await SessionManager.listAll(getSessionsDir());
+  // listAll() with no arg resolves the default sessions dir under the pi agent
+  // dir (subdir layout: --<cwd>--/<file>.jsonl). Passing a custom dir would
+  // expect flat .jsonl files and miss the sessions the CLI creates.
+  const sessions = await SessionManager.listAll();
   return Response.json({
     configRoot: process.env.LAZYRESEARCH_CONFIG_DIR ?? null,
     model: config.model ?? null,
