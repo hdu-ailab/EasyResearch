@@ -1,5 +1,6 @@
 import { createInterface } from "node:readline";
 import { createOrchestratorSession } from "../../runtime/session";
+import { installBundledSkills } from "../../config";
 
 export interface RunCommandOptions {
   model?: string;
@@ -15,6 +16,7 @@ export interface RunCommandOptions {
  */
 export async function runRun(options: RunCommandOptions = {}): Promise<void> {
   const cwd = process.cwd();
+  installBundledSkills();
   const { session } = await createOrchestratorSession({ cwd, model: options.model });
 
   session.subscribe((event) => {
