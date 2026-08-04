@@ -1,0 +1,6 @@
+.opencode/
+AGENTS.md
+AGENTS_cn.md
+.docs/
+node_modules/
+src/webui/dist/
