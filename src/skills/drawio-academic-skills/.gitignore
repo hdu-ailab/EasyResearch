@@ -1,0 +1,12 @@
+# macOS
+.DS_Store
+
+# Tooling artifacts
+.playwright-mcp/
+logs/
+
+# Legacy local timestamp (no longer written; kept ignored defensively)
+.last_update
+
+# Superpowers skill files (local-only)
+docs/superpowers

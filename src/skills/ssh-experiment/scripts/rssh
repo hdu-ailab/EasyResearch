@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# rssh — robust SSH wrapper for hz110-cyy with keepalive and timeout handling.
+# Usage: rssh "<command>"
+#        rssh -f "<command>"     # force nohup, returns immediately
+#        rssh -s <seconds> "<command>"  # custom timeout in seconds
+#
+# All connection parameters are hardcoded for hz110-cyy.
+
+set -euo pipefail
+
+FALLBACK_HOST="hz110-cyy"
+PRIMARY_HOST="192.168.0.83"
+PRIMARY_PORT=22
+DEFAULT_TIMEOUT=7200  # 2 hours for long experiments
+KEEPALIVE_INTERVAL=30
+KEEPALIVE_MAX=10
+
+SSH_OPTS=(
+    -o "ServerAliveInterval=${KEEPALIVE_INTERVAL}"
+    -o "ServerAliveCountMax=${KEEPALIVE_MAX}"
+    -o "ConnectTimeout=15"
+    -o "TCPKeepAlive=yes"
+    -o "BatchMode=yes"
+)
+
+PRIMARY_SSH_OPTS=(
+    "${SSH_OPTS[@]}"
+    -p "${PRIMARY_PORT}"
+    -i "$HOME/.ssh/id_ed25519"
+    -l "cyy"
+)
+
+FORCE_NOHUP=false
+TIMEOUT=$DEFAULT_TIMEOUT
+
+usage() {
+    cat <<'EOF'
+Usage: rssh [-f] [-s seconds] "<command>"
+  -f        Force nohup mode (detach immediately, return PID)
+  -s SEC    Custom timeout in seconds (default: 7200)
+  -h        Show this help
+EOF
+    exit 1
+}
+
+while getopts "fs:h" opt; do
+    case "$opt" in
+        f) FORCE_NOHUP=true ;;
+        s) TIMEOUT="$OPTARG" ;;
+        *) usage ;;
+    esac
+done
+shift $((OPTIND - 1))
+
+CMD="${1:-}"
+if [ -z "$CMD" ]; then
+    echo "rssh: missing command argument"
+    usage
+fi
+
+choose_host() {
+    if timeout 5 ssh "${PRIMARY_SSH_OPTS[@]}" "$PRIMARY_HOST" "true" >/dev/null 2>&1; then
+        echo "primary"
+    else
+        echo "fallback"
+    fi
+}
+
+HOST_MODE=$(choose_host)
+ENCODED_CMD=$(printf '%s' "$CMD" | base64 -w0)
+
+if $FORCE_NOHUP; then
+    # Launch as nohup background job, return immediately
+    if [ "$HOST_MODE" = "primary" ]; then
+        ssh "${PRIMARY_SSH_OPTS[@]}" "$PRIMARY_HOST" \
+            "bash -lc 'cmd=\$(printf %s \"$ENCODED_CMD\" | base64 -d); nohup bash -lc \"\$cmd\" > /dev/null 2>&1 & echo \$!'"
+    else
+        ssh "${SSH_OPTS[@]}" "$FALLBACK_HOST" \
+            "bash -lc 'cmd=\$(printf %s \"$ENCODED_CMD\" | base64 -d); nohup bash -lc \"\$cmd\" > /dev/null 2>&1 & echo \$!'"
+    fi
+else
+    # Run with timeout
+    if [ "$HOST_MODE" = "primary" ]; then
+        timeout "$TIMEOUT" ssh "${PRIMARY_SSH_OPTS[@]}" "$PRIMARY_HOST" "bash -lc '$CMD'"
+    else
+        timeout "$TIMEOUT" ssh "${SSH_OPTS[@]}" "$FALLBACK_HOST" "bash -lc '$CMD'"
+    fi
+fi
