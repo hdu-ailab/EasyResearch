@@ -26,24 +26,21 @@ export async function runRun(options: RunCommandOptions = {}): Promise<void> {
   });
 
   const rl = createInterface({ input: process.stdin, output: process.stdout });
+  rl.setPrompt("> ");
   console.log("LazyResearch orchestrator started. Type your paper idea, or /exit to quit.");
+  rl.prompt();
 
-  const prompt = () => {
-    rl.question("> ", async (input) => {
-      const text = input.trim();
-      if (!text) return prompt();
-      if (text === "/exit" || text === "/quit") {
-        session.dispose();
-        rl.close();
-        process.exit(0);
-      }
-      try {
-        await session.prompt(text);
-      } catch (err) {
-        console.error("\n" + String(err instanceof Error ? err.message : err));
-      }
-      prompt();
-    });
-  };
-  prompt();
+  for await (const line of rl) {
+    const text = line.trim();
+    if (!text) { rl.prompt(); continue; }
+    if (text === "/exit" || text === "/quit") break;
+    try {
+      await session.prompt(text);
+    } catch (err) {
+      console.error("\n" + String(err instanceof Error ? err.message : err));
+    }
+    rl.prompt();
+  }
+  session.dispose();
+  rl.close();
 }
