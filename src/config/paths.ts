@@ -1,5 +1,6 @@
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 export const CONFIG_DIR_NAME = ".lazyresearch";
 export const ENV_CONFIG_ROOT = "LAZYRESEARCH_CONFIG_DIR";
@@ -11,10 +12,40 @@ export function expandTildePath(p: string): string {
   return p;
 }
 
-export function getConfigRoot(): string {
+/**
+ * Resolve the config root (ADR-015):
+ * 1. LAZYRESEARCH_CONFIG_DIR env (tests/multi-root override), else
+ * 2. project-level: walking up from `cwd`, the first directory containing a
+ *    `.lazyresearch/` config root (marker: config.json, agent/, or state.json)
+ * 3. global fallback: ~/.lazyresearch
+ */
+export function getConfigRoot(cwd: string = process.cwd()): string {
   const envDir = process.env[ENV_CONFIG_ROOT];
   if (envDir) return expandTildePath(envDir);
+  const projectRoot = findProjectConfigRoot(resolve(cwd));
+  if (projectRoot) return projectRoot;
   return join(homedir(), CONFIG_DIR_NAME);
+}
+
+/** First ancestor of `cwd` (inclusive) that holds a `.lazyresearch/` config root, or null. */
+export function findProjectConfigRoot(cwd: string): string | null {
+  let dir = cwd;
+  for (;;) {
+    const candidate = join(dir, CONFIG_DIR_NAME);
+    if (isProjectConfigRoot(candidate)) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+function isProjectConfigRoot(dir: string): boolean {
+  if (!existsSync(dir)) return false;
+  return (
+    existsSync(join(dir, "config.json")) ||
+    existsSync(join(dir, "agent")) ||
+    existsSync(join(dir, "state.json"))
+  );
 }
 
 export function getConfigPath(): string {
