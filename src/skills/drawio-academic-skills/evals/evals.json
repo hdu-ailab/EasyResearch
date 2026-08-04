@@ -1,0 +1,228 @@
+{
+  "skill_name": "drawio-academic-skills",
+  "version": "2.7.0",
+  "_runner": "No automated runner. Each eval is a prompt plus an assertion checklist; verify manually or with an agent, assertion by assertion.",
+  "evals": [
+    {
+      "id": "academic-ieee-campus-network",
+      "prompt": "Create an IEEE-style campus network paper figure with core, distribution, and access layers in grayscale. Return the final .drawio and .svg, with sidecars in a work directory.",
+      "expected_output": "A grayscale-safe IEEE campus network figure generated through the sibling base CLI with clean final outputs.",
+      "files": [],
+      "assertions": [
+        "Uses drawio-academic-skills overlay policy",
+        "Calls or references sibling ../drawio for CLI execution",
+        "Sets meta.profile to academic-paper",
+        "Sets meta.figureType to architecture",
+        "Includes caption or legend guidance for IEEE-style symbols"
+      ]
+    },
+    {
+      "id": "academic-research-workflow-paper",
+      "prompt": "Create a research workflow figure for a manuscript showing data collection, preprocessing, modeling, validation, and reporting.",
+      "expected_output": "A publication-ready workflow figure with default final .drawio and .svg outputs.",
+      "files": [],
+      "assertions": [
+        "Sets meta.figureType to workflow",
+        "Uses academic or academic-color theme based on color policy",
+        "Default final deliverables are .drawio and .svg, with .spec.yaml and .arch.json in a work directory",
+        "Does not require MCP or live backend"
+      ]
+    },
+    {
+      "id": "academic-system-architecture-paper",
+      "prompt": "Create a system architecture paper figure with client, API, worker, and storage layers. Make it readable in a two-column paper.",
+      "expected_output": "A paper-facing architecture diagram with compact labels and publication checks.",
+      "files": ["skills/drawio-academic-skills/references/examples/system-architecture-paper.yaml"],
+      "assertions": [
+        "Sets meta.figureType to architecture",
+        "Uses concise labels before shrinking fonts",
+        "Preserves caption-ready title and one-sentence description",
+        "Runs sibling base CLI validation with strict warnings or equivalent"
+      ]
+    },
+    {
+      "id": "academic-yolo-model-architecture",
+      "prompt": "Create a paper-ready YOLO-style object detection architecture figure. Show input image, backbone, neck/fusion, detection heads, and loss/output. Use editable draw.io primitives, compact labels, and deliver .drawio plus .svg with sidecars in a work directory.",
+      "expected_output": "An academic model-architecture figure using modules and deep-learning semantic types rather than generic boxes.",
+      "files": ["skills/drawio-academic-skills/references/examples/yolo-model-architecture-paper.yaml"],
+      "assertions": [
+        "Uses drawio-academic-skills overlay policy for the publication-facing request",
+        "Sets meta.profile to academic-paper and meta.figureType to architecture",
+        "Uses modules for stages such as input, backbone, fusion or neck, head, and loss/output",
+        "Uses deep-learning semantic node types such as input, conv, pool, attention, tensor3d, loss, and output",
+        "Keeps labels compact and uses a legend or caption instead of long prose inside layer blocks",
+        "Delivers final .drawio and .svg, with .spec.yaml and .arch.json in .drawio-tmp/<name>/"
+      ]
+    },
+    {
+      "id": "academic-max-pooling-operation-figure",
+      "prompt": "Create a publication-ready max-pooling operation figure using native draw.io cells. Show a 2 x 2 input window, the max operation, the output value, a short formula, and arrow labels that do not overlap connector lines.",
+      "expected_output": "A compact academic operation figure built from native grid cells, formula/text nodes, and offset connector labels.",
+      "files": ["skills/drawio-academic-skills/references/examples/max-pooling-operation-paper.yaml"],
+      "assertions": [
+        "Sets meta.profile to academic-paper and maps the operation to an existing meta.figureType value",
+        "Builds the grid from native editable draw.io cells instead of embedding a raster image",
+        "Uses explicit bounds for grid cells, formula, and callout or label placement",
+        "Uses supported math delimiters for the formula",
+        "Uses labelOffset or equivalent placement so edge labels sit off connector lines",
+        "Verifies exported SVG or Desktop-exported artifacts before any browser screenshot"
+      ]
+    },
+    {
+      "id": "academic-ablation-pipeline",
+      "prompt": "Create an ablation-study figure comparing a baseline and two variants before a shared evaluation block for a conference paper.",
+      "expected_output": "A workflow-style ablation pipeline suitable for publication.",
+      "files": [],
+      "assertions": [
+        "Sets meta.figureType to workflow",
+        "Shows baseline and at least two variant branches",
+        "Branches converge at shared evaluation",
+        "Includes legend or caption guidance when line styles or colors encode meaning"
+      ]
+    },
+    {
+      "id": "academic-paper-evidence-chain-preview",
+      "prompt": "I have a draft optimization paper about traffic-signal control. Build a publication figure from the paper logic, not just a list of sections: problem gap, sensor data, assumptions, multi-agent controller, simulation scenarios, metrics, results, and contribution. Use an image-generation concept preview if appropriate, but don't send raw unpublished text externally without asking.",
+      "expected_output": "A paper-derived academic figure workflow that extracts the research evidence chain, confirms a diagram plan, optionally uses privacy-gated image preview, then renders editable draw.io artifacts.",
+      "files": [],
+      "assertions": [
+        "Identifies the source as a paper-derived figure and extracts a research evidence chain",
+        "Maps the figure to an existing meta.figureType value rather than inventing a new schema field",
+        "Presents a diagram plan for confirmation before rendering",
+        "Uses optional image-generation preview only after plan confirmation and privacy approval",
+        "Keeps YAML as the canonical source and final .drawio/.svg as the authoritative artifacts"
+      ]
+    },
+    {
+      "id": "academic-thesis-word-a4-bundle",
+      "prompt": "Create an A4-safe thesis figure for Word export. Deliver the editable bundle plus SVG, and include PNG only if draw.io Desktop is available.",
+      "expected_output": "An academic bundle with Word/A4 export policy and honest Desktop fallback.",
+      "files": [],
+      "assertions": [
+        "Performs venue/audience preflight for thesis or Word",
+        "Default final deliverables include .drawio and .svg, with sidecars in a work directory",
+        "Treats PNG as optional Desktop-enhanced export",
+        "Reports missing PNG clearly if Desktop is unavailable"
+      ]
+    },
+    {
+      "id": "academic-formula-publication-figure",
+      "prompt": "Create a publication-ready training pipeline figure with a visible loss formula $$L = -\\sum y_i \\log(\\hat{y}_i)$$ and an inline metric note \\(F_1\\).",
+      "expected_output": "A formula-bearing academic workflow figure with formula and text fidelity checks.",
+      "files": [],
+      "assertions": [
+        "Loads or follows math-typesetting guidance from sibling base",
+        "Uses only official math delimiters",
+        "Keeps formulas readable and unclipped",
+        "Sets meta.profile to academic-paper and meta.figureType to workflow"
+      ]
+    },
+    {
+      "id": "academic-replication-text-formula-edge-labels",
+      "prompt": "Replicate the uploaded academic figure into an editable bundle. Preserve caption, legend, formula block, standalone text boxes, and edge labels with their relative positions.",
+      "expected_output": "An academic replication bundle with explicit text placement and label offsets.",
+      "files": ["skills/drawio/evals/fixtures/replicate-academic-highlight.svg"],
+      "assertions": [
+        "Sets meta.source to replicated",
+        "Sets meta.profile to academic-paper",
+        "Uses explicit bounds for standalone text, captions, formulas, or callouts when placement matters",
+        "Uses labelOffset for connector labels that would otherwise sit on lines",
+        "Records a visual/text-position self-check before completion",
+        "Uses exported SVG or Desktop-exported artifacts for visual verification before any browser screenshot"
+      ]
+    },
+    {
+      "id": "academic-reference-redraw-native-scientific",
+      "prompt": "Redraw the uploaded research framework screenshot as an editable scientific draw.io figure. Preserve section labels, caption, legend, formulas, callouts, and connector labels, but rebuild the main diagram as native cells rather than pasting the screenshot as the page.",
+      "expected_output": "A scientific reference redraw workflow with source inventory, native editable cells, explicit text placement, and exported-artifact verification.",
+      "files": ["skills/drawio/evals/fixtures/replicate-academic-highlight.svg"],
+      "assertions": [
+        "Sets meta.source to replicated and meta.profile to academic-paper",
+        "Creates or presents a source inventory for canvas, regions, shapes, text, formulas, connectors, palette, and uncertainties",
+        "Uses native draw.io shapes, text/formula nodes, modules, waypoints, and labelOffset for the main figure",
+        "Does not embed the uploaded reference image as the final full-page draw.io content",
+        "Preserves captions, legends, formulas, callouts, and connector labels as first-class elements",
+        "Uses exported SVG or Desktop-exported artifacts for visual verification before any browser screenshot"
+      ]
+    },
+    {
+      "id": "academic-image-improvement-preview-gate",
+      "prompt": "Redraw the uploaded framework screenshot as a cleaner journal figure. Improve the hierarchy and academic tone, but preserve the visible caption, legend, callouts, and edge labels. Use a visual concept preview before final draw.io if that helps, then deliver editable .drawio and .svg with sidecars in a work directory.",
+      "expected_output": "An academic image-improvement workflow that confirms extracted structure, uses optional image preview for layout approval, then verifies exported draw.io artifacts.",
+      "files": ["skills/drawio/evals/fixtures/replicate-academic-highlight.svg"],
+      "assertions": [
+        "Confirms ambiguous source text or extracted structure before final rendering",
+        "Uses optional image-generation preview for academic improvement or layout exploration when available",
+        "Falls back to local YAML/SVG preview when image generation is unavailable or declined",
+        "Uses explicit bounds or labelOffset for captions, callouts, formulas, or connector labels when placement matters",
+        "Performs one exported-artifact QA pass and rerenders once if visible defects are found"
+      ]
+    },
+    {
+      "id": "academic-desktop-png-pdf-unavailable-fallback",
+      "prompt": "Export the final paper figure as PNG and PDF for submission, but draw.io Desktop might not be installed.",
+      "expected_output": "A publication workflow that tries Desktop exports when needed and falls back honestly.",
+      "files": [],
+      "assertions": [
+        "Attempts PNG/PDF only through sibling base Desktop-enhanced export",
+        "Does not require MCP or a live backend",
+        "Does not claim PNG/PDF files exist when Desktop is unavailable",
+        "Still delivers final .drawio and .svg, with sidecars in a work directory",
+        "Provides a diagrams.net URL or exact Desktop command fallback",
+        "Does not substitute Playwright screenshots for unavailable Desktop exports"
+      ]
+    },
+    {
+      "id": "academic-ieee-print-palette",
+      "prompt": "Create an IEEE camera-ready workflow figure for single-column print. I have not selected a palette.",
+      "expected_output": "An academic preflight that recommends an IEEE print-safe palette, records it independently from the theme, and passes the print gate.",
+      "files": [],
+      "assertions": [
+        "Determines the IEEE print venue before asking one palette question",
+        "Offers ieee-bw first with (Recommended), followed by relevant alternatives such as tol-high-contrast and ieee-color",
+        "States colorblind and grayscale safety in the option descriptions",
+        "Sets meta.palette to the selected palette and meta.print.target to ieee-single",
+        "Uses the academic theme for typography and layout independently from palette colors",
+        "Runs strict validation and reports the selected palette plus its safety flags"
+      ]
+    },
+    {
+      "id": "academic-explicit-palette",
+      "prompt": "Create a Nature-style online journal figure using the journal-npg palette. This is a color PDF, not a grayscale print deliverable.",
+      "expected_output": "An academic workflow that applies the explicitly named palette without asking again and reports its accessibility metadata.",
+      "files": [],
+      "assertions": [
+        "Maps journal-npg directly to meta.palette and does not ask a palette-selection question",
+        "Keeps academic theme typography, layout, shapes, and line styles independent from the palette",
+        "Surfaces PALETTE_CVD_NOTICE as non-blocking info because journal-npg is not colorblind-safe",
+        "Does not invent a grayscale print requirement for the explicitly online color deliverable",
+        "Names journal-npg and its colorblind and grayscale safety flags in the completion report"
+      ]
+    },
+    {
+      "id": "academic-print-gate-downgrade",
+      "prompt": "Create an IEEE single-column camera-ready workflow figure using the morandi palette.",
+      "expected_output": "An academic print workflow that honors the explicit palette request, surfaces the grayscale print risk, and recommends a print-safe downgrade.",
+      "files": [],
+      "assertions": [
+        "Maps morandi directly to meta.palette and does not ask a palette-selection question",
+        "Sets meta.print.target to ieee-single for the camera-ready deliverable",
+        "Surfaces PALETTE_PRINT_GATE because morandi is not grayscale-safe for the print target",
+        "Recommends downgrading to ieee-bw or tol-high-contrast, or keeps the strict validation failure explicit",
+        "Reports morandi's colorblind and grayscale safety flags in the completion report"
+      ]
+    },
+    {
+      "id": "academic-base-capability-promotion",
+      "prompt": "Turn the supplied multi-page architecture bundle into a paper-ready figure set, using the sibling base offline postprocess summary before applying publication checks.",
+      "expected_output": "A publication-checked bundle that consumes base multi-page and postprocess contracts without duplicating runtime.",
+      "files": ["skills/drawio/scripts/postprocess/fixtures/bundle.yaml"],
+      "assertions": [
+        "Uses sibling base canonical bundle and postprocess behavior",
+        "Applies academic caption, print, and readability checks after the base transform",
+        "Does not copy adapters, identity, renderer, catalogs, or postprocess runtime into the overlay",
+        "Keeps Desktop and model evidence classifications honest"
+      ]
+    }
+  ]
+}

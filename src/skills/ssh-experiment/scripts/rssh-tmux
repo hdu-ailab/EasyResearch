@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# rssh-tmux — start a persistent interactive SSH to hz110-cyy inside a local tmux session.
+# Usage:
+#   rssh-tmux start            Create/resume tmux session "ssh-hz110" with interactive SSH
+#   rssh-tmux send "<cmd>"     Send command to the running session
+#   rssh-tmux capture [lines]  Capture last N lines of output (default: 50)
+#   rssh-tmux stop             Kill the tmux session
+
+HOST="hz110-cyy"
+SESSION="ssh-hz110"
+KEEPALIVE_INTERVAL=30
+KEEPALIVE_MAX=10
+
+SSH_CMD="ssh -o ServerAliveInterval=${KEEPALIVE_INTERVAL} -o ServerAliveCountMax=${KEEPALIVE_MAX} -o TCPKeepAlive=yes ${HOST}"
+
+usage() {
+    cat <<'EOF'
+Usage: rssh-tmux <action> [args]
+  start              Create/resume persistent SSH session
+  send "<cmd>"       Run command in the session
+  capture [N]        Capture last N lines (default: 50)
+  stop               Kill the session
+EOF
+    exit 1
+}
+
+ACTION="${1:-}"
+shift 2>/dev/null || true
+
+case "$ACTION" in
+    start)
+        if tmux has-session -t "$SESSION" 2>/dev/null; then
+            echo "Session '$SESSION' already running."
+        else
+            tmux new-session -d -s "$SESSION" "$SSH_CMD"
+            echo "Started tmux session '$SESSION' with SSH to $HOST."
+        fi
+        ;;
+
+    send)
+        CMD="${1:-}"
+        if [ -z "$CMD" ]; then
+            echo "rssh-tmux: missing command to send"
+            usage
+        fi
+        if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+            echo "rssh-tmux: session '$SESSION' not running. Run 'rssh-tmux start' first."
+            exit 1
+        fi
+        # Send command and press Enter
+        tmux send-keys -t "$SESSION" "$CMD" Enter
+        echo "Sent to $SESSION."
+        ;;
+
+    capture)
+        LINES="${1:-50}"
+        if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+            echo "rssh-tmux: session '$SESSION' not running."
+            exit 1
+        fi
+        tmux capture-pane -t "$SESSION" -p -S -"$LINES"
+        ;;
+
+    stop)
+        if tmux has-session -t "$SESSION" 2>/dev/null; then
+            tmux kill-session -t "$SESSION"
+            echo "Session '$SESSION' killed."
+        else
+            echo "Session '$SESSION' not running."
+        fi
+        ;;
+
+    *)
+        usage
+        ;;
+esac

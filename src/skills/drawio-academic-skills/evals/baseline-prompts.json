@@ -1,0 +1,52 @@
+[
+  {
+    "id": "academic-ieee-campus-network",
+    "profile": "academic-paper",
+    "prompt": "Create an IEEE-style campus network paper figure with core, distribution, and access layers in grayscale. Return final .drawio and .svg, with sidecars in a work directory."
+  },
+  {
+    "id": "academic-research-workflow-paper",
+    "profile": "academic-paper",
+    "prompt": "Create a research workflow figure for a manuscript showing data collection, preprocessing, modeling, validation, and reporting."
+  },
+  {
+    "id": "academic-system-architecture-paper",
+    "profile": "academic-paper",
+    "prompt": "Create a system architecture paper figure with client, API, worker, and storage layers. Make it readable in a two-column paper."
+  },
+  {
+    "id": "academic-ablation-pipeline",
+    "profile": "academic-paper",
+    "prompt": "Create an ablation-study figure comparing a baseline and two variants before a shared evaluation block for a conference paper."
+  },
+  {
+    "id": "academic-paper-evidence-chain-preview",
+    "profile": "academic-paper",
+    "prompt": "I have a draft optimization paper about traffic-signal control. Build a publication figure from the paper logic, not just a list of sections: problem gap, sensor data, assumptions, multi-agent controller, simulation scenarios, metrics, results, and contribution. Use an image-generation concept preview if appropriate, but don't send raw unpublished text externally without asking."
+  },
+  {
+    "id": "academic-thesis-word-a4-bundle",
+    "profile": "academic-paper",
+    "prompt": "Create an A4-safe thesis figure for Word export. Deliver the editable bundle plus SVG, and include PNG only if draw.io Desktop is available."
+  },
+  {
+    "id": "academic-formula-publication-figure",
+    "profile": "academic-paper",
+    "prompt": "Create a publication-ready training pipeline figure with a visible loss formula $$L = -\\sum y_i \\log(\\hat{y}_i)$$ and an inline metric note \\(F_1\\)."
+  },
+  {
+    "id": "academic-replication-text-formula-edge-labels",
+    "profile": "academic-paper",
+    "prompt": "Replicate the uploaded academic figure into an editable bundle. Preserve caption, legend, formula block, standalone text boxes, and edge labels with their relative positions."
+  },
+  {
+    "id": "academic-image-improvement-preview-gate",
+    "profile": "academic-paper",
+    "prompt": "Redraw the uploaded framework screenshot as a cleaner journal figure. Improve the hierarchy and academic tone, but preserve the visible caption, legend, callouts, and edge labels. Use a visual concept preview before final draw.io if that helps, then deliver editable .drawio and .svg with sidecars in a work directory."
+  },
+  {
+    "id": "academic-desktop-png-pdf-unavailable-fallback",
+    "profile": "academic-paper",
+    "prompt": "Export the final paper figure as PNG and PDF for submission, but draw.io Desktop might not be installed."
+  }
+]

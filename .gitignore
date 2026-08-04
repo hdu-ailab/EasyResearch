@@ -4,3 +4,6 @@ AGENTS_cn.md
 .docs/
 node_modules/
 src/webui/dist/
+.venv/
+__pycache__/
+*.pyc
