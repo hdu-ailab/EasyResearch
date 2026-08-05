@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Braces, MessageSquare } from "lucide-react";
 import { abortSession, connectSessionEvents, getSnapshot, restartSession, sendPrompt, stopSession } from "../api";
 import { fromSnapshot, reduceSessionEvent, type SessionViewState } from "../session-reducer";
 import { ChatTranscript } from "../components/ChatTranscript";
 import { ChatComposer } from "../components/ChatComposer";
+import { ConfigBrowser } from "../components/ConfigBrowser";
 
 export interface WorkPageProps {
   id: string;
@@ -11,8 +12,11 @@ export interface WorkPageProps {
   onBack: () => void;
 }
 
+type View = "chat" | "config";
+
 export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
-  const [view, setView] = useState<SessionViewState>({ messages: [], isStreaming: false, activity: null, error: null });
+  const [view, setView] = useState<View>("chat");
+  const [sessionView, setSessionView] = useState<SessionViewState>({ messages: [], isStreaming: false, activity: null, error: null });
   const [status, setStatus] = useState<string>("starting");
   const [sessionId, setSessionId] = useState(id);
   const [accepting, setAccepting] = useState(false);
@@ -21,7 +25,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   const hydrate = useCallback(async (targetId: string) => {
     const snapshot = await getSnapshot(targetId);
     setSessionId(snapshot.session.id);
-    setView(fromSnapshot(snapshot));
+    setSessionView(fromSnapshot(snapshot));
     setStatus(snapshot.session.status);
   }, []);
 
@@ -34,7 +38,8 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
       }
     });
     const unsubscribe = connectSessionEvents(id, {
-      onEvent: (event) => setView((prev) => reduceSessionEvent(prev, event as Parameters<typeof reduceSessionEvent>[1])),
+      onEvent: (event) =>
+        setSessionView((prev) => reduceSessionEvent(prev, event as Parameters<typeof reduceSessionEvent>[1])),
       onError: () => setStatusText("Connection lost — events will resume when the browser reconnects."),
     });
     return () => {
@@ -61,7 +66,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   const abort = useCallback(async () => {
     try {
       await abortSession(sessionId);
-      setView((prev) => ({ ...prev, isStreaming: false }));
+      setSessionView((prev) => ({ ...prev, isStreaming: false }));
       setStatus("ready");
     } catch (e) {
       setStatusText(e instanceof Error ? e.message : String(e));
@@ -73,7 +78,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
     setStatusText(null);
     try {
       await stopSession(sessionId);
-      setView((prev) => ({ ...prev, isStreaming: false }));
+      setSessionView((prev) => ({ ...prev, isStreaming: false }));
       setStatus("stopped");
     } catch (e) {
       setStatusText(e instanceof Error ? e.message : String(e));
@@ -102,22 +107,48 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
           <h1 className="work-page__title">Orchestrator</h1>
           <p className="work-page__cwd" title={cwd}>{cwd}</p>
         </div>
+        <nav className="segmented" aria-label="Work page view">
+          <button
+            role="tab"
+            aria-selected={view === "chat"}
+            className="segmented__option"
+            onClick={() => setView("chat")}
+          >
+            <MessageSquare size={14} />
+            Orchestrator
+          </button>
+          <button
+            role="tab"
+            aria-selected={view === "config"}
+            className="segmented__option"
+            onClick={() => setView("config")}
+          >
+            <Braces size={14} />
+            Config
+          </button>
+        </nav>
         <span className={`status-pill status-pill--${status}`}>{status}</span>
         <button className="button button--ghost" aria-label="Stop session" title="Stop this session" onClick={stop}>
           Stop
         </button>
       </header>
       {statusText && <p className="work-page__status-text" role="alert">{statusText}</p>}
-      <ChatTranscript messages={view.messages} activity={view.activity} />
-      <footer className="work-page__footer">
-        <ChatComposer
-          disabled={accepting}
-          streaming={view.isStreaming}
-          onSend={send}
-          onAbort={abort}
-          onRestart={restart}
-        />
-      </footer>
+      {view === "chat" ? (
+        <>
+          <ChatTranscript messages={sessionView.messages} activity={sessionView.activity} />
+          <footer className="work-page__footer">
+            <ChatComposer
+              disabled={accepting}
+              streaming={sessionView.isStreaming}
+              onSend={send}
+              onAbort={abort}
+              onRestart={restart}
+            />
+          </footer>
+        </>
+      ) : (
+        <ConfigBrowser cwd={cwd} onSaveApplied={() => {}} />
+      )}
     </main>
   );
 }
