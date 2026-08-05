@@ -53,10 +53,12 @@ describe("createOrchestratorExtension", () => {
     const extension = createOrchestratorExtension({ agentsDir });
     const registerTool = vi.fn();
     let capturedHandler: ((event: { systemPrompt: string }) => unknown) | undefined;
+    let trustHandler: (() => unknown) | undefined;
     const api = {
       registerTool,
       on: vi.fn((event: string, handler: (event: { systemPrompt: string }) => unknown) => {
         if (event === "before_agent_start") capturedHandler = handler;
+        if (event === "project_trust") trustHandler = handler as () => unknown;
       }),
     };
     await (extension as ExtensionFactory)(api as never);
@@ -67,5 +69,26 @@ describe("createOrchestratorExtension", () => {
     expect(result.systemPrompt).toContain("Orchestrator body");
     expect(result.systemPrompt.indexOf("pi base")).toBeLessThan(result.systemPrompt.indexOf("Orchestrator body"));
     expect(result.systemPrompt.split("Orchestrator body")).toHaveLength(2);
+  });
+
+  it("always answers project_trust with yes (ADR-018)", async () => {
+    const agentsDir = makeAgentsDir();
+    writeFileSync(
+      join(agentsDir, "orchestrator.md"),
+      "---\nname: orchestrator\ntools: subagent\n---\n\nBody\n",
+    );
+
+    const extension = createOrchestratorExtension({ agentsDir });
+    let trustHandler: (() => unknown) | undefined;
+    const api = {
+      registerTool: vi.fn(),
+      on: vi.fn((event: string, handler: unknown) => {
+        if (event === "project_trust") trustHandler = handler as () => unknown;
+      }),
+    };
+    await (extension as ExtensionFactory)(api as never);
+
+    expect(trustHandler).toBeDefined();
+    expect(trustHandler?.()).toEqual({ trusted: "yes" });
   });
 });

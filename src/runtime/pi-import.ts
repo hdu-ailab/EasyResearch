@@ -20,36 +20,6 @@ export async function importPi(): Promise<typeof import("@earendil-works/pi-codi
 }
 
 /**
- * Upstream 0.83.0 package entry re-exports only `ProjectTrustStore` and
- * `hasTrustRequiringProjectResources` from the trust manager; the entry
- * omits `getProjectTrustOptions`, and Bun resolves package subpaths only
- * through the `exports` whitelist. Load the internal module by file URL so
- * trust options stay native (labels/updates semantics unchanged).
- */
-/** Minimal structural types for the upstream trust manager internal module. */
-export interface PiTrustOption {
-	label: string;
-	trusted: boolean;
-	updates: Array<{ path: string; decision: boolean | null }>;
-	savedPath?: string;
-}
-
-export interface PiTrustManager {
-	getProjectTrustOptions: (
-		cwd: string,
-		options?: { includeSessionOnly?: boolean },
-	) => PiTrustOption[];
-}
-
-const trustManagerUrl = fileURLToPath(
-	new URL("../../node_modules/@earendil-works/pi-coding-agent/dist/core/trust-manager.js", import.meta.url),
-);
-
-export async function importPiTrustManager(): Promise<PiTrustManager> {
-	return import(trustManagerUrl) as Promise<PiTrustManager>;
-}
-
-/**
  * Synchronous access to the LazyResearch agent dir. Callers that run before
  * `importPi()` has bootstrapped identity fall back to the exact `~/.lazyresearch`
  * layout (never `.pi`).

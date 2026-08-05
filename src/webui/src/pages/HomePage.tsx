@@ -1,12 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { FolderSearch } from "lucide-react";
-import { applyTrust, createSession, listStatus, openSession } from "../api";
+import { createSession, listStatus, openSession } from "../api";
 import { ApiError } from "../api";
 import { DirectoryPicker } from "../components/DirectoryPicker";
-import { TrustDialog } from "../components/TrustDialog";
 import { SessionList } from "../components/SessionList";
 import type { ActiveSessionDto, SessionSummaryDto } from "../../../web/contracts";
-import type { TrustInspection } from "../../../web/trust";
 
 export interface HomePageProps {
   homeDir: string;
@@ -17,8 +15,6 @@ export function HomePage({ homeDir, onOpenSession }: HomePageProps) {
   const [status, setStatus] = useState<{ sessions: SessionSummaryDto[]; activeSessions: ActiveSessionDto[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-  const [trust, setTrust] = useState<TrustInspection | null>(null);
-  const [pendingCwd, setPendingCwd] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
     setError(null);
@@ -37,33 +33,12 @@ export function HomePage({ homeDir, onOpenSession }: HomePageProps) {
         const dto = await createSession(cwd);
         onOpenSession({ id: dto.id, cwd: dto.cwd });
       } catch (e) {
-        if (e instanceof ApiError && e.status === 409) {
-          const details = e.details as { options?: TrustInspection["options"] };
-          setPendingCwd(cwd);
-          setTrust({ required: true, options: details.options ?? [] });
-        } else {
-          setError(e instanceof Error ? e.message : String(e));
-        }
+        setError(e instanceof Error ? e.message : String(e));
       } finally {
         setCreating(false);
       }
     },
     [onOpenSession],
-  );
-
-  const applyTrustOption = useCallback(
-    async (optionIndex: number) => {
-      if (!pendingCwd) return;
-      setTrust(null);
-      try {
-        const decision = await applyTrust(pendingCwd, optionIndex);
-        const dto = await createSession(pendingCwd, decision.projectTrustOverride);
-        onOpenSession({ id: dto.id, cwd: dto.cwd });
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
-      }
-    },
-    [pendingCwd, onOpenSession],
   );
 
   const openHistory = useCallback(
@@ -112,13 +87,6 @@ export function HomePage({ homeDir, onOpenSession }: HomePageProps) {
         </section>
       </div>
       {creating && <p className="muted">Starting orchestrator session…</p>}
-      {trust && (
-        <TrustDialog
-          options={trust.options}
-          onApply={applyTrustOption}
-          onCancel={() => setTrust(null)}
-        />
-      )}
     </main>
   );
 }

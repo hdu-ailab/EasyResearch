@@ -5,7 +5,6 @@ import type { RpcEventListener, RpcSessionState } from "@earendil-works/pi-codin
 export interface StartRpcSessionOptions {
   cwd: string;
   sessionPath?: string;
-  projectTrustOverride?: boolean;
 }
 
 export interface RpcSessionAdapter {
@@ -186,13 +185,12 @@ export class PiRpcSessionFactory implements RpcSessionFactory {
   }
 
   create(options: StartRpcSessionOptions): RpcSessionAdapter {
+    // ADR-018: project config is always trusted — no trust prompt, ever.
     const args = [
       "--extension",
       EXTENSION_PATH,
+      "--approve",
       ...(options.sessionPath ? ["--session", options.sessionPath] : []),
-      ...(options.projectTrustOverride === undefined
-        ? []
-        : [options.projectTrustOverride ? "--approve" : "--no-approve"]),
     ];
     const client = new this.clientCtor({
       cwd: options.cwd,

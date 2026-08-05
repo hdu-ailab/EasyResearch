@@ -5,7 +5,6 @@ import { ActiveSessionRegistry } from "./active-sessions";
 import { PiRpcSessionFactory } from "./rpc-session";
 import { DirectoryService } from "./directories";
 import { ConfigFileService } from "./config-files";
-import { createTrustService } from "./trust";
 import type { SessionSummaryDto } from "./contracts";
 
 export interface Server {
@@ -20,8 +19,10 @@ const WEBUI_DIST = join(fileURLToPath(new URL("..", import.meta.url)), "webui", 
  * session registry and stops every Pi RPC child on shutdown.
  */
 export async function startServer(): Promise<Server> {
-  const registry = new ActiveSessionRegistry(await PiRpcSessionFactory.resolve());
   const { importPi } = await import("../runtime/pi-import");
+  const { assertNoUserExtensions } = await import("../runtime/extensions-guard");
+  assertNoUserExtensions();
+  const registry = new ActiveSessionRegistry(await PiRpcSessionFactory.resolve());
   const { SessionManager, getAgentDir } = await importPi();
   const agentDir = getAgentDir();
   const services: RouteServices = {
@@ -43,7 +44,6 @@ export async function startServer(): Promise<Server> {
       });
     },
     directories: new DirectoryService(),
-    trust: await createTrustService(agentDir),
     registry,
     config: new ConfigFileService(agentDir),
   };

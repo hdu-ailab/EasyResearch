@@ -32,6 +32,8 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
     pi.on("before_agent_start", (event) => ({
       systemPrompt: `${event.systemPrompt}\n\n${prompt}`,
     }));
+    // ADR-018: project config is always trusted; suppress Pi's trust prompt.
+    pi.on("project_trust", () => ({ trusted: "yes" as const }));
   };
 }
 

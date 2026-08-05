@@ -10,8 +10,12 @@ import type { RpcSessionAdapter, RpcSessionFactory, StartRpcSessionOptions } fro
 import { ActiveSessionRegistry } from "./active-sessions";
 import { DirectoryService } from "./directories";
 import { ConfigFileService } from "./config-files";
-import { TrustService, type TrustDeps } from "./trust";
 import type { SessionSummaryDto } from "./contracts";
+
+vi.mock("../runtime/extensions-guard", () => ({
+  assertNoUserExtensions: vi.fn(),
+  ExtensionGuardError: class ExtensionGuardError extends Error {},
+}));
 
 class FakeAdapter implements RpcSessionAdapter {
   static all: FakeAdapter[] = [];
@@ -71,16 +75,6 @@ class FakeFactory implements RpcSessionFactory {
   }
 }
 
-function trustDeps(overrides: Partial<TrustDeps> = {}): TrustDeps {
-  return {
-    hasTrustRequiringProjectResources: () => false,
-    trustStore: { get: () => null, setMany: vi.fn() },
-    getProjectTrustOptions: () => [],
-    defaultProjectTrust: "always",
-    ...overrides,
-  };
-}
-
 describe("web routes", () => {
   let webuiDist: string;
   let homeDir: string;
@@ -113,7 +107,6 @@ describe("web routes", () => {
       webuiDist,
       listAllSessions: async () => historySessions,
       directories: directoryService,
-      trust: new TrustService(trustDeps()),
       registry,
       config: configService,
       ...overrides,
@@ -150,40 +143,6 @@ describe("web routes", () => {
     expect(body.path).toBe(homeDir);
   });
 
-  it("inspects trust and applies a native option", async () => {
-    const store = { get: () => null as boolean | null, setMany: vi.fn() };
-    setup({
-      trust: new TrustService(
-        trustDeps({
-          hasTrustRequiringProjectResources: () => true,
-          trustStore: store,
-          defaultProjectTrust: "ask",
-          getProjectTrustOptions: () => [
-            { label: "Always trust", trusted: true, updates: [{ cwd: projectDir, path: ".lazyresearch", decision: true }] },
-            { label: "Only this session", trusted: true, updates: [] },
-          ],
-        }),
-      ),
-    });
-    const inspect = await handler(
-      new Request(`http://localhost/api/trust?cwd=${encodeURIComponent(projectDir)}`),
-    );
-    expect(inspect.status).toBe(200);
-    const inspection = (await inspect.json()) as { required: boolean; options: unknown[] };
-    expect(inspection.required).toBe(true);
-    expect(inspection.options).toHaveLength(2);
-
-    const apply = await handler(
-      new Request("http://localhost/api/trust", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cwd: projectDir, optionIndex: 0 }),
-      }),
-    );
-    expect(apply.status).toBe(200);
-    expect(store.setMany).toHaveBeenCalledTimes(1);
-  });
-
   it("creates a session for an exact cwd", async () => {
     setup();
     const res = await handler(
@@ -199,29 +158,6 @@ describe("web routes", () => {
     expect(dto.id).toBe("sess-1");
     expect(factory.created).toHaveLength(1);
     expect(factory.created[0]?.options.cwd).toBe(projectDir);
-  });
-
-  it("returns 409 with native options when trust is unresolved", async () => {
-    setup({
-      trust: new TrustService(
-        trustDeps({
-          hasTrustRequiringProjectResources: () => true,
-          defaultProjectTrust: "ask",
-          getProjectTrustOptions: () => [{ label: "Always trust", trusted: true, updates: [] }],
-        }),
-      ),
-    });
-    const res = await handler(
-      new Request("http://localhost/api/sessions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cwd: projectDir }),
-      }),
-    );
-    expect(res.status).toBe(409);
-    const body = (await res.json()) as { options: unknown[] };
-    expect(body.options).toHaveLength(1);
-    expect(factory.created).toHaveLength(0);
   });
 
   it("opens a historical session using its recorded cwd", async () => {
