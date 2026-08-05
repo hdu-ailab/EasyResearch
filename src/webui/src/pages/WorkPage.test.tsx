@@ -14,6 +14,10 @@ vi.mock("../api", async (importOriginal) => {
     sendPrompt: vi.fn(),
     stopSession: vi.fn(),
     restartSession: vi.fn(),
+    listConfig: vi.fn().mockResolvedValue([]),
+    readConfigFile: vi.fn(),
+    writeConfigFile: vi.fn(),
+    createConfigDirectory: vi.fn(),
   };
 });
 
@@ -134,6 +138,24 @@ describe("WorkPage", () => {
     expect(window.confirm).toHaveBeenCalled();
     await waitFor(() => expect(api.stopSession).toHaveBeenCalledWith("s1"));
     expect(screen.getByRole("button", { name: /restart/i })).toBeTruthy();
+  });
+
+  it("preserves chat state when switching to Config and back", async () => {
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    await user.type(screen.getByRole("textbox", { name: /message/i }), "keep this");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+    emit({
+      type: "message_start",
+      message: { role: "user", content: [{ type: "text", text: "keep this" }] },
+    });
+    expect(await screen.findByText("keep this")).toBeTruthy();
+    await user.click(screen.getByRole("tab", { name: /config/i }));
+    expect(await screen.findByRole("region", { name: /config browser/i })).toBeTruthy();
+    await user.click(screen.getByRole("tab", { name: /orchestrator/i }));
+    expect(await screen.findByText("keep this")).toBeTruthy();
+    expect(screen.getByText("starting research")).toBeTruthy();
   });
 
   it("Restart calls restartSession and reconnects events", async () => {
