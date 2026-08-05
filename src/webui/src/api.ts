@@ -10,7 +10,7 @@ export interface SessionSummary {
 }
 
 export interface StatusResponse {
-  configRoot: string | null;
+  agentDir: string | null;
   model: string | null;
   sessions: SessionSummary[];
 }

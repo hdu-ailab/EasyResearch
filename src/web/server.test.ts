@@ -2,28 +2,25 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ENV_CONFIG_ROOT, ENV_PI_AGENT_DIR } from "../config/paths";
 import { routeRequest } from "./routes";
+
+const AGENT_DIR_ENV = "LAZYPAPER_CODING_AGENT_DIR";
 
 describe("web routes", () => {
   let dir: string;
   let webuiDist: string;
-  const realEnv = process.env[ENV_CONFIG_ROOT];
-  const realPiEnv = process.env[ENV_PI_AGENT_DIR];
+  const realAgentDirEnv = process.env[AGENT_DIR_ENV];
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "lazy-web-"));
     webuiDist = mkdtempSync(join(tmpdir(), "lazy-webui-dist-"));
-    process.env[ENV_CONFIG_ROOT] = dir;
-    delete process.env[ENV_PI_AGENT_DIR];
+    process.env[AGENT_DIR_ENV] = join(dir, "agent");
     writeFileSync(join(webuiDist, "index.html"), "<div id=\"root\"></div>", "utf-8");
   });
 
   afterEach(() => {
-    if (realEnv === undefined) delete process.env[ENV_CONFIG_ROOT];
-    else process.env[ENV_CONFIG_ROOT] = realEnv;
-    if (realPiEnv === undefined) delete process.env[ENV_PI_AGENT_DIR];
-    else process.env[ENV_PI_AGENT_DIR] = realPiEnv;
+    if (realAgentDirEnv === undefined) delete process.env[AGENT_DIR_ENV];
+    else process.env[AGENT_DIR_ENV] = realAgentDirEnv;
     rmSync(dir, { recursive: true, force: true });
     rmSync(webuiDist, { recursive: true, force: true });
   });
@@ -31,9 +28,9 @@ describe("web routes", () => {
   it("returns status with empty sessions", async () => {
     const res = await routeRequest(new Request("http://localhost/api/status"), webuiDist);
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { sessions: unknown[]; configRoot: string };
+    const body = (await res.json()) as { sessions: unknown[]; agentDir: string };
     expect(body.sessions).toEqual([]);
-    expect(body.configRoot).toBe(dir);
+    expect(body.agentDir).toBe(join(dir, "agent"));
   });
 
   it("lists sessions from the default subdir layout (--<cwd>--/<file>.jsonl)", async () => {
