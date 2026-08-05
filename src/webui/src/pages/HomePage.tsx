@@ -1,53 +1,124 @@
-import { useEffect, useState } from "react";
-import { listStatus } from "../api";
-import type { StatusDto } from "../../../web/contracts";
+import { useCallback, useEffect, useState } from "react";
+import { FolderSearch } from "lucide-react";
+import { applyTrust, createSession, listStatus, openSession } from "../api";
+import { ApiError } from "../api";
+import { DirectoryPicker } from "../components/DirectoryPicker";
+import { TrustDialog } from "../components/TrustDialog";
+import { SessionList } from "../components/SessionList";
+import type { ActiveSessionDto, SessionSummaryDto } from "../../../web/contracts";
+import type { TrustInspection } from "../../../web/trust";
 
-export function HomePage({ onOpenSession }: { onOpenSession: (cwd: string) => void }) {
-  const [status, setStatus] = useState<StatusDto | null>(null);
+export interface HomePageProps {
+  homeDir: string;
+  onOpenSession: (session: { id: string; cwd: string }) => void;
+}
+
+export function HomePage({ homeDir, onOpenSession }: HomePageProps) {
+  const [status, setStatus] = useState<{ sessions: SessionSummaryDto[]; activeSessions: ActiveSessionDto[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [trust, setTrust] = useState<TrustInspection | null>(null);
+  const [pendingCwd, setPendingCwd] = useState<string | null>(null);
 
-  useEffect(() => {
-    listStatus().then(setStatus).catch((e) => setError(String(e)));
+  const refresh = useCallback(() => {
+    setError(null);
+    listStatus()
+      .then(setStatus)
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
   }, []);
 
+  useEffect(refresh, [refresh]);
+
+  const startSession = useCallback(
+    async (cwd: string) => {
+      setCreating(true);
+      setError(null);
+      try {
+        const dto = await createSession(cwd);
+        onOpenSession({ id: dto.id, cwd: dto.cwd });
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 409) {
+          const details = e.details as { options?: TrustInspection["options"] };
+          setPendingCwd(cwd);
+          setTrust({ required: true, options: details.options ?? [] });
+        } else {
+          setError(e instanceof Error ? e.message : String(e));
+        }
+      } finally {
+        setCreating(false);
+      }
+    },
+    [onOpenSession],
+  );
+
+  const applyTrustOption = useCallback(
+    async (optionIndex: number) => {
+      if (!pendingCwd) return;
+      setTrust(null);
+      try {
+        const decision = await applyTrust(pendingCwd, optionIndex);
+        const dto = await createSession(pendingCwd, decision.projectTrustOverride);
+        onOpenSession({ id: dto.id, cwd: dto.cwd });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [pendingCwd, onOpenSession],
+  );
+
+  const openHistory = useCallback(
+    async (session: SessionSummaryDto) => {
+      try {
+        const dto = await openSession(session.path);
+        onOpenSession({ id: dto.id, cwd: dto.cwd });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [onOpenSession],
+  );
+
   return (
-    <div>
-      <h1>LazyResearch</h1>
-      <p>
-        Agent dir: {status?.agentDir ?? "…"}
-      </p>
-      {error && <p style={{ color: "red" }}>{error}</p>}
-      <h2>Sessions</h2>
-      {!status ? (
-        <p>Loading…</p>
-      ) : status.sessions.length === 0 ? (
-        <p>No sessions yet. Run <code>lazyresearch</code> in a project folder to start one.</p>
-      ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Project</th>
-              <th>Messages</th>
-              <th>Modified</th>
-            </tr>
-          </thead>
-          <tbody>
-            {status.sessions.map((s) => (
-              <tr key={s.id}>
-                <td>
-                  <a href="#" onClick={(e) => { e.preventDefault(); onOpenSession(s.cwd); }}>
-                    {s.name || s.id.slice(0, 8)}
-                  </a>
-                </td>
-                <td>{s.cwd}</td>
-                <td>{s.messageCount}</td>
-                <td>{new Date(s.modified).toLocaleString()}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+    <main className="home-page">
+      <header className="home-page__header">
+        <h1 className="home-page__title">LazyResearch</h1>
+        <p className="home-page__subtitle">From idea to paper, one project at a time.</p>
+      </header>
+      {error && <p className="home-page__error" role="alert">{error}</p>}
+      <div className="home-page__grid">
+        <section className="home-page__column">
+          <h2 className="section-heading">
+            <FolderSearch size={15} />
+            Start from a directory
+          </h2>
+          <DirectoryPicker
+            homeDir={homeDir}
+            onSelect={startSession}
+            onNavigate={() => {}}
+          />
+        </section>
+        <section className="home-page__column">
+          <h2 className="section-heading">Continue work</h2>
+          {!status ? (
+            <p className="muted">Loading sessions…</p>
+          ) : (
+            <SessionList
+              history={status.sessions}
+              active={status.activeSessions}
+              onOpenHistory={openHistory}
+              onOpenActive={(session) => onOpenSession({ id: session.id, cwd: session.cwd })}
+            />
+          )}
+        </section>
+      </div>
+      {creating && <p className="muted">Starting orchestrator session…</p>}
+      {trust && (
+        <TrustDialog
+          options={trust.options}
+          onApply={applyTrustOption}
+          onCancel={() => setTrust(null)}
+        />
       )}
-    </div>
+    </main>
   );
 }

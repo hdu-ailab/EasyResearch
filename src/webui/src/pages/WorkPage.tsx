@@ -12,12 +12,12 @@ interface AgentEvent {
  * events. Dynamic subagent tabs and file browsing land with the full webui
  * spec in .docs/webui.md.
  */
-export function WorkPage({ cwd, onBack }: { cwd: string; onBack: () => void }) {
+export function WorkPage({ id, cwd, onBack }: { id: string; cwd: string; onBack: () => void }) {
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [input, setInput] = useState("");
 
   useEffect(() => {
-    const es = new EventSource("/api/events");
+    const es = new EventSource(`/api/sessions/${encodeURIComponent(id)}/events`);
     es.onmessage = (e) => {
       try {
         setEvents((prev) => [...prev.slice(-200), JSON.parse(e.data)]);
