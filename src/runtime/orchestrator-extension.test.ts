@@ -8,7 +8,7 @@ import { createOrchestratorExtension, loadOrchestratorPrompt } from "./orchestra
 const tempDirs: string[] = [];
 
 function makeAgentsDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "lazypaper-agents-"));
+  const dir = mkdtempSync(join(tmpdir(), "lazyresearch-agents-"));
   tempDirs.push(dir);
   return dir;
 }

@@ -15,7 +15,7 @@ export function loadOrchestratorPrompt(agentsDir: string): string {
   try {
     content = readFileSync(path, "utf8");
   } catch {
-    throw new Error("Missing global orchestrator definition: expected ~/.lazypaper/agent/agents/orchestrator.md");
+    throw new Error("Missing global orchestrator definition: expected ~/.lazyresearch/agent/agents/orchestrator.md");
   }
   const frontmatter = parseFrontmatter(content);
   if (frontmatter == null || Object.keys(frontmatter.frontmatter ?? {}).length === 0) {

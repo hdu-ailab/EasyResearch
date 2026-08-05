@@ -20,7 +20,7 @@ export function HomePage({ onOpenSession }: { onOpenSession: (cwd: string) => vo
       {!status ? (
         <p>Loading…</p>
       ) : status.sessions.length === 0 ? (
-        <p>No sessions yet. Run <code>lazypaper</code> in a project folder to start one.</p>
+        <p>No sessions yet. Run <code>lazyresearch</code> in a project folder to start one.</p>
       ) : (
         <table>
           <thead>

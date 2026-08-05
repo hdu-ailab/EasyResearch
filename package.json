@@ -1,16 +1,16 @@
 {
-  "name": "lazypaper",
+  "name": "lazyresearch",
   "version": "0.1.0",
   "description": "Automated academic paper writing CLI built on the Pi agent harness",
   "type": "module",
   "private": true,
   "piConfig": {
-    "name": "lazypaper",
-    "configDir": ".lazypaper"
+    "name": "lazyresearch",
+    "configDir": ".lazyresearch"
   },
   "module": "src/cli/index.ts",
   "bin": {
-    "lazypaper": "./src/cli/index.ts"
+    "lazyresearch": "./src/cli/index.ts"
   },
   "scripts": {
     "test": "vitest run",

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { routeRequest } from "./routes";
 
-const AGENT_DIR_ENV = "LAZYPAPER_CODING_AGENT_DIR";
+const AGENT_DIR_ENV = "LAZYRESEARCH_CODING_AGENT_DIR";
 
 describe("web routes", () => {
   let dir: string;
