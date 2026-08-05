@@ -129,8 +129,9 @@ describe("web routes", () => {
     setup();
     const res = await handler(new Request("http://localhost/api/status"));
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { agentDir: string; sessions: unknown[]; activeSessions: unknown[] };
+    const body = (await res.json()) as { agentDir: string; homeDir: string; sessions: unknown[]; activeSessions: unknown[] };
     expect(body.agentDir).toBe(agentDir);
+    expect(body.homeDir).toBe(homeDir);
     expect(body.sessions).toHaveLength(1);
     expect(body.activeSessions).toEqual([]);
   });
@@ -141,6 +142,38 @@ describe("web routes", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { path: string; entries: unknown[] };
     expect(body.path).toBe(homeDir);
+  });
+
+  it("lists files and directories for the files panel", async () => {
+    writeFileSync(join(homeDir, "note.txt"), "x", "utf-8");
+    setup();
+    const res = await handler(new Request(`http://localhost/api/entries?path=${encodeURIComponent(homeDir)}`));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { entries: Array<{ kind: string }> };
+    expect(body.entries.length).toBeGreaterThan(0);
+    expect(body.entries.every((e) => e.kind === "file" || e.kind === "directory")).toBe(true);
+  });
+
+  it("reads a file for preview", async () => {
+    writeFileSync(join(homeDir, "note.txt"), "preview me", "utf-8");
+    setup();
+    const res = await handler(new Request(`http://localhost/api/file?path=${encodeURIComponent(join(homeDir, "note.txt"))}`));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { content: string; truncated: boolean };
+    expect(body.content).toBe("preview me");
+    expect(body.truncated).toBe(false);
+  });
+
+  it("rejects reading a missing file", async () => {
+    setup();
+    const res = await handler(new Request(`http://localhost/api/file?path=${encodeURIComponent(join(homeDir, "nope.txt"))}`));
+    expect(res.status).toBe(404);
+  });
+
+  it("requires a path for file reads", async () => {
+    setup();
+    const res = await handler(new Request("http://localhost/api/file"));
+    expect(res.status).toBe(400);
   });
 
   it("creates a session for an exact cwd", async () => {

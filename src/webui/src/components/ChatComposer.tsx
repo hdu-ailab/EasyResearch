@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { RotateCcw, Send, Square } from "lucide-react";
+import { RotateCcw, Square } from "lucide-react";
 
 export interface ChatComposerProps {
   disabled: boolean;
@@ -10,9 +10,8 @@ export interface ChatComposerProps {
 }
 
 /**
- * Chat composer. Send is disabled while a request is being accepted; while
- * the agent is streaming the primary action becomes Abort (steering is not
- * part of the MVP backend). Multiline input is preserved.
+ * Chat composer. The Send button turns into Stop while the agent is
+ * streaming (opencode prompt-input behavior); multiline input preserved.
  */
 export function ChatComposer({ disabled, streaming, onSend, onAbort, onRestart }: ChatComposerProps) {
   const [text, setText] = useState("");
@@ -26,57 +25,60 @@ export function ChatComposer({ disabled, streaming, onSend, onAbort, onRestart }
 
   return (
     <form
-      className="chat-composer"
+      className="mx-auto flex w-full max-w-[1000px] items-end gap-2 md:max-w-200 2xl:max-w-[1000px]"
       onSubmit={(e) => {
         e.preventDefault();
         submit();
       }}
     >
-      <textarea
-        className="chat-composer__input"
-        aria-label="Message"
-        placeholder="Describe the paper you want to write…"
-        rows={2}
-        value={text}
-        disabled={disabled}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey) {
-            e.preventDefault();
-            submit();
-          }
-        }}
-      />
-      <div className="chat-composer__actions">
+      <div className="flex min-w-0 flex-1 flex-col rounded-lg border border-v2-grey-200 bg-v2-background-bg-base transition-colors focus-within:border-v2-blue-600">
+        <textarea
+          className="max-h-[160px] min-h-[52px] w-full resize-none bg-transparent px-3 py-2 text-[13px] text-v2-text-text-base outline-none placeholder:text-v2-text-text-faint"
+          aria-label="Message"
+          placeholder="Describe the paper you want to write…"
+          rows={2}
+          value={text}
+          disabled={disabled}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              submit();
+            }
+          }}
+        />
+      </div>
+      <div className="flex shrink-0 items-center gap-1">
         <button
           type="button"
-          className="icon-button"
+          className="flex size-8 items-center justify-center rounded-md text-v2-icon-icon-muted transition-colors hover:bg-v2-grey-100 hover:text-v2-icon-icon-base"
           aria-label="Restart session"
           title="Restart session"
           onClick={onRestart}
         >
-          <RotateCcw size={16} />
+          <RotateCcw size={15} />
         </button>
         {streaming ? (
           <button
             type="button"
-            className="button button--danger"
-            aria-label="Abort"
-            title="Abort the running agent"
+            className="flex size-8 items-center justify-center rounded-md bg-v2-grey-1100 text-v2-grey-50 transition-opacity hover:opacity-90"
+            aria-label="Stop"
+            title="Stop the running agent"
             onClick={onAbort}
           >
-            <Square size={14} />
-            Abort
+            <Square size={13} fill="currentColor" />
           </button>
         ) : (
           <button
             type="submit"
-            className="button button--primary"
+            className="flex size-8 items-center justify-center rounded-md bg-v2-grey-1100 text-v2-grey-50 transition-opacity hover:opacity-90 disabled:opacity-40 disabled:hover:opacity-40"
             aria-label="Send"
             disabled={disabled || !text.trim()}
           >
-            <Send size={14} />
-            Send
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M12 19V5" />
+              <path d="M5 12l7-7 7 7" />
+            </svg>
           </button>
         )}
       </div>

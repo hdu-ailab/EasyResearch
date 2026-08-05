@@ -3,6 +3,8 @@ import type {
   ConfigEntryDto,
   ConfigScope,
   DirectoryEntryDto,
+  FileContentDto,
+  FileEntryDto,
   SessionSnapshotDto,
   SessionSummaryDto,
   StatusDto,
@@ -55,6 +57,16 @@ export function listDirectories(path: string): Promise<DirectoryEntryDto[]> {
   return request(`/api/directories?path=${encodeURIComponent(path)}`).then(
     (listing) => (listing as { entries: DirectoryEntryDto[] }).entries,
   );
+}
+
+export function listEntries(path: string): Promise<FileEntryDto[]> {
+  return request(`/api/entries?path=${encodeURIComponent(path)}`).then(
+    (listing) => (listing as { entries: FileEntryDto[] }).entries,
+  );
+}
+
+export function readFileContent(path: string): Promise<FileContentDto> {
+  return request(`/api/file?path=${encodeURIComponent(path)}`);
 }
 
 export function createSession(cwd: string): Promise<ActiveSessionDto> {

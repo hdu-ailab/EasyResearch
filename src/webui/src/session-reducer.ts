@@ -1,27 +1,37 @@
 import type { SessionSnapshotDto } from "../../web/contracts";
 import type { AgentSessionEvent, MessageUpdateEvent } from "@earendil-works/pi-coding-agent";
 
+export interface ToolView {
+  key: string;
+  name: string;
+  running: boolean;
+  done: boolean;
+  error: boolean;
+}
+
 export interface SessionMessageView {
   key: string;
   role: "user" | "assistant" | "tool" | "system";
   text: string;
   streaming: boolean;
   error: boolean;
+  /** Agent that produced this message; undefined means the orchestrator. */
+  agentId?: string;
   /** Last applied text delta, used to make duplicate deliveries idempotent. */
   lastDelta?: string;
 }
 
 export interface SessionViewState {
   messages: SessionMessageView[];
+  tools: ToolView[];
   isStreaming: boolean;
-  activity: string | null;
   error: string | null;
 }
 
 const emptyState: SessionViewState = {
   messages: [],
+  tools: [],
   isStreaming: false,
-  activity: null,
   error: null,
 };
 
@@ -31,6 +41,7 @@ type UnknownMessage = {
   timestamp?: unknown;
   content?: unknown;
   errorMessage?: unknown;
+  agentId?: unknown;
 };
 
 function textOf(message: UnknownMessage): string {
@@ -67,8 +78,8 @@ function deltaOf(event: MessageUpdateEvent): string {
 export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
   const state: SessionViewState = {
     messages: [],
+    tools: [],
     isStreaming: snapshot.session.isStreaming,
-    activity: null,
     error: null,
   };
   snapshot.messages.forEach((message, index) => {
@@ -79,6 +90,7 @@ export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
       text: textOf(message),
       streaming: false,
       error: Boolean((message as { errorMessage?: string }).errorMessage),
+          agentId: typeof (message as { agentId?: unknown }).agentId === "string" ? (message as { agentId?: unknown }).agentId as string : undefined,
     });
   });
   return state;
@@ -108,6 +120,7 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
           text: textOf(message) || (errorMessage ? "" : "..."),
           streaming: role === "assistant",
           error: Boolean(errorMessage),
+      agentId: typeof (message as { agentId?: unknown }).agentId === "string" ? (message as { agentId?: unknown }).agentId as string : undefined,
         },
       ];
       return next;
@@ -142,10 +155,25 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
       return { ...state, messages: nextMessages };
     }
     case "tool_execution_start": {
-      return { ...state, activity: `Running tool: ${event.toolName}` };
+      const { toolCallId, toolName } = event as unknown as { toolCallId: string; toolName: string };
+      return {
+        ...state,
+        tools: [
+          ...state.tools,
+          { key: toolCallId, name: toolName, running: true, done: false, error: false },
+        ],
+      };
     }
     case "tool_execution_end": {
-      return { ...state, activity: null };
+      const { toolCallId, isError } = event as unknown as { toolCallId: string; isError?: boolean };
+      return {
+        ...state,
+        tools: state.tools.map((tool) =>
+          tool.key === toolCallId
+            ? { ...tool, running: false, done: true, error: Boolean(isError) }
+            : tool,
+        ),
+      };
     }
     case "agent_settled": {
       return {

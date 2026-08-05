@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { fromSnapshot, reduceSessionEvent, type SessionViewState } from "./session-reducer";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 
-const emptyState: SessionViewState = { messages: [], isStreaming: false, activity: null, error: null };
+const emptyState: SessionViewState = { messages: [], tools: [], isStreaming: false, error: null };
 
 function userMessage(text: string) {
   return { role: "user", content: [{ type: "text", text }] } as never;
@@ -63,11 +63,27 @@ describe("session reducer", () => {
     expect(settled.messages[0]!.streaming).toBe(false);
   });
 
-  it("shows tool activity during tool execution and clears it on end", () => {
+  it("adds a tool block on start and marks it done on end", () => {
     const active = reduceSessionEvent(emptyState, toolEvent("tool_execution_start", "t1", "bash"));
-    expect(active.activity).toBe("Running tool: bash");
+    expect(active.tools).toHaveLength(1);
+    expect(active.tools[0]).toMatchObject({ key: "t1", name: "bash", running: true, done: false });
     const done = reduceSessionEvent(active, toolEvent("tool_execution_end", "t1", "bash"));
-    expect(done.activity).toBeNull();
+    expect(done.tools[0]).toMatchObject({ running: false, done: true, error: false });
+  });
+
+  it("marks a failing tool with its error flag and keeps other tools intact", () => {
+    const first = reduceSessionEvent(emptyState, toolEvent("tool_execution_start", "t1", "bash"));
+    const second = reduceSessionEvent(first, toolEvent("tool_execution_start", "t2", "grep"));
+    const failed = reduceSessionEvent(second, {
+      type: "tool_execution_end",
+      toolCallId: "t1",
+      toolName: "bash",
+      result: "nope",
+      isError: true,
+    } as never);
+    expect(failed.tools).toHaveLength(2);
+    expect(failed.tools[0]).toMatchObject({ error: true, done: true });
+    expect(failed.tools[1]).toMatchObject({ name: "grep", running: true });
   });
 
   it("surfaces an assistant error message", () => {

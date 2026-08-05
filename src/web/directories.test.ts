@@ -2,7 +2,7 @@ import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
-import { DirectoryService, DirectoryServiceError } from "./directories";
+import { DirectoryService, DirectoryServiceError, FILE_PREVIEW_LIMIT } from "./directories";
 
 let fakeHome: string;
 
@@ -51,5 +51,47 @@ describe("DirectoryService", () => {
   it("rejects listing a missing path with a typed error", () => {
     const service = new DirectoryService(fakeHome);
     expect(() => service.list(join(fakeHome, "missing"))).toThrow(DirectoryServiceError);
+  });
+
+  it("lists files and directories together, directories first", () => {
+    const service = new DirectoryService(fakeHome);
+    const { entries } = service.listEntries(join(fakeHome, "project"));
+    expect(entries.map((e) => [e.kind, e.name])).toEqual([
+      ["directory", "a-dir"],
+      ["directory", "z-dir"],
+      ["file", "file.txt"],
+    ]);
+  });
+
+  it("lists entries under the injected home root by default", () => {
+    const service = new DirectoryService(fakeHome);
+    const { path, entries } = service.listEntries();
+    expect(path).toBe(realpathSync(fakeHome));
+    expect(entries.every((e) => e.path.startsWith(path))).toBe(true);
+  });
+
+  it("reads a file's text content with its canonical path", () => {
+    const service = new DirectoryService(fakeHome);
+    writeFileSync(join(fakeHome, "project", "read.txt"), "hello");
+    const file = service.readFile(join(fakeHome, "project", "read.txt"));
+    expect(file.content).toBe("hello");
+    expect(file.truncated).toBe(false);
+    expect(file.path).toBe(join(realpathSync(fakeHome), "project", "read.txt"));
+  });
+
+  it("truncates oversized reads and flags them", () => {
+    const service = new DirectoryService(fakeHome);
+    const big = join(fakeHome, "big.bin");
+    writeFileSync(big, Buffer.alloc(FILE_PREVIEW_LIMIT + 10, 0x61));
+    const file = service.readFile(big);
+    expect(file.truncated).toBe(true);
+    expect(file.byteCount).toBe(FILE_PREVIEW_LIMIT + 10);
+    expect(file.content.length).toBe(FILE_PREVIEW_LIMIT);
+  });
+
+  it("rejects reading a directory or a missing path", () => {
+    const service = new DirectoryService(fakeHome);
+    expect(() => service.readFile(join(fakeHome, "project"))).toThrow(/not a file/);
+    expect(() => service.readFile(join(fakeHome, "missing"))).toThrow(/does not exist/);
   });
 });

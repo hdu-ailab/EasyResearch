@@ -37,6 +37,7 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       if (req.method === "GET" && path === "/api/status") {
         return jsonResponse({
           agentDir: services.config.globalRoot,
+          homeDir: services.directories.homeDir,
           sessions: await services.listAllSessions(),
           activeSessions: services.registry.list(),
         });
@@ -44,6 +45,14 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
 
       if (req.method === "GET" && path === "/api/directories") {
         return jsonResponse(services.directories.list(url.searchParams.get("path") ?? undefined));
+      }
+
+      if (req.method === "GET" && path === "/api/entries") {
+        return jsonResponse(services.directories.listEntries(url.searchParams.get("path") ?? undefined));
+      }
+
+      if (req.method === "GET" && path === "/api/file") {
+        return jsonResponse(services.directories.readFile(requireQuery(url, "path")));
       }
 
       if (req.method === "POST" && path === "/api/sessions") {

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { fireEvent } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkPage } from "./WorkPage";
 import * as api from "../api";
@@ -13,11 +14,14 @@ vi.mock("../api", async (importOriginal) => {
     connectSessionEvents: vi.fn(),
     sendPrompt: vi.fn(),
     stopSession: vi.fn(),
+    abortSession: vi.fn(),
     restartSession: vi.fn(),
     listConfig: vi.fn().mockResolvedValue([]),
     readConfigFile: vi.fn(),
     writeConfigFile: vi.fn(),
     createConfigDirectory: vi.fn(),
+    listEntries: vi.fn(),
+    readFileContent: vi.fn(),
   };
 });
 
@@ -51,8 +55,12 @@ describe("WorkPage", () => {
     vi.mocked(api.connectSessionEvents).mockReset();
     vi.mocked(api.sendPrompt).mockReset();
     vi.mocked(api.stopSession).mockReset();
+    vi.mocked(api.abortSession).mockReset();
     vi.mocked(api.restartSession).mockReset();
+    vi.mocked(api.listEntries).mockReset();
+    vi.mocked(api.readFileContent).mockReset();
     vi.mocked(api.getSnapshot).mockResolvedValue(snapshot);
+    vi.mocked(api.listEntries).mockResolvedValue([{ kind: "file", name: "notes.md", path: "/p/notes.md" }]);
     stubEvents();
   });
 
@@ -129,18 +137,31 @@ describe("WorkPage", () => {
     expect(api.stopSession).not.toHaveBeenCalled();
   });
 
-  it("Stop confirms, calls stopSession, and keeps Restart usable", async () => {
-    const user = userEvent.setup();
-    window.confirm = vi.fn(() => true);
+  it("composer Stop while streaming aborts instead of stopping the session", async () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await screen.findByText("starting research");
-    await user.click(screen.getByRole("button", { name: /stop/i }));
-    expect(window.confirm).toHaveBeenCalled();
-    await waitFor(() => expect(api.stopSession).toHaveBeenCalledWith("s1"));
-    expect(screen.getByRole("button", { name: /restart/i })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /stop/i })).toBeNull();
+    emit({ type: "message_start", message: { role: "assistant", id: "m3", content: [] } });
+    await screen.findByRole("button", { name: /stop/i });
+    await userEvent.setup().click(screen.getByRole("button", { name: /stop/i }));
+    await waitFor(() => expect(api.abortSession).toHaveBeenCalledWith("s1"));
+    expect(api.stopSession).not.toHaveBeenCalled();
   });
 
-  it("preserves chat state when switching to Config and back", async () => {
+  it("agent chips show run status dot and clicking focuses an agent", async () => {
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    const orchestatorChip = screen.getByRole("button", { name: /agent orchestrator/i });
+    expect(orchestatorChip.getAttribute("aria-pressed")).toBe("true");
+    emit({ type: "message_start", message: { role: "assistant", id: "sm1", content: [], agentId: "literature" } });
+    await screen.findByRole("button", { name: /agent literature/i });
+    await user.click(screen.getByRole("button", { name: /agent literature/i }));
+    expect(screen.getByRole("button", { name: /agent literature/i }).getAttribute("aria-pressed")).toBe("true");
+    expect(orchestatorChip.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("preserves chat state when toggling side panels and back", async () => {
     const user = userEvent.setup();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await screen.findByText("starting research");
@@ -151,9 +172,9 @@ describe("WorkPage", () => {
       message: { role: "user", content: [{ type: "text", text: "keep this" }] },
     });
     expect(await screen.findByText("keep this")).toBeTruthy();
-    await user.click(screen.getByRole("tab", { name: /config/i }));
-    expect(await screen.findByRole("region", { name: /config browser/i })).toBeTruthy();
-    await user.click(screen.getByRole("tab", { name: /orchestrator/i }));
+    await user.click(screen.getByRole("button", { name: /agent list/i }));
+    expect(screen.getByRole("region", { name: /agent list/i })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /agent list/i }));
     expect(await screen.findByText("keep this")).toBeTruthy();
     expect(screen.getByText("starting research")).toBeTruthy();
   });
@@ -178,5 +199,102 @@ describe("WorkPage", () => {
     await user.click(screen.getByRole("button", { name: /restart/i }));
     await waitFor(() => expect(api.restartSession).toHaveBeenCalledWith("s1"));
     expect(await screen.findByText("after restart")).toBeTruthy();
+  });
+
+  it("opens a file from the files panel into a tab and previews its content", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.readFileContent).mockResolvedValue({
+      path: "/p/notes.md",
+      content: "# Notes\n\nplan",
+      byteCount: 15,
+      truncated: false,
+    } as never);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    await user.click(await screen.findByText("notes.md"));
+    expect(api.readFileContent).toHaveBeenCalledWith("/p/notes.md");
+    expect(await screen.findByText(/Notes/)).toBeTruthy();
+    const tab = screen.getByRole("tab", { name: /notes.md/i });
+    expect(tab.getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("closing the active tab returns to the transcript", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.readFileContent).mockResolvedValue({
+      path: "/p/notes.md",
+      content: "body",
+      byteCount: 4,
+      truncated: false,
+    } as never);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    await user.click(await screen.findByText("notes.md"));
+    expect(await screen.findByText(/body/)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /close notes.md/i }));
+    expect(await screen.findByText("starting research")).toBeTruthy();
+    expect(screen.queryByRole("tab", { name: /notes.md/i })).toBeNull();
+  });
+
+  it("rehydrates from a snapshot event on reconnect", async () => {
+    stubEvents();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    emit({
+      type: "snapshot",
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      messages: [{ role: "assistant", content: [{ type: "text", text: "after reconnect" }] }],
+    });
+    expect(await screen.findByText("after reconnect")).toBeTruthy();
+    expect(screen.queryByText("starting research")).toBeNull();
+  });
+
+  it("shows tool blocks from live events with running and done states", async () => {
+    stubEvents();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    emit({ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: {} });
+    expect(await screen.findByText(/Running tool: bash/)).toBeTruthy();
+    emit({ type: "tool_execution_end", toolCallId: "t1", toolName: "bash", result: {}, isError: false });
+    expect(await screen.findByText("bash")).toBeTruthy();
+  });
+
+  it("chat column is the flex-1 remainder and the panel carries the explicit width", async () => {
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    const chat = screen.getByText("starting research").closest("section");
+    const panel = screen.getByRole("region", { name: /file browser/i });
+    expect(chat).toBeTruthy();
+    expect(chat?.className).toContain("flex-1");
+    expect(panel.className).toContain("md:shrink-0");
+    expect(panel.getAttribute("style")).toMatch(/width:\s*320px/);
+  });
+
+  it("resizes the panel within min/max while dragging", async () => {
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    const RO = (globalThis as unknown as { FakeResizeObserver: typeof ResizeObserver }).FakeResizeObserver;
+    const observer = (RO as unknown as { instances: { __fire: (n: number) => void }[] }).instances.at(-1);
+    expect(observer).toBeTruthy();
+    observer!.__fire(1200);
+    await waitFor(() => expect(screen.getByRole("region", { name: /file browser/i }).getAttribute("style")).toMatch(/width:\s*320px/));
+    const handle = screen.getByRole("button", { name: /resize panel/i });
+    const row = screen.getByText("starting research").closest("section")?.parentElement;
+    expect(row).toBeTruthy();
+    vi.spyOn(row!, "getBoundingClientRect").mockReturnValue({
+      right: 1200,
+      left: 0,
+      top: 0,
+      bottom: 600,
+      width: 1200,
+      height: 600,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect);
+    const panel = screen.getByRole("region", { name: /file browser/i });
+    fireEvent.pointerDown(handle, { clientX: 880, clientY: 100, pointerId: 1 });
+    fireEvent.pointerMove(document, { clientX: 820, clientY: 100, pointerId: 1 });
+    fireEvent.pointerUp(document, { clientX: 820, clientY: 100, pointerId: 1 });
+    expect(panel.getAttribute("style")).toMatch(/width:\s*380px/);
   });
 });

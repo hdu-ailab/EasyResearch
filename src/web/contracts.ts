@@ -13,6 +13,7 @@ export interface SessionSummaryDto {
 
 export interface StatusDto {
   agentDir: string;
+  homeDir: string;
   sessions: SessionSummaryDto[];
   activeSessions: ActiveSessionDto[];
 }
@@ -35,6 +36,17 @@ export interface SessionSnapshotDto {
 export interface DirectoryEntryDto {
   name: string;
   path: string;
+}
+
+export interface FileEntryDto extends DirectoryEntryDto {
+  kind: "file" | "directory";
+}
+
+export interface FileContentDto {
+  path: string;
+  content: string;
+  byteCount: number;
+  truncated: boolean;
 }
 
 export type ConfigScope = "global" | "project";

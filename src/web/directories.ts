@@ -1,7 +1,10 @@
-import { accessSync, constants, readdirSync, realpathSync, statSync } from "node:fs";
+import { accessSync, constants, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { DirectoryEntryDto } from "./contracts";
+import type { DirectoryEntryDto, FileContentDto, FileEntryDto } from "./contracts";
+
+/** Maximum bytes read for a single file preview. */
+export const FILE_PREVIEW_LIMIT = 1024 * 1024;
 
 export interface DirectoryListing {
   path: string;
@@ -24,7 +27,7 @@ export class DirectoryServiceError extends Error {
  * path; a project root is never inferred from an ancestor.
  */
 export class DirectoryService {
-  constructor(private readonly homeDir: string = homedir()) {}
+  constructor(public readonly homeDir: string = homedir()) {}
 
   list(path?: string): DirectoryListing {
     const target = path ?? this.homeDir;
@@ -59,6 +62,58 @@ export class DirectoryService {
       .map((d) => ({ name: d.name, path: join(real, d.name) }))
       .sort((a, b) => a.name.localeCompare(b.name));
     return { path: real, entries };
+  }
+
+  /**
+   * Lists both files and directories of a directory, directories first, each
+   * sorted by name. Powers the files panel tree.
+   */
+  listEntries(path?: string): { path: string; entries: FileEntryDto[] } {
+    const listing = this.list(path);
+    const dirents = readdirSync(listing.path, { withFileTypes: true });
+    const entries: FileEntryDto[] = dirents
+      .map((d) => ({
+        kind: d.isDirectory() ? ("directory" as const) : ("file" as const),
+        name: d.name,
+        path: join(listing.path, d.name),
+      }))
+      .sort((a, b) => {
+        if (a.kind !== b.kind) return a.kind === "directory" ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+    return { path: listing.path, entries };
+  }
+
+  /**
+   * Reads a file's UTF-8 text for preview. Non-files and unreadable paths are
+   * rejected; reads larger than {@link FILE_PREVIEW_LIMIT} truncate with a
+   * `truncated` flag instead of failing.
+   */
+  readFile(path: string): FileContentDto {
+    let real: string;
+    try {
+      real = realpathSync(path);
+    } catch {
+      throw new DirectoryServiceError(404, `does not exist: ${path}`);
+    }
+    let stat;
+    try {
+      stat = statSync(real);
+    } catch {
+      throw new DirectoryServiceError(404, `does not exist: ${path}`);
+    }
+    if (!stat.isFile()) {
+      throw new DirectoryServiceError(400, `not a file: ${path}`);
+    }
+    try {
+      accessSync(real, constants.R_OK);
+    } catch {
+      throw new DirectoryServiceError(403, `File is not readable: ${path}`);
+    }
+    const buffer = readFileSync(real);
+    const truncated = buffer.byteLength > FILE_PREVIEW_LIMIT;
+    const content = buffer.subarray(0, FILE_PREVIEW_LIMIT).toString("utf8");
+    return { path: real, content, byteCount: buffer.byteLength, truncated };
   }
 
   requireCwd(path: string): string {
