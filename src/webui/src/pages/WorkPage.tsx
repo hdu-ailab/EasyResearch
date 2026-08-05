@@ -38,8 +38,10 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
       }
     });
     const unsubscribe = connectSessionEvents(id, {
-      onEvent: (event) =>
-        setSessionView((prev) => reduceSessionEvent(prev, event as Parameters<typeof reduceSessionEvent>[1])),
+      onEvent: (event) => {
+        setStatusText((current) => (current?.startsWith("Connection lost") ? null : current));
+        setSessionView((prev) => reduceSessionEvent(prev, event as Parameters<typeof reduceSessionEvent>[1]));
+      },
       onError: () => setStatusText("Connection lost — events will resume when the browser reconnects."),
     });
     return () => {
