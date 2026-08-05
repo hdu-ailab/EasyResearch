@@ -66,7 +66,7 @@ describe("ConfigBrowser", () => {
     await screen.findByText("settings.json");
     await user.click(screen.getByText("settings.json"));
     expect(api.readConfigFile).toHaveBeenCalledWith("project", "/p", "settings.json");
-    expect(await screen.findByText("settings.json", { selector: ".config-browser__filename" })).toBeTruthy();
+    expect(await screen.findByText("settings.json", { selector: ".config-browser__filename-text" })).toBeTruthy();
     const editor = screen.getByRole("textbox", { name: /editor/i });
     expect((editor as HTMLTextAreaElement).value).toContain('"a":1');
   });
@@ -117,7 +117,7 @@ describe("ConfigBrowser", () => {
     await user.click(screen.getByText("auth.json"));
     const editor = (await screen.findByRole("textbox", { name: /editor/i })) as HTMLTextAreaElement;
     expect(editor.value).toContain("sk-secret");
-    expect(screen.getByText("auth.json", { selector: ".config-browser__filename" })).toBeTruthy();
+    expect(screen.getByText("auth.json", { selector: ".config-browser__filename-text" })).toBeTruthy();
     await user.click(screen.getByRole("button", { name: /save/i }));
     await waitFor(() =>
       expect(api.writeConfigFile).toHaveBeenCalledWith("project", "/p", "auth.json", '{"apiKey":"sk-secret"}'),

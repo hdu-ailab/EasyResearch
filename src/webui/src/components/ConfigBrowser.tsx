@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { FilePlus, FolderPlus, RefreshCw, Save, X } from "lucide-react";
+import { ChevronLeft, FilePlus, FolderPlus, RefreshCw, Save, X } from "lucide-react";
 import { createConfigDirectory, listConfig, readConfigFile, writeConfigFile } from "../api";
 import type { ConfigEntryDto, ConfigScope } from "../types";
 
@@ -187,7 +187,17 @@ export function ConfigBrowser({ cwd, onSaveApplied }: ConfigBrowserProps) {
         <div className="config-browser__editor">
           {edited ? (
             <>
-              <div className="config-browser__filename">{edited.path}</div>
+              <div className="config-browser__filename">
+                <button
+                  className="icon-button config-browser__back"
+                  aria-label="Back to files"
+                  title="Back to files"
+                  onClick={() => setEdited(null)}
+                >
+                  <ChevronLeft size={16} />
+                </button>
+                <span className="config-browser__filename-text">{edited.path}</span>
+              </div>
               <textarea
                 className="config-browser__textarea"
                 aria-label="Editor"
