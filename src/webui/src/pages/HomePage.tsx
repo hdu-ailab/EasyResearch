@@ -13,14 +13,14 @@ export function HomePage({ onOpenSession }: { onOpenSession: (cwd: string) => vo
     <div>
       <h1>LazyResearch</h1>
       <p>
-        Config root: {status?.configRoot ?? "…"} · Model: {status?.model ?? "(default)"}
+        Agent dir: {status?.agentDir ?? "…"} · Model: {status?.model ?? "(default)"}
       </p>
       {error && <p style={{ color: "red" }}>{error}</p>}
       <h2>Sessions</h2>
       {!status ? (
         <p>Loading…</p>
       ) : status.sessions.length === 0 ? (
-        <p>No sessions yet. Create a project and run <code>lazypaper run</code>.</p>
+        <p>No sessions yet. Run <code>lazypaper</code> in a project folder to start one.</p>
       ) : (
         <table>
           <thead>

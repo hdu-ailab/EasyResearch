@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { applyConfigRootToPi, getConfigRoot, loadConfig } from "../config";
+import { importPi } from "../runtime/pi-import";
 
 /**
  * Pure request routing for the web panel. The Bun HTTP server in server.ts is
@@ -34,15 +33,15 @@ export async function routeRequest(req: Request, webuiDist: string): Promise<Res
 }
 
 async function apiStatus(): Promise<Response> {
-  applyConfigRootToPi();
-  const config = loadConfig();
+  const { SessionManager, SettingsManager, getAgentDir } = await importPi();
+  const agentDir = getAgentDir();
   // listAll() with no arg resolves the default sessions dir under the pi agent
-  // dir (subdir layout: --<cwd>--/<file>.jsonl). Passing a custom dir would
-  // expect flat .jsonl files and miss the sessions the CLI creates.
+  // dir (subdir layout: --<cwd>--/<file>.jsonl).
   const sessions = await SessionManager.listAll();
+  const defaultModel = SettingsManager.create(process.cwd()).getDefaultModel();
   return Response.json({
-    configRoot: getConfigRoot(),
-    model: config.model ?? null,
+    agentDir,
+    model: defaultModel ?? null,
     sessions: sessions.map((s) => ({
       id: s.id,
       path: s.path,
