@@ -20,13 +20,13 @@ export async function importPi(): Promise<typeof import("@earendil-works/pi-codi
 }
 
 /**
- * Synchronous access to the LazyPaper agent dir. Callers that run before
- * `importPi()` has bootstrapped identity fall back to the exact `~/.lazypaper`
+ * Synchronous access to the LazyResearch agent dir. Callers that run before
+ * `importPi()` has bootstrapped identity fall back to the exact `~/.lazyresearch`
  * layout (never `.pi`).
  */
 export function getAgentDir(): string {
 	if (cachedPi) return cachedPi.getAgentDir();
-	return process.env.LAZYPAPER_CODING_AGENT_DIR || join(homedir(), ".lazypaper", "agent");
+	return process.env.LAZYRESEARCH_CODING_AGENT_DIR || join(homedir(), ".lazyresearch", "agent");
 }
 
 export function getAgentsDir(): string {

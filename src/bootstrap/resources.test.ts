@@ -7,7 +7,7 @@ import { bootstrapBundledResources } from "./resources";
 const tempDirs: string[] = [];
 
 function setUpFixture(): { agentDir: string; bundledAgentsDir: string; bundledSkillsDir: string } {
-  const agentDir = mkdtempSync(join(tmpdir(), "lazypaper-agent-"));
+  const agentDir = mkdtempSync(join(tmpdir(), "lazyresearch-agent-"));
   const bundledAgentsDir = mkdtempSync(join(tmpdir(), "bundled-agents-"));
   const bundledSkillsDir = mkdtempSync(join(tmpdir(), "bundled-skills-"));
   tempDirs.push(agentDir, bundledAgentsDir, bundledSkillsDir);

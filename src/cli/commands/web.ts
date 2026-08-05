@@ -1,7 +1,7 @@
 import { bootstrapBundledResources } from "../../bootstrap/resources";
 
 /**
- * `lazypaper web` — start the Web panel (Bun HTTP + SSE backend) on 127.0.0.1:3000.
+ * `lazyresearch web` — start the Web panel (Bun HTTP + SSE backend) on 127.0.0.1:3000.
  * Accepts no additional arguments.
  */
 export async function runWeb(): Promise<void> {

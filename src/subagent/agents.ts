@@ -20,7 +20,7 @@ export interface AgentDiscoveryResult {
 }
 
 /**
- * Discover agents from the LazyPaper global agents dir
+ * Discover agents from the LazyResearch global agents dir
  * (`<agent-dir>/agents`, bootstrapped with bundled defaults on first run).
  * Users edit or replace these files; definitions are global, never packaged.
  */

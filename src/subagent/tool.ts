@@ -105,7 +105,7 @@ async function mapWithConcurrencyLimit<TIn, TOut>(
 }
 
 async function writePromptToTempFile(agentName: string, prompt: string): Promise<string> {
-  const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "lazypaper-subagent-"));
+  const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "lazyresearch-subagent-"));
   const safeName = agentName.replace(/[^\w.-]+/g, "_");
   const filePath = path.join(tmpDir, `prompt-${safeName}.md`);
   await withFileMutationQueue(filePath, async () => {
