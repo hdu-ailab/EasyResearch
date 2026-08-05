@@ -1,19 +1,20 @@
 import { useEffect, useState } from "react";
-import { fetchStatus, type StatusResponse } from "../api";
+import { listStatus } from "../api";
+import type { StatusDto } from "../../../web/contracts";
 
 export function HomePage({ onOpenSession }: { onOpenSession: (cwd: string) => void }) {
-  const [status, setStatus] = useState<StatusResponse | null>(null);
+  const [status, setStatus] = useState<StatusDto | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchStatus().then(setStatus).catch((e) => setError(String(e)));
+    listStatus().then(setStatus).catch((e) => setError(String(e)));
   }, []);
 
   return (
     <div>
       <h1>LazyResearch</h1>
       <p>
-        Agent dir: {status?.agentDir ?? "…"} · Model: {status?.model ?? "(default)"}
+        Agent dir: {status?.agentDir ?? "…"}
       </p>
       {error && <p style={{ color: "red" }}>{error}</p>}
       <h2>Sessions</h2>
