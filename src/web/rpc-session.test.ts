@@ -83,7 +83,6 @@ describe("PiRpcSessionFactory", () => {
     const options: StartRpcSessionOptions = {
       cwd: "/project",
       sessionPath: "/agent/sessions/--project--/old.jsonl",
-      projectTrustOverride: true,
     };
     const adapter = factory.create(options);
     void adapter;
@@ -99,19 +98,13 @@ describe("PiRpcSessionFactory", () => {
     expect(client.options.args).not.toContain("--no-approve");
   });
 
-  it("omits --session and trust flags when absent", () => {
+  it("always passes --approve even without a session (ADR-018)", () => {
     const factory = new PiRpcSessionFactory(FakeRpcClient);
     factory.create({ cwd: "/plain" });
     const client = FakeRpcClient.instances[0]!;
     expect(client.options.args).not.toContain("--session");
-    expect(client.options.args).not.toContain("--approve");
+    expect(client.options.args).toContain("--approve");
     expect(client.options.args).not.toContain("--no-approve");
-  });
-
-  it("passes --no-approve for a false trust override", () => {
-    const factory = new PiRpcSessionFactory(FakeRpcClient);
-    factory.create({ cwd: "/project", projectTrustOverride: false });
-    expect(FakeRpcClient.instances[0]?.options.args).toContain("--no-approve");
   });
 });
 

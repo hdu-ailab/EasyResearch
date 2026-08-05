@@ -7,7 +7,6 @@ import type {
   SessionSummaryDto,
   StatusDto,
 } from "../../web/contracts";
-import type { AppliedTrustDecision, TrustInspection } from "../../web/trust";
 import type { ConfigFileDto } from "./types";
 
 export class ApiError extends Error {
@@ -58,20 +57,12 @@ export function listDirectories(path: string): Promise<DirectoryEntryDto[]> {
   );
 }
 
-export function inspectTrust(cwd: string): Promise<TrustInspection> {
-  return request(`/api/trust?cwd=${encodeURIComponent(cwd)}`);
+export function createSession(cwd: string): Promise<ActiveSessionDto> {
+  return request("/api/sessions", json({ cwd }));
 }
 
-export function applyTrust(cwd: string, optionIndex: number): Promise<AppliedTrustDecision> {
-  return request("/api/trust", json({ cwd, optionIndex }));
-}
-
-export function createSession(cwd: string, projectTrustOverride?: boolean): Promise<ActiveSessionDto> {
-  return request("/api/sessions", json({ cwd, projectTrustOverride }));
-}
-
-export function openSession(path: string, projectTrustOverride?: boolean): Promise<ActiveSessionDto> {
-  return request("/api/sessions/open", json({ path, projectTrustOverride }));
+export function openSession(path: string): Promise<ActiveSessionDto> {
+  return request("/api/sessions/open", json({ path }));
 }
 
 export function getSnapshot(id: string): Promise<SessionSnapshotDto> {

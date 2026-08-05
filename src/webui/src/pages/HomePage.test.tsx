@@ -11,8 +11,6 @@ vi.mock("../api", async (importOriginal) => {
     ...actual,
     listStatus: vi.fn(),
     listDirectories: vi.fn(),
-    inspectTrust: vi.fn(),
-    applyTrust: vi.fn(),
     createSession: vi.fn(),
     openSession: vi.fn(),
   };
@@ -47,8 +45,6 @@ describe("HomePage", () => {
   beforeEach(() => {
     vi.mocked(api.listStatus).mockReset();
     vi.mocked(api.listDirectories).mockReset();
-    vi.mocked(api.inspectTrust).mockReset();
-    vi.mocked(api.applyTrust).mockReset();
     vi.mocked(api.createSession).mockReset();
     vi.mocked(api.openSession).mockReset();
     vi.mocked(api.listStatus).mockResolvedValue({
@@ -59,7 +55,6 @@ describe("HomePage", () => {
     vi.mocked(api.listDirectories).mockResolvedValue([
       { name: "proj", path: "/proj" },
     ]);
-    vi.mocked(api.inspectTrust).mockResolvedValue({ required: false, trusted: true, options: [] } as never);
     vi.mocked(api.createSession).mockResolvedValue({
       id: "new1",
       cwd: "/proj",
@@ -83,27 +78,16 @@ describe("HomePage", () => {
     await waitFor(() => expect(api.createSession).toHaveBeenCalledWith("/proj"));
   });
 
-  it("opens TrustDialog on 409 and retries once after applying an option", async () => {
+  it("surfaces a create failure inline without a trust dialog", async () => {
     const user = userEvent.setup();
-    vi.mocked(api.inspectTrust).mockResolvedValue({
-      required: true,
-      options: [{ label: "Always trust", trusted: true, savesDecision: true }],
-    } as never);
     vi.mocked(api.createSession).mockRejectedValueOnce(
-      new ApiError(409, {
-        error: "Project trust decision required",
-        options: [{ label: "Always trust", trusted: true, savesDecision: true }],
-      }),
+      new ApiError(400, { error: "LazyResearch does not load user-added Pi extensions" }),
     );
-    vi.mocked(api.applyTrust).mockResolvedValue({ trusted: true, projectTrustOverride: true } as never);
-
     render(<HomePage homeDir="/" onOpenSession={() => {}} />);
     await user.click(await screen.findByText("proj"));
     await user.click(screen.getByRole("button", { name: /create session/i }));
-    expect(await screen.findByText("Always trust")).toBeTruthy();
-    await user.click(screen.getByText("Always trust"));
-    await waitFor(() => expect(api.applyTrust).toHaveBeenCalledWith("/proj", 0));
-    await waitFor(() => expect(api.createSession).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText(/user-added Pi extensions/)).toBeTruthy();
+    expect(screen.queryByText(/trust decision/i)).toBeNull();
   });
 
   it("selecting history calls openSession(path), not createSession", async () => {

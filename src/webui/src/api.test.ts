@@ -2,12 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   abortSession,
-  applyTrust,
   connectSessionEvents,
   createConfigDirectory,
   createSession,
   getSnapshot,
-  inspectTrust,
   listConfig,
   listDirectories,
   listStatus,
@@ -51,25 +49,11 @@ describe("api transport", () => {
     expect(url).toBe("/api/directories?path=%2Fhome%2Fuser");
   });
 
-  it("inspectTrust GETs /api/trust with cwd", async () => {
-    await inspectTrust("/p");
-    const [url] = fetchMock.mock.calls[0] as [string];
-    expect(url).toBe("/api/trust?cwd=%2Fp");
-  });
-
-  it("applyTrust POSTs cwd and optionIndex", async () => {
-    await applyTrust("/p", 2);
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("/api/trust");
-    expect(init.method).toBe("POST");
-    expect(JSON.parse(init.body as string)).toEqual({ cwd: "/p", optionIndex: 2 });
-  });
-
-  it("createSession POSTs cwd with trust override", async () => {
-    await createSession("/p", false);
+  it("createSession POSTs cwd only", async () => {
+    await createSession("/p");
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("/api/sessions");
-    expect(JSON.parse(init.body as string)).toEqual({ cwd: "/p", projectTrustOverride: false });
+    expect(JSON.parse(init.body as string)).toEqual({ cwd: "/p" });
   });
 
   it("openSession POSTs path only", async () => {

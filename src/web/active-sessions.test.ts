@@ -2,7 +2,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { RpcEventListener, RpcSessionState } from "@earendil-works/pi-coding-agent";
 import { ActiveSessionRegistry } from "./active-sessions";
+import { assertNoUserExtensions } from "../runtime/extensions-guard";
 import type { RpcSessionAdapter, RpcSessionFactory, StartRpcSessionOptions } from "./rpc-session";
+
+vi.mock("../runtime/extensions-guard", () => ({
+  assertNoUserExtensions: vi.fn(),
+  ExtensionGuardError: class ExtensionGuardError extends Error {},
+}));
 
 const cwd = "/test/project";
 const sessionPath = "/agent/sessions/--test-project--/a.jsonl";
@@ -84,12 +90,14 @@ describe("ActiveSessionRegistry", () => {
   beforeEach(() => {
     factory = new FakeFactory();
     registry = new ActiveSessionRegistry(factory);
+    vi.mocked(assertNoUserExtensions).mockClear();
   });
 
   it("creates a session with exact cwd and launches a client", async () => {
-    const created = await registry.create({ cwd, projectTrustOverride: true });
+    const created = await registry.create({ cwd });
     expect(created.cwd).toBe(cwd);
-    expect(factory.created[0]?.options).toEqual({ cwd, projectTrustOverride: true });
+    expect(factory.created[0]?.options).toEqual({ cwd });
+    expect(vi.mocked(assertNoUserExtensions)).toHaveBeenCalledWith({ cwd });
     expect(factory.created[0]?.stats.started).toBe(1);
     expect(created.status).toBe("ready");
     expect(created.id).toBe(fakeState.sessionId);

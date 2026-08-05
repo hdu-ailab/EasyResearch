@@ -3,8 +3,8 @@ import { join } from "node:path";
 import type { ActiveSessionDto, ConfigScope, SessionSummaryDto } from "./contracts";
 import type { DirectoryService } from "./directories";
 import { DirectoryServiceError } from "./directories";
-import type { TrustService } from "./trust";
 import { UnknownSessionError, type ActiveSessionRegistry } from "./active-sessions";
+import { ExtensionGuardError } from "../runtime/extensions-guard";
 import type { ConfigFileService } from "./config-files";
 import { ConfigPathError, ConfigServiceError } from "./config-files";
 
@@ -12,7 +12,6 @@ export interface RouteServices {
   webuiDist: string;
   listAllSessions: () => Promise<SessionSummaryDto[]>;
   directories: DirectoryService;
-  trust: TrustService;
   registry: ActiveSessionRegistry;
   config: ConfigFileService;
 }
@@ -47,17 +46,8 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
         return jsonResponse(services.directories.list(url.searchParams.get("path") ?? undefined));
       }
 
-      if (req.method === "GET" && path === "/api/trust") {
-        return jsonResponse(services.trust.inspect(requireQuery(url, "cwd")));
-      }
-
-      if (req.method === "POST" && path === "/api/trust") {
-        const body = await jsonBody<{ cwd: string; optionIndex: number }>(req);
-        return jsonResponse(services.trust.apply(body.cwd, body.optionIndex));
-      }
-
       if (req.method === "POST" && path === "/api/sessions") {
-        const body = await jsonBody<{ cwd: string; projectTrustOverride?: boolean }>(req);
+        const body = await jsonBody<{ cwd: string }>(req);
         return await createSession(services, body);
       }
 
@@ -146,9 +136,7 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       if (error instanceof ConfigPathError) return errorResponse(403, error.message);
       if (error instanceof ConfigServiceError) return errorResponse(error.status, error.message);
       if (error instanceof DirectoryServiceError) return errorResponse(error.status, error.message);
-      if (error instanceof TrustConflictError) {
-        return errorResponse(409, error.message, { options: error.options });
-      }
+      if (error instanceof ExtensionGuardError) return errorResponse(400, error.message);
       if (error instanceof UnknownSessionError) return errorResponse(404, error.message);
       if (error instanceof BodyError) return errorResponse(400, error.message);
       return errorResponse(500, "Internal server error");
@@ -158,20 +146,10 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
 
 async function createSession(
   services: RouteServices,
-  body: { cwd: string; projectTrustOverride?: boolean },
+  body: { cwd: string },
 ): Promise<Response> {
   if (!body.cwd) throw new BodyError("cwd is required");
-  let trusted: boolean;
-  if (typeof body.projectTrustOverride === "boolean") {
-    trusted = body.projectTrustOverride;
-  } else {
-    const inspection = services.trust.inspect(body.cwd);
-    if (inspection.required && inspection.trusted === undefined) {
-      throw new TrustConflictError(inspection.options);
-    }
-    trusted = inspection.trusted ?? true;
-  }
-  return jsonResponse(await services.registry.create({ cwd: body.cwd, projectTrustOverride: trusted }));
+  return jsonResponse(await services.registry.create({ cwd: body.cwd }));
 }
 
 async function openSession(
@@ -231,11 +209,6 @@ function configFileParams(url: URL): { scope: ConfigScope; cwd?: string; path?: 
   return { scope, cwd, path };
 }
 
-class TrustConflictError extends Error {
-  constructor(public readonly options: Array<{ label: string; trusted: boolean; savesDecision: boolean }>) {
-    super("Project trust decision required");
-  }
-}
 class BodyError extends Error {}
 
 function requireQuery(url: URL, name: string): string {

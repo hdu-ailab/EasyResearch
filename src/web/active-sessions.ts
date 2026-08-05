@@ -12,7 +12,6 @@ interface ActiveRecord {
   dto: ActiveSessionDto;
   cwd: string;
   sessionPath?: string;
-  trustOverride?: boolean;
   client: RpcSessionAdapter;
   listeners: Set<(event: unknown) => void>;
   dispose: () => void;
@@ -21,13 +20,11 @@ interface ActiveRecord {
 
 export interface CreateSessionInput {
   cwd: string;
-  projectTrustOverride?: boolean;
 }
 
 export interface OpenSessionInput {
   cwd: string;
   sessionPath: string;
-  projectTrustOverride?: boolean;
 }
 
 /**
@@ -42,7 +39,7 @@ export class ActiveSessionRegistry {
   constructor(private readonly factory: RpcSessionFactory) {}
 
   async create(input: CreateSessionInput): Promise<ActiveSessionDto> {
-    return this.launch({ cwd: input.cwd, projectTrustOverride: input.projectTrustOverride });
+    return this.launch({ cwd: input.cwd });
   }
 
   async open(input: OpenSessionInput): Promise<ActiveSessionDto> {
@@ -54,7 +51,6 @@ export class ActiveSessionRegistry {
     return this.launch({
       cwd: input.cwd,
       sessionPath: input.sessionPath,
-      projectTrustOverride: input.projectTrustOverride,
     });
   }
 
@@ -112,7 +108,6 @@ export class ActiveSessionRegistry {
     const replacement = await this.launch({
       cwd: record.cwd,
       sessionPath: record.sessionPath,
-      projectTrustOverride: record.trustOverride,
       adoptListeners: oldListeners,
     });
     return replacement;
@@ -132,6 +127,8 @@ export class ActiveSessionRegistry {
   private async launch(
     options: StartRpcSessionOptions & { adoptListeners?: Set<(event: unknown) => void> },
   ): Promise<ActiveSessionDto> {
+    const { assertNoUserExtensions } = await import("../runtime/extensions-guard");
+    assertNoUserExtensions({ cwd: options.cwd });
     const listeners = options.adoptListeners ?? new Set<(event: unknown) => void>();
     const dto: ActiveSessionDto = {
       id: "",
@@ -145,7 +142,6 @@ export class ActiveSessionRegistry {
       dto,
       cwd: options.cwd,
       sessionPath: options.sessionPath,
-      trustOverride: options.projectTrustOverride,
       client,
       listeners,
       dispose: () => {},
