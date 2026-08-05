@@ -3,7 +3,12 @@
   "version": "0.1.0",
   "description": "Automated academic paper writing CLI built on the Pi agent harness",
   "type": "module",
-  "private": true,
+  "private": false,
+  "files": [
+    "src",
+    "README.md",
+    "AGENTS.md"
+  ],
   "piConfig": {
     "name": "lazyresearch",
     "configDir": ".lazyresearch"
@@ -17,6 +22,7 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "build:web": "vite build --config src/webui/vite.config.ts",
+    "prepack": "bun run build:web",
     "dev": "bun run src/cli/index.ts"
   },
   "dependencies": {
