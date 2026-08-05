@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Bot, FileSearch, FolderOpen } from "lucide-react";
-import { abortSession, connectSessionEvents, getSnapshot, readFileContent, restartSession, sendPrompt } from "../api";
+import { abortSession, connectSessionEvents, getSnapshot, readFileContent, sendPrompt } from "../api";
 import { fromSnapshot, reduceSessionEvent, type SessionViewState } from "../session-reducer";
 import { ChatTranscript } from "../components/ChatTranscript";
 import { ChatComposer } from "../components/ChatComposer";
@@ -129,7 +129,8 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
       event.preventDefault();
       resizing.current = true;
       setSizing(true);
-      const rowRight = rowRef.current?.getBoundingClientRect().right ?? 0;
+      const startX = event.clientX;
+      const startWidth = clampedPanelWidth;
       document.body.style.userSelect = "none";
       document.body.style.overflow = "hidden";
 
@@ -143,14 +144,14 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
       };
 
       const move = (moveEvent: PointerEvent) => {
-        const next = Math.min(panelMax, Math.max(PANEL_MIN, rowRight - moveEvent.clientX));
+        const next = Math.min(panelMax, Math.max(PANEL_MIN, startWidth + startX - moveEvent.clientX));
         setPanelWidth(Math.round(next));
       };
 
       document.addEventListener("pointermove", move);
       document.addEventListener("pointerup", stop);
     },
-    [panelMax],
+    [panelMax, clampedPanelWidth],
   );
 
   const send = useCallback(
@@ -177,18 +178,6 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
       setStatusText(e instanceof Error ? e.message : String(e));
     }
   }, [sessionId]);
-
-  const restart = useCallback(async () => {
-    setStatusText(null);
-    setStatus("starting");
-    try {
-      const dto = await restartSession(sessionId);
-      await hydrate(dto.id);
-    } catch (e) {
-      setStatus("error");
-      setStatusText(e instanceof Error ? e.message : String(e));
-    }
-  }, [sessionId, hydrate]);
 
   const togglePanel = (next: Exclude<Panel, null>) => {
     setPanel((current) => (current === next ? null : next));
@@ -281,7 +270,6 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
               streaming={sessionView.isStreaming}
               onSend={send}
               onAbort={abort}
-              onRestart={restart}
             />
           </footer>
         </section>

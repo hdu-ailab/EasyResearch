@@ -1,19 +1,18 @@
 import { useState } from "react";
-import { RotateCcw, Square } from "lucide-react";
+import { Square } from "lucide-react";
 
 export interface ChatComposerProps {
   disabled: boolean;
   streaming: boolean;
   onSend: (text: string) => void;
   onAbort: () => void;
-  onRestart: () => void;
 }
 
 /**
  * Chat composer. The Send button turns into Stop while the agent is
  * streaming (opencode prompt-input behavior); multiline input preserved.
  */
-export function ChatComposer({ disabled, streaming, onSend, onAbort, onRestart }: ChatComposerProps) {
+export function ChatComposer({ disabled, streaming, onSend, onAbort }: ChatComposerProps) {
   const [text, setText] = useState("");
 
   const submit = () => {
@@ -49,15 +48,6 @@ export function ChatComposer({ disabled, streaming, onSend, onAbort, onRestart }
         />
       </div>
       <div className="flex shrink-0 items-center gap-1">
-        <button
-          type="button"
-          className="flex size-8 items-center justify-center rounded-md text-v2-icon-icon-muted transition-colors hover:bg-v2-grey-100 hover:text-v2-icon-icon-base"
-          aria-label="Restart session"
-          title="Restart session"
-          onClick={onRestart}
-        >
-          <RotateCcw size={15} />
-        </button>
         {streaming ? (
           <button
             type="button"
