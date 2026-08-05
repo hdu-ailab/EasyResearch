@@ -15,7 +15,6 @@ vi.mock("../api", async (importOriginal) => {
     sendPrompt: vi.fn(),
     stopSession: vi.fn(),
     abortSession: vi.fn(),
-    restartSession: vi.fn(),
     listConfig: vi.fn().mockResolvedValue([]),
     readConfigFile: vi.fn(),
     writeConfigFile: vi.fn(),
@@ -56,7 +55,6 @@ describe("WorkPage", () => {
     vi.mocked(api.sendPrompt).mockReset();
     vi.mocked(api.stopSession).mockReset();
     vi.mocked(api.abortSession).mockReset();
-    vi.mocked(api.restartSession).mockReset();
     vi.mocked(api.listEntries).mockReset();
     vi.mocked(api.readFileContent).mockReset();
     vi.mocked(api.getSnapshot).mockResolvedValue(snapshot);
@@ -177,28 +175,6 @@ describe("WorkPage", () => {
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     expect(await screen.findByText("keep this")).toBeTruthy();
     expect(screen.getByText("starting research")).toBeTruthy();
-  });
-
-  it("Restart calls restartSession and reconnects events", async () => {
-    const user = userEvent.setup();
-    vi.mocked(api.restartSession).mockResolvedValue({
-      id: "s2",
-      cwd: "/p",
-      sessionFile: "/agent/s2.jsonl",
-      isStreaming: false,
-      status: "ready",
-    } as never);
-    vi.mocked(api.getSnapshot)
-      .mockResolvedValueOnce(snapshot)
-      .mockResolvedValueOnce({
-        session: { id: "s2", cwd: "/p", isStreaming: false, status: "ready" },
-        messages: [{ role: "assistant", content: [{ type: "text", text: "after restart" }] }],
-      } as never);
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
-    await screen.findByText("starting research");
-    await user.click(screen.getByRole("button", { name: /restart/i }));
-    await waitFor(() => expect(api.restartSession).toHaveBeenCalledWith("s1"));
-    expect(await screen.findByText("after restart")).toBeTruthy();
   });
 
   it("opens a file from the files panel into a tab and previews its content", async () => {
