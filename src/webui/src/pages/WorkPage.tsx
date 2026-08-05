@@ -299,14 +299,12 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
             aria-label="Resize panel"
             title="Resize panel"
             onPointerDown={startResize}
-            className={`group absolute inset-y-0 left-[-8px] z-30 hidden w-2 -translate-x-1/2 cursor-col-resize md:block ${
-              sizing ? "bg-v2-blue-200" : "hover:bg-v2-blue-200/60"
-            }`}
+            className="group absolute inset-y-0 left-[-0.5rem] z-30 hidden w-2 -translate-x-1/2 cursor-col-resize md:block"
           >
             <span
-              className={`absolute inset-y-0 left-1/2 w-[3px] -translate-x-1/2 transition-colors ${
-                sizing ? "bg-v2-blue-600" : "bg-v2-blue-400 group-hover:bg-v2-blue-600"
-              }`}
+              className={`absolute inset-y-0 left-1/2 w-[3px] -translate-x-1/2 rounded-full transition-opacity ${
+                sizing ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+              } ${sizing ? "bg-v2-blue-600" : "bg-v2-grey-700 group-hover:bg-v2-blue-600"}`}
               aria-hidden
             />
           </button>
