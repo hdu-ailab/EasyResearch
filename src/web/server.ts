@@ -19,6 +19,7 @@ const WEBUI_DIST = join(fileURLToPath(new URL("..", import.meta.url)), "webui", 
  */
 export async function startServer(options: ServerOptions = {}): Promise<Server> {
   const server = Bun.serve<undefined>({
+    hostname: "127.0.0.1",
     port: options.port ?? 3000,
     async fetch(req) {
       return routeRequest(req, WEBUI_DIST);
