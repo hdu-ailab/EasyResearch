@@ -1,10 +1,12 @@
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import { routeRequest } from "./routes";
-
-export interface ServerOptions {
-  port?: number;
-}
+import { createRouteHandler, type RouteServices } from "./routes";
+import { ActiveSessionRegistry } from "./active-sessions";
+import { PiRpcSessionFactory } from "./rpc-session";
+import { DirectoryService } from "./directories";
+import { ConfigFileService } from "./config-files";
+import { createTrustService } from "./trust";
+import type { SessionSummaryDto } from "./contracts";
 
 export interface Server {
   port: number;
@@ -14,20 +16,50 @@ export interface Server {
 const WEBUI_DIST = join(fileURLToPath(new URL("..", import.meta.url)), "webui", "dist");
 
 /**
- * Start the Web panel backend. Bun HTTP server; request handling is delegated
- * to the pure `routeRequest` in routes.ts (node-compatible, unit-testable).
+ * Start the Web panel backend on 127.0.0.1:3000. The server owns the active
+ * session registry and stops every Pi RPC child on shutdown.
  */
-export async function startServer(options: ServerOptions = {}): Promise<Server> {
-  const server = Bun.serve<undefined>({
-    hostname: "127.0.0.1",
-    port: options.port ?? 3000,
-    async fetch(req) {
-      return routeRequest(req, WEBUI_DIST);
+export async function startServer(): Promise<Server> {
+  const registry = new ActiveSessionRegistry(await PiRpcSessionFactory.resolve());
+  const { importPi } = await import("../runtime/pi-import");
+  const { SessionManager, getAgentDir } = await importPi();
+  const agentDir = getAgentDir();
+  const services: RouteServices = {
+    webuiDist: WEBUI_DIST,
+    listAllSessions: async () => {
+      const sessions = await SessionManager.listAll(undefined);
+      return sessions.map((s) => {
+        const dto: SessionSummaryDto = {
+          id: s.id,
+          path: s.path,
+          cwd: s.cwd,
+          name: s.name,
+          created: new Date(s.created).toISOString(),
+          modified: new Date(s.modified).toISOString(),
+          messageCount: s.messageCount,
+          firstMessage: s.firstMessage,
+        };
+        return dto;
+      });
     },
+    directories: new DirectoryService(),
+    trust: await createTrustService(agentDir),
+    registry,
+    config: new ConfigFileService(agentDir),
+  };
+  const handler = createRouteHandler(services);
+
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 3000,
+    fetch: handler,
   });
 
   return {
-    port: server.port ?? options.port ?? 3000,
-    stop: () => server.stop(true),
+    port: server.port ?? 3000,
+    stop: async () => {
+      await registry.shutdown();
+      server.stop(true);
+    },
   };
 }
