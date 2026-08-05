@@ -53,6 +53,7 @@ export async function startServer(): Promise<Server> {
     hostname: "127.0.0.1",
     port: 3000,
     fetch: handler,
+    idleTimeout: 0,
   });
 
   return {
