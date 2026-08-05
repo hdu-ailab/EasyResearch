@@ -32,11 +32,11 @@ describe("discoverAgents", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("loads agents from the user agents dir", () => {
+  it("loads agents from the global agents dir", () => {
     writeFileSync(join(dir, "literature.md"), LITERATURE_MD, "utf-8");
     const { agents } = discoverAgents(dir);
     const lit = agents.find((a) => a.name === "literature");
-    expect(lit?.source).toBe("user");
+    expect(lit?.source).toBe("global");
     expect(lit?.systemPrompt).toContain("You research papers.");
     expect(lit?.tools).toBeUndefined();
   });
@@ -53,15 +53,12 @@ describe("discoverAgents", () => {
     writeFileSync(join(dir, "bad.md"), "no frontmatter here", "utf-8");
     writeFileSync(join(dir, "readme.txt"), "not md", "utf-8");
     const { agents } = discoverAgents(dir);
-    // bad.md and readme.txt are ignored; bundled agents still present.
     expect(agents.map((a) => a.name)).not.toContain("bad");
     expect(agents.map((a) => a.name)).not.toContain("readme");
   });
 
-  it("falls back to bundled agents when user dir is missing", () => {
+  it("returns no agents when the global dir is missing", () => {
     const { agents } = discoverAgents(join(dir, "nope"));
-    expect(agents.map((a) => a.name)).toContain("orchestrator");
-    expect(agents.map((a) => a.name)).toContain("literature");
-    expect(agents.every((a) => a.source === "package")).toBe(true);
+    expect(agents).toEqual([]);
   });
 });
