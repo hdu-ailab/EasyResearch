@@ -4,22 +4,21 @@ Automated academic paper writing — a CLI tool (package `lazypaper`) built on t
 
 ## Status
 
-Early MVP scaffold: CLI (`new`/`run`/`web`), config isolation (`.lazyresearch`), orchestrator + literature agents, subagent tool, Web panel skeleton. See `AGENTS.md` (spec) and `.docs/` (design, gitignored) for the full picture.
+Backend parity redesign in progress: native Pi TUI/session semantics under the isolated `.lazypaper` identity, orchestrator + literature agents, subagent tool, and a local Web panel backed by Pi RPC. See `AGENTS.md` (spec) and `.docs/` (design, gitignored) for the authoritative target.
 
 ## Quick Start
 
 ```bash
 bun install
-bun run src/cli/index.ts new "Fault Diagnosis 2026"   # create a paper project
-cd <project> && lazypaper run                          # start orchestrator session
-lazypaper web                                          # start Web panel
+mkdir -p <paper-project>
+cd <paper-project> && lazypaper   # native Pi TUI with the orchestrator
+lazypaper web                     # local Web panel at 127.0.0.1:3000
 ```
 
 ## Commands
 
-- `lazypaper new <topic>` — create a paper project workspace
-- `lazypaper run [--model M]` — start the orchestrator session (terminal)
-- `lazypaper web [--port N]` — start the Web panel
+- `lazypaper` — start the native Pi TUI in the shell's exact cwd
+- `lazypaper web` — start the localhost Web panel
 
 ## Development
 
@@ -29,4 +28,4 @@ bun run typecheck       # tsc --noEmit
 bun run build:web       # build the Vite frontend into src/webui/dist
 ```
 
-Config root: `~/.lazyresearch` (override with `LAZYRESEARCH_CONFIG_DIR`). LazyResearch never touches `~/.pi`.
+Global Pi-compatible state lives under `~/.lazypaper/agent`; project overrides live at `<exact-cwd>/.lazypaper/settings.json`. LazyPaper never reads `~/.pi` or `.lazyresearch`.
