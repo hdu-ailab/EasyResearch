@@ -154,7 +154,12 @@ export class ActiveSessionRegistry {
     await client.start();
     const state = await client.getState();
     dto.id = state.sessionId;
-    if (state.sessionFile) dto.sessionFile = state.sessionFile;
+    if (state.sessionFile) {
+      dto.sessionFile = state.sessionFile;
+      // Resume must target the real session file, even when it was created
+      // during this launch (create has no sessionPath up front).
+      record.sessionPath = state.sessionFile;
+    }
     if (state.sessionName) dto.sessionName = state.sessionName;
     dto.isStreaming = state.isStreaming;
     dto.status = state.isStreaming ? "running" : "ready";
