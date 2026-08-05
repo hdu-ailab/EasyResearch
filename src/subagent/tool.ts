@@ -7,7 +7,8 @@ import type { Message } from "@earendil-works/pi-ai";
 import { defineTool, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { getAgentDir } from "../config";
+import { getInternalPiInvocation } from "../runtime/internal-invocation";
+import { getAgentDir } from "../runtime/pi-import";
 import { discoverAgents, type AgentConfig } from "./agents";
 
 const MAX_PARALLEL_TASKS = 8;
@@ -113,7 +114,7 @@ async function writePromptToTempFile(agentName: string, prompt: string): Promise
   return filePath;
 }
 
-function buildPiArgs(agent: AgentConfig, fallbackModel: string | undefined, task: string): string[] {
+export function buildPiArgs(agent: AgentConfig, fallbackModel: string | undefined, task: string): string[] {
   const args: string[] = ["--mode", "json", "-p", "--no-session"];
   if (agent.model) {
     args.push("--model", agent.model);
@@ -263,9 +264,9 @@ async function runSingleAgent(opts: RunSingleOptions): Promise<SingleResult> {
 }
 
 function getPiInvocation(): { command: string; args: string[] } {
-  // Lazypaper is not the pi CLI; always spawn the `pi` binary from PATH,
-  // which is installed as a bin of @earendil-works/pi-coding-agent.
-  return { command: "pi", args: [] };
+  // Subagents always enter Pi through the private bootstrap entry, which
+  // applies the temporary PI_PACKAGE_DIR initialization before main() runs.
+  return getInternalPiInvocation();
 }
 
 const TaskItem = Type.Object({

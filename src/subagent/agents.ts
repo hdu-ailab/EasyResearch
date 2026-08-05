@@ -1,10 +1,9 @@
 import { readFileSync, readdirSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import { getAgentsDir } from "../config";
+import { getAgentsDir } from "../runtime/pi-import";
 
-export type AgentSource = "package" | "user";
+export type AgentSource = "global";
 
 export interface AgentConfig {
   name: string;
@@ -21,18 +20,12 @@ export interface AgentDiscoveryResult {
 }
 
 /**
- * Discover agents from the config root's agents dir, plus the agents bundled
- * with the lazypaper package. Bundled agents act as built-in defaults; user
- * agents in the config root with the same name override them.
+ * Discover agents from the LazyPaper global agents dir
+ * (`<agent-dir>/agents`, bootstrapped with bundled defaults on first run).
+ * Users edit or replace these files; definitions are global, never packaged.
  */
 export function discoverAgents(userAgentsDir: string = getAgentsDir()): AgentDiscoveryResult {
-  const map = new Map<string, AgentConfig>();
-
-  // Bundled agents are defaults; user agents with the same name override them.
-  for (const a of loadBundledAgents()) map.set(a.name, a);
-  for (const a of loadFromDir(userAgentsDir, "user")) map.set(a.name, a);
-
-  return { agents: Array.from(map.values()) };
+  return { agents: loadFromDir(userAgentsDir, "global") };
 }
 
 function listMdFiles(dir: string): string[] {
@@ -53,11 +46,6 @@ function loadFromDir(dir: string, source: AgentSource): AgentConfig[] {
     if (parsed) agents.push(parsed);
   }
   return agents;
-}
-
-function loadBundledAgents(): AgentConfig[] {
-  const bundledDir = join(fileURLToPath(new URL(".", import.meta.url)), "..", "agents");
-  return loadFromDir(bundledDir, "package");
 }
 
 function parseAgentFile(filePath: string, source: AgentSource): AgentConfig | null {
