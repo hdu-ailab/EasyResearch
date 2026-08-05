@@ -155,6 +155,20 @@ describe("ConfigFileService", () => {
     expect(entries.map((e) => e.name)).toEqual(["sub"]);
   });
 
+  it("returns paths relative to the allowed root so clients can round-trip them", async () => {
+    writeFileSync(join(agentDir, "settings.json"), "{}");
+    writeFileSync(join(agentDir, "models.json"), "{}");
+    await service.createDirectory({ scope: "global", path: "agents" });
+    writeFileSync(join(agentDir, "agents", "x.json"), "{}");
+    const top = await service.list({ scope: "global" });
+    for (const entry of top) {
+      expect(entry.path).not.toBe(join(agentDir, entry.name));
+      expect(entry.path).toBe(entry.name);
+    }
+    const sub = await service.list({ scope: "global", path: "agents" });
+    expect(sub.map((e) => e.path)).toEqual(["agents/x.json"]);
+  });
+
   it("refuses to escape the project root via traversal", async () => {
     await expect(
       service.write({ scope: "project", cwd, path: "../evil.txt", content: "x" }),

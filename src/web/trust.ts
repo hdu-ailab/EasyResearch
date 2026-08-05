@@ -78,17 +78,14 @@ export class TrustService {
 
 /** Production dependency wiring through the identity bootstrap. */
 export async function createTrustService(agentDir: string): Promise<TrustService> {
-  const { importPi } = await import("../runtime/pi-import");
+  const { importPi, importPiTrustManager } = await import("../runtime/pi-import");
   const pi = await importPi();
-  const { ProjectTrustStore, hasTrustRequiringProjectResources, getProjectTrustOptions } =
+  const { ProjectTrustStore, hasTrustRequiringProjectResources } =
     pi as typeof pi & {
-      getProjectTrustOptions: (cwd: string, options?: { includeSessionOnly?: boolean }) => Array<{
-        label: string;
-        trusted: boolean;
-        updates: ProjectTrustUpdate[];
-        savedPath?: string;
-      }>;
+      ProjectTrustStore: new (agentDir: string) => TrustStoreLike;
+      hasTrustRequiringProjectResources: (cwd: string) => boolean;
     };
+  const { getProjectTrustOptions } = await importPiTrustManager();
   const { SettingsManager } = pi;
   const globalSettings = SettingsManager.create(homedir(), agentDir).getGlobalSettings();
   return new TrustService({

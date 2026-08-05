@@ -111,7 +111,7 @@ export class ConfigFileService {
     return dirents
       .map((dirent) => ({
         name: dirent.name,
-        path: join(dirPath, dirent.name),
+        path: relative(root, join(dirPath, dirent.name)),
         type: dirent.isDirectory() ? ("directory" as const) : ("file" as const),
       }))
       .sort((a, b) => a.name.localeCompare(b.name));

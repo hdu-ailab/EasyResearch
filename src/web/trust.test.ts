@@ -121,3 +121,31 @@ describe("TrustService.apply", () => {
     expect(() => service.apply(cwd, 99)).toThrow(/option/);
   });
 });
+
+describe("createTrustService production wiring", () => {
+  it("inspects an undecided trust-requiring directory with native options", async () => {
+    const agentDir = join(tmpdir(), `lazyresearch-trust-agent-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(agentDir, { recursive: true });
+    const originalHome = process.env.HOME;
+    const originalAgentDir = process.env.LAZYRESEARCH_CODING_AGENT_DIR;
+    process.env.HOME = join(tmpdir(), `lazyresearch-trust-home-${Math.random().toString(36).slice(2)}`);
+    process.env.LAZYRESEARCH_CODING_AGENT_DIR = agentDir;
+    mkdirSync(join(cwd, ".agents", "skills"), { recursive: true });
+    try {
+      const { createTrustService } = await import("./trust");
+      const service = await createTrustService(agentDir);
+      const inspection = service.inspect(cwd);
+      expect(inspection.required).toBe(true);
+      expect(inspection.trusted).toBeUndefined();
+      const labels = inspection.options.map((o) => o.label);
+      expect(labels).toContain("Trust");
+      expect(labels).toContain("Trust (this session only)");
+      expect(labels).toContain("Do not trust");
+      const applied = service.apply(cwd, 1);
+      expect(applied.trusted).toBe(true);
+    } finally {
+      process.env.HOME = originalHome;
+      process.env.LAZYRESEARCH_CODING_AGENT_DIR = originalAgentDir;
+    }
+  });
+});
