@@ -64,6 +64,10 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
     void patch({ agentModels });
   };
 
+  const setOrchestratorModel = (value: string) => {
+    void patch({ orchestratorModel: value === "" ? null : value });
+  };
+
   const disabled = !settings || busy;
 
   return (
@@ -131,11 +135,32 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
             <div className="flex flex-col gap-3 px-4 py-4">
               {agents.map((agent) =>
                 agent.name === "orchestrator" ? (
-                  <div key={agent.name} className="flex items-center justify-between gap-4">
-                    <span className="text-[13px] font-medium text-v2-text-text-base">orchestrator</span>
-                    <span className="text-[12px] text-v2-text-text-muted">
-                      Uses the session model — set in the work page, not configurable here (ADR-027)
-                    </span>
+                  <div key={agent.name}>
+                    <label className="flex items-center justify-between gap-4">
+                      <span className="flex flex-col">
+                        <span className="text-[13px] font-medium text-v2-text-text-base">orchestrator</span>
+                        <span className="text-[12px] text-v2-text-text-muted">Pi's global default model</span>
+                      </span>
+                      <select
+                        className="h-8 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600 disabled:opacity-50"
+                        aria-label="orchestrator model"
+                        value={settings?.orchestratorModel ?? ""}
+                        onChange={(e) => setOrchestratorModel(e.target.value)}
+                        disabled={disabled}
+                      >
+                        <option value=""> </option>
+                        {models.map((m) => (
+                          <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
+                            {m.provider}/{m.id}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    {settings && !settings.orchestratorModel && settings.effectiveOrchestratorModel && (
+                      <p className="mt-1 text-right text-[12px] text-v2-text-text-muted">
+                        Pi will use: {settings.effectiveOrchestratorModel}
+                      </p>
+                    )}
                   </div>
                 ) : (
                   <label key={agent.name} className="flex items-center justify-between gap-4">
