@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, ChevronLeft, ChevronRight, Download, FileText, Minus, Plus } from "lucide-react";
 import { rawFileUrl } from "../../api";
+import { useI18n } from "../../i18n/useI18n";
 import { createPdfLoader, type PdfDocumentHandle, type PdfLoader } from "./pdf-runtime";
 
 export interface PdfPreviewProps {
@@ -28,6 +29,7 @@ const RENDER_BUFFER = 2;
  * with a Retry action.
  */
 export function PdfPreview({ path, loader }: PdfPreviewProps) {
+  const { t } = useI18n();
   const effectiveLoader = loader ?? DEFAULT_LOADER;
   const [doc, setDoc] = useState<PdfDocumentHandle | null>(null);
   const [pageSizes, setPageSizes] = useState<{ width: number; height: number }[]>([]);
@@ -181,14 +183,14 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-4">
           <AlertTriangle size={20} className="shrink-0 text-v2-status-error" aria-hidden />
           <p className="max-w-[420px] text-center text-[13px] text-v2-text-text-muted" role="alert">
-            Could not load the PDF: {error}
+            {t("preview.pdf.loadError").replace("{error}", error)}
           </p>
           <button
             type="button"
             className="rounded-md border border-v2-grey-200 px-3 py-1 text-[12px] font-medium text-v2-text-text-base transition-colors hover:bg-v2-grey-100"
             onClick={() => setRetryToken((token) => token + 1)}
           >
-            Retry
+            {t("preview.retry")}
           </button>
         </div>
       </div>
@@ -204,20 +206,20 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
         <div
           className="ml-auto flex min-w-0 flex-1 flex-wrap items-center gap-1"
           role="toolbar"
-          aria-label="PDF controls"
+          aria-label={t("preview.pdf.controls")}
         >
           <button
             type="button"
             className={iconButton}
-            aria-label="Previous page"
-            title="Previous page"
+            aria-label={t("preview.pdf.previous")}
+            title={t("preview.pdf.previous")}
             disabled={currentPage <= 1}
             onClick={() => navigateToPage(currentPage - 1)}
           >
             <ChevronLeft size={14} aria-hidden />
           </button>
           <input
-            aria-label="Current page"
+            aria-label={t("preview.pdf.currentPage")}
             type="number"
             min={1}
             max={numPages}
@@ -234,8 +236,8 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
           <button
             type="button"
             className={iconButton}
-            aria-label="Next page"
-            title="Next page"
+            aria-label={t("preview.pdf.next")}
+            title={t("preview.pdf.next")}
             disabled={currentPage >= numPages}
             onClick={() => navigateToPage(currentPage + 1)}
           >
@@ -243,11 +245,11 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
           </button>
           <span className="mx-1 h-4 w-px shrink-0 bg-v2-grey-200" aria-hidden />
 
-          <button type="button" className={iconButton} aria-label="Zoom out" title="Zoom out" onClick={() => zoom(-1)}>
+          <button type="button" className={iconButton} aria-label={t("preview.pdf.zoomOut")} title={t("preview.pdf.zoomOut")} onClick={() => zoom(-1)}>
             <Minus size={14} aria-hidden />
           </button>
           <span className="w-11 shrink-0 text-center font-mono text-[11px] text-v2-text-text-muted">{Math.round(scale * 100)}%</span>
-          <button type="button" className={iconButton} aria-label="Zoom in" title="Zoom in" onClick={() => zoom(1)}>
+          <button type="button" className={iconButton} aria-label={t("preview.pdf.zoomIn")} title={t("preview.pdf.zoomIn")} onClick={() => zoom(1)}>
             <Plus size={14} aria-hidden />
           </button>
           <span className="mx-1 h-4 w-px shrink-0 bg-v2-grey-200" aria-hidden />
@@ -258,7 +260,7 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
             className="flex h-7 shrink-0 items-center gap-1 rounded-md px-1.5 text-[12px] font-medium text-v2-text-text-muted transition-colors hover:bg-v2-grey-100 hover:text-v2-text-text-base"
           >
             <Download size={13} aria-hidden />
-            <span className="hidden sm:inline">Download PDF</span>
+            <span className="hidden sm:inline">{t("preview.pdf.download")}</span>
           </a>
         </div>
       </header>
@@ -266,10 +268,10 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
         ref={scrollRef}
         data-testid="pdf-scroll"
         className="min-h-0 flex-1 overflow-auto bg-v2-grey-100 p-3"
-        aria-label="PDF pages"
+        aria-label={t("preview.pdf.pages")}
       >
         {numPages === 0 ? (
-          <p className="text-center text-[12px] text-v2-text-text-faint">Loading…</p>
+          <p className="text-center text-[12px] text-v2-text-text-faint">{t("files.loading")}</p>
         ) : (
           <div className="flex flex-col items-center gap-3">
             {Array.from({ length: numPages }, (_, index) => (
@@ -278,7 +280,7 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
                 ref={(element) => {
                   canvasRefs.current[index] = element;
                 }}
-                aria-label={`Page ${index + 1}`}
+                aria-label={t("preview.pdf.pageLabel").replace("{page}", String(index + 1))}
                 className="rounded-sm bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]"
               />
             ))}

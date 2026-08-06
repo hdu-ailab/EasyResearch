@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ChevronLeft, Save, X } from "lucide-react";
 import { ApiError, listConfigProjects, readConfigFile, writeConfigFile } from "../api";
+import { useI18n } from "../i18n/useI18n";
 import type { ConfigProjectsDto } from "../types";
 import { BackButton, ProductMark, Topbar } from "../components/Topbar";
 
@@ -18,6 +19,7 @@ const settingsPath = (root: Root) =>
  * a per-scope settings.json editor with field help.
  */
 export function ConfigPage({ onBack }: ConfigPageProps) {
+  const { t } = useI18n();
   const [data, setData] = useState<ConfigProjectsDto | null>(null);
   const [selected, setSelected] = useState<Root | null>(null);
   const [content, setContent] = useState("{}");
@@ -64,7 +66,7 @@ export function ConfigPage({ onBack }: ConfigPageProps) {
     try {
       JSON.parse(content);
     } catch {
-      setError("Invalid JSON — the file was not saved.");
+      setError(t("config.invalidJson"));
       setSaved(false);
       return;
     }
@@ -92,17 +94,17 @@ export function ConfigPage({ onBack }: ConfigPageProps) {
             <ProductMark />
           </>
         }
-        center={<span className="truncate text-[13px] text-v2-text-text-muted">Settings — global &amp; project config</span>}
+        center={<span className="truncate text-[13px] text-v2-text-text-muted">{t("configPage.title")}</span>}
       />
       <div className="min-h-0 flex-1 p-4">
         {selected ? (
-          <section className="relative mx-auto flex h-full w-full max-w-[980px] flex-col rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]" aria-label="Settings editor">
+          <section className="relative mx-auto flex h-full w-full max-w-[980px] flex-col rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]" aria-label={t("configPage.editorAria")}>
             <div className="flex h-10 shrink-0 items-center gap-2 border-b border-v2-grey-200 px-2">
               <button
                 type="button"
                 className="flex size-7 items-center justify-center rounded-md text-v2-icon-icon-muted transition-colors hover:bg-v2-grey-100"
-                aria-label="Back to projects"
-                title="Back to projects"
+                aria-label={t("configPage.backToProjects")}
+                title={t("configPage.backToProjects")}
                 onClick={() => setSelected(null)}
               >
                 <ChevronLeft size={15} />
@@ -112,7 +114,7 @@ export function ConfigPage({ onBack }: ConfigPageProps) {
                 type="button"
                 className="flex size-7 items-center justify-center rounded-md text-v2-icon-icon-muted transition-colors hover:bg-v2-grey-100"
                 aria-label="?"
-                title="Field help"
+                title={t("configPage.fieldHelp")}
                 onClick={() => setHelp((v) => !v)}
               >
                 ?
@@ -120,57 +122,46 @@ export function ConfigPage({ onBack }: ConfigPageProps) {
             </div>
             <textarea
               className="min-h-0 flex-1 resize-none bg-transparent p-3 font-mono text-[12px] leading-[1.5] text-v2-text-text-base outline-none"
-              aria-label="settings.json"
+              aria-label={t("configPage.settingsJson")}
               spellCheck={false}
               value={content}
               onChange={(e) => setContent(e.target.value)}
             />
             <div className="flex shrink-0 items-center gap-1 border-t border-v2-grey-200 p-2">
-              <button type="button" className="flex h-7 items-center gap-1 rounded-md bg-v2-grey-1100 px-3 text-[12px] font-medium text-v2-grey-50 transition-opacity hover:opacity-90" aria-label="Save" onClick={() => void save()}>
+              <button type="button" className="flex h-7 items-center gap-1 rounded-md bg-v2-grey-1100 px-3 text-[12px] font-medium text-v2-grey-50 transition-opacity hover:opacity-90" aria-label={t("config.save")} onClick={() => void save()}>
                 <Save size={13} />
-                Save
+                {t("config.save")}
               </button>
-              {saved && !error && <p className="ml-2 text-[12px] text-v2-text-text-muted">Saved — applies after restart.</p>}
+              {saved && !error && <p className="ml-2 text-[12px] text-v2-text-text-muted">{t("config.saved")}</p>}
             </div>
             {error && <p className="border-t border-v2-grey-200 px-3 py-2 text-[12px] text-v2-status-error" role="alert">{error}</p>}
             {help && (
               <div
                 role="dialog"
-                aria-label="Settings help"
+                aria-label={t("configPage.helpDialog")}
                 className="absolute inset-0 z-10 flex items-center justify-center bg-v2-background-overlay p-6"
               >
                 <div className="max-h-full w-full max-w-[560px] overflow-y-auto rounded-[10px] bg-v2-background-bg-base p-5 shadow-[var(--v2-elevation-raised)]">
                   <div className="mb-3 flex items-center justify-between">
-                    <h2 className="text-[13px] font-semibold text-v2-text-text-base">lazyresearch settings</h2>
+                    <h2 className="text-[13px] font-semibold text-v2-text-text-base">{t("configPage.helpTitle")}</h2>
                     <button
                       type="button"
                       className="flex size-7 items-center justify-center rounded-md text-v2-icon-icon-muted transition-colors hover:bg-v2-grey-100"
-                      aria-label="Close help"
+                      aria-label={t("configPage.closeHelp")}
                       onClick={() => setHelp(false)}
                     >
                       <X size={15} />
                     </button>
                   </div>
                   <p className="mb-2 text-[13px] text-v2-text-text-base">
-                    The <code className="font-mono text-[12px]">lazyresearch</code> namespace holds behavioral settings. Fields:
-</p>
+                    {t("configPage.helpIntro")}
+                  </p>
                   <ul className="mb-3 list-disc pl-5 text-[13px] text-v2-text-text-base">
-                    <li>
-                      <code className="font-mono text-[12px]">agentModels</code>: map of agent name → <code className="font-mono text-[12px]">"provider/id"</code> model override.
-                    </li>
-                    <li>
-                      <code className="font-mono text-[12px]">webui</code> (global-only): Web panel font sizes —{" "}
-                      <code className="font-mono text-[12px]">chatFontSize</code> 11–18 (default 13),{" "}
-                      <code className="font-mono text-[12px]">filesFontSize</code> 10–16 (default 12).
-                    </li>
+                    <li>{t("configPage.helpAgentModels")}</li>
                   </ul>
-                  <p className="mb-1 text-[13px] text-v2-text-text-muted">Example:</p>
+                  <p className="mb-1 text-[13px] text-v2-text-text-muted">{t("configPage.helpExample")}</p>
                   <pre className="whitespace-pre-wrap break-words rounded-md bg-v2-grey-100 p-3 font-mono text-[12px] leading-[1.5] text-v2-text-text-base">{`{
   "lazyresearch": {
-    "webui": {
-      "chatFontSize": 13,
-      "filesFontSize": 12
-    },
     "agentModels": {
       "search": "openai/gpt-4o",
       "writing": "anthropic/claude-sonnet-4"
@@ -182,20 +173,20 @@ export function ConfigPage({ onBack }: ConfigPageProps) {
             )}
           </section>
         ) : (
-          <section className="mx-auto flex h-full w-full max-w-[980px] flex-col rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]" aria-label="Settings root">
+          <section className="mx-auto flex h-full w-full max-w-[980px] flex-col rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]" aria-label={t("configPage.settingsRoot")}>
             <div className="flex h-10 shrink-0 items-center border-b border-v2-grey-200 px-3">
-              <span className="text-[12px] text-v2-text-text-muted">Choose a scope to edit its settings.json</span>
+              <span className="text-[12px] text-v2-text-text-muted">{t("configPage.chooseScope")}</span>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto p-2">
               {data ? (
-                <ul role="list" aria-label="Project folders" className="flex flex-col gap-0.5">
+                <ul role="list" aria-label={t("configPage.projectFolders")} className="flex flex-col gap-0.5">
                   <li>
                     <button
                       type="button"
                       className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-v2-grey-100"
                       onClick={() => void open({ kind: "home" })}
                     >
-                      <span className="text-[13px] font-medium text-v2-text-text-base">~（全局配置）</span>
+                      <span className="text-[13px] font-medium text-v2-text-text-base">{t("configPage.homeLabel")}</span>
                       <span className="ml-auto truncate font-mono text-[12px] text-v2-text-text-muted">{data.home}</span>
                     </button>
                   </li>
@@ -212,7 +203,7 @@ export function ConfigPage({ onBack }: ConfigPageProps) {
                   ))}
                 </ul>
               ) : (
-                <p className="flex flex-1 items-center justify-center text-[13px] text-v2-text-text-faint">Loading project folders…</p>
+                <p className="flex flex-1 items-center justify-center text-[13px] text-v2-text-text-faint">{t("configPage.loadingFolders")}</p>
               )}
               {error && <p className="border-t border-v2-grey-200 px-3 py-2 text-[12px] text-v2-status-error" role="alert">{error}</p>}
             </div>
