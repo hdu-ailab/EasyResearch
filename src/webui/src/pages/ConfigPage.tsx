@@ -153,14 +153,30 @@ export function ConfigPage({ onBack }: ConfigPageProps) {
                   </div>
                   <p className="mb-2 text-[13px] text-v2-text-text-base">
                     The <code className="font-mono text-[12px]">lazyresearch</code> namespace holds behavioral settings. Fields:
-                  </p>
+</p>
                   <ul className="mb-3 list-disc pl-5 text-[13px] text-v2-text-text-base">
                     <li>
                       <code className="font-mono text-[12px]">agentModels</code>: map of agent name → <code className="font-mono text-[12px]">"provider/id"</code> model override.
                     </li>
+                    <li>
+                      <code className="font-mono text-[12px]">webui</code> (global-only): Web panel font sizes —{" "}
+                      <code className="font-mono text-[12px]">chatFontSize</code> 11–18 (default 13),{" "}
+                      <code className="font-mono text-[12px]">filesFontSize</code> 10–16 (default 12).
+                    </li>
                   </ul>
                   <p className="mb-1 text-[13px] text-v2-text-text-muted">Example:</p>
-                  <pre className="overflow-x-auto rounded-md bg-v2-grey-100 p-3 font-mono text-[12px] leading-[1.5] text-v2-text-text-base">{`{"lazyresearch":{"agentModels":{"search":"openai/gpt-4o","writing":"anthropic/claude-sonnet-4"}}}`}</pre>
+                  <pre className="whitespace-pre-wrap break-words rounded-md bg-v2-grey-100 p-3 font-mono text-[12px] leading-[1.5] text-v2-text-text-base">{`{
+  "lazyresearch": {
+    "webui": {
+      "chatFontSize": 13,
+      "filesFontSize": 12
+    },
+    "agentModels": {
+      "search": "openai/gpt-4o",
+      "writing": "anthropic/claude-sonnet-4"
+    }
+  }
+}`}</pre>
                 </div>
               </div>
             )}
