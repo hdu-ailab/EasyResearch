@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -173,6 +173,65 @@ describe("web routes", () => {
   it("requires a path for file reads", async () => {
     setup();
     const res = await handler(new Request("http://localhost/api/file"));
+    expect(res.status).toBe(400);
+  });
+
+  it("serves raw file bytes with MIME metadata for a full read", async () => {
+    const pdf = join(homeDir, "raw.pdf");
+    writeFileSync(pdf, Buffer.from([0, 1, 2, 3, 4]));
+    setup();
+    const res = await handler(new Request(`http://localhost/api/file/raw?path=${encodeURIComponent(pdf)}`));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("application/pdf");
+    expect(res.headers.get("content-length")).toBe("5");
+    expect(res.headers.get("accept-ranges")).toBe("bytes");
+    expect([...new Uint8Array(await res.arrayBuffer())]).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  it("serves a single ranged raw file response", async () => {
+    const pdf = join(homeDir, "raw.pdf");
+    writeFileSync(pdf, Buffer.from([0, 1, 2, 3, 4]));
+    setup();
+    const res = await handler(
+      new Request(`http://localhost/api/file/raw?path=${encodeURIComponent(pdf)}`, {
+        headers: { Range: "bytes=1-3" },
+      }),
+    );
+    expect(res.status).toBe(206);
+    expect(res.headers.get("content-range")).toBe("bytes 1-3/5");
+    expect(res.headers.get("accept-ranges")).toBe("bytes");
+    expect([...new Uint8Array(await res.arrayBuffer())]).toEqual([1, 2, 3]);
+  });
+
+  it("rejects unsatisfiable ranges with 416 and a content-range hint", async () => {
+    const pdf = join(homeDir, "raw.pdf");
+    writeFileSync(pdf, Buffer.from([0, 1, 2, 3, 4]));
+    setup();
+    const res = await handler(
+      new Request(`http://localhost/api/file/raw?path=${encodeURIComponent(pdf)}`, {
+        headers: { Range: "bytes=20-30" },
+      }),
+    );
+    expect(res.status).toBe(416);
+    expect(res.headers.get("content-range")).toBe("bytes */5");
+  });
+
+  it("rejects raw reads of a directory with the same typed error as text reads", async () => {
+    mkdirSync(join(homeDir, "subdir"), { recursive: true });
+    setup();
+    const res = await handler(new Request(`http://localhost/api/file/raw?path=${encodeURIComponent(join(homeDir, "subdir"))}`));
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects raw reads of a missing file with the same typed error as text reads", async () => {
+    setup();
+    const res = await handler(new Request(`http://localhost/api/file/raw?path=${encodeURIComponent(join(homeDir, "nope.pdf"))}`));
+    expect(res.status).toBe(404);
+  });
+
+  it("requires a path for raw file reads", async () => {
+    setup();
+    const res = await handler(new Request("http://localhost/api/file/raw"));
     expect(res.status).toBe(400);
   });
 

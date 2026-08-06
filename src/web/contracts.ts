@@ -47,6 +47,8 @@ export interface FileContentDto {
   content: string;
   byteCount: number;
   truncated: boolean;
+  /** True when content is binary or non-UTF-8; `content` is then empty. */
+  binary: boolean;
 }
 
 export type ConfigScope = "global" | "project";

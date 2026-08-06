@@ -75,8 +75,50 @@ describe("DirectoryService", () => {
     writeFileSync(join(fakeHome, "project", "read.txt"), "hello");
     const file = service.readFile(join(fakeHome, "project", "read.txt"));
     expect(file.content).toBe("hello");
+    expect(file.binary).toBe(false);
     expect(file.truncated).toBe(false);
     expect(file.path).toBe(join(realpathSync(fakeHome), "project", "read.txt"));
+  });
+
+  it("marks non-UTF-8 bytes binary with empty content", () => {
+    const service = new DirectoryService(fakeHome);
+    const bin = join(fakeHome, "data.bin");
+    writeFileSync(bin, Buffer.from([0xff, 0xfe, 0x00, 0x01]));
+    const file = service.readFile(bin);
+    expect(file.binary).toBe(true);
+    expect(file.content).toBe("");
+    expect(file.byteCount).toBe(4);
+  });
+
+  it("marks NUL-containing valid UTF-8 as binary", () => {
+    const service = new DirectoryService(fakeHome);
+    const nul = join(fakeHome, "nul.bin");
+    writeFileSync(nul, Buffer.from([0x68, 0x69, 0x00, 0x21]));
+    const file = service.readFile(nul);
+    expect(file.binary).toBe(true);
+    expect(file.content).toBe("");
+  });
+
+  it("describes a file with size and MIME type", () => {
+    const service = new DirectoryService(fakeHome);
+    writeFileSync(join(fakeHome, "paper.pdf"), Buffer.from([0, 1, 2, 3, 4]));
+    const descriptor = service.describeFile(join(fakeHome, "paper.pdf"));
+    expect(descriptor.path).toBe(join(realpathSync(fakeHome), "paper.pdf"));
+    expect(descriptor.size).toBe(5);
+    expect(descriptor.mimeType).toBe("application/pdf");
+  });
+
+  it("reads a bounded inclusive byte range from a file", () => {
+    const service = new DirectoryService(fakeHome);
+    writeFileSync(join(fakeHome, "raw.bin"), Buffer.from([0, 1, 2, 3, 4]));
+    const bytes = service.readFileBytes(join(fakeHome, "raw.bin"), { start: 1, end: 3 });
+    expect([...bytes]).toEqual([1, 2, 3]);
+  });
+
+  it("rejects reading bytes of a directory or a missing path", () => {
+    const service = new DirectoryService(fakeHome);
+    expect(() => service.readFileBytes(join(fakeHome, "project"), { start: 0, end: 0 })).toThrow(/not a file/);
+    expect(() => service.readFileBytes(join(fakeHome, "missing"), { start: 0, end: 0 })).toThrow(/does not exist/);
   });
 
   it("truncates oversized reads and flags them", () => {
@@ -86,6 +128,7 @@ describe("DirectoryService", () => {
     const file = service.readFile(big);
     expect(file.truncated).toBe(true);
     expect(file.byteCount).toBe(FILE_PREVIEW_LIMIT + 10);
+    expect(file.binary).toBe(false);
     expect(file.content.length).toBe(FILE_PREVIEW_LIMIT);
   });
 
