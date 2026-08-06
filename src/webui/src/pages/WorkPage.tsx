@@ -87,7 +87,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
     });
   }, [sessionView]);
 
-  const panelMax = available === undefined ? 480 : Math.max(PANEL_MIN, available - CHAT_MIN - 16);
+  const panelMax = available === undefined ? 480 : Math.max(PANEL_MIN, available - CHAT_MIN - 8);
   const clampedPanelWidth = available === undefined ? panelWidth : Math.min(panelWidth, panelMax);
   const activeMessages = sessionView.messages.filter((m) => (m.agentId ?? "orchestrator") === activeAgent);
 
@@ -227,7 +227,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
           {statusText}
         </p>
       )}
-      <div ref={rowRef} className="relative flex min-h-0 flex-1 gap-4 p-4">
+      <div ref={rowRef} className="relative flex min-h-0 flex-1 gap-2 p-2">
         <section className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)] h-full">
           <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-v2-grey-200 px-3 py-2">
             {agents.map((agent) => {
@@ -287,15 +287,8 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
             aria-label="Resize panel"
             title="Resize panel"
             onPointerDown={startResize}
-            className="group absolute inset-y-0 left-[-0.5rem] z-30 hidden w-2 -translate-x-1/2 cursor-col-resize md:block"
-          >
-            <span
-              className={`absolute inset-y-0 left-1/2 w-[3px] -translate-x-1/2 rounded-full transition-opacity ${
-                sizing ? "opacity-100" : "opacity-0 group-hover:opacity-100"
-              } ${sizing ? "bg-v2-blue-600" : "bg-v2-grey-700 group-hover:bg-v2-blue-600"}`}
-              aria-hidden
-            />
-          </button>
+            className="absolute inset-y-0 left-[-0.5rem] z-30 hidden w-2 -translate-x-1/2 cursor-col-resize md:block"
+          />
           <div className="min-h-0 flex-1 overflow-hidden rounded-t-[10px] md:rounded-[10px]">
             {panel === "files" && (
               <>
