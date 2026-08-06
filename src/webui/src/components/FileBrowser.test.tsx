@@ -58,6 +58,18 @@ describe("FileBrowser", () => {
     expect(tablist?.firstElementChild).toBe(slot);
   });
 
+  it("colors the toggle when the tree is open and clears it when collapsed", async () => {
+    const user = userEvent.setup();
+    render(<FileBrowser root="/p" />);
+    const button = await screen.findByRole("button", { name: "Toggle file tree" });
+    expect(button).toHaveAttribute("aria-expanded", "true");
+    expect(button).toHaveClass("bg-v2-background-bg-layer-2");
+
+    await user.click(button);
+    expect(button).toHaveAttribute("aria-expanded", "false");
+    expect(button).not.toHaveClass("bg-v2-background-bg-layer-2");
+  });
+
   it("collapses the tree on click while keeping the preview visible, and expands again", async () => {
     const user = userEvent.setup();
     render(<FileBrowser root="/p" />);
