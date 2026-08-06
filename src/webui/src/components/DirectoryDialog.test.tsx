@@ -46,6 +46,14 @@ describe("DirectoryDialog", () => {
     expect(screen.getByLabelText("Loading folder")).toBeVisible();
   });
 
+  it("shows a loading message instead of empty content while the root is pending", async () => {
+    const pending = new Promise<{ name: string; path: string }[]>(() => {});
+    vi.mocked(api.listDirectories).mockImplementation(async () => pending);
+    render(<DirectoryDialog homeDir={HOME} onSelect={() => {}} onClose={() => {}} />);
+    expect(await screen.findByText("Loading…")).toBeTruthy();
+    expect(screen.queryByText("No subdirectories.")).toBeNull();
+  });
+
   it("shows Retry on a failed directory and recovers", async () => {
     const user = userEvent.setup();
     vi.mocked(api.listDirectories).mockImplementation(async (p) => {

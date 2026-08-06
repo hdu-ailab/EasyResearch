@@ -245,7 +245,11 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
         <div className="min-h-0 flex-1 overflow-y-auto p-1.5" role="tree" aria-label="Directory tree">
           {treeError && <p className="px-2 py-1 text-[12px] text-v2-status-error">{treeError}</p>}
           {rootError && <p className="px-2 py-1 text-[12px] text-v2-status-error">{rootError}</p>}
-          {rows.length === 0 && !treeError && !rootError && <p className="px-2 py-1 text-[12px] text-v2-text-text-faint">No subdirectories.</p>}
+          {rows.length === 0 && !treeError && !rootError && (tree.status(viewPath) === "loading" ? (
+            <p className="px-2 py-1 text-[12px] text-v2-text-text-faint">Loading…</p>
+          ) : (
+            <p className="px-2 py-1 text-[12px] text-v2-text-text-faint">No subdirectories.</p>
+          ))}
           {rows.map((row) => {
             const isExpanded = tree.expanded.has(row.path);
             const isSelected = selected === row.path;
