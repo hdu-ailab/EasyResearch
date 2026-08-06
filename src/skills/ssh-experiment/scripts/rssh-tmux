@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# rssh-tmux — start a persistent interactive SSH to hz110-cyy inside a local tmux session.
+# rssh-tmux — start a persistent interactive SSH to {{SSH_HOST}} inside a local tmux session.
 # Usage:
-#   rssh-tmux start            Create/resume tmux session "ssh-hz110" with interactive SSH
+#   rssh-tmux start            Create/resume tmux session "ssh-<host>" with interactive SSH
 #   rssh-tmux send "<cmd>"     Send command to the running session
 #   rssh-tmux capture [lines]  Capture last N lines of output (default: 50)
 #   rssh-tmux stop             Kill the tmux session
 
-HOST="hz110-cyy"
-SESSION="ssh-hz110"
+HOST="{{SSH_HOST}}"
+SESSION="ssh-${HOST}"
 KEEPALIVE_INTERVAL=30
 KEEPALIVE_MAX=10
 

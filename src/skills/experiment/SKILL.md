@@ -97,7 +97,7 @@ When running experiment related script or shell command, extend tool timeout to 
 
 Decide where to run based on task type:
 
-| Run Locally | Run on Server (ssh hz110-cyy) |
+| Run Locally | Run on Server (ssh {{SSH_HOST}}) |
 |-------------|-------------------------------|
 | Data preprocessing, EDA, plotting | Image recognition (CNNs, ViTs) |
 | Small ML (sklearn, XGBoost, etc.) | Deep learning training (PyTorch, TF) |

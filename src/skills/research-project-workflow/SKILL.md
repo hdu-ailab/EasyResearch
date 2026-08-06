@@ -123,7 +123,7 @@ Use `arxiv` for exact metadata, BibTeX, and citation checks after candidate pape
 ## Phase 3: PDF Download And Text Conversion
 Download only publicly accessible PDFs or user-provided PDFs.
 
-Use the global `pdf-to-markdown` skill for conversion. It wraps the local Microsoft MarkItDown CLI installed at `~/Tools/markitdown/`.
+Use the global `pdf-to-markdown` skill for conversion. It wraps a local Microsoft MarkItDown CLI (see that skill's `{{MARKITDOWN_BIN}}` placeholder).
 
 Default command:
 
@@ -134,7 +134,7 @@ markitdown ref_papers/pdf/paper.pdf -o ref_papers/text/paper.md
 If shell aliases are unavailable, use the absolute path:
 
 ```bash
-/home/cyy/Tools/markitdown/.venv/bin/markitdown ref_papers/pdf/paper.pdf -o ref_papers/text/paper.md
+{{MARKITDOWN_BIN}} ref_papers/pdf/paper.pdf -o ref_papers/text/paper.md
 ```
 
 After conversion:
