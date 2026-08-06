@@ -389,6 +389,25 @@ describe("WorkPage", () => {
     await waitFor(() => expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*660px/));
   });
 
+  it("never lets the drag shrink the panel below one third of the screen", async () => {
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    const RO = (globalThis as unknown as { FakeResizeObserver: typeof ResizeObserver }).FakeResizeObserver;
+    const observer = (RO as unknown as { instances: { __fire: (n: number) => void }[] }).instances.at(-1);
+    observer!.__fire(1200);
+    await waitFor(() => expect(screen.getByRole("region", { name: /file browser/i }).getAttribute("style")).toMatch(/--panel-w:\s*600px/));
+    const handle = screen.getByRole("button", { name: /resize panel/i });
+    const row = screen.getByText("starting research").closest("section")?.parentElement;
+    vi.spyOn(row!, "getBoundingClientRect").mockReturnValue({
+      right: 1200, left: 0, top: 0, bottom: 600, width: 1200, height: 600, x: 0, y: 0, toJSON: () => ({}),
+    } as DOMRect);
+    const panel = screen.getByRole("region", { name: /file browser/i });
+    fireEvent.pointerDown(handle, { clientX: 880, clientY: 100, pointerId: 1 });
+    fireEvent.pointerMove(document, { clientX: 1880, clientY: 100, pointerId: 1 });
+    fireEvent.pointerUp(document, { clientX: 1880, clientY: 100, pointerId: 1 });
+    expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*341px/);
+  });
+
   it("shows the conversation by default on mobile and animates panels on demand", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("innerWidth", 375);

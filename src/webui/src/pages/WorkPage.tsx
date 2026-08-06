@@ -121,8 +121,9 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
     });
   }, [sessionView]);
 
-  const panelMax = available === undefined ? 480 : Math.max(PANEL_MIN, available - CHAT_MIN - 8);
-  const defaultPanelWidth = available === undefined ? PANEL_DEFAULT : Math.max(PANEL_MIN, Math.round(available / 2));
+  const panelMin = Math.max(PANEL_MIN, window.innerWidth / 3);
+  const panelMax = available === undefined ? 480 : Math.max(panelMin, available - CHAT_MIN - 8);
+  const defaultPanelWidth = available === undefined ? PANEL_DEFAULT : Math.max(panelMin, Math.round(available / 2));
   const clampedPanelWidth = available === undefined
     ? panelWidth
     : panelWidthTouched
@@ -183,7 +184,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
       };
 
       const move = (moveEvent: PointerEvent) => {
-        const next = Math.min(panelMax, Math.max(PANEL_MIN, startWidth + startX - moveEvent.clientX));
+        const next = Math.min(panelMax, Math.max(panelMin, startWidth + startX - moveEvent.clientX));
         setPanelWidth(Math.round(next));
         setPanelWidthTouched(true);
       };
@@ -191,7 +192,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
       document.addEventListener("pointermove", move);
       document.addEventListener("pointerup", stop);
     },
-    [panelMax, clampedPanelWidth],
+    [panelMax, panelMin, clampedPanelWidth],
   );
 
   const send = useCallback(
