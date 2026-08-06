@@ -9,5 +9,6 @@ __pycache__/
 *.pyc
 
 .playwright-cli/
+.worktrees/
 .lazyresearch/
 testpaper/
