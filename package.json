@@ -23,7 +23,8 @@
     "typecheck": "tsc --noEmit",
     "build:web": "vite build --config src/webui/vite.config.ts",
     "prepack": "bun run build:web",
-    "dev": "bun run src/cli/index.ts"
+    "dev": "bun run src/cli/index.ts",
+    "dev:web": "vite --config src/webui/vite.config.ts"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.83.0",
