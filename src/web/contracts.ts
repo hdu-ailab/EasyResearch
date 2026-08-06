@@ -71,3 +71,15 @@ export interface AgentEffectiveModelDto {
   model: string | null;
   source: "override" | "project" | "global" | "inherit";
 }
+
+export interface WebuiSettingsDto {
+  chatFontSize: number;
+  filesFontSize: number;
+  agentModels: Record<string, string>;
+}
+
+export interface WebuiSettingsUpdate {
+  chatFontSize?: number;
+  filesFontSize?: number;
+  agentModels?: Record<string, string>;
+}
