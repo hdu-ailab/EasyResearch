@@ -14,7 +14,7 @@ import { releaseSubagentLock, tryAcquireSubagentLock } from "./serial";
 
 describe("buildPiArgs", () => {
   it("uses json + prompt-only mode, mounts the subagent extension, names the session line, and never uses --no-session", () => {
-    const agent = maker("search", "");
+    const agent = maker("search");
     const args = buildPiArgs(agent, undefined, "task");
     expect(args.slice(0, 3)).toEqual(["--mode", "json", "-p"]);
     expect(args).toContain("--extension");
@@ -24,34 +24,33 @@ describe("buildPiArgs", () => {
   });
 
   it("adds --session when inheriting a session line (ADR-022)", () => {
-    const agent = maker("search", "");
+    const agent = maker("search");
     const args = buildPiArgs(agent, undefined, "task", "/tmp/lazyresearch-search.jsonl");
     expect(args).toContain("--session");
     expect(args[args.indexOf("--session") + 1]).toBe("/tmp/lazyresearch-search.jsonl");
   });
 
   it("does not add --session for a fresh session (ADR-022)", () => {
-    const agent = maker("search", "");
+    const agent = maker("search");
     const args = buildPiArgs(agent, undefined, "task");
     expect(args).not.toContain("--session");
   });
 
-  it("selects the agent model over the orchestrator fallback", () => {
-    const agent = maker("search", "oc/mimo-v2.5-free");
-    const args = buildPiArgs(agent, "opencode/deepseek-v4-flash-free", "task");
+  it("adds --model with the resolved model", () => {
+    const agent = maker("search");
+    const args = buildPiArgs(agent, "oc/mimo-v2.5-free", "task");
     expect(args).toContain("--model");
     expect(args[args.indexOf("--model") + 1]).toBe("oc/mimo-v2.5-free");
   });
 
-  it("falls back to the orchestrator model when the agent has none (ADR-008)", () => {
-    const agent = maker("search", "");
-    const args = buildPiArgs(agent, "opencode/deepseek-v4-flash-free", "task");
-    expect(args).toContain("--model");
-    expect(args[args.indexOf("--model") + 1]).toBe("opencode/deepseek-v4-flash-free");
+  it("omits --model when no model is resolved", () => {
+    const agent = maker("search");
+    const args = buildPiArgs(agent, undefined, "task");
+    expect(args).not.toContain("--model");
   });
 
   it("passes the agent tools as a comma list", () => {
-    const agent = maker("search", "", "read, bash, arxiv");
+    const agent = maker("search", "read, bash, arxiv");
     const args = buildPiArgs(agent, undefined, "task");
     expect(args).toContain("--tools");
     expect(args[args.indexOf("--tools") + 1]).toBe("read,bash,arxiv");
@@ -65,7 +64,7 @@ describe("sessionNameFor", () => {
 });
 
 describe("filterAgentsByAllowlist (ADR-022)", () => {
-  const agents = [maker("search", ""), maker("experiment", ""), maker("writing", "")];
+  const agents = [maker("search"), maker("experiment"), maker("writing")];
 
   it("keeps all agents without an allowlist (orchestrator runtime)", () => {
     expect(filterAgentsByAllowlist(agents, undefined).map((a) => a.name)).toEqual(["search", "experiment", "writing"]);
@@ -150,12 +149,11 @@ describe("describeModel", () => {
   });
 });
 
-function maker(name: string, model: string, tools = ""): {
+function maker(name: string, tools = ""): {
   name: string;
   description: string;
   tools: string[] | undefined;
   subagents: string[] | undefined;
-  model: string | undefined;
   systemPrompt: string;
   source: "global";
   filePath: string;
@@ -165,7 +163,6 @@ function maker(name: string, model: string, tools = ""): {
     description: "test agent",
     tools: tools ? tools.split(", ").map((t) => t.trim()).filter(Boolean) : undefined,
     subagents: undefined,
-    model: model || undefined,
     systemPrompt: "",
     source: "global",
     filePath: name,

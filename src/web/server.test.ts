@@ -530,7 +530,7 @@ describe("web routes", () => {
   it("lists the agent roster without leaking system prompts", async () => {
     setup({
       listAgents: async () => [
-        { name: "orchestrator", description: "Runs the pipeline", tools: ["subagent"], model: undefined },
+        { name: "orchestrator", description: "Runs the pipeline", tools: ["subagent"] },
         { name: "search", description: "Finds papers", subagents: [] },
       ],
     });

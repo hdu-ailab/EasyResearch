@@ -56,7 +56,6 @@ export interface AgentDto {
   description: string;
   tools?: string[];
   subagents?: string[];
-  model?: string;
 }
 
 export type ConfigScope = "global" | "project";
