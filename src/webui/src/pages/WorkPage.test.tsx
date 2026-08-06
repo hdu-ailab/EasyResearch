@@ -395,6 +395,7 @@ describe("WorkPage", () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await screen.findByText("starting research");
     const region = screen.getByRole("region", { name: /file browser/i });
+    expect(region.className).toContain("transition-[translate,opacity]");
     expect(region.className).toContain("translate-x-full");
     expect(region.className).toContain("opacity-0");
     expect(screen.getByText("starting research")).toBeVisible();
@@ -405,6 +406,19 @@ describe("WorkPage", () => {
     expect(region.className).toContain("translate-x-full");
     expect(region.className).toContain("opacity-0");
     expect(screen.getByText("starting research")).toBeVisible();
+  });
+
+  it("closes the panel when the window narrows below the desktop breakpoint", async () => {
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    const region = screen.getByRole("region", { name: /file browser/i });
+    expect(region.className).toContain("translate-x-0");
+    vi.stubGlobal("innerWidth", 375);
+    fireEvent(window, new Event("resize"));
+    await waitFor(() => {
+      expect(region.className).toContain("translate-x-full");
+      expect(region.className).toContain("opacity-0");
+    });
   });
 
   it("marks the panel invisible after the close transition ends", async () => {

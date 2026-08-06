@@ -78,6 +78,14 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   }, []);
 
   useEffect(() => {
+    const onResize = () => {
+      if (window.innerWidth < DESKTOP_BREAKPOINT) setPanel(null);
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  useEffect(() => {
     setAgents((current) => {
       const counts = new Map<string, number>();
       for (const message of sessionView.messages) {
@@ -308,7 +316,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
           className={`absolute inset-0 z-30 flex w-full flex-col overflow-hidden bg-v2-background-bg-base shadow-[var(--v2-elevation-floating)] md:relative md:inset-auto md:z-0 md:shrink-0 md:w-(--panel-w) md:translate-x-0 md:rounded-[10px] md:shadow-[var(--v2-elevation-raised)] ${
             sizing
               ? ""
-              : "transition-[transform,opacity] duration-v2-panel ease-v2-panel md:transition-[width,opacity] md:duration-v2-panel md:ease-v2-panel motion-reduce:transition-none"
+              : "transition-[translate,opacity] duration-v2-panel ease-v2-panel md:transition-[width,opacity] md:duration-v2-panel md:ease-v2-panel motion-reduce:transition-none"
           } ${
             panelPhase === "open"
               ? "translate-x-0 opacity-100 md:opacity-100"
