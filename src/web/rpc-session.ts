@@ -12,6 +12,7 @@ export interface RpcSessionAdapter {
   stop(): Promise<void>;
   prompt(message: string): Promise<void>;
   abort(): Promise<void>;
+  setModel(provider: string, modelId: string): Promise<void>;
   getState(): Promise<RpcSessionState>;
   getMessages(): Promise<AgentMessage[]>;
   onEvent(listener: RpcEventListener): () => void;
@@ -33,6 +34,7 @@ export interface RpcClientLike {
   onEvent(listener: RpcEventListener): () => void;
   prompt(message: string): Promise<void>;
   abort(): Promise<void>;
+  setModel(provider: string, modelId: string): Promise<void>;
   getState(): Promise<RpcSessionState>;
   getMessages(): Promise<AgentMessage[]>;
 }
@@ -93,6 +95,10 @@ class DefaultRpcSessionAdapter implements RpcSessionAdapter {
 
   async abort(): Promise<void> {
     await this.withExitProbe(() => this.client.abort());
+  }
+
+  async setModel(provider: string, modelId: string): Promise<void> {
+    await this.withExitProbe(() => this.client.setModel(provider, modelId));
   }
 
   async getState(): Promise<RpcSessionState> {

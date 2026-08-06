@@ -83,6 +83,31 @@ export class ActiveSessionRegistry {
     });
   }
 
+  async setModel(id: string, provider: string, modelId: string): Promise<void> {
+    return this.withRecord(id, (record) => record.client.setModel(provider, modelId));
+  }
+
+  async getSessionPath(id: string): Promise<string | undefined> {
+    return this.withRecord(id, (record) => Promise.resolve(record.sessionPath));
+  }
+
+  async getCwd(id: string): Promise<string> {
+    return this.withRecord(id, (record) => Promise.resolve(record.cwd));
+  }
+
+  /**
+   * The orchestrator's current model as a `provider/id` string, the level-4
+   * fallback for stage agents in this session. Undefined when the session has
+   * no model (e.g. no auth configured).
+   */
+  async getOrchestratorModel(id: string): Promise<string | undefined> {
+    return this.withRecord(id, async (record) => {
+      const state = await record.client.getState();
+      const model = state.model;
+      return model ? `${model.provider}/${model.id}` : undefined;
+    });
+  }
+
   async stop(id: string): Promise<void> {
     const record = this.records.get(id);
     if (!record) return;

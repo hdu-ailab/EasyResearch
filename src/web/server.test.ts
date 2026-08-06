@@ -7,10 +7,11 @@ import type { RpcEventListener, RpcSessionState } from "@earendil-works/pi-codin
 import type { RouteServices } from "./routes";
 import { createRouteHandler } from "./routes";
 import type { RpcSessionAdapter, RpcSessionFactory, StartRpcSessionOptions } from "./rpc-session";
-import { ActiveSessionRegistry } from "./active-sessions";
+import { ActiveSessionRegistry, UnknownSessionError } from "./active-sessions";
 import { DirectoryService } from "./directories";
 import { ConfigFileService } from "./config-files";
 import type { SessionSummaryDto } from "./contracts";
+import { AgentModelError } from "./agent-models";
 
 vi.mock("../runtime/extensions-guard", () => ({
   assertNoUserExtensions: vi.fn(),
@@ -25,6 +26,7 @@ class FakeAdapter implements RpcSessionAdapter {
   prompts: string[] = [];
   aborts = 0;
   stopped = 0;
+  setModels: Array<{ provider: string; modelId: string }> = [];
   messages: AgentMessage[] = [];
   constructor(public options: StartRpcSessionOptions) {
     FakeAdapter.all.push(this);
@@ -38,6 +40,9 @@ class FakeAdapter implements RpcSessionAdapter {
   }
   async abort() {
     this.aborts++;
+  }
+  async setModel(provider: string, modelId: string) {
+    this.setModels.push({ provider, modelId });
   }
   async getState(): Promise<RpcSessionState> {
     return {
@@ -106,6 +111,10 @@ describe("web routes", () => {
     const services: RouteServices = {
       webuiDist,
       listAllSessions: async () => historySessions,
+      listModels: async () => [],
+      effectiveModels: async () => [],
+      setAgentModel: async () => {},
+      listConfigProjects: async () => ({ home: agentDir, projects: [] }),
       directories: directoryService,
       registry,
       config: configService,
@@ -540,5 +549,108 @@ describe("web routes", () => {
     expect(body.map((a) => a.name)).toEqual(["orchestrator", "search"]);
     expect(body[0]?.tools).toEqual(["subagent"]);
     expect(body[0]?.systemPrompt).toBeUndefined();
+  });
+
+  it("lists available models", async () => {
+    setup({
+      listModels: async () => [
+        { provider: "openai", id: "gpt-4o" },
+        { provider: "deepseek", id: "ds-v3" },
+      ],
+    });
+    const res = await handler(new Request("http://localhost/api/models"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { models: Array<{ provider: string; id: string }> };
+    expect(body.models).toEqual([
+      { provider: "openai", id: "gpt-4o" },
+      { provider: "deepseek", id: "ds-v3" },
+    ]);
+  });
+
+  it("returns the effective models for a session", async () => {
+    const effectiveModels = vi.fn(async () => [{ name: "search", model: "a/1", source: "override" as const }]);
+    setup({ effectiveModels });
+    const res = await handler(new Request("http://localhost/api/sessions/s1/agents/effective-models"));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([{ name: "search", model: "a/1", source: "override" }]);
+    expect(effectiveModels).toHaveBeenCalledWith("s1");
+  });
+
+  it("returns 404 for effective models of an unknown session", async () => {
+    setup({
+      effectiveModels: async () => {
+        throw new UnknownSessionError("Unknown session: nope");
+      },
+    });
+    const res = await handler(new Request("http://localhost/api/sessions/nope/agents/effective-models"));
+    expect(res.status).toBe(404);
+  });
+
+  it("sets a stage agent model via PUT and returns ok", async () => {
+    const setAgentModel = vi.fn(async () => {});
+    setup({ setAgentModel });
+    const res = await handler(
+      new Request("http://localhost/api/sessions/s1/agents/search/model", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "x/y" }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(setAgentModel).toHaveBeenCalledWith("s1", "search", "x/y");
+  });
+
+  it("sets a null model (reset) via PUT", async () => {
+    const setAgentModel = vi.fn(async () => {});
+    setup({ setAgentModel });
+    const res = await handler(
+      new Request("http://localhost/api/sessions/s1/agents/figures/model", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: null }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(setAgentModel).toHaveBeenCalledWith("s1", "figures", null);
+  });
+
+  it("rejects a non-string model body with 400", async () => {
+    const setAgentModel = vi.fn(async () => {});
+    setup({ setAgentModel });
+    const res = await handler(
+      new Request("http://localhost/api/sessions/s1/agents/search/model", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: 42 }),
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect(setAgentModel).not.toHaveBeenCalled();
+  });
+
+  it("surfaces AgentModelError statuses from setAgentModel (409 reset without default)", async () => {
+    setup({
+      setAgentModel: async () => {
+        throw new AgentModelError(409, "No default model configured");
+      },
+    });
+    const res = await handler(
+      new Request("http://localhost/api/sessions/s1/agents/orchestrator/model", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: null }),
+      }),
+    );
+    expect(res.status).toBe(409);
+  });
+
+  it("lists config projects from session cwds", async () => {
+    setup({
+      listConfigProjects: async () => ({ home: agentDir, projects: [{ cwd: projectDir }] }),
+    });
+    const res = await handler(new Request("http://localhost/api/config/projects"));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ home: agentDir, projects: [{ cwd: projectDir }] });
   });
 });

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ActiveSessionDto, AgentDto, ConfigScope, SessionSummaryDto } from "./contracts";
+import type { ActiveSessionDto, AgentDto, AgentEffectiveModelDto, ConfigScope, SessionSummaryDto } from "./contracts";
 import type { DirectoryService } from "./directories";
 import { DirectoryServiceError } from "./directories";
 import { parseByteRange, RawFileRangeError, type ByteRange, type RawFileDescriptor } from "./raw-file";
@@ -8,11 +8,16 @@ import { UnknownSessionError, type ActiveSessionRegistry } from "./active-sessio
 import { ExtensionGuardError } from "../runtime/extensions-guard";
 import type { ConfigFileService } from "./config-files";
 import { ConfigPathError, ConfigServiceError } from "./config-files";
+import { AgentModelError } from "./agent-models";
 
 export interface RouteServices {
   webuiDist: string;
   listAllSessions: () => Promise<SessionSummaryDto[]>;
   listAgents: () => Promise<AgentDto[]>;
+  listModels: () => Promise<Array<{ provider: string; id: string }>>;
+  effectiveModels: (sessionId: string) => Promise<AgentEffectiveModelDto[]>;
+  setAgentModel: (sessionId: string, agentName: string, model: string | null) => Promise<void>;
+  listConfigProjects: () => Promise<{ home: string; projects: Array<{ cwd: string }> }>;
   directories: DirectoryService;
   registry: ActiveSessionRegistry;
   config: ConfigFileService;
@@ -47,6 +52,10 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
 
       if (req.method === "GET" && path === "/api/agents") {
         return jsonResponse(await services.listAgents());
+      }
+
+      if (req.method === "GET" && path === "/api/models") {
+        return jsonResponse({ models: await services.listModels() });
       }
 
       if (req.method === "GET" && path === "/api/directories") {
@@ -99,6 +108,21 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
         return jsonResponse({ ok: true });
       }
 
+      const effectiveModelsMatch = path.match(/^\/api\/sessions\/([^/]+)\/agents\/effective-models$/);
+      if (req.method === "GET" && effectiveModelsMatch) {
+        return jsonResponse(await services.effectiveModels(effectiveModelsMatch[1]!));
+      }
+
+      const agentModelMatch = path.match(/^\/api\/sessions\/([^/]+)\/agents\/([^/]+)\/model$/);
+      if (req.method === "PUT" && agentModelMatch) {
+        const body = await jsonBody<{ model: unknown }>(req);
+        if (body.model !== null && typeof body.model !== "string") {
+          return errorResponse(400, "model must be a string or null");
+        }
+        await services.setAgentModel(agentModelMatch[1]!, agentModelMatch[2]!, body.model as string | null);
+        return jsonResponse({ ok: true });
+      }
+
       const actionMatch = path.match(/^\/api\/sessions\/([^/]+)\/(abort|stop|restart)$/);
       if (req.method === "POST" && actionMatch) {
         const id = actionMatch[1]!;
@@ -139,6 +163,10 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
         return jsonResponse({ ok: true });
       }
 
+      if (path === "/api/config/projects" && req.method === "GET") {
+        return jsonResponse(await services.listConfigProjects());
+      }
+
       if (req.method === "GET") {
         const assetPath = path === "/" ? "index.html" : path.replace(/^\//, "");
         const file = join(services.webuiDist, assetPath);
@@ -157,6 +185,7 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       if (error instanceof DirectoryServiceError) return errorResponse(error.status, error.message);
       if (error instanceof ExtensionGuardError) return errorResponse(400, error.message);
       if (error instanceof UnknownSessionError) return errorResponse(404, error.message);
+      if (error instanceof AgentModelError) return errorResponse(error.status, error.message);
       if (error instanceof BodyError) return errorResponse(400, error.message);
       return errorResponse(500, "Internal server error");
     }
