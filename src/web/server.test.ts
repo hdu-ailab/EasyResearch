@@ -12,7 +12,7 @@ import { DirectoryService } from "./directories";
 import { ConfigFileService } from "./config-files";
 import type { SessionSummaryDto } from "./contracts";
 import { AgentModelError } from "./agent-models";
-import { WebuiSettingsError } from "./webui-settings";
+import { WebuiSettingsError, readEffectiveWebuiSettings, updateWebuiSettings } from "./webui-settings";
 
 vi.mock("../runtime/extensions-guard", () => ({
   assertNoUserExtensions: vi.fn(),
@@ -120,8 +120,21 @@ describe("web routes", () => {
       registry,
       config: configService,
       listAgents: async () => [],
-      getWebuiSettings: vi.fn(async () => ({ chatFontSize: 13, filesFontSize: 12, agentModels: {} })),
-      updateWebuiSettings: vi.fn(async (patch) => ({ chatFontSize: 14, filesFontSize: 12, agentModels: {}, ...patch })),
+      getWebuiSettings: vi.fn(async () => ({
+        chatFontSize: 13,
+        filesFontSize: 12,
+        agentModels: {},
+        orchestratorModel: null,
+        effectiveOrchestratorModel: null,
+      })),
+      updateWebuiSettings: vi.fn(async (patch) => ({
+        chatFontSize: 14,
+        filesFontSize: 12,
+        agentModels: {},
+        orchestratorModel: null,
+        effectiveOrchestratorModel: null,
+        ...patch,
+      })),
       ...overrides,
     };
     handler = createRouteHandler(services);
@@ -579,7 +592,7 @@ describe("web routes", () => {
   it("GET /api/webui-settings returns the settings object", async () => {
     const res = await handler(new Request("http://localhost/api/webui-settings"));
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ chatFontSize: 13, filesFontSize: 12, agentModels: {} });
+    expect(await res.json()).toMatchObject({ chatFontSize: 13, filesFontSize: 12, agentModels: {}, orchestratorModel: null });
   });
 
   it("PUT /api/webui-settings forwards the partial patch and returns the updated object", async () => {
@@ -608,6 +621,72 @@ describe("web routes", () => {
     );
     expect(res.status).toBe(400);
     expect((await res.json()).error).toContain("chatFontSize");
+  });
+
+  it("round-trips the orchestrator default model through the real settings store", async () => {
+    const TEST_AVAILABLE = [{ provider: "oc", id: "deepseek-v4-flash-free" }];
+    setup({
+      getWebuiSettings: () => readEffectiveWebuiSettings(configService, TEST_AVAILABLE),
+      updateWebuiSettings: async (patch) => {
+        await updateWebuiSettings(configService, patch);
+        return readEffectiveWebuiSettings(configService, TEST_AVAILABLE);
+      },
+    });
+    const put = await handler(
+      new Request("http://localhost/api/webui-settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orchestratorModel: "openai/gpt-4o" }),
+      }),
+    );
+    expect(put.status).toBe(200);
+    const putBody = (await put.json()) as { orchestratorModel: string | null; effectiveOrchestratorModel: string | null };
+    expect(putBody.orchestratorModel).toBe("openai/gpt-4o");
+    expect(putBody.effectiveOrchestratorModel).toBe("openai/gpt-4o");
+
+    const get = await handler(new Request("http://localhost/api/webui-settings"));
+    expect((await get.json()).orchestratorModel).toBe("openai/gpt-4o");
+
+    const clear = await handler(
+      new Request("http://localhost/api/webui-settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orchestratorModel: null }),
+      }),
+    );
+    expect(clear.status).toBe(200);
+    expect((await clear.json()).orchestratorModel).toBeNull();
+  });
+
+  it("GET reports the Pi fallback model when no orchestrator default is configured", async () => {
+    setup({
+      getWebuiSettings: () => readEffectiveWebuiSettings(configService, [{ provider: "oc", id: "deepseek-v4-flash-free" }]),
+    });
+    const res = await handler(new Request("http://localhost/api/webui-settings"));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.orchestratorModel).toBeNull();
+    expect(body.effectiveOrchestratorModel).toBe("oc/deepseek-v4-flash-free");
+  });
+
+  it("forwards a null orchestratorModel patch to the settings store", async () => {
+    const updateWebuiSettings = vi.fn(async (patch) => ({
+      chatFontSize: 13,
+      filesFontSize: 12,
+      agentModels: {},
+      orchestratorModel: null,
+      ...patch,
+    }));
+    setup({ updateWebuiSettings });
+    const res = await handler(
+      new Request("http://localhost/api/webui-settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orchestratorModel: null }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(updateWebuiSettings).toHaveBeenCalledWith({ orchestratorModel: null });
   });
 
   it("returns the effective models for a session", async () => {

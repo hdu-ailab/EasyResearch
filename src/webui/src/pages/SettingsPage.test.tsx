@@ -16,7 +16,13 @@ vi.mock("../api", async (importOriginal) => {
   };
 });
 
-const baseSettings = { chatFontSize: 13, filesFontSize: 12, agentModels: { search: "openai/gpt-4o" } };
+const baseSettings = {
+  chatFontSize: 13,
+  filesFontSize: 12,
+  agentModels: { search: "openai/gpt-4o" },
+  orchestratorModel: null,
+  effectiveOrchestratorModel: null,
+};
 
 beforeEach(() => {
   vi.mocked(api.getWebuiSettings).mockReset();
@@ -42,13 +48,13 @@ describe("SettingsPage", () => {
     expect(screen.getByLabelText("Files font size")).toHaveValue("12");
   });
 
-  it("shows stage agents with their configured model and the orchestrator read-only", async () => {
+  it("shows stage agents with their configured model and a blank orchestrator model", async () => {
     render(<SettingsPage onBack={() => {}} onOpenConfigPage={() => {}} />);
     await screen.findByLabelText("Chat font size");
     expect(screen.getByRole("combobox", { name: "search model" })).toHaveValue("openai/gpt-4o");
     expect(screen.getByRole("combobox", { name: "writing model" })).toHaveValue("");
-    expect(screen.queryByRole("combobox", { name: "orchestrator model" })).toBeNull();
-    expect(screen.getByText(/session model/i)).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "orchestrator model" })).toHaveValue("");
+    expect(screen.getByText(/global default model/i)).toBeTruthy();
   });
 
   it("applies font size changes live and persists them", async () => {
@@ -84,6 +90,54 @@ describe("SettingsPage", () => {
     await screen.findByLabelText("Chat font size");
     await user.selectOptions(screen.getByRole("combobox", { name: "search model" }), "");
     await waitFor(() => expect(api.updateWebuiSettings).toHaveBeenCalledWith({ agentModels: {} }));
+  });
+
+  it("shows the Pi fallback model hint when the orchestrator is unconfigured", async () => {
+    vi.mocked(api.getWebuiSettings).mockResolvedValue({
+      ...baseSettings,
+      effectiveOrchestratorModel: "oc/deepseek-v4-flash-free",
+    } as never);
+    render(<SettingsPage onBack={() => {}} onOpenConfigPage={() => {}} />);
+    await screen.findByLabelText("Chat font size");
+    expect(screen.getByText("Pi will use: oc/deepseek-v4-flash-free")).toBeTruthy();
+  });
+
+  it("hides the fallback hint once the orchestrator model is configured", async () => {
+    vi.mocked(api.getWebuiSettings).mockResolvedValue({
+      ...baseSettings,
+      orchestratorModel: "anthropic/claude-sonnet-4",
+      effectiveOrchestratorModel: "anthropic/claude-sonnet-4",
+    } as never);
+    render(<SettingsPage onBack={() => {}} onOpenConfigPage={() => {}} />);
+    await screen.findByLabelText("Chat font size");
+    expect(screen.getByRole("combobox", { name: "orchestrator model" })).toHaveValue("anthropic/claude-sonnet-4");
+    expect(screen.queryByText(/Pi will use:/)).toBeNull();
+  });
+
+  it("sets the orchestrator model via an orchestratorModel patch", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.updateWebuiSettings).mockResolvedValue({
+      ...baseSettings,
+      orchestratorModel: "openai/gpt-4o",
+    } as never);
+    render(<SettingsPage onBack={() => {}} onOpenConfigPage={() => {}} />);
+    await screen.findByLabelText("Chat font size");
+    await user.selectOptions(screen.getByRole("combobox", { name: "orchestrator model" }), "openai/gpt-4o");
+    await waitFor(() => expect(api.updateWebuiSettings).toHaveBeenCalledWith({ orchestratorModel: "openai/gpt-4o" }));
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "orchestrator model" })).toHaveValue("openai/gpt-4o"));
+  });
+
+  it("clears the orchestrator model when the blank option is chosen", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.updateWebuiSettings).mockResolvedValue({
+      ...baseSettings,
+      orchestratorModel: "anthropic/claude-sonnet-4",
+    } as never);
+    render(<SettingsPage onBack={() => {}} onOpenConfigPage={() => {}} />);
+    await screen.findByLabelText("Chat font size");
+    await user.selectOptions(screen.getByRole("combobox", { name: "orchestrator model" }), "anthropic/claude-sonnet-4");
+    await user.selectOptions(screen.getByRole("combobox", { name: "orchestrator model" }), "");
+    await waitFor(() => expect(api.updateWebuiSettings).toHaveBeenCalledWith({ orchestratorModel: null }));
   });
 
   it("surfaces an update failure and keeps the last good value", async () => {

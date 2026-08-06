@@ -6,7 +6,7 @@ import { PiRpcSessionFactory } from "./rpc-session";
 import { DirectoryService } from "./directories";
 import { ConfigFileService } from "./config-files";
 import type { SessionSummaryDto } from "./contracts";
-import { readWebuiSettings, updateWebuiSettings } from "./webui-settings";
+import { readEffectiveWebuiSettings, updateWebuiSettings } from "./webui-settings";
 import { discoverAgents } from "../subagent/agents";
 import {
   readAgentModels,
@@ -93,8 +93,11 @@ export async function startServer(): Promise<Server> {
       const cwds = [...new Set(sessions.map((s) => s.cwd).filter(Boolean))];
       return { home: agentDir, projects: cwds.map((cwd) => ({ cwd })) };
     },
-    getWebuiSettings: () => readWebuiSettings(config),
-    updateWebuiSettings: (patch) => updateWebuiSettings(config, patch),
+    getWebuiSettings: () => readEffectiveWebuiSettings(config),
+    updateWebuiSettings: async (patch) => {
+      await updateWebuiSettings(config, patch);
+      return readEffectiveWebuiSettings(config);
+    },
     directories: new DirectoryService(),
     registry,
     config,
