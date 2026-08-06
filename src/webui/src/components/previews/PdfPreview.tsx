@@ -14,16 +14,23 @@ const MIN_SCALE = 0.5;
 const MAX_SCALE = 4;
 const SCALE_STEP = 0.25;
 
+/** Pages rendered as canvas bitmaps on each side of the current page. */
+const RENDER_BUFFER = 2;
+
 /**
- * Continuous PDF preview: every page renders as a canvas at the selected
- * scale; page navigation, zoom, and download. Page navigation scrolls the
- * continuous viewport to the target canvas and the current page synchronizes
- * on scroll. Loading and render tasks are cancelled on cleanup; failures
- * surface inline with a Retry action.
+ * Continuous PDF preview with viewport-virtualized rendering: only the pages
+ * around the current page (±RENDER_BUFFER) hold canvas bitmaps; pages outside
+ * the window keep their placeholder geometry (style width/height) so the
+ * scroll height is stable, while their bitmap is released (canvas.width = 0).
+ * Page navigation, zoom, and download. Page navigation scrolls the continuous
+ * viewport to the target canvas and the current page synchronizes on scroll.
+ * Loading and render tasks are cancelled on cleanup; failures surface inline
+ * with a Retry action.
  */
 export function PdfPreview({ path, loader }: PdfPreviewProps) {
   const effectiveLoader = loader ?? DEFAULT_LOADER;
   const [doc, setDoc] = useState<PdfDocumentHandle | null>(null);
+  const [pageSizes, setPageSizes] = useState<{ width: number; height: number }[]>([]);
   const [numPages, setNumPages] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
   const [scale, setScale] = useState(1);
@@ -31,11 +38,13 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
   const [retryToken, setRetryToken] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const canvasRefs = useRef<(HTMLCanvasElement | null)[]>([]);
+  const renderedPages = useRef(new Map<number, number>());
 
   useEffect(() => {
     let cancelled = false;
     let loaded: PdfDocumentHandle | null = null;
     setDoc(null);
+    setPageSizes([]);
     setNumPages(0);
     setCurrentPage(1);
     setError(null);
@@ -47,7 +56,15 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
           return;
         }
         loaded = document;
+        const sizes: { width: number; height: number }[] = [];
+        for (let n = 1; n <= document.numPages; n += 1) {
+          const page = await document.page(n);
+          const base = page.viewport(1, 0);
+          sizes.push({ width: base.width, height: base.height });
+        }
+        if (cancelled) return;
         setDoc(document);
+        setPageSizes(sizes);
         setNumPages(document.numPages);
       })
       .catch((e: unknown) => {
@@ -61,26 +78,44 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
 
   useEffect(() => {
     if (!doc) return;
+    const windowStart = Math.max(1, currentPage - RENDER_BUFFER);
+    const windowEnd = Math.min(numPages, currentPage + RENDER_BUFFER);
+    const dpr = globalThis.devicePixelRatio ?? 1;
+    for (let n = 1; n <= numPages; n += 1) {
+      const canvas = canvasRefs.current[n - 1];
+      if (!canvas) continue;
+      const base = pageSizes[n - 1];
+      canvas.style.width = `${Math.round((base?.width ?? 0) * scale)}px`;
+      canvas.style.height = `${Math.round((base?.height ?? 0) * scale)}px`;
+      if (n < windowStart || n > windowEnd) {
+        if (canvas.width !== 0) canvas.width = 0;
+        renderedPages.current.delete(n);
+      }
+    }
     let cancelled = false;
     const tasks: { cancel(): void }[] = [];
-    const dpr = globalThis.devicePixelRatio ?? 1;
     (async () => {
-      for (let n = 1; n <= doc.numPages; n += 1) {
+      for (let n = windowStart; n <= windowEnd; n += 1) {
         if (cancelled) return;
+        const canvas = canvasRefs.current[n - 1];
+        if (!canvas) continue;
+        if (renderedPages.current.get(n) === scale && canvas.width > 0) continue;
         const page = await doc.page(n);
         if (cancelled) return;
         const viewport = page.viewport(scale, 0);
-        const canvas = canvasRefs.current[n - 1];
-        if (!canvas) continue;
         canvas.width = Math.floor(viewport.width * dpr);
         canvas.height = Math.floor(viewport.height * dpr);
         canvas.style.width = `${Math.round(viewport.width)}px`;
         canvas.style.height = `${Math.round(viewport.height)}px`;
         const task = page.render({ canvas, viewport, transform: [dpr, 0, 0, dpr, 0, 0] });
         tasks.push(task);
-        task.promise.catch((e: unknown) => {
-          if (!cancelled) setError(e instanceof Error ? e.message : String(e));
-        });
+        task.promise
+          .then(() => {
+            if (!cancelled) renderedPages.current.set(n, scale);
+          })
+          .catch((e: unknown) => {
+            if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+          });
       }
     })().catch((e: unknown) => {
       if (!cancelled) setError(e instanceof Error ? e.message : String(e));
@@ -89,7 +124,7 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
       cancelled = true;
       for (const task of tasks) task.cancel();
     };
-  }, [doc, scale]);
+  }, [doc, scale, currentPage, pageSizes, numPages]);
 
   const zoom = (direction: 1 | -1) => {
     setScale((current) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, Math.round((current + direction * SCALE_STEP) * 100) / 100)));

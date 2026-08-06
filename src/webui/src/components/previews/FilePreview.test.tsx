@@ -273,6 +273,25 @@ describe("PdfPreview", () => {
     await waitFor(() => expect(screen.getByLabelText("Current page")).toHaveValue(2));
   });
 
+  it("renders only a window around the current page and releases far page bitmaps", async () => {
+    const renderLog: FakePdfRenderCall[] = [];
+    render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 8, renderLog })} />);
+    await screen.findByText("1 / 8");
+    await waitFor(() => expect(renderLog.length).toBeGreaterThanOrEqual(3));
+    expect(renderLog.length).toBeLessThan(8);
+    const page1 = screen.getByLabelText("Page 1") as HTMLCanvasElement;
+    const page4 = screen.getByLabelText("Page 4") as HTMLCanvasElement;
+    const page8 = screen.getByLabelText("Page 8") as HTMLCanvasElement;
+    await waitFor(() => expect(page1.width).toBeGreaterThan(0));
+    expect(page4.width).toBe(0);
+    expect(page8.width).toBe(0);
+    fireEvent.change(screen.getByLabelText("Current page"), { target: { value: "8" } });
+    await waitFor(() => expect(page8.width).toBeGreaterThan(0));
+    expect(page1.width).toBe(0);
+    expect(renderLog.length).toBeGreaterThanOrEqual(6);
+    expect(renderLog.length).toBeLessThan(16);
+  });
+
   it("passes the devicePixelRatio transform to the page render", async () => {
     const renderLog: FakePdfRenderCall[] = [];
     vi.stubGlobal("devicePixelRatio", 2);
