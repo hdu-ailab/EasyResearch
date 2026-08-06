@@ -1,41 +1,19 @@
-import { Activity, History, MessageSquareText } from "lucide-react";
-import type { SessionSummaryDto, ActiveSessionDto } from "../../../web/contracts";
+import { History, MessageSquareText } from "lucide-react";
+import type { SessionSummaryDto } from "../../../web/contracts";
 
 export interface SessionListProps {
   history: SessionSummaryDto[];
-  active: ActiveSessionDto[];
   onOpenHistory: (session: SessionSummaryDto) => void;
-  onOpenActive: (session: ActiveSessionDto) => void;
 }
 
 /**
- * Home session lists. Historical sessions are opened through their recorded
- * session file; active sessions reuse their existing registry id.
+ * Home history list. Historical sessions are opened through their recorded
+ * session file. Active (running) sessions are listed in the Global monitor on
+ * the home page, which auto-restarts dead sessions before opening.
  */
-export function SessionList({ history, active, onOpenHistory, onOpenActive }: SessionListProps) {
+export function SessionList({ history, onOpenHistory }: SessionListProps) {
   return (
     <div className="flex flex-col gap-3" aria-label="Sessions">
-      {active.length > 0 && (
-        <div>
-          <h3 className="mb-1 flex items-center gap-1.5 text-[12px] font-medium text-v2-text-text-faint">
-            <Activity size={12} />
-            Running
-          </h3>
-          <ul className="flex flex-col gap-0.5">
-            {active.map((session) => (
-              <li key={session.id}>
-                <button type="button" className="group flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-v2-grey-100" onClick={() => onOpenActive(session)}>
-                  <span className="size-2 shrink-0 rounded-full bg-v2-status-success" aria-hidden />
-                  <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-v2-text-text-base">
-                    {session.sessionName ?? session.cwd}
-                  </span>
-                  <span className="truncate font-mono text-[12px] text-v2-text-text-faint">{session.cwd}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
       <div>
         <h3 className="mb-1 flex items-center gap-1.5 text-[12px] font-medium text-v2-text-text-faint">
           <History size={12} />
