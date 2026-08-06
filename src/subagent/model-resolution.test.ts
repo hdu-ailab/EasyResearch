@@ -99,6 +99,14 @@ describe("resolveModelForSpawn", () => {
     await expect(resolveModelForSpawn(ctx(override("x/9")), "search", "o/1")).resolves.toBe("x/9");
   });
 
+  it("falls through to config levels when the session carries only other agents' overrides (nested stage dispatch)", async () => {
+    fakeManager = { getProjectSettings: () => project({ search: "a/1" }), getGlobalSettings: () => global({ search: "b/2" }) };
+    const rows = [
+      { type: "custom", customType: AGENT_MODEL_ENTRY, data: { agent: "writing", model: "w/9" } },
+    ];
+    await expect(resolveModelForSpawn(ctx(rows), "search", "o/1")).resolves.toBe("a/1");
+  });
+
   it("treats a null override as a reset and falls through to project/global", async () => {
     fakeManager = { getProjectSettings: () => project({ search: "a/1" }), getGlobalSettings: () => global({ search: "b/2" }) };
     await expect(resolveModelForSpawn(ctx(override(null)), "search", "o/1")).resolves.toBe("a/1");

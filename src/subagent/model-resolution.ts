@@ -57,10 +57,15 @@ export async function resolveModelForSpawn(
   orchestratorModel: string | undefined,
 ): Promise<string | undefined> {
   let override: string | null | undefined;
+  // Nested stage→stage dispatch runs in the stage's own session context, which
+  // never carries `lazyresearch:agent_model` entries — session overrides apply
+  // only when the orchestrator dispatches directly; config levels always apply.
   for (const entry of ctx.sessionManager.getEntries()) {
     if (entry.type !== "custom" || entry.customType !== AGENT_MODEL_ENTRY) continue;
     const data = entry.data as { agent?: unknown; model?: unknown } | undefined;
     if (!data || typeof data.agent !== "string" || data.agent !== agentName) continue;
+    // A malformed newer entry (non-string, non-null model) is skipped so the
+    // last valid entry still wins; a corrupt write must not wipe a working override.
     if (typeof data.model !== "string" && data.model !== null) continue;
     override = data.model;
   }
