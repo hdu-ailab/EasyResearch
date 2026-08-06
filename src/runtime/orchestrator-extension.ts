@@ -4,6 +4,7 @@ import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { importPi } from "./pi-import";
 import { subagentTool } from "../subagent/tool";
+import { mountWelcomeBanner } from "../tui/welcome-banner";
 
 export interface OrchestratorExtensionOptions {
   agentsDir?: string;
@@ -29,6 +30,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
     const { getAgentDir } = await importPi();
     const prompt = loadOrchestratorPrompt(options.agentsDir ?? join(getAgentDir(), "agents"));
     pi.registerTool(subagentTool);
+    mountWelcomeBanner(pi);
     pi.on("before_agent_start", (event) => ({
       systemPrompt: `${event.systemPrompt}\n\n${prompt}`,
     }));
