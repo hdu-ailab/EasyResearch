@@ -23,6 +23,9 @@ vi.mock("../api", async (importOriginal) => {
     listEntries: vi.fn(),
     readFileContent: vi.fn(),
     listAgents: vi.fn(),
+    listModels: vi.fn(),
+    getEffectiveModels: vi.fn(),
+    setAgentModel: vi.fn(),
   };
 });
 
@@ -60,12 +63,26 @@ describe("WorkPage", () => {
     vi.mocked(api.listEntries).mockReset();
     vi.mocked(api.readFileContent).mockReset();
     vi.mocked(api.listAgents).mockReset();
+    vi.mocked(api.listModels).mockReset();
+    vi.mocked(api.getEffectiveModels).mockReset();
+    vi.mocked(api.setAgentModel).mockReset();
     vi.mocked(api.listAgents).mockResolvedValue([
       { name: "orchestrator", description: "Runs the pipeline", tools: ["subagent"] },
       { name: "search", description: "Finds papers" },
       { name: "experiment", description: "Runs experiments", subagents: ["search"] },
       { name: "writing", description: "Writes the paper", subagents: ["search", "figures"] },
       { name: "figures", description: "Draws figures" },
+    ]);
+    vi.mocked(api.listModels).mockResolvedValue([
+      { provider: "openai", id: "gpt-4o" },
+      { provider: "anthropic", id: "claude" },
+    ]);
+    vi.mocked(api.getEffectiveModels).mockResolvedValue([
+      { name: "orchestrator", model: "openai/gpt-4o", source: "inherit" },
+      { name: "search", model: "anthropic/claude", source: "override" },
+      { name: "experiment", model: null, source: "inherit" },
+      { name: "writing", model: null, source: "inherit" },
+      { name: "figures", model: null, source: "inherit" },
     ]);
     vi.mocked(api.getSnapshot).mockResolvedValue(snapshot);
     vi.mocked(api.listEntries).mockResolvedValue([{ kind: "file", name: "notes.md", path: "/p/notes.md" }]);
@@ -407,5 +424,40 @@ describe("WorkPage", () => {
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
     expect(await within(region).findByText(/orchestrator/i)).toBeTruthy();
+  });
+
+  it("shows each agent's effective model with a session badge for overrides", async () => {
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    await user.click(screen.getByRole("button", { name: /agent list/i }));
+    const region = screen.getByRole("region", { name: /agent list/i });
+    expect(await within(region).findByText("anthropic/claude", { selector: "dd" })).toBeTruthy();
+    expect(within(region).getByText("openai/gpt-4o", { selector: "dd" })).toBeTruthy();
+    expect(within(region).getByText("session")).toBeTruthy();
+    expect(within(region).getAllByText("inherits session").length).toBeGreaterThan(0);
+  });
+
+  it("reset on an overridden agent clears its model", async () => {
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    await user.click(screen.getByRole("button", { name: /agent list/i }));
+    const region = screen.getByRole("region", { name: /agent list/i });
+    const searchCard = within(region).getByText("search", { selector: "span" }).closest(".rounded-md") as HTMLElement;
+    await user.click(within(searchCard).getByRole("button", { name: /reset/i }));
+    await waitFor(() => expect(api.setAgentModel).toHaveBeenCalledWith("s1", "search", null));
+  });
+
+  it("set on an agent writes the selected model", async () => {
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    await user.click(screen.getByRole("button", { name: /agent list/i }));
+    const region = screen.getByRole("region", { name: /agent list/i });
+    const searchCard = within(region).getByText("search", { selector: "span" }).closest(".rounded-md") as HTMLElement;
+    await user.selectOptions(within(searchCard).getByRole("combobox"), "openai/gpt-4o");
+    await user.click(within(searchCard).getByRole("button", { name: /^set$/i }));
+    await waitFor(() => expect(api.setAgentModel).toHaveBeenCalledWith("s1", "search", "openai/gpt-4o"));
   });
 });

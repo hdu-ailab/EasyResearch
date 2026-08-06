@@ -5,15 +5,18 @@ import {
   connectSessionEvents,
   createConfigDirectory,
   createSession,
+  getEffectiveModels,
   getSnapshot,
   listAgents,
   listConfig,
   listDirectories,
+  listModels,
   listStatus,
   openSession,
   readConfigFile,
   restartSession,
   sendPrompt,
+  setAgentModel,
   stopSession,
   writeConfigFile,
 } from "./api";
@@ -41,6 +44,32 @@ describe("api transport", () => {
     const result = await listStatus();
     expect(fetchMock).toHaveBeenCalledWith("/api/status", expect.objectContaining({ method: "GET" }));
     expect(result.agentDir).toBe("/a");
+  });
+
+  it("listModels GETs /api/models", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ models: [{ provider: "openai", id: "gpt-4o" }] }), { status: 200 }),
+    );
+    const models = await listModels();
+    expect(fetchMock).toHaveBeenCalledWith("/api/models", expect.objectContaining({ method: "GET" }));
+    expect(models[0]?.id).toBe("gpt-4o");
+  });
+
+  it("getEffectiveModels GETs the session endpoint", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify([{ name: "search", model: "a/1", source: "override" }]), { status: 200 }),
+    );
+    const list = await getEffectiveModels("s1");
+    expect(fetchMock).toHaveBeenCalledWith("/api/sessions/s1/agents/effective-models", expect.objectContaining({ method: "GET" }));
+    expect(list[0]?.source).toBe("override");
+  });
+
+  it("setAgentModel PUTs the agent model", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    await setAgentModel("s1", "search", "openai/gpt-4o");
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/sessions/s1/agents/search/model");
+    expect(init.method).toBe("PUT");
   });
 
   it("listDirectories GETs /api/directories with path", async () => {

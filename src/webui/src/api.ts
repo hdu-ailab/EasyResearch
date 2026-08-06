@@ -1,6 +1,7 @@
 import type {
   ActiveSessionDto,
   AgentDto,
+  AgentEffectiveModelDto,
   ConfigEntryDto,
   ConfigScope,
   DirectoryEntryDto,
@@ -50,12 +51,28 @@ const json = (body: unknown): RequestInit => ({
   body: JSON.stringify(body),
 });
 
+function requestJson<T>(path: string, method: string, body: unknown): Promise<T> {
+  return request(path, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+}
+
 export function listStatus(): Promise<StatusDto> {
   return request("/api/status");
 }
 
 export function listAgents(): Promise<AgentDto[]> {
   return request("/api/agents");
+}
+
+export function listModels(): Promise<Array<{ provider: string; id: string }>> {
+  return request("/api/models").then((d) => (d as { models: Array<{ provider: string; id: string }> }).models);
+}
+
+export function getEffectiveModels(sessionId: string): Promise<AgentEffectiveModelDto[]> {
+  return request(`/api/sessions/${encodeURIComponent(sessionId)}/agents/effective-models`);
+}
+
+export function setAgentModel(sessionId: string, agentName: string, model: string | null): Promise<void> {
+  return requestJson(`/api/sessions/${encodeURIComponent(sessionId)}/agents/${encodeURIComponent(agentName)}/model`, "PUT", { model });
 }
 
 export function listDirectories(path: string): Promise<DirectoryEntryDto[]> {

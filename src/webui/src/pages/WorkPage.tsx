@@ -1,7 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Bot, FileSearch, FolderOpen } from "lucide-react";
-import type { AgentDto } from "../../../web/contracts";
-import { abortSession, connectSessionEvents, getSnapshot, listAgents, readFileContent, sendPrompt } from "../api";
+import type { AgentDto, AgentEffectiveModelDto } from "../../../web/contracts";
+import {
+  abortSession,
+  connectSessionEvents,
+  getEffectiveModels,
+  getSnapshot,
+  listAgents,
+  listModels,
+  readFileContent,
+  sendPrompt,
+  setAgentModel,
+} from "../api";
 import { fromSnapshot, reduceSessionEvent, type SessionViewState } from "../session-reducer";
 import { ChatTranscript } from "../components/ChatTranscript";
 import { ChatComposer } from "../components/ChatComposer";
@@ -303,7 +313,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
                 <FileBrowser root={cwd} />
               </>
             )}
-            {panel === "agents" && <AgentList streaming={sessionView.isStreaming} />}
+            {panel === "agents" && <AgentList streaming={sessionView.isStreaming} sessionId={sessionId} />}
           </div>
         </aside>
       </div>
@@ -311,14 +321,21 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   );
 }
 
-function AgentList({ streaming }: { streaming: boolean }) {
+function AgentList({ streaming, sessionId }: { streaming: boolean; sessionId: string }) {
   const [roster, setRoster] = useState<AgentDto[] | null>(null);
+  const [models, setModels] = useState<Array<{ provider: string; id: string }>>([]);
+  const [effective, setEffective] = useState<AgentEffectiveModelDto[] | null>(null);
+  const [selected, setSelected] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     let alive = true;
-    listAgents()
-      .then((agents) => {
-        if (alive) setRoster(agents);
+    Promise.all([listAgents(), listModels(), getEffectiveModels(sessionId)])
+      .then(([agents, catalog, eff]) => {
+        if (!alive) return;
+        setRoster(agents);
+        setModels(catalog);
+        setEffective(eff);
       })
       .catch(() => {
         if (alive) setRoster([]);
@@ -326,7 +343,22 @@ function AgentList({ streaming }: { streaming: boolean }) {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [sessionId]);
+
+  const applyModel = useCallback(
+    async (agentName: string, model: string | null) => {
+      setBusy(true);
+      try {
+        await setAgentModel(sessionId, agentName, model);
+        setEffective(await getEffectiveModels(sessionId));
+      } catch {
+        // keep the last known models; the next interaction will retry
+      } finally {
+        setBusy(false);
+      }
+    },
+    [sessionId],
+  );
 
   const agents = roster ?? [];
   const orchestrator = agents.find((a) => a.name === "orchestrator");
@@ -352,6 +384,15 @@ function AgentList({ streaming }: { streaming: boolean }) {
               <dt className="text-v2-text-text-faint">Role</dt>
               <dd className="text-v2-text-text-muted">{orchestrator?.description ?? "Runs the paper pipeline"}</dd>
             </div>
+            <ModelRow
+              entry={effective?.find((e) => e.name === "orchestrator")}
+              models={models}
+              selected={selected["orchestrator"] ?? ""}
+              busy={busy}
+              onSelect={(value) => setSelected((s) => ({ ...s, orchestrator: value }))}
+              onSet={() => applyModel("orchestrator", selected["orchestrator"] ?? null)}
+              onReset={() => applyModel("orchestrator", null)}
+            />
           </dl>
         </div>
         {subagents.map((agent) => (
@@ -371,6 +412,15 @@ function AgentList({ streaming }: { streaming: boolean }) {
                   <dd className="text-v2-text-text-muted">{agent.subagents.join(", ")}</dd>
                 </div>
               )}
+              <ModelRow
+                entry={effective?.find((e) => e.name === agent.name)}
+                models={models}
+                selected={selected[agent.name] ?? ""}
+                busy={busy}
+                onSelect={(value) => setSelected((s) => ({ ...s, [agent.name]: value }))}
+                onSet={() => applyModel(agent.name, selected[agent.name] ?? null)}
+                onReset={() => applyModel(agent.name, null)}
+              />
             </dl>
           </div>
         ))}
@@ -380,5 +430,73 @@ function AgentList({ streaming }: { streaming: boolean }) {
         </p>
       </div>
     </div>
+  );
+}
+
+interface ModelRowProps {
+  entry: AgentEffectiveModelDto | undefined;
+  models: Array<{ provider: string; id: string }>;
+  selected: string;
+  busy: boolean;
+  onSelect: (value: string) => void;
+  onSet: () => void;
+  onReset: () => void;
+}
+
+function ModelRow({ entry, models, selected, busy, onSelect, onSet, onReset }: ModelRowProps) {
+  const badge =
+    entry?.source === "override" ? (
+      <span className="rounded-full bg-v2-blue-100/50 px-1.5 py-px text-[10px] text-v2-blue-600">session</span>
+    ) : entry?.source === "project" || entry?.source === "global" ? (
+      <span className="rounded-full bg-v2-grey-100 px-1.5 py-px text-[10px] text-v2-text-text-muted">config</span>
+    ) : null;
+
+  return (
+    <>
+      <div className="flex items-center justify-between gap-2">
+        <dt className="text-v2-text-text-faint">Model</dt>
+        <dd className="flex items-center gap-1.5 text-v2-text-text-muted">
+          {entry?.model ?? "inherits session"}
+          {badge}
+        </dd>
+      </div>
+      <div className="mt-1 flex items-center gap-1.5">
+        <select
+          aria-label="Select model"
+          value={selected}
+          onChange={(e) => onSelect(e.target.value)}
+          disabled={busy}
+          className="h-6 min-w-0 flex-1 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-1 text-[11px] text-v2-text-text-base outline-none focus:border-v2-blue-600"
+        >
+          <option value="">Models…</option>
+          {models.map((m) => {
+            const key = `${m.provider}/${m.id}`;
+            return (
+              <option key={key} value={key}>
+                {key}
+              </option>
+            );
+          })}
+        </select>
+        <button
+          type="button"
+          onClick={onSet}
+          disabled={busy || !selected}
+          className="rounded-md border border-v2-grey-200 px-2 py-0.5 text-[11px] text-v2-text-text-base transition-colors hover:bg-v2-grey-100 disabled:opacity-50"
+        >
+          Set
+        </button>
+        {entry?.source === "override" && (
+          <button
+            type="button"
+            onClick={onReset}
+            disabled={busy}
+            className="rounded-md border border-v2-grey-200 px-2 py-0.5 text-[11px] text-v2-text-text-base transition-colors hover:bg-v2-grey-100 disabled:opacity-50"
+          >
+            Reset
+          </button>
+        )}
+      </div>
+    </>
   );
 }
