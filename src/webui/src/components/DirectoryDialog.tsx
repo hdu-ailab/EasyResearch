@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronRight, Folder, FolderOpen, Home, RefreshCw, X } from "lucide-react";
 import { listDirectories } from "../api";
 import { useLazyTree } from "../hooks/useLazyTree";
+import { useI18n } from "../i18n/useI18n";
 import type { DirectoryEntryDto } from "../../../web/contracts";
 
 export interface DirectoryDialogProps {
@@ -36,6 +37,7 @@ function expandHome(input: string, homeDir: string): string {
 }
 
 export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogProps) {
+  const { t } = useI18n();
   const [input, setInput] = useState(homeDir);
   const [selected, setSelected] = useState<string | null>(null);
   const [viewPath, setViewPath] = useState(homeDir);
@@ -173,10 +175,10 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-v2-grey-1200/30 p-0 sm:p-6" role="presentation" onMouseDown={(e) => {
       if (e.target === e.currentTarget) onClose();
     }}>
-      <section className="flex h-full w-full flex-col overflow-hidden rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-overlay)] sm:h-auto sm:max-h-[84vh] sm:max-w-[640px]" role="dialog" aria-modal="true" aria-label="Choose project directory">
+      <section className="flex h-full w-full flex-col overflow-hidden rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-overlay)] sm:h-auto sm:max-h-[84vh] sm:max-w-[640px]" role="dialog" aria-modal="true" aria-label={t("dialog.title")}>
         <header className="flex h-10 shrink-0 items-center justify-between border-b border-v2-grey-200 px-3">
-          <h2 className="text-[13px] font-semibold text-v2-text-text-base">Choose project directory</h2>
-          <button type="button" className="flex size-7 items-center justify-center rounded-md text-v2-icon-icon-muted transition-colors hover:bg-v2-grey-100 hover:text-v2-icon-icon-base" aria-label="Close" title="Close" onClick={onClose}>
+          <h2 className="text-[13px] font-semibold text-v2-text-text-base">{t("dialog.title")}</h2>
+          <button type="button" className="flex size-7 items-center justify-center rounded-md text-v2-icon-icon-muted transition-colors hover:bg-v2-grey-100 hover:text-v2-icon-icon-base" aria-label={t("dialog.close")} title={t("dialog.close")} onClick={onClose}>
             <X size={16} />
           </button>
         </header>
@@ -203,21 +205,21 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
             onBlur={() => setTimeout(() => setSuggestionsOpen(false), 120)}
           />
           <div className="flex items-center gap-1">
-            <button className="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100" title="Home" onClick={() => navigate(homeDir)}>
+            <button className="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100" title={t("dialog.home")} onClick={() => navigate(homeDir)}>
               <Home size={14} />
               ~
             </button>
-            <button className="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100" title="Root" onClick={() => navigate("/")}>
+            <button className="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100" title={t("dialog.root")} onClick={() => navigate("/")}>
               /
             </button>
             <button
               className="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100"
-              title="Parent directory"
+              title={t("dialog.parent")}
               onClick={() => navigate(parentOf(viewPath))}
             >
               ↑
             </button>
-            <button className="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100" title="Refresh" onClick={() => tree.refresh(viewPath)}>
+            <button className="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100" title={t("dialog.refresh")} onClick={() => tree.refresh(viewPath)}>
               <RefreshCw size={14} />
             </button>
           </div>
@@ -242,13 +244,13 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
             </ul>
           )}
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto p-1.5" role="tree" aria-label="Directory tree">
+        <div className="min-h-0 flex-1 overflow-y-auto p-1.5" role="tree" aria-label={t("dialog.tree")}>
           {treeError && <p className="px-2 py-1 text-[12px] text-v2-status-error">{treeError}</p>}
           {rootError && <p className="px-2 py-1 text-[12px] text-v2-status-error">{rootError}</p>}
           {rows.length === 0 && !treeError && !rootError && (tree.status(viewPath) === "loading" ? (
-            <p className="px-2 py-1 text-[12px] text-v2-text-text-faint">Loading…</p>
+            <p className="px-2 py-1 text-[12px] text-v2-text-text-faint">{t("dialog.loading")}</p>
           ) : (
-            <p className="px-2 py-1 text-[12px] text-v2-text-text-faint">No subdirectories.</p>
+            <p className="px-2 py-1 text-[12px] text-v2-text-text-faint">{t("dialog.empty")}</p>
           ))}
           {rows.map((row) => {
             const isExpanded = tree.expanded.has(row.path);
@@ -266,7 +268,13 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
               >
                 <button
                   className="flex size-4 shrink-0 items-center justify-center rounded text-v2-icon-icon-muted hover:bg-v2-grey-200"
-                  aria-label={state === "loading" ? `Loading ${row.name}` : isExpanded ? `Collapse ${row.name}` : `Expand ${row.name}`}
+                  aria-label={
+                    state === "loading"
+                      ? t("dialog.loadingRow").replace("{name}", row.name)
+                      : isExpanded
+                        ? t("dialog.collapse").replace("{name}", row.name)
+                        : t("dialog.expand").replace("{name}", row.name)
+                  }
                   onClick={(event) => {
                     event.stopPropagation();
                     toggleExpand(row.path);
@@ -287,13 +295,13 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
                   <button
                     type="button"
                     className="ml-auto shrink-0 rounded px-1.5 py-0.5 text-[11px] text-v2-text-text-muted hover:bg-v2-grey-200"
-                    aria-label={`Retry ${row.name}`}
+                    aria-label={t("dialog.retryRow").replace("{name}", row.name)}
                     onClick={(event) => {
                       event.stopPropagation();
                       tree.retry(row.path);
                     }}
                   >
-                    Retry
+                    {t("dialog.retry")}
                   </button>
                 )}
               </div>
@@ -302,10 +310,10 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
         </div>
         <footer className="flex shrink-0 items-center justify-end gap-2 border-t border-v2-grey-200 px-3 py-2.5">
           <button type="button" className="flex h-7 items-center rounded-md px-3 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100" onClick={onClose}>
-            Cancel
+            {t("dialog.cancel")}
           </button>
           <button type="button" className="flex h-7 items-center rounded-md bg-v2-grey-1100 px-3 text-[12px] font-medium text-v2-grey-50 transition-opacity hover:opacity-90 disabled:opacity-40" disabled={!selected} onClick={confirm}>
-            Create session
+            {t("dialog.createSession")}
           </button>
         </footer>
       </section>

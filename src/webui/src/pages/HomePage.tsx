@@ -4,6 +4,7 @@ import { createSession, listStatus, openSession, restartSession } from "../api";
 import { DirectoryDialog } from "../components/DirectoryDialog";
 import { SessionList } from "../components/SessionList";
 import { ProductMark, Topbar } from "../components/Topbar";
+import { useI18n } from "../i18n/useI18n";
 import type { ActiveSessionDto, SessionSummaryDto } from "../../../web/contracts";
 
 export interface HomePageProps {
@@ -15,6 +16,7 @@ export interface HomePageProps {
 const MONITOR_POLL_MS = 5000;
 
 export function HomePage({ onOpenSession, onOpenSettings, settingsButton }: HomePageProps) {
+  const { t } = useI18n();
   const [status, setStatus] = useState<{ sessions: SessionSummaryDto[]; activeSessions: ActiveSessionDto[]; homeDir: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -84,7 +86,7 @@ export function HomePage({ onOpenSession, onOpenSettings, settingsButton }: Home
     <div className="flex h-full flex-col">
       <Topbar
         leading={<ProductMark />}
-        center={<span className="truncate text-[13px] text-v2-text-text-muted">From idea to paper, one project at a time.</span>}
+        center={<span className="truncate text-[13px] text-v2-text-text-muted">{t("home.tagline")}</span>}
         actions={settingsButton}
       />
       <main className="min-h-0 flex-1 overflow-y-auto">
@@ -98,31 +100,31 @@ export function HomePage({ onOpenSession, onOpenSettings, settingsButton }: Home
           <section className="rounded-[10px] bg-v2-background-bg-base p-4 shadow-[var(--v2-elevation-raised)]">
             <h2 className="mb-3 flex items-center gap-2 text-[13px] font-semibold text-v2-text-text-base">
               <FolderSearch size={14} className="text-v2-icon-icon-muted" />
-              Start a project
+              {t("home.startProject")}
             </h2>
             <button
               type="button"
               className="flex h-9 w-full items-center justify-center gap-2 rounded-md bg-v2-grey-1100 text-[13px] font-medium text-v2-grey-50 transition-opacity hover:opacity-90 disabled:opacity-50"
               onClick={() => setDialogOpen(true)}
             >
-              {creating ? "Starting orchestrator session…" : "Choose directory…"}
+              {creating ? t("home.starting") : t("home.chooseDirectory")}
             </button>
             <p className="mt-3 text-[13px] text-v2-text-text-muted">
-              Create a paper project from any existing directory, or resume one below.
+              {t("home.help")}
             </p>
           </section>
 
           <section className="rounded-[10px] bg-v2-background-bg-base p-4 shadow-[var(--v2-elevation-raised)]">
             <h2 className="mb-3 flex items-center gap-2 text-[13px] font-semibold text-v2-text-text-base">
               <Activity size={14} className="text-v2-icon-icon-muted" />
-              Global monitor
+              {t("home.globalMonitor")}
               <span className="ml-auto flex items-center gap-1 text-[12px] font-normal text-v2-text-text-faint">
                 <span className={`size-1.5 rounded-full ${running.length > 0 ? "bg-v2-status-success" : "bg-v2-grey-300"}`} aria-hidden />
-                {running.length} running
+                {running.length} {t("home.running")}
               </span>
             </h2>
             {running.length === 0 ? (
-              <p className="text-[13px] text-v2-text-text-muted">No agents running right now.</p>
+              <p className="text-[13px] text-v2-text-text-muted">{t("home.noAgentsRunning")}</p>
             ) : (
               <ul className="flex flex-col gap-1">
                 {running.map((session) => {
@@ -150,7 +152,7 @@ export function HomePage({ onOpenSession, onOpenSettings, settingsButton }: Home
                         <span className="truncate font-mono text-[12px] text-v2-text-text-faint">{session.cwd}</span>
                         {dead ? (
                           <span className="shrink-0 rounded-full bg-v2-status-error/10 px-2 py-0.5 text-[11px] text-v2-status-error" title={session.error}>
-                            reconnected on click
+                            {t("home.reconnectedOnClick")}
                           </span>
                         ) : (
                           <span className="shrink-0 text-[12px] text-v2-text-text-muted">{session.status}</span>
@@ -166,10 +168,10 @@ export function HomePage({ onOpenSession, onOpenSettings, settingsButton }: Home
           <section className="rounded-[10px] bg-v2-background-bg-base p-4 shadow-[var(--v2-elevation-raised)]">
             <h2 className="mb-3 flex items-center gap-2 text-[13px] font-semibold text-v2-text-text-base">
               <History size={14} className="text-v2-icon-icon-muted" />
-              Continue work
+              {t("home.continueWork")}
             </h2>
             {!status ? (
-              <p className="text-[13px] text-v2-text-text-faint">Loading sessions…</p>
+              <p className="text-[13px] text-v2-text-text-faint">{t("home.loadingSessions")}</p>
             ) : (
               <SessionList
                 history={status.sessions}
@@ -184,7 +186,7 @@ export function HomePage({ onOpenSession, onOpenSettings, settingsButton }: Home
             onClick={onOpenSettings}
           >
             <Settings2 size={14} />
-            Settings
+            {t("home.settings")}
           </button>
         </div>
       </main>
