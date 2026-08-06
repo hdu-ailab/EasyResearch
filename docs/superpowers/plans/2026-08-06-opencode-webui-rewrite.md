@@ -307,6 +307,31 @@ git add package.json bun.lock src/webui/src/api.ts src/webui/src/components/prev
 git commit -m "Add Markdown and PDF previews"
 ```
 
+### Task 3b: File Tree Toggle Button (interleaved addition, spec `2026-08-06-file-tree-toggle-design.md`)
+
+**Files:**
+- Modify: `src/webui/src/components/FileTabs.tsx` (optional `toggle: { opened; onToggle }` prop)
+- Modify: `src/webui/src/components/FileTabs.test.tsx` (if present; otherwise FileBrowser tests cover it)
+- Modify: `src/webui/src/components/FileBrowser.tsx` (state + conditional tree visibility)
+- Modify: `src/webui/src/components/FileBrowser.test.tsx`
+
+**Interfaces:**
+- Consumes: existing `FileTabs` tab props (unchanged), `FilesPanel`, `FilePreview`.
+- Produces: `FileTabs` optional `toggle` slot — sticky far-left ghost button (lucide `FolderTree`, 28px, `aria-label`/`title` "Toggle file tree", `aria-expanded`, `data-expanded`) that stays fixed while tabs scroll horizontally.
+- Produces: `treeVisible` state in `FileBrowser` (default `true`, not persisted); tree column hidden via CSS (`hidden`, component stays mounted → `useLazyTree` expansion/filter/loading preserved); preview takes full width when hidden.
+
+- [ ] **Step 1: Write failing FileBrowser tests** — button is the first tab-bar element with `aria-expanded=true`; click → `aria-expanded=false` and tree content hidden while preview remains visible; click again → tree visible. Existing tests keep passing.
+- [ ] **Step 2: Implement toggle slot + state** — optional prop in `FileTabs`, `treeVisible` in `FileBrowser`, CSS hide of the `FilesPanel` column.
+- [ ] **Step 3: Run** `bunx vitest run src/webui/src/components/FileBrowser.test.tsx && bun run typecheck`
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/webui/src/components/FileTabs.tsx src/webui/src/components/FileBrowser.tsx src/webui/src/components/FileBrowser.test.tsx
+git commit -m "Add file tree toggle button to the file browser"
+```
+
+Note for Task 5: the mobile stacked Files layout must keep the toggle working (hiding the tree leaves the preview full width).
+
 ### Task 4: Shared Shell, Home, Directory, And Config Rewrite
 
 **Files:**
