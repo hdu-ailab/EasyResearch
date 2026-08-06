@@ -84,7 +84,7 @@ export function FileViewer({ file }: { file: FileContentDto | null }) {
           File preview truncated to the first 1 MiB.
         </p>
       )}
-      <pre className="min-h-0 flex-1 overflow-auto p-3 font-mono text-[12px] leading-[1.5] text-v2-text-text-base whitespace-pre">
+      <pre className="min-h-0 flex-1 overflow-auto p-3 font-mono text-[length:var(--v2-files-font-size)] leading-[1.5] text-v2-text-text-base whitespace-pre">
         {file.content}
       </pre>
     </div>

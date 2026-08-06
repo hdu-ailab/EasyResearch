@@ -111,7 +111,7 @@ function ToolRow({ tool }: { tool: ToolView }) {
           } motion-reduce:animate-none`}
         >
           {tool.output ? (
-            <pre className="whitespace-pre-wrap font-mono text-[11.5px] leading-relaxed text-v2-text-text-muted">
+            <pre className="whitespace-pre-wrap font-mono text-[length:var(--v2-chat-font-size)] leading-relaxed text-v2-text-text-muted">
               {tool.output}
             </pre>
           ) : tool.running ? (
@@ -153,7 +153,7 @@ export function ChatTranscript({ messages, tools, emptyHint = "Send a message to
   return (
     <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto" aria-label="Conversation" onScroll={onScroll}>
       {messages.length === 0 && tools.length === 0 && !pending && (
-        <p className="px-4 pt-6 text-center text-[13px] text-v2-text-text-faint">{emptyHint}</p>
+        <p className="px-4 pt-6 text-center text-[length:var(--v2-chat-font-size)] text-v2-text-text-faint">{emptyHint}</p>
       )}
       <ul className="mx-auto flex w-full max-w-[1000px] flex-col gap-3 p-4 md:max-w-200 2xl:max-w-[1000px]">
         {messages.map((message) => (
@@ -164,7 +164,7 @@ export function ChatTranscript({ messages, tools, emptyHint = "Send a message to
             {message.reasoning ? <ReasoningBlock text={message.reasoning} /> : null}
             {message.role === "assistant" || message.role === "user" ? (
               <div
-                className={`v2-md max-w-full rounded-lg px-3 py-2 text-[13px] ${
+                className={`v2-md max-w-full rounded-lg px-3 py-2 text-[length:var(--v2-chat-font-size)] ${
                   message.role === "user" ? "bg-v2-blue-100/60 text-v2-text-text-base" : "bg-v2-background-bg-deep text-v2-text-text-base"
                 } ${message.error ? "text-v2-status-error" : ""}`}
               >
@@ -192,7 +192,7 @@ export function ChatTranscript({ messages, tools, emptyHint = "Send a message to
         {pending && (
           <li className="flex flex-col items-start gap-1" aria-label="Working">
             <span className="text-[11px] font-medium uppercase tracking-wide text-v2-text-text-faint">Orchestrator</span>
-            <div className="v2-md flex items-center gap-2 rounded-lg bg-v2-background-bg-deep px-3 py-2 text-[13px] text-v2-text-text-base">
+            <div className="v2-md flex items-center gap-2 rounded-lg bg-v2-background-bg-deep px-3 py-2 text-[length:var(--v2-chat-font-size)] text-v2-text-text-base">
               <span className="v2-spinner" aria-hidden />
               <span className="text-[12px] text-v2-text-text-faint">Working…</span>
               <span className="v2-caret" aria-hidden />

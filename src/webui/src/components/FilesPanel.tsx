@@ -97,7 +97,7 @@ export function FilesPanel({ root, onOpenFile }: FilesPanelProps) {
                   title={entry.path}
                 >
                   {entry.kind === "directory" ? <Folder size={13} className="shrink-0 text-v2-icon-icon-muted" /> : <FileIcon size={13} className="shrink-0 text-v2-icon-icon-muted" />}
-                  <span className="min-w-0 truncate text-[12px]">{entry.name}</span>
+                  <span className="min-w-0 truncate text-[length:var(--v2-files-font-size)]">{entry.name}</span>
                   <span className="ml-auto shrink-0 truncate font-mono text-[11px] text-v2-text-text-faint">{rel}</span>
                 </button>
               ))}
@@ -152,7 +152,7 @@ export function FilesPanel({ root, onOpenFile }: FilesPanelProps) {
                   ) : (
                     <FileIcon size={13} className="shrink-0 text-v2-icon-icon-muted" />
                   )}
-                  <span className="min-w-0 truncate text-[12px]">{entry.name}</span>
+                  <span className="min-w-0 truncate text-[length:var(--v2-files-font-size)]">{entry.name}</span>
                   {state === "error" && (
                     <button
                       type="button"
