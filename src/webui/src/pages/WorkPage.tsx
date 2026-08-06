@@ -33,11 +33,13 @@ const PANEL_MIN = 240;
 const PANEL_DEFAULT = 320;
 const CHAT_MIN = 400;
 
-/** Tailwind `md:` breakpoint — below it the side panel overlays the chat. */
-const DESKTOP_BREAKPOINT = 768;
+/** The conversation-first band. Matches the WebUI tabs threshold (below 820px the
+ * Work surface is Chat-default, `.docs/webui.md`); the `md:` layout breakpoint
+ * (768px) governs sidebar-vs-overlay geometry only. */
+const CONVERSATION_FIRST_BREAKPOINT = 820;
 
 function defaultPanel(): Panel {
-  return typeof window !== "undefined" && window.innerWidth >= DESKTOP_BREAKPOINT ? "files" : null;
+  return typeof window !== "undefined" && window.innerWidth >= CONVERSATION_FIRST_BREAKPOINT ? "files" : null;
 }
 
 interface AgentChip {
@@ -79,7 +81,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
 
   useEffect(() => {
     const onResize = () => {
-      if (window.innerWidth < DESKTOP_BREAKPOINT) setPanel(null);
+      if (window.innerWidth < CONVERSATION_FIRST_BREAKPOINT) setPanel(null);
     };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
@@ -322,7 +324,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
               ? "translate-x-0 opacity-100 md:opacity-100"
               : "translate-x-full opacity-0 md:w-0 md:opacity-0"
           } ${panelInvisible ? "invisible" : ""} ${panelInteractive ? "" : "pointer-events-none"}`}
-          style={panel ? { "--panel-w": `${clampedPanelWidth}px` } as React.CSSProperties : undefined}
+          style={{ "--panel-w": `${clampedPanelWidth}px` } as React.CSSProperties}
           aria-label={panel === "agents" ? "Agent list" : "File browser"}
           role="region"
         >

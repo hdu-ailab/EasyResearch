@@ -421,6 +421,21 @@ describe("WorkPage", () => {
     });
   });
 
+  it("keeps the conversation first in the 768–820px band and closes the panel there on resize", async () => {
+    vi.stubGlobal("innerWidth", 800);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    const region = screen.getByRole("region", { name: /file browser/i });
+    expect(region.className).toContain("translate-x-full");
+    expect(region.className).toContain("opacity-0");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /files browser/i }));
+    expect(region.className).toContain("translate-x-0");
+    vi.stubGlobal("innerWidth", 800);
+    fireEvent(window, new Event("resize"));
+    await waitFor(() => expect(region.className).toContain("translate-x-full"));
+  });
+
   it("marks the panel invisible after the close transition ends", async () => {
     const user = userEvent.setup();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
