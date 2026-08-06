@@ -51,6 +51,7 @@ describe("usePanelTransition", () => {
     );
     rerender({ open: false });
     unmount();
+    expect(vi.getTimerCount()).toBe(0);
     act(() => vi.advanceTimersByTime(PANEL_TRANSITION_MS));
     expect(result.current).toBe("closing");
   });
