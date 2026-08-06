@@ -287,7 +287,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
             aria-label="Resize panel"
             title="Resize panel"
             onPointerDown={startResize}
-            className="absolute inset-y-0 left-[-0.5rem] z-30 hidden w-2 -translate-x-1/2 cursor-col-resize md:block"
+            className="absolute inset-y-0 left-[-0.5rem] z-30 hidden w-2 cursor-col-resize md:block"
           />
           <div className="min-h-0 flex-1 overflow-hidden rounded-t-[10px] md:rounded-[10px]">
             {panel === "files" && (
