@@ -14,6 +14,7 @@ import {
 } from "../api";
 import { fromSnapshot, reduceSessionEvent, type SessionViewState } from "../session-reducer";
 import { usePanelTransition } from "../hooks/usePanelTransition";
+import { useI18n } from "../i18n/useI18n";
 import { ChatTranscript } from "../components/ChatTranscript";
 import { ChatComposer } from "../components/ChatComposer";
 import { FileBrowser } from "../components/FileBrowser";
@@ -27,7 +28,7 @@ export interface WorkPageProps {
 
 type Panel = "files" | "agents" | null;
 
-const emptyView: SessionViewState = { messages: [], tools: [], isStreaming: false, error: null };
+const emptyView: SessionViewState = { messages: [], tools: [], isStreaming: false, error: null, nextOrder: 0 };
 
 const PANEL_MIN = 240;
 const PANEL_DEFAULT = 320;
@@ -52,6 +53,7 @@ interface AgentChip {
 const ORCHESTRATOR_AGENT: AgentChip = { id: "orchestrator", name: "Orchestrator", count: 0, status: "idle" };
 
 export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
+  const { t } = useI18n();
   const [sessionView, setSessionView] = useState<SessionViewState>(emptyView);
   const [status, setStatus] = useState<string>("starting");
   const [sessionId, setSessionId] = useState(id);
@@ -150,7 +152,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
     });
     const unsubscribe = connectSessionEvents(id, {
       onEvent: (event) => {
-        setStatusText((current) => (current?.startsWith("Connection lost") ? null : current));
+        setStatusText((current) => (current === t("work.connectionLost") ? null : current));
         const typed = event as { type?: string };
         if (typed.type === "snapshot") {
           setSessionView(fromSnapshot(typed as never));
@@ -158,7 +160,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
         }
         setSessionView((prev) => reduceSessionEvent(prev, event as Parameters<typeof reduceSessionEvent>[1]));
       },
-      onError: () => setStatusText("Connection lost — events will resume when the browser reconnects."),
+      onError: () => setStatusText(t("work.connectionLost")),
     });
     return () => {
       active = false;
@@ -248,6 +250,16 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
 
   const statusColor =
     status === "error" ? "bg-v2-status-error" : status === "running" || sessionView.isStreaming ? "bg-v2-status-success" : "bg-v2-grey-400";
+  const statusLabel =
+    status === "error"
+      ? t("work.error")
+      : status === "running"
+        ? t("work.running")
+        : status === "stopped"
+          ? t("work.stopped")
+          : status === "starting"
+            ? t("work.starting")
+            : t("work.ready");
 
   return (
     <div className="flex h-full flex-col">
@@ -263,21 +275,21 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
           <>
             <span className="mr-1 flex items-center gap-1.5 text-[12px] text-v2-text-text-muted">
               <span className={`size-1.5 rounded-full ${statusColor}`} aria-hidden />
-              {status}
+              {statusLabel}
             </span>
             <span className="mx-1 h-4 w-px bg-v2-grey-200" aria-hidden />
             <TopbarIconButton
               active={panel === "files"}
-              label="Files browser"
-              title="Files browser"
+              label={t("work.filesBrowser")}
+              title={t("work.filesBrowser")}
               onClick={() => togglePanel("files")}
             >
               <FileSearch size={15} />
             </TopbarIconButton>
             <TopbarIconButton
               active={panel === "agents"}
-              label="Agent list"
-              title="Agent list"
+              label={t("work.agentList")}
+              title={t("work.agentList")}
               onClick={() => togglePanel("agents")}
             >
               <Bot size={15} />
@@ -306,9 +318,9 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
                   key={agent.id}
                   type="button"
                   aria-pressed={focused}
-                  aria-label={`Agent ${agent.name}`}
+                  aria-label={`${t("work.agentChip")} ${agent.name}`}
                   onClick={() => setActiveAgent(agent.id)}
-                  title={focused ? `Viewing ${agent.name}` : `Focus ${agent.name}`}
+                  title={focused ? `${t("work.viewing")} ${agent.name}` : `${t("work.focus")} ${agent.name}`}
                   className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[12px] transition-colors ${
                     focused
                       ? "border-v2-blue-200 bg-v2-blue-100/50 text-v2-blue-600"
@@ -325,7 +337,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
           <ChatTranscript
             messages={activeMessages}
             tools={sessionView.tools}
-            emptyHint={activeAgent === "orchestrator" ? undefined : "No messages from this agent yet."}
+            emptyHint={activeAgent === "orchestrator" ? undefined : t("work.noMessagesYet")}
             pending={pendingOutput && activeAgent === "orchestrator"}
           />
           <footer className="shrink-0 border-t border-v2-grey-200 p-3">
@@ -349,13 +361,13 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
               : "translate-x-full opacity-0 md:w-0 md:opacity-0"
           } ${panelInvisible ? "invisible" : ""} ${panelInteractive ? "" : "pointer-events-none"}`}
           style={{ "--panel-w": `${clampedPanelWidth}px` } as React.CSSProperties}
-          aria-label={panel === "agents" ? "Agent list" : "File browser"}
+          aria-label={panel === "agents" ? t("work.agentList") : t("work.fileBrowser")}
           role="region"
         >
           <button
             type="button"
-            aria-label="Resize panel"
-            title="Resize panel"
+            aria-label={t("work.resizePanel")}
+            title={t("work.resizePanel")}
             onPointerDown={startResize}
             className="absolute inset-y-0 left-[-0.5rem] z-30 hidden w-2 cursor-col-resize md:block"
           />
@@ -377,6 +389,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
 }
 
 function AgentList({ streaming, sessionId }: { streaming: boolean; sessionId: string }) {
+  const { t } = useI18n();
   const [roster, setRoster] = useState<AgentDto[] | null>(null);
   const [models, setModels] = useState<Array<{ provider: string; id: string }>>([]);
   const [effective, setEffective] = useState<AgentEffectiveModelDto[] | null>(null);
@@ -423,7 +436,7 @@ function AgentList({ streaming, sessionId }: { streaming: boolean; sessionId: st
     <div className="flex h-full flex-col">
       <div className="flex shrink-0 items-center gap-2 border-b border-v2-grey-200 px-3 py-2">
         <Bot size={14} className="text-v2-icon-icon-muted" />
-        <span className="text-[13px] font-semibold text-v2-text-text-base">Agents</span>
+        <span className="text-[13px] font-semibold text-v2-text-text-base">{t("work.agentsTab")}</span>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         <div className="rounded-md border border-v2-grey-200 bg-v2-background-bg-base p-3">
@@ -432,12 +445,12 @@ function AgentList({ streaming, sessionId }: { streaming: boolean; sessionId: st
             <span className="text-[13px] font-medium text-v2-text-text-base">
               {orchestrator ? orchestrator.name : "Orchestrator"}
             </span>
-            <span className="ml-auto text-[12px] text-v2-text-text-faint">{streaming ? "working…" : "idle"}</span>
+            <span className="ml-auto text-[12px] text-v2-text-text-faint">{streaming ? t("work.working") : t("work.idle")}</span>
           </div>
           <dl className="mt-2 flex flex-col gap-1 text-[12px]">
             <div className="flex justify-between gap-2">
-              <dt className="text-v2-text-text-faint">Role</dt>
-              <dd className="text-v2-text-text-muted">{orchestrator?.description ?? "Runs the paper pipeline"}</dd>
+              <dt className="text-v2-text-text-faint">{t("work.role")}</dt>
+              <dd className="text-v2-text-text-muted">{orchestrator?.description ?? t("work.orchestratorFallback")}</dd>
             </div>
             <ModelRow
               entry={effective?.find((e) => e.name === "orchestrator")}
@@ -458,12 +471,12 @@ function AgentList({ streaming, sessionId }: { streaming: boolean; sessionId: st
             </div>
             <dl className="mt-2 flex flex-col gap-1 text-[12px]">
               <div className="flex justify-between gap-2">
-                <dt className="text-v2-text-text-faint">Role</dt>
+                <dt className="text-v2-text-text-faint">{t("work.role")}</dt>
                 <dd className="text-v2-text-text-muted">{agent.description}</dd>
               </div>
               {agent.subagents && agent.subagents.length > 0 && (
                 <div className="flex justify-between gap-2">
-                  <dt className="text-v2-text-text-faint">Subagents</dt>
+                  <dt className="text-v2-text-text-faint">{t("work.subagents")}</dt>
                   <dd className="text-v2-text-text-muted">{agent.subagents.join(", ")}</dd>
                 </div>
               )}
@@ -481,7 +494,7 @@ function AgentList({ streaming, sessionId }: { streaming: boolean; sessionId: st
         ))}
         <p className="mt-3 flex items-center gap-2 text-[12px] text-v2-text-text-faint">
           <FolderOpen size={12} />
-          Subagents run strictly serially; their cards appear here as they run.
+          {t("work.strictlySerialNote")}
         </p>
       </div>
     </div>
@@ -499,31 +512,32 @@ interface ModelRowProps {
 }
 
 function ModelRow({ entry, models, selected, busy, onSelect, onSet, onReset }: ModelRowProps) {
+  const { t } = useI18n();
   const badge =
     entry?.source === "override" ? (
-      <span className="rounded-full bg-v2-blue-100/50 px-1.5 py-px text-[10px] text-v2-blue-600">session</span>
+      <span className="rounded-full bg-v2-blue-100/50 px-1.5 py-px text-[10px] text-v2-blue-600">{t("work.sourceSession")}</span>
     ) : entry?.source === "project" || entry?.source === "global" ? (
-      <span className="rounded-full bg-v2-grey-100 px-1.5 py-px text-[10px] text-v2-text-text-muted">config</span>
+      <span className="rounded-full bg-v2-grey-100 px-1.5 py-px text-[10px] text-v2-text-text-muted">{t("work.sourceConfig")}</span>
     ) : null;
 
   return (
     <>
       <div className="flex items-center justify-between gap-2">
-        <dt className="text-v2-text-text-faint">Model</dt>
+        <dt className="text-v2-text-text-faint">{t("work.model")}</dt>
         <dd className="flex items-center gap-1.5 text-v2-text-text-muted">
-          {entry?.model ?? "inherits session"}
+          {entry?.model ?? t("work.inheritsSession")}
           {badge}
         </dd>
       </div>
       <div className="mt-1 flex items-center gap-1.5">
         <select
-          aria-label="Select model"
+          aria-label={t("work.selectModel")}
           value={selected}
           onChange={(e) => onSelect(e.target.value)}
           disabled={busy}
           className="h-6 min-w-0 flex-1 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-1 text-[11px] text-v2-text-text-base outline-none focus:border-v2-blue-600"
         >
-          <option value="">Models…</option>
+          <option value="">{t("work.models")}</option>
           {models.map((m) => {
             const key = `${m.provider}/${m.id}`;
             return (
@@ -539,7 +553,7 @@ function ModelRow({ entry, models, selected, busy, onSelect, onSet, onReset }: M
           disabled={busy || !selected}
           className="rounded-md border border-v2-grey-200 px-2 py-0.5 text-[11px] text-v2-text-text-base transition-colors hover:bg-v2-grey-100 disabled:opacity-50"
         >
-          Set
+          {t("work.set")}
         </button>
         {entry?.source === "override" && (
           <button
@@ -548,7 +562,7 @@ function ModelRow({ entry, models, selected, busy, onSelect, onSet, onReset }: M
             disabled={busy}
             className="rounded-md border border-v2-grey-200 px-2 py-0.5 text-[11px] text-v2-text-text-base transition-colors hover:bg-v2-grey-100 disabled:opacity-50"
           >
-            Reset
+            {t("work.reset")}
           </button>
         )}
       </div>

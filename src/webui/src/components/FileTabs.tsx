@@ -1,4 +1,5 @@
 import { File as FileIcon, FolderTree, X } from "lucide-react";
+import { useI18n } from "../i18n/useI18n";
 import type { FileContentDto } from "../../../web/contracts";
 
 export interface FileTab {
@@ -15,11 +16,12 @@ export interface FileTabsProps {
 }
 
 export function FileTabs({ tabs, active, onActivate, onClose, toggle }: FileTabsProps) {
+  const { t } = useI18n();
   return (
     <div
       className="flex shrink-0 items-center gap-0.5 overflow-x-auto border-b border-v2-grey-200 px-1.5 py-1"
       role="tablist"
-      aria-label="Open files"
+      aria-label={t("tabs.openFiles")}
     >
       {toggle && (
         <div className="sticky left-0 z-10 shrink-0 bg-v2-background-bg-base">
@@ -28,8 +30,8 @@ export function FileTabs({ tabs, active, onActivate, onClose, toggle }: FileTabs
             className={`flex size-7 shrink-0 items-center justify-center rounded text-v2-icon-icon-muted transition-colors hover:bg-v2-grey-100 ${
               toggle.opened ? "bg-v2-background-bg-layer-2" : ""
             }`}
-            aria-label="Toggle file tree"
-            title="Toggle file tree"
+            aria-label={t("tabs.toggleTree")}
+            title={t("tabs.toggleTree")}
             aria-expanded={toggle.opened}
             data-expanded={toggle.opened}
             onClick={toggle.onToggle}
@@ -56,8 +58,8 @@ export function FileTabs({ tabs, active, onActivate, onClose, toggle }: FileTabs
             <button
               type="button"
               className="flex size-4 shrink-0 items-center justify-center rounded text-v2-text-text-faint opacity-0 transition-opacity hover:bg-v2-grey-200 hover:text-v2-text-text-base group-hover:opacity-100"
-              aria-label={`Close ${tab.name}`}
-              title="Close"
+              aria-label={t("tabs.closeRow").replace("{name}", tab.name)}
+              title={t("tabs.close")}
               onClick={() => onClose(tab.path)}
             >
               <X size={11} />
@@ -70,18 +72,21 @@ export function FileTabs({ tabs, active, onActivate, onClose, toggle }: FileTabs
 }
 
 export function FileViewer({ file }: { file: FileContentDto | null }) {
-  if (!file) return <p className="p-3 text-[12px] text-v2-text-text-faint">Loading…</p>;
+  const { t } = useI18n();
+  if (!file) return <p className="p-3 text-[12px] text-v2-text-text-faint">{t("files.loading")}</p>;
   return (
     <div className="flex h-full min-w-0 flex-col">
       <header className="flex shrink-0 items-center gap-2 border-b border-v2-grey-200 px-3 py-1.5">
         <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-v2-text-text-muted" title={file.path}>
           {file.path}
         </span>
-        <span className="shrink-0 font-mono text-[11px] text-v2-text-text-faint">{file.byteCount} bytes</span>
+        <span className="shrink-0 font-mono text-[11px] text-v2-text-text-faint">
+          {file.byteCount} {t("files.bytes")}
+        </span>
       </header>
       {file.truncated && (
         <p className="shrink-0 border-b border-v2-grey-200 bg-v2-status-warning/10 px-3 py-1 text-[12px] text-v2-status-warning">
-          File preview truncated to the first 1 MiB.
+          {t("preview.truncated")}
         </p>
       )}
       <pre className="min-h-0 flex-1 overflow-auto p-3 font-mono text-[length:var(--v2-files-font-size)] leading-[1.5] text-v2-text-text-base whitespace-pre">

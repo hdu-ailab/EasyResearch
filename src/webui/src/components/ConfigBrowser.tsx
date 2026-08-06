@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ChevronLeft, FilePlus, FolderPlus, RefreshCw, Save, X } from "lucide-react";
 import { createConfigDirectory, listConfig, listConfigProjects, readConfigFile, writeConfigFile } from "../api";
+import { useI18n } from "../i18n/useI18n";
 import type { ConfigEntryDto, ConfigScope } from "../types";
 
 export interface ConfigBrowserProps {
@@ -20,6 +21,7 @@ interface EditedFile {
  * root; saving never restarts the session.
  */
 export function ConfigBrowser({ onSaveApplied = () => {}, initialScope = "global" }: ConfigBrowserProps) {
+  const { t } = useI18n();
   const [scope, setScope] = useState<ConfigScope>(initialScope);
   const [projects, setProjects] = useState<Array<{ cwd: string }>>([]);
   const [projectCwd, setProjectCwd] = useState<string | null>(null);
@@ -57,7 +59,7 @@ export function ConfigBrowser({ onSaveApplied = () => {}, initialScope = "global
         setProjectCwd((prev) => prev ?? dto.projects[0]?.cwd ?? null);
       })
       .catch(() => {
-        if (!cancelled) setError("Failed to load project folders.");
+        if (!cancelled) setError(t("config.loadProjectsFailed"));
       });
     return () => {
       cancelled = true;
@@ -65,7 +67,7 @@ export function ConfigBrowser({ onSaveApplied = () => {}, initialScope = "global
   }, [scope]);
 
   const abandonEditor = () => {
-    if (edited && edited.current !== edited.original && !window.confirm("Discard unsaved changes?")) return false;
+    if (edited && edited.current !== edited.original && !window.confirm(t("config.discardChanges"))) return false;
     return true;
   };
 
@@ -105,7 +107,7 @@ export function ConfigBrowser({ onSaveApplied = () => {}, initialScope = "global
     try {
       JSON.parse(edited.current);
     } catch {
-      setError("Invalid JSON — the file was not saved.");
+      setError(t("config.invalidJson"));
       setSaved(false);
       return;
     }
@@ -137,28 +139,28 @@ export function ConfigBrowser({ onSaveApplied = () => {}, initialScope = "global
   const rootLabel = scope === "project" && projectCwd ? `${projectCwd}/.lazyresearch` : "~/.lazyresearch/agent";
 
   return (
-    <section className="mx-auto flex h-full w-full max-w-[980px] flex-col rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]" aria-label="Config browser">
+    <section className="mx-auto flex h-full w-full max-w-[980px] flex-col rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]" aria-label={t("config.browser")}>
       <div className="flex h-10 shrink-0 items-center gap-1 border-b border-v2-grey-200 px-2">
         <span className="px-2 font-mono text-[12px] text-v2-text-text-muted">{rootLabel}</span>
         <span className="ml-auto flex items-center gap-1">
           <select
             className="h-6 rounded-md border border-v2-grey-200 bg-transparent px-1 text-[12px] text-v2-text-text-base outline-none"
-            aria-label="Scope"
+            aria-label={t("config.scope")}
             value={scope}
             onChange={(e) => changeScope(e.target.value as ConfigScope)}
           >
-            <option value="global">Global</option>
-            <option value="project">Project</option>
+            <option value="global">{t("config.global")}</option>
+            <option value="project">{t("config.project")}</option>
           </select>
           {scope === "project" && (
             <select
               className="h-6 max-w-[200px] rounded-md border border-v2-grey-200 bg-transparent px-1 text-[12px] text-v2-text-text-base outline-none"
-              aria-label="Project folder"
+              aria-label={t("config.projectFolder")}
               value={projectCwd ?? ""}
               onChange={(e) => chooseProject(e.target.value)}
               disabled={projects.length === 0}
             >
-              {projects.length === 0 && <option value="">No projects</option>}
+              {projects.length === 0 && <option value="">{t("config.noProjects")}</option>}
               {projects.map((project) => (
                 <option key={project.cwd} value={project.cwd}>
                   {project.cwd}
@@ -166,13 +168,13 @@ export function ConfigBrowser({ onSaveApplied = () => {}, initialScope = "global
               ))}
             </select>
           )}
-          <button type="button" className="flex size-7 items-center justify-center rounded-md text-v2-icon-icon-muted transition-colors hover:bg-v2-grey-100 hover:text-v2-icon-icon-base" aria-label="Refresh" title="Refresh listing" onClick={() => void refresh()}>
+          <button type="button" className="flex size-7 items-center justify-center rounded-md text-v2-icon-icon-muted transition-colors hover:bg-v2-grey-100 hover:text-v2-icon-icon-base" aria-label={t("config.refresh")} title={t("config.refresh")} onClick={() => void refresh()}>
             <RefreshCw size={15} />
           </button>
-          <button type="button" className="flex size-7 items-center justify-center rounded-md text-v2-icon-icon-muted transition-colors hover:bg-v2-grey-100 hover:text-v2-icon-icon-base" aria-label="New folder" title="New folder" onClick={() => setCreating(true)}>
+          <button type="button" className="flex size-7 items-center justify-center rounded-md text-v2-icon-icon-muted transition-colors hover:bg-v2-grey-100 hover:text-v2-icon-icon-base" aria-label={t("config.newFolder")} title={t("config.newFolder")} onClick={() => setCreating(true)}>
             <FolderPlus size={15} />
           </button>
-          <button type="button" className="flex size-7 items-center justify-center rounded-md text-v2-icon-icon-muted transition-colors hover:bg-v2-grey-100 hover:text-v2-icon-icon-base" aria-label="New file" title="New file" onClick={() => {}}>
+          <button type="button" className="flex size-7 items-center justify-center rounded-md text-v2-icon-icon-muted transition-colors hover:bg-v2-grey-100 hover:text-v2-icon-icon-base" aria-label={t("config.newFile")} title={t("config.newFile")} onClick={() => {}}>
             <FilePlus size={15} />
           </button>
         </span>
@@ -187,26 +189,26 @@ export function ConfigBrowser({ onSaveApplied = () => {}, initialScope = "global
           }}
         >
           <label htmlFor="folder-name" className="text-[12px] text-v2-text-text-muted">
-            Folder name
+            {t("config.folderName")}
           </label>
           <input
             id="folder-name"
-            aria-label="Folder name"
+            aria-label={t("config.folderName")}
             className="h-7 min-w-0 flex-1 rounded-md border border-v2-grey-200 px-2 text-[12px] text-v2-text-text-base outline-none focus:border-v2-blue-600"
             value={folderName}
             onChange={(e) => setFolderName(e.target.value)}
           />
-          <button type="submit" className="flex h-7 items-center rounded-md bg-v2-grey-1100 px-3 text-[12px] font-medium text-v2-grey-50 hover:opacity-90" aria-label="Confirm">
-            Confirm
+          <button type="submit" className="flex h-7 items-center rounded-md bg-v2-grey-1100 px-3 text-[12px] font-medium text-v2-grey-50 hover:opacity-90" aria-label={t("config.confirm")}>
+            {t("config.confirm")}
           </button>
-          <button type="button" className="flex size-7 items-center justify-center rounded-md text-v2-icon-icon-muted hover:bg-v2-grey-100" aria-label="Cancel" onClick={() => setCreating(false)}>
+          <button type="button" className="flex size-7 items-center justify-center rounded-md text-v2-icon-icon-muted hover:bg-v2-grey-100" aria-label={t("config.cancel")} onClick={() => setCreating(false)}>
             <X size={15} />
           </button>
         </form>
       )}
 
       <div className="flex min-h-0 flex-1">
-        <nav className="w-[260px] shrink-0 overflow-y-auto border-r border-v2-grey-200 p-2" aria-label="Config files">
+        <nav className="w-[260px] shrink-0 overflow-y-auto border-r border-v2-grey-200 p-2" aria-label={t("config.files")}>
           {dirPath && (
             <button
               type="button"
@@ -250,8 +252,8 @@ export function ConfigBrowser({ onSaveApplied = () => {}, initialScope = "global
                 <button
                   type="button"
                   className="flex size-7 items-center justify-center rounded-md text-v2-icon-icon-muted transition-colors hover:bg-v2-grey-100"
-                  aria-label="Back to files"
-                  title="Back to files"
+                  aria-label={t("config.backToFiles")}
+                  title={t("config.backToFiles")}
                   onClick={() => setEdited(null)}
                 >
                   <ChevronLeft size={15} />
@@ -260,28 +262,28 @@ export function ConfigBrowser({ onSaveApplied = () => {}, initialScope = "global
               </div>
               <textarea
                 className="min-h-0 flex-1 resize-none bg-transparent p-3 font-mono text-[12px] leading-[1.5] text-v2-text-text-base outline-none"
-                aria-label="Editor"
+                aria-label={t("config.editor")}
                 spellCheck={false}
                 value={edited.current}
                 onChange={(e) => setEdited({ ...edited, current: e.target.value })}
               />
               <div className="flex shrink-0 items-center gap-1 border-t border-v2-grey-200 p-2">
-                <button type="button" className="flex h-7 items-center gap-1 rounded-md bg-v2-grey-1100 px-3 text-[12px] font-medium text-v2-grey-50 transition-opacity hover:opacity-90" aria-label="Save" onClick={() => void save()}>
+                <button type="button" className="flex h-7 items-center gap-1 rounded-md bg-v2-grey-1100 px-3 text-[12px] font-medium text-v2-grey-50 transition-opacity hover:opacity-90" aria-label={t("config.save")} onClick={() => void save()}>
                   <Save size={13} />
-                  Save
+                  {t("config.save")}
                 </button>
-                <button type="button" className="flex size-7 items-center justify-center rounded-md text-v2-icon-icon-muted hover:bg-v2-grey-100" aria-label="Close" title="Close editor" onClick={() => setEdited(null)}>
+                <button type="button" className="flex size-7 items-center justify-center rounded-md text-v2-icon-icon-muted hover:bg-v2-grey-100" aria-label={t("config.close")} title={t("config.close")} onClick={() => setEdited(null)}>
                   <X size={15} />
                 </button>
               </div>
             </>
           ) : (
             <p className="flex flex-1 items-center justify-center text-[13px] text-v2-text-text-faint">
-              Select a file to edit its JSON.
+              {t("config.selectFile")}
             </p>
           )}
           {error && <p className="border-t border-v2-grey-200 px-3 py-2 text-[12px] text-v2-status-error" role="alert">{error}</p>}
-          {saved && !error && <p className="border-t border-v2-grey-200 px-3 py-2 text-[12px] text-v2-text-text-muted">Saved — applies after restart.</p>}
+          {saved && !error && <p className="border-t border-v2-grey-200 px-3 py-2 text-[12px] text-v2-text-text-muted">{t("config.saved")}</p>}
         </div>
       </div>
     </section>

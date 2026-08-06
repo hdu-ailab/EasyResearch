@@ -3,6 +3,7 @@ import { FileTabs, type FileTab } from "./FileTabs";
 import { FilesPanel } from "./FilesPanel";
 import { FilePreview } from "./previews/FilePreview";
 import { readFileContent } from "../api";
+import { useI18n } from "../i18n/useI18n";
 import type { FileContentDto, FileEntryDto } from "../../../web/contracts";
 
 export interface FileBrowserProps {
@@ -23,6 +24,7 @@ function entryName(path: string): string {
  * route.
  */
 export function FileBrowser({ root }: FileBrowserProps) {
+  const { t } = useI18n();
   const [tabs, setTabs] = useState<FileTab[]>([]);
   const [activeTab, setActiveTab] = useState<string | null>(null);
   const [contents, setContents] = useState<Record<string, FileContentDto>>({});
@@ -48,7 +50,7 @@ export function FileBrowser({ root }: FileBrowserProps) {
           const message = e instanceof Error ? e.message : String(e);
           setContents((current) => ({
             ...current,
-            [activeTab]: { path: activeTab, content: `Error: ${message}`, byteCount: 0, truncated: false, binary: false },
+            [activeTab]: { path: activeTab, content: t("files.loadError").replace("{message}", message), byteCount: 0, truncated: false, binary: false },
           }));
         }
       });
@@ -97,8 +99,8 @@ export function FileBrowser({ root }: FileBrowserProps) {
             <FilePreview path={activeTab} textFile={contents[activeTab] ?? null} onOpenFile={openPath} />
           ) : (
             <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
-              <p className="text-[13px] font-medium text-v2-text-text-base">Open a file</p>
-              <p className="text-[12px] text-v2-text-text-faint">Select a file from the tree to preview it.</p>
+              <p className="text-[13px] font-medium text-v2-text-text-base">{t("files.emptyTitle")}</p>
+              <p className="text-[12px] text-v2-text-text-faint">{t("files.emptyHint")}</p>
             </div>
           )}
         </div>

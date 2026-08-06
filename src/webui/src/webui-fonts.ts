@@ -1,12 +1,10 @@
-import type { WebuiSettingsDto } from "../../web/contracts";
+import type { WebUiPreferences } from "./preferences";
 
-/**
- * Apply Web panel font sizes as CSS variables on the document root so every
- * component that uses `text-[length:var(--v2-chat-font-size)]` /
- * `--v2-files-font-size` re-renders live, with no reload.
- */
-export function applyWebuiSettings(settings: WebuiSettingsDto): void {
+export const CHAT_FONT_VAR = "--v2-chat-font-size";
+export const FILES_FONT_VAR = "--v2-files-font-size";
+
+export function applyFontPreferences(prefs: WebUiPreferences): void {
   const root = document.documentElement.style;
-  root.setProperty("--v2-chat-font-size", `${settings.chatFontSize}px`);
-  root.setProperty("--v2-files-font-size", `${settings.filesFontSize}px`);
+  root.setProperty(CHAT_FONT_VAR, `${prefs.chatFontSize}px`);
+  root.setProperty(FILES_FONT_VAR, `${prefs.filesFontSize}px`);
 }

@@ -120,21 +120,8 @@ describe("web routes", () => {
       registry,
       config: configService,
       listAgents: async () => [],
-      getWebuiSettings: vi.fn(async () => ({
-        chatFontSize: 13,
-        filesFontSize: 12,
-        agentModels: {},
-        orchestratorModel: null,
-        effectiveOrchestratorModel: null,
-      })),
-      updateWebuiSettings: vi.fn(async (patch) => ({
-        chatFontSize: 14,
-        filesFontSize: 12,
-        agentModels: {},
-        orchestratorModel: null,
-        effectiveOrchestratorModel: null,
-        ...patch,
-      })),
+      getWebuiSettings: vi.fn(async () => ({ agentModels: {}, orchestratorModel: null, effectiveOrchestratorModel: null })),
+      updateWebuiSettings: vi.fn(async (patch) => ({ agentModels: {}, orchestratorModel: null, effectiveOrchestratorModel: null, ...patch })),
       ...overrides,
     };
     handler = createRouteHandler(services);
@@ -592,7 +579,7 @@ describe("web routes", () => {
   it("GET /api/webui-settings returns the settings object", async () => {
     const res = await handler(new Request("http://localhost/api/webui-settings"));
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ chatFontSize: 13, filesFontSize: 12, agentModels: {}, orchestratorModel: null });
+    expect(await res.json()).toMatchObject({ agentModels: {} });
   });
 
   it("PUT /api/webui-settings forwards the partial patch and returns the updated object", async () => {
@@ -600,27 +587,27 @@ describe("web routes", () => {
       new Request("http://localhost/api/webui-settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chatFontSize: 14 }),
+        body: JSON.stringify({ agentModels: { search: "openai/gpt-4o" } }),
       }),
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ chatFontSize: 14 });
+    expect(await res.json()).toMatchObject({ agentModels: { search: "openai/gpt-4o" } });
   });
 
   it("PUT /api/webui-settings maps WebuiSettingsError to its status", async () => {
     const updateWebuiSettings = vi.fn(async () => {
-      throw new WebuiSettingsError(400, "chatFontSize must be an integer");
+      throw new WebuiSettingsError(400, "agentModels must be an object");
     });
     setup({ updateWebuiSettings });
     const res = await handler(
       new Request("http://localhost/api/webui-settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chatFontSize: 99 }),
+        body: JSON.stringify({ agentModels: 42 }),
       }),
     );
     expect(res.status).toBe(400);
-    expect((await res.json()).error).toContain("chatFontSize");
+    expect((await res.json()).error).toContain("agentModels");
   });
 
   it("round-trips the orchestrator default model through the real settings store", async () => {
@@ -670,14 +657,13 @@ describe("web routes", () => {
   });
 
   it("forwards a null orchestratorModel patch to the settings store", async () => {
-    const updateWebuiSettings = vi.fn(async (patch) => ({
-      chatFontSize: 13,
-      filesFontSize: 12,
+    const updateWebuiSettingsMock = vi.fn(async (patch) => ({
       agentModels: {},
       orchestratorModel: null,
+      effectiveOrchestratorModel: null,
       ...patch,
     }));
-    setup({ updateWebuiSettings });
+    setup({ updateWebuiSettings: updateWebuiSettingsMock });
     const res = await handler(
       new Request("http://localhost/api/webui-settings", {
         method: "PUT",
@@ -686,7 +672,7 @@ describe("web routes", () => {
       }),
     );
     expect(res.status).toBe(200);
-    expect(updateWebuiSettings).toHaveBeenCalledWith({ orchestratorModel: null });
+    expect(updateWebuiSettingsMock).toHaveBeenCalledWith({ orchestratorModel: null });
   });
 
   it("returns the effective models for a session", async () => {

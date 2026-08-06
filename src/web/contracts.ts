@@ -73,16 +73,12 @@ export interface AgentEffectiveModelDto {
 }
 
 export interface WebuiSettingsDto {
-  chatFontSize: number;
-  filesFontSize: number;
   agentModels: Record<string, string>;
   orchestratorModel: string | null;
   effectiveOrchestratorModel: string | null;
 }
 
 export interface WebuiSettingsUpdate {
-  chatFontSize?: number;
-  filesFontSize?: number;
   agentModels?: Record<string, string>;
   orchestratorModel?: string | null;
 }

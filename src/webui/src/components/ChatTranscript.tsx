@@ -3,6 +3,8 @@ import ReactMarkdown from "react-markdown";
 import { AlertTriangle, Check, ChevronDown, ChevronRight } from "lucide-react";
 import type { SessionMessageView, ToolView } from "../session-reducer";
 import { useExpandable } from "../hooks/useExpandable";
+import { useI18n } from "../i18n/useI18n";
+import type { MessageKey } from "../i18n/messages";
 
 export interface ChatTranscriptProps {
   messages: SessionMessageView[];
@@ -12,15 +14,16 @@ export interface ChatTranscriptProps {
   pending?: boolean;
 }
 
-const ROLE_LABELS: Record<string, string> = {
-  user: "You",
-  assistant: "Orchestrator",
+const ROLE_LABELS: Record<string, MessageKey> = {
+  user: "transcript.you",
+  assistant: "transcript.orchestrator",
 };
 
 const STICK_THRESHOLD = 24;
 
 /** Collapsible reasoning block; collapsed by default. */
 function ReasoningBlock({ text }: { text: string }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const { mounted, phase } = useExpandable(open);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -40,8 +43,8 @@ function ReasoningBlock({ text }: { text: string }) {
         onClick={() => setOpen((current) => !current)}
       >
         {open ? <ChevronDown size={14} aria-hidden /> : <ChevronRight size={14} aria-hidden />}
-        <span>{open ? "Hide details" : "Show details"}</span>
-        <span className="text-v2-text-text-faint/70">Thinking</span>
+        <span>{open ? t("transcript.hideDetails") : t("transcript.showDetails")}</span>
+        <span className="text-v2-text-text-faint/70">{t("transcript.thinking")}</span>
       </button>
       {mounted && (
         <div
@@ -66,6 +69,7 @@ function ReasoningBlock({ text }: { text: string }) {
 }
 
 function ToolRow({ tool }: { tool: ToolView }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const { mounted, phase } = useExpandable(open);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -93,7 +97,7 @@ function ToolRow({ tool }: { tool: ToolView }) {
         {tool.done && !tool.error ? <Check size={13} aria-hidden /> : null}
         {tool.error ? <AlertTriangle size={13} aria-hidden /> : null}
         <span className="truncate">
-          {tool.running ? "Running tool: " : ""}
+          {tool.running ? t("transcript.runningTool") : ""}
           {tool.name}
           {tool.args ? <span className="text-v2-text-text-faint"> {tool.args}</span> : null}
         </span>
@@ -115,9 +119,9 @@ function ToolRow({ tool }: { tool: ToolView }) {
               {tool.output}
             </pre>
           ) : tool.running ? (
-            <p className="text-[12px] text-v2-text-text-faint">Running…</p>
+            <p className="text-[12px] text-v2-text-text-faint">{t("transcript.running")}</p>
           ) : (
-            <p className="text-[12px] text-v2-text-text-faint">No output.</p>
+            <p className="text-[12px] text-v2-text-text-faint">{t("transcript.noOutput")}</p>
           )}
         </div>
       )}
@@ -129,7 +133,9 @@ function ToolRow({ tool }: { tool: ToolView }) {
  * anything labeled otherwise (subagent-line dispatches, agent replies)
  * aligns left under its own label. */
 function MessageRow({ message }: { message: SessionMessageView }) {
-  const label = message.label ?? ROLE_LABELS[message.role] ?? message.role;
+  const { t } = useI18n();
+  const roleKey = ROLE_LABELS[message.role];
+  const label = message.label ?? (roleKey ? t(roleKey) : message.role);
   const isYou = message.role === "user" && message.label == null;
   return (
     <li className={`flex flex-col gap-1 ${isYou ? "items-end" : "items-start"}`}>
@@ -171,7 +177,9 @@ function MessageRow({ message }: { message: SessionMessageView }) {
  * The list pins to the bottom while the user stays at the bottom; any
  * manual scroll away unpins it, and returning to the bottom re-pins.
  */
-export function ChatTranscript({ messages, tools, emptyHint = "Send a message to start.", pending = false }: ChatTranscriptProps) {
+export function ChatTranscript({ messages, tools, emptyHint, pending = false }: ChatTranscriptProps) {
+  const { t } = useI18n();
+  const hint = emptyHint ?? t("transcript.sendToStart");
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
   const entries = useMemo(
@@ -193,9 +201,9 @@ export function ChatTranscript({ messages, tools, emptyHint = "Send a message to
   }, [entries, pending]);
 
   return (
-    <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto" aria-label="Conversation" onScroll={onScroll}>
+    <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto" aria-label={t("transcript.conversation")} onScroll={onScroll}>
       {messages.length === 0 && tools.length === 0 && !pending && (
-        <p className="px-4 pt-6 text-center text-[length:var(--v2-chat-font-size)] text-v2-text-text-faint">{emptyHint}</p>
+        <p className="px-4 pt-6 text-center text-[length:var(--v2-chat-font-size)] text-v2-text-text-faint">{hint}</p>
       )}
       <ul className="mx-auto flex w-full max-w-[1000px] flex-col gap-3 p-4 md:max-w-200 2xl:max-w-[1000px]">
         {entries.map((entry) =>
@@ -206,11 +214,11 @@ export function ChatTranscript({ messages, tools, emptyHint = "Send a message to
           ),
         )}
         {pending && (
-          <li className="flex flex-col items-start gap-1" aria-label="Working">
-            <span className="text-[11px] font-medium uppercase tracking-wide text-v2-text-text-faint">Orchestrator</span>
+          <li className="flex flex-col items-start gap-1" aria-label={t("transcript.working")}>
+            <span className="text-[11px] font-medium uppercase tracking-wide text-v2-text-text-faint">{t("transcript.orchestrator")}</span>
             <div className="v2-md flex items-center gap-2 rounded-lg bg-v2-background-bg-deep px-3 py-2 text-[length:var(--v2-chat-font-size)] text-v2-text-text-base">
               <span className="v2-spinner" aria-hidden />
-              <span className="text-[12px] text-v2-text-text-faint">Working…</span>
+              <span className="text-[12px] text-v2-text-text-faint">{t("transcript.workingInProgress")}</span>
               <span className="v2-caret" aria-hidden />
             </div>
           </li>

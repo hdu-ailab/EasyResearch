@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Square } from "lucide-react";
+import { useI18n } from "../i18n/useI18n";
 
 export interface ChatComposerProps {
   disabled: boolean;
@@ -13,6 +14,7 @@ export interface ChatComposerProps {
  * streaming (opencode prompt-input behavior); multiline input preserved.
  */
 export function ChatComposer({ disabled, streaming, onSend, onAbort }: ChatComposerProps) {
+  const { t } = useI18n();
   const [text, setText] = useState("");
 
   const submit = () => {
@@ -33,8 +35,8 @@ export function ChatComposer({ disabled, streaming, onSend, onAbort }: ChatCompo
       <div className="flex min-w-0 flex-1 flex-col rounded-lg border border-v2-grey-200 bg-v2-background-bg-base transition-colors focus-within:border-v2-blue-600">
         <textarea
           className="max-h-[160px] min-h-[52px] w-full resize-none bg-transparent px-3 py-2 text-[13px] text-v2-text-text-base outline-none placeholder:text-v2-text-text-faint"
-          aria-label="Message"
-          placeholder="Describe the paper you want to write…"
+          aria-label={t("composer.message")}
+          placeholder={t("composer.placeholder")}
           rows={2}
           value={text}
           disabled={disabled}
@@ -52,8 +54,8 @@ export function ChatComposer({ disabled, streaming, onSend, onAbort }: ChatCompo
           <button
             type="button"
             className="flex size-8 items-center justify-center rounded-md bg-v2-grey-1100 text-v2-grey-50 transition-opacity hover:opacity-90"
-            aria-label="Stop"
-            title="Stop the running agent"
+            aria-label={t("composer.stop")}
+            title={t("composer.stopTitle")}
             onClick={onAbort}
           >
             <Square size={13} fill="currentColor" />
@@ -62,7 +64,7 @@ export function ChatComposer({ disabled, streaming, onSend, onAbort }: ChatCompo
           <button
             type="submit"
             className="flex size-8 items-center justify-center rounded-md bg-v2-grey-1100 text-v2-grey-50 transition-opacity hover:opacity-90 disabled:opacity-40 disabled:hover:opacity-40"
-            aria-label="Send"
+            aria-label={t("composer.send")}
             disabled={disabled || !text.trim()}
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
