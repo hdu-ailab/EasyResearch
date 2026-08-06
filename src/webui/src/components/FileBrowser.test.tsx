@@ -47,4 +47,35 @@ describe("FileBrowser", () => {
     expect(await screen.findByRole("heading", { name: "Notes" })).toBeVisible();
     expect(readFileContent).toHaveBeenCalledWith("/p/notes.md");
   });
+
+  it("renders the tree toggle as the first tab-bar element with aria-expanded=true", async () => {
+    render(<FileBrowser root="/p" />);
+    const button = await screen.findByRole("button", { name: "Toggle file tree" });
+    expect(button).toHaveAttribute("aria-expanded", "true");
+    const slot = button.parentElement;
+    const tablist = slot?.parentElement;
+    expect(tablist?.getAttribute("role")).toBe("tablist");
+    expect(tablist?.firstElementChild).toBe(slot);
+  });
+
+  it("collapses the tree on click while keeping the preview visible, and expands again", async () => {
+    const user = userEvent.setup();
+    render(<FileBrowser root="/p" />);
+    const button = await screen.findByRole("button", { name: "Toggle file tree" });
+    const tree = await screen.findByRole("tree", { name: "Project files tree" });
+    const container = tree.closest("[class*='w-[240px]']");
+    expect(container).not.toBeNull();
+    expect(button).toHaveAttribute("aria-expanded", "true");
+    expect(await screen.findByText("paper.pdf")).toBeVisible();
+
+    await user.click(button);
+    expect(button).toHaveAttribute("aria-expanded", "false");
+    expect(container).toHaveClass("hidden");
+    expect(screen.getByText("Open a file")).toBeVisible();
+
+    await user.click(button);
+    expect(button).toHaveAttribute("aria-expanded", "true");
+    expect(container).not.toHaveClass("hidden");
+    expect(screen.getByText("paper.pdf")).toBeVisible();
+  });
 });
