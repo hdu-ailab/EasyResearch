@@ -6,7 +6,9 @@ import { readPreferences } from "./preferences";
 import { applyFontPreferences } from "./webui-fonts";
 import "./index.css";
 
-applyFontPreferences(readPreferences(window.localStorage, () => navigator.language));
+const preferences = readPreferences(window.localStorage, () => navigator.language);
+applyFontPreferences(preferences);
+document.documentElement.lang = preferences.language;
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

@@ -74,6 +74,15 @@ describe("SettingsPage", () => {
     expect(screen.getByText("19px")).toBeTruthy();
   });
 
+  it("disables the decrease button at the min bound", async () => {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ chatFontSize: 10, filesFontSize: 12, language: "en" }));
+    const user = userEvent.setup();
+    render(<SettingsPage onBack={() => {}} onOpenConfigPage={() => {}} />);
+    expect(screen.getByRole("button", { name: "Decrease chat font size" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Increase chat font size" }));
+    expect(screen.getByText("11px")).toBeTruthy();
+  });
+
   it("switches the interface language and persists it", async () => {
     const user = userEvent.setup();
     render(
