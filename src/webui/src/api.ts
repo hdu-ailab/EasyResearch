@@ -11,7 +11,7 @@ import type {
   SessionSummaryDto,
   StatusDto,
 } from "../../web/contracts";
-import type { ConfigFileDto } from "./types";
+import type { ConfigFileDto, ConfigProjectsDto } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -132,6 +132,10 @@ export function listConfig(scope: ConfigScope, cwd?: string, path?: string): Pro
   if (cwd) params.set("cwd", cwd);
   if (path) params.set("path", path);
   return request(`/api/config?${params.toString()}`);
+}
+
+export function listConfigProjects(): Promise<ConfigProjectsDto> {
+  return request("/api/config/projects");
 }
 
 export function readConfigFile(scope: ConfigScope, cwd?: string, path?: string): Promise<ConfigFileDto> {

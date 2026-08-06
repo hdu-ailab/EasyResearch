@@ -22,3 +22,8 @@ export interface ConfigFileDto {
   path: string;
   content: string;
 }
+
+export interface ConfigProjectsDto {
+  home: string;
+  projects: Array<{ cwd: string }>;
+}

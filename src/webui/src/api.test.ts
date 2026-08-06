@@ -9,6 +9,7 @@ import {
   getSnapshot,
   listAgents,
   listConfig,
+  listConfigProjects,
   listDirectories,
   listModels,
   listStatus,
@@ -131,6 +132,13 @@ describe("api transport", () => {
     await listConfig("project", "/p", "agents");
     const [url] = fetchMock.mock.calls[0] as [string];
     expect(url).toBe("/api/config?scope=project&cwd=%2Fp&path=agents");
+  });
+
+  it("listConfigProjects GETs /api/config/projects", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ home: "/h", projects: [{ cwd: "/p" }] }), { status: 200 }));
+    const dto = await listConfigProjects();
+    expect(fetchMock).toHaveBeenCalledWith("/api/config/projects", expect.objectContaining({ method: "GET" }));
+    expect(dto.home).toBe("/h");
   });
 
   it("readConfigFile GETs /api/config/file", async () => {
