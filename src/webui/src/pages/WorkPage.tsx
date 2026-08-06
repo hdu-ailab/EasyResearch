@@ -13,6 +13,7 @@ import {
   setAgentModel,
 } from "../api";
 import { fromSnapshot, reduceSessionEvent, type SessionViewState } from "../session-reducer";
+import { usePanelTransition } from "../hooks/usePanelTransition";
 import { ChatTranscript } from "../components/ChatTranscript";
 import { ChatComposer } from "../components/ChatComposer";
 import { FileBrowser } from "../components/FileBrowser";
@@ -59,6 +60,10 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   const [panelWidthTouched, setPanelWidthTouched] = useState(false);
   const [available, setAvailable] = useState<number | undefined>(undefined);
   const [sizing, setSizing] = useState(false);
+  const panelOpen = panel !== null;
+  const panelPhase = usePanelTransition(panelOpen);
+  const panelInvisible = panelPhase === "closed";
+  const panelInteractive = panelPhase === "open";
   const [agents, setAgents] = useState<AgentChip[]>([ORCHESTRATOR_AGENT]);
   const [activeAgent, setActiveAgent] = useState<string>("orchestrator");
   const resizing = useRef(false);
@@ -300,9 +305,15 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
         </section>
 
         <aside
-          className={`absolute inset-0 z-30 flex-col w-full bg-v2-background-bg-base shadow-[var(--v2-elevation-floating)] md:w-(--panel-w) md:relative md:z-0 md:inset-auto md:translate-x-0 md:shrink-0 md:rounded-[10px] md:shadow-[var(--v2-elevation-raised)] ${
-            sizing ? "" : "md:transition-[width] md:duration-200 md:ease-[cubic-bezier(0.22,1,0.36,1)]"
-          } ${panel ? "flex" : "hidden"}`}
+          className={`absolute inset-0 z-30 flex w-full flex-col overflow-hidden bg-v2-background-bg-base shadow-[var(--v2-elevation-floating)] md:relative md:inset-auto md:z-0 md:shrink-0 md:w-(--panel-w) md:translate-x-0 md:rounded-[10px] md:shadow-[var(--v2-elevation-raised)] ${
+            sizing
+              ? ""
+              : "transition-[transform,opacity] duration-v2-panel ease-v2-panel md:transition-[width,opacity] md:duration-v2-panel md:ease-v2-panel motion-reduce:transition-none"
+          } ${
+            panelPhase === "open"
+              ? "translate-x-0 opacity-100 md:opacity-100"
+              : "translate-x-full opacity-0 md:w-0 md:opacity-0"
+          } ${panelInvisible ? "invisible" : ""} ${panelInteractive ? "" : "pointer-events-none"}`}
           style={panel ? { "--panel-w": `${clampedPanelWidth}px` } as React.CSSProperties : undefined}
           aria-label={panel === "agents" ? "Agent list" : "File browser"}
           role="region"
@@ -314,7 +325,10 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
             onPointerDown={startResize}
             className="absolute inset-y-0 left-[-0.5rem] z-30 hidden w-2 cursor-col-resize md:block"
           />
-          <div className="min-h-0 flex-1 overflow-hidden rounded-t-[10px] md:rounded-[10px]">
+          <div
+            key={panel ?? "none"}
+            className="min-h-0 flex-1 animate-v2-fade-in overflow-hidden rounded-t-[10px] md:rounded-[10px] motion-reduce:animate-none"
+          >
             {panel === "files" && (
               <>
                 <FileBrowser root={cwd} />

@@ -389,19 +389,55 @@ describe("WorkPage", () => {
     await waitFor(() => expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*660px/));
   });
 
-  it("shows the conversation by default on mobile and opens panels on demand", async () => {
+  it("shows the conversation by default on mobile and animates panels on demand", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("innerWidth", 375);
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await screen.findByText("starting research");
     const region = screen.getByRole("region", { name: /file browser/i });
-    expect(region.className).toContain("hidden");
+    expect(region.className).toContain("translate-x-full");
+    expect(region.className).toContain("opacity-0");
     expect(screen.getByText("starting research")).toBeVisible();
     await user.click(screen.getByRole("button", { name: /files browser/i }));
-    expect(screen.getByRole("region", { name: /file browser/i }).className).not.toContain("hidden");
+    expect(region.className).toContain("translate-x-0");
+    expect(region.className).toContain("opacity-100");
     await user.click(screen.getByRole("button", { name: /files browser/i }));
-    expect(screen.getByRole("region", { name: /file browser/i }).className).toContain("hidden");
+    expect(region.className).toContain("translate-x-full");
+    expect(region.className).toContain("opacity-0");
     expect(screen.getByText("starting research")).toBeVisible();
+  });
+
+  it("marks the panel invisible after the close transition ends", async () => {
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    await user.click(screen.getByRole("button", { name: /agent list/i }));
+    const region = screen.getByRole("region", { name: /agent list/i });
+    expect(region.className).not.toContain("invisible");
+    await user.click(screen.getByRole("button", { name: /agent list/i }));
+    await waitFor(() => expect(region.className).toContain("invisible"));
+  });
+
+  it("disables panel transitions while drag-resizing", async () => {
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    const handle = screen.getByRole("button", { name: /resize panel/i });
+    fireEvent.pointerDown(handle, { clientX: 880, clientY: 100, pointerId: 1 });
+    const region = screen.getByRole("region", { name: /file browser/i });
+    expect(region.className).not.toContain("transition-");
+    fireEvent.pointerUp(document, { clientX: 880, clientY: 100, pointerId: 1 });
+    expect(region.className).toContain("transition-[width,opacity]");
+  });
+
+  it("fades the content wrapper when switching between panel views", async () => {
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    const filesRegion = screen.getByRole("region", { name: /file browser/i });
+    expect(filesRegion.querySelector(".animate-v2-fade-in")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /agent list/i }));
+    const agentsRegion = screen.getByRole("region", { name: /agent list/i });
+    expect(agentsRegion.querySelector(".animate-v2-fade-in")).toBeTruthy();
   });
 
   it("covers the full row region on mobile without a desktop bottom-sheet geometry", async () => {
