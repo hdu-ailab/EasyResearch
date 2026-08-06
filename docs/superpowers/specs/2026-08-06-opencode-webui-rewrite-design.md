@@ -14,6 +14,8 @@ The opencode source under `/tmp/opencode/opencode-src` and the live UI at `http:
 - Untouched tree directories show chevrons. Spinners appear only during active listing requests.
 - Markdown preview supports GFM, math, fenced code, tables, task lists, and local relative images/file links.
 - PDF preview uses PDF.js and supports continuous pages, page navigation, page input/count, zoom, fit width, rotation, text search, match navigation/count, and download.
+- Home does not present named `lazyresearch:<agent>` session lines as top-level orchestrator sessions.
+- The Agents view uses the five-agent ADR-022 roster and reflects strictly serial subagent activity; no `parallel` mode remains.
 - Desktop and mobile layouts have no incoherent overlap, clipped controls, or horizontal page overflow.
 
 ## Architecture
@@ -33,13 +35,15 @@ Existing backend session contracts and `session-reducer` behavior remain unchang
 
 ### Home
 
-Home is one raised surface at `m-2`. Its inner layout is capped at 1080px. At `lg`, a 280px project/utility sidebar sits beside a session column capped near 720px. Sessions are grouped by exact cwd. Project rows expose New session; the main column includes search, live status, and history. Mobile stacks these controls in one column without removing New session or Settings.
+Home is one raised surface at `m-2`. Its inner layout is capped at 1080px. At `lg`, a 280px project/utility sidebar sits beside a session column capped near 720px. Orchestrator sessions are grouped by exact cwd. Named stage-agent lines whose session name starts with `lazyresearch:` are filtered from the top-level reopen list because opening one through the orchestrator Work page would mount the wrong runtime role. Project rows expose New session; the main column includes search, live status, and orchestrator history. Mobile stacks these controls in one column without removing New session or Settings.
 
 ### Work
 
 Desktop retains a flexible chat panel and a pixel-width, resizable right panel separated by an 8px gap. The chat panel owns agent chips, transcript, and composer. The right panel switches between Files and Agents without unmounting their state.
 
 Below 820px, a top tablist switches between `Chat`, `Files`, and `Agents`. Each view fills the available Work surface. Chat position, composer draft, opened files, tree expansion, active preview, and agent focus survive tab switches.
+
+The Agents view uses the fixed ADR-022 roster: `orchestrator`, `search`, `experiment`, `writing`, and `figures`. It labels allowed nested dispatch where available (`experiment` to `search`; `writing` to `search`/`figures`; `figures` to `search`) and never describes agents as parallel. At most one stage agent is running. Dynamic activity/history tabs remain serial and can later bind to each agent's persistent `lazyresearch:<agent>` line without changing the Work navigation model. Any consumed `SubagentDetails.mode` is `"single" | "chain"` only.
 
 ### Config And Directory Selection
 
