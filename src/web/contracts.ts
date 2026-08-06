@@ -65,3 +65,9 @@ export interface ConfigEntryDto {
   path: string;
   type: "file" | "directory";
 }
+
+export interface AgentEffectiveModelDto {
+  name: string;
+  model: string | null;
+  source: "override" | "project" | "global" | "inherit";
+}

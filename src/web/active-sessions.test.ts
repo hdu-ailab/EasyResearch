@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { RpcEventListener, RpcSessionState } from "@earendil-works/pi-coding-agent";
-import { ActiveSessionRegistry } from "./active-sessions";
+import { ActiveSessionRegistry, UnknownSessionError } from "./active-sessions";
 import { assertNoUserExtensions } from "../runtime/extensions-guard";
 import type { RpcSessionAdapter, RpcSessionFactory, StartRpcSessionOptions } from "./rpc-session";
 
@@ -32,6 +32,7 @@ interface FakeAdapterStats {
   stopped: number;
   prompts: string[];
   aborts: number;
+  setModels: Array<{ provider: string; modelId: string }>;
   exits: Array<{ listener: (error: Error) => void }>;
 }
 
@@ -40,7 +41,8 @@ class FakeAdapter implements RpcSessionAdapter {
   static nextId = 0;
   events = new Set<RpcEventListener>();
   onExitListeners = new Set<(error: Error) => void>();
-  stats: FakeAdapterStats = { started: 0, stopped: 0, prompts: [], aborts: 0, exits: [] };
+  stats: FakeAdapterStats = { started: 0, stopped: 0, prompts: [], aborts: 0, setModels: [], exits: [] };
+  stateOverrides: Partial<RpcSessionState> = {};
 
   constructor(public options: StartRpcSessionOptions) {
     FakeAdapter.all.push(this);
@@ -58,8 +60,11 @@ class FakeAdapter implements RpcSessionAdapter {
   async abort() {
     this.stats.aborts++;
   }
+  async setModel(provider: string, modelId: string) {
+    this.stats.setModels.push({ provider, modelId });
+  }
   async getState(): Promise<RpcSessionState> {
-    return { ...fakeState, sessionId: `sess-${++FakeAdapter.nextId}`, sessionFile: this.options.sessionPath ?? sessionPath };
+    return { ...fakeState, ...this.stateOverrides, sessionId: `sess-${++FakeAdapter.nextId}`, sessionFile: this.options.sessionPath ?? sessionPath };
   }
   async getMessages(): Promise<AgentMessage[]> {
     return [];
@@ -122,6 +127,36 @@ describe("ActiveSessionRegistry", () => {
     await registry.stop(created.id);
     expect(factory.created[0]?.stats.stopped).toBe(1);
     expect(registry.list().find((s) => s.id === created.id)?.status).toBe("stopped");
+  });
+
+  it("forwards setModel to the adapter with provider and model id", async () => {
+    const created = await registry.create({ cwd });
+    await registry.setModel(created.id, "openai", "gpt-4o");
+    expect(factory.created[0]?.stats.setModels).toEqual([{ provider: "openai", modelId: "gpt-4o" }]);
+  });
+
+  it("throws UnknownSessionError for unknown ids in model accessors", async () => {
+    await expect(registry.setModel("nope", "openai", "gpt-4o")).rejects.toThrow(UnknownSessionError);
+    await expect(registry.getSessionPath("nope")).rejects.toThrow(UnknownSessionError);
+    await expect(registry.getCwd("nope")).rejects.toThrow(UnknownSessionError);
+    await expect(registry.getOrchestratorModel("nope")).rejects.toThrow(UnknownSessionError);
+  });
+
+  it("exposes the record session path and cwd", async () => {
+    const created = await registry.open({ cwd, sessionPath });
+    await expect(registry.getSessionPath(created.id)).resolves.toBe(sessionPath);
+    await expect(registry.getCwd(created.id)).resolves.toBe(cwd);
+  });
+
+  it("reports the orchestrator model from session state as provider/id", async () => {
+    const created = await registry.create({ cwd });
+    factory.created[0]!.stateOverrides = { model: { provider: "deepseek", id: "ds-v3" } as never };
+    await expect(registry.getOrchestratorModel(created.id)).resolves.toBe("deepseek/ds-v3");
+  });
+
+  it("reports no orchestrator model when session state has none", async () => {
+    const created = await registry.create({ cwd });
+    await expect(registry.getOrchestratorModel(created.id)).resolves.toBeUndefined();
   });
 
   it("makes two simultaneous stops call child stop once", async () => {

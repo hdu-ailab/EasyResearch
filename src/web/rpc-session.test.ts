@@ -30,6 +30,7 @@ class FakeRpcClient {
   stopCalls = 0;
   promptCalls: string[] = [];
   abortCalls = 0;
+  setModelCalls: Array<{ provider: string; modelId: string }> = [];
   stateCalls = 0;
   messagesCalls = 0;
   listeners = new Set<RpcEventListener>();
@@ -54,6 +55,9 @@ class FakeRpcClient {
   }
   async abort() {
     this.abortCalls++;
+  }
+  async setModel(provider: string, modelId: string) {
+    this.setModelCalls.push({ provider, modelId });
   }
   async getState() {
     this.stateCalls++;
@@ -131,6 +135,15 @@ describe("RpcSessionAdapter", () => {
     expect(client.stateCalls).toBeGreaterThanOrEqual(1);
     expect(client.messagesCalls).toBe(1);
     expect(client.stopCalls).toBe(1);
+  });
+
+  it("forwards setModel with provider and model id", async () => {
+    const factory = new PiRpcSessionFactory(FakeRpcClient);
+    const adapter = factory.create({ cwd: "/project" });
+    const client = FakeRpcClient.instances[0]!;
+
+    await adapter.setModel("openai", "gpt-4o");
+    expect(client.setModelCalls).toEqual([{ provider: "openai", modelId: "gpt-4o" }]);
   });
 
   it("forwards events from the client to listeners", async () => {
