@@ -11,6 +11,8 @@ export interface ToolView {
   args?: string;
   /** Compact string of the tool output, shown in the expanded body. */
   output?: string;
+  /** Position in the shared message/tool stream; tools interleave with messages. */
+  order: number;
 }
 
 export interface SessionMessageView {
@@ -25,6 +27,10 @@ export interface SessionMessageView {
   agentId?: string;
   /** Last applied text delta, used to make duplicate deliveries idempotent. */
   lastDelta?: string;
+  /** Position in the shared message/tool stream; tools interleave with messages. */
+  order: number;
+  /** Display label overriding the role-based default (e.g. subagent-line dispatches). */
+  label?: string;
 }
 
 export interface SessionViewState {
@@ -32,13 +38,21 @@ export interface SessionViewState {
   tools: ToolView[];
   isStreaming: boolean;
   error: string | null;
+  /** Agent name when this session line is a `lazyresearch:` subagent line. */
+  subagentName?: string;
+  /** Next value of the shared message/tool stream counter. */
+  nextOrder: number;
 }
+
+/** ADR-022: named subagent session lines share this prefix (`subagent/tool.ts`). */
+const SUBAGENT_SESSION_PREFIX = "lazyresearch:";
 
 const emptyState: SessionViewState = {
   messages: [],
   tools: [],
   isStreaming: false,
   error: null,
+  nextOrder: 0,
 };
 
 type UnknownMessage = {
@@ -133,18 +147,37 @@ function compactOutput(result: unknown): string | undefined {
   return text.length > 2000 ? `${text.slice(0, 1997)}…` : text;
 }
 
+/** Label to apply to a message on a subagent line: dispatches come from the
+ * orchestrator, replies belong to the agent running that line. */
+function labelFor(role: string, subagentName?: string): string | undefined {
+  if (!subagentName) return undefined;
+  return role === "user" ? "Orchestrator" : subagentName;
+}
+
+function subagentNameOf(snapshot: SessionSnapshotDto): string | undefined {
+  const name = snapshot.session?.sessionName;
+  if (typeof name !== "string" || !name.startsWith(SUBAGENT_SESSION_PREFIX)) return undefined;
+  const agent = name.slice(SUBAGENT_SESSION_PREFIX.length);
+  return agent.length > 0 ? agent : undefined;
+}
+
 export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
+  const subagentName = subagentNameOf(snapshot);
   const state: SessionViewState = {
     messages: [],
     tools: [],
     isStreaming: snapshot.session.isStreaming,
     error: null,
+    subagentName,
+    nextOrder: 0,
   };
+  const next = () => state.nextOrder++;
   snapshot.messages.forEach((message, index) => {
     if (message.role === "toolResult") {
       const toolMessage = message as unknown as { toolCallId?: unknown; toolName?: unknown; isError?: unknown };
       const tool = state.tools.find((t) => t.key === String(toolMessage.toolCallId));
       const output = compactOutput(message.content);
+      next();
       if (tool) {
         tool.done = true;
         tool.error = Boolean(toolMessage.isError);
@@ -157,7 +190,9 @@ export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
           done: true,
           error: Boolean(toolMessage.isError),
           output,
+          order: state.nextOrder,
         });
+        next();
       }
       return;
     }
@@ -171,7 +206,8 @@ export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
               Boolean(block && typeof block === "object" && (block as { type?: string }).type === "toolCall"),
           )
         : [];
-    const next: SessionMessageView = {
+    const order = next();
+    const nextMessage: SessionMessageView = {
       key: keyFor(message, index),
       role,
       text,
@@ -181,10 +217,13 @@ export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
         typeof (message as { agentId?: unknown }).agentId === "string"
           ? ((message as { agentId?: unknown }).agentId as string)
           : undefined,
+      order,
     };
-    if (reasoning) next.reasoning = reasoning;
+    const label = labelFor(role, subagentName);
+    if (label) nextMessage.label = label;
+    if (reasoning) nextMessage.reasoning = reasoning;
     // A message made only of tool calls renders as tool rows, not a bubble.
-    if (text || reasoning || next.error || toolCallBlocks.length === 0) state.messages.push(next);
+    if (text || reasoning || nextMessage.error || toolCallBlocks.length === 0) state.messages.push(nextMessage);
     if (role === "assistant") {
       for (const b of toolCallBlocks) {
         state.tools.push({
@@ -194,6 +233,7 @@ export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
           done: false,
           error: false,
           args: compactArgs(b.arguments),
+          order: next(),
         });
       }
     }
@@ -217,6 +257,7 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
         ...state,
         isStreaming: true,
         error: null,
+        nextOrder: state.nextOrder + 1,
       };
       const view: SessionMessageView = {
         key: keyFor(message, state.messages.length),
@@ -226,7 +267,10 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
         error: Boolean(errorMessage),
         agentId:
           typeof message.agentId === "string" ? message.agentId : undefined,
+        order: state.nextOrder,
       };
+      const label = labelFor(role, state.subagentName);
+      if (label) view.label = label;
       if (reasoning) view.reasoning = reasoning;
       next.messages = [...state.messages, view];
       return next;
@@ -268,6 +312,7 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
       };
       return {
         ...state,
+        nextOrder: state.nextOrder + 1,
         tools: [
           ...state.tools,
           {
@@ -277,6 +322,7 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
             done: false,
             error: false,
             args: compactArgs(args),
+            order: state.nextOrder,
           },
         ],
       };

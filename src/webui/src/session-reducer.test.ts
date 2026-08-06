@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { fromSnapshot, reduceSessionEvent, type SessionViewState } from "./session-reducer";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 
-const emptyState: SessionViewState = { messages: [], tools: [], isStreaming: false, error: null };
+const emptyState: SessionViewState = { messages: [], tools: [], isStreaming: false, error: null, nextOrder: 0 };
 
 function userMessage(text: string) {
   return { role: "user", content: [{ type: "text", text }] } as never;
@@ -182,5 +182,69 @@ describe("session reducer", () => {
       ] as never,
     });
     expect(state.tools[0]).toMatchObject({ key: "tc-9", output: "总计 4\nnotes" });
+  });
+
+  it("orders tools at their stream position, interleaving with messages", () => {
+    const state = fromSnapshot({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "done" } as never,
+      messages: [
+        { role: "user", content: [{ type: "text", text: "go" }] },
+        {
+          role: "assistant",
+          content: [
+            { type: "text", text: "about to run" },
+            { type: "toolCall", id: "tc-1", name: "bash", arguments: '{"command":"ls"}' },
+          ],
+        },
+        {
+          role: "toolResult",
+          toolCallId: "tc-1",
+          toolName: "bash",
+          content: [{ type: "text", text: "file.txt" }],
+          isError: false,
+        },
+        { role: "assistant", content: [{ type: "text", text: "done" }] },
+      ] as never,
+    });
+    const order = (m: { order: number }) => m.order;
+    expect(state.messages.map(order)).toEqual([0, 1, 4]);
+    expect(state.tools.map(order)).toEqual([2]);
+    const merged = [...state.messages, ...state.tools].sort((a, b) => a.order - b.order);
+    expect(merged.map((e) => ("role" in e ? e.role : "tool"))).toEqual(["user", "assistant", "tool", "assistant"]);
+  });
+
+  it("labels a subagent-line dispatch as orchestrator, not the user", () => {
+    const state = fromSnapshot({
+      session: { id: "s2", cwd: "/p", sessionName: "lazyresearch:search", isStreaming: false, status: "done" } as never,
+      messages: [
+        { role: "user", content: [{ type: "text", text: "Task: search papers" }] },
+        { role: "assistant", content: [{ type: "text", text: "found 3 papers" }] },
+      ] as never,
+    });
+    expect(state.subagentName).toBe("search");
+    expect(state.messages[0]).toMatchObject({ role: "user", label: "Orchestrator" });
+    expect(state.messages[1]).toMatchObject({ role: "assistant", label: "search" });
+  });
+
+  it("keeps plain sessions user-labeled and unlabeled assistants", () => {
+    const state = fromSnapshot({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "done" } as never,
+      messages: [
+        { role: "user", content: [{ type: "text", text: "hi" }] },
+        { role: "assistant", content: [{ type: "text", text: "hello" }] },
+      ] as never,
+    });
+    expect(state.subagentName).toBeUndefined();
+    expect(state.messages[0]!.label).toBeUndefined();
+    expect(state.messages[1]!.label).toBeUndefined();
+  });
+
+  it("assigns stream positions to live tools between messages", () => {
+    let state = reduceSessionEvent(emptyState, { type: "message_start", message: userMessage("go") } as AgentSessionEvent);
+    state = reduceSessionEvent(state, assistantEvent("message_start", "running"));
+    state = reduceSessionEvent(state, toolEvent("tool_execution_start", "t1", "bash"));
+    const final = reduceSessionEvent(state, assistantEvent("message_start", "done"));
+    expect(final.messages.map((m) => m.order)).toEqual([0, 1, 3]);
+    expect(final.tools.map((t) => t.order)).toEqual([2]);
   });
 });

@@ -11,6 +11,7 @@ const msg = (overrides: Partial<SessionMessageView>): SessionMessageView => ({
   text: "hello",
   streaming: false,
   error: false,
+  order: 0,
   ...overrides,
 });
 
@@ -22,6 +23,7 @@ const tool = (overrides: Partial<ToolView>): ToolView => ({
   done: true,
   error: false,
   output: "matched lines",
+  order: 1,
   ...overrides,
 });
 
@@ -114,5 +116,43 @@ describe("ChatTranscript", () => {
     const toggle = screen.getByRole("button", { name: /grep/i });
     fireEvent.click(toggle);
     expect(screen.getByText("tool output here").closest(".animate-v2-expand-down")).toBeTruthy();
+  });
+
+  it("interleaves tool rows at their stream position between messages", () => {
+    render(
+      <ChatTranscript
+        messages={[
+          msg({ key: "a", role: "assistant", text: "first", order: 1 }),
+          msg({ key: "c", role: "assistant", text: "second", order: 4 }),
+        ]}
+        tools={[tool({ key: "t1", name: "bash", args: "ls", order: 2 })]}
+      />,
+    );
+    const container = screen.getByLabelText("Conversation");
+    const texts = [...container.querySelectorAll("li")]
+      .map((li) => li.textContent ?? "")
+      .filter((t) => t.trim().length > 0);
+    const first = texts.findIndex((t) => t.includes("first"));
+    const toolIndex = texts.findIndex((t) => t.includes("bash") && t.includes("ls"));
+    const second = texts.findIndex((t) => t.includes("second"));
+    expect(first).toBeGreaterThanOrEqual(0);
+    expect(toolIndex).toBeGreaterThan(first);
+    expect(second).toBeGreaterThan(toolIndex);
+  });
+
+  it("renders the subagent dispatch under the orchestrator label, never as You", () => {
+    render(
+      <ChatTranscript
+        messages={[
+          msg({ key: "d", role: "user", text: "Task: search papers", label: "Orchestrator", order: 0 }),
+          msg({ key: "r", role: "assistant", text: "found 3 papers", label: "search", order: 1 }),
+        ]}
+        tools={[]}
+      />,
+    );
+    const container = screen.getByLabelText("Conversation");
+    expect(container.textContent).not.toContain("You");
+    expect(container.textContent).toContain("Orchestrator");
+    expect(container.textContent).toContain("search");
   });
 });

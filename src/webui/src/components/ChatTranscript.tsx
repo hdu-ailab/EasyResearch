@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { AlertTriangle, Check, ChevronDown, ChevronRight } from "lucide-react";
 import type { SessionMessageView, ToolView } from "../session-reducer";
@@ -125,17 +125,59 @@ function ToolRow({ tool }: { tool: ToolView }) {
   );
 }
 
+/** A single message bubble. Human messages align right with the You label;
+ * anything labeled otherwise (subagent-line dispatches, agent replies)
+ * aligns left under its own label. */
+function MessageRow({ message }: { message: SessionMessageView }) {
+  const label = message.label ?? ROLE_LABELS[message.role] ?? message.role;
+  const isYou = message.role === "user" && message.label == null;
+  return (
+    <li className={`flex flex-col gap-1 ${isYou ? "items-end" : "items-start"}`}>
+      <span className="text-[11px] font-medium uppercase tracking-wide text-v2-text-text-faint">{label}</span>
+      {message.reasoning ? <ReasoningBlock text={message.reasoning} /> : null}
+      {message.role === "assistant" || message.role === "user" ? (
+        <div
+          className={`v2-md max-w-full rounded-lg px-3 py-2 text-[length:var(--v2-chat-font-size)] ${
+            isYou ? "bg-v2-blue-100/60 text-v2-text-text-base" : "bg-v2-background-bg-deep text-v2-text-text-base"
+          } ${message.error ? "text-v2-status-error" : ""}`}
+        >
+          <ReactMarkdown
+            components={{
+              a: ({ children }) => <span>{children}</span>,
+            }}
+          >
+            {message.text}
+          </ReactMarkdown>
+          {message.streaming && <span className="v2-caret" aria-hidden />}
+        </div>
+      ) : (
+        <span
+          className={`rounded-md px-2 py-1 font-mono text-[12px] ${
+            message.error ? "text-v2-status-error" : "text-v2-text-text-muted"
+          }`}
+        >
+          {message.text}
+          {message.streaming && <span className="v2-caret" aria-hidden />}
+        </span>
+      )}
+    </li>
+  );
+}
+
 /**
- * Streaming chat transcript. Each message is a stable row keyed by the
- * reducer's message key; streaming text updates in place. Reasoning renders
- * as a collapsed "Thinking" block; tool executions render as collapsible
- * rows below the messages. The list pins to the bottom while the user stays
- * at the bottom; any manual scroll away unpins it, and returning to the
- * bottom re-pins.
+ * Streaming chat transcript. Messages and tool rows share one stream order
+ * (the reducer assigns monotonically increasing positions), so tool rows
+ * interleave with message bubbles exactly where the agent executed them.
+ * The list pins to the bottom while the user stays at the bottom; any
+ * manual scroll away unpins it, and returning to the bottom re-pins.
  */
 export function ChatTranscript({ messages, tools, emptyHint = "Send a message to start.", pending = false }: ChatTranscriptProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
+  const entries = useMemo(
+    () => [...messages, ...tools].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
+    [messages, tools],
+  );
 
   const onScroll = () => {
     const el = scrollRef.current;
@@ -148,7 +190,7 @@ export function ChatTranscript({ messages, tools, emptyHint = "Send a message to
     if (el && stickRef.current) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [messages, tools, pending]);
+  }, [entries, pending]);
 
   return (
     <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto" aria-label="Conversation" onScroll={onScroll}>
@@ -156,39 +198,13 @@ export function ChatTranscript({ messages, tools, emptyHint = "Send a message to
         <p className="px-4 pt-6 text-center text-[length:var(--v2-chat-font-size)] text-v2-text-text-faint">{emptyHint}</p>
       )}
       <ul className="mx-auto flex w-full max-w-[1000px] flex-col gap-3 p-4 md:max-w-200 2xl:max-w-[1000px]">
-        {messages.map((message) => (
-          <li key={message.key} className={`flex flex-col gap-1 ${message.role === "user" ? "items-end" : "items-start"}`}>
-            <span className="text-[11px] font-medium uppercase tracking-wide text-v2-text-text-faint">
-              {ROLE_LABELS[message.role] ?? message.role}
-            </span>
-            {message.reasoning ? <ReasoningBlock text={message.reasoning} /> : null}
-            {message.role === "assistant" || message.role === "user" ? (
-              <div
-                className={`v2-md max-w-full rounded-lg px-3 py-2 text-[length:var(--v2-chat-font-size)] ${
-                  message.role === "user" ? "bg-v2-blue-100/60 text-v2-text-text-base" : "bg-v2-background-bg-deep text-v2-text-text-base"
-                } ${message.error ? "text-v2-status-error" : ""}`}
-              >
-                <ReactMarkdown
-                  components={{
-                    a: ({ children }) => <span>{children}</span>,
-                  }}
-                >
-                  {message.text}
-                </ReactMarkdown>
-                {message.streaming && <span className="v2-caret" aria-hidden />}
-              </div>
-            ) : (
-              <span
-                className={`rounded-md px-2 py-1 font-mono text-[12px] ${
-                  message.error ? "text-v2-status-error" : "text-v2-text-text-muted"
-                }`}
-              >
-                {message.text}
-                {message.streaming && <span className="v2-caret" aria-hidden />}
-              </span>
-            )}
-          </li>
-        ))}
+        {entries.map((entry) =>
+          "name" in entry ? (
+            <ToolRow key={entry.key} tool={entry} />
+          ) : (
+            <MessageRow key={entry.key} message={entry} />
+          ),
+        )}
         {pending && (
           <li className="flex flex-col items-start gap-1" aria-label="Working">
             <span className="text-[11px] font-medium uppercase tracking-wide text-v2-text-text-faint">Orchestrator</span>
@@ -199,9 +215,6 @@ export function ChatTranscript({ messages, tools, emptyHint = "Send a message to
             </div>
           </li>
         )}
-        {tools.map((tool) => (
-          <ToolRow key={tool.key} tool={tool} />
-        ))}
       </ul>
     </div>
   );
