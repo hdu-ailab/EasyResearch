@@ -13,6 +13,7 @@ vi.mock("../api", async (importOriginal) => {
     listDirectories: vi.fn(),
     createSession: vi.fn(),
     openSession: vi.fn(),
+    restartSession: vi.fn(),
   };
 });
 
@@ -47,6 +48,7 @@ describe("HomePage", () => {
     vi.mocked(api.listDirectories).mockReset();
     vi.mocked(api.createSession).mockReset();
     vi.mocked(api.openSession).mockReset();
+    vi.mocked(api.restartSession).mockReset();
     vi.mocked(api.listStatus).mockResolvedValue({
       agentDir: "/agent",
       homeDir: "/home/user",
@@ -121,5 +123,57 @@ describe("HomePage", () => {
     render(<HomePage onOpenSession={() => {}} onOpenSettings={() => {}} settingsButton={<button type="button">Settings</button>} />);
     expect(await screen.findByText(/agent dir unavailable/)).toBeTruthy();
     expect(screen.getByRole("button", { name: /choose directory/i })).toBeTruthy();
+  });
+
+  it("auto-restarts a stopped active session before opening it", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listStatus).mockResolvedValue({
+      agentDir: "/agent",
+      homeDir: "/home/user",
+      sessions: history,
+      activeSessions: [{ id: "a1", cwd: "/proj", sessionName: "Running proj", isStreaming: false, status: "stopped" }],
+    } as never);
+    vi.mocked(api.restartSession).mockResolvedValue({
+      id: "a1",
+      cwd: "/proj",
+      isStreaming: false,
+      status: "ready",
+    } as never);
+    const onOpen = vi.fn();
+    render(<HomePage onOpenSession={onOpen} onOpenSettings={() => {}} settingsButton={<button type="button">Settings</button>} />);
+    await user.click(await screen.findByText("Running proj"));
+    await waitFor(() => expect(api.restartSession).toHaveBeenCalledWith("a1"));
+    await waitFor(() => expect(onOpen).toHaveBeenCalledWith({ id: "a1", cwd: "/proj" }));
+  });
+
+  it("opens a running active session directly without restart", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listStatus).mockResolvedValue({
+      agentDir: "/agent",
+      homeDir: "/home/user",
+      sessions: history,
+      activeSessions: [{ id: "a1", cwd: "/proj", sessionName: "Running proj", isStreaming: true, status: "running" }],
+    } as never);
+    const onOpen = vi.fn();
+    render(<HomePage onOpenSession={onOpen} onOpenSettings={() => {}} settingsButton={<button type="button">Settings</button>} />);
+    await user.click(await screen.findByText("Running proj"));
+    await waitFor(() => expect(api.restartSession).not.toHaveBeenCalled());
+    await waitFor(() => expect(onOpen).toHaveBeenCalledWith({ id: "a1", cwd: "/proj" }));
+  });
+
+  it("surfaces a restart failure inline", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listStatus).mockResolvedValue({
+      agentDir: "/agent",
+      homeDir: "/home/user",
+      sessions: history,
+      activeSessions: [{ id: "a1", cwd: "/proj", sessionName: "Running proj", isStreaming: false, status: "error", error: "boom" }],
+    } as never);
+    vi.mocked(api.restartSession).mockRejectedValueOnce(new Error("boom"));
+    const onOpen = vi.fn();
+    render(<HomePage onOpenSession={onOpen} onOpenSettings={() => {}} settingsButton={<button type="button">Settings</button>} />);
+    await user.click(await screen.findByText("Running proj"));
+    expect(await screen.findByText("boom")).toBeTruthy();
+    expect(onOpen).not.toHaveBeenCalled();
   });
 });

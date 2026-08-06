@@ -297,9 +297,10 @@ describe("PdfPreview", () => {
     vi.stubGlobal("devicePixelRatio", 2);
     render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 1, renderLog })} />);
     await screen.findByText("1 / 1");
-    expect(renderLog.length).toBeGreaterThan(0);
-    const call = renderLog.find((entry) => entry.transform?.every((value, index) => value === (index === 0 || index === 3 ? 2 : 0)));
-    expect(call).toBeTruthy();
+    await waitFor(() => {
+      const call = renderLog.find((entry) => entry.transform?.every((value, index) => value === (index === 0 || index === 3 ? 2 : 0)));
+      expect(call).toBeTruthy();
+    });
   });
 
   it("wraps the toolbar on compact widths without page-level overflow", async () => {
