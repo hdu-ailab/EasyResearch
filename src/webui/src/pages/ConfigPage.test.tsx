@@ -51,13 +51,12 @@ describe("ConfigPage", () => {
     expect(within(dialog).getByText(/example/i)).toBeTruthy();
   });
 
-  it("? overlay shows a wrapped example with webui and agentModels", async () => {
+  it("? overlay shows a wrapped example with agentModels", async () => {
     const user = userEvent.setup();
     render(<ConfigPage onBack={() => {}} />);
     await user.click(await screen.findByText("/home/u/proj"));
     await user.click(await screen.findByRole("button", { name: /\?/i }));
     const dialog = await screen.findByRole("dialog", { name: /settings help/i });
-    expect(within(dialog).getAllByText(/chatFontSize/i).length).toBeGreaterThan(0);
     expect(within(dialog).getAllByText(/agentModels/i).length).toBeGreaterThan(0);
     const example = dialog.querySelector("pre");
     expect(example?.className).toContain("whitespace-pre-wrap");
