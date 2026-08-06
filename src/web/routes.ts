@@ -298,6 +298,7 @@ function errorResponse(status: number, message: string, extra: Record<string, un
 function contentType(file: string): string {
   if (file.endsWith(".html")) return "text/html; charset=utf-8";
   if (file.endsWith(".js")) return "text/javascript; charset=utf-8";
+  if (file.endsWith(".mjs")) return "text/javascript; charset=utf-8";
   if (file.endsWith(".css")) return "text/css; charset=utf-8";
   if (file.endsWith(".svg")) return "image/svg+xml";
   if (file.endsWith(".json")) return "application/json; charset=utf-8";

@@ -25,7 +25,9 @@ export function FileTabs({ tabs, active, onActivate, onClose, toggle }: FileTabs
         <div className="sticky left-0 z-10 shrink-0 bg-v2-background-bg-base">
           <button
             type="button"
-            className="flex size-7 shrink-0 items-center justify-center rounded text-v2-icon-icon-muted transition-colors hover:bg-v2-grey-100"
+            className={`flex size-7 shrink-0 items-center justify-center rounded text-v2-icon-icon-muted transition-colors hover:bg-v2-grey-100 ${
+              toggle.opened ? "bg-v2-background-bg-layer-2" : ""
+            }`}
             aria-label="Toggle file tree"
             title="Toggle file tree"
             aria-expanded={toggle.opened}
