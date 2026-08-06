@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { ChevronRight, File as FileIcon, Folder, FolderOpen, RefreshCw, Search } from "lucide-react";
 import { listEntries } from "../api";
+import { useLazyTree } from "../hooks/useLazyTree";
 import type { FileEntryDto } from "../../../web/contracts";
 
 export interface FilesPanelProps {
@@ -11,81 +12,44 @@ export interface FilesPanelProps {
 interface TreeRow {
   entry: FileEntryDto;
   depth: number;
-  loading: boolean;
 }
 
 export function FilesPanel({ root, onOpenFile }: FilesPanelProps) {
   const [filter, setFilter] = useState("");
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [childrenByPath, setChildrenByPath] = useState<Map<string, FileEntryDto[]>>(new Map());
-  const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(
-    (path: string) => {
-      if (childrenByPath.has(path)) return;
-      setChildrenByPath((current) => new Map(current).set(path, []));
-      listEntries(path)
-        .then((entries) => {
-          setChildrenByPath((current) => new Map(current).set(path, entries));
-          setError(null);
-        })
-        .catch((e: unknown) => {
-          setChildrenByPath((current) => new Map(current).set(path, []));
-          setError(e instanceof Error ? e.message : String(e));
-        });
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    },
-    [childrenByPath],
-  );
-
-  useEffect(() => {
-    load(root);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [root]);
+  const tree = useLazyTree<FileEntryDto>({ root, loadChildren: listEntries });
 
   const rows = useMemo(() => {
     const out: TreeRow[] = [];
     const walk = (path: string, depth: number) => {
-      const children = childrenByPath.get(path);
-      if (!children) return;
-      for (const child of children) {
-        out.push({ entry: child, depth, loading: child.kind === "directory" && !childrenByPath.has(child.path) });
-        if (child.kind === "directory" && expanded.has(child.path)) walk(child.path, depth + 1);
+      for (const child of tree.children(path)) {
+        out.push({ entry: child, depth });
+        if (child.kind === "directory" && tree.expanded.has(child.path)) walk(child.path, depth + 1);
       }
     };
     walk(root, 0);
     return out;
-  }, [root, expanded, childrenByPath]);
+  }, [root, tree.children, tree.expanded]);
 
   const matches = useMemo(() => {
     const query = filter.trim().toLowerCase();
     if (!query) return [];
     const out: { entry: FileEntryDto; rel: string }[] = [];
     const walk = (path: string) => {
-      const children = childrenByPath.get(path);
-      if (!children) return;
-      for (const child of children) {
+      for (const child of tree.children(path)) {
         out.push({ entry: child, rel: path === root ? child.name : `${path.slice(root.length + 1)}/${child.name}` });
         if (child.kind === "directory") walk(child.path);
       }
     };
     walk(root);
     return out.filter((item) => item.entry.name.toLowerCase().includes(query)).slice(0, 100);
-  }, [root, filter, childrenByPath]);
+  }, [root, filter, tree.children]);
 
   const toggle = (entry: FileEntryDto) => {
     if (entry.kind !== "directory") return;
-    setExpanded((current) => {
-      const next = new Set(current);
-      if (next.has(entry.path)) {
-        next.delete(entry.path);
-      } else {
-        next.add(entry.path);
-      }
-      return next;
-    });
-    load(entry.path);
+    tree.toggle(entry.path);
   };
+
+  const rootError = tree.error(root);
 
   const rowClass = (isDirectory: boolean) =>
     `group flex w-full cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-v2-grey-100 ${
@@ -111,17 +75,12 @@ export function FilesPanel({ root, onOpenFile }: FilesPanelProps) {
           className="flex size-6 shrink-0 items-center justify-center rounded-md text-v2-icon-icon-muted transition-colors hover:bg-v2-grey-100 hover:text-v2-icon-icon-base"
           aria-label="Refresh listing"
           title="Refresh listing"
-          onClick={() => {
-            const next = new Map<string, FileEntryDto[]>();
-            next.set(root, []);
-            setChildrenByPath(next);
-            load(root);
-          }}
+          onClick={() => tree.refresh(root)}
         >
           <RefreshCw size={13} />
         </button>
       </div>
-      {error && <p className="px-2 pt-2 text-[12px] text-v2-status-error">{error}</p>}
+      {rootError && <p className="px-2 pt-2 text-[12px] text-v2-status-error">{rootError}</p>}
       <div className="min-h-0 flex-1 overflow-y-auto p-2" role="tree" aria-label="Project files tree">
         {filter.trim() ? (
           matches.length === 0 ? (
@@ -144,13 +103,14 @@ export function FilesPanel({ root, onOpenFile }: FilesPanelProps) {
               ))}
             </div>
           )
-        ) : rows.length === 0 && !error ? (
+        ) : rows.length === 0 && !rootError ? (
           <p className="px-2 py-1 text-[12px] text-v2-text-text-faint">No files.</p>
         ) : (
           <div className="flex flex-col gap-0.5">
-            {rows.map(({ entry, depth, loading }) => {
-              const isExpanded = expanded.has(entry.path);
+            {rows.map(({ entry, depth }) => {
+              const isExpanded = tree.expanded.has(entry.path);
               const isDirectory = entry.kind === "directory";
+              const state = tree.status(entry.path);
               return (
                 <div
                   key={entry.path}
@@ -165,13 +125,13 @@ export function FilesPanel({ root, onOpenFile }: FilesPanelProps) {
                     <button
                       type="button"
                       className="flex size-4 shrink-0 items-center justify-center rounded text-v2-icon-icon-muted hover:bg-v2-grey-200"
-                      aria-label={isExpanded ? "Collapse" : "Expand"}
+                      aria-label={state === "loading" ? `Loading ${entry.name}` : isExpanded ? `Collapse ${entry.name}` : `Expand ${entry.name}`}
                       onClick={(event) => {
                         event.stopPropagation();
                         toggle(entry);
                       }}
                     >
-                      {loading ? (
+                      {state === "loading" ? (
                         <span className="v2-spinner" aria-hidden />
                       ) : (
                         <ChevronRight
@@ -189,6 +149,19 @@ export function FilesPanel({ root, onOpenFile }: FilesPanelProps) {
                     <FileIcon size={13} className="shrink-0 text-v2-icon-icon-muted" />
                   )}
                   <span className="min-w-0 truncate text-[12px]">{entry.name}</span>
+                  {state === "error" && (
+                    <button
+                      type="button"
+                      className="ml-auto shrink-0 rounded px-1.5 py-0.5 text-[11px] text-v2-text-text-muted hover:bg-v2-grey-200"
+                      aria-label={`Retry ${entry.name}`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        tree.retry(entry.path);
+                      }}
+                    >
+                      Retry
+                    </button>
+                  )}
                 </div>
               );
             })}

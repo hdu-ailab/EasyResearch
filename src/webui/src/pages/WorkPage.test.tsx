@@ -5,6 +5,7 @@ import { fireEvent } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkPage } from "./WorkPage";
 import * as api from "../api";
+import type { FileEntryDto } from "../../../web/contracts";
 
 vi.mock("../api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api")>();
@@ -175,6 +176,22 @@ describe("WorkPage", () => {
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     expect(await screen.findByText("keep this")).toBeTruthy();
     expect(screen.getByText("starting research")).toBeTruthy();
+  });
+
+  it("files tree shows a chevron for untouched directories and a spinner only while loading", async () => {
+    const user = userEvent.setup();
+    const pending: Promise<FileEntryDto[]> = new Promise(() => {});
+    vi.mocked(api.listEntries).mockImplementation(async (p) => {
+      if (p === "/p") return [{ kind: "directory", name: "folder", path: "/p/folder" }];
+      return pending;
+    });
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    expect(await screen.findByText("folder")).toBeVisible();
+    expect(screen.queryByLabelText("Loading folder")).toBeNull();
+    expect(screen.getByRole("button", { name: "Expand folder" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Expand folder" }));
+    expect(screen.getByLabelText("Loading folder")).toBeVisible();
   });
 
   it("opens a file from the files panel into a tab and previews its content", async () => {
