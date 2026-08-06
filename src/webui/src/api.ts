@@ -10,6 +10,8 @@ import type {
   SessionSnapshotDto,
   SessionSummaryDto,
   StatusDto,
+  WebuiSettingsDto,
+  WebuiSettingsUpdate,
 } from "../../web/contracts";
 import type { ConfigFileDto, ConfigProjectsDto } from "./types";
 
@@ -65,6 +67,18 @@ export function listAgents(): Promise<AgentDto[]> {
 
 export function listModels(): Promise<Array<{ provider: string; id: string }>> {
   return request("/api/models").then((d) => (d as { models: Array<{ provider: string; id: string }> }).models);
+}
+
+export function getWebuiSettings(): Promise<WebuiSettingsDto> {
+  return request("/api/webui-settings");
+}
+
+export function updateWebuiSettings(patch: WebuiSettingsUpdate): Promise<WebuiSettingsDto> {
+  return request("/api/webui-settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
 }
 
 export function getEffectiveModels(sessionId: string): Promise<AgentEffectiveModelDto[]> {

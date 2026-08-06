@@ -1,6 +1,14 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ActiveSessionDto, AgentDto, AgentEffectiveModelDto, ConfigScope, SessionSummaryDto } from "./contracts";
+import type {
+  ActiveSessionDto,
+  AgentDto,
+  AgentEffectiveModelDto,
+  ConfigScope,
+  SessionSummaryDto,
+  WebuiSettingsDto,
+  WebuiSettingsUpdate,
+} from "./contracts";
 import type { DirectoryService } from "./directories";
 import { DirectoryServiceError } from "./directories";
 import { parseByteRange, RawFileRangeError, type ByteRange, type RawFileDescriptor } from "./raw-file";
@@ -9,6 +17,7 @@ import { ExtensionGuardError } from "../runtime/extensions-guard";
 import type { ConfigFileService } from "./config-files";
 import { ConfigPathError, ConfigServiceError } from "./config-files";
 import { AgentModelError } from "./agent-models";
+import { WebuiSettingsError, readWebuiSettings, updateWebuiSettings } from "./webui-settings";
 
 export interface RouteServices {
   webuiDist: string;
@@ -18,6 +27,8 @@ export interface RouteServices {
   effectiveModels: (sessionId: string) => Promise<AgentEffectiveModelDto[]>;
   setAgentModel: (sessionId: string, agentName: string, model: string | null) => Promise<void>;
   listConfigProjects: () => Promise<{ home: string; projects: Array<{ cwd: string }> }>;
+  getWebuiSettings: () => Promise<WebuiSettingsDto>;
+  updateWebuiSettings: (patch: WebuiSettingsUpdate) => Promise<WebuiSettingsDto>;
   directories: DirectoryService;
   registry: ActiveSessionRegistry;
   config: ConfigFileService;
@@ -56,6 +67,15 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
 
       if (req.method === "GET" && path === "/api/models") {
         return jsonResponse({ models: await services.listModels() });
+      }
+
+      if (req.method === "GET" && path === "/api/webui-settings") {
+        return jsonResponse(await services.getWebuiSettings());
+      }
+
+      if (req.method === "PUT" && path === "/api/webui-settings") {
+        const body = await jsonBody<WebuiSettingsUpdate>(req);
+        return jsonResponse(await services.updateWebuiSettings(body));
       }
 
       if (req.method === "GET" && path === "/api/directories") {
@@ -186,6 +206,7 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       if (error instanceof ExtensionGuardError) return errorResponse(400, error.message);
       if (error instanceof UnknownSessionError) return errorResponse(404, error.message);
       if (error instanceof AgentModelError) return errorResponse(error.status, error.message);
+      if (error instanceof WebuiSettingsError) return errorResponse(error.status, error.message);
       if (error instanceof BodyError) return errorResponse(400, error.message);
       return errorResponse(500, "Internal server error");
     }

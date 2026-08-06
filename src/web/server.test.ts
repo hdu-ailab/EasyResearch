@@ -12,6 +12,7 @@ import { DirectoryService } from "./directories";
 import { ConfigFileService } from "./config-files";
 import type { SessionSummaryDto } from "./contracts";
 import { AgentModelError } from "./agent-models";
+import { WebuiSettingsError } from "./webui-settings";
 
 vi.mock("../runtime/extensions-guard", () => ({
   assertNoUserExtensions: vi.fn(),
@@ -119,6 +120,8 @@ describe("web routes", () => {
       registry,
       config: configService,
       listAgents: async () => [],
+      getWebuiSettings: vi.fn(async () => ({ chatFontSize: 13, filesFontSize: 12, agentModels: {} })),
+      updateWebuiSettings: vi.fn(async (patch) => ({ chatFontSize: 14, filesFontSize: 12, agentModels: {}, ...patch })),
       ...overrides,
     };
     handler = createRouteHandler(services);
@@ -571,6 +574,40 @@ describe("web routes", () => {
       { provider: "openai", id: "gpt-4o" },
       { provider: "deepseek", id: "ds-v3" },
     ]);
+  });
+
+  it("GET /api/webui-settings returns the settings object", async () => {
+    const res = await handler(new Request("http://localhost/api/webui-settings"));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ chatFontSize: 13, filesFontSize: 12, agentModels: {} });
+  });
+
+  it("PUT /api/webui-settings forwards the partial patch and returns the updated object", async () => {
+    const res = await handler(
+      new Request("http://localhost/api/webui-settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chatFontSize: 14 }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ chatFontSize: 14 });
+  });
+
+  it("PUT /api/webui-settings maps WebuiSettingsError to its status", async () => {
+    const updateWebuiSettings = vi.fn(async () => {
+      throw new WebuiSettingsError(400, "chatFontSize must be an integer");
+    });
+    setup({ updateWebuiSettings });
+    const res = await handler(
+      new Request("http://localhost/api/webui-settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chatFontSize: 99 }),
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain("chatFontSize");
   });
 
   it("returns the effective models for a session", async () => {
