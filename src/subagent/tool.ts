@@ -10,6 +10,7 @@ import { Type } from "typebox";
 import { getInternalPiInvocation } from "../runtime/internal-invocation";
 import { getAgentDir, importPi } from "../runtime/pi-import";
 import { discoverAgents, type AgentConfig } from "./agents";
+import { resolveModelForSpawn } from "./model-resolution";
 import { releaseSubagentLock, tryAcquireSubagentLock } from "./serial";
 
 /**
@@ -129,17 +130,12 @@ export async function resolveInheritedSession(
 
 export function buildPiArgs(
   agent: AgentConfig,
-  fallbackModel: string | undefined,
+  model: string | undefined,
   task: string,
   sessionPath?: string,
 ): string[] {
   const args: string[] = ["--mode", "json", "-p"];
-  if (agent.model) {
-    args.push("--model", agent.model);
-  } else if (fallbackModel) {
-    // ADR-008: subagents without a model fall back to the orchestrator's model.
-    args.push("--model", fallbackModel);
-  }
+  if (model) args.push("--model", model);
   if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
   // ADR-022: nested dispatch needs the subagent tool inside stage runtimes.
   args.push("--extension", SUBAGENT_EXTENSION_PATH);
@@ -154,14 +150,15 @@ export interface RunSingleOptions {
   agentName: string;
   task: string;
   cwd?: string;
-  fallbackModel?: string;
+  /** Effective model to spawn the agent with (ADR-008 superseded: resolved upstream). */
+  model?: string;
   sessionPath?: string;
   signal?: AbortSignal;
   step?: number;
 }
 
 async function runSingleAgent(opts: RunSingleOptions): Promise<SingleResult> {
-  const { defaultCwd, agents, agentName, task, cwd, fallbackModel, sessionPath, signal, step } = opts;
+  const { defaultCwd, agents, agentName, task, cwd, model, sessionPath, signal, step } = opts;
   const agent = agents.find((a) => a.name === agentName);
 
   const emptyUsage: UsageStats = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 };
@@ -188,13 +185,13 @@ async function runSingleAgent(opts: RunSingleOptions): Promise<SingleResult> {
     messages: [],
     stderr: "",
     usage: emptyUsage,
-    model: agent.model,
+    model,
     step,
   };
 
   let tmpPromptPath: string | null = null;
   try {
-    const args = buildPiArgs(agent, fallbackModel, task, sessionPath);
+    const args = buildPiArgs(agent, model, task, sessionPath);
     if (agent.systemPrompt.trim()) {
       tmpPromptPath = await writePromptToTempFile(agent.name, agent.systemPrompt);
       args.push("--append-system-prompt", tmpPromptPath);
@@ -378,13 +375,14 @@ export const subagentTool = defineTool({
           const sessionPath =
             step.session === "new" ? undefined : await resolveInheritedSession(ctx.cwd, step.agent);
           const taskWithContext = step.task.replace(/\{previous\}/g, previousOutput);
+          const model = await resolveModelForSpawn(ctx, step.agent, fallbackModel);
           const result = await runSingleAgent({
             defaultCwd: ctx.cwd,
             agents,
             agentName: step.agent,
             task: taskWithContext,
             cwd: step.cwd,
-            fallbackModel,
+            model,
             sessionPath,
             signal,
             step: i + 1,
@@ -407,13 +405,14 @@ export const subagentTool = defineTool({
 
       if (params.agent && params.task) {
         const sessionPath = params.session === "new" ? undefined : await resolveInheritedSession(ctx.cwd, params.agent);
+        const model = await resolveModelForSpawn(ctx, params.agent, fallbackModel);
         const result = await runSingleAgent({
           defaultCwd: ctx.cwd,
           agents,
           agentName: params.agent,
           task: params.task,
           cwd: params.cwd,
-          fallbackModel,
+          model,
           sessionPath,
           signal,
         });

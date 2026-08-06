@@ -48,12 +48,11 @@ export async function startServer(): Promise<Server> {
     registry,
     config: new ConfigFileService(agentDir),
     listAgents: async () =>
-      discoverAgents().agents.map(({ name, description, tools, subagents, model }) => ({
+      discoverAgents().agents.map(({ name, description, tools, subagents }) => ({
         name,
         description,
         tools,
         subagents,
-        model,
       })),
   };
   const handler = createRouteHandler(services);

@@ -352,10 +352,6 @@ function AgentList({ streaming }: { streaming: boolean }) {
               <dt className="text-v2-text-text-faint">Role</dt>
               <dd className="text-v2-text-text-muted">{orchestrator?.description ?? "Runs the paper pipeline"}</dd>
             </div>
-            <div className="flex justify-between gap-2">
-              <dt className="text-v2-text-text-faint">Model</dt>
-              <dd className="text-v2-text-text-muted">{orchestrator?.model ?? "inherits session"}</dd>
-            </div>
           </dl>
         </div>
         {subagents.map((agent) => (
@@ -375,12 +371,6 @@ function AgentList({ streaming }: { streaming: boolean }) {
                   <dd className="text-v2-text-text-muted">{agent.subagents.join(", ")}</dd>
                 </div>
               )}
-              {agent.model ? (
-                <div className="flex justify-between gap-2">
-                  <dt className="text-v2-text-text-faint">Model</dt>
-                  <dd className="text-v2-text-text-muted">{agent.model}</dd>
-                </div>
-              ) : null}
             </dl>
           </div>
         ))}

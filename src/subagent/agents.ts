@@ -11,7 +11,6 @@ export interface AgentConfig {
   tools?: string[];
   /** Agents this agent may dispatch via the subagent tool; absent = all (ADR-022). */
   subagents?: string[];
-  model?: string;
   systemPrompt: string;
   source: AgentSource;
   filePath: string;
@@ -72,7 +71,6 @@ function parseAgentFile(filePath: string, source: AgentSource): AgentConfig | nu
     description: frontmatter.description,
     tools: tools && tools.length > 0 ? tools : undefined,
     subagents: subagents && subagents.length > 0 ? subagents : undefined,
-    model: frontmatter.model,
     systemPrompt: body,
     source,
     filePath,
