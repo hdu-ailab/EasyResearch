@@ -4,6 +4,8 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsPage } from "./SettingsPage";
 import * as api from "../api";
+import { I18nProvider } from "../i18n/I18nProvider";
+import { STORAGE_KEY } from "../preferences";
 
 vi.mock("../api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api")>();
@@ -16,14 +18,13 @@ vi.mock("../api", async (importOriginal) => {
   };
 });
 
-const baseSettings = { chatFontSize: 13, filesFontSize: 12, agentModels: { search: "openai/gpt-4o" } };
-
 beforeEach(() => {
+  window.localStorage.clear();
   vi.mocked(api.getWebuiSettings).mockReset();
   vi.mocked(api.updateWebuiSettings).mockReset();
   vi.mocked(api.listAgents).mockReset();
   vi.mocked(api.listModels).mockReset();
-  vi.mocked(api.getWebuiSettings).mockResolvedValue({ ...baseSettings } as never);
+  vi.mocked(api.getWebuiSettings).mockResolvedValue({ agentModels: { search: "openai/gpt-4o" } } as never);
   vi.mocked(api.listAgents).mockResolvedValue([
     { name: "orchestrator", description: "Coordinates" },
     { name: "search", description: "Searches" },
@@ -36,39 +37,73 @@ beforeEach(() => {
 });
 
 describe("SettingsPage", () => {
-  it("renders appearance selects with the current values", async () => {
+  it("renders default font sizes with steppers and a preview", async () => {
     render(<SettingsPage onBack={() => {}} onOpenConfigPage={() => {}} />);
-    expect(await screen.findByLabelText("Chat font size")).toHaveValue("13");
-    expect(screen.getByLabelText("Files font size")).toHaveValue("12");
+    expect(screen.getByText("Chat font size")).toBeTruthy();
+    expect(screen.getByText("Files font size")).toBeTruthy();
+    expect(screen.getByText("13px")).toBeTruthy();
+    expect(screen.getByText("12px")).toBeTruthy();
+    expect(screen.getByText("Preview")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Decrease chat font size" })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: "Increase chat font size" })).not.toBeDisabled();
+  });
+
+  it("reads stored font sizes from localStorage", async () => {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ chatFontSize: 16, filesFontSize: 11, language: "en" }));
+    render(<SettingsPage onBack={() => {}} onOpenConfigPage={() => {}} />);
+    expect(screen.getByText("16px")).toBeTruthy();
+    expect(screen.getByText("11px")).toBeTruthy();
+  });
+
+  it("persists and applies font size changes without a backend call", async () => {
+    const user = userEvent.setup();
+    render(<SettingsPage onBack={() => {}} onOpenConfigPage={() => {}} />);
+    await user.click(screen.getByRole("button", { name: "Increase chat font size" }));
+    expect(screen.getByText("14px")).toBeTruthy();
+    expect(document.documentElement.style.getPropertyValue("--v2-chat-font-size")).toBe("14px");
+    expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}")).toMatchObject({ chatFontSize: 14 });
+    expect(api.updateWebuiSettings).not.toHaveBeenCalled();
+  });
+
+  it("disables the increase button at the max bound", async () => {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ chatFontSize: 20, filesFontSize: 12, language: "en" }));
+    const user = userEvent.setup();
+    render(<SettingsPage onBack={() => {}} onOpenConfigPage={() => {}} />);
+    expect(screen.getByRole("button", { name: "Increase chat font size" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Decrease chat font size" }));
+    expect(screen.getByText("19px")).toBeTruthy();
+  });
+
+  it("switches the interface language and persists it", async () => {
+    const user = userEvent.setup();
+    render(
+      <I18nProvider>
+        <SettingsPage onBack={() => {}} onOpenConfigPage={() => {}} />
+      </I18nProvider>,
+    );
+    await user.click(screen.getByRole("button", { name: "简体中文" }));
+    expect(screen.getByText("外观")).toBeTruthy();
+    expect(screen.getByText("语言")).toBeTruthy();
+    expect(document.documentElement.lang).toBe("zh-CN");
+    expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}")).toMatchObject({ language: "zh-CN" });
   });
 
   it("shows stage agents with their configured model and the orchestrator read-only", async () => {
     render(<SettingsPage onBack={() => {}} onOpenConfigPage={() => {}} />);
-    await screen.findByLabelText("Chat font size");
+    await screen.findByRole("combobox", { name: "search model" });
     expect(screen.getByRole("combobox", { name: "search model" })).toHaveValue("openai/gpt-4o");
     expect(screen.getByRole("combobox", { name: "writing model" })).toHaveValue("");
     expect(screen.queryByRole("combobox", { name: "orchestrator model" })).toBeNull();
     expect(screen.getByText(/session model/i)).toBeTruthy();
   });
 
-  it("applies font size changes live and persists them", async () => {
-    const user = userEvent.setup();
-    vi.mocked(api.updateWebuiSettings).mockResolvedValue({ ...baseSettings, chatFontSize: 14 } as never);
-    render(<SettingsPage onBack={() => {}} onOpenConfigPage={() => {}} />);
-    await screen.findByLabelText("Chat font size");
-    await user.selectOptions(screen.getByLabelText("Chat font size"), "14");
-    await waitFor(() => expect(api.updateWebuiSettings).toHaveBeenCalledWith({ chatFontSize: 14 }));
-    await waitFor(() => expect(document.documentElement.style.getPropertyValue("--v2-chat-font-size")).toBe("14px"));
-  });
-
   it("sets a stage agent model via agentModels patch", async () => {
     const user = userEvent.setup();
     vi.mocked(api.updateWebuiSettings).mockResolvedValue({
-      ...baseSettings,
       agentModels: { search: "openai/gpt-4o", writing: "anthropic/claude-sonnet-4" },
     } as never);
     render(<SettingsPage onBack={() => {}} onOpenConfigPage={() => {}} />);
-    await screen.findByLabelText("Chat font size");
+    await screen.findByRole("combobox", { name: "writing model" });
     await user.selectOptions(screen.getByRole("combobox", { name: "writing model" }), "anthropic/claude-sonnet-4");
     await waitFor(() =>
       expect(api.updateWebuiSettings).toHaveBeenCalledWith({
@@ -77,30 +112,19 @@ describe("SettingsPage", () => {
     );
   });
 
-  it("clears an agent model when inherit is chosen", async () => {
-    const user = userEvent.setup();
-    vi.mocked(api.updateWebuiSettings).mockResolvedValue({ ...baseSettings, agentModels: {} } as never);
-    render(<SettingsPage onBack={() => {}} onOpenConfigPage={() => {}} />);
-    await screen.findByLabelText("Chat font size");
-    await user.selectOptions(screen.getByRole("combobox", { name: "search model" }), "");
-    await waitFor(() => expect(api.updateWebuiSettings).toHaveBeenCalledWith({ agentModels: {} }));
-  });
-
-  it("surfaces an update failure and keeps the last good value", async () => {
+  it("surfaces an agentModels update failure", async () => {
     const user = userEvent.setup();
     vi.mocked(api.updateWebuiSettings).mockRejectedValueOnce(new Error("boom"));
     render(<SettingsPage onBack={() => {}} onOpenConfigPage={() => {}} />);
-    await screen.findByLabelText("Chat font size");
-    await user.selectOptions(screen.getByLabelText("Chat font size"), "14");
+    await screen.findByRole("combobox", { name: "search model" });
+    await user.selectOptions(screen.getByRole("combobox", { name: "search model" }), "");
     expect(await screen.findByText(/boom/)).toBeTruthy();
-    expect(screen.getByLabelText("Chat font size")).toHaveValue("13");
   });
 
   it("opens the JSON config editor from its button", async () => {
     const user = userEvent.setup();
     const onOpenConfigPage = vi.fn();
     render(<SettingsPage onBack={() => {}} onOpenConfigPage={onOpenConfigPage} />);
-    await screen.findByLabelText("Chat font size");
     await user.click(screen.getByRole("button", { name: /edit.*json/i }));
     expect(onOpenConfigPage).toHaveBeenCalled();
   });
