@@ -315,7 +315,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
         </section>
 
         <aside
-          className={`absolute inset-0 z-30 flex w-full flex-col overflow-hidden bg-v2-background-bg-base shadow-[var(--v2-elevation-floating)] md:relative md:inset-auto md:z-0 md:shrink-0 md:w-(--panel-w) md:translate-x-0 md:rounded-[10px] md:shadow-[var(--v2-elevation-raised)] ${
+          className={`absolute inset-0 z-30 flex w-full flex-col bg-v2-background-bg-base shadow-[var(--v2-elevation-floating)] md:relative md:inset-auto md:z-0 md:shrink-0 md:w-(--panel-w) md:translate-x-0 md:rounded-[10px] md:shadow-[var(--v2-elevation-raised)] ${
             sizing
               ? ""
               : "transition-[translate,opacity] duration-v2-panel ease-v2-panel md:transition-[width,opacity] md:duration-v2-panel md:ease-v2-panel motion-reduce:transition-none"

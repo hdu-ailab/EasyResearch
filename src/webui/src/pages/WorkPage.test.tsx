@@ -462,6 +462,18 @@ describe("WorkPage", () => {
     expect(region.className).toContain("transition-[width,opacity]");
   });
 
+  it("keeps the resize handle reachable while clipping panel content internally", async () => {
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    const region = screen.getByRole("region", { name: /file browser/i });
+    expect(region.className).not.toContain("overflow-hidden");
+    const wrapper = region.querySelector(".animate-v2-fade-in");
+    expect(wrapper?.className).toContain("overflow-hidden");
+    const handle = screen.getByRole("button", { name: /resize panel/i });
+    expect(region.contains(handle)).toBe(true);
+    expect(handle.className).toContain("md:block");
+  });
+
   it("fades the content wrapper when switching between panel views", async () => {
     const user = userEvent.setup();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
