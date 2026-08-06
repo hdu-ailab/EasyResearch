@@ -54,6 +54,8 @@
   --transition-duration-v2-panel: 200ms;
   --ease-v2-panel: cubic-bezier(0.22, 1, 0.36, 1);
   --animate-v2-fade-in: v2-fade-in 200ms var(--ease-v2-panel);
+  --animate-v2-expand-down: v2-expand-down 200ms var(--ease-v2-panel);
+  --animate-v2-collapse-up: v2-collapse-up 200ms var(--ease-v2-panel);
 }
 
 :root {
@@ -116,6 +118,20 @@ body {
 @keyframes v2-fade-in {
   from {
     opacity: 0;
+  }
+}
+
+@keyframes v2-expand-down {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes v2-collapse-up {
+  to {
+    opacity: 0;
+    transform: translateY(-8px);
   }
 }
 
