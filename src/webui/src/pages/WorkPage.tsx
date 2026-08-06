@@ -27,7 +27,7 @@ export interface WorkPageProps {
 
 type Panel = "files" | "agents" | null;
 
-const emptyView: SessionViewState = { messages: [], tools: [], isStreaming: false, error: null };
+const emptyView: SessionViewState = { messages: [], tools: [], isStreaming: false, error: null, nextOrder: 0 };
 
 const PANEL_MIN = 240;
 const PANEL_DEFAULT = 320;
