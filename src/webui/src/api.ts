@@ -1,5 +1,6 @@
 import type {
   ActiveSessionDto,
+  AgentDto,
   ConfigEntryDto,
   ConfigScope,
   DirectoryEntryDto,
@@ -53,6 +54,10 @@ export function listStatus(): Promise<StatusDto> {
   return request("/api/status");
 }
 
+export function listAgents(): Promise<AgentDto[]> {
+  return request("/api/agents");
+}
+
 export function listDirectories(path: string): Promise<DirectoryEntryDto[]> {
   return request(`/api/directories?path=${encodeURIComponent(path)}`).then(
     (listing) => (listing as { entries: DirectoryEntryDto[] }).entries,
@@ -67,6 +72,14 @@ export function listEntries(path: string): Promise<FileEntryDto[]> {
 
 export function readFileContent(path: string): Promise<FileContentDto> {
   return request(`/api/file?path=${encodeURIComponent(path)}`);
+}
+
+/**
+ * URL for the MIME-correct, Range-capable raw bytes endpoint. Used for PDF
+ * loading and Markdown-local image/link resources.
+ */
+export function rawFileUrl(path: string): string {
+  return `/api/file/raw?path=${encodeURIComponent(path)}`;
 }
 
 export function createSession(cwd: string): Promise<ActiveSessionDto> {

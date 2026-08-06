@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Bot, FileSearch, FolderOpen } from "lucide-react";
-import { abortSession, connectSessionEvents, getSnapshot, readFileContent, sendPrompt } from "../api";
+import type { AgentDto } from "../../../web/contracts";
+import { abortSession, connectSessionEvents, getSnapshot, listAgents, readFileContent, sendPrompt } from "../api";
 import { fromSnapshot, reduceSessionEvent, type SessionViewState } from "../session-reducer";
 import { ChatTranscript } from "../components/ChatTranscript";
 import { ChatComposer } from "../components/ChatComposer";
@@ -38,6 +39,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   const [statusText, setStatusText] = useState<string | null>(null);
   const [panel, setPanel] = useState<Panel>("files");
   const [panelWidth, setPanelWidth] = useState(PANEL_DEFAULT);
+  const [panelWidthTouched, setPanelWidthTouched] = useState(false);
   const [available, setAvailable] = useState<number | undefined>(undefined);
   const [sizing, setSizing] = useState(false);
   const [agents, setAgents] = useState<AgentChip[]>([ORCHESTRATOR_AGENT]);
@@ -88,7 +90,12 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   }, [sessionView]);
 
   const panelMax = available === undefined ? 480 : Math.max(PANEL_MIN, available - CHAT_MIN - 8);
-  const clampedPanelWidth = available === undefined ? panelWidth : Math.min(panelWidth, panelMax);
+  const defaultPanelWidth = available === undefined ? PANEL_DEFAULT : Math.max(PANEL_MIN, Math.round(available / 2));
+  const clampedPanelWidth = available === undefined
+    ? panelWidth
+    : panelWidthTouched
+      ? Math.min(panelWidth, panelMax)
+      : Math.min(defaultPanelWidth, panelMax);
   const activeMessages = sessionView.messages.filter((m) => (m.agentId ?? "orchestrator") === activeAgent);
 
   const hydrate = useCallback(async (targetId: string) => {
@@ -146,6 +153,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
       const move = (moveEvent: PointerEvent) => {
         const next = Math.min(panelMax, Math.max(PANEL_MIN, startWidth + startX - moveEvent.clientX));
         setPanelWidth(Math.round(next));
+        setPanelWidthTouched(true);
       };
 
       document.addEventListener("pointermove", move);
@@ -275,10 +283,10 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
         </section>
 
         <aside
-          className={`absolute inset-x-0 bottom-0 top-9 z-30 flex-col rounded-t-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-floating)] transition-transform duration-200 sm:top-0 md:relative md:z-0 md:inset-auto md:translate-x-0 md:shrink-0 md:rounded-[10px] md:shadow-[var(--v2-elevation-raised)] ${
+          className={`absolute inset-0 z-30 flex-col w-full bg-v2-background-bg-base shadow-[var(--v2-elevation-floating)] md:w-(--panel-w) md:relative md:z-0 md:inset-auto md:translate-x-0 md:shrink-0 md:rounded-[10px] md:shadow-[var(--v2-elevation-raised)] ${
             sizing ? "" : "md:transition-[width] md:duration-200 md:ease-[cubic-bezier(0.22,1,0.36,1)]"
           } ${panel ? "flex" : "hidden"}`}
-          style={panel ? { width: `${clampedPanelWidth}px` } : undefined}
+          style={panel ? { "--panel-w": `${clampedPanelWidth}px` } as React.CSSProperties : undefined}
           aria-label={panel === "agents" ? "Agent list" : "File browser"}
           role="region"
         >
@@ -304,6 +312,26 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
 }
 
 function AgentList({ streaming }: { streaming: boolean }) {
+  const [roster, setRoster] = useState<AgentDto[] | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    listAgents()
+      .then((agents) => {
+        if (alive) setRoster(agents);
+      })
+      .catch(() => {
+        if (alive) setRoster([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const agents = roster ?? [];
+  const orchestrator = agents.find((a) => a.name === "orchestrator");
+  const subagents = agents.filter((a) => a.name !== "orchestrator");
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex shrink-0 items-center gap-2 border-b border-v2-grey-200 px-3 py-2">
@@ -314,23 +342,51 @@ function AgentList({ streaming }: { streaming: boolean }) {
         <div className="rounded-md border border-v2-grey-200 bg-v2-background-bg-base p-3">
           <div className="flex items-center gap-2">
             <span className={`size-2 rounded-full ${streaming ? "bg-v2-status-success" : "bg-v2-grey-400"}`} aria-hidden />
-            <span className="text-[13px] font-medium text-v2-text-text-base">Orchestrator</span>
+            <span className="text-[13px] font-medium text-v2-text-text-base">
+              {orchestrator ? orchestrator.name : "Orchestrator"}
+            </span>
             <span className="ml-auto text-[12px] text-v2-text-text-faint">{streaming ? "working…" : "idle"}</span>
           </div>
           <dl className="mt-2 flex flex-col gap-1 text-[12px]">
             <div className="flex justify-between gap-2">
               <dt className="text-v2-text-text-faint">Role</dt>
-              <dd className="text-v2-text-text-muted">orchestrator</dd>
+              <dd className="text-v2-text-text-muted">{orchestrator?.description ?? "Runs the paper pipeline"}</dd>
             </div>
             <div className="flex justify-between gap-2">
               <dt className="text-v2-text-text-faint">Model</dt>
-              <dd className="text-v2-text-text-muted">inherits session</dd>
+              <dd className="text-v2-text-text-muted">{orchestrator?.model ?? "inherits session"}</dd>
             </div>
           </dl>
         </div>
+        {subagents.map((agent) => (
+          <div key={agent.name} className="mt-3 rounded-md border border-v2-grey-200 bg-v2-background-bg-base p-3">
+            <div className="flex items-center gap-2">
+              <FolderOpen size={12} className="text-v2-icon-icon-muted" />
+              <span className="text-[13px] font-medium text-v2-text-text-base">{agent.name}</span>
+            </div>
+            <dl className="mt-2 flex flex-col gap-1 text-[12px]">
+              <div className="flex justify-between gap-2">
+                <dt className="text-v2-text-text-faint">Role</dt>
+                <dd className="text-v2-text-text-muted">{agent.description}</dd>
+              </div>
+              {agent.subagents && agent.subagents.length > 0 && (
+                <div className="flex justify-between gap-2">
+                  <dt className="text-v2-text-text-faint">Subagents</dt>
+                  <dd className="text-v2-text-text-muted">{agent.subagents.join(", ")}</dd>
+                </div>
+              )}
+              {agent.model ? (
+                <div className="flex justify-between gap-2">
+                  <dt className="text-v2-text-text-faint">Model</dt>
+                  <dd className="text-v2-text-text-muted">{agent.model}</dd>
+                </div>
+              ) : null}
+            </dl>
+          </div>
+        ))}
         <p className="mt-3 flex items-center gap-2 text-[12px] text-v2-text-text-faint">
           <FolderOpen size={12} />
-          Subagent cards appear here while they run in parallel.
+          Subagents run strictly serially; their cards appear here as they run.
         </p>
       </div>
     </div>

@@ -47,6 +47,16 @@ export interface FileContentDto {
   content: string;
   byteCount: number;
   truncated: boolean;
+  /** True when content is binary or non-UTF-8; `content` is then empty. */
+  binary: boolean;
+}
+
+export interface AgentDto {
+  name: string;
+  description: string;
+  tools?: string[];
+  subagents?: string[];
+  model?: string;
 }
 
 export type ConfigScope = "global" | "project";

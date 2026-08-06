@@ -1,4 +1,4 @@
-import { File as FileIcon, X } from "lucide-react";
+import { File as FileIcon, FolderTree, X } from "lucide-react";
 import type { FileContentDto } from "../../../web/contracts";
 
 export interface FileTab {
@@ -11,15 +11,33 @@ export interface FileTabsProps {
   active: string | null;
   onActivate: (path: string) => void;
   onClose: (path: string) => void;
+  toggle?: { opened: boolean; onToggle: () => void };
 }
 
-export function FileTabs({ tabs, active, onActivate, onClose }: FileTabsProps) {
+export function FileTabs({ tabs, active, onActivate, onClose, toggle }: FileTabsProps) {
   return (
     <div
       className="flex shrink-0 items-center gap-0.5 overflow-x-auto border-b border-v2-grey-200 px-1.5 py-1"
       role="tablist"
       aria-label="Open files"
     >
+      {toggle && (
+        <div className="sticky left-0 z-10 shrink-0 bg-v2-background-bg-base">
+          <button
+            type="button"
+            className={`flex size-7 shrink-0 items-center justify-center rounded text-v2-icon-icon-muted transition-colors hover:bg-v2-grey-100 ${
+              toggle.opened ? "bg-v2-background-bg-layer-2" : ""
+            }`}
+            aria-label="Toggle file tree"
+            title="Toggle file tree"
+            aria-expanded={toggle.opened}
+            data-expanded={toggle.opened}
+            onClick={toggle.onToggle}
+          >
+            <FolderTree size={14} />
+          </button>
+        </div>
+      )}
       {tabs.map((tab) => {
         const isActive = active === tab.path;
         return (
