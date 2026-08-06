@@ -1,9 +1,12 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Settings } from "lucide-react";
 import { HomePage } from "./pages/HomePage";
 import { WorkPage } from "./pages/WorkPage";
 import { ConfigPage } from "./pages/ConfigPage";
+import { SettingsPage } from "./pages/SettingsPage";
 import { TopbarIconButton } from "./components/Topbar";
+import { getWebuiSettings } from "./api";
+import { applyWebuiSettings } from "./webui-fonts";
 
 export interface ActiveSession {
   id: string;
@@ -13,10 +16,17 @@ export interface ActiveSession {
 type Route =
   | { page: "home" }
   | { page: "config" }
+  | { page: "config-json" }
   | { page: "work"; session: ActiveSession };
 
 export function App() {
   const [route, setRoute] = useState<Route>({ page: "home" });
+
+  useEffect(() => {
+    getWebuiSettings()
+      .then(applyWebuiSettings)
+      .catch(() => {});
+  }, []);
 
   if (route.page === "work") {
     return (
@@ -29,8 +39,17 @@ export function App() {
     );
   }
 
+  if (route.page === "config-json") {
+    return <ConfigPage onBack={() => setRoute({ page: "config" })} />;
+  }
+
   if (route.page === "config") {
-    return <ConfigPage onBack={() => setRoute({ page: "home" })} />;
+    return (
+      <SettingsPage
+        onBack={() => setRoute({ page: "home" })}
+        onOpenConfigPage={() => setRoute({ page: "config-json" })}
+      />
+    );
   }
 
   return (
