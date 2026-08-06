@@ -516,4 +516,13 @@ describe("web routes", () => {
     expect(await index.text()).toContain("<div id=\"root\">");
     expect((await handler(new Request("http://localhost/nope"))).status).toBe(404);
   });
+
+  it("serves .mjs modules with a JavaScript MIME type so PDF workers can load", async () => {
+    writeFileSync(join(webuiDist, "pdf.worker.min.mjs"), "self.streamSink", "utf-8");
+    setup();
+    const worker = await handler(new Request("http://localhost/pdf.worker.min.mjs"));
+    expect(worker.status).toBe(200);
+    expect(worker.headers.get("content-type")).toMatch(/text\/javascript/);
+    expect(await worker.text()).toBe("self.streamSink");
+  });
 });
