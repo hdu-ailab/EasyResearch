@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { FilePreview } from "./FilePreview";
@@ -39,11 +39,6 @@ function rect(overrides: Partial<DOMRect>): DOMRect {
     toJSON: () => ({}),
     ...overrides,
   } as DOMRect;
-}
-
-function fakeResizeObserverInstances() {
-  return (globalThis as unknown as { FakeResizeObserver: { instances: { __fire(width: number): void }[] } })
-    .FakeResizeObserver.instances;
 }
 
 const markdownDto: FileContentDto = {
@@ -190,24 +185,41 @@ describe("FilePreview markdown dispatch", () => {
 
 describe("PdfPreview", () => {
   beforeEach(() => {
-    fakeResizeObserverInstances().length = 0;
     scrollIntoViewTargets.length = 0;
   });
 
-  it("loads pages and navigates, searches, and links download", async () => {
+  it("loads pages, navigates, and links download", async () => {
     const user = userEvent.setup();
-    render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 3, text: ["alpha", "beta alpha", "gamma"] })} />);
+    render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 3 })} />);
     expect(await screen.findByText("1 / 3")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Next page" }));
     expect(screen.getByLabelText("Current page")).toHaveValue(2);
-    await user.type(screen.getByRole("searchbox", { name: "Find in PDF" }), "alpha");
-    expect(await screen.findByText("1 / 2 matches")).toBeVisible();
     expect(screen.getByRole("link", { name: "Download PDF" })).toHaveAttribute("href", rawFileUrl("/p/paper.pdf"));
+  });
+
+  it("keeps only page, zoom, and download controls", async () => {
+    render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 1 })} />);
+    await screen.findByText("1 / 1");
+    const toolbar = screen.getByRole("toolbar", { name: "PDF controls" });
+    expect(within(toolbar).getByRole("button", { name: "Previous page" })).toBeVisible();
+    expect(within(toolbar).getByRole("button", { name: "Next page" })).toBeVisible();
+    expect(within(toolbar).getByRole("button", { name: "Zoom in" })).toBeVisible();
+    expect(within(toolbar).getByRole("button", { name: "Zoom out" })).toBeVisible();
+    expect(within(toolbar).getByRole("link", { name: "Download PDF" })).toBeVisible();
+    expect(within(toolbar).queryByRole("searchbox")).toBeNull();
+    expect(within(toolbar).queryByRole("button", { name: "Fit width" })).toBeNull();
+    expect(within(toolbar).queryByRole("button", { name: "Rotate" })).toBeNull();
+  });
+
+  it("does not display the file name in the preview header", async () => {
+    render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 1 })} />);
+    await screen.findByText("1 / 1");
+    expect(screen.queryByText("/p/paper.pdf")).toBeNull();
   });
 
   it("zooms in and out", async () => {
     const user = userEvent.setup();
-    render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 1, text: ["a"] })} />);
+    render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 1 })} />);
     await screen.findByText("1 / 1");
     await user.click(screen.getByRole("button", { name: "Zoom in" }));
     expect(screen.getByText("125%")).toBeVisible();
@@ -215,77 +227,21 @@ describe("PdfPreview", () => {
     expect(screen.getByText("100%")).toBeVisible();
   });
 
-  it("fits pages to the container width", async () => {
+  it("keeps the canvas at the fixed zoom width in any container", async () => {
     const user = userEvent.setup();
-    render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 1, text: ["a"] })} />);
-    await screen.findByText("1 / 1");
-    await user.click(screen.getByRole("button", { name: "Fit width" }));
-    const instances = fakeResizeObserverInstances();
-    await waitFor(() => expect(instances.length).toBeGreaterThan(0));
-    instances[instances.length - 1]!.__fire(800);
-    await waitFor(() => expect(screen.getByLabelText("Page 1")).toHaveStyle({ width: "800px" }));
-  });
-
-  it("does not cap canvas CSS width in normal zoom so pages overflow and scroll locally", async () => {
-    const user = userEvent.setup();
-    render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 1, text: ["a"] })} />);
+    render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 1 })} />);
     await screen.findByText("1 / 1");
     const canvas = screen.getByLabelText("Page 1");
-    const instances = fakeResizeObserverInstances();
-    await waitFor(() => expect(instances.length).toBeGreaterThan(0));
-    instances[instances.length - 1]!.__fire(80);
     await waitFor(() => expect(canvas).toHaveStyle({ width: "100px" }));
     expect(canvas.className).not.toContain("max-w-full");
     await user.click(screen.getByRole("button", { name: "Zoom in" }));
     await waitFor(() => expect(canvas).toHaveStyle({ width: "125px" }));
-    expect(parseInt(canvas.style.width, 10)).toBeGreaterThan(80);
-    await user.click(screen.getByRole("button", { name: "Zoom in" }));
-    await waitFor(() => expect(canvas).toHaveStyle({ width: "150px" }));
-    expect(parseInt(canvas.style.width, 10)).toBeGreaterThan(80);
-  });
-
-  it("scopes max-w-full to fit-width mode only", async () => {
-    const user = userEvent.setup();
-    render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 1, text: ["a"] })} />);
-    await screen.findByText("1 / 1");
-    const canvas = screen.getByLabelText("Page 1");
-    expect(canvas.className).not.toContain("max-w-full");
-    await user.click(screen.getByRole("button", { name: "Fit width" }));
-    await waitFor(() => expect(canvas.className).toContain("max-w-full"));
-    const instances = fakeResizeObserverInstances();
-    await waitFor(() => expect(instances.length).toBeGreaterThan(0));
-    instances[instances.length - 1]!.__fire(800);
-    await waitFor(() => expect(canvas).toHaveStyle({ width: "800px" }));
-    await user.click(screen.getByRole("button", { name: "Fit width" }));
-    await waitFor(() => expect(canvas.className).not.toContain("max-w-full"));
-  });
-
-  it("rotates the page", async () => {
-    const user = userEvent.setup();
-    render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 1, text: ["a"] })} />);
-    await screen.findByText("1 / 1");
-    await waitFor(() => expect(screen.getByLabelText("Page 1")).toHaveStyle({ width: "100px" }));
-    await user.click(screen.getByRole("button", { name: "Rotate" }));
-    await waitFor(() => expect(screen.getByLabelText("Page 1")).toHaveStyle({ width: "140px" }));
-  });
-
-  it("navigates between search matches", async () => {
-    const user = userEvent.setup();
-    render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 3, text: ["alpha", "beta alpha", "gamma"] })} />);
-    await screen.findByText("1 / 3");
-    await user.type(screen.getByRole("searchbox", { name: "Find in PDF" }), "alpha");
-    await screen.findByText("1 / 2 matches");
-    await user.click(screen.getByRole("button", { name: "Next match" }));
-    expect(await screen.findByText("2 / 2 matches")).toBeVisible();
-    expect(screen.getByLabelText("Current page")).toHaveValue(2);
-    await user.click(screen.getByRole("button", { name: "Previous match" }));
-    expect(await screen.findByText("1 / 2 matches")).toBeVisible();
-    expect(screen.getByLabelText("Current page")).toHaveValue(1);
+    expect(parseInt(canvas.style.width, 10)).toBeGreaterThan(100);
   });
 
   it("scrolls the viewport to the target canvas on page button navigation", async () => {
     const user = userEvent.setup();
-    render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 3, text: ["a", "b", "c"] })} />);
+    render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 3 })} />);
     await screen.findByText("1 / 3");
     await user.click(screen.getByRole("button", { name: "Next page" }));
     expect(screen.getByLabelText("Current page")).toHaveValue(2);
@@ -295,42 +251,15 @@ describe("PdfPreview", () => {
   });
 
   it("scrolls to the page typed into the current page input", async () => {
-    render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 3, text: ["a", "b", "c"] })} />);
+    render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 3 })} />);
     await screen.findByText("1 / 3");
     fireEvent.change(screen.getByLabelText("Current page"), { target: { value: "3" } });
     expect(screen.getByLabelText("Current page")).toHaveValue(3);
     expect(scrollIntoViewTargets.at(-1)?.getAttribute("aria-label")).toBe("Page 3");
   });
 
-  it("scrolls to the target canvas when navigating matches", async () => {
-    const user = userEvent.setup();
-    render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 3, text: ["alpha", "beta alpha", "gamma"] })} />);
-    await screen.findByText("1 / 3");
-    await user.type(screen.getByRole("searchbox", { name: "Find in PDF" }), "alpha");
-    await screen.findByText("1 / 2 matches");
-    await user.click(screen.getByRole("button", { name: "Next match" }));
-    expect(scrollIntoViewTargets.at(-1)?.getAttribute("aria-label")).toBe("Page 2");
-    await user.click(screen.getByRole("button", { name: "Previous match" }));
-    expect(scrollIntoViewTargets.at(-1)?.getAttribute("aria-label")).toBe("Page 1");
-  });
-
-  it("counts every case-insensitive occurrence, including multiple on one page", async () => {
-    const user = userEvent.setup();
-    render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 3, text: ["alpha alpha", "Alpha", "gamma"] })} />);
-    await screen.findByText("1 / 3");
-    await user.type(screen.getByRole("searchbox", { name: "Find in PDF" }), "alpha");
-    expect(await screen.findByText("1 / 3 matches")).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "Next match" }));
-    expect(await screen.findByText("2 / 3 matches")).toBeVisible();
-    expect(screen.getByLabelText("Current page")).toHaveValue(1);
-    await user.click(screen.getByRole("button", { name: "Next match" }));
-    expect(await screen.findByText("3 / 3 matches")).toBeVisible();
-    expect(screen.getByLabelText("Current page")).toHaveValue(2);
-    expect(scrollIntoViewTargets.at(-1)?.getAttribute("aria-label")).toBe("Page 2");
-  });
-
   it("synchronizes the current page when the viewport scrolls", async () => {
-    render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 3, text: ["a", "b", "c"] })} />);
+    render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 3 })} />);
     await screen.findByText("1 / 3");
     const scroll = screen.getByTestId("pdf-scroll");
     const page1 = screen.getByLabelText("Page 1");
@@ -347,7 +276,7 @@ describe("PdfPreview", () => {
   it("passes the devicePixelRatio transform to the page render", async () => {
     const renderLog: FakePdfRenderCall[] = [];
     vi.stubGlobal("devicePixelRatio", 2);
-    render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 1, text: ["a"], renderLog })} />);
+    render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 1, renderLog })} />);
     await screen.findByText("1 / 1");
     expect(renderLog.length).toBeGreaterThan(0);
     const call = renderLog.find((entry) => entry.transform?.every((value, index) => value === (index === 0 || index === 3 ? 2 : 0)));
@@ -355,12 +284,11 @@ describe("PdfPreview", () => {
   });
 
   it("wraps the toolbar on compact widths without page-level overflow", async () => {
-    render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 1, text: ["a"] })} />);
+    render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 1 })} />);
     await screen.findByText("1 / 1");
     const toolbar = screen.getByRole("toolbar", { name: "PDF controls" });
     expect(toolbar.className).toContain("flex-wrap");
     expect(toolbar.className).toContain("min-w-0");
-    expect(toolbar.closest("header")?.className).toContain("flex-col");
     expect(toolbar.closest(".overflow-hidden")).toBeTruthy();
     const scroll = screen.getByTestId("pdf-scroll");
     expect(scroll.className).toContain("overflow-auto");
@@ -371,7 +299,7 @@ describe("PdfPreview", () => {
     const failing = { load: vi.fn().mockRejectedValueOnce(new Error("corrupt pdf")) };
     render(<PdfPreview path="/p/bad.pdf" loader={failing} />);
     expect(await screen.findByText(/corrupt pdf/)).toBeVisible();
-    failing.load.mockResolvedValueOnce(await fakePdfLoader({ pages: 1, text: ["ok"] }).load({ url: "" }));
+    failing.load.mockResolvedValueOnce(await fakePdfLoader({ pages: 1 }).load({ url: "" }));
     await user.click(screen.getByRole("button", { name: /retry/i }));
     expect(await screen.findByText("1 / 1")).toBeVisible();
   });

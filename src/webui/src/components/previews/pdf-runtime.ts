@@ -29,7 +29,6 @@ export interface PdfRenderOptions {
 export interface PdfPageHandle {
   viewport(scale: number, rotation: number): PdfViewport;
   render(options: PdfRenderOptions): PdfRenderTask;
-  textContent(): Promise<string>;
 }
 
 export interface PdfDocumentHandle {
@@ -51,7 +50,6 @@ export interface FakePdfRenderCall {
 
 export interface FakePdfLoaderOptions {
   pages: number;
-  text: string[];
   /** Optional sink that records every page render call for assertions. */
   renderLog?: FakePdfRenderCall[];
 }
@@ -59,11 +57,10 @@ export interface FakePdfLoaderOptions {
 export function fakePdfLoader(options: FakePdfLoaderOptions): PdfLoader {
   return {
     async load() {
-      const { pages, text } = options;
+      const { pages } = options;
       return {
         numPages: pages,
         async page(n: number): Promise<PdfPageHandle> {
-          const index = n - 1;
           return {
             viewport(scale: number, rotation: number): PdfViewport {
               const rotated = rotation % 180 !== 0;
@@ -78,9 +75,6 @@ export function fakePdfLoader(options: FakePdfLoaderOptions): PdfLoader {
                 transform: renderOptions.transform,
               });
               return { promise: Promise.resolve(undefined), cancel: () => {} };
-            },
-            async textContent(): Promise<string> {
-              return text[index] ?? "";
             },
           };
         },
@@ -123,12 +117,6 @@ export function createPdfLoader(): PdfLoader {
                 ? page.render({ canvas, viewport: vp, transform })
                 : page.render({ canvas, viewport: vp });
               return { promise: task.promise, cancel: () => task.cancel() };
-            },
-            async textContent(): Promise<string> {
-              const content = await page.getTextContent();
-              return content.items
-                .map((item) => ("str" in item ? (item as { str: string }).str : ""))
-                .join(" ");
             },
           };
         },
