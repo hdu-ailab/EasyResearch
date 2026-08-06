@@ -226,6 +226,40 @@ describe("PdfPreview", () => {
     await waitFor(() => expect(screen.getByLabelText("Page 1")).toHaveStyle({ width: "800px" }));
   });
 
+  it("does not cap canvas CSS width in normal zoom so pages overflow and scroll locally", async () => {
+    const user = userEvent.setup();
+    render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 1, text: ["a"] })} />);
+    await screen.findByText("1 / 1");
+    const canvas = screen.getByLabelText("Page 1");
+    const instances = fakeResizeObserverInstances();
+    await waitFor(() => expect(instances.length).toBeGreaterThan(0));
+    instances[instances.length - 1]!.__fire(80);
+    await waitFor(() => expect(canvas).toHaveStyle({ width: "100px" }));
+    expect(canvas.className).not.toContain("max-w-full");
+    await user.click(screen.getByRole("button", { name: "Zoom in" }));
+    await waitFor(() => expect(canvas).toHaveStyle({ width: "125px" }));
+    expect(parseInt(canvas.style.width, 10)).toBeGreaterThan(80);
+    await user.click(screen.getByRole("button", { name: "Zoom in" }));
+    await waitFor(() => expect(canvas).toHaveStyle({ width: "150px" }));
+    expect(parseInt(canvas.style.width, 10)).toBeGreaterThan(80);
+  });
+
+  it("scopes max-w-full to fit-width mode only", async () => {
+    const user = userEvent.setup();
+    render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 1, text: ["a"] })} />);
+    await screen.findByText("1 / 1");
+    const canvas = screen.getByLabelText("Page 1");
+    expect(canvas.className).not.toContain("max-w-full");
+    await user.click(screen.getByRole("button", { name: "Fit width" }));
+    await waitFor(() => expect(canvas.className).toContain("max-w-full"));
+    const instances = fakeResizeObserverInstances();
+    await waitFor(() => expect(instances.length).toBeGreaterThan(0));
+    instances[instances.length - 1]!.__fire(800);
+    await waitFor(() => expect(canvas).toHaveStyle({ width: "800px" }));
+    await user.click(screen.getByRole("button", { name: "Fit width" }));
+    await waitFor(() => expect(canvas.className).not.toContain("max-w-full"));
+  });
+
   it("rotates the page", async () => {
     const user = userEvent.setup();
     render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 1, text: ["a"] })} />);

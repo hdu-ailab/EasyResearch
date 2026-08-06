@@ -408,7 +408,7 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
                   canvasRefs.current[index] = element;
                 }}
                 aria-label={`Page ${index + 1}`}
-                className="max-w-full rounded-sm bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]"
+                className={`${fitWidth ? "max-w-full" : ""} rounded-sm bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]`}
               />
             ))}
           </div>
