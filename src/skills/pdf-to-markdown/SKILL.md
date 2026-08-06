@@ -1,7 +1,7 @@
 ---
 name: pdf-to-markdown
 description: |-
-  Convert research PDFs and other documents to Markdown using the locally installed Microsoft MarkItDown CLI at ~/Tools/markitdown/.venv/bin/markitdown. Use proactively when papers must be converted into readable text for agent analysis, especially inside ref_papers/pdf to ref_papers/text workflows.
+  Convert research PDFs and other documents to Markdown using a locally installed Microsoft MarkItDown CLI ({{MARKITDOWN_BIN}}). Use proactively when papers must be converted into readable text for agent analysis, especially inside ref_papers/pdf to ref_papers/text workflows.
 
   Examples:
   - user: "Convert these papers to Markdown" then run markitdown on each PDF and save .md files
@@ -16,6 +16,12 @@ metadata:
 
 # PDF To Markdown
 
+## Placeholders
+
+| Token | Meaning | Generic example |
+|-------|---------|-----------------|
+| `{{MARKITDOWN_BIN}}` | Absolute path of the local MarkItDown CLI | `~/tools/markitdown/.venv/bin/markitdown` |
+
 ## Tool
 Use the local Microsoft MarkItDown installation:
 
@@ -26,7 +32,7 @@ markitdown input.pdf -o output.md
 The alias is configured for bash and fish. If aliases are unavailable in a non-interactive shell, use the absolute CLI path:
 
 ```bash
-/home/cyy/Tools/markitdown/.venv/bin/markitdown input.pdf -o output.md
+{{MARKITDOWN_BIN}} input.pdf -o output.md
 ```
 
 ## When To Use
@@ -118,5 +124,5 @@ markitdown --help
 Check the installed absolute path:
 
 ```bash
-/home/cyy/Tools/markitdown/.venv/bin/markitdown --help
+{{MARKITDOWN_BIN}} --help
 ```

@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# rssh — robust SSH wrapper for hz110-cyy with keepalive and timeout handling.
+# rssh — robust SSH wrapper for {{SSH_HOST}} with keepalive and timeout handling.
 # Usage: rssh "<command>"
 #        rssh -f "<command>"     # force nohup, returns immediately
 #        rssh -s <seconds> "<command>"  # custom timeout in seconds
 #
-# All connection parameters are hardcoded for hz110-cyy.
+# All connection parameters are placeholder tokens; replace them in your global copy before first use.
 
 set -euo pipefail
 
-FALLBACK_HOST="hz110-cyy"
-PRIMARY_HOST="192.168.0.83"
+FALLBACK_HOST="{{SSH_HOST}}"
+PRIMARY_HOST="{{SSH_PRIMARY_HOST}}"
 PRIMARY_PORT=22
 DEFAULT_TIMEOUT=7200  # 2 hours for long experiments
 KEEPALIVE_INTERVAL=30
@@ -27,7 +27,7 @@ PRIMARY_SSH_OPTS=(
     "${SSH_OPTS[@]}"
     -p "${PRIMARY_PORT}"
     -i "$HOME/.ssh/id_ed25519"
-    -l "cyy"
+    -l "{{SSH_USER}}"
 )
 
 FORCE_NOHUP=false
