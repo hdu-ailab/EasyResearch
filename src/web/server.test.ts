@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, mkdtempSync, openSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -109,6 +109,7 @@ describe("web routes", () => {
       directories: directoryService,
       registry,
       config: configService,
+      listAgents: async () => [],
       ...overrides,
     };
     handler = createRouteHandler(services);
@@ -173,6 +174,121 @@ describe("web routes", () => {
   it("requires a path for file reads", async () => {
     setup();
     const res = await handler(new Request("http://localhost/api/file"));
+    expect(res.status).toBe(400);
+  });
+
+  it("serves raw file bytes with MIME metadata for a full read", async () => {
+    const pdf = join(homeDir, "raw.pdf");
+    writeFileSync(pdf, Buffer.from([0, 1, 2, 3, 4]));
+    setup();
+    const res = await handler(new Request(`http://localhost/api/file/raw?path=${encodeURIComponent(pdf)}`));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("application/pdf");
+    expect(res.headers.get("content-length")).toBe("5");
+    expect(res.headers.get("accept-ranges")).toBe("bytes");
+    expect([...new Uint8Array(await res.arrayBuffer())]).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  it("serves a single ranged raw file response", async () => {
+    const pdf = join(homeDir, "raw.pdf");
+    writeFileSync(pdf, Buffer.from([0, 1, 2, 3, 4]));
+    setup();
+    const res = await handler(
+      new Request(`http://localhost/api/file/raw?path=${encodeURIComponent(pdf)}`, {
+        headers: { Range: "bytes=1-3" },
+      }),
+    );
+    expect(res.status).toBe(206);
+    expect(res.headers.get("content-range")).toBe("bytes 1-3/5");
+    expect(res.headers.get("accept-ranges")).toBe("bytes");
+    expect([...new Uint8Array(await res.arrayBuffer())]).toEqual([1, 2, 3]);
+  });
+
+  it("rejects unsatisfiable ranges with 416 and a content-range hint", async () => {
+    const pdf = join(homeDir, "raw.pdf");
+    writeFileSync(pdf, Buffer.from([0, 1, 2, 3, 4]));
+    setup();
+    const res = await handler(
+      new Request(`http://localhost/api/file/raw?path=${encodeURIComponent(pdf)}`, {
+        headers: { Range: "bytes=20-30" },
+      }),
+    );
+    expect(res.status).toBe(416);
+    expect(res.headers.get("content-range")).toBe("bytes */5");
+  });
+
+  it("streams full and ranged raw bodies instead of buffering the file", async () => {
+    const pdf = join(homeDir, "raw.pdf");
+    writeFileSync(pdf, Buffer.from([0, 1, 2, 3, 4]));
+    setup();
+
+    const full = await handler(new Request(`http://localhost/api/file/raw?path=${encodeURIComponent(pdf)}`));
+    expect(full.status).toBe(200);
+    expect(full.body).toBeInstanceOf(ReadableStream);
+    const fullReader = full.body!.getReader();
+    const fullChunks: number[] = [];
+    for (;;) {
+      const { done, value } = await fullReader.read();
+      if (done) break;
+      fullChunks.push(...value);
+    }
+    expect(fullChunks).toEqual([0, 1, 2, 3, 4]);
+
+    const ranged = await handler(
+      new Request(`http://localhost/api/file/raw?path=${encodeURIComponent(pdf)}`, {
+        headers: { Range: "bytes=1-3" },
+      }),
+    );
+    expect(ranged.status).toBe(206);
+    expect(ranged.body).toBeInstanceOf(ReadableStream);
+    const rangedReader = ranged.body!.getReader();
+    const rangedChunks: number[] = [];
+    for (;;) {
+      const { done, value } = await rangedReader.read();
+      if (done) break;
+      rangedChunks.push(...value);
+    }
+    expect(rangedChunks).toEqual([1, 2, 3]);
+  });
+
+  it("serves a small range of a large raw file through the streaming body", async () => {
+    const big = join(homeDir, "big.bin");
+    const size = 8 * 1024 * 1024;
+    const fd = openSync(big, "w");
+    try {
+      writeSync(fd, Buffer.alloc(size));
+      writeSync(fd, Buffer.from([0xaa, 0xbb, 0xcc, 0xdd]), 0, 4, size - 4);
+    } finally {
+      closeSync(fd);
+    }
+    setup();
+    const res = await handler(
+      new Request(`http://localhost/api/file/raw?path=${encodeURIComponent(big)}`, {
+        headers: { Range: "bytes=-4" },
+      }),
+    );
+    expect(res.status).toBe(206);
+    expect(res.headers.get("content-range")).toBe(`bytes ${size - 4}-${size - 1}/${size}`);
+    expect(res.headers.get("content-length")).toBe("4");
+    expect([...new Uint8Array(await res.arrayBuffer())]).toEqual([0xaa, 0xbb, 0xcc, 0xdd]);
+  });
+
+  it("rejects raw reads of a directory with the same typed error as text reads", async () => {
+    mkdirSync(join(homeDir, "subdir"), { recursive: true });
+    setup();
+    const res = await handler(new Request(`http://localhost/api/file/raw?path=${encodeURIComponent(join(homeDir, "subdir"))}`));
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects raw reads of a missing file with the same typed error as text reads", async () => {
+    setup();
+    const res = await handler(new Request(`http://localhost/api/file/raw?path=${encodeURIComponent(join(homeDir, "nope.pdf"))}`));
+    expect(res.status).toBe(404);
+  });
+
+  it("requires a path for raw file reads", async () => {
+    setup();
+    const res = await handler(new Request("http://localhost/api/file/raw"));
     expect(res.status).toBe(400);
   });
 
@@ -400,5 +516,29 @@ describe("web routes", () => {
     expect(index.status).toBe(200);
     expect(await index.text()).toContain("<div id=\"root\">");
     expect((await handler(new Request("http://localhost/nope"))).status).toBe(404);
+  });
+
+  it("serves .mjs modules with a JavaScript MIME type so PDF workers can load", async () => {
+    writeFileSync(join(webuiDist, "pdf.worker.min.mjs"), "self.streamSink", "utf-8");
+    setup();
+    const worker = await handler(new Request("http://localhost/pdf.worker.min.mjs"));
+    expect(worker.status).toBe(200);
+    expect(worker.headers.get("content-type")).toMatch(/text\/javascript/);
+    expect(await worker.text()).toBe("self.streamSink");
+  });
+
+  it("lists the agent roster without leaking system prompts", async () => {
+    setup({
+      listAgents: async () => [
+        { name: "orchestrator", description: "Runs the pipeline", tools: ["subagent"], model: undefined },
+        { name: "search", description: "Finds papers", subagents: [] },
+      ],
+    });
+    const res = await handler(new Request("http://localhost/api/agents"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Array<{ name: string; description: string; tools?: string[]; systemPrompt?: string }>;
+    expect(body.map((a) => a.name)).toEqual(["orchestrator", "search"]);
+    expect(body[0]?.tools).toEqual(["subagent"]);
+    expect(body[0]?.systemPrompt).toBeUndefined();
   });
 });

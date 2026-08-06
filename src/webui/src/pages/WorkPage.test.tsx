@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { fireEvent } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkPage } from "./WorkPage";
 import * as api from "../api";
+import type { FileEntryDto } from "../../../web/contracts";
 
 vi.mock("../api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api")>();
@@ -21,6 +22,7 @@ vi.mock("../api", async (importOriginal) => {
     createConfigDirectory: vi.fn(),
     listEntries: vi.fn(),
     readFileContent: vi.fn(),
+    listAgents: vi.fn(),
   };
 });
 
@@ -57,6 +59,14 @@ describe("WorkPage", () => {
     vi.mocked(api.abortSession).mockReset();
     vi.mocked(api.listEntries).mockReset();
     vi.mocked(api.readFileContent).mockReset();
+    vi.mocked(api.listAgents).mockReset();
+    vi.mocked(api.listAgents).mockResolvedValue([
+      { name: "orchestrator", description: "Runs the pipeline", tools: ["subagent"] },
+      { name: "search", description: "Finds papers" },
+      { name: "experiment", description: "Runs experiments", subagents: ["search"] },
+      { name: "writing", description: "Writes the paper", subagents: ["search", "figures"] },
+      { name: "figures", description: "Draws figures" },
+    ]);
     vi.mocked(api.getSnapshot).mockResolvedValue(snapshot);
     vi.mocked(api.listEntries).mockResolvedValue([{ kind: "file", name: "notes.md", path: "/p/notes.md" }]);
     stubEvents();
@@ -152,10 +162,10 @@ describe("WorkPage", () => {
     await screen.findByText("starting research");
     const orchestatorChip = screen.getByRole("button", { name: /agent orchestrator/i });
     expect(orchestatorChip.getAttribute("aria-pressed")).toBe("true");
-    emit({ type: "message_start", message: { role: "assistant", id: "sm1", content: [], agentId: "literature" } });
-    await screen.findByRole("button", { name: /agent literature/i });
-    await user.click(screen.getByRole("button", { name: /agent literature/i }));
-    expect(screen.getByRole("button", { name: /agent literature/i }).getAttribute("aria-pressed")).toBe("true");
+    emit({ type: "message_start", message: { role: "assistant", id: "sm1", content: [], agentId: "search" } });
+    await screen.findByRole("button", { name: /agent search/i });
+    await user.click(screen.getByRole("button", { name: /agent search/i }));
+    expect(screen.getByRole("button", { name: /agent search/i }).getAttribute("aria-pressed")).toBe("true");
     expect(orchestatorChip.getAttribute("aria-pressed")).toBe("false");
   });
 
@@ -175,6 +185,31 @@ describe("WorkPage", () => {
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     expect(await screen.findByText("keep this")).toBeTruthy();
     expect(screen.getByText("starting research")).toBeTruthy();
+  });
+
+  it("files tree shows a chevron for untouched directories and a spinner only while loading", async () => {
+    const user = userEvent.setup();
+    const pending: Promise<FileEntryDto[]> = new Promise(() => {});
+    vi.mocked(api.listEntries).mockImplementation(async (p) => {
+      if (p === "/p") return [{ kind: "directory", name: "folder", path: "/p/folder" }];
+      return pending;
+    });
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    expect(await screen.findByText("folder")).toBeVisible();
+    expect(screen.queryByLabelText("Loading folder")).toBeNull();
+    expect(screen.getByRole("button", { name: "Expand folder" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Expand folder" }));
+    expect(screen.getByLabelText("Loading folder")).toBeVisible();
+  });
+
+  it("files panel shows a loading message instead of empty content while the root is pending", async () => {
+    const pending: Promise<FileEntryDto[]> = new Promise(() => {});
+    vi.mocked(api.listEntries).mockImplementation(async () => pending);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    expect(await screen.findByText("Loading…")).toBeTruthy();
+    expect(screen.queryByText("No files.")).toBeNull();
   });
 
   it("opens a file from the files panel into a tab and previews its content", async () => {
@@ -280,7 +315,7 @@ describe("WorkPage", () => {
     expect(chat).toBeTruthy();
     expect(chat?.className).toContain("flex-1");
     expect(panel.className).toContain("md:shrink-0");
-    expect(panel.getAttribute("style")).toMatch(/width:\s*320px/);
+    expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*320px/);
   });
 
   it("resizes the panel within min/max while dragging", async () => {
@@ -290,7 +325,7 @@ describe("WorkPage", () => {
     const observer = (RO as unknown as { instances: { __fire: (n: number) => void }[] }).instances.at(-1);
     expect(observer).toBeTruthy();
     observer!.__fire(1200);
-    await waitFor(() => expect(screen.getByRole("region", { name: /file browser/i }).getAttribute("style")).toMatch(/width:\s*320px/));
+    await waitFor(() => expect(screen.getByRole("region", { name: /file browser/i }).getAttribute("style")).toMatch(/--panel-w:\s*600px/));
     const handle = screen.getByRole("button", { name: /resize panel/i });
     const row = screen.getByText("starting research").closest("section")?.parentElement;
     expect(row).toBeTruthy();
@@ -309,6 +344,68 @@ describe("WorkPage", () => {
     fireEvent.pointerDown(handle, { clientX: 880, clientY: 100, pointerId: 1 });
     fireEvent.pointerMove(document, { clientX: 820, clientY: 100, pointerId: 1 });
     fireEvent.pointerUp(document, { clientX: 820, clientY: 100, pointerId: 1 });
-    expect(panel.getAttribute("style")).toMatch(/width:\s*380px/);
+    expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*660px/);
+  });
+
+  it("remembers the dragged width for the session after the first drag", async () => {
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    const RO = (globalThis as unknown as { FakeResizeObserver: typeof ResizeObserver }).FakeResizeObserver;
+    const observer = (RO as unknown as { instances: { __fire: (n: number) => void }[] }).instances.at(-1);
+    observer!.__fire(1200);
+    await waitFor(() => expect(screen.getByRole("region", { name: /file browser/i }).getAttribute("style")).toMatch(/--panel-w:\s*600px/));
+    const handle = screen.getByRole("button", { name: /resize panel/i });
+    const row = screen.getByText("starting research").closest("section")?.parentElement;
+    vi.spyOn(row!, "getBoundingClientRect").mockReturnValue({
+      right: 1200, left: 0, top: 0, bottom: 600, width: 1200, height: 600, x: 0, y: 0, toJSON: () => ({}),
+    } as DOMRect);
+    const panel = screen.getByRole("region", { name: /file browser/i });
+    fireEvent.pointerDown(handle, { clientX: 880, clientY: 100, pointerId: 1 });
+    fireEvent.pointerMove(document, { clientX: 820, clientY: 100, pointerId: 1 });
+    fireEvent.pointerUp(document, { clientX: 820, clientY: 100, pointerId: 1 });
+    expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*660px/);
+    observer!.__fire(1600);
+    await waitFor(() => expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*660px/));
+  });
+
+  it("covers the full row region on mobile without a desktop bottom-sheet geometry", async () => {
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    const panel = screen.getByRole("region", { name: /file browser/i });
+    expect(panel.className).toContain("absolute");
+    expect(panel.className).toContain("inset-0");
+    expect(panel.className).toContain("z-30");
+    expect(panel.className).toMatch(/w-full/);
+    expect(panel.className).not.toContain("bottom-0");
+    expect(panel.className).not.toContain("top-9");
+    const row = screen.getByText("starting research").closest("section")?.parentElement;
+    expect(row).toBeTruthy();
+    expect(row?.firstElementChild === screen.getByText("starting research").closest("section")).toBe(true);
+    expect(panel.parentElement).toBe(row);
+  });
+
+  it("renders the full five-agent roster in the agents view with serial copy", async () => {
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    await user.click(screen.getByRole("button", { name: /agent list/i }));
+    const region = screen.getByRole("region", { name: /agent list/i });
+    await waitFor(() => {
+      for (const agent of ["orchestrator", "search", "experiment", "writing", "figures"]) {
+        expect(within(region).getAllByText(agent).length).toBeGreaterThan(0);
+      }
+    });
+    expect(within(region).getByText(/serially/i)).toBeTruthy();
+    expect(within(region).queryByText(/parallel/i)).toBeNull();
+  });
+
+  it("keeps the orchestrator card when the agents endpoint fails", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listAgents).mockRejectedValue(new Error("boom"));
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    await user.click(screen.getByRole("button", { name: /agent list/i }));
+    const region = screen.getByRole("region", { name: /agent list/i });
+    expect(await within(region).findByText(/orchestrator/i)).toBeTruthy();
   });
 });

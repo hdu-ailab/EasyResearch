@@ -31,6 +31,47 @@ describe("DirectoryDialog", () => {
     expect(screen.getByText("notes")).toBeTruthy();
   });
 
+  it("shows a chevron for untouched directories and a spinner only while loading", async () => {
+    const user = userEvent.setup();
+    const pending = new Promise<{ name: string; path: string }[]>(() => {});
+    vi.mocked(api.listDirectories).mockImplementation(async (p) => {
+      if (p === HOME) return [{ name: "folder", path: `${HOME}/folder` }];
+      return pending;
+    });
+    render(<DirectoryDialog homeDir={HOME} onSelect={() => {}} onClose={() => {}} />);
+    expect(await screen.findByText("folder")).toBeVisible();
+    expect(screen.queryByLabelText("Loading folder")).toBeNull();
+    expect(screen.getByRole("button", { name: "Expand folder" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Expand folder" }));
+    expect(screen.getByLabelText("Loading folder")).toBeVisible();
+  });
+
+  it("shows a loading message instead of empty content while the root is pending", async () => {
+    const pending = new Promise<{ name: string; path: string }[]>(() => {});
+    vi.mocked(api.listDirectories).mockImplementation(async () => pending);
+    render(<DirectoryDialog homeDir={HOME} onSelect={() => {}} onClose={() => {}} />);
+    expect(await screen.findByText("Loading…")).toBeTruthy();
+    expect(screen.queryByText("No subdirectories.")).toBeNull();
+  });
+
+  it("shows Retry on a failed directory and recovers", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listDirectories).mockImplementation(async (p) => {
+      if (p === HOME) return [{ name: "folder", path: `${HOME}/folder` }];
+      throw new Error("boom");
+    });
+    render(<DirectoryDialog homeDir={HOME} onSelect={() => {}} onClose={() => {}} />);
+    await user.click(await screen.findByText("folder"));
+    await user.click(screen.getByRole("button", { name: "Expand folder" }));
+    expect(await screen.findByRole("button", { name: "Retry folder" })).toBeTruthy();
+    vi.mocked(api.listDirectories).mockImplementation(async (p) => {
+      if (p === HOME) return [{ name: "folder", path: `${HOME}/folder` }];
+      return [{ name: "nested", path: `${HOME}/folder/nested` }];
+    });
+    await user.click(screen.getByRole("button", { name: "Retry folder" }));
+    expect(await screen.findByText("nested")).toBeTruthy();
+  });
+
   it("expands a directory lazily", async () => {
     mockListing({ [HOME]: ["papers"], [`${HOME}/papers`]: ["draft"] });
     const user = userEvent.setup();

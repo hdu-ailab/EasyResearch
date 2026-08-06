@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ActiveSessionDto, ConfigScope, SessionSummaryDto } from "./contracts";
+import type { ActiveSessionDto, AgentDto, ConfigScope, SessionSummaryDto } from "./contracts";
 import type { DirectoryService } from "./directories";
 import { DirectoryServiceError } from "./directories";
+import { parseByteRange, RawFileRangeError, type ByteRange, type RawFileDescriptor } from "./raw-file";
 import { UnknownSessionError, type ActiveSessionRegistry } from "./active-sessions";
 import { ExtensionGuardError } from "../runtime/extensions-guard";
 import type { ConfigFileService } from "./config-files";
@@ -11,6 +12,7 @@ import { ConfigPathError, ConfigServiceError } from "./config-files";
 export interface RouteServices {
   webuiDist: string;
   listAllSessions: () => Promise<SessionSummaryDto[]>;
+  listAgents: () => Promise<AgentDto[]>;
   directories: DirectoryService;
   registry: ActiveSessionRegistry;
   config: ConfigFileService;
@@ -43,6 +45,10 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
         });
       }
 
+      if (req.method === "GET" && path === "/api/agents") {
+        return jsonResponse(await services.listAgents());
+      }
+
       if (req.method === "GET" && path === "/api/directories") {
         return jsonResponse(services.directories.list(url.searchParams.get("path") ?? undefined));
       }
@@ -53,6 +59,10 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
 
       if (req.method === "GET" && path === "/api/file") {
         return jsonResponse(services.directories.readFile(requireQuery(url, "path")));
+      }
+
+      if (req.method === "GET" && path === "/api/file/raw") {
+        return rawFileResponse(services.directories, requireQuery(url, "path"), req.headers.get("range"));
       }
 
       if (req.method === "POST" && path === "/api/sessions") {
@@ -176,6 +186,45 @@ async function openSession(
   return jsonResponse(dto);
 }
 
+/**
+ * Serves canonicalized raw file bytes with MIME metadata and single-range
+ * support. No Range header yields `200` with the full bytes; a valid range
+ * yields `206` with a `Content-Range` header; an unsatisfiable or malformed
+ * range yields `416` with `Content-Range` set to `bytes` star-slash `<size>`.
+ * Both full and ranged bodies are streamed via {@link DirectoryService.readFileStream}
+ * so only the requested bytes are read into memory.
+ */
+function rawFileResponse(directories: DirectoryService, path: string, rangeHeader: string | null): Response {
+  const descriptor = directories.describeFile(path);
+  try {
+    const range = rangeHeader === null ? null : (parseByteRange(rangeHeader, descriptor.size) as ByteRange);
+    const length = range === null ? descriptor.size : range.end - range.start + 1;
+    const headers: Record<string, string> = {
+      "Content-Type": descriptor.mimeType,
+      "Content-Length": String(length),
+      "Accept-Ranges": "bytes",
+    };
+    if (rangeHeader !== null) {
+      headers["Content-Range"] = `bytes ${range!.start}-${range!.end}/${descriptor.size}`;
+      return new Response(directories.readFileStream(path, range), { status: 206, headers });
+    }
+    return new Response(directories.readFileStream(path, null), { status: 200, headers });
+  } catch (error) {
+    if (error instanceof RawFileRangeError) return rangeErrorResponse(descriptor);
+    throw error;
+  }
+}
+
+function rangeErrorResponse(descriptor: RawFileDescriptor): Response {
+  return new Response(JSON.stringify({ error: "Invalid byte range" }), {
+    status: 416,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Content-Range": `bytes */${descriptor.size}`,
+    },
+  });
+}
+
 function sessionEvents(registry: ActiveSessionRegistry, id: string): Response {
   const encoder = new TextEncoder();
   let controllerRef: ReadableStreamDefaultController<Uint8Array> | null = null;
@@ -254,6 +303,7 @@ function errorResponse(status: number, message: string, extra: Record<string, un
 function contentType(file: string): string {
   if (file.endsWith(".html")) return "text/html; charset=utf-8";
   if (file.endsWith(".js")) return "text/javascript; charset=utf-8";
+  if (file.endsWith(".mjs")) return "text/javascript; charset=utf-8";
   if (file.endsWith(".css")) return "text/css; charset=utf-8";
   if (file.endsWith(".svg")) return "image/svg+xml";
   if (file.endsWith(".json")) return "application/json; charset=utf-8";

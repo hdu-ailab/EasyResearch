@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronRight, Folder, FolderOpen, Home, RefreshCw, X } from "lucide-react";
 import { listDirectories } from "../api";
+import { useLazyTree } from "../hooks/useLazyTree";
 import type { DirectoryEntryDto } from "../../../web/contracts";
 
 export interface DirectoryDialogProps {
@@ -13,7 +14,6 @@ interface TreeRow {
   path: string;
   name: string;
   depth: number;
-  loading: boolean;
 }
 
 function parentOf(path: string): string {
@@ -42,10 +42,9 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
   const [suggestions, setSuggestions] = useState<DirectoryEntryDto[]>([]);
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   const [activeSuggestion, setActiveSuggestion] = useState(-1);
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [childrenByPath, setChildrenByPath] = useState<Map<string, DirectoryEntryDto[]>>(new Map());
   const [treeError, setTreeError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const tree = useLazyTree<DirectoryEntryDto>({ root: viewPath, loadChildren: listDirectories });
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -59,41 +58,17 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const loadTree = useCallback(
-    (path: string) => {
-      if (childrenByPath.has(path)) return;
-      setChildrenByPath((current) => new Map(current).set(path, []));
-      listDirectories(path)
-        .then((entries) => {
-          setChildrenByPath((current) => new Map(current).set(path, entries));
-          setTreeError(null);
-        })
-        .catch((e: unknown) => {
-          setChildrenByPath((current) => new Map(current).set(path, []));
-          setTreeError(e instanceof Error ? e.message : String(e));
-        });
-    },
-    [childrenByPath],
-  );
-
-  useEffect(() => {
-    loadTree(viewPath);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewPath]);
-
   const rows = useMemo(() => {
     const out: TreeRow[] = [];
     const walk = (path: string, depth: number) => {
-      const children = childrenByPath.get(path);
-      if (!children) return;
-      for (const child of children) {
-        out.push({ path: child.path, name: child.name, depth, loading: !childrenByPath.has(child.path) });
-        if (expanded.has(child.path)) walk(child.path, depth + 1);
+      for (const child of tree.children(path)) {
+        out.push({ path: child.path, name: child.name, depth });
+        if (tree.expanded.has(child.path)) walk(child.path, depth + 1);
       }
     };
     walk(viewPath, 0);
     return out;
-  }, [viewPath, expanded, childrenByPath]);
+  }, [viewPath, tree.children, tree.expanded]);
 
   const navigate = useCallback(
     (path: string) => {
@@ -180,18 +155,7 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
     }
   };
 
-  const toggleExpand = (path: string) => {
-    setExpanded((current) => {
-      const next = new Set(current);
-      if (next.has(path)) {
-        next.delete(path);
-      } else {
-        next.add(path);
-      }
-      return next;
-    });
-    loadTree(path);
-  };
+  const toggleExpand = (path: string) => tree.toggle(path);
 
   const selectRow = (path: string) => {
     setSelected(path);
@@ -202,6 +166,8 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
     if (!selected) return;
     onSelect(selected);
   };
+
+  const rootError = tree.error(viewPath);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-v2-grey-1200/30 p-0 sm:p-6" role="presentation" onMouseDown={(e) => {
@@ -251,14 +217,7 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
             >
               ↑
             </button>
-            <button className="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100" title="Refresh" onClick={() => {
-              setChildrenByPath((current) => {
-                const next = new Map(current);
-                next.delete(viewPath);
-                return next;
-              });
-              loadTree(viewPath);
-            }}>
+            <button className="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100" title="Refresh" onClick={() => tree.refresh(viewPath)}>
               <RefreshCw size={14} />
             </button>
           </div>
@@ -285,10 +244,16 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-1.5" role="tree" aria-label="Directory tree">
           {treeError && <p className="px-2 py-1 text-[12px] text-v2-status-error">{treeError}</p>}
-          {rows.length === 0 && !treeError && <p className="px-2 py-1 text-[12px] text-v2-text-text-faint">No subdirectories.</p>}
+          {rootError && <p className="px-2 py-1 text-[12px] text-v2-status-error">{rootError}</p>}
+          {rows.length === 0 && !treeError && !rootError && (tree.status(viewPath) === "loading" ? (
+            <p className="px-2 py-1 text-[12px] text-v2-text-text-faint">Loading…</p>
+          ) : (
+            <p className="px-2 py-1 text-[12px] text-v2-text-text-faint">No subdirectories.</p>
+          ))}
           {rows.map((row) => {
-            const isExpanded = expanded.has(row.path);
+            const isExpanded = tree.expanded.has(row.path);
             const isSelected = selected === row.path;
+            const state = tree.status(row.path);
             return (
               <div
                 key={row.path}
@@ -301,13 +266,13 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
               >
                 <button
                   className="flex size-4 shrink-0 items-center justify-center rounded text-v2-icon-icon-muted hover:bg-v2-grey-200"
-                  aria-label={isExpanded ? "Collapse" : "Expand"}
+                  aria-label={state === "loading" ? `Loading ${row.name}` : isExpanded ? `Collapse ${row.name}` : `Expand ${row.name}`}
                   onClick={(event) => {
                     event.stopPropagation();
                     toggleExpand(row.path);
                   }}
                 >
-                  {row.loading ? (
+                  {state === "loading" ? (
                     <span className="v2-spinner" aria-hidden />
                   ) : (
                     <ChevronRight
@@ -318,6 +283,19 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
                 </button>
                 {isSelected ? <FolderOpen size={15} /> : <Folder size={15} />}
                 <span className="truncate text-[12px]">{row.name}</span>
+                {state === "error" && (
+                  <button
+                    type="button"
+                    className="ml-auto shrink-0 rounded px-1.5 py-0.5 text-[11px] text-v2-text-text-muted hover:bg-v2-grey-200"
+                    aria-label={`Retry ${row.name}`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      tree.retry(row.path);
+                    }}
+                  >
+                    Retry
+                  </button>
+                )}
               </div>
             );
           })}
