@@ -109,4 +109,78 @@ describe("session reducer", () => {
     expect(streaming.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
     expect(streaming.messages[0]!.streaming).toBe(false);
   });
+
+  it("splits thinking blocks into reasoning, keeping the body text", () => {
+    const state = fromSnapshot({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "done" } as never,
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "let me think hard", thinkingSignature: "reasoning" },
+            { type: "text", text: "here is the answer" },
+          ],
+        },
+      ] as never,
+    });
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]!.reasoning).toBe("let me think hard");
+    expect(state.messages[0]!.text).toBe("here is the answer");
+  });
+
+  it("captures tool args on start and output on end", () => {
+    const active = reduceSessionEvent(emptyState, {
+      type: "tool_execution_start",
+      toolCallId: "t1",
+      toolName: "bash",
+      args: { command: "ls -la" },
+    } as never);
+    expect(active.tools[0]).toMatchObject({ args: "ls -la" });
+    const done = reduceSessionEvent(active, {
+      type: "tool_execution_end",
+      toolCallId: "t1",
+      toolName: "bash",
+      result: { output: "total 8" },
+    } as never);
+    expect(done.tools[0]).toMatchObject({ output: "total 8", done: true });
+  });
+
+  it("pairs snapshot toolCall blocks with toolResult messages", () => {
+    const state = fromSnapshot({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "done" } as never,
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "tc-1", name: "bash", arguments: '{"command":"ls"}' }],
+        },
+        {
+          role: "toolResult",
+          toolCallId: "tc-1",
+          toolName: "bash",
+          content: [{ type: "text", text: "file.txt" }],
+          isError: false,
+        },
+      ] as never,
+    });
+    expect(state.messages).toHaveLength(0);
+    expect(state.tools).toHaveLength(1);
+    expect(state.tools[0]).toMatchObject({ key: "tc-1", name: "bash", done: true, error: false });
+    expect(state.tools[0]!.output).toBe("file.txt");
+  });
+
+  it("unwraps text-block arrays from toolResult content", () => {
+    const state = fromSnapshot({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "done" } as never,
+      messages: [
+        {
+          role: "toolResult",
+          toolCallId: "tc-9",
+          toolName: "bash",
+          content: [{ type: "text", text: "总计 4\nnotes" }],
+          isError: false,
+        },
+      ] as never,
+    });
+    expect(state.tools[0]).toMatchObject({ key: "tc-9", output: "总计 4\nnotes" });
+  });
 });

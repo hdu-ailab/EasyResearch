@@ -1,6 +1,6 @@
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { AlertTriangle, Check, ChevronDown } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, ChevronRight } from "lucide-react";
 import type { SessionMessageView, ToolView } from "../session-reducer";
 
 export interface ChatTranscriptProps {
@@ -14,39 +14,89 @@ const ROLE_LABELS: Record<string, string> = {
   assistant: "Orchestrator",
 };
 
-function ToolRow({ tool }: { tool: ToolView }) {
+/** Collapsible reasoning block; collapsed by default. */
+function ReasoningBlock({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
   return (
-    <li>
+    <div className="flex w-full flex-col gap-1.5">
       <button
         type="button"
-        className={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-[12px] transition-colors ${
-          tool.done
-            ? tool.error
-              ? "border-v2-status-error/30 text-v2-status-error hover:bg-v2-status-error/5"
-              : "border-v2-grey-200 text-v2-text-text-muted hover:bg-v2-grey-100"
-            : "border-v2-blue-200 text-v2-blue-600 hover:bg-v2-blue-100/50"
-        }`}
+        className="flex items-center gap-1 text-[12px] font-medium text-v2-text-text-faint transition-colors hover:text-v2-text-text-muted"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        {open ? <ChevronDown size={14} aria-hidden /> : <ChevronRight size={14} aria-hidden />}
+        <span>{open ? "Hide details" : "Show details"}</span>
+        <span className="text-v2-text-text-faint/70">Thinking</span>
+      </button>
+      {open && (
+        <div className="border-l-2 border-v2-blue-200 pl-3">
+          <div className="v2-md text-[12.5px] text-v2-text-text-muted">
+            <ReactMarkdown
+              components={{
+                a: ({ children }) => <span>{children}</span>,
+              }}
+            >
+              {text}
+            </ReactMarkdown>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ToolRow({ tool }: { tool: ToolView }) {
+  const [open, setOpen] = useState(false);
+  const statusClass = tool.done
+    ? tool.error
+      ? "border-v2-status-error/30 text-v2-status-error hover:bg-v2-status-error/5"
+      : "border-v2-grey-200 text-v2-text-text-muted hover:bg-v2-grey-100"
+    : "border-v2-blue-200 text-v2-blue-600 hover:bg-v2-blue-100/50";
+  return (
+    <li className="flex flex-col gap-1 items-start">
+      <button
+        type="button"
+        className={`flex max-w-full items-center gap-1.5 rounded-md border px-2 py-1 text-[12px] transition-colors ${statusClass}`}
         aria-expanded={open}
         onClick={() => setOpen((current) => !current)}
       >
         {tool.running ? <span className="v2-spinner" aria-hidden /> : null}
         {tool.done && !tool.error ? <Check size={13} aria-hidden /> : null}
         {tool.error ? <AlertTriangle size={13} aria-hidden /> : null}
-        <span>
+        <span className="truncate">
           {tool.running ? "Running tool: " : ""}
           {tool.name}
+          {tool.args ? <span className="text-v2-text-text-faint"> {tool.args}</span> : null}
         </span>
-        <ChevronDown size={12} className={`transition-transform ${open ? "rotate-180" : ""}`} aria-hidden />
+        {open ? (
+          <ChevronDown size={12} aria-hidden />
+        ) : (
+          <ChevronRight size={12} aria-hidden />
+        )}
       </button>
+      {open && (
+        <div className="max-h-64 w-full overflow-y-auto rounded-md border border-v2-grey-200 bg-v2-background-bg-deep px-3 py-2">
+          {tool.output ? (
+            <pre className="whitespace-pre-wrap font-mono text-[11.5px] leading-relaxed text-v2-text-text-muted">
+              {tool.output}
+            </pre>
+          ) : tool.running ? (
+            <p className="text-[12px] text-v2-text-text-faint">Running…</p>
+          ) : (
+            <p className="text-[12px] text-v2-text-text-faint">No output.</p>
+          )}
+        </div>
+      )}
     </li>
   );
 }
 
 /**
  * Streaming chat transcript. Each message is a stable row keyed by the
- * reducer's message key; streaming text updates in place. Tool executions
- * render as collapsible rows below the messages.
+ * reducer's message key; streaming text updates in place. Reasoning renders
+ * as a collapsed "Thinking" block; tool executions render as collapsible
+ * rows below the messages.
  */
 export function ChatTranscript({ messages, tools, emptyHint = "Send a message to start." }: ChatTranscriptProps) {
   return (
@@ -60,6 +110,7 @@ export function ChatTranscript({ messages, tools, emptyHint = "Send a message to
             <span className="text-[11px] font-medium uppercase tracking-wide text-v2-text-text-faint">
               {ROLE_LABELS[message.role] ?? message.role}
             </span>
+            {message.reasoning ? <ReasoningBlock text={message.reasoning} /> : null}
             {message.role === "assistant" || message.role === "user" ? (
               <div
                 className={`v2-md max-w-full rounded-lg px-3 py-2 text-[13px] ${
