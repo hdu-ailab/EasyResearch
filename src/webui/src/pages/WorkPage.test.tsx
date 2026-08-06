@@ -493,6 +493,7 @@ describe("WorkPage", () => {
     expect(row).toBeTruthy();
     expect(row?.firstElementChild === screen.getByText("starting research").closest("section")).toBe(true);
     expect(panel.parentElement).toBe(row);
+    expect(row?.className).toContain("overflow-x-clip");
   });
 
   it("renders the full five-agent roster in the agents view with serial copy", async () => {
