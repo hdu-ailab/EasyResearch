@@ -56,6 +56,8 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   const [status, setStatus] = useState<string>("starting");
   const [sessionId, setSessionId] = useState(id);
   const [accepting, setAccepting] = useState(false);
+  const [pendingOutput, setPendingOutput] = useState(false);
+  const pendingBaseline = useRef<number | null>(null);
   const [statusText, setStatusText] = useState<string | null>(null);
   const [panel, setPanel] = useState<Panel>(defaultPanel);
   const [panelWidth, setPanelWidth] = useState(PANEL_DEFAULT);
@@ -195,26 +197,46 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
     [panelMax, panelMin, clampedPanelWidth],
   );
 
+  const assistantCount = useCallback(() => {
+    let n = sessionView.tools.length;
+    for (const m of sessionView.messages) if (m.role !== "user") n += 1;
+    return n;
+  }, [sessionView]);
+
   const send = useCallback(
     async (text: string) => {
       setAccepting(true);
       setStatusText(null);
+      pendingBaseline.current = assistantCount();
+      setPendingOutput(true);
       try {
         await sendPrompt(sessionId, text);
         setAccepting(false);
       } catch (e) {
         setAccepting(false);
+        setPendingOutput(false);
+        pendingBaseline.current = null;
         setStatusText(e instanceof Error ? e.message : String(e));
       }
     },
-    [sessionId],
+    [sessionId, assistantCount],
   );
+
+  useEffect(() => {
+    if (!pendingOutput || pendingBaseline.current === null) return;
+    if (sessionView.isStreaming || assistantCount() > pendingBaseline.current) {
+      setPendingOutput(false);
+      pendingBaseline.current = null;
+    }
+  }, [sessionView, pendingOutput, assistantCount]);
 
   const abort = useCallback(async () => {
     try {
       await abortSession(sessionId);
       setSessionView((prev) => ({ ...prev, isStreaming: false }));
       setStatus("ready");
+      setPendingOutput(false);
+      pendingBaseline.current = null;
     } catch (e) {
       setStatusText(e instanceof Error ? e.message : String(e));
     }
@@ -304,6 +326,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
             messages={activeMessages}
             tools={sessionView.tools}
             emptyHint={activeAgent === "orchestrator" ? undefined : "No messages from this agent yet."}
+            pending={pendingOutput && activeAgent === "orchestrator"}
           />
           <footer className="shrink-0 border-t border-v2-grey-200 p-3">
             <ChatComposer

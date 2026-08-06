@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Activity, FolderSearch, Settings2, History } from "lucide-react";
-import { createSession, listStatus, openSession } from "../api";
+import { createSession, listStatus, openSession, restartSession } from "../api";
 import { DirectoryDialog } from "../components/DirectoryDialog";
 import { SessionList } from "../components/SessionList";
 import { ProductMark, Topbar } from "../components/Topbar";
@@ -62,6 +62,22 @@ export function HomePage({ onOpenSession, onOpenSettings, settingsButton }: Home
     [onOpenSession],
   );
 
+  const openActive = useCallback(
+    async (session: ActiveSessionDto) => {
+      if (session.status === "stopped" || session.status === "error") {
+        try {
+          const dto = await restartSession(session.id);
+          onOpenSession({ id: dto.id, cwd: dto.cwd });
+        } catch (e) {
+          setError(e instanceof Error ? e.message : String(e));
+        }
+        return;
+      }
+      onOpenSession({ id: session.id, cwd: session.cwd });
+    },
+    [onOpenSession],
+  );
+
   const running = status?.activeSessions ?? [];
 
   return (
@@ -109,31 +125,40 @@ export function HomePage({ onOpenSession, onOpenSettings, settingsButton }: Home
               <p className="text-[13px] text-v2-text-text-muted">No agents running right now.</p>
             ) : (
               <ul className="flex flex-col gap-1">
-                {running.map((session) => (
-                  <li key={session.id}>
-                    <button
-                      type="button"
-                      className="flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-v2-grey-100"
-                      onClick={() => onOpenSession({ id: session.id, cwd: session.cwd })}
-                    >
-                      <span
-                        className={`size-2 rounded-full ${
-                          session.status === "error"
-                            ? "bg-v2-status-error"
-                            : session.status === "running" || session.isStreaming
-                              ? "bg-v2-status-success"
-                              : "bg-v2-grey-400"
-                        }`}
-                        aria-hidden
-                      />
-                      <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-v2-text-text-base">
-                        {session.sessionName ?? session.cwd}
-                      </span>
-                      <span className="truncate font-mono text-[12px] text-v2-text-text-faint">{session.cwd}</span>
-                      <span className="shrink-0 text-[12px] text-v2-text-text-muted">{session.status}</span>
-                    </button>
-                  </li>
-                ))}
+                {running.map((session) => {
+                  const dead = session.status === "stopped" || session.status === "error";
+                  return (
+                    <li key={session.id}>
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-v2-grey-100"
+                        onClick={() => void openActive(session)}
+                      >
+                        <span
+                          className={`size-2 rounded-full ${
+                            session.status === "error"
+                              ? "bg-v2-status-error"
+                              : session.status === "running" || session.isStreaming
+                                ? "bg-v2-status-success"
+                                : "bg-v2-status-warning"
+                          }`}
+                          aria-hidden
+                        />
+                        <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-v2-text-text-base">
+                          {session.sessionName ?? session.cwd}
+                        </span>
+                        <span className="truncate font-mono text-[12px] text-v2-text-text-faint">{session.cwd}</span>
+                        {dead ? (
+                          <span className="shrink-0 rounded-full bg-v2-status-error/10 px-2 py-0.5 text-[11px] text-v2-status-error" title={session.error}>
+                            reconnected on click
+                          </span>
+                        ) : (
+                          <span className="shrink-0 text-[12px] text-v2-text-text-muted">{session.status}</span>
+                        )}
+                      </button>
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </section>
@@ -148,9 +173,7 @@ export function HomePage({ onOpenSession, onOpenSettings, settingsButton }: Home
             ) : (
               <SessionList
                 history={status.sessions}
-                active={status.activeSessions}
                 onOpenHistory={openHistory}
-                onOpenActive={(session) => onOpenSession({ id: session.id, cwd: session.cwd })}
               />
             )}
           </section>

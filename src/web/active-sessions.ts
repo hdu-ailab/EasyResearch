@@ -44,7 +44,10 @@ export class ActiveSessionRegistry {
 
   async open(input: OpenSessionInput): Promise<ActiveSessionDto> {
     for (const record of this.records.values()) {
-      if (record.sessionPath === input.sessionPath && record.dto.status !== "error") {
+      if (
+        record.sessionPath === input.sessionPath &&
+        (record.dto.status === "starting" || record.dto.status === "ready" || record.dto.status === "running")
+      ) {
         return record.dto;
       }
     }
@@ -61,7 +64,12 @@ export class ActiveSessionRegistry {
   async snapshot(id: string): Promise<{ session: ActiveSessionDto; messages: AgentMessage[] }> {
     return this.withRecord(id, async (record) => {
       await this.refreshFromClient(record);
-      return { session: { ...record.dto }, messages: await record.client.getMessages() };
+      const live =
+        record.dto.status === "starting" ||
+        record.dto.status === "ready" ||
+        record.dto.status === "running";
+      const messages = live ? await record.client.getMessages() : [];
+      return { session: { ...record.dto }, messages };
     });
   }
 
@@ -231,8 +239,10 @@ export class ActiveSessionRegistry {
       if (state.sessionFile) record.dto.sessionFile = state.sessionFile;
       if (state.sessionName) record.dto.sessionName = state.sessionName;
     } catch (error) {
-      record.dto.status = "error";
-      record.dto.error = error instanceof Error ? error.message : String(error);
+      if (record.dto.status !== "stopped") {
+        record.dto.status = "error";
+        record.dto.error = error instanceof Error ? error.message : String(error);
+      }
     }
   }
 
