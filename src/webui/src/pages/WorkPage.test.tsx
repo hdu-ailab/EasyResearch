@@ -306,7 +306,7 @@ describe("WorkPage", () => {
     expect(chat).toBeTruthy();
     expect(chat?.className).toContain("flex-1");
     expect(panel.className).toContain("md:shrink-0");
-    expect(panel.getAttribute("style")).toMatch(/width:\s*320px/);
+    expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*320px/);
   });
 
   it("resizes the panel within min/max while dragging", async () => {
@@ -316,7 +316,7 @@ describe("WorkPage", () => {
     const observer = (RO as unknown as { instances: { __fire: (n: number) => void }[] }).instances.at(-1);
     expect(observer).toBeTruthy();
     observer!.__fire(1200);
-    await waitFor(() => expect(screen.getByRole("region", { name: /file browser/i }).getAttribute("style")).toMatch(/width:\s*320px/));
+    await waitFor(() => expect(screen.getByRole("region", { name: /file browser/i }).getAttribute("style")).toMatch(/--panel-w:\s*600px/));
     const handle = screen.getByRole("button", { name: /resize panel/i });
     const row = screen.getByText("starting research").closest("section")?.parentElement;
     expect(row).toBeTruthy();
@@ -335,6 +335,43 @@ describe("WorkPage", () => {
     fireEvent.pointerDown(handle, { clientX: 880, clientY: 100, pointerId: 1 });
     fireEvent.pointerMove(document, { clientX: 820, clientY: 100, pointerId: 1 });
     fireEvent.pointerUp(document, { clientX: 820, clientY: 100, pointerId: 1 });
-    expect(panel.getAttribute("style")).toMatch(/width:\s*380px/);
+    expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*660px/);
+  });
+
+  it("remembers the dragged width for the session after the first drag", async () => {
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    const RO = (globalThis as unknown as { FakeResizeObserver: typeof ResizeObserver }).FakeResizeObserver;
+    const observer = (RO as unknown as { instances: { __fire: (n: number) => void }[] }).instances.at(-1);
+    observer!.__fire(1200);
+    await waitFor(() => expect(screen.getByRole("region", { name: /file browser/i }).getAttribute("style")).toMatch(/--panel-w:\s*600px/));
+    const handle = screen.getByRole("button", { name: /resize panel/i });
+    const row = screen.getByText("starting research").closest("section")?.parentElement;
+    vi.spyOn(row!, "getBoundingClientRect").mockReturnValue({
+      right: 1200, left: 0, top: 0, bottom: 600, width: 1200, height: 600, x: 0, y: 0, toJSON: () => ({}),
+    } as DOMRect);
+    const panel = screen.getByRole("region", { name: /file browser/i });
+    fireEvent.pointerDown(handle, { clientX: 880, clientY: 100, pointerId: 1 });
+    fireEvent.pointerMove(document, { clientX: 820, clientY: 100, pointerId: 1 });
+    fireEvent.pointerUp(document, { clientX: 820, clientY: 100, pointerId: 1 });
+    expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*660px/);
+    observer!.__fire(1600);
+    await waitFor(() => expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*660px/));
+  });
+
+  it("covers the full row region on mobile without a desktop bottom-sheet geometry", async () => {
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    const panel = screen.getByRole("region", { name: /file browser/i });
+    expect(panel.className).toContain("absolute");
+    expect(panel.className).toContain("inset-0");
+    expect(panel.className).toContain("z-30");
+    expect(panel.className).toMatch(/w-full/);
+    expect(panel.className).not.toContain("bottom-0");
+    expect(panel.className).not.toContain("top-9");
+    const row = screen.getByText("starting research").closest("section")?.parentElement;
+    expect(row).toBeTruthy();
+    expect(row?.firstElementChild === screen.getByText("starting research").closest("section")).toBe(true);
+    expect(panel.parentElement).toBe(row);
   });
 });

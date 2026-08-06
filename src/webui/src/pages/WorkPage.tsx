@@ -38,6 +38,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   const [statusText, setStatusText] = useState<string | null>(null);
   const [panel, setPanel] = useState<Panel>("files");
   const [panelWidth, setPanelWidth] = useState(PANEL_DEFAULT);
+  const [panelWidthTouched, setPanelWidthTouched] = useState(false);
   const [available, setAvailable] = useState<number | undefined>(undefined);
   const [sizing, setSizing] = useState(false);
   const [agents, setAgents] = useState<AgentChip[]>([ORCHESTRATOR_AGENT]);
@@ -88,7 +89,12 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   }, [sessionView]);
 
   const panelMax = available === undefined ? 480 : Math.max(PANEL_MIN, available - CHAT_MIN - 8);
-  const clampedPanelWidth = available === undefined ? panelWidth : Math.min(panelWidth, panelMax);
+  const defaultPanelWidth = available === undefined ? PANEL_DEFAULT : Math.max(PANEL_MIN, Math.round(available / 2));
+  const clampedPanelWidth = available === undefined
+    ? panelWidth
+    : panelWidthTouched
+      ? Math.min(panelWidth, panelMax)
+      : Math.min(defaultPanelWidth, panelMax);
   const activeMessages = sessionView.messages.filter((m) => (m.agentId ?? "orchestrator") === activeAgent);
 
   const hydrate = useCallback(async (targetId: string) => {
@@ -146,6 +152,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
       const move = (moveEvent: PointerEvent) => {
         const next = Math.min(panelMax, Math.max(PANEL_MIN, startWidth + startX - moveEvent.clientX));
         setPanelWidth(Math.round(next));
+        setPanelWidthTouched(true);
       };
 
       document.addEventListener("pointermove", move);
