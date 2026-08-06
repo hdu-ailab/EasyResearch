@@ -6,6 +6,7 @@ import {
   createConfigDirectory,
   createSession,
   getSnapshot,
+  listAgents,
   listConfig,
   listDirectories,
   listStatus,
@@ -47,6 +48,15 @@ describe("api transport", () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(init.method).toBe("GET");
     expect(url).toBe("/api/directories?path=%2Fhome%2Fuser");
+  });
+
+  it("listAgents GETs /api/agents", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify([{ name: "search", description: "Finds papers" }]), { status: 200 }),
+    );
+    const agents = await listAgents();
+    expect(fetchMock).toHaveBeenCalledWith("/api/agents", expect.objectContaining({ method: "GET" }));
+    expect(agents[0]?.name).toBe("search");
   });
 
   it("createSession POSTs cwd only", async () => {

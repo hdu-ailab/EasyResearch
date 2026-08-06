@@ -51,6 +51,14 @@ export interface FileContentDto {
   binary: boolean;
 }
 
+export interface AgentDto {
+  name: string;
+  description: string;
+  tools?: string[];
+  subagents?: string[];
+  model?: string;
+}
+
 export type ConfigScope = "global" | "project";
 
 export interface ConfigEntryDto {

@@ -6,6 +6,7 @@ import { PiRpcSessionFactory } from "./rpc-session";
 import { DirectoryService } from "./directories";
 import { ConfigFileService } from "./config-files";
 import type { SessionSummaryDto } from "./contracts";
+import { discoverAgents } from "../subagent/agents";
 
 export interface Server {
   port: number;
@@ -46,6 +47,14 @@ export async function startServer(): Promise<Server> {
     directories: new DirectoryService(),
     registry,
     config: new ConfigFileService(agentDir),
+    listAgents: async () =>
+      discoverAgents().agents.map(({ name, description, tools, subagents, model }) => ({
+        name,
+        description,
+        tools,
+        subagents,
+        model,
+      })),
   };
   const handler = createRouteHandler(services);
 

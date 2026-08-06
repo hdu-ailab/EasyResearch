@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { fireEvent } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,6 +22,7 @@ vi.mock("../api", async (importOriginal) => {
     createConfigDirectory: vi.fn(),
     listEntries: vi.fn(),
     readFileContent: vi.fn(),
+    listAgents: vi.fn(),
   };
 });
 
@@ -58,6 +59,14 @@ describe("WorkPage", () => {
     vi.mocked(api.abortSession).mockReset();
     vi.mocked(api.listEntries).mockReset();
     vi.mocked(api.readFileContent).mockReset();
+    vi.mocked(api.listAgents).mockReset();
+    vi.mocked(api.listAgents).mockResolvedValue([
+      { name: "orchestrator", description: "Runs the pipeline", tools: ["subagent"] },
+      { name: "search", description: "Finds papers" },
+      { name: "experiment", description: "Runs experiments", subagents: ["search"] },
+      { name: "writing", description: "Writes the paper", subagents: ["search", "figures"] },
+      { name: "figures", description: "Draws figures" },
+    ]);
     vi.mocked(api.getSnapshot).mockResolvedValue(snapshot);
     vi.mocked(api.listEntries).mockResolvedValue([{ kind: "file", name: "notes.md", path: "/p/notes.md" }]);
     stubEvents();
@@ -153,10 +162,10 @@ describe("WorkPage", () => {
     await screen.findByText("starting research");
     const orchestatorChip = screen.getByRole("button", { name: /agent orchestrator/i });
     expect(orchestatorChip.getAttribute("aria-pressed")).toBe("true");
-    emit({ type: "message_start", message: { role: "assistant", id: "sm1", content: [], agentId: "literature" } });
-    await screen.findByRole("button", { name: /agent literature/i });
-    await user.click(screen.getByRole("button", { name: /agent literature/i }));
-    expect(screen.getByRole("button", { name: /agent literature/i }).getAttribute("aria-pressed")).toBe("true");
+    emit({ type: "message_start", message: { role: "assistant", id: "sm1", content: [], agentId: "search" } });
+    await screen.findByRole("button", { name: /agent search/i });
+    await user.click(screen.getByRole("button", { name: /agent search/i }));
+    expect(screen.getByRole("button", { name: /agent search/i }).getAttribute("aria-pressed")).toBe("true");
     expect(orchestatorChip.getAttribute("aria-pressed")).toBe("false");
   });
 
@@ -373,5 +382,30 @@ describe("WorkPage", () => {
     expect(row).toBeTruthy();
     expect(row?.firstElementChild === screen.getByText("starting research").closest("section")).toBe(true);
     expect(panel.parentElement).toBe(row);
+  });
+
+  it("renders the full five-agent roster in the agents view with serial copy", async () => {
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    await user.click(screen.getByRole("button", { name: /agent list/i }));
+    const region = screen.getByRole("region", { name: /agent list/i });
+    await waitFor(() => {
+      for (const agent of ["orchestrator", "search", "experiment", "writing", "figures"]) {
+        expect(within(region).getAllByText(agent).length).toBeGreaterThan(0);
+      }
+    });
+    expect(within(region).getByText(/serially/i)).toBeTruthy();
+    expect(within(region).queryByText(/parallel/i)).toBeNull();
+  });
+
+  it("keeps the orchestrator card when the agents endpoint fails", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listAgents).mockRejectedValue(new Error("boom"));
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    await user.click(screen.getByRole("button", { name: /agent list/i }));
+    const region = screen.getByRole("region", { name: /agent list/i });
+    expect(await within(region).findByText(/orchestrator/i)).toBeTruthy();
   });
 });

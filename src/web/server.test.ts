@@ -109,6 +109,7 @@ describe("web routes", () => {
       directories: directoryService,
       registry,
       config: configService,
+      listAgents: async () => [],
       ...overrides,
     };
     handler = createRouteHandler(services);
@@ -524,5 +525,20 @@ describe("web routes", () => {
     expect(worker.status).toBe(200);
     expect(worker.headers.get("content-type")).toMatch(/text\/javascript/);
     expect(await worker.text()).toBe("self.streamSink");
+  });
+
+  it("lists the agent roster without leaking system prompts", async () => {
+    setup({
+      listAgents: async () => [
+        { name: "orchestrator", description: "Runs the pipeline", tools: ["subagent"], model: undefined },
+        { name: "search", description: "Finds papers", subagents: [] },
+      ],
+    });
+    const res = await handler(new Request("http://localhost/api/agents"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Array<{ name: string; description: string; tools?: string[]; systemPrompt?: string }>;
+    expect(body.map((a) => a.name)).toEqual(["orchestrator", "search"]);
+    expect(body[0]?.tools).toEqual(["subagent"]);
+    expect(body[0]?.systemPrompt).toBeUndefined();
   });
 });
