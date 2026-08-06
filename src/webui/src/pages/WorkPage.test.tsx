@@ -123,6 +123,39 @@ describe("WorkPage", () => {
     expect(api.sendPrompt).not.toHaveBeenCalled();
   });
 
+  it("renders a working agent row on send and replaces it with the first real output", async () => {
+    const user = userEvent.setup();
+    stubEvents();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    await user.type(screen.getByRole("textbox", { name: /message/i }), "continue please");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+    expect(await screen.findByLabelText("Working")).toBeTruthy();
+    emit({
+      type: "message_start",
+      message: { id: "m0", role: "user", content: [{ type: "text", text: "continue please" }] },
+    });
+    expect(screen.getByLabelText("Working")).toBeTruthy();
+    emit({
+      type: "message_start",
+      message: { id: "m1", role: "assistant", content: [{ type: "text", text: "on it" }] },
+    });
+    await waitFor(() => expect(screen.queryByLabelText("Working")).toBeNull());
+    expect(await screen.findByText("on it")).toBeTruthy();
+  });
+
+  it("clears the working agent row when the send fails", async () => {
+    const user = userEvent.setup();
+    stubEvents();
+    vi.mocked(api.sendPrompt).mockRejectedValue(new Error("boom"));
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    await user.type(screen.getByRole("textbox", { name: /message/i }), "continue please");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+    await waitFor(() => expect(screen.queryByLabelText("Working")).toBeNull());
+    expect(screen.getByText("boom")).toBeTruthy();
+  });
+
   it("streams message_update deltas into a single assistant row", async () => {
     stubEvents();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);

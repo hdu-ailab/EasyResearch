@@ -173,6 +173,49 @@ describe("ActiveSessionRegistry", () => {
     expect(factory.created).toHaveLength(1);
   });
 
+  it("re-launches a stopped session on open instead of reusing the dead entry", async () => {
+    const created = await registry.open({ cwd, sessionPath });
+    await registry.stop(created.id);
+    const reopened = await registry.open({ cwd, sessionPath });
+    expect(reopened.status).toBe("ready");
+    expect(factory.created).toHaveLength(2);
+    expect(factory.created[1]?.options.sessionPath).toBe(sessionPath);
+    expect(factory.created[1]?.stats.started).toBe(1);
+  });
+
+  it("re-launches an errored session on open instead of reusing the dead entry", async () => {
+    const created = await registry.create({ cwd });
+    const adapter = factory.created[0]!;
+    adapter.onExitListeners.forEach((listener) => listener(new Error("crash")));
+    const reopened = await registry.open({ cwd, sessionPath });
+    expect(reopened.status).toBe("ready");
+    expect(factory.created).toHaveLength(2);
+    expect(factory.created[1]?.stats.started).toBe(1);
+  });
+
+  it("snapshots a stopped session without calling into the dead client", async () => {
+    const created = await registry.create({ cwd });
+    await registry.stop(created.id);
+    const adapter = factory.created[0]!;
+    const broken = vi.spyOn(adapter, "getMessages").mockRejectedValue(new Error("Client not started"));
+    const snapshot = await registry.snapshot(created.id);
+    expect(broken).not.toHaveBeenCalled();
+    expect(snapshot.session.status).toBe("stopped");
+    expect(snapshot.messages).toEqual([]);
+  });
+
+  it("snapshots an errored session without calling into the dead client", async () => {
+    const created = await registry.create({ cwd });
+    const adapter = factory.created[0]!;
+    const broken = vi.spyOn(adapter, "getMessages").mockRejectedValue(new Error("Client not started"));
+    adapter.onExitListeners.forEach((listener) => listener(new Error("crash")));
+    const snapshot = await registry.snapshot(created.id);
+    expect(broken).not.toHaveBeenCalled();
+    expect(snapshot.session.status).toBe("error");
+    expect(snapshot.session.error).toBe("crash");
+    expect(snapshot.messages).toEqual([]);
+  });
+
   it("restarts with the same session path in a replacement adapter", async () => {
     const created = await registry.open({ cwd, sessionPath });
     await registry.restart(created.id);
