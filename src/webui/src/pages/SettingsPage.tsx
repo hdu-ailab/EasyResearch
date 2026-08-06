@@ -1,8 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
-import { Activity, FileJson, Settings2 } from "lucide-react";
-import type { AgentDto, WebuiSettingsDto } from "../../../web/contracts";
+import { Activity, FileJson, Languages, Minus, Plus, Settings2 } from "lucide-react";
+import type { AgentDto } from "../../../web/contracts";
 import { getWebuiSettings, listAgents, listModels, updateWebuiSettings } from "../api";
-import { applyWebuiSettings } from "../webui-fonts";
+import { useI18n } from "../i18n/useI18n";
+import type { WebUiPreferences } from "../preferences";
+import {
+  CHAT_FONT_MAX,
+  CHAT_FONT_MIN,
+  FILES_FONT_MAX,
+  FILES_FONT_MIN,
+  readPreferences,
+  writePreferences,
+} from "../preferences";
+import { applyFontPreferences } from "../webui-fonts";
 import { BackButton, ProductMark, Topbar } from "../components/Topbar";
 
 export interface SettingsPageProps {
@@ -10,61 +20,84 @@ export interface SettingsPageProps {
   onOpenConfigPage: () => void;
 }
 
-const CHAT_SIZES = [11, 12, 13, 14, 15, 16, 17, 18];
-const FILES_SIZES = [10, 11, 12, 13, 14, 15, 16];
-
 const sectionClass =
   "rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)] focus-within:border-v2-grey-200";
 
-/**
- * Homepage settings page: live Web panel font sizes, per-agent global model
- * overrides, and an entry into the per-scope settings.json editor.
- */
+const buttonClass =
+  "flex h-7 w-7 items-center justify-center rounded-md border border-v2-grey-200 text-v2-text-text-base transition-colors hover:bg-v2-grey-100 disabled:opacity-40";
+
+interface StepperProps {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  decreaseLabel: string;
+  increaseLabel: string;
+  onDecrease: () => void;
+  onIncrease: () => void;
+}
+
+function FontStepper({ label, value, min, max, decreaseLabel, increaseLabel, onDecrease, onIncrease }: StepperProps) {
+  return (
+    <div className="flex items-center justify-between gap-4">
+      <span className="text-[13px] text-v2-text-text-base">{label}</span>
+      <div className="flex items-center gap-2">
+        <button type="button" aria-label={decreaseLabel} disabled={value <= min} onClick={onDecrease} className={buttonClass}>
+          <Minus size={13} aria-hidden />
+        </button>
+        <span className="w-12 text-center text-[13px] tabular-nums text-v2-text-text-base" aria-live="polite">
+          {value}px
+        </span>
+        <button type="button" aria-label={increaseLabel} disabled={value >= max} onClick={onIncrease} className={buttonClass}>
+          <Plus size={13} aria-hidden />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
-  const [settings, setSettings] = useState<WebuiSettingsDto | null>(null);
+  const { t, language, setLanguage } = useI18n();
+  const [prefs, setPrefs] = useState<WebUiPreferences>(() =>
+    readPreferences(window.localStorage, () => navigator.language),
+  );
   const [agents, setAgents] = useState<AgentDto[]>([]);
   const [models, setModels] = useState<Array<{ provider: string; id: string }>>([]);
+  const [agentModels, setAgentModels] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     Promise.all([getWebuiSettings(), listAgents(), listModels()])
       .then(([s, a, m]) => {
-        setSettings(s);
-        applyWebuiSettings(s);
+        setAgentModels(s.agentModels);
         setAgents(a);
         setModels(m);
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, []);
 
-  const patch = useCallback(async (partial: Parameters<typeof updateWebuiSettings>[0]) => {
-    if (!settings) return;
-    setBusy(true);
-    setError(null);
-    const previous = settings;
-    try {
-      const updated = await updateWebuiSettings(partial);
-      setSettings(updated);
-      applyWebuiSettings(updated);
-    } catch (e) {
-      setSettings(previous);
-      applyWebuiSettings(previous);
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  }, [settings]);
+  const setFont = useCallback(
+    (key: "chatFontSize" | "filesFontSize", value: number) => {
+      const next: WebUiPreferences = { ...readPreferences(window.localStorage, () => navigator.language), [key]: value };
+      writePreferences(window.localStorage, next);
+      applyFontPreferences(next);
+      setPrefs(next);
+    },
+    [],
+  );
 
   const setAgentModel = (name: string, value: string) => {
-    if (!settings) return;
-    const agentModels = { ...settings.agentModels };
-    if (value === "") delete agentModels[name];
-    else agentModels[name] = value;
-    void patch({ agentModels });
+    const next = { ...agentModels };
+    if (value === "") delete next[name];
+    else next[name] = value;
+    setBusy(true);
+    setError(null);
+    updateWebuiSettings({ agentModels: next })
+      .then((s) => setAgentModels(s.agentModels))
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setBusy(false));
   };
-
-  const disabled = !settings || busy;
 
   return (
     <div className="flex h-full flex-col">
@@ -75,67 +108,91 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
             <ProductMark />
           </>
         }
-        center={<span className="truncate text-[13px] text-v2-text-text-muted">Settings</span>}
+        center={<span className="truncate text-[13px] text-v2-text-text-muted">{t("settings.title")}</span>}
       />
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         <div className="mx-auto flex w-full max-w-[720px] flex-col gap-4">
-          <section className={sectionClass} aria-label="Appearance">
+          <section className={sectionClass} aria-label={t("settings.appearance.title")}>
             <header className="flex items-center gap-2 border-b border-v2-grey-200 px-4 py-2.5">
               <Activity size={14} className="text-v2-icon-icon-muted" aria-hidden />
-              <h2 className="text-[13px] font-semibold text-v2-text-text-base">Appearance</h2>
+              <h2 className="text-[13px] font-semibold text-v2-text-text-base">{t("settings.appearance.title")}</h2>
             </header>
             <div className="flex flex-col gap-3 px-4 py-4">
-              <label className="flex items-center justify-between gap-4">
-                <span className="text-[13px] text-v2-text-text-base">Chat font size</span>
-                <select
-                  className="h-8 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600 disabled:opacity-50"
-                  aria-label="Chat font size"
-                  value={settings?.chatFontSize ?? 13}
-                  onChange={(e) => void patch({ chatFontSize: Number(e.target.value) })}
-                  disabled={disabled}
-                >
-                  {CHAT_SIZES.map((size) => (
-                    <option key={size} value={size}>
-                      {size}px
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="flex items-center justify-between gap-4">
-                <span className="text-[13px] text-v2-text-text-base">Files font size</span>
-                <select
-                  className="h-8 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600 disabled:opacity-50"
-                  aria-label="Files font size"
-                  value={settings?.filesFontSize ?? 12}
-                  onChange={(e) => void patch({ filesFontSize: Number(e.target.value) })}
-                  disabled={disabled}
-                >
-                  {FILES_SIZES.map((size) => (
-                    <option key={size} value={size}>
-                      {size}px
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <FontStepper
+                label={t("settings.appearance.chatFontSize")}
+                value={prefs.chatFontSize}
+                min={CHAT_FONT_MIN}
+                max={CHAT_FONT_MAX}
+                decreaseLabel={t("settings.appearance.decreaseChat")}
+                increaseLabel={t("settings.appearance.increaseChat")}
+                onDecrease={() => setFont("chatFontSize", Math.max(CHAT_FONT_MIN, prefs.chatFontSize - 1))}
+                onIncrease={() => setFont("chatFontSize", Math.min(CHAT_FONT_MAX, prefs.chatFontSize + 1))}
+              />
+              <FontStepper
+                label={t("settings.appearance.filesFontSize")}
+                value={prefs.filesFontSize}
+                min={FILES_FONT_MIN}
+                max={FILES_FONT_MAX}
+                decreaseLabel={t("settings.appearance.decreaseFiles")}
+                increaseLabel={t("settings.appearance.increaseFiles")}
+                onDecrease={() => setFont("filesFontSize", Math.max(FILES_FONT_MIN, prefs.filesFontSize - 1))}
+                onIncrease={() => setFont("filesFontSize", Math.min(FILES_FONT_MAX, prefs.filesFontSize + 1))}
+              />
+              <div className="rounded-md border border-v2-grey-200 bg-v2-background-bg-deep px-3 py-3">
+                <p className="mb-1 text-[12px] font-medium text-v2-text-text-muted">{t("settings.appearance.previewTitle")}</p>
+                <p className="v2-md text-[length:var(--v2-chat-font-size)] leading-relaxed text-v2-text-text-base">
+                  {t("settings.appearance.previewChat")}
+                </p>
+                <p className="mt-2 font-mono text-[length:var(--v2-files-font-size)] leading-[1.5] text-v2-text-text-muted">
+                  {t("settings.appearance.previewFiles")}
+                </p>
+              </div>
             </div>
           </section>
 
-          <section className={sectionClass} aria-label="Agent models">
+          <section className={sectionClass} aria-label={t("settings.language.title")}>
+            <header className="flex items-center gap-2 border-b border-v2-grey-200 px-4 py-2.5">
+              <Languages size={14} className="text-v2-icon-icon-muted" aria-hidden />
+              <h2 className="text-[13px] font-semibold text-v2-text-text-base">{t("settings.language.title")}</h2>
+            </header>
+            <div className="flex flex-col gap-3 px-4 py-4">
+              <div
+                className="flex w-fit gap-1 rounded-md border border-v2-grey-200 bg-v2-background-bg-deep p-1"
+                role="group"
+                aria-label={t("settings.language.selector")}
+              >
+                {(["en", "zh-CN"] as const).map((lang) => (
+                  <button
+                    key={lang}
+                    type="button"
+                    aria-pressed={language === lang}
+                    onClick={() => setLanguage(lang)}
+                    className={`h-7 rounded px-3 text-[13px] transition-colors ${
+                      language === lang
+                        ? "bg-v2-blue-600 text-white"
+                        : "text-v2-text-text-base hover:bg-v2-grey-100"
+                    }`}
+                  >
+                    {lang === "en" ? "English" : "简体中文"}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[12px] text-v2-text-text-muted">{t("settings.language.hint")}</p>
+            </div>
+          </section>
+
+          <section className={sectionClass} aria-label={t("settings.agents.title")}>
             <header className="flex items-center gap-2 border-b border-v2-grey-200 px-4 py-2.5">
               <Settings2 size={14} className="text-v2-icon-icon-muted" aria-hidden />
-              <h2 className="text-[13px] font-semibold text-v2-text-text-base">Agent models</h2>
-              <span className="ml-auto text-[12px] text-v2-text-text-faint">
-                Global defaults — project overrides are set in the JSON editor
-              </span>
+              <h2 className="text-[13px] font-semibold text-v2-text-text-base">{t("settings.agents.title")}</h2>
+              <span className="ml-auto text-[12px] text-v2-text-text-faint">{t("settings.agents.globalHint")}</span>
             </header>
             <div className="flex flex-col gap-3 px-4 py-4">
               {agents.map((agent) =>
                 agent.name === "orchestrator" ? (
                   <div key={agent.name} className="flex items-center justify-between gap-4">
                     <span className="text-[13px] font-medium text-v2-text-text-base">orchestrator</span>
-                    <span className="text-[12px] text-v2-text-text-muted">
-                      Uses the session model — set in the work page, not configurable here (ADR-027)
-                    </span>
+                    <span className="text-[12px] text-v2-text-text-muted">{t("settings.agents.orchestratorHint")}</span>
                   </div>
                 ) : (
                   <label key={agent.name} className="flex items-center justify-between gap-4">
@@ -143,11 +200,11 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
                     <select
                       className="h-8 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600 disabled:opacity-50"
                       aria-label={`${agent.name} model`}
-                      value={settings?.agentModels[agent.name] ?? ""}
+                      value={agentModels[agent.name] ?? ""}
                       onChange={(e) => setAgentModel(agent.name, e.target.value)}
-                      disabled={disabled}
+                      disabled={busy}
                     >
-                      <option value="">inherit (orchestrator's model)</option>
+                      <option value="">{t("settings.agents.inherit")}</option>
                       {models.map((m) => (
                         <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
                           {m.provider}/{m.id}
@@ -160,15 +217,14 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
             </div>
           </section>
 
-          <section className={sectionClass} aria-label="Edit JSON config file">
+          <section className={sectionClass} aria-label={t("settings.config.entry")}>
             <button
               type="button"
-              className="flex h-9 w-full items-center gap-2 rounded-[10px] px-4 py-2 text-[13px] font-medium text-v2-text-text-base transition-colors hover:bg-v2-grey-100 disabled:opacity-50"
+              className="flex h-9 w-full items-center gap-2 rounded-[10px] px-4 py-2 text-[13px] font-medium text-v2-text-text-base transition-colors hover:bg-v2-grey-100"
               onClick={onOpenConfigPage}
-              disabled={disabled}
             >
               <FileJson size={14} className="text-v2-text-text-muted" aria-hidden />
-              Edit JSON config file…
+              {t("settings.config.entry")}
             </button>
           </section>
 
