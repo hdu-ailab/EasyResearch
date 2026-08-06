@@ -53,6 +53,7 @@ export function ConfigPage({ onBack }: ConfigPageProps) {
       if (e instanceof ApiError && e.status === 404) {
         setContent("{}");
       } else {
+        setSelected(null);
         setError(e instanceof Error ? e.message : String(e));
       }
     }
