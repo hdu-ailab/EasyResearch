@@ -17,6 +17,8 @@
 - Direct dependencies remain pinned exactly: `pdfjs-dist@6.2.108`, `remark-gfm@4.0.1`, `remark-math@6.0.0`, `rehype-katex@7.0.1`, and `katex@0.18.1`.
 - Use opencode v2 light tokens, 41px titlebars, 8px outer insets, 10px raised surfaces, and 28px dense controls.
 - Mobile Work uses persistent full-width `Chat`, `Files`, and `Agents` top tabs below 820px.
+- Follow ADR-022: agent roster is `orchestrator`, `search`, `experiment`, `writing`, `figures`; subagent execution is strictly serial; consumed modes are `"single" | "chain"` only.
+- Filter session summaries whose `name` starts with `lazyresearch:` out of the top-level orchestrator history/reopen list.
 - Do not render raw Markdown HTML, import opencode private packages, add Git UI, or expose project config editing.
 - Follow TDD for each behavior and commit each completed task separately.
 
@@ -325,6 +327,7 @@ git commit -m "Add Markdown and PDF previews"
 - Consumes: current status, session creation/opening, directory, and global config APIs.
 - Produces: `AppShell({ titlebar, children })` with one raised `m-2` page surface.
 - Produces: `groupSessionsByCwd(history, active)` for Home project/session presentation.
+- Produces: `isSubagentSession(session): boolean`, true only when `session.name?.startsWith("lazyresearch:")`, used before grouping/search/open actions.
 - Preserves: global-only Config Browser and DirectoryDialog keyboard behavior.
 
 - [ ] **Step 1: Write failing shell geometry and Home grouping tests**
@@ -335,9 +338,10 @@ expect(screen.getByRole("banner")).toHaveClass("h-[41px]");
 expect(screen.getByText("Body").parentElement).toHaveClass("m-2", "rounded-[10px]");
 
 expect(groupSessionsByCwd(history, active).map((group) => group.cwd)).toEqual(["/a", "/b"]);
+expect(isSubagentSession({ name: "lazyresearch:search" } as SessionSummaryDto)).toBe(true);
 ```
 
-Home tests must assert project rows, search filtering, New session from a project row, live status, history opening, and mobile utility actions remaining in the DOM.
+Home tests must assert project rows, search filtering, New session from a project row, live status, history opening, `lazyresearch:<agent>` named sessions absent from top-level reopen controls, and mobile utility actions remaining in the DOM.
 
 - [ ] **Step 2: Run shell/Home tests and verify failure**
 
@@ -383,6 +387,7 @@ git commit -m "Rewrite the Web application shell"
 **Interfaces:**
 - Consumes: `FilePreview` from Task 3 and `useLazyTree` from Task 2.
 - Produces: `WorkView = "chat" | "files" | "agents"` and `MobileWorkTabs`.
+- Produces: a five-entry `AGENT_ROSTER` (`orchestrator`, `search`, `experiment`, `writing`, `figures`) with ADR-022 roles/allowlists for the Agents view.
 - Produces: file tab state with one replaceable preview tab and pinned tabs.
 - Preserves: SSE connection, snapshot hydration, composer Send/Stop, agent focus, and panel width clamping.
 
@@ -415,7 +420,7 @@ Use `FilePreview` for the active path. Cache text requests per path; PDF.js perf
 
 - [ ] **Step 5: Align transcript, agent, and composer details**
 
-Match opencode's current message width, title/header spacing, tool rows, reasoning disclosure, 60px composer body, 50px control row, and Send-to-Stop transition. Use stable min/max dimensions so streaming text and status labels cannot move surrounding controls.
+Match opencode's current message width, title/header spacing, tool rows, reasoning disclosure, 60px composer body, 50px control row, and Send-to-Stop transition. Use stable min/max dimensions so streaming text and status labels cannot move surrounding controls. Render the ADR-022 five-agent roster and allowlists in Agents; status copy must describe one serial active stage at most, never parallel runs. Remove `literature`, `topics`, and `compile` labels. If `SubagentDetails` is consumed, accept only `"single" | "chain"`.
 
 - [ ] **Step 6: Run Work tests and responsive component tests**
 
