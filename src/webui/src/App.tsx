@@ -1,12 +1,10 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Settings } from "lucide-react";
 import { HomePage } from "./pages/HomePage";
 import { WorkPage } from "./pages/WorkPage";
 import { ConfigPage } from "./pages/ConfigPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { TopbarIconButton } from "./components/Topbar";
-import { getWebuiSettings } from "./api";
-import { applyWebuiSettings } from "./webui-fonts";
 
 export interface ActiveSession {
   id: string;
@@ -21,12 +19,6 @@ type Route =
 
 export function App() {
   const [route, setRoute] = useState<Route>({ page: "home" });
-
-  useEffect(() => {
-    getWebuiSettings()
-      .then(applyWebuiSettings)
-      .catch(() => {});
-  }, []);
 
   if (route.page === "work") {
     return (
