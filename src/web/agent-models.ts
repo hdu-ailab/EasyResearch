@@ -2,7 +2,7 @@ import { AGENT_MODEL_ENTRY, resolveEffectiveModel } from "../subagent/model-reso
 import { importPi } from "../runtime/pi-import";
 import type { AgentEffectiveModelDto, ConfigScope } from "./contracts";
 import type { ConfigFileService } from "./config-files";
-import { ConfigPathError } from "./config-files";
+import { ConfigPathError, ConfigServiceError } from "./config-files";
 
 export interface EntryRow {
   type: string;
@@ -120,10 +120,11 @@ async function readSettingsJson(
     const content = await config.read({ ...input, path: "settings.json" });
     return JSON.parse(content) as Record<string, unknown>;
   } catch (error) {
-    // Missing settings.json (ConfigPathError from read mode) and a missing
-    // project `.lazyresearch` root (raw ENOENT from root canonicalization)
-    // both mean "no config", never a failure.
+    // Missing settings.json (ConfigPathError from read mode, ConfigServiceError
+    // 404 from the missing-file check, and a raw ENOENT from root
+    // canonicalization) all mean "no config", never a failure.
     if (error instanceof ConfigPathError) return undefined;
+    if (error instanceof ConfigServiceError && error.status === 404) return undefined;
     if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return undefined;
     throw error;
   }

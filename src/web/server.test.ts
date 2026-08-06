@@ -511,6 +511,12 @@ describe("web routes", () => {
     expect(res.status).toBe(403);
   });
 
+  it("returns 404 when reading a missing config file", async () => {
+    setup();
+    const res = await handler(new Request(`http://localhost/api/config/file?scope=global&path=settings.json`));
+    expect(res.status).toBe(404);
+  });
+
   it("returns 500 without secret content on internal errors", async () => {
     setup({ listAllSessions: async () => Promise.reject(new Error("boom")) });
     const res = await handler(new Request("http://localhost/api/status"));

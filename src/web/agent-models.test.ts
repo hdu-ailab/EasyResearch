@@ -10,6 +10,7 @@ import {
   readOrchestratorDefaults,
   readOverrideForAgent,
   readSessionOverrides,
+  resolveAgentModelsService,
   routeSetAgentModel,
   splitModelRef,
   writeAgentOverride,
@@ -142,6 +143,51 @@ describe("settings sources", () => {
   it("returns undefined when defaultProvider or defaultModel is unset", async () => {
     writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultModel: "gpt-4o" }));
     await expect(readOrchestratorDefaults(config, cwd)).resolves.toBeUndefined();
+  });
+});
+
+describe("resolveAgentModelsService.effective", () => {
+  const roster = () => [
+    { name: "orchestrator" },
+    { name: "search" },
+    { name: "experiment" },
+    { name: "writing" },
+    { name: "figures" },
+  ];
+
+  it("resolves mixed sources per agent in roster order", async () => {
+    const service = resolveAgentModelsService({
+      listAgents: async () => roster(),
+      getSessionPath: async () => "/sessions/o.jsonl",
+      readEntries: async () => [
+        { type: "custom", customType: AGENT_MODEL_ENTRY, data: { agent: "search", model: "s/9" } },
+      ],
+      projectAgentModels: async () => ({ experiment: "p/1", figures: "p/2" }),
+      globalAgentModels: async () => ({ figures: "g/1", writing: "g/2" }),
+      orchestratorModel: async () => "o/7",
+      getCwd: async () => "/tmp/proj",
+    });
+    await expect(service.effective("s1")).resolves.toEqual([
+      { name: "orchestrator", model: "o/7", source: "inherit" },
+      { name: "search", model: "s/9", source: "override" },
+      { name: "experiment", model: "p/1", source: "project" },
+      { name: "writing", model: "g/2", source: "global" },
+      { name: "figures", model: "p/2", source: "project" },
+    ]);
+  });
+
+  it("reports model null with source inherit when nothing resolves", async () => {
+    const service = resolveAgentModelsService({
+      listAgents: async () => roster(),
+      getSessionPath: async () => undefined,
+      readEntries: async () => [] as EntryRow[],
+      projectAgentModels: async () => undefined,
+      globalAgentModels: async () => undefined,
+      orchestratorModel: async () => undefined,
+      getCwd: async () => "/tmp/proj",
+    });
+    const effective = await service.effective("s1");
+    expect(effective).toEqual(roster().map((a) => ({ name: a.name, model: null, source: "inherit" })));
   });
 });
 

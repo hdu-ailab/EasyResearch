@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ConfigFileService, ConfigPathError, resolveAllowedConfigPath } from "./config-files";
+import { ConfigFileService, ConfigPathError, ConfigServiceError, resolveAllowedConfigPath } from "./config-files";
 
 const { renameSyncMock, realRenameSync } = vi.hoisted(() => ({
   renameSyncMock: vi.fn<typeof fs.renameSync>(),
@@ -80,9 +80,14 @@ describe("resolveAllowedConfigPath", () => {
     expect(resolveAllowedConfigPath(root, "link-in/file.txt", "read")).toBe(join(root, "inside/file.txt"));
   });
 
-  it("requires existing targets in read mode", () => {
-    expect(() => resolveAllowedConfigPath(root, "missing.txt", "read")).toThrow(ConfigPathError);
-    expect(resolveAllowedConfigPath(root, "missing.txt", "write")).toBe(join(root, "missing.txt"));
+  it("returns 404 for missing targets in read mode, keeping 403 for escapes", () => {
+    expect(() => resolveAllowedConfigPath(root, "missing.txt", "read")).toThrow(ConfigServiceError);
+    try {
+      resolveAllowedConfigPath(root, "missing.txt", "read");
+    } catch (error) {
+      expect((error as ConfigServiceError).status).toBe(404);
+    }
+    expect(() => resolveAllowedConfigPath(root, "missing.txt", "write")).not.toThrow();
   });
 });
 
@@ -105,6 +110,15 @@ describe("ConfigFileService", () => {
       content: '{\n  "defaultModel": "x"\n}\n',
     });
     expect(await service.read({ scope: "project", cwd, path: "settings.json" })).toContain("defaultModel");
+  });
+
+  it("returns 404 when reading a missing settings.json", async () => {
+    await expect(service.read({ scope: "project", cwd, path: "settings.json" })).rejects.toThrow(ConfigServiceError);
+    try {
+      await service.read({ scope: "project", cwd, path: "settings.json" });
+    } catch (error) {
+      expect((error as ConfigServiceError).status).toBe(404);
+    }
   });
 
   it("rejects invalid JSON and leaves the existing file unchanged", async () => {

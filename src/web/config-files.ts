@@ -62,7 +62,7 @@ export function resolveAllowedConfigPath(
     throw new ConfigPathError(`Path escapes the allowed root: ${relativePath}`);
   }
   if (mode === "read" && !fs.existsSync(target)) {
-    throw new ConfigPathError(`does not exist: ${relativePath}`);
+    throw new ConfigServiceError(404, `does not exist: ${relativePath}`);
   }
   return target;
 }
@@ -119,7 +119,17 @@ export class ConfigFileService {
 
   async read(input: ConfigReadInput): Promise<string> {
     const root = this.rootFor(input.scope, input.cwd);
-    const target = resolveAllowedConfigPath(root, input.path, "read");
+    let target: string;
+    try {
+      target = resolveAllowedConfigPath(root, input.path, "read");
+    } catch (error) {
+      // Read-mode root resolution realpaths the root, which throws a raw ENOENT
+      // when the project `.lazyresearch` directory itself is absent yet.
+      if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+        throw new ConfigServiceError(404, `does not exist: ${input.path}`);
+      }
+      throw error;
+    }
     try {
       return fs.readFileSync(target, "utf8");
     } catch (error) {
