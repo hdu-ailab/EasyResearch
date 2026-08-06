@@ -2,7 +2,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { fireEvent } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkPage } from "./WorkPage";
 import * as api from "../api";
 import type { FileEntryDto } from "../../../web/contracts";
@@ -54,6 +54,10 @@ function emit(event: unknown) {
 }
 
 describe("WorkPage", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   beforeEach(() => {
     vi.mocked(api.getSnapshot).mockReset();
     vi.mocked(api.connectSessionEvents).mockReset();
@@ -385,9 +389,27 @@ describe("WorkPage", () => {
     await waitFor(() => expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*660px/));
   });
 
-  it("covers the full row region on mobile without a desktop bottom-sheet geometry", async () => {
+  it("shows the conversation by default on mobile and opens panels on demand", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("innerWidth", 375);
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await screen.findByText("starting research");
+    const region = screen.getByRole("region", { name: /file browser/i });
+    expect(region.className).toContain("hidden");
+    expect(screen.getByText("starting research")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: /files browser/i }));
+    expect(screen.getByRole("region", { name: /file browser/i }).className).not.toContain("hidden");
+    await user.click(screen.getByRole("button", { name: /files browser/i }));
+    expect(screen.getByRole("region", { name: /file browser/i }).className).toContain("hidden");
+    expect(screen.getByText("starting research")).toBeVisible();
+  });
+
+  it("covers the full row region on mobile without a desktop bottom-sheet geometry", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("innerWidth", 375);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    await user.click(screen.getByRole("button", { name: /files browser/i }));
     const panel = screen.getByRole("region", { name: /file browser/i });
     expect(panel.className).toContain("absolute");
     expect(panel.className).toContain("inset-0");
