@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { useI18n } from "../i18n/useI18n";
 
 export interface TopbarProps {
   leading?: ReactNode;
@@ -51,12 +52,14 @@ export function TopbarIconButton({
   );
 }
 
-export function BackButton({ onClick, label = "Back to home" }: { onClick: () => void; label?: string }) {
+export function BackButton({ onClick, label }: { onClick: () => void; label?: string }) {
+  const { t } = useI18n();
+  const resolved = label ?? t("topbar.backToHome");
   return (
     <button
       type="button"
-      aria-label={label}
-      title={label}
+      aria-label={resolved}
+      title={resolved}
       onClick={onClick}
       className="flex size-7 items-center justify-center rounded-md text-v2-icon-icon-muted transition-colors hover:bg-v2-grey-100 hover:text-v2-icon-icon-base"
     >

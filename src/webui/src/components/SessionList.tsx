@@ -1,4 +1,5 @@
 import { History, MessageSquareText } from "lucide-react";
+import { useI18n } from "../i18n/useI18n";
 import type { SessionSummaryDto } from "../../../web/contracts";
 
 export interface SessionListProps {
@@ -12,16 +13,17 @@ export interface SessionListProps {
  * the home page, which auto-restarts dead sessions before opening.
  */
 export function SessionList({ history, onOpenHistory }: SessionListProps) {
+  const { t } = useI18n();
   return (
-    <div className="flex flex-col gap-3" aria-label="Sessions">
+    <div className="flex flex-col gap-3" aria-label={t("sessions.ariaLabel")}>
       <div>
         <h3 className="mb-1 flex items-center gap-1.5 text-[12px] font-medium text-v2-text-text-faint">
           <History size={12} />
-          History
+          {t("sessions.history")}
         </h3>
         {history.length === 0 ? (
           <p className="px-2 py-1 text-[13px] text-v2-text-text-muted">
-            No sessions yet. Pick a project directory to start one.
+            {t("sessions.noSessions")}
           </p>
         ) : (
           <ul className="flex flex-col gap-0.5">
