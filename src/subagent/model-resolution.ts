@@ -1,8 +1,27 @@
+import { getAgentDir, importPi } from "../runtime/pi-import";
+
 export const AGENT_MODEL_ENTRY = "lazyresearch:agent_model";
 
 export interface ModelSource {
   model: string;
   source: "override" | "project" | "global" | "inherit";
+}
+
+/**
+ * Parse the `lazyresearch.agentModels` map out of a settings object. Absent
+ * or malformed config means "no config" (undefined); non-string values are
+ * skipped.
+ */
+export function extractAgentModels(settings: unknown): Record<string, string> | undefined {
+  const models = (settings as { lazyresearch?: { agentModels?: unknown } } | undefined)?.lazyresearch?.agentModels;
+  if (models === undefined || typeof models !== "object" || models === null || Array.isArray(models)) {
+    return undefined;
+  }
+  const out: Record<string, string> = {};
+  for (const [agent, model] of Object.entries(models as Record<string, unknown>)) {
+    if (typeof model === "string") out[agent] = model;
+  }
+  return out;
 }
 
 export function resolveEffectiveModel(
@@ -25,10 +44,15 @@ export function resolveEffectiveModel(
  * Resolve the model a subagent should be spawned with. Session overrides are
  * `lazyresearch:agent_model` custom entries on the orchestrator session line;
  * the latest entry per agent wins, and `model: null` is a reset marker.
- * Project/global config models are not yet sourced (wired in a later task).
+ * Project/global config models are sourced from settings.json via Pi's
+ * SettingsManager; `resolveEffectiveModel` applies the per-agent chain
+ * override → project → global → inherit.
  */
 export async function resolveModelForSpawn(
-  ctx: { sessionManager: { getEntries(): Array<{ type: string; customType?: string; data?: unknown }> } },
+  ctx: {
+    cwd: string;
+    sessionManager: { getEntries(): Array<{ type: string; customType?: string; data?: unknown }> };
+  },
   agentName: string,
   orchestratorModel: string | undefined,
 ): Promise<string | undefined> {
@@ -40,6 +64,10 @@ export async function resolveModelForSpawn(
     if (typeof data.model !== "string" && data.model !== null) continue;
     override = data.model;
   }
-  const resolved = resolveEffectiveModel(override, undefined, undefined, orchestratorModel, agentName);
+  const { SettingsManager } = await importPi();
+  const manager = SettingsManager.create(ctx.cwd, getAgentDir());
+  const project = extractAgentModels(manager.getProjectSettings());
+  const global = extractAgentModels(manager.getGlobalSettings());
+  const resolved = resolveEffectiveModel(override, project, global, orchestratorModel, agentName);
   return resolved?.model;
 }
