@@ -24,6 +24,9 @@ export function MarkdownPreview({ path, content, onOpenFile }: MarkdownPreviewPr
   const components = useMemo(
     () => ({
       a: ({ href, children }: { href?: string; children?: React.ReactNode }) => {
+        if (href?.startsWith("#")) {
+          return <a href={href}>{children}</a>;
+        }
         const local = href ? resolveLocalPreviewPath(path, href) : null;
         if (local) {
           return (

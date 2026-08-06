@@ -17,9 +17,18 @@ export interface PdfRenderTask {
   cancel: () => void;
 }
 
+/** Affine transform passed to pdfjs; used to rasterize at the device pixel ratio. */
+export type PdfRenderTransform = [number, number, number, number, number, number];
+
+export interface PdfRenderOptions {
+  canvas: HTMLCanvasElement;
+  viewport: PdfViewport;
+  transform?: PdfRenderTransform;
+}
+
 export interface PdfPageHandle {
   viewport(scale: number, rotation: number): PdfViewport;
-  render(options: { canvas: HTMLCanvasElement; viewport: PdfViewport }): PdfRenderTask;
+  render(options: PdfRenderOptions): PdfRenderTask;
   textContent(): Promise<string>;
 }
 
@@ -34,7 +43,20 @@ export interface PdfLoader {
 }
 
 /** Deterministic fake loader used by component tests. */
-export function fakePdfLoader(options: { pages: number; text: string[] }): PdfLoader {
+export interface FakePdfRenderCall {
+  canvas: HTMLCanvasElement;
+  viewport: PdfViewport;
+  transform?: PdfRenderTransform;
+}
+
+export interface FakePdfLoaderOptions {
+  pages: number;
+  text: string[];
+  /** Optional sink that records every page render call for assertions. */
+  renderLog?: FakePdfRenderCall[];
+}
+
+export function fakePdfLoader(options: FakePdfLoaderOptions): PdfLoader {
   return {
     async load() {
       const { pages, text } = options;
@@ -49,7 +71,12 @@ export function fakePdfLoader(options: { pages: number; text: string[] }): PdfLo
               const height = (rotated ? 100 : 140) * scale;
               return { scale, rotation, width, height };
             },
-            render() {
+            render(renderOptions: PdfRenderOptions) {
+              options.renderLog?.push({
+                canvas: renderOptions.canvas,
+                viewport: renderOptions.viewport,
+                transform: renderOptions.transform,
+              });
               return { promise: Promise.resolve(undefined), cancel: () => {} };
             },
             async textContent(): Promise<string> {
@@ -90,9 +117,11 @@ export function createPdfLoader(): PdfLoader {
               const vp = page.getViewport({ scale, rotation });
               return { scale, rotation, width: vp.width, height: vp.height };
             },
-            render({ canvas, viewport }): PdfRenderTask {
+            render({ canvas, viewport, transform }): PdfRenderTask {
               const vp = page.getViewport({ scale: viewport.scale, rotation: viewport.rotation });
-              const task = page.render({ canvas, viewport: vp });
+              const task = transform
+                ? page.render({ canvas, viewport: vp, transform })
+                : page.render({ canvas, viewport: vp });
               return { promise: task.promise, cancel: () => task.cancel() };
             },
             async textContent(): Promise<string> {
