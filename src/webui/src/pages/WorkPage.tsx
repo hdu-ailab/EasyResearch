@@ -32,6 +32,13 @@ const PANEL_MIN = 240;
 const PANEL_DEFAULT = 320;
 const CHAT_MIN = 400;
 
+/** Tailwind `md:` breakpoint — below it the side panel overlays the chat. */
+const DESKTOP_BREAKPOINT = 768;
+
+function defaultPanel(): Panel {
+  return typeof window !== "undefined" && window.innerWidth >= DESKTOP_BREAKPOINT ? "files" : null;
+}
+
 interface AgentChip {
   id: string;
   name: string;
@@ -47,7 +54,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   const [sessionId, setSessionId] = useState(id);
   const [accepting, setAccepting] = useState(false);
   const [statusText, setStatusText] = useState<string | null>(null);
-  const [panel, setPanel] = useState<Panel>("files");
+  const [panel, setPanel] = useState<Panel>(defaultPanel);
   const [panelWidth, setPanelWidth] = useState(PANEL_DEFAULT);
   const [panelWidthTouched, setPanelWidthTouched] = useState(false);
   const [available, setAvailable] = useState<number | undefined>(undefined);

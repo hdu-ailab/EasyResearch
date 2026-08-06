@@ -12,7 +12,7 @@ vi.mock("../api", async (importOriginal) => {
 
 vi.mock("./previews/pdf-runtime", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./previews/pdf-runtime")>();
-  return { ...actual, createPdfLoader: () => actual.fakePdfLoader({ pages: 1, text: ["rendered pdf text"] }) };
+  return { ...actual, createPdfLoader: () => actual.fakePdfLoader({ pages: 1 }) };
 });
 
 describe("FileBrowser", () => {
