@@ -1,4 +1,4 @@
-import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, realpathSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -119,6 +119,78 @@ describe("DirectoryService", () => {
     const service = new DirectoryService(fakeHome);
     expect(() => service.readFileBytes(join(fakeHome, "project"), { start: 0, end: 0 })).toThrow(/not a file/);
     expect(() => service.readFileBytes(join(fakeHome, "missing"), { start: 0, end: 0 })).toThrow(/does not exist/);
+  });
+
+  it("reads a near-end range of a large file without materializing the whole file", () => {
+    const service = new DirectoryService(fakeHome);
+    const big = join(fakeHome, "big.bin");
+    const size = 16 * 1024 * 1024 + 1234;
+    const fd = openSync(big, "w");
+    try {
+      writeSync(fd, Buffer.alloc(size));
+      writeSync(fd, Buffer.from([0xde, 0xad, 0xbe, 0xef]), 0, 4, size - 4);
+    } finally {
+      closeSync(fd);
+    }
+    expect([...service.readFileBytes(big, { start: size - 4, end: size - 1 })]).toEqual([0xde, 0xad, 0xbe, 0xef]);
+  });
+
+  it("streams the full file bytes as a readable body", async () => {
+    const service = new DirectoryService(fakeHome);
+    writeFileSync(join(fakeHome, "stream.bin"), Buffer.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
+    const stream = service.readFileStream(join(fakeHome, "stream.bin"), null);
+    expect(stream).toBeInstanceOf(ReadableStream);
+    const reader = stream.getReader();
+    const chunks: number[] = [];
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(...value);
+    }
+    expect(chunks).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  });
+
+  it("streams only an inclusive byte range", async () => {
+    const service = new DirectoryService(fakeHome);
+    writeFileSync(join(fakeHome, "stream.bin"), Buffer.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
+    const reader = service.readFileStream(join(fakeHome, "stream.bin"), { start: 2, end: 6 }).getReader();
+    const chunks: number[] = [];
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(...value);
+    }
+    expect(chunks).toEqual([2, 3, 4, 5, 6]);
+  });
+
+  it("streams a near-end range of a large file bounded to the window", async () => {
+    const service = new DirectoryService(fakeHome);
+    const big = join(fakeHome, "big.bin");
+    const size = 8 * 1024 * 1024 + 99;
+    const fd = openSync(big, "w");
+    try {
+      writeSync(fd, Buffer.alloc(size));
+      writeSync(fd, Buffer.from([1, 2, 3, 4]), 0, 4, size - 4);
+    } finally {
+      closeSync(fd);
+    }
+    const reader = service.readFileStream(big, { start: size - 4, end: size - 1 }).getReader();
+    const chunks: number[] = [];
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(...value);
+    }
+    expect(chunks).toEqual([1, 2, 3, 4]);
+  });
+
+  it("streams an empty file as an empty body", async () => {
+    const service = new DirectoryService(fakeHome);
+    writeFileSync(join(fakeHome, "empty.bin"), Buffer.alloc(0));
+    const reader = service.readFileStream(join(fakeHome, "empty.bin"), null).getReader();
+    const first = await reader.read();
+    expect(first.done).toBe(true);
+    expect(first.value).toBeUndefined();
   });
 
   it("truncates oversized reads and flags them", () => {

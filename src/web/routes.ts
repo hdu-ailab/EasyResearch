@@ -186,33 +186,24 @@ async function openSession(
  * support. No Range header yields `200` with the full bytes; a valid range
  * yields `206` with a `Content-Range` header; an unsatisfiable or malformed
  * range yields `416` with `Content-Range` set to `bytes` star-slash `<size>`.
+ * Both full and ranged bodies are streamed via {@link DirectoryService.readFileStream}
+ * so only the requested bytes are read into memory.
  */
 function rawFileResponse(directories: DirectoryService, path: string, rangeHeader: string | null): Response {
   const descriptor = directories.describeFile(path);
-  if (rangeHeader === null && descriptor.size === 0) {
-    return new Response(new Uint8Array(0), {
-      status: 200,
-      headers: {
-        "Content-Type": descriptor.mimeType,
-        "Content-Length": "0",
-        "Accept-Ranges": "bytes",
-      },
-    });
-  }
   try {
-    const range: ByteRange =
-      rangeHeader === null ? { start: 0, end: descriptor.size - 1 } : (parseByteRange(rangeHeader, descriptor.size) as ByteRange);
-    const bytes = directories.readFileBytes(path, range);
+    const range = rangeHeader === null ? null : (parseByteRange(rangeHeader, descriptor.size) as ByteRange);
+    const length = range === null ? descriptor.size : range.end - range.start + 1;
     const headers: Record<string, string> = {
       "Content-Type": descriptor.mimeType,
-      "Content-Length": String(bytes.byteLength),
+      "Content-Length": String(length),
       "Accept-Ranges": "bytes",
     };
     if (rangeHeader !== null) {
-      headers["Content-Range"] = `bytes ${range.start}-${range.end}/${descriptor.size}`;
-      return new Response(bytes, { status: 206, headers });
+      headers["Content-Range"] = `bytes ${range!.start}-${range!.end}/${descriptor.size}`;
+      return new Response(directories.readFileStream(path, range), { status: 206, headers });
     }
-    return new Response(bytes, { status: 200, headers });
+    return new Response(directories.readFileStream(path, null), { status: 200, headers });
   } catch (error) {
     if (error instanceof RawFileRangeError) return rangeErrorResponse(descriptor);
     throw error;
