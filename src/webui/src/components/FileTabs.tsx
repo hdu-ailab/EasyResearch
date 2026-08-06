@@ -80,7 +80,9 @@ export function FileViewer({ file }: { file: FileContentDto | null }) {
         <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-v2-text-text-muted" title={file.path}>
           {file.path}
         </span>
-        <span className="shrink-0 font-mono text-[11px] text-v2-text-text-faint">{file.byteCount} bytes</span>
+        <span className="shrink-0 font-mono text-[11px] text-v2-text-text-faint">
+          {file.byteCount} {t("files.bytes")}
+        </span>
       </header>
       {file.truncated && (
         <p className="shrink-0 border-b border-v2-grey-200 bg-v2-status-warning/10 px-3 py-1 text-[12px] text-v2-status-warning">

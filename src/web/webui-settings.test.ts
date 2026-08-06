@@ -35,10 +35,12 @@ describe("readWebuiSettings", () => {
     expect(settings.agentModels).toEqual({ search: "openai/gpt-4o" });
   });
 
-  it("salvages string agentModels entries and drops malformed ones", async () => {
-    writeSettings({ lazyresearch: { webui: { chatFontSize: "big", filesFontSize: 3 }, agentModels: { search: 42 } } });
+  it("keeps string agentModels entries and drops malformed ones", async () => {
+    writeSettings({
+      lazyresearch: { webui: { chatFontSize: "big", filesFontSize: 3 }, agentModels: { search: 42, writing: "anthropic/claude-sonnet-4" } },
+    });
     const settings = await readWebuiSettings(config);
-    expect(settings.agentModels).toEqual({});
+    expect(settings.agentModels).toEqual({ writing: "anthropic/claude-sonnet-4" });
   });
 
   it("ignores legacy font-size fields in settings.json", async () => {
