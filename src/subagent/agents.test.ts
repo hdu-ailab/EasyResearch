@@ -15,10 +15,19 @@ const ORCHESTRATOR_MD = [
 
 const LITERATURE_MD = [
   "---",
-  "name: literature",
+  "name: search",
   "description: Research stage agent",
   "---",
   "You research papers.",
+].join("\n");
+
+const EXPERIMENT_MD = [
+  "---",
+  "name: experiment",
+  "description: Experiment stage agent",
+  "subagents: search",
+  "---",
+  "You run experiments.",
 ].join("\n");
 
 describe("discoverAgents", () => {
@@ -33,9 +42,9 @@ describe("discoverAgents", () => {
   });
 
   it("loads agents from the global agents dir", () => {
-    writeFileSync(join(dir, "literature.md"), LITERATURE_MD, "utf-8");
+    writeFileSync(join(dir, "search.md"), LITERATURE_MD, "utf-8");
     const { agents } = discoverAgents(dir);
-    const lit = agents.find((a) => a.name === "literature");
+    const lit = agents.find((a) => a.name === "search");
     expect(lit?.source).toBe("global");
     expect(lit?.systemPrompt).toContain("You research papers.");
     expect(lit?.tools).toBeUndefined();
@@ -47,6 +56,13 @@ describe("discoverAgents", () => {
     const orch = agents.find((a) => a.name === "orchestrator");
     expect(orch?.tools).toEqual(["read", "bash", "subagent"]);
     expect(orch?.description).toContain("paper pipeline");
+  });
+
+  it("parses the subagents allowlist (ADR-022)", () => {
+    writeFileSync(join(dir, "experiment.md"), EXPERIMENT_MD, "utf-8");
+    const { agents } = discoverAgents(dir);
+    const exp = agents.find((a) => a.name === "experiment");
+    expect(exp?.subagents).toEqual(["search"]);
   });
 
   it("ignores files without required frontmatter", () => {
