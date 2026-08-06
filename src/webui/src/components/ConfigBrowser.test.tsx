@@ -11,6 +11,7 @@ vi.mock("../api", async (importOriginal) => {
   return {
     ...actual,
     listConfig: vi.fn(),
+    listConfigProjects: vi.fn(),
     readConfigFile: vi.fn(),
     writeConfigFile: vi.fn(),
     createConfigDirectory: vi.fn(),
@@ -26,6 +27,7 @@ const dirEntry: ConfigEntryDto = { name: "sub", path: "sub", type: "directory" }
 describe("ConfigBrowser", () => {
   beforeEach(() => {
     vi.mocked(api.listConfig).mockReset();
+    vi.mocked(api.listConfigProjects).mockReset();
     vi.mocked(api.readConfigFile).mockReset();
     vi.mocked(api.writeConfigFile).mockReset();
     vi.mocked(api.createConfigDirectory).mockReset();
@@ -132,5 +134,35 @@ describe("ConfigBrowser", () => {
     await user.click(screen.getByText("models.json"));
     expect(confirmSpy).toHaveBeenCalled();
     expect(api.readConfigFile).not.toHaveBeenCalledWith("global", undefined, "models.json");
+  });
+
+  it("switches to project scope, chooses a folder, and threads cwd through list and read", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listConfigProjects).mockResolvedValue({ home: "/home/u", projects: [{ cwd: "/home/u/proj" }, { cwd: "/tmp/other" }] });
+    render(<ConfigBrowser />);
+    await screen.findByText("settings.json");
+    await user.selectOptions(await screen.findByRole("combobox", { name: /scope/i }), "project");
+    await waitFor(() => expect(api.listConfig).toHaveBeenLastCalledWith("project", "/home/u/proj", undefined));
+    await user.click(await screen.findByText("settings.json"));
+    expect(api.readConfigFile).toHaveBeenCalledWith("project", "/home/u/proj", "settings.json");
+    await user.selectOptions(await screen.findByRole("combobox", { name: /project folder/i }), "/tmp/other");
+    await waitFor(() => expect(api.listConfig).toHaveBeenLastCalledWith("project", "/tmp/other", undefined));
+  });
+
+  it("saves edits under the project scope with the chosen cwd", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listConfigProjects).mockResolvedValue({ home: "/home/u", projects: [{ cwd: "/home/u/proj" }] });
+    render(<ConfigBrowser />);
+    await screen.findByText("settings.json");
+    await user.selectOptions(await screen.findByRole("combobox", { name: /scope/i }), "project");
+    await waitFor(() => expect(api.listConfig).toHaveBeenLastCalledWith("project", "/home/u/proj", undefined));
+    await user.click(await screen.findByText("settings.json"));
+    const editor = (await screen.findByRole("textbox", { name: /editor/i })) as HTMLTextAreaElement;
+    await user.clear(editor);
+    fireEvent.change(editor, { target: { value: '{"b":2}' } });
+    await user.click(screen.getByRole("button", { name: /save/i }));
+    await waitFor(() =>
+      expect(api.writeConfigFile).toHaveBeenCalledWith("project", "/home/u/proj", "settings.json", '{"b":2}'),
+    );
   });
 });

@@ -2,8 +2,8 @@ import { useState } from "react";
 import { Settings } from "lucide-react";
 import { HomePage } from "./pages/HomePage";
 import { WorkPage } from "./pages/WorkPage";
-import { ConfigBrowser } from "./components/ConfigBrowser";
-import { BackButton, ProductMark, Topbar, TopbarIconButton } from "./components/Topbar";
+import { ConfigPage } from "./pages/ConfigPage";
+import { TopbarIconButton } from "./components/Topbar";
 
 export interface ActiveSession {
   id: string;
@@ -30,22 +30,7 @@ export function App() {
   }
 
   if (route.page === "config") {
-    return (
-      <div className="flex h-full flex-col">
-        <Topbar
-          leading={
-            <>
-              <BackButton onClick={() => setRoute({ page: "home" })} />
-              <ProductMark />
-            </>
-          }
-          center={<span className="truncate text-[13px] text-v2-text-text-muted">Settings — global config</span>}
-        />
-        <div className="min-h-0 flex-1 p-4">
-          <ConfigBrowser />
-        </div>
-      </div>
-    );
+    return <ConfigPage onBack={() => setRoute({ page: "home" })} />;
   }
 
   return (

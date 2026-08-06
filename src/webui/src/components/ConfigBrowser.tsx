@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { ChevronLeft, FilePlus, FolderPlus, RefreshCw, Save, X } from "lucide-react";
-import { createConfigDirectory, listConfig, readConfigFile, writeConfigFile } from "../api";
-import type { ConfigEntryDto } from "../types";
+import { createConfigDirectory, listConfig, listConfigProjects, readConfigFile, writeConfigFile } from "../api";
+import type { ConfigEntryDto, ConfigScope } from "../types";
 
 export interface ConfigBrowserProps {
   onSaveApplied?: () => void;
+  initialScope?: "global" | "project";
 }
 
 interface EditedFile {
@@ -14,10 +15,14 @@ interface EditedFile {
 }
 
 /**
- * Global-only config browser (ADR-020). Lists and edits the global
- * `~/.lazyresearch/agent/` root; saving never restarts the session.
+ * Global + project config browser (ADR-020 amended). Lists and edits the
+ * global `~/.lazyresearch/agent/` root or a project's `<cwd>/.lazyresearch`
+ * root; saving never restarts the session.
  */
-export function ConfigBrowser({ onSaveApplied = () => {} }: ConfigBrowserProps) {
+export function ConfigBrowser({ onSaveApplied = () => {}, initialScope = "global" }: ConfigBrowserProps) {
+  const [scope, setScope] = useState<ConfigScope>(initialScope);
+  const [projects, setProjects] = useState<Array<{ cwd: string }>>([]);
+  const [projectCwd, setProjectCwd] = useState<string | null>(null);
   const [entries, setEntries] = useState<ConfigEntryDto[]>([]);
   const [dirPath, setDirPath] = useState<string | null>(null);
   const [edited, setEdited] = useState<EditedFile | null>(null);
@@ -26,23 +31,67 @@ export function ConfigBrowser({ onSaveApplied = () => {} }: ConfigBrowserProps) 
   const [creating, setCreating] = useState(false);
   const [folderName, setFolderName] = useState("");
 
+  const cwd = scope === "project" ? (projectCwd ?? undefined) : undefined;
+
   const refresh = useCallback(async () => {
     setError(null);
+    if (scope === "project" && !projectCwd) return;
     try {
-      setEntries(await listConfig("global", undefined, dirPath ?? undefined));
+      setEntries(await listConfig(scope, cwd, dirPath ?? undefined));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [dirPath]);
+  }, [scope, cwd, dirPath]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
+  useEffect(() => {
+    if (scope !== "project") return;
+    let cancelled = false;
+    listConfigProjects()
+      .then((dto) => {
+        if (cancelled) return;
+        setProjects(dto.projects);
+        setProjectCwd((prev) => prev ?? dto.projects[0]?.cwd ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setError("Failed to load project folders.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [scope]);
+
+  const abandonEditor = () => {
+    if (edited && edited.current !== edited.original && !window.confirm("Discard unsaved changes?")) return false;
+    return true;
+  };
+
+  const changeScope = (next: ConfigScope) => {
+    if (next === scope) return;
+    if (!abandonEditor()) return;
+    setScope(next);
+    setProjectCwd(null);
+    setDirPath(null);
+    setEdited(null);
+    setSaved(false);
+    setEntries([]);
+  };
+
+  const chooseProject = (next: string) => {
+    if (!abandonEditor()) return;
+    setProjectCwd(next);
+    setDirPath(null);
+    setEdited(null);
+    setSaved(false);
+  };
+
   const openFile = async (path: string) => {
-    if (edited && edited.current !== edited.original && !window.confirm("Discard unsaved changes?")) return;
+    if (!abandonEditor()) return;
     try {
-      const file = await readConfigFile("global", undefined, path);
+      const file = await readConfigFile(scope, cwd, path);
       setEdited({ path: file.path, original: file.content, current: file.content });
       setSaved(false);
       setError(null);
@@ -61,7 +110,7 @@ export function ConfigBrowser({ onSaveApplied = () => {} }: ConfigBrowserProps) 
       return;
     }
     try {
-      await writeConfigFile("global", undefined, edited.path, edited.current);
+      await writeConfigFile(scope, cwd, edited.path, edited.current);
       setEdited({ ...edited, original: edited.current });
       setSaved(true);
       setError(null);
@@ -76,7 +125,7 @@ export function ConfigBrowser({ onSaveApplied = () => {} }: ConfigBrowserProps) 
     const name = folderName.trim();
     if (!name) return;
     try {
-      await createConfigDirectory("global", undefined, dirPath ? `${dirPath}/${name}` : name);
+      await createConfigDirectory(scope, cwd, dirPath ? `${dirPath}/${name}` : name);
       setCreating(false);
       setFolderName("");
       await refresh();
@@ -85,11 +134,38 @@ export function ConfigBrowser({ onSaveApplied = () => {} }: ConfigBrowserProps) 
     }
   };
 
+  const rootLabel = scope === "project" && projectCwd ? `${projectCwd}/.lazyresearch` : "~/.lazyresearch/agent";
+
   return (
     <section className="mx-auto flex h-full w-full max-w-[980px] flex-col rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]" aria-label="Config browser">
       <div className="flex h-10 shrink-0 items-center gap-1 border-b border-v2-grey-200 px-2">
-        <span className="px-2 font-mono text-[12px] text-v2-text-text-muted">~/.lazyresearch/agent</span>
+        <span className="px-2 font-mono text-[12px] text-v2-text-text-muted">{rootLabel}</span>
         <span className="ml-auto flex items-center gap-1">
+          <select
+            className="h-6 rounded-md border border-v2-grey-200 bg-transparent px-1 text-[12px] text-v2-text-text-base outline-none"
+            aria-label="Scope"
+            value={scope}
+            onChange={(e) => changeScope(e.target.value as ConfigScope)}
+          >
+            <option value="global">Global</option>
+            <option value="project">Project</option>
+          </select>
+          {scope === "project" && (
+            <select
+              className="h-6 max-w-[200px] rounded-md border border-v2-grey-200 bg-transparent px-1 text-[12px] text-v2-text-text-base outline-none"
+              aria-label="Project folder"
+              value={projectCwd ?? ""}
+              onChange={(e) => chooseProject(e.target.value)}
+              disabled={projects.length === 0}
+            >
+              {projects.length === 0 && <option value="">No projects</option>}
+              {projects.map((project) => (
+                <option key={project.cwd} value={project.cwd}>
+                  {project.cwd}
+                </option>
+              ))}
+            </select>
+          )}
           <button type="button" className="flex size-7 items-center justify-center rounded-md text-v2-icon-icon-muted transition-colors hover:bg-v2-grey-100 hover:text-v2-icon-icon-base" aria-label="Refresh" title="Refresh listing" onClick={() => void refresh()}>
             <RefreshCw size={15} />
           </button>
