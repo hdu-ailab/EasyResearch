@@ -26,6 +26,7 @@ export function FileBrowser({ root }: FileBrowserProps) {
   const [tabs, setTabs] = useState<FileTab[]>([]);
   const [activeTab, setActiveTab] = useState<string | null>(null);
   const [contents, setContents] = useState<Record<string, FileContentDto>>({});
+  const [treeVisible, setTreeVisible] = useState(true);
 
   useEffect(() => {
     if (!activeTab) return;
@@ -78,9 +79,17 @@ export function FileBrowser({ root }: FileBrowserProps) {
 
   return (
     <div className="flex h-full min-w-0 flex-col">
-      <FileTabs tabs={tabs} active={activeTab} onActivate={setActiveTab} onClose={closeTab} />
+      <FileTabs
+        tabs={tabs}
+        active={activeTab}
+        onActivate={setActiveTab}
+        onClose={closeTab}
+        toggle={{ opened: treeVisible, onToggle: () => setTreeVisible((v) => !v) }}
+      />
       <div className="flex min-h-0 min-w-0 flex-1">
-        <div className="flex w-[240px] shrink-0 flex-col border-r border-v2-grey-200">
+        <div
+          className={treeVisible ? "flex w-[240px] shrink-0 flex-col border-r border-v2-grey-200" : "hidden"}
+        >
           <FilesPanel root={root} onOpenFile={openFile} />
         </div>
         <div className="min-w-0 flex-1">
