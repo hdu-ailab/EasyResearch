@@ -104,7 +104,11 @@ export function FilesPanel({ root, onOpenFile }: FilesPanelProps) {
             </div>
           )
         ) : rows.length === 0 && !rootError ? (
-          <p className="px-2 py-1 text-[12px] text-v2-text-text-faint">No files.</p>
+          tree.status(root) === "loading" ? (
+            <p className="px-2 py-1 text-[12px] text-v2-text-text-faint">Loading…</p>
+          ) : (
+            <p className="px-2 py-1 text-[12px] text-v2-text-text-faint">No files.</p>
+          )
         ) : (
           <div className="flex flex-col gap-0.5">
             {rows.map(({ entry, depth }) => {

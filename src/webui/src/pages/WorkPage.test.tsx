@@ -194,6 +194,15 @@ describe("WorkPage", () => {
     expect(screen.getByLabelText("Loading folder")).toBeVisible();
   });
 
+  it("files panel shows a loading message instead of empty content while the root is pending", async () => {
+    const pending: Promise<FileEntryDto[]> = new Promise(() => {});
+    vi.mocked(api.listEntries).mockImplementation(async () => pending);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    expect(await screen.findByText("Loading…")).toBeTruthy();
+    expect(screen.queryByText("No files.")).toBeNull();
+  });
+
   it("opens a file from the files panel into a tab and previews its content", async () => {
     const user = userEvent.setup();
     vi.mocked(api.readFileContent).mockResolvedValue({

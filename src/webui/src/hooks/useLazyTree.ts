@@ -27,7 +27,9 @@ export interface UseLazyTreeResult<T> {
  * Shared explicit lazy-tree state. The root is loaded in an effect; child
  * loading starts only from `toggle` or `retry`. Each request carries an
  * identity token (`inFlight` ref) so stale resolutions are ignored after the
- * `root` changes or a `refresh` invalidates a path.
+ * `root` changes or a `refresh` invalidates a path. `load` is idempotent per
+ * path: it refuses to start a second request while one is already in flight,
+ * so rapid batched toggles can never duplicate a fetch.
  */
 export function useLazyTree<T>({ root, loadChildren }: UseLazyTreeOptions<T>): UseLazyTreeResult<T> {
   const [stateMap, setStateMap] = useState<Map<string, NodeLoadState<T>>>(() => new Map());
@@ -37,27 +39,30 @@ export function useLazyTree<T>({ root, loadChildren }: UseLazyTreeOptions<T>): U
 
   const load = useCallback(
     (path: string) => {
+      if (inFlight.current.has(path)) return;
       const token = ++tokens.current;
       inFlight.current.set(path, token);
       setStateMap((current) => new Map(current).set(path, { status: "loading", children: [] }));
-      Promise.resolve(loadChildren(path)).then(
-        (children) => {
-          if (inFlight.current.get(path) !== token) return;
-          inFlight.current.delete(path);
-          setStateMap((current) => new Map(current).set(path, { status: "loaded", children }));
-        },
-        (error: unknown) => {
-          if (inFlight.current.get(path) !== token) return;
-          inFlight.current.delete(path);
-          setStateMap((current) =>
-            new Map(current).set(path, {
-              status: "error",
-              children: [],
-              error: error instanceof Error ? error.message : String(error),
-            }),
-          );
-        },
-      );
+      Promise.resolve()
+        .then(() => loadChildren(path))
+        .then(
+          (children) => {
+            if (inFlight.current.get(path) !== token) return;
+            inFlight.current.delete(path);
+            setStateMap((current) => new Map(current).set(path, { status: "loaded", children }));
+          },
+          (error: unknown) => {
+            if (inFlight.current.get(path) !== token) return;
+            inFlight.current.delete(path);
+            setStateMap((current) =>
+              new Map(current).set(path, {
+                status: "error",
+                children: [],
+                error: error instanceof Error ? error.message : String(error),
+              }),
+            );
+          },
+        );
     },
     [loadChildren],
   );
@@ -92,6 +97,13 @@ export function useLazyTree<T>({ root, loadChildren }: UseLazyTreeOptions<T>): U
       setStateMap((current) => {
         const next = new Map(current);
         for (const key of current.keys()) {
+          if (key === path || key.startsWith(prefix)) next.delete(key);
+        }
+        return next;
+      });
+      setExpanded((current) => {
+        const next = new Set(current);
+        for (const key of current) {
           if (key === path || key.startsWith(prefix)) next.delete(key);
         }
         return next;
