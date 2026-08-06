@@ -1,5 +1,6 @@
 import type {
   ActiveSessionDto,
+  AgentDto,
   ConfigEntryDto,
   ConfigScope,
   DirectoryEntryDto,
@@ -51,6 +52,10 @@ const json = (body: unknown): RequestInit => ({
 
 export function listStatus(): Promise<StatusDto> {
   return request("/api/status");
+}
+
+export function listAgents(): Promise<AgentDto[]> {
+  return request("/api/agents");
 }
 
 export function listDirectories(path: string): Promise<DirectoryEntryDto[]> {

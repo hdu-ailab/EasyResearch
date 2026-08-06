@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ActiveSessionDto, ConfigScope, SessionSummaryDto } from "./contracts";
+import type { ActiveSessionDto, AgentDto, ConfigScope, SessionSummaryDto } from "./contracts";
 import type { DirectoryService } from "./directories";
 import { DirectoryServiceError } from "./directories";
 import { parseByteRange, RawFileRangeError, type ByteRange, type RawFileDescriptor } from "./raw-file";
@@ -12,6 +12,7 @@ import { ConfigPathError, ConfigServiceError } from "./config-files";
 export interface RouteServices {
   webuiDist: string;
   listAllSessions: () => Promise<SessionSummaryDto[]>;
+  listAgents: () => Promise<AgentDto[]>;
   directories: DirectoryService;
   registry: ActiveSessionRegistry;
   config: ConfigFileService;
@@ -42,6 +43,10 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
           sessions: await services.listAllSessions(),
           activeSessions: services.registry.list(),
         });
+      }
+
+      if (req.method === "GET" && path === "/api/agents") {
+        return jsonResponse(await services.listAgents());
       }
 
       if (req.method === "GET" && path === "/api/directories") {

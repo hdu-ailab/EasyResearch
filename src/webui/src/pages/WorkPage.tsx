@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Bot, FileSearch, FolderOpen } from "lucide-react";
-import { abortSession, connectSessionEvents, getSnapshot, readFileContent, sendPrompt } from "../api";
+import type { AgentDto } from "../../../web/contracts";
+import { abortSession, connectSessionEvents, getSnapshot, listAgents, readFileContent, sendPrompt } from "../api";
 import { fromSnapshot, reduceSessionEvent, type SessionViewState } from "../session-reducer";
 import { ChatTranscript } from "../components/ChatTranscript";
 import { ChatComposer } from "../components/ChatComposer";
@@ -311,6 +312,26 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
 }
 
 function AgentList({ streaming }: { streaming: boolean }) {
+  const [roster, setRoster] = useState<AgentDto[] | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    listAgents()
+      .then((agents) => {
+        if (alive) setRoster(agents);
+      })
+      .catch(() => {
+        if (alive) setRoster([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const agents = roster ?? [];
+  const orchestrator = agents.find((a) => a.name === "orchestrator");
+  const subagents = agents.filter((a) => a.name !== "orchestrator");
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex shrink-0 items-center gap-2 border-b border-v2-grey-200 px-3 py-2">
@@ -321,23 +342,51 @@ function AgentList({ streaming }: { streaming: boolean }) {
         <div className="rounded-md border border-v2-grey-200 bg-v2-background-bg-base p-3">
           <div className="flex items-center gap-2">
             <span className={`size-2 rounded-full ${streaming ? "bg-v2-status-success" : "bg-v2-grey-400"}`} aria-hidden />
-            <span className="text-[13px] font-medium text-v2-text-text-base">Orchestrator</span>
+            <span className="text-[13px] font-medium text-v2-text-text-base">
+              {orchestrator ? orchestrator.name : "Orchestrator"}
+            </span>
             <span className="ml-auto text-[12px] text-v2-text-text-faint">{streaming ? "working…" : "idle"}</span>
           </div>
           <dl className="mt-2 flex flex-col gap-1 text-[12px]">
             <div className="flex justify-between gap-2">
               <dt className="text-v2-text-text-faint">Role</dt>
-              <dd className="text-v2-text-text-muted">orchestrator</dd>
+              <dd className="text-v2-text-text-muted">{orchestrator?.description ?? "Runs the paper pipeline"}</dd>
             </div>
             <div className="flex justify-between gap-2">
               <dt className="text-v2-text-text-faint">Model</dt>
-              <dd className="text-v2-text-text-muted">inherits session</dd>
+              <dd className="text-v2-text-text-muted">{orchestrator?.model ?? "inherits session"}</dd>
             </div>
           </dl>
         </div>
+        {subagents.map((agent) => (
+          <div key={agent.name} className="mt-3 rounded-md border border-v2-grey-200 bg-v2-background-bg-base p-3">
+            <div className="flex items-center gap-2">
+              <FolderOpen size={12} className="text-v2-icon-icon-muted" />
+              <span className="text-[13px] font-medium text-v2-text-text-base">{agent.name}</span>
+            </div>
+            <dl className="mt-2 flex flex-col gap-1 text-[12px]">
+              <div className="flex justify-between gap-2">
+                <dt className="text-v2-text-text-faint">Role</dt>
+                <dd className="text-v2-text-text-muted">{agent.description}</dd>
+              </div>
+              {agent.subagents && agent.subagents.length > 0 && (
+                <div className="flex justify-between gap-2">
+                  <dt className="text-v2-text-text-faint">Subagents</dt>
+                  <dd className="text-v2-text-text-muted">{agent.subagents.join(", ")}</dd>
+                </div>
+              )}
+              {agent.model ? (
+                <div className="flex justify-between gap-2">
+                  <dt className="text-v2-text-text-faint">Model</dt>
+                  <dd className="text-v2-text-text-muted">{agent.model}</dd>
+                </div>
+              ) : null}
+            </dl>
+          </div>
+        ))}
         <p className="mt-3 flex items-center gap-2 text-[12px] text-v2-text-text-faint">
           <FolderOpen size={12} />
-          Subagent cards appear here while they run in parallel.
+          Subagents run strictly serially; their cards appear here as they run.
         </p>
       </div>
     </div>
