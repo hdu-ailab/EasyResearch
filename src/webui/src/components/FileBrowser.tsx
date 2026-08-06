@@ -31,7 +31,7 @@ export function FileBrowser({ root }: FileBrowserProps) {
           const message = e instanceof Error ? e.message : String(e);
           setContents((current) => ({
             ...current,
-            [activeTab]: { path: activeTab, content: `Error: ${message}`, byteCount: 0, truncated: false },
+            [activeTab]: { path: activeTab, content: `Error: ${message}`, byteCount: 0, truncated: false, binary: false },
           }));
         }
       });

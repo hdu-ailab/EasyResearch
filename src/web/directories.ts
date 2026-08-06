@@ -2,6 +2,7 @@ import { accessSync, constants, readFileSync, readdirSync, realpathSync, statSyn
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { DirectoryEntryDto, FileContentDto, FileEntryDto } from "./contracts";
+import { isBinaryBytes, mimeTypeFor, RawFileRangeError, type ByteRange, type RawFileDescriptor } from "./raw-file";
 
 /** Maximum bytes read for a single file preview. */
 export const FILE_PREVIEW_LIMIT = 1024 * 1024;
@@ -87,9 +88,51 @@ export class DirectoryService {
   /**
    * Reads a file's UTF-8 text for preview. Non-files and unreadable paths are
    * rejected; reads larger than {@link FILE_PREVIEW_LIMIT} truncate with a
-   * `truncated` flag instead of failing.
+   * `truncated` flag instead of failing. Binary or non-UTF-8 content is marked
+   * `binary` with an empty `content` string while preserving `byteCount`.
    */
   readFile(path: string): FileContentDto {
+    const file = this.resolveReadableFile(path);
+    const buffer = readFileSync(file.path);
+    const byteCount = buffer.byteLength;
+    const truncated = byteCount > FILE_PREVIEW_LIMIT;
+    const sample = buffer.subarray(0, FILE_PREVIEW_LIMIT);
+    const binary = isBinaryBytes(sample);
+    const content = binary ? "" : new TextDecoder("utf-8", { fatal: true }).decode(sample);
+    return { path: file.path, content, byteCount, truncated, binary };
+  }
+
+  /**
+   * Describes a readable file for raw responses: its canonical path, exact
+   * size, and conservative MIME type.
+   */
+  describeFile(path: string): RawFileDescriptor {
+    const file = this.resolveReadableFile(path);
+    return { path: file.path, size: file.size, mimeType: mimeTypeFor(file.path) };
+  }
+
+  /**
+   * Reads an inclusive byte range of a file. The range must be valid for the
+   * file's actual size; unsatisfiable ranges throw {@link RawFileRangeError}.
+   */
+  readFileBytes(path: string, range: ByteRange): Uint8Array<ArrayBuffer> {
+    const file = this.resolveReadableFile(path);
+    if (
+      !Number.isSafeInteger(range.start) ||
+      !Number.isSafeInteger(range.end) ||
+      range.start < 0 ||
+      range.start > range.end ||
+      range.start >= file.size ||
+      range.end >= file.size
+    ) {
+      throw new RawFileRangeError("Unsatisfiable byte range");
+    }
+    const buffer = readFileSync(file.path);
+    return new Uint8Array(buffer.subarray(range.start, range.end + 1));
+  }
+
+  /** Resolves a path to a canonical readable file, sharing typed error mapping. */
+  private resolveReadableFile(path: string): { path: string; size: number } {
     let real: string;
     try {
       real = realpathSync(path);
@@ -110,10 +153,7 @@ export class DirectoryService {
     } catch {
       throw new DirectoryServiceError(403, `File is not readable: ${path}`);
     }
-    const buffer = readFileSync(real);
-    const truncated = buffer.byteLength > FILE_PREVIEW_LIMIT;
-    const content = buffer.subarray(0, FILE_PREVIEW_LIMIT).toString("utf8");
-    return { path: real, content, byteCount: buffer.byteLength, truncated };
+    return { path: real, size: stat.size };
   }
 
   requireCwd(path: string): string {
