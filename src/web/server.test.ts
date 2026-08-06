@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, mkdtempSync, openSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -214,6 +214,62 @@ describe("web routes", () => {
     );
     expect(res.status).toBe(416);
     expect(res.headers.get("content-range")).toBe("bytes */5");
+  });
+
+  it("streams full and ranged raw bodies instead of buffering the file", async () => {
+    const pdf = join(homeDir, "raw.pdf");
+    writeFileSync(pdf, Buffer.from([0, 1, 2, 3, 4]));
+    setup();
+
+    const full = await handler(new Request(`http://localhost/api/file/raw?path=${encodeURIComponent(pdf)}`));
+    expect(full.status).toBe(200);
+    expect(full.body).toBeInstanceOf(ReadableStream);
+    const fullReader = full.body!.getReader();
+    const fullChunks: number[] = [];
+    for (;;) {
+      const { done, value } = await fullReader.read();
+      if (done) break;
+      fullChunks.push(...value);
+    }
+    expect(fullChunks).toEqual([0, 1, 2, 3, 4]);
+
+    const ranged = await handler(
+      new Request(`http://localhost/api/file/raw?path=${encodeURIComponent(pdf)}`, {
+        headers: { Range: "bytes=1-3" },
+      }),
+    );
+    expect(ranged.status).toBe(206);
+    expect(ranged.body).toBeInstanceOf(ReadableStream);
+    const rangedReader = ranged.body!.getReader();
+    const rangedChunks: number[] = [];
+    for (;;) {
+      const { done, value } = await rangedReader.read();
+      if (done) break;
+      rangedChunks.push(...value);
+    }
+    expect(rangedChunks).toEqual([1, 2, 3]);
+  });
+
+  it("serves a small range of a large raw file through the streaming body", async () => {
+    const big = join(homeDir, "big.bin");
+    const size = 8 * 1024 * 1024;
+    const fd = openSync(big, "w");
+    try {
+      writeSync(fd, Buffer.alloc(size));
+      writeSync(fd, Buffer.from([0xaa, 0xbb, 0xcc, 0xdd]), 0, 4, size - 4);
+    } finally {
+      closeSync(fd);
+    }
+    setup();
+    const res = await handler(
+      new Request(`http://localhost/api/file/raw?path=${encodeURIComponent(big)}`, {
+        headers: { Range: "bytes=-4" },
+      }),
+    );
+    expect(res.status).toBe(206);
+    expect(res.headers.get("content-range")).toBe(`bytes ${size - 4}-${size - 1}/${size}`);
+    expect(res.headers.get("content-length")).toBe("4");
+    expect([...new Uint8Array(await res.arrayBuffer())]).toEqual([0xaa, 0xbb, 0xcc, 0xdd]);
   });
 
   it("rejects raw reads of a directory with the same typed error as text reads", async () => {

@@ -1,4 +1,4 @@
-import { accessSync, constants, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { accessSync, closeSync, constants, openSync, readFileSync, readdirSync, readSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { DirectoryEntryDto, FileContentDto, FileEntryDto } from "./contracts";
@@ -114,21 +114,98 @@ export class DirectoryService {
   /**
    * Reads an inclusive byte range of a file. The range must be valid for the
    * file's actual size; unsatisfiable ranges throw {@link RawFileRangeError}.
+   * Only the requested bytes are read (bounded `openSync`/`readSync`/`closeSync`);
+   * the rest of the file is never materialized in memory.
    */
   readFileBytes(path: string, range: ByteRange): Uint8Array<ArrayBuffer> {
     const file = this.resolveReadableFile(path);
+    this.assertRange(range, file.size);
+    const length = range.end - range.start + 1;
+    const buffer = new Uint8Array(length);
+    const fd = openSync(file.path, "r");
+    try {
+      let read = 0;
+      while (read < length) {
+        const count = readSync(fd, buffer, read, length - read, range.start + read);
+        if (count === 0) break;
+        read += count;
+      }
+      return read === length ? buffer : buffer.slice(0, read);
+    } finally {
+      closeSync(fd);
+    }
+  }
+
+  /**
+   * Opens a readable file and returns a web `ReadableStream` that emits only the
+   * inclusive byte range (the whole file when `range` is `null`) in bounded
+   * chunks, closing the descriptor on drain, error, or cancel. Used by the raw
+   * file route so both full and ranged responses stream instead of buffering
+   * the entire file.
+   */
+  readFileStream(path: string, range: ByteRange | null): ReadableStream<Uint8Array> {
+    const file = this.resolveReadableFile(path);
+    if (range !== null) this.assertRange(range, file.size);
+    const fd = openSync(file.path, "r");
+    const start = range?.start ?? 0;
+    const end = range?.end ?? Math.max(0, file.size - 1);
+    const CHUNK_SIZE = 64 * 1024;
+    let position = start;
+    let closed = false;
+    const close = (): void => {
+      if (closed) return;
+      closed = true;
+      try {
+        closeSync(fd);
+      } catch {
+        // Best effort: the descriptor may already be closed by the kernel.
+      }
+    };
+    return new ReadableStream<Uint8Array>({
+      pull(controller) {
+        try {
+          if (position > end) {
+            close();
+            controller.close();
+            return;
+          }
+          const length = Math.min(CHUNK_SIZE, end - position + 1);
+          const chunk = new Uint8Array(length);
+          let read = 0;
+          while (read < length) {
+            const count = readSync(fd, chunk, read, length - read, position + read);
+            if (count === 0) break;
+            read += count;
+          }
+          position += read;
+          if (read > 0) controller.enqueue(read === length ? chunk : chunk.slice(0, read));
+          if (read === 0 || position > end) {
+            close();
+            controller.close();
+          }
+        } catch (error) {
+          close();
+          controller.error(error);
+        }
+      },
+      cancel() {
+        close();
+      },
+    });
+  }
+
+  /** Validates an inclusive range against a file's exact size. */
+  private assertRange(range: ByteRange, size: number): void {
     if (
       !Number.isSafeInteger(range.start) ||
       !Number.isSafeInteger(range.end) ||
       range.start < 0 ||
       range.start > range.end ||
-      range.start >= file.size ||
-      range.end >= file.size
+      range.start >= size ||
+      range.end >= size
     ) {
       throw new RawFileRangeError("Unsatisfiable byte range");
     }
-    const buffer = readFileSync(file.path);
-    return new Uint8Array(buffer.subarray(range.start, range.end + 1));
   }
 
   /** Resolves a path to a canonical readable file, sharing typed error mapping. */
