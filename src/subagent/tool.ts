@@ -2,18 +2,27 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AgentToolResult, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Message } from "@earendil-works/pi-ai";
 import { defineTool, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
-import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { getInternalPiInvocation } from "../runtime/internal-invocation";
-import { getAgentDir } from "../runtime/pi-import";
+import { getAgentDir, importPi } from "../runtime/pi-import";
 import { discoverAgents, type AgentConfig } from "./agents";
+import { releaseSubagentLock, tryAcquireSubagentLock } from "./serial";
 
-const MAX_PARALLEL_TASKS = 8;
-const MAX_CONCURRENCY = 4;
-const PER_TASK_OUTPUT_CAP = 50 * 1024;
+/**
+ * ADR-022: stage-agent runtimes mount the subagent-only extension so nested
+ * dispatch (experiment/writing/figures → search) works.
+ */
+const SUBAGENT_EXTENSION_PATH = fileURLToPath(new URL("./subagent-extension.ts", import.meta.url));
+
+/** ADR-022: named session line per (pipeline cwd, agent). */
+export const SUBAGENT_SESSION_PREFIX = "lazyresearch:";
+
+/** Environment variable carrying the caller's subagent allowlist (ADR-022). */
+export const ALLOWLIST_ENV = "LAZYRESEARCH_AGENTS_ALLOWLIST";
 
 interface UsageStats {
   input: number;
@@ -40,7 +49,7 @@ export interface SingleResult {
 }
 
 export interface SubagentDetails {
-  mode: "single" | "parallel" | "chain";
+  mode: "single" | "chain";
   projectAgentsDir: string | null;
   results: SingleResult[];
 }
@@ -69,39 +78,8 @@ function getResultOutput(result: SingleResult): string {
   return getFinalOutput(result.messages) || "(no output)";
 }
 
-function truncateParallelOutput(output: string): string {
-  const byteLength = Buffer.byteLength(output, "utf8");
-  if (byteLength <= PER_TASK_OUTPUT_CAP) return output;
-  let truncated = output.slice(0, PER_TASK_OUTPUT_CAP);
-  while (Buffer.byteLength(truncated, "utf8") > PER_TASK_OUTPUT_CAP) {
-    truncated = truncated.slice(0, -1);
-  }
-  return `${truncated}\n\n[Output truncated: ${byteLength - Buffer.byteLength(truncated, "utf8")} bytes omitted.]`;
-}
-
-function makeDetails(mode: "single" | "parallel" | "chain", agents: AgentConfig[]): SubagentDetails {
+function makeDetails(mode: "single" | "chain", agents: AgentConfig[]): SubagentDetails {
   return { mode, projectAgentsDir: getAgentDir(), results: [] };
-}
-
-async function mapWithConcurrencyLimit<TIn, TOut>(
-  items: TIn[],
-  concurrency: number,
-  fn: (item: TIn, index: number) => Promise<TOut>,
-): Promise<TOut[]> {
-  if (items.length === 0) return [];
-  const limit = Math.max(1, Math.min(concurrency, items.length));
-  const results: TOut[] = new Array(items.length);
-  let nextIndex = 0;
-  const workers = new Array(limit).fill(null).map(async () => {
-    while (true) {
-      const current = nextIndex++;
-      if (current >= items.length) return;
-      const item = items[current]!;
-      results[current] = await fn(item, current);
-    }
-  });
-  await Promise.all(workers);
-  return results;
 }
 
 async function writePromptToTempFile(agentName: string, prompt: string): Promise<string> {
@@ -114,8 +92,48 @@ async function writePromptToTempFile(agentName: string, prompt: string): Promise
   return filePath;
 }
 
-export function buildPiArgs(agent: AgentConfig, fallbackModel: string | undefined, task: string): string[] {
-  const args: string[] = ["--mode", "json", "-p", "--no-session"];
+/** ADR-022: named session line for an agent, e.g. `lazyresearch:search`. */
+export function sessionNameFor(agentName: string): string {
+  return `${SUBAGENT_SESSION_PREFIX}${agentName}`;
+}
+
+/**
+ * ADR-022: filter agents by the caller's allowlist. The orchestrator runtime
+ * has no allowlist env and sees all agents; stage runtimes receive their
+ * allowlist from `subagents:` frontmatter via the spawn environment.
+ */
+export function filterAgentsByAllowlist(agents: AgentConfig[], allowlistEnv?: string): AgentConfig[] {
+  if (allowlistEnv === undefined) return agents;
+  const allowed = new Set(allowlistEnv.split(",").map((s) => s.trim()).filter(Boolean));
+  return agents.filter((a) => allowed.has(a.name));
+}
+
+/**
+ * ADR-022: resolve the agent's most recent named session line under `cwd` so
+ * the call can inherit its previous context. Returns undefined when no such
+ * session exists yet (the call then starts a fresh named session).
+ */
+export async function resolveInheritedSession(
+  cwd: string,
+  agentName: string,
+  sessionDir?: string,
+): Promise<string | undefined> {
+  const { SessionManager } = await importPi();
+  const sessions = await SessionManager.list(cwd, sessionDir);
+  const target = sessionNameFor(agentName);
+  const matches = sessions.filter((s) => s.name === target);
+  if (matches.length === 0) return undefined;
+  matches.sort((a, b) => b.modified.getTime() - a.modified.getTime());
+  return matches[0]!.path;
+}
+
+export function buildPiArgs(
+  agent: AgentConfig,
+  fallbackModel: string | undefined,
+  task: string,
+  sessionPath?: string,
+): string[] {
+  const args: string[] = ["--mode", "json", "-p"];
   if (agent.model) {
     args.push("--model", agent.model);
   } else if (fallbackModel) {
@@ -123,6 +141,10 @@ export function buildPiArgs(agent: AgentConfig, fallbackModel: string | undefine
     args.push("--model", fallbackModel);
   }
   if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
+  // ADR-022: nested dispatch needs the subagent tool inside stage runtimes.
+  args.push("--extension", SUBAGENT_EXTENSION_PATH);
+  args.push("--name", sessionNameFor(agent.name));
+  if (sessionPath) args.push("--session", sessionPath);
   return args;
 }
 
@@ -133,12 +155,13 @@ export interface RunSingleOptions {
   task: string;
   cwd?: string;
   fallbackModel?: string;
+  sessionPath?: string;
   signal?: AbortSignal;
   step?: number;
 }
 
 async function runSingleAgent(opts: RunSingleOptions): Promise<SingleResult> {
-  const { defaultCwd, agents, agentName, task, cwd, fallbackModel, signal, step } = opts;
+  const { defaultCwd, agents, agentName, task, cwd, fallbackModel, sessionPath, signal, step } = opts;
   const agent = agents.find((a) => a.name === agentName);
 
   const emptyUsage: UsageStats = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 };
@@ -171,7 +194,7 @@ async function runSingleAgent(opts: RunSingleOptions): Promise<SingleResult> {
 
   let tmpPromptPath: string | null = null;
   try {
-    const args = buildPiArgs(agent, fallbackModel, task);
+    const args = buildPiArgs(agent, fallbackModel, task, sessionPath);
     if (agent.systemPrompt.trim()) {
       tmpPromptPath = await writePromptToTempFile(agent.name, agent.systemPrompt);
       args.push("--append-system-prompt", tmpPromptPath);
@@ -185,6 +208,8 @@ async function runSingleAgent(opts: RunSingleOptions): Promise<SingleResult> {
         cwd: cwd ?? defaultCwd,
         shell: false,
         stdio: ["ignore", "pipe", "pipe"],
+        // ADR-022: the child runtime filters its available agents through this.
+        env: agent.subagents ? { ...process.env, [ALLOWLIST_ENV]: agent.subagents.join(",") } : undefined,
       });
       let buffer = "";
 
@@ -269,24 +294,30 @@ function getPiInvocation(): { command: string; args: string[] } {
   return getInternalPiInvocation();
 }
 
-const TaskItem = Type.Object({
-  agent: Type.String({ description: "Name of the agent to invoke" }),
-  task: Type.String({ description: "Task to delegate to the agent" }),
+const SessionMode = Type.Union([Type.Literal("inherit"), Type.Literal("new")], {
+  description: "inherit resumes the agent's previous session line; new starts a fresh one (default: inherit)",
+});
+
+const SingleParams = Type.Object({
+  agent: Type.Optional(Type.String({ description: "Name of the agent to invoke" })),
+  task: Type.Optional(Type.String({ description: "Task to delegate" })),
   cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
+  session: Type.Optional(SessionMode),
 });
 
 const ChainItem = Type.Object({
   agent: Type.String({ description: "Name of the agent to invoke" }),
   task: Type.String({ description: "Task with optional {previous} placeholder for prior output" }),
   cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
+  session: Type.Optional(SessionMode),
 });
 
 const SubagentParams = Type.Object({
   agent: Type.Optional(Type.String({ description: "Name of the agent to invoke (single mode)" })),
   task: Type.Optional(Type.String({ description: "Task to delegate (single mode)" })),
-  tasks: Type.Optional(Type.Array(TaskItem, { description: "Array of {agent, task} for parallel execution" })),
   chain: Type.Optional(Type.Array(ChainItem, { description: "Array of {agent, task} for sequential execution" })),
   cwd: Type.Optional(Type.String({ description: "Working directory for the agent process (single mode)" })),
+  session: Type.Optional(SessionMode),
 });
 
 export const subagentTool = defineTool({
@@ -294,120 +325,119 @@ export const subagentTool = defineTool({
   label: "Subagent",
   description: [
     "Delegate tasks to specialized subagents with isolated context.",
-    "Modes: single (agent + task), parallel (tasks array), chain (sequential with {previous} placeholder).",
-    "Available agents are defined in the config root agents dir plus bundled agents.",
+    "Modes: single (agent + task) or chain (sequential with {previous} placeholder).",
+    "Invocations are strictly serial: while one subagent runs, further calls return an error.",
+    "session defaults to inherit: the agent resumes its previous session line and remembers its prior work; use session=new for a fresh line.",
+    "Available agents are defined in the config root agents dir.",
   ].join(" "),
   parameters: SubagentParams,
 
   async execute(_toolCallId, params, signal, _onUpdate, ctx: ExtensionContext) {
-    const agents = discoverAgents().agents;
-    const fallbackModel = describeModel(ctx);
-    const detailsBase = (mode: "single" | "parallel" | "chain") => makeDetails(mode, agents);
-
-    const hasChain = (params.chain?.length ?? 0) > 0;
-    const hasTasks = (params.tasks?.length ?? 0) > 0;
-    const hasSingle = Boolean(params.agent && params.task);
-    const modeCount = Number(hasChain) + Number(hasTasks) + Number(hasSingle);
-
-    if (modeCount !== 1) {
-      const available = agents.map((a) => `${a.name} (${a.source})`).join(", ") || "none";
+    if (!tryAcquireSubagentLock()) {
       return {
-        content: [{ type: "text", text: `Invalid parameters. Provide exactly one mode.\nAvailable agents: ${available}` }],
-        details: { ...detailsBase("single"), results: [] },
+        content: [
+          {
+            type: "text",
+            text: "Another subagent is still running. Subagent invocations are strictly serial; wait for it to complete and call this tool again.",
+          },
+        ],
+        details: { mode: "single", projectAgentsDir: getAgentDir(), results: [] },
+        isError: true,
       };
     }
+    try {
+      const agents = filterAgentsByAllowlist(discoverAgents().agents, process.env[ALLOWLIST_ENV]);
+      const fallbackModel = describeModel(ctx);
+      const detailsBase = (mode: "single" | "chain") => makeDetails(mode, agents);
 
-    if (params.chain && params.chain.length > 0) {
-      const results: SingleResult[] = [];
-      let previousOutput = "";
-      for (let i = 0; i < params.chain.length; i++) {
-        const step = params.chain[i]!;
-        const taskWithContext = step.task.replace(/\{previous\}/g, previousOutput);
-        const result = await runSingleAgent({
-          defaultCwd: ctx.cwd,
-          agents,
-          agentName: step.agent,
-          task: taskWithContext,
-          cwd: step.cwd,
-          fallbackModel,
-          signal,
-          step: i + 1,
-        });
-        results.push(result);
-        if (isFailedResult(result)) {
-          return {
-            content: [{ type: "text", text: `Chain stopped at step ${i + 1} (${step.agent}): ${getResultOutput(result)}` }],
-            details: { ...detailsBase("chain"), results },
-            isError: true,
-          };
-        }
-        previousOutput = getFinalOutput(result.messages);
-      }
-      return {
-        content: [{ type: "text", text: getFinalOutput(results[results.length - 1]!.messages) || "(no output)" }],
-        details: { ...detailsBase("chain"), results },
-      };
-    }
+      const hasChain = (params.chain?.length ?? 0) > 0;
+      const hasSingle = Boolean(params.agent && params.task);
+      const modeCount = Number(hasChain) + Number(hasSingle);
 
-    if (params.tasks && params.tasks.length > 0) {
-      if (params.tasks.length > MAX_PARALLEL_TASKS) {
+      if (agents.length === 0) {
         return {
-          content: [{ type: "text", text: `Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.` }],
-          details: { ...detailsBase("parallel"), results: [] },
-        };
-      }
-      const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, (t, index) =>
-        runSingleAgent({
-          defaultCwd: ctx.cwd,
-          agents,
-          agentName: t.agent,
-          task: t.task,
-          cwd: t.cwd,
-          fallbackModel,
-          signal,
-          step: index + 1,
-        }),
-      );
-      const successCount = results.filter((r) => !isFailedResult(r)).length;
-      const summaries = results.map((r) => {
-        const output = truncateParallelOutput(getResultOutput(r));
-        const status = isFailedResult(r) ? "failed" : "completed";
-        return `### [${r.agent}] ${status}\n\n${output}`;
-      });
-      return {
-        content: [{ type: "text", text: `Parallel: ${successCount}/${results.length} succeeded\n\n${summaries.join("\n\n---\n\n")}` }],
-        details: { ...detailsBase("parallel"), results },
-      };
-    }
-
-    if (params.agent && params.task) {
-      const result = await runSingleAgent({
-        defaultCwd: ctx.cwd,
-        agents,
-        agentName: params.agent,
-        task: params.task,
-        cwd: params.cwd,
-        fallbackModel,
-        signal,
-      });
-      if (isFailedResult(result)) {
-        return {
-          content: [{ type: "text", text: `Agent ${result.stopReason || "failed"}: ${getResultOutput(result)}` }],
-          details: { ...detailsBase("single"), results: [result] },
+          content: [{ type: "text", text: "No agents are available in this runtime." }],
+          details: { ...detailsBase("single"), results: [] },
           isError: true,
         };
       }
-      return {
-        content: [{ type: "text", text: getFinalOutput(result.messages) || "(no output)" }],
-        details: { ...detailsBase("single"), results: [result] },
-      };
-    }
 
-    const available = agents.map((a) => `${a.name} (${a.source})`).join(", ") || "none";
-    return {
-      content: [{ type: "text", text: `Invalid parameters. Available agents: ${available}` }],
-      details: { ...detailsBase("single"), results: [] },
-    };
+      if (modeCount !== 1) {
+        const available = agents.map((a) => `${a.name} (${a.source})`).join(", ") || "none";
+        return {
+          content: [{ type: "text", text: `Invalid parameters. Provide exactly one mode.\nAvailable agents: ${available}` }],
+          details: { ...detailsBase("single"), results: [] },
+        };
+      }
+
+      if (params.chain && params.chain.length > 0) {
+        const results: SingleResult[] = [];
+        let previousOutput = "";
+        for (let i = 0; i < params.chain.length; i++) {
+          const step = params.chain[i]!;
+          const sessionPath =
+            step.session === "new" ? undefined : await resolveInheritedSession(ctx.cwd, step.agent);
+          const taskWithContext = step.task.replace(/\{previous\}/g, previousOutput);
+          const result = await runSingleAgent({
+            defaultCwd: ctx.cwd,
+            agents,
+            agentName: step.agent,
+            task: taskWithContext,
+            cwd: step.cwd,
+            fallbackModel,
+            sessionPath,
+            signal,
+            step: i + 1,
+          });
+          results.push(result);
+          if (isFailedResult(result)) {
+            return {
+              content: [{ type: "text", text: `Chain stopped at step ${i + 1} (${step.agent}): ${getResultOutput(result)}` }],
+              details: { ...detailsBase("chain"), results },
+              isError: true,
+            };
+          }
+          previousOutput = getFinalOutput(result.messages);
+        }
+        return {
+          content: [{ type: "text", text: getFinalOutput(results[results.length - 1]!.messages) || "(no output)" }],
+          details: { ...detailsBase("chain"), results },
+        };
+      }
+
+      if (params.agent && params.task) {
+        const sessionPath = params.session === "new" ? undefined : await resolveInheritedSession(ctx.cwd, params.agent);
+        const result = await runSingleAgent({
+          defaultCwd: ctx.cwd,
+          agents,
+          agentName: params.agent,
+          task: params.task,
+          cwd: params.cwd,
+          fallbackModel,
+          sessionPath,
+          signal,
+        });
+        if (isFailedResult(result)) {
+          return {
+            content: [{ type: "text", text: `Agent ${result.stopReason || "failed"}: ${getResultOutput(result)}` }],
+            details: { ...detailsBase("single"), results: [result] },
+            isError: true,
+          };
+        }
+        return {
+          content: [{ type: "text", text: getFinalOutput(result.messages) || "(no output)" }],
+          details: { ...detailsBase("single"), results: [result] },
+        };
+      }
+
+      const available = agents.map((a) => `${a.name} (${a.source})`).join(", ") || "none";
+      return {
+        content: [{ type: "text", text: `Invalid parameters. Available agents: ${available}` }],
+        details: { ...detailsBase("single"), results: [] },
+      };
+    } finally {
+      releaseSubagentLock();
+    }
   },
 });
 
