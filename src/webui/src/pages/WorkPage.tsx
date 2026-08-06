@@ -275,10 +275,10 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
         </section>
 
         <aside
-          className={`absolute inset-x-0 bottom-0 top-9 z-30 flex-col rounded-t-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-floating)] transition-transform duration-200 sm:top-0 md:relative md:z-0 md:inset-auto md:translate-x-0 md:shrink-0 md:rounded-[10px] md:shadow-[var(--v2-elevation-raised)] ${
+          className={`absolute inset-0 z-30 flex-col w-full bg-v2-background-bg-base shadow-[var(--v2-elevation-floating)] md:w-(--panel-w) md:relative md:z-0 md:inset-auto md:translate-x-0 md:shrink-0 md:rounded-[10px] md:shadow-[var(--v2-elevation-raised)] ${
             sizing ? "" : "md:transition-[width] md:duration-200 md:ease-[cubic-bezier(0.22,1,0.36,1)]"
           } ${panel ? "flex" : "hidden"}`}
-          style={panel ? { width: `${clampedPanelWidth}px` } : undefined}
+          style={panel ? { "--panel-w": `${clampedPanelWidth}px` } as React.CSSProperties : undefined}
           aria-label={panel === "agents" ? "Agent list" : "File browser"}
           role="region"
         >
