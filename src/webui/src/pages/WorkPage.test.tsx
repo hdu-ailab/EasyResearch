@@ -234,6 +234,44 @@ describe("WorkPage", () => {
     expect(await screen.findByText("bash")).toBeTruthy();
   });
 
+  it("collapses reasoning by default and expands on demand", async () => {
+    stubEvents();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    emit({
+      type: "snapshot",
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "secret chain of thought", thinkingSignature: "reasoning" },
+            { type: "text", text: "visible answer" },
+          ],
+        },
+      ],
+    });
+    const toggle = await screen.findByRole("button", { name: /show details/i });
+    expect(screen.queryByText("secret chain of thought")).toBeNull();
+    expect(screen.getByText("visible answer")).toBeTruthy();
+    await userEvent.setup().click(toggle);
+    expect(await screen.findByText("secret chain of thought")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /hide details/i })).toBeTruthy();
+  });
+
+  it("shows tool arguments and expands tool output on demand", async () => {
+    stubEvents();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    emit({ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: { command: "ls -la" } });
+    expect(await screen.findByText(/Running tool: bash/)).toBeTruthy();
+    expect(screen.getByText("ls -la")).toBeTruthy();
+    emit({ type: "tool_execution_end", toolCallId: "t1", toolName: "bash", result: { output: "file.txt\nnotes.md" }, isError: false });
+    expect(screen.queryByText("file.txt")).toBeNull();
+    await userEvent.setup().click(screen.getByText(/Running tool: bash/));
+    expect(await screen.findByText(/file.txt/)).toBeTruthy();
+  });
+
   it("chat column is the flex-1 remainder and the panel carries the explicit width", async () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await screen.findByText("starting research");
