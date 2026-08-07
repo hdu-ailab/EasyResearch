@@ -166,8 +166,8 @@ export class ActiveSessionRegistry {
   private async launch(
     options: StartRpcSessionOptions & { adoptListeners?: Set<(event: unknown) => void> },
   ): Promise<ActiveSessionDto> {
-    const { assertNoUserExtensions } = await import("../runtime/extensions-guard");
-    assertNoUserExtensions({ cwd: options.cwd });
+    const { assertSafeExtensionSources } = await import("../runtime/extensions-guard");
+    assertSafeExtensionSources({ cwd: options.cwd });
     const listeners = options.adoptListeners ?? new Set<(event: unknown) => void>();
     const dto: ActiveSessionDto = {
       id: "",

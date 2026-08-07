@@ -17,7 +17,7 @@ import { discoverAgents } from "../subagent/agents";
 import { agentToDto, isKnownAgentName } from "./server";
 
 vi.mock("../runtime/extensions-guard", () => ({
-  assertNoUserExtensions: vi.fn(),
+  assertSafeExtensionSources: vi.fn(),
   ExtensionGuardError: class ExtensionGuardError extends Error {},
 }));
 

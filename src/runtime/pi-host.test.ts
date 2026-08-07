@@ -32,7 +32,7 @@ vi.mock("../bootstrap/resources", () => ({
   bootstrapBundledResources: () => hoisted.bootstrap(),
 }));
 vi.mock("./extensions-guard", () => ({
-  assertNoUserExtensions: () => hoisted.guard(),
+  assertSafeExtensionSources: () => hoisted.guard(),
 }));
 vi.mock("./orchestrator-extension", () => ({
   createOrchestratorExtension: () => hoisted.createExtension(),

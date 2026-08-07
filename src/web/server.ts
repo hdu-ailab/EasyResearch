@@ -51,8 +51,8 @@ export function isKnownAgentName(agents: AgentConfig[], name: string): boolean {
  */
 export async function startServer(): Promise<Server> {
   const { importPi } = await import("../runtime/pi-import");
-  const { assertNoUserExtensions } = await import("../runtime/extensions-guard");
-  assertNoUserExtensions();
+  const { assertSafeExtensionSources } = await import("../runtime/extensions-guard");
+  assertSafeExtensionSources();
   const registry = new ActiveSessionRegistry(await PiRpcSessionFactory.resolve());
   const { SessionManager, getAgentDir } = await importPi();
   const agentDir = getAgentDir();

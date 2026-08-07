@@ -1,12 +1,16 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve, sep } from "node:path";
 import { getAgentDir } from "./pi-import";
 
 /**
- * ADR-018: user-added Pi extensions are disabled. LazyResearch mounts its
- * bundled orchestrator/subagent extension only via `InlineExtension`; the Pi
- * extension auto-discovery directories and the `extensions`/`packages`
- * settings arrays must stay empty. Throws with the offending paths otherwise.
+ * ADR-032: LazyResearch relies on Pi's native extension auto-discovery, which
+ * the identity bootstrap (ADR-016) binds to `.lazyresearch` — global
+ * `agent/extensions/`, project `.lazyresearch/extensions/`, and the settings
+ * `extensions` array all load through Pi. Those discovery roots can never
+ * point at `~/.pi` by construction. This guard keeps the two remaining
+ * invariants of ADR-018/ADR-032: the `packages` array stays banned, and no
+ * settings `extensions` entry may resolve inside the foreign `~/.pi` tree.
  */
 export class ExtensionGuardError extends Error {}
 
@@ -15,41 +19,53 @@ export interface ExtensionGuardOptions {
   cwd?: string;
 }
 
-export function assertNoUserExtensions(options: ExtensionGuardOptions = {}): void {
+export function assertSafeExtensionSources(options: ExtensionGuardOptions = {}): void {
   const agentDir = options.agentDir ?? getAgentDir();
   const offenders: string[] = [];
 
-  const globalExtensions = join(agentDir, "extensions");
-  if (isNonEmptyDir(globalExtensions)) offenders.push(globalExtensions);
+  const globalSettings = readFileSafe(join(agentDir, "settings.json"));
+  offenders.push(...unlistedPackageArrays(globalSettings, "global settings.json"));
+  offenders.push(...foreignPiExtensions(globalSettings, "global settings.json"));
 
   if (options.cwd) {
-    const projectExtensions = join(options.cwd, ".lazyresearch", "extensions");
-    if (isNonEmptyDir(projectExtensions)) offenders.push(projectExtensions);
-  }
-
-  const globalSettings = join(agentDir, "settings.json");
-  offenders.push(...unlistedResources(readFileSafe(globalSettings), "global settings.json"));
-
-  if (options.cwd) {
-    const projectSettings = join(options.cwd, ".lazyresearch", "settings.json");
-    offenders.push(...unlistedResources(readFileSafe(projectSettings), "project settings.json"));
+    const projectSettings = readFileSafe(join(options.cwd, ".lazyresearch", "settings.json"));
+    offenders.push(...unlistedPackageArrays(projectSettings, "project settings.json"));
+    offenders.push(...foreignPiExtensions(projectSettings, "project settings.json"));
   }
 
   if (offenders.length > 0) {
-    throw new ExtensionGuardError(
-      `LazyResearch does not load user-added Pi extensions (ADR-018). Remove or empty: ${offenders.join(", ")}`,
-    );
+    throw new ExtensionGuardError(`LazyResearch refused at startup: ${offenders.join("; ")}`);
   }
 }
 
-function unlistedResources(settings: unknown, label: string): string[] {
-  if (settings === null || typeof settings !== "object") return [];
-  const value = settings as Record<string, unknown>;
+function asSettings(settings: unknown): Record<string, unknown> | null {
+  if (settings === null || typeof settings !== "object") return null;
+  return settings as Record<string, unknown>;
+}
+
+function unlistedPackageArrays(settings: unknown, label: string): string[] {
+  const value = asSettings(settings);
+  const list = value?.packages;
+  if (Array.isArray(list) && list.length > 0) {
+    return [`non-empty packages array in ${label}`];
+  }
+  return [];
+}
+
+function foreignPiExtensions(settings: unknown, label: string): string[] {
+  const value = asSettings(settings);
+  const list = value?.extensions;
+  if (!Array.isArray(list)) return [];
+
+  const home = homedir();
+  const piRoot = resolve(home, ".pi");
   const offenders: string[] = [];
-  for (const key of ["extensions", "packages"]) {
-    const list = value[key];
-    if (Array.isArray(list) && list.length > 0) {
-      offenders.push(`${key} array in ${label}`);
+  for (const entry of list) {
+    if (typeof entry !== "string" || entry.length === 0) continue;
+    const expanded = entry.startsWith("~/") ? resolve(home, entry.slice(2)) : entry;
+    const resolved = resolve(expanded);
+    if (resolved === piRoot || resolved.startsWith(piRoot + sep)) {
+      offenders.push(`${entry} in ${label}`);
     }
   }
   return offenders;
@@ -60,14 +76,5 @@ function readFileSafe(path: string): unknown {
     return JSON.parse(readFileSync(path, "utf8"));
   } catch {
     return null;
-  }
-}
-
-function isNonEmptyDir(path: string): boolean {
-  if (!existsSync(path)) return false;
-  try {
-    return readdirSync(path).length > 0;
-  } catch {
-    return false;
   }
 }

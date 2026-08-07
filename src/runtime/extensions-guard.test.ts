@@ -1,8 +1,8 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { assertNoUserExtensions, ExtensionGuardError } from "./extensions-guard";
+import { assertSafeExtensionSources, ExtensionGuardError } from "./extensions-guard";
 
 const originalGetAgentDir = vi.hoisted(() => ({ value: "" }));
 
@@ -10,7 +10,7 @@ vi.mock("./pi-import", () => ({
   getAgentDir: () => originalGetAgentDir.value,
 }));
 
-describe("assertNoUserExtensions (ADR-018)", () => {
+describe("assertSafeExtensionSources (ADR-032)", () => {
   let agentDir: string;
   let cwd: string;
 
@@ -24,46 +24,70 @@ describe("assertNoUserExtensions (ADR-018)", () => {
     originalGetAgentDir.value = "";
   });
 
-  it("passes when no extension dirs or settings arrays exist", () => {
-    expect(() => assertNoUserExtensions({ cwd })).not.toThrow();
-    expect(() => assertNoUserExtensions({})).not.toThrow();
+  it("passes when no settings arrays exist", () => {
+    expect(() => assertSafeExtensionSources({ cwd })).not.toThrow();
+    expect(() => assertSafeExtensionSources({})).not.toThrow();
   });
 
-  it("refuses non-empty global extensions directory and names it", () => {
+  it("allows extension discovery directories (global and project)", () => {
     mkdirSync(join(agentDir, "extensions"), { recursive: true });
-    writeFileSync(join(agentDir, "extensions", "user.ts"), "export default () => {}");
-    expect(() => assertNoUserExtensions()).toThrow(ExtensionGuardError);
-    expect(() => assertNoUserExtensions()).toThrow(/extensions/);
-  });
-
-  it("ignores an empty extensions directory", () => {
-    mkdirSync(join(agentDir, "extensions"), { recursive: true });
-    expect(() => assertNoUserExtensions()).not.toThrow();
-  });
-
-  it("refuses non-empty project extensions directory and names it", () => {
     mkdirSync(join(cwd, ".lazyresearch", "extensions"), { recursive: true });
     writeFileSync(join(cwd, ".lazyresearch", "extensions", "x.ts"), "export default () => {}");
-    expect(() => assertNoUserExtensions({ cwd })).toThrow(join(cwd, ".lazyresearch", "extensions"));
-    expect(() => assertNoUserExtensions({})).not.toThrow();
+    expect(() => assertSafeExtensionSources({ cwd })).not.toThrow();
   });
 
-  it("refuses non-empty extensions array in global settings.json", () => {
-    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ extensions: ["./e.ts"] }));
-    expect(() => assertNoUserExtensions()).toThrow(/extensions array in global settings\.json/);
+  it("allows a non-empty extensions array pointing to safe local paths", () => {
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ extensions: ["./e.ts", "~/my-ext"] }));
+    expect(() => assertSafeExtensionSources({ cwd })).not.toThrow();
   });
 
-  it("refuses non-empty packages array in project settings.json", () => {
+  it("passes for an empty packages array", () => {
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [] }));
+    expect(() => assertSafeExtensionSources()).not.toThrow();
+  });
+
+  it("refuses a non-empty packages array in global settings.json", () => {
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: ["npm:foo"] }));
+    expect(() => assertSafeExtensionSources()).toThrow(ExtensionGuardError);
+    expect(() => assertSafeExtensionSources()).toThrow(/packages array in global settings\.json/);
+  });
+
+  it("refuses a non-empty packages array in project settings.json", () => {
     mkdirSync(join(cwd, ".lazyresearch"), { recursive: true });
-    writeFileSync(join(cwd, ".lazyresearch", "settings.json"), JSON.stringify({ packages: ["npm:foo"] }));
-    expect(() => assertNoUserExtensions({ cwd })).toThrow(/packages array in project settings\.json/);
-    expect(() => assertNoUserExtensions({})).not.toThrow();
+    writeFileSync(join(cwd, ".lazyresearch", "settings.json"), JSON.stringify({ packages: ["git:foo"] }));
+    expect(() => assertSafeExtensionSources({ cwd })).toThrow(/packages array in project settings\.json/);
+    expect(() => assertSafeExtensionSources({})).not.toThrow();
+  });
+
+  it("refuses an extensions array entry inside the foreign ~/.pi tree (absolute)", () => {
+    const piExtension = join(homedir(), ".pi", "agent", "extensions", "e.ts");
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ extensions: [piExtension] }));
+    expect(() => assertSafeExtensionSources()).toThrow(ExtensionGuardError);
+    expect(() => assertSafeExtensionSources()).toThrow(/e\.ts in global settings\.json/);
+  });
+
+  it("refuses an extensions array entry pointing into ~/.pi via a ~/ path", () => {
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ extensions: ["~/.pi/agent/extensions/e.ts"] }));
+    expect(() => assertSafeExtensionSources()).toThrow(ExtensionGuardError);
+    expect(() => assertSafeExtensionSources()).toThrow(/~\/\.pi\/agent\/extensions\/e\.ts in global settings\.json/);
+  });
+
+  it("allows a local extension path that merely resembles .pi but is not inside the home tree", () => {
+    const local = join(cwd, "my", ".pi-like", "e.ts");
+    mkdirSync(join(cwd, "my", ".pi-like"), { recursive: true });
+    mkdirSync(join(cwd, ".lazyresearch"), { recursive: true });
+    writeFileSync(join(cwd, ".lazyresearch", "settings.json"), JSON.stringify({ extensions: [local] }));
+    expect(() => assertSafeExtensionSources({ cwd })).not.toThrow();
   });
 
   it("collects all offenders into one message", () => {
-    mkdirSync(join(agentDir, "extensions"), { recursive: true });
-    writeFileSync(join(agentDir, "extensions", "a.ts"), "1");
-    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ extensions: ["./e.ts"] }));
-    expect(() => assertNoUserExtensions()).toThrow(/extensions array in global settings\.json/);
+    writeFileSync(
+      join(agentDir, "settings.json"),
+      JSON.stringify({ packages: ["npm:foo"], extensions: ["~/.pi/x.ts", "./ok.ts"] }),
+    );
+    const error = () => assertSafeExtensionSources();
+    expect(error).toThrow(/packages array in global settings\.json/);
+    expect(error).toThrow(/~\/\.pi\/x\.ts in global settings\.json/);
+    expect(error).not.toThrow(/\.\/ok\.ts/);
   });
 });
