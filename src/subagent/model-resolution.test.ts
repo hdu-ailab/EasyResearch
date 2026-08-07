@@ -26,29 +26,49 @@ describe("resolveEffectiveModel", () => {
     expect(resolveEffectiveModel(undefined, undefined, undefined, "o/1", "search")).toEqual({ model: "o/1", source: "inherit" });
     expect(resolveEffectiveModel(undefined, undefined, undefined, undefined, "search")).toBeNull();
   });
+  it("resolves the orchestrator model from project registry config", () => {
+    expect(resolveEffectiveModel(undefined, { orchestrator: "top/slow" }, undefined, "o/1", "orchestrator")).toEqual({
+      model: "top/slow",
+      source: "project",
+    });
+  });
 });
 
 describe("extractAgentModels", () => {
-  it("returns the agentModels map from valid settings", () => {
-    expect(extractAgentModels({ lazyresearch: { agentModels: { search: "a/1", writing: "b/2" } } })).toEqual({
-      search: "a/1",
-      writing: "b/2",
+  it("reads models from the agents registry, not agentModels", () => {
+    const models = extractAgentModels({
+      lazyresearch: {
+        agents: { search: { model: "a/1" }, writing: { model: "b/2" }, ghost: {} },
+      },
     });
+    expect(models).toEqual({ search: "a/1", writing: "b/2" });
+    expect(extractAgentModels({ lazyresearch: { agentModels: { search: "x/y" } } })).toBeUndefined();
   });
-  it("returns undefined when lazyresearch or agentModels is missing", () => {
+  it("returns undefined when lazyresearch or agents is missing", () => {
     expect(extractAgentModels(undefined)).toBeUndefined();
     expect(extractAgentModels({})).toBeUndefined();
     expect(extractAgentModels({ theme: "dark" })).toBeUndefined();
     expect(extractAgentModels({ lazyresearch: {} })).toBeUndefined();
   });
-  it("returns undefined when agentModels is not an object", () => {
+  it("returns undefined when agents is not an object", () => {
     for (const bad of [null, 42, "a/1", ["a/1"]]) {
-      expect(extractAgentModels({ lazyresearch: { agentModels: bad } })).toBeUndefined();
+      expect(extractAgentModels({ lazyresearch: { agents: bad } })).toBeUndefined();
     }
   });
-  it("skips non-string model values", () => {
+  it("skips entries with non-string or empty models", () => {
     expect(
-      extractAgentModels({ lazyresearch: { agentModels: { search: "a/1", writing: 42, figures: null, orchestrator: true } } }),
+      extractAgentModels({
+        lazyresearch: {
+          agents: {
+            search: { model: "a/1" },
+            writing: { model: 42 },
+            figures: { model: null },
+            orchestrator: { model: true },
+            ghost: {},
+            empty: { model: "" },
+          },
+        },
+      }),
     ).toEqual({ search: "a/1" });
   });
 });
@@ -68,8 +88,12 @@ describe("resolveModelForSpawn", () => {
     sessionManager: { getEntries: () => rows },
   });
 
-  const project = (models: Record<string, string>) => ({ lazyresearch: { agentModels: models } });
-  const global = (models: Record<string, string>) => ({ lazyresearch: { agentModels: models } });
+  const project = (models: Record<string, string>) => ({
+    lazyresearch: {
+      agents: Object.fromEntries(Object.entries(models).map(([name, model]) => [name, { model }])),
+    },
+  });
+  const global = (models: Record<string, string>) => project(models);
   const override = (model: string | null) => [{ type: "custom", customType: AGENT_MODEL_ENTRY, data: { agent: "search", model } }];
 
   it("sources project and global settings via SettingsManager.create(cwd, agentDir)", async () => {
