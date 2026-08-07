@@ -108,4 +108,18 @@ describe("bootstrapBundledResources", () => {
     };
     expect(settings.lazyresearch.agents).toEqual({ custom: {} });
   });
+
+  it("backs off on an unparseable settings.json and leaves it untouched", async () => {
+    const { agentDir, bundledAgentsDir, bundledSkillsDir } = setUpFixture();
+    writeFileSync(
+      join(bundledAgentsDir, "agents.json"),
+      JSON.stringify({ orchestrator: { definition: "agents/orchestrator.md" } }),
+    );
+    const corrupt = "{ not json";
+    writeFileSync(join(agentDir, "settings.json"), corrupt);
+
+    const result = await bootstrapBundledResources({ agentDir, bundledAgentsDir, bundledSkillsDir });
+    expect(result.seededRegistry).toBe(false);
+    expect(readFileSync(join(agentDir, "settings.json"), "utf8")).toBe(corrupt);
+  });
 });
