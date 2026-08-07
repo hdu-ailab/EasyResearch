@@ -5,7 +5,8 @@ import { ActiveSessionRegistry } from "./active-sessions";
 import { PiRpcSessionFactory } from "./rpc-session";
 import { DirectoryService } from "./directories";
 import { ConfigFileService } from "./config-files";
-import type { SessionSummaryDto } from "./contracts";
+import type { AgentDto, SessionSummaryDto } from "./contracts";
+import type { AgentConfig } from "../subagent/agents";
 import { readEffectiveWebuiSettings, updateWebuiSettings } from "./webui-settings";
 import { discoverAgents } from "../subagent/agents";
 import {
@@ -29,6 +30,20 @@ const WEBUI_DIST = join(fileURLToPath(new URL("..", import.meta.url)), "webui", 
  * (`<agent-dir>/agents/orchestrator.md`, orchestrator-extension.ts).
  */
 const ORCHESTRATOR_AGENT = "orchestrator";
+
+export function agentToDto(agent: AgentConfig): AgentDto {
+  return {
+    name: agent.name,
+    description: agent.description,
+    tools: agent.tools,
+    subagents: agent.subagents,
+    skills: agent.skills,
+  };
+}
+
+export function isKnownAgentName(agents: AgentConfig[], name: string): boolean {
+  return agents.some((a) => a.name === name);
+}
 
 /**
  * Start the Web panel backend on 127.0.0.1:3000. The server owns the active
@@ -80,7 +95,7 @@ export async function startServer(): Promise<Server> {
       routeSetAgentModel(
         {
           isOrchestrator: (name) => name === ORCHESTRATOR_AGENT,
-          isKnownAgent: async (name) => (await discoverAgents()).agents.some((a) => a.name === name),
+          isKnownAgent: async (name) => isKnownAgentName((await discoverAgents()).agents, name),
           setOrchestrator: (provider, modelId) => registry.setModel(sessionId, provider, modelId),
           writeOverride: (agentName, model) => agentModels.set(sessionId, agentName, model),
           orchestratorDefaults: async () => readOrchestratorDefaults(config, await registry.getCwd(sessionId)),
@@ -101,13 +116,7 @@ export async function startServer(): Promise<Server> {
     directories: new DirectoryService(),
     registry,
     config,
-    listAgents: async () =>
-      (await discoverAgents()).agents.map(({ name, description, tools, subagents }) => ({
-        name,
-        description,
-        tools,
-        subagents,
-      })),
+    listAgents: async () => (await discoverAgents()).agents.map(agentToDto),
   };
   const handler = createRouteHandler(services);
 
