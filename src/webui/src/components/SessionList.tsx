@@ -4,15 +4,16 @@ import type { SessionSummaryDto } from "../../../web/contracts";
 
 export interface SessionListProps {
   history: SessionSummaryDto[];
+  showCwd?: boolean;
   onOpenHistory: (session: SessionSummaryDto) => void;
 }
 
 /**
  * Home history list. Historical sessions are opened through their recorded
- * session file. Active (running) sessions are listed in the Global monitor on
- * the home page, which auto-restarts dead sessions before opening.
+ * session file. Active sessions are listed separately in the home workspace,
+ * which auto-restarts dead sessions before opening.
  */
-export function SessionList({ history, onOpenHistory }: SessionListProps) {
+export function SessionList({ history, showCwd = true, onOpenHistory }: SessionListProps) {
   const { t } = useI18n();
   return (
     <div className="flex flex-col gap-3" aria-label={t("sessions.ariaLabel")}>
@@ -37,7 +38,7 @@ export function SessionList({ history, onOpenHistory }: SessionListProps) {
                     <MessageSquareText size={12} />
                     {session.messageCount}
                   </span>
-                  <span className="max-w-[220px] truncate font-mono text-[12px] text-v2-text-text-faint">{session.cwd}</span>
+                  {showCwd && <span className="max-w-[220px] truncate font-mono text-[12px] text-v2-text-text-faint">{session.cwd}</span>}
                 </button>
               </li>
             ))}

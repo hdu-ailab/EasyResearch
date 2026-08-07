@@ -19,6 +19,7 @@ import { ChatTranscript } from "../components/ChatTranscript";
 import { ChatComposer } from "../components/ChatComposer";
 import { FileBrowser } from "../components/FileBrowser";
 import { BackButton, ProductMark, Topbar, TopbarIconButton } from "../components/Topbar";
+import { WorkMobileTabs, type WorkView } from "../components/WorkMobileTabs";
 
 export interface WorkPageProps {
   id: string;
@@ -34,9 +35,6 @@ const PANEL_MIN = 240;
 const PANEL_DEFAULT = 320;
 const CHAT_MIN = 400;
 
-/** The conversation-first band. Matches the WebUI tabs threshold (below 820px the
- * Work surface is Chat-default, `.docs/webui.md`); the `md:` layout breakpoint
- * (768px) governs sidebar-vs-overlay geometry only. */
 const CONVERSATION_FIRST_BREAKPOINT = 820;
 
 function defaultPanel(): Panel {
@@ -62,6 +60,8 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   const pendingBaseline = useRef<number | null>(null);
   const [statusText, setStatusText] = useState<string | null>(null);
   const [panel, setPanel] = useState<Panel>(defaultPanel);
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth < CONVERSATION_FIRST_BREAKPOINT);
+  const [mobileView, setMobileView] = useState<WorkView>("chat");
   const [panelWidth, setPanelWidth] = useState(PANEL_DEFAULT);
   const [panelWidthTouched, setPanelWidthTouched] = useState(false);
   const [available, setAvailable] = useState<number | undefined>(undefined);
@@ -84,8 +84,16 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   }, []);
 
   useEffect(() => {
+    let wasMobile = window.innerWidth < CONVERSATION_FIRST_BREAKPOINT;
     const onResize = () => {
-      if (window.innerWidth < CONVERSATION_FIRST_BREAKPOINT) setPanel(null);
+      const mobile = window.innerWidth < CONVERSATION_FIRST_BREAKPOINT;
+      if (mobile === wasMobile) return;
+      wasMobile = mobile;
+      setIsMobile(mobile);
+      if (mobile) {
+        setMobileView("chat");
+        setPanel(null);
+      }
     };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
@@ -134,6 +142,10 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
       ? Math.min(panelWidth, panelMax)
       : Math.min(defaultPanelWidth, panelMax);
   const activeMessages = sessionView.messages.filter((m) => (m.agentId ?? "orchestrator") === activeAgent);
+  const projectName = cwd.split("/").filter(Boolean).at(-1) ?? cwd;
+  const chatHidden = isMobile && mobileView !== "chat";
+  const filesHidden = isMobile ? mobileView !== "files" : panel !== "files";
+  const agentsHidden = isMobile ? mobileView !== "agents" : panel !== "agents";
 
   const hydrate = useCallback(async (targetId: string) => {
     const snapshot = await getSnapshot(targetId);
@@ -267,33 +279,41 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
         leading={
           <>
             <BackButton onClick={onBack} />
-            <ProductMark />
+            {!isMobile && <ProductMark />}
           </>
         }
-        center={<span className="max-w-[50vw] truncate font-mono text-[12px] text-v2-text-text-muted" title={cwd}>{cwd}</span>}
+        center={
+          <span className="max-w-full truncate font-mono text-[12px] text-v2-text-text-muted" title={cwd}>
+            {isMobile ? projectName : cwd}
+          </span>
+        }
         actions={
           <>
-            <span className="mr-1 flex items-center gap-1.5 text-[12px] text-v2-text-text-muted">
+            <span className="flex shrink-0 items-center gap-1.5 text-[12px] text-v2-text-text-muted min-[820px]:mr-1">
               <span className={`size-1.5 rounded-full ${statusColor}`} aria-hidden />
-              {statusLabel}
+              {!isMobile && statusLabel}
             </span>
-            <span className="mx-1 h-4 w-px bg-v2-grey-200" aria-hidden />
-            <TopbarIconButton
-              active={panel === "files"}
-              label={t("work.filesBrowser")}
-              title={t("work.filesBrowser")}
-              onClick={() => togglePanel("files")}
-            >
-              <FileSearch size={15} />
-            </TopbarIconButton>
-            <TopbarIconButton
-              active={panel === "agents"}
-              label={t("work.agentList")}
-              title={t("work.agentList")}
-              onClick={() => togglePanel("agents")}
-            >
-              <Bot size={15} />
-            </TopbarIconButton>
+            {!isMobile && (
+              <>
+                <span className="mx-1 h-4 w-px bg-v2-grey-200" aria-hidden />
+                <TopbarIconButton
+                  active={panel === "files"}
+                  label={t("work.filesBrowser")}
+                  title={t("work.filesBrowser")}
+                  onClick={() => togglePanel("files")}
+                >
+                  <FileSearch size={15} />
+                </TopbarIconButton>
+                <TopbarIconButton
+                  active={panel === "agents"}
+                  label={t("work.agentList")}
+                  title={t("work.agentList")}
+                  onClick={() => togglePanel("agents")}
+                >
+                  <Bot size={15} />
+                </TopbarIconButton>
+              </>
+            )}
           </>
         }
       />
@@ -302,8 +322,15 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
           {statusText}
         </p>
       )}
+      <WorkMobileTabs active={mobileView} onChange={setMobileView} />
       <div ref={rowRef} className="relative flex min-h-0 flex-1 gap-2 overflow-x-clip p-2">
-        <section className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)] h-full">
+        <section
+          id="work-panel-chat"
+          role="tabpanel"
+          aria-labelledby="work-tab-chat"
+          hidden={chatHidden}
+          className="flex h-full min-w-0 flex-1 flex-col overflow-hidden rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]"
+        >
           <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-v2-grey-200 px-3 py-2">
             {agents.map((agent) => {
               const focused = agent.id === activeAgent;
@@ -351,17 +378,18 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
         </section>
 
         <aside
-          className={`absolute inset-0 z-30 flex w-full flex-col bg-v2-background-bg-base shadow-[var(--v2-elevation-floating)] md:relative md:inset-auto md:z-0 md:shrink-0 md:w-(--panel-w) md:translate-x-0 md:rounded-[10px] md:shadow-[var(--v2-elevation-raised)] ${
+          hidden={isMobile && mobileView === "chat"}
+          className={`flex h-full min-w-0 w-full flex-col bg-v2-background-bg-base min-[820px]:relative min-[820px]:shrink-0 min-[820px]:w-(--panel-w) min-[820px]:rounded-[10px] min-[820px]:shadow-[var(--v2-elevation-raised)] ${
             sizing
               ? ""
-              : "transition-[translate,opacity] duration-v2-panel ease-v2-panel md:transition-[width,opacity] md:duration-v2-panel md:ease-v2-panel motion-reduce:transition-none"
+              : "min-[820px]:transition-[width,opacity] min-[820px]:duration-v2-panel min-[820px]:ease-v2-panel motion-reduce:transition-none"
           } ${
             panelPhase === "open"
-              ? "translate-x-0 opacity-100 md:opacity-100"
-              : "translate-x-full opacity-0 md:w-0 md:opacity-0"
-          } ${panelInvisible ? "invisible" : ""} ${panelInteractive ? "" : "pointer-events-none"}`}
+              ? "min-[820px]:opacity-100"
+              : "min-[820px]:w-0 min-[820px]:opacity-0"
+          } ${!isMobile && panelInvisible ? "invisible" : ""} ${!isMobile && !panelInteractive ? "pointer-events-none" : ""}`}
           style={{ "--panel-w": `${clampedPanelWidth}px` } as React.CSSProperties}
-          aria-label={panel === "agents" ? t("work.agentList") : t("work.fileBrowser")}
+          aria-label={(isMobile ? mobileView === "agents" : panel === "agents") ? t("work.agentList") : t("work.fileBrowser")}
           role="region"
         >
           <button
@@ -369,18 +397,25 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
             aria-label={t("work.resizePanel")}
             title={t("work.resizePanel")}
             onPointerDown={startResize}
-            className="absolute inset-y-0 left-[-0.5rem] z-30 hidden w-2 cursor-col-resize md:block"
+            className="absolute inset-y-0 left-[-0.5rem] z-30 hidden w-2 cursor-col-resize min-[820px]:block"
           />
           <div
-            key={panel ?? "none"}
-            className="min-h-0 flex-1 animate-v2-fade-in overflow-hidden rounded-t-[10px] md:rounded-[10px] motion-reduce:animate-none"
+            id="work-panel-files"
+            role="tabpanel"
+            aria-labelledby="work-tab-files"
+            hidden={filesHidden}
+            className={`h-full min-h-0 overflow-hidden min-[820px]:rounded-[10px] ${!filesHidden ? "animate-v2-fade-in motion-reduce:animate-none" : ""}`}
           >
-            {panel === "files" && (
-              <>
-                <FileBrowser root={cwd} />
-              </>
-            )}
-            {panel === "agents" && <AgentList streaming={sessionView.isStreaming} sessionId={sessionId} />}
+            <FileBrowser root={cwd} />
+          </div>
+          <div
+            id="work-panel-agents"
+            role="tabpanel"
+            aria-labelledby="work-tab-agents"
+            hidden={agentsHidden}
+            className={`h-full min-h-0 overflow-hidden min-[820px]:rounded-[10px] ${!agentsHidden ? "animate-v2-fade-in motion-reduce:animate-none" : ""}`}
+          >
+            <AgentList streaming={sessionView.isStreaming} sessionId={sessionId} />
           </div>
         </aside>
       </div>

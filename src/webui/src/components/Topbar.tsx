@@ -7,16 +7,13 @@ export interface TopbarProps {
   actions?: ReactNode;
 }
 
-/**
- * Global 36px top bar shared by every page (opencode titlebar pattern:
- * grid-cols-[1fr_auto_1fr], bg-deep surface).
- */
+/** Global 36px top bar shared by every page. */
 export function Topbar({ leading, center, actions }: TopbarProps) {
   return (
-    <header className="grid h-9 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 border-b border-v2-grey-200 bg-v2-background-bg-deep px-3">
-      <div className="flex min-w-0 items-center gap-2">{leading}</div>
-      <div className="flex min-w-0 items-center justify-center truncate">{center}</div>
-      <div className="flex min-w-0 items-center justify-end gap-0.5">{actions}</div>
+    <header className="grid h-9 shrink-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 border-b border-v2-grey-200 bg-v2-background-bg-deep px-3 min-[820px]:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] min-[820px]:gap-3">
+      <div className="flex min-w-0 items-center gap-2 overflow-hidden">{leading}</div>
+      <div className="flex min-w-0 items-center justify-center overflow-hidden">{center}</div>
+      <div className="flex min-w-0 items-center justify-end gap-0.5 overflow-hidden">{actions}</div>
     </header>
   );
 }

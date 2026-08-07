@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HomePage } from "./HomePage";
 import * as api from "../api";
 
@@ -42,7 +42,49 @@ const active = [
   },
 ];
 
+const otherHistory = {
+  id: "h2",
+  path: "/agent/sessions/--other--/a.jsonl",
+  cwd: "/other",
+  name: "Other paper",
+  created: "2026-08-02T00:00:00.000Z",
+  modified: "2026-08-02T00:00:00.000Z",
+  messageCount: 4,
+  firstMessage: "compare another method",
+};
+
+const otherActive = {
+  id: "a2",
+  cwd: "/other",
+  sessionFile: "/agent/sessions/--other--/b.jsonl",
+  sessionName: "Other experiment",
+  isStreaming: false,
+  status: "ready",
+};
+
+function renderHome() {
+  return render(
+    <HomePage
+      onOpenSession={() => {}}
+      onOpenSettings={() => {}}
+      settingsButton={<button type="button">Settings</button>}
+    />,
+  );
+}
+
+function renderHomeWithTwoProjects() {
+  vi.mocked(api.listStatus).mockResolvedValue({
+    agentDir: "/agent",
+    homeDir: "/home/user",
+    sessions: [...history, otherHistory],
+    activeSessions: [{ ...active[0], sessionName: "Project experiment" }, otherActive],
+  } as never);
+  return renderHome();
+}
+
 describe("HomePage", () => {
+  afterEach(() => vi.useRealTimers());
+
   beforeEach(() => {
     vi.mocked(api.listStatus).mockReset();
     vi.mocked(api.listDirectories).mockReset();
@@ -73,10 +115,110 @@ describe("HomePage", () => {
     expect(screen.getAllByText("12").length).toBeGreaterThan(0);
   });
 
+  it("starts in All projects and filters both active and history by exact cwd", async () => {
+    const user = userEvent.setup();
+    renderHomeWithTwoProjects();
+    expect(await screen.findByText("Fault diagnosis")).toBeVisible();
+    expect(screen.getByText("Other paper")).toBeVisible();
+    expect(screen.getByText("Project experiment")).toBeVisible();
+    expect(screen.getByText("Other experiment")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "/other" }));
+    expect(screen.queryByText("Fault diagnosis")).toBeNull();
+    expect(screen.queryByText("Project experiment")).toBeNull();
+    expect(screen.getByText("Other paper")).toBeVisible();
+    expect(screen.getByText("Other experiment")).toBeVisible();
+  });
+
+  it("keeps mobile interaction and landmark order aligned with the visual workspace order", async () => {
+    renderHomeWithTwoProjects();
+    const elements = [
+      await screen.findByRole("button", { name: /^new session$/i }),
+      screen.getByRole("searchbox", { name: /search sessions/i }),
+      screen.getByRole("heading", { name: /active sessions/i }),
+      screen.getByRole("complementary", { name: /projects/i }),
+      screen.getByRole("heading", { name: /recent sessions/i }),
+    ];
+    for (let index = 0; index < elements.length - 1; index += 1) {
+      const current = elements[index]!;
+      const next = elements[index + 1]!;
+      expect(current.compareDocumentPosition(next) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+  });
+
+  it("creates directly in a known project cwd", async () => {
+    const user = userEvent.setup();
+    renderHomeWithTwoProjects();
+    await user.click(await screen.findByRole("button", { name: /new session \/other/i }));
+    await waitFor(() => expect(api.createSession).toHaveBeenCalledWith("/other"));
+  });
+
+  it("reports only actually running sessions", async () => {
+    vi.mocked(api.listStatus).mockResolvedValue({
+      agentDir: "/agent",
+      homeDir: "/home/user",
+      sessions: history,
+      activeSessions: [
+        { id: "ready", cwd: "/proj", sessionName: "Ready paper", isStreaming: false, status: "ready" },
+        { id: "running", cwd: "/proj", sessionName: "Running paper", isStreaming: false, status: "running" },
+        { id: "error", cwd: "/proj", sessionName: "Error paper", isStreaming: false, status: "error" },
+      ],
+    } as never);
+    renderHome();
+    expect(await screen.findByText(/^1 running$/i)).toBeVisible();
+    expect(screen.getByText(/^ready$/i)).toBeVisible();
+    expect(screen.getByText(/^error$/i)).toBeVisible();
+  });
+
+  it("searches active and historical session names without hiding project selection", async () => {
+    const user = userEvent.setup();
+    renderHomeWithTwoProjects();
+    await user.type(await screen.findByRole("searchbox", { name: /search sessions/i }), "other");
+    expect(screen.queryByText("Fault diagnosis")).toBeNull();
+    expect(screen.queryByText("Project experiment")).toBeNull();
+    expect(screen.getByText("Other paper")).toBeVisible();
+    expect(screen.getByText("Other experiment")).toBeVisible();
+    expect(screen.getByRole("button", { name: "/proj" })).toBeVisible();
+  });
+
+  it("returns to All projects when polling removes the selected cwd", async () => {
+    vi.useFakeTimers();
+    vi.mocked(api.listStatus)
+      .mockResolvedValueOnce({
+        agentDir: "/agent",
+        homeDir: "/home/user",
+        sessions: [...history, otherHistory],
+        activeSessions: [{ ...active[0], sessionName: "Project experiment" }, otherActive],
+      } as never)
+      .mockResolvedValue({
+        agentDir: "/agent",
+        homeDir: "/home/user",
+        sessions: history,
+        activeSessions: active,
+      } as never);
+    renderHome();
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "/other" }));
+    expect(screen.getByRole("button", { name: "/other" })).toHaveAttribute("aria-current", "true");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+
+    expect(screen.getByRole("button", { name: /all projects/i })).toHaveAttribute("aria-current", "true");
+    expect(screen.queryByRole("button", { name: "/other" })).toBeNull();
+    expect(screen.getByText("Fault diagnosis")).toBeVisible();
+  });
+
+  it("renders Settings once", async () => {
+    renderHome();
+    await screen.findByText("Fault diagnosis");
+    expect(screen.getAllByRole("button", { name: /settings/i })).toHaveLength(1);
+  });
+
   it("selecting a directory in the dialog then Create calls createSession with the exact path", async () => {
     const user = userEvent.setup();
     render(<HomePage onOpenSession={() => {}} onOpenSettings={() => {}} settingsButton={<button type="button">Settings</button>} />);
-    await user.click(screen.getByRole("button", { name: /choose directory/i }));
+    await user.click(screen.getByRole("button", { name: /^new session$/i }));
     await user.click(await screen.findByText("proj"));
     await user.click(screen.getByRole("button", { name: /create session/i }));
     await waitFor(() => expect(api.createSession).toHaveBeenCalledWith("/proj"));
@@ -88,7 +230,7 @@ describe("HomePage", () => {
       new ApiError(400, { error: "LazyResearch does not load user-added Pi extensions" }),
     );
     render(<HomePage onOpenSession={() => {}} onOpenSettings={() => {}} settingsButton={<button type="button">Settings</button>} />);
-    await user.click(screen.getByRole("button", { name: /choose directory/i }));
+    await user.click(screen.getByRole("button", { name: /^new session$/i }));
     await user.click(await screen.findByText("proj"));
     await user.click(screen.getByRole("button", { name: /create session/i }));
     expect(await screen.findByText(/user-added Pi extensions/)).toBeTruthy();
@@ -115,14 +257,14 @@ describe("HomePage", () => {
   it("keeps controls usable while loading", () => {
     vi.mocked(api.listStatus).mockReturnValue(new Promise(() => {}) as never);
     render(<HomePage onOpenSession={() => {}} onOpenSettings={() => {}} settingsButton={<button type="button">Settings</button>} />);
-    expect(screen.getByRole("button", { name: /choose directory/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /^new session$/i })).toBeEnabled();
   });
 
   it("shows an error state that does not shift layout", async () => {
     vi.mocked(api.listStatus).mockRejectedValueOnce(new Error("agent dir unavailable"));
     render(<HomePage onOpenSession={() => {}} onOpenSettings={() => {}} settingsButton={<button type="button">Settings</button>} />);
     expect(await screen.findByText(/agent dir unavailable/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: /choose directory/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^new session$/i })).toBeTruthy();
   });
 
   it("auto-restarts a stopped active session before opening it", async () => {

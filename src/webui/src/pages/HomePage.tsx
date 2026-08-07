@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import { Activity, FolderSearch, Settings2, History } from "lucide-react";
 import { createSession, listStatus, openSession, restartSession } from "../api";
 import { DirectoryDialog } from "../components/DirectoryDialog";
-import { SessionList } from "../components/SessionList";
+import { HomeWorkspace } from "../components/HomeWorkspace";
 import { ProductMark, Topbar } from "../components/Topbar";
 import { useI18n } from "../i18n/useI18n";
 import type { ActiveSessionDto, SessionSummaryDto } from "../../../web/contracts";
+import { buildHomeProjectGroups } from "./home-view-model";
 
 export interface HomePageProps {
   onOpenSession: (session: { id: string; cwd: string }) => void;
@@ -15,12 +15,13 @@ export interface HomePageProps {
 
 const MONITOR_POLL_MS = 5000;
 
-export function HomePage({ onOpenSession, onOpenSettings, settingsButton }: HomePageProps) {
+export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
   const { t } = useI18n();
   const [status, setStatus] = useState<{ sessions: SessionSummaryDto[]; activeSessions: ActiveSessionDto[]; homeDir: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [selectedCwd, setSelectedCwd] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
     setError(null);
@@ -80,114 +81,38 @@ export function HomePage({ onOpenSession, onOpenSettings, settingsButton }: Home
     [onOpenSession],
   );
 
-  const running = status?.activeSessions ?? [];
+  const groups = buildHomeProjectGroups(status?.sessions ?? [], status?.activeSessions ?? []);
+
+  useEffect(() => {
+    if (selectedCwd && !groups.some((group) => group.cwd === selectedCwd)) setSelectedCwd(null);
+  }, [groups, selectedCwd]);
 
   return (
     <div className="flex h-full flex-col">
       <Topbar
         leading={<ProductMark />}
-        center={<span className="truncate text-[13px] text-v2-text-text-muted">{t("home.tagline")}</span>}
+        center={<span className="hidden truncate text-[13px] text-v2-text-text-muted sm:inline">{t("home.tagline")}</span>}
         actions={settingsButton}
       />
       <main className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-[560px] flex-col gap-4 px-4 py-8">
+        <div className="flex min-h-full w-full flex-col gap-2 p-2">
           {error && (
             <p className="rounded-md border border-v2-status-error/30 bg-v2-status-error/5 px-3 py-2 text-[13px] text-v2-status-error" role="alert">
               {error}
             </p>
           )}
 
-          <section className="rounded-[10px] bg-v2-background-bg-base p-4 shadow-[var(--v2-elevation-raised)]">
-            <h2 className="mb-3 flex items-center gap-2 text-[13px] font-semibold text-v2-text-text-base">
-              <FolderSearch size={14} className="text-v2-icon-icon-muted" />
-              {t("home.startProject")}
-            </h2>
-            <button
-              type="button"
-              className="flex h-9 w-full items-center justify-center gap-2 rounded-md bg-v2-grey-1100 text-[13px] font-medium text-v2-grey-50 transition-opacity hover:opacity-90 disabled:opacity-50"
-              onClick={() => setDialogOpen(true)}
-            >
-              {creating ? t("home.starting") : t("home.chooseDirectory")}
-            </button>
-            <p className="mt-3 text-[13px] text-v2-text-text-muted">
-              {t("home.help")}
-            </p>
-          </section>
-
-          <section className="rounded-[10px] bg-v2-background-bg-base p-4 shadow-[var(--v2-elevation-raised)]">
-            <h2 className="mb-3 flex items-center gap-2 text-[13px] font-semibold text-v2-text-text-base">
-              <Activity size={14} className="text-v2-icon-icon-muted" />
-              {t("home.globalMonitor")}
-              <span className="ml-auto flex items-center gap-1 text-[12px] font-normal text-v2-text-text-faint">
-                <span className={`size-1.5 rounded-full ${running.length > 0 ? "bg-v2-status-success" : "bg-v2-grey-300"}`} aria-hidden />
-                {running.length} {t("home.running")}
-              </span>
-            </h2>
-            {running.length === 0 ? (
-              <p className="text-[13px] text-v2-text-text-muted">{t("home.noAgentsRunning")}</p>
-            ) : (
-              <ul className="flex flex-col gap-1">
-                {running.map((session) => {
-                  const dead = session.status === "stopped" || session.status === "error";
-                  return (
-                    <li key={session.id}>
-                      <button
-                        type="button"
-                        className="flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-v2-grey-100"
-                        onClick={() => void openActive(session)}
-                      >
-                        <span
-                          className={`size-2 rounded-full ${
-                            session.status === "error"
-                              ? "bg-v2-status-error"
-                              : session.status === "running" || session.isStreaming
-                                ? "bg-v2-status-success"
-                                : "bg-v2-status-warning"
-                          }`}
-                          aria-hidden
-                        />
-                        <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-v2-text-text-base">
-                          {session.sessionName ?? session.cwd}
-                        </span>
-                        <span className="truncate font-mono text-[12px] text-v2-text-text-faint">{session.cwd}</span>
-                        {dead ? (
-                          <span className="shrink-0 rounded-full bg-v2-status-error/10 px-2 py-0.5 text-[11px] text-v2-status-error" title={session.error}>
-                            {t("home.reconnectedOnClick")}
-                          </span>
-                        ) : (
-                          <span className="shrink-0 text-[12px] text-v2-text-text-muted">{session.status}</span>
-                        )}
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </section>
-
-          <section className="rounded-[10px] bg-v2-background-bg-base p-4 shadow-[var(--v2-elevation-raised)]">
-            <h2 className="mb-3 flex items-center gap-2 text-[13px] font-semibold text-v2-text-text-base">
-              <History size={14} className="text-v2-icon-icon-muted" />
-              {t("home.continueWork")}
-            </h2>
-            {!status ? (
-              <p className="text-[13px] text-v2-text-text-faint">{t("home.loadingSessions")}</p>
-            ) : (
-              <SessionList
-                history={status.sessions}
-                onOpenHistory={openHistory}
-              />
-            )}
-          </section>
-
-          <button
-            type="button"
-            className="flex items-center gap-2 self-center text-[13px] text-v2-text-text-faint transition-colors hover:text-v2-text-text-muted"
-            onClick={onOpenSettings}
-          >
-            <Settings2 size={14} />
-            {t("home.settings")}
-          </button>
+          <HomeWorkspace
+            groups={groups}
+            selectedCwd={selectedCwd}
+            loading={!status}
+            creating={creating}
+            onSelectProject={setSelectedCwd}
+            onChooseDirectory={() => setDialogOpen(true)}
+            onCreateInProject={(cwd) => void startSession(cwd)}
+            onOpenActive={(session) => void openActive(session)}
+            onOpenHistory={(session) => void openHistory(session)}
+          />
         </div>
       </main>
       {dialogOpen && (
