@@ -11,7 +11,8 @@ export interface SessionListProps {
 /**
  * Home history list. Historical sessions are opened through their recorded
  * session file. Active sessions are listed separately in the home workspace,
- * which auto-restarts dead sessions before opening.
+ * which shows only running sessions; idle/stopped sessions are reopened from
+ * this history list.
  */
 export function SessionList({ history, showCwd = true, onOpenHistory }: SessionListProps) {
   const { t } = useI18n();

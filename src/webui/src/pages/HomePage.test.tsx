@@ -58,8 +58,8 @@ const otherActive = {
   cwd: "/other",
   sessionFile: "/agent/sessions/--other--/b.jsonl",
   sessionName: "Other experiment",
-  isStreaming: false,
-  status: "ready",
+  isStreaming: true,
+  status: "running",
 };
 
 function renderHome() {
@@ -165,8 +165,24 @@ describe("HomePage", () => {
     } as never);
     renderHome();
     expect(await screen.findByText(/^1 running$/i)).toBeVisible();
-    expect(screen.getByText(/^ready$/i)).toBeVisible();
-    expect(screen.getByText(/^error$/i)).toBeVisible();
+    expect(screen.getByText("Running paper")).toBeVisible();
+    expect(screen.queryByText("Ready paper")).toBeNull();
+    expect(screen.queryByText("Error paper")).toBeNull();
+  });
+
+  it("renders only running sessions in the active list", async () => {
+    const running = { ...active[0], sessionName: "Running" };
+    const idle = { id: "idle", cwd: "/proj", sessionName: "Idle", isStreaming: false, status: "ready" };
+    vi.mocked(api.listStatus).mockResolvedValueOnce({
+      agentDir: "/agent",
+      homeDir: "/home/user",
+      sessions: [],
+      activeSessions: [running, idle],
+    } as never);
+    renderHome();
+    expect(await screen.findByRole("heading", { name: /active sessions/i })).toBeInTheDocument();
+    expect(screen.getByText("Running")).toBeInTheDocument();
+    expect(screen.queryByText("Idle")).not.toBeInTheDocument();
   });
 
   it("searches active and historical session names without hiding project selection", async () => {
@@ -267,27 +283,6 @@ describe("HomePage", () => {
     expect(screen.getByRole("button", { name: /^new session$/i })).toBeTruthy();
   });
 
-  it("auto-restarts a stopped active session before opening it", async () => {
-    const user = userEvent.setup();
-    vi.mocked(api.listStatus).mockResolvedValue({
-      agentDir: "/agent",
-      homeDir: "/home/user",
-      sessions: history,
-      activeSessions: [{ id: "a1", cwd: "/proj", sessionName: "Running proj", isStreaming: false, status: "stopped" }],
-    } as never);
-    vi.mocked(api.restartSession).mockResolvedValue({
-      id: "a1",
-      cwd: "/proj",
-      isStreaming: false,
-      status: "ready",
-    } as never);
-    const onOpen = vi.fn();
-    render(<HomePage onOpenSession={onOpen} onOpenSettings={() => {}} settingsButton={<button type="button">Settings</button>} />);
-    await user.click(await screen.findByText("Running proj"));
-    await waitFor(() => expect(api.restartSession).toHaveBeenCalledWith("a1"));
-    await waitFor(() => expect(onOpen).toHaveBeenCalledWith({ id: "a1", cwd: "/proj" }));
-  });
-
   it("opens a running active session directly without restart", async () => {
     const user = userEvent.setup();
     vi.mocked(api.listStatus).mockResolvedValue({
@@ -301,21 +296,5 @@ describe("HomePage", () => {
     await user.click(await screen.findByText("Running proj"));
     await waitFor(() => expect(api.restartSession).not.toHaveBeenCalled());
     await waitFor(() => expect(onOpen).toHaveBeenCalledWith({ id: "a1", cwd: "/proj" }));
-  });
-
-  it("surfaces a restart failure inline", async () => {
-    const user = userEvent.setup();
-    vi.mocked(api.listStatus).mockResolvedValue({
-      agentDir: "/agent",
-      homeDir: "/home/user",
-      sessions: history,
-      activeSessions: [{ id: "a1", cwd: "/proj", sessionName: "Running proj", isStreaming: false, status: "error", error: "boom" }],
-    } as never);
-    vi.mocked(api.restartSession).mockRejectedValueOnce(new Error("boom"));
-    const onOpen = vi.fn();
-    render(<HomePage onOpenSession={onOpen} onOpenSettings={() => {}} settingsButton={<button type="button">Settings</button>} />);
-    await user.click(await screen.findByText("Running proj"));
-    expect(await screen.findByText("boom")).toBeTruthy();
-    expect(onOpen).not.toHaveBeenCalled();
   });
 });

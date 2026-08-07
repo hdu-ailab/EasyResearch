@@ -6,8 +6,10 @@ import {
   connectSessionEvents,
   getEffectiveModels,
   getSnapshot,
+  isUnknownSession,
   listAgents,
   listModels,
+  openSession,
   readFileContent,
   sendPrompt,
   setAgentModel,
@@ -59,6 +61,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   const [pendingOutput, setPendingOutput] = useState(false);
   const pendingBaseline = useRef<number | null>(null);
   const [statusText, setStatusText] = useState<string | null>(null);
+  const sessionPathRef = useRef<string | null>(null);
   const [panel, setPanel] = useState<Panel>(defaultPanel);
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < CONVERSATION_FIRST_BREAKPOINT);
   const [mobileView, setMobileView] = useState<WorkView>("chat");
@@ -149,6 +152,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
 
   const hydrate = useCallback(async (targetId: string) => {
     const snapshot = await getSnapshot(targetId);
+    sessionPathRef.current = snapshot.session.sessionFile ?? null;
     setSessionId(snapshot.session.id);
     setSessionView(fromSnapshot(snapshot));
     setStatus(snapshot.session.status);
@@ -156,18 +160,26 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
 
   useEffect(() => {
     let active = true;
-    hydrate(id).catch((e: unknown) => {
+    hydrate(sessionId).catch((e: unknown) => {
       if (active) {
         setStatus("error");
         setStatusText(e instanceof Error ? e.message : String(e));
       }
     });
-    const unsubscribe = connectSessionEvents(id, {
+    const unsubscribe = connectSessionEvents(sessionId, {
       onEvent: (event) => {
         setStatusText((current) => (current === t("work.connectionLost") ? null : current));
         const typed = event as { type?: string };
         if (typed.type === "snapshot") {
+          const snapshotEvent = typed as { session?: { sessionFile?: string } };
+          if (typeof snapshotEvent.session?.sessionFile === "string") {
+            sessionPathRef.current = snapshotEvent.session.sessionFile;
+          }
           setSessionView(fromSnapshot(typed as never));
+          return;
+        }
+        if (typed.type === "session_deactivated") {
+          setStatusText(t("work.sessionEnded"));
           return;
         }
         setSessionView((prev) => reduceSessionEvent(prev, event as Parameters<typeof reduceSessionEvent>[1]));
@@ -178,7 +190,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
       active = false;
       unsubscribe();
     };
-  }, [id, hydrate]);
+  }, [sessionId, hydrate]);
 
   const startResize = useCallback(
     (event: React.PointerEvent) => {
@@ -227,10 +239,26 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
         await sendPrompt(sessionId, text);
         setAccepting(false);
       } catch (e) {
+        const error = e instanceof Error ? e.message : String(e);
+        const path = sessionPathRef.current;
+        if (isUnknownSession(e) && path) {
+          try {
+            const dto = await openSession(path);
+            sessionPathRef.current = dto.sessionFile ?? path;
+            setSessionId(dto.id);
+            const snapshot = await getSnapshot(dto.id);
+            setSessionView(fromSnapshot(snapshot));
+            await sendPrompt(dto.id, text);
+            setAccepting(false);
+            return;
+          } catch (reopenError) {
+            setStatusText(reopenError instanceof Error ? reopenError.message : String(reopenError));
+          }
+        }
         setAccepting(false);
         setPendingOutput(false);
         pendingBaseline.current = null;
-        setStatusText(e instanceof Error ? e.message : String(e));
+        setStatusText(error);
       }
     },
     [sessionId, assistantCount],
