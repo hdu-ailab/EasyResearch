@@ -1,4 +1,5 @@
-import { AGENT_MODEL_ENTRY, resolveEffectiveModel } from "../subagent/model-resolution";
+import { AGENT_MODEL_ENTRY, extractAgentModels, resolveEffectiveModel } from "../subagent/model-resolution";
+import { parseAgentRegistry } from "../subagent/registry";
 import { importPi } from "../runtime/pi-import";
 import type { AgentEffectiveModelDto, ConfigScope } from "./contracts";
 import type { ConfigFileService } from "./config-files";
@@ -60,56 +61,42 @@ export async function writeAgentOverride(sessionPath: string | undefined, agentN
 }
 
 /**
- * Read `<root>/settings.json` via ConfigFileService and parse the
- * `lazyresearch.agentModels` map. Absent settings files and absent keys both
- * mean "no config" (undefined); a malformed file is a real error and
- * propagates.
+ * Read `<root>/settings.json` via ConfigFileService and parse each agent's
+ * `model` out of the `lazyresearch.agents` registry. Absent settings files and
+ * a registry with no models both mean "no config" (undefined); a malformed
+ * file is a real error and propagates.
  */
 export async function readAgentModels(
   config: ConfigFileService,
   input: { scope: ConfigScope; cwd?: string },
 ): Promise<Record<string, string> | undefined> {
   const settings = await readSettingsJson(config, input);
+  return settings ? extractAgentModels(settings) : undefined;
+}
+
+function readOrchestratorRegistryModel(settings: Record<string, unknown> | undefined): string | undefined {
   if (!settings) return undefined;
-  const models = (settings.lazyresearch as { agentModels?: unknown } | undefined)?.agentModels;
-  if (models === undefined || typeof models !== "object" || models === null || Array.isArray(models)) {
-    return undefined;
-  }
-  const out: Record<string, string> = {};
-  for (const [agent, model] of Object.entries(models as Record<string, unknown>)) {
-    if (typeof model === "string") out[agent] = model;
-  }
-  return out;
+  const model = parseAgentRegistry(settings)["orchestrator"]?.model;
+  return typeof model === "string" && model !== "" ? model : undefined;
 }
 
 /**
- * Read the merged default model for the orchestrator reset: project settings
- * win over global (Pi-native semantics), `defaultProvider`/`defaultModel` are
- * the top-level Settings keys (settings-manager.d.ts). Undefined when either
- * part of the pair is unset.
+ * Read the configured default model for the orchestrator reset: the project's
+ * `lazyresearch.agents.orchestrator.model` wins over the global one (per-field
+ * merge, Pi-native semantics). Undefined when neither level configures a
+ * `"provider/id"` model for the orchestrator.
  */
 export async function readOrchestratorDefaults(
   config: ConfigFileService,
   cwd: string,
 ): Promise<{ provider: string; modelId: string } | undefined> {
-  const merged: Record<string, unknown> = {};
-  for (const input of [
-    { scope: "global" as ConfigScope },
-    { scope: "project" as ConfigScope, cwd },
-  ]) {
-    const settings = await readSettingsJson(config, input);
-    if (settings) Object.assign(merged, settings);
-  }
-  const { defaultProvider, defaultModel } = merged;
-  if (
-    typeof defaultProvider === "string" &&
-    defaultProvider !== "" &&
-    typeof defaultModel === "string" &&
-    defaultModel !== ""
-  ) {
-    return { provider: defaultProvider, modelId: defaultModel };
-  }
-  return undefined;
+  const global = await readSettingsJson(config, { scope: "global" });
+  const project = await readSettingsJson(config, { scope: "project", cwd });
+  const model = readOrchestratorRegistryModel(project) ?? readOrchestratorRegistryModel(global);
+  if (model === undefined) return undefined;
+  const index = model.indexOf("/");
+  if (index <= 0 || index === model.length - 1) return undefined;
+  return { provider: model.slice(0, index), modelId: model.slice(index + 1) };
 }
 
 async function readSettingsJson(
@@ -156,7 +143,7 @@ export async function routeSetAgentModel(
       if (!defaults) {
         throw new AgentModelError(
           409,
-          "No default model configured: set defaultProvider/defaultModel in settings.json",
+          "No default model configured: set lazyresearch.agents.orchestrator.model in settings.json",
         );
       }
       await router.setOrchestrator(defaults.provider, defaults.modelId);

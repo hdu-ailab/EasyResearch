@@ -100,16 +100,18 @@ describe("settings sources", () => {
     config = new ConfigFileService(agentDir);
   });
 
-  it("reads lazyresearch.agentModels from settings.json", async () => {
-    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ lazyresearch: { agentModels: { search: "a/1" } } }));
+  it("reads agent models from the lazyresearch.agents registry", async () => {
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ lazyresearch: { agents: { search: { model: "a/1" } } } }));
     await expect(readAgentModels(config, { scope: "global" })).resolves.toEqual({ search: "a/1" });
   });
 
-  it("treats a missing settings file or missing agentModels key as no config", async () => {
+  it("treats a missing settings file or registry with no models as no config", async () => {
     await expect(readAgentModels(config, { scope: "global" })).resolves.toBeUndefined();
     writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ theme: "dark" }));
     await expect(readAgentModels(config, { scope: "global" })).resolves.toBeUndefined();
     writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ lazyresearch: {} }));
+    await expect(readAgentModels(config, { scope: "global" })).resolves.toBeUndefined();
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ lazyresearch: { agents: {} } }));
     await expect(readAgentModels(config, { scope: "global" })).resolves.toBeUndefined();
   });
 
@@ -117,31 +119,48 @@ describe("settings sources", () => {
     await expect(readAgentModels(config, { scope: "project", cwd })).resolves.toBeUndefined();
   });
 
-  it("reads project-scoped agentModels from <cwd>/.lazyresearch/settings.json", async () => {
+  it("reads project-scoped agent models from <cwd>/.lazyresearch/settings.json", async () => {
     mkdirSync(join(cwd, ".lazyresearch"));
-    writeFileSync(join(cwd, ".lazyresearch", "settings.json"), JSON.stringify({ lazyresearch: { agentModels: { writing: "b/2" } } }));
+    writeFileSync(join(cwd, ".lazyresearch", "settings.json"), JSON.stringify({ lazyresearch: { agents: { writing: { model: "b/2" } } } }));
     await expect(readAgentModels(config, { scope: "project", cwd })).resolves.toEqual({ writing: "b/2" });
   });
 
   it("ignores non-string agent model values", async () => {
-    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ lazyresearch: { agentModels: { search: "a/1", writing: 42 } } }));
+    writeFileSync(
+      join(agentDir, "settings.json"),
+      JSON.stringify({ lazyresearch: { agents: { search: { model: "a/1" }, writing: { model: 42 } } } }),
+    );
     await expect(readAgentModels(config, { scope: "global" })).resolves.toEqual({ search: "a/1" });
   });
 
   it("returns the global default model when no project settings exist", async () => {
-    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultProvider: "openai", defaultModel: "gpt-4o" }));
+    writeFileSync(
+      join(agentDir, "settings.json"),
+      JSON.stringify({ lazyresearch: { agents: { orchestrator: { model: "openai/gpt-4o" } } } }),
+    );
     await expect(readOrchestratorDefaults(config, cwd)).resolves.toEqual({ provider: "openai", modelId: "gpt-4o" });
   });
 
-  it("lets the project default model win over the global one", async () => {
-    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultProvider: "openai", defaultModel: "gpt-4o" }));
+  it("lets the project orchestrator model win over the global one", async () => {
+    writeFileSync(
+      join(agentDir, "settings.json"),
+      JSON.stringify({ lazyresearch: { agents: { orchestrator: { model: "openai/gpt-4o" } } } }),
+    );
     mkdirSync(join(cwd, ".lazyresearch"));
-    writeFileSync(join(cwd, ".lazyresearch", "settings.json"), JSON.stringify({ defaultProvider: "deepseek", defaultModel: "ds-v3" }));
+    writeFileSync(
+      join(cwd, ".lazyresearch", "settings.json"),
+      JSON.stringify({ lazyresearch: { agents: { orchestrator: { model: "deepseek/ds-v3" } } } }),
+    );
     await expect(readOrchestratorDefaults(config, cwd)).resolves.toEqual({ provider: "deepseek", modelId: "ds-v3" });
   });
 
-  it("returns undefined when defaultProvider or defaultModel is unset", async () => {
-    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultModel: "gpt-4o" }));
+  it("returns undefined when the orchestrator registry model is unset", async () => {
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ lazyresearch: {} }));
+    await expect(readOrchestratorDefaults(config, cwd)).resolves.toBeUndefined();
+    writeFileSync(
+      join(agentDir, "settings.json"),
+      JSON.stringify({ lazyresearch: { agents: { orchestrator: { definition: "agents/orchestrator.md" } } } }),
+    );
     await expect(readOrchestratorDefaults(config, cwd)).resolves.toBeUndefined();
   });
 });
