@@ -13,6 +13,8 @@ import { ConfigFileService } from "./config-files";
 import type { SessionSummaryDto } from "./contracts";
 import { AgentModelError } from "./agent-models";
 import { WebuiSettingsError, readEffectiveWebuiSettings, updateWebuiSettings } from "./webui-settings";
+import { discoverAgents } from "../subagent/agents";
+import { agentToDto, isKnownAgentName } from "./server";
 
 vi.mock("../runtime/extensions-guard", () => ({
   assertNoUserExtensions: vi.fn(),
@@ -545,19 +547,63 @@ describe("web routes", () => {
     expect(await worker.text()).toBe("self.streamSink");
   });
 
-  it("lists the agent roster without leaking system prompts", async () => {
+  it("lists the agent roster with tools/subagents/skills without leaking system prompts or model", async () => {
     setup({
       listAgents: async () => [
-        { name: "orchestrator", description: "Runs the pipeline", tools: ["subagent"] },
-        { name: "search", description: "Finds papers", subagents: [] },
+        { name: "orchestrator", description: "Runs the pipeline", tools: ["subagent"], skills: ["research-project-workflow"] },
+        { name: "search", description: "Finds papers", subagents: [], skills: [] },
       ],
     });
     const res = await handler(new Request("http://localhost/api/agents"));
     expect(res.status).toBe(200);
-    const body = (await res.json()) as Array<{ name: string; description: string; tools?: string[]; systemPrompt?: string }>;
+    const body = (await res.json()) as Array<{
+      name: string;
+      description: string;
+      tools?: string[];
+      subagents?: string[];
+      skills?: string[];
+      systemPrompt?: string;
+      model?: string;
+    }>;
     expect(body.map((a) => a.name)).toEqual(["orchestrator", "search"]);
     expect(body[0]?.tools).toEqual(["subagent"]);
+    expect(body[0]?.skills).toEqual(["research-project-workflow"]);
+    expect(body[1]?.skills).toEqual([]);
     expect(body[0]?.systemPrompt).toBeUndefined();
+    expect(body[0]?.model).toBeUndefined();
+  });
+
+  it("maps a discovered AgentConfig into the roster DTO without private fields", () => {
+    expect(
+      agentToDto({
+        name: "search",
+        description: "Finds papers",
+        tools: ["bash"],
+        subagents: ["experiment"],
+        skills: ["paper-search"],
+        model: "deepseek/ds-v3",
+        systemPrompt: "SECRET PROMPT",
+        source: "global",
+        filePath: "/agent/agents/search.md",
+      }),
+    ).toEqual({
+      name: "search",
+      description: "Finds papers",
+      tools: ["bash"],
+      subagents: ["experiment"],
+      skills: ["paper-search"],
+    });
+  });
+
+  it("recognizes registry-discovered agent names via isKnownAgentName", async () => {
+    mkdirSync(join(agentDir, "agents"), { recursive: true });
+    writeFileSync(join(agentDir, "agents", "search.md"), "---\nname: search\ndescription: finds papers\n---\nbody", "utf-8");
+    const { agents } = await discoverAgents({
+      agentDir,
+      registry: { search: { definition: "agents/search.md", tools: ["bash"] } },
+    });
+    expect(isKnownAgentName(agents, "search")).toBe(true);
+    expect(isKnownAgentName(agents, "writing")).toBe(false);
   });
 
   it("lists available models", async () => {
