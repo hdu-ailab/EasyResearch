@@ -11,6 +11,7 @@ import { getInternalPiInvocation } from "../runtime/internal-invocation";
 import { getAgentDir, importPi } from "../runtime/pi-import";
 import { discoverAgents, type AgentConfig } from "./agents";
 import { resolveModelForSpawn } from "./model-resolution";
+import { resolveSkillDirectories } from "./skill-resolution";
 import { releaseSubagentLock, tryAcquireSubagentLock } from "./serial";
 
 /**
@@ -133,10 +134,15 @@ export function buildPiArgs(
   model: string | undefined,
   task: string,
   sessionPath?: string,
+  skillDeps?: { cwd: string; agentDir: string },
 ): string[] {
   const args: string[] = ["--mode", "json", "-p"];
   if (model) args.push("--model", model);
   if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
+  if (agent.skills !== undefined && skillDeps) {
+    args.push("--no-skills");
+    for (const dir of resolveSkillDirectories(agent.skills, skillDeps) ?? []) args.push("--skill", dir);
+  }
   // ADR-022: nested dispatch needs the subagent tool inside stage runtimes.
   args.push("--extension", SUBAGENT_EXTENSION_PATH);
   args.push("--name", sessionNameFor(agent.name));
@@ -191,7 +197,7 @@ async function runSingleAgent(opts: RunSingleOptions): Promise<SingleResult> {
 
   let tmpPromptPath: string | null = null;
   try {
-    const args = buildPiArgs(agent, model, task, sessionPath);
+    const args = buildPiArgs(agent, model, task, sessionPath, { cwd: cwd ?? defaultCwd, agentDir: getAgentDir() });
     if (agent.systemPrompt.trim()) {
       tmpPromptPath = await writePromptToTempFile(agent.name, agent.systemPrompt);
       args.push("--append-system-prompt", tmpPromptPath);
@@ -343,7 +349,7 @@ export const subagentTool = defineTool({
       };
     }
     try {
-      const agents = filterAgentsByAllowlist(discoverAgents().agents, process.env[ALLOWLIST_ENV]);
+      const agents = filterAgentsByAllowlist((await discoverAgents()).agents, process.env[ALLOWLIST_ENV]);
       const fallbackModel = describeModel(ctx);
       const detailsBase = (mode: "single" | "chain") => makeDetails(mode, agents);
 

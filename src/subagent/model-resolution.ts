@@ -1,4 +1,5 @@
 import { getAgentDir, importPi } from "../runtime/pi-import";
+import { extractRegistryModels, parseAgentRegistry } from "./registry";
 
 export const AGENT_MODEL_ENTRY = "lazyresearch:agent_model";
 
@@ -8,20 +9,12 @@ export interface ModelSource {
 }
 
 /**
- * Parse the `lazyresearch.agentModels` map out of a settings object. Absent
- * or malformed config means "no config" (undefined); non-string values are
- * skipped.
+ * Parse each agent's `model` out of the `lazyresearch.agents` registry. Absent
+ * or malformed config means "no config" (undefined); non-string or empty
+ * models are skipped.
  */
 export function extractAgentModels(settings: unknown): Record<string, string> | undefined {
-  const models = (settings as { lazyresearch?: { agentModels?: unknown } } | undefined)?.lazyresearch?.agentModels;
-  if (models === undefined || typeof models !== "object" || models === null || Array.isArray(models)) {
-    return undefined;
-  }
-  const out: Record<string, string> = {};
-  for (const [agent, model] of Object.entries(models as Record<string, unknown>)) {
-    if (typeof model === "string") out[agent] = model;
-  }
-  return out;
+  return extractRegistryModels(parseAgentRegistry(settings));
 }
 
 export function resolveEffectiveModel(
