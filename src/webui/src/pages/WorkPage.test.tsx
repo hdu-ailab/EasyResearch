@@ -368,7 +368,7 @@ describe("WorkPage", () => {
     const panel = screen.getByRole("region", { name: /file browser/i });
     expect(chat).toBeTruthy();
     expect(chat?.className).toContain("flex-1");
-    expect(panel.className).toContain("md:shrink-0");
+    expect(panel.className).toContain("min-[820px]:shrink-0");
     expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*320px/);
   });
 
@@ -441,51 +441,61 @@ describe("WorkPage", () => {
     expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*341px/);
   });
 
-  it("shows the conversation by default on mobile and animates panels on demand", async () => {
-    const user = userEvent.setup();
-    vi.stubGlobal("innerWidth", 375);
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
-    await screen.findByText("starting research");
-    const region = screen.getByRole("region", { name: /file browser/i });
-    expect(region.className).toContain("transition-[translate,opacity]");
-    expect(region.className).toContain("translate-x-full");
-    expect(region.className).toContain("opacity-0");
-    expect(screen.getByText("starting research")).toBeVisible();
-    await user.click(screen.getByRole("button", { name: /files browser/i }));
-    expect(region.className).toContain("translate-x-0");
-    expect(region.className).toContain("opacity-100");
-    await user.click(screen.getByRole("button", { name: /files browser/i }));
-    expect(region.className).toContain("translate-x-full");
-    expect(region.className).toContain("opacity-0");
-    expect(screen.getByText("starting research")).toBeVisible();
+  it("shows Chat by default below 820px and exposes persistent view tabs", async () => {
+    vi.stubGlobal("innerWidth", 390);
+    render(<WorkPage id="s1" cwd="/papers/fault-diagnosis" onBack={() => {}} />);
+    expect(await screen.findByRole("tab", { name: /chat/i })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tabpanel", { name: /chat/i })).toBeVisible();
+    expect(screen.getByTitle("/papers/fault-diagnosis")).toHaveTextContent("fault-diagnosis");
   });
 
-  it("closes the panel when the window narrows below the desktop breakpoint", async () => {
+  it("preserves file browser state while switching mobile views", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("innerWidth", 390);
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
-    await screen.findByText("starting research");
-    const region = screen.getByRole("region", { name: /file browser/i });
-    expect(region.className).toContain("translate-x-0");
-    vi.stubGlobal("innerWidth", 375);
-    fireEvent(window, new Event("resize"));
-    await waitFor(() => {
-      expect(region.className).toContain("translate-x-full");
-      expect(region.className).toContain("opacity-0");
-    });
+    await user.click(await screen.findByRole("tab", { name: /files/i }));
+    const filter = screen.getByRole("textbox", { name: /filter files/i });
+    await user.type(filter, "notes");
+    await user.click(screen.getByRole("tab", { name: /chat/i }));
+    await user.click(screen.getByRole("tab", { name: /files/i }));
+    expect(screen.getByRole("textbox", { name: /filter files/i })).toHaveValue("notes");
   });
 
-  it("keeps the conversation first in the 768–820px band and closes the panel there on resize", async () => {
-    vi.stubGlobal("innerWidth", 800);
+  it("resets to Chat and closes the desktop panel when the viewport narrows below 820px", async () => {
+    vi.stubGlobal("innerWidth", 900);
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
-    await screen.findByText("starting research");
-    const region = screen.getByRole("region", { name: /file browser/i });
-    expect(region.className).toContain("translate-x-full");
-    expect(region.className).toContain("opacity-0");
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: /files browser/i }));
-    expect(region.className).toContain("translate-x-0");
+    await userEvent.setup().click(await screen.findByRole("button", { name: /agent list/i }));
+    expect(screen.getByRole("region", { name: /agent list/i })).toBeTruthy();
     vi.stubGlobal("innerWidth", 800);
     fireEvent(window, new Event("resize"));
-    await waitFor(() => expect(region.className).toContain("translate-x-full"));
+    await waitFor(() => expect(screen.getByRole("tab", { name: /chat/i })).toHaveAttribute("aria-selected", "true"));
+    expect(screen.queryByRole("region", { name: /agent list/i })).toBeNull();
+  });
+
+  it("keeps the current mobile view across in-mobile resizes without resetting to Chat", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("innerWidth", 800);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await user.click(await screen.findByRole("tab", { name: /files/i }));
+    expect(screen.getByRole("tab", { name: /files/i })).toHaveAttribute("aria-selected", "true");
+    vi.stubGlobal("innerWidth", 700);
+    fireEvent(window, new Event("resize"));
+    expect(screen.getByRole("tab", { name: /files/i })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: /chat/i })).toHaveAttribute("aria-selected", "false");
+  });
+
+  it("mounts FileBrowser and AgentList once while switching mobile views", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("innerWidth", 390);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    await user.click(screen.getByRole("tab", { name: /files/i }));
+    await user.click(screen.getByRole("tab", { name: /agents/i }));
+    await user.click(screen.getByRole("tab", { name: /chat/i }));
+    expect(api.listEntries).toHaveBeenCalledTimes(1);
+    expect(api.listAgents).toHaveBeenCalledTimes(1);
+    expect(api.listModels).toHaveBeenCalledTimes(1);
+    expect(api.getEffectiveModels).toHaveBeenCalledTimes(1);
   });
 
   it("marks the panel invisible after the close transition ends", async () => {
@@ -497,8 +507,8 @@ describe("WorkPage", () => {
     expect(region.className).not.toContain("invisible");
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     await waitFor(() => {
-      expect(region.className).toContain("md:w-0");
-      expect(region.className).toContain("md:opacity-0");
+      expect(region.className).toContain("min-[820px]:w-0");
+      expect(region.className).toContain("min-[820px]:opacity-0");
       expect(region.className).toContain("invisible");
     });
   });
@@ -523,7 +533,7 @@ describe("WorkPage", () => {
     expect(wrapper?.className).toContain("overflow-hidden");
     const handle = screen.getByRole("button", { name: /resize panel/i });
     expect(region.contains(handle)).toBe(true);
-    expect(handle.className).toContain("md:block");
+    expect(handle.className).toContain("min-[820px]:block");
   });
 
   it("fades the content wrapper when switching between panel views", async () => {
@@ -538,26 +548,6 @@ describe("WorkPage", () => {
     const agentsWrapper = agentsRegion.querySelector(".animate-v2-fade-in");
     expect(agentsWrapper).toBeTruthy();
     expect(agentsWrapper).not.toBe(filesWrapper);
-  });
-
-  it("covers the full row region on mobile without a desktop bottom-sheet geometry", async () => {
-    const user = userEvent.setup();
-    vi.stubGlobal("innerWidth", 375);
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
-    await screen.findByText("starting research");
-    await user.click(screen.getByRole("button", { name: /files browser/i }));
-    const panel = screen.getByRole("region", { name: /file browser/i });
-    expect(panel.className).toContain("absolute");
-    expect(panel.className).toContain("inset-0");
-    expect(panel.className).toContain("z-30");
-    expect(panel.className).toMatch(/w-full/);
-    expect(panel.className).not.toContain("bottom-0");
-    expect(panel.className).not.toContain("top-9");
-    const row = screen.getByText("starting research").closest("section")?.parentElement;
-    expect(row).toBeTruthy();
-    expect(row?.firstElementChild === screen.getByText("starting research").closest("section")).toBe(true);
-    expect(panel.parentElement).toBe(row);
-    expect(row?.className).toContain("overflow-x-clip");
   });
 
   it("renders the full five-agent roster in the agents view with serial copy", async () => {

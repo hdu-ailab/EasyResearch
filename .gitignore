@@ -9,6 +9,7 @@ __pycache__/
 *.pyc
 
 .playwright-cli/
+.superpowers/
 .worktrees/
 .lazyresearch/
 testpaper/
