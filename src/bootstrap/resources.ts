@@ -48,7 +48,7 @@ function seedMissingRegistry(agentDir: string, bundledRegistryPath: string): boo
       settings = JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, unknown>;
     }
   } catch {
-    settings = {};
+    return false;
   }
 
   const rawLazy = settings.lazyresearch ?? {};
