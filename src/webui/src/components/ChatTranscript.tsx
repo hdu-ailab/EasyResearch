@@ -4,6 +4,7 @@ import { AlertTriangle, Check, ChevronDown, ChevronRight } from "lucide-react";
 import type { SessionMessageView, ToolView } from "../session-reducer";
 import { useExpandable } from "../hooks/useExpandable";
 import { useI18n } from "../i18n/useI18n";
+import { agentDisplayName } from "../i18n/agents";
 import type { MessageKey } from "../i18n/messages";
 
 export interface ChatTranscriptProps {
@@ -135,7 +136,7 @@ function ToolRow({ tool }: { tool: ToolView }) {
 function MessageRow({ message }: { message: SessionMessageView }) {
   const { t } = useI18n();
   const roleKey = ROLE_LABELS[message.role];
-  const label = message.label ?? (roleKey ? t(roleKey) : message.role);
+  const label = message.label ? agentDisplayName(t, message.label) : roleKey ? t(roleKey) : message.role;
   const isYou = message.role === "user" && message.label == null;
   return (
     <li className={`flex flex-col gap-1 ${isYou ? "items-end" : "items-start"}`}>

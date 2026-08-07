@@ -3,6 +3,7 @@ import { Activity, FileJson, Languages, Minus, Plus, Settings2 } from "lucide-re
 import type { AgentDto } from "../../../web/contracts";
 import { getWebuiSettings, listAgents, listModels, updateWebuiSettings } from "../api";
 import { useI18n } from "../i18n/useI18n";
+import { agentDisplayName } from "../i18n/agents";
 import type { WebUiPreferences } from "../preferences";
 import {
   CHAT_FONT_MAX,
@@ -133,6 +134,9 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
         ]
       : models;
 
+  /** Pin the orchestrator to the first row, keeping the rest in API order. */
+  const roster = [...agents].sort((a, b) => (a.name === "orchestrator" ? -1 : b.name === "orchestrator" ? 1 : 0));
+
   return (
     <div className="flex h-full flex-col">
       <Topbar
@@ -217,11 +221,11 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
               <span className="ml-auto text-[12px] text-v2-text-text-faint">{t("settings.agents.globalHint")}</span>
             </header>
             <div className="flex flex-col gap-3 px-4 py-4">
-              {agents.map((agent) =>
+              {roster.map((agent) =>
                 agent.name === "orchestrator" ? (
                   <div key={agent.name}>
                     <label className="flex items-center justify-between gap-4">
-                      <span className="text-[13px] font-medium text-v2-text-text-base">orchestrator</span>
+                      <span className="text-[13px] font-medium text-v2-text-text-base">{agentDisplayName(t, "orchestrator")}</span>
                       <select
                         className="h-8 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600 disabled:opacity-50"
                         aria-label="orchestrator model"
@@ -239,7 +243,7 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
                   </div>
                 ) : (
                   <label key={agent.name} className="flex items-center justify-between gap-4">
-                    <span className="text-[13px] font-medium text-v2-text-text-base">{agent.name}</span>
+                    <span className="text-[13px] font-medium text-v2-text-text-base">{agentDisplayName(t, agent.name)}</span>
                     <select
                       className="h-8 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600 disabled:opacity-50"
                       aria-label={`${agent.name} model`}

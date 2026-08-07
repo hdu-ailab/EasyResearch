@@ -153,6 +153,6 @@ describe("ChatTranscript", () => {
     const container = screen.getByLabelText("Conversation");
     expect(container.textContent).not.toContain("You");
     expect(container.textContent).toContain("Orchestrator");
-    expect(container.textContent).toContain("search");
+    expect(container.textContent).toContain("Search");
   });
 });

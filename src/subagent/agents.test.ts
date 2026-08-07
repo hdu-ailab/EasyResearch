@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { discoverAgents } from "./agents";
+import { discoverAgents, mergeRegistryChain } from "./agents";
 import type { AgentRegistry } from "./registry";
 
 let dir: string;
@@ -62,5 +62,69 @@ describe("discoverAgents (registry)", () => {
   it("uses the registry-only discovery when registry given (no dir scan fallback)", async () => {
     const { agents } = await discoverAgents({ agentDir: join(dir, "missing"), registry: REG });
     expect(agents.every((a) => a.name !== "ghost")).toBe(true);
+  });
+});
+
+describe("mergeRegistryChain (ADR-034)", () => {
+  it("uses bundled defaults when no user layer configures an agent", () => {
+    const bundled = { search: { definition: "agents/search.md", tools: ["bash"], skills: ["paper-search"] } };
+    const merged = mergeRegistryChain(bundled, {}, {});
+    expect(merged.search).toEqual({
+      definition: "agents/search.md",
+      tools: ["bash"],
+      skills: ["paper-search"],
+    });
+  });
+
+  it("lets project override global and global override bundled per field", () => {
+    const bundled = {
+      search: { definition: "agents/search.md", model: "b/m", tools: ["read"], skills: ["paper-search"] },
+    };
+    const global = { search: { model: "g/m" } };
+    const project = { search: { tools: ["search"] } };
+    const merged = mergeRegistryChain(bundled, global, project);
+    expect(merged.search).toEqual({
+      definition: "agents/search.md",
+      model: "g/m",
+      tools: ["search"],
+      skills: ["paper-search"],
+    });
+  });
+
+  it("keeps bundled-only agents that no user layer touches", () => {
+    const bundled = {
+      search: { definition: "agents/search.md" },
+      figures: { definition: "agents/figures.md" },
+    };
+    const merged = mergeRegistryChain(bundled, { search: { model: "g/m" } }, {});
+    expect(Object.keys(merged).sort()).toEqual(["figures", "search"]);
+  });
+});
+
+describe("disabled agents (ADR-034)", () => {
+  it("skips an entry whose merged registry disables it", async () => {
+    writeAgent("search");
+    writeAgent("figures");
+    const { agents } = await discoverAgents({
+      agentDir: dir,
+      registry: {
+        search: { definition: "agents/search.md", disabled: true },
+        figures: { definition: "agents/figures.md" },
+      },
+    });
+    expect(agents.map((a) => a.name)).toEqual(["figures"]);
+  });
+
+  it("ignores disabled on the orchestrator", async () => {
+    writeAgent("orchestrator");
+    writeAgent("search");
+    const { agents } = await discoverAgents({
+      agentDir: dir,
+      registry: {
+        orchestrator: { definition: "agents/orchestrator.md", disabled: true },
+        search: { definition: "agents/search.md" },
+      },
+    });
+    expect(agents.map((a) => a.name)).toEqual(["orchestrator", "search"]);
   });
 });
