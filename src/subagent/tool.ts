@@ -343,7 +343,7 @@ export const subagentTool = defineTool({
       };
     }
     try {
-      const agents = filterAgentsByAllowlist(discoverAgents().agents, process.env[ALLOWLIST_ENV]);
+      const agents = filterAgentsByAllowlist((await discoverAgents()).agents, process.env[ALLOWLIST_ENV]);
       const fallbackModel = describeModel(ctx);
       const detailsBase = (mode: "single" | "chain") => makeDetails(mode, agents);
 

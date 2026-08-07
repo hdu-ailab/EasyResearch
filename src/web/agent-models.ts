@@ -139,7 +139,7 @@ async function readSettingsJson(
 export async function routeSetAgentModel(
   router: {
     isOrchestrator: (agentName: string) => boolean;
-    isKnownAgent: (agentName: string) => boolean;
+    isKnownAgent: (agentName: string) => boolean | Promise<boolean>;
     setOrchestrator: (provider: string, modelId: string) => Promise<void>;
     writeOverride: (agentName: string, model: string | null) => Promise<void>;
     orchestratorDefaults: () => Promise<{ provider: string; modelId: string } | undefined>;
@@ -147,7 +147,7 @@ export async function routeSetAgentModel(
   agentName: string,
   model: string | null,
 ): Promise<void> {
-  if (!router.isKnownAgent(agentName)) {
+  if (!(await router.isKnownAgent(agentName))) {
     throw new AgentModelError(404, `Unknown agent: ${agentName}`);
   }
   if (router.isOrchestrator(agentName)) {

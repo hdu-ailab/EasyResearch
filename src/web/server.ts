@@ -80,7 +80,7 @@ export async function startServer(): Promise<Server> {
       routeSetAgentModel(
         {
           isOrchestrator: (name) => name === ORCHESTRATOR_AGENT,
-          isKnownAgent: (name) => discoverAgents().agents.some((a) => a.name === name),
+          isKnownAgent: async (name) => (await discoverAgents()).agents.some((a) => a.name === name),
           setOrchestrator: (provider, modelId) => registry.setModel(sessionId, provider, modelId),
           writeOverride: (agentName, model) => agentModels.set(sessionId, agentName, model),
           orchestratorDefaults: async () => readOrchestratorDefaults(config, await registry.getCwd(sessionId)),
@@ -102,7 +102,7 @@ export async function startServer(): Promise<Server> {
     registry,
     config,
     listAgents: async () =>
-      discoverAgents().agents.map(({ name, description, tools, subagents }) => ({
+      (await discoverAgents()).agents.map(({ name, description, tools, subagents }) => ({
         name,
         description,
         tools,
