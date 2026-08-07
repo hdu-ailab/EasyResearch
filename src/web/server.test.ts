@@ -410,6 +410,33 @@ describe("web routes", () => {
     reader.cancel();
   });
 
+  it("emits session_deactivated over SSE and then 404s", async () => {
+    setup();
+    const created = await registry.create({ cwd: "/test/proj" });
+    const adapter = factory.created[0]!;
+    const res = await handler(new Request(`http://localhost/api/sessions/${created.id}/events`));
+    expect(res.status).toBe(200);
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    const first = await reader.read();
+    expect(decoder.decode(first.value)).toContain('"type":"snapshot"');
+    let body = "";
+    try {
+      adapter.events.forEach((listener) => listener({ type: "agent_start" } as never));
+      adapter.events.forEach((listener) => listener({ type: "agent_settled" } as never));
+      while (!body.includes("session_deactivated")) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        body += decoder.decode(value);
+      }
+      expect(body).toContain(JSON.stringify({ type: "session_deactivated", sessionId: created.id }));
+    } finally {
+      await reader.cancel();
+    }
+    const snap = await handler(new Request(`http://localhost/api/sessions/${created.id}/snapshot`));
+    expect(snap.status).toBe(404);
+  });
+
   it("posts a prompt to the active session", async () => {
     setup();
     const created = (await (
@@ -432,7 +459,7 @@ describe("web routes", () => {
     expect(factory.created[0]?.prompts).toEqual(["Write a paper"]);
   });
 
-  it("aborts, stops, and restarts an active session", async () => {
+  it("aborts, stops, and 404s restarting a stopped session", async () => {
     setup();
     const created = (await (
       await handler(
@@ -451,8 +478,27 @@ describe("web routes", () => {
     expect(factory.created[0]?.stopped).toBe(1);
 
     const restarted = await handler(new Request(`http://localhost/api/sessions/${created.id}/restart`, { method: "POST" }));
+    expect(restarted.status).toBe(404);
+    expect(factory.created).toHaveLength(1);
+  });
+
+  it("restarts a live session in place", async () => {
+    setup();
+    const created = (await (
+      await handler(
+        new Request("http://localhost/api/sessions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cwd: projectDir }),
+        }),
+      )
+    ).json()) as { id: string };
+
+    const restarted = await handler(new Request(`http://localhost/api/sessions/${created.id}/restart`, { method: "POST" }));
     expect(restarted.status).toBe(200);
     expect(factory.created).toHaveLength(2);
+    const dto = (await restarted.json()) as { id: string };
+    expect(dto.id).not.toBe(created.id);
   });
 
   it("lists, reads, writes, and creates config entries", async () => {
