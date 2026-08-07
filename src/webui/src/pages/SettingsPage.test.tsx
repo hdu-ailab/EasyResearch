@@ -47,7 +47,8 @@ describe("SettingsPage", () => {
     expect(screen.getByText("Files font size")).toBeTruthy();
     expect(screen.getByText("13px")).toBeTruthy();
     expect(screen.getByText("12px")).toBeTruthy();
-    expect(screen.getByText("Preview")).toBeTruthy();
+    expect(screen.getByText(/lazy dog/)).toBeTruthy();
+    expect(screen.getByText(/index\.ts/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Decrease chat font size" })).not.toBeDisabled();
     expect(screen.getByRole("button", { name: "Increase chat font size" })).not.toBeDisabled();
   });
