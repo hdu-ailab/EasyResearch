@@ -62,6 +62,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   const [sessionView, setSessionView] = useState<SessionViewState>(emptyView);
   const [status, setStatus] = useState<string>("starting");
   const [sessionId, setSessionId] = useState(id);
+  const [subscribeEpoch, setSubscribeEpoch] = useState(0);
   const [accepting, setAccepting] = useState(false);
   const [pendingOutput, setPendingOutput] = useState(false);
   const pendingBaseline = useRef<number | null>(null);
@@ -196,7 +197,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
       active = false;
       unsubscribe();
     };
-  }, [sessionId, hydrate]);
+  }, [sessionId, hydrate, subscribeEpoch]);
 
   const startResize = useCallback(
     (event: React.PointerEvent) => {
@@ -252,6 +253,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
             const dto = await openSession(path);
             sessionPathRef.current = dto.sessionFile ?? path;
             setSessionId(dto.id);
+            setSubscribeEpoch((epoch) => epoch + 1);
             const snapshot = await getSnapshot(dto.id);
             setSessionView(fromSnapshot(snapshot));
             await sendPrompt(dto.id, text);

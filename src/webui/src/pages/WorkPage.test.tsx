@@ -669,6 +669,39 @@ describe("WorkPage", () => {
     expect(await screen.findByText("continue please")).toBeTruthy();
   });
 
+  it("re-subs scribes events when reopening returns the same session id", async () => {
+    const user = userEvent.setup();
+    stubEvents();
+    vi.mocked(api.sendPrompt)
+      .mockRejectedValueOnce(new api.ApiError(404, { error: "Unknown session: s1" }))
+      .mockResolvedValueOnce(undefined);
+    vi.mocked(api.openSession).mockResolvedValueOnce({
+      id: "s1",
+      cwd: "/p",
+      sessionFile: "/agent/sessions/--p--/a.jsonl",
+      isStreaming: false,
+      status: "ready",
+    } as never);
+    vi.mocked(api.getSnapshot).mockResolvedValueOnce(snapshot).mockResolvedValue({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      messages: [{ role: "user", content: [{ type: "text", text: "continue please" }] }],
+    } as never);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    await user.type(screen.getByRole("textbox", { name: /message/i }), "continue please");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+    await waitFor(() => expect(api.openSession).toHaveBeenCalledWith("/agent/sessions/--p--/a.jsonl"));
+    await waitFor(() => expect(api.connectSessionEvents).toHaveBeenCalledTimes(2));
+    expect(api.connectSessionEvents).toHaveBeenNthCalledWith(1, "s1", expect.anything());
+    expect(api.connectSessionEvents).toHaveBeenNthCalledWith(2, "s1", expect.anything());
+    expect(api.sendPrompt).toHaveBeenLastCalledWith("s1", "continue please");
+    emit({
+      type: "message_start",
+      message: { role: "user", content: [{ type: "text", text: "continue please" }] },
+    });
+    expect(await screen.findByText("continue please")).toBeTruthy();
+  });
+
   it("shows the error text for a plain HTTP failure without reopening", async () => {
     const user = userEvent.setup();
     stubEvents();
