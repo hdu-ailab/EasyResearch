@@ -122,11 +122,19 @@ describe("ActiveSessionRegistry", () => {
     expect(factory.created[0]?.stats.prompts).toEqual(["hello"]);
   });
 
-  it("stops the child and marks the session stopped", async () => {
+  it("stop deactivates: removes the registry entry", async () => {
     const created = await registry.create({ cwd });
     await registry.stop(created.id);
     expect(factory.created[0]?.stats.stopped).toBe(1);
-    expect(registry.list().find((s) => s.id === created.id)?.status).toBe("stopped");
+    expect(registry.list().find((s) => s.id === created.id)).toBeUndefined();
+  });
+
+  it("stop emits session_deactivated to subscribers", async () => {
+    const created = await registry.create({ cwd });
+    const listener = vi.fn();
+    registry.subscribe(created.id, listener);
+    await registry.stop(created.id);
+    expect(listener).toHaveBeenCalledWith({ type: "session_deactivated", sessionId: created.id });
   });
 
   it("forwards setModel to the adapter with provider and model id", async () => {
@@ -193,15 +201,21 @@ describe("ActiveSessionRegistry", () => {
     expect(factory.created[1]?.stats.started).toBe(1);
   });
 
-  it("snapshots a stopped session without calling into the dead client", async () => {
+  it("open re-launches a session deactivated by agent_settled", async () => {
+    const created = await registry.open({ cwd, sessionPath });
+    const adapter = factory.created[0]!;
+    adapter.events.forEach((l) => l({ type: "agent_start" } as never));
+    adapter.events.forEach((l) => l({ type: "agent_settled" } as never));
+    await vi.waitFor(() => expect(registry.list().find((s) => s.id === created.id)).toBeUndefined());
+    const reopened = await registry.open({ cwd, sessionPath });
+    expect(reopened.status).toBe("ready");
+    expect(factory.created).toHaveLength(2);
+  });
+
+  it("snapshot rejects after deactivation", async () => {
     const created = await registry.create({ cwd });
     await registry.stop(created.id);
-    const adapter = factory.created[0]!;
-    const broken = vi.spyOn(adapter, "getMessages").mockRejectedValue(new Error("Client not started"));
-    const snapshot = await registry.snapshot(created.id);
-    expect(broken).not.toHaveBeenCalled();
-    expect(snapshot.session.status).toBe("stopped");
-    expect(snapshot.messages).toEqual([]);
+    await expect(registry.snapshot(created.id)).rejects.toThrow(UnknownSessionError);
   });
 
   it("snapshots an errored session without calling into the dead client", async () => {
@@ -235,13 +249,17 @@ describe("ActiveSessionRegistry", () => {
     expect(dto?.isStreaming).toBe(false);
   });
 
-  it("marks running only on agent_start and ready again on agent_settled", async () => {
+  it("deactivates on agent_settled: stops child, removes entry, emits event", async () => {
     const created = await registry.create({ cwd });
     const adapter = factory.created[0]!;
-    adapter.events.forEach((listener) => listener({ type: "agent_start" } as never));
+    const listener = vi.fn();
+    registry.subscribe(created.id, listener);
+    adapter.events.forEach((l) => l({ type: "agent_start" } as never));
     expect(registry.list().find((s) => s.id === created.id)?.status).toBe("running");
-    adapter.events.forEach((listener) => listener({ type: "agent_settled" } as never));
-    expect(registry.list().find((s) => s.id === created.id)?.status).toBe("ready");
+    adapter.events.forEach((l) => l({ type: "agent_settled" } as never));
+    await vi.waitFor(() => expect(registry.list().find((s) => s.id === created.id)).toBeUndefined());
+    expect(factory.created[0]?.stats.stopped).toBe(1);
+    expect(listener).toHaveBeenCalledWith({ type: "session_deactivated", sessionId: created.id });
   });
 
   it("ignores message events when deciding run status", async () => {
