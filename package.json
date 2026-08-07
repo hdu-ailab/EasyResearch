@@ -27,13 +27,14 @@
     "dev:web": "vite --config src/webui/vite.config.ts"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "0.83.0",
-    "@earendil-works/pi-ai": "0.83.0",
-    "@earendil-works/pi-coding-agent": "0.83.0",
-    "@earendil-works/pi-tui": "0.83.0",
+    "@earendil-works/pi-agent-core": "0.84.1",
+    "@earendil-works/pi-ai": "0.84.1",
+    "@earendil-works/pi-coding-agent": "0.84.1",
+    "@earendil-works/pi-tui": "0.84.1",
     "cheerio": "1.1.2",
     "katex": "0.18.1",
     "lucide-react": "1.28.0",
+    "mermaid": "11.16.1",
     "pdfjs-dist": "6.2.108",
     "react": "19.2.8",
     "react-dom": "19.2.8",

@@ -5,6 +5,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ChatTranscript } from "./ChatTranscript";
 import type { SessionMessageView, ToolView } from "../session-reducer";
 
+vi.mock("mermaid", () => ({
+  default: {
+    initialize: vi.fn(),
+    render: vi.fn().mockResolvedValue({ svg: "<svg data-testid='mermaid-svg' />" }),
+  },
+}));
+
 const msg = (overrides: Partial<SessionMessageView>): SessionMessageView => ({
   key: "k",
   role: "assistant",
@@ -140,7 +147,12 @@ describe("ChatTranscript", () => {
     expect(second).toBeGreaterThan(toolIndex);
   });
 
-  it("renders the subagent dispatch under the orchestrator label, never as You", () => {
+  it("renders math in assistant messages", () => {
+    render(<ChatTranscript messages={[msg({ key: "m", text: "Euler: $e^{i\\pi} + 1 = 0$" })]} tools={[]} />);
+    expect(document.querySelector(".katex")).toBeTruthy();
+  });
+
+  it("renders subagent dispatch under the orchestrator label, never as You", () => {
     render(
       <ChatTranscript
         messages={[

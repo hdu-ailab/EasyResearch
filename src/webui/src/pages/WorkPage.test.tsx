@@ -168,12 +168,10 @@ describe("WorkPage", () => {
     });
     emit({
       type: "message_update",
-      message: { role: "assistant", id: "m1", content: [{ type: "text", text: "tok" }] },
       assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "tok" },
     });
     emit({
       type: "message_update",
-      message: { role: "assistant", id: "m1", content: [{ type: "text", text: "tok2" }] },
       assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "2" },
     });
     expect(await screen.findByText(/tok2/)).toBeTruthy();
