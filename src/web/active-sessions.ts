@@ -73,10 +73,16 @@ export class ActiveSessionRegistry {
     });
   }
 
+  /**
+   * Dispatch a prompt without touching the DTO status: a session counts as
+   * `running` only while a real agent run is active (`agent_start` →
+   * `agent_settled`), never while a prompt is merely in flight. Pi's RPC
+   * `prompt` resolves even when the run never starts (e.g. missing
+   * model/auth preflight failure), and no `agent_settled` follows then;
+   * pre-marking `running` here would leave an idle session stuck `running`.
+   */
   async prompt(id: string, message: string): Promise<void> {
     return this.withRecord(id, async (record) => {
-      record.dto.isStreaming = true;
-      record.dto.status = record.dto.status === "stopped" ? "stopped" : "running";
       await record.client.prompt(message);
     });
   }
@@ -211,15 +217,22 @@ export class ActiveSessionRegistry {
     return { ...dto };
   }
 
+  /**
+   * The DTO status must reflect an actual agent run, never user focus,
+   * session launch, or a prompt send. `agent_start`/`agent_settled` are Pi's
+   * authoritative run boundaries: a run that fails preflight emits neither,
+   * so the session stays `ready` instead of being marked `running`. Message
+   * events are intentionally ignored here — `message_start` fires for user
+   * and queued messages too, which would mark the session running while no
+   * agent is active.
+   */
   private syncDtoFromEvent(record: ActiveRecord, event: unknown): void {
     const type = (event as { type?: string }).type;
-    if (type === "message_start") {
-      record.dto.isStreaming = true;
-      if (record.dto.status !== "stopped") record.dto.status = "running";
-    }
     if (type === "agent_start") {
       record.dto.isStreaming = true;
-      if (record.dto.status !== "stopped") record.dto.status = "running";
+      if (record.dto.status !== "stopped" && record.dto.status !== "error") {
+        record.dto.status = "running";
+      }
     }
     if (type === "agent_settled") {
       record.dto.isStreaming = false;

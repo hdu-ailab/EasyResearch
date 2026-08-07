@@ -224,6 +224,35 @@ describe("ActiveSessionRegistry", () => {
     expect(factory.created[1]?.stats.started).toBe(1);
   });
 
+  it("stays ready when a prompt never starts an agent run", async () => {
+    const created = await registry.create({ cwd });
+    expect(created.status).toBe("ready");
+    await registry.prompt(created.id, "hello");
+    // Pi's RPC prompt resolves even when the run fails preflight and emits no
+    // agent_settled, so the session must not be left marked running.
+    const dto = registry.list().find((s) => s.id === created.id);
+    expect(dto?.status).toBe("ready");
+    expect(dto?.isStreaming).toBe(false);
+  });
+
+  it("marks running only on agent_start and ready again on agent_settled", async () => {
+    const created = await registry.create({ cwd });
+    const adapter = factory.created[0]!;
+    adapter.events.forEach((listener) => listener({ type: "agent_start" } as never));
+    expect(registry.list().find((s) => s.id === created.id)?.status).toBe("running");
+    adapter.events.forEach((listener) => listener({ type: "agent_settled" } as never));
+    expect(registry.list().find((s) => s.id === created.id)?.status).toBe("ready");
+  });
+
+  it("ignores message events when deciding run status", async () => {
+    const created = await registry.create({ cwd });
+    const adapter = factory.created[0]!;
+    adapter.events.forEach((listener) => listener({ type: "message_start" } as never));
+    expect(registry.list().find((s) => s.id === created.id)?.status).toBe("ready");
+    adapter.events.forEach((listener) => listener({ type: "agent_start" } as never));
+    expect(registry.list().find((s) => s.id === created.id)?.status).toBe("running");
+  });
+
   it("surfaces an unexpected process error as status error", async () => {
     const created = await registry.create({ cwd });
     const adapter = factory.created[0]!;
