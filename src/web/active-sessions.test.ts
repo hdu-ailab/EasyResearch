@@ -2,11 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { RpcEventListener, RpcSessionState } from "@earendil-works/pi-coding-agent";
 import { ActiveSessionRegistry, UnknownSessionError } from "./active-sessions";
-import { assertNoUserExtensions } from "../runtime/extensions-guard";
+import { assertSafeExtensionSources } from "../runtime/extensions-guard";
 import type { RpcSessionAdapter, RpcSessionFactory, StartRpcSessionOptions } from "./rpc-session";
 
 vi.mock("../runtime/extensions-guard", () => ({
-  assertNoUserExtensions: vi.fn(),
+  assertSafeExtensionSources: vi.fn(),
   ExtensionGuardError: class ExtensionGuardError extends Error {},
 }));
 
@@ -95,14 +95,14 @@ describe("ActiveSessionRegistry", () => {
   beforeEach(() => {
     factory = new FakeFactory();
     registry = new ActiveSessionRegistry(factory);
-    vi.mocked(assertNoUserExtensions).mockClear();
+    vi.mocked(assertSafeExtensionSources).mockClear();
   });
 
   it("creates a session with exact cwd and launches a client", async () => {
     const created = await registry.create({ cwd });
     expect(created.cwd).toBe(cwd);
     expect(factory.created[0]?.options).toEqual({ cwd });
-    expect(vi.mocked(assertNoUserExtensions)).toHaveBeenCalledWith({ cwd });
+    expect(vi.mocked(assertSafeExtensionSources)).toHaveBeenCalledWith({ cwd });
     expect(factory.created[0]?.stats.started).toBe(1);
     expect(created.status).toBe("ready");
     expect(created.id).toBe(fakeState.sessionId);

@@ -31,6 +31,7 @@
     "@earendil-works/pi-ai": "0.83.0",
     "@earendil-works/pi-coding-agent": "0.83.0",
     "@earendil-works/pi-tui": "0.83.0",
+    "cheerio": "1.1.2",
     "katex": "0.18.1",
     "lucide-react": "1.28.0",
     "pdfjs-dist": "6.2.108",
