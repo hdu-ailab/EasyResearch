@@ -110,6 +110,21 @@ describe("SettingsPage", () => {
     expect(screen.getByRole("combobox", { name: "orchestrator model" })).toHaveValue("openai/gpt-4o");
   });
 
+  it("pins the orchestrator to the first Agent models row regardless of API order", async () => {
+    vi.mocked(api.listAgents).mockResolvedValue([
+      { name: "writing", description: "Writes" },
+      { name: "orchestrator", description: "Coordinates" },
+      { name: "search", description: "Searches" },
+    ] as never);
+    render(<SettingsPage onBack={() => {}} onOpenConfigPage={() => {}} />);
+    await screen.findByRole("combobox", { name: "orchestrator model" });
+    const orchestratorBox = screen.getByRole("combobox", { name: "orchestrator model" });
+    const searchBox = screen.getByRole("combobox", { name: "search model" });
+    expect(orchestratorBox.compareDocumentPosition(searchBox) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
+
   it("shows the configured orchestrator default without any inherit option", async () => {
     vi.mocked(api.getWebuiSettings).mockResolvedValue({
       agentModels: { search: "openai/gpt-4o" },

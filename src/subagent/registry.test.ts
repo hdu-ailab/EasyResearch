@@ -37,6 +37,23 @@ describe("parseAgentRegistry", () => {
     expect(extractRegistryModels(reg)).toEqual({ a: "p/m" });
     expect(extractRegistryModels({})).toBeUndefined();
   });
+
+  it("parses disabled only for literal booleans", () => {
+    const reg = parseAgentRegistry({
+      lazyresearch: {
+        agents: {
+          gone: { disabled: true },
+          back: { disabled: false },
+          nonsense: { disabled: "yes" },
+          omitted: {},
+        },
+      },
+    });
+    expect(reg.gone?.disabled).toBe(true);
+    expect(reg.back?.disabled).toBe(false);
+    expect(reg.nonsense?.disabled).toBeUndefined();
+    expect(reg.omitted?.disabled).toBeUndefined();
+  });
 });
 
 describe("mergeAgentRegistry", () => {
@@ -52,5 +69,19 @@ describe("mergeAgentRegistry", () => {
   it("keeps global-only agents", () => {
     const merged = mergeAgentRegistry({}, { writing: { definition: "agents/writing.md" } });
     expect(merged.writing?.definition).toBe("agents/writing.md");
+  });
+
+  it("merges disabled per field and lets a higher layer re-enable", () => {
+    const project = { figures: { disabled: false } };
+    const global = { figures: { disabled: true } };
+    const merged = mergeAgentRegistry(project, global);
+    expect(merged.figures?.disabled).toBe(false);
+  });
+
+  it("carries disabled through when only the lower layer sets it", () => {
+    const project = { figures: { subagents: ["search"] } };
+    const global = { figures: { disabled: true } };
+    const merged = mergeAgentRegistry(project, global);
+    expect(merged.figures?.disabled).toBe(true);
   });
 });
