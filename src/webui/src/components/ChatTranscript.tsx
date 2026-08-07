@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
 import { AlertTriangle, Check, ChevronDown, ChevronRight } from "lucide-react";
 import type { SessionMessageView, ToolView } from "../session-reducer";
 import { useExpandable } from "../hooks/useExpandable";
 import { useI18n } from "../i18n/useI18n";
 import { agentDisplayName } from "../i18n/agents";
 import type { MessageKey } from "../i18n/messages";
+import { MarkdownBlock } from "./MarkdownBlock";
 
 export interface ChatTranscriptProps {
   messages: SessionMessageView[];
@@ -55,13 +55,7 @@ function ReasoningBlock({ text }: { text: string }) {
           } motion-reduce:animate-none`}
         >
           <div className="v2-md text-[12.5px] text-v2-text-text-muted">
-            <ReactMarkdown
-              components={{
-                a: ({ children }) => <span>{children}</span>,
-              }}
-            >
-              {text}
-            </ReactMarkdown>
+            <MarkdownBlock text={text} />
           </div>
         </div>
       )}
@@ -148,13 +142,7 @@ function MessageRow({ message }: { message: SessionMessageView }) {
             isYou ? "bg-v2-blue-100/60 text-v2-text-text-base" : "bg-v2-background-bg-deep text-v2-text-text-base"
           } ${message.error ? "text-v2-status-error" : ""}`}
         >
-          <ReactMarkdown
-            components={{
-              a: ({ children }) => <span>{children}</span>,
-            }}
-          >
-            {message.text}
-          </ReactMarkdown>
+          <MarkdownBlock text={message.text} />
           {message.streaming && <span className="v2-caret" aria-hidden />}
         </div>
       ) : (

@@ -6,6 +6,7 @@ import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
 import { rawFileUrl } from "../../api";
 import { resolveLocalPreviewPath } from "./preview-paths";
+import { MermaidDiagram } from "../MermaidDiagram";
 
 export interface MarkdownPreviewProps {
   path: string;
@@ -50,6 +51,14 @@ export function MarkdownPreview({ path, content, onOpenFile }: MarkdownPreviewPr
       img: ({ src, alt }: { src?: string; alt?: string }) => {
         const local = src ? resolveLocalPreviewPath(path, src) : null;
         return <img src={local ? rawFileUrl(local) : src} alt={alt ?? ""} />;
+      },
+      code: ({ className: codeClassName, children }: { className?: string; children?: React.ReactNode }) => {
+        const language = codeClassName?.match(/language-(\w+)/)?.[1];
+        if (language === "mermaid") {
+          const source = String(children ?? "").replace(/\n$/, "");
+          return <MermaidDiagram source={source} />;
+        }
+        return <code className={codeClassName}>{children}</code>;
       },
     }),
     [path, onOpenFile],
