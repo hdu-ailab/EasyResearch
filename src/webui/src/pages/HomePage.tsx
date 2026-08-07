@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { createSession, listStatus, openSession, restartSession } from "../api";
+import { createSession, listStatus, openSession } from "../api";
 import { DirectoryDialog } from "../components/DirectoryDialog";
 import { HomeWorkspace } from "../components/HomeWorkspace";
 import { ProductMark, Topbar } from "../components/Topbar";
@@ -66,16 +66,7 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
   );
 
   const openActive = useCallback(
-    async (session: ActiveSessionDto) => {
-      if (session.status === "stopped" || session.status === "error") {
-        try {
-          const dto = await restartSession(session.id);
-          onOpenSession({ id: dto.id, cwd: dto.cwd });
-        } catch (e) {
-          setError(e instanceof Error ? e.message : String(e));
-        }
-        return;
-      }
+    (session: ActiveSessionDto) => {
       onOpenSession({ id: session.id, cwd: session.cwd });
     },
     [onOpenSession],
