@@ -9,15 +9,15 @@ function userMessage(text: string) {
 }
 
 function assistantEvent(type: "message_start" | "message_update" | "message_end", text: string): AgentSessionEvent {
+  if (type === "message_update") {
+    return {
+      type,
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: text },
+    } as AgentSessionEvent;
+  }
   return {
     type,
-    message: {
-      role: "assistant",
-      content: [{ type: "text", text }],
-    },
-    ...(type === "message_update"
-      ? { assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: text, partial: { role: "assistant", content: [{ type: "text", text }] } } }
-      : {}),
+    message: { role: "assistant", content: [{ type: "text", text }] },
   } as AgentSessionEvent;
 }
 
@@ -246,5 +246,16 @@ describe("session reducer", () => {
     const final = reduceSessionEvent(state, assistantEvent("message_start", "done"));
     expect(final.messages.map((m) => m.order)).toEqual([0, 1, 3]);
     expect(final.tools.map((t) => t.order)).toEqual([2]);
+  });
+
+  it("resolves message_update deltas by the message_start key, even without ids", () => {
+    let state = reduceSessionEvent(emptyState, assistantEvent("message_start", ""));
+    expect(state.activeMessageKey).toBe("0");
+    state = reduceSessionEvent(state, assistantEvent("message_update", "one "));
+    state = reduceSessionEvent(state, assistantEvent("message_update", "two"));
+    expect(state.messages[0]!.text).toBe("one two");
+    state = reduceSessionEvent(state, { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "one two" }] } } as never);
+    expect(state.activeMessageKey).toBeUndefined();
+    expect(state.messages[0]!.streaming).toBe(false);
   });
 });
