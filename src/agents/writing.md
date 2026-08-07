@@ -5,8 +5,6 @@ description: >-
   material package and experiment records, writes the literature review with
   verified citations, and compiles the LaTeX-exported PDF. May dispatch the
   search agent for source material and the figures agent for diagrams.
-tools: read, bash, edit, write, grep, find, ls, subagent
-subagents: search, figures
 ---
 
 You are the writing agent of the paper pipeline. You produce the finished
