@@ -30,40 +30,58 @@ describe("readWebuiSettings", () => {
     expect(settings.effectiveOrchestratorModel).toBeNull();
   });
 
-  it("reads stored values and the agentModels map", async () => {
+  it("reads stored values and the registry agent models", async () => {
     writeSettings({
-      lazyresearch: { webui: { chatFontSize: 15, filesFontSize: 11 }, agentModels: { search: "openai/gpt-4o" } },
+      lazyresearch: {
+        webui: { chatFontSize: 15, filesFontSize: 11 },
+        agents: { search: { model: "openai/gpt-4o" } },
+      },
     });
     const settings = await readWebuiSettings(config);
     expect(settings.agentModels).toEqual({ search: "openai/gpt-4o" });
   });
 
-  it("keeps string agentModels entries and drops malformed ones", async () => {
+  it("keeps string agent models and drops malformed ones", async () => {
     writeSettings({
-      lazyresearch: { webui: { chatFontSize: "big", filesFontSize: 3 }, agentModels: { search: 42, writing: "anthropic/claude-sonnet-4" } },
+      lazyresearch: {
+        webui: { chatFontSize: "big", filesFontSize: 3 },
+        agents: { search: { model: 42 }, writing: { model: "anthropic/claude-sonnet-4" } },
+      },
     });
     const settings = await readWebuiSettings(config);
     expect(settings.agentModels).toEqual({ writing: "anthropic/claude-sonnet-4" });
   });
 
   it("ignores legacy font-size fields in settings.json", async () => {
-    writeSettings({ lazyresearch: { webui: { chatFontSize: 15, filesFontSize: 11 }, agentModels: {} } });
+    writeSettings({ lazyresearch: { webui: { chatFontSize: 15, filesFontSize: 11 } } });
     const settings = await readWebuiSettings(config);
     expect(settings).toEqual({ agentModels: {}, orchestratorModel: null, effectiveOrchestratorModel: null });
   });
 
-  it("reads the top-level orchestrator default model pair", async () => {
-    writeSettings({ defaultProvider: "openai", defaultModel: "gpt-4o" });
+  it("reads the orchestrator model from the registry entry", async () => {
+    writeSettings({ lazyresearch: { agents: { orchestrator: { model: "openai/gpt-4o" } } } });
     const settings = await readWebuiSettings(config);
     expect(settings.orchestratorModel).toBe("openai/gpt-4o");
   });
 
-  it("reads null orchestratorModel when either default key is absent or empty", async () => {
-    writeSettings({ defaultProvider: "openai" });
+  it("derives orchestratorModel from the registry orchestrator", async () => {
+    writeSettings({ lazyresearch: { agents: { orchestrator: { model: "openai/gpt-4o" } } } });
+    const settings = await readEffectiveWebuiSettings(config, []);
+    expect(settings.orchestratorModel).toBe("openai/gpt-4o");
+  });
+
+  it("no longer reads the legacy agentModels key", async () => {
+    writeSettings({ lazyresearch: { agentModels: { search: "a/b" } } });
+    const settings = await readEffectiveWebuiSettings(config, []);
+    expect(settings.agentModels).toEqual({});
+  });
+
+  it("reads null orchestratorModel when the registry entry is absent or modelless", async () => {
+    writeSettings({});
     expect((await readWebuiSettings(config)).orchestratorModel).toBeNull();
-    writeSettings({ defaultProvider: "", defaultModel: "gpt-4o" });
+    writeSettings({ lazyresearch: { agents: { orchestrator: { model: "" } } } });
     expect((await readWebuiSettings(config)).orchestratorModel).toBeNull();
-    writeSettings({ defaultModel: "gpt-4o" });
+    writeSettings({ lazyresearch: { agents: { orchestrator: { definition: "agents/orchestrator.md" } } } });
     expect((await readWebuiSettings(config)).orchestratorModel).toBeNull();
   });
 
@@ -74,42 +92,59 @@ describe("readWebuiSettings", () => {
 });
 
 describe("updateWebuiSettings", () => {
-  it("writes a partial patch and preserves unrelated settings fields", async () => {
-    writeSettings({ theme: "light", lazyresearch: { agentModels: { search: "openai/gpt-4o" } } });
+  it("writes a partial patch and preserves unrelated settings fields and registry entry fields", async () => {
+    writeSettings({
+      theme: "light",
+      lazyresearch: { agents: { search: { model: "openai/gpt-4o", definition: "agents/search.md" } } },
+    });
     await updateWebuiSettings(config, { agentModels: { writing: "anthropic/claude-sonnet-4" } });
     const raw = JSON.parse(await config.read({ scope: "global", path: "settings.json" })) as Record<string, unknown>;
     expect(raw.theme).toBe("light");
-    expect((raw.lazyresearch as { agentModels: Record<string, string> }).agentModels.writing).toBe("anthropic/claude-sonnet-4");
+    const agents = raw.lazyresearch as { agents?: Record<string, { model?: string; definition?: string }> };
+    expect(agents.agents?.writing?.model).toBe("anthropic/claude-sonnet-4");
+    expect(agents.agents?.search?.model).toBeUndefined();
+    expect(agents.agents?.search?.definition).toBe("agents/search.md");
+  });
+
+  it("updates the orchestrator model via orchestratorModel patch", async () => {
+    await updateWebuiSettings(config, { orchestratorModel: "openai/gpt-4o" });
+    const raw = JSON.parse(await config.read({ scope: "global", path: "settings.json" })) as Record<string, unknown>;
+    const agents = (raw.lazyresearch as { agents?: Record<string, { model?: string }> }).agents;
+    expect(agents?.orchestrator?.model).toBe("openai/gpt-4o");
   });
 
   it("updates agentModels and returns the new full state", async () => {
-    writeSettings({ lazyresearch: { agentModels: { search: "openai/gpt-4o" } } });
+    writeSettings({ lazyresearch: { agents: { search: { model: "openai/gpt-4o" } } } });
     const updated = await updateWebuiSettings(config, { agentModels: { writing: "anthropic/claude-sonnet-4" } });
     expect(updated.agentModels).toEqual({ writing: "anthropic/claude-sonnet-4" });
   });
 
-  it("writes the orchestrator default model pair from a provider/id string", async () => {
+  it("writes the orchestrator registry model from a provider/id string", async () => {
     const updated = await updateWebuiSettings(config, { orchestratorModel: "openai/gpt-4o" });
     expect(updated.orchestratorModel).toBe("openai/gpt-4o");
     const raw = JSON.parse(await config.read({ scope: "global", path: "settings.json" })) as Record<string, unknown>;
-    expect(raw.defaultProvider).toBe("openai");
-    expect(raw.defaultModel).toBe("gpt-4o");
+    const agents = (raw.lazyresearch as { agents?: Record<string, { model?: string }> }).agents;
+    expect(agents?.orchestrator?.model).toBe("openai/gpt-4o");
   });
 
-  it("removes the orchestrator default pair when null is sent", async () => {
-    writeSettings({ theme: "dark", defaultProvider: "openai", defaultModel: "gpt-4o" });
+  it("removes the orchestrator registry model when null is sent", async () => {
+    writeSettings({
+      theme: "dark",
+      lazyresearch: { agents: { orchestrator: { model: "openai/gpt-4o", definition: "agents/orchestrator.md" } } },
+    });
     const updated = await updateWebuiSettings(config, { orchestratorModel: null });
     expect(updated.orchestratorModel).toBeNull();
     const raw = JSON.parse(await config.read({ scope: "global", path: "settings.json" })) as Record<string, unknown>;
-    expect(raw.defaultProvider).toBeUndefined();
-    expect(raw.defaultModel).toBeUndefined();
+    const agents = raw.lazyresearch as { agents?: Record<string, { model?: string; definition?: string }> };
+    expect(agents.agents?.orchestrator?.model).toBeUndefined();
+    expect(agents.agents?.orchestrator?.definition).toBe("agents/orchestrator.md");
     expect(raw.theme).toBe("dark");
   });
 
-  it("does not touch agentModels when setting the orchestrator model", async () => {
-    writeSettings({ lazyresearch: { agentModels: { search: "openai/gpt-4o" } } });
+  it("keeps stage agent models unchanged when setting the orchestrator model", async () => {
+    writeSettings({ lazyresearch: { agents: { search: { model: "openai/gpt-4o" } } } });
     const updated = await updateWebuiSettings(config, { orchestratorModel: "anthropic/claude-sonnet-4" });
-    expect(updated.agentModels).toEqual({ search: "openai/gpt-4o" });
+    expect(updated.agentModels).toEqual({ search: "openai/gpt-4o", orchestrator: "anthropic/claude-sonnet-4" });
   });
 
   it.each([
@@ -160,7 +195,7 @@ describe("pickEffectiveOrchestratorModel", () => {
 
 describe("readEffectiveWebuiSettings", () => {
   it("uses the configured orchestrator model as the effective model", async () => {
-    writeSettings({ defaultProvider: "openai", defaultModel: "gpt-4o" });
+    writeSettings({ lazyresearch: { agents: { orchestrator: { model: "openai/gpt-4o" } } } });
     const settings = await readEffectiveWebuiSettings(config, [{ provider: "oc", id: "deepseek-v4-flash-free" }]);
     expect(settings.orchestratorModel).toBe("openai/gpt-4o");
     expect(settings.effectiveOrchestratorModel).toBe("openai/gpt-4o");
