@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
@@ -54,6 +54,34 @@ describe("buildPiArgs", () => {
     const args = buildPiArgs(agent, undefined, "task");
     expect(args).toContain("--tools");
     expect(args[args.indexOf("--tools") + 1]).toBe("read,bash,arxiv");
+  });
+
+  it("adds --no-skills and --skill for a non-empty whitelist", () => {
+    const agentDir = mkdtempSync(join(tmpdir(), "lr-args-"));
+    const skillDir = join(agentDir, "skills", "paper-search");
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(join(skillDir, "SKILL.md"), "# paper-search");
+    const agent = { ...maker("search"), skills: ["paper-search"] };
+    const args = buildPiArgs(agent, undefined, "task", undefined, {
+      cwd: agentDir,
+      agentDir,
+    });
+    expect(args).toContain("--no-skills");
+    expect(args[args.indexOf("--skill") + 1]!.endsWith("paper-search")).toBe(true);
+    expect(args[args.indexOf("--skill") + 1]!.startsWith("/")).toBe(true);
+  });
+
+  it("emits only --no-skills for an explicit empty whitelist", () => {
+    const agent = { ...maker("search"), skills: [] };
+    const args = buildPiArgs(agent, undefined, "task", undefined, { cwd: "/tmp", agentDir: "/tmp" });
+    expect(args).toContain("--no-skills");
+    expect(args).not.toContain("--skill");
+  });
+
+  it("omits skill flags when skills is undefined", () => {
+    const args = buildPiArgs(maker("search"), undefined, "task");
+    expect(args).not.toContain("--no-skills");
+    expect(args).not.toContain("--skill");
   });
 });
 
