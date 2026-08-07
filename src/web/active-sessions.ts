@@ -244,9 +244,6 @@ export class ActiveSessionRegistry {
   }
 
   private async deactivate(record: ActiveRecord): Promise<void> {
-    for (const listener of record.listeners) {
-      listener({ type: "session_deactivated", sessionId: record.dto.id });
-    }
     await this.stop(record.dto.id);
   }
 
