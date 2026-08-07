@@ -33,24 +33,29 @@ interface StepperProps {
   max: number;
   decreaseLabel: string;
   increaseLabel: string;
+  preview: string;
+  previewClassName: string;
   onDecrease: () => void;
   onIncrease: () => void;
 }
 
-function FontStepper({ label, value, min, max, decreaseLabel, increaseLabel, onDecrease, onIncrease }: StepperProps) {
+function FontStepper({ label, value, min, max, decreaseLabel, increaseLabel, preview, previewClassName, onDecrease, onIncrease }: StepperProps) {
   return (
-    <div className="flex items-center justify-between gap-4">
-      <span className="text-[13px] text-v2-text-text-base">{label}</span>
-      <div className="flex items-center gap-2">
-        <button type="button" aria-label={decreaseLabel} disabled={value <= min} onClick={onDecrease} className={buttonClass}>
-          <Minus size={13} aria-hidden />
-        </button>
-        <span className="w-12 text-center text-[13px] tabular-nums text-v2-text-text-base" aria-live="polite">
-          {value}px
-        </span>
-        <button type="button" aria-label={increaseLabel} disabled={value >= max} onClick={onIncrease} className={buttonClass}>
-          <Plus size={13} aria-hidden />
-        </button>
+    <div className="flex min-w-0 items-center justify-between gap-3">
+      <span className="shrink-0 text-[13px] text-v2-text-text-base">{label}</span>
+      <div className="flex min-w-0 items-center justify-end gap-3">
+        <span className={`min-w-0 truncate ${previewClassName}`}>{preview}</span>
+        <div className="flex shrink-0 items-center gap-2">
+          <button type="button" aria-label={decreaseLabel} disabled={value <= min} onClick={onDecrease} className={buttonClass}>
+            <Minus size={13} aria-hidden />
+          </button>
+          <span className="w-10 text-center text-[13px] tabular-nums text-v2-text-text-base" aria-live="polite">
+            {value}px
+          </span>
+          <button type="button" aria-label={increaseLabel} disabled={value >= max} onClick={onIncrease} className={buttonClass}>
+            <Plus size={13} aria-hidden />
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -141,6 +146,8 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
                 max={CHAT_FONT_MAX}
                 decreaseLabel={t("settings.appearance.decreaseChat")}
                 increaseLabel={t("settings.appearance.increaseChat")}
+                preview={t("settings.appearance.previewChat")}
+                previewClassName="v2-md text-[length:var(--v2-chat-font-size)] leading-relaxed text-v2-text-text-faint"
                 onDecrease={() => setFont("chatFontSize", Math.max(CHAT_FONT_MIN, prefs.chatFontSize - 1))}
                 onIncrease={() => setFont("chatFontSize", Math.min(CHAT_FONT_MAX, prefs.chatFontSize + 1))}
               />
@@ -151,18 +158,11 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
                 max={FILES_FONT_MAX}
                 decreaseLabel={t("settings.appearance.decreaseFiles")}
                 increaseLabel={t("settings.appearance.increaseFiles")}
+                preview={t("settings.appearance.previewFiles")}
+                previewClassName="font-mono text-[length:var(--v2-files-font-size)] leading-[1.5] text-v2-text-text-faint"
                 onDecrease={() => setFont("filesFontSize", Math.max(FILES_FONT_MIN, prefs.filesFontSize - 1))}
                 onIncrease={() => setFont("filesFontSize", Math.min(FILES_FONT_MAX, prefs.filesFontSize + 1))}
               />
-              <div className="rounded-md border border-v2-grey-200 bg-v2-background-bg-deep px-3 py-3">
-                <p className="mb-1 text-[12px] font-medium text-v2-text-text-muted">{t("settings.appearance.previewTitle")}</p>
-                <p className="v2-md text-[length:var(--v2-chat-font-size)] leading-relaxed text-v2-text-text-base">
-                  {t("settings.appearance.previewChat")}
-                </p>
-                <p className="mt-2 font-mono text-[length:var(--v2-files-font-size)] leading-[1.5] text-v2-text-text-muted">
-                  {t("settings.appearance.previewFiles")}
-                </p>
-              </div>
             </div>
           </section>
 
