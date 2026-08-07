@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Bot, FileSearch, FolderOpen } from "lucide-react";
+import { agentDescription, agentDisplayName, type Translate } from "../i18n/agents";
 import type { AgentDto, AgentEffectiveModelDto } from "../../../web/contracts";
 import {
   abortSession,
@@ -50,7 +51,11 @@ interface AgentChip {
   status: "idle" | "working" | "error";
 }
 
-const ORCHESTRATOR_AGENT: AgentChip = { id: "orchestrator", name: "Orchestrator", count: 0, status: "idle" };
+const ORCHESTRATOR_AGENT: AgentChip = { id: "orchestrator", name: "orchestrator", count: 0, status: "idle" };
+
+function dotClass(status: AgentChip["status"]): string {
+  return status === "working" ? "bg-v2-status-success" : status === "error" ? "bg-v2-status-warning" : "bg-v2-grey-400";
+}
 
 export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   const { t } = useI18n();
@@ -145,6 +150,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
       ? Math.min(panelWidth, panelMax)
       : Math.min(defaultPanelWidth, panelMax);
   const activeMessages = sessionView.messages.filter((m) => (m.agentId ?? "orchestrator") === activeAgent);
+  const statusByAgent = Object.fromEntries(agents.map((a) => [a.id, a.status])) as Record<string, AgentChip["status"]>;
   const projectName = cwd.split("/").filter(Boolean).at(-1) ?? cwd;
   const chatHidden = isMobile && mobileView !== "chat";
   const filesHidden = isMobile ? mobileView !== "files" : panel !== "files";
@@ -362,20 +368,16 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
           <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-v2-grey-200 px-3 py-2">
             {agents.map((agent) => {
               const focused = agent.id === activeAgent;
-              const dot =
-                agent.status === "working"
-                  ? "bg-v2-status-success"
-                  : agent.status === "error"
-                    ? "bg-v2-status-warning"
-                    : "bg-v2-grey-400";
+              const label = agentDisplayName(t, agent.name);
+              const dot = dotClass(agent.status);
               return (
                 <button
                   key={agent.id}
                   type="button"
                   aria-pressed={focused}
-                  aria-label={`${t("work.agentChip")} ${agent.name}`}
+                  aria-label={`${t("work.agentChip")} ${label}`}
                   onClick={() => setActiveAgent(agent.id)}
-                  title={focused ? `${t("work.viewing")} ${agent.name}` : `${t("work.focus")} ${agent.name}`}
+                  title={focused ? `${t("work.viewing")} ${label}` : `${t("work.focus")} ${label}`}
                   className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[12px] transition-colors ${
                     focused
                       ? "border-v2-blue-200 bg-v2-blue-100/50 text-v2-blue-600"
@@ -383,7 +385,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
                   }`}
                 >
                   <span className={`size-2 rounded-full ${dot}`} aria-hidden />
-                  {agent.name}
+                  {label}
                   {agent.count > 0 ? <span className="opacity-70">({agent.count})</span> : null}
                 </button>
               );
@@ -443,7 +445,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
             hidden={agentsHidden}
             className={`h-full min-h-0 overflow-hidden min-[820px]:rounded-[10px] ${!agentsHidden ? "animate-v2-fade-in motion-reduce:animate-none" : ""}`}
           >
-            <AgentList streaming={sessionView.isStreaming} sessionId={sessionId} />
+            <AgentList statusByAgent={statusByAgent} sessionId={sessionId} />
           </div>
         </aside>
       </div>
@@ -451,12 +453,11 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   );
 }
 
-function AgentList({ streaming, sessionId }: { streaming: boolean; sessionId: string }) {
+function AgentList({ statusByAgent, sessionId }: { statusByAgent: Record<string, AgentChip["status"]>; sessionId: string }) {
   const { t } = useI18n();
   const [roster, setRoster] = useState<AgentDto[] | null>(null);
   const [models, setModels] = useState<Array<{ provider: string; id: string }>>([]);
   const [effective, setEffective] = useState<AgentEffectiveModelDto[] | null>(null);
-  const [selected, setSelected] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -504,55 +505,40 @@ function AgentList({ streaming, sessionId }: { streaming: boolean; sessionId: st
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         <div className="rounded-md border border-v2-grey-200 bg-v2-background-bg-base p-3">
           <div className="flex items-center gap-2">
-            <span className={`size-2 rounded-full ${streaming ? "bg-v2-status-success" : "bg-v2-grey-400"}`} aria-hidden />
+            <span className={`size-2 rounded-full ${dotClass(statusByAgent["orchestrator"] ?? "idle")}`} aria-hidden />
             <span className="text-[13px] font-medium text-v2-text-text-base">
-              {orchestrator ? orchestrator.name : "Orchestrator"}
+              {agentDisplayName(t, orchestrator?.name ?? "orchestrator")}
             </span>
-            <span className="ml-auto text-[12px] text-v2-text-text-faint">{streaming ? t("work.working") : t("work.idle")}</span>
+            <span className="ml-auto text-[12px] text-v2-text-text-faint">
+              {statusLabel(t, statusByAgent["orchestrator"] ?? "idle")}
+            </span>
           </div>
-          <dl className="mt-2 flex flex-col gap-1 text-[12px]">
-            <div className="flex justify-between gap-2">
-              <dt className="text-v2-text-text-faint">{t("work.role")}</dt>
-              <dd className="text-v2-text-text-muted">{orchestrator?.description ?? t("work.orchestratorFallback")}</dd>
-            </div>
-            <ModelRow
-              entry={effective?.find((e) => e.name === "orchestrator")}
-              models={models}
-              selected={selected["orchestrator"] ?? ""}
-              busy={busy}
-              onSelect={(value) => setSelected((s) => ({ ...s, orchestrator: value }))}
-              onSet={() => applyModel("orchestrator", selected["orchestrator"] ?? null)}
-              onReset={() => applyModel("orchestrator", null)}
-            />
-          </dl>
+          <p className="mt-2 text-[12px] text-v2-text-text-muted">
+            {agentDescription(t, "orchestrator", orchestrator?.description ?? t("work.orchestratorFallback"))}
+          </p>
+          <ModelRow
+            entry={effective?.find((e) => e.name === "orchestrator")}
+            models={models}
+            busy={busy}
+            onApply={(model) => applyModel("orchestrator", model)}
+          />
         </div>
         {subagents.map((agent) => (
           <div key={agent.name} className="mt-3 rounded-md border border-v2-grey-200 bg-v2-background-bg-base p-3">
             <div className="flex items-center gap-2">
-              <FolderOpen size={12} className="text-v2-icon-icon-muted" />
-              <span className="text-[13px] font-medium text-v2-text-text-base">{agent.name}</span>
+              <span className={`size-2 rounded-full ${dotClass(statusByAgent[agent.name] ?? "idle")}`} aria-hidden />
+              <span className="text-[13px] font-medium text-v2-text-text-base">{agentDisplayName(t, agent.name)}</span>
+              <span className="ml-auto text-[12px] text-v2-text-text-faint">
+                {statusLabel(t, statusByAgent[agent.name] ?? "idle")}
+              </span>
             </div>
-            <dl className="mt-2 flex flex-col gap-1 text-[12px]">
-              <div className="flex justify-between gap-2">
-                <dt className="text-v2-text-text-faint">{t("work.role")}</dt>
-                <dd className="text-v2-text-text-muted">{agent.description}</dd>
-              </div>
-              {agent.subagents && agent.subagents.length > 0 && (
-                <div className="flex justify-between gap-2">
-                  <dt className="text-v2-text-text-faint">{t("work.subagents")}</dt>
-                  <dd className="text-v2-text-text-muted">{agent.subagents.join(", ")}</dd>
-                </div>
-              )}
-              <ModelRow
-                entry={effective?.find((e) => e.name === agent.name)}
-                models={models}
-                selected={selected[agent.name] ?? ""}
-                busy={busy}
-                onSelect={(value) => setSelected((s) => ({ ...s, [agent.name]: value }))}
-                onSet={() => applyModel(agent.name, selected[agent.name] ?? null)}
-                onReset={() => applyModel(agent.name, null)}
-              />
-            </dl>
+            <p className="mt-2 text-[12px] text-v2-text-text-muted">{agentDescription(t, agent.name, agent.description)}</p>
+            <ModelRow
+              entry={effective?.find((e) => e.name === agent.name)}
+              models={models}
+              busy={busy}
+              onApply={(model) => applyModel(agent.name, model)}
+            />
           </div>
         ))}
         <p className="mt-3 flex items-center gap-2 text-[12px] text-v2-text-text-faint">
@@ -564,71 +550,47 @@ function AgentList({ streaming, sessionId }: { streaming: boolean; sessionId: st
   );
 }
 
+function statusLabel(t: Translate, status: AgentChip["status"]): string {
+  return status === "working" ? t("work.working") : status === "error" ? t("work.error") : t("work.idle");
+}
+
 interface ModelRowProps {
   entry: AgentEffectiveModelDto | undefined;
   models: Array<{ provider: string; id: string }>;
-  selected: string;
   busy: boolean;
-  onSelect: (value: string) => void;
-  onSet: () => void;
-  onReset: () => void;
+  onApply: (model: string | null) => void;
 }
 
-function ModelRow({ entry, models, selected, busy, onSelect, onSet, onReset }: ModelRowProps) {
+function ModelRow({ entry, models, busy, onApply }: ModelRowProps) {
   const { t } = useI18n();
-  const badge =
-    entry?.source === "override" ? (
-      <span className="rounded-full bg-v2-blue-100/50 px-1.5 py-px text-[10px] text-v2-blue-600">{t("work.sourceSession")}</span>
-    ) : entry?.source === "project" || entry?.source === "global" ? (
-      <span className="rounded-full bg-v2-grey-100 px-1.5 py-px text-[10px] text-v2-text-text-muted">{t("work.sourceConfig")}</span>
-    ) : null;
+  const current = entry?.model ?? "";
+  const slash = current.indexOf("/");
+  const options =
+    current !== "" &&
+    slash > 0 &&
+    !models.some((m) => `${m.provider}/${m.id}` === current)
+      ? [{ provider: current.slice(0, slash), id: current.slice(slash + 1) }, ...models]
+      : models;
 
   return (
-    <>
-      <div className="flex items-center justify-between gap-2">
-        <dt className="text-v2-text-text-faint">{t("work.model")}</dt>
-        <dd className="flex items-center gap-1.5 text-v2-text-text-muted">
-          {entry?.model ?? t("work.inheritsSession")}
-          {badge}
-        </dd>
-      </div>
-      <div className="mt-1 flex items-center gap-1.5">
-        <select
-          aria-label={t("work.selectModel")}
-          value={selected}
-          onChange={(e) => onSelect(e.target.value)}
-          disabled={busy}
-          className="h-6 min-w-0 flex-1 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-1 text-[11px] text-v2-text-text-base outline-none focus:border-v2-blue-600"
-        >
-          <option value="">{t("work.models")}</option>
-          {models.map((m) => {
-            const key = `${m.provider}/${m.id}`;
-            return (
-              <option key={key} value={key}>
-                {key}
-              </option>
-            );
-          })}
-        </select>
-        <button
-          type="button"
-          onClick={onSet}
-          disabled={busy || !selected}
-          className="rounded-md border border-v2-grey-200 px-2 py-0.5 text-[11px] text-v2-text-text-base transition-colors hover:bg-v2-grey-100 disabled:opacity-50"
-        >
-          {t("work.set")}
-        </button>
-        {entry?.source === "override" && (
-          <button
-            type="button"
-            onClick={onReset}
-            disabled={busy}
-            className="rounded-md border border-v2-grey-200 px-2 py-0.5 text-[11px] text-v2-text-text-base transition-colors hover:bg-v2-grey-100 disabled:opacity-50"
-          >
-            {t("work.reset")}
-          </button>
-        )}
-      </div>
-    </>
+    <div className="mt-2 flex items-center gap-1.5">
+      <select
+        aria-label={t("work.selectModel")}
+        value={current}
+        onChange={(e) => onApply(e.target.value === "" ? null : e.target.value)}
+        disabled={busy}
+        className="h-6 min-w-0 flex-1 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-1 text-[11px] text-v2-text-text-base outline-none focus:border-v2-blue-600"
+      >
+        <option value="">{t("work.models")}</option>
+        {options.map((m) => {
+          const key = `${m.provider}/${m.id}`;
+          return (
+            <option key={key} value={key}>
+              {key}
+            </option>
+          );
+        })}
+      </select>
+    </div>
   );
 }

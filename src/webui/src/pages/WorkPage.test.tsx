@@ -296,7 +296,7 @@ describe("WorkPage", () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await screen.findByText("starting research");
     await user.click(await screen.findByText("notes.md"));
-    expect(await screen.findByText(/body/)).toBeTruthy();
+    expect(await screen.findByText("body")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: /close notes.md/i }));
     expect(await screen.findByText("starting research")).toBeTruthy();
     expect(screen.queryByRole("tab", { name: /notes.md/i })).toBeNull();
@@ -559,12 +559,24 @@ describe("WorkPage", () => {
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
     await waitFor(() => {
-      for (const agent of ["orchestrator", "search", "experiment", "writing", "figures"]) {
-        expect(within(region).getAllByText(agent).length).toBeGreaterThan(0);
+      for (const display of ["Orchestrator", "Search", "Experiment", "Writing", "Figures"]) {
+        expect(within(region).getAllByText(display).length).toBeGreaterThan(0);
       }
     });
     expect(within(region).getByText(/serially/i)).toBeTruthy();
     expect(within(region).queryByText(/parallel/i)).toBeNull();
+  });
+
+  it("agent cards show localized descriptions and no Subagents rows", async () => {
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    await user.click(screen.getByRole("button", { name: /agent list/i }));
+    const region = screen.getByRole("region", { name: /agent list/i });
+    expect(await within(region).findByText(/Orchestrator for the paper pipeline/)).toBeTruthy();
+    expect(within(region).getByText(/Experiment agent/)).toBeTruthy();
+    expect(within(region).queryByText("Subagents")).toBeNull();
+    expect(within(region).queryByText("search, figures")).toBeNull();
   });
 
   it("keeps the orchestrator card when the agents endpoint fails", async () => {
@@ -574,42 +586,45 @@ describe("WorkPage", () => {
     await screen.findByText("starting research");
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
-    expect(await within(region).findByText(/orchestrator/i)).toBeTruthy();
+    expect(await within(region).findByText("Orchestrator")).toBeTruthy();
   });
 
-  it("shows each agent's effective model with a session badge for overrides", async () => {
+  it("shows each agent's effective model in its model dropdown", async () => {
     const user = userEvent.setup();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await screen.findByText("starting research");
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
-    expect(await within(region).findByText("anthropic/claude", { selector: "dd" })).toBeTruthy();
-    expect(within(region).getByText("openai/gpt-4o", { selector: "dd" })).toBeTruthy();
-    expect(within(region).getByText("session")).toBeTruthy();
-    expect(within(region).getAllByText("inherits session").length).toBeGreaterThan(0);
+    const combos = within(region).getAllByRole("combobox");
+    expect(combos.length).toBe(5);
+    expect(combos[0]!).toHaveValue("openai/gpt-4o");
+    expect(combos[1]!).toHaveValue("anthropic/claude");
+    expect(combos[2]!).toHaveValue("");
+    expect(within(combos[2]!).getByText("Default model")).toBeTruthy();
+    expect(within(region).queryByText(/inherits session/)).toBeNull();
   });
 
-  it("reset on an overridden agent clears its model", async () => {
+  it("selecting the default option on an overridden agent clears its model", async () => {
     const user = userEvent.setup();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await screen.findByText("starting research");
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
-    const searchCard = within(region).getByText("search", { selector: "span" }).closest(".rounded-md") as HTMLElement;
-    await user.click(within(searchCard).getByRole("button", { name: /reset/i }));
+    const searchCombo = within(region).getAllByRole("combobox")[1] as HTMLSelectElement;
+    await user.selectOptions(searchCombo, "");
     await waitFor(() => expect(api.setAgentModel).toHaveBeenCalledWith("s1", "search", null));
   });
 
-  it("set on an agent writes the selected model", async () => {
+  it("applying a model to an agent writes it immediately, with no Set button", async () => {
     const user = userEvent.setup();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await screen.findByText("starting research");
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
-    const searchCard = within(region).getByText("search", { selector: "span" }).closest(".rounded-md") as HTMLElement;
-    await user.selectOptions(within(searchCard).getByRole("combobox"), "openai/gpt-4o");
-    await user.click(within(searchCard).getByRole("button", { name: /^set$/i }));
+    const searchCombo = within(region).getAllByRole("combobox")[1] as HTMLSelectElement;
+    await user.selectOptions(searchCombo, "openai/gpt-4o");
     await waitFor(() => expect(api.setAgentModel).toHaveBeenCalledWith("s1", "search", "openai/gpt-4o"));
+    expect(within(region).queryByRole("button", { name: /^set$/i })).toBeNull();
   });
 
   it("shows a session-ended notice and keeps the transcript on session_deactivated", async () => {
