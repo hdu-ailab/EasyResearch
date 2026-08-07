@@ -42,6 +42,10 @@ export interface SessionViewState {
   subagentName?: string;
   /** Next value of the shared message/tool stream counter. */
   nextOrder: number;
+  /** Key of the assistant message currently streaming; set at message_start,
+   * cleared at message_end. message_update deltas key to this because the
+   * 0.84 RPC wire no longer carries the cumulative `message` field. */
+  activeMessageKey?: string;
 }
 
 /** ADR-022: named subagent session lines share this prefix (`subagent/tool.ts`). */
@@ -253,6 +257,7 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
       const role = message.role === "user" || message.role === "assistant" ? message.role : "system";
       const errorMessage = message.errorMessage;
       const { text, reasoning } = splitContent(message);
+      const key = keyFor(message, state.messages.length);
       const next: SessionViewState = {
         ...state,
         isStreaming: true,
@@ -260,7 +265,7 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
         nextOrder: state.nextOrder + 1,
       };
       const view: SessionMessageView = {
-        key: keyFor(message, state.messages.length),
+        key,
         role,
         text: text || (errorMessage ? "" : "..."),
         streaming: role === "assistant",
@@ -273,19 +278,31 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
       if (label) view.label = label;
       if (reasoning) view.reasoning = reasoning;
       next.messages = [...state.messages, view];
+      next.activeMessageKey = key;
       return next;
     }
     case "message_update": {
-      const key = keyFor(event.message, 0);
       const delta = deltaOf(event);
+      const key = state.activeMessageKey;
       let lastIndex = -1;
-      for (let i = state.messages.length - 1; i >= 0; i--) {
-        if (state.messages[i]!.key === key) {
-          lastIndex = i;
-          break;
+      if (key !== undefined) {
+        for (let i = state.messages.length - 1; i >= 0; i--) {
+          if (state.messages[i]!.key === key) {
+            lastIndex = i;
+            break;
+          }
         }
       }
-      if (lastIndex === -1) return state;
+      if (lastIndex === -1) {
+        // fallback: last streaming message (no active key or row already cleared)
+        for (let i = state.messages.length - 1; i >= 0; i--) {
+          if (state.messages[i]!.streaming) {
+            lastIndex = i;
+            break;
+          }
+        }
+      }
+      if (lastIndex === -1 || !delta) return state;
       const target = state.messages[lastIndex]!;
       if (delta === target.lastDelta) return state;
       const nextMessages = [...state.messages];
@@ -298,11 +315,11 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
       return { ...state, messages: nextMessages, isStreaming: true };
     }
     case "message_end": {
-      const key = keyFor(event.message, 0);
+      const key = state.activeMessageKey ?? keyFor(event.message, 0);
       const nextMessages = state.messages.map((m) =>
         m.key === key ? { ...m, streaming: false } : m,
       );
-      return { ...state, messages: nextMessages };
+      return { ...state, messages: nextMessages, activeMessageKey: undefined };
     }
     case "tool_execution_start": {
       const { toolCallId, toolName, args } = event as unknown as {
@@ -346,6 +363,7 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
       return {
         ...state,
         isStreaming: false,
+        activeMessageKey: undefined,
         messages: state.messages.map((m) => ({ ...m, streaming: false })),
       };
     }
