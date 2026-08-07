@@ -108,7 +108,7 @@ export async function updateWebuiSettings(config: ConfigFileService, patch: Webu
 
 /**
  * Pi's per-provider default model IDs, mirrored verbatim (key order included)
- * from `@earendil-works/pi-coding-agent@0.83.0` `dist/core/model-resolver.js`
+ * from `@earendil-works/pi-coding-agent@0.84.1` `dist/core/model-resolver.js`
  * `defaultModelPerProvider` — the package `exports` map blocks the deep import.
  * `findInitialModel` prefers the first provider whose default is available with
  * auth, so key order is part of the contract.
@@ -141,6 +141,7 @@ const PI_DEFAULT_MODEL_PER_PROVIDER: Record<string, string> = {
   huggingface: "moonshotai/Kimi-K2.6",
   fireworks: "accounts/fireworks/models/kimi-k2p6",
   together: "moonshotai/Kimi-K2.6",
+  baseten: "zai-org/GLM-5.2",
   opencode: "kimi-k2.6",
   "opencode-go": "kimi-k2.6",
   "kimi-coding": "kimi-for-coding",
@@ -148,6 +149,7 @@ const PI_DEFAULT_MODEL_PER_PROVIDER: Record<string, string> = {
   "cloudflare-ai-gateway": "workers-ai/@cf/moonshotai/kimi-k2.6",
   "qwen-token-plan": "qwen3.7-max",
   "qwen-token-plan-cn": "qwen3.7-max",
+  "qwen-token-plan-individual": "qwen3.8-max",
   xiaomi: "mimo-v2.5-pro",
   "xiaomi-token-plan-cn": "mimo-v2.5-pro",
   "xiaomi-token-plan-ams": "mimo-v2.5-pro",

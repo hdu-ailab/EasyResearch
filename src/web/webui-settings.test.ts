@@ -191,6 +191,25 @@ describe("pickEffectiveOrchestratorModel", () => {
   it("returns null when nothing is available", () => {
     expect(pickEffectiveOrchestratorModel(null, [])).toBeNull();
   });
+
+  it("mirrors every 0.84.1 upstream default provider in key order", () => {
+    const upstream = [
+      ["amazon-bedrock", "us.anthropic.claude-opus-4-6-v1"],
+      ["baseten", "zai-org/GLM-5.2"],
+      ["qwen-token-plan-individual", "qwen3.8-max"],
+      ["xiaomi-token-plan-sgp", "mimo-v2.5-pro"],
+    ] as const;
+    // provider defaults are reachable through pickEffectiveOrchestratorModel
+    // and win over the first available entry, so the target entry sits behind
+    // a decoy ("oc" is not a Pi provider):
+    for (const [provider, id] of upstream) {
+      const available = [
+        { provider: "oc", id: "deepseek-v4-flash-free" },
+        { provider, id },
+      ] as Array<{ provider: string; id: string }>;
+      expect(pickEffectiveOrchestratorModel(null, available)).toBe(`${provider}/${id}`);
+    }
+  });
 });
 
 describe("readEffectiveWebuiSettings", () => {
