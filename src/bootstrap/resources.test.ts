@@ -32,7 +32,7 @@ describe("bootstrapBundledResources", () => {
     writeFileSync(join(agentDir, "agents", "orchestrator.md"), "user edit");
     writeFileSync(join(agentDir, "skills", "paper-search", "SKILL.md"), "user skill");
     const second = await bootstrapBundledResources({ agentDir, bundledAgentsDir, bundledSkillsDir });
-    expect(second).toEqual({ copiedAgents: [], copiedSkills: [] });
+    expect(second).toEqual({ copiedAgents: [], copiedSkills: [], seededRegistry: false });
     expect(readFileSync(join(agentDir, "agents", "orchestrator.md"), "utf8")).toBe("user edit");
     expect(readFileSync(join(agentDir, "skills", "paper-search", "SKILL.md"), "utf8")).toBe("user skill");
   });
@@ -54,5 +54,72 @@ describe("bootstrapBundledResources", () => {
     expect(existsSync(join(target, "scripts", ".venv"))).toBe(false);
     expect(existsSync(join(target, "scripts", "__pycache__"))).toBe(false);
     expect(existsSync(join(target, "scripts", "stale.pyc"))).toBe(false);
+  });
+
+  it("seeds the default registry on a fresh agentDir", async () => {
+    const { agentDir, bundledAgentsDir, bundledSkillsDir } = setUpFixture();
+    writeFileSync(
+      join(bundledAgentsDir, "agents.json"),
+      JSON.stringify({
+        orchestrator: { definition: "agents/orchestrator.md", tools: ["read", "bash"], skills: ["research-project-workflow"] },
+      }),
+    );
+
+    const result = await bootstrapBundledResources({ agentDir, bundledAgentsDir, bundledSkillsDir });
+    expect(result.seededRegistry).toBe(true);
+    const settings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")) as {
+      lazyresearch: { agents: Record<string, unknown> };
+    };
+    expect(Object.keys(settings.lazyresearch.agents)).toContain("orchestrator");
+  });
+
+  it("seeds while preserving unrelated settings fields", async () => {
+    const { agentDir, bundledAgentsDir, bundledSkillsDir } = setUpFixture();
+    writeFileSync(
+      join(bundledAgentsDir, "agents.json"),
+      JSON.stringify({ orchestrator: { definition: "agents/orchestrator.md" } }),
+    );
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ theme: "dark", defaultModel: "gpt-4o" }));
+
+    const result = await bootstrapBundledResources({ agentDir, bundledAgentsDir, bundledSkillsDir });
+    expect(result.seededRegistry).toBe(true);
+    const settings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")) as {
+      theme: string;
+      defaultModel: string;
+      lazyresearch: { agents: Record<string, unknown> };
+    };
+    expect(settings.theme).toBe("dark");
+    expect(settings.defaultModel).toBe("gpt-4o");
+    expect(settings.lazyresearch.agents.orchestrator).toEqual({ definition: "agents/orchestrator.md" });
+  });
+
+  it("does not overwrite an existing registry", async () => {
+    const { agentDir, bundledAgentsDir, bundledSkillsDir } = setUpFixture();
+    writeFileSync(
+      join(bundledAgentsDir, "agents.json"),
+      JSON.stringify({ orchestrator: { definition: "agents/orchestrator.md" } }),
+    );
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ lazyresearch: { agents: { custom: {} } } }));
+
+    const result = await bootstrapBundledResources({ agentDir, bundledAgentsDir, bundledSkillsDir });
+    expect(result.seededRegistry).toBe(false);
+    const settings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")) as {
+      lazyresearch: { agents: Record<string, unknown> };
+    };
+    expect(settings.lazyresearch.agents).toEqual({ custom: {} });
+  });
+
+  it("backs off on an unparseable settings.json and leaves it untouched", async () => {
+    const { agentDir, bundledAgentsDir, bundledSkillsDir } = setUpFixture();
+    writeFileSync(
+      join(bundledAgentsDir, "agents.json"),
+      JSON.stringify({ orchestrator: { definition: "agents/orchestrator.md" } }),
+    );
+    const corrupt = "{ not json";
+    writeFileSync(join(agentDir, "settings.json"), corrupt);
+
+    const result = await bootstrapBundledResources({ agentDir, bundledAgentsDir, bundledSkillsDir });
+    expect(result.seededRegistry).toBe(false);
+    expect(readFileSync(join(agentDir, "settings.json"), "utf8")).toBe(corrupt);
   });
 });

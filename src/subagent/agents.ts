@@ -1,7 +1,9 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import { getAgentsDir } from "../runtime/pi-import";
+import { getAgentDir, importPi } from "../runtime/pi-import";
+import { mergeAgentRegistry, parseAgentRegistry, type AgentRegistry } from "./registry";
 
 export type AgentSource = "global";
 
@@ -11,6 +13,8 @@ export interface AgentConfig {
   tools?: string[];
   /** Agents this agent may dispatch via the subagent tool; absent = all (ADR-022). */
   subagents?: string[];
+  skills?: string[];
+  model?: string;
   systemPrompt: string;
   source: AgentSource;
   filePath: string;
@@ -20,59 +24,57 @@ export interface AgentDiscoveryResult {
   agents: AgentConfig[];
 }
 
-/**
- * Discover agents from the LazyResearch global agents dir
- * (`<agent-dir>/agents`, bootstrapped with bundled defaults on first run).
- * Users edit or replace these files; definitions are global, never packaged.
- */
-export function discoverAgents(userAgentsDir: string = getAgentsDir()): AgentDiscoveryResult {
-  return { agents: loadFromDir(userAgentsDir, "global") };
+async function readRegistryForCwd(cwd?: string): Promise<AgentRegistry> {
+  const { SettingsManager } = await importPi();
+  const manager = SettingsManager.create(cwd ?? process.cwd(), getAgentDir());
+  return mergeAgentRegistry(parseAgentRegistry(manager.getProjectSettings()), parseAgentRegistry(manager.getGlobalSettings()));
 }
 
-function listMdFiles(dir: string): string[] {
-  let entries: string[];
-  try {
-    entries = readdirSync(dir);
-  } catch {
-    return [];
-  }
-  return entries.filter((e) => e.endsWith(".md"));
-}
-
-function loadFromDir(dir: string, source: AgentSource): AgentConfig[] {
+export async function discoverAgents(opts: {
+  agentDir?: string;
+  registry?: AgentRegistry;
+  cwd?: string;
+} = {}): Promise<AgentDiscoveryResult> {
+  const agentDir = opts.agentDir ?? getAgentDir();
+  const registry = opts.registry ?? (await readRegistryForCwd(opts.cwd));
   const agents: AgentConfig[] = [];
-  for (const name of listMdFiles(dir)) {
-    const filePath = join(dir, name);
-    const parsed = parseAgentFile(filePath, source);
-    if (parsed) agents.push(parsed);
+  for (const [name, entry] of Object.entries(registry)) {
+    const definitionPath = entry.definition ? resolveDefinition(agentDir, entry.definition) : join(agentDir, "agents", `${name}.md`);
+    if (!existsSync(definitionPath)) continue;
+    const parsed = parseAgentFile(definitionPath, name);
+    if (!parsed) continue;
+    agents.push({
+      ...parsed,
+      tools: entry.tools,
+      skills: entry.skills,
+      subagents: entry.subagents,
+      model: entry.model,
+    });
   }
-  return agents;
+  agents.sort((a, b) => a.name.localeCompare(b.name));
+  return { agents };
 }
 
-function parseAgentFile(filePath: string, source: AgentSource): AgentConfig | null {
+function resolveDefinition(agentDir: string, p: string): string {
+  if (p.startsWith("~")) return join(homedir(), p.slice(1));
+  if (p.startsWith("/")) return p;
+  return join(agentDir, p);
+}
+
+function parseAgentFile(defPath: string, name: string): Pick<AgentConfig, "name" | "description" | "systemPrompt" | "source" | "filePath"> | null {
   let content: string;
   try {
-    content = readFileSync(filePath, "utf-8");
+    content = readFileSync(defPath, "utf-8");
   } catch {
     return null;
   }
   const { frontmatter, body } = parseFrontmatter<Record<string, string>>(content);
-  if (!frontmatter.name || !frontmatter.description) return null;
-  const tools = frontmatter.tools
-    ?.split(",")
-    .map((t: string) => t.trim())
-    .filter(Boolean);
-  const subagents = frontmatter.subagents
-    ?.split(",")
-    .map((a: string) => a.trim())
-    .filter(Boolean);
+  if (Object.keys(frontmatter).length === 0) return null;
   return {
-    name: frontmatter.name,
-    description: frontmatter.description,
-    tools: tools && tools.length > 0 ? tools : undefined,
-    subagents: subagents && subagents.length > 0 ? subagents : undefined,
+    name,
+    description: typeof frontmatter.description === "string" ? frontmatter.description : name,
     systemPrompt: body,
-    source,
-    filePath,
+    source: "global",
+    filePath: defPath,
   };
 }

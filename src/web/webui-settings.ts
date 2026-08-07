@@ -2,6 +2,7 @@ import type { WebuiSettingsDto, WebuiSettingsUpdate } from "./contracts";
 import type { ConfigFileService } from "./config-files";
 import { ConfigPathError, ConfigServiceError } from "./config-files";
 import { importPi } from "../runtime/pi-import";
+import { extractRegistryModels, parseAgentRegistry } from "../subagent/registry";
 
 export class WebuiSettingsError extends Error {
   constructor(
@@ -12,15 +13,6 @@ export class WebuiSettingsError extends Error {
   }
 }
 
-function parseAgentModels(value: unknown): Record<string, string> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
-  const out: Record<string, string> = {};
-  for (const [agent, model] of Object.entries(value as Record<string, unknown>)) {
-    if (typeof model === "string") out[agent] = model;
-  }
-  return out;
-}
-
 function parseModelRef(model: string): { provider: string; modelId: string } {
   const index = model.indexOf("/");
   if (index <= 0 || index === model.length - 1) {
@@ -29,12 +21,10 @@ function parseModelRef(model: string): { provider: string; modelId: string } {
   return { provider: model.slice(0, index), modelId: model.slice(index + 1) };
 }
 
-function parseOrchestratorModel(settings: Record<string, unknown> | undefined): string | null {
-  const { defaultProvider, defaultModel } = settings ?? {};
-  if (typeof defaultProvider === "string" && defaultProvider !== "" && typeof defaultModel === "string" && defaultModel !== "") {
-    return `${defaultProvider}/${defaultModel}`;
-  }
-  return null;
+function readOrchestratorFromRegistry(settings: Record<string, unknown> | undefined): string | null {
+  const entry = settings ? parseAgentRegistry(settings)["orchestrator"] : undefined;
+  const model = entry?.model;
+  return typeof model === "string" && model !== "" ? model : null;
 }
 
 async function readSettings(config: ConfigFileService): Promise<Record<string, unknown> | undefined> {
@@ -54,10 +44,9 @@ async function readSettings(config: ConfigFileService): Promise<Record<string, u
 
 export async function readWebuiSettings(config: ConfigFileService): Promise<WebuiSettingsDto> {
   const settings = await readSettings(config);
-  const lazy = ((settings?.lazyresearch ?? {}) as { agentModels?: unknown }).agentModels;
   return {
-    agentModels: parseAgentModels(lazy),
-    orchestratorModel: parseOrchestratorModel(settings),
+    agentModels: extractRegistryModels(parseAgentRegistry(settings)) ?? {},
+    orchestratorModel: readOrchestratorFromRegistry(settings),
     effectiveOrchestratorModel: null,
   };
 }
@@ -89,16 +78,28 @@ export async function updateWebuiSettings(config: ConfigFileService, patch: Webu
   validatePatch(patch);
   const settings = (await readSettings(config)) ?? {};
   const lazy = (settings.lazyresearch as Record<string, unknown> | undefined) ?? {};
-  if (patch.agentModels !== undefined) lazy.agentModels = patch.agentModels;
-  if (patch.orchestratorModel !== undefined) {
-    if (patch.orchestratorModel === null) {
-      delete settings.defaultProvider;
-      delete settings.defaultModel;
-    } else {
-      const { provider, modelId } = parseModelRef(patch.orchestratorModel);
-      settings.defaultProvider = provider;
-      settings.defaultModel = modelId;
+  if (patch.agentModels !== undefined) {
+    const agents = (lazy.agents as Record<string, unknown> | undefined) ?? {};
+    const current = extractRegistryModels(parseAgentRegistry(settings)) ?? {};
+    for (const name of Object.keys(current)) {
+      if (name in patch.agentModels) continue;
+      const entry = agents[name] as Record<string, unknown> | undefined;
+      if (entry) delete entry.model;
     }
+    for (const [name, model] of Object.entries(patch.agentModels)) {
+      const entry = (agents[name] as Record<string, unknown> | undefined) ?? {};
+      entry.model = model;
+      agents[name] = entry;
+    }
+    lazy.agents = agents;
+  }
+  if (patch.orchestratorModel !== undefined) {
+    const agents = (lazy.agents as Record<string, unknown> | undefined) ?? {};
+    const entry = (agents["orchestrator"] as Record<string, unknown> | undefined) ?? {};
+    if (patch.orchestratorModel === null) delete entry.model;
+    else entry.model = patch.orchestratorModel;
+    agents["orchestrator"] = entry;
+    lazy.agents = agents;
   }
   (settings as Record<string, unknown>).lazyresearch = lazy;
   await config.write({ scope: "global", path: "settings.json", content: JSON.stringify(settings, null, 2) });
