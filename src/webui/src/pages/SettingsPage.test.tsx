@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsPage } from "./SettingsPage";
@@ -27,7 +27,7 @@ beforeEach(() => {
   vi.mocked(api.getWebuiSettings).mockResolvedValue({
     agentModels: { search: "openai/gpt-4o" },
     orchestratorModel: null,
-    effectiveOrchestratorModel: null,
+    effectiveOrchestratorModel: "openai/gpt-4o",
   } as never);
   vi.mocked(api.listAgents).mockResolvedValue([
     { name: "orchestrator", description: "Coordinates" },
@@ -107,62 +107,60 @@ describe("SettingsPage", () => {
     await screen.findByRole("combobox", { name: "search model" });
     expect(screen.getByRole("combobox", { name: "search model" })).toHaveValue("openai/gpt-4o");
     expect(screen.getByRole("combobox", { name: "writing model" })).toHaveValue("");
-    expect(screen.getByRole("combobox", { name: "orchestrator model" })).toHaveValue("");
+    expect(screen.getByRole("combobox", { name: "orchestrator model" })).toHaveValue("openai/gpt-4o");
   });
 
-  it("shows the configured orchestrator default and hides the Pi fallback hint", async () => {
+  it("shows the configured orchestrator default without any inherit option", async () => {
     vi.mocked(api.getWebuiSettings).mockResolvedValue({
       agentModels: { search: "openai/gpt-4o" },
       orchestratorModel: "openai/gpt-4o",
       effectiveOrchestratorModel: "openai/gpt-4o",
     } as never);
     render(<SettingsPage onBack={() => {}} onOpenConfigPage={() => {}} />);
-    await screen.findByRole("combobox", { name: "orchestrator model" });
-    expect(screen.getByRole("combobox", { name: "orchestrator model" })).toHaveValue("openai/gpt-4o");
-    expect(screen.queryByText(/Pi will use:/)).toBeNull();
+    const combobox = await screen.findByRole("combobox", { name: "orchestrator model" });
+    expect(combobox).toHaveValue("openai/gpt-4o");
+    expect(within(combobox).queryAllByRole("option", { name: /inherit/i })).toHaveLength(0);
   });
 
-  it("shows the Pi fallback hint when no orchestrator default is configured", async () => {
+  it("auto-selects the effective Pi model when no orchestrator default is configured", async () => {
     vi.mocked(api.getWebuiSettings).mockResolvedValue({
       agentModels: {},
       orchestratorModel: null,
       effectiveOrchestratorModel: "anthropic/claude-opus-4-8",
     } as never);
     render(<SettingsPage onBack={() => {}} onOpenConfigPage={() => {}} />);
-    await screen.findByRole("combobox", { name: "orchestrator model" });
-    expect(screen.getByText("Pi will use: anthropic/claude-opus-4-8")).toBeTruthy();
+    const combobox = await screen.findByRole("combobox", { name: "orchestrator model" });
+    expect(combobox).toHaveValue("anthropic/claude-opus-4-8");
+    expect(within(combobox).getAllByRole("option", { name: "anthropic/claude-opus-4-8" })).toHaveLength(1);
+    expect(within(combobox).queryAllByRole("option", { name: /inherit/i })).toHaveLength(0);
+  });
+
+  it("auto-selects a default already in the catalog without duplicating it", async () => {
+    vi.mocked(api.getWebuiSettings).mockResolvedValue({
+      agentModels: {},
+      orchestratorModel: null,
+      effectiveOrchestratorModel: "openai/gpt-4o",
+    } as never);
+    render(<SettingsPage onBack={() => {}} onOpenConfigPage={() => {}} />);
+    const combobox = await screen.findByRole("combobox", { name: "orchestrator model" });
+    expect(combobox).toHaveValue("openai/gpt-4o");
+    expect(within(combobox).queryAllByRole("option", { name: "openai/gpt-4o" })).toHaveLength(1);
   });
 
   it("sets the orchestrator default via an orchestratorModel patch", async () => {
     const user = userEvent.setup();
     vi.mocked(api.updateWebuiSettings).mockResolvedValue({
       agentModels: { search: "openai/gpt-4o" },
-      orchestratorModel: "openai/gpt-4o",
-      effectiveOrchestratorModel: "openai/gpt-4o",
+      orchestratorModel: "anthropic/claude-sonnet-4",
+      effectiveOrchestratorModel: "anthropic/claude-sonnet-4",
     } as never);
     render(<SettingsPage onBack={() => {}} onOpenConfigPage={() => {}} />);
     await screen.findByRole("combobox", { name: "orchestrator model" });
-    await user.selectOptions(screen.getByRole("combobox", { name: "orchestrator model" }), "openai/gpt-4o");
-    await waitFor(() => expect(api.updateWebuiSettings).toHaveBeenCalledWith({ orchestratorModel: "openai/gpt-4o" }));
-  });
-
-  it("clears the orchestrator default by sending null", async () => {
-    const user = userEvent.setup();
-    vi.mocked(api.getWebuiSettings).mockResolvedValue({
-      agentModels: {},
-      orchestratorModel: "openai/gpt-4o",
-      effectiveOrchestratorModel: "openai/gpt-4o",
-    } as never);
-    vi.mocked(api.updateWebuiSettings).mockResolvedValue({
-      agentModels: {},
-      orchestratorModel: null,
-      effectiveOrchestratorModel: "anthropic/claude-opus-4-8",
-    } as never);
-    render(<SettingsPage onBack={() => {}} onOpenConfigPage={() => {}} />);
-    await screen.findByRole("combobox", { name: "orchestrator model" });
-    await user.selectOptions(screen.getByRole("combobox", { name: "orchestrator model" }), "");
-    await waitFor(() => expect(api.updateWebuiSettings).toHaveBeenCalledWith({ orchestratorModel: null }));
-    expect(await screen.findByText("Pi will use: anthropic/claude-opus-4-8")).toBeTruthy();
+    await user.selectOptions(screen.getByRole("combobox", { name: "orchestrator model" }), "anthropic/claude-sonnet-4");
+    await waitFor(() =>
+      expect(api.updateWebuiSettings).toHaveBeenCalledWith({ orchestratorModel: "anthropic/claude-sonnet-4" }),
+    );
+    expect(screen.getByRole("combobox", { name: "orchestrator model" })).toHaveValue("anthropic/claude-sonnet-4");
   });
 
   it("sets a stage agent model via agentModels patch", async () => {

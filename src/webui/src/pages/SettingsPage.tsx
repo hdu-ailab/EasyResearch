@@ -120,6 +120,19 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
       .finally(() => setBusy(false));
   };
 
+  const orchestratorValue = orchestratorModel ?? effectiveOrchestratorModel ?? "";
+  const orchestratorOptions =
+    effectiveOrchestratorModel !== null &&
+    !models.some((m) => `${m.provider}/${m.id}` === effectiveOrchestratorModel)
+      ? [
+          ...models,
+          {
+            provider: effectiveOrchestratorModel.slice(0, effectiveOrchestratorModel.indexOf("/")),
+            id: effectiveOrchestratorModel.slice(effectiveOrchestratorModel.indexOf("/") + 1),
+          },
+        ]
+      : models;
+
   return (
     <div className="flex h-full flex-col">
       <Topbar
@@ -208,30 +221,21 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
                 agent.name === "orchestrator" ? (
                   <div key={agent.name}>
                     <label className="flex items-center justify-between gap-4">
-                      <span className="flex flex-col">
-                        <span className="text-[13px] font-medium text-v2-text-text-base">orchestrator</span>
-                        <span className="text-[12px] text-v2-text-text-muted">{t("settings.agents.orchestratorLabel")}</span>
-                      </span>
+                      <span className="text-[13px] font-medium text-v2-text-text-base">orchestrator</span>
                       <select
                         className="h-8 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600 disabled:opacity-50"
                         aria-label="orchestrator model"
-                        value={orchestratorModel ?? ""}
+                        value={orchestratorValue}
                         onChange={(e) => setOrchestratorModel(e.target.value)}
                         disabled={busy}
                       >
-                        <option value="">{t("settings.agents.orchestratorUnset")}</option>
-                        {models.map((m) => (
+                        {orchestratorOptions.map((m) => (
                           <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
                             {m.provider}/{m.id}
                           </option>
                         ))}
                       </select>
                     </label>
-                    {orchestratorModel === null && effectiveOrchestratorModel && (
-                      <p className="mt-1 text-right text-[12px] text-v2-text-text-muted">
-                        {t("settings.agents.orchestratorHint").replace("{model}", effectiveOrchestratorModel)}
-                      </p>
-                    )}
                   </div>
                 ) : (
                   <label key={agent.name} className="flex items-center justify-between gap-4">
