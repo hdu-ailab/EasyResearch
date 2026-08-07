@@ -127,11 +127,15 @@ export class ActiveSessionRegistry {
     if (!record) return;
     if (!record.stopPromise) {
       record.stopPromise = (async () => {
+        for (const listener of record.listeners) {
+          listener({ type: "session_deactivated", sessionId: record.dto.id });
+        }
         await record.client.stop();
         record.dto.isStreaming = false;
         record.dto.status = "stopped";
         record.dto.error = undefined;
         record.dispose();
+        this.records.delete(id);
       })();
     }
     await record.stopPromise;
@@ -235,11 +239,12 @@ export class ActiveSessionRegistry {
       }
     }
     if (type === "agent_settled") {
-      record.dto.isStreaming = false;
-      if (record.dto.status !== "stopped" && record.dto.status !== "error") {
-        record.dto.status = "ready";
-      }
+      void this.deactivate(record);
     }
+  }
+
+  private async deactivate(record: ActiveRecord): Promise<void> {
+    await this.stop(record.dto.id);
   }
 
   private async refreshFromClient(record: ActiveRecord): Promise<void> {

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Activity, Folder, FolderOpen, Plus, Search } from "lucide-react";
 import type { ActiveSessionDto, SessionSummaryDto } from "../../../web/contracts";
-import { countRunningSessions, matchesSessionQuery, type HomeProjectGroup } from "../pages/home-view-model";
+import { countRunningSessions, isActuallyRunning, matchesSessionQuery, type HomeProjectGroup } from "../pages/home-view-model";
 import { useI18n } from "../i18n/useI18n";
 import { SessionList } from "./SessionList";
 
@@ -39,7 +39,10 @@ export function HomeWorkspace({
   const { t } = useI18n();
   const [query, setQuery] = useState("");
   const selectedGroups = selectedCwd === null ? groups : groups.filter((group) => group.cwd === selectedCwd);
-  const visibleActive = selectedGroups.flatMap((group) => group.active).filter((session) => matchesSessionQuery(session, query));
+  const visibleActive = selectedGroups
+    .flatMap((group) => group.active)
+    .filter((session) => isActuallyRunning(session))
+    .filter((session) => matchesSessionQuery(session, query));
   const visibleHistory = selectedGroups.flatMap((group) => group.history).filter((session) => matchesSessionQuery(session, query));
   const runningCount = countRunningSessions(selectedGroups.flatMap((group) => group.active));
   const emptyHistory = selectedCwd === null ? t("sessions.noSessions") : t("home.noSessionsForProject");

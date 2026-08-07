@@ -14,6 +14,7 @@ vi.mock("../api", async (importOriginal) => {
     getSnapshot: vi.fn(),
     connectSessionEvents: vi.fn(),
     sendPrompt: vi.fn(),
+    openSession: vi.fn(),
     stopSession: vi.fn(),
     abortSession: vi.fn(),
     listConfig: vi.fn().mockResolvedValue([]),
@@ -30,7 +31,7 @@ vi.mock("../api", async (importOriginal) => {
 });
 
 const snapshot = {
-  session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+  session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready", sessionFile: "/agent/sessions/--p--/a.jsonl" },
   messages: [
     { role: "user", content: [{ type: "text", text: "write a paper" }] },
     { role: "assistant", content: [{ type: "text", text: "starting research" }] },
@@ -62,6 +63,7 @@ describe("WorkPage", () => {
     vi.mocked(api.getSnapshot).mockReset();
     vi.mocked(api.connectSessionEvents).mockReset();
     vi.mocked(api.sendPrompt).mockReset();
+    vi.mocked(api.openSession).mockReset();
     vi.mocked(api.stopSession).mockReset();
     vi.mocked(api.abortSession).mockReset();
     vi.mocked(api.listEntries).mockReset();
@@ -608,5 +610,60 @@ describe("WorkPage", () => {
     await user.selectOptions(within(searchCard).getByRole("combobox"), "openai/gpt-4o");
     await user.click(within(searchCard).getByRole("button", { name: /^set$/i }));
     await waitFor(() => expect(api.setAgentModel).toHaveBeenCalledWith("s1", "search", "openai/gpt-4o"));
+  });
+
+  it("shows a session-ended notice and keeps the transcript on session_deactivated", async () => {
+    stubEvents();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    emit({ type: "session_deactivated", sessionId: "s1" });
+    expect(await screen.findByText(/session ended/i)).toBeTruthy();
+    expect(screen.getByText("write a paper")).toBeTruthy();
+    expect(screen.getByText("starting research")).toBeTruthy();
+  });
+
+  it("auto-reopens the deactivated session and re-sends the message", async () => {
+    const user = userEvent.setup();
+    stubEvents();
+    vi.mocked(api.sendPrompt)
+      .mockRejectedValueOnce(new api.ApiError(404, { error: "Unknown session: s1" }))
+      .mockResolvedValueOnce(undefined);
+    vi.mocked(api.openSession).mockResolvedValueOnce({
+      id: "s2",
+      cwd: "/p",
+      sessionFile: "/agent/sessions/--p--/a.jsonl",
+      isStreaming: false,
+      status: "ready",
+    } as never);
+    vi.mocked(api.getSnapshot).mockResolvedValueOnce(snapshot).mockResolvedValue({
+      session: { id: "s2", cwd: "/p", isStreaming: false, status: "ready" },
+      messages: [{ role: "user", content: [{ type: "text", text: "continue please" }] }],
+    } as never);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    await user.type(screen.getByRole("textbox", { name: /message/i }), "continue please");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+    await waitFor(() => expect(api.openSession).toHaveBeenCalledWith("/agent/sessions/--p--/a.jsonl"));
+    expect(api.sendPrompt).toHaveBeenCalledTimes(2);
+    expect(api.sendPrompt).toHaveBeenLastCalledWith("s2", "continue please");
+    await waitFor(() => expect(api.connectSessionEvents).toHaveBeenCalledTimes(2));
+    expect(api.connectSessionEvents).toHaveBeenNthCalledWith(1, "s1", expect.anything());
+    expect(api.connectSessionEvents).toHaveBeenNthCalledWith(2, "s2", expect.anything());
+    expect(unsubscribeFn).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(await screen.findByText("continue please")).toBeTruthy();
+  });
+
+  it("shows the error text for a plain HTTP failure without reopening", async () => {
+    const user = userEvent.setup();
+    stubEvents();
+    vi.mocked(api.sendPrompt).mockRejectedValue(new api.ApiError(500, { error: "server exploded" }));
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    await user.type(screen.getByRole("textbox", { name: /message/i }), "continue please");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("server exploded");
+    expect(api.openSession).not.toHaveBeenCalled();
+    expect(api.sendPrompt).toHaveBeenCalledTimes(1);
   });
 });

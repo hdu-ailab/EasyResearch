@@ -24,6 +24,10 @@ export class ApiError extends Error {
   }
 }
 
+export function isUnknownSession(e: unknown): boolean {
+  return e instanceof ApiError && e.status === 404;
+}
+
 function messageFor(details: unknown): string {
   if (details && typeof details === "object") {
     const error = (details as { error?: unknown }).error;
