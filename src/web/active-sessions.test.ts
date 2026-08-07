@@ -135,6 +135,7 @@ describe("ActiveSessionRegistry", () => {
     registry.subscribe(created.id, listener);
     await registry.stop(created.id);
     expect(listener).toHaveBeenCalledWith({ type: "session_deactivated", sessionId: created.id });
+    expect(listener).toHaveBeenCalledTimes(1);
   });
 
   it("forwards setModel to the adapter with provider and model id", async () => {
@@ -260,6 +261,9 @@ describe("ActiveSessionRegistry", () => {
     await vi.waitFor(() => expect(registry.list().find((s) => s.id === created.id)).toBeUndefined());
     expect(factory.created[0]?.stats.stopped).toBe(1);
     expect(listener).toHaveBeenCalledWith({ type: "session_deactivated", sessionId: created.id });
+    expect(
+      listener.mock.calls.filter(([event]) => (event as { type?: string }).type === "session_deactivated"),
+    ).toHaveLength(1);
   });
 
   it("ignores message events when deciding run status", async () => {
