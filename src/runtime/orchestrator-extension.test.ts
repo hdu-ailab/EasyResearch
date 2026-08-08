@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { createOrchestratorExtension, loadOrchestratorPrompt } from "./orchestrator-extension";
 
@@ -13,7 +13,12 @@ function makeAgentsDir(): string {
   return dir;
 }
 
+beforeEach(() => {
+  process.env.LAZYRESEARCH_RPC_CHILD = "1";
+});
+
 afterEach(() => {
+  delete process.env.LAZYRESEARCH_RPC_CHILD;
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 

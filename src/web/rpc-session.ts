@@ -43,6 +43,7 @@ export interface RpcClientLikeOptions {
   cwd: string;
   cliPath: string;
   args: string[];
+  env?: Record<string, string>;
 }
 
 export type RpcClientLikeConstructor = new (options: RpcClientLikeOptions) => RpcClientLike;
@@ -202,6 +203,7 @@ export class PiRpcSessionFactory implements RpcSessionFactory {
       cwd: options.cwd,
       cliPath: CLI_PATH,
       args,
+      env: { LAZYRESEARCH_RPC_CHILD: "1" },
     });
     return new DefaultRpcSessionAdapter(client, this.heartbeatOptions);
   }

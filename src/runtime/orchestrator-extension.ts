@@ -6,6 +6,8 @@ import { importPi } from "./pi-import";
 import { subagentTool } from "../subagent/tool";
 import { webSearchTool } from "../tools/duckduckgo-search";
 import { mountWelcomeBanner } from "../tui/welcome-banner";
+import { createLogger } from "./logger";
+import { mountPiEventLogger, type PiEventBus } from "./pi-event-logger";
 
 export interface OrchestratorExtensionOptions {
   agentsDir?: string;
@@ -33,6 +35,12 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
     pi.registerTool(subagentTool);
     pi.registerTool(webSearchTool);
     mountWelcomeBanner(pi);
+    const isRpcChild = process.env.LAZYRESEARCH_RPC_CHILD === "1";
+    if (!isRpcChild) {
+      const logger = createLogger("orchestrator");
+      mountPiEventLogger(pi as unknown as PiEventBus, logger);
+      logger.info("orchestrator session started", { cwd: process.cwd() });
+    }
     pi.on("before_agent_start", (event) => ({
       systemPrompt: `${event.systemPrompt}\n\n${prompt}`,
     }));

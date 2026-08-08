@@ -21,6 +21,7 @@ interface FakeClientOptions {
   cwd: string;
   cliPath: string;
   args: string[];
+  env?: Record<string, string>;
 }
 
 class FakeRpcClient {
@@ -100,6 +101,7 @@ describe("PiRpcSessionFactory", () => {
     expect(client.options.args).toContain("/agent/sessions/--project--/old.jsonl");
     expect(client.options.args).toContain("--approve");
     expect(client.options.args).not.toContain("--no-approve");
+    expect(client.options.env).toEqual({ LAZYRESEARCH_RPC_CHILD: "1" });
   });
 
   it("always passes --approve even without a session (ADR-018)", () => {
