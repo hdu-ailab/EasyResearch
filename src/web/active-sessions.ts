@@ -200,7 +200,16 @@ export class ActiveSessionRegistry {
       stopPromise: null,
     };
     (this.logger ?? logger).info("session launch", { cwd: options.cwd, sessionPath: options.sessionPath ?? "" });
-    await client.start();
+    try {
+      await client.start();
+    } catch (error) {
+      (this.logger ?? logger).error("rpc child launch failed", {
+        cwd: options.cwd,
+        sessionPath: options.sessionPath ?? "",
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
     const state = await client.getState();
     dto.id = state.sessionId;
     if (state.sessionFile) {
