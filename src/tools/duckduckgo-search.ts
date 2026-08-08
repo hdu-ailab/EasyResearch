@@ -18,11 +18,11 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 /**
- * ADR-031: the bundled `search` tool (registered as `duckduckgo_search` in
- * upstream), ported verbatim from the upstream Pi duckduckgo-search extension
- * (the user's `~/.pi` copy is the sole source). Registration happens in the
- * two bundled extension surfaces (orchestrator + subagent); pure helpers are
- * exported for tests.
+ * ADR-031 (amended by ADR-038): the bundled web-search tool (registered as
+ * `web-search`), ported verbatim from the upstream Pi duckduckgo-search
+ * extension (the user's `~/.pi` copy is the sole source). Registration happens
+ * in the two bundled extension surfaces (orchestrator + subagent); pure
+ * helpers are exported for tests.
  */
 export const DEFAULT_RESULT_COUNT = 5;
 export const COLLAPSED_LINE_MAX_CHARS = 200;
@@ -295,15 +295,15 @@ export async function truncateOutput(output: string): Promise<{ text: string; fu
   return { text: truncation.content + notice, fullOutputPath };
 }
 
-export const duckduckgoSearchTool = defineTool({
-  name: "search",
+export const webSearchTool = defineTool({
+  name: "web-search",
   label: "DuckDuckGo Search",
   description:
-    "Use when you need current real-time information, up-to-date facts, breaking news, prices, availability, or anything you cannot reliably know from your training data — i.e. when you must discover or verify unknown facts from the open web. Returns concise numbered search leads, supports domain and age filters. Treat snippets as leads, not verified facts: fetch the underlying URLs before relying on the claims. Requests are serialized and retry challenge responses up to three times.",
+    "Use when you need current real-time information or must verify facts you cannot reliably know from training data.",
   promptSnippet: "Search the web with DuckDuckGo using optional domain and age filters",
   promptGuidelines: [
-    "Use search when current external information or web discovery is required.",
-    "Treat search snippets as leads, and inspect selected source URLs before presenting their claims as verified facts.",
+    "Use web-search when current external information or web discovery is required.",
+    "Treat web-search snippets as leads, and inspect selected source URLs before presenting their claims as verified facts.",
   ],
   parameters: Type.Object({
     query: Type.String({ minLength: 1, description: "Search query, including quoted phrases when needed" }),
@@ -405,5 +405,5 @@ export const duckduckgoSearchTool = defineTool({
 
 /** Extension factory kept for parity with the upstream duckduckgo-search extension shape. */
 export function duckduckGoSearchExtension(pi: ExtensionAPI): void {
-  pi.registerTool(duckduckgoSearchTool);
+  pi.registerTool(webSearchTool);
 }

@@ -4,7 +4,7 @@ import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { importPi } from "./pi-import";
 import { subagentTool } from "../subagent/tool";
-import { duckduckgoSearchTool } from "../tools/duckduckgo-search";
+import { webSearchTool } from "../tools/duckduckgo-search";
 import { mountWelcomeBanner } from "../tui/welcome-banner";
 
 export interface OrchestratorExtensionOptions {
@@ -31,7 +31,7 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
     const { getAgentDir } = await importPi();
     const prompt = loadOrchestratorPrompt(options.agentsDir ?? join(getAgentDir(), "agents"));
     pi.registerTool(subagentTool);
-    pi.registerTool(duckduckgoSearchTool);
+    pi.registerTool(webSearchTool);
     mountWelcomeBanner(pi);
     pi.on("before_agent_start", (event) => ({
       systemPrompt: `${event.systemPrompt}\n\n${prompt}`,

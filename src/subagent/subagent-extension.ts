@@ -1,6 +1,6 @@
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 import { subagentTool } from "./tool";
-import { duckduckgoSearchTool } from "../tools/duckduckgo-search";
+import { webSearchTool } from "../tools/duckduckgo-search";
 
 /**
  * ADR-022: stage-agent runtimes mount this extension so nested dispatch works
@@ -12,7 +12,7 @@ import { duckduckgoSearchTool } from "../tools/duckduckgo-search";
 export function createSubagentExtension(): InlineExtension {
   return async (pi) => {
     pi.registerTool(subagentTool);
-    pi.registerTool(duckduckgoSearchTool);
+    pi.registerTool(webSearchTool);
     // ADR-018: project config is always trusted; suppress Pi's trust prompt.
     pi.on("project_trust", () => ({ trusted: "yes" as const }));
   };

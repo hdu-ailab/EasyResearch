@@ -66,7 +66,7 @@ describe("createOrchestratorExtension", () => {
     expect(registerTool).toHaveBeenCalledTimes(2);
     const toolNames = registerTool.mock.calls.map((call) => (call[0] as { name: string }).name);
     expect(toolNames).toContain("subagent");
-    expect(toolNames).toContain("search");
+    expect(toolNames).toContain("web-search");
     const result = capturedHandler?.({ systemPrompt: "pi base" }) as { systemPrompt: string };
     expect(result.systemPrompt).toContain("pi base");
     expect(result.systemPrompt).toContain("Orchestrator body");
