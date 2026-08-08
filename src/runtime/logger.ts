@@ -58,7 +58,19 @@ function formatLine(level: LogLevel, pid: number, scope: string, msg: string, fi
   const stamp = new Date().toISOString();
   const fieldText = fields
     ? " " + Object.entries(fields)
-        .map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`)
+        .map(([k, v]) => {
+          let rendered: string;
+          if (typeof v === "string") {
+            rendered = v;
+          } else {
+            try {
+              rendered = JSON.stringify(v) ?? "undefined";
+            } catch {
+              rendered = "<unserializable>";
+            }
+          }
+          return `${k}=${rendered}`;
+        })
         .join(" ")
     : "";
   return `[${stamp}] [${level.toUpperCase()}] [pid=${pid}] [${scope}] ${msg}${fieldText}`;
@@ -77,11 +89,9 @@ export function createLogger(scope: string, options?: { agentDir?: string; level
   let warnedInvalid = false;
   // Spec 5: an invalid env/settings level falls back to info and warns once
   // per logger instance. Only the configured level (no explicit option) warns.
-  let warnedInvalidLevel = false;
   if (options?.level === undefined) {
     const rawLevel = rawConfiguredLevel(agentDir);
     if (rawLevel !== undefined && parseLevel(rawLevel) === undefined) {
-      warnedInvalidLevel = true;
       // eslint-disable-next-line no-console
       console.warn(`[lazyresearch:logger] invalid log level "${rawLevel}", falling back to info`);
     }
@@ -116,7 +126,7 @@ export function createLogger(scope: string, options?: { agentDir?: string; level
       if (!warnedInvalid) {
         warnedInvalid = true;
         // eslint-disable-next-line no-console
-        console.error(`[lazyresearch:logger] cannot write log file under ${config.logDir}; logging disabled`);
+        console.error(`[lazyresearch:logger] cannot write log file under ${config.logDir}; logging failed`);
       }
     }
   };

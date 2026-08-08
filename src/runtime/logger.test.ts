@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createLogger, resolveLogConfig } from "./logger";
 
 function makeAgentDir(): string {
@@ -96,7 +96,7 @@ describe("createLogger", () => {
     expect(line).toMatch(/^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\] \[INFO\] \[pid=\d+\] \[scope-a\] hello$/);
   });
 
-  it("rolls over to a new file on a new day", async () => {
+  it("appends across logger instances to the same day file", async () => {
     const agentDir = makeAgentDir();
     const logger = createLogger("t", { agentDir, level: "info" });
     logger.info("day1");
@@ -135,7 +135,27 @@ describe("createLogger", () => {
   it("never throws into application logic on unwritable log dir", () => {
     const agentDir = makeAgentDir();
     writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ lazyresearch: { logging: { logDir: "/proc/definitely/not/writable" } } }));
-    const logger = createLogger("t", { agentDir, level: "info" });
-    expect(() => logger.info("no crash")).not.toThrow();
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const logger = createLogger("t", { agentDir, level: "info" });
+      expect(() => logger.info("no crash")).not.toThrow();
+      expect(error).toHaveBeenCalledTimes(1);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it("degrades unserializable fields without throwing", () => {
+    const agentDir = makeAgentDir();
+    const logger = createLogger("test", { agentDir, level: "info" });
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    expect(() => logger.info("big", { tokens: 1n })).not.toThrow();
+    expect(() => logger.info("circ", circular)).not.toThrow();
+    const content = readFileSync(logFiles(agentDir).map((f) => join(agentDir, "logs", f))[0]!, "utf8");
+    expect(content).toContain("big");
+    expect(content).toContain("circ");
+    expect(content).toContain("tokens=<unserializable>");
+    expect(content).toContain("self=<unserializable>");
   });
 });
