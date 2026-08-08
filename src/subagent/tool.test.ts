@@ -1,11 +1,13 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import {
   buildPiArgs,
   describeModel,
   filterAgentsByAllowlist,
+  handleChildLine,
+  progressFromMessage,
   resolveInheritedSession,
   sessionNameFor,
   SUBAGENT_SESSION_PREFIX,
@@ -105,6 +107,102 @@ describe("filterAgentsByAllowlist (ADR-022)", () => {
 
   it("allows no agents for an empty allowlist", () => {
     expect(filterAgentsByAllowlist(agents, "")).toEqual([]);
+  });
+});
+
+describe("progressFromMessage (ADR-037)", () => {
+  it("extracts the last text block as live progress", () => {
+    const progress = progressFromMessage("search", 2, {
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "think" },
+        { type: "text", text: "looking at arxiv" },
+      ],
+    } as never);
+    expect(progress).toEqual({ agent: "search", step: 2, status: "running", lastText: "looking at arxiv" });
+  });
+
+  it("returns undefined when the message has no text", () => {
+    expect(progressFromMessage("search", 1, { role: "assistant", content: [] } as never)).toBeUndefined();
+  });
+
+  it("caps oversized progress text so tool outputs never flood the parent line", () => {
+    const progress = progressFromMessage("search", 1, {
+      role: "assistant",
+      content: [{ type: "text", text: "x".repeat(500) }],
+    } as never);
+    expect(progress!.lastText!.length).toBe(201);
+    expect(progress!.lastText!.endsWith("…")).toBe(true);
+  });
+
+  it("handles string content blocks", () => {
+    const progress = progressFromMessage("search", undefined, {
+      role: "assistant",
+      content: ["plain text"],
+    } as never);
+    expect(progress).toMatchObject({ step: undefined, lastText: "plain text" });
+  });
+});
+
+describe("handleChildLine (ADR-037)", () => {
+  const line = (event: unknown) => JSON.stringify(event);
+
+  it("dispatches message_end to onMessageEnd and streams progress to onProgress", () => {
+    const onMessageEnd = vi.fn();
+    const onToolResultEnd = vi.fn();
+    const onProgress = vi.fn();
+    handleChildLine(
+      line({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "scanning arxiv" }] } }),
+      "search",
+      3,
+      { onMessageEnd, onToolResultEnd, onProgress },
+    );
+    expect(onMessageEnd).toHaveBeenCalledTimes(1);
+    expect(onToolResultEnd).not.toHaveBeenCalled();
+    expect(onProgress).toHaveBeenCalledWith({ agent: "search", step: 3, status: "running", lastText: "scanning arxiv" });
+  });
+
+  it("dispatches tool_result_end to onToolResultEnd without progress", () => {
+    const onMessageEnd = vi.fn();
+    const onToolResultEnd = vi.fn();
+    const onProgress = vi.fn();
+    handleChildLine(line({ type: "tool_result_end", message: { role: "tool", content: [{ type: "text", text: "out" }] } }), "search", 1, {
+      onMessageEnd,
+      onToolResultEnd,
+      onProgress,
+    });
+    expect(onMessageEnd).not.toHaveBeenCalled();
+    expect(onToolResultEnd).toHaveBeenCalledTimes(1);
+    expect(onProgress).not.toHaveBeenCalled();
+  });
+
+  it("skips progress when the message carries no text", () => {
+    const onProgress = vi.fn();
+    handleChildLine(line({ type: "message_end", message: { role: "assistant", content: [] } }), "search", 1, {
+      onMessageEnd: vi.fn(),
+      onToolResultEnd: vi.fn(),
+      onProgress,
+    });
+    expect(onProgress).not.toHaveBeenCalled();
+  });
+
+  it("ignores malformed lines without crashing", () => {
+    const handlers = { onMessageEnd: vi.fn(), onToolResultEnd: vi.fn(), onProgress: vi.fn() };
+    handleChildLine("not json", "search", 1, handlers);
+    handleChildLine("", "search", 1, handlers);
+    handleChildLine(line({ type: "message_start" }), "search", 1, handlers);
+    expect(handlers.onMessageEnd).not.toHaveBeenCalled();
+    expect(handlers.onToolResultEnd).not.toHaveBeenCalled();
+    expect(handlers.onProgress).not.toHaveBeenCalled();
+  });
+
+  it("does not crash when no progress callback is wired", () => {
+    expect(() =>
+      handleChildLine(line({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "hi" }] } }), "search", 1, {
+        onMessageEnd: vi.fn(),
+        onToolResultEnd: vi.fn(),
+      }),
+    ).not.toThrow();
   });
 });
 

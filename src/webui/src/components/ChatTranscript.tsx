@@ -114,7 +114,7 @@ function ToolRow({ tool }: { tool: ToolView }) {
               {tool.output}
             </pre>
           ) : tool.running ? (
-            <p className="text-[12px] text-v2-text-text-faint">{t("transcript.running")}</p>
+            <p className="text-[12px] text-v2-text-text-muted">{tool.progress ?? t("transcript.running")}</p>
           ) : (
             <p className="text-[12px] text-v2-text-text-faint">{t("transcript.noOutput")}</p>
           )}

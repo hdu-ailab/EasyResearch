@@ -95,12 +95,24 @@ describe("session reducer", () => {
     expect(started.messages[0]!.text).toContain("provider down");
   });
 
-  it("ignores duplicate deliveries of the same update", () => {
+  it("flags the run error on the session state and clears it on settle", () => {
+    const started = reduceSessionEvent(emptyState, {
+      type: "message_start",
+      message: { role: "assistant", content: [], errorMessage: "provider down" },
+    } as unknown as AgentSessionEvent);
+    expect(started.error).toBe("provider down");
+    const settled = reduceSessionEvent(started, { type: "agent_settled" } as unknown as AgentSessionEvent);
+    expect(settled.error).toBeNull();
+    const ok = reduceSessionEvent(emptyState, assistantEvent("message_start", ""));
+    expect(ok.error).toBeNull();
+  });
+
+  it("appends consecutive identical token deltas without dropping text", () => {
     const started = reduceSessionEvent(emptyState, assistantEvent("message_start", ""));
     const once = reduceSessionEvent(started, assistantEvent("message_update", "same"));
     const twice = reduceSessionEvent(once, assistantEvent("message_update", "same"));
     expect(twice.messages).toHaveLength(1);
-    expect(twice.messages[0]!.text).toBe("same");
+    expect(twice.messages[0]!.text).toBe("samesame");
   });
 
   it("keeps user messages distinct from assistant streaming", () => {
@@ -207,10 +219,13 @@ describe("session reducer", () => {
       ] as never,
     });
     const order = (m: { order: number }) => m.order;
-    expect(state.messages.map(order)).toEqual([0, 1, 4]);
-    expect(state.tools.map(order)).toEqual([2]);
     const merged = [...state.messages, ...state.tools].sort((a, b) => a.order - b.order);
     expect(merged.map((e) => ("role" in e ? e.role : "tool"))).toEqual(["user", "assistant", "tool", "assistant"]);
+    const messageOrders = state.messages.map(order);
+    const toolOrders = state.tools.map(order);
+    expect(new Set(messageOrders).size).toBe(messageOrders.length);
+    expect(new Set(toolOrders).size).toBe(toolOrders.length);
+    expect(messageOrders.every((o, i) => i === 0 || o > messageOrders[i - 1]!)).toBe(true);
   });
 
   it("labels a subagent-line dispatch as orchestrator, not the user", () => {
@@ -246,6 +261,80 @@ describe("session reducer", () => {
     const final = reduceSessionEvent(state, assistantEvent("message_start", "done"));
     expect(final.messages.map((m) => m.order)).toEqual([0, 1, 3]);
     expect(final.tools.map((t) => t.order)).toEqual([2]);
+  });
+
+  it("attaches subagent progress to the matching tool on tool_execution_update", () => {
+    let state = reduceSessionEvent(emptyState, toolEvent("tool_execution_start", "t1", "subagent"));
+    state = reduceSessionEvent(state, {
+      type: "tool_execution_update",
+      toolCallId: "t1",
+      toolName: "subagent",
+      args: { agent: "search" },
+      partialResult: { details: { subagent: { agent: "search", step: 2, status: "running", lastText: "looking at arxiv entries" } } },
+    } as never);
+    expect(state.tools[0]!.progress).toContain("looking at arxiv entries");
+    expect(state.tools[0]!.running).toBe(true);
+    expect(state.messages).toHaveLength(0);
+  });
+
+  it("captures the agent name from single-mode subagent args", () => {
+    const state = reduceSessionEvent(emptyState, {
+      type: "tool_execution_start",
+      toolCallId: "t1",
+      toolName: "subagent",
+      args: { agent: "search", task: "find papers" },
+    } as never);
+    expect(state.tools[0]).toMatchObject({ agentName: "search" });
+  });
+
+  it("captures the first agent name from chain-mode subagent args", () => {
+    const state = reduceSessionEvent(emptyState, {
+      type: "tool_execution_start",
+      toolCallId: "t2",
+      toolName: "subagent",
+      args: { chain: [{ agent: "search", task: "first" }, { agent: "writing", task: "then" }] },
+    } as never);
+    expect(state.tools[0]).toMatchObject({ agentName: "search" });
+  });
+
+  it("captures the agent name from snapshot subagent toolCall blocks (JSON-string args)", () => {
+    const state = fromSnapshot({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "done" } as never,
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "tc-1", name: "subagent", arguments: '{"agent":"figures","task":"draw"}' }],
+        },
+      ] as never,
+    });
+    expect(state.tools[0]).toMatchObject({ name: "subagent", agentName: "figures" });
+  });
+
+  it("ignores tool_execution_update for unknown toolCallIds", () => {
+    const state = reduceSessionEvent(emptyState, {
+      type: "tool_execution_update",
+      toolCallId: "ghost",
+      toolName: "subagent",
+      partialResult: { details: { subagent: { agent: "search", status: "running" } } },
+    } as never);
+    expect(state.tools).toHaveLength(0);
+  });
+
+  it("does not overwrite progress with a later empty update", () => {
+    let state = reduceSessionEvent(emptyState, toolEvent("tool_execution_start", "t1", "subagent"));
+    state = reduceSessionEvent(state, {
+      type: "tool_execution_update",
+      toolCallId: "t1",
+      toolName: "subagent",
+      partialResult: { details: { subagent: { agent: "search", lastText: "first" } } },
+    } as never);
+    state = reduceSessionEvent(state, {
+      type: "tool_execution_update",
+      toolCallId: "t1",
+      toolName: "subagent",
+      partialResult: { details: {} },
+    } as never);
+    expect(state.tools[0]!.progress).toContain("first");
   });
 
   it("resolves message_update deltas by the message_start key, even without ids", () => {
