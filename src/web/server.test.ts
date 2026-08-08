@@ -15,11 +15,14 @@ import { AgentModelError } from "./agent-models";
 import { WebuiSettingsError, readEffectiveWebuiSettings, updateWebuiSettings } from "./webui-settings";
 import { discoverAgents } from "../subagent/agents";
 import { agentToDto, isKnownAgentName } from "./server";
+import type { Logger } from "../runtime/logger";
 
 vi.mock("../runtime/extensions-guard", () => ({
   assertSafeExtensionSources: vi.fn(),
   ExtensionGuardError: class ExtensionGuardError extends Error {},
 }));
+
+const noopLogger: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} };
 
 class FakeAdapter implements RpcSessionAdapter {
   static all: FakeAdapter[] = [];
@@ -104,7 +107,7 @@ describe("web routes", () => {
     FakeAdapter.all = [];
     FakeAdapter.nextId = 0;
     factory = new FakeFactory();
-    registry = new ActiveSessionRegistry(factory);
+    registry = new ActiveSessionRegistry(factory, noopLogger);
     directoryService = new DirectoryService(homeDir);
     configService = new ConfigFileService(agentDir);
     historySessions = [];

@@ -5,6 +5,11 @@ import type {
   RpcSessionFactory,
   StartRpcSessionOptions,
 } from "./rpc-session";
+import { createLogger } from "../runtime/logger";
+import { attachEventLogger } from "./event-logger";
+import type { Logger } from "../runtime/logger";
+
+const logger = createLogger("web-registry");
 
 export class UnknownSessionError extends Error {}
 
@@ -36,7 +41,10 @@ export interface OpenSessionInput {
 export class ActiveSessionRegistry {
   private readonly records = new Map<string, ActiveRecord>();
 
-  constructor(private readonly factory: RpcSessionFactory) {}
+  constructor(
+    private readonly factory: RpcSessionFactory,
+    private readonly logger?: Logger,
+  ) {}
 
   async create(input: CreateSessionInput): Promise<ActiveSessionDto> {
     return this.launch({ cwd: input.cwd });
@@ -135,6 +143,7 @@ export class ActiveSessionRegistry {
         record.dto.status = "stopped";
         record.dto.error = undefined;
         record.dispose();
+        (this.logger ?? logger).info("session deactivated", { sessionId: record.dto.id });
         this.records.delete(id);
       })();
     }
@@ -190,6 +199,7 @@ export class ActiveSessionRegistry {
       dispose: () => {},
       stopPromise: null,
     };
+    (this.logger ?? logger).info("session launch", { cwd: options.cwd, sessionPath: options.sessionPath ?? "" });
     await client.start();
     const state = await client.getState();
     dto.id = state.sessionId;
@@ -207,13 +217,16 @@ export class ActiveSessionRegistry {
       for (const listener of record.listeners) listener(event);
       this.syncDtoFromEvent(record, event);
     });
+    const eventLogCancel = attachEventLogger(dto.id, record.cwd, client.onEvent.bind(client), this.logger ?? logger);
     const exitCancel = client.onExit((error) => {
+      (this.logger ?? logger).error("rpc child exited", { sessionId: record.dto.id, error: error.message });
       record.dto.isStreaming = false;
       record.dto.status = "error";
       record.dto.error = error.message;
     });
     record.dispose = () => {
       eventCancel();
+      eventLogCancel();
       exitCancel();
     };
 

@@ -4,6 +4,7 @@ import type { RpcEventListener, RpcSessionState } from "@earendil-works/pi-codin
 import { ActiveSessionRegistry, UnknownSessionError } from "./active-sessions";
 import { assertSafeExtensionSources } from "../runtime/extensions-guard";
 import type { RpcSessionAdapter, RpcSessionFactory, StartRpcSessionOptions } from "./rpc-session";
+import type { Logger } from "../runtime/logger";
 
 vi.mock("../runtime/extensions-guard", () => ({
   assertSafeExtensionSources: vi.fn(),
@@ -12,6 +13,8 @@ vi.mock("../runtime/extensions-guard", () => ({
 
 const cwd = "/test/project";
 const sessionPath = "/agent/sessions/--test-project--/a.jsonl";
+
+const noopLogger: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} };
 
 const fakeState: RpcSessionState = {
   thinkingLevel: "medium",
@@ -94,7 +97,7 @@ describe("ActiveSessionRegistry", () => {
 
   beforeEach(() => {
     factory = new FakeFactory();
-    registry = new ActiveSessionRegistry(factory);
+    registry = new ActiveSessionRegistry(factory, noopLogger);
     vi.mocked(assertSafeExtensionSources).mockClear();
   });
 

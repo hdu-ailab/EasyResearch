@@ -16,6 +16,7 @@ import {
   resolveAgentModelsService,
   routeSetAgentModel,
 } from "./agent-models";
+import { createLogger } from "../runtime/logger";
 
 export interface Server {
   port: number;
@@ -53,6 +54,7 @@ export async function startServer(): Promise<Server> {
   const { importPi } = await import("../runtime/pi-import");
   const { assertSafeExtensionSources } = await import("../runtime/extensions-guard");
   assertSafeExtensionSources();
+  const logger = createLogger("web-server");
   const registry = new ActiveSessionRegistry(await PiRpcSessionFactory.resolve());
   const { SessionManager, getAgentDir } = await importPi();
   const agentDir = getAgentDir();
@@ -127,9 +129,12 @@ export async function startServer(): Promise<Server> {
     idleTimeout: 0,
   });
 
+  logger.info("web server started", { port: server.port ?? 3000 });
+
   return {
     port: server.port ?? 3000,
     stop: async () => {
+      logger.info("web server stopping");
       await registry.shutdown();
       server.stop(true);
     },
