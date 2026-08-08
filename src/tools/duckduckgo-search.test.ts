@@ -4,22 +4,22 @@ import {
   COLLAPSED_LINE_MAX_CHARS,
   compactLine,
   decodeResultUrl,
-  duckduckgoSearchTool,
   formatResults,
   looksBlocked,
   parseResults,
   serialize,
   textContent,
   truncateOutput,
+  webSearchTool,
 } from "./duckduckgo-search";
 
-describe("search tool definition (ADR-031)", () => {
-  it("is named search", () => {
-    expect(duckduckgoSearchTool.name).toBe("search");
+describe("search tool definition (ADR-031 as amended by ADR-038)", () => {
+  it("is named web-search", () => {
+    expect(webSearchTool.name).toBe("web-search");
   });
 
   it("declares query required and num/site/time optional", () => {
-    const schema = duckduckgoSearchTool.parameters as {
+    const schema = webSearchTool.parameters as {
       type: string;
       required?: string[];
       properties?: Record<string, unknown>;

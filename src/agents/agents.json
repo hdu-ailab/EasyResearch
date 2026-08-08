@@ -6,7 +6,7 @@
   },
   "search": {
     "definition": "agents/search.md",
-    "tools": ["read", "bash", "edit", "write", "grep", "find", "ls", "search"],
+    "tools": ["read", "bash", "edit", "write", "grep", "find", "ls", "web-search"],
     "skills": ["paper-search", "arxiv", "pdf-to-markdown"]
   },
   "experiment": {
