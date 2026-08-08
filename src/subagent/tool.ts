@@ -8,6 +8,7 @@ import type { Message } from "@earendil-works/pi-ai";
 import { defineTool, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { getInternalPiInvocation } from "../runtime/internal-invocation";
+import { createLogger, type Logger } from "../runtime/logger";
 import { getAgentDir, importPi } from "../runtime/pi-import";
 import { discoverAgents, type AgentConfig } from "./agents";
 import { resolveModelForSpawn } from "./model-resolution";
@@ -19,6 +20,14 @@ import { releaseSubagentLock, tryAcquireSubagentLock } from "./serial";
  * dispatch (experiment/writing/figures → search) works.
  */
 const SUBAGENT_EXTENSION_PATH = fileURLToPath(new URL("./subagent-extension.ts", import.meta.url));
+
+/**
+ * Pre-flight ruling (2026-08-08): `execute` runs inside the Web RPC child in
+ * Web mode, so the module-scope logger is only created outside RPC children
+ * (Constraint 4: RPC children never run their own logger).
+ */
+const subagentLogger: Logger | null =
+  process.env.LAZYRESEARCH_RPC_CHILD === "1" ? null : createLogger("subagent");
 
 /** ADR-022: named session line per (pipeline cwd, agent). */
 export const SUBAGENT_SESSION_PREFIX = "lazyresearch:";
@@ -458,6 +467,7 @@ export const subagentTool = defineTool({
             step.session === "new" ? undefined : await resolveInheritedSession(ctx.cwd, step.agent);
           const taskWithContext = step.task.replace(/\{previous\}/g, previousOutput);
           const model = await resolveModelForSpawn(ctx, step.agent, fallbackModel);
+          subagentLogger?.debug("subagent model resolved", { agent: step.agent, model: model ?? "" });
           const result = await runSingleAgent({
             defaultCwd: ctx.cwd,
             agents,
@@ -489,6 +499,7 @@ export const subagentTool = defineTool({
       if (params.agent && params.task) {
         const sessionPath = params.session === "new" ? undefined : await resolveInheritedSession(ctx.cwd, params.agent);
         const model = await resolveModelForSpawn(ctx, params.agent, fallbackModel);
+        subagentLogger?.debug("subagent model resolved", { agent: params.agent, model: model ?? "" });
         const result = await runSingleAgent({
           defaultCwd: ctx.cwd,
           agents,
