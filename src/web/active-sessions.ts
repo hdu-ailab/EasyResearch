@@ -202,44 +202,45 @@ export class ActiveSessionRegistry {
     (this.logger ?? logger).info("session launch", { cwd: options.cwd, sessionPath: options.sessionPath ?? "" });
     try {
       await client.start();
+      const state = await client.getState();
+      dto.id = state.sessionId;
+      if (state.sessionFile) {
+        dto.sessionFile = state.sessionFile;
+        // Resume must target the real session file, even when it was created
+        // during this launch (create has no sessionPath up front).
+        record.sessionPath = state.sessionFile;
+      }
+      if (state.sessionName) dto.sessionName = state.sessionName;
+      dto.isStreaming = state.isStreaming;
+      dto.status = state.isStreaming ? "running" : "ready";
+
+      const eventCancel = client.onEvent((event) => {
+        for (const listener of record.listeners) listener(event);
+        this.syncDtoFromEvent(record, event);
+      });
+      const eventLogCancel = attachEventLogger(dto.id, record.cwd, client.onEvent.bind(client), this.logger ?? logger);
+      const exitCancel = client.onExit((error) => {
+        (this.logger ?? logger).error("rpc child exited", { sessionId: record.dto.id, error: error.message });
+        record.dto.isStreaming = false;
+        record.dto.status = "error";
+        record.dto.error = error.message;
+      });
+      record.dispose = () => {
+        eventCancel();
+        eventLogCancel();
+        exitCancel();
+      };
+
+      this.records.set(dto.id, record);
     } catch (error) {
       (this.logger ?? logger).error("rpc child launch failed", {
         cwd: options.cwd,
         sessionPath: options.sessionPath ?? "",
         error: error instanceof Error ? error.message : String(error),
       });
+      await client.stop().catch(() => {});
       throw error;
     }
-    const state = await client.getState();
-    dto.id = state.sessionId;
-    if (state.sessionFile) {
-      dto.sessionFile = state.sessionFile;
-      // Resume must target the real session file, even when it was created
-      // during this launch (create has no sessionPath up front).
-      record.sessionPath = state.sessionFile;
-    }
-    if (state.sessionName) dto.sessionName = state.sessionName;
-    dto.isStreaming = state.isStreaming;
-    dto.status = state.isStreaming ? "running" : "ready";
-
-    const eventCancel = client.onEvent((event) => {
-      for (const listener of record.listeners) listener(event);
-      this.syncDtoFromEvent(record, event);
-    });
-    const eventLogCancel = attachEventLogger(dto.id, record.cwd, client.onEvent.bind(client), this.logger ?? logger);
-    const exitCancel = client.onExit((error) => {
-      (this.logger ?? logger).error("rpc child exited", { sessionId: record.dto.id, error: error.message });
-      record.dto.isStreaming = false;
-      record.dto.status = "error";
-      record.dto.error = error.message;
-    });
-    record.dispose = () => {
-      eventCancel();
-      eventLogCancel();
-      exitCancel();
-    };
-
-    this.records.set(dto.id, record);
     return { ...dto };
   }
 
