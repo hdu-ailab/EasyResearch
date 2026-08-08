@@ -56,6 +56,7 @@ class FakeAdapter implements RpcSessionAdapter {
   stats: FakeAdapterStats = { started: 0, stopped: 0, prompts: [], aborts: 0, setModels: [], exits: [] };
   stateOverrides: Partial<RpcSessionState> = {};
   startError: Error | null = null;
+  getStateError: Error | null = null;
 
   constructor(public options: StartRpcSessionOptions) {
     FakeAdapter.all.push(this);
@@ -78,6 +79,7 @@ class FakeAdapter implements RpcSessionAdapter {
     this.stats.setModels.push({ provider, modelId });
   }
   async getState(): Promise<RpcSessionState> {
+    if (this.getStateError) throw this.getStateError;
     return { ...fakeState, ...this.stateOverrides, sessionId: `sess-${++FakeAdapter.nextId}`, sessionFile: this.options.sessionPath ?? sessionPath };
   }
   async getMessages(): Promise<AgentMessage[]> {
@@ -96,9 +98,11 @@ class FakeAdapter implements RpcSessionAdapter {
 class FakeFactory implements RpcSessionFactory {
   created: FakeAdapter[] = [];
   startError: Error | null = null;
+  getStateError: Error | null = null;
   create(options: StartRpcSessionOptions): RpcSessionAdapter {
     const adapter = new FakeAdapter(options);
     adapter.startError = this.startError;
+    adapter.getStateError = this.getStateError;
     this.created.push(adapter);
     return adapter;
   }
@@ -305,9 +309,24 @@ describe("ActiveSessionRegistry", () => {
     factory.startError = launchError;
     const registryWithMock = new ActiveSessionRegistry(factory, loggerMock);
     await expect(registryWithMock.create({ cwd })).rejects.toBe(launchError);
+    expect(factory.created[0]?.stats.stopped).toBe(1);
     expect(loggerMock.error).toHaveBeenCalledWith(
       "rpc child launch failed",
       expect.objectContaining({ cwd, sessionPath: "", error: "boom" }),
+    );
+  });
+
+  it("stops the orphan rpc child and logs when getState fails during launch", async () => {
+    loggerMock.error.mockClear();
+    const getStateError = new Error("state boom");
+    factory.getStateError = getStateError;
+    const registryWithMock = new ActiveSessionRegistry(factory, loggerMock);
+    await expect(registryWithMock.create({ cwd })).rejects.toBe(getStateError);
+    expect(registryWithMock.list()).toEqual([]);
+    expect(factory.created[0]?.stats.stopped).toBe(1);
+    expect(loggerMock.error).toHaveBeenCalledWith(
+      "rpc child launch failed",
+      expect.objectContaining({ cwd, sessionPath: "", error: "state boom" }),
     );
   });
 
