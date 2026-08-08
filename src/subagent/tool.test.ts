@@ -14,6 +14,32 @@ import {
 } from "./tool";
 import { releaseSubagentLock, tryAcquireSubagentLock } from "./serial";
 
+const [loggerMock, createLoggerMock] = vi.hoisted(() => {
+  const mockLogger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+  return [mockLogger, vi.fn(() => mockLogger)] as const;
+});
+
+vi.mock("../runtime/logger", () => ({
+  createLogger: createLoggerMock,
+}));
+
+vi.mock("./agents", () => ({
+  discoverAgents: vi.fn(),
+}));
+
+vi.mock("./model-resolution", () => ({
+  resolveModelForSpawn: vi.fn(),
+}));
+
+vi.mock("../runtime/pi-import", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../runtime/pi-import")>();
+  return {
+    ...actual,
+    importPi: vi.fn(actual.importPi),
+    getAgentDir: vi.fn(actual.getAgentDir),
+  };
+});
+
 describe("buildPiArgs", () => {
   it("uses json + prompt-only mode, mounts the subagent extension, names the session line, and never uses --no-session", () => {
     const agent = maker("search");
@@ -272,6 +298,78 @@ describe("describeModel", () => {
 
   it("returns undefined without a model", () => {
     expect(describeModel({} as never)).toBeUndefined();
+  });
+});
+
+describe("subagent model resolution logging", () => {
+  async function stubFreshToolDeps(): Promise<void> {
+    const { discoverAgents } = await import("./agents");
+    const { resolveModelForSpawn } = await import("./model-resolution");
+    const { importPi, getAgentDir } = await import("../runtime/pi-import");
+    vi.mocked(discoverAgents).mockResolvedValue({ agents: [maker("other")] });
+    vi.mocked(resolveModelForSpawn).mockResolvedValue("p/m");
+    vi.mocked(getAgentDir).mockReturnValue("/fake/agent");
+    vi.mocked(importPi).mockResolvedValue({
+      SessionManager: { list: vi.fn(async () => []) },
+    } as never);
+  }
+
+  it("logs the resolved model at dispatch", async () => {
+    const previous = process.env.LAZYRESEARCH_RPC_CHILD;
+    delete process.env.LAZYRESEARCH_RPC_CHILD;
+    try {
+      vi.resetModules();
+      await stubFreshToolDeps();
+      // Fresh import re-executes the module scope, so createLogger runs with
+      // RPC_CHILD unset and the module-scope logger is live.
+      const { subagentTool } = await import("./tool");
+
+      await subagentTool.execute(
+        "call-1",
+        { chain: [{ agent: "search", task: "find papers" }] },
+        undefined,
+        undefined,
+        { cwd: "/tmp/lazyresearch-pipeline", sessionManager: { getEntries: () => [] } } as never,
+      );
+
+      expect(loggerMock.debug).toHaveBeenCalledWith("subagent model resolved", {
+        agent: "search",
+        model: "p/m",
+      });
+    } finally {
+      if (previous === undefined) delete process.env.LAZYRESEARCH_RPC_CHILD;
+      else process.env.LAZYRESEARCH_RPC_CHILD = previous;
+    }
+  });
+
+  it("creates no logger inside RPC children (LAZYRESEARCH_RPC_CHILD=1)", async () => {
+    const previous = process.env.LAZYRESEARCH_RPC_CHILD;
+    process.env.LAZYRESEARCH_RPC_CHILD = "1";
+    try {
+      createLoggerMock.mockClear();
+      loggerMock.debug.mockClear();
+      vi.resetModules();
+      await stubFreshToolDeps();
+      // Fresh import re-executes the module scope; with RPC_CHILD=1 the guard
+      // must skip createLogger entirely (Constraint 4: RPC children never run
+      // their own logger).
+      const { subagentTool } = await import("./tool");
+      expect(createLoggerMock).not.toHaveBeenCalled();
+
+      await subagentTool.execute(
+        "call-2",
+        { agent: "search", task: "find papers" },
+        undefined,
+        undefined,
+        { cwd: "/tmp/lazyresearch-pipeline", sessionManager: { getEntries: () => [] } } as never,
+      );
+
+      expect(createLoggerMock).not.toHaveBeenCalled();
+      expect(loggerMock.debug).not.toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) delete process.env.LAZYRESEARCH_RPC_CHILD;
+      else process.env.LAZYRESEARCH_RPC_CHILD = previous;
+    }
   });
 });
 
