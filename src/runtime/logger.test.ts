@@ -70,6 +70,26 @@ describe("invalid-level warning (spec 5)", () => {
       warn2.mockRestore();
     }
   });
+
+  it("warns once on invalid LAZYRESEARCH_LOG_LEVEL env value, env wins over settings", () => {
+    const agentDir = makeAgentDir();
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ lazyresearch: { logging: { level: "info" } } }));
+    const previous = process.env.LAZYRESEARCH_LOG_LEVEL;
+    process.env.LAZYRESEARCH_LOG_LEVEL = "verbose";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const logger = createLogger("t", { agentDir });
+      expect(process.env.LAZYRESEARCH_LOG_LEVEL).toBe("verbose");
+      logger.info("a");
+      logger.info("b");
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toContain('invalid log level "verbose"');
+    } finally {
+      warn.mockRestore();
+      if (previous === undefined) delete process.env.LAZYRESEARCH_LOG_LEVEL;
+      else process.env.LAZYRESEARCH_LOG_LEVEL = previous;
+    }
+  });
 });
 
 describe("createLogger", () => {

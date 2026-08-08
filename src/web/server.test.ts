@@ -17,6 +17,15 @@ import { discoverAgents } from "../subagent/agents";
 import { agentToDto, isKnownAgentName } from "./server";
 import type { Logger } from "../runtime/logger";
 
+const [loggerMock, createLoggerMock] = vi.hoisted(() => {
+  const mockLogger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+  return [mockLogger, vi.fn(() => mockLogger)] as const;
+});
+
+vi.mock("../runtime/logger", () => ({
+  createLogger: createLoggerMock,
+}));
+
 vi.mock("../runtime/extensions-guard", () => ({
   assertSafeExtensionSources: vi.fn(),
   ExtensionGuardError: class ExtensionGuardError extends Error {},
