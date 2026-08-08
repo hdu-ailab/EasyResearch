@@ -68,7 +68,7 @@ function formatLine(level: LogLevel, pid: number, scope: string, msg: string, fi
         .map(([k, v]) => {
           let rendered: string;
           if (typeof v === "string") {
-            rendered = v;
+            rendered = v.replace(/\r|\n/g, (ch) => (ch === "\n" ? "\\n" : "\\r"));
           } else {
             try {
               rendered = JSON.stringify(v) ?? "undefined";
