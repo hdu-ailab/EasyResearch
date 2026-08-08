@@ -200,4 +200,13 @@ describe("createLogger", () => {
     expect(content).toContain("tokens=<unserializable>");
     expect(content).toContain("self=<unserializable>");
   });
+
+  it("escapes line terminators in string field values", () => {
+    const agentDir = makeAgentDir();
+    const logger = createLogger("test", { agentDir, level: "info" });
+    logger.info("msg", { note: "line1\nline2\rx" });
+    const content = readFileSync(logFiles(agentDir).map((f) => join(agentDir, "logs", f))[0]!, "utf8");
+    expect(content.trim().split("\n")).toHaveLength(1);
+    expect(content).toContain("note=line1\\nline2\\rx");
+  });
 });
