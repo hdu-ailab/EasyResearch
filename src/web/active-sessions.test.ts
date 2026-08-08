@@ -4,6 +4,16 @@ import type { RpcEventListener, RpcSessionState } from "@earendil-works/pi-codin
 import { ActiveSessionRegistry, UnknownSessionError } from "./active-sessions";
 import { assertSafeExtensionSources } from "../runtime/extensions-guard";
 import type { RpcSessionAdapter, RpcSessionFactory, StartRpcSessionOptions } from "./rpc-session";
+import type { Logger } from "../runtime/logger";
+
+const [loggerMock, createLoggerMock] = vi.hoisted(() => {
+  const mockLogger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+  return [mockLogger, vi.fn(() => mockLogger)] as const;
+});
+
+vi.mock("../runtime/logger", () => ({
+  createLogger: createLoggerMock,
+}));
 
 vi.mock("../runtime/extensions-guard", () => ({
   assertSafeExtensionSources: vi.fn(),
@@ -12,6 +22,8 @@ vi.mock("../runtime/extensions-guard", () => ({
 
 const cwd = "/test/project";
 const sessionPath = "/agent/sessions/--test-project--/a.jsonl";
+
+const noopLogger: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} };
 
 const fakeState: RpcSessionState = {
   thinkingLevel: "medium",
@@ -94,7 +106,7 @@ describe("ActiveSessionRegistry", () => {
 
   beforeEach(() => {
     factory = new FakeFactory();
-    registry = new ActiveSessionRegistry(factory);
+    registry = new ActiveSessionRegistry(factory, noopLogger);
     vi.mocked(assertSafeExtensionSources).mockClear();
   });
 
