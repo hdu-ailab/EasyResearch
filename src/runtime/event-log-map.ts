@@ -4,6 +4,10 @@ export interface LoggedEvent {
   fields?: Record<string, unknown>;
 }
 
+// Channel split: session_start, model_select, tool_result are delivered only
+// via the extension channel (pi.on -> pi-event-logger, TUI/stage runtimes);
+// the Web RPC wire (session.subscribe) never delivers them, so the Web
+// event-logger sees only agent-level/retry/compaction events. Shared by both.
 const INFO_TYPES = new Set([
   "session_start", "agent_start", "agent_end", "agent_settled",
   "turn_start", "turn_end", "model_select",
