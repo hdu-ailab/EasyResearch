@@ -18,6 +18,7 @@ import type { ConfigFileService } from "./config-files";
 import { ConfigPathError, ConfigServiceError } from "./config-files";
 import { AgentModelError } from "./agent-models";
 import { WebuiSettingsError, readWebuiSettings, updateWebuiSettings } from "./webui-settings";
+import type { Logger } from "../runtime/logger";
 
 export interface RouteServices {
   webuiDist: string;
@@ -32,6 +33,7 @@ export interface RouteServices {
   directories: DirectoryService;
   registry: ActiveSessionRegistry;
   config: ConfigFileService;
+  logger: Logger;
 }
 
 export type RouteHandler = (request: Request) => Promise<Response>;
@@ -115,7 +117,7 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
 
       const eventsMatch = path.match(/^\/api\/sessions\/([^/]+)\/events$/);
       if (req.method === "GET" && eventsMatch) {
-        return sessionEvents(services.registry, eventsMatch[1]!);
+        return sessionEvents(services.registry, services.logger, eventsMatch[1]!);
       }
 
       const messagesMatch = path.match(/^\/api\/sessions\/([^/]+)\/messages$/);
@@ -275,7 +277,7 @@ function rangeErrorResponse(descriptor: RawFileDescriptor): Response {
   });
 }
 
-function sessionEvents(registry: ActiveSessionRegistry, id: string): Response {
+function sessionEvents(registry: ActiveSessionRegistry, logger: Logger, id: string): Response {
   const encoder = new TextEncoder();
   let controllerRef: ReadableStreamDefaultController<Uint8Array> | null = null;
   let unsubscribe: (() => void) | null = null;
@@ -286,6 +288,7 @@ function sessionEvents(registry: ActiveSessionRegistry, id: string): Response {
   } catch {
     throw new UnknownSessionError(`Unknown session: ${id}`);
   }
+  logger.info("sse connected", { sessionId: id });
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       controllerRef = controller;
@@ -305,6 +308,7 @@ function sessionEvents(registry: ActiveSessionRegistry, id: string): Response {
     cancel() {
       // Browser disconnect only unsubscribes; the registry entry keeps running.
       unsubscribe?.();
+      logger.info("sse disconnected", { sessionId: id });
     },
   });
   return new Response(stream, { headers: SSE_HEADERS });

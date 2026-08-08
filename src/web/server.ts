@@ -118,6 +118,7 @@ export async function startServer(): Promise<Server> {
     directories: new DirectoryService(),
     registry,
     config,
+    logger,
     listAgents: async () => (await discoverAgents()).agents.map(agentToDto),
   };
   const handler = createRouteHandler(services);
