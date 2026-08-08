@@ -11,6 +11,10 @@ export interface ToolView {
   args?: string;
   /** Compact string of the tool output, shown in the expanded body. */
   output?: string;
+  /** Live progress text streamed by the tool (ADR-037: subagent updates). */
+  progress?: string;
+  /** Agent name for `subagent` tool rows (ADR-037: tab derivation). */
+  agentName?: string;
   /** Position in the shared message/tool stream; tools interleave with messages. */
   order: number;
 }
@@ -25,8 +29,6 @@ export interface SessionMessageView {
   error: boolean;
   /** Agent that produced this message; undefined means the orchestrator. */
   agentId?: string;
-  /** Last applied text delta, used to make duplicate deliveries idempotent. */
-  lastDelta?: string;
   /** Position in the shared message/tool stream; tools interleave with messages. */
   order: number;
   /** Display label overriding the role-based default (e.g. subagent-line dispatches). */
@@ -125,6 +127,26 @@ function compactArgs(args: unknown): string | undefined {
   return text.length > 80 ? `${text.slice(0, 77)}…` : text;
 }
 
+/** Agent name from a subagent tool call's arguments (single or chain mode). */
+function agentNameOfToolCall(args: unknown): string | undefined {
+  if (args === undefined || args === null) return undefined;
+  if (typeof args === "string") {
+    try {
+      args = JSON.parse(args);
+    } catch {
+      return undefined;
+    }
+  }
+  if (typeof args !== "object") return undefined;
+  const a = args as Record<string, unknown>;
+  if (typeof a.agent === "string" && a.agent) return a.agent;
+  if (Array.isArray(a.chain) && a.chain.length > 0) {
+    const first = a.chain[0] as { agent?: unknown } | undefined;
+    if (typeof first?.agent === "string" && first.agent) return first.agent;
+  }
+  return undefined;
+}
+
 /** Compact string for a tool result (prefers the output field). */
 function compactOutput(result: unknown): string | undefined {
   if (result === undefined || result === null) return undefined;
@@ -181,7 +203,6 @@ export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
       const toolMessage = message as unknown as { toolCallId?: unknown; toolName?: unknown; isError?: unknown };
       const tool = state.tools.find((t) => t.key === String(toolMessage.toolCallId));
       const output = compactOutput(message.content);
-      next();
       if (tool) {
         tool.done = true;
         tool.error = Boolean(toolMessage.isError);
@@ -194,9 +215,8 @@ export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
           done: true,
           error: Boolean(toolMessage.isError),
           output,
-          order: state.nextOrder,
+          order: next(),
         });
-        next();
       }
       return;
     }
@@ -237,6 +257,7 @@ export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
           done: false,
           error: false,
           args: compactArgs(b.arguments),
+          agentName: b.name === "subagent" ? agentNameOfToolCall(b.arguments) : undefined,
           order: next(),
         });
       }
@@ -261,7 +282,7 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
       const next: SessionViewState = {
         ...state,
         isStreaming: true,
-        error: null,
+        error: typeof errorMessage === "string" && errorMessage ? errorMessage : null,
         nextOrder: state.nextOrder + 1,
       };
       const view: SessionMessageView = {
@@ -304,12 +325,10 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
       }
       if (lastIndex === -1 || !delta) return state;
       const target = state.messages[lastIndex]!;
-      if (delta === target.lastDelta) return state;
       const nextMessages = [...state.messages];
       nextMessages[lastIndex] = {
         ...target,
         text: target.text === "..." ? delta : target.text + delta,
-        lastDelta: delta,
         streaming: true,
       };
       return { ...state, messages: nextMessages, isStreaming: true };
@@ -339,6 +358,7 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
             done: false,
             error: false,
             args: compactArgs(args),
+            agentName: toolName === "subagent" ? agentNameOfToolCall(args) : undefined,
             order: state.nextOrder,
           },
         ],
@@ -359,10 +379,33 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
         ),
       };
     }
+    case "tool_execution_update": {
+      const { toolCallId, partialResult } = event as unknown as {
+        toolCallId: string;
+        partialResult?: { details?: { subagent?: { agent?: unknown; lastText?: unknown } } };
+      };
+      const subagent = partialResult?.details?.subagent;
+      const lastText = subagent?.lastText;
+      if (typeof lastText !== "string" || lastText.trim() === "") return state;
+      const agent = typeof subagent?.agent === "string" ? subagent.agent : undefined;
+      return {
+        ...state,
+        tools: state.tools.map((tool) =>
+          tool.key === toolCallId && tool.running
+            ? {
+                ...tool,
+                progress: lastText,
+                ...(agent ? { agentName: agent } : {}),
+              }
+            : tool,
+        ),
+      };
+    }
     case "agent_settled": {
       return {
         ...state,
         isStreaming: false,
+        error: null,
         activeMessageKey: undefined,
         messages: state.messages.map((m) => ({ ...m, streaming: false })),
       };

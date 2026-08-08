@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AgentToolResult, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Message } from "@earendil-works/pi-ai";
 import { defineTool, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -54,6 +54,80 @@ export interface SubagentDetails {
   mode: "single" | "chain";
   projectAgentsDir: string | null;
   results: SingleResult[];
+  /** Live progress from the running subagent child (ADR-037). */
+  subagent?: SubagentProgress;
+}
+
+/** Live progress payload streamed via the tool update callback (ADR-037). */
+export interface SubagentProgress {
+  agent: string;
+  step?: number;
+  status: "running";
+  lastText?: string;
+}
+
+/** Cap for the progress text forwarded to the parent session line. */
+const PROGRESS_TEXT_CAP = 200;
+
+/**
+ * ADR-037: build the live progress payload from one child message. Returns
+ * undefined when the message carries no text (nothing to report). The text is
+ * the last text block, capped so huge tool outputs never flood the parent
+ * session line.
+ */
+/** Per-child-line dispatch targets used by {@link handleChildLine}. */
+export interface ChildLineHandlers {
+  onMessageEnd: (message: Message) => void;
+  onToolResultEnd: (message: Message) => void;
+  onProgress?: (progress: SubagentProgress) => void;
+}
+
+/**
+ * ADR-037: parse one child stdout JSONL line and dispatch. `message_end`
+ * lines also emit live progress (agent/step/lastText) when the message
+ * carries text and an `onProgress` handler is wired; malformed lines are
+ * ignored. Pure and DI-friendly so the update-callback contract is testable
+ * without spawning a child process.
+ */
+export function handleChildLine(
+  line: string,
+  agentName: string,
+  step: number | undefined,
+  handlers: ChildLineHandlers,
+): void {
+  if (!line.trim()) return;
+  let event: any;
+  try {
+    event = JSON.parse(line);
+  } catch {
+    return;
+  }
+  if (event.type === "message_end" && event.message) {
+    const msg = event.message as Message;
+    handlers.onMessageEnd(msg);
+    if (handlers.onProgress) {
+      const progress = progressFromMessage(agentName, step, msg);
+      if (progress) handlers.onProgress(progress);
+    }
+  }
+  if (event.type === "tool_result_end" && event.message) {
+    handlers.onToolResultEnd(event.message as Message);
+  }
+}
+
+export function progressFromMessage(
+  agent: string,
+  step: number | undefined,
+  message: Message,
+): SubagentProgress | undefined {
+  let lastText: string | undefined;
+  for (const part of message.content) {
+    const text = typeof part === "string" ? part : part.type === "text" ? part.text : undefined;
+    if (text && text.trim()) lastText = text;
+  }
+  if (!lastText) return undefined;
+  const capped = lastText.length > PROGRESS_TEXT_CAP ? `${lastText.slice(0, PROGRESS_TEXT_CAP)}…` : lastText;
+  return { agent, step, status: "running", lastText: capped };
 }
 
 function getFinalOutput(messages: Message[]): string {
@@ -161,11 +235,14 @@ export interface RunSingleOptions {
   sessionPath?: string;
   signal?: AbortSignal;
   step?: number;
+  /** Live progress callback (ADR-037): invoked on each child message_end. */
+  onUpdate?: AgentToolUpdateCallback<SubagentDetails>;
 }
 
 async function runSingleAgent(opts: RunSingleOptions): Promise<SingleResult> {
-  const { defaultCwd, agents, agentName, task, cwd, model, sessionPath, signal, step } = opts;
+  const { defaultCwd, agents, agentName, task, cwd, model, sessionPath, signal, step, onUpdate } = opts;
   const agent = agents.find((a) => a.name === agentName);
+  const detailsBase = { mode: "single" as const, projectAgentsDir: getAgentDir(), results: [] };
 
   const emptyUsage: UsageStats = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 };
 
@@ -217,35 +294,34 @@ async function runSingleAgent(opts: RunSingleOptions): Promise<SingleResult> {
       let buffer = "";
 
       const processLine = (line: string) => {
-        if (!line.trim()) return;
-        let event: any;
-        try {
-          event = JSON.parse(line);
-        } catch {
-          return;
-        }
-        if (event.type === "message_end" && event.message) {
-          const msg = event.message as Message;
-          result.messages.push(msg);
-          if (msg.role === "assistant") {
-            result.usage.turns++;
-            const usage = msg.usage;
-            if (usage) {
-              result.usage.input += usage.input || 0;
-              result.usage.output += usage.output || 0;
-              result.usage.cacheRead += usage.cacheRead || 0;
-              result.usage.cacheWrite += usage.cacheWrite || 0;
-              result.usage.cost += usage.cost?.total || 0;
-              result.usage.contextTokens = usage.totalTokens || 0;
+        handleChildLine(line, agentName, step, {
+          onMessageEnd: (msg) => {
+            result.messages.push(msg);
+            if (msg.role === "assistant") {
+              result.usage.turns++;
+              const usage = msg.usage;
+              if (usage) {
+                result.usage.input += usage.input || 0;
+                result.usage.output += usage.output || 0;
+                result.usage.cacheRead += usage.cacheRead || 0;
+                result.usage.cacheWrite += usage.cacheWrite || 0;
+                result.usage.cost += usage.cost?.total || 0;
+                result.usage.contextTokens = usage.totalTokens || 0;
+              }
+              if (!result.model && msg.model) result.model = msg.model;
+              if (msg.stopReason) result.stopReason = msg.stopReason;
+              if (msg.errorMessage) result.errorMessage = msg.errorMessage;
             }
-            if (!result.model && msg.model) result.model = msg.model;
-            if (msg.stopReason) result.stopReason = msg.stopReason;
-            if (msg.errorMessage) result.errorMessage = msg.errorMessage;
-          }
-        }
-        if (event.type === "tool_result_end" && event.message) {
-          result.messages.push(event.message as Message);
-        }
+          },
+          onToolResultEnd: (msg) => {
+            result.messages.push(msg);
+          },
+          // ADR-037: stream live progress to the parent session line so the
+          // Web UI can render a dynamic subagent tab.
+          onProgress: onUpdate
+            ? (progress) => onUpdate({ content: [], details: { ...detailsBase, subagent: progress } })
+            : undefined,
+        });
       };
 
       proc.stdout.on("data", (data) => {
@@ -335,7 +411,7 @@ export const subagentTool = defineTool({
   ].join(" "),
   parameters: SubagentParams,
 
-  async execute(_toolCallId, params, signal, _onUpdate, ctx: ExtensionContext) {
+  async execute(_toolCallId, params, signal, onUpdate, ctx: ExtensionContext) {
     if (!tryAcquireSubagentLock()) {
       return {
         content: [
@@ -392,6 +468,7 @@ export const subagentTool = defineTool({
             sessionPath,
             signal,
             step: i + 1,
+            onUpdate,
           });
           results.push(result);
           if (isFailedResult(result)) {
@@ -421,6 +498,7 @@ export const subagentTool = defineTool({
           model,
           sessionPath,
           signal,
+          onUpdate,
         });
         if (isFailedResult(result)) {
           return {

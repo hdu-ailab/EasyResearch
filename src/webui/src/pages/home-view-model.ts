@@ -20,7 +20,18 @@ export function buildHomeProjectGroups(
     return group;
   };
   for (const session of active) ensure(session.cwd).active.push(session);
-  for (const session of history) ensure(session.cwd).history.push(session);
+  // webui.md: the Recent list is history-only — a *running* session must not
+  // appear there too; idle/ready sessions are shown only in Recent history.
+  const activePaths = new Set(
+    active
+      .filter(isActuallyRunning)
+      .map((session) => session.sessionFile)
+      .filter((path): path is string => Boolean(path)),
+  );
+  for (const session of history) {
+    if (session.path && activePaths.has(session.path)) continue;
+    ensure(session.cwd).history.push(session);
+  }
   return [...groups.values()];
 }
 

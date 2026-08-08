@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Bot, FileSearch, FolderOpen } from "lucide-react";
+import { Bot, FileSearch, FolderOpen, X } from "lucide-react";
 import { agentDescription, agentDisplayName, type Translate } from "../i18n/agents";
 import type { AgentDto, AgentEffectiveModelDto } from "../../../web/contracts";
 import {
@@ -47,11 +47,10 @@ function defaultPanel(): Panel {
 interface AgentChip {
   id: string;
   name: string;
-  count: number;
   status: "idle" | "working" | "error";
 }
 
-const ORCHESTRATOR_AGENT: AgentChip = { id: "orchestrator", name: "orchestrator", count: 0, status: "idle" };
+const ORCHESTRATOR_AGENT: AgentChip = { id: "orchestrator", name: "orchestrator", status: "idle" };
 
 function dotClass(status: AgentChip["status"]): string {
   return status === "working" ? "bg-v2-status-success" : status === "error" ? "bg-v2-status-warning" : "bg-v2-grey-400";
@@ -68,6 +67,10 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   const pendingBaseline = useRef<number | null>(null);
   const [statusText, setStatusText] = useState<string | null>(null);
   const sessionPathRef = useRef<string | null>(null);
+  // Any event-stream delivery (the connection snapshot or live deltas) makes
+  // the stream the authoritative view; later HTTP snapshot resolutions must
+  // not overwrite it with a stale earlier state (ADR-037 race).
+  const eventsReceivedRef = useRef(false);
   const [panel, setPanel] = useState<Panel>(defaultPanel);
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < CONVERSATION_FIRST_BREAKPOINT);
   const [mobileView, setMobileView] = useState<WorkView>("chat");
@@ -79,7 +82,6 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   const panelPhase = usePanelTransition(panelOpen);
   const panelInvisible = panelPhase === "closed";
   const panelInteractive = panelPhase === "open";
-  const [agents, setAgents] = useState<AgentChip[]>([ORCHESTRATOR_AGENT]);
   const [activeAgent, setActiveAgent] = useState<string>("orchestrator");
   const resizing = useRef(false);
   const rowRef = useRef<HTMLDivElement>(null);
@@ -108,39 +110,33 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
+  // ADR-037: tabs derive from running `subagent` tool rows — the tool update
+  // stream feeds progress; the fixed orchestrator tab always comes first.
+  const subagentTabs: Array<{ id: string; name: string; status: AgentChip["status"]; progress?: string }> =
+    sessionView.tools
+      .filter((tool) => tool.name === "subagent" && tool.running)
+      .map((tool) => ({
+        id: tool.agentName ?? tool.key,
+        name: tool.agentName ?? "subagent",
+        status: "working",
+        progress: tool.progress,
+      }));
+  const agentTabs: Array<{ id: string; name: string; status: AgentChip["status"]; progress?: string }> = [
+    {
+      id: "orchestrator",
+      name: "orchestrator",
+      status: sessionView.error !== null ? "error" : sessionView.isStreaming ? "working" : "idle",
+    },
+    ...subagentTabs,
+  ];
+
+  // If the focused subagent tab collapses (its run ended), fall back to the
+  // orchestrator so the transcript never lingers on an empty filter.
   useEffect(() => {
-    setAgents((current) => {
-      const counts = new Map<string, number>();
-      for (const message of sessionView.messages) {
-        const id = message.agentId ?? "orchestrator";
-        counts.set(id, (counts.get(id) ?? 0) + 1);
-      }
-      let changed = false;
-      const ids = new Set(current.map((a) => a.id));
-      const next = [...current];
-      for (const id of counts.keys()) {
-        if (!ids.has(id)) {
-          next.push({ id, name: id, count: 0, status: "idle" });
-          changed = true;
-        }
-      }
-      const mapped = next.map((agent) => {
-        const count = counts.get(agent.id) ?? 0;
-        const status: AgentChip["status"] =
-          agent.id === "orchestrator"
-            ? sessionView.error !== null
-              ? "error"
-              : sessionView.isStreaming
-                ? "working"
-                : "idle"
-            : agent.status;
-        if (agent.count === count && agent.status === status) return agent;
-        changed = true;
-        return { ...agent, count, status };
-      });
-      return changed ? mapped : current;
-    });
-  }, [sessionView]);
+    if (activeAgent !== "orchestrator" && !agentTabs.some((tab) => tab.id === activeAgent)) {
+      setActiveAgent("orchestrator");
+    }
+  }, [sessionView, activeAgent]);
 
   const panelMin = Math.max(PANEL_MIN, window.innerWidth / 3);
   const panelMax = available === undefined ? 480 : Math.max(panelMin, available - CHAT_MIN - 8);
@@ -151,7 +147,13 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
       ? Math.min(panelWidth, panelMax)
       : Math.min(defaultPanelWidth, panelMax);
   const activeMessages = sessionView.messages.filter((m) => (m.agentId ?? "orchestrator") === activeAgent);
-  const statusByAgent = Object.fromEntries(agents.map((a) => [a.id, a.status])) as Record<string, AgentChip["status"]>;
+  // A focused subagent tab shows that run's tool rows (its messages live on
+  // the agent's own session line, not the orchestrator line).
+  const activeTools =
+    activeAgent === "orchestrator"
+      ? sessionView.tools
+      : sessionView.tools.filter((tool) => tool.name === "subagent" && (tool.agentName ?? tool.key) === activeAgent);
+  const statusByAgent = Object.fromEntries(agentTabs.map((a) => [a.id, a.status])) as Record<string, AgentChip["status"]>;
   const projectName = cwd.split("/").filter(Boolean).at(-1) ?? cwd;
   const chatHidden = isMobile && mobileView !== "chat";
   const filesHidden = isMobile ? mobileView !== "files" : panel !== "files";
@@ -161,13 +163,18 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
     const snapshot = await getSnapshot(targetId);
     sessionPathRef.current = snapshot.session.sessionFile ?? null;
     setSessionId(snapshot.session.id);
-    setSessionView(fromSnapshot(snapshot));
     setStatus(snapshot.session.status);
+    return snapshot;
   }, []);
 
   useEffect(() => {
     let active = true;
-    hydrate(sessionId).catch((e: unknown) => {
+    eventsReceivedRef.current = false;
+    hydrate(sessionId).then((snapshot) => {
+      if (active && !eventsReceivedRef.current) {
+        setSessionView(fromSnapshot(snapshot));
+      }
+    }).catch((e: unknown) => {
       if (active) {
         setStatus("error");
         setStatusText(e instanceof Error ? e.message : String(e));
@@ -175,6 +182,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
     });
     const unsubscribe = connectSessionEvents(sessionId, {
       onEvent: (event) => {
+        eventsReceivedRef.current = true;
         setStatusText((current) => (current === t("work.connectionLost") ? null : current));
         const typed = event as { type?: string };
         if (typed.type === "snapshot") {
@@ -255,7 +263,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
             setSessionId(dto.id);
             setSubscribeEpoch((epoch) => epoch + 1);
             const snapshot = await getSnapshot(dto.id);
-            setSessionView(fromSnapshot(snapshot));
+            if (!eventsReceivedRef.current) setSessionView(fromSnapshot(snapshot));
             await sendPrompt(dto.id, text);
             setAccepting(false);
             return;
@@ -368,10 +376,11 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
           className="flex h-full min-w-0 flex-1 flex-col overflow-hidden rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]"
         >
           <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-v2-grey-200 px-3 py-2">
-            {agents.map((agent) => {
+            {agentTabs.map((agent) => {
               const focused = agent.id === activeAgent;
               const label = agentDisplayName(t, agent.name);
               const dot = dotClass(agent.status);
+              const running = agent.status === "working";
               return (
                 <button
                   key={agent.id}
@@ -380,28 +389,69 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
                   aria-label={`${t("work.agentChip")} ${label}`}
                   onClick={() => setActiveAgent(agent.id)}
                   title={focused ? `${t("work.viewing")} ${label}` : `${t("work.focus")} ${label}`}
-                  className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[12px] transition-colors ${
+                  className={`flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-[12px] transition-colors ${
                     focused
                       ? "border-v2-blue-200 bg-v2-blue-100/50 text-v2-blue-600"
                       : "border-v2-grey-200 text-v2-text-text-muted hover:bg-v2-grey-100"
                   }`}
                 >
-                  <span className={`size-2 rounded-full ${dot}`} aria-hidden />
-                  {label}
-                  {agent.count > 0 ? <span className="opacity-70">({agent.count})</span> : null}
+                  <span className={`size-2 shrink-0 rounded-full ${dot}`} aria-hidden />
+                  {agent.id === "orchestrator" ? (
+                    <span className="truncate">{label}</span>
+                  ) : (
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <span className="truncate">{label}</span>
+                      <span className="min-w-0">
+                        {running ? (
+                          agent.progress ? (
+                            <span className="truncate text-v2-text-text-faint" title={agent.progress}>
+                              {agent.progress}
+                            </span>
+                          ) : (
+                            <span className="v2-spinner size-3" aria-hidden />
+                          )
+                        ) : null}
+                      </span>
+                    </span>
+                  )}
+                  {running && agent.id !== "orchestrator" ? (
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      aria-label={t("work.stopAgent")}
+                      title={t("work.stopAgent")}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        abort();
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          abort();
+                        }
+                      }}
+                      className="flex size-4 shrink-0 items-center justify-center rounded-full text-v2-text-text-faint hover:bg-v2-grey-200 hover:text-v2-status-error"
+                    >
+                      <X size={11} aria-hidden />
+                    </span>
+                  ) : null}
                 </button>
               );
             })}
           </div>
           <ChatTranscript
             messages={activeMessages}
-            tools={sessionView.tools}
+            tools={activeTools}
             emptyHint={activeAgent === "orchestrator" ? undefined : t("work.noMessagesYet")}
             pending={pendingOutput && activeAgent === "orchestrator"}
           />
           <footer className="shrink-0 border-t border-v2-grey-200 p-3">
+            {sessionView.subagentName ? (
+              <p className="mb-2 text-[12px] text-v2-text-text-faint">{t("work.subagentLineNote")}</p>
+            ) : null}
             <ChatComposer
-              disabled={accepting}
+              disabled={accepting || sessionView.subagentName !== undefined}
               streaming={sessionView.isStreaming}
               onSend={send}
               onAbort={abort}

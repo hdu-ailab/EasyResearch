@@ -210,17 +210,60 @@ describe("WorkPage", () => {
     expect(api.stopSession).not.toHaveBeenCalled();
   });
 
-  it("agent chips show run status dot and clicking focuses an agent", async () => {
+  it("shows the fixed orchestrator tab, adds a running subagent tab with live progress, and collapses it when done", async () => {
     const user = userEvent.setup();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await screen.findByText("starting research");
-    const orchestatorChip = screen.getByRole("button", { name: /agent orchestrator/i });
-    expect(orchestatorChip.getAttribute("aria-pressed")).toBe("true");
-    emit({ type: "message_start", message: { role: "assistant", id: "sm1", content: [], agentId: "search" } });
-    await screen.findByRole("button", { name: /agent search/i });
-    await user.click(screen.getByRole("button", { name: /agent search/i }));
+    const orchestratorTab = screen.getByRole("button", { name: /agent orchestrator/i });
+    expect(orchestratorTab.getAttribute("aria-pressed")).toBe("true");
+    emit({
+      type: "tool_execution_start",
+      toolCallId: "sub-1",
+      toolName: "subagent",
+      args: { agent: "search", task: "find papers" },
+    });
+    const searchTab = await screen.findByRole("button", { name: /agent search/i });
+    expect(searchTab.getAttribute("aria-pressed")).toBe("false");
+    emit({
+      type: "tool_execution_update",
+      toolCallId: "sub-1",
+      toolName: "subagent",
+      args: { agent: "search" },
+      partialResult: { details: { subagent: { agent: "search", step: 1, status: "running", lastText: "scanning arxiv" } } },
+    });
+    expect(await screen.findByText(/scanning arxiv/)).toBeTruthy();
+    await user.click(searchTab);
     expect(screen.getByRole("button", { name: /agent search/i }).getAttribute("aria-pressed")).toBe("true");
-    expect(orchestatorChip.getAttribute("aria-pressed")).toBe("false");
+    expect(orchestratorTab.getAttribute("aria-pressed")).toBe("false");
+    emit({ type: "tool_execution_end", toolCallId: "sub-1", toolName: "subagent", result: "done", isError: false });
+    await waitFor(() => expect(screen.queryByRole("button", { name: /agent search/i })).toBeNull());
+    await waitFor(() => expect(screen.getByRole("button", { name: /agent orchestrator/i }).getAttribute("aria-pressed")).toBe("true"));
+  });
+
+  it("stops the running subagent from its tab and aborts the session", async () => {
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    emit({
+      type: "tool_execution_start",
+      toolCallId: "sub-2",
+      toolName: "subagent",
+      args: { agent: "writing", task: "draft" },
+    });
+    const stop = await screen.findByRole("button", { name: /stop agent/i });
+    await user.click(stop);
+    await waitFor(() => expect(api.abortSession).toHaveBeenCalledWith("s1"));
+  });
+
+  it("disables the composer on a subagent session line (history browse only)", async () => {
+    vi.mocked(api.getSnapshot).mockResolvedValue({
+      session: { id: "s3", cwd: "/p", isStreaming: false, status: "ready", sessionName: "lazyresearch:search" },
+      messages: [{ role: "user", content: [{ type: "text", text: "Task: search" }] }],
+    } as never);
+    render(<WorkPage id="s3" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("Task: search");
+    expect(screen.getByText(/history only/i)).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: /message/i })).toBeDisabled();
   });
 
   it("preserves chat state when toggling side panels and back", async () => {
