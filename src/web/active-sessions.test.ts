@@ -55,12 +55,14 @@ class FakeAdapter implements RpcSessionAdapter {
   onExitListeners = new Set<(error: Error) => void>();
   stats: FakeAdapterStats = { started: 0, stopped: 0, prompts: [], aborts: 0, setModels: [], exits: [] };
   stateOverrides: Partial<RpcSessionState> = {};
+  startError: Error | null = null;
 
   constructor(public options: StartRpcSessionOptions) {
     FakeAdapter.all.push(this);
   }
 
   async start() {
+    if (this.startError) throw this.startError;
     this.stats.started++;
   }
   async stop() {
@@ -93,8 +95,10 @@ class FakeAdapter implements RpcSessionAdapter {
 
 class FakeFactory implements RpcSessionFactory {
   created: FakeAdapter[] = [];
+  startError: Error | null = null;
   create(options: StartRpcSessionOptions): RpcSessionAdapter {
     const adapter = new FakeAdapter(options);
+    adapter.startError = this.startError;
     this.created.push(adapter);
     return adapter;
   }
@@ -293,6 +297,18 @@ describe("ActiveSessionRegistry", () => {
     adapter.onExitListeners.forEach((listener) => listener(new Error("crash")));
     expect(registry.list().find((s) => s.id === created.id)?.status).toBe("error");
     expect(registry.list().find((s) => s.id === created.id)?.error).toBe("crash");
+  });
+
+  it("logs and propagates unchanged when the rpc child fails to launch", async () => {
+    loggerMock.error.mockClear();
+    const launchError = new Error("boom");
+    factory.startError = launchError;
+    const registryWithMock = new ActiveSessionRegistry(factory, loggerMock);
+    await expect(registryWithMock.create({ cwd })).rejects.toBe(launchError);
+    expect(loggerMock.error).toHaveBeenCalledWith(
+      "rpc child launch failed",
+      expect.objectContaining({ cwd, sessionPath: "", error: "boom" }),
+    );
   });
 
   it("shutdown stops all clients", async () => {
