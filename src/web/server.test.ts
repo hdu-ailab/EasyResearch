@@ -24,6 +24,12 @@ vi.mock("../runtime/extensions-guard", () => ({
 
 const noopLogger: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} };
 
+function fakeLogger(): Logger & { calls: Array<[level: string, msg: string, fields?: Record<string, unknown>]> } {
+  const calls: Array<[string, string, Record<string, unknown> | undefined]> = [];
+  const make = (level: string) => (msg: string, fields?: Record<string, unknown>) => calls.push([level, msg, fields]);
+  return { debug: make("debug"), info: make("info"), warn: make("warn"), error: make("error"), calls };
+}
+
 class FakeAdapter implements RpcSessionAdapter {
   static all: FakeAdapter[] = [];
   static nextId = 0;
@@ -124,6 +130,7 @@ describe("web routes", () => {
       directories: directoryService,
       registry,
       config: configService,
+      logger: noopLogger,
       listAgents: async () => [],
       getWebuiSettings: vi.fn(async () => ({ agentModels: {}, orchestratorModel: null, effectiveOrchestratorModel: null })),
       updateWebuiSettings: vi.fn(async (patch) => ({ agentModels: {}, orchestratorModel: null, effectiveOrchestratorModel: null, ...patch })),
@@ -411,6 +418,33 @@ describe("web routes", () => {
     const second = await reader.read();
     expect(decoder.decode(second.value)).toContain('"type":"message_start"');
     reader.cancel();
+  });
+
+  it("logs SSE connect on subscribe and disconnect on cancel", async () => {
+    const logger = fakeLogger();
+    setup({ logger });
+    const created = (await (
+      await handler(
+        new Request("http://localhost/api/sessions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cwd: projectDir }),
+        }),
+      )
+    ).json()) as { id: string };
+
+    const res = await handler(new Request(`http://localhost/api/sessions/${created.id}/events`));
+    expect(res.status).toBe(200);
+    expect(logger.calls).toContainEqual(["info", "sse connected", { sessionId: created.id }]);
+
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    const first = await reader.read();
+    expect(decoder.decode(first.value)).toContain('"type":"snapshot"');
+    await reader.cancel();
+    await vi.waitFor(() =>
+      expect(logger.calls).toContainEqual(["info", "sse disconnected", { sessionId: created.id }]),
+    );
   });
 
   it("emits session_deactivated over SSE and then 404s", async () => {
