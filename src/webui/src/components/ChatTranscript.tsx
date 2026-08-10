@@ -5,7 +5,9 @@ import { useExpandable } from "../hooks/useExpandable";
 import { useI18n } from "../i18n/useI18n";
 import { agentDisplayName } from "../i18n/agents";
 import type { MessageKey } from "../i18n/messages";
+import { usePreferences } from "../preferences/PreferencesProvider";
 import { MarkdownBlock } from "./MarkdownBlock";
+import { SubagentToolCard } from "./SubagentToolCard";
 
 export interface ChatTranscriptProps {
   messages: SessionMessageView[];
@@ -22,18 +24,11 @@ const ROLE_LABELS: Record<string, MessageKey> = {
 
 const STICK_THRESHOLD = 24;
 
-/** Collapsible reasoning block; collapsed by default. */
-function ReasoningBlock({ text }: { text: string }) {
+/** Collapsible reasoning block initialized from the preference for this row. */
+function ReasoningBlock({ text, initialOpen }: { text: string; initialOpen: boolean }) {
   const { t } = useI18n();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(initialOpen);
   const { mounted, phase } = useExpandable(open);
-  const bodyRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (phase === "enter" && open && typeof bodyRef.current?.scrollIntoView === "function") {
-      bodyRef.current.scrollIntoView({ block: "nearest" });
-    }
-  }, [phase, open]);
 
   return (
     <div className="flex w-full flex-col gap-1.5">
@@ -49,7 +44,6 @@ function ReasoningBlock({ text }: { text: string }) {
       </button>
       {mounted && (
         <div
-          ref={bodyRef}
           className={`border-l-2 border-v2-blue-200 pl-3 ${
             phase === "enter" ? "animate-v2-expand-down" : "animate-v2-collapse-up"
           } motion-reduce:animate-none`}
@@ -63,22 +57,15 @@ function ReasoningBlock({ text }: { text: string }) {
   );
 }
 
-function ToolRow({ tool }: { tool: ToolView }) {
+function ToolRow({ tool, initialOpen }: { tool: ToolView; initialOpen: boolean }) {
   const { t } = useI18n();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(initialOpen);
   const { mounted, phase } = useExpandable(open);
-  const bodyRef = useRef<HTMLDivElement>(null);
   const statusClass = tool.done
     ? tool.error
       ? "border-v2-status-error/30 text-v2-status-error hover:bg-v2-status-error/5"
       : "border-v2-grey-200 text-v2-text-text-muted hover:bg-v2-grey-100"
     : "border-v2-blue-200 text-v2-blue-600 hover:bg-v2-blue-100/50";
-
-  useEffect(() => {
-    if (phase === "enter" && open && typeof bodyRef.current?.scrollIntoView === "function") {
-      bodyRef.current.scrollIntoView({ block: "nearest" });
-    }
-  }, [phase, open]);
 
   return (
     <li className="flex flex-col gap-1 items-start">
@@ -104,7 +91,6 @@ function ToolRow({ tool }: { tool: ToolView }) {
       </button>
       {mounted && (
         <div
-          ref={bodyRef}
           className={`max-h-64 w-full overflow-y-auto rounded-md border border-v2-grey-200 bg-v2-background-bg-deep px-3 py-2 ${
             phase === "enter" ? "animate-v2-expand-down" : "animate-v2-collapse-up"
           } motion-reduce:animate-none`}
@@ -114,7 +100,7 @@ function ToolRow({ tool }: { tool: ToolView }) {
               {tool.output}
             </pre>
           ) : tool.running ? (
-            <p className="text-[12px] text-v2-text-text-muted">{tool.progress ?? t("transcript.running")}</p>
+            <p className="text-[12px] text-v2-text-text-muted">{t("transcript.running")}</p>
           ) : (
             <p className="text-[12px] text-v2-text-text-faint">{t("transcript.noOutput")}</p>
           )}
@@ -127,7 +113,7 @@ function ToolRow({ tool }: { tool: ToolView }) {
 /** A single message bubble. Human messages align right with the You label;
  * anything labeled otherwise (subagent-line dispatches, agent replies)
  * aligns left under its own label. */
-function MessageRow({ message }: { message: SessionMessageView }) {
+function MessageRow({ message, initialThinkingOpen }: { message: SessionMessageView; initialThinkingOpen: boolean }) {
   const { t } = useI18n();
   const roleKey = ROLE_LABELS[message.role];
   const label = message.label ? agentDisplayName(t, message.label) : roleKey ? t(roleKey) : message.role;
@@ -135,7 +121,7 @@ function MessageRow({ message }: { message: SessionMessageView }) {
   return (
     <li className={`flex flex-col gap-1 ${isYou ? "items-end" : "items-start"}`}>
       <span className="text-[11px] font-medium uppercase tracking-wide text-v2-text-text-faint">{label}</span>
-      {message.reasoning ? <ReasoningBlock text={message.reasoning} /> : null}
+      {message.reasoning ? <ReasoningBlock text={message.reasoning} initialOpen={initialThinkingOpen} /> : null}
       {message.role === "assistant" || message.role === "user" ? (
         <div
           className={`v2-md max-w-full rounded-lg px-3 py-2 text-[length:var(--v2-chat-font-size)] ${
@@ -168,9 +154,12 @@ function MessageRow({ message }: { message: SessionMessageView }) {
  */
 export function ChatTranscript({ messages, tools, emptyHint, pending = false }: ChatTranscriptProps) {
   const { t } = useI18n();
+  const { preferences } = usePreferences();
   const hint = emptyHint ?? t("transcript.sendToStart");
   const scrollRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLUListElement>(null);
   const stickRef = useRef(true);
+  const frameRef = useRef<number | null>(null);
   const entries = useMemo(
     () => [...messages, ...tools].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
     [messages, tools],
@@ -182,11 +171,31 @@ export function ChatTranscript({ messages, tools, emptyHint, pending = false }: 
     stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_THRESHOLD;
   };
 
+  const scheduleFollow = () => {
+    if (frameRef.current !== null) return;
+    frameRef.current = requestAnimationFrame(() => {
+      frameRef.current = null;
+      const element = scrollRef.current;
+      if (element && stickRef.current) element.scrollTop = element.scrollHeight;
+    });
+  };
+
   useEffect(() => {
-    const el = scrollRef.current;
-    if (el && stickRef.current) {
-      el.scrollTop = el.scrollHeight;
-    }
+    const content = contentRef.current;
+    if (!content) return;
+    const observer = new ResizeObserver(scheduleFollow);
+    observer.observe(content);
+    return () => {
+      observer.disconnect();
+      if (frameRef.current !== null) {
+        cancelAnimationFrame(frameRef.current);
+        frameRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    scheduleFollow();
   }, [entries, pending]);
 
   return (
@@ -194,12 +203,14 @@ export function ChatTranscript({ messages, tools, emptyHint, pending = false }: 
       {messages.length === 0 && tools.length === 0 && !pending && (
         <p className="px-4 pt-6 text-center text-[length:var(--v2-chat-font-size)] text-v2-text-text-faint">{hint}</p>
       )}
-      <ul className="mx-auto flex w-full max-w-[1000px] flex-col gap-3 p-4 md:max-w-200 2xl:max-w-[1000px]">
+      <ul ref={contentRef} className="mx-auto flex w-full max-w-[1000px] flex-col gap-3 p-4 md:max-w-200 2xl:max-w-[1000px]">
         {entries.map((entry) =>
-          "name" in entry ? (
-            <ToolRow key={entry.key} tool={entry} />
+          "name" in entry ? entry.name === "subagent" ? (
+            <SubagentToolCard key={entry.key} tool={entry} initialOpen={preferences.expandSubagentOutput} />
           ) : (
-            <MessageRow key={entry.key} message={entry} />
+            <ToolRow key={entry.key} tool={entry} initialOpen={preferences.autoExpandTools} />
+          ) : (
+            <MessageRow key={entry.key} message={entry} initialThinkingOpen={preferences.autoExpandThinking} />
           ),
         )}
         {pending && (

@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
@@ -10,13 +11,19 @@ import {
   progressFromMessage,
   resolveInheritedSession,
   sessionNameFor,
+  subagentTool,
   SUBAGENT_SESSION_PREFIX,
 } from "./tool";
 import { releaseSubagentLock, tryAcquireSubagentLock } from "./serial";
 
-const [loggerMock, createLoggerMock] = vi.hoisted(() => {
+const [loggerMock, createLoggerMock, spawnMock] = vi.hoisted(() => {
   const mockLogger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-  return [mockLogger, vi.fn(() => mockLogger)] as const;
+  return [mockLogger, vi.fn(() => mockLogger), vi.fn()] as const;
+});
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, spawn: spawnMock };
 });
 
 vi.mock("../runtime/logger", () => ({
@@ -136,37 +143,107 @@ describe("filterAgentsByAllowlist (ADR-022)", () => {
   });
 });
 
-describe("progressFromMessage (ADR-037)", () => {
-  it("extracts the last text block as live progress", () => {
-    const progress = progressFromMessage("search", 2, {
+describe("progressFromMessage (ADR-040)", () => {
+  it("returns every non-empty assistant text block without truncation", () => {
+    const complete = "x".repeat(500);
+    expect(progressFromMessage("search", 2, {
       role: "assistant",
       content: [
         { type: "thinking", thinking: "think" },
-        { type: "text", text: "looking at arxiv" },
+        { type: "text", text: "first section" },
+        { type: "text", text: "   " },
+        { type: "text", text: complete },
       ],
-    } as never);
-    expect(progress).toEqual({ agent: "search", step: 2, status: "running", lastText: "looking at arxiv" });
+    } as never)).toEqual({
+      agent: "search",
+      step: 2,
+      status: "running",
+      latestMessage: `first section\n\n${complete}`,
+    });
   });
 
   it("returns undefined when the message has no text", () => {
     expect(progressFromMessage("search", 1, { role: "assistant", content: [] } as never)).toBeUndefined();
   });
 
-  it("caps oversized progress text so tool outputs never flood the parent line", () => {
-    const progress = progressFromMessage("search", 1, {
-      role: "assistant",
-      content: [{ type: "text", text: "x".repeat(500) }],
-    } as never);
-    expect(progress!.lastText!.length).toBe(201);
-    expect(progress!.lastText!.endsWith("…")).toBe(true);
+  it("returns undefined for non-assistant messages", () => {
+    expect(progressFromMessage("search", 1, {
+      role: "user",
+      content: [{ type: "text", text: "not subagent progress" }],
+    } as never)).toBeUndefined();
   });
 
-  it("handles string content blocks", () => {
+  it("handles plain-string content", () => {
     const progress = progressFromMessage("search", undefined, {
       role: "assistant",
-      content: ["plain text"],
+      content: "plain text",
     } as never);
-    expect(progress).toMatchObject({ step: undefined, lastText: "plain text" });
+    expect(progress).toMatchObject({ step: undefined, latestMessage: "plain text" });
+  });
+
+  it.each([
+    ["null content", null],
+    ["object content", { type: "text", text: "not an array" }],
+    ["numeric content", 42],
+    ["invalid array entries", [null, 42, {}, { type: "text" }, { type: "text", text: null }]],
+  ])("returns undefined for malformed %s", (_name, content) => {
+    expect(progressFromMessage("search", 1, {
+      role: "assistant",
+      content,
+    } as never)).toBeUndefined();
+  });
+
+  it("ignores malformed array entries while preserving valid text", () => {
+    expect(progressFromMessage("search", 1, {
+      role: "assistant",
+      content: [null, "first", { type: "text", text: 7 }, { type: "text", text: "second" }],
+    } as never)).toMatchObject({ latestMessage: "first\n\nsecond" });
+  });
+});
+
+describe("final subagent output (ADR-040)", () => {
+  it("returns all text blocks from the latest assistant message", async () => {
+    const { discoverAgents } = await import("./agents");
+    const { resolveModelForSpawn } = await import("./model-resolution");
+    const { getAgentDir } = await import("../runtime/pi-import");
+    vi.mocked(discoverAgents).mockResolvedValue({ agents: [maker("search")] });
+    vi.mocked(resolveModelForSpawn).mockResolvedValue(undefined);
+    vi.mocked(getAgentDir).mockReturnValue("/tmp/lazyresearch-test-agent");
+    spawnMock.mockImplementationOnce(() => {
+      const stdout = new EventEmitter();
+      const stderr = new EventEmitter();
+      const child = Object.assign(new EventEmitter(), {
+        stdout,
+        stderr,
+        killed: false,
+        kill: vi.fn(),
+      });
+      queueMicrotask(() => {
+        stdout.emit("data", Buffer.from(`${JSON.stringify({
+          type: "message_end",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "text", text: "first section" },
+              { type: "thinking", thinking: "internal" },
+              { type: "text", text: "second section" },
+            ],
+          },
+        })}\n`));
+        child.emit("close", 0);
+      });
+      return child;
+    });
+
+    const result = await subagentTool.execute(
+      "call-multi-block",
+      { agent: "search", task: "find papers", session: "new" },
+      undefined,
+      undefined,
+      { cwd: "/tmp/lazyresearch-test-project" } as never,
+    );
+
+    expect(result.content).toEqual([{ type: "text", text: "first section\n\nsecond section" }]);
   });
 });
 
@@ -185,7 +262,12 @@ describe("handleChildLine (ADR-037)", () => {
     );
     expect(onMessageEnd).toHaveBeenCalledTimes(1);
     expect(onToolResultEnd).not.toHaveBeenCalled();
-    expect(onProgress).toHaveBeenCalledWith({ agent: "search", step: 3, status: "running", lastText: "scanning arxiv" });
+    expect(onProgress).toHaveBeenCalledWith({
+      agent: "search",
+      step: 3,
+      status: "running",
+      latestMessage: "scanning arxiv",
+    });
   });
 
   it("dispatches tool_result_end to onToolResultEnd without progress", () => {
@@ -210,6 +292,53 @@ describe("handleChildLine (ADR-037)", () => {
       onProgress,
     });
     expect(onProgress).not.toHaveBeenCalled();
+  });
+
+  it("dispatches malformed-content messages without emitting progress or throwing", () => {
+    const message = { role: "assistant", content: [null, { type: "text" }] };
+    const onMessageEnd = vi.fn();
+    const onProgress = vi.fn();
+    expect(() => handleChildLine(line({ type: "message_end", message }), "search", 1, {
+      onMessageEnd,
+      onToolResultEnd: vi.fn(),
+      onProgress,
+    })).not.toThrow();
+    expect(onMessageEnd).toHaveBeenCalledWith(message);
+    expect(onProgress).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["null", null],
+    ["array", []],
+    ["string", "message_end"],
+    ["number", 42],
+    ["boolean", true],
+  ])("ignores a valid JSON %s event", (_name, event) => {
+    const handlers = { onMessageEnd: vi.fn(), onToolResultEnd: vi.fn(), onProgress: vi.fn() };
+    expect(() => handleChildLine(line(event), "search", 1, handlers)).not.toThrow();
+    expect(handlers.onMessageEnd).not.toHaveBeenCalled();
+    expect(handlers.onToolResultEnd).not.toHaveBeenCalled();
+    expect(handlers.onProgress).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["null", null],
+    ["array", []],
+    ["string", "assistant"],
+    ["number", 42],
+    ["boolean", true],
+  ])("ignores a message_end with a %s message", (_name, message) => {
+    const handlers = { onMessageEnd: vi.fn(), onToolResultEnd: vi.fn(), onProgress: vi.fn() };
+    expect(() => handleChildLine(line({ type: "message_end", message }), "search", 1, handlers)).not.toThrow();
+    expect(handlers.onMessageEnd).not.toHaveBeenCalled();
+    expect(handlers.onToolResultEnd).not.toHaveBeenCalled();
+    expect(handlers.onProgress).not.toHaveBeenCalled();
+  });
+
+  it("ignores a tool_result_end with a primitive message", () => {
+    const handlers = { onMessageEnd: vi.fn(), onToolResultEnd: vi.fn(), onProgress: vi.fn() };
+    handleChildLine(line({ type: "tool_result_end", message: "output" }), "search", 1, handlers);
+    expect(handlers.onToolResultEnd).not.toHaveBeenCalled();
   });
 
   it("ignores malformed lines without crashing", () => {

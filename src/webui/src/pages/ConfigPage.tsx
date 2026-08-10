@@ -162,9 +162,8 @@ export function ConfigPage({ onBack }: ConfigPageProps) {
                   <p className="mb-1 text-[13px] text-v2-text-text-muted">{t("configPage.helpExample")}</p>
                   <pre className="whitespace-pre-wrap break-words rounded-md bg-v2-grey-100 p-3 font-mono text-[12px] leading-[1.5] text-v2-text-text-base">{`{
   "lazyresearch": {
-    "agentModels": {
-      "search": "openai/gpt-4o",
-      "writing": "anthropic/claude-sonnet-4"
+    "agents": {
+      "search": { "model": "provider/model-id" }
     }
   }
 }`}</pre>

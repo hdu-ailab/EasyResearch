@@ -63,27 +63,18 @@ export interface SubagentDetails {
   mode: "single" | "chain";
   projectAgentsDir: string | null;
   results: SingleResult[];
-  /** Live progress from the running subagent child (ADR-037). */
+  /** Live progress from the running subagent child (ADR-040). */
   subagent?: SubagentProgress;
 }
 
-/** Live progress payload streamed via the tool update callback (ADR-037). */
+/** Complete latest-message payload streamed via the tool update callback (ADR-040). */
 export interface SubagentProgress {
   agent: string;
   step?: number;
   status: "running";
-  lastText?: string;
+  latestMessage: string;
 }
 
-/** Cap for the progress text forwarded to the parent session line. */
-const PROGRESS_TEXT_CAP = 200;
-
-/**
- * ADR-037: build the live progress payload from one child message. Returns
- * undefined when the message carries no text (nothing to report). The text is
- * the last text block, capped so huge tool outputs never flood the parent
- * session line.
- */
 /** Per-child-line dispatch targets used by {@link handleChildLine}. */
 export interface ChildLineHandlers {
   onMessageEnd: (message: Message) => void;
@@ -91,12 +82,16 @@ export interface ChildLineHandlers {
   onProgress?: (progress: SubagentProgress) => void;
 }
 
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 /**
- * ADR-037: parse one child stdout JSONL line and dispatch. `message_end`
- * lines also emit live progress (agent/step/lastText) when the message
- * carries text and an `onProgress` handler is wired; malformed lines are
- * ignored. Pure and DI-friendly so the update-callback contract is testable
- * without spawning a child process.
+ * ADR-040: parse one child stdout JSONL line and dispatch. Completed assistant
+ * `message_end` lines emit their complete text as live progress when an
+ * `onProgress` handler is wired; malformed lines are ignored. Pure and
+ * DI-friendly so the update-callback contract is testable without spawning a
+ * child process.
  */
 export function handleChildLine(
   line: string,
@@ -105,22 +100,23 @@ export function handleChildLine(
   handlers: ChildLineHandlers,
 ): void {
   if (!line.trim()) return;
-  let event: any;
+  let event: unknown;
   try {
     event = JSON.parse(line);
   } catch {
     return;
   }
-  if (event.type === "message_end" && event.message) {
-    const msg = event.message as Message;
+  if (!isObject(event) || !isObject(event.message)) return;
+  if (event.type === "message_end") {
+    const msg = event.message as unknown as Message;
     handlers.onMessageEnd(msg);
     if (handlers.onProgress) {
       const progress = progressFromMessage(agentName, step, msg);
       if (progress) handlers.onProgress(progress);
     }
   }
-  if (event.type === "tool_result_end" && event.message) {
-    handlers.onToolResultEnd(event.message as Message);
+  if (event.type === "tool_result_end") {
+    handlers.onToolResultEnd(event.message as unknown as Message);
   }
 }
 
@@ -129,24 +125,30 @@ export function progressFromMessage(
   step: number | undefined,
   message: Message,
 ): SubagentProgress | undefined {
-  let lastText: string | undefined;
-  for (const part of message.content) {
-    const text = typeof part === "string" ? part : part.type === "text" ? part.text : undefined;
-    if (text && text.trim()) lastText = text;
-  }
-  if (!lastText) return undefined;
-  const capped = lastText.length > PROGRESS_TEXT_CAP ? `${lastText.slice(0, PROGRESS_TEXT_CAP)}…` : lastText;
-  return { agent, step, status: "running", lastText: capped };
+  if (message.role !== "assistant") return undefined;
+  const latestMessage = getMessageText(message);
+  return latestMessage ? { agent, step, status: "running", latestMessage } : undefined;
+}
+
+function getMessageText(message: Message): string {
+  const rawContent: unknown = message.content;
+  const content: unknown[] = typeof rawContent === "string" ? [rawContent] : Array.isArray(rawContent) ? rawContent : [];
+  return content
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if (part === null || typeof part !== "object" || !("type" in part) || part.type !== "text") return "";
+      return "text" in part && typeof part.text === "string" ? part.text : "";
+    })
+    .filter((text) => text.trim().length > 0)
+    .join("\n\n");
 }
 
 function getFinalOutput(messages: Message[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
     if (msg && msg.role === "assistant") {
-      for (const part of msg.content) {
-        const text = typeof part === "string" ? part : part.type === "text" ? part.text : undefined;
-        if (text) return text;
-      }
+      const text = getMessageText(msg);
+      if (text) return text;
     }
   }
   return "";
@@ -244,7 +246,7 @@ export interface RunSingleOptions {
   sessionPath?: string;
   signal?: AbortSignal;
   step?: number;
-  /** Live progress callback (ADR-037): invoked on each child message_end. */
+  /** Complete latest-message callback (ADR-040): invoked on each child message_end. */
   onUpdate?: AgentToolUpdateCallback<SubagentDetails>;
 }
 
@@ -325,8 +327,8 @@ async function runSingleAgent(opts: RunSingleOptions): Promise<SingleResult> {
           onToolResultEnd: (msg) => {
             result.messages.push(msg);
           },
-          // ADR-037: stream live progress to the parent session line so the
-          // Web UI can render a dynamic subagent tab.
+          // ADR-040: stream each complete latest assistant message through the
+          // ADR-037 parent-session route for the tab and progress card.
           onProgress: onUpdate
             ? (progress) => onUpdate({ content: [], details: { ...detailsBase, subagent: progress } })
             : undefined,
