@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render as renderWithTestingLibrary, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { fireEvent } from "@testing-library/react";
+import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkPage } from "./WorkPage";
 import * as api from "../api";
 import type { FileEntryDto } from "../../../web/contracts";
+import { PreferencesProvider } from "../preferences/PreferencesProvider";
 
 vi.mock("../api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api")>();
@@ -52,6 +54,14 @@ function stubEvents() {
 
 function emit(event: unknown) {
   latestHandlers?.onEvent(event);
+}
+
+function emitInAct(event: unknown) {
+  act(() => emit(event));
+}
+
+function render(ui: ReactElement) {
+  return renderWithTestingLibrary(ui, { wrapper: PreferencesProvider });
 }
 
 describe("WorkPage", () => {
@@ -210,13 +220,14 @@ describe("WorkPage", () => {
     expect(api.stopSession).not.toHaveBeenCalled();
   });
 
-  it("shows the fixed orchestrator tab, adds a running subagent tab with live progress, and collapses it when done", async () => {
+  it("shows a bounded latest-message preview and the focused subagent card until the run ends", async () => {
     const user = userEvent.setup();
+    const latestMessage = "scanning arxiv for recent fault-diagnosis papers";
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await screen.findByText("starting research");
     const orchestratorTab = screen.getByRole("button", { name: /agent orchestrator/i });
     expect(orchestratorTab.getAttribute("aria-pressed")).toBe("true");
-    emit({
+    emitInAct({
       type: "tool_execution_start",
       toolCallId: "sub-1",
       toolName: "subagent",
@@ -224,35 +235,114 @@ describe("WorkPage", () => {
     });
     const searchTab = await screen.findByRole("button", { name: /agent search/i });
     expect(searchTab.getAttribute("aria-pressed")).toBe("false");
-    emit({
+    emitInAct({
       type: "tool_execution_update",
       toolCallId: "sub-1",
       toolName: "subagent",
       args: { agent: "search" },
-      partialResult: { details: { subagent: { agent: "search", step: 1, status: "running", lastText: "scanning arxiv" } } },
+      partialResult: { details: { subagent: { agent: "search", step: 1, status: "running", latestMessage } } },
     });
-    expect(await screen.findByText(/scanning arxiv/)).toBeTruthy();
+    const preview = within(searchTab).getByTitle(latestMessage);
+    expect(preview).toHaveClass("max-w-64", "truncate");
     await user.click(searchTab);
     expect(screen.getByRole("button", { name: /agent search/i }).getAttribute("aria-pressed")).toBe("true");
     expect(orchestratorTab.getAttribute("aria-pressed")).toBe("false");
-    emit({ type: "tool_execution_end", toolCallId: "sub-1", toolName: "subagent", result: "done", isError: false });
+    const cardMessage = within(screen.getByLabelText(/conversation/i)).getByText(latestMessage);
+    expect(cardMessage.closest("article")).not.toBeNull();
+    emitInAct({ type: "tool_execution_end", toolCallId: "sub-1", toolName: "subagent", result: "done", isError: false });
     await waitFor(() => expect(screen.queryByRole("button", { name: /agent search/i })).toBeNull());
     await waitFor(() => expect(screen.getByRole("button", { name: /agent orchestrator/i }).getAttribute("aria-pressed")).toBe("true"));
   });
 
-  it("stops the running subagent from its tab and aborts the session", async () => {
+  it("keeps subagent selection and stop as sibling buttons with independent effects", async () => {
     const user = userEvent.setup();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await screen.findByText("starting research");
-    emit({
+    emitInAct({
       type: "tool_execution_start",
       toolCallId: "sub-2",
       toolName: "subagent",
-      args: { agent: "writing", task: "draft" },
+      args: { agent: "search", task: "find papers" },
     });
+    const select = await screen.findByRole("button", { name: /agent search/i });
     const stop = await screen.findByRole("button", { name: /stop agent/i });
+    const orchestrator = screen.getByRole("button", { name: /agent orchestrator/i });
+    expect(select.contains(stop)).toBe(false);
+    expect(select.parentElement).toBe(stop.parentElement);
+    expect(select.parentElement).toHaveClass("rounded-full", "border");
+
     await user.click(stop);
     await waitFor(() => expect(api.abortSession).toHaveBeenCalledWith("s1"));
+    expect(select).toHaveAttribute("aria-pressed", "false");
+    expect(orchestrator).toHaveAttribute("aria-pressed", "true");
+
+    await user.click(select);
+    expect(select).toHaveAttribute("aria-pressed", "true");
+    expect(orchestrator).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("keeps a selected chain tab and card mounted when its displayed agent and step change", async () => {
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    emitInAct({
+      type: "tool_execution_start",
+      toolCallId: "chain-1",
+      toolName: "subagent",
+      args: { chain: [{ agent: "search", task: "find" }, { agent: "writing", task: "draft" }] },
+    });
+    emitInAct({
+      type: "tool_execution_update",
+      toolCallId: "chain-1",
+      toolName: "subagent",
+      partialResult: { details: { subagent: { agent: "search", step: 1, latestMessage: "papers found" } } },
+    });
+
+    const searchTab = await screen.findByRole("button", { name: /agent search/i });
+    await user.click(searchTab);
+    const conversation = screen.getByLabelText(/conversation/i);
+    const firstCard = within(conversation).getByText("papers found").closest("article");
+    expect(firstCard).not.toBeNull();
+
+    emitInAct({
+      type: "tool_execution_update",
+      toolCallId: "chain-1",
+      toolName: "subagent",
+      partialResult: { details: { subagent: { agent: "writing", step: 2, latestMessage: "drafting method" } } },
+    });
+
+    const writingTab = await screen.findByRole("button", { name: /agent writing/i });
+    expect(writingTab).toBe(searchTab);
+    expect(writingTab).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /agent orchestrator/i })).toHaveAttribute("aria-pressed", "false");
+    expect(within(conversation).getByText("drafting method").closest("article")).toBe(firstCard);
+    expect(within(firstCard as HTMLElement).getByText("Step 2")).toBeTruthy();
+  });
+
+  it("maps the running chain status to the currently displayed agent name", async () => {
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    emitInAct({
+      type: "tool_execution_start",
+      toolCallId: "chain-status",
+      toolName: "subagent",
+      args: { chain: [{ agent: "search", task: "find" }, { agent: "writing", task: "draft" }] },
+    });
+    emitInAct({
+      type: "tool_execution_update",
+      toolCallId: "chain-status",
+      toolName: "subagent",
+      partialResult: { details: { subagent: { agent: "writing", step: 2, latestMessage: "drafting" } } },
+    });
+    await user.click(screen.getByRole("button", { name: /agent list/i }));
+    const region = screen.getByRole("region", { name: /agent list/i });
+    const writingCard = (await within(region).findByText(/^Writing agent\./)).closest(".rounded-md");
+    const searchCard = within(region).getByText(/^Web research agent\./).closest(".rounded-md");
+    expect(writingCard).not.toBeNull();
+    expect(searchCard).not.toBeNull();
+    expect(within(writingCard as HTMLElement).getByText(/working/i)).toBeTruthy();
+    expect(within(searchCard as HTMLElement).getByText(/^idle$/i)).toBeTruthy();
   });
 
   it("disables the composer on a subagent session line (history browse only)", async () => {
@@ -347,13 +437,102 @@ describe("WorkPage", () => {
     stubEvents();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await screen.findByText("starting research");
-    emit({
+    emitInAct({
       type: "snapshot",
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
       messages: [{ role: "assistant", content: [{ type: "text", text: "after reconnect" }] }],
     });
     expect(await screen.findByText("after reconnect")).toBeTruthy();
     expect(screen.queryByText("starting research")).toBeNull();
+  });
+
+  it("rehydrates a running subagent tab and card, then updates both in place", async () => {
+    const latestMessage = "verifying metadata for the selected papers";
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    emitInAct({
+      type: "snapshot",
+      session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            { type: "toolCall", id: "sub-reconnect", name: "subagent", arguments: '{"agent":"search","task":"find papers"}' },
+          ],
+        },
+      ],
+    });
+
+    const select = await screen.findByRole("button", { name: /agent search/i });
+    const conversation = screen.getByLabelText(/conversation/i);
+    const waiting = within(conversation).getByText(/waiting for the first progress message/i);
+    const card = waiting.closest("article");
+    expect(card).not.toBeNull();
+    expect(within(card as HTMLElement).getByText(/running/i)).toBeTruthy();
+
+    emitInAct({
+      type: "tool_execution_update",
+      toolCallId: "sub-reconnect",
+      toolName: "subagent",
+      partialResult: { details: { subagent: { agent: "search", step: 1, status: "running", latestMessage } } },
+    });
+
+    expect(screen.getByRole("button", { name: /agent search/i })).toBe(select);
+    expect(within(select).getByTitle(latestMessage)).toBeTruthy();
+    const cardMessage = within(conversation).getByText(latestMessage);
+    expect(cardMessage.closest("article")).toBe(card);
+  });
+
+  it("keeps usable live chain progress when reconnect completes with whitespace-only failure output", async () => {
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    emitInAct({
+      type: "tool_execution_start",
+      toolCallId: "sub-failed-reconnect",
+      toolName: "subagent",
+      args: { chain: [{ agent: "search", task: "find" }, { agent: "writing", task: "draft" }] },
+    });
+    emitInAct({
+      type: "tool_execution_update",
+      toolCallId: "sub-failed-reconnect",
+      toolName: "subagent",
+      partialResult: {
+        details: { subagent: { agent: "writing", step: 2, latestMessage: "usable live progress" } },
+      },
+    });
+    const liveCard = within(screen.getByLabelText(/conversation/i)).getByText("usable live progress").closest("article");
+
+    emitInAct({
+      type: "snapshot",
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: "sub-failed-reconnect",
+              name: "subagent",
+              arguments: '{"chain":[{"agent":"search","task":"find"},{"agent":"writing","task":"draft"}]}',
+            },
+          ],
+        },
+        {
+          role: "toolResult",
+          toolCallId: "sub-failed-reconnect",
+          toolName: "subagent",
+          content: [{ type: "text", text: " \n\t " }],
+          isError: true,
+        },
+      ],
+    });
+
+    const conversation = screen.getByLabelText(/conversation/i);
+    const retained = await within(conversation).findByText("usable live progress");
+    expect(retained.closest("article")).toBe(liveCard);
+    expect(within(liveCard as HTMLElement).getByText("Writing")).toBeTruthy();
+    expect(within(liveCard as HTMLElement).getByText("Step 2")).toBeTruthy();
+    expect(within(liveCard as HTMLElement).getByText("Failed")).toBeTruthy();
   });
 
   it("shows tool blocks from live events with running and done states", async () => {

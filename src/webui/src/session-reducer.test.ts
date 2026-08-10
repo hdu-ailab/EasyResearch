@@ -56,6 +56,34 @@ describe("session reducer", () => {
     expect(second.messages[0]!.text).toBe("two deltas");
   });
 
+  it("accumulates live thinking and keeps text deltas on the same assistant row", () => {
+    let state = reduceSessionEvent(emptyState, assistantEvent("message_start", ""));
+    state = reduceSessionEvent(state, {
+      type: "message_update",
+      assistantMessageEvent: { type: "thinking_start", contentIndex: 0 },
+    } as never);
+    state = reduceSessionEvent(state, {
+      type: "message_update",
+      assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "first " },
+    } as never);
+    state = reduceSessionEvent(state, {
+      type: "message_update",
+      assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "second" },
+    } as never);
+    state = reduceSessionEvent(state, {
+      type: "message_update",
+      assistantMessageEvent: { type: "thinking_end", contentIndex: 0, content: "first second" },
+    } as never);
+
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]!.reasoning).toBe("first second");
+
+    state = reduceSessionEvent(state, assistantEvent("message_update", "answer"));
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]!.text).toBe("answer");
+    expect(state.messages[0]!.reasoning).toBe("first second");
+  });
+
   it("handles agent_settled by clearing streaming state", () => {
     const started = reduceSessionEvent(emptyState, assistantEvent("message_start", ""));
     const settled = reduceSessionEvent(started, { type: "agent_settled" } as AgentSessionEvent);
@@ -157,6 +185,100 @@ describe("session reducer", () => {
     expect(done.tools[0]).toMatchObject({ output: "total 8", done: true });
   });
 
+  it("shows textual partial content from generic tool updates", () => {
+    const active = reduceSessionEvent(emptyState, toolEvent("tool_execution_start", "t1", "bash"));
+    const updated = reduceSessionEvent(active, {
+      type: "tool_execution_update",
+      toolCallId: "t1",
+      toolName: "bash",
+      partialResult: { content: [{ type: "text", text: "partial" }] },
+    } as never);
+
+    expect(updated.tools[0]!.output).toBe("partial");
+  });
+
+  it("unwraps Pi content from a completed generic tool result", () => {
+    const active = reduceSessionEvent(emptyState, toolEvent("tool_execution_start", "t1", "bash"));
+    const done = reduceSessionEvent(active, {
+      type: "tool_execution_end",
+      toolCallId: "t1",
+      toolName: "bash",
+      result: { content: [{ type: "text", text: "final" }], details: { opaque: true } },
+    } as never);
+
+    expect(done.tools[0]!.output).toBe("final");
+  });
+
+  it("caps generic completed output at its presentation limit", () => {
+    const longOutput = "g".repeat(2_500);
+    const active = reduceSessionEvent(emptyState, toolEvent("tool_execution_start", "t1", "bash"));
+    const done = reduceSessionEvent(active, {
+      type: "tool_execution_end",
+      toolCallId: "t1",
+      toolName: "bash",
+      result: { content: [{ type: "text", text: longOutput }] },
+    } as never);
+
+    expect(done.tools[0]!.output).toMatch(/^g+/);
+    expect(done.tools[0]!.output!.length).toBeLessThanOrEqual(2_000);
+    expect(done.tools[0]!.output).toMatch(/…$/);
+  });
+
+  it("keeps a completed subagent latest message unbounded", () => {
+    const latestMessage = "s".repeat(2_500);
+    const active = reduceSessionEvent(emptyState, toolEvent("tool_execution_start", "t1", "subagent"));
+    const done = reduceSessionEvent(active, {
+      type: "tool_execution_end",
+      toolCallId: "t1",
+      toolName: "subagent",
+      result: { content: [{ type: "text", text: latestMessage }], details: { opaque: true } },
+    } as never);
+
+    expect(done.tools[0]!.latestMessage).toBe(latestMessage);
+  });
+
+  it("retains live subagent text when completion content is empty", () => {
+    let state = reduceSessionEvent(emptyState, toolEvent("tool_execution_start", "t1", "subagent"));
+    state = reduceSessionEvent(state, {
+      type: "tool_execution_update",
+      toolCallId: "t1",
+      toolName: "subagent",
+      partialResult: { details: { subagent: { latestMessage: "latest live message" } } },
+    } as never);
+    state = reduceSessionEvent(state, {
+      type: "tool_execution_end",
+      toolCallId: "t1",
+      toolName: "subagent",
+      result: { content: [], details: {} },
+    } as never);
+
+    expect(state.tools[0]!.latestMessage).toBe("latest live message");
+  });
+
+  it("retains live subagent text when an aborted completion has no usable final text", () => {
+    let state = reduceSessionEvent(emptyState, toolEvent("tool_execution_start", "t1", "subagent"));
+    state = reduceSessionEvent(state, {
+      type: "tool_execution_update",
+      toolCallId: "t1",
+      toolName: "subagent",
+      partialResult: { details: { subagent: { latestMessage: "complete progress before abort" } } },
+    } as never);
+    state = reduceSessionEvent(state, {
+      type: "tool_execution_end",
+      toolCallId: "t1",
+      toolName: "subagent",
+      result: { content: [{ type: "text", text: "   " }], details: {} },
+      isError: true,
+    } as never);
+
+    expect(state.tools[0]).toMatchObject({
+      running: false,
+      done: true,
+      error: true,
+      latestMessage: "complete progress before abort",
+    });
+  });
+
   it("pairs snapshot toolCall blocks with toolResult messages", () => {
     const state = fromSnapshot({
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "done" } as never,
@@ -194,6 +316,63 @@ describe("session reducer", () => {
       ] as never,
     });
     expect(state.tools[0]).toMatchObject({ key: "tc-9", output: "总计 4\nnotes" });
+  });
+
+  it("keeps snapshot subagent latest messages unbounded while capping generic output", () => {
+    const latestMessage = "s".repeat(2_500);
+    const genericOutput = "g".repeat(2_500);
+    const state = fromSnapshot({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "done" } as never,
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            { type: "toolCall", id: "sub-1", name: "subagent", arguments: '{"agent":"writing"}' },
+            { type: "toolCall", id: "bash-1", name: "bash", arguments: '{"command":"run"}' },
+          ],
+        },
+        {
+          role: "toolResult",
+          toolCallId: "sub-1",
+          toolName: "subagent",
+          content: [{ type: "text", text: latestMessage }],
+          isError: false,
+        },
+        {
+          role: "toolResult",
+          toolCallId: "bash-1",
+          toolName: "bash",
+          content: [{ type: "text", text: genericOutput }],
+          isError: false,
+        },
+      ] as never,
+    });
+
+    expect(state.tools.find((tool) => tool.key === "sub-1")!.latestMessage).toBe(latestMessage);
+    expect(state.tools.find((tool) => tool.key === "bash-1")!.output!.length).toBeLessThanOrEqual(2_000);
+    expect(state.tools.find((tool) => tool.key === "bash-1")!.output).toMatch(/…$/);
+  });
+
+  it("does not treat whitespace-only snapshot subagent output as a latest message", () => {
+    const state = fromSnapshot({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "done" } as never,
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "sub-space", name: "subagent", arguments: '{"agent":"search"}' }],
+        },
+        {
+          role: "toolResult",
+          toolCallId: "sub-space",
+          toolName: "subagent",
+          content: [{ type: "text", text: " \n\t " }],
+          isError: true,
+        },
+      ] as never,
+    });
+
+    expect(state.tools[0]).toMatchObject({ running: false, done: true, error: true });
+    expect(state.tools[0]!.latestMessage).toBeUndefined();
   });
 
   it("orders tools at their stream position, interleaving with messages", () => {
@@ -263,18 +442,31 @@ describe("session reducer", () => {
     expect(final.tools.map((t) => t.order)).toEqual([2]);
   });
 
-  it("attaches subagent progress to the matching tool on tool_execution_update", () => {
+  it("attaches subagent state to the matching tool on tool_execution_update", () => {
     let state = reduceSessionEvent(emptyState, toolEvent("tool_execution_start", "t1", "subagent"));
     state = reduceSessionEvent(state, {
       type: "tool_execution_update",
       toolCallId: "t1",
       toolName: "subagent",
       args: { agent: "search" },
-      partialResult: { details: { subagent: { agent: "search", step: 2, status: "running", lastText: "looking at arxiv entries" } } },
+      partialResult: { details: { subagent: { agent: "writing", step: 2, status: "running", latestMessage: "drafting method" } } },
     } as never);
-    expect(state.tools[0]!.progress).toContain("looking at arxiv entries");
+    expect(state.tools[0]).toMatchObject({ agentName: "writing", step: 2, latestMessage: "drafting method" });
     expect(state.tools[0]!.running).toBe(true);
     expect(state.messages).toHaveLength(0);
+  });
+
+  it("keeps live subagent latest messages unbounded", () => {
+    const latestMessage = "l".repeat(2_500);
+    let state = reduceSessionEvent(emptyState, toolEvent("tool_execution_start", "t1", "subagent"));
+    state = reduceSessionEvent(state, {
+      type: "tool_execution_update",
+      toolCallId: "t1",
+      toolName: "subagent",
+      partialResult: { details: { subagent: { latestMessage } } },
+    } as never);
+
+    expect(state.tools[0]!.latestMessage).toBe(latestMessage);
   });
 
   it("captures the agent name from single-mode subagent args", () => {
@@ -320,21 +512,41 @@ describe("session reducer", () => {
     expect(state.tools).toHaveLength(0);
   });
 
-  it("does not overwrite progress with a later empty update", () => {
+  it("does not overwrite subagent state with a later malformed update", () => {
     let state = reduceSessionEvent(emptyState, toolEvent("tool_execution_start", "t1", "subagent"));
     state = reduceSessionEvent(state, {
       type: "tool_execution_update",
       toolCallId: "t1",
       toolName: "subagent",
-      partialResult: { details: { subagent: { agent: "search", lastText: "first" } } },
+      partialResult: { details: { subagent: { agent: "writing", step: 2, latestMessage: "first" } } },
     } as never);
     state = reduceSessionEvent(state, {
       type: "tool_execution_update",
       toolCallId: "t1",
       toolName: "subagent",
-      partialResult: { details: {} },
+      partialResult: { details: { subagent: { agent: 42, step: "third", latestMessage: null } } },
     } as never);
-    expect(state.tools[0]!.progress).toContain("first");
+    expect(state.tools[0]).toMatchObject({ agentName: "writing", step: 2, latestMessage: "first" });
+  });
+
+  it("rehydrates unresolved tools as running only from a streaming snapshot", () => {
+    const messages = [
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "tc-1", name: "subagent", arguments: '{"agent":"writing"}' }],
+      },
+    ] as never;
+    const streaming = fromSnapshot({
+      session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" } as never,
+      messages,
+    });
+    const settled = fromSnapshot({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "done" } as never,
+      messages,
+    });
+
+    expect(streaming.tools[0]).toMatchObject({ running: true, done: false });
+    expect(settled.tools[0]).toMatchObject({ running: false, done: false });
   });
 
   it("resolves message_update deltas by the message_start key, even without ids", () => {

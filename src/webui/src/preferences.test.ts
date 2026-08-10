@@ -55,22 +55,53 @@ describe("readPreferences", () => {
       chatFontSize: DEFAULT_CHAT_FONT_SIZE,
       filesFontSize: DEFAULT_FILES_FONT_SIZE,
       language: "zh-CN",
+      autoExpandThinking: false,
+      autoExpandTools: false,
+      expandSubagentOutput: false,
     });
     expect(readPreferences(fakeStorage(), nav("en-US")).language).toBe("en");
   });
 
   it("round-trips stored values", () => {
     const storage = fakeStorage();
-    writePreferences(storage, { chatFontSize: 16, filesFontSize: 11, language: "zh-CN" });
-    expect(readPreferences(storage, nav("en-US"))).toEqual({ chatFontSize: 16, filesFontSize: 11, language: "zh-CN" });
+    writePreferences(storage, {
+      chatFontSize: 16,
+      filesFontSize: 11,
+      language: "zh-CN",
+      autoExpandThinking: true,
+      autoExpandTools: false,
+      expandSubagentOutput: true,
+    });
+    expect(readPreferences(storage, nav("en-US"))).toEqual({
+      chatFontSize: 16,
+      filesFontSize: 11,
+      language: "zh-CN",
+      autoExpandThinking: true,
+      autoExpandTools: false,
+      expandSubagentOutput: true,
+    });
   });
 
   it("salvages fields individually on garbage", () => {
     const storage = fakeStorage({
-      [STORAGE_KEY]: JSON.stringify({ chatFontSize: "big", filesFontSize: 14, language: "xx" }),
+      [STORAGE_KEY]: JSON.stringify({
+        chatFontSize: "big",
+        filesFontSize: 14,
+        language: "xx",
+        autoExpandThinking: true,
+        autoExpandTools: "yes",
+        expandSubagentOutput: true,
+      }),
     });
     const prefs = readPreferences(storage, nav("en"));
-    expect(prefs).toEqual({ chatFontSize: DEFAULT_CHAT_FONT_SIZE, filesFontSize: 14, language: "en" });
+    expect(prefs).toEqual({
+      chatFontSize: DEFAULT_CHAT_FONT_SIZE,
+      filesFontSize: 14,
+      language: "en",
+      autoExpandThinking: true,
+      autoExpandTools: false,
+      expandSubagentOutput: true,
+    });
   });
 
   it("falls back to defaults for out-of-range integers", () => {
@@ -88,6 +119,9 @@ describe("readPreferences", () => {
       chatFontSize: DEFAULT_CHAT_FONT_SIZE,
       filesFontSize: DEFAULT_FILES_FONT_SIZE,
       language: "en",
+      autoExpandThinking: false,
+      autoExpandTools: false,
+      expandSubagentOutput: false,
     });
   });
 });
@@ -95,7 +129,21 @@ describe("readPreferences", () => {
 describe("writePreferences", () => {
   it("stores the full blob under the single key", () => {
     const storage = fakeStorage();
-    writePreferences(storage, { chatFontSize: 15, filesFontSize: 12, language: "en" });
-    expect(storage.getItem(STORAGE_KEY)).toBe('{"chatFontSize":15,"filesFontSize":12,"language":"en"}');
+    writePreferences(storage, {
+      chatFontSize: 15,
+      filesFontSize: 12,
+      language: "en",
+      autoExpandThinking: false,
+      autoExpandTools: true,
+      expandSubagentOutput: false,
+    });
+    expect(JSON.parse(storage.getItem(STORAGE_KEY) ?? "{}")).toEqual({
+      chatFontSize: 15,
+      filesFontSize: 12,
+      language: "en",
+      autoExpandThinking: false,
+      autoExpandTools: true,
+      expandSubagentOutput: false,
+    });
   });
 });

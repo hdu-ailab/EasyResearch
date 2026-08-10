@@ -140,6 +140,38 @@ body {
   }
 }
 
+.v2-subagent-card-running::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    110deg,
+    var(--color-v2-grey-300),
+    var(--color-v2-blue-200),
+    var(--color-v2-blue-400),
+    var(--color-v2-grey-300)
+  );
+  background-size: 250% 100%;
+  animation: v2-subagent-edge 7s linear infinite;
+}
+
+@keyframes v2-subagent-edge {
+  from {
+    background-position: 100% 50%;
+  }
+  to {
+    background-position: -100% 50%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .v2-subagent-card-running::before {
+    animation: none;
+  }
+}
+
 /* Markdown content inside the transcript */
 .v2-md pre {
   overflow-x: auto;

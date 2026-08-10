@@ -15,7 +15,7 @@ import {
   sendPrompt,
   setAgentModel,
 } from "../api";
-import { fromSnapshot, reduceSessionEvent, type SessionViewState } from "../session-reducer";
+import { fromSnapshot, mergeSnapshot, reduceSessionEvent, type SessionViewState } from "../session-reducer";
 import { usePanelTransition } from "../hooks/usePanelTransition";
 import { useI18n } from "../i18n/useI18n";
 import { ChatTranscript } from "../components/ChatTranscript";
@@ -110,18 +110,18 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  // ADR-037: tabs derive from running `subagent` tool rows — the tool update
-  // stream feeds progress; the fixed orchestrator tab always comes first.
-  const subagentTabs: Array<{ id: string; name: string; status: AgentChip["status"]; progress?: string }> =
+  // ADR-037/ADR-040: tabs derive from running `subagent` tool rows — the tool
+  // update stream feeds the latest message; the fixed orchestrator tab leads.
+  const subagentTabs: Array<{ id: string; name: string; status: AgentChip["status"]; latestMessage?: string }> =
     sessionView.tools
       .filter((tool) => tool.name === "subagent" && tool.running)
       .map((tool) => ({
-        id: tool.agentName ?? tool.key,
+        id: tool.key,
         name: tool.agentName ?? "subagent",
         status: "working",
-        progress: tool.progress,
+        latestMessage: tool.latestMessage,
       }));
-  const agentTabs: Array<{ id: string; name: string; status: AgentChip["status"]; progress?: string }> = [
+  const agentTabs: Array<{ id: string; name: string; status: AgentChip["status"]; latestMessage?: string }> = [
     {
       id: "orchestrator",
       name: "orchestrator",
@@ -152,8 +152,8 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   const activeTools =
     activeAgent === "orchestrator"
       ? sessionView.tools
-      : sessionView.tools.filter((tool) => tool.name === "subagent" && (tool.agentName ?? tool.key) === activeAgent);
-  const statusByAgent = Object.fromEntries(agentTabs.map((a) => [a.id, a.status])) as Record<string, AgentChip["status"]>;
+      : sessionView.tools.filter((tool) => tool.name === "subagent" && tool.key === activeAgent);
+  const statusByAgent = Object.fromEntries(agentTabs.map((a) => [a.name, a.status])) as Record<string, AgentChip["status"]>;
   const projectName = cwd.split("/").filter(Boolean).at(-1) ?? cwd;
   const chatHidden = isMobile && mobileView !== "chat";
   const filesHidden = isMobile ? mobileView !== "files" : panel !== "files";
@@ -190,7 +190,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
           if (typeof snapshotEvent.session?.sessionFile === "string") {
             sessionPathRef.current = snapshotEvent.session.sessionFile;
           }
-          setSessionView(fromSnapshot(typed as never));
+          setSessionView((current) => mergeSnapshot(current, typed as never));
           return;
         }
         if (typed.type === "session_deactivated") {
@@ -380,8 +380,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
               const focused = agent.id === activeAgent;
               const label = agentDisplayName(t, agent.name);
               const dot = dotClass(agent.status);
-              const running = agent.status === "working";
-              return (
+              if (agent.id === "orchestrator") return (
                 <button
                   key={agent.id}
                   type="button"
@@ -396,47 +395,47 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
                   }`}
                 >
                   <span className={`size-2 shrink-0 rounded-full ${dot}`} aria-hidden />
-                  {agent.id === "orchestrator" ? (
-                    <span className="truncate">{label}</span>
-                  ) : (
-                    <span className="flex min-w-0 items-center gap-1.5">
-                      <span className="truncate">{label}</span>
-                      <span className="min-w-0">
-                        {running ? (
-                          agent.progress ? (
-                            <span className="truncate text-v2-text-text-faint" title={agent.progress}>
-                              {agent.progress}
-                            </span>
-                          ) : (
-                            <span className="v2-spinner size-3" aria-hidden />
-                          )
-                        ) : null}
-                      </span>
-                    </span>
-                  )}
-                  {running && agent.id !== "orchestrator" ? (
-                    <span
-                      role="button"
-                      tabIndex={0}
-                      aria-label={t("work.stopAgent")}
-                      title={t("work.stopAgent")}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        abort();
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          abort();
-                        }
-                      }}
-                      className="flex size-4 shrink-0 items-center justify-center rounded-full text-v2-text-text-faint hover:bg-v2-grey-200 hover:text-v2-status-error"
-                    >
-                      <X size={11} aria-hidden />
-                    </span>
-                  ) : null}
+                  <span className="truncate">{label}</span>
                 </button>
+              );
+
+              return (
+                <div
+                  key={agent.id}
+                  className={`flex max-w-full items-center rounded-full border transition-colors ${
+                    focused
+                      ? "border-v2-blue-200 bg-v2-blue-100/50 text-v2-blue-600"
+                      : "border-v2-grey-200 text-v2-text-text-muted hover:bg-v2-grey-100"
+                  }`}
+                >
+                  <button
+                    type="button"
+                    aria-pressed={focused}
+                    aria-label={`${t("work.agentChip")} ${label}`}
+                    onClick={() => setActiveAgent(agent.id)}
+                    title={focused ? `${t("work.viewing")} ${label}` : `${t("work.focus")} ${label}`}
+                    className="flex min-w-0 items-center gap-1.5 rounded-l-full py-1 pl-2.5 pr-1 text-[12px]"
+                  >
+                    <span className={`size-2 shrink-0 rounded-full ${dot}`} aria-hidden />
+                    <span className="truncate">{label}</span>
+                    {agent.latestMessage ? (
+                      <span className="max-w-64 truncate text-v2-text-text-faint" title={agent.latestMessage}>
+                        {agent.latestMessage}
+                      </span>
+                    ) : (
+                      <span className="v2-spinner size-3" aria-hidden />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={t("work.stopAgent")}
+                    title={t("work.stopAgent")}
+                    onClick={abort}
+                    className="mr-1 flex size-5 shrink-0 items-center justify-center rounded-full text-v2-text-text-faint hover:bg-v2-grey-200 hover:text-v2-status-error"
+                  >
+                    <X size={11} aria-hidden />
+                  </button>
+                </div>
               );
             })}
           </div>

@@ -1,19 +1,16 @@
-import { useCallback, useEffect, useState } from "react";
-import { Activity, FileJson, Languages, Minus, Plus, Settings2 } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Activity, FileJson, Languages, MessageSquare, Minus, Plus, Settings2 } from "lucide-react";
 import type { AgentDto } from "../../../web/contracts";
 import { getWebuiSettings, listAgents, listModels, updateWebuiSettings } from "../api";
 import { useI18n } from "../i18n/useI18n";
 import { agentDisplayName } from "../i18n/agents";
-import type { WebUiPreferences } from "../preferences";
 import {
   CHAT_FONT_MAX,
   CHAT_FONT_MIN,
   FILES_FONT_MAX,
   FILES_FONT_MIN,
-  readPreferences,
-  writePreferences,
 } from "../preferences";
-import { applyFontPreferences } from "../webui-fonts";
+import { usePreferences } from "../preferences/PreferencesProvider";
 import { BackButton, ProductMark, Topbar } from "../components/Topbar";
 
 export interface SettingsPageProps {
@@ -62,11 +59,42 @@ function FontStepper({ label, value, min, max, decreaseLabel, increaseLabel, pre
   );
 }
 
+function PreferenceSwitch({ label, checked, onChange }: {
+  label: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4">
+      <span className="text-[13px] text-v2-text-text-base">{label}</span>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={label}
+        onClick={() => onChange(!checked)}
+        className={`relative h-5 w-9 rounded-full transition-colors ${checked ? "bg-v2-blue-600" : "bg-v2-grey-400"}`}
+      >
+        <span
+          aria-hidden
+          className={`absolute top-0.5 size-4 rounded-full bg-white transition-transform ${checked ? "translate-x-[18px]" : "translate-x-0.5"}`}
+        />
+      </button>
+    </div>
+  );
+}
+
+type ModelOption = { provider: string; id: string };
+
+function withConfiguredModel(models: ModelOption[], configured?: string): ModelOption[] {
+  if (!configured || models.some((model) => `${model.provider}/${model.id}` === configured)) return models;
+  const slash = configured.indexOf("/");
+  return slash > 0 ? [...models, { provider: configured.slice(0, slash), id: configured.slice(slash + 1) }] : models;
+}
+
 export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
   const { t, language, setLanguage } = useI18n();
-  const [prefs, setPrefs] = useState<WebUiPreferences>(() =>
-    readPreferences(window.localStorage, () => navigator.language),
-  );
+  const { preferences: prefs, updatePreferences } = usePreferences();
   const [agents, setAgents] = useState<AgentDto[]>([]);
   const [models, setModels] = useState<Array<{ provider: string; id: string }>>([]);
   const [agentModels, setAgentModels] = useState<Record<string, string>>({});
@@ -86,16 +114,6 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, []);
-
-  const setFont = useCallback(
-    (key: "chatFontSize" | "filesFontSize", value: number) => {
-      const next: WebUiPreferences = { ...readPreferences(window.localStorage, () => navigator.language), [key]: value };
-      writePreferences(window.localStorage, next);
-      applyFontPreferences(next);
-      setPrefs(next);
-    },
-    [],
-  );
 
   const setAgentModel = (name: string, value: string) => {
     const next = { ...agentModels };
@@ -165,8 +183,8 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
                 increaseLabel={t("settings.appearance.increaseChat")}
                 preview={t("settings.appearance.previewChat")}
                 previewClassName="v2-md text-[length:var(--v2-chat-font-size)] leading-relaxed text-v2-text-text-faint"
-                onDecrease={() => setFont("chatFontSize", Math.max(CHAT_FONT_MIN, prefs.chatFontSize - 1))}
-                onIncrease={() => setFont("chatFontSize", Math.min(CHAT_FONT_MAX, prefs.chatFontSize + 1))}
+                onDecrease={() => updatePreferences({ chatFontSize: Math.max(CHAT_FONT_MIN, prefs.chatFontSize - 1) })}
+                onIncrease={() => updatePreferences({ chatFontSize: Math.min(CHAT_FONT_MAX, prefs.chatFontSize + 1) })}
               />
               <FontStepper
                 label={t("settings.appearance.filesFontSize")}
@@ -177,8 +195,32 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
                 increaseLabel={t("settings.appearance.increaseFiles")}
                 preview={t("settings.appearance.previewFiles")}
                 previewClassName="font-mono text-[length:var(--v2-files-font-size)] leading-[1.5] text-v2-text-text-faint"
-                onDecrease={() => setFont("filesFontSize", Math.max(FILES_FONT_MIN, prefs.filesFontSize - 1))}
-                onIncrease={() => setFont("filesFontSize", Math.min(FILES_FONT_MAX, prefs.filesFontSize + 1))}
+                onDecrease={() => updatePreferences({ filesFontSize: Math.max(FILES_FONT_MIN, prefs.filesFontSize - 1) })}
+                onIncrease={() => updatePreferences({ filesFontSize: Math.min(FILES_FONT_MAX, prefs.filesFontSize + 1) })}
+              />
+            </div>
+          </section>
+
+          <section className={sectionClass} aria-label={t("settings.conversation.title")}>
+            <header className="flex items-center gap-2 border-b border-v2-grey-200 px-4 py-2.5">
+              <MessageSquare size={14} className="text-v2-icon-icon-muted" aria-hidden />
+              <h2 className="text-[13px] font-semibold text-v2-text-text-base">{t("settings.conversation.title")}</h2>
+            </header>
+            <div className="flex flex-col gap-3 px-4 py-4">
+              <PreferenceSwitch
+                label={t("settings.conversation.autoExpandThinking")}
+                checked={prefs.autoExpandThinking}
+                onChange={(checked) => updatePreferences({ autoExpandThinking: checked })}
+              />
+              <PreferenceSwitch
+                label={t("settings.conversation.autoExpandTools")}
+                checked={prefs.autoExpandTools}
+                onChange={(checked) => updatePreferences({ autoExpandTools: checked })}
+              />
+              <PreferenceSwitch
+                label={t("settings.conversation.expandSubagentOutput")}
+                checked={prefs.expandSubagentOutput}
+                onChange={(checked) => updatePreferences({ expandSubagentOutput: checked })}
               />
             </div>
           </section>
@@ -228,7 +270,7 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
                       <span className="text-[13px] font-medium text-v2-text-text-base">{agentDisplayName(t, "orchestrator")}</span>
                       <select
                         className="h-8 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600 disabled:opacity-50"
-                        aria-label="orchestrator model"
+                        aria-label={`${t("settings.agents.selectModelFor")} ${agentDisplayName(t, agent.name)}`}
                         value={orchestratorValue}
                         onChange={(e) => setOrchestratorModel(e.target.value)}
                         disabled={busy}
@@ -246,13 +288,13 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
                     <span className="text-[13px] font-medium text-v2-text-text-base">{agentDisplayName(t, agent.name)}</span>
                     <select
                       className="h-8 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600 disabled:opacity-50"
-                      aria-label={`${agent.name} model`}
+                      aria-label={`${t("settings.agents.selectModelFor")} ${agentDisplayName(t, agent.name)}`}
                       value={agentModels[agent.name] ?? ""}
                       onChange={(e) => setAgentModel(agent.name, e.target.value)}
                       disabled={busy}
                     >
                       <option value="">{t("settings.agents.inherit")}</option>
-                      {models.map((m) => (
+                      {withConfiguredModel(models, agentModels[agent.name]).map((m) => (
                         <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
                           {m.provider}/{m.id}
                         </option>
