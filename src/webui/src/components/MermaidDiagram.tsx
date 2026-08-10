@@ -1,11 +1,18 @@
 import { useEffect, useState } from "react";
-import mermaid from "mermaid";
 
 export interface MermaidDiagramProps {
   source: string;
 }
 
+type MermaidRuntime = typeof import("mermaid")["default"];
+
+let mermaidPromise: Promise<MermaidRuntime> | null = null;
 let initialized = false;
+
+function loadMermaid(): Promise<MermaidRuntime> {
+  mermaidPromise ??= import("mermaid").then((module) => module.default);
+  return mermaidPromise;
+}
 
 export function MermaidDiagram({ source }: MermaidDiagramProps) {
   const [svg, setSvg] = useState<string | null>(null);
@@ -13,15 +20,18 @@ export function MermaidDiagram({ source }: MermaidDiagramProps) {
 
   useEffect(() => {
     let cancelled = false;
-    if (!initialized) {
-      mermaid.initialize({ startOnLoad: false, securityLevel: "strict" });
-      initialized = true;
-    }
     const id = `mermaid-${crypto.randomUUID()}`;
-    mermaid
-      .render(id, source)
-      .then(({ svg: rendered }) => {
-        if (!cancelled) setSvg(rendered);
+    loadMermaid()
+      .then((mermaid) => {
+        if (cancelled) return null;
+        if (!initialized) {
+          mermaid.initialize({ startOnLoad: false, securityLevel: "strict" });
+          initialized = true;
+        }
+        return mermaid.render(id, source);
+      })
+      .then((result) => {
+        if (!cancelled && result) setSvg(result.svg);
       })
       .catch((err: unknown) => {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
