@@ -289,6 +289,47 @@ describe("ChatTranscript", () => {
     expect(screen.queryByText("deep thought")).toBeNull();
   });
 
+  it("shows the animated thinking label only while reasoning is active", () => {
+    const active = msg({ key: "a", reasoning: "deep thought", isThinking: true });
+    const { rerender } = renderTranscript(<ChatTranscript messages={[active]} tools={[]} />);
+
+    expect(screen.getByText("Thinking")).toHaveClass("v2-thinking-active");
+
+    rerender(
+      <ChatTranscript
+        messages={[msg({ key: "a", reasoning: "deep thought", isThinking: false, text: "answer" })]}
+        tools={[]}
+      />,
+    );
+
+    expect(screen.queryByText("Thinking")).toBeNull();
+    expect(screen.getByRole("button", { name: /show details/i })).toBeVisible();
+  });
+
+  it("shows active thinking before the first reasoning token arrives", () => {
+    renderTranscript(
+      <ChatTranscript
+        messages={[msg({ key: "starting", reasoning: undefined, isThinking: true, text: "..." })]}
+        tools={[]}
+      />,
+    );
+
+    expect(screen.getByText("Thinking")).toHaveClass("v2-thinking-active");
+    expect(screen.queryByRole("button", { name: /details/i })).toBeNull();
+  });
+
+  it("does not label historical reasoning as active thinking", () => {
+    renderTranscript(
+      <ChatTranscript
+        messages={[msg({ key: "history", reasoning: "stored thought", streaming: false })]}
+        tools={[]}
+      />,
+    );
+
+    expect(screen.queryByText("Thinking")).toBeNull();
+    expect(screen.getByRole("button", { name: /show details/i })).toBeVisible();
+  });
+
   it("expands the tool output body with a pop-down animation", () => {
     vi.useFakeTimers();
     renderTranscript(<ChatTranscript messages={[]} tools={[tool({ key: "t1", output: "tool output here" })]} />);

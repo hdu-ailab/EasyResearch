@@ -33,6 +33,8 @@ export interface SessionMessageView {
   text: string;
   /** Reasoning/thinking content, rendered as a collapsible block. */
   reasoning?: string;
+  /** True only while the current assistant reasoning block is streaming. */
+  isThinking?: boolean;
   streaming: boolean;
   error: boolean;
   /** Agent that produced this message; undefined means the orchestrator. */
@@ -120,11 +122,19 @@ function identityFor(message: { id?: unknown; timestamp?: unknown }): string | u
 
 function assistantUpdateOf(event: MessageUpdateEvent):
   | { kind: "text"; delta: string }
+  | { kind: "text-start" }
+  | { kind: "thinking-start" }
   | { kind: "thinking"; delta: string; complete?: boolean }
   | undefined {
   const update = event.assistantMessageEvent;
   if (update?.type === "text_delta" && typeof update.delta === "string") {
     return { kind: "text", delta: update.delta };
+  }
+  if (update?.type === "text_start") {
+    return { kind: "text-start" };
+  }
+  if (update?.type === "thinking_start") {
+    return { kind: "thinking-start" };
   }
   if (update?.type === "thinking_delta" && typeof update.delta === "string") {
     return { kind: "thinking", delta: update.delta };
@@ -276,6 +286,7 @@ export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
       ...(identityFor(message) !== undefined ? { identity: identityFor(message) } : {}),
       role,
       text,
+      isThinking: false,
       streaming: false,
       error: Boolean((message as { errorMessage?: string }).errorMessage),
       agentId:
@@ -417,6 +428,7 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
         ...(identity !== undefined ? { identity } : {}),
         role,
         text: text || (errorMessage ? "" : "..."),
+        isThinking: false,
         streaming: role === "assistant",
         error: Boolean(errorMessage),
         agentId:
@@ -452,26 +464,44 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
           }
         }
       }
-      if (lastIndex === -1 || (!update.delta && !(update.kind === "thinking" && update.complete))) return state;
+      if (lastIndex === -1) return state;
+      if (
+        (update.kind === "text" && !update.delta)
+        || (update.kind === "thinking" && !update.delta && !update.complete)
+      ) return state;
       const target = state.messages[lastIndex]!;
       const nextMessages = [...state.messages];
       nextMessages[lastIndex] = update.kind === "text"
         ? {
             ...target,
             text: target.text === "..." ? update.delta : target.text + update.delta,
+            isThinking: false,
             streaming: true,
           }
-        : {
-            ...target,
-            reasoning: update.complete ? update.delta : (target.reasoning ?? "") + update.delta,
-            streaming: true,
-          };
+        : update.kind === "text-start"
+          ? {
+              ...target,
+              isThinking: false,
+              streaming: true,
+            }
+          : update.kind === "thinking-start"
+            ? {
+                ...target,
+                isThinking: true,
+                streaming: true,
+              }
+            : {
+                ...target,
+                reasoning: update.complete ? update.delta : (target.reasoning ?? "") + update.delta,
+                isThinking: !update.complete,
+                streaming: true,
+              };
       return { ...state, messages: nextMessages, isStreaming: true };
     }
     case "message_end": {
       const key = state.activeMessageKey ?? keyFor(event.message, 0);
       const nextMessages = state.messages.map((m) =>
-        m.key === key ? { ...m, streaming: false } : m,
+        m.key === key ? { ...m, isThinking: false, streaming: false } : m,
       );
       return { ...state, messages: nextMessages, activeMessageKey: undefined };
     }
@@ -592,7 +622,7 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
         isStreaming: false,
         error: null,
         activeMessageKey: undefined,
-        messages: state.messages.map((m) => ({ ...m, streaming: false })),
+        messages: state.messages.map((m) => ({ ...m, isThinking: false, streaming: false })),
       };
     }
     default:
