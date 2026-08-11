@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext, JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { Message } from "@earendil-works/pi-ai";
 import { defineTool, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -12,6 +12,7 @@ import { createLogger, type Logger } from "../runtime/logger";
 import { getAgentDir, importPi } from "../runtime/pi-import";
 import { discoverAgents, type AgentConfig } from "./agents";
 import { resolveModelForSpawn } from "./model-resolution";
+import { sessionNameFor, type SubagentSessionLink } from "./session-links";
 import { resolveSkillDirectories } from "./skill-resolution";
 import { releaseSubagentLock, tryAcquireSubagentLock } from "./serial";
 
@@ -28,9 +29,6 @@ const SUBAGENT_EXTENSION_PATH = fileURLToPath(new URL("./subagent-extension.ts",
  */
 const subagentLogger: Logger | null =
   process.env.LAZYRESEARCH_RPC_CHILD === "1" ? null : createLogger("subagent");
-
-/** ADR-022: named session line per (pipeline cwd, agent). */
-export const SUBAGENT_SESSION_PREFIX = "lazyresearch:";
 
 /** Environment variable carrying the caller's subagent allowlist (ADR-022). */
 export const ALLOWLIST_ENV = "LAZYRESEARCH_AGENTS_ALLOWLIST";
@@ -57,6 +55,7 @@ export interface SingleResult {
   stopReason?: string;
   errorMessage?: string;
   step?: number;
+  sessionId?: string;
 }
 
 export interface SubagentDetails {
@@ -64,23 +63,39 @@ export interface SubagentDetails {
   projectAgentsDir: string | null;
   results: SingleResult[];
   /** Live progress from the running subagent child (ADR-040). */
-  subagent?: SubagentProgress;
+  subagent?: SubagentStreamUpdate;
 }
 
 /** Complete latest-message payload streamed via the tool update callback (ADR-040). */
-export interface SubagentProgress {
+export interface SubagentStreamUpdate {
   agent: string;
   step?: number;
   status: "running";
-  latestMessage: string;
+  sessionId?: string;
+  latestMessage?: string;
+  event?: JsonAgentSessionEvent;
 }
 
 /** Per-child-line dispatch targets used by {@link handleChildLine}. */
 export interface ChildLineHandlers {
+  onSessionHeader?: (header: { id: string; cwd: string }) => void;
+  onEvent?: (event: JsonAgentSessionEvent) => void;
   onMessageEnd: (message: Message) => void;
   onToolResultEnd: (message: Message) => void;
-  onProgress?: (progress: SubagentProgress) => void;
+  onProgress?: (progress: SubagentStreamUpdate) => void;
 }
+
+const CHILD_LIFECYCLE_EVENTS = new Set([
+  "agent_start",
+  "agent_end",
+  "agent_settled",
+  "message_start",
+  "message_update",
+  "message_end",
+  "tool_execution_start",
+  "tool_execution_update",
+  "tool_execution_end",
+]);
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -106,7 +121,17 @@ export function handleChildLine(
   } catch {
     return;
   }
-  if (!isObject(event) || !isObject(event.message)) return;
+  if (!isObject(event)) return;
+  if (event.type === "session") {
+    if (typeof event.id === "string" && event.id.trim() && typeof event.cwd === "string" && event.cwd.trim()) {
+      handlers.onSessionHeader?.({ id: event.id, cwd: event.cwd });
+    }
+    return;
+  }
+  if (typeof event.type === "string" && CHILD_LIFECYCLE_EVENTS.has(event.type)) {
+    handlers.onEvent?.(event as unknown as JsonAgentSessionEvent);
+  }
+  if (!isObject(event.message)) return;
   if (event.type === "message_end") {
     const msg = event.message as unknown as Message;
     handlers.onMessageEnd(msg);
@@ -124,7 +149,7 @@ export function progressFromMessage(
   agent: string,
   step: number | undefined,
   message: Message,
-): SubagentProgress | undefined {
+): SubagentStreamUpdate | undefined {
   if (message.role !== "assistant") return undefined;
   const latestMessage = getMessageText(message);
   return latestMessage ? { agent, step, status: "running", latestMessage } : undefined;
@@ -177,11 +202,6 @@ async function writePromptToTempFile(agentName: string, prompt: string): Promise
     await fs.promises.writeFile(filePath, prompt, { encoding: "utf-8", mode: 0o600 });
   });
   return filePath;
-}
-
-/** ADR-022: named session line for an agent, e.g. `lazyresearch:search`. */
-export function sessionNameFor(agentName: string): string {
-  return `${SUBAGENT_SESSION_PREFIX}${agentName}`;
 }
 
 /**
@@ -248,10 +268,11 @@ export interface RunSingleOptions {
   step?: number;
   /** Complete latest-message callback (ADR-040): invoked on each child message_end. */
   onUpdate?: AgentToolUpdateCallback<SubagentDetails>;
+  onSessionHeader?: (header: { id: string; cwd: string }) => void;
 }
 
 async function runSingleAgent(opts: RunSingleOptions): Promise<SingleResult> {
-  const { defaultCwd, agents, agentName, task, cwd, model, sessionPath, signal, step, onUpdate } = opts;
+  const { defaultCwd, agents, agentName, task, cwd, model, sessionPath, signal, step, onUpdate, onSessionHeader } = opts;
   const agent = agents.find((a) => a.name === agentName);
   const detailsBase = { mode: "single" as const, projectAgentsDir: getAgentDir(), results: [] };
 
@@ -306,6 +327,31 @@ async function runSingleAgent(opts: RunSingleOptions): Promise<SingleResult> {
 
       const processLine = (line: string) => {
         handleChildLine(line, agentName, step, {
+          onSessionHeader: (header) => {
+            result.sessionId = header.id;
+            onSessionHeader?.(header);
+            onUpdate?.({
+              content: [],
+              details: {
+                ...detailsBase,
+                subagent: { agent: agentName, step, status: "running", sessionId: header.id },
+              },
+            });
+          },
+          onEvent: (event) => {
+            const progress: SubagentStreamUpdate = {
+              agent: agentName,
+              step,
+              status: "running",
+              ...(result.sessionId ? { sessionId: result.sessionId } : {}),
+              event,
+            };
+            if (event.type === "message_end") {
+              const completed = progressFromMessage(agentName, step, event.message as unknown as Message);
+              if (completed?.latestMessage) progress.latestMessage = completed.latestMessage;
+            }
+            onUpdate?.({ content: [], details: { ...detailsBase, subagent: progress } });
+          },
           onMessageEnd: (msg) => {
             result.messages.push(msg);
             if (msg.role === "assistant") {
@@ -327,11 +373,6 @@ async function runSingleAgent(opts: RunSingleOptions): Promise<SingleResult> {
           onToolResultEnd: (msg) => {
             result.messages.push(msg);
           },
-          // ADR-040: stream each complete latest assistant message through the
-          // ADR-037 parent-session route for the tab and progress card.
-          onProgress: onUpdate
-            ? (progress) => onUpdate({ content: [], details: { ...detailsBase, subagent: progress } })
-            : undefined,
         });
       };
 
@@ -410,8 +451,11 @@ const SubagentParams = Type.Object({
   session: Type.Optional(SessionMode),
 });
 
-export const subagentTool = defineTool({
-  name: "subagent",
+export function createSubagentTool(options: {
+  persistSessionLink?: (link: SubagentSessionLink) => void;
+} = {}) {
+  return defineTool({
+    name: "subagent",
   label: "Subagent",
   description: [
     "Delegate tasks to specialized subagents with isolated context.",
@@ -422,7 +466,7 @@ export const subagentTool = defineTool({
   ].join(" "),
   parameters: SubagentParams,
 
-  async execute(_toolCallId, params, signal, onUpdate, ctx: ExtensionContext) {
+  async execute(toolCallId, params, signal, onUpdate, ctx: ExtensionContext) {
     if (!tryAcquireSubagentLock()) {
       return {
         content: [
@@ -436,6 +480,15 @@ export const subagentTool = defineTool({
       };
     }
     try {
+      const persistedSessionLinks = new Set<string>();
+      const persistSessionLink = (agent: string, step: number | undefined, childSessionId: string) => {
+        const key = JSON.stringify([toolCallId, step ?? null, childSessionId]);
+        if (persistedSessionLinks.has(key)) return;
+        persistedSessionLinks.add(key);
+        options.persistSessionLink?.(step === undefined
+          ? { toolCallId, childSessionId, agent }
+          : { toolCallId, childSessionId, agent, step });
+      };
       const agents = filterAgentsByAllowlist((await discoverAgents()).agents, process.env[ALLOWLIST_ENV]);
       const fallbackModel = describeModel(ctx);
       const detailsBase = (mode: "single" | "chain") => makeDetails(mode, agents);
@@ -481,6 +534,7 @@ export const subagentTool = defineTool({
             signal,
             step: i + 1,
             onUpdate,
+            onSessionHeader: (header) => persistSessionLink(step.agent, i + 1, header.id),
           });
           results.push(result);
           if (isFailedResult(result)) {
@@ -512,6 +566,7 @@ export const subagentTool = defineTool({
           sessionPath,
           signal,
           onUpdate,
+          onSessionHeader: (header) => persistSessionLink(params.agent!, undefined, header.id),
         });
         if (isFailedResult(result)) {
           return {
@@ -535,7 +590,10 @@ export const subagentTool = defineTool({
       releaseSubagentLock();
     }
   },
-});
+  });
+}
+
+export const subagentTool = createSubagentTool();
 
 export function describeModel(ctx: ExtensionContext): string | undefined {
   const model = ctx.model;

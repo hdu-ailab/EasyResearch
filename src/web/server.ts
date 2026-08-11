@@ -17,6 +17,8 @@ import {
   routeSetAgentModel,
 } from "./agent-models";
 import { createLogger } from "../runtime/logger";
+import { SubagentSessionService } from "./subagent-sessions";
+import { isSubagentSessionName } from "../subagent/session-links";
 
 export interface Server {
   port: number;
@@ -47,6 +49,41 @@ export function isKnownAgentName(agents: AgentConfig[], name: string): boolean {
 }
 
 /**
+ * Structural subset of Pi's SessionInfo used by the pure mapping helper so the
+ * web layer can be tested without a static Pi import.
+ */
+interface SessionInfoLike {
+  id: string;
+  path: string;
+  cwd: string;
+  name?: string;
+  created: Date;
+  modified: Date;
+  messageCount: number;
+  firstMessage: string;
+}
+
+/**
+ * Home-list session summaries. Internal `lazyresearch:` child session lines
+ * are excluded: they are not user sessions and are browsed through their
+ * parent's snapshot endpoint instead.
+ */
+export function toUserSessionSummaries(sessions: readonly SessionInfoLike[]): SessionSummaryDto[] {
+  return sessions
+    .filter((session) => !isSubagentSessionName(session.name))
+    .map((session) => ({
+      id: session.id,
+      path: session.path,
+      cwd: session.cwd,
+      name: session.name,
+      created: new Date(session.created).toISOString(),
+      modified: new Date(session.modified).toISOString(),
+      messageCount: session.messageCount,
+      firstMessage: session.firstMessage,
+    }));
+}
+
+/**
  * Start the Web panel backend on 127.0.0.1:3000. The server owns the active
  * session registry and stops every Pi RPC child on shutdown.
  */
@@ -57,6 +94,13 @@ export async function startServer(): Promise<Server> {
   const logger = createLogger("web-server");
   const registry = new ActiveSessionRegistry(await PiRpcSessionFactory.resolve());
   const { SessionManager, getAgentDir } = await importPi();
+  const subagentSessions = new SubagentSessionService({
+    open: (path) => SessionManager.open(path),
+    listAll: async () => {
+      const sessions = await SessionManager.listAll(undefined);
+      return sessions.map(({ id, path, cwd }) => ({ id, path, cwd }));
+    },
+  });
   const agentDir = getAgentDir();
   const config = new ConfigFileService(agentDir);
   const agentModels = resolveAgentModelsService({
@@ -72,19 +116,7 @@ export async function startServer(): Promise<Server> {
     webuiDist: WEBUI_DIST,
     listAllSessions: async () => {
       const sessions = await SessionManager.listAll(undefined);
-      return sessions.map((s) => {
-        const dto: SessionSummaryDto = {
-          id: s.id,
-          path: s.path,
-          cwd: s.cwd,
-          name: s.name,
-          created: new Date(s.created).toISOString(),
-          modified: new Date(s.modified).toISOString(),
-          messageCount: s.messageCount,
-          firstMessage: s.firstMessage,
-        };
-        return dto;
-      });
+      return toUserSessionSummaries(sessions);
     },
     listModels: async () => {
       const { ModelRuntime } = await importPi();
@@ -118,6 +150,7 @@ export async function startServer(): Promise<Server> {
     directories: new DirectoryService(),
     registry,
     config,
+    subagentSessions,
     logger,
     listAgents: async () => (await discoverAgents()).agents.map(agentToDto),
   };

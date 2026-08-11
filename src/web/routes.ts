@@ -19,6 +19,7 @@ import { ConfigPathError, ConfigServiceError } from "./config-files";
 import { AgentModelError } from "./agent-models";
 import { WebuiSettingsError, readWebuiSettings, updateWebuiSettings } from "./webui-settings";
 import type { Logger } from "../runtime/logger";
+import { SubagentSessionNotFoundError, type SubagentSessionService } from "./subagent-sessions";
 
 export interface RouteServices {
   webuiDist: string;
@@ -33,6 +34,7 @@ export interface RouteServices {
   directories: DirectoryService;
   registry: ActiveSessionRegistry;
   config: ConfigFileService;
+  subagentSessions: Pick<SubagentSessionService, "summaries" | "snapshot">;
   logger: Logger;
 }
 
@@ -110,14 +112,21 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
         return jsonResponse({ sessions: services.registry.list() });
       }
 
+      const childSnapshotMatch = path.match(/^\/api\/sessions\/([^/]+)\/subagents\/([^/]+)\/snapshot$/);
+      if (req.method === "GET" && childSnapshotMatch) {
+        return jsonResponse(await services.subagentSessions.snapshot(childSnapshotMatch[1]!, childSnapshotMatch[2]!));
+      }
+
       const sessionMatch = path.match(/^\/api\/sessions\/([^/]+)\/snapshot$/);
       if (req.method === "GET" && sessionMatch) {
-        return jsonResponse(await services.registry.snapshot(sessionMatch[1]!));
+        const sessionId = sessionMatch[1]!;
+        const snapshot = await services.registry.snapshot(sessionId);
+        return jsonResponse({ ...snapshot, subagents: await services.subagentSessions.summaries(sessionId) });
       }
 
       const eventsMatch = path.match(/^\/api\/sessions\/([^/]+)\/events$/);
       if (req.method === "GET" && eventsMatch) {
-        return sessionEvents(services.registry, services.logger, eventsMatch[1]!);
+        return sessionEvents(services, eventsMatch[1]!);
       }
 
       const messagesMatch = path.match(/^\/api\/sessions\/([^/]+)\/messages$/);
@@ -207,6 +216,7 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       if (error instanceof DirectoryServiceError) return errorResponse(error.status, error.message);
       if (error instanceof ExtensionGuardError) return errorResponse(400, error.message);
       if (error instanceof UnknownSessionError) return errorResponse(404, error.message);
+      if (error instanceof SubagentSessionNotFoundError) return errorResponse(404, error.message);
       if (error instanceof AgentModelError) return errorResponse(error.status, error.message);
       if (error instanceof WebuiSettingsError) return errorResponse(error.status, error.message);
       if (error instanceof BodyError) return errorResponse(400, error.message);
@@ -277,7 +287,8 @@ function rangeErrorResponse(descriptor: RawFileDescriptor): Response {
   });
 }
 
-function sessionEvents(registry: ActiveSessionRegistry, logger: Logger, id: string): Response {
+function sessionEvents(services: RouteServices, id: string): Response {
+  const { registry, logger, subagentSessions } = services;
   const encoder = new TextEncoder();
   let controllerRef: ReadableStreamDefaultController<Uint8Array> | null = null;
   let unsubscribe: (() => void) | null = null;
@@ -292,10 +303,10 @@ function sessionEvents(registry: ActiveSessionRegistry, logger: Logger, id: stri
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       controllerRef = controller;
-      registry.snapshot(id).then(
-        ({ session, messages }) => {
+      Promise.all([registry.snapshot(id), subagentSessions.summaries(id)]).then(
+        ([{ session, messages }, subagents]) => {
           controller.enqueue(
-            encoder.encode(`data: ${JSON.stringify({ type: "snapshot", session, messages })}\n\n`),
+            encoder.encode(`data: ${JSON.stringify({ type: "snapshot", session, messages, subagents })}\n\n`),
           );
         },
         (error) => {

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { fromSnapshot, reduceSessionEvent, type SessionViewState } from "./session-reducer";
+import {
+  fromSnapshot,
+  mergeSnapshot,
+  nestedSubagentEvent,
+  reduceSessionEvent,
+  type SessionViewState,
+} from "./session-reducer";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 
 const emptyState: SessionViewState = { messages: [], tools: [], isStreaming: false, error: null, nextOrder: 0 };
@@ -29,6 +35,7 @@ describe("session reducer", () => {
   it("hydrates from a snapshot", () => {
     const state = fromSnapshot({
       session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" } as never,
+      subagents: [],
       messages: [
         { role: "user", content: [{ type: "text", text: "hi" }] },
         { role: "assistant", content: [{ type: "text", text: "hello" }] },
@@ -153,6 +160,7 @@ describe("session reducer", () => {
   it("splits thinking blocks into reasoning, keeping the body text", () => {
     const state = fromSnapshot({
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "done" } as never,
+      subagents: [],
       messages: [
         {
           role: "assistant",
@@ -282,6 +290,7 @@ describe("session reducer", () => {
   it("pairs snapshot toolCall blocks with toolResult messages", () => {
     const state = fromSnapshot({
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "done" } as never,
+      subagents: [],
       messages: [
         {
           role: "assistant",
@@ -305,6 +314,7 @@ describe("session reducer", () => {
   it("unwraps text-block arrays from toolResult content", () => {
     const state = fromSnapshot({
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "done" } as never,
+      subagents: [],
       messages: [
         {
           role: "toolResult",
@@ -323,6 +333,7 @@ describe("session reducer", () => {
     const genericOutput = "g".repeat(2_500);
     const state = fromSnapshot({
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "done" } as never,
+      subagents: [],
       messages: [
         {
           role: "assistant",
@@ -356,6 +367,7 @@ describe("session reducer", () => {
   it("does not treat whitespace-only snapshot subagent output as a latest message", () => {
     const state = fromSnapshot({
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "done" } as never,
+      subagents: [],
       messages: [
         {
           role: "assistant",
@@ -378,6 +390,7 @@ describe("session reducer", () => {
   it("orders tools at their stream position, interleaving with messages", () => {
     const state = fromSnapshot({
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "done" } as never,
+      subagents: [],
       messages: [
         { role: "user", content: [{ type: "text", text: "go" }] },
         {
@@ -410,6 +423,7 @@ describe("session reducer", () => {
   it("labels a subagent-line dispatch as orchestrator, not the user", () => {
     const state = fromSnapshot({
       session: { id: "s2", cwd: "/p", sessionName: "lazyresearch:search", isStreaming: false, status: "done" } as never,
+      subagents: [],
       messages: [
         { role: "user", content: [{ type: "text", text: "Task: search papers" }] },
         { role: "assistant", content: [{ type: "text", text: "found 3 papers" }] },
@@ -423,6 +437,7 @@ describe("session reducer", () => {
   it("keeps plain sessions user-labeled and unlabeled assistants", () => {
     const state = fromSnapshot({
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "done" } as never,
+      subagents: [],
       messages: [
         { role: "user", content: [{ type: "text", text: "hi" }] },
         { role: "assistant", content: [{ type: "text", text: "hello" }] },
@@ -492,6 +507,7 @@ describe("session reducer", () => {
   it("captures the agent name from snapshot subagent toolCall blocks (JSON-string args)", () => {
     const state = fromSnapshot({
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "done" } as never,
+      subagents: [],
       messages: [
         {
           role: "assistant",
@@ -500,6 +516,218 @@ describe("session reducer", () => {
       ] as never,
     });
     expect(state.tools[0]).toMatchObject({ name: "subagent", agentName: "figures" });
+  });
+
+  it("applies persisted child summaries to the exact parent tool invocation", () => {
+    const state = fromSnapshot({
+      session: { id: "parent", cwd: "/p", isStreaming: false, status: "ready" } as never,
+      subagents: [{
+        toolCallId: "sub-linked",
+        childSessionId: "child-uuid",
+        agent: "writing",
+        step: 2,
+        latestMessage: "historical progress",
+      }],
+      messages: [{
+        role: "assistant",
+        content: [{ type: "toolCall", id: "sub-linked", name: "subagent", arguments: '{"agent":"search"}' }],
+      }] as never,
+    });
+
+    expect(state.tools[0]).toMatchObject({
+      key: "sub-linked",
+      agentName: "writing",
+      step: 2,
+      sessionId: "child-uuid",
+      latestMessage: "historical progress",
+    });
+  });
+
+  it("preserves every historical chain-step mapping on one parent tool row", () => {
+    const state = fromSnapshot({
+      session: { id: "parent", cwd: "/p", isStreaming: false, status: "ready" } as never,
+      subagents: [
+        { toolCallId: "chain-linked", childSessionId: "child-search", agent: "search", step: 1 },
+        { toolCallId: "chain-linked", childSessionId: "child-writing", agent: "writing", step: 2 },
+      ],
+      messages: [{
+        role: "assistant",
+        content: [{ type: "toolCall", id: "chain-linked", name: "subagent", arguments: '{"chain":[]}' }],
+      }] as never,
+    });
+
+    expect(state.tools[0]).toMatchObject({
+      agentName: "writing",
+      step: 2,
+      sessionId: "child-writing",
+      sessionLinks: [
+        { toolCallId: "chain-linked", childSessionId: "child-search", agent: "search", step: 1 },
+        { toolCallId: "chain-linked", childSessionId: "child-writing", agent: "writing", step: 2 },
+      ],
+    });
+  });
+
+  it("lets an authoritative snapshot summary replace prior live chain agent and step", () => {
+    const prior: SessionViewState = {
+      ...emptyState,
+      tools: [{
+        key: "chain-call",
+        name: "subagent",
+        running: true,
+        done: false,
+        error: false,
+        agentName: "search",
+        step: 1,
+        latestMessage: "live progress",
+        order: 0,
+      }],
+      nextOrder: 1,
+    };
+    const snapshot = {
+      session: { id: "parent", cwd: "/p", isStreaming: true, status: "running" },
+      subagents: [{
+        toolCallId: "chain-call",
+        childSessionId: "child-writing",
+        agent: "writing",
+        step: 2,
+      }],
+      messages: [{
+        role: "assistant",
+        content: [{ type: "toolCall", id: "chain-call", name: "subagent", arguments: '{"agent":"search"}' }],
+      }],
+    } as never;
+
+    expect(mergeSnapshot(prior, snapshot).tools[0]).toMatchObject({
+      agentName: "writing",
+      step: 2,
+      sessionId: "child-writing",
+      latestMessage: "live progress",
+    });
+  });
+
+  it("preserves prior live chain agent and step when the snapshot has no summary", () => {
+    const prior: SessionViewState = {
+      ...emptyState,
+      tools: [{
+        key: "chain-call",
+        name: "subagent",
+        running: true,
+        done: false,
+        error: false,
+        agentName: "writing",
+        step: 2,
+        order: 0,
+      }],
+      nextOrder: 1,
+    };
+    const snapshot = {
+      session: { id: "parent", cwd: "/p", isStreaming: true, status: "running" },
+      subagents: [],
+      messages: [{
+        role: "assistant",
+        content: [{ type: "toolCall", id: "chain-call", name: "subagent", arguments: '{"agent":"search"}' }],
+      }],
+    } as never;
+
+    expect(mergeSnapshot(prior, snapshot).tools[0]).toMatchObject({ agentName: "writing", step: 2 });
+  });
+
+  it("extracts nested child deltas and reduces them token-by-token into only that child state", () => {
+    const start = nestedSubagentEvent({
+      type: "tool_execution_update",
+      toolCallId: "parent-tool",
+      partialResult: { details: { subagent: {
+        agent: "search",
+        sessionId: "child-uuid",
+        event: { type: "message_start", message: { id: "child-message", role: "assistant", content: [] } },
+      } } },
+    } as never)!;
+    const first = nestedSubagentEvent({
+      type: "tool_execution_update",
+      toolCallId: "parent-tool",
+      partialResult: { details: { subagent: {
+        agent: "search",
+        sessionId: "child-uuid",
+        event: { type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "two " } },
+      } } },
+    } as never)!;
+    const second = nestedSubagentEvent({
+      type: "tool_execution_update",
+      toolCallId: "parent-tool",
+      partialResult: { details: { subagent: {
+        agent: "search",
+        sessionId: "child-uuid",
+        event: { type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "tokens" } },
+      } } },
+    } as never)!;
+
+    expect(start).toMatchObject({ sessionId: "child-uuid", toolCallId: "parent-tool", agent: "search" });
+    let child = reduceSessionEvent({ ...emptyState, subagentName: "search" }, start.event!);
+    child = reduceSessionEvent(child, first.event!);
+    child = reduceSessionEvent(child, second.event!);
+    expect(child.messages).toEqual([expect.objectContaining({ text: "two tokens", label: "search" })]);
+  });
+
+  it("deduplicates replayed nested child message starts by stable Pi message id", () => {
+    const nested = nestedSubagentEvent({
+      type: "tool_execution_update",
+      toolCallId: "parent-tool",
+      partialResult: { details: { subagent: {
+        agent: "search",
+        sessionId: "child-uuid",
+        event: { type: "message_start", message: { id: "child-message", role: "assistant", content: [] } },
+      } } },
+    } as never)!.event!;
+
+    let child = reduceSessionEvent({ ...emptyState, subagentName: "search" }, nested);
+    child = reduceSessionEvent(child, nested);
+
+    expect(child.messages).toHaveLength(1);
+    expect(child.nextOrder).toBe(1);
+  });
+
+  it("deduplicates replayed nested child tool starts by toolCallId", () => {
+    const nested = nestedSubagentEvent({
+      type: "tool_execution_update",
+      toolCallId: "parent-tool",
+      partialResult: { details: { subagent: {
+        agent: "search",
+        sessionId: "child-uuid",
+        event: { type: "tool_execution_start", toolCallId: "bash-1", toolName: "bash", args: { command: "ls" } },
+      } } },
+    } as never)!.event!;
+
+    let child = reduceSessionEvent({ ...emptyState, subagentName: "search" }, nested);
+    child = reduceSessionEvent(child, nested);
+
+    expect(child.tools).toHaveLength(1);
+    expect(child.nextOrder).toBe(1);
+  });
+
+  it("preserves nested child tool order among child messages", () => {
+    const nested = (event: AgentSessionEvent) => nestedSubagentEvent({
+      type: "tool_execution_update",
+      toolCallId: "parent-tool",
+      partialResult: { details: { subagent: { agent: "search", sessionId: "child-uuid", event } } },
+    } as never)!.event!;
+    let child = reduceSessionEvent({ ...emptyState, subagentName: "search" }, nested({
+      type: "message_start",
+      message: { id: "m1", role: "assistant", content: [{ type: "text", text: "before" }] },
+    } as never));
+    child = reduceSessionEvent(child, nested({
+      type: "tool_execution_start", toolCallId: "bash-1", toolName: "bash", args: { command: "ls" },
+    } as never));
+    child = reduceSessionEvent(child, nested({
+      type: "tool_execution_end", toolCallId: "bash-1", toolName: "bash", result: { output: "done" },
+    } as never));
+    child = reduceSessionEvent(child, nested({
+      type: "message_start",
+      message: { id: "m2", role: "assistant", content: [{ type: "text", text: "after" }] },
+    } as never));
+
+    expect([...child.messages, ...child.tools].sort((a, b) => a.order - b.order).map((entry) =>
+      "name" in entry ? entry.name : entry.text,
+    )).toEqual(["before", "bash", "after"]);
   });
 
   it("ignores tool_execution_update for unknown toolCallIds", () => {
@@ -538,10 +766,12 @@ describe("session reducer", () => {
     ] as never;
     const streaming = fromSnapshot({
       session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" } as never,
+      subagents: [],
       messages,
     });
     const settled = fromSnapshot({
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "done" } as never,
+      subagents: [],
       messages,
     });
 

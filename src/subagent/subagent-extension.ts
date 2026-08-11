@@ -1,5 +1,6 @@
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
-import { subagentTool } from "./tool";
+import { createSubagentTool } from "./tool";
+import { SUBAGENT_SESSION_LINK_ENTRY } from "./session-links";
 import { webSearchTool } from "../tools/duckduckgo-search";
 import { createLogger } from "../runtime/logger";
 import { mountPiEventLogger, type PiEventBus } from "../runtime/pi-event-logger";
@@ -13,7 +14,9 @@ import { mountPiEventLogger, type PiEventBus } from "../runtime/pi-event-logger"
  */
 export function createSubagentExtension(): InlineExtension {
   return async (pi) => {
-    pi.registerTool(subagentTool);
+    pi.registerTool(createSubagentTool({
+      persistSessionLink: (link) => pi.appendEntry(SUBAGENT_SESSION_LINK_ENTRY, link),
+    }));
     pi.registerTool(webSearchTool);
     const logger = createLogger("stage-agent");
     mountPiEventLogger(pi as unknown as PiEventBus, logger);

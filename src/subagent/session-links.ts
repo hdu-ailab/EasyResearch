@@ -1,0 +1,44 @@
+export const SUBAGENT_SESSION_PREFIX = "lazyresearch:";
+export const SUBAGENT_SESSION_LINK_ENTRY = "lazyresearch:subagent_session";
+
+export interface SubagentSessionLink {
+  toolCallId: string;
+  childSessionId: string;
+  agent: string;
+  step?: number;
+}
+
+export function sessionNameFor(agentName: string): string {
+  return `${SUBAGENT_SESSION_PREFIX}${agentName}`;
+}
+
+export function isSubagentSessionName(name: string | undefined): boolean {
+  return typeof name === "string" && name.startsWith(SUBAGENT_SESSION_PREFIX);
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+export function readSubagentSessionLinks(entries: readonly unknown[]): SubagentSessionLink[] {
+  const links = new Map<string, SubagentSessionLink>();
+  for (const entry of entries) {
+    if (!isObject(entry) || entry.type !== "custom" || entry.customType !== SUBAGENT_SESSION_LINK_ENTRY) continue;
+    const data = entry.data;
+    if (!isObject(data)) continue;
+    const { toolCallId, childSessionId, agent, step } = data;
+    if (!isNonEmptyString(toolCallId) || !isNonEmptyString(childSessionId) || !isNonEmptyString(agent)) continue;
+    if (step !== undefined && (typeof step !== "number" || !Number.isFinite(step) || !Number.isInteger(step) || step <= 0)) continue;
+
+    const key = `${toolCallId}:${step ?? "single"}`;
+    links.delete(key);
+    links.set(key, step === undefined
+      ? { toolCallId, childSessionId, agent }
+      : { toolCallId, childSessionId, agent, step });
+  }
+  return [...links.values()];
+}

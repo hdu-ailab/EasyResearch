@@ -15,6 +15,7 @@ export interface ChatTranscriptProps {
   emptyHint?: string;
   /** While true, renders a working agent row under the newest user message. */
   pending?: boolean;
+  onViewDetails?: (toolCallId: string, step?: number) => void;
 }
 
 const ROLE_LABELS: Record<string, MessageKey> = {
@@ -152,7 +153,7 @@ function MessageRow({ message, initialThinkingOpen }: { message: SessionMessageV
  * The list pins to the bottom while the user stays at the bottom; any
  * manual scroll away unpins it, and returning to the bottom re-pins.
  */
-export function ChatTranscript({ messages, tools, emptyHint, pending = false }: ChatTranscriptProps) {
+export function ChatTranscript({ messages, tools, emptyHint, pending = false, onViewDetails }: ChatTranscriptProps) {
   const { t } = useI18n();
   const { preferences } = usePreferences();
   const hint = emptyHint ?? t("transcript.sendToStart");
@@ -206,7 +207,12 @@ export function ChatTranscript({ messages, tools, emptyHint, pending = false }: 
       <ul ref={contentRef} className="mx-auto flex w-full max-w-[1000px] flex-col gap-3 p-4 md:max-w-200 2xl:max-w-[1000px]">
         {entries.map((entry) =>
           "name" in entry ? entry.name === "subagent" ? (
-            <SubagentToolCard key={entry.key} tool={entry} initialOpen={preferences.expandSubagentOutput} />
+            <SubagentToolCard
+              key={entry.key}
+              tool={entry}
+              initialOpen={preferences.expandSubagentOutput}
+              onViewDetails={onViewDetails}
+            />
           ) : (
             <ToolRow key={entry.key} tool={entry} initialOpen={preferences.autoExpandTools} />
           ) : (

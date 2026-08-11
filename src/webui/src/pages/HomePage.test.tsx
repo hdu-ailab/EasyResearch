@@ -110,7 +110,7 @@ describe("HomePage", () => {
 
   it("renders historical and active sessions separately", async () => {
     render(<HomePage onOpenSession={() => {}} onOpenSettings={() => {}} settingsButton={<button type="button">Settings</button>} />);
-    expect(await screen.findByText("Fault diagnosis")).toBeTruthy();
+    expect(await screen.findByText("write a paper")).toBeTruthy();
     expect(screen.getAllByText("/proj").length).toBeGreaterThan(0);
     expect(screen.getAllByText("12").length).toBeGreaterThan(0);
   });
@@ -118,15 +118,15 @@ describe("HomePage", () => {
   it("starts in All projects and filters both active and history by exact cwd", async () => {
     const user = userEvent.setup();
     renderHomeWithTwoProjects();
-    expect(await screen.findByText("Fault diagnosis")).toBeVisible();
-    expect(screen.getByText("Other paper")).toBeVisible();
-    expect(screen.getByText("Project experiment")).toBeVisible();
-    expect(screen.getByText("Other experiment")).toBeVisible();
+    expect(await screen.findByText("write a paper")).toBeVisible();
+    expect(screen.getByText("compare another method")).toBeVisible();
+    expect(screen.getByText("a1")).toBeVisible();
+    expect(screen.getByText("a2")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "/other" }));
-    expect(screen.queryByText("Fault diagnosis")).toBeNull();
-    expect(screen.queryByText("Project experiment")).toBeNull();
-    expect(screen.getByText("Other paper")).toBeVisible();
-    expect(screen.getByText("Other experiment")).toBeVisible();
+    expect(screen.queryByText("write a paper")).toBeNull();
+    expect(screen.queryByText("a1")).toBeNull();
+    expect(screen.getByText("compare another method")).toBeVisible();
+    expect(screen.getByText("a2")).toBeVisible();
   });
 
   it("keeps mobile interaction and landmark order aligned with the visual workspace order", async () => {
@@ -158,21 +158,21 @@ describe("HomePage", () => {
       homeDir: "/home/user",
       sessions: history,
       activeSessions: [
-        { id: "ready", cwd: "/proj", sessionName: "Ready paper", isStreaming: false, status: "ready" },
-        { id: "running", cwd: "/proj", sessionName: "Running paper", isStreaming: false, status: "running" },
-        { id: "error", cwd: "/proj", sessionName: "Error paper", isStreaming: false, status: "error" },
+        { id: "ready-sess", cwd: "/proj", sessionName: "Ready paper", isStreaming: false, status: "ready" },
+        { id: "running-sess", cwd: "/proj", sessionName: "Running paper", isStreaming: false, status: "running" },
+        { id: "error-sess", cwd: "/proj", sessionName: "Error paper", isStreaming: false, status: "error" },
       ],
     } as never);
     renderHome();
     expect(await screen.findByText(/^1 running$/i)).toBeVisible();
-    expect(screen.getByText("Running paper")).toBeVisible();
-    expect(screen.queryByText("Ready paper")).toBeNull();
-    expect(screen.queryByText("Error paper")).toBeNull();
+    expect(screen.getByText("running-")).toBeVisible();
+    expect(screen.queryByText("ready-se")).toBeNull();
+    expect(screen.queryByText("error-se")).toBeNull();
   });
 
   it("renders only running sessions in the active list", async () => {
     const running = { ...active[0], sessionName: "Running" };
-    const idle = { id: "idle", cwd: "/proj", sessionName: "Idle", isStreaming: false, status: "ready" };
+    const idle = { id: "idle-sess", cwd: "/proj", sessionName: "Idle", isStreaming: false, status: "ready" };
     vi.mocked(api.listStatus).mockResolvedValueOnce({
       agentDir: "/agent",
       homeDir: "/home/user",
@@ -181,18 +181,18 @@ describe("HomePage", () => {
     } as never);
     renderHome();
     expect(await screen.findByRole("heading", { name: /active sessions/i })).toBeInTheDocument();
-    expect(screen.getByText("Running")).toBeInTheDocument();
-    expect(screen.queryByText("Idle")).not.toBeInTheDocument();
+    expect(screen.getByText("a1")).toBeInTheDocument();
+    expect(screen.queryByText("idle-ses")).not.toBeInTheDocument();
   });
 
-  it("searches active and historical session names without hiding project selection", async () => {
+  it("searches active and historical session titles without hiding project selection", async () => {
     const user = userEvent.setup();
     renderHomeWithTwoProjects();
     await user.type(await screen.findByRole("searchbox", { name: /search sessions/i }), "other");
-    expect(screen.queryByText("Fault diagnosis")).toBeNull();
-    expect(screen.queryByText("Project experiment")).toBeNull();
-    expect(screen.getByText("Other paper")).toBeVisible();
-    expect(screen.getByText("Other experiment")).toBeVisible();
+    expect(screen.queryByText("write a paper")).toBeNull();
+    expect(screen.queryByText("a1")).toBeNull();
+    expect(screen.getByText("compare another method")).toBeVisible();
+    expect(screen.getByText("a2")).toBeVisible();
     expect(screen.getByRole("button", { name: "/proj" })).toBeVisible();
   });
 
@@ -222,12 +222,12 @@ describe("HomePage", () => {
 
     expect(screen.getByRole("button", { name: /all projects/i })).toHaveAttribute("aria-current", "true");
     expect(screen.queryByRole("button", { name: "/other" })).toBeNull();
-    expect(screen.getByText("Fault diagnosis")).toBeVisible();
+    expect(screen.getByText("write a paper")).toBeVisible();
   });
 
   it("renders Settings once", async () => {
     renderHome();
-    await screen.findByText("Fault diagnosis");
+    await screen.findByText("write a paper");
     expect(screen.getAllByRole("button", { name: /settings/i })).toHaveLength(1);
   });
 
@@ -264,7 +264,7 @@ describe("HomePage", () => {
     } as never);
     const onOpen = vi.fn();
     render(<HomePage onOpenSession={onOpen} onOpenSettings={() => {}} settingsButton={<button type="button">Settings</button>} />);
-    await user.click(await screen.findByText("Fault diagnosis"));
+    await user.click(await screen.findByText("write a paper"));
     await waitFor(() => expect(api.openSession).toHaveBeenCalledWith("/agent/sessions/--p--/a.jsonl"));
     expect(api.createSession).not.toHaveBeenCalled();
     await waitFor(() => expect(onOpen).toHaveBeenCalledWith({ id: "h1", cwd: "/proj" }));
@@ -293,7 +293,7 @@ describe("HomePage", () => {
     } as never);
     const onOpen = vi.fn();
     render(<HomePage onOpenSession={onOpen} onOpenSettings={() => {}} settingsButton={<button type="button">Settings</button>} />);
-    await user.click(await screen.findByText("Running proj"));
+    await user.click(await screen.findByText("a1"));
     await waitFor(() => expect(api.restartSession).not.toHaveBeenCalled());
     await waitFor(() => expect(onOpen).toHaveBeenCalledWith({ id: "a1", cwd: "/proj" }));
   });

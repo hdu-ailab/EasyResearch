@@ -14,6 +14,7 @@ vi.mock("../api", async (importOriginal) => {
   return {
     ...actual,
     getSnapshot: vi.fn(),
+    getChildSnapshot: vi.fn(),
     connectSessionEvents: vi.fn(),
     sendPrompt: vi.fn(),
     openSession: vi.fn(),
@@ -60,6 +61,24 @@ function emitInAct(event: unknown) {
   act(() => emit(event));
 }
 
+function emitChildHeader(toolCallId: string, agent: string, sessionId: string, step?: number) {
+  emitInAct({
+    type: "tool_execution_update",
+    toolCallId,
+    toolName: "subagent",
+    partialResult: { details: { subagent: { agent, sessionId, step, status: "running" } } },
+  });
+}
+
+function emitRawChildEvent(toolCallId: string, agent: string, event: unknown, step?: number) {
+  emitInAct({
+    type: "tool_execution_update",
+    toolCallId,
+    toolName: "subagent",
+    partialResult: { details: { subagent: { agent, step, status: "running", event } } },
+  });
+}
+
 function render(ui: ReactElement) {
   return renderWithTestingLibrary(ui, { wrapper: PreferencesProvider });
 }
@@ -71,6 +90,7 @@ describe("WorkPage", () => {
 
   beforeEach(() => {
     vi.mocked(api.getSnapshot).mockReset();
+    vi.mocked(api.getChildSnapshot).mockReset();
     vi.mocked(api.connectSessionEvents).mockReset();
     vi.mocked(api.sendPrompt).mockReset();
     vi.mocked(api.openSession).mockReset();
@@ -101,6 +121,10 @@ describe("WorkPage", () => {
       { name: "figures", model: null, source: "inherit" },
     ]);
     vi.mocked(api.getSnapshot).mockResolvedValue(snapshot);
+    vi.mocked(api.getChildSnapshot).mockResolvedValue({
+      session: { id: "child-default", cwd: "/p", sessionName: "lazyresearch:search" },
+      messages: [],
+    });
     vi.mocked(api.listEntries).mockResolvedValue([{ kind: "file", name: "notes.md", path: "/p/notes.md" }]);
     stubEvents();
   });
@@ -220,8 +244,7 @@ describe("WorkPage", () => {
     expect(api.stopSession).not.toHaveBeenCalled();
   });
 
-  it("shows a bounded latest-message preview and the focused subagent card until the run ends", async () => {
-    const user = userEvent.setup();
+  it("shows a bounded latest-message preview and auto-collapses an untouched temporary tab", async () => {
     const latestMessage = "scanning arxiv for recent fault-diagnosis papers";
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await screen.findByText("starting research");
@@ -244,14 +267,266 @@ describe("WorkPage", () => {
     });
     const preview = within(searchTab).getByTitle(latestMessage);
     expect(preview).toHaveClass("max-w-64", "truncate");
-    await user.click(searchTab);
-    expect(screen.getByRole("button", { name: /agent search/i }).getAttribute("aria-pressed")).toBe("true");
-    expect(orchestratorTab.getAttribute("aria-pressed")).toBe("false");
     const cardMessage = within(screen.getByLabelText(/conversation/i)).getByText(latestMessage);
     expect(cardMessage.closest("article")).not.toBeNull();
     emitInAct({ type: "tool_execution_end", toolCallId: "sub-1", toolName: "subagent", result: "done", isError: false });
     await waitFor(() => expect(screen.queryByRole("button", { name: /agent search/i })).toBeNull());
     await waitFor(() => expect(screen.getByRole("button", { name: /agent orchestrator/i }).getAttribute("aria-pressed")).toBe("true"));
+  });
+
+  it("retains a selected temporary tab and promotes it to an exact UUID tab", async () => {
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    emitInAct({
+      type: "tool_execution_start", toolCallId: "sub-promote", toolName: "subagent",
+      args: { agent: "search", task: "find" },
+    });
+    emitInAct({
+      type: "tool_execution_update", toolCallId: "sub-promote", toolName: "subagent",
+      partialResult: { details: { subagent: { agent: "search", sessionId: "child-promoted", latestMessage: "linked" } } },
+    });
+    await user.click(await screen.findByRole("button", { name: /agent search/i }));
+    expect(await screen.findByRole("button", { name: /Close agent tab:/ })).toBeVisible();
+    emitInAct({ type: "tool_execution_end", toolCallId: "sub-promote", toolName: "subagent", result: "done" });
+
+    expect(await screen.findByRole("button", { name: /agent search/i })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /Close agent tab:/ })).toBeVisible();
+  });
+
+  it("keeps a selected pre-header tab focused when its first header adds step and UUID", async () => {
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    emitInAct({
+      type: "tool_execution_start",
+      toolCallId: "sub-first-header",
+      toolName: "subagent",
+      args: { agent: "search", task: "find" },
+    });
+    const temporary = await screen.findByRole("button", { name: /agent search/i });
+    await user.click(temporary);
+    expect(temporary).toHaveAttribute("aria-pressed", "true");
+
+    emitChildHeader("sub-first-header", "search", "child-first-header", 1);
+
+    const promoted = await screen.findByRole("button", { name: /agent search/i });
+    expect(promoted).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /Close agent tab:/ })).toBeVisible();
+  });
+
+  it("loads inherited history exactly once when a retained temporary tab receives a delayed UUID", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getChildSnapshot).mockResolvedValue({
+      session: { id: "child-delayed", cwd: "/p", sessionName: "lazyresearch:search" },
+      messages: [{ role: "user", content: [{ type: "text", text: "inherited before this dispatch" }] }],
+    } as never);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    emitInAct({
+      type: "tool_execution_start", toolCallId: "sub-delayed", toolName: "subagent",
+      args: { agent: "search", task: "find" },
+    });
+    await user.click((await screen.findAllByRole("button", { name: "View details" })).at(-1)!);
+    expect(api.getChildSnapshot).not.toHaveBeenCalled();
+
+    emitInAct({
+      type: "tool_execution_update", toolCallId: "sub-delayed", toolName: "subagent",
+      partialResult: { details: { subagent: { agent: "search", sessionId: "child-delayed" } } },
+    });
+
+    expect(await screen.findByText("inherited before this dispatch")).toBeVisible();
+    expect(api.getChildSnapshot).toHaveBeenCalledWith("s1", "child-delayed");
+    expect(api.getChildSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens complete child history from View details with child labels and a disabled composer", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getSnapshot).mockResolvedValue({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      subagents: [{ toolCallId: "sub-history", childSessionId: "child-history", agent: "search", latestMessage: "saved result" }],
+      messages: [
+        { role: "assistant", content: [{ type: "toolCall", id: "sub-history", name: "subagent", arguments: '{"agent":"search"}' }] },
+        { role: "toolResult", toolCallId: "sub-history", toolName: "subagent", content: [], isError: false },
+      ],
+    } as never);
+    vi.mocked(api.getChildSnapshot).mockResolvedValue({
+      session: { id: "child-history", cwd: "/p", sessionName: "lazyresearch:search" },
+      messages: [
+        { role: "user", content: [{ type: "text", text: "older inherited task" }] },
+        { role: "assistant", content: [{ type: "text", text: "complete child answer" }] },
+      ],
+    } as never);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await user.click(await screen.findByRole("button", { name: "View details" }));
+
+    expect(api.getChildSnapshot).toHaveBeenCalledWith("s1", "child-history");
+    expect(await screen.findByText("older inherited task")).toBeVisible();
+    expect(screen.getByText("complete child answer")).toBeVisible();
+    const conversation = screen.getByLabelText("Conversation");
+    expect(conversation).toHaveTextContent("Orchestrator");
+    expect(conversation).toHaveTextContent("Search");
+    expect(screen.getByRole("textbox", { name: /message/i })).toBeDisabled();
+    expect(within(conversation).queryByRole("button", { name: "View details" })).toBeNull();
+  });
+
+  it("reduces nested child deltas and tools in order, then closes without abort and reopens from its card", async () => {
+    const user = userEvent.setup();
+    let resolveChild!: (value: Awaited<ReturnType<typeof api.getChildSnapshot>>) => void;
+    vi.mocked(api.getSnapshot).mockResolvedValue({
+      session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
+      subagents: [{ toolCallId: "sub-live", childSessionId: "child-live", agent: "search" }],
+      messages: [{ role: "assistant", content: [{ type: "toolCall", id: "sub-live", name: "subagent", arguments: '{"agent":"search"}' }] }],
+    } as never);
+    vi.mocked(api.getChildSnapshot).mockReturnValue(new Promise((resolve) => { resolveChild = resolve; }));
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await user.click(await screen.findByRole("button", { name: "View details" }));
+    emitChildHeader("sub-live", "search", "child-live");
+    emitRawChildEvent("sub-live", "search", { type: "message_start", message: { id: "cm", role: "assistant", content: [] } });
+    emitRawChildEvent("sub-live", "search", { type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "live " } });
+    emitRawChildEvent("sub-live", "search", { type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "tokens" } });
+    emitRawChildEvent("sub-live", "search", { type: "tool_execution_start", toolCallId: "ct", toolName: "bash", args: { command: "ls" } });
+    emitRawChildEvent("sub-live", "search", { type: "tool_execution_end", toolCallId: "ct", toolName: "bash", result: { output: "done" } });
+    expect(await screen.findByText("live tokens")).toBeVisible();
+    resolveChild({
+      session: { id: "child-live", cwd: "/p", sessionName: "lazyresearch:search" },
+      messages: [{ role: "user", content: [{ type: "text", text: "older task" }] }],
+    } as never);
+    expect(await screen.findByText("older task")).toBeVisible();
+    expect(screen.getByText("live tokens")).toBeVisible();
+    const rows = [...screen.getByLabelText("Conversation").querySelectorAll("li")].map((row) => row.textContent ?? "");
+    expect(rows.findIndex((row) => row.includes("live tokens"))).toBeLessThan(rows.findIndex((row) => row.includes("bash")));
+
+    await user.click(screen.getByRole("button", { name: /Close agent tab:/ }));
+    expect(api.abortSession).not.toHaveBeenCalled();
+    expect(await screen.findByRole("button", { name: "View details" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "View details" }));
+    expect(await screen.findByText("live tokens")).toBeVisible();
+    expect(api.getChildSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows duplicate UUID labels and keeps a child 404 inline without losing the parent transcript", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getSnapshot).mockResolvedValue({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      subagents: [
+        { toolCallId: "sub-one", childSessionId: "11111111-aaaa", agent: "search", latestMessage: "first card" },
+        { toolCallId: "sub-two", childSessionId: "22222222-bbbb", agent: "search", latestMessage: "second card" },
+      ],
+      messages: [
+        { role: "user", content: [{ type: "text", text: "parent remains" }] },
+        { role: "assistant", content: [
+          { type: "toolCall", id: "sub-one", name: "subagent", arguments: '{"agent":"search"}' },
+          { type: "toolCall", id: "sub-two", name: "subagent", arguments: '{"agent":"search"}' },
+        ] },
+      ],
+    } as never);
+    vi.mocked(api.getChildSnapshot).mockRejectedValue(new api.ApiError(404, { error: "missing" }));
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    const details = await screen.findAllByRole("button", { name: "View details" });
+    await user.click(details[0]!);
+    await user.click(screen.getByRole("button", { name: /agent orchestrator/i }));
+    await user.click((await screen.findAllByRole("button", { name: "View details" }))[1]!);
+    expect(screen.getByRole("button", { name: /agent search · 11111111/i })).toBeVisible();
+    expect(screen.getByRole("button", { name: /agent search · 22222222/i })).toBeVisible();
+    expect(await screen.findByText("Child session unavailable.")).toBeVisible();
+    expect(screen.getAllByRole("button", { name: /Close agent tab:/ })).toHaveLength(2);
+    await user.click(screen.getByRole("button", { name: /agent orchestrator/i }));
+    expect(screen.getByText("parent remains")).toBeVisible();
+  });
+
+  it("refreshes every open child snapshot when the parent SSE snapshot reconnects", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getSnapshot).mockResolvedValue({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      subagents: [{ toolCallId: "sub-refresh", childSessionId: "child-refresh", agent: "search" }],
+      messages: [{ role: "assistant", content: [{ type: "toolCall", id: "sub-refresh", name: "subagent", arguments: '{"agent":"search"}' }] }],
+    } as never);
+    vi.mocked(api.getChildSnapshot)
+      .mockResolvedValueOnce({
+        session: { id: "child-refresh", cwd: "/p", sessionName: "lazyresearch:search" },
+        messages: [{ id: "child-message", role: "assistant", content: [{ type: "text", text: "before reconnect" }] }],
+      } as never)
+      .mockResolvedValueOnce({
+        session: { id: "child-refresh", cwd: "/p", sessionName: "lazyresearch:search" },
+        messages: [{ id: "child-message", role: "assistant", content: [{ type: "text", text: "recovered from JSONL" }] }],
+      } as never);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await user.click(await screen.findByRole("button", { name: "View details" }));
+    expect(await screen.findByText("before reconnect")).toBeVisible();
+
+    emitInAct({
+      type: "snapshot",
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      subagents: [{ toolCallId: "sub-refresh", childSessionId: "child-refresh", agent: "search" }],
+      messages: [{ role: "assistant", content: [{ type: "toolCall", id: "sub-refresh", name: "subagent", arguments: '{"agent":"search"}' }] }],
+    });
+
+    expect(await screen.findByText("recovered from JSONL")).toBeVisible();
+    expect(api.getChildSnapshot).toHaveBeenCalledTimes(2);
+  });
+
+  it("queues one reconnect refresh when the child snapshot is already in flight", async () => {
+    const user = userEvent.setup();
+    let resolveInitial!: (value: Awaited<ReturnType<typeof api.getChildSnapshot>>) => void;
+    vi.mocked(api.getSnapshot).mockResolvedValue({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      subagents: [{ toolCallId: "sub-overlap", childSessionId: "child-overlap", agent: "search" }],
+      messages: [{ role: "assistant", content: [{ type: "toolCall", id: "sub-overlap", name: "subagent", arguments: '{"agent":"search"}' }] }],
+    } as never);
+    vi.mocked(api.getChildSnapshot)
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveInitial = resolve; }))
+      .mockResolvedValueOnce({
+        session: { id: "child-overlap", cwd: "/p", sessionName: "lazyresearch:search" },
+        messages: [{ id: "child-message", role: "assistant", content: [{ type: "text", text: "recovered after overlap" }] }],
+      } as never);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await user.click(await screen.findByRole("button", { name: "View details" }));
+    expect(api.getChildSnapshot).toHaveBeenCalledTimes(1);
+
+    emitInAct({
+      type: "snapshot",
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      subagents: [{ toolCallId: "sub-overlap", childSessionId: "child-overlap", agent: "search" }],
+      messages: [{ role: "assistant", content: [{ type: "toolCall", id: "sub-overlap", name: "subagent", arguments: '{"agent":"search"}' }] }],
+    });
+    act(() => resolveInitial({
+      session: { id: "child-overlap", cwd: "/p", sessionName: "lazyresearch:search" },
+      messages: [{ id: "child-message", role: "assistant", content: [{ type: "text", text: "stale in-flight response" }] }],
+    } as never));
+
+    expect(await screen.findByText("recovered after overlap")).toBeVisible();
+    expect(api.getChildSnapshot).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries a failed child load after close and reopen without duplicate concurrent requests", async () => {
+    const user = userEvent.setup();
+    let rejectFirst!: (error: unknown) => void;
+    vi.mocked(api.getSnapshot).mockResolvedValue({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      subagents: [{ toolCallId: "sub-retry", childSessionId: "child-retry", agent: "search" }],
+      messages: [{ role: "assistant", content: [{ type: "toolCall", id: "sub-retry", name: "subagent", arguments: '{"agent":"search"}' }] }],
+    } as never);
+    vi.mocked(api.getChildSnapshot)
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectFirst = reject; }))
+      .mockResolvedValueOnce({
+        session: { id: "child-retry", cwd: "/p", sessionName: "lazyresearch:search" },
+        messages: [{ role: "assistant", content: [{ type: "text", text: "retry recovered" }] }],
+      } as never);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    const details = await screen.findByRole("button", { name: "View details" });
+    act(() => {
+      details.click();
+      details.click();
+    });
+    expect(api.getChildSnapshot).toHaveBeenCalledTimes(1);
+    act(() => rejectFirst(new api.ApiError(404, { error: "temporarily missing" })));
+    expect(await screen.findByText("Child session unavailable.")).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: /Close agent tab:/ }));
+    await user.click(await screen.findByRole("button", { name: "View details" }));
+    expect(await screen.findByText("retry recovered")).toBeVisible();
+    expect(api.getChildSnapshot).toHaveBeenCalledTimes(2);
   });
 
   it("keeps subagent selection and stop as sibling buttons with independent effects", async () => {
@@ -281,7 +556,7 @@ describe("WorkPage", () => {
     expect(orchestrator).toHaveAttribute("aria-pressed", "false");
   });
 
-  it("keeps a selected chain tab and card mounted when its displayed agent and step change", async () => {
+  it("keeps a retained chain UUID active while creating and promoting the next step tab", async () => {
     const user = userEvent.setup();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await screen.findByText("starting research");
@@ -299,10 +574,12 @@ describe("WorkPage", () => {
     });
 
     const searchTab = await screen.findByRole("button", { name: /agent search/i });
-    await user.click(searchTab);
+    await user.click((await screen.findAllByRole("button", { name: "View details" })).at(-1)!);
+    expect(searchTab).toHaveAttribute("aria-pressed", "true");
     const conversation = screen.getByLabelText(/conversation/i);
-    const firstCard = within(conversation).getByText("papers found").closest("article");
-    expect(firstCard).not.toBeNull();
+    expect(within(conversation).queryByText("papers found")).toBeNull();
+    emitChildHeader("chain-1", "search", "child-search", 1);
+    expect(await screen.findByRole("button", { name: /agent search/i })).toHaveAttribute("aria-pressed", "true");
 
     emitInAct({
       type: "tool_execution_update",
@@ -312,11 +589,61 @@ describe("WorkPage", () => {
     });
 
     const writingTab = await screen.findByRole("button", { name: /agent writing/i });
-    expect(writingTab).toBe(searchTab);
-    expect(writingTab).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: /agent orchestrator/i })).toHaveAttribute("aria-pressed", "false");
-    expect(within(conversation).getByText("drafting method").closest("article")).toBe(firstCard);
-    expect(within(firstCard as HTMLElement).getByText("Step 2")).toBeTruthy();
+    expect(writingTab).not.toBe(searchTab);
+    expect(writingTab).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: /agent search/i })).toHaveAttribute("aria-pressed", "true");
+    expect(within(writingTab).getByTitle("drafting method")).toBeVisible();
+    expect(within(conversation).queryByText("drafting method")).toBeNull();
+
+    await user.click(writingTab);
+    emitChildHeader("chain-1", "writing", "child-writing", 2);
+    expect(await screen.findByRole("button", { name: /agent writing/i })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /agent search/i })).toBeVisible();
+  });
+
+  it("opens every historical chain UUID through compact per-step details actions", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getSnapshot).mockResolvedValue({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      subagents: [
+        { toolCallId: "chain-history", childSessionId: "child-history-search", agent: "search", step: 1 },
+        { toolCallId: "chain-history", childSessionId: "child-history-writing", agent: "writing", step: 2 },
+      ],
+      messages: [
+        { role: "assistant", content: [{ type: "toolCall", id: "chain-history", name: "subagent", arguments: '{"chain":[]}' }] },
+        { role: "toolResult", toolCallId: "chain-history", toolName: "subagent", content: [], isError: false },
+      ],
+    } as never);
+    vi.mocked(api.getChildSnapshot).mockImplementation(async (_parentId, childId) => ({
+      session: { id: childId, cwd: "/p", sessionName: childId.endsWith("search") ? "lazyresearch:search" : "lazyresearch:writing" },
+      messages: [{ role: "assistant", content: [{ type: "text", text: `history for ${childId}` }] }],
+    } as never));
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+
+    await user.click(await screen.findByRole("button", { name: "View details: Step 1" }));
+    expect(await screen.findByText("history for child-history-search")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: /agent orchestrator/i }));
+    await user.click(screen.getByRole("button", { name: "View details: Step 2" }));
+
+    expect(await screen.findByText("history for child-history-writing")).toBeVisible();
+    expect(screen.getByRole("button", { name: /agent search/i })).toBeVisible();
+    expect(screen.getByRole("button", { name: /agent writing/i })).toBeVisible();
+  });
+
+  it("shows truthful settled unmapped copy without an unclosable details tab", async () => {
+    vi.mocked(api.getSnapshot).mockResolvedValue({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      subagents: [],
+      messages: [
+        { role: "assistant", content: [{ type: "toolCall", id: "old-unmapped", name: "subagent", arguments: '{"agent":"search"}' }] },
+        { role: "toolResult", toolCallId: "old-unmapped", toolName: "subagent", content: [], isError: false },
+      ],
+    } as never);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+
+    expect(await screen.findByText("No progress was saved before this run ended.")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "View details" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /agent search/i })).toBeNull();
   });
 
   it("maps the running chain status to the currently displayed agent name", async () => {

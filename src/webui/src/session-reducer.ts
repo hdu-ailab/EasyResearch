@@ -1,4 +1,4 @@
-import type { SessionSnapshotDto } from "../../web/contracts";
+import type { SessionSnapshotDto, SubagentSessionSummaryDto } from "../../web/contracts";
 import type { AgentSessionEvent, MessageUpdateEvent } from "@earendil-works/pi-coding-agent";
 
 export interface ToolView {
@@ -17,12 +17,18 @@ export interface ToolView {
   step?: number;
   /** Agent name for `subagent` tool rows (ADR-037/ADR-040: tab derivation). */
   agentName?: string;
+  /** Exact persisted child session UUID for this invocation. */
+  sessionId?: string;
+  /** Every exact child mapping for this tool call, including chain steps. */
+  sessionLinks?: SubagentSessionSummaryDto[];
   /** Position in the shared message/tool stream; tools interleave with messages. */
   order: number;
 }
 
 export interface SessionMessageView {
   key: string;
+  /** Stable Pi identity used to deduplicate snapshot/live overlap when available. */
+  identity?: string;
   role: "user" | "assistant" | "tool" | "system";
   text: string;
   /** Reasoning/thinking content, rendered as a collapsible block. */
@@ -105,6 +111,11 @@ function splitContent(message: UnknownMessage): { text: string; reasoning: strin
 
 function keyFor(message: { id?: unknown; timestamp?: unknown }, fallback: number): string {
   return String(message.id ?? message.timestamp ?? fallback);
+}
+
+function identityFor(message: { id?: unknown; timestamp?: unknown }): string | undefined {
+  const identity = message.id ?? message.timestamp;
+  return identity === undefined || identity === null ? undefined : String(identity);
 }
 
 function assistantUpdateOf(event: MessageUpdateEvent):
@@ -262,6 +273,7 @@ export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
     const order = next();
     const nextMessage: SessionMessageView = {
       key: keyFor(message, index),
+      ...(identityFor(message) !== undefined ? { identity: identityFor(message) } : {}),
       role,
       text,
       streaming: false,
@@ -296,13 +308,67 @@ export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
     ...tool,
     running: tool.done ? false : snapshot.session.isStreaming,
   }));
-  return state;
+  return applySubagentSummaries(state, snapshot.subagents ?? []);
+}
+
+export function applySubagentSummaries(
+  state: SessionViewState,
+  summaries: SubagentSessionSummaryDto[],
+): SessionViewState {
+  if (summaries.length === 0) return state;
+  const byToolCall = new Map<string, SubagentSessionSummaryDto[]>();
+  for (const summary of summaries) {
+    const links = byToolCall.get(summary.toolCallId) ?? [];
+    links.push(summary);
+    byToolCall.set(summary.toolCallId, links);
+  }
+  let changed = false;
+  const tools = state.tools.map((tool) => {
+    const links = byToolCall.get(tool.key);
+    if (tool.name !== "subagent" || !links?.length) return tool;
+    const summary = links.at(-1)!;
+    changed = true;
+    return {
+      ...tool,
+      agentName: summary.agent,
+      sessionId: summary.childSessionId,
+      sessionLinks: links,
+      ...(summary.step !== undefined ? { step: summary.step } : {}),
+      ...(usableText(summary.latestMessage) !== undefined ? { latestMessage: summary.latestMessage } : {}),
+    };
+  });
+  return changed ? { ...state, tools } : state;
+}
+
+export function nestedSubagentEvent(event: AgentSessionEvent): {
+  sessionId?: string;
+  toolCallId: string;
+  agent: string;
+  event?: AgentSessionEvent;
+} | undefined {
+  if (event.type !== "tool_execution_update") return undefined;
+  const value = event as unknown as {
+    toolCallId?: unknown;
+    partialResult?: { details?: { subagent?: Record<string, unknown> } };
+  };
+  const subagent = value.partialResult?.details?.subagent;
+  if (typeof value.toolCallId !== "string" || typeof subagent?.agent !== "string" || !subagent.agent.trim()) {
+    return undefined;
+  }
+  return {
+    toolCallId: value.toolCallId,
+    agent: subagent.agent,
+    ...(typeof subagent.sessionId === "string" && subagent.sessionId ? { sessionId: subagent.sessionId } : {}),
+    ...(subagent.event && typeof subagent.event === "object" ? { event: subagent.event as AgentSessionEvent } : {}),
+  };
 }
 
 /** Rehydrate authoritative snapshot state without discarding richer live-only
  * subagent progress that is not persisted in the session transcript. */
 export function mergeSnapshot(state: SessionViewState, snapshot: SessionSnapshotDto): SessionViewState {
   const next = fromSnapshot(snapshot);
+  const summaries = new Map<string, SubagentSessionSummaryDto>();
+  for (const summary of snapshot.subagents ?? []) summaries.set(summary.toolCallId, summary);
   const priorSubagents = new Map(
     state.tools.filter((tool) => tool.name === "subagent").map((tool) => [tool.key, tool]),
   );
@@ -310,13 +376,16 @@ export function mergeSnapshot(state: SessionViewState, snapshot: SessionSnapshot
     if (tool.name !== "subagent") return tool;
     const prior = priorSubagents.get(tool.key);
     if (!prior) return tool;
+    const summary = summaries.get(tool.key);
     return {
       ...tool,
       ...(usableText(tool.latestMessage) === undefined && usableText(prior.latestMessage) !== undefined
         ? { latestMessage: prior.latestMessage }
         : {}),
-      ...(prior.agentName !== undefined ? { agentName: prior.agentName } : {}),
-      ...(prior.step !== undefined ? { step: prior.step } : {}),
+      ...(summary === undefined && prior.agentName !== undefined ? { agentName: prior.agentName } : {}),
+      ...(summary?.step === undefined && prior.step !== undefined ? { step: prior.step } : {}),
+      ...(summary === undefined && prior.sessionId !== undefined ? { sessionId: prior.sessionId } : {}),
+      ...(tool.sessionLinks === undefined && prior.sessionLinks !== undefined ? { sessionLinks: prior.sessionLinks } : {}),
     };
   });
   return next;
@@ -331,6 +400,8 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
   switch (event.type) {
     case "message_start": {
       const message = event.message as UnknownMessage;
+      const identity = identityFor(message);
+      if (identity !== undefined && state.messages.some((candidate) => candidate.identity === identity)) return state;
       const role = message.role === "user" || message.role === "assistant" ? message.role : "system";
       const errorMessage = message.errorMessage;
       const { text, reasoning } = splitContent(message);
@@ -343,6 +414,7 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
       };
       const view: SessionMessageView = {
         key,
+        ...(identity !== undefined ? { identity } : {}),
         role,
         text: text || (errorMessage ? "" : "..."),
         streaming: role === "assistant",
@@ -409,6 +481,7 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
         toolName: string;
         args?: unknown;
       };
+      if (state.tools.some((tool) => tool.key === toolCallId)) return state;
       return {
         ...state,
         nextOrder: state.nextOrder + 1,
@@ -457,7 +530,7 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
         toolCallId: string;
         partialResult?: {
           content?: unknown;
-          details?: { subagent?: { agent?: unknown; step?: unknown; latestMessage?: unknown } };
+          details?: { subagent?: { agent?: unknown; step?: unknown; sessionId?: unknown; latestMessage?: unknown } };
         };
       };
       const subagent = partialResult?.details?.subagent;
@@ -480,13 +553,35 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
         const latestMessage = typeof subagent?.latestMessage === "string" && subagent.latestMessage.trim()
           ? subagent.latestMessage
           : undefined;
-        if (agentName === undefined && step === undefined && latestMessage === undefined) return tool;
+        const sessionId = typeof subagent?.sessionId === "string" && subagent.sessionId.trim()
+          ? subagent.sessionId
+          : undefined;
+        if (agentName === undefined && step === undefined && sessionId === undefined && latestMessage === undefined) return tool;
+        const stepChanged = step !== undefined && step !== tool.step;
+        const effectiveAgent = agentName ?? tool.agentName;
+        const effectiveSessionId = sessionId ?? (stepChanged ? undefined : tool.sessionId);
+        const effectiveLatestMessage = latestMessage ?? (stepChanged ? undefined : tool.latestMessage);
+        let sessionLinks = tool.sessionLinks;
+        if (sessionId && effectiveAgent) {
+          const link: SubagentSessionSummaryDto = {
+            toolCallId,
+            childSessionId: sessionId,
+            agent: effectiveAgent,
+            ...(step !== undefined ? { step } : {}),
+            ...(latestMessage !== undefined ? { latestMessage } : {}),
+          };
+          const identity = (candidate: SubagentSessionSummaryDto) =>
+            candidate.toolCallId === toolCallId && candidate.step === step;
+          sessionLinks = [...(sessionLinks ?? []).filter((candidate) => !identity(candidate)), link];
+        }
         changed = true;
         return {
           ...tool,
           ...(agentName !== undefined ? { agentName } : {}),
           ...(step !== undefined ? { step } : {}),
-          ...(latestMessage !== undefined ? { latestMessage } : {}),
+          sessionId: effectiveSessionId,
+          latestMessage: effectiveLatestMessage,
+          ...(sessionLinks !== undefined ? { sessionLinks } : {}),
         };
       });
       return changed ? { ...state, tools } : state;

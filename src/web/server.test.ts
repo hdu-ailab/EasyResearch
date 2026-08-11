@@ -14,8 +14,9 @@ import type { SessionSummaryDto } from "./contracts";
 import { AgentModelError } from "./agent-models";
 import { WebuiSettingsError, readEffectiveWebuiSettings, updateWebuiSettings } from "./webui-settings";
 import { discoverAgents } from "../subagent/agents";
-import { agentToDto, isKnownAgentName } from "./server";
+import { agentToDto, isKnownAgentName, toUserSessionSummaries } from "./server";
 import type { Logger } from "../runtime/logger";
+import { SubagentSessionNotFoundError } from "./subagent-sessions";
 
 const [loggerMock, createLoggerMock] = vi.hoisted(() => {
   const mockLogger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
@@ -37,6 +38,30 @@ function fakeLogger(): Logger & { calls: Array<[level: string, msg: string, fiel
   const calls: Array<[string, string, Record<string, unknown> | undefined]> = [];
   const make = (level: string) => (msg: string, fields?: Record<string, unknown>) => calls.push([level, msg, fields]);
   return { debug: make("debug"), info: make("info"), warn: make("warn"), error: make("error"), calls };
+}
+
+function userMessage(text: string): AgentMessage {
+  return { role: "user", content: text, timestamp: 1 };
+}
+
+function assistant(text: string): AgentMessage {
+  return {
+    role: "assistant",
+    content: [{ type: "text", text }],
+    api: "openai-completions",
+    provider: "openai",
+    model: "test-model",
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "stop",
+    timestamp: 1,
+  };
 }
 
 class FakeAdapter implements RpcSessionAdapter {
@@ -143,6 +168,12 @@ describe("web routes", () => {
       listAgents: async () => [],
       getWebuiSettings: vi.fn(async () => ({ agentModels: {}, orchestratorModel: null, effectiveOrchestratorModel: null })),
       updateWebuiSettings: vi.fn(async (patch) => ({ agentModels: {}, orchestratorModel: null, effectiveOrchestratorModel: null, ...patch })),
+      subagentSessions: {
+        summaries: async () => [],
+        snapshot: async (_parentSessionId: string, childSessionId: string) => {
+          throw new SubagentSessionNotFoundError(`Subagent session not found: ${childSessionId}`);
+        },
+      },
       ...overrides,
     };
     handler = createRouteHandler(services);
@@ -402,6 +433,94 @@ describe("web routes", () => {
     expect(body.messages).toEqual([]);
   });
 
+  it("includes subagent summaries in a parent HTTP snapshot", async () => {
+    const subagents = [{
+      toolCallId: "tool-1",
+      childSessionId: "child-1",
+      agent: "search",
+      latestMessage: "final child reply",
+    }];
+    setup({
+      subagentSessions: {
+        summaries: async () => subagents,
+        snapshot: async () => { throw new Error("not used"); },
+      },
+    });
+    const created = await registry.create({ cwd: projectDir });
+
+    const res = await handler(new Request(`http://localhost/api/sessions/${created.id}/snapshot`));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ subagents });
+  });
+
+  it("returns a complete read-only child snapshot", async () => {
+    const childSnapshot = {
+      session: { id: "child-1", cwd: projectDir, sessionName: "lazyresearch:search" },
+      messages: [userMessage("dispatch"), assistant("complete child reply")],
+    };
+    setup({
+      subagentSessions: {
+        summaries: async () => [],
+        snapshot: async () => childSnapshot,
+      },
+    });
+
+    const res = await handler(new Request("http://localhost/api/sessions/parent-1/subagents/child-1/snapshot"));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(childSnapshot);
+  });
+
+  it("maps an unmapped child snapshot to JSON 404", async () => {
+    setup();
+
+    const res = await handler(new Request("http://localhost/api/sessions/parent-1/subagents/unmapped/snapshot"));
+
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    expect(await res.json()).toEqual({ error: "Subagent session not found: unmapped" });
+  });
+
+  it("does not add a child snapshot to the active-session registry", async () => {
+    setup({
+      subagentSessions: {
+        summaries: async () => [],
+        snapshot: async () => ({
+          session: { id: "child-1", cwd: projectDir },
+          messages: [assistant("complete child reply")],
+        }),
+      },
+    });
+    const parent = await registry.create({ cwd: projectDir });
+    const activeBefore = registry.list().length;
+
+    const res = await handler(new Request(`http://localhost/api/sessions/${parent.id}/subagents/child-1/snapshot`));
+
+    expect(res.status).toBe(200);
+    expect(registry.list()).toHaveLength(activeBefore);
+  });
+
+  it("returns a child snapshot after the parent registry entry is stopped", async () => {
+    setup({
+      subagentSessions: {
+        summaries: async () => [],
+        snapshot: async () => ({
+          session: { id: "child-1", cwd: projectDir },
+          messages: [assistant("persisted child reply")],
+        }),
+      },
+    });
+    const parent = await registry.create({ cwd: projectDir });
+    await registry.stop(parent.id);
+    expect(registry.list()).toEqual([]);
+
+    const res = await handler(new Request(`http://localhost/api/sessions/${parent.id}/subagents/child-1/snapshot`));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ messages: [{ role: "assistant" }] });
+  });
+
   it("streams snapshot and forwarded RPC events over SSE", async () => {
     setup();
     const created = (await (
@@ -427,6 +546,30 @@ describe("web routes", () => {
     const second = await reader.read();
     expect(decoder.decode(second.value)).toContain('"type":"message_start"');
     reader.cancel();
+  });
+
+  it("includes the same subagent summaries in the first SSE snapshot", async () => {
+    const subagents = [{
+      toolCallId: "tool-1",
+      childSessionId: "child-1",
+      agent: "search",
+      latestMessage: "final child reply",
+    }];
+    setup({
+      subagentSessions: {
+        summaries: async () => subagents,
+        snapshot: async () => { throw new Error("not used"); },
+      },
+    });
+    const parent = await registry.create({ cwd: projectDir });
+
+    const res = await handler(new Request(`http://localhost/api/sessions/${parent.id}/events`));
+    const reader = res.body!.getReader();
+    const first = await reader.read();
+    await reader.cancel();
+    const payload = new TextDecoder().decode(first.value);
+
+    expect(payload).toContain(`"subagents":${JSON.stringify(subagents)}`);
   });
 
   it("logs SSE connect on subscribe and disconnect on cancel", async () => {
@@ -898,5 +1041,49 @@ describe("web routes", () => {
     const res = await handler(new Request("http://localhost/api/config/projects"));
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ home: agentDir, projects: [{ cwd: projectDir }] });
+  });
+});
+
+interface SessionInfoLike {
+  id: string;
+  path: string;
+  cwd: string;
+  name?: string;
+  created: Date;
+  modified: Date;
+  messageCount: number;
+  firstMessage: string;
+}
+
+function sessionInfo(patch: Partial<SessionInfoLike>): SessionInfoLike {
+  return {
+    id: "sess",
+    path: "/agent/sessions/sess.jsonl",
+    cwd: "/proj",
+    created: new Date("2026-08-10T00:00:00.000Z"),
+    modified: new Date("2026-08-10T00:00:00.000Z"),
+    messageCount: 1,
+    firstMessage: "write a paper",
+    ...patch,
+  };
+}
+
+describe("toUserSessionSummaries", () => {
+  it("excludes internal lazyresearch child session lines from the user home list", () => {
+    expect(toUserSessionSummaries([
+      sessionInfo({ id: "main", name: undefined, firstMessage: "write a paper" }),
+      sessionInfo({ id: "child", name: "lazyresearch:search", firstMessage: "Task: search" }),
+    ])).toEqual([
+      expect.objectContaining({ id: "main", firstMessage: "write a paper" }),
+    ]);
+  });
+
+  it("uses literal startsWith filtering, including the exact internal prefix", () => {
+    const results = toUserSessionSummaries([
+      sessionInfo({ id: "s1", name: "lazyresearch:search", firstMessage: "child" }),
+      sessionInfo({ id: "s2", name: "my lazyresearch:search notes", firstMessage: "user" }),
+      sessionInfo({ id: "s3", name: "lazyresearch:", firstMessage: "user" }),
+    ]);
+    expect(results.map((session) => session.id)).toEqual(["s2"]);
   });
 });
