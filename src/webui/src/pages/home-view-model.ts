@@ -23,11 +23,11 @@ export function buildHomeProjectGroups(history: SessionSummaryDto[], active: Act
     }
     return group;
   };
-  // webui.md: the Recent list is history-only — a *running* session must not
-  // appear there too; idle/ready sessions are shown only in Recent history.
+  // Connected sessions belong in Active sessions and must not be duplicated in
+  // the history list, including sessions that are ready but currently idle.
   const activePaths = new Set(
     active
-      .filter(isActuallyRunning)
+      .filter(isConnected)
       .map((session) => session.sessionFile)
       .filter((path): path is string => Boolean(path)),
   );
@@ -35,7 +35,7 @@ export function buildHomeProjectGroups(history: SessionSummaryDto[], active: Act
   for (const session of history) {
     if (session.path) firstMessages.set(session.path, session.firstMessage);
   }
-  for (const session of active) {
+  for (const session of active.filter(isConnected)) {
     const firstMessage = session.sessionFile ? firstMessages.get(session.sessionFile) : undefined;
     ensure(session.cwd).active.push(firstMessage === undefined ? session : { ...session, firstMessage });
   }
@@ -48,6 +48,14 @@ export function buildHomeProjectGroups(history: SessionSummaryDto[], active: Act
 
 export function isActuallyRunning(session: ActiveSessionDto): boolean {
   return session.status === "running" || session.isStreaming;
+}
+
+export function isConnected(session: ActiveSessionDto): boolean {
+  return session.status === "starting" || session.status === "ready" || session.status === "running";
+}
+
+export function countConnectedSessions(sessions: ActiveSessionDto[]): number {
+  return sessions.filter(isConnected).length;
 }
 
 export function countRunningSessions(sessions: ActiveSessionDto[]): number {

@@ -415,6 +415,30 @@ describe("web routes", () => {
     expect(body.sessions).toHaveLength(1);
   });
 
+  it("lists only connected sessions and touches an idle session", async () => {
+    setup();
+    const created = (await (
+      await handler(
+        new Request("http://localhost/api/sessions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cwd: projectDir }),
+        }),
+      )
+    ).json()) as { id: string };
+
+    const touch = await handler(new Request(`http://localhost/api/sessions/${created.id}/touch`, { method: "POST" }));
+    expect(touch.status).toBe(200);
+    expect(await touch.json()).toEqual({ ok: true });
+
+    factory.created[0]?.exitListeners.forEach((listener) => listener(new Error("crash")));
+    const active = await handler(new Request("http://localhost/api/active-sessions"));
+    expect((await active.json() as { sessions: unknown[] }).sessions).toEqual([]);
+
+    const unknown = await handler(new Request("http://localhost/api/sessions/missing/touch", { method: "POST" }));
+    expect(unknown.status).toBe(404);
+  });
+
   it("returns a session snapshot", async () => {
     setup();
     const created = (await (
@@ -599,7 +623,7 @@ describe("web routes", () => {
     );
   });
 
-  it("emits session_deactivated over SSE and then 404s", async () => {
+  it("emits session_deactivated over SSE after an explicit stop and then 404s", async () => {
     setup();
     const created = await registry.create({ cwd: "/test/proj" });
     const adapter = factory.created[0]!;
@@ -613,6 +637,8 @@ describe("web routes", () => {
     try {
       adapter.events.forEach((listener) => listener({ type: "agent_start" } as never));
       adapter.events.forEach((listener) => listener({ type: "agent_settled" } as never));
+      expect((await registry.snapshot(created.id)).session.status).toBe("ready");
+      await registry.stop(created.id);
       while (!body.includes("session_deactivated")) {
         const { done, value } = await reader.read();
         if (done) break;

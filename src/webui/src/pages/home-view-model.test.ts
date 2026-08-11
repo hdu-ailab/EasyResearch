@@ -2,8 +2,10 @@ import { expect, it } from "vitest";
 import type { ActiveSessionDto, SessionSummaryDto } from "../../../web/contracts";
 import {
   buildHomeProjectGroups,
+  countConnectedSessions,
   countRunningSessions,
   isActuallyRunning,
+  isConnected,
   matchesSessionQuery,
   sessionTitle,
 } from "./home-view-model";
@@ -41,15 +43,25 @@ it("groups history and active sessions by exact cwd without ancestor inference",
   expect(groups[2]?.history.map((session) => session.id)).toEqual(["h2"]);
 });
 
-it("keeps running sessions out of the history list; idle/ready sessions stay in history", () => {
+it("keeps all connected sessions out of the history list", () => {
   const groups = buildHomeProjectGroups(
     [history("s1", "/papers/a"), history("s2", "/papers/a"), history("other", "/papers/b")],
     [active("s1", "/papers/a", "running"), active("s2", "/papers/a", "ready")],
   );
   const groupA = groups.find((group) => group.cwd === "/papers/a")!;
   expect(groupA.active.map((s) => s.id)).toEqual(["s1", "s2"]);
-  expect(groupA.history.map((s) => s.id)).toEqual(["s2"]);
+  expect(groupA.history.map((s) => s.id)).toEqual([]);
   expect(groups.find((group) => group.cwd === "/papers/b")!.history.map((s) => s.id)).toEqual(["other"]);
+});
+
+it("classifies connected and disconnected records for the Home active list", () => {
+  const ready = active("ready", "/p", "ready");
+  const running = active("running", "/p", "running");
+  const error = active("error", "/p", "error");
+  expect(isConnected(ready)).toBe(true);
+  expect(isConnected(running)).toBe(true);
+  expect(isConnected(error)).toBe(false);
+  expect(countConnectedSessions([ready, running, error])).toBe(2);
 });
 
 it("counts only running or streaming sessions", () => {

@@ -5,6 +5,7 @@ import { ActiveSessionRegistry } from "./active-sessions";
 import { PiRpcSessionFactory } from "./rpc-session";
 import { DirectoryService } from "./directories";
 import { ConfigFileService } from "./config-files";
+import { readWebSessionIdleTimeout } from "./session-settings";
 import type { AgentDto, SessionSummaryDto } from "./contracts";
 import type { AgentConfig } from "../subagent/agents";
 import { readEffectiveWebuiSettings, updateWebuiSettings } from "./webui-settings";
@@ -92,8 +93,11 @@ export async function startServer(): Promise<Server> {
   const { assertSafeExtensionSources } = await import("../runtime/extensions-guard");
   assertSafeExtensionSources();
   const logger = createLogger("web-server");
-  const registry = new ActiveSessionRegistry(await PiRpcSessionFactory.resolve());
   const { SessionManager, getAgentDir } = await importPi();
+  const agentDir = getAgentDir();
+  const config = new ConfigFileService(agentDir);
+  const idleTimeoutMs = await readWebSessionIdleTimeout(config);
+  const registry = new ActiveSessionRegistry(await PiRpcSessionFactory.resolve(), logger, { idleTimeoutMs });
   const subagentSessions = new SubagentSessionService({
     open: (path) => SessionManager.open(path),
     listAll: async () => {
@@ -101,8 +105,6 @@ export async function startServer(): Promise<Server> {
       return sessions.map(({ id, path, cwd }) => ({ id, path, cwd }));
     },
   });
-  const agentDir = getAgentDir();
-  const config = new ConfigFileService(agentDir);
   const agentModels = resolveAgentModelsService({
     listAgents: async () => (await discoverAgents()).agents.map((a) => ({ name: a.name })),
     getSessionPath: (id) => registry.getSessionPath(id),
