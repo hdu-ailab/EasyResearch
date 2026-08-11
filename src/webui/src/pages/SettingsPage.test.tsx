@@ -41,17 +41,30 @@ beforeEach(() => {
   ] as never);
 });
 
-function renderSettings(onOpenConfigPage: () => void = () => {}) {
+function renderSettings(onOpenConfigPage: () => void = () => {}, onHome: () => void = () => {}) {
   return render(
     <PreferencesProvider>
       <I18nProvider>
-        <SettingsPage onBack={() => {}} onOpenConfigPage={onOpenConfigPage} />
+        <SettingsPage onBack={onHome} onOpenConfigPage={onOpenConfigPage} />
       </I18nProvider>
     </PreferencesProvider>,
   );
 }
 
 describe("SettingsPage", () => {
+  it("navigates Home and starts settings content 4px below the topbar", async () => {
+    const onHome = vi.fn();
+    const user = userEvent.setup();
+    renderSettings(() => {}, onHome);
+
+    await user.click(screen.getByRole("button", { name: /back to home/i }));
+    expect(onHome).toHaveBeenCalledOnce();
+    const appearance = screen.getByRole("region", { name: "Appearance" });
+    const pageContent = appearance.parentElement?.parentElement;
+    expect(pageContent).toHaveClass("px-4", "pb-4", "pt-[4px]");
+    expect(pageContent).not.toHaveClass("p-4");
+  });
+
   it("renders default font sizes with steppers and a preview", async () => {
     renderSettings();
     expect(screen.getByText("Chat font size")).toBeTruthy();
@@ -114,16 +127,23 @@ describe("SettingsPage", () => {
     });
   });
 
-  it("contains the switch thumb in both states", async () => {
+  it("contains all switch thumbs with fixed pixel geometry in both states", async () => {
     const user = userEvent.setup();
     renderSettings();
-    const track = screen.getByRole("switch", { name: /auto-expand thinking/i });
-    const thumb = track.querySelector("[aria-hidden]");
-    expect(track).toHaveClass("overflow-hidden");
-    expect(thumb).toHaveClass("translate-x-0.5");
-    await user.click(track);
-    expect(thumb).toHaveClass("translate-x-[18px]");
-    expect(track).toHaveAttribute("aria-checked", "true");
+    const switches = [
+      screen.getByRole("switch", { name: /auto-expand thinking/i }),
+      screen.getByRole("switch", { name: /auto-expand tool output/i }),
+      screen.getByRole("switch", { name: /expand subagent output/i }),
+    ];
+
+    for (const track of switches) {
+      const thumb = track.querySelector("[aria-hidden]");
+      expect(track).toHaveClass("h-[20px]", "w-[36px]", "overflow-hidden");
+      expect(thumb).toHaveClass("left-0", "top-[2px]", "size-[16px]", "translate-x-[2px]");
+      await user.click(track);
+      expect(thumb).toHaveClass("translate-x-[18px]");
+      expect(track).toHaveAttribute("aria-checked", "true");
+    }
   });
 
   it("follows font preference changes from another tab", async () => {

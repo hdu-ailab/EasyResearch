@@ -20,6 +20,18 @@ describe("ConfigPage", () => {
     vi.mocked(api.readConfigFile).mockResolvedValue({ path: "settings.json", content: '{"lazyresearch":{"agentModels":{"search":"a/1"}}}' });
   });
 
+  it("navigates Home and starts config content 4px below the topbar", async () => {
+    const onHome = vi.fn();
+    const user = userEvent.setup();
+    render(<ConfigPage onBack={onHome} />);
+
+    await user.click(screen.getByRole("button", { name: /back to home/i }));
+    expect(onHome).toHaveBeenCalledOnce();
+    const root = await screen.findByRole("region", { name: /settings root/i });
+    expect(root.parentElement).toHaveClass("px-4", "pb-4", "pt-[4px]");
+    expect(root.parentElement).not.toHaveClass("p-4");
+  });
+
   it("pins home on top labeled 全局配置", async () => {
     render(<ConfigPage onBack={() => {}} />);
     const list = await screen.findByRole("list", { name: /project folders/i });

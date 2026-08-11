@@ -11,7 +11,7 @@ import {
   FILES_FONT_MIN,
 } from "../preferences";
 import { usePreferences } from "../preferences/PreferencesProvider";
-import { BackButton, ProductMark, Topbar } from "../components/Topbar";
+import { ProductMark, Topbar } from "../components/Topbar";
 
 export interface SettingsPageProps {
   onBack: () => void;
@@ -73,11 +73,11 @@ function PreferenceSwitch({ label, checked, onChange }: {
         aria-checked={checked}
         aria-label={label}
         onClick={() => onChange(!checked)}
-        className={`relative h-5 w-9 overflow-hidden rounded-full transition-colors ${checked ? "bg-v2-blue-600" : "bg-v2-grey-400"}`}
+        className={`relative h-[20px] w-[36px] shrink-0 overflow-hidden rounded-full transition-colors ${checked ? "bg-v2-blue-600" : "bg-v2-grey-400"}`}
       >
         <span
           aria-hidden
-          className={`absolute top-0.5 size-4 rounded-full bg-white transition-transform ${checked ? "translate-x-[18px]" : "translate-x-0.5"}`}
+          className={`absolute left-0 top-[2px] size-[16px] rounded-full bg-white transition-transform ${checked ? "translate-x-[18px]" : "translate-x-[2px]"}`}
         />
       </button>
     </div>
@@ -158,15 +158,11 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
   return (
     <div className="flex h-full flex-col">
       <Topbar
-        leading={
-          <>
-            <BackButton onClick={onBack} />
-            <ProductMark />
-          </>
-        }
+        home={{ active: false, onClick: onBack }}
+        leading={<ProductMark />}
         center={<span className="truncate text-[13px] text-v2-text-text-muted">{t("settings.title")}</span>}
       />
-      <div className="min-h-0 flex-1 overflow-y-auto p-4">
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4 pt-[4px]">
         <div className="mx-auto flex w-full max-w-[720px] flex-col gap-4">
           <section className={sectionClass} aria-label={t("settings.appearance.title")}>
             <header className="flex items-center gap-2 border-b border-v2-grey-200 px-4 py-2.5">

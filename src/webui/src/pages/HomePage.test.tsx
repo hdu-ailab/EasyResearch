@@ -108,6 +108,15 @@ describe("HomePage", () => {
     } as never);
   });
 
+  it("renders the fixed current Home control above a 4px content gap", async () => {
+    renderHome();
+    const home = screen.getByRole("button", { name: /back to home/i });
+    expect(home).toHaveAttribute("aria-current", "page");
+    const workspace = await screen.findByRole("region", { name: /research workspace/i });
+    expect(workspace.parentElement).toHaveClass("px-2", "pb-2", "pt-[4px]");
+    expect(workspace.parentElement).not.toHaveClass("p-2");
+  });
+
   it("renders historical and active sessions separately", async () => {
     render(<HomePage onOpenSession={() => {}} onOpenSettings={() => {}} settingsButton={<button type="button">Settings</button>} />);
     expect(await screen.findByText("write a paper")).toBeTruthy();
