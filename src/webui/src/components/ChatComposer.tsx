@@ -1,5 +1,5 @@
-import { useState } from "react";
 import { Square } from "lucide-react";
+import { useState } from "react";
 import { useI18n } from "../i18n/useI18n";
 
 export interface ChatComposerProps {
@@ -67,7 +67,18 @@ export function ChatComposer({ disabled, streaming, onSend, onAbort }: ChatCompo
             aria-label={t("composer.send")}
             disabled={disabled || !text.trim()}
           >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+              role="presentation"
+            >
               <path d="M12 19V5" />
               <path d="M5 12l7-7 7 7" />
             </svg>

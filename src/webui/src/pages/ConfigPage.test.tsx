@@ -1,10 +1,9 @@
-// @vitest-environment jsdom
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ConfigPage } from "./ConfigPage";
-import { ApiError } from "../api";
 import * as api from "../api";
+import { ApiError } from "../api";
+import { ConfigPage } from "./ConfigPage";
 
 vi.mock("../api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api")>();
@@ -16,8 +15,14 @@ describe("ConfigPage", () => {
     vi.mocked(api.listConfigProjects).mockReset();
     vi.mocked(api.readConfigFile).mockReset();
     vi.mocked(api.writeConfigFile).mockReset();
-    vi.mocked(api.listConfigProjects).mockResolvedValue({ home: "/home/u", projects: [{ cwd: "/home/u/proj" }, { cwd: "/tmp/other" }] });
-    vi.mocked(api.readConfigFile).mockResolvedValue({ path: "settings.json", content: '{"lazyresearch":{"agentModels":{"search":"a/1"}}}' });
+    vi.mocked(api.listConfigProjects).mockResolvedValue({
+      home: "/home/u",
+      projects: [{ cwd: "/home/u/proj" }, { cwd: "/tmp/other" }],
+    });
+    vi.mocked(api.readConfigFile).mockResolvedValue({
+      path: "settings.json",
+      content: '{"lazyresearch":{"agentModels":{"search":"a/1"}}}',
+    });
   });
 
   it("navigates Home and starts config content 4px below the topbar", async () => {
@@ -48,9 +53,16 @@ describe("ConfigPage", () => {
     const editor = await screen.findByRole("textbox", { name: /settings.json/i });
     expect(editor).toHaveValue(JSON.stringify({ lazyresearch: { agentModels: { search: "a/1" } } }, null, 2));
     await user.clear(editor);
-    fireEvent.change(editor, { target: { value: '{"lazyresearch":{"agentModels":{"search":"b/2"}},"theme":"light"}' } });
+    fireEvent.change(editor, {
+      target: { value: '{"lazyresearch":{"agentModels":{"search":"b/2"}},"theme":"light"}' },
+    });
     await user.click(screen.getByRole("button", { name: /save/i }));
-    expect(api.writeConfigFile).toHaveBeenCalledWith("project", "/home/u/proj", "settings.json", '{"lazyresearch":{"agentModels":{"search":"b/2"}},"theme":"light"}');
+    expect(api.writeConfigFile).toHaveBeenCalledWith(
+      "project",
+      "/home/u/proj",
+      "settings.json",
+      '{"lazyresearch":{"agentModels":{"search":"b/2"}},"theme":"light"}',
+    );
   });
 
   it("shows field help when ? is clicked", async () => {

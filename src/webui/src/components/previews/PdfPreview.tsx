@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, ChevronLeft, ChevronRight, Download, FileText, Minus, Plus } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { rawFileUrl } from "../../api";
 import { useI18n } from "../../i18n/useI18n";
 import { createPdfLoader, type PdfDocumentHandle, type PdfLoader } from "./pdf-runtime";
@@ -43,6 +43,7 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
   const renderedPages = useRef(new Map<number, number>());
 
   useEffect(() => {
+    void retryToken;
     let cancelled = false;
     let loaded: PdfDocumentHandle | null = null;
     setDoc(null);
@@ -129,7 +130,9 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
   }, [doc, scale, currentPage, pageSizes, numPages]);
 
   const zoom = (direction: 1 | -1) => {
-    setScale((current) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, Math.round((current + direction * SCALE_STEP) * 100) / 100)));
+    setScale((current) =>
+      Math.min(MAX_SCALE, Math.max(MIN_SCALE, Math.round((current + direction * SCALE_STEP) * 100) / 100)),
+    );
   };
 
   const scrollToCanvas = useCallback((page: number) => {
@@ -245,11 +248,25 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
           </button>
           <span className="mx-1 h-4 w-px shrink-0 bg-v2-grey-200" aria-hidden />
 
-          <button type="button" className={iconButton} aria-label={t("preview.pdf.zoomOut")} title={t("preview.pdf.zoomOut")} onClick={() => zoom(-1)}>
+          <button
+            type="button"
+            className={iconButton}
+            aria-label={t("preview.pdf.zoomOut")}
+            title={t("preview.pdf.zoomOut")}
+            onClick={() => zoom(-1)}
+          >
             <Minus size={14} aria-hidden />
           </button>
-          <span className="w-11 shrink-0 text-center font-mono text-[11px] text-v2-text-text-muted">{Math.round(scale * 100)}%</span>
-          <button type="button" className={iconButton} aria-label={t("preview.pdf.zoomIn")} title={t("preview.pdf.zoomIn")} onClick={() => zoom(1)}>
+          <span className="w-11 shrink-0 text-center font-mono text-[11px] text-v2-text-text-muted">
+            {Math.round(scale * 100)}%
+          </span>
+          <button
+            type="button"
+            className={iconButton}
+            aria-label={t("preview.pdf.zoomIn")}
+            title={t("preview.pdf.zoomIn")}
+            onClick={() => zoom(1)}
+          >
             <Plus size={14} aria-hidden />
           </button>
           <span className="mx-1 h-4 w-px shrink-0 bg-v2-grey-200" aria-hidden />
@@ -264,7 +281,7 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
           </a>
         </div>
       </header>
-      <div
+      <section
         ref={scrollRef}
         data-testid="pdf-scroll"
         className="min-h-0 flex-1 overflow-auto bg-v2-grey-100 p-3"
@@ -276,7 +293,8 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
           <div className="flex flex-col items-center gap-3">
             {Array.from({ length: numPages }, (_, index) => (
               <canvas
-                key={index}
+                // biome-ignore lint/suspicious/noArrayIndexKey: PDF pages have stable document-order identities.
+                key={`pdf-page-${index + 1}`}
                 ref={(element) => {
                   canvasRefs.current[index] = element;
                 }}
@@ -286,7 +304,7 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
             ))}
           </div>
         )}
-      </div>
+      </section>
     </div>
   );
 }

@@ -1,12 +1,11 @@
-// @vitest-environment jsdom
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { SettingsPage } from "./SettingsPage";
 import * as api from "../api";
 import { I18nProvider } from "../i18n/I18nProvider";
 import { readPreferences, STORAGE_KEY } from "../preferences";
 import { PreferencesProvider } from "../preferences/PreferencesProvider";
+import { SettingsPage } from "./SettingsPage";
 
 vi.mock("../api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api")>();
@@ -149,14 +148,17 @@ describe("SettingsPage", () => {
   it("follows font preference changes from another tab", async () => {
     renderSettings();
     await screen.findByRole("combobox", { name: "Select model for Search" });
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      chatFontSize: 16,
-      filesFontSize: 11,
-      language: "en",
-      autoExpandThinking: false,
-      autoExpandTools: false,
-      expandSubagentOutput: false,
-    }));
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        chatFontSize: 16,
+        filesFontSize: 11,
+        language: "en",
+        autoExpandThinking: false,
+        autoExpandTools: false,
+        expandSubagentOutput: false,
+      }),
+    );
 
     act(() => {
       window.dispatchEvent(new StorageEvent("storage", { key: STORAGE_KEY }));
@@ -285,11 +287,16 @@ describe("SettingsPage", () => {
     } as never);
     renderSettings();
     await screen.findByRole("combobox", { name: "Select model for Research Mentor" });
-    await user.selectOptions(screen.getByRole("combobox", { name: "Select model for Research Mentor" }), "anthropic/claude-sonnet-4");
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Select model for Research Mentor" }),
+      "anthropic/claude-sonnet-4",
+    );
     await waitFor(() =>
       expect(api.updateWebuiSettings).toHaveBeenCalledWith({ orchestratorModel: "anthropic/claude-sonnet-4" }),
     );
-    expect(screen.getByRole("combobox", { name: "Select model for Research Mentor" })).toHaveValue("anthropic/claude-sonnet-4");
+    expect(screen.getByRole("combobox", { name: "Select model for Research Mentor" })).toHaveValue(
+      "anthropic/claude-sonnet-4",
+    );
   });
 
   it("sets a stage agent model via agentModels patch", async () => {
@@ -299,7 +306,10 @@ describe("SettingsPage", () => {
     } as never);
     renderSettings();
     await screen.findByRole("combobox", { name: "Select model for Writing" });
-    await user.selectOptions(screen.getByRole("combobox", { name: "Select model for Writing" }), "anthropic/claude-sonnet-4");
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Select model for Writing" }),
+      "anthropic/claude-sonnet-4",
+    );
     await waitFor(() =>
       expect(api.updateWebuiSettings).toHaveBeenCalledWith({
         agentModels: { search: "openai/gpt-4o", writing: "anthropic/claude-sonnet-4" },

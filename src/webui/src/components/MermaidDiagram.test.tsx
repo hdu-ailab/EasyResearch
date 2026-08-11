@@ -1,6 +1,5 @@
-// @vitest-environment jsdom
-import { describe, expect, it, vi, beforeEach } from "vitest";
 import { act, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MermaidDiagram } from "./MermaidDiagram";
 
 const svgResult = vi.hoisted(() => ({
@@ -38,8 +37,16 @@ describe("MermaidDiagram", () => {
 
     expect(mermaidMock.moduleLoads).toBe(1);
     expect(mermaidMock.runtime.initialize).toHaveBeenCalledTimes(1);
-    expect(mermaidMock.runtime.render).toHaveBeenNthCalledWith(1, expect.stringMatching(/^mermaid-/), "graph TD; A-->B");
-    expect(mermaidMock.runtime.render).toHaveBeenNthCalledWith(2, expect.stringMatching(/^mermaid-/), "graph TD; B-->C");
+    expect(mermaidMock.runtime.render).toHaveBeenNthCalledWith(
+      1,
+      expect.stringMatching(/^mermaid-/),
+      "graph TD; A-->B",
+    );
+    expect(mermaidMock.runtime.render).toHaveBeenNthCalledWith(
+      2,
+      expect.stringMatching(/^mermaid-/),
+      "graph TD; B-->C",
+    );
   });
 
   it("falls back to the raw source on render error", async () => {

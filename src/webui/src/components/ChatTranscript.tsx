@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Check, ChevronDown, ChevronRight } from "lucide-react";
-import type { SessionMessageView, ToolView } from "../session-reducer";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useExpandable } from "../hooks/useExpandable";
-import { useI18n } from "../i18n/useI18n";
 import { agentDisplayName } from "../i18n/agents";
 import type { MessageKey } from "../i18n/messages";
+import { useI18n } from "../i18n/useI18n";
 import { usePreferences } from "../preferences/PreferencesProvider";
+import type { SessionMessageView, ToolView } from "../session-reducer";
 import { MarkdownBlock } from "./MarkdownBlock";
 import { SubagentToolCard } from "./SubagentToolCard";
 
@@ -84,11 +84,7 @@ function ToolRow({ tool, initialOpen }: { tool: ToolView; initialOpen: boolean }
           {tool.name}
           {tool.args ? <span className="text-v2-text-text-faint"> {tool.args}</span> : null}
         </span>
-        {open ? (
-          <ChevronDown size={12} aria-hidden />
-        ) : (
-          <ChevronRight size={12} aria-hidden />
-        )}
+        {open ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}
       </button>
       {mounted && (
         <div
@@ -123,7 +119,11 @@ function MessageRow({ message, initialThinkingOpen }: { message: SessionMessageV
     <li className={`flex flex-col gap-1 ${isYou ? "items-end" : "items-start"}`}>
       <span className="text-[11px] font-medium uppercase tracking-wide text-v2-text-text-faint">{label}</span>
       {message.reasoning ? (
-        <ReasoningBlock text={message.reasoning} initialOpen={initialThinkingOpen} active={Boolean(message.isThinking)} />
+        <ReasoningBlock
+          text={message.reasoning}
+          initialOpen={initialThinkingOpen}
+          active={Boolean(message.isThinking)}
+        />
       ) : message.isThinking ? (
         <span className="v2-thinking-active text-[12px] font-medium text-v2-text-text-faint">
           {t("transcript.thinking")}
@@ -187,6 +187,8 @@ export function ChatTranscript({ messages, tools, emptyHint, pending = false, on
     });
   };
 
+  // The callback intentionally reads refs; recreating this observer for every render would lose the stream-following contract.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: scheduleFollow is ref-based and intentionally stable for this observer.
   useEffect(() => {
     const content = contentRef.current;
     if (!content) return;
@@ -201,33 +203,46 @@ export function ChatTranscript({ messages, tools, emptyHint, pending = false, on
     };
   }, []);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the ref-based callback is intentionally not an effect dependency.
   useEffect(() => {
     scheduleFollow();
   }, [entries, pending]);
 
   return (
-    <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto" aria-label={t("transcript.conversation")} onScroll={onScroll}>
+    <section
+      ref={scrollRef}
+      className="min-h-0 flex-1 overflow-y-auto"
+      aria-label={t("transcript.conversation")}
+      onScroll={onScroll}
+    >
       {messages.length === 0 && tools.length === 0 && !pending && (
         <p className="px-4 pt-6 text-center text-[length:var(--v2-chat-font-size)] text-v2-text-text-faint">{hint}</p>
       )}
-      <ul ref={contentRef} className="mx-auto flex w-full max-w-[1000px] flex-col gap-3 p-4 md:max-w-200 2xl:max-w-[1000px]">
+      <ul
+        ref={contentRef}
+        className="mx-auto flex w-full max-w-[1000px] flex-col gap-3 p-4 md:max-w-200 2xl:max-w-[1000px]"
+      >
         {entries.map((entry) =>
-          "name" in entry ? entry.name === "subagent" ? (
-            <SubagentToolCard
-              key={entry.key}
-              tool={entry}
-              initialOpen={preferences.expandSubagentOutput}
-              onViewDetails={onViewDetails}
-            />
-          ) : (
-            <ToolRow key={entry.key} tool={entry} initialOpen={preferences.autoExpandTools} />
+          "name" in entry ? (
+            entry.name === "subagent" ? (
+              <SubagentToolCard
+                key={entry.key}
+                tool={entry}
+                initialOpen={preferences.expandSubagentOutput}
+                onViewDetails={onViewDetails}
+              />
+            ) : (
+              <ToolRow key={entry.key} tool={entry} initialOpen={preferences.autoExpandTools} />
+            )
           ) : (
             <MessageRow key={entry.key} message={entry} initialThinkingOpen={preferences.autoExpandThinking} />
           ),
         )}
         {pending && (
           <li className="flex flex-col items-start gap-1" aria-label={t("transcript.working")}>
-            <span className="text-[11px] font-medium uppercase tracking-wide text-v2-text-text-faint">{t("transcript.orchestrator")}</span>
+            <span className="text-[11px] font-medium uppercase tracking-wide text-v2-text-text-faint">
+              {t("transcript.orchestrator")}
+            </span>
             <div className="v2-md flex items-center gap-2 rounded-lg bg-v2-background-bg-deep px-3 py-2 text-[length:var(--v2-chat-font-size)] text-v2-text-text-base">
               <span className="v2-spinner" aria-hidden />
               <span className="text-[12px] text-v2-text-text-faint">{t("transcript.workingInProgress")}</span>
@@ -236,6 +251,6 @@ export function ChatTranscript({ messages, tools, emptyHint, pending = false, on
           </li>
         )}
       </ul>
-    </div>
+    </section>
   );
 }

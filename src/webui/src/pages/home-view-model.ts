@@ -13,10 +13,7 @@ export function sessionTitle(session: { id: string; firstMessage?: string }): st
   return firstMessage ? firstMessage : session.id.slice(0, 8);
 }
 
-export function buildHomeProjectGroups(
-  history: SessionSummaryDto[],
-  active: ActiveSessionDto[],
-): HomeProjectGroup[] {
+export function buildHomeProjectGroups(history: SessionSummaryDto[], active: ActiveSessionDto[]): HomeProjectGroup[] {
   const groups = new Map<string, HomeProjectGroup>();
   const ensure = (cwd: string) => {
     let group = groups.get(cwd);
@@ -57,14 +54,12 @@ export function countRunningSessions(sessions: ActiveSessionDto[]): number {
   return sessions.filter(isActuallyRunning).length;
 }
 
-export function matchesSessionQuery(
-  session: SessionSummaryDto | HomeActiveSession,
-  query: string,
-): boolean {
+export function matchesSessionQuery(session: SessionSummaryDto | HomeActiveSession, query: string): boolean {
   const needle = query.trim().toLocaleLowerCase();
   if (!needle) return true;
-  const values = "messageCount" in session
-    ? [session.cwd, session.id, session.name, session.firstMessage]
-    : [session.cwd, session.id, session.sessionName, session.firstMessage];
+  const values =
+    "messageCount" in session
+      ? [session.cwd, session.id, session.name, session.firstMessage]
+      : [session.cwd, session.id, session.sessionName, session.firstMessage];
   return values.some((value) => value?.toLocaleLowerCase().includes(needle));
 }

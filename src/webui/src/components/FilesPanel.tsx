@@ -1,9 +1,9 @@
-import { useMemo, useState } from "react";
 import { ChevronRight, File as FileIcon, Folder, FolderOpen, RefreshCw, Search } from "lucide-react";
+import { useMemo, useState } from "react";
+import type { FileEntryDto } from "../../../web/contracts";
 import { listEntries } from "../api";
 import { useLazyTree } from "../hooks/useLazyTree";
 import { useI18n } from "../i18n/useI18n";
-import type { FileEntryDto } from "../../../web/contracts";
 
 export interface FilesPanelProps {
   root: string;
@@ -98,7 +98,11 @@ export function FilesPanel({ root, onOpenFile }: FilesPanelProps) {
                   onClick={() => (entry.kind === "directory" ? toggle(entry) : onOpenFile(entry))}
                   title={entry.path}
                 >
-                  {entry.kind === "directory" ? <Folder size={13} className="shrink-0 text-v2-icon-icon-muted" /> : <FileIcon size={13} className="shrink-0 text-v2-icon-icon-muted" />}
+                  {entry.kind === "directory" ? (
+                    <Folder size={13} className="shrink-0 text-v2-icon-icon-muted" />
+                  ) : (
+                    <FileIcon size={13} className="shrink-0 text-v2-icon-icon-muted" />
+                  )}
                   <span className="min-w-0 truncate text-[length:var(--v2-files-font-size)]">{entry.name}</span>
                   <span className="ml-auto shrink-0 truncate font-mono text-[11px] text-v2-text-text-faint">{rel}</span>
                 </button>
@@ -122,16 +126,31 @@ export function FilesPanel({ root, onOpenFile }: FilesPanelProps) {
                   key={entry.path}
                   role="treeitem"
                   aria-expanded={isDirectory ? isExpanded : undefined}
+                  tabIndex={0}
                   className="group flex cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-v2-grey-100"
                   style={{ paddingLeft: `${8 + depth * 14}px` }}
                   onClick={() => (isDirectory ? toggle(entry) : onOpenFile(entry))}
+                  onKeyDown={(event) => {
+                    if (event.target !== event.currentTarget) return;
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      if (isDirectory) toggle(entry);
+                      else onOpenFile(entry);
+                    }
+                  }}
                   title={entry.path}
                 >
                   {isDirectory ? (
                     <button
                       type="button"
                       className="flex size-4 shrink-0 items-center justify-center rounded text-v2-icon-icon-muted hover:bg-v2-grey-200"
-                      aria-label={state === "loading" ? t("files.loadingRow").replace("{name}", entry.name) : isExpanded ? t("files.collapseRow").replace("{name}", entry.name) : t("files.expandRow").replace("{name}", entry.name)}
+                      aria-label={
+                        state === "loading"
+                          ? t("files.loadingRow").replace("{name}", entry.name)
+                          : isExpanded
+                            ? t("files.collapseRow").replace("{name}", entry.name)
+                            : t("files.expandRow").replace("{name}", entry.name)
+                      }
                       onClick={(event) => {
                         event.stopPropagation();
                         toggle(entry);
@@ -150,7 +169,10 @@ export function FilesPanel({ root, onOpenFile }: FilesPanelProps) {
                     <span className="w-4 shrink-0" aria-hidden />
                   )}
                   {isDirectory ? (
-                    <FolderOpen size={13} className={`shrink-0 ${isExpanded ? "text-v2-blue-600" : "text-v2-icon-icon-muted"}`} />
+                    <FolderOpen
+                      size={13}
+                      className={`shrink-0 ${isExpanded ? "text-v2-blue-600" : "text-v2-icon-icon-muted"}`}
+                    />
                   ) : (
                     <FileIcon size={13} className="shrink-0 text-v2-icon-icon-muted" />
                   )}

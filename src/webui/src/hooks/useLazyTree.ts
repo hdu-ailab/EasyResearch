@@ -67,12 +67,13 @@ export function useLazyTree<T>({ root, loadChildren }: UseLazyTreeOptions<T>): U
     [loadChildren],
   );
 
+  // The root change is the reset boundary; adding load here would re-run the reset when its callback identity changes.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: load is intentionally excluded from the root reset boundary.
   useEffect(() => {
     inFlight.current.clear();
     setStateMap(new Map());
     setExpanded(new Set());
     load(root);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [root]);
 
   const toggle = useCallback(

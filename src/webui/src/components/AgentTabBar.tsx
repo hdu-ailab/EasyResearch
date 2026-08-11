@@ -1,7 +1,7 @@
 import { X } from "lucide-react";
-import { childTabLabel, type SubagentTabState } from "../subagent-tabs";
 import { agentDisplayName } from "../i18n/agents";
 import { useI18n } from "../i18n/useI18n";
+import { childTabLabel, type SubagentTabState } from "../subagent-tabs";
 
 export type AgentStatus = "idle" | "working" | "error";
 
@@ -24,14 +24,7 @@ function tabClass(focused: boolean): string {
     : "border-v2-grey-200 text-v2-text-text-muted hover:bg-v2-grey-100";
 }
 
-export function AgentTabBar({
-  tabs,
-  activeKey,
-  orchestratorStatus,
-  onSelect,
-  onClose,
-  onStop,
-}: AgentTabBarProps) {
+export function AgentTabBar({ tabs, activeKey, orchestratorStatus, onSelect, onClose, onStop }: AgentTabBarProps) {
   const { t } = useI18n();
   const orchestratorFocused = activeKey === "orchestrator";
 
@@ -54,7 +47,10 @@ export function AgentTabBar({
         const label = rawLabel === tab.agent ? localizedAgent : `${localizedAgent}${rawLabel.slice(tab.agent.length)}`;
         const closeLabel = `${t("work.closeAgentTab")}: ${label}`;
         return (
-          <div key={tab.key} className={`flex max-w-full items-center rounded-full border transition-colors ${tabClass(focused)}`}>
+          <div
+            key={tab.key}
+            className={`flex max-w-full items-center rounded-full border transition-colors ${tabClass(focused)}`}
+          >
             <button
               type="button"
               aria-pressed={focused}
@@ -62,11 +58,18 @@ export function AgentTabBar({
               onClick={() => onSelect(tab.key)}
               className="flex min-w-0 items-center gap-1.5 rounded-l-full py-1 pl-2.5 pr-1 text-[12px]"
             >
-              <span className={`size-2 shrink-0 rounded-full ${dotClass(tab.running ? "working" : "idle")}`} aria-hidden />
+              <span
+                className={`size-2 shrink-0 rounded-full ${dotClass(tab.running ? "working" : "idle")}`}
+                aria-hidden
+              />
               <span className="truncate">{label}</span>
               {tab.latestMessage ? (
-                <span className="max-w-64 truncate text-v2-text-text-faint" title={tab.latestMessage}>{tab.latestMessage}</span>
-              ) : tab.running ? <span className="v2-spinner size-3" aria-hidden /> : null}
+                <span className="max-w-64 truncate text-v2-text-text-faint" title={tab.latestMessage}>
+                  {tab.latestMessage}
+                </span>
+              ) : tab.running ? (
+                <span className="v2-spinner size-3" aria-hidden />
+              ) : null}
             </button>
             {tab.sessionId ? (
               <button

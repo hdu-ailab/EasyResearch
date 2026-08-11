@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
+import type { ActiveSessionDto, SessionSummaryDto } from "../../../web/contracts";
 import { createSession, listStatus, openSession } from "../api";
 import { DirectoryDialog } from "../components/DirectoryDialog";
 import { HomeWorkspace } from "../components/HomeWorkspace";
 import { ProductMark, Topbar } from "../components/Topbar";
 import { useI18n } from "../i18n/useI18n";
-import type { ActiveSessionDto, SessionSummaryDto } from "../../../web/contracts";
 import { buildHomeProjectGroups } from "./home-view-model";
 
 export interface HomePageProps {
@@ -17,7 +17,11 @@ const MONITOR_POLL_MS = 5000;
 
 export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
   const { t } = useI18n();
-  const [status, setStatus] = useState<{ sessions: SessionSummaryDto[]; activeSessions: ActiveSessionDto[]; homeDir: string } | null>(null);
+  const [status, setStatus] = useState<{
+    sessions: SessionSummaryDto[];
+    activeSessions: ActiveSessionDto[];
+    homeDir: string;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -83,13 +87,18 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
       <Topbar
         home={{ active: true }}
         leading={<ProductMark />}
-        center={<span className="hidden truncate text-[13px] text-v2-text-text-muted sm:inline">{t("home.tagline")}</span>}
+        center={
+          <span className="hidden truncate text-[13px] text-v2-text-text-muted sm:inline">{t("home.tagline")}</span>
+        }
         actions={settingsButton}
       />
       <main className="min-h-0 flex-1 overflow-y-auto">
         <div className="flex min-h-full w-full flex-col gap-2 px-2 pb-2 pt-[4px]">
           {error && (
-            <p className="rounded-md border border-v2-status-error/30 bg-v2-status-error/5 px-3 py-2 text-[13px] text-v2-status-error" role="alert">
+            <p
+              className="rounded-md border border-v2-status-error/30 bg-v2-status-error/5 px-3 py-2 text-[13px] text-v2-status-error"
+              role="alert"
+            >
               {error}
             </p>
           )}

@@ -1,38 +1,38 @@
+import { Bot, FileSearch } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Bot, FileSearch, FolderOpen } from "lucide-react";
-import { agentDescription, agentDisplayName, type Translate } from "../i18n/agents";
-import type { AgentDto, AgentEffectiveModelDto } from "../../../web/contracts";
 import {
   abortSession,
   connectSessionEvents,
-  getEffectiveModels,
   getChildSnapshot,
   getSnapshot,
   isUnknownSession,
-  listAgents,
-  listModels,
   openSession,
-  readFileContent,
   sendPrompt,
-  setAgentModel,
 } from "../api";
-import { fromSnapshot, mergeSnapshot, nestedSubagentEvent, reduceSessionEvent, type SessionViewState } from "../session-reducer";
+import { AgentList, type AgentStatus } from "../components/AgentList";
+import { AgentTabBar } from "../components/AgentTabBar";
+import { ChatComposer } from "../components/ChatComposer";
+import { ChatTranscript } from "../components/ChatTranscript";
+import { FileBrowser } from "../components/FileBrowser";
+import { ProductMark, Topbar, TopbarIconButton } from "../components/Topbar";
+import { WorkMobileTabs, type WorkView } from "../components/WorkMobileTabs";
+import { usePanelTransition } from "../hooks/usePanelTransition";
+import { useI18n } from "../i18n/useI18n";
+import {
+  fromSnapshot,
+  mergeSnapshot,
+  nestedSubagentEvent,
+  reduceSessionEvent,
+  type SessionViewState,
+} from "../session-reducer";
 import {
   closeSubagentTab,
   promoteSubagentTab,
   retainSubagentTab,
+  type SubagentTabsState,
   syncRunningSubagentTabs,
   temporarySubagentTabKey,
-  type SubagentTabsState,
 } from "../subagent-tabs";
-import { usePanelTransition } from "../hooks/usePanelTransition";
-import { useI18n } from "../i18n/useI18n";
-import { ChatTranscript } from "../components/ChatTranscript";
-import { ChatComposer } from "../components/ChatComposer";
-import { FileBrowser } from "../components/FileBrowser";
-import { ProductMark, Topbar, TopbarIconButton } from "../components/Topbar";
-import { WorkMobileTabs, type WorkView } from "../components/WorkMobileTabs";
-import { AgentTabBar } from "../components/AgentTabBar";
 
 export interface WorkPageProps {
   id: string;
@@ -66,8 +66,12 @@ function mergeChildView(snapshot: SessionViewState, live: SessionViewState): Ses
   const ordered = entries.map((entry, order) => ({ kind: entry.kind, value: { ...entry.value, order } }));
   return {
     ...snapshot,
-    messages: ordered.filter((entry) => entry.kind === "message").map((entry) => entry.value as SessionViewState["messages"][number]),
-    tools: ordered.filter((entry) => entry.kind === "tool").map((entry) => entry.value as SessionViewState["tools"][number]),
+    messages: ordered
+      .filter((entry) => entry.kind === "message")
+      .map((entry) => entry.value as SessionViewState["messages"][number]),
+    tools: ordered
+      .filter((entry) => entry.kind === "tool")
+      .map((entry) => entry.value as SessionViewState["tools"][number]),
     isStreaming: live.isStreaming,
     error: live.error,
     nextOrder: ordered.length,
@@ -85,18 +89,10 @@ function defaultPanel(): Panel {
   return typeof window !== "undefined" && window.innerWidth >= CONVERSATION_FIRST_BREAKPOINT ? "files" : null;
 }
 
-interface AgentChip {
-  id: string;
-  name: string;
-  status: "idle" | "working" | "error";
-}
-
-function dotClass(status: AgentChip["status"]): string {
-  return status === "working" ? "bg-v2-status-success" : status === "error" ? "bg-v2-status-warning" : "bg-v2-grey-400";
-}
-
 export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   const { t } = useI18n();
+  const tRef = useRef(t);
+  tRef.current = t;
   const [sessionView, setSessionView] = useState<SessionViewState>(emptyView);
   const [status, setStatus] = useState<string>("starting");
   const [sessionId, setSessionId] = useState(id);
@@ -183,8 +179,11 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
       if (!current.startsWith("tool:")) return current;
       const tab = tabsStateRef.current.tabs.find((candidate) => candidate.key === current);
       const tool = tab
-        ? sessionView.tools.find((candidate) => candidate.key === tab.toolCallId
-          && (candidate.step === tab.step || (tab.step === undefined && tab.sessionId === undefined)))
+        ? sessionView.tools.find(
+            (candidate) =>
+              candidate.key === tab.toolCallId &&
+              (candidate.step === tab.step || (tab.step === undefined && tab.sessionId === undefined)),
+          )
         : sessionView.tools.find((candidate) => temporarySubagentTabKey(candidate.key, candidate.step) === current);
       return tool?.sessionId ? `session:${tool.sessionId}` : current;
     });
@@ -199,23 +198,20 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   const panelMin = Math.max(PANEL_MIN, window.innerWidth / 3);
   const panelMax = available === undefined ? 480 : Math.max(panelMin, available - CHAT_MIN - 8);
   const defaultPanelWidth = available === undefined ? PANEL_DEFAULT : Math.max(panelMin, Math.round(available / 2));
-  const clampedPanelWidth = available === undefined
-    ? panelWidth
-    : panelWidthTouched
-      ? Math.min(panelWidth, panelMax)
-      : Math.min(defaultPanelWidth, panelMax);
+  const clampedPanelWidth =
+    available === undefined
+      ? panelWidth
+      : panelWidthTouched
+        ? Math.min(panelWidth, panelMax)
+        : Math.min(defaultPanelWidth, panelMax);
   const activeChildId = activeTab.startsWith("session:") ? activeTab.slice(8) : undefined;
   const activeView = activeChildId ? childViews[activeChildId] : undefined;
-  const activeMessages = activeTab === "orchestrator" ? sessionView.messages : activeView?.messages ?? [];
-  const activeTools = activeTab === "orchestrator"
-    ? sessionView.tools
-    : activeChildId
-      ? activeView?.tools ?? []
-      : [];
+  const activeMessages = activeTab === "orchestrator" ? sessionView.messages : (activeView?.messages ?? []);
+  const activeTools = activeTab === "orchestrator" ? sessionView.tools : activeChildId ? (activeView?.tools ?? []) : [];
   const statusByAgent = Object.fromEntries([
     ["orchestrator", sessionView.error !== null ? "error" : sessionView.isStreaming ? "working" : "idle"],
     ...tabsState.tabs.map((tab) => [tab.agent, tab.running ? "working" : "idle"]),
-  ]) as Record<string, AgentChip["status"]>;
+  ]) as Record<string, AgentStatus>;
   const projectName = cwd.split("/").filter(Boolean).at(-1) ?? cwd;
   const chatHidden = isMobile && mobileView !== "chat";
   const filesHidden = isMobile ? mobileView !== "files" : panel !== "files";
@@ -229,72 +225,81 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
     return snapshot;
   }, []);
 
-  const loadChild = useCallback((childId: string, refresh = false): Promise<void> => {
-    const requestKey = `${sessionId}:${childId}`;
-    const inFlight = childRequests.current.get(requestKey);
-    if (inFlight) {
-      if (refresh) childRefreshPending.current.add(requestKey);
-      return inFlight;
-    }
-    if (!refresh && childLoaded.current.has(requestKey)) return Promise.resolve();
-
-    setChildErrors((current) => current[childId] ? { ...current, [childId]: false } : current);
-    const request = getChildSnapshot(sessionId, childId).then((snapshot) => {
-      const hydrated = fromSnapshot({
-        session: {
-          ...snapshot.session,
-          isStreaming: false,
-          status: "ready",
-        },
-        messages: snapshot.messages,
-        subagents: [],
-      });
-      childLoaded.current.add(requestKey);
-      setChildErrors((current) => {
-        if (!(childId in current)) return current;
-        const next = { ...current };
-        delete next[childId];
-        return next;
-      });
-      setChildViews((current) => ({
-        ...current,
-        [childId]: current[childId]
-          ? refresh
-            ? mergeChildView(current[childId], hydrated)
-            : mergeChildView(hydrated, current[childId])
-          : hydrated,
-      }));
-    }).catch(() => {
-      childLoaded.current.delete(requestKey);
-      setChildErrors((current) => ({ ...current, [childId]: true }));
-    }).finally(() => {
-      childRequests.current.delete(requestKey);
-      if (childRefreshPending.current.delete(requestKey)) {
-        void loadChildRef.current(childId, true);
+  const loadChild = useCallback(
+    (childId: string, refresh = false): Promise<void> => {
+      const requestKey = `${sessionId}:${childId}`;
+      const inFlight = childRequests.current.get(requestKey);
+      if (inFlight) {
+        if (refresh) childRefreshPending.current.add(requestKey);
+        return inFlight;
       }
-    });
-    childRequests.current.set(requestKey, request);
-    return request;
-  }, [sessionId]);
+      if (!refresh && childLoaded.current.has(requestKey)) return Promise.resolve();
+
+      setChildErrors((current) => (current[childId] ? { ...current, [childId]: false } : current));
+      const request = getChildSnapshot(sessionId, childId)
+        .then((snapshot) => {
+          const hydrated = fromSnapshot({
+            session: {
+              ...snapshot.session,
+              isStreaming: false,
+              status: "ready",
+            },
+            messages: snapshot.messages,
+            subagents: [],
+          });
+          childLoaded.current.add(requestKey);
+          setChildErrors((current) => {
+            if (!(childId in current)) return current;
+            const next = { ...current };
+            delete next[childId];
+            return next;
+          });
+          setChildViews((current) => ({
+            ...current,
+            [childId]: current[childId]
+              ? refresh
+                ? mergeChildView(current[childId], hydrated)
+                : mergeChildView(hydrated, current[childId])
+              : hydrated,
+          }));
+        })
+        .catch(() => {
+          childLoaded.current.delete(requestKey);
+          setChildErrors((current) => ({ ...current, [childId]: true }));
+        })
+        .finally(() => {
+          childRequests.current.delete(requestKey);
+          if (childRefreshPending.current.delete(requestKey)) {
+            void loadChildRef.current(childId, true);
+          }
+        });
+      childRequests.current.set(requestKey, request);
+      return request;
+    },
+    [sessionId],
+  );
   loadChildRef.current = loadChild;
 
   useEffect(() => {
+    void subscribeEpoch;
     let active = true;
     eventsReceivedRef.current = false;
-    hydrate(sessionId).then((snapshot) => {
-      if (active && !eventsReceivedRef.current) {
-        setSessionView(fromSnapshot(snapshot));
-      }
-    }).catch((e: unknown) => {
-      if (active) {
-        setStatus("error");
-        setStatusText(e instanceof Error ? e.message : String(e));
-      }
-    });
+    hydrate(sessionId)
+      .then((snapshot) => {
+        if (active && !eventsReceivedRef.current) {
+          setSessionView(fromSnapshot(snapshot));
+        }
+      })
+      .catch((e: unknown) => {
+        if (active) {
+          setStatus("error");
+          setStatusText(e instanceof Error ? e.message : String(e));
+        }
+      });
     const unsubscribe = connectSessionEvents(sessionId, {
       onEvent: (event) => {
         eventsReceivedRef.current = true;
-        setStatusText((current) => (current === t("work.connectionLost") ? null : current));
+        setStatusText((current) => (current === tRef.current("work.connectionLost") ? null : current));
         const typed = event as { type?: string };
         if (typed.type === "snapshot") {
           const snapshotEvent = typed as { session?: { sessionFile?: string } };
@@ -308,100 +313,121 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
           return;
         }
         if (typed.type === "session_deactivated") {
-          setStatusText(t("work.sessionEnded"));
+          setStatusText(tRef.current("work.sessionEnded"));
           return;
         }
         const agentEvent = event as Parameters<typeof reduceSessionEvent>[1];
         const nested = nestedSubagentEvent(agentEvent);
         if (nested?.sessionId) childSessionByTool.current.set(nested.toolCallId, nested.sessionId);
-        const nestedSessionId = nested?.sessionId ?? (nested ? childSessionByTool.current.get(nested.toolCallId) : undefined);
-        if (nestedSessionId && nested?.event) {
+        const nestedSessionId =
+          nested?.sessionId ?? (nested ? childSessionByTool.current.get(nested.toolCallId) : undefined);
+        const nestedEvent = nested?.event;
+        if (nestedSessionId && nestedEvent) {
           setChildViews((current) => ({
             ...current,
             [nestedSessionId]: reduceSessionEvent(
               current[nestedSessionId] ?? { ...emptyView, subagentName: nested.agent },
-              nested.event!,
+              nestedEvent,
             ),
           }));
         }
         setSessionView((prev) => reduceSessionEvent(prev, agentEvent));
       },
-      onError: () => setStatusText(t("work.connectionLost")),
+      onError: () => setStatusText(tRef.current("work.connectionLost")),
     });
     return () => {
       active = false;
       unsubscribe();
     };
-  }, [sessionId, hydrate, subscribeEpoch, loadChild]);
+  }, [sessionId, hydrate, loadChild, subscribeEpoch]);
 
   useEffect(() => {
     if (activeTab.startsWith("session:")) loadChild(activeTab.slice(8));
   }, [activeTab, loadChild]);
 
-  const openSubagentTool = useCallback((toolCallId: string, requestedStep?: number) => {
-    const tool = sessionView.tools.find((candidate) => candidate.name === "subagent" && candidate.key === toolCallId);
-    if (!tool) return;
-    const link = requestedStep === undefined
-      ? tool.sessionLinks?.length === 1
-        ? tool.sessionLinks[0]
-        : tool.sessionLinks?.find((candidate) => candidate.step === tool.step)
-      : tool.sessionLinks?.find((candidate) => candidate.step === requestedStep);
-    const step = link?.step ?? requestedStep ?? tool.step;
-    const childId = link?.childSessionId ?? (step === tool.step ? tool.sessionId : undefined);
-    const existingTab = tabsState.tabs.find((tab) => tab.toolCallId === toolCallId && tab.step === step);
-    setTabsState((current) => {
-      let next = current;
-      if (!next.tabs.some((tab) => tab.toolCallId === toolCallId && tab.step === step)) {
-        next = {
-          ...next,
-          tabs: [...next.tabs, {
-            key: temporarySubagentTabKey(toolCallId, step),
-            toolCallId,
-            agent: link?.agent ?? tool.agentName ?? "subagent",
-            ...(step !== undefined ? { step } : {}),
-            retained: false,
-            running: tool.running,
-            ...(tool.latestMessage !== undefined ? { latestMessage: tool.latestMessage } : {}),
-          }],
-        };
-      }
-      next = retainSubagentTab(next, toolCallId, step);
-      return childId ? promoteSubagentTab(next, {
-        toolCallId,
-        childSessionId: childId,
-        agent: link?.agent ?? tool.agentName ?? "subagent",
-        ...(step !== undefined ? { step } : {}),
-        ...(link?.latestMessage ?? tool.latestMessage ? { latestMessage: link?.latestMessage ?? tool.latestMessage } : {}),
-      }) : next;
-    });
-    const key = childId ? `session:${childId}` : existingTab?.key ?? temporarySubagentTabKey(toolCallId, step);
-    setActiveTab(key);
-    if (childId) void loadChild(childId);
-  }, [sessionView.tools, tabsState.tabs, loadChild]);
-
-  const selectAgentTab = useCallback((key: string) => {
-    if (key === "orchestrator") {
+  const openSubagentTool = useCallback(
+    (toolCallId: string, requestedStep?: number) => {
+      const tool = sessionView.tools.find((candidate) => candidate.name === "subagent" && candidate.key === toolCallId);
+      if (!tool) return;
+      const link =
+        requestedStep === undefined
+          ? tool.sessionLinks?.length === 1
+            ? tool.sessionLinks[0]
+            : tool.sessionLinks?.find((candidate) => candidate.step === tool.step)
+          : tool.sessionLinks?.find((candidate) => candidate.step === requestedStep);
+      const step = link?.step ?? requestedStep ?? tool.step;
+      const childId = link?.childSessionId ?? (step === tool.step ? tool.sessionId : undefined);
+      const existingTab = tabsState.tabs.find((tab) => tab.toolCallId === toolCallId && tab.step === step);
+      setTabsState((current) => {
+        let next = current;
+        if (!next.tabs.some((tab) => tab.toolCallId === toolCallId && tab.step === step)) {
+          next = {
+            ...next,
+            tabs: [
+              ...next.tabs,
+              {
+                key: temporarySubagentTabKey(toolCallId, step),
+                toolCallId,
+                agent: link?.agent ?? tool.agentName ?? "subagent",
+                ...(step !== undefined ? { step } : {}),
+                retained: false,
+                running: tool.running,
+                ...(tool.latestMessage !== undefined ? { latestMessage: tool.latestMessage } : {}),
+              },
+            ],
+          };
+        }
+        next = retainSubagentTab(next, toolCallId, step);
+        return childId
+          ? promoteSubagentTab(next, {
+              toolCallId,
+              childSessionId: childId,
+              agent: link?.agent ?? tool.agentName ?? "subagent",
+              ...(step !== undefined ? { step } : {}),
+              ...((link?.latestMessage ?? tool.latestMessage)
+                ? { latestMessage: link?.latestMessage ?? tool.latestMessage }
+                : {}),
+            })
+          : next;
+      });
+      const key = childId ? `session:${childId}` : (existingTab?.key ?? temporarySubagentTabKey(toolCallId, step));
       setActiveTab(key);
-      return;
-    }
-    const tab = tabsState.tabs.find((candidate) => candidate.key === key);
-    if (!tab) return;
-    const tool = sessionView.tools.find((candidate) => candidate.key === tab.toolCallId);
-    const link = tool?.sessionLinks?.find((candidate) => candidate.step === tab.step);
-    const childId = tab.sessionId ?? link?.childSessionId ?? (tool && tool.step === tab.step ? tool.sessionId : undefined);
-    setTabsState((current) => {
-      const retained = retainSubagentTab(current, tab.toolCallId, tab.step);
-      return childId ? promoteSubagentTab(retained, {
-        toolCallId: tab.toolCallId,
-        childSessionId: childId,
-        agent: link?.agent ?? tool?.agentName ?? tab.agent,
-        ...(tab.step !== undefined ? { step: tab.step } : {}),
-        ...(link?.latestMessage ?? tool?.latestMessage ? { latestMessage: link?.latestMessage ?? tool?.latestMessage } : {}),
-      }) : retained;
-    });
-    setActiveTab(childId ? `session:${childId}` : key);
-    if (childId) void loadChild(childId);
-  }, [tabsState.tabs, sessionView.tools, loadChild]);
+      if (childId) void loadChild(childId);
+    },
+    [sessionView.tools, tabsState.tabs, loadChild],
+  );
+
+  const selectAgentTab = useCallback(
+    (key: string) => {
+      if (key === "orchestrator") {
+        setActiveTab(key);
+        return;
+      }
+      const tab = tabsState.tabs.find((candidate) => candidate.key === key);
+      if (!tab) return;
+      const tool = sessionView.tools.find((candidate) => candidate.key === tab.toolCallId);
+      const link = tool?.sessionLinks?.find((candidate) => candidate.step === tab.step);
+      const childId =
+        tab.sessionId ?? link?.childSessionId ?? (tool && tool.step === tab.step ? tool.sessionId : undefined);
+      setTabsState((current) => {
+        const retained = retainSubagentTab(current, tab.toolCallId, tab.step);
+        return childId
+          ? promoteSubagentTab(retained, {
+              toolCallId: tab.toolCallId,
+              childSessionId: childId,
+              agent: link?.agent ?? tool?.agentName ?? tab.agent,
+              ...(tab.step !== undefined ? { step: tab.step } : {}),
+              ...((link?.latestMessage ?? tool?.latestMessage)
+                ? { latestMessage: link?.latestMessage ?? tool?.latestMessage }
+                : {}),
+            })
+          : retained;
+      });
+      setActiveTab(childId ? `session:${childId}` : key);
+      if (childId) void loadChild(childId);
+    },
+    [tabsState.tabs, sessionView.tools, loadChild],
+  );
 
   const closeAgentTab = useCallback((key: string) => {
     setTabsState((current) => closeSubagentTab(current, key));
@@ -506,7 +532,11 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   };
 
   const statusColor =
-    status === "error" ? "bg-v2-status-error" : status === "running" || sessionView.isStreaming ? "bg-v2-status-success" : "bg-v2-grey-400";
+    status === "error"
+      ? "bg-v2-status-error"
+      : status === "running" || sessionView.isStreaming
+        ? "bg-v2-status-success"
+        : "bg-v2-grey-400";
   const statusLabel =
     status === "error"
       ? t("work.error")
@@ -559,7 +589,10 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
         }
       />
       {statusText && (
-        <p className="border-b border-v2-grey-200 bg-v2-status-error/5 px-4 py-1.5 text-[13px] text-v2-status-error" role="alert">
+        <p
+          className="border-b border-v2-grey-200 bg-v2-status-error/5 px-4 py-1.5 text-[13px] text-v2-status-error"
+          role="alert"
+        >
           {statusText}
         </p>
       )}
@@ -603,20 +636,19 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
           </footer>
         </section>
 
-        <aside
+        <section
           hidden={isMobile && mobileView === "chat"}
           className={`flex h-full min-w-0 w-full flex-col bg-v2-background-bg-base min-[820px]:relative min-[820px]:shrink-0 min-[820px]:w-(--panel-w) min-[820px]:rounded-[10px] min-[820px]:shadow-[var(--v2-elevation-raised)] ${
             sizing
               ? ""
               : "min-[820px]:transition-[width,opacity] min-[820px]:duration-v2-panel min-[820px]:ease-v2-panel motion-reduce:transition-none"
           } ${
-            panelPhase === "open"
-              ? "min-[820px]:opacity-100"
-              : "min-[820px]:w-0 min-[820px]:opacity-0"
+            panelPhase === "open" ? "min-[820px]:opacity-100" : "min-[820px]:w-0 min-[820px]:opacity-0"
           } ${!isMobile && panelInvisible ? "invisible" : ""} ${!isMobile && !panelInteractive ? "pointer-events-none" : ""}`}
           style={{ "--panel-w": `${clampedPanelWidth}px` } as React.CSSProperties}
-          aria-label={(isMobile ? mobileView === "agents" : panel === "agents") ? t("work.agentList") : t("work.fileBrowser")}
-          role="region"
+          aria-label={
+            (isMobile ? mobileView === "agents" : panel === "agents") ? t("work.agentList") : t("work.fileBrowser")
+          }
         >
           <button
             type="button"
@@ -643,150 +675,8 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
           >
             <AgentList statusByAgent={statusByAgent} sessionId={sessionId} />
           </div>
-        </aside>
+        </section>
       </div>
-    </div>
-  );
-}
-
-function AgentList({ statusByAgent, sessionId }: { statusByAgent: Record<string, AgentChip["status"]>; sessionId: string }) {
-  const { t } = useI18n();
-  const [roster, setRoster] = useState<AgentDto[] | null>(null);
-  const [models, setModels] = useState<Array<{ provider: string; id: string }>>([]);
-  const [effective, setEffective] = useState<AgentEffectiveModelDto[] | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    let alive = true;
-    Promise.all([listAgents(), listModels(), getEffectiveModels(sessionId)])
-      .then(([agents, catalog, eff]) => {
-        if (!alive) return;
-        setRoster(agents);
-        setModels(catalog);
-        setEffective(eff);
-      })
-      .catch(() => {
-        if (alive) setRoster([]);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [sessionId]);
-
-  const applyModel = useCallback(
-    async (agentName: string, model: string | null) => {
-      setBusy(true);
-      try {
-        await setAgentModel(sessionId, agentName, model);
-        setEffective(await getEffectiveModels(sessionId));
-      } catch {
-        // keep the last known models; the next interaction will retry
-      } finally {
-        setBusy(false);
-      }
-    },
-    [sessionId],
-  );
-
-  const agents = roster ?? [];
-  const orchestrator = agents.find((a) => a.name === "orchestrator");
-  const subagents = agents.filter((a) => a.name !== "orchestrator");
-
-  return (
-    <div className="flex h-full flex-col">
-      <div className="flex shrink-0 items-center gap-2 border-b border-v2-grey-200 px-3 py-2">
-        <Bot size={14} className="text-v2-icon-icon-muted" />
-        <span className="text-[13px] font-semibold text-v2-text-text-base">{t("work.agentsTab")}</span>
-      </div>
-      <div className="min-h-0 flex-1 overflow-y-auto p-3">
-        <div className="rounded-md border border-v2-grey-200 bg-v2-background-bg-base p-3">
-          <div className="flex items-center gap-2">
-            <span className={`size-2 rounded-full ${dotClass(statusByAgent["orchestrator"] ?? "idle")}`} aria-hidden />
-            <span className="text-[13px] font-medium text-v2-text-text-base">
-              {agentDisplayName(t, orchestrator?.name ?? "orchestrator")}
-            </span>
-            <span className="ml-auto text-[12px] text-v2-text-text-faint">
-              {statusLabel(t, statusByAgent["orchestrator"] ?? "idle")}
-            </span>
-          </div>
-          <p className="mt-2 text-[12px] text-v2-text-text-muted">
-            {agentDescription(t, "orchestrator", orchestrator?.description ?? t("work.orchestratorFallback"))}
-          </p>
-          <ModelRow
-            entry={effective?.find((e) => e.name === "orchestrator")}
-            models={models}
-            busy={busy}
-            onApply={(model) => applyModel("orchestrator", model)}
-          />
-        </div>
-        {subagents.map((agent) => (
-          <div key={agent.name} className="mt-3 rounded-md border border-v2-grey-200 bg-v2-background-bg-base p-3">
-            <div className="flex items-center gap-2">
-              <span className={`size-2 rounded-full ${dotClass(statusByAgent[agent.name] ?? "idle")}`} aria-hidden />
-              <span className="text-[13px] font-medium text-v2-text-text-base">{agentDisplayName(t, agent.name)}</span>
-              <span className="ml-auto text-[12px] text-v2-text-text-faint">
-                {statusLabel(t, statusByAgent[agent.name] ?? "idle")}
-              </span>
-            </div>
-            <p className="mt-2 text-[12px] text-v2-text-text-muted">{agentDescription(t, agent.name, agent.description)}</p>
-            <ModelRow
-              entry={effective?.find((e) => e.name === agent.name)}
-              models={models}
-              busy={busy}
-              onApply={(model) => applyModel(agent.name, model)}
-            />
-          </div>
-        ))}
-        <p className="mt-3 flex items-center gap-2 text-[12px] text-v2-text-text-faint">
-          <FolderOpen size={12} />
-          {t("work.strictlySerialNote")}
-        </p>
-      </div>
-    </div>
-  );
-}
-
-function statusLabel(t: Translate, status: AgentChip["status"]): string {
-  return status === "working" ? t("work.working") : status === "error" ? t("work.error") : t("work.idle");
-}
-
-interface ModelRowProps {
-  entry: AgentEffectiveModelDto | undefined;
-  models: Array<{ provider: string; id: string }>;
-  busy: boolean;
-  onApply: (model: string | null) => void;
-}
-
-function ModelRow({ entry, models, busy, onApply }: ModelRowProps) {
-  const { t } = useI18n();
-  const current = entry?.model ?? "";
-  const slash = current.indexOf("/");
-  const options =
-    current !== "" &&
-    slash > 0 &&
-    !models.some((m) => `${m.provider}/${m.id}` === current)
-      ? [{ provider: current.slice(0, slash), id: current.slice(slash + 1) }, ...models]
-      : models;
-
-  return (
-    <div className="mt-2 flex items-center gap-1.5">
-      <select
-        aria-label={t("work.selectModel")}
-        value={current}
-        onChange={(e) => onApply(e.target.value === "" ? null : e.target.value)}
-        disabled={busy}
-        className="h-6 min-w-0 flex-1 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-1 text-[11px] text-v2-text-text-base outline-none focus:border-v2-blue-600"
-      >
-        <option value="">{t("work.models")}</option>
-        {options.map((m) => {
-          const key = `${m.provider}/${m.id}`;
-          return (
-            <option key={key} value={key}>
-              {key}
-            </option>
-          );
-        })}
-      </select>
     </div>
   );
 }

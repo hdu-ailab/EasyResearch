@@ -1,6 +1,6 @@
-import { useRef } from "react";
-import type { KeyboardEvent } from "react";
 import { Bot, Files, MessageSquare } from "lucide-react";
+import type { KeyboardEvent } from "react";
+import { useRef } from "react";
 import { useI18n } from "../i18n/useI18n";
 
 export type WorkView = "chat" | "files" | "agents";

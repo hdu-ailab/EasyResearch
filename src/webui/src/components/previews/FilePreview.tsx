@@ -1,7 +1,7 @@
+import type { FileContentDto } from "../../../../web/contracts";
+import { useI18n } from "../../i18n/useI18n";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { PdfPreview } from "./PdfPreview";
-import { useI18n } from "../../i18n/useI18n";
-import type { FileContentDto } from "../../../../web/contracts";
 
 export interface FilePreviewProps {
   path: string;

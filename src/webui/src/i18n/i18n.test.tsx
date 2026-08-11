@@ -1,11 +1,10 @@
-// @vitest-environment jsdom
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
-import { I18nProvider } from "./I18nProvider";
-import { useI18n } from "./useI18n";
 import { STORAGE_KEY } from "../preferences";
 import { PreferencesProvider, usePreferences } from "../preferences/PreferencesProvider";
+import { I18nProvider } from "./I18nProvider";
+import { useI18n } from "./useI18n";
 
 function Probe() {
   const { t, language, setLanguage } = useI18n();
@@ -67,7 +66,10 @@ describe("i18n", () => {
   });
 
   it("reads a stored language on mount", () => {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ chatFontSize: 13, filesFontSize: 12, language: "zh-CN" }));
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ chatFontSize: 13, filesFontSize: 12, language: "zh-CN" }),
+    );
     renderWithProviders(<Probe />);
     expect(screen.getByTestId("label").textContent).toBe("语言");
   });

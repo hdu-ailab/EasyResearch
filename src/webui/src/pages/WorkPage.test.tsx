@@ -1,13 +1,13 @@
-// @vitest-environment jsdom
-import { act, render as renderWithTestingLibrary, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render as renderWithTestingLibrary, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { fireEvent } from "@testing-library/react";
-import type { ReactElement } from "react";
+import type { ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { WorkPage } from "./WorkPage";
-import * as api from "../api";
 import type { FileEntryDto } from "../../../web/contracts";
+import * as api from "../api";
+import { I18nProvider } from "../i18n/I18nProvider";
+import { STORAGE_KEY } from "../preferences";
 import { PreferencesProvider } from "../preferences/PreferencesProvider";
+import { WorkPage } from "./WorkPage";
 
 vi.mock("../api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api")>();
@@ -80,7 +80,13 @@ function emitRawChildEvent(toolCallId: string, agent: string, event: unknown, st
 }
 
 function render(ui: ReactElement) {
-  return renderWithTestingLibrary(ui, { wrapper: PreferencesProvider });
+  return renderWithTestingLibrary(ui, {
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <PreferencesProvider>
+        <I18nProvider>{children}</I18nProvider>
+      </PreferencesProvider>
+    ),
+  });
 }
 
 describe("WorkPage", () => {
@@ -248,6 +254,18 @@ describe("WorkPage", () => {
     expect(api.stopSession).not.toHaveBeenCalled();
   });
 
+  it("does not reconnect the session stream when browser preferences change", async () => {
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    expect(api.connectSessionEvents).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      window.dispatchEvent(new StorageEvent("storage", { key: STORAGE_KEY }));
+    });
+
+    await waitFor(() => expect(api.connectSessionEvents).toHaveBeenCalledTimes(1));
+  });
+
   it("composer Stop while streaming aborts instead of stopping the session", async () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await screen.findByText("starting research");
@@ -284,9 +302,17 @@ describe("WorkPage", () => {
     expect(preview).toHaveClass("max-w-64", "truncate");
     const cardMessage = within(screen.getByLabelText(/conversation/i)).getByText(latestMessage);
     expect(cardMessage.closest("article")).not.toBeNull();
-    emitInAct({ type: "tool_execution_end", toolCallId: "sub-1", toolName: "subagent", result: "done", isError: false });
+    emitInAct({
+      type: "tool_execution_end",
+      toolCallId: "sub-1",
+      toolName: "subagent",
+      result: "done",
+      isError: false,
+    });
     await waitFor(() => expect(screen.queryByRole("button", { name: /agent search/i })).toBeNull());
-    await waitFor(() => expect(screen.getByRole("button", { name: /agent research mentor/i }).getAttribute("aria-pressed")).toBe("true"));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /agent research mentor/i }).getAttribute("aria-pressed")).toBe("true"),
+    );
   });
 
   it("retains a selected temporary tab and promotes it to an exact UUID tab", async () => {
@@ -294,12 +320,18 @@ describe("WorkPage", () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await screen.findByText("starting research");
     emitInAct({
-      type: "tool_execution_start", toolCallId: "sub-promote", toolName: "subagent",
+      type: "tool_execution_start",
+      toolCallId: "sub-promote",
+      toolName: "subagent",
       args: { agent: "search", task: "find" },
     });
     emitInAct({
-      type: "tool_execution_update", toolCallId: "sub-promote", toolName: "subagent",
-      partialResult: { details: { subagent: { agent: "search", sessionId: "child-promoted", latestMessage: "linked" } } },
+      type: "tool_execution_update",
+      toolCallId: "sub-promote",
+      toolName: "subagent",
+      partialResult: {
+        details: { subagent: { agent: "search", sessionId: "child-promoted", latestMessage: "linked" } },
+      },
     });
     await user.click(await screen.findByRole("button", { name: /agent search/i }));
     expect(await screen.findByRole("button", { name: /Close agent tab:/ })).toBeVisible();
@@ -339,14 +371,18 @@ describe("WorkPage", () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await screen.findByText("starting research");
     emitInAct({
-      type: "tool_execution_start", toolCallId: "sub-delayed", toolName: "subagent",
+      type: "tool_execution_start",
+      toolCallId: "sub-delayed",
+      toolName: "subagent",
       args: { agent: "search", task: "find" },
     });
     await user.click((await screen.findAllByRole("button", { name: "View details" })).at(-1)!);
     expect(api.getChildSnapshot).not.toHaveBeenCalled();
 
     emitInAct({
-      type: "tool_execution_update", toolCallId: "sub-delayed", toolName: "subagent",
+      type: "tool_execution_update",
+      toolCallId: "sub-delayed",
+      toolName: "subagent",
       partialResult: { details: { subagent: { agent: "search", sessionId: "child-delayed" } } },
     });
 
@@ -359,9 +395,14 @@ describe("WorkPage", () => {
     const user = userEvent.setup();
     vi.mocked(api.getSnapshot).mockResolvedValue({
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
-      subagents: [{ toolCallId: "sub-history", childSessionId: "child-history", agent: "search", latestMessage: "saved result" }],
+      subagents: [
+        { toolCallId: "sub-history", childSessionId: "child-history", agent: "search", latestMessage: "saved result" },
+      ],
       messages: [
-        { role: "assistant", content: [{ type: "toolCall", id: "sub-history", name: "subagent", arguments: '{"agent":"search"}' }] },
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "sub-history", name: "subagent", arguments: '{"agent":"search"}' }],
+        },
         { role: "toolResult", toolCallId: "sub-history", toolName: "subagent", content: [], isError: false },
       ],
     } as never);
@@ -391,17 +432,45 @@ describe("WorkPage", () => {
     vi.mocked(api.getSnapshot).mockResolvedValue({
       session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
       subagents: [{ toolCallId: "sub-live", childSessionId: "child-live", agent: "search" }],
-      messages: [{ role: "assistant", content: [{ type: "toolCall", id: "sub-live", name: "subagent", arguments: '{"agent":"search"}' }] }],
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "sub-live", name: "subagent", arguments: '{"agent":"search"}' }],
+        },
+      ],
     } as never);
-    vi.mocked(api.getChildSnapshot).mockReturnValue(new Promise((resolve) => { resolveChild = resolve; }));
+    vi.mocked(api.getChildSnapshot).mockReturnValue(
+      new Promise((resolve) => {
+        resolveChild = resolve;
+      }),
+    );
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await user.click(await screen.findByRole("button", { name: "View details" }));
     emitChildHeader("sub-live", "search", "child-live");
-    emitRawChildEvent("sub-live", "search", { type: "message_start", message: { id: "cm", role: "assistant", content: [] } });
-    emitRawChildEvent("sub-live", "search", { type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "live " } });
-    emitRawChildEvent("sub-live", "search", { type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "tokens" } });
-    emitRawChildEvent("sub-live", "search", { type: "tool_execution_start", toolCallId: "ct", toolName: "bash", args: { command: "ls" } });
-    emitRawChildEvent("sub-live", "search", { type: "tool_execution_end", toolCallId: "ct", toolName: "bash", result: { output: "done" } });
+    emitRawChildEvent("sub-live", "search", {
+      type: "message_start",
+      message: { id: "cm", role: "assistant", content: [] },
+    });
+    emitRawChildEvent("sub-live", "search", {
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "live " },
+    });
+    emitRawChildEvent("sub-live", "search", {
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "tokens" },
+    });
+    emitRawChildEvent("sub-live", "search", {
+      type: "tool_execution_start",
+      toolCallId: "ct",
+      toolName: "bash",
+      args: { command: "ls" },
+    });
+    emitRawChildEvent("sub-live", "search", {
+      type: "tool_execution_end",
+      toolCallId: "ct",
+      toolName: "bash",
+      result: { output: "done" },
+    });
     expect(await screen.findByText("live tokens")).toBeVisible();
     resolveChild({
       session: { id: "child-live", cwd: "/p", sessionName: "lazyresearch:search" },
@@ -410,7 +479,9 @@ describe("WorkPage", () => {
     expect(await screen.findByText("older task")).toBeVisible();
     expect(screen.getByText("live tokens")).toBeVisible();
     const rows = [...screen.getByLabelText("Conversation").querySelectorAll("li")].map((row) => row.textContent ?? "");
-    expect(rows.findIndex((row) => row.includes("live tokens"))).toBeLessThan(rows.findIndex((row) => row.includes("bash")));
+    expect(rows.findIndex((row) => row.includes("live tokens"))).toBeLessThan(
+      rows.findIndex((row) => row.includes("bash")),
+    );
 
     await user.click(screen.getByRole("button", { name: /Close agent tab:/ }));
     expect(api.abortSession).not.toHaveBeenCalled();
@@ -430,10 +501,13 @@ describe("WorkPage", () => {
       ],
       messages: [
         { role: "user", content: [{ type: "text", text: "parent remains" }] },
-        { role: "assistant", content: [
-          { type: "toolCall", id: "sub-one", name: "subagent", arguments: '{"agent":"search"}' },
-          { type: "toolCall", id: "sub-two", name: "subagent", arguments: '{"agent":"search"}' },
-        ] },
+        {
+          role: "assistant",
+          content: [
+            { type: "toolCall", id: "sub-one", name: "subagent", arguments: '{"agent":"search"}' },
+            { type: "toolCall", id: "sub-two", name: "subagent", arguments: '{"agent":"search"}' },
+          ],
+        },
       ],
     } as never);
     vi.mocked(api.getChildSnapshot).mockRejectedValue(new api.ApiError(404, { error: "missing" }));
@@ -455,7 +529,12 @@ describe("WorkPage", () => {
     vi.mocked(api.getSnapshot).mockResolvedValue({
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
       subagents: [{ toolCallId: "sub-refresh", childSessionId: "child-refresh", agent: "search" }],
-      messages: [{ role: "assistant", content: [{ type: "toolCall", id: "sub-refresh", name: "subagent", arguments: '{"agent":"search"}' }] }],
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "sub-refresh", name: "subagent", arguments: '{"agent":"search"}' }],
+        },
+      ],
     } as never);
     vi.mocked(api.getChildSnapshot)
       .mockResolvedValueOnce({
@@ -464,7 +543,9 @@ describe("WorkPage", () => {
       } as never)
       .mockResolvedValueOnce({
         session: { id: "child-refresh", cwd: "/p", sessionName: "lazyresearch:search" },
-        messages: [{ id: "child-message", role: "assistant", content: [{ type: "text", text: "recovered from JSONL" }] }],
+        messages: [
+          { id: "child-message", role: "assistant", content: [{ type: "text", text: "recovered from JSONL" }] },
+        ],
       } as never);
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await user.click(await screen.findByRole("button", { name: "View details" }));
@@ -474,7 +555,12 @@ describe("WorkPage", () => {
       type: "snapshot",
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
       subagents: [{ toolCallId: "sub-refresh", childSessionId: "child-refresh", agent: "search" }],
-      messages: [{ role: "assistant", content: [{ type: "toolCall", id: "sub-refresh", name: "subagent", arguments: '{"agent":"search"}' }] }],
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "sub-refresh", name: "subagent", arguments: '{"agent":"search"}' }],
+        },
+      ],
     });
 
     expect(await screen.findByText("recovered from JSONL")).toBeVisible();
@@ -487,13 +573,25 @@ describe("WorkPage", () => {
     vi.mocked(api.getSnapshot).mockResolvedValue({
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
       subagents: [{ toolCallId: "sub-overlap", childSessionId: "child-overlap", agent: "search" }],
-      messages: [{ role: "assistant", content: [{ type: "toolCall", id: "sub-overlap", name: "subagent", arguments: '{"agent":"search"}' }] }],
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "sub-overlap", name: "subagent", arguments: '{"agent":"search"}' }],
+        },
+      ],
     } as never);
     vi.mocked(api.getChildSnapshot)
-      .mockImplementationOnce(() => new Promise((resolve) => { resolveInitial = resolve; }))
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveInitial = resolve;
+          }),
+      )
       .mockResolvedValueOnce({
         session: { id: "child-overlap", cwd: "/p", sessionName: "lazyresearch:search" },
-        messages: [{ id: "child-message", role: "assistant", content: [{ type: "text", text: "recovered after overlap" }] }],
+        messages: [
+          { id: "child-message", role: "assistant", content: [{ type: "text", text: "recovered after overlap" }] },
+        ],
       } as never);
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await user.click(await screen.findByRole("button", { name: "View details" }));
@@ -503,12 +601,21 @@ describe("WorkPage", () => {
       type: "snapshot",
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
       subagents: [{ toolCallId: "sub-overlap", childSessionId: "child-overlap", agent: "search" }],
-      messages: [{ role: "assistant", content: [{ type: "toolCall", id: "sub-overlap", name: "subagent", arguments: '{"agent":"search"}' }] }],
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "sub-overlap", name: "subagent", arguments: '{"agent":"search"}' }],
+        },
+      ],
     });
-    act(() => resolveInitial({
-      session: { id: "child-overlap", cwd: "/p", sessionName: "lazyresearch:search" },
-      messages: [{ id: "child-message", role: "assistant", content: [{ type: "text", text: "stale in-flight response" }] }],
-    } as never));
+    act(() =>
+      resolveInitial({
+        session: { id: "child-overlap", cwd: "/p", sessionName: "lazyresearch:search" },
+        messages: [
+          { id: "child-message", role: "assistant", content: [{ type: "text", text: "stale in-flight response" }] },
+        ],
+      } as never),
+    );
 
     expect(await screen.findByText("recovered after overlap")).toBeVisible();
     expect(api.getChildSnapshot).toHaveBeenCalledTimes(2);
@@ -520,10 +627,20 @@ describe("WorkPage", () => {
     vi.mocked(api.getSnapshot).mockResolvedValue({
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
       subagents: [{ toolCallId: "sub-retry", childSessionId: "child-retry", agent: "search" }],
-      messages: [{ role: "assistant", content: [{ type: "toolCall", id: "sub-retry", name: "subagent", arguments: '{"agent":"search"}' }] }],
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "sub-retry", name: "subagent", arguments: '{"agent":"search"}' }],
+        },
+      ],
     } as never);
     vi.mocked(api.getChildSnapshot)
-      .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectFirst = reject; }))
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectFirst = reject;
+          }),
+      )
       .mockResolvedValueOnce({
         session: { id: "child-retry", cwd: "/p", sessionName: "lazyresearch:search" },
         messages: [{ role: "assistant", content: [{ type: "text", text: "retry recovered" }] }],
@@ -579,7 +696,12 @@ describe("WorkPage", () => {
       type: "tool_execution_start",
       toolCallId: "chain-1",
       toolName: "subagent",
-      args: { chain: [{ agent: "search", task: "find" }, { agent: "writing", task: "draft" }] },
+      args: {
+        chain: [
+          { agent: "search", task: "find" },
+          { agent: "writing", task: "draft" },
+        ],
+      },
     });
     emitInAct({
       type: "tool_execution_update",
@@ -625,14 +747,24 @@ describe("WorkPage", () => {
         { toolCallId: "chain-history", childSessionId: "child-history-writing", agent: "writing", step: 2 },
       ],
       messages: [
-        { role: "assistant", content: [{ type: "toolCall", id: "chain-history", name: "subagent", arguments: '{"chain":[]}' }] },
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "chain-history", name: "subagent", arguments: '{"chain":[]}' }],
+        },
         { role: "toolResult", toolCallId: "chain-history", toolName: "subagent", content: [], isError: false },
       ],
     } as never);
-    vi.mocked(api.getChildSnapshot).mockImplementation(async (_parentId, childId) => ({
-      session: { id: childId, cwd: "/p", sessionName: childId.endsWith("search") ? "lazyresearch:search" : "lazyresearch:writing" },
-      messages: [{ role: "assistant", content: [{ type: "text", text: `history for ${childId}` }] }],
-    } as never));
+    vi.mocked(api.getChildSnapshot).mockImplementation(
+      async (_parentId, childId) =>
+        ({
+          session: {
+            id: childId,
+            cwd: "/p",
+            sessionName: childId.endsWith("search") ? "lazyresearch:search" : "lazyresearch:writing",
+          },
+          messages: [{ role: "assistant", content: [{ type: "text", text: `history for ${childId}` }] }],
+        }) as never,
+    );
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
 
     await user.click(await screen.findByRole("button", { name: "View details: Step 1" }));
@@ -650,7 +782,10 @@ describe("WorkPage", () => {
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
       subagents: [],
       messages: [
-        { role: "assistant", content: [{ type: "toolCall", id: "old-unmapped", name: "subagent", arguments: '{"agent":"search"}' }] },
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "old-unmapped", name: "subagent", arguments: '{"agent":"search"}' }],
+        },
         { role: "toolResult", toolCallId: "old-unmapped", toolName: "subagent", content: [], isError: false },
       ],
     } as never);
@@ -669,7 +804,12 @@ describe("WorkPage", () => {
       type: "tool_execution_start",
       toolCallId: "chain-status",
       toolName: "subagent",
-      args: { chain: [{ agent: "search", task: "find" }, { agent: "writing", task: "draft" }] },
+      args: {
+        chain: [
+          { agent: "search", task: "find" },
+          { agent: "writing", task: "draft" },
+        ],
+      },
     });
     emitInAct({
       type: "tool_execution_update",
@@ -680,7 +820,9 @@ describe("WorkPage", () => {
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
     const writingCard = (await within(region).findByText(/^Writing agent\./)).closest(".rounded-md");
-    const searchCard = within(region).getByText(/^Web research agent\./).closest(".rounded-md");
+    const searchCard = within(region)
+      .getByText(/^Web research agent\./)
+      .closest(".rounded-md");
     expect(writingCard).not.toBeNull();
     expect(searchCard).not.toBeNull();
     expect(within(writingCard as HTMLElement).getByText(/working/i)).toBeTruthy();
@@ -799,7 +941,12 @@ describe("WorkPage", () => {
         {
           role: "assistant",
           content: [
-            { type: "toolCall", id: "sub-reconnect", name: "subagent", arguments: '{"agent":"search","task":"find papers"}' },
+            {
+              type: "toolCall",
+              id: "sub-reconnect",
+              name: "subagent",
+              arguments: '{"agent":"search","task":"find papers"}',
+            },
           ],
         },
       ],
@@ -832,7 +979,12 @@ describe("WorkPage", () => {
       type: "tool_execution_start",
       toolCallId: "sub-failed-reconnect",
       toolName: "subagent",
-      args: { chain: [{ agent: "search", task: "find" }, { agent: "writing", task: "draft" }] },
+      args: {
+        chain: [
+          { agent: "search", task: "find" },
+          { agent: "writing", task: "draft" },
+        ],
+      },
     });
     emitInAct({
       type: "tool_execution_update",
@@ -842,7 +994,9 @@ describe("WorkPage", () => {
         details: { subagent: { agent: "writing", step: 2, latestMessage: "usable live progress" } },
       },
     });
-    const liveCard = within(screen.getByLabelText(/conversation/i)).getByText("usable live progress").closest("article");
+    const liveCard = within(screen.getByLabelText(/conversation/i))
+      .getByText("usable live progress")
+      .closest("article");
 
     emitInAct({
       type: "snapshot",
@@ -919,7 +1073,13 @@ describe("WorkPage", () => {
     emit({ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: { command: "ls -la" } });
     expect(await screen.findByText(/Running tool: bash/)).toBeTruthy();
     expect(screen.getByText("ls -la")).toBeTruthy();
-    emit({ type: "tool_execution_end", toolCallId: "t1", toolName: "bash", result: { output: "file.txt\nnotes.md" }, isError: false });
+    emit({
+      type: "tool_execution_end",
+      toolCallId: "t1",
+      toolName: "bash",
+      result: { output: "file.txt\nnotes.md" },
+      isError: false,
+    });
     expect(screen.queryByText("file.txt")).toBeNull();
     await userEvent.setup().click(screen.getByText(/Running tool: bash/));
     expect(await screen.findByText(/file.txt/)).toBeTruthy();
@@ -943,7 +1103,9 @@ describe("WorkPage", () => {
     const observer = (RO as unknown as { instances: { __fire: (n: number) => void }[] }).instances.at(-1);
     expect(observer).toBeTruthy();
     observer!.__fire(1200);
-    await waitFor(() => expect(screen.getByRole("region", { name: /file browser/i }).getAttribute("style")).toMatch(/--panel-w:\s*600px/));
+    await waitFor(() =>
+      expect(screen.getByRole("region", { name: /file browser/i }).getAttribute("style")).toMatch(/--panel-w:\s*600px/),
+    );
     const handle = screen.getByRole("button", { name: /resize panel/i });
     const row = screen.getByText("starting research").closest("section")?.parentElement;
     expect(row).toBeTruthy();
@@ -971,11 +1133,21 @@ describe("WorkPage", () => {
     const RO = (globalThis as unknown as { FakeResizeObserver: typeof ResizeObserver }).FakeResizeObserver;
     const observer = (RO as unknown as { instances: { __fire: (n: number) => void }[] }).instances.at(-1);
     observer!.__fire(1200);
-    await waitFor(() => expect(screen.getByRole("region", { name: /file browser/i }).getAttribute("style")).toMatch(/--panel-w:\s*600px/));
+    await waitFor(() =>
+      expect(screen.getByRole("region", { name: /file browser/i }).getAttribute("style")).toMatch(/--panel-w:\s*600px/),
+    );
     const handle = screen.getByRole("button", { name: /resize panel/i });
     const row = screen.getByText("starting research").closest("section")?.parentElement;
     vi.spyOn(row!, "getBoundingClientRect").mockReturnValue({
-      right: 1200, left: 0, top: 0, bottom: 600, width: 1200, height: 600, x: 0, y: 0, toJSON: () => ({}),
+      right: 1200,
+      left: 0,
+      top: 0,
+      bottom: 600,
+      width: 1200,
+      height: 600,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
     } as DOMRect);
     const panel = screen.getByRole("region", { name: /file browser/i });
     fireEvent.pointerDown(handle, { clientX: 880, clientY: 100, pointerId: 1 });
@@ -992,11 +1164,21 @@ describe("WorkPage", () => {
     const RO = (globalThis as unknown as { FakeResizeObserver: typeof ResizeObserver }).FakeResizeObserver;
     const observer = (RO as unknown as { instances: { __fire: (n: number) => void }[] }).instances.at(-1);
     observer!.__fire(1200);
-    await waitFor(() => expect(screen.getByRole("region", { name: /file browser/i }).getAttribute("style")).toMatch(/--panel-w:\s*600px/));
+    await waitFor(() =>
+      expect(screen.getByRole("region", { name: /file browser/i }).getAttribute("style")).toMatch(/--panel-w:\s*600px/),
+    );
     const handle = screen.getByRole("button", { name: /resize panel/i });
     const row = screen.getByText("starting research").closest("section")?.parentElement;
     vi.spyOn(row!, "getBoundingClientRect").mockReturnValue({
-      right: 1200, left: 0, top: 0, bottom: 600, width: 1200, height: 600, x: 0, y: 0, toJSON: () => ({}),
+      right: 1200,
+      left: 0,
+      top: 0,
+      bottom: 600,
+      width: 1200,
+      height: 600,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
     } as DOMRect);
     const panel = screen.getByRole("region", { name: /file browser/i });
     fireEvent.pointerDown(handle, { clientX: 880, clientY: 100, pointerId: 1 });
@@ -1212,10 +1394,12 @@ describe("WorkPage", () => {
       isStreaming: false,
       status: "ready",
     } as never);
-    vi.mocked(api.getSnapshot).mockResolvedValueOnce(snapshot).mockResolvedValue({
-      session: { id: "s2", cwd: "/p", isStreaming: false, status: "ready" },
-      messages: [{ role: "user", content: [{ type: "text", text: "continue please" }] }],
-    } as never);
+    vi.mocked(api.getSnapshot)
+      .mockResolvedValueOnce(snapshot)
+      .mockResolvedValue({
+        session: { id: "s2", cwd: "/p", isStreaming: false, status: "ready" },
+        messages: [{ role: "user", content: [{ type: "text", text: "continue please" }] }],
+      } as never);
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await screen.findByText("starting research");
     await user.type(screen.getByRole("textbox", { name: /message/i }), "continue please");
@@ -1244,10 +1428,12 @@ describe("WorkPage", () => {
       isStreaming: false,
       status: "ready",
     } as never);
-    vi.mocked(api.getSnapshot).mockResolvedValueOnce(snapshot).mockResolvedValue({
-      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
-      messages: [{ role: "user", content: [{ type: "text", text: "continue please" }] }],
-    } as never);
+    vi.mocked(api.getSnapshot)
+      .mockResolvedValueOnce(snapshot)
+      .mockResolvedValue({
+        session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+        messages: [{ role: "user", content: [{ type: "text", text: "continue please" }] }],
+      } as never);
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await screen.findByText("starting research");
     await user.type(screen.getByRole("textbox", { name: /message/i }), "continue please");

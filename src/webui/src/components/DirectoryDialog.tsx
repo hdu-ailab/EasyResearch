@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronRight, Folder, FolderOpen, Home, RefreshCw, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { DirectoryEntryDto } from "../../../web/contracts";
 import { listDirectories } from "../api";
 import { useLazyTree } from "../hooks/useLazyTree";
 import { useI18n } from "../i18n/useI18n";
-import type { DirectoryEntryDto } from "../../../web/contracts";
 
 export interface DirectoryDialogProps {
   homeDir: string;
@@ -94,9 +94,7 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
       const prefix = nameOf(target).toLowerCase();
       listDirectories(parent)
         .then((entries) => {
-          const filtered = prefix
-            ? entries.filter((entry) => entry.name.toLowerCase().startsWith(prefix))
-            : entries;
+          const filtered = prefix ? entries.filter((entry) => entry.name.toLowerCase().startsWith(prefix)) : entries;
           setSuggestions(filtered.slice(0, 12));
           setSuggestionsOpen(true);
         })
@@ -172,13 +170,29 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
   const rootError = tree.error(viewPath);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-v2-grey-1200/30 p-0 sm:p-6" role="presentation" onMouseDown={(e) => {
-      if (e.target === e.currentTarget) onClose();
-    }}>
-      <section className="flex h-full w-full flex-col overflow-hidden rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-overlay)] sm:h-auto sm:max-h-[84vh] sm:max-w-[640px]" role="dialog" aria-modal="true" aria-label={t("dialog.title")}>
+    // biome-ignore lint/a11y/noStaticElementInteractions: the backdrop intentionally closes the dialog on pointer dismissal.
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-v2-grey-1200/30 p-0 sm:p-6"
+      role="presentation"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <section
+        className="flex h-full w-full flex-col overflow-hidden rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-overlay)] sm:h-auto sm:max-h-[84vh] sm:max-w-[640px]"
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("dialog.title")}
+      >
         <header className="flex h-10 shrink-0 items-center justify-between border-b border-v2-grey-200 px-3">
           <h2 className="text-[13px] font-semibold text-v2-text-text-base">{t("dialog.title")}</h2>
-          <button type="button" className="flex size-7 items-center justify-center rounded-md text-v2-icon-icon-muted transition-colors hover:bg-v2-grey-100 hover:text-v2-icon-icon-base" aria-label={t("dialog.close")} title={t("dialog.close")} onClick={onClose}>
+          <button
+            type="button"
+            className="flex size-7 items-center justify-center rounded-md text-v2-icon-icon-muted transition-colors hover:bg-v2-grey-100 hover:text-v2-icon-icon-base"
+            aria-label={t("dialog.close")}
+            title={t("dialog.close")}
+            onClick={onClose}
+          >
             <X size={16} />
           </button>
         </header>
@@ -190,9 +204,7 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
             role="combobox"
             aria-autocomplete="list"
             aria-expanded={suggestionsOpen}
-            aria-activedescendant={
-              activeSuggestion >= 0 ? `directory-suggestion-${activeSuggestion}` : undefined
-            }
+            aria-activedescendant={activeSuggestion >= 0 ? `directory-suggestion-${activeSuggestion}` : undefined}
             spellCheck={false}
             onChange={(event) => {
               const value = event.target.value;
@@ -205,29 +217,48 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
             onBlur={() => setTimeout(() => setSuggestionsOpen(false), 120)}
           />
           <div className="flex items-center gap-1">
-            <button className="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100" title={t("dialog.home")} onClick={() => navigate(homeDir)}>
-              <Home size={14} />
-              ~
+            <button
+              type="button"
+              className="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100"
+              title={t("dialog.home")}
+              onClick={() => navigate(homeDir)}
+            >
+              <Home size={14} />~
             </button>
-            <button className="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100" title={t("dialog.root")} onClick={() => navigate("/")}>
+            <button
+              type="button"
+              className="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100"
+              title={t("dialog.root")}
+              onClick={() => navigate("/")}
+            >
               /
             </button>
             <button
+              type="button"
               className="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100"
               title={t("dialog.parent")}
               onClick={() => navigate(parentOf(viewPath))}
             >
               ↑
             </button>
-            <button className="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100" title={t("dialog.refresh")} onClick={() => tree.refresh(viewPath)}>
+            <button
+              type="button"
+              className="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100"
+              title={t("dialog.refresh")}
+              onClick={() => tree.refresh(viewPath)}
+            >
               <RefreshCw size={14} />
             </button>
           </div>
           {suggestionsOpen && suggestions.length > 0 && (
-            <ul className="absolute left-3 right-3 top-[calc(100%+8px)] z-10 max-h-[240px] overflow-y-auto rounded-md border border-v2-grey-200 bg-v2-background-bg-base p-1 shadow-[var(--v2-elevation-floating)]" role="listbox">
+            <div
+              className="absolute left-3 right-3 top-[calc(100%+8px)] z-10 max-h-[240px] overflow-y-auto rounded-md border border-v2-grey-200 bg-v2-background-bg-base p-1 shadow-[var(--v2-elevation-floating)]"
+              role="listbox"
+            >
               {suggestions.map((suggestion, index) => (
-                <li key={suggestion.path} role="option" aria-selected={index === activeSuggestion}>
+                <div key={suggestion.path} role="option" aria-selected={index === activeSuggestion} tabIndex={-1}>
                   <button
+                    type="button"
                     id={`directory-suggestion-${index}`}
                     className={`flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-v2-text-text-base transition-colors ${index === activeSuggestion ? "bg-v2-blue-100 text-v2-blue-600" : "hover:bg-v2-grey-100"}`}
                     onMouseDown={(event) => {
@@ -239,19 +270,22 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
                     <Folder size={14} />
                     <span>{suggestion.name}/</span>
                   </button>
-                </li>
+                </div>
               ))}
-            </ul>
+            </div>
           )}
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-1.5" role="tree" aria-label={t("dialog.tree")}>
           {treeError && <p className="px-2 py-1 text-[12px] text-v2-status-error">{treeError}</p>}
           {rootError && <p className="px-2 py-1 text-[12px] text-v2-status-error">{rootError}</p>}
-          {rows.length === 0 && !treeError && !rootError && (tree.status(viewPath) === "loading" ? (
-            <p className="px-2 py-1 text-[12px] text-v2-text-text-faint">{t("dialog.loading")}</p>
-          ) : (
-            <p className="px-2 py-1 text-[12px] text-v2-text-text-faint">{t("dialog.empty")}</p>
-          ))}
+          {rows.length === 0 &&
+            !treeError &&
+            !rootError &&
+            (tree.status(viewPath) === "loading" ? (
+              <p className="px-2 py-1 text-[12px] text-v2-text-text-faint">{t("dialog.loading")}</p>
+            ) : (
+              <p className="px-2 py-1 text-[12px] text-v2-text-text-faint">{t("dialog.empty")}</p>
+            ))}
           {rows.map((row) => {
             const isExpanded = tree.expanded.has(row.path);
             const isSelected = selected === row.path;
@@ -262,11 +296,20 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
                 role="treeitem"
                 aria-expanded={isExpanded}
                 aria-selected={isSelected}
+                tabIndex={0}
                 className={`group flex cursor-pointer items-center gap-1.5 rounded-md py-1 pr-2 text-left transition-colors hover:bg-v2-grey-100 ${isSelected ? "bg-v2-blue-100/50" : ""}`}
                 style={{ paddingLeft: `${8 + row.depth * 16}px` }}
                 onClick={() => selectRow(row.path)}
+                onKeyDown={(event) => {
+                  if (event.target !== event.currentTarget) return;
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    selectRow(row.path);
+                  }
+                }}
               >
                 <button
+                  type="button"
                   className="flex size-4 shrink-0 items-center justify-center rounded text-v2-icon-icon-muted hover:bg-v2-grey-200"
                   aria-label={
                     state === "loading"
@@ -309,10 +352,19 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
           })}
         </div>
         <footer className="flex shrink-0 items-center justify-end gap-2 border-t border-v2-grey-200 px-3 py-2.5">
-          <button type="button" className="flex h-7 items-center rounded-md px-3 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100" onClick={onClose}>
+          <button
+            type="button"
+            className="flex h-7 items-center rounded-md px-3 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100"
+            onClick={onClose}
+          >
             {t("dialog.cancel")}
           </button>
-          <button type="button" className="flex h-7 items-center rounded-md bg-v2-grey-1100 px-3 text-[12px] font-medium text-v2-grey-50 transition-opacity hover:opacity-90 disabled:opacity-40" disabled={!selected} onClick={confirm}>
+          <button
+            type="button"
+            className="flex h-7 items-center rounded-md bg-v2-grey-1100 px-3 text-[12px] font-medium text-v2-grey-50 transition-opacity hover:opacity-90 disabled:opacity-40"
+            disabled={!selected}
+            onClick={confirm}
+          >
             {t("dialog.createSession")}
           </button>
         </footer>

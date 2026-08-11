@@ -25,7 +25,11 @@ export function temporarySubagentTabKey(toolCallId: string, step?: number): stri
   return `tool:${invocationKey(toolCallId, step)}`;
 }
 
-function sameInvocation(tab: Pick<SubagentTabState, "toolCallId" | "step">, toolCallId: string, step?: number): boolean {
+function sameInvocation(
+  tab: Pick<SubagentTabState, "toolCallId" | "step">,
+  toolCallId: string,
+  step?: number,
+): boolean {
   return tab.toolCallId === toolCallId && tab.step === step;
 }
 
@@ -59,13 +63,18 @@ export function syncRunningSubagentTabs(state: SubagentTabsState, tools: ToolVie
     if (!tool) return tab.sessionId || tab.retained ? [{ ...tab, running: false }] : [];
     const nextKey = invocationKey(tool.key, tool.step);
     if (hidden.has(nextKey)) return [];
-    return [withStep({
-      ...tab,
-      key: tab.sessionId || migratedFirstStep ? tab.key : temporarySubagentTabKey(tool.key, tool.step),
-      agent: tool.agentName ?? tab.agent,
-      running: true,
-      ...(tool.latestMessage !== undefined ? { latestMessage: tool.latestMessage } : {}),
-    }, tool.step)];
+    return [
+      withStep(
+        {
+          ...tab,
+          key: tab.sessionId || migratedFirstStep ? tab.key : temporarySubagentTabKey(tool.key, tool.step),
+          agent: tool.agentName ?? tab.agent,
+          running: true,
+          ...(tool.latestMessage !== undefined ? { latestMessage: tool.latestMessage } : {}),
+        },
+        tool.step,
+      ),
+    ];
   });
 
   const represented = new Set(tabs.map((tab) => invocationKey(tab.toolCallId, tab.step)));
@@ -89,15 +98,12 @@ export function syncRunningSubagentTabs(state: SubagentTabsState, tools: ToolVie
 export function retainSubagentTab(state: SubagentTabsState, toolCallId: string, step?: number): SubagentTabsState {
   const key = invocationKey(toolCallId, step);
   return {
-    tabs: state.tabs.map((tab) => sameInvocation(tab, toolCallId, step) ? { ...tab, retained: true } : tab),
+    tabs: state.tabs.map((tab) => (sameInvocation(tab, toolCallId, step) ? { ...tab, retained: true } : tab)),
     hiddenRunningToolCalls: state.hiddenRunningToolCalls.filter((id) => id !== key),
   };
 }
 
-export function promoteSubagentTab(
-  state: SubagentTabsState,
-  link: SubagentSessionSummaryDto,
-): SubagentTabsState {
+export function promoteSubagentTab(state: SubagentTabsState, link: SubagentSessionSummaryDto): SubagentTabsState {
   const existingUuid = state.tabs.find((tab) => tab.sessionId === link.childSessionId);
   const matched = state.tabs.find((tab) => sameInvocation(tab, link.toolCallId, link.step));
   if (existingUuid) {
@@ -107,26 +113,38 @@ export function promoteSubagentTab(
       tabs: state.tabs.flatMap((tab) => {
         if (matched && tab === matched && tab !== existingUuid) return [];
         if (tab !== existingUuid) return [tab];
-        return [withStep({
-          ...existingUuid,
-          toolCallId: link.toolCallId,
-          agent: link.agent,
-          retained: true,
-          running: matched?.running ?? existingUuid.running,
-          latestMessage: link.latestMessage ?? matched?.latestMessage ?? existingUuid.latestMessage,
-        }, link.step)];
+        return [
+          withStep(
+            {
+              ...existingUuid,
+              toolCallId: link.toolCallId,
+              agent: link.agent,
+              retained: true,
+              running: matched?.running ?? existingUuid.running,
+              latestMessage: link.latestMessage ?? matched?.latestMessage ?? existingUuid.latestMessage,
+            },
+            link.step,
+          ),
+        ];
       }),
     };
   }
-  if (!matched || !matched.retained) return state;
+  if (!matched?.retained) return state;
   return {
     ...state,
-    tabs: state.tabs.map((tab) => tab === matched ? withStep({
-      ...tab,
-      key: `session:${link.childSessionId}`,
-      sessionId: link.childSessionId,
-      agent: link.agent,
-    }, link.step) : tab),
+    tabs: state.tabs.map((tab) =>
+      tab === matched
+        ? withStep(
+            {
+              ...tab,
+              key: `session:${link.childSessionId}`,
+              sessionId: link.childSessionId,
+              agent: link.agent,
+            },
+            link.step,
+          )
+        : tab,
+    ),
   };
 }
 
@@ -142,7 +160,8 @@ export function closeSubagentTab(state: SubagentTabsState, key: string): Subagen
 }
 
 export function childTabLabel(tab: SubagentTabState, allTabs: SubagentTabState[]): string {
-  const duplicateAgent = tab.sessionId !== undefined
-    && allTabs.some((other) => other !== tab && other.sessionId !== undefined && other.agent === tab.agent);
-  return duplicateAgent ? `${tab.agent} · ${tab.sessionId!.slice(0, 8)}` : tab.agent;
+  const duplicateAgent =
+    tab.sessionId !== undefined &&
+    allTabs.some((other) => other !== tab && other.sessionId !== undefined && other.agent === tab.agent);
+  return duplicateAgent && tab.sessionId ? `${tab.agent} · ${tab.sessionId.slice(0, 8)}` : tab.agent;
 }

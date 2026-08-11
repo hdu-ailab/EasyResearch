@@ -11,7 +11,10 @@ const preferences = readPreferences(window.localStorage, () => navigator.languag
 applyFontPreferences(preferences);
 document.documentElement.lang = preferences.language;
 
-createRoot(document.getElementById("root")!).render(
+const root = document.getElementById("root");
+if (!root) throw new Error("LazyResearch Web UI root element is missing");
+
+createRoot(root).render(
   <StrictMode>
     <PreferencesProvider>
       <I18nProvider>

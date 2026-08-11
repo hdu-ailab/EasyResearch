@@ -1,5 +1,5 @@
-import { createContext, use, useEffect, useEffectEvent, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { createContext, use, useEffect, useEffectEvent, useRef, useState } from "react";
 import type { WebUiPreferences } from "../preferences";
 import { readPreferences, STORAGE_KEY, writePreferences } from "../preferences";
 import { applyFontPreferences } from "../webui-fonts";
@@ -12,9 +12,7 @@ export interface PreferencesContextValue {
 const PreferencesContext = createContext<PreferencesContextValue | null>(null);
 
 export function PreferencesProvider({ children }: { children: ReactNode }) {
-  const [preferences, setPreferences] = useState(() =>
-    readPreferences(window.localStorage, () => navigator.language),
-  );
+  const [preferences, setPreferences] = useState(() => readPreferences(window.localStorage, () => navigator.language));
   const shouldPersist = useRef(false);
 
   const apply = useEffectEvent((next: WebUiPreferences) => {
@@ -48,11 +46,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
     setPreferences((current) => ({ ...current, ...patch }));
   };
 
-  return (
-    <PreferencesContext value={{ preferences, updatePreferences }}>
-      {children}
-    </PreferencesContext>
-  );
+  return <PreferencesContext value={{ preferences, updatePreferences }}>{children}</PreferencesContext>;
 }
 
 export function usePreferences(): PreferencesContextValue {

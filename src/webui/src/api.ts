@@ -2,203 +2,154 @@ import type {
   ActiveSessionDto,
   AgentDto,
   AgentEffectiveModelDto,
+  ChildSessionSnapshotDto,
   ConfigEntryDto,
   ConfigScope,
-  ChildSessionSnapshotDto,
   DirectoryEntryDto,
   FileContentDto,
   FileEntryDto,
   SessionSnapshotDto,
-  SessionSummaryDto,
   StatusDto,
   WebuiSettingsDto,
   WebuiSettingsUpdate,
 } from "../../web/contracts";
-import type { ConfigFileDto, ConfigProjectsDto } from "./types";
+import {
+  type ModelOption,
+  parseActiveSession,
+  parseAgents,
+  parseChildSnapshot,
+  parseConfigEntries,
+  parseConfigFile,
+  parseConfigProjects,
+  parseDirectories,
+  parseEffectiveModels,
+  parseEntries,
+  parseFileContent,
+  parseModels,
+  parseSessionSnapshot,
+  parseStatus,
+  parseWebuiSettings,
+} from "./api/parsers";
+import { routes } from "./api/routes";
+import { ApiError, connectEventStream, requestJson, requestVoid, type SessionEventHandlers } from "./api/transport";
 
-export class ApiError extends Error {
-  constructor(
-    public readonly status: number,
-    public readonly details: unknown,
-  ) {
-    super(messageFor(details));
-  }
+export type { SessionEventHandlers } from "./api/transport";
+export { ApiError } from "./api/transport";
+
+export function isUnknownSession(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404;
 }
 
-export function isUnknownSession(e: unknown): boolean {
-  return e instanceof ApiError && e.status === 404;
-}
-
-function messageFor(details: unknown): string {
-  if (details && typeof details === "object") {
-    const error = (details as { error?: unknown }).error;
-    if (typeof error === "string") return error;
-  }
-  return "Request failed";
-}
-
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, init ?? { method: "GET" });
-  if (!res.ok) {
-    let details: unknown = null;
-    try {
-      details = await res.json();
-    } catch {
-      // non-JSON error body
-    }
-    throw new ApiError(res.status, details);
-  }
-  if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
-}
-
-const json = (body: unknown): RequestInit => ({
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify(body),
-});
-
-function requestJson<T>(path: string, method: string, body: unknown): Promise<T> {
-  return request(path, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+function json(method: "POST" | "PUT", body: unknown): RequestInit {
+  return {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  };
 }
 
 export function listStatus(): Promise<StatusDto> {
-  return request("/api/status");
+  return requestJson(routes.status(), parseStatus);
 }
 
 export function listAgents(): Promise<AgentDto[]> {
-  return request("/api/agents");
+  return requestJson(routes.agents(), parseAgents);
 }
 
-export function listModels(): Promise<Array<{ provider: string; id: string }>> {
-  return request("/api/models").then((d) => (d as { models: Array<{ provider: string; id: string }> }).models);
+export function listModels(): Promise<ModelOption[]> {
+  return requestJson(routes.models(), parseModels);
 }
 
 export function getWebuiSettings(): Promise<WebuiSettingsDto> {
-  return request("/api/webui-settings");
+  return requestJson(routes.webuiSettings(), parseWebuiSettings);
 }
 
 export function updateWebuiSettings(patch: WebuiSettingsUpdate): Promise<WebuiSettingsDto> {
-  return request("/api/webui-settings", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(patch),
-  });
+  return requestJson(routes.webuiSettings(), parseWebuiSettings, json("PUT", patch));
 }
 
 export function getEffectiveModels(sessionId: string): Promise<AgentEffectiveModelDto[]> {
-  return request(`/api/sessions/${encodeURIComponent(sessionId)}/agents/effective-models`);
+  return requestJson(routes.effectiveModels(sessionId), parseEffectiveModels);
 }
 
 export function setAgentModel(sessionId: string, agentName: string, model: string | null): Promise<void> {
-  return requestJson(`/api/sessions/${encodeURIComponent(sessionId)}/agents/${encodeURIComponent(agentName)}/model`, "PUT", { model });
+  return requestVoid(routes.agentModel(sessionId, agentName), json("PUT", { model }));
 }
 
 export function listDirectories(path: string): Promise<DirectoryEntryDto[]> {
-  return request(`/api/directories?path=${encodeURIComponent(path)}`).then(
-    (listing) => (listing as { entries: DirectoryEntryDto[] }).entries,
-  );
+  return requestJson(routes.directories(path), parseDirectories);
 }
 
 export function listEntries(path: string): Promise<FileEntryDto[]> {
-  return request(`/api/entries?path=${encodeURIComponent(path)}`).then(
-    (listing) => (listing as { entries: FileEntryDto[] }).entries,
-  );
+  return requestJson(routes.entries(path), parseEntries);
 }
 
 export function readFileContent(path: string): Promise<FileContentDto> {
-  return request(`/api/file?path=${encodeURIComponent(path)}`);
+  return requestJson(routes.file(path), parseFileContent);
 }
 
-/**
- * URL for the MIME-correct, Range-capable raw bytes endpoint. Used for PDF
- * loading and Markdown-local image/link resources.
- */
+/** URL for the MIME-correct, Range-capable raw bytes endpoint. */
 export function rawFileUrl(path: string): string {
-  return `/api/file/raw?path=${encodeURIComponent(path)}`;
+  return routes.rawFile(path);
 }
 
 export function createSession(cwd: string): Promise<ActiveSessionDto> {
-  return request("/api/sessions", json({ cwd }));
+  return requestJson(routes.createSession(), parseActiveSession, json("POST", { cwd }));
 }
 
 export function openSession(path: string): Promise<ActiveSessionDto> {
-  return request("/api/sessions/open", json({ path }));
+  return requestJson(routes.openSession(), parseActiveSession, json("POST", { path }));
 }
 
 export function getSnapshot(id: string): Promise<SessionSnapshotDto> {
-  return request(`/api/sessions/${encodeURIComponent(id)}/snapshot`);
+  return requestJson(routes.snapshot(id), parseSessionSnapshot);
 }
 
 export function getChildSnapshot(parentId: string, childId: string): Promise<ChildSessionSnapshotDto> {
-  return request(`/api/sessions/${encodeURIComponent(parentId)}/subagents/${encodeURIComponent(childId)}/snapshot`);
+  return requestJson(routes.childSnapshot(parentId, childId), parseChildSnapshot);
 }
 
 export function sendPrompt(id: string, message: string): Promise<void> {
-  return request(`/api/sessions/${encodeURIComponent(id)}/messages`, json({ message }));
+  return requestVoid(routes.messages(id), json("POST", { message }));
 }
 
 export function abortSession(id: string): Promise<void> {
-  return request(`/api/sessions/${encodeURIComponent(id)}/abort`, { method: "POST" });
+  return requestVoid(routes.abort(id), { method: "POST" });
 }
 
 export function stopSession(id: string): Promise<void> {
-  return request(`/api/sessions/${encodeURIComponent(id)}/stop`, { method: "POST" });
+  return requestVoid(routes.stop(id), { method: "POST" });
 }
 
 export function restartSession(id: string): Promise<ActiveSessionDto> {
-  return request(`/api/sessions/${encodeURIComponent(id)}/restart`, { method: "POST" });
+  return requestJson(routes.restart(id), parseActiveSession, { method: "POST" });
 }
 
 export function listConfig(scope: ConfigScope, cwd?: string, path?: string): Promise<ConfigEntryDto[]> {
-  const params = new URLSearchParams({ scope });
-  if (cwd) params.set("cwd", cwd);
-  if (path) params.set("path", path);
-  return request(`/api/config?${params.toString()}`);
+  return requestJson(routes.config(scope, cwd, path), parseConfigEntries);
 }
 
-export function listConfigProjects(): Promise<ConfigProjectsDto> {
-  return request("/api/config/projects");
+export function listConfigProjects() {
+  return requestJson(routes.configProjects(), parseConfigProjects);
 }
 
-export function readConfigFile(scope: ConfigScope, cwd?: string, path?: string): Promise<ConfigFileDto> {
-  const params = new URLSearchParams({ scope });
-  if (cwd) params.set("cwd", cwd);
-  if (path) params.set("path", path);
-  return request(`/api/config/file?${params.toString()}`);
+export function readConfigFile(scope: ConfigScope, cwd?: string, path?: string) {
+  return requestJson(routes.configFile(scope, cwd, path), parseConfigFile);
 }
 
-export function writeConfigFile(scope: ConfigScope, cwd: string | undefined, path: string, content: string): Promise<void> {
-  return request("/api/config/file", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ scope, cwd, path, content }),
-  });
+export function writeConfigFile(
+  scope: ConfigScope,
+  cwd: string | undefined,
+  path: string,
+  content: string,
+): Promise<void> {
+  return requestVoid(routes.writeConfigFile(), json("PUT", { scope, cwd, path, content }));
 }
 
 export function createConfigDirectory(scope: ConfigScope, cwd: string | undefined, path: string): Promise<void> {
-  return request("/api/config/directory", json({ scope, cwd, path }));
+  return requestVoid(routes.createConfigDirectory(), json("POST", { scope, cwd, path }));
 }
 
-export interface SessionEventHandlers {
-  onEvent: (event: unknown) => void;
-  onError: () => void;
-}
-
-/**
- * Stream session events over SSE. Parses each `data:` payload and forwards it;
- * calls `onError` for malformed payloads or network failures. Returns an
- * unsubscribe function that closes the connection without touching the child.
- */
 export function connectSessionEvents(id: string, handlers: SessionEventHandlers): () => void {
-  const source = new EventSource(`/api/sessions/${encodeURIComponent(id)}/events`);
-  source.onmessage = (e) => {
-    try {
-      handlers.onEvent(JSON.parse(e.data));
-    } catch {
-      handlers.onError();
-    }
-  };
-  source.onerror = () => handlers.onError();
-  return () => source.close();
+  return connectEventStream(routes.events(id), handlers);
 }

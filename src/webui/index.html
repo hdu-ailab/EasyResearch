@@ -12,19 +12,19 @@
   <body>
     <div id="root"></div>
     <script>
-      (function () {
+      (() => {
         try {
-          var raw = localStorage.getItem("lazyresearch.webui.preferences");
+          const raw = localStorage.getItem("lazyresearch.webui.preferences");
           if (!raw) return;
-          var p = JSON.parse(raw);
-          var chat = typeof p.chatFontSize === "number" && Number.isInteger(p.chatFontSize)
+          const p = JSON.parse(raw);
+          const chat = typeof p.chatFontSize === "number" && Number.isInteger(p.chatFontSize)
             ? Math.min(20, Math.max(10, p.chatFontSize)) : 13;
-          var files = typeof p.filesFontSize === "number" && Number.isInteger(p.filesFontSize)
+          const files = typeof p.filesFontSize === "number" && Number.isInteger(p.filesFontSize)
             ? Math.min(20, Math.max(10, p.filesFontSize)) : 12;
-          document.documentElement.style.setProperty("--v2-chat-font-size", chat + "px");
-          document.documentElement.style.setProperty("--v2-files-font-size", files + "px");
+          document.documentElement.style.setProperty("--v2-chat-font-size", `${chat}px`);
+          document.documentElement.style.setProperty("--v2-files-font-size", `${files}px`);
           if (p.language === "en" || p.language === "zh-CN") document.documentElement.lang = p.language;
-        } catch (e) {
+        } catch {
           /* malformed prefs: keep defaults */
         }
       })();
