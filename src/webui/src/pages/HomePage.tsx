@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ActiveSessionDto, SessionSummaryDto } from "../../../web/contracts";
-import { createSession, listStatus, openSession } from "../api";
+import { createSession, listStatus, openSession, stopSession, touchSession } from "../api";
 import { DirectoryDialog } from "../components/DirectoryDialog";
 import { HomeWorkspace } from "../components/HomeWorkspace";
 import { ProductMark, Topbar } from "../components/Topbar";
@@ -24,6 +24,7 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [disconnectingSessionId, setDisconnectingSessionId] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [selectedCwd, setSelectedCwd] = useState<string | null>(null);
 
@@ -70,10 +71,31 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
   );
 
   const openActive = useCallback(
-    (session: ActiveSessionDto) => {
-      onOpenSession({ id: session.id, cwd: session.cwd });
+    async (session: ActiveSessionDto) => {
+      try {
+        await touchSession(session.id);
+        onOpenSession({ id: session.id, cwd: session.cwd });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
     },
     [onOpenSession],
+  );
+
+  const disconnectActive = useCallback(
+    async (session: ActiveSessionDto) => {
+      setDisconnectingSessionId(session.id);
+      setError(null);
+      try {
+        await stopSession(session.id);
+        refresh();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setDisconnectingSessionId(null);
+      }
+    },
+    [refresh],
   );
 
   const groups = buildHomeProjectGroups(status?.sessions ?? [], status?.activeSessions ?? []);
@@ -112,7 +134,9 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
             onChooseDirectory={() => setDialogOpen(true)}
             onCreateInProject={(cwd) => void startSession(cwd)}
             onOpenActive={(session) => void openActive(session)}
+            onDisconnectActive={(session) => void disconnectActive(session)}
             onOpenHistory={(session) => void openHistory(session)}
+            disconnectingSessionId={disconnectingSessionId}
           />
         </div>
       </main>

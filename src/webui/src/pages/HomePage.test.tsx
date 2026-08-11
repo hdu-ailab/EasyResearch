@@ -13,6 +13,8 @@ vi.mock("../api", async (importOriginal) => {
     createSession: vi.fn(),
     openSession: vi.fn(),
     restartSession: vi.fn(),
+    touchSession: vi.fn(),
+    stopSession: vi.fn(),
   };
 });
 
@@ -90,6 +92,8 @@ describe("HomePage", () => {
     vi.mocked(api.createSession).mockReset();
     vi.mocked(api.openSession).mockReset();
     vi.mocked(api.restartSession).mockReset();
+    vi.mocked(api.touchSession).mockReset();
+    vi.mocked(api.stopSession).mockReset();
     vi.mocked(api.listStatus).mockResolvedValue({
       agentDir: "/agent",
       homeDir: "/home/user",
@@ -164,7 +168,7 @@ describe("HomePage", () => {
     await waitFor(() => expect(api.createSession).toHaveBeenCalledWith("/other"));
   });
 
-  it("reports only actually running sessions", async () => {
+  it("reports connected running and idle sessions", async () => {
     vi.mocked(api.listStatus).mockResolvedValue({
       agentDir: "/agent",
       homeDir: "/home/user",
@@ -176,13 +180,13 @@ describe("HomePage", () => {
       ],
     } as never);
     renderHome();
-    expect(await screen.findByText(/^1 running$/i)).toBeVisible();
+    expect(await screen.findByText(/^2 active$/i)).toBeVisible();
     expect(screen.getByText("running-")).toBeVisible();
-    expect(screen.queryByText("ready-se")).toBeNull();
+    expect(screen.getByText("ready-se")).toBeVisible();
     expect(screen.queryByText("error-se")).toBeNull();
   });
 
-  it("renders only running sessions in the active list", async () => {
+  it("renders ready sessions in the active list", async () => {
     const running = { ...active[0], sessionName: "Running" };
     const idle = { id: "idle-sess", cwd: "/proj", sessionName: "Idle", isStreaming: false, status: "ready" };
     vi.mocked(api.listStatus).mockResolvedValueOnce({
@@ -194,7 +198,7 @@ describe("HomePage", () => {
     renderHome();
     expect(await screen.findByRole("heading", { name: /active sessions/i })).toBeInTheDocument();
     expect(screen.getByText("a1")).toBeInTheDocument();
-    expect(screen.queryByText("idle-ses")).not.toBeInTheDocument();
+    expect(screen.getByText("idle-ses")).toBeInTheDocument();
   });
 
   it("searches active and historical session titles without hiding project selection", async () => {
@@ -334,6 +338,7 @@ describe("HomePage", () => {
       activeSessions: [{ id: "a1", cwd: "/proj", sessionName: "Running proj", isStreaming: true, status: "running" }],
     } as never);
     const onOpen = vi.fn();
+    vi.mocked(api.touchSession).mockResolvedValue();
     render(
       <HomePage
         onOpenSession={onOpen}
@@ -343,6 +348,25 @@ describe("HomePage", () => {
     );
     await user.click(await screen.findByText("a1"));
     await waitFor(() => expect(api.restartSession).not.toHaveBeenCalled());
+    await waitFor(() => expect(api.touchSession).toHaveBeenCalledWith("a1"));
     await waitFor(() => expect(onOpen).toHaveBeenCalledWith({ id: "a1", cwd: "/proj" }));
+  });
+
+  it("disconnects an active session without opening it and refreshes status", async () => {
+    const user = userEvent.setup();
+    const onOpen = vi.fn();
+    vi.mocked(api.stopSession).mockResolvedValue();
+    render(
+      <HomePage
+        onOpenSession={onOpen}
+        onOpenSettings={() => {}}
+        settingsButton={<button type="button">Settings</button>}
+      />,
+    );
+
+    await user.click(await screen.findByRole("button", { name: /disconnect.*a1|disconnect/i }));
+    await waitFor(() => expect(api.stopSession).toHaveBeenCalledWith("a1"));
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(api.listStatus).toHaveBeenCalledTimes(2);
   });
 });
