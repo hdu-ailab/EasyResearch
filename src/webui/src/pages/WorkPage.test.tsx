@@ -263,7 +263,7 @@ describe("WorkPage", () => {
     const latestMessage = "scanning arxiv for recent fault-diagnosis papers";
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await screen.findByText("starting research");
-    const orchestratorTab = screen.getByRole("button", { name: /agent orchestrator/i });
+    const orchestratorTab = screen.getByRole("button", { name: /agent research mentor/i });
     expect(orchestratorTab.getAttribute("aria-pressed")).toBe("true");
     emitInAct({
       type: "tool_execution_start",
@@ -286,7 +286,7 @@ describe("WorkPage", () => {
     expect(cardMessage.closest("article")).not.toBeNull();
     emitInAct({ type: "tool_execution_end", toolCallId: "sub-1", toolName: "subagent", result: "done", isError: false });
     await waitFor(() => expect(screen.queryByRole("button", { name: /agent search/i })).toBeNull());
-    await waitFor(() => expect(screen.getByRole("button", { name: /agent orchestrator/i }).getAttribute("aria-pressed")).toBe("true"));
+    await waitFor(() => expect(screen.getByRole("button", { name: /agent research mentor/i }).getAttribute("aria-pressed")).toBe("true"));
   });
 
   it("retains a selected temporary tab and promotes it to an exact UUID tab", async () => {
@@ -379,7 +379,7 @@ describe("WorkPage", () => {
     expect(await screen.findByText("older inherited task")).toBeVisible();
     expect(screen.getByText("complete child answer")).toBeVisible();
     const conversation = screen.getByLabelText("Conversation");
-    expect(conversation).toHaveTextContent("Orchestrator");
+    expect(conversation).toHaveTextContent("Research Mentor");
     expect(conversation).toHaveTextContent("Search");
     expect(screen.getByRole("textbox", { name: /message/i })).toBeDisabled();
     expect(within(conversation).queryByRole("button", { name: "View details" })).toBeNull();
@@ -440,13 +440,13 @@ describe("WorkPage", () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     const details = await screen.findAllByRole("button", { name: "View details" });
     await user.click(details[0]!);
-    await user.click(screen.getByRole("button", { name: /agent orchestrator/i }));
+    await user.click(screen.getByRole("button", { name: /agent research mentor/i }));
     await user.click((await screen.findAllByRole("button", { name: "View details" }))[1]!);
     expect(screen.getByRole("button", { name: /agent search · 11111111/i })).toBeVisible();
     expect(screen.getByRole("button", { name: /agent search · 22222222/i })).toBeVisible();
     expect(await screen.findByText("Child session unavailable.")).toBeVisible();
     expect(screen.getAllByRole("button", { name: /Close agent tab:/ })).toHaveLength(2);
-    await user.click(screen.getByRole("button", { name: /agent orchestrator/i }));
+    await user.click(screen.getByRole("button", { name: /agent research mentor/i }));
     expect(screen.getByText("parent remains")).toBeVisible();
   });
 
@@ -556,7 +556,7 @@ describe("WorkPage", () => {
     });
     const select = await screen.findByRole("button", { name: /agent search/i });
     const stop = await screen.findByRole("button", { name: /stop agent/i });
-    const orchestrator = screen.getByRole("button", { name: /agent orchestrator/i });
+    const orchestrator = screen.getByRole("button", { name: /agent research mentor/i });
     expect(select.contains(stop)).toBe(false);
     expect(select.parentElement).toBe(stop.parentElement);
     expect(select.parentElement).toHaveClass("rounded-full", "border");
@@ -637,7 +637,7 @@ describe("WorkPage", () => {
 
     await user.click(await screen.findByRole("button", { name: "View details: Step 1" }));
     expect(await screen.findByText("history for child-history-search")).toBeVisible();
-    await user.click(screen.getByRole("button", { name: /agent orchestrator/i }));
+    await user.click(screen.getByRole("button", { name: /agent research mentor/i }));
     await user.click(screen.getByRole("button", { name: "View details: Step 2" }));
 
     expect(await screen.findByText("history for child-history-writing")).toBeVisible();
@@ -1121,7 +1121,7 @@ describe("WorkPage", () => {
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
     await waitFor(() => {
-      for (const display of ["Orchestrator", "Search", "Experiment", "Writing", "Figures"]) {
+      for (const display of ["Research Mentor", "Search", "Experiment", "Writing", "Figures"]) {
         expect(within(region).getAllByText(display).length).toBeGreaterThan(0);
       }
     });
@@ -1135,7 +1135,7 @@ describe("WorkPage", () => {
     await screen.findByText("starting research");
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
-    expect(await within(region).findByText(/Orchestrator for the paper pipeline/)).toBeTruthy();
+    expect(await within(region).findByText(/Research Mentor for the paper pipeline/)).toBeTruthy();
     expect(within(region).getByText(/Experiment agent/)).toBeTruthy();
     expect(within(region).queryByText("Subagents")).toBeNull();
     expect(within(region).queryByText("search, figures")).toBeNull();
@@ -1148,7 +1148,7 @@ describe("WorkPage", () => {
     await screen.findByText("starting research");
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
-    expect(await within(region).findByText("Orchestrator")).toBeTruthy();
+    expect(await within(region).findByText("Research Mentor")).toBeTruthy();
   });
 
   it("shows each agent's effective model in its model dropdown", async () => {

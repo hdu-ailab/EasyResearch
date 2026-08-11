@@ -148,7 +148,7 @@ describe("ChatTranscript", () => {
     renderTranscript(<ChatTranscript messages={[]} tools={[]} pending />);
     const row = screen.getByLabelText("Working");
     expect(row.textContent).toContain("Working…");
-    expect(row.textContent).toContain("Orchestrator");
+    expect(row.textContent).toContain("Research Mentor");
   });
 
   it("pins to the bottom on content change, unpins on manual scroll, and re-pins at the bottom", () => {
@@ -349,7 +349,7 @@ describe("ChatTranscript", () => {
     );
     const container = screen.getByLabelText("Conversation");
     expect(container.textContent).not.toContain("You");
-    expect(container.textContent).toContain("Orchestrator");
+    expect(container.textContent).toContain("Research Mentor");
     expect(container.textContent).toContain("Search");
   });
 

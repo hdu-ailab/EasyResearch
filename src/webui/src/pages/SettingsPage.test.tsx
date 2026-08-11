@@ -199,7 +199,7 @@ describe("SettingsPage", () => {
     await screen.findByRole("combobox", { name: "Select model for Search" });
     expect(screen.getByRole("combobox", { name: "Select model for Search" })).toHaveValue("openai/gpt-4o");
     expect(screen.getByRole("combobox", { name: "Select model for Writing" })).toHaveValue("");
-    expect(screen.getByRole("combobox", { name: "Select model for Orchestrator" })).toHaveValue("openai/gpt-4o");
+    expect(screen.getByRole("combobox", { name: "Select model for Research Mentor" })).toHaveValue("openai/gpt-4o");
   });
 
   it("includes a configured stage model that is absent from the model catalog", async () => {
@@ -220,7 +220,7 @@ describe("SettingsPage", () => {
     renderSettings();
     await user.click(screen.getByRole("button", { name: "简体中文" }));
 
-    expect(await screen.findByRole("combobox", { name: "选择模型： 编排者" })).toBeTruthy();
+    expect(await screen.findByRole("combobox", { name: "选择模型： 论文导师" })).toBeTruthy();
     expect(screen.getByRole("combobox", { name: "选择模型： 检索" })).toBeTruthy();
   });
 
@@ -231,8 +231,8 @@ describe("SettingsPage", () => {
       { name: "search", description: "Searches" },
     ] as never);
     renderSettings();
-    await screen.findByRole("combobox", { name: "Select model for Orchestrator" });
-    const orchestratorBox = screen.getByRole("combobox", { name: "Select model for Orchestrator" });
+    await screen.findByRole("combobox", { name: "Select model for Research Mentor" });
+    const orchestratorBox = screen.getByRole("combobox", { name: "Select model for Research Mentor" });
     const searchBox = screen.getByRole("combobox", { name: "Select model for Search" });
     expect(orchestratorBox.compareDocumentPosition(searchBox) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
@@ -246,7 +246,7 @@ describe("SettingsPage", () => {
       effectiveOrchestratorModel: "openai/gpt-4o",
     } as never);
     renderSettings();
-    const combobox = await screen.findByRole("combobox", { name: "Select model for Orchestrator" });
+    const combobox = await screen.findByRole("combobox", { name: "Select model for Research Mentor" });
     expect(combobox).toHaveValue("openai/gpt-4o");
     expect(within(combobox).queryAllByRole("option", { name: /inherit/i })).toHaveLength(0);
   });
@@ -258,7 +258,7 @@ describe("SettingsPage", () => {
       effectiveOrchestratorModel: "anthropic/claude-opus-4-8",
     } as never);
     renderSettings();
-    const combobox = await screen.findByRole("combobox", { name: "Select model for Orchestrator" });
+    const combobox = await screen.findByRole("combobox", { name: "Select model for Research Mentor" });
     expect(combobox).toHaveValue("anthropic/claude-opus-4-8");
     expect(within(combobox).getAllByRole("option", { name: "anthropic/claude-opus-4-8" })).toHaveLength(1);
     expect(within(combobox).queryAllByRole("option", { name: /inherit/i })).toHaveLength(0);
@@ -271,7 +271,7 @@ describe("SettingsPage", () => {
       effectiveOrchestratorModel: "openai/gpt-4o",
     } as never);
     renderSettings();
-    const combobox = await screen.findByRole("combobox", { name: "Select model for Orchestrator" });
+    const combobox = await screen.findByRole("combobox", { name: "Select model for Research Mentor" });
     expect(combobox).toHaveValue("openai/gpt-4o");
     expect(within(combobox).queryAllByRole("option", { name: "openai/gpt-4o" })).toHaveLength(1);
   });
@@ -284,12 +284,12 @@ describe("SettingsPage", () => {
       effectiveOrchestratorModel: "anthropic/claude-sonnet-4",
     } as never);
     renderSettings();
-    await screen.findByRole("combobox", { name: "Select model for Orchestrator" });
-    await user.selectOptions(screen.getByRole("combobox", { name: "Select model for Orchestrator" }), "anthropic/claude-sonnet-4");
+    await screen.findByRole("combobox", { name: "Select model for Research Mentor" });
+    await user.selectOptions(screen.getByRole("combobox", { name: "Select model for Research Mentor" }), "anthropic/claude-sonnet-4");
     await waitFor(() =>
       expect(api.updateWebuiSettings).toHaveBeenCalledWith({ orchestratorModel: "anthropic/claude-sonnet-4" }),
     );
-    expect(screen.getByRole("combobox", { name: "Select model for Orchestrator" })).toHaveValue("anthropic/claude-sonnet-4");
+    expect(screen.getByRole("combobox", { name: "Select model for Research Mentor" })).toHaveValue("anthropic/claude-sonnet-4");
   });
 
   it("sets a stage agent model via agentModels patch", async () => {
