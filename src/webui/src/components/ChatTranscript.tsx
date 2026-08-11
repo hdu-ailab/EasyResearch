@@ -115,6 +115,7 @@ function MessageRow({ message, initialThinkingOpen }: { message: SessionMessageV
   const roleKey = ROLE_LABELS[message.role];
   const label = message.label ? agentDisplayName(t, message.label) : roleKey ? t(roleKey) : message.role;
   const isYou = message.role === "user" && message.label == null;
+  const hasBody = Boolean(message.text) || message.error || message.streaming;
   return (
     <li className={`flex flex-col gap-1 ${isYou ? "items-end" : "items-start"}`}>
       <span className="text-[11px] font-medium uppercase tracking-wide text-v2-text-text-faint">{label}</span>
@@ -129,7 +130,7 @@ function MessageRow({ message, initialThinkingOpen }: { message: SessionMessageV
           {t("transcript.thinking")}
         </span>
       ) : null}
-      {message.role === "assistant" || message.role === "user" ? (
+      {hasBody && (message.role === "assistant" || message.role === "user") ? (
         <div
           className={`v2-md max-w-full rounded-lg px-3 py-2 text-[length:var(--v2-chat-font-size)] ${
             isYou ? "bg-v2-blue-100/60 text-v2-text-text-base" : "bg-v2-background-bg-deep text-v2-text-text-base"
@@ -138,7 +139,7 @@ function MessageRow({ message, initialThinkingOpen }: { message: SessionMessageV
           <MarkdownBlock text={message.text} />
           {message.streaming && <span className="v2-caret" aria-hidden />}
         </div>
-      ) : (
+      ) : hasBody ? (
         <span
           className={`rounded-md px-2 py-1 font-mono text-[12px] ${
             message.error ? "text-v2-status-error" : "text-v2-text-text-muted"
@@ -147,7 +148,7 @@ function MessageRow({ message, initialThinkingOpen }: { message: SessionMessageV
           {message.text}
           {message.streaming && <span className="v2-caret" aria-hidden />}
         </span>
-      )}
+      ) : null}
     </li>
   );
 }
