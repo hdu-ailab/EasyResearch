@@ -1,5 +1,5 @@
-import type { ReactNode } from "react";
 import { House } from "lucide-react";
+import type { ReactNode } from "react";
 import { useI18n } from "../i18n/useI18n";
 
 export interface TopbarProps {

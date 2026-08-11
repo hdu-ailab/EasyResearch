@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import { FileTabs, type FileTab } from "./FileTabs";
-import { FilesPanel } from "./FilesPanel";
-import { FilePreview } from "./previews/FilePreview";
+import type { FileContentDto, FileEntryDto } from "../../../web/contracts";
 import { readFileContent } from "../api";
 import { useI18n } from "../i18n/useI18n";
-import type { FileContentDto, FileEntryDto } from "../../../web/contracts";
+import { FilesPanel } from "./FilesPanel";
+import { type FileTab, FileTabs } from "./FileTabs";
+import { FilePreview } from "./previews/FilePreview";
 
 export interface FileBrowserProps {
   root: string;
@@ -50,14 +50,20 @@ export function FileBrowser({ root }: FileBrowserProps) {
           const message = e instanceof Error ? e.message : String(e);
           setContents((current) => ({
             ...current,
-            [activeTab]: { path: activeTab, content: t("files.loadError").replace("{message}", message), byteCount: 0, truncated: false, binary: false },
+            [activeTab]: {
+              path: activeTab,
+              content: t("files.loadError").replace("{message}", message),
+              byteCount: 0,
+              truncated: false,
+              binary: false,
+            },
           }));
         }
       });
     return () => {
       stale = true;
     };
-  }, [activeTab, contents]);
+  }, [activeTab, contents, t]);
 
   const openFile = useCallback((entry: FileEntryDto) => {
     setTabs((current) => (current.some((tab) => tab.path === entry.path) ? current : [...current, entry]));
@@ -89,9 +95,7 @@ export function FileBrowser({ root }: FileBrowserProps) {
         toggle={{ opened: treeVisible, onToggle: () => setTreeVisible((v) => !v) }}
       />
       <div className="flex min-h-0 min-w-0 flex-1">
-        <div
-          className={treeVisible ? "flex w-[240px] shrink-0 flex-col border-r border-v2-grey-200" : "hidden"}
-        >
+        <div className={treeVisible ? "flex w-[240px] shrink-0 flex-col border-r border-v2-grey-200" : "hidden"}>
           <FilesPanel root={root} onOpenFile={openFile} />
         </div>
         <div className="min-w-0 flex-1">

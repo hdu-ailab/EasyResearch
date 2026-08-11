@@ -1,6 +1,6 @@
 import { File as FileIcon, FolderTree, X } from "lucide-react";
-import { useI18n } from "../i18n/useI18n";
 import type { FileContentDto } from "../../../web/contracts";
+import { useI18n } from "../i18n/useI18n";
 
 export interface FileTab {
   path: string;
@@ -47,11 +47,17 @@ export function FileTabs({ tabs, active, onActivate, onClose, toggle }: FileTabs
             key={tab.path}
             role="tab"
             aria-selected={isActive}
+            tabIndex={-1}
             className={`group flex h-7 shrink-0 items-center gap-1 rounded-md px-1.5 text-[12px] transition-colors ${
               isActive ? "bg-v2-blue-100 text-v2-blue-600" : "text-v2-text-text-muted hover:bg-v2-grey-100"
             }`}
           >
-            <button type="button" className="flex min-w-0 items-center gap-1" onClick={() => onActivate(tab.path)} title={tab.path}>
+            <button
+              type="button"
+              className="flex min-w-0 items-center gap-1"
+              onClick={() => onActivate(tab.path)}
+              title={tab.path}
+            >
               <FileIcon size={12} className="shrink-0" />
               <span className="max-w-[160px] truncate">{tab.name}</span>
             </button>

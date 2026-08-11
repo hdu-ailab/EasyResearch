@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
@@ -11,7 +10,11 @@ describe("Topbar", () => {
       <Topbar
         home={{ active: true, onClick: onHome }}
         leading={<ProductMark />}
-        actions={<TopbarIconButton label="Files" title="Files" onClick={() => {}}><span /></TopbarIconButton>}
+        actions={
+          <TopbarIconButton label="Files" title="Files" onClick={() => {}}>
+            <span />
+          </TopbarIconButton>
+        }
       />,
     );
 
@@ -22,7 +25,9 @@ describe("Topbar", () => {
     expect(home).toHaveAccessibleName("Back to home");
     expect(home).toHaveAttribute("aria-current", "page");
     expect(home.querySelector(".lucide-house")).not.toBeNull();
-    expect(home.compareDocumentPosition(screen.getByText("LazyResearch")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(
+      home.compareDocumentPosition(screen.getByText("LazyResearch")) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
 
     await userEvent.setup().click(home);
     expect(onHome).toHaveBeenCalledOnce();

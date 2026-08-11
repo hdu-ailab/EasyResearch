@@ -1,18 +1,19 @@
-// @vitest-environment jsdom
-import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { FileContentDto } from "../../../../web/contracts";
+import { rawFileUrl } from "../../api";
 import { FilePreview } from "./FilePreview";
 import { PdfPreview } from "./PdfPreview";
-import { fakePdfLoader, type FakePdfRenderCall } from "./pdf-runtime";
+import { type FakePdfRenderCall, fakePdfLoader } from "./pdf-runtime";
 import { resolveLocalPreviewPath } from "./preview-paths";
-import { rawFileUrl } from "../../api";
-import type { FileContentDto } from "../../../../web/contracts";
 
 const scrollIntoViewTargets: HTMLElement[] = [];
 
 beforeAll(() => {
-  HTMLCanvasElement.prototype.getContext = vi.fn(() => ({})) as unknown as typeof HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.getContext = vi.fn(
+    () => ({}),
+  ) as unknown as typeof HTMLCanvasElement.prototype.getContext;
   Object.defineProperty(Element.prototype, "scrollIntoView", {
     configurable: true,
     writable: true,
@@ -153,9 +154,7 @@ describe("FilePreview markdown dispatch", () => {
   });
 
   it("shows the truncation notice for truncated markdown", () => {
-    render(
-      <FilePreview path="/p/paper.md" textFile={{ ...markdownDto, truncated: true }} onOpenFile={() => {}} />,
-    );
+    render(<FilePreview path="/p/paper.md" textFile={{ ...markdownDto, truncated: true }} onOpenFile={() => {}} />);
     expect(screen.getByText(/truncated to the first 1 MiB/i)).toBeVisible();
     expect(screen.getByRole("heading", { name: "Method" })).toBeVisible();
   });
@@ -298,7 +297,9 @@ describe("PdfPreview", () => {
     render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 1, renderLog })} />);
     await screen.findByText("1 / 1");
     await waitFor(() => {
-      const call = renderLog.find((entry) => entry.transform?.every((value, index) => value === (index === 0 || index === 3 ? 2 : 0)));
+      const call = renderLog.find((entry) =>
+        entry.transform?.every((value, index) => value === (index === 0 || index === 3 ? 2 : 0)),
+      );
       expect(call).toBeTruthy();
     });
   });

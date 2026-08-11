@@ -1,9 +1,9 @@
-import { createContext } from "react";
 import type { ReactNode } from "react";
+import { createContext } from "react";
 import type { Language } from "../preferences";
 import { usePreferences } from "../preferences/PreferencesProvider";
-import { messages } from "./messages";
 import type { MessageKey } from "./messages";
+import { messages } from "./messages";
 
 export interface I18nContextValue {
   language: Language;

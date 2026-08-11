@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -67,14 +66,17 @@ describe("PreferencesProvider", () => {
         <Probe />
       </PreferencesProvider>,
     );
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      chatFontSize: 16,
-      filesFontSize: 11,
-      language: "zh-CN",
-      autoExpandThinking: true,
-      autoExpandTools: true,
-      expandSubagentOutput: true,
-    }));
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        chatFontSize: 16,
+        filesFontSize: 11,
+        language: "zh-CN",
+        autoExpandThinking: true,
+        autoExpandTools: true,
+        expandSubagentOutput: true,
+      }),
+    );
 
     act(() => {
       window.dispatchEvent(new StorageEvent("storage", { key: STORAGE_KEY }));
@@ -114,14 +116,17 @@ describe("PreferencesProvider", () => {
         <Probe />
       </PreferencesProvider>,
     );
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      chatFontSize: 13,
-      filesFontSize: 12,
-      language: "en",
-      autoExpandThinking: false,
-      autoExpandTools: true,
-      expandSubagentOutput: false,
-    }));
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        chatFontSize: 13,
+        filesFontSize: 12,
+        language: "en",
+        autoExpandThinking: false,
+        autoExpandTools: true,
+        expandSubagentOutput: false,
+      }),
+    );
     const setItem = vi.spyOn(Storage.prototype, "setItem");
 
     act(() => {

@@ -1,9 +1,8 @@
-// @vitest-environment jsdom
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { DirectoryDialog } from "./DirectoryDialog";
 import * as api from "../api";
+import { DirectoryDialog } from "./DirectoryDialog";
 
 vi.mock("../api", () => ({
   listDirectories: vi.fn(),
@@ -70,6 +69,24 @@ describe("DirectoryDialog", () => {
     });
     await user.click(screen.getByRole("button", { name: "Retry folder" }));
     expect(await screen.findByText("nested")).toBeTruthy();
+  });
+
+  it("activates a failed directory retry with the keyboard without selecting the row", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listDirectories).mockImplementation(async (p) => {
+      if (p === HOME) return [{ name: "folder", path: `${HOME}/folder` }];
+      throw new Error("boom");
+    });
+    render(<DirectoryDialog homeDir={HOME} onSelect={() => {}} onClose={() => {}} />);
+    await user.click(await screen.findByText("folder"));
+    await user.click(screen.getByRole("button", { name: "Expand folder" }));
+    const retry = await screen.findByRole("button", { name: "Retry folder" });
+    vi.mocked(api.listDirectories).mockResolvedValue([{ name: "nested", path: `${HOME}/folder/nested` }]);
+
+    retry.focus();
+    await user.keyboard("{Enter}");
+
+    expect(await screen.findByText("nested")).toBeVisible();
   });
 
   it("expands a directory lazily", async () => {

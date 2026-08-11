@@ -1,22 +1,18 @@
-import { useState } from "react";
 import { Settings } from "lucide-react";
-import { HomePage } from "./pages/HomePage";
-import { WorkPage } from "./pages/WorkPage";
-import { ConfigPage } from "./pages/ConfigPage";
-import { SettingsPage } from "./pages/SettingsPage";
+import { useState } from "react";
 import { TopbarIconButton } from "./components/Topbar";
 import { useI18n } from "./i18n/useI18n";
+import { ConfigPage } from "./pages/ConfigPage";
+import { HomePage } from "./pages/HomePage";
+import { SettingsPage } from "./pages/SettingsPage";
+import { WorkPage } from "./pages/WorkPage";
 
 export interface ActiveSession {
   id: string;
   cwd: string;
 }
 
-type Route =
-  | { page: "home" }
-  | { page: "config" }
-  | { page: "config-json" }
-  | { page: "work"; session: ActiveSession };
+type Route = { page: "home" } | { page: "config" } | { page: "config-json" } | { page: "work"; session: ActiveSession };
 
 export function App() {
   const { t } = useI18n();
@@ -50,9 +46,15 @@ export function App() {
     <HomePage
       onOpenSession={(session) => setRoute({ page: "work", session })}
       onOpenSettings={() => setRoute({ page: "config" })}
-      settingsButton={<TopbarIconButton label={t("home.settings")} title={t("home.settingsTitle")} onClick={() => setRoute({ page: "config" })}>
-        <Settings size={15} />
-      </TopbarIconButton>}
+      settingsButton={
+        <TopbarIconButton
+          label={t("home.settings")}
+          title={t("home.settingsTitle")}
+          onClick={() => setRoute({ page: "config" })}
+        >
+          <Settings size={15} />
+        </TopbarIconButton>
+      }
     />
   );
 }

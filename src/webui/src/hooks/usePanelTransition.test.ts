@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PANEL_TRANSITION_MS, usePanelTransition } from "./usePanelTransition";
@@ -45,10 +44,9 @@ describe("usePanelTransition", () => {
   });
 
   it("unmounting mid-close cancels the timer without errors", () => {
-    const { result, rerender, unmount } = renderHook(
-      ({ open }: { open: boolean }) => usePanelTransition(open),
-      { initialProps: { open: true } },
-    );
+    const { result, rerender, unmount } = renderHook(({ open }: { open: boolean }) => usePanelTransition(open), {
+      initialProps: { open: true },
+    });
     rerender({ open: false });
     unmount();
     expect(vi.getTimerCount()).toBe(0);

@@ -1,9 +1,8 @@
-// @vitest-environment jsdom
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { HomePage } from "./HomePage";
 import * as api from "../api";
+import { HomePage } from "./HomePage";
 
 vi.mock("../api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api")>();
@@ -97,9 +96,7 @@ describe("HomePage", () => {
       sessions: history,
       activeSessions: active,
     } as never);
-    vi.mocked(api.listDirectories).mockResolvedValue([
-      { name: "proj", path: "/proj" },
-    ]);
+    vi.mocked(api.listDirectories).mockResolvedValue([{ name: "proj", path: "/proj" }]);
     vi.mocked(api.createSession).mockResolvedValue({
       id: "new1",
       cwd: "/proj",
@@ -118,7 +115,13 @@ describe("HomePage", () => {
   });
 
   it("renders historical and active sessions separately", async () => {
-    render(<HomePage onOpenSession={() => {}} onOpenSettings={() => {}} settingsButton={<button type="button">Settings</button>} />);
+    render(
+      <HomePage
+        onOpenSession={() => {}}
+        onOpenSettings={() => {}}
+        settingsButton={<button type="button">Settings</button>}
+      />,
+    );
     expect(await screen.findByText("write a paper")).toBeTruthy();
     expect(screen.getAllByText("/proj").length).toBeGreaterThan(0);
     expect(screen.getAllByText("12").length).toBeGreaterThan(0);
@@ -242,7 +245,13 @@ describe("HomePage", () => {
 
   it("selecting a directory in the dialog then Create calls createSession with the exact path", async () => {
     const user = userEvent.setup();
-    render(<HomePage onOpenSession={() => {}} onOpenSettings={() => {}} settingsButton={<button type="button">Settings</button>} />);
+    render(
+      <HomePage
+        onOpenSession={() => {}}
+        onOpenSettings={() => {}}
+        settingsButton={<button type="button">Settings</button>}
+      />,
+    );
     await user.click(screen.getByRole("button", { name: /^new session$/i }));
     await user.click(await screen.findByText("proj"));
     await user.click(screen.getByRole("button", { name: /create session/i }));
@@ -254,7 +263,13 @@ describe("HomePage", () => {
     vi.mocked(api.createSession).mockRejectedValueOnce(
       new ApiError(400, { error: "LazyResearch does not load user-added Pi extensions" }),
     );
-    render(<HomePage onOpenSession={() => {}} onOpenSettings={() => {}} settingsButton={<button type="button">Settings</button>} />);
+    render(
+      <HomePage
+        onOpenSession={() => {}}
+        onOpenSettings={() => {}}
+        settingsButton={<button type="button">Settings</button>}
+      />,
+    );
     await user.click(screen.getByRole("button", { name: /^new session$/i }));
     await user.click(await screen.findByText("proj"));
     await user.click(screen.getByRole("button", { name: /create session/i }));
@@ -272,7 +287,13 @@ describe("HomePage", () => {
       status: "ready",
     } as never);
     const onOpen = vi.fn();
-    render(<HomePage onOpenSession={onOpen} onOpenSettings={() => {}} settingsButton={<button type="button">Settings</button>} />);
+    render(
+      <HomePage
+        onOpenSession={onOpen}
+        onOpenSettings={() => {}}
+        settingsButton={<button type="button">Settings</button>}
+      />,
+    );
     await user.click(await screen.findByText("write a paper"));
     await waitFor(() => expect(api.openSession).toHaveBeenCalledWith("/agent/sessions/--p--/a.jsonl"));
     expect(api.createSession).not.toHaveBeenCalled();
@@ -281,13 +302,25 @@ describe("HomePage", () => {
 
   it("keeps controls usable while loading", () => {
     vi.mocked(api.listStatus).mockReturnValue(new Promise(() => {}) as never);
-    render(<HomePage onOpenSession={() => {}} onOpenSettings={() => {}} settingsButton={<button type="button">Settings</button>} />);
+    render(
+      <HomePage
+        onOpenSession={() => {}}
+        onOpenSettings={() => {}}
+        settingsButton={<button type="button">Settings</button>}
+      />,
+    );
     expect(screen.getByRole("button", { name: /^new session$/i })).toBeEnabled();
   });
 
   it("shows an error state that does not shift layout", async () => {
     vi.mocked(api.listStatus).mockRejectedValueOnce(new Error("agent dir unavailable"));
-    render(<HomePage onOpenSession={() => {}} onOpenSettings={() => {}} settingsButton={<button type="button">Settings</button>} />);
+    render(
+      <HomePage
+        onOpenSession={() => {}}
+        onOpenSettings={() => {}}
+        settingsButton={<button type="button">Settings</button>}
+      />,
+    );
     expect(await screen.findByText(/agent dir unavailable/)).toBeTruthy();
     expect(screen.getByRole("button", { name: /^new session$/i })).toBeTruthy();
   });
@@ -301,7 +334,13 @@ describe("HomePage", () => {
       activeSessions: [{ id: "a1", cwd: "/proj", sessionName: "Running proj", isStreaming: true, status: "running" }],
     } as never);
     const onOpen = vi.fn();
-    render(<HomePage onOpenSession={onOpen} onOpenSettings={() => {}} settingsButton={<button type="button">Settings</button>} />);
+    render(
+      <HomePage
+        onOpenSession={onOpen}
+        onOpenSettings={() => {}}
+        settingsButton={<button type="button">Settings</button>}
+      />,
+    );
     await user.click(await screen.findByText("a1"));
     await waitFor(() => expect(api.restartSession).not.toHaveBeenCalled());
     await waitFor(() => expect(onOpen).toHaveBeenCalledWith({ id: "a1", cwd: "/proj" }));

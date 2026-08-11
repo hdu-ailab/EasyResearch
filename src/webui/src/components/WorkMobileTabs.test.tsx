@@ -1,12 +1,11 @@
-// @vitest-environment jsdom
-import { useState } from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { expect, it, vi } from "vitest";
 import { I18nContext } from "../i18n/I18nProvider";
 import { zhCN } from "../i18n/messages";
-import { WorkMobileTabs } from "./WorkMobileTabs";
 import type { WorkView } from "./WorkMobileTabs";
+import { WorkMobileTabs } from "./WorkMobileTabs";
 
 it("exposes one selected tab with stable tab and panel ids", () => {
   render(<WorkMobileTabs active="chat" onChange={() => {}} />);
@@ -103,9 +102,7 @@ it("prevents default only for handled navigation keys", () => {
 
 it("uses localized tablist and tab labels", () => {
   render(
-    <I18nContext.Provider
-      value={{ language: "zh-CN", setLanguage: () => {}, t: (key) => zhCN[key] }}
-    >
+    <I18nContext.Provider value={{ language: "zh-CN", setLanguage: () => {}, t: (key) => zhCN[key] }}>
       <WorkMobileTabs active="chat" onChange={() => {}} />
     </I18nContext.Provider>,
   );

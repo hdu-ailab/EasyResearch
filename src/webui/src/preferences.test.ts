@@ -1,14 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
-  CHAT_FONT_MAX,
   CHAT_FONT_MIN,
   DEFAULT_CHAT_FONT_SIZE,
   DEFAULT_FILES_FONT_SIZE,
   FILES_FONT_MAX,
-  FILES_FONT_MIN,
-  STORAGE_KEY,
   readPreferences,
   resolveLanguage,
+  STORAGE_KEY,
   writePreferences,
 } from "./preferences";
 
@@ -106,7 +104,11 @@ describe("readPreferences", () => {
 
   it("falls back to defaults for out-of-range integers", () => {
     const storage = fakeStorage({
-      [STORAGE_KEY]: JSON.stringify({ chatFontSize: CHAT_FONT_MIN - 1, filesFontSize: FILES_FONT_MAX + 1, language: "en" }),
+      [STORAGE_KEY]: JSON.stringify({
+        chatFontSize: CHAT_FONT_MIN - 1,
+        filesFontSize: FILES_FONT_MAX + 1,
+        language: "en",
+      }),
     });
     const prefs = readPreferences(storage, nav("en"));
     expect(prefs.chatFontSize).toBe(DEFAULT_CHAT_FONT_SIZE);

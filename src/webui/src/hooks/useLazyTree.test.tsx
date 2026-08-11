@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import { act, renderHook } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { useLazyTree } from "./useLazyTree";
@@ -29,9 +28,7 @@ async function settle() {
 describe("useLazyTree", () => {
   it("reports loading for the root and unloaded for untouched children", async () => {
     const pending = deferred<Entry[]>();
-    const { result } = renderHook(() =>
-      useLazyTree({ root: "/p", loadChildren: vi.fn(() => pending.promise) }),
-    );
+    const { result } = renderHook(() => useLazyTree({ root: "/p", loadChildren: vi.fn(() => pending.promise) }));
     expect(result.current.status("/p")).toBe("loading");
     expect(result.current.status("/p/folder")).toBe("unloaded");
     await act(() => pending.resolve([{ path: "/p/folder", name: "folder" }]));
@@ -167,10 +164,9 @@ describe("useLazyTree", () => {
       if (path === "/old") return pendingOldRoot.promise;
       return Promise.resolve([folder("/new/child")]);
     });
-    const { result, rerender } = renderHook(
-      ({ root }: { root: string }) => useLazyTree({ root, loadChildren }),
-      { initialProps: { root: "/old" } },
-    );
+    const { result, rerender } = renderHook(({ root }: { root: string }) => useLazyTree({ root, loadChildren }), {
+      initialProps: { root: "/old" },
+    });
     expect(result.current.status("/old")).toBe("loading");
     rerender({ root: "/new" });
     await settle();

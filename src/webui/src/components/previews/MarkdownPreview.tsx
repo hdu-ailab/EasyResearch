@@ -1,12 +1,12 @@
 import { useMemo } from "react";
 import ReactMarkdown from "react-markdown";
+import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
-import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
 import { rawFileUrl } from "../../api";
-import { resolveLocalPreviewPath } from "./preview-paths";
 import { MermaidDiagram } from "../MermaidDiagram";
+import { resolveLocalPreviewPath } from "./preview-paths";
 
 export interface MarkdownPreviewProps {
   path: string;
@@ -66,11 +66,7 @@ export function MarkdownPreview({ path, content, onOpenFile }: MarkdownPreviewPr
 
   return (
     <div className="v2-document min-h-0 flex-1 overflow-auto p-4">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[rehypeKatex]}
-        components={components}
-      >
+      <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]} components={components}>
         {content}
       </ReactMarkdown>
     </div>

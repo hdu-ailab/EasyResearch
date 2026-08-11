@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import { render, screen } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import type { ActiveSessionDto, SessionSummaryDto } from "../../../web/contracts";

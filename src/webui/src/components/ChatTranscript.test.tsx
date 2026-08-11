@@ -1,12 +1,11 @@
-// @vitest-environment jsdom
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ChatTranscript } from "./ChatTranscript";
-import type { SessionMessageView, ToolView } from "../session-reducer";
-import { STORAGE_KEY, writePreferences, type WebUiPreferences } from "../preferences";
+import { STORAGE_KEY, type WebUiPreferences, writePreferences } from "../preferences";
 import { PreferencesProvider } from "../preferences/PreferencesProvider";
+import type { SessionMessageView, ToolView } from "../session-reducer";
+import { ChatTranscript } from "./ChatTranscript";
 
 vi.mock("mermaid", () => ({
   default: {
@@ -170,7 +169,12 @@ describe("ChatTranscript", () => {
 
     el.scrollTop = 400;
     fireEvent.scroll(el);
-    rerender(<ChatTranscript messages={[...first, msg({ key: "b" }), msg({ key: "c" }), msg({ key: "d", text: "four" })]} tools={[]} />);
+    rerender(
+      <ChatTranscript
+        messages={[...first, msg({ key: "b" }), msg({ key: "c" }), msg({ key: "d", text: "four" })]}
+        tools={[]}
+      />,
+    );
     flushFollowFrame();
     expect(el.scrollTop).toBe(400);
   });
@@ -320,10 +324,7 @@ describe("ChatTranscript", () => {
 
   it("does not label historical reasoning as active thinking", () => {
     renderTranscript(
-      <ChatTranscript
-        messages={[msg({ key: "history", reasoning: "stored thought", streaming: false })]}
-        tools={[]}
-      />,
+      <ChatTranscript messages={[msg({ key: "history", reasoning: "stored thought", streaming: false })]} tools={[]} />,
     );
 
     expect(screen.queryByText("Thinking")).toBeNull();
@@ -342,7 +343,15 @@ describe("ChatTranscript", () => {
     renderTranscript(
       <ChatTranscript
         messages={[]}
-        tools={[tool({ name: "grep", running: true, done: false, output: undefined, latestMessage: "private subagent progress" })]}
+        tools={[
+          tool({
+            name: "grep",
+            running: true,
+            done: false,
+            output: undefined,
+            latestMessage: "private subagent progress",
+          }),
+        ]}
       />,
       { autoExpandTools: true },
     );
@@ -413,10 +422,9 @@ describe("ChatTranscript", () => {
       done: false,
       order: 2,
     });
-    const { rerender } = renderTranscript(
-      <ChatTranscript messages={[]} tools={[first, second]} />,
-      { expandSubagentOutput: true },
-    );
+    const { rerender } = renderTranscript(<ChatTranscript messages={[]} tools={[first, second]} />, {
+      expandSubagentOutput: true,
+    });
 
     const firstToggle = screen.getByRole("button", { name: /hide.*search.*running/i });
     expect(firstToggle).toHaveAttribute("aria-expanded", "true");
@@ -442,10 +450,10 @@ describe("ChatTranscript", () => {
     const user = userEvent.setup();
     const firstMessage = msg({ key: "reason-1", reasoning: "first thought", order: 1 });
     const firstTool = tool({ key: "tool-1", name: "grep", output: "first tool output", order: 2 });
-    const { rerender } = renderTranscript(
-      <ChatTranscript messages={[firstMessage]} tools={[firstTool]} />,
-      { autoExpandThinking: true, autoExpandTools: true },
-    );
+    const { rerender } = renderTranscript(<ChatTranscript messages={[firstMessage]} tools={[firstTool]} />, {
+      autoExpandThinking: true,
+      autoExpandTools: true,
+    });
 
     const firstReasoningToggle = screen.getByRole("button", { name: /hide details/i });
     const firstToolToggle = screen.getByRole("button", { name: /grep/i });
@@ -456,14 +464,8 @@ describe("ChatTranscript", () => {
 
     rerender(
       <ChatTranscript
-        messages={[
-          firstMessage,
-          msg({ key: "reason-2", reasoning: "second thought", text: "second", order: 3 }),
-        ]}
-        tools={[
-          firstTool,
-          tool({ key: "tool-2", name: "bash", output: "second tool output", order: 4 }),
-        ]}
+        messages={[firstMessage, msg({ key: "reason-2", reasoning: "second thought", text: "second", order: 3 })]}
+        tools={[firstTool, tool({ key: "tool-2", name: "bash", output: "second tool output", order: 4 })]}
       />,
     );
 

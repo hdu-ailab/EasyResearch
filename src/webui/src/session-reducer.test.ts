@@ -1,3 +1,4 @@
+import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import {
   fromSnapshot,
@@ -6,7 +7,6 @@ import {
   reduceSessionEvent,
   type SessionViewState,
 } from "./session-reducer";
-import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 
 const emptyState: SessionViewState = { messages: [], tools: [], isStreaming: false, error: null, nextOrder: 0 };
 
@@ -27,7 +27,11 @@ function assistantEvent(type: "message_start" | "message_update" | "message_end"
   } as AgentSessionEvent;
 }
 
-function toolEvent(type: "tool_execution_start" | "tool_execution_end", toolCallId = "t1", toolName = "bash"): AgentSessionEvent {
+function toolEvent(
+  type: "tool_execution_start" | "tool_execution_end",
+  toolCallId = "t1",
+  toolName = "bash",
+): AgentSessionEvent {
   return { type, toolCallId, toolName, args: {} } as AgentSessionEvent;
 }
 
@@ -216,7 +220,10 @@ describe("session reducer", () => {
   });
 
   it("keeps user messages distinct from assistant streaming", () => {
-    const withUser = reduceSessionEvent(emptyState, { type: "message_start", message: userMessage("question") } as AgentSessionEvent);
+    const withUser = reduceSessionEvent(emptyState, {
+      type: "message_start",
+      message: userMessage("question"),
+    } as AgentSessionEvent);
     const streaming = reduceSessionEvent(withUser, assistantEvent("message_start", ""));
     expect(streaming.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
     expect(streaming.messages[0]!.streaming).toBe(false);
@@ -515,7 +522,10 @@ describe("session reducer", () => {
   });
 
   it("assigns stream positions to live tools between messages", () => {
-    let state = reduceSessionEvent(emptyState, { type: "message_start", message: userMessage("go") } as AgentSessionEvent);
+    let state = reduceSessionEvent(emptyState, {
+      type: "message_start",
+      message: userMessage("go"),
+    } as AgentSessionEvent);
     state = reduceSessionEvent(state, assistantEvent("message_start", "running"));
     state = reduceSessionEvent(state, toolEvent("tool_execution_start", "t1", "bash"));
     const final = reduceSessionEvent(state, assistantEvent("message_start", "done"));
@@ -530,7 +540,9 @@ describe("session reducer", () => {
       toolCallId: "t1",
       toolName: "subagent",
       args: { agent: "search" },
-      partialResult: { details: { subagent: { agent: "writing", step: 2, status: "running", latestMessage: "drafting method" } } },
+      partialResult: {
+        details: { subagent: { agent: "writing", step: 2, status: "running", latestMessage: "drafting method" } },
+      },
     } as never);
     expect(state.tools[0]).toMatchObject({ agentName: "writing", step: 2, latestMessage: "drafting method" });
     expect(state.tools[0]!.running).toBe(true);
@@ -565,7 +577,12 @@ describe("session reducer", () => {
       type: "tool_execution_start",
       toolCallId: "t2",
       toolName: "subagent",
-      args: { chain: [{ agent: "search", task: "first" }, { agent: "writing", task: "then" }] },
+      args: {
+        chain: [
+          { agent: "search", task: "first" },
+          { agent: "writing", task: "then" },
+        ],
+      },
     } as never);
     expect(state.tools[0]).toMatchObject({ agentName: "search" });
   });
@@ -587,17 +604,21 @@ describe("session reducer", () => {
   it("applies persisted child summaries to the exact parent tool invocation", () => {
     const state = fromSnapshot({
       session: { id: "parent", cwd: "/p", isStreaming: false, status: "ready" } as never,
-      subagents: [{
-        toolCallId: "sub-linked",
-        childSessionId: "child-uuid",
-        agent: "writing",
-        step: 2,
-        latestMessage: "historical progress",
-      }],
-      messages: [{
-        role: "assistant",
-        content: [{ type: "toolCall", id: "sub-linked", name: "subagent", arguments: '{"agent":"search"}' }],
-      }] as never,
+      subagents: [
+        {
+          toolCallId: "sub-linked",
+          childSessionId: "child-uuid",
+          agent: "writing",
+          step: 2,
+          latestMessage: "historical progress",
+        },
+      ],
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "sub-linked", name: "subagent", arguments: '{"agent":"search"}' }],
+        },
+      ] as never,
     });
 
     expect(state.tools[0]).toMatchObject({
@@ -616,10 +637,12 @@ describe("session reducer", () => {
         { toolCallId: "chain-linked", childSessionId: "child-search", agent: "search", step: 1 },
         { toolCallId: "chain-linked", childSessionId: "child-writing", agent: "writing", step: 2 },
       ],
-      messages: [{
-        role: "assistant",
-        content: [{ type: "toolCall", id: "chain-linked", name: "subagent", arguments: '{"chain":[]}' }],
-      }] as never,
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "chain-linked", name: "subagent", arguments: '{"chain":[]}' }],
+        },
+      ] as never,
     });
 
     expect(state.tools[0]).toMatchObject({
@@ -636,31 +659,37 @@ describe("session reducer", () => {
   it("lets an authoritative snapshot summary replace prior live chain agent and step", () => {
     const prior: SessionViewState = {
       ...emptyState,
-      tools: [{
-        key: "chain-call",
-        name: "subagent",
-        running: true,
-        done: false,
-        error: false,
-        agentName: "search",
-        step: 1,
-        latestMessage: "live progress",
-        order: 0,
-      }],
+      tools: [
+        {
+          key: "chain-call",
+          name: "subagent",
+          running: true,
+          done: false,
+          error: false,
+          agentName: "search",
+          step: 1,
+          latestMessage: "live progress",
+          order: 0,
+        },
+      ],
       nextOrder: 1,
     };
     const snapshot = {
       session: { id: "parent", cwd: "/p", isStreaming: true, status: "running" },
-      subagents: [{
-        toolCallId: "chain-call",
-        childSessionId: "child-writing",
-        agent: "writing",
-        step: 2,
-      }],
-      messages: [{
-        role: "assistant",
-        content: [{ type: "toolCall", id: "chain-call", name: "subagent", arguments: '{"agent":"search"}' }],
-      }],
+      subagents: [
+        {
+          toolCallId: "chain-call",
+          childSessionId: "child-writing",
+          agent: "writing",
+          step: 2,
+        },
+      ],
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "chain-call", name: "subagent", arguments: '{"agent":"search"}' }],
+        },
+      ],
     } as never;
 
     expect(mergeSnapshot(prior, snapshot).tools[0]).toMatchObject({
@@ -674,25 +703,29 @@ describe("session reducer", () => {
   it("preserves prior live chain agent and step when the snapshot has no summary", () => {
     const prior: SessionViewState = {
       ...emptyState,
-      tools: [{
-        key: "chain-call",
-        name: "subagent",
-        running: true,
-        done: false,
-        error: false,
-        agentName: "writing",
-        step: 2,
-        order: 0,
-      }],
+      tools: [
+        {
+          key: "chain-call",
+          name: "subagent",
+          running: true,
+          done: false,
+          error: false,
+          agentName: "writing",
+          step: 2,
+          order: 0,
+        },
+      ],
       nextOrder: 1,
     };
     const snapshot = {
       session: { id: "parent", cwd: "/p", isStreaming: true, status: "running" },
       subagents: [],
-      messages: [{
-        role: "assistant",
-        content: [{ type: "toolCall", id: "chain-call", name: "subagent", arguments: '{"agent":"search"}' }],
-      }],
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "chain-call", name: "subagent", arguments: '{"agent":"search"}' }],
+        },
+      ],
     } as never;
 
     expect(mergeSnapshot(prior, snapshot).tools[0]).toMatchObject({ agentName: "writing", step: 2 });
@@ -702,29 +735,47 @@ describe("session reducer", () => {
     const start = nestedSubagentEvent({
       type: "tool_execution_update",
       toolCallId: "parent-tool",
-      partialResult: { details: { subagent: {
-        agent: "search",
-        sessionId: "child-uuid",
-        event: { type: "message_start", message: { id: "child-message", role: "assistant", content: [] } },
-      } } },
+      partialResult: {
+        details: {
+          subagent: {
+            agent: "search",
+            sessionId: "child-uuid",
+            event: { type: "message_start", message: { id: "child-message", role: "assistant", content: [] } },
+          },
+        },
+      },
     } as never)!;
     const first = nestedSubagentEvent({
       type: "tool_execution_update",
       toolCallId: "parent-tool",
-      partialResult: { details: { subagent: {
-        agent: "search",
-        sessionId: "child-uuid",
-        event: { type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "two " } },
-      } } },
+      partialResult: {
+        details: {
+          subagent: {
+            agent: "search",
+            sessionId: "child-uuid",
+            event: {
+              type: "message_update",
+              assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "two " },
+            },
+          },
+        },
+      },
     } as never)!;
     const second = nestedSubagentEvent({
       type: "tool_execution_update",
       toolCallId: "parent-tool",
-      partialResult: { details: { subagent: {
-        agent: "search",
-        sessionId: "child-uuid",
-        event: { type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "tokens" } },
-      } } },
+      partialResult: {
+        details: {
+          subagent: {
+            agent: "search",
+            sessionId: "child-uuid",
+            event: {
+              type: "message_update",
+              assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "tokens" },
+            },
+          },
+        },
+      },
     } as never)!;
 
     expect(start).toMatchObject({ sessionId: "child-uuid", toolCallId: "parent-tool", agent: "search" });
@@ -738,11 +789,15 @@ describe("session reducer", () => {
     const nested = nestedSubagentEvent({
       type: "tool_execution_update",
       toolCallId: "parent-tool",
-      partialResult: { details: { subagent: {
-        agent: "search",
-        sessionId: "child-uuid",
-        event: { type: "message_start", message: { id: "child-message", role: "assistant", content: [] } },
-      } } },
+      partialResult: {
+        details: {
+          subagent: {
+            agent: "search",
+            sessionId: "child-uuid",
+            event: { type: "message_start", message: { id: "child-message", role: "assistant", content: [] } },
+          },
+        },
+      },
     } as never)!.event!;
 
     let child = reduceSessionEvent({ ...emptyState, subagentName: "search" }, nested);
@@ -756,11 +811,15 @@ describe("session reducer", () => {
     const nested = nestedSubagentEvent({
       type: "tool_execution_update",
       toolCallId: "parent-tool",
-      partialResult: { details: { subagent: {
-        agent: "search",
-        sessionId: "child-uuid",
-        event: { type: "tool_execution_start", toolCallId: "bash-1", toolName: "bash", args: { command: "ls" } },
-      } } },
+      partialResult: {
+        details: {
+          subagent: {
+            agent: "search",
+            sessionId: "child-uuid",
+            event: { type: "tool_execution_start", toolCallId: "bash-1", toolName: "bash", args: { command: "ls" } },
+          },
+        },
+      },
     } as never)!.event!;
 
     let child = reduceSessionEvent({ ...emptyState, subagentName: "search" }, nested);
@@ -771,29 +830,50 @@ describe("session reducer", () => {
   });
 
   it("preserves nested child tool order among child messages", () => {
-    const nested = (event: AgentSessionEvent) => nestedSubagentEvent({
-      type: "tool_execution_update",
-      toolCallId: "parent-tool",
-      partialResult: { details: { subagent: { agent: "search", sessionId: "child-uuid", event } } },
-    } as never)!.event!;
-    let child = reduceSessionEvent({ ...emptyState, subagentName: "search" }, nested({
-      type: "message_start",
-      message: { id: "m1", role: "assistant", content: [{ type: "text", text: "before" }] },
-    } as never));
-    child = reduceSessionEvent(child, nested({
-      type: "tool_execution_start", toolCallId: "bash-1", toolName: "bash", args: { command: "ls" },
-    } as never));
-    child = reduceSessionEvent(child, nested({
-      type: "tool_execution_end", toolCallId: "bash-1", toolName: "bash", result: { output: "done" },
-    } as never));
-    child = reduceSessionEvent(child, nested({
-      type: "message_start",
-      message: { id: "m2", role: "assistant", content: [{ type: "text", text: "after" }] },
-    } as never));
+    const nested = (event: AgentSessionEvent) =>
+      nestedSubagentEvent({
+        type: "tool_execution_update",
+        toolCallId: "parent-tool",
+        partialResult: { details: { subagent: { agent: "search", sessionId: "child-uuid", event } } },
+      } as never)!.event!;
+    let child = reduceSessionEvent(
+      { ...emptyState, subagentName: "search" },
+      nested({
+        type: "message_start",
+        message: { id: "m1", role: "assistant", content: [{ type: "text", text: "before" }] },
+      } as never),
+    );
+    child = reduceSessionEvent(
+      child,
+      nested({
+        type: "tool_execution_start",
+        toolCallId: "bash-1",
+        toolName: "bash",
+        args: { command: "ls" },
+      } as never),
+    );
+    child = reduceSessionEvent(
+      child,
+      nested({
+        type: "tool_execution_end",
+        toolCallId: "bash-1",
+        toolName: "bash",
+        result: { output: "done" },
+      } as never),
+    );
+    child = reduceSessionEvent(
+      child,
+      nested({
+        type: "message_start",
+        message: { id: "m2", role: "assistant", content: [{ type: "text", text: "after" }] },
+      } as never),
+    );
 
-    expect([...child.messages, ...child.tools].sort((a, b) => a.order - b.order).map((entry) =>
-      "name" in entry ? entry.name : entry.text,
-    )).toEqual(["before", "bash", "after"]);
+    expect(
+      [...child.messages, ...child.tools]
+        .sort((a, b) => a.order - b.order)
+        .map((entry) => ("name" in entry ? entry.name : entry.text)),
+    ).toEqual(["before", "bash", "after"]);
   });
 
   it("ignores tool_execution_update for unknown toolCallIds", () => {
@@ -851,7 +931,10 @@ describe("session reducer", () => {
     state = reduceSessionEvent(state, assistantEvent("message_update", "one "));
     state = reduceSessionEvent(state, assistantEvent("message_update", "two"));
     expect(state.messages[0]!.text).toBe("one two");
-    state = reduceSessionEvent(state, { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "one two" }] } } as never);
+    state = reduceSessionEvent(state, {
+      type: "message_end",
+      message: { role: "assistant", content: [{ type: "text", text: "one two" }] },
+    } as never);
     expect(state.activeMessageKey).toBeUndefined();
     expect(state.messages[0]!.streaming).toBe(false);
   });

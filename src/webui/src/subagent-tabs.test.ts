@@ -6,8 +6,8 @@ import {
   closeSubagentTab,
   promoteSubagentTab,
   retainSubagentTab,
-  syncRunningSubagentTabs,
   type SubagentTabsState,
+  syncRunningSubagentTabs,
 } from "./subagent-tabs";
 
 const empty: SubagentTabsState = { tabs: [], hiddenRunningToolCalls: [] };
@@ -33,14 +33,16 @@ function summary(toolCallId: string, childSessionId: string, agent = "search"): 
 describe("subagent tab state", () => {
   it("derives temporary tabs only while tools run and preserves retained tabs after settlement", () => {
     const derived = syncRunningSubagentTabs(empty, [runningTool("call-1", "search", "finding papers")]);
-    expect(derived.tabs).toEqual([{
-      key: "tool:call-1",
-      toolCallId: "call-1",
-      agent: "search",
-      retained: false,
-      running: true,
-      latestMessage: "finding papers",
-    }]);
+    expect(derived.tabs).toEqual([
+      {
+        key: "tool:call-1",
+        toolCallId: "call-1",
+        agent: "search",
+        retained: false,
+        running: true,
+        latestMessage: "finding papers",
+      },
+    ]);
     expect(syncRunningSubagentTabs(derived, []).tabs).toEqual([]);
 
     const retained = retainSubagentTab(derived, "call-1");
@@ -54,12 +56,14 @@ describe("subagent tab state", () => {
     state = promoteSubagentTab(state, summary("call-1", "12345678-aaaa"));
     state = promoteSubagentTab(state, summary("call-2", "12345678-aaaa"));
 
-    expect(state.tabs).toEqual([expect.objectContaining({
-      key: "session:12345678-aaaa",
-      sessionId: "12345678-aaaa",
-      toolCallId: "call-1",
-      retained: true,
-    })]);
+    expect(state.tabs).toEqual([
+      expect.objectContaining({
+        key: "session:12345678-aaaa",
+        sessionId: "12345678-aaaa",
+        toolCallId: "call-1",
+        retained: true,
+      }),
+    ]);
     expect(syncRunningSubagentTabs(state, []).tabs).toHaveLength(1);
   });
 
@@ -84,14 +88,14 @@ describe("subagent tab state", () => {
     state = retainSubagentTab(syncRunningSubagentTabs(state, [runningTool("two")]), "two");
     state = promoteSubagentTab(state, summary("two", "22222222-bbbb"));
 
-    expect(state.tabs.map((tab) => childTabLabel(tab, state.tabs))).toEqual([
-      "search · 11111111",
-      "search · 22222222",
-    ]);
+    expect(state.tabs.map((tab) => childTabLabel(tab, state.tabs))).toEqual(["search · 11111111", "search · 22222222"]);
   });
 
   it("reuses an open UUID tab with the later invocation's current fields", () => {
-    let state = retainSubagentTab(syncRunningSubagentTabs(empty, [runningTool("call-old", "search", "old progress")]), "call-old");
+    let state = retainSubagentTab(
+      syncRunningSubagentTabs(empty, [runningTool("call-old", "search", "old progress")]),
+      "call-old",
+    );
     state = promoteSubagentTab(state, summary("call-old", "shared-uuid", "search"));
     state = syncRunningSubagentTabs(state, [runningTool("call-new", "writing", "current progress")]);
     state = retainSubagentTab(state, "call-new");
@@ -100,15 +104,17 @@ describe("subagent tab state", () => {
       latestMessage: "current progress",
     });
 
-    expect(state.tabs).toEqual([{
-      key: "session:shared-uuid",
-      sessionId: "shared-uuid",
-      toolCallId: "call-new",
-      agent: "writing",
-      retained: true,
-      running: true,
-      latestMessage: "current progress",
-    }]);
+    expect(state.tabs).toEqual([
+      {
+        key: "session:shared-uuid",
+        sessionId: "shared-uuid",
+        toolCallId: "call-new",
+        agent: "writing",
+        retained: true,
+        running: true,
+        latestMessage: "current progress",
+      },
+    ]);
   });
 
   it("merges an unretained reused invocation into its existing UUID tab without leaving a temporary", () => {
@@ -120,15 +126,17 @@ describe("subagent tab state", () => {
       latestMessage: "current progress",
     });
 
-    expect(state.tabs).toEqual([{
-      key: "session:shared-uuid",
-      sessionId: "shared-uuid",
-      toolCallId: "call-new",
-      agent: "writing",
-      retained: true,
-      running: true,
-      latestMessage: "current progress",
-    }]);
+    expect(state.tabs).toEqual([
+      {
+        key: "session:shared-uuid",
+        sessionId: "shared-uuid",
+        toolCallId: "call-new",
+        agent: "writing",
+        retained: true,
+        running: true,
+        latestMessage: "current progress",
+      },
+    ]);
   });
 
   it("preserves a retained prior chain UUID while creating and promoting the next step tab", () => {

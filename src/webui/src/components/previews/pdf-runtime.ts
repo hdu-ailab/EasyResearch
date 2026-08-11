@@ -60,7 +60,7 @@ export function fakePdfLoader(options: FakePdfLoaderOptions): PdfLoader {
       const { pages } = options;
       return {
         numPages: pages,
-        async page(n: number): Promise<PdfPageHandle> {
+        async page(_n: number): Promise<PdfPageHandle> {
           return {
             viewport(scale: number, rotation: number): PdfViewport {
               const rotated = rotation % 180 !== 0;

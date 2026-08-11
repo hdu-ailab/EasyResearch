@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
 import { ChevronLeft, Save, X } from "lucide-react";
+import { useEffect, useState } from "react";
 import { ApiError, listConfigProjects, readConfigFile, writeConfigFile } from "../api";
+import { ProductMark, Topbar } from "../components/Topbar";
 import { useI18n } from "../i18n/useI18n";
 import type { ConfigProjectsDto } from "../types";
-import { ProductMark, Topbar } from "../components/Topbar";
 
 export interface ConfigPageProps {
   onBack: () => void;
@@ -94,7 +94,10 @@ export function ConfigPage({ onBack }: ConfigPageProps) {
       />
       <div className="min-h-0 flex-1 px-4 pb-4 pt-[4px]">
         {selected ? (
-          <section className="relative mx-auto flex h-full w-full max-w-[980px] flex-col rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]" aria-label={t("configPage.editorAria")}>
+          <section
+            className="relative mx-auto flex h-full w-full max-w-[980px] flex-col rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]"
+            aria-label={t("configPage.editorAria")}
+          >
             <div className="flex h-10 shrink-0 items-center gap-2 border-b border-v2-grey-200 px-2">
               <button
                 type="button"
@@ -105,7 +108,9 @@ export function ConfigPage({ onBack }: ConfigPageProps) {
               >
                 <ChevronLeft size={15} />
               </button>
-              <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-v2-text-text-muted">{settingsPath(selected)}</span>
+              <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-v2-text-text-muted">
+                {settingsPath(selected)}
+              </span>
               <button
                 type="button"
                 className="flex size-7 items-center justify-center rounded-md text-v2-icon-icon-muted transition-colors hover:bg-v2-grey-100"
@@ -124,13 +129,22 @@ export function ConfigPage({ onBack }: ConfigPageProps) {
               onChange={(e) => setContent(e.target.value)}
             />
             <div className="flex shrink-0 items-center gap-1 border-t border-v2-grey-200 p-2">
-              <button type="button" className="flex h-7 items-center gap-1 rounded-md bg-v2-grey-1100 px-3 text-[12px] font-medium text-v2-grey-50 transition-opacity hover:opacity-90" aria-label={t("config.save")} onClick={() => void save()}>
+              <button
+                type="button"
+                className="flex h-7 items-center gap-1 rounded-md bg-v2-grey-1100 px-3 text-[12px] font-medium text-v2-grey-50 transition-opacity hover:opacity-90"
+                aria-label={t("config.save")}
+                onClick={() => void save()}
+              >
                 <Save size={13} />
                 {t("config.save")}
               </button>
               {saved && !error && <p className="ml-2 text-[12px] text-v2-text-text-muted">{t("config.saved")}</p>}
             </div>
-            {error && <p className="border-t border-v2-grey-200 px-3 py-2 text-[12px] text-v2-status-error" role="alert">{error}</p>}
+            {error && (
+              <p className="border-t border-v2-grey-200 px-3 py-2 text-[12px] text-v2-status-error" role="alert">
+                {error}
+              </p>
+            )}
             {help && (
               <div
                 role="dialog"
@@ -149,9 +163,7 @@ export function ConfigPage({ onBack }: ConfigPageProps) {
                       <X size={15} />
                     </button>
                   </div>
-                  <p className="mb-2 text-[13px] text-v2-text-text-base">
-                    {t("configPage.helpIntro")}
-                  </p>
+                  <p className="mb-2 text-[13px] text-v2-text-text-base">{t("configPage.helpIntro")}</p>
                   <ul className="mb-3 list-disc pl-5 text-[13px] text-v2-text-text-base">
                     <li>{t("configPage.helpAgentModels")}</li>
                   </ul>
@@ -168,21 +180,28 @@ export function ConfigPage({ onBack }: ConfigPageProps) {
             )}
           </section>
         ) : (
-          <section className="mx-auto flex h-full w-full max-w-[980px] flex-col rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]" aria-label={t("configPage.settingsRoot")}>
+          <section
+            className="mx-auto flex h-full w-full max-w-[980px] flex-col rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]"
+            aria-label={t("configPage.settingsRoot")}
+          >
             <div className="flex h-10 shrink-0 items-center border-b border-v2-grey-200 px-3">
               <span className="text-[12px] text-v2-text-text-muted">{t("configPage.chooseScope")}</span>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto p-2">
               {data ? (
-                <ul role="list" aria-label={t("configPage.projectFolders")} className="flex flex-col gap-0.5">
+                <ul aria-label={t("configPage.projectFolders")} className="flex flex-col gap-0.5">
                   <li>
                     <button
                       type="button"
                       className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-v2-grey-100"
                       onClick={() => void open({ kind: "home" })}
                     >
-                      <span className="text-[13px] font-medium text-v2-text-text-base">{t("configPage.homeLabel")}</span>
-                      <span className="ml-auto truncate font-mono text-[12px] text-v2-text-text-muted">{data.home}</span>
+                      <span className="text-[13px] font-medium text-v2-text-text-base">
+                        {t("configPage.homeLabel")}
+                      </span>
+                      <span className="ml-auto truncate font-mono text-[12px] text-v2-text-text-muted">
+                        {data.home}
+                      </span>
                     </button>
                   </li>
                   {data.projects.map((project) => (
@@ -198,9 +217,15 @@ export function ConfigPage({ onBack }: ConfigPageProps) {
                   ))}
                 </ul>
               ) : (
-                <p className="flex flex-1 items-center justify-center text-[13px] text-v2-text-text-faint">{t("configPage.loadingFolders")}</p>
+                <p className="flex flex-1 items-center justify-center text-[13px] text-v2-text-text-faint">
+                  {t("configPage.loadingFolders")}
+                </p>
               )}
-              {error && <p className="border-t border-v2-grey-200 px-3 py-2 text-[12px] text-v2-status-error" role="alert">{error}</p>}
+              {error && (
+                <p className="border-t border-v2-grey-200 px-3 py-2 text-[12px] text-v2-status-error" role="alert">
+                  {error}
+                </p>
+              )}
             </div>
           </section>
         )}

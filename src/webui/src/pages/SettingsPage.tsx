@@ -1,17 +1,12 @@
-import { useEffect, useState } from "react";
 import { Activity, FileJson, Languages, MessageSquare, Minus, Plus, Settings2 } from "lucide-react";
+import { useEffect, useState } from "react";
 import type { AgentDto } from "../../../web/contracts";
 import { getWebuiSettings, listAgents, listModels, updateWebuiSettings } from "../api";
-import { useI18n } from "../i18n/useI18n";
-import { agentDisplayName } from "../i18n/agents";
-import {
-  CHAT_FONT_MAX,
-  CHAT_FONT_MIN,
-  FILES_FONT_MAX,
-  FILES_FONT_MIN,
-} from "../preferences";
-import { usePreferences } from "../preferences/PreferencesProvider";
 import { ProductMark, Topbar } from "../components/Topbar";
+import { agentDisplayName } from "../i18n/agents";
+import { useI18n } from "../i18n/useI18n";
+import { CHAT_FONT_MAX, CHAT_FONT_MIN, FILES_FONT_MAX, FILES_FONT_MIN } from "../preferences";
+import { usePreferences } from "../preferences/PreferencesProvider";
 
 export interface SettingsPageProps {
   onBack: () => void;
@@ -37,20 +32,43 @@ interface StepperProps {
   onIncrease: () => void;
 }
 
-function FontStepper({ label, value, min, max, decreaseLabel, increaseLabel, preview, previewClassName, onDecrease, onIncrease }: StepperProps) {
+function FontStepper({
+  label,
+  value,
+  min,
+  max,
+  decreaseLabel,
+  increaseLabel,
+  preview,
+  previewClassName,
+  onDecrease,
+  onIncrease,
+}: StepperProps) {
   return (
     <div className="flex min-w-0 items-center justify-between gap-3">
       <span className="shrink-0 text-[13px] text-v2-text-text-base">{label}</span>
       <div className="flex min-w-0 items-center justify-end gap-3">
         <span className={`min-w-0 truncate ${previewClassName}`}>{preview}</span>
         <div className="flex shrink-0 items-center gap-2">
-          <button type="button" aria-label={decreaseLabel} disabled={value <= min} onClick={onDecrease} className={buttonClass}>
+          <button
+            type="button"
+            aria-label={decreaseLabel}
+            disabled={value <= min}
+            onClick={onDecrease}
+            className={buttonClass}
+          >
             <Minus size={13} aria-hidden />
           </button>
           <span className="w-10 text-center text-[13px] tabular-nums text-v2-text-text-base" aria-live="polite">
             {value}px
           </span>
-          <button type="button" aria-label={increaseLabel} disabled={value >= max} onClick={onIncrease} className={buttonClass}>
+          <button
+            type="button"
+            aria-label={increaseLabel}
+            disabled={value >= max}
+            onClick={onIncrease}
+            className={buttonClass}
+          >
             <Plus size={13} aria-hidden />
           </button>
         </div>
@@ -59,7 +77,11 @@ function FontStepper({ label, value, min, max, decreaseLabel, increaseLabel, pre
   );
 }
 
-function PreferenceSwitch({ label, checked, onChange }: {
+function PreferenceSwitch({
+  label,
+  checked,
+  onChange,
+}: {
   label: string;
   checked: boolean;
   onChange: (checked: boolean) => void;
@@ -141,8 +163,7 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
 
   const orchestratorValue = orchestratorModel ?? effectiveOrchestratorModel ?? "";
   const orchestratorOptions =
-    effectiveOrchestratorModel !== null &&
-    !models.some((m) => `${m.provider}/${m.id}` === effectiveOrchestratorModel)
+    effectiveOrchestratorModel !== null && !models.some((m) => `${m.provider}/${m.id}` === effectiveOrchestratorModel)
       ? [
           ...models,
           {
@@ -191,8 +212,12 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
                 increaseLabel={t("settings.appearance.increaseFiles")}
                 preview={t("settings.appearance.previewFiles")}
                 previewClassName="font-mono text-[length:var(--v2-files-font-size)] leading-[1.5] text-v2-text-text-faint"
-                onDecrease={() => updatePreferences({ filesFontSize: Math.max(FILES_FONT_MIN, prefs.filesFontSize - 1) })}
-                onIncrease={() => updatePreferences({ filesFontSize: Math.min(FILES_FONT_MAX, prefs.filesFontSize + 1) })}
+                onDecrease={() =>
+                  updatePreferences({ filesFontSize: Math.max(FILES_FONT_MIN, prefs.filesFontSize - 1) })
+                }
+                onIncrease={() =>
+                  updatePreferences({ filesFontSize: Math.min(FILES_FONT_MAX, prefs.filesFontSize + 1) })
+                }
               />
             </div>
           </section>
@@ -227,6 +252,7 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
               <h2 className="text-[13px] font-semibold text-v2-text-text-base">{t("settings.language.title")}</h2>
             </header>
             <div className="flex flex-col gap-3 px-4 py-4">
+              {/* biome-ignore lint/a11y/useSemanticElements: this compact segmented control intentionally has no fieldset chrome. */}
               <div
                 className="flex w-fit gap-1 rounded-md border border-v2-grey-200 bg-v2-background-bg-deep p-1"
                 role="group"
@@ -239,9 +265,7 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
                     aria-pressed={language === lang}
                     onClick={() => setLanguage(lang)}
                     className={`h-7 rounded px-3 text-[13px] transition-colors ${
-                      language === lang
-                        ? "bg-v2-blue-600 text-white"
-                        : "text-v2-text-text-base hover:bg-v2-grey-100"
+                      language === lang ? "bg-v2-blue-600 text-white" : "text-v2-text-text-base hover:bg-v2-grey-100"
                     }`}
                   >
                     {lang === "en" ? "English" : "简体中文"}
@@ -263,7 +287,9 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
                 agent.name === "orchestrator" ? (
                   <div key={agent.name}>
                     <label className="flex items-center justify-between gap-4">
-                      <span className="text-[13px] font-medium text-v2-text-text-base">{agentDisplayName(t, "orchestrator")}</span>
+                      <span className="text-[13px] font-medium text-v2-text-text-base">
+                        {agentDisplayName(t, "orchestrator")}
+                      </span>
                       <select
                         className="h-8 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600 disabled:opacity-50"
                         aria-label={`${t("settings.agents.selectModelFor")} ${agentDisplayName(t, agent.name)}`}
@@ -281,7 +307,9 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
                   </div>
                 ) : (
                   <label key={agent.name} className="flex items-center justify-between gap-4">
-                    <span className="text-[13px] font-medium text-v2-text-text-base">{agentDisplayName(t, agent.name)}</span>
+                    <span className="text-[13px] font-medium text-v2-text-text-base">
+                      {agentDisplayName(t, agent.name)}
+                    </span>
                     <select
                       className="h-8 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600 disabled:opacity-50"
                       aria-label={`${t("settings.agents.selectModelFor")} ${agentDisplayName(t, agent.name)}`}
@@ -314,7 +342,10 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
           </section>
 
           {error && (
-            <p className="rounded-md border border-v2-status-error/30 bg-v2-status-error/5 px-3 py-2 text-[13px] text-v2-status-error" role="alert">
+            <p
+              className="rounded-md border border-v2-status-error/30 bg-v2-status-error/5 px-3 py-2 text-[13px] text-v2-status-error"
+              role="alert"
+            >
               {error}
             </p>
           )}

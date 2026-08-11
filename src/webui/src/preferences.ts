@@ -26,19 +26,15 @@ export function resolveLanguage(navigatorLanguage: string): Language {
   return navigatorLanguage.toLowerCase().startsWith("zh") ? "zh-CN" : "en";
 }
 
-const isInt = (value: unknown): value is number =>
-  typeof value === "number" && Number.isInteger(value);
+const isInt = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value);
 
 function pickFontSize(value: unknown, fallback: number, min: number, max: number): number {
   return isInt(value) && value >= min && value <= max ? value : fallback;
 }
 
-const pickBoolean = (value: unknown): boolean => typeof value === "boolean" ? value : false;
+const pickBoolean = (value: unknown): boolean => (typeof value === "boolean" ? value : false);
 
-export function readPreferences(
-  storage: Pick<Storage, "getItem">,
-  navigatorLanguage: () => string,
-): WebUiPreferences {
+export function readPreferences(storage: Pick<Storage, "getItem">, navigatorLanguage: () => string): WebUiPreferences {
   const browserLanguage = resolveLanguage(navigatorLanguage());
   const defaults = (language: Language): WebUiPreferences => ({
     chatFontSize: DEFAULT_CHAT_FONT_SIZE,
@@ -50,7 +46,8 @@ export function readPreferences(
     const raw = storage.getItem(STORAGE_KEY);
     if (!raw) return defaults(browserLanguage);
     const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const language: Language = parsed.language === "en" || parsed.language === "zh-CN" ? parsed.language : browserLanguage;
+    const language: Language =
+      parsed.language === "en" || parsed.language === "zh-CN" ? parsed.language : browserLanguage;
     return {
       chatFontSize: pickFontSize(parsed.chatFontSize, DEFAULT_CHAT_FONT_SIZE, CHAT_FONT_MIN, CHAT_FONT_MAX),
       filesFontSize: pickFontSize(parsed.filesFontSize, DEFAULT_FILES_FONT_SIZE, FILES_FONT_MIN, FILES_FONT_MAX),

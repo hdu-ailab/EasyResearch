@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -45,10 +44,13 @@ function stubReducedMotion(initialMatches: boolean) {
     removeListener: vi.fn(),
     dispatchEvent: vi.fn(),
   } as unknown as MediaQueryList;
-  vi.stubGlobal("matchMedia", vi.fn((query: string) => {
-    expect(query).toBe(REDUCED_MOTION_QUERY);
-    return mediaQuery;
-  }));
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn((query: string) => {
+      expect(query).toBe(REDUCED_MOTION_QUERY);
+      return mediaQuery;
+    }),
+  );
   return {
     mediaQuery,
     listenerCount: () => listeners.size,
@@ -160,12 +162,7 @@ describe("SubagentToolCard", () => {
     { state: "failed", patch: { running: false, done: true, error: true } },
   ])("keeps the final message on a $state card without the running edge", ({ state, patch }) => {
     const finalText = `${state} final message`;
-    render(
-      <SubagentToolCard
-        tool={subagentTool({ ...patch, latestMessage: finalText })}
-        initialOpen
-      />,
-    );
+    render(<SubagentToolCard tool={subagentTool({ ...patch, latestMessage: finalText })} initialOpen />);
 
     expect(screen.getByText(finalText)).toBeVisible();
     expect(screen.getByText(new RegExp(`^${state}$`, "i"))).toBeVisible();
@@ -261,7 +258,10 @@ describe("SubagentToolCard", () => {
 
     await userEvent.setup().click(screen.getByRole("button", { name: "View details: Step 1" }));
     await userEvent.setup().click(screen.getByRole("button", { name: "View details: Step 2" }));
-    expect(onViewDetails.mock.calls).toEqual([["sub-1", 1], ["sub-1", 2]]);
+    expect(onViewDetails.mock.calls).toEqual([
+      ["sub-1", 1],
+      ["sub-1", 2],
+    ]);
   });
 
   it("describes missing settled progress without claiming it is waiting", () => {

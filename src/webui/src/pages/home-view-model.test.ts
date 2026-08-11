@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import { expect, it } from "vitest";
 import type { ActiveSessionDto, SessionSummaryDto } from "../../../web/contracts";
 import {
@@ -21,11 +20,7 @@ function history(id: string, cwd: string): SessionSummaryDto {
   };
 }
 
-function active(
-  id: string,
-  cwd: string,
-  status: ActiveSessionDto["status"],
-): ActiveSessionDto {
+function active(id: string, cwd: string, status: ActiveSessionDto["status"]): ActiveSessionDto {
   return {
     id,
     cwd,

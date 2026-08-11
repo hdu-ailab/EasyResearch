@@ -116,11 +116,16 @@ export const en = {
   "agent.experiment": "Experiment",
   "agent.writing": "Writing",
   "agent.figures": "Figures",
-  "agentDesc.orchestrator": "Research Mentor for the paper pipeline. Receives and clarifies the user's paper idea, leads specialist agents (search, experiment, writing, figures), tracks their outputs, and decides the next step. On explicit request, reviews the available research question, evidence, method, experiments, and manuscript claims, then recommends whether to proceed, revise through the relevant specialist, or ask the user. Quality checkpoints remain user-confirmed. The Research Mentor dispatches and synthesizes; it does not replace specialist work.",
-  "agentDesc.search": "Web research agent. Searches academic papers for a given topic using the paper-search and arxiv skills, verifies metadata with the arxiv skill, converts PDFs to readable Markdown with pdf-to-markdown, and produces a material package in ref_papers/. Returns a summary of what was found as its final output. Does not write literature reviews.",
-  "agentDesc.experiment": "Experiment agent. Creates the experiment workspace, reads the referenced papers, selects datasets, implements baselines, runs controlled trials (local or remote GPU per configuration), and records formal results in the experiments/ area. May dispatch the search agent to retrieve papers or material.",
-  "agentDesc.writing": "Writing agent. Drafts and revises the manuscript body in Markdown from the material package and experiment records, writes the literature review with verified citations, and compiles the LaTeX-exported PDF. May dispatch the search agent for source material and the figures agent for diagrams.",
-  "agentDesc.figures": "Figures agent. Creates publication-grade diagrams (architecture, workflow, results) with the drawio-academic-skills skill, saving editable sources and exported images under figures/. May dispatch the search agent to retrieve source material.",
+  "agentDesc.orchestrator":
+    "Research Mentor for the paper pipeline. Receives and clarifies the user's paper idea, leads specialist agents (search, experiment, writing, figures), tracks their outputs, and decides the next step. On explicit request, reviews the available research question, evidence, method, experiments, and manuscript claims, then recommends whether to proceed, revise through the relevant specialist, or ask the user. Quality checkpoints remain user-confirmed. The Research Mentor dispatches and synthesizes; it does not replace specialist work.",
+  "agentDesc.search":
+    "Web research agent. Searches academic papers for a given topic using the paper-search and arxiv skills, verifies metadata with the arxiv skill, converts PDFs to readable Markdown with pdf-to-markdown, and produces a material package in ref_papers/. Returns a summary of what was found as its final output. Does not write literature reviews.",
+  "agentDesc.experiment":
+    "Experiment agent. Creates the experiment workspace, reads the referenced papers, selects datasets, implements baselines, runs controlled trials (local or remote GPU per configuration), and records formal results in the experiments/ area. May dispatch the search agent to retrieve papers or material.",
+  "agentDesc.writing":
+    "Writing agent. Drafts and revises the manuscript body in Markdown from the material package and experiment records, writes the literature review with verified citations, and compiles the LaTeX-exported PDF. May dispatch the search agent for source material and the figures agent for diagrams.",
+  "agentDesc.figures":
+    "Figures agent. Creates publication-grade diagrams (architecture, workflow, results) with the drawio-academic-skills skill, saving editable sources and exported images under figures/. May dispatch the search agent to retrieve source material.",
   "files.filter": "Filter files",
   "files.filterPlaceholder": "Filter…",
   "files.refresh": "Refresh listing",
@@ -177,7 +182,7 @@ export const en = {
   "configPage.helpDialog": "Settings help",
   "configPage.closeHelp": "Close help",
   "configPage.helpIntro": "The lazyresearch namespace holds behavioral settings. Fields:",
-  "configPage.helpAgentModels": "agents.<name>.model: \"provider/id\" model override for an agent.",
+  "configPage.helpAgentModels": 'agents.<name>.model: "provider/id" model override for an agent.',
   "configPage.homeLabel": "~（全局配置）",
   "preview.pdf.previous": "Previous page",
   "preview.pdf.next": "Next page",
@@ -312,11 +317,16 @@ export const zhCN: Record<MessageKey, string> = {
   "agent.experiment": "实验",
   "agent.writing": "写作",
   "agent.figures": "图表",
-  "agentDesc.orchestrator": "论文流水线的论文导师。接收并澄清用户的论文想法，带领检索、实验、写作和图表等专业智能体，跟踪阶段产出并决定下一步。用户明确要求时，评审现有的研究问题、证据、方法、实验和稿件论证，并建议继续推进、让相关专业智能体定向修改或请用户决策。质量检查点仍由用户确认。论文导师负责分派与汇总，不替代专业智能体的工作。",
-  "agentDesc.search": "网络研究智能体。使用 paper-search 与 arxiv 技能按主题检索学术论文，用 arxiv 技能核验元数据，用 pdf-to-markdown 将 PDF 转为可读的 Markdown，并在 ref_papers/ 中产出素材包。最终输出返回检索摘要，不撰写文献综述。",
-  "agentDesc.experiment": "实验智能体。创建实验工作区，阅读引用论文，选择数据集，实现基线方法，运行受控实验（按配置使用本地或远程 GPU），并在 experiments/ 中记录正式结果。可分派检索智能体获取论文或素材。",
-  "agentDesc.writing": "写作智能体。根据素材包与实验记录用 Markdown 起草并修改正文，撰写含已验证引用的文献综述，并编译 LaTeX 导出的 PDF。可分派检索智能体获取素材、图表智能体绘制图表。",
-  "agentDesc.figures": "图表智能体。使用 drawio-academic-skills 技能绘制出版级图表（架构、流程、结果），将可编辑源文件与导出的图片保存在 figures/ 下。可分派检索智能体获取素材。",
+  "agentDesc.orchestrator":
+    "论文流水线的论文导师。接收并澄清用户的论文想法，带领检索、实验、写作和图表等专业智能体，跟踪阶段产出并决定下一步。用户明确要求时，评审现有的研究问题、证据、方法、实验和稿件论证，并建议继续推进、让相关专业智能体定向修改或请用户决策。质量检查点仍由用户确认。论文导师负责分派与汇总，不替代专业智能体的工作。",
+  "agentDesc.search":
+    "网络研究智能体。使用 paper-search 与 arxiv 技能按主题检索学术论文，用 arxiv 技能核验元数据，用 pdf-to-markdown 将 PDF 转为可读的 Markdown，并在 ref_papers/ 中产出素材包。最终输出返回检索摘要，不撰写文献综述。",
+  "agentDesc.experiment":
+    "实验智能体。创建实验工作区，阅读引用论文，选择数据集，实现基线方法，运行受控实验（按配置使用本地或远程 GPU），并在 experiments/ 中记录正式结果。可分派检索智能体获取论文或素材。",
+  "agentDesc.writing":
+    "写作智能体。根据素材包与实验记录用 Markdown 起草并修改正文，撰写含已验证引用的文献综述，并编译 LaTeX 导出的 PDF。可分派检索智能体获取素材、图表智能体绘制图表。",
+  "agentDesc.figures":
+    "图表智能体。使用 drawio-academic-skills 技能绘制出版级图表（架构、流程、结果），将可编辑源文件与导出的图片保存在 figures/ 下。可分派检索智能体获取素材。",
   "files.filter": "过滤文件",
   "files.filterPlaceholder": "筛选…",
   "files.refresh": "刷新列表",
@@ -373,7 +383,7 @@ export const zhCN: Record<MessageKey, string> = {
   "configPage.helpDialog": "设置帮助",
   "configPage.closeHelp": "关闭帮助",
   "configPage.helpIntro": "lazyresearch 命名空间存放行为设置。字段：",
-  "configPage.helpAgentModels": "agents.<name>.model：智能体的 \"provider/id\" 模型覆盖。",
+  "configPage.helpAgentModels": 'agents.<name>.model：智能体的 "provider/id" 模型覆盖。',
   "configPage.homeLabel": "~（全局配置）",
   "preview.pdf.previous": "上一页",
   "preview.pdf.next": "下一页",

@@ -1,16 +1,16 @@
-import { useEffect, useState } from "react";
 import { AlertTriangle, Check, ChevronDown, ChevronRight } from "lucide-react";
-import type { ToolView } from "../session-reducer";
+import { useEffect, useState } from "react";
 import { useExpandable } from "../hooks/useExpandable";
 import { agentDisplayName } from "../i18n/agents";
 import { useI18n } from "../i18n/useI18n";
+import type { ToolView } from "../session-reducer";
 import { MarkdownBlock } from "./MarkdownBlock";
 
 const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)";
 
 function usePrefersReducedMotion(): boolean {
-  const [reducedMotion, setReducedMotion] = useState(() =>
-    typeof window.matchMedia === "function" && window.matchMedia(REDUCED_MOTION_QUERY).matches,
+  const [reducedMotion, setReducedMotion] = useState(
+    () => typeof window.matchMedia === "function" && window.matchMedia(REDUCED_MOTION_QUERY).matches,
   );
 
   useEffect(() => {
@@ -54,12 +54,18 @@ export function SubagentToolCard({
         ? t("transcript.running")
         : t("transcript.subagentProgress");
   const step = tool.step !== undefined ? `${t("transcript.subagentStep")} ${tool.step}` : undefined;
-  const mappedLinks = tool.sessionLinks ?? (tool.sessionId ? [{
-    toolCallId: tool.key,
-    childSessionId: tool.sessionId,
-    agent: tool.agentName ?? "subagent",
-    ...(tool.step !== undefined ? { step: tool.step } : {}),
-  }] : []);
+  const mappedLinks =
+    tool.sessionLinks ??
+    (tool.sessionId
+      ? [
+          {
+            toolCallId: tool.key,
+            childSessionId: tool.sessionId,
+            agent: tool.agentName ?? "subagent",
+            ...(tool.step !== undefined ? { step: tool.step } : {}),
+          },
+        ]
+      : []);
   const canViewDetails = onViewDetails !== undefined && (running || mappedLinks.length > 0);
   const stateClass = running
     ? reducedMotion
@@ -81,12 +87,18 @@ export function SubagentToolCard({
           >
             <span className="sr-only">{open ? t("transcript.hideDetails") : t("transcript.showDetails")}</span>
             {running ? <span className="v2-spinner shrink-0" aria-hidden /> : null}
-            {tool.done && !tool.error ? <Check className="shrink-0 text-v2-status-success" size={14} aria-hidden /> : null}
+            {tool.done && !tool.error ? (
+              <Check className="shrink-0 text-v2-status-success" size={14} aria-hidden />
+            ) : null}
             {tool.error ? <AlertTriangle className="shrink-0 text-v2-status-error" size={14} aria-hidden /> : null}
             <span className="min-w-0 flex-1 truncate font-medium text-v2-text-text-base">{agentName}</span>
             <span className={tool.error ? "text-v2-status-error" : "text-v2-text-text-faint"}>{state}</span>
             {step ? <span className="text-v2-text-text-faint">{step}</span> : null}
-            {open ? <ChevronDown className="shrink-0" size={14} aria-hidden /> : <ChevronRight className="shrink-0" size={14} aria-hidden />}
+            {open ? (
+              <ChevronDown className="shrink-0" size={14} aria-hidden />
+            ) : (
+              <ChevronRight className="shrink-0" size={14} aria-hidden />
+            )}
           </button>
 
           {!mounted ? (
@@ -107,9 +119,10 @@ export function SubagentToolCard({
           {canViewDetails && mappedLinks.length > 1 ? (
             <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
               {mappedLinks.map((link) => {
-                const linkStep = link.step === undefined
-                  ? t("transcript.viewDetails")
-                  : `${t("transcript.subagentStep")} ${link.step}`;
+                const linkStep =
+                  link.step === undefined
+                    ? t("transcript.viewDetails")
+                    : `${t("transcript.subagentStep")} ${link.step}`;
                 return (
                   <button
                     key={`${link.childSessionId}:${link.step ?? "single"}`}

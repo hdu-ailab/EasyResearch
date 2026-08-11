@@ -1,9 +1,8 @@
-// @vitest-environment jsdom
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { FileBrowser } from "./FileBrowser";
 import { listEntries, readFileContent } from "../api";
+import { FileBrowser } from "./FileBrowser";
 
 vi.mock("../api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api")>();

@@ -28,9 +28,7 @@ describe("api transport", () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", fetchMock);
     fetchMock.mockReset();
-    fetchMock.mockImplementation(() =>
-      Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 })),
-    );
+    fetchMock.mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 })));
   });
 
   afterEach(() => {
@@ -40,7 +38,9 @@ describe("api transport", () => {
 
   it("listStatus GETs /api/status", async () => {
     fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ agentDir: "/a", sessions: [], activeSessions: [] }), { status: 200 }),
+      new Response(JSON.stringify({ agentDir: "/a", homeDir: "/home/user", sessions: [], activeSessions: [] }), {
+        status: 200,
+      }),
     );
     const result = await listStatus();
     expect(fetchMock).toHaveBeenCalledWith("/api/status", expect.objectContaining({ method: "GET" }));
@@ -61,7 +61,10 @@ describe("api transport", () => {
       new Response(JSON.stringify([{ name: "search", model: "a/1", source: "override" }]), { status: 200 }),
     );
     const list = await getEffectiveModels("s1");
-    expect(fetchMock).toHaveBeenCalledWith("/api/sessions/s1/agents/effective-models", expect.objectContaining({ method: "GET" }));
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/sessions/s1/agents/effective-models",
+      expect.objectContaining({ method: "GET" }),
+    );
     expect(list[0]?.source).toBe("override");
   });
 
@@ -74,6 +77,7 @@ describe("api transport", () => {
   });
 
   it("listDirectories GETs /api/directories with path", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ entries: [] }), { status: 200 }));
     await listDirectories("/home/user");
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(init.method).toBe("GET");
@@ -90,6 +94,9 @@ describe("api transport", () => {
   });
 
   it("createSession POSTs cwd only", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ id: "s1", cwd: "/p", isStreaming: false, status: "ready" }), { status: 200 }),
+    );
     await createSession("/p");
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("/api/sessions");
@@ -97,6 +104,9 @@ describe("api transport", () => {
   });
 
   it("openSession POSTs path only", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ id: "s1", cwd: "/p", isStreaming: false, status: "ready" }), { status: 200 }),
+    );
     await openSession("/agent/s/a.jsonl");
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("/api/sessions/open");
@@ -105,7 +115,14 @@ describe("api transport", () => {
 
   it("getSnapshot GETs session snapshot", async () => {
     fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ session: { id: "s1" }, messages: [] }), { status: 200 }),
+      new Response(
+        JSON.stringify({
+          session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+          messages: [],
+          subagents: [],
+        }),
+        { status: 200 },
+      ),
     );
     await getSnapshot("s1");
     const [url] = fetchMock.mock.calls[0] as [string];
@@ -124,18 +141,30 @@ describe("api transport", () => {
     expect(fetchMock.mock.calls[0]![0]).toBe("/api/sessions/s1/abort");
     await stopSession("s1");
     expect(fetchMock.mock.calls[1]![0]).toBe("/api/sessions/s1/stop");
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ id: "s1", cwd: "/p", isStreaming: false, status: "ready" }), { status: 200 }),
+    );
     await restartSession("s1");
     expect(fetchMock.mock.calls[2]![0]).toBe("/api/sessions/s1/restart");
   });
 
+  it("accepts an empty 204 response for void commands", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await abortSession("s1");
+    expect(fetchMock).toHaveBeenCalledWith("/api/sessions/s1/abort", { method: "POST" });
+  });
+
   it("listConfig sends scope, cwd, and path", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }));
     await listConfig("project", "/p", "agents");
     const [url] = fetchMock.mock.calls[0] as [string];
     expect(url).toBe("/api/config?scope=project&cwd=%2Fp&path=agents");
   });
 
   it("listConfigProjects GETs /api/config/projects", async () => {
-    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ home: "/h", projects: [{ cwd: "/p" }] }), { status: 200 }));
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ home: "/h", projects: [{ cwd: "/p" }] }), { status: 200 }),
+    );
     const dto = await listConfigProjects();
     expect(fetchMock).toHaveBeenCalledWith("/api/config/projects", expect.objectContaining({ method: "GET" }));
     expect(dto.home).toBe("/h");
@@ -155,7 +184,12 @@ describe("api transport", () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("/api/config/file");
     expect(init.method).toBe("PUT");
-    expect(JSON.parse(init.body as string)).toEqual({ scope: "project", cwd: "/p", path: "settings.json", content: '{"a":1}' });
+    expect(JSON.parse(init.body as string)).toEqual({
+      scope: "project",
+      cwd: "/p",
+      path: "settings.json",
+      content: '{"a":1}',
+    });
   });
 
   it("createConfigDirectory POSTs /api/config/directory", async () => {
@@ -175,7 +209,9 @@ describe("api transport", () => {
 
   it("ApiError message never includes request content", async () => {
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: "boom" }), { status: 400 }));
-    const error = (await writeConfigFile("global", "/p", "secrets.json", "SECRET-PAYLOAD").catch((e: unknown) => e)) as ApiError;
+    const error = (await writeConfigFile("global", "/p", "secrets.json", "SECRET-PAYLOAD").catch(
+      (e: unknown) => e,
+    )) as ApiError;
     expect(error.message).not.toContain("SECRET-PAYLOAD");
     expect(error.message).toContain("boom");
   });
@@ -183,7 +219,12 @@ describe("api transport", () => {
 
 describe("connectSessionEvents", () => {
   let FakeEventSource: {
-    instances: { url: string; onmessage: ((e: MessageEvent) => void) | null; onerror: (() => void) | null; close: () => void }[];
+    instances: {
+      url: string;
+      onmessage: ((e: MessageEvent) => void) | null;
+      onerror: (() => void) | null;
+      close: () => void;
+    }[];
   };
 
   beforeEach(() => {
