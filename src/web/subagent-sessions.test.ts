@@ -85,6 +85,10 @@ describe("SubagentSessionService", () => {
     });
   }
 
+  it("returns no summaries while a newly active parent is not yet in the persistent session listing", async () => {
+    await expect(service(async () => []).summaries("new-parent-uuid")).resolves.toEqual([]);
+  });
+
   it("returns mapped child summaries and complete branch snapshots by exact UUID", async () => {
     const parent = createSession();
     const child = createSession();

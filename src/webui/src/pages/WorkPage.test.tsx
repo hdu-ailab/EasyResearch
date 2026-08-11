@@ -129,6 +129,21 @@ describe("WorkPage", () => {
     stubEvents();
   });
 
+  it("keeps Home first and places the workspace 4px below the topbar", async () => {
+    const onBack = vi.fn();
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={onBack} />);
+    await screen.findByText("starting research");
+
+    const home = screen.getByRole("button", { name: /back to home/i });
+    expect(home).not.toHaveAttribute("aria-current");
+    await user.click(home);
+    expect(onBack).toHaveBeenCalledOnce();
+    const conversation = screen.getByRole("tabpanel", { name: /^chat$/i });
+    expect(conversation.parentElement).toHaveClass("px-2", "pb-2", "pt-[4px]");
+    expect(conversation.parentElement).not.toHaveClass("p-2");
+  });
+
   it("renders snapshot messages before live events", async () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     expect(await screen.findByText("write a paper")).toBeTruthy();

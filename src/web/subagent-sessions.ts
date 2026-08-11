@@ -21,7 +21,14 @@ export class SubagentSessionService {
   constructor(private readonly store: SubagentSessionStore) {}
 
   async summaries(parentSessionId: string): Promise<SubagentSessionSummaryDto[]> {
-    const { parent, sessions } = await this.parent(parentSessionId);
+    let resolved: Awaited<ReturnType<SubagentSessionService["parent"]>>;
+    try {
+      resolved = await this.parent(parentSessionId);
+    } catch (error) {
+      if (error instanceof SubagentSessionNotFoundError) return [];
+      throw error;
+    }
+    const { parent, sessions } = resolved;
     const summaries: SubagentSessionSummaryDto[] = [];
 
     for (const link of readSubagentSessionLinks(parent.manager.getEntries())) {

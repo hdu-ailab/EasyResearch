@@ -3,7 +3,7 @@ import { ChevronLeft, Save, X } from "lucide-react";
 import { ApiError, listConfigProjects, readConfigFile, writeConfigFile } from "../api";
 import { useI18n } from "../i18n/useI18n";
 import type { ConfigProjectsDto } from "../types";
-import { BackButton, ProductMark, Topbar } from "../components/Topbar";
+import { ProductMark, Topbar } from "../components/Topbar";
 
 export interface ConfigPageProps {
   onBack: () => void;
@@ -88,15 +88,11 @@ export function ConfigPage({ onBack }: ConfigPageProps) {
   return (
     <div className="flex h-full flex-col">
       <Topbar
-        leading={
-          <>
-            <BackButton onClick={onBack} />
-            <ProductMark />
-          </>
-        }
+        home={{ active: false, onClick: onBack }}
+        leading={<ProductMark />}
         center={<span className="truncate text-[13px] text-v2-text-text-muted">{t("configPage.title")}</span>}
       />
-      <div className="min-h-0 flex-1 p-4">
+      <div className="min-h-0 flex-1 px-4 pb-4 pt-[4px]">
         {selected ? (
           <section className="relative mx-auto flex h-full w-full max-w-[980px] flex-col rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]" aria-label={t("configPage.editorAria")}>
             <div className="flex h-10 shrink-0 items-center gap-2 border-b border-v2-grey-200 px-2">

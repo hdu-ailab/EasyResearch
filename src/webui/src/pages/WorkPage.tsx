@@ -30,7 +30,7 @@ import { useI18n } from "../i18n/useI18n";
 import { ChatTranscript } from "../components/ChatTranscript";
 import { ChatComposer } from "../components/ChatComposer";
 import { FileBrowser } from "../components/FileBrowser";
-import { BackButton, ProductMark, Topbar, TopbarIconButton } from "../components/Topbar";
+import { ProductMark, Topbar, TopbarIconButton } from "../components/Topbar";
 import { WorkMobileTabs, type WorkView } from "../components/WorkMobileTabs";
 import { AgentTabBar } from "../components/AgentTabBar";
 
@@ -521,12 +521,8 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   return (
     <div className="flex h-full flex-col">
       <Topbar
-        leading={
-          <>
-            <BackButton onClick={onBack} />
-            {!isMobile && <ProductMark />}
-          </>
-        }
+        home={{ active: false, onClick: onBack }}
+        leading={!isMobile && <ProductMark />}
         center={
           <span className="max-w-full truncate font-mono text-[12px] text-v2-text-text-muted" title={cwd}>
             {isMobile ? projectName : cwd}
@@ -568,7 +564,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
         </p>
       )}
       <WorkMobileTabs active={mobileView} onChange={setMobileView} />
-      <div ref={rowRef} className="relative flex min-h-0 flex-1 gap-2 overflow-x-clip p-2">
+      <div ref={rowRef} className="relative flex min-h-0 flex-1 gap-2 overflow-x-clip px-2 pb-2 pt-[4px]">
         <section
           id="work-panel-chat"
           role="tabpanel"
