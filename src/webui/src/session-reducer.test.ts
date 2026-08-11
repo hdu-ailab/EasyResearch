@@ -63,12 +63,13 @@ describe("session reducer", () => {
     expect(second.messages[0]!.text).toBe("two deltas");
   });
 
-  it("accumulates live thinking and keeps text deltas on the same assistant row", () => {
+  it("tracks live thinking until thinking ends and keeps text deltas on the same assistant row", () => {
     let state = reduceSessionEvent(emptyState, assistantEvent("message_start", ""));
     state = reduceSessionEvent(state, {
       type: "message_update",
       assistantMessageEvent: { type: "thinking_start", contentIndex: 0 },
     } as never);
+    expect(state.messages[0]!.isThinking).toBe(true);
     state = reduceSessionEvent(state, {
       type: "message_update",
       assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "first " },
@@ -84,11 +85,75 @@ describe("session reducer", () => {
 
     expect(state.messages).toHaveLength(1);
     expect(state.messages[0]!.reasoning).toBe("first second");
+    expect(state.messages[0]!.isThinking).toBe(false);
 
     state = reduceSessionEvent(state, assistantEvent("message_update", "answer"));
     expect(state.messages).toHaveLength(1);
     expect(state.messages[0]!.text).toBe("answer");
     expect(state.messages[0]!.reasoning).toBe("first second");
+    expect(state.messages[0]!.isThinking).toBe(false);
+  });
+
+  it("clears active thinking when text output starts or the agent settles", () => {
+    let state = reduceSessionEvent(emptyState, assistantEvent("message_start", ""));
+    state = reduceSessionEvent(state, {
+      type: "message_update",
+      assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "working" },
+    } as never);
+    expect(state.messages[0]!.isThinking).toBe(true);
+
+    state = reduceSessionEvent(state, assistantEvent("message_update", "answer"));
+    expect(state.messages[0]!.isThinking).toBe(false);
+
+    state = reduceSessionEvent(state, {
+      type: "message_update",
+      assistantMessageEvent: { type: "thinking_delta", contentIndex: 1, delta: "more" },
+    } as never);
+    expect(state.messages[0]!.isThinking).toBe(true);
+
+    state = reduceSessionEvent(state, { type: "agent_settled" } as AgentSessionEvent);
+    expect(state.messages[0]!.isThinking).toBe(false);
+  });
+
+  it("clears active thinking when the text block starts before its first token", () => {
+    let state = reduceSessionEvent(emptyState, assistantEvent("message_start", ""));
+    state = reduceSessionEvent(state, {
+      type: "message_update",
+      assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "working" },
+    } as never);
+
+    state = reduceSessionEvent(state, {
+      type: "message_update",
+      assistantMessageEvent: { type: "text_start", contentIndex: 1 },
+    } as never);
+
+    expect(state.messages[0]!.isThinking).toBe(false);
+    expect(state.messages[0]!.text).toBe("...");
+  });
+
+  it("ignores empty text deltas without ending active thinking", () => {
+    let state = reduceSessionEvent(emptyState, assistantEvent("message_start", ""));
+    state = reduceSessionEvent(state, {
+      type: "message_update",
+      assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "working" },
+    } as never);
+
+    state = reduceSessionEvent(state, assistantEvent("message_update", ""));
+
+    expect(state.messages[0]!.isThinking).toBe(true);
+    expect(state.messages[0]!.text).toBe("...");
+  });
+
+  it("clears active thinking when the assistant message ends", () => {
+    let state = reduceSessionEvent(emptyState, assistantEvent("message_start", ""));
+    state = reduceSessionEvent(state, {
+      type: "message_update",
+      assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "working" },
+    } as never);
+
+    state = reduceSessionEvent(state, assistantEvent("message_end", ""));
+
+    expect(state.messages[0]!.isThinking).toBe(false);
   });
 
   it("handles agent_settled by clearing streaming state", () => {
@@ -174,6 +239,7 @@ describe("session reducer", () => {
     expect(state.messages).toHaveLength(1);
     expect(state.messages[0]!.reasoning).toBe("let me think hard");
     expect(state.messages[0]!.text).toBe("here is the answer");
+    expect(state.messages[0]!.isThinking).toBe(false);
   });
 
   it("captures tool args on start and output on end", () => {

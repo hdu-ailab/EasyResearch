@@ -26,7 +26,7 @@ const ROLE_LABELS: Record<string, MessageKey> = {
 const STICK_THRESHOLD = 24;
 
 /** Collapsible reasoning block initialized from the preference for this row. */
-function ReasoningBlock({ text, initialOpen }: { text: string; initialOpen: boolean }) {
+function ReasoningBlock({ text, initialOpen, active }: { text: string; initialOpen: boolean; active: boolean }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(initialOpen);
   const { mounted, phase } = useExpandable(open);
@@ -41,7 +41,7 @@ function ReasoningBlock({ text, initialOpen }: { text: string; initialOpen: bool
       >
         {open ? <ChevronDown size={14} aria-hidden /> : <ChevronRight size={14} aria-hidden />}
         <span>{open ? t("transcript.hideDetails") : t("transcript.showDetails")}</span>
-        <span className="text-v2-text-text-faint/70">{t("transcript.thinking")}</span>
+        {active ? <span className="v2-thinking-active text-v2-text-text-faint">{t("transcript.thinking")}</span> : null}
       </button>
       {mounted && (
         <div
@@ -122,7 +122,13 @@ function MessageRow({ message, initialThinkingOpen }: { message: SessionMessageV
   return (
     <li className={`flex flex-col gap-1 ${isYou ? "items-end" : "items-start"}`}>
       <span className="text-[11px] font-medium uppercase tracking-wide text-v2-text-text-faint">{label}</span>
-      {message.reasoning ? <ReasoningBlock text={message.reasoning} initialOpen={initialThinkingOpen} /> : null}
+      {message.reasoning ? (
+        <ReasoningBlock text={message.reasoning} initialOpen={initialThinkingOpen} active={Boolean(message.isThinking)} />
+      ) : message.isThinking ? (
+        <span className="v2-thinking-active text-[12px] font-medium text-v2-text-text-faint">
+          {t("transcript.thinking")}
+        </span>
+      ) : null}
       {message.role === "assistant" || message.role === "user" ? (
         <div
           className={`v2-md max-w-full rounded-lg px-3 py-2 text-[length:var(--v2-chat-font-size)] ${

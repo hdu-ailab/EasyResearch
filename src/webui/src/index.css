@@ -94,6 +94,20 @@ body {
   }
 }
 
+.v2-thinking-active {
+  animation: v2-thinking-opacity 1.6s ease-in-out infinite;
+}
+
+@keyframes v2-thinking-opacity {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
 .v2-caret {
   display: inline-block;
   width: 2px;
@@ -167,6 +181,7 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .v2-thinking-active,
   .v2-subagent-card-running::before {
     animation: none;
   }
