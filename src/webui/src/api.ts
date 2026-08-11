@@ -4,6 +4,7 @@ import type {
   AgentEffectiveModelDto,
   ConfigEntryDto,
   ConfigScope,
+  ChildSessionSnapshotDto,
   DirectoryEntryDto,
   FileContentDto,
   FileEntryDto,
@@ -127,6 +128,10 @@ export function openSession(path: string): Promise<ActiveSessionDto> {
 
 export function getSnapshot(id: string): Promise<SessionSnapshotDto> {
   return request(`/api/sessions/${encodeURIComponent(id)}/snapshot`);
+}
+
+export function getChildSnapshot(parentId: string, childId: string): Promise<ChildSessionSnapshotDto> {
+  return request(`/api/sessions/${encodeURIComponent(parentId)}/subagents/${encodeURIComponent(childId)}/snapshot`);
 }
 
 export function sendPrompt(id: string, message: string): Promise<void> {

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Activity, Folder, FolderOpen, Plus, Search } from "lucide-react";
 import type { ActiveSessionDto, SessionSummaryDto } from "../../../web/contracts";
-import { countRunningSessions, isActuallyRunning, matchesSessionQuery, type HomeProjectGroup } from "../pages/home-view-model";
+import { countRunningSessions, isActuallyRunning, matchesSessionQuery, sessionTitle, type HomeProjectGroup } from "../pages/home-view-model";
 import { useI18n } from "../i18n/useI18n";
 import { SessionList } from "./SessionList";
 
@@ -55,8 +55,8 @@ export function HomeWorkspace({
         onClick={() => onOpenActive(session)}
       >
         <span className={`size-2 shrink-0 rounded-full ${statusDot[session.status]}`} aria-hidden />
-        <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-v2-text-text-base">
-          {session.sessionName ?? session.cwd}
+        <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-v2-text-text-base" title={sessionTitle(session)}>
+          {sessionTitle(session)}
         </span>
         {selectedCwd === null && (
           <span className="max-w-[220px] truncate font-mono text-[12px] text-v2-text-text-faint">{session.cwd}</span>

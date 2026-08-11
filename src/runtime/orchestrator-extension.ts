@@ -3,7 +3,8 @@ import { join } from "node:path";
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { importPi } from "./pi-import";
-import { subagentTool } from "../subagent/tool";
+import { createSubagentTool } from "../subagent/tool";
+import { SUBAGENT_SESSION_LINK_ENTRY } from "../subagent/session-links";
 import { webSearchTool } from "../tools/duckduckgo-search";
 import { mountWelcomeBanner } from "../tui/welcome-banner";
 import { createLogger } from "./logger";
@@ -32,7 +33,9 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
   return async (pi) => {
     const { getAgentDir } = await importPi();
     const prompt = loadOrchestratorPrompt(options.agentsDir ?? join(getAgentDir(), "agents"));
-    pi.registerTool(subagentTool);
+    pi.registerTool(createSubagentTool({
+      persistSessionLink: (link) => pi.appendEntry(SUBAGENT_SESSION_LINK_ENTRY, link),
+    }));
     pi.registerTool(webSearchTool);
     mountWelcomeBanner(pi);
     const isRpcChild = process.env.LAZYRESEARCH_RPC_CHILD === "1";

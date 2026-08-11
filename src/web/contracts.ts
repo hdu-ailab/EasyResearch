@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { SubagentSessionLink } from "../subagent/session-links";
 
 export interface SessionSummaryDto {
   id: string;
@@ -30,6 +31,20 @@ export interface ActiveSessionDto {
 
 export interface SessionSnapshotDto {
   session: ActiveSessionDto;
+  messages: AgentMessage[];
+  subagents: SubagentSessionSummaryDto[];
+}
+
+export interface SubagentSessionSummaryDto extends SubagentSessionLink {
+  latestMessage?: string;
+}
+
+export interface ChildSessionSnapshotDto {
+  session: {
+    id: string;
+    cwd: string;
+    sessionName?: string;
+  };
   messages: AgentMessage[];
 }
 

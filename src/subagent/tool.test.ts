@@ -10,10 +10,9 @@ import {
   handleChildLine,
   progressFromMessage,
   resolveInheritedSession,
-  sessionNameFor,
   subagentTool,
-  SUBAGENT_SESSION_PREFIX,
 } from "./tool";
+import { sessionNameFor, SUBAGENT_SESSION_PREFIX } from "./session-links";
 import { releaseSubagentLock, tryAcquireSubagentLock } from "./serial";
 
 const [loggerMock, createLoggerMock, spawnMock] = vi.hoisted(() => {
@@ -247,8 +246,135 @@ describe("final subagent output (ADR-040)", () => {
   });
 });
 
+describe("subagent session link persistence", () => {
+  it("persists the exact child UUID against the real parent tool call id", async () => {
+    const { discoverAgents } = await import("./agents");
+    const { resolveModelForSpawn } = await import("./model-resolution");
+    const { getAgentDir } = await import("../runtime/pi-import");
+    vi.mocked(discoverAgents).mockResolvedValue({ agents: [maker("search")] });
+    vi.mocked(resolveModelForSpawn).mockResolvedValue(undefined);
+    vi.mocked(getAgentDir).mockReturnValue("/tmp/lazyresearch-test-agent");
+    spawnMock.mockImplementationOnce(() => {
+      const stdout = new EventEmitter();
+      const stderr = new EventEmitter();
+      const child = Object.assign(new EventEmitter(), {
+        stdout,
+        stderr,
+        killed: false,
+        kill: vi.fn(),
+      });
+      queueMicrotask(() => {
+        stdout.emit("data", Buffer.from('{"type":"session","version":3,"id":"child-uuid","cwd":"/paper"}\n'));
+        child.emit("close", 0);
+      });
+      return child;
+    });
+
+    const toolModule = await import("./tool") as typeof import("./tool") & {
+      createSubagentTool?: (options?: { persistSessionLink?: (link: unknown) => void }) => typeof subagentTool;
+    };
+    expect(toolModule.createSubagentTool).toBeTypeOf("function");
+    const persistSessionLink = vi.fn();
+    const tool = toolModule.createSubagentTool!({ persistSessionLink });
+
+    await tool.execute(
+      "parent-call",
+      { agent: "search", task: "find papers", session: "new" },
+      undefined,
+      undefined,
+      { cwd: "/tmp/lazyresearch-test-project" } as never,
+    );
+
+    expect(persistSessionLink).toHaveBeenCalledTimes(1);
+    expect(persistSessionLink).toHaveBeenCalledWith({
+      toolCallId: "parent-call",
+      childSessionId: "child-uuid",
+      agent: "search",
+    });
+  });
+
+  it("carries the captured child UUID on nested event updates after the session header", async () => {
+    const { discoverAgents } = await import("./agents");
+    const { resolveModelForSpawn } = await import("./model-resolution");
+    const { getAgentDir } = await import("../runtime/pi-import");
+    vi.mocked(discoverAgents).mockResolvedValue({ agents: [maker("search")] });
+    vi.mocked(resolveModelForSpawn).mockResolvedValue(undefined);
+    vi.mocked(getAgentDir).mockReturnValue("/tmp/lazyresearch-test-agent");
+    spawnMock.mockImplementationOnce(() => {
+      const stdout = new EventEmitter();
+      const stderr = new EventEmitter();
+      const child = Object.assign(new EventEmitter(), {
+        stdout,
+        stderr,
+        killed: false,
+        kill: vi.fn(),
+      });
+      queueMicrotask(() => {
+        stdout.emit("data", Buffer.from([
+          '{"type":"session","version":3,"id":"child-stream-uuid","cwd":"/paper"}',
+          '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"token"}}',
+          "",
+        ].join("\n")));
+        child.emit("close", 0);
+      });
+      return child;
+    });
+
+    const onUpdate = vi.fn();
+    await subagentTool.execute(
+      "parent-stream-call",
+      { agent: "search", task: "find papers", session: "new" },
+      undefined,
+      onUpdate,
+      { cwd: "/tmp/lazyresearch-test-project" } as never,
+    );
+
+    const nestedEventUpdate = onUpdate.mock.calls
+      .map(([update]) => update.details?.subagent)
+      .find((update) => update?.event?.type === "message_update");
+    expect(nestedEventUpdate).toMatchObject({
+      agent: "search",
+      sessionId: "child-stream-uuid",
+      event: {
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", delta: "token" },
+      },
+    });
+  });
+});
+
 describe("handleChildLine (ADR-037)", () => {
   const line = (event: unknown) => JSON.stringify(event);
+
+  it("captures a valid child session header before message dispatch", () => {
+    const headers: Array<{ id: string; cwd: string }> = [];
+    handleChildLine(
+      '{"type":"session","version":3,"id":"child-uuid","cwd":"/paper"}',
+      "search",
+      undefined,
+      {
+        onSessionHeader: (header) => headers.push(header),
+        onEvent: () => {},
+        onMessageEnd: () => {},
+        onToolResultEnd: () => {},
+      },
+    );
+    expect(headers).toEqual([{ id: "child-uuid", cwd: "/paper" }]);
+  });
+
+  it("forwards the exact child message delta event", () => {
+    const events: unknown[] = [];
+    const childLine = JSON.stringify({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "token" },
+    });
+    handleChildLine(childLine, "search", 1, {
+      onEvent: (event) => events.push(event),
+      onMessageEnd: () => {},
+      onToolResultEnd: () => {},
+    });
+    expect(events).toEqual([JSON.parse(childLine)]);
+  });
 
   it("dispatches message_end to onMessageEnd and streams progress to onProgress", () => {
     const onMessageEnd = vi.fn();

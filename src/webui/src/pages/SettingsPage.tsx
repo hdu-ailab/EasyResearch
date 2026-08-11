@@ -73,7 +73,7 @@ function PreferenceSwitch({ label, checked, onChange }: {
         aria-checked={checked}
         aria-label={label}
         onClick={() => onChange(!checked)}
-        className={`relative h-5 w-9 rounded-full transition-colors ${checked ? "bg-v2-blue-600" : "bg-v2-grey-400"}`}
+        className={`relative h-5 w-9 overflow-hidden rounded-full transition-colors ${checked ? "bg-v2-blue-600" : "bg-v2-grey-400"}`}
       >
         <span
           aria-hidden

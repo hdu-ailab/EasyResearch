@@ -114,6 +114,18 @@ describe("SettingsPage", () => {
     });
   });
 
+  it("contains the switch thumb in both states", async () => {
+    const user = userEvent.setup();
+    renderSettings();
+    const track = screen.getByRole("switch", { name: /auto-expand thinking/i });
+    const thumb = track.querySelector("[aria-hidden]");
+    expect(track).toHaveClass("overflow-hidden");
+    expect(thumb).toHaveClass("translate-x-0.5");
+    await user.click(track);
+    expect(thumb).toHaveClass("translate-x-[18px]");
+    expect(track).toHaveAttribute("aria-checked", "true");
+  });
+
   it("follows font preference changes from another tab", async () => {
     renderSettings();
     await screen.findByRole("combobox", { name: "Select model for Search" });

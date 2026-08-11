@@ -432,4 +432,29 @@ describe("ChatTranscript", () => {
     expect(screen.getByRole("button", { name: /grep/i })).toHaveAttribute("aria-expanded", "false");
     expect(screen.getByRole("button", { name: /bash/i })).toHaveAttribute("aria-expanded", "true");
   });
+
+  it("forwards View details with the exact subagent tool key", async () => {
+    const onViewDetails = vi.fn();
+    renderTranscript(
+      <ChatTranscript
+        messages={[]}
+        tools={[tool({ key: "child-call", name: "subagent", agentName: "search", running: true, done: false })]}
+        onViewDetails={onViewDetails}
+      />,
+    );
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "View details" }));
+    expect(onViewDetails).toHaveBeenCalledWith("child-call");
+  });
+
+  it("does not render an enabled no-op details action without a callback", () => {
+    renderTranscript(
+      <ChatTranscript
+        messages={[]}
+        tools={[tool({ key: "nested-subagent", name: "subagent", agentName: "search", running: true, done: false })]}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "View details" })).toBeNull();
+  });
 });

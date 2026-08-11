@@ -29,7 +29,15 @@ export function subagentMessagePreview(text: string, maxLength = 240): string {
   return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1)}…` : normalized;
 }
 
-export function SubagentToolCard({ tool, initialOpen }: { tool: ToolView; initialOpen: boolean }) {
+export function SubagentToolCard({
+  tool,
+  initialOpen,
+  onViewDetails,
+}: {
+  tool: ToolView;
+  initialOpen: boolean;
+  onViewDetails?: (toolCallId: string, step?: number) => void;
+}) {
   const { t } = useI18n();
   const [open, setOpen] = useState(initialOpen);
   const reducedMotion = usePrefersReducedMotion();
@@ -37,6 +45,7 @@ export function SubagentToolCard({ tool, initialOpen }: { tool: ToolView; initia
   const message = tool.latestMessage ?? tool.output ?? "";
   const agentName = agentDisplayName(t, tool.agentName ?? "subagent");
   const running = tool.running && !tool.done;
+  const emptyMessage = running ? t("transcript.waitingForProgress") : t("transcript.noSavedProgress");
   const state = tool.error
     ? t("transcript.subagentFailed")
     : tool.done
@@ -45,6 +54,13 @@ export function SubagentToolCard({ tool, initialOpen }: { tool: ToolView; initia
         ? t("transcript.running")
         : t("transcript.subagentProgress");
   const step = tool.step !== undefined ? `${t("transcript.subagentStep")} ${tool.step}` : undefined;
+  const mappedLinks = tool.sessionLinks ?? (tool.sessionId ? [{
+    toolCallId: tool.key,
+    childSessionId: tool.sessionId,
+    agent: tool.agentName ?? "subagent",
+    ...(tool.step !== undefined ? { step: tool.step } : {}),
+  }] : []);
+  const canViewDetails = onViewDetails !== undefined && (running || mappedLinks.length > 0);
   const stateClass = running
     ? reducedMotion
       ? "border border-v2-blue-200"
@@ -75,7 +91,7 @@ export function SubagentToolCard({ tool, initialOpen }: { tool: ToolView; initia
 
           {!mounted ? (
             <p className="mt-1.5 line-clamp-3 text-[length:var(--v2-chat-font-size)] leading-relaxed text-v2-text-text-muted">
-              {message ? subagentMessagePreview(message) : t("transcript.waitingForProgress")}
+              {message ? subagentMessagePreview(message) : emptyMessage}
             </p>
           ) : null}
 
@@ -85,8 +101,40 @@ export function SubagentToolCard({ tool, initialOpen }: { tool: ToolView; initia
                 phase === "enter" ? "animate-v2-expand-down" : "animate-v2-collapse-up"
               } motion-reduce:animate-none`}
             >
-              {message ? <MarkdownBlock text={message} /> : <p className="text-v2-text-text-faint">{t("transcript.waitingForProgress")}</p>}
+              {message ? <MarkdownBlock text={message} /> : <p className="text-v2-text-text-faint">{emptyMessage}</p>}
             </div>
+          ) : null}
+          {canViewDetails && mappedLinks.length > 1 ? (
+            <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
+              {mappedLinks.map((link) => {
+                const linkStep = link.step === undefined
+                  ? t("transcript.viewDetails")
+                  : `${t("transcript.subagentStep")} ${link.step}`;
+                return (
+                  <button
+                    key={`${link.childSessionId}:${link.step ?? "single"}`}
+                    type="button"
+                    aria-label={`${t("transcript.viewDetails")}: ${linkStep}`}
+                    onClick={() => onViewDetails(tool.key, link.step)}
+                    className="text-[12px] font-medium text-v2-blue-600 hover:text-v2-blue-700"
+                  >
+                    {linkStep}
+                  </button>
+                );
+              })}
+            </div>
+          ) : canViewDetails ? (
+            <button
+              type="button"
+              onClick={() => {
+                const detailStep = mappedLinks[0]?.step ?? tool.step;
+                if (detailStep === undefined) onViewDetails(tool.key);
+                else onViewDetails(tool.key, detailStep);
+              }}
+              className="mt-2 text-[12px] font-medium text-v2-blue-600 hover:text-v2-blue-700"
+            >
+              {t("transcript.viewDetails")}
+            </button>
           ) : null}
         </div>
       </article>

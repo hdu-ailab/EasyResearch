@@ -6,6 +6,7 @@ import {
   countRunningSessions,
   isActuallyRunning,
   matchesSessionQuery,
+  sessionTitle,
 } from "./home-view-model";
 
 function history(id: string, cwd: string): SessionSummaryDto {
@@ -71,4 +72,40 @@ it("matches localized user searches against recognizable session fields", () => 
   expect(matchesSessionQuery({ ...history("h1", "/Paper"), name: "Fault Diagnosis" }, "diagnosis")).toBe(true);
   expect(matchesSessionQuery({ ...active("a1", "/Paper", "ready"), sessionName: "Baseline" }, "paper")).toBe(true);
   expect(matchesSessionQuery(active("a1", "/Paper", "ready"), "missing")).toBe(false);
+});
+
+it("matches the copied active session first message in localized searches", () => {
+  const running = { ...active("r1", "/Paper", "running"), firstMessage: "Fault diagnosis prompt" };
+  expect(matchesSessionQuery(running, "diagnosis")).toBe(true);
+  expect(matchesSessionQuery(running, "missing")).toBe(false);
+});
+
+it("titles sessions from the trimmed first message or the first eight id characters", () => {
+  expect(sessionTitle({ id: "0123456789abcdef", firstMessage: "  write a paper  " })).toBe("write a paper");
+  expect(sessionTitle({ id: "0123456789abcdef" })).toBe("01234567");
+  expect(sessionTitle({ id: "0123456789abcdef", firstMessage: " \t " })).toBe("01234567");
+  expect(sessionTitle({ id: "0123456789abcdef", firstMessage: "write a paper" })).toBe("write a paper");
+});
+
+it("copies the exact-file history firstMessage onto the running active view model", () => {
+  const groups = buildHomeProjectGroups(
+    [
+      history("h1", "/papers/a"),
+      { ...history("h1b", "/papers/a"), path: "/sessions/r1.jsonl", firstMessage: "fault diagnosis prompt" },
+    ],
+    [{ ...active("r1", "/papers/a", "running"), sessionFile: "/sessions/r1.jsonl" }],
+  );
+  const groupA = groups.find((group) => group.cwd === "/papers/a")!;
+  expect(groupA.active[0]).toMatchObject({ id: "r1", firstMessage: "fault diagnosis prompt" });
+  expect(groupA.history.map((session) => session.id)).toEqual(["h1"]);
+});
+
+it("never copies a firstMessage from a different session file", () => {
+  const groups = buildHomeProjectGroups(
+    [history("h1", "/papers/a")],
+    [{ ...active("r1", "/papers/a", "running"), sessionFile: "/sessions/other.jsonl" }],
+  );
+  const groupA = groups.find((group) => group.cwd === "/papers/a")!;
+  expect(groupA.active[0]).toMatchObject({ id: "r1" });
+  expect(groupA.active[0]).not.toHaveProperty("firstMessage");
 });

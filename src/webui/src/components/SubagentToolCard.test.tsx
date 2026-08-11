@@ -211,4 +211,63 @@ describe("SubagentToolCard", () => {
       }
     }
   });
+
+  it("offers View details as a separate action with the exact tool key", async () => {
+    const onViewDetails = vi.fn();
+    render(<SubagentToolCard tool={subagentTool()} initialOpen={false} onViewDetails={onViewDetails} />);
+
+    const details = screen.getByRole("button", { name: "View details" });
+    expect(details).not.toBe(screen.getByRole("button", { name: /show.*search.*running/i }));
+    await userEvent.setup().click(details);
+    expect(onViewDetails).toHaveBeenCalledOnce();
+    expect(onViewDetails).toHaveBeenCalledWith("sub-1", 2);
+  });
+
+  it("hides View details when no callback is available in a nested child transcript", () => {
+    render(<SubagentToolCard tool={subagentTool()} initialOpen={false} />);
+
+    expect(screen.queryByRole("button", { name: "View details" })).toBeNull();
+  });
+
+  it("does not offer details for a settled tool without a saved child mapping", () => {
+    render(
+      <SubagentToolCard
+        tool={subagentTool({ running: false, done: true })}
+        initialOpen={false}
+        onViewDetails={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("No progress was saved before this run ended.")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "View details" })).toBeNull();
+  });
+
+  it("offers one accessible details action for every mapped chain step", async () => {
+    const onViewDetails = vi.fn();
+    render(
+      <SubagentToolCard
+        tool={subagentTool({
+          running: false,
+          done: true,
+          sessionLinks: [
+            { toolCallId: "sub-1", childSessionId: "child-search", agent: "search", step: 1 },
+            { toolCallId: "sub-1", childSessionId: "child-writing", agent: "writing", step: 2 },
+          ],
+        })}
+        initialOpen={false}
+        onViewDetails={onViewDetails}
+      />,
+    );
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "View details: Step 1" }));
+    await userEvent.setup().click(screen.getByRole("button", { name: "View details: Step 2" }));
+    expect(onViewDetails.mock.calls).toEqual([["sub-1", 1], ["sub-1", 2]]);
+  });
+
+  it("describes missing settled progress without claiming it is waiting", () => {
+    render(<SubagentToolCard tool={subagentTool({ running: false, done: true })} initialOpen={false} />);
+
+    expect(screen.getByText("No progress was saved before this run ended.")).toBeVisible();
+    expect(screen.queryByText(/waiting/i)).toBeNull();
+  });
 });
