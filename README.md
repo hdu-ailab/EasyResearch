@@ -1,17 +1,17 @@
 # EasyResearch
 
-Automated academic paper writing — a CLI tool (package `easyresearch`) built on the Pi agent harness. A "lazy person can still produce a paper": the orchestrator dispatches stage agents, waits in place, and loops until the manuscript is done.
+Automated academic paper writing — a CLI tool (package `easyresearch`) built on the Pi agent harness. A "lazy person can still produce a paper": the assistant dispatches stage agents, waits in place, and loops until the manuscript is done.
 
 ## Status
 
-Backend parity redesign in progress: native Pi TUI/session semantics under the isolated `.easyresearch` identity, orchestrator + literature agents, subagent tool, and a local Web panel backed by Pi RPC. See `AGENTS.md` (spec) and `.docs/` (design, gitignored) for the authoritative target.
+Backend parity redesign in progress: native Pi TUI/session semantics under the isolated `.easyresearch` identity, assistant + literature agents, subagent tool, and a local Web panel backed by Pi RPC. See `AGENTS.md` (spec) and `.docs/` (design, gitignored) for the authoritative target.
 
 ## Quick Start
 
 ```bash
 bun install
 mkdir -p <paper-project>
-cd <paper-project> && easyresearch   # native Pi TUI with the orchestrator
+cd <paper-project> && easyresearch   # native Pi TUI with the assistant
 easyresearch web                     # local Web panel at 127.0.0.1:3000
 ```
 
