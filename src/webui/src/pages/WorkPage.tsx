@@ -308,7 +308,6 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
           return;
         }
         if (typed.type === "session_deactivated") {
-          setStatusText(t("work.sessionEnded"));
           return;
         }
         const agentEvent = event as Parameters<typeof reduceSessionEvent>[1];
