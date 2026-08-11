@@ -28,10 +28,10 @@ const SUBAGENT_EXTENSION_PATH = fileURLToPath(new URL("./subagent-extension.ts",
  * (Constraint 4: RPC children never run their own logger).
  */
 const subagentLogger: Logger | null =
-  process.env.LAZYRESEARCH_RPC_CHILD === "1" ? null : createLogger("subagent");
+  process.env.EASYRESEARCH_RPC_CHILD === "1" ? null : createLogger("subagent");
 
 /** Environment variable carrying the caller's subagent allowlist (ADR-022). */
-export const ALLOWLIST_ENV = "LAZYRESEARCH_AGENTS_ALLOWLIST";
+export const ALLOWLIST_ENV = "EASYRESEARCH_AGENTS_ALLOWLIST";
 
 interface UsageStats {
   input: number;
@@ -195,7 +195,7 @@ function makeDetails(mode: "single" | "chain", agents: AgentConfig[]): SubagentD
 }
 
 async function writePromptToTempFile(agentName: string, prompt: string): Promise<string> {
-  const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "lazyresearch-subagent-"));
+  const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "easyresearch-subagent-"));
   const safeName = agentName.replace(/[^\w.-]+/g, "_");
   const filePath = path.join(tmpDir, `prompt-${safeName}.md`);
   await withFileMutationQueue(filePath, async () => {
@@ -205,7 +205,7 @@ async function writePromptToTempFile(agentName: string, prompt: string): Promise
 }
 
 /**
- * ADR-022: filter agents by the caller's allowlist. The orchestrator runtime
+ * ADR-022: filter agents by the caller's allowlist. The assistant runtime
  * has no allowlist env and sees all agents; stage runtimes receive their
  * allowlist from `subagents:` frontmatter via the spawn environment.
  */

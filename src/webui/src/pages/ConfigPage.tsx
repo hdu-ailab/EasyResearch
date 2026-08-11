@@ -12,7 +12,7 @@ export interface ConfigPageProps {
 type Root = { kind: "home" } | { kind: "project"; cwd: string };
 
 const settingsPath = (root: Root) =>
-  root.kind === "home" ? "~/.lazyresearch/agent/settings.json" : `${root.cwd}/.lazyresearch/settings.json`;
+  root.kind === "home" ? "~/.easyresearch/agent/settings.json" : `${root.cwd}/.easyresearch/settings.json`;
 
 /**
  * Homepage settings page: project folders list (home pinned first) leading to
@@ -169,7 +169,7 @@ export function ConfigPage({ onBack }: ConfigPageProps) {
                   </ul>
                   <p className="mb-1 text-[13px] text-v2-text-text-muted">{t("configPage.helpExample")}</p>
                   <pre className="whitespace-pre-wrap break-words rounded-md bg-v2-grey-100 p-3 font-mono text-[12px] leading-[1.5] text-v2-text-text-base">{`{
-  "lazyresearch": {
+  "easyresearch": {
     "agents": {
       "search": { "model": "provider/model-id" }
     }

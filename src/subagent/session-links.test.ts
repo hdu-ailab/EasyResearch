@@ -67,10 +67,10 @@ describe("subagent session links", () => {
     ]);
   });
 
-  it("treats lazyresearch:search as a session name, not a child session id", () => {
-    expect(sessionNameFor("search")).toBe("lazyresearch:search");
-    expect(isSubagentSessionName("lazyresearch:search")).toBe(true);
-    expect(isSubagentSessionName("lazyresearch:")).toBe(true);
+  it("treats easyresearch:search as a session name, not a child session id", () => {
+    expect(sessionNameFor("search")).toBe("easyresearch:search");
+    expect(isSubagentSessionName("easyresearch:search")).toBe(true);
+    expect(isSubagentSessionName("easyresearch:")).toBe(true);
     expect(isSubagentSessionName("child-uuid")).toBe(false);
     expect(isSubagentSessionName(undefined)).toBe(false);
   });

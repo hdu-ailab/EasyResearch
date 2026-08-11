@@ -129,7 +129,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   const [tabsState, setTabsState] = useState<SubagentTabsState>({ tabs: [], hiddenRunningToolCalls: [] });
   const [childViews, setChildViews] = useState<Record<string, SessionViewState>>({});
   const [childErrors, setChildErrors] = useState<Record<string, boolean>>({});
-  const [activeTab, setActiveTab] = useState("orchestrator");
+  const [activeTab, setActiveTab] = useState("assistant");
   const tabsStateRef = useRef(tabsState);
   const childSessionByTool = useRef(new Map<string, string>());
   const childLoaded = useRef(new Set<string>());
@@ -199,8 +199,8 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   }, [sessionView.tools]);
 
   useEffect(() => {
-    if (activeTab !== "orchestrator" && !tabsState.tabs.some((tab) => tab.key === activeTab)) {
-      setActiveTab("orchestrator");
+    if (activeTab !== "assistant" && !tabsState.tabs.some((tab) => tab.key === activeTab)) {
+      setActiveTab("assistant");
     }
   }, [tabsState.tabs, activeTab]);
 
@@ -215,10 +215,10 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
         : Math.min(defaultPanelWidth, panelMax);
   const activeChildId = activeTab.startsWith("session:") ? activeTab.slice(8) : undefined;
   const activeView = activeChildId ? childViews[activeChildId] : undefined;
-  const activeMessages = activeTab === "orchestrator" ? sessionView.messages : (activeView?.messages ?? []);
-  const activeTools = activeTab === "orchestrator" ? sessionView.tools : activeChildId ? (activeView?.tools ?? []) : [];
+  const activeMessages = activeTab === "assistant" ? sessionView.messages : (activeView?.messages ?? []);
+  const activeTools = activeTab === "assistant" ? sessionView.tools : activeChildId ? (activeView?.tools ?? []) : [];
   const statusByAgent = Object.fromEntries([
-    ["orchestrator", sessionView.error !== null ? "error" : sessionView.isStreaming ? "working" : "idle"],
+    ["assistant", sessionView.error !== null ? "error" : sessionView.isStreaming ? "working" : "idle"],
     ...tabsState.tabs.map((tab) => [tab.agent, tab.running ? "working" : "idle"]),
   ]) as Record<string, AgentStatus>;
   const projectName = cwd.split("/").filter(Boolean).at(-1) ?? cwd;
@@ -427,7 +427,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
 
   const selectAgentTab = useCallback(
     (key: string) => {
-      if (key === "orchestrator") {
+      if (key === "assistant") {
         setActiveTab(key);
         return;
       }
@@ -459,7 +459,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
 
   const closeAgentTab = useCallback((key: string) => {
     setTabsState((current) => closeSubagentTab(current, key));
-    setActiveTab("orchestrator");
+    setActiveTab("assistant");
   }, []);
 
   const startResize = useCallback(
@@ -646,7 +646,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
           <AgentTabBar
             tabs={tabsState.tabs}
             activeKey={activeTab}
-            orchestratorStatus={sessionView.error !== null ? "error" : sessionView.isStreaming ? "working" : "idle"}
+            assistantStatus={sessionView.error !== null ? "error" : sessionView.isStreaming ? "working" : "idle"}
             onSelect={selectAgentTab}
             onClose={closeAgentTab}
             onStop={() => abort()}
@@ -657,17 +657,17 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
           <ChatTranscript
             messages={activeMessages}
             tools={activeTools}
-            emptyHint={activeTab === "orchestrator" ? undefined : t("work.noMessagesYet")}
-            pending={pendingOutput && activeTab === "orchestrator"}
-            onViewDetails={activeTab === "orchestrator" ? openSubagentTool : undefined}
+            emptyHint={activeTab === "assistant" ? undefined : t("work.noMessagesYet")}
+            pending={pendingOutput && activeTab === "assistant"}
+            onViewDetails={activeTab === "assistant" ? openSubagentTool : undefined}
           />
           <footer className="shrink-0 border-t border-v2-grey-200 p-3">
-            {activeTab !== "orchestrator" || sessionView.subagentName ? (
+            {activeTab !== "assistant" || sessionView.subagentName ? (
               <p className="mb-2 text-[12px] text-v2-text-text-faint">{t("work.subagentLineNote")}</p>
             ) : null}
             <ChatComposer
-              disabled={accepting || activeTab !== "orchestrator" || sessionView.subagentName !== undefined}
-              streaming={activeTab === "orchestrator" && sessionView.isStreaming}
+              disabled={accepting || activeTab !== "assistant" || sessionView.subagentName !== undefined}
+              streaming={activeTab === "assistant" && sessionView.isStreaming}
               onSend={send}
               onAbort={abort}
             />

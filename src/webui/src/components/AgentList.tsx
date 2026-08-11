@@ -56,8 +56,8 @@ export function AgentList({ statusByAgent, sessionId }: AgentListProps) {
   );
 
   const agents = roster ?? [];
-  const orchestrator = agents.find((agent) => agent.name === "orchestrator");
-  const subagents = agents.filter((agent) => agent.name !== "orchestrator");
+  const assistant = agents.find((agent) => agent.name === "assistant");
+  const subagents = agents.filter((agent) => agent.name !== "assistant");
 
   return (
     <div className="flex h-full flex-col">
@@ -67,14 +67,14 @@ export function AgentList({ statusByAgent, sessionId }: AgentListProps) {
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         <AgentCard
-          agent={orchestrator}
-          fallbackName="orchestrator"
-          fallbackDescription={t("work.orchestratorFallback")}
-          status={statusByAgent.orchestrator ?? "idle"}
-          entry={effective?.find((item) => item.name === "orchestrator")}
+          agent={assistant}
+          fallbackName="assistant"
+          fallbackDescription={t("work.assistantFallback")}
+          status={statusByAgent.assistant ?? "idle"}
+          entry={effective?.find((item) => item.name === "assistant")}
           models={models}
           busy={busy}
-          onApply={(model) => applyModel("orchestrator", model)}
+          onApply={(model) => applyModel("assistant", model)}
         />
         {subagents.map((agent) => (
           <AgentCard

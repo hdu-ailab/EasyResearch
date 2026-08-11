@@ -17,29 +17,29 @@ beforeEach(() => {
   vi.mocked(api.getEffectiveModels).mockReset();
   vi.mocked(api.setAgentModel).mockReset();
   vi.mocked(api.listAgents).mockResolvedValue([
-    { name: "orchestrator", description: "Coordinates work" },
+    { name: "assistant", description: "Coordinates work" },
     { name: "search", description: "Finds papers" },
   ]);
   vi.mocked(api.listModels).mockResolvedValue([{ provider: "openai", id: "gpt-4o" }]);
   vi.mocked(api.getEffectiveModels).mockResolvedValue([
-    { name: "orchestrator", model: "openai/gpt-4o", source: "inherit" },
+    { name: "assistant", model: "openai/gpt-4o", source: "inherit" },
     { name: "search", model: "custom/model", source: "override" },
   ]);
   vi.mocked(api.setAgentModel).mockResolvedValue(undefined);
 });
 
 describe("AgentList", () => {
-  it("renders the orchestrator card and preserves an effective model absent from the catalog", async () => {
-    render(<AgentList statusByAgent={{ orchestrator: "idle", search: "working" }} sessionId="s1" />);
+  it("renders the assistant card and preserves an effective model absent from the catalog", async () => {
+    render(<AgentList statusByAgent={{ assistant: "idle", search: "working" }} sessionId="s1" />);
 
-    expect(await screen.findByText("Research Mentor")).toBeVisible();
+    expect(await screen.findByText("Paper Assistant")).toBeVisible();
     expect(screen.getAllByRole("combobox")[1]).toHaveDisplayValue("custom/model");
     expect(screen.getAllByRole("combobox")[1]).toHaveTextContent("custom/model");
   });
 
   it("sends null when a stage agent is reset to the default model", async () => {
     const user = userEvent.setup();
-    render(<AgentList statusByAgent={{ orchestrator: "idle", search: "idle" }} sessionId="s1" />);
+    render(<AgentList statusByAgent={{ assistant: "idle", search: "idle" }} sessionId="s1" />);
 
     const searchSelect = await screen.findByDisplayValue("custom/model");
     await user.selectOptions(searchSelect, "");
@@ -49,7 +49,7 @@ describe("AgentList", () => {
 
   it("keeps its header mounted when agent data fails", async () => {
     vi.mocked(api.listAgents).mockRejectedValue(new Error("unavailable"));
-    render(<AgentList statusByAgent={{ orchestrator: "idle" }} sessionId="s1" />);
+    render(<AgentList statusByAgent={{ assistant: "idle" }} sessionId="s1" />);
 
     expect(screen.getByText("Agents")).toBeVisible();
   });

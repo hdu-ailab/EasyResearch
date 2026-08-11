@@ -62,7 +62,7 @@ export async function writeAgentOverride(sessionPath: string | undefined, agentN
 
 /**
  * Read `<root>/settings.json` via ConfigFileService and parse each agent's
- * `model` out of the `lazyresearch.agents` registry. Absent settings files and
+ * `model` out of the `easyresearch.agents` registry. Absent settings files and
  * a registry with no models both mean "no config" (undefined); a malformed
  * file is a real error and propagates.
  */
@@ -74,25 +74,25 @@ export async function readAgentModels(
   return settings ? extractAgentModels(settings) : undefined;
 }
 
-function readOrchestratorRegistryModel(settings: Record<string, unknown> | undefined): string | undefined {
+function readAssistantRegistryModel(settings: Record<string, unknown> | undefined): string | undefined {
   if (!settings) return undefined;
-  const model = parseAgentRegistry(settings)["orchestrator"]?.model;
+  const model = parseAgentRegistry(settings)["assistant"]?.model;
   return typeof model === "string" && model !== "" ? model : undefined;
 }
 
 /**
- * Read the configured default model for the orchestrator reset: the project's
- * `lazyresearch.agents.orchestrator.model` wins over the global one (per-field
+ * Read the configured default model for the assistant reset: the project's
+ * `easyresearch.agents.assistant.model` wins over the global one (per-field
  * merge, Pi-native semantics). Undefined when neither level configures a
- * `"provider/id"` model for the orchestrator.
+ * `"provider/id"` model for the assistant.
  */
-export async function readOrchestratorDefaults(
+export async function readAssistantDefaults(
   config: ConfigFileService,
   cwd: string,
 ): Promise<{ provider: string; modelId: string } | undefined> {
   const global = await readSettingsJson(config, { scope: "global" });
   const project = await readSettingsJson(config, { scope: "project", cwd });
-  const model = readOrchestratorRegistryModel(project) ?? readOrchestratorRegistryModel(global);
+  const model = readAssistantRegistryModel(project) ?? readAssistantRegistryModel(global);
   if (model === undefined) return undefined;
   const index = model.indexOf("/");
   if (index <= 0 || index === model.length - 1) return undefined;
@@ -118,18 +118,18 @@ async function readSettingsJson(
 }
 
 /**
- * Route a set-agent-model request: the orchestrator's model is the session
+ * Route a set-agent-model request: the assistant's model is the session
  * model itself (RPC `set_model`), stage agents get a custom entry on the
- * orchestrator session line. `null` resets the orchestrator to the configured
+ * assistant session line. `null` resets the assistant to the configured
  * default model or fails with 409.
  */
 export async function routeSetAgentModel(
   router: {
-    isOrchestrator: (agentName: string) => boolean;
+    isAssistant: (agentName: string) => boolean;
     isKnownAgent: (agentName: string) => boolean | Promise<boolean>;
-    setOrchestrator: (provider: string, modelId: string) => Promise<void>;
+    setAssistant: (provider: string, modelId: string) => Promise<void>;
     writeOverride: (agentName: string, model: string | null) => Promise<void>;
-    orchestratorDefaults: () => Promise<{ provider: string; modelId: string } | undefined>;
+    assistantDefaults: () => Promise<{ provider: string; modelId: string } | undefined>;
   },
   agentName: string,
   model: string | null,
@@ -137,20 +137,20 @@ export async function routeSetAgentModel(
   if (!(await router.isKnownAgent(agentName))) {
     throw new AgentModelError(404, `Unknown agent: ${agentName}`);
   }
-  if (router.isOrchestrator(agentName)) {
+  if (router.isAssistant(agentName)) {
     if (model === null) {
-      const defaults = await router.orchestratorDefaults();
+      const defaults = await router.assistantDefaults();
       if (!defaults) {
         throw new AgentModelError(
           409,
-          "No default model configured: set lazyresearch.agents.orchestrator.model in settings.json",
+          "No default model configured: set easyresearch.agents.assistant.model in settings.json",
         );
       }
-      await router.setOrchestrator(defaults.provider, defaults.modelId);
+      await router.setAssistant(defaults.provider, defaults.modelId);
       return;
     }
     const { provider, modelId } = splitModelRef(model);
-    await router.setOrchestrator(provider, modelId);
+    await router.setAssistant(provider, modelId);
     return;
   }
   await router.writeOverride(agentName, model);
@@ -162,7 +162,7 @@ export function resolveAgentModelsService(deps: {
   readEntries: (sessionPath: string | undefined) => Promise<EntryRow[]>;
   projectAgentModels: (cwd: string) => Promise<Record<string, string> | undefined>;
   globalAgentModels: () => Promise<Record<string, string> | undefined>;
-  orchestratorModel: (id: string) => Promise<string | undefined>;
+  assistantModel: (id: string) => Promise<string | undefined>;
   getCwd: (id: string) => Promise<string>;
 }) {
   return {
@@ -172,7 +172,7 @@ export function resolveAgentModelsService(deps: {
       const rows = await deps.readEntries(sessionPath);
       const project = await deps.projectAgentModels(await deps.getCwd(id));
       const global = await deps.globalAgentModels();
-      const orch = await deps.orchestratorModel(id);
+      const orch = await deps.assistantModel(id);
       const out: AgentEffectiveModelDto[] = [];
       for (const agent of agents) {
         const override = readOverrideForAgent(rows, agent.name);

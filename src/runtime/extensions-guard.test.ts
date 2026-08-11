@@ -31,8 +31,8 @@ describe("assertSafeExtensionSources (ADR-032)", () => {
 
   it("allows extension discovery directories (global and project)", () => {
     mkdirSync(join(agentDir, "extensions"), { recursive: true });
-    mkdirSync(join(cwd, ".lazyresearch", "extensions"), { recursive: true });
-    writeFileSync(join(cwd, ".lazyresearch", "extensions", "x.ts"), "export default () => {}");
+    mkdirSync(join(cwd, ".easyresearch", "extensions"), { recursive: true });
+    writeFileSync(join(cwd, ".easyresearch", "extensions", "x.ts"), "export default () => {}");
     expect(() => assertSafeExtensionSources({ cwd })).not.toThrow();
   });
 
@@ -53,8 +53,8 @@ describe("assertSafeExtensionSources (ADR-032)", () => {
   });
 
   it("refuses a non-empty packages array in project settings.json", () => {
-    mkdirSync(join(cwd, ".lazyresearch"), { recursive: true });
-    writeFileSync(join(cwd, ".lazyresearch", "settings.json"), JSON.stringify({ packages: ["git:foo"] }));
+    mkdirSync(join(cwd, ".easyresearch"), { recursive: true });
+    writeFileSync(join(cwd, ".easyresearch", "settings.json"), JSON.stringify({ packages: ["git:foo"] }));
     expect(() => assertSafeExtensionSources({ cwd })).toThrow(/packages array in project settings\.json/);
     expect(() => assertSafeExtensionSources({})).not.toThrow();
   });
@@ -75,8 +75,8 @@ describe("assertSafeExtensionSources (ADR-032)", () => {
   it("allows a local extension path that merely resembles .pi but is not inside the home tree", () => {
     const local = join(cwd, "my", ".pi-like", "e.ts");
     mkdirSync(join(cwd, "my", ".pi-like"), { recursive: true });
-    mkdirSync(join(cwd, ".lazyresearch"), { recursive: true });
-    writeFileSync(join(cwd, ".lazyresearch", "settings.json"), JSON.stringify({ extensions: [local] }));
+    mkdirSync(join(cwd, ".easyresearch"), { recursive: true });
+    writeFileSync(join(cwd, ".easyresearch", "settings.json"), JSON.stringify({ extensions: [local] }));
     expect(() => assertSafeExtensionSources({ cwd })).not.toThrow();
   });
 

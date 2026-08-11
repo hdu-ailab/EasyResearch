@@ -17,14 +17,14 @@ function tab(patch: Partial<SubagentTabState> = {}): SubagentTabState {
 }
 
 describe("AgentTabBar", () => {
-  it("keeps Research Mentor first and fixed while a temporary tab has sibling select and Stop controls", async () => {
+  it("keeps Paper Assistant first and fixed while a temporary tab has sibling select and Stop controls", async () => {
     const onSelect = vi.fn();
     const onStop = vi.fn();
     render(
       <AgentTabBar
         tabs={[tab()]}
-        activeKey="orchestrator"
-        orchestratorStatus="idle"
+        activeKey="assistant"
+        assistantStatus="idle"
         onSelect={onSelect}
         onClose={vi.fn()}
         onStop={onStop}
@@ -32,7 +32,7 @@ describe("AgentTabBar", () => {
     );
 
     const buttons = screen.getAllByRole("button");
-    expect(buttons[0]).toHaveAccessibleName("Agent Research Mentor");
+    expect(buttons[0]).toHaveAccessibleName("Agent Paper Assistant");
     expect(screen.queryByRole("button", { name: "Close agent tab" })).toBeNull();
     const select = screen.getByRole("button", { name: "Agent Search" });
     const stop = screen.getByRole("button", { name: "Stop agent" });
@@ -51,7 +51,7 @@ describe("AgentTabBar", () => {
       <AgentTabBar
         tabs={[tab({ key: "session:child-uuid", sessionId: "child-uuid", retained: true, running: false })]}
         activeKey="session:child-uuid"
-        orchestratorStatus="working"
+        assistantStatus="working"
         onSelect={vi.fn()}
         onClose={onClose}
         onStop={onStop}
@@ -71,8 +71,8 @@ describe("AgentTabBar", () => {
           tab({ key: "session:11111111-aaaa", sessionId: "11111111-aaaa", retained: true }),
           tab({ key: "session:22222222-bbbb", toolCallId: "call-2", sessionId: "22222222-bbbb", retained: true }),
         ]}
-        activeKey="orchestrator"
-        orchestratorStatus="error"
+        activeKey="assistant"
+        assistantStatus="error"
         onSelect={vi.fn()}
         onClose={vi.fn()}
         onStop={vi.fn()}

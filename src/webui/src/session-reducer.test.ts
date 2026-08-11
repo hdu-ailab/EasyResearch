@@ -530,9 +530,9 @@ describe("session reducer", () => {
     expect(messageOrders.every((o, i) => i === 0 || o > messageOrders[i - 1]!)).toBe(true);
   });
 
-  it("labels a subagent-line dispatch as orchestrator, not the user", () => {
+  it("labels a subagent-line dispatch as assistant, not the user", () => {
     const state = fromSnapshot({
-      session: { id: "s2", cwd: "/p", sessionName: "lazyresearch:search", isStreaming: false, status: "done" } as never,
+      session: { id: "s2", cwd: "/p", sessionName: "easyresearch:search", isStreaming: false, status: "done" } as never,
       subagents: [],
       messages: [
         { role: "user", content: [{ type: "text", text: "Task: search papers" }] },
@@ -540,7 +540,7 @@ describe("session reducer", () => {
       ] as never,
     });
     expect(state.subagentName).toBe("search");
-    expect(state.messages[0]).toMatchObject({ role: "user", label: "Orchestrator" });
+    expect(state.messages[0]).toMatchObject({ role: "user", label: "Assistant" });
     expect(state.messages[1]).toMatchObject({ role: "assistant", label: "search" });
   });
 

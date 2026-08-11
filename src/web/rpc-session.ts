@@ -49,7 +49,7 @@ export interface RpcClientLikeOptions {
 export type RpcClientLikeConstructor = new (options: RpcClientLikeOptions) => RpcClientLike;
 
 const CLI_PATH = fileURLToPath(new URL("../runtime/pi-bootstrap.mjs", import.meta.url));
-const EXTENSION_PATH = fileURLToPath(new URL("../runtime/orchestrator-extension.ts", import.meta.url));
+const EXTENSION_PATH = fileURLToPath(new URL("../runtime/assistant-extension.ts", import.meta.url));
 
 export interface HeartbeatOptions {
   heartbeatIntervalMs?: number;
@@ -203,7 +203,7 @@ export class PiRpcSessionFactory implements RpcSessionFactory {
       cwd: options.cwd,
       cliPath: CLI_PATH,
       args,
-      env: { LAZYRESEARCH_RPC_CHILD: "1" },
+      env: { EASYRESEARCH_RPC_CHILD: "1" },
     });
     return new DefaultRpcSessionAdapter(client, this.heartbeatOptions);
   }

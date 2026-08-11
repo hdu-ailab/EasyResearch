@@ -115,16 +115,16 @@ describe("disabled agents (ADR-034)", () => {
     expect(agents.map((a) => a.name)).toEqual(["figures"]);
   });
 
-  it("ignores disabled on the orchestrator", async () => {
-    writeAgent("orchestrator");
+  it("ignores disabled on the assistant", async () => {
+    writeAgent("assistant");
     writeAgent("search");
     const { agents } = await discoverAgents({
       agentDir: dir,
       registry: {
-        orchestrator: { definition: "agents/orchestrator.md", disabled: true },
+        assistant: { definition: "agents/assistant.md", disabled: true },
         search: { definition: "agents/search.md" },
       },
     });
-    expect(agents.map((a) => a.name)).toEqual(["orchestrator", "search"]);
+    expect(agents.map((a) => a.name)).toEqual(["assistant", "search"]);
   });
 });

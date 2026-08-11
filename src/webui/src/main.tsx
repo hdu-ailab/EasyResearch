@@ -12,7 +12,7 @@ applyFontPreferences(preferences);
 document.documentElement.lang = preferences.language;
 
 const root = document.getElementById("root");
-if (!root) throw new Error("LazyResearch Web UI root element is missing");
+if (!root) throw new Error("EasyResearch Web UI root element is missing");
 
 createRoot(root).render(
   <StrictMode>

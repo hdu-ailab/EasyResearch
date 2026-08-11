@@ -7,7 +7,7 @@ import { ConfigFileService } from "./config-files";
 import {
   AgentModelError,
   readAgentModels,
-  readOrchestratorDefaults,
+  readAssistantDefaults,
   readOverrideForAgent,
   readSessionOverrides,
   resolveAgentModelsService,
@@ -28,9 +28,9 @@ const entries = (rows: Array<{ type: string; customType?: string; data?: unknown
 describe("agent-models custom entries", () => {
   it("reads the latest override per agent; null resets", () => {
     const rows = entries([
-      { type: "custom", customType: "lazyresearch:agent_model", data: { agent: "search", model: "a/1" } },
-      { type: "custom", customType: "lazyresearch:agent_model", data: { agent: "search", model: null } },
-      { type: "custom", customType: "lazyresearch:agent_model", data: { agent: "figures", model: "b/2" } },
+      { type: "custom", customType: "easyresearch:agent_model", data: { agent: "search", model: "a/1" } },
+      { type: "custom", customType: "easyresearch:agent_model", data: { agent: "search", model: null } },
+      { type: "custom", customType: "easyresearch:agent_model", data: { agent: "figures", model: "b/2" } },
     ]);
     expect(readOverrideForAgent(rows, "search")).toBeNull();
     expect(readOverrideForAgent(rows, "figures")).toBe("b/2");
@@ -100,8 +100,8 @@ describe("settings sources", () => {
     config = new ConfigFileService(agentDir);
   });
 
-  it("reads agent models from the lazyresearch.agents registry", async () => {
-    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ lazyresearch: { agents: { search: { model: "a/1" } } } }));
+  it("reads agent models from the easyresearch.agents registry", async () => {
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ easyresearch: { agents: { search: { model: "a/1" } } } }));
     await expect(readAgentModels(config, { scope: "global" })).resolves.toEqual({ search: "a/1" });
   });
 
@@ -109,26 +109,26 @@ describe("settings sources", () => {
     await expect(readAgentModels(config, { scope: "global" })).resolves.toBeUndefined();
     writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ theme: "dark" }));
     await expect(readAgentModels(config, { scope: "global" })).resolves.toBeUndefined();
-    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ lazyresearch: {} }));
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ easyresearch: {} }));
     await expect(readAgentModels(config, { scope: "global" })).resolves.toBeUndefined();
-    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ lazyresearch: { agents: {} } }));
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ easyresearch: { agents: {} } }));
     await expect(readAgentModels(config, { scope: "global" })).resolves.toBeUndefined();
   });
 
-  it("treats a project without a .lazyresearch dir as no config", async () => {
+  it("treats a project without a .easyresearch dir as no config", async () => {
     await expect(readAgentModels(config, { scope: "project", cwd })).resolves.toBeUndefined();
   });
 
-  it("reads project-scoped agent models from <cwd>/.lazyresearch/settings.json", async () => {
-    mkdirSync(join(cwd, ".lazyresearch"));
-    writeFileSync(join(cwd, ".lazyresearch", "settings.json"), JSON.stringify({ lazyresearch: { agents: { writing: { model: "b/2" } } } }));
+  it("reads project-scoped agent models from <cwd>/.easyresearch/settings.json", async () => {
+    mkdirSync(join(cwd, ".easyresearch"));
+    writeFileSync(join(cwd, ".easyresearch", "settings.json"), JSON.stringify({ easyresearch: { agents: { writing: { model: "b/2" } } } }));
     await expect(readAgentModels(config, { scope: "project", cwd })).resolves.toEqual({ writing: "b/2" });
   });
 
   it("ignores non-string agent model values", async () => {
     writeFileSync(
       join(agentDir, "settings.json"),
-      JSON.stringify({ lazyresearch: { agents: { search: { model: "a/1" }, writing: { model: 42 } } } }),
+      JSON.stringify({ easyresearch: { agents: { search: { model: "a/1" }, writing: { model: 42 } } } }),
     );
     await expect(readAgentModels(config, { scope: "global" })).resolves.toEqual({ search: "a/1" });
   });
@@ -136,38 +136,38 @@ describe("settings sources", () => {
   it("returns the global default model when no project settings exist", async () => {
     writeFileSync(
       join(agentDir, "settings.json"),
-      JSON.stringify({ lazyresearch: { agents: { orchestrator: { model: "openai/gpt-4o" } } } }),
+      JSON.stringify({ easyresearch: { agents: { assistant: { model: "openai/gpt-4o" } } } }),
     );
-    await expect(readOrchestratorDefaults(config, cwd)).resolves.toEqual({ provider: "openai", modelId: "gpt-4o" });
+    await expect(readAssistantDefaults(config, cwd)).resolves.toEqual({ provider: "openai", modelId: "gpt-4o" });
   });
 
-  it("lets the project orchestrator model win over the global one", async () => {
+  it("lets the project assistant model win over the global one", async () => {
     writeFileSync(
       join(agentDir, "settings.json"),
-      JSON.stringify({ lazyresearch: { agents: { orchestrator: { model: "openai/gpt-4o" } } } }),
+      JSON.stringify({ easyresearch: { agents: { assistant: { model: "openai/gpt-4o" } } } }),
     );
-    mkdirSync(join(cwd, ".lazyresearch"));
+    mkdirSync(join(cwd, ".easyresearch"));
     writeFileSync(
-      join(cwd, ".lazyresearch", "settings.json"),
-      JSON.stringify({ lazyresearch: { agents: { orchestrator: { model: "deepseek/ds-v3" } } } }),
+      join(cwd, ".easyresearch", "settings.json"),
+      JSON.stringify({ easyresearch: { agents: { assistant: { model: "deepseek/ds-v3" } } } }),
     );
-    await expect(readOrchestratorDefaults(config, cwd)).resolves.toEqual({ provider: "deepseek", modelId: "ds-v3" });
+    await expect(readAssistantDefaults(config, cwd)).resolves.toEqual({ provider: "deepseek", modelId: "ds-v3" });
   });
 
-  it("returns undefined when the orchestrator registry model is unset", async () => {
-    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ lazyresearch: {} }));
-    await expect(readOrchestratorDefaults(config, cwd)).resolves.toBeUndefined();
+  it("returns undefined when the assistant registry model is unset", async () => {
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ easyresearch: {} }));
+    await expect(readAssistantDefaults(config, cwd)).resolves.toBeUndefined();
     writeFileSync(
       join(agentDir, "settings.json"),
-      JSON.stringify({ lazyresearch: { agents: { orchestrator: { definition: "agents/orchestrator.md" } } } }),
+      JSON.stringify({ easyresearch: { agents: { assistant: { definition: "agents/assistant.md" } } } }),
     );
-    await expect(readOrchestratorDefaults(config, cwd)).resolves.toBeUndefined();
+    await expect(readAssistantDefaults(config, cwd)).resolves.toBeUndefined();
   });
 });
 
 describe("resolveAgentModelsService.effective", () => {
   const roster = () => [
-    { name: "orchestrator" },
+    { name: "assistant" },
     { name: "search" },
     { name: "experiment" },
     { name: "writing" },
@@ -183,11 +183,11 @@ describe("resolveAgentModelsService.effective", () => {
       ],
       projectAgentModels: async () => ({ experiment: "p/1", figures: "p/2" }),
       globalAgentModels: async () => ({ figures: "g/1", writing: "g/2" }),
-      orchestratorModel: async () => "o/7",
+      assistantModel: async () => "o/7",
       getCwd: async () => "/tmp/proj",
     });
     await expect(service.effective("s1")).resolves.toEqual([
-      { name: "orchestrator", model: "o/7", source: "inherit" },
+      { name: "assistant", model: "o/7", source: "inherit" },
       { name: "search", model: "s/9", source: "override" },
       { name: "experiment", model: "p/1", source: "project" },
       { name: "writing", model: "g/2", source: "global" },
@@ -202,7 +202,7 @@ describe("resolveAgentModelsService.effective", () => {
       readEntries: async () => [] as EntryRow[],
       projectAgentModels: async () => undefined,
       globalAgentModels: async () => undefined,
-      orchestratorModel: async () => undefined,
+      assistantModel: async () => undefined,
       getCwd: async () => "/tmp/proj",
     });
     const effective = await service.effective("s1");
@@ -211,23 +211,23 @@ describe("resolveAgentModelsService.effective", () => {
 });
 
 describe("routeSetAgentModel", () => {
-  const setOrchestrator = vi.fn();
+  const setAssistant = vi.fn();
   const writeOverride = vi.fn();
   const defaults = vi.fn<() => Promise<{ provider: string; modelId: string } | undefined>>();
-  const known = new Set(["orchestrator", "search", "figures"]);
+  const known = new Set(["assistant", "search", "figures"]);
 
   function router() {
     return {
-      isOrchestrator: (name: string) => name === "orchestrator",
+      isAssistant: (name: string) => name === "assistant",
       isKnownAgent: (name: string) => known.has(name),
-      setOrchestrator,
+      setAssistant,
       writeOverride,
-      orchestratorDefaults: defaults,
+      assistantDefaults: defaults,
     };
   }
 
   beforeEach(() => {
-    setOrchestrator.mockReset();
+    setAssistant.mockReset();
     writeOverride.mockReset();
     defaults.mockReset();
   });
@@ -242,43 +242,43 @@ describe("routeSetAgentModel", () => {
     expect(writeOverride).not.toHaveBeenCalled();
   });
 
-  it("routes the orchestrator model string through RPC setModel", async () => {
-    await routeSetAgentModel(router(), "orchestrator", "openai/gpt-4o");
-    expect(setOrchestrator).toHaveBeenCalledWith("openai", "gpt-4o");
+  it("routes the assistant model string through RPC setModel", async () => {
+    await routeSetAgentModel(router(), "assistant", "openai/gpt-4o");
+    expect(setAssistant).toHaveBeenCalledWith("openai", "gpt-4o");
     expect(writeOverride).not.toHaveBeenCalled();
   });
 
-  it("resets the orchestrator to the configured default model", async () => {
+  it("resets the assistant to the configured default model", async () => {
     defaults.mockResolvedValue({ provider: "openai", modelId: "gpt-4o" });
-    await routeSetAgentModel(router(), "orchestrator", null);
-    expect(setOrchestrator).toHaveBeenCalledWith("openai", "gpt-4o");
+    await routeSetAgentModel(router(), "assistant", null);
+    expect(setAssistant).toHaveBeenCalledWith("openai", "gpt-4o");
   });
 
-  it("rejects an orchestrator reset with 409 when no default model is configured", async () => {
+  it("rejects an assistant reset with 409 when no default model is configured", async () => {
     defaults.mockResolvedValue(undefined);
-    await expect(routeSetAgentModel(router(), "orchestrator", null)).rejects.toThrow(AgentModelError);
+    await expect(routeSetAgentModel(router(), "assistant", null)).rejects.toThrow(AgentModelError);
     try {
-      await routeSetAgentModel(router(), "orchestrator", null);
+      await routeSetAgentModel(router(), "assistant", null);
     } catch (error) {
       expect((error as AgentModelError).status).toBe(409);
     }
-    expect(setOrchestrator).not.toHaveBeenCalled();
+    expect(setAssistant).not.toHaveBeenCalled();
   });
 
-  it("rejects a malformed orchestrator model string with 400", async () => {
-    await expect(routeSetAgentModel(router(), "orchestrator", "garbage")).rejects.toThrow(AgentModelError);
+  it("rejects a malformed assistant model string with 400", async () => {
+    await expect(routeSetAgentModel(router(), "assistant", "garbage")).rejects.toThrow(AgentModelError);
     try {
-      await routeSetAgentModel(router(), "orchestrator", "garbage");
+      await routeSetAgentModel(router(), "assistant", "garbage");
     } catch (error) {
       expect((error as AgentModelError).status).toBe(400);
     }
-    expect(setOrchestrator).not.toHaveBeenCalled();
+    expect(setAssistant).not.toHaveBeenCalled();
   });
 
   it("writes a session override for stage agents", async () => {
     await routeSetAgentModel(router(), "search", "a/1");
     expect(writeOverride).toHaveBeenCalledWith("search", "a/1");
-    expect(setOrchestrator).not.toHaveBeenCalled();
+    expect(setAssistant).not.toHaveBeenCalled();
 
     await routeSetAgentModel(router(), "figures", null);
     expect(writeOverride).toHaveBeenCalledWith("figures", null);

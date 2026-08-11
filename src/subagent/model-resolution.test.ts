@@ -21,13 +21,13 @@ describe("resolveEffectiveModel", () => {
     const r = resolveEffectiveModel(undefined, { search: "anthropic/claude" }, { search: "x/y" }, "o/1", "search");
     expect(r).toEqual({ model: "anthropic/claude", source: "project" });
   });
-  it("falls back to global, then orchestrator inherit", () => {
+  it("falls back to global, then assistant inherit", () => {
     expect(resolveEffectiveModel(undefined, undefined, { search: "x/y" }, "o/1", "search")).toEqual({ model: "x/y", source: "global" });
     expect(resolveEffectiveModel(undefined, undefined, undefined, "o/1", "search")).toEqual({ model: "o/1", source: "inherit" });
     expect(resolveEffectiveModel(undefined, undefined, undefined, undefined, "search")).toBeNull();
   });
-  it("resolves the orchestrator model from project registry config", () => {
-    expect(resolveEffectiveModel(undefined, { orchestrator: "top/slow" }, undefined, "o/1", "orchestrator")).toEqual({
+  it("resolves the assistant model from project registry config", () => {
+    expect(resolveEffectiveModel(undefined, { assistant: "top/slow" }, undefined, "o/1", "assistant")).toEqual({
       model: "top/slow",
       source: "project",
     });
@@ -37,33 +37,33 @@ describe("resolveEffectiveModel", () => {
 describe("extractAgentModels", () => {
   it("reads models from the agents registry, not agentModels", () => {
     const models = extractAgentModels({
-      lazyresearch: {
+      easyresearch: {
         agents: { search: { model: "a/1" }, writing: { model: "b/2" }, ghost: {} },
       },
     });
     expect(models).toEqual({ search: "a/1", writing: "b/2" });
-    expect(extractAgentModels({ lazyresearch: { agentModels: { search: "x/y" } } })).toBeUndefined();
+    expect(extractAgentModels({ easyresearch: { agentModels: { search: "x/y" } } })).toBeUndefined();
   });
-  it("returns undefined when lazyresearch or agents is missing", () => {
+  it("returns undefined when easyresearch or agents is missing", () => {
     expect(extractAgentModels(undefined)).toBeUndefined();
     expect(extractAgentModels({})).toBeUndefined();
     expect(extractAgentModels({ theme: "dark" })).toBeUndefined();
-    expect(extractAgentModels({ lazyresearch: {} })).toBeUndefined();
+    expect(extractAgentModels({ easyresearch: {} })).toBeUndefined();
   });
   it("returns undefined when agents is not an object", () => {
     for (const bad of [null, 42, "a/1", ["a/1"]]) {
-      expect(extractAgentModels({ lazyresearch: { agents: bad } })).toBeUndefined();
+      expect(extractAgentModels({ easyresearch: { agents: bad } })).toBeUndefined();
     }
   });
   it("skips entries with non-string or empty models", () => {
     expect(
       extractAgentModels({
-        lazyresearch: {
+        easyresearch: {
           agents: {
             search: { model: "a/1" },
             writing: { model: 42 },
             figures: { model: null },
-            orchestrator: { model: true },
+            assistant: { model: true },
             ghost: {},
             empty: { model: "" },
           },
@@ -89,7 +89,7 @@ describe("resolveModelForSpawn", () => {
   });
 
   const project = (models: Record<string, string>) => ({
-    lazyresearch: {
+    easyresearch: {
       agents: Object.fromEntries(Object.entries(models).map(([name, model]) => [name, { model }])),
     },
   });
@@ -136,11 +136,11 @@ describe("resolveModelForSpawn", () => {
     await expect(resolveModelForSpawn(ctx(override(null)), "search", "o/1")).resolves.toBe("a/1");
   });
 
-  it("inherits the orchestrator model when nothing is configured anywhere", async () => {
+  it("inherits the assistant model when nothing is configured anywhere", async () => {
     await expect(resolveModelForSpawn(ctx([]), "search", "o/1")).resolves.toBe("o/1");
   });
 
-  it("returns undefined when nothing is configured and no orchestrator model", async () => {
+  it("returns undefined when nothing is configured and no assistant model", async () => {
     await expect(resolveModelForSpawn(ctx([]), "search", undefined)).resolves.toBeUndefined();
   });
 });

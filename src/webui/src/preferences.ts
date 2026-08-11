@@ -20,7 +20,7 @@ export const DEFAULT_EXPANSION_PREFERENCES = {
   autoExpandTools: false,
   expandSubagentOutput: false,
 } as const;
-export const STORAGE_KEY = "lazyresearch.webui.preferences";
+export const STORAGE_KEY = "easyresearch.webui.preferences";
 
 export function resolveLanguage(navigatorLanguage: string): Language {
   return navigatorLanguage.toLowerCase().startsWith("zh") ? "zh-CN" : "en";

@@ -148,11 +148,11 @@ export class ActiveSessionRegistry {
   }
 
   /**
-   * The orchestrator's current model as a `provider/id` string, the level-4
+   * The assistant's current model as a `provider/id` string, the level-4
    * fallback for stage agents in this session. Undefined when the session has
    * no model (e.g. no auth configured).
    */
-  async getOrchestratorModel(id: string): Promise<string | undefined> {
+  async getAssistantModel(id: string): Promise<string | undefined> {
     return this.withRecord(id, async (record) => {
       const state = await record.client.getState();
       const model = state.model;

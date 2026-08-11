@@ -8,7 +8,7 @@ export type AgentStatus = "idle" | "working" | "error";
 export interface AgentTabBarProps {
   tabs: SubagentTabState[];
   activeKey: string;
-  orchestratorStatus: AgentStatus;
+  assistantStatus: AgentStatus;
   onSelect(key: string): void;
   onClose(key: string): void;
   onStop(toolCallId: string): void;
@@ -24,21 +24,21 @@ function tabClass(focused: boolean): string {
     : "border-v2-grey-200 text-v2-text-text-muted hover:bg-v2-grey-100";
 }
 
-export function AgentTabBar({ tabs, activeKey, orchestratorStatus, onSelect, onClose, onStop }: AgentTabBarProps) {
+export function AgentTabBar({ tabs, activeKey, assistantStatus, onSelect, onClose, onStop }: AgentTabBarProps) {
   const { t } = useI18n();
-  const orchestratorFocused = activeKey === "orchestrator";
+  const assistantFocused = activeKey === "assistant";
 
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-v2-grey-200 px-3 py-2">
       <button
         type="button"
-        aria-pressed={orchestratorFocused}
-        aria-label={`${t("work.agentChip")} ${agentDisplayName(t, "orchestrator")}`}
-        onClick={() => onSelect("orchestrator")}
-        className={`flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-[12px] transition-colors ${tabClass(orchestratorFocused)}`}
+        aria-pressed={assistantFocused}
+        aria-label={`${t("work.agentChip")} ${agentDisplayName(t, "assistant")}`}
+        onClick={() => onSelect("assistant")}
+        className={`flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-[12px] transition-colors ${tabClass(assistantFocused)}`}
       >
-        <span className={`size-2 shrink-0 rounded-full ${dotClass(orchestratorStatus)}`} aria-hidden />
-        <span className="truncate">{agentDisplayName(t, "orchestrator")}</span>
+        <span className={`size-2 shrink-0 rounded-full ${dotClass(assistantStatus)}`} aria-hidden />
+        <span className="truncate">{agentDisplayName(t, "assistant")}</span>
       </button>
       {tabs.map((tab) => {
         const focused = activeKey === tab.key;

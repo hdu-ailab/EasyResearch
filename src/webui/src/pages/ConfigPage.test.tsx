@@ -21,7 +21,7 @@ describe("ConfigPage", () => {
     });
     vi.mocked(api.readConfigFile).mockResolvedValue({
       path: "settings.json",
-      content: '{"lazyresearch":{"agentModels":{"search":"a/1"}}}',
+      content: '{"easyresearch":{"agentModels":{"search":"a/1"}}}',
     });
   });
 
@@ -51,17 +51,17 @@ describe("ConfigPage", () => {
     render(<ConfigPage onBack={() => {}} />);
     await user.click(await screen.findByText("/home/u/proj"));
     const editor = await screen.findByRole("textbox", { name: /settings.json/i });
-    expect(editor).toHaveValue(JSON.stringify({ lazyresearch: { agentModels: { search: "a/1" } } }, null, 2));
+    expect(editor).toHaveValue(JSON.stringify({ easyresearch: { agentModels: { search: "a/1" } } }, null, 2));
     await user.clear(editor);
     fireEvent.change(editor, {
-      target: { value: '{"lazyresearch":{"agentModels":{"search":"b/2"}},"theme":"light"}' },
+      target: { value: '{"easyresearch":{"agentModels":{"search":"b/2"}},"theme":"light"}' },
     });
     await user.click(screen.getByRole("button", { name: /save/i }));
     expect(api.writeConfigFile).toHaveBeenCalledWith(
       "project",
       "/home/u/proj",
       "settings.json",
-      '{"lazyresearch":{"agentModels":{"search":"b/2"}},"theme":"light"}',
+      '{"easyresearch":{"agentModels":{"search":"b/2"}},"theme":"light"}',
     );
   });
 
@@ -84,7 +84,7 @@ describe("ConfigPage", () => {
     const example = dialog.querySelector("pre");
     expect(example?.className).toContain("whitespace-pre-wrap");
     expect(JSON.parse(example?.textContent ?? "")).toEqual({
-      lazyresearch: {
+      easyresearch: {
         agents: {
           search: { model: "provider/model-id" },
         },

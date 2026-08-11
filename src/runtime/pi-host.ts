@@ -8,7 +8,7 @@ import { assertSafeExtensionSources } from "./extensions-guard";
 export const VERSION_CHECK_ENV = "PI_SKIP_VERSION_CHECK";
 
 /**
- * ADR-023: LazyResearch is a rebranded host distribution; Pi's "new version
+ * ADR-023: EasyResearch is a rebranded host distribution; Pi's "new version
  * available" notification would point at the upstream package and is noise.
  * `PI_SKIP_VERSION_CHECK` is Pi's documented env switch (.docs/pi/settings.md);
  * `PI_OFFLINE` is deliberately not used — it would also disable the model
@@ -39,7 +39,7 @@ export function parseVersion(version: string): VersionParts | null {
  * ADR-024: Pi renders its "What's New" changelog notice whenever the stored
  * `lastChangelogVersion` watermark is lower than any changelog entry, and it
  * rewrites the watermark to its own `VERSION` constant — which the identity
- * bootstrap (ADR-016) binds to LazyResearch's package version, so upstream
+ * bootstrap (ADR-016) binds to EasyResearch's package version, so upstream
  * release notes would otherwise look new on every launch forever. The host
  * primes the watermark to the pinned upstream version instead. A missing or
  * unparseable watermark is treated as behind; a value at or above upstream is
@@ -72,7 +72,7 @@ export interface PrimeChangelogOptions {
  * version when it is missing or behind, preserving every other field. Returns
  * whether a write happened. The upstream version is read at runtime from the
  * pinned package via Pi's own `getPackageDir()` — never `pi.VERSION`, which is
- * the LazyResearch identity version. Unreadable settings are left untouched.
+ * the EasyResearch identity version. Unreadable settings are left untouched.
  */
 export async function primeChangelogSeenVersion(
   options: PrimeChangelogOptions = {},
@@ -122,6 +122,6 @@ export async function runNativeTui(): Promise<void> {
   const { main } = await importPi();
   await bootstrapBundledResources();
   assertSafeExtensionSources({ cwd: process.cwd() });
-  const { createOrchestratorExtension } = await import("./orchestrator-extension");
-  await main([], { extensionFactories: [createOrchestratorExtension()] });
+  const { createAssistantExtension } = await import("./assistant-extension");
+  await main([], { extensionFactories: [createAssistantExtension()] });
 }

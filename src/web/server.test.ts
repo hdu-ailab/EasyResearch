@@ -166,8 +166,8 @@ describe("web routes", () => {
       config: configService,
       logger: noopLogger,
       listAgents: async () => [],
-      getWebuiSettings: vi.fn(async () => ({ agentModels: {}, orchestratorModel: null, effectiveOrchestratorModel: null })),
-      updateWebuiSettings: vi.fn(async (patch) => ({ agentModels: {}, orchestratorModel: null, effectiveOrchestratorModel: null, ...patch })),
+      getWebuiSettings: vi.fn(async () => ({ agentModels: {}, assistantModel: null, effectiveAssistantModel: null })),
+      updateWebuiSettings: vi.fn(async (patch) => ({ agentModels: {}, assistantModel: null, effectiveAssistantModel: null, ...patch })),
       subagentSessions: {
         summaries: async () => [],
         snapshot: async (_parentSessionId: string, childSessionId: string) => {
@@ -480,7 +480,7 @@ describe("web routes", () => {
 
   it("returns a complete read-only child snapshot", async () => {
     const childSnapshot = {
-      session: { id: "child-1", cwd: projectDir, sessionName: "lazyresearch:search" },
+      session: { id: "child-1", cwd: projectDir, sessionName: "easyresearch:search" },
       messages: [userMessage("dispatch"), assistant("complete child reply")],
     };
     setup({
@@ -811,7 +811,7 @@ describe("web routes", () => {
   it("lists the agent roster with tools/subagents/skills without leaking system prompts or model", async () => {
     setup({
       listAgents: async () => [
-        { name: "orchestrator", description: "Runs the pipeline", tools: ["subagent"], skills: ["research-project-workflow"] },
+        { name: "assistant", description: "Runs the pipeline", tools: ["subagent"], skills: ["research-project-workflow"] },
         { name: "search", description: "Finds papers", subagents: [], skills: [] },
       ],
     });
@@ -826,7 +826,7 @@ describe("web routes", () => {
       systemPrompt?: string;
       model?: string;
     }>;
-    expect(body.map((a) => a.name)).toEqual(["orchestrator", "search"]);
+    expect(body.map((a) => a.name)).toEqual(["assistant", "search"]);
     expect(body[0]?.tools).toEqual(["subagent"]);
     expect(body[0]?.skills).toEqual(["research-project-workflow"]);
     expect(body[1]?.skills).toEqual([]);
@@ -917,7 +917,7 @@ describe("web routes", () => {
     expect((await res.json()).error).toContain("agentModels");
   });
 
-  it("round-trips the orchestrator default model through the real settings store", async () => {
+  it("round-trips the assistant default model through the real settings store", async () => {
     const TEST_AVAILABLE = [{ provider: "oc", id: "deepseek-v4-flash-free" }];
     setup({
       getWebuiSettings: () => readEffectiveWebuiSettings(configService, TEST_AVAILABLE),
@@ -930,44 +930,44 @@ describe("web routes", () => {
       new Request("http://localhost/api/webui-settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ orchestratorModel: "openai/gpt-4o" }),
+        body: JSON.stringify({ assistantModel: "openai/gpt-4o" }),
       }),
     );
     expect(put.status).toBe(200);
-    const putBody = (await put.json()) as { orchestratorModel: string | null; effectiveOrchestratorModel: string | null };
-    expect(putBody.orchestratorModel).toBe("openai/gpt-4o");
-    expect(putBody.effectiveOrchestratorModel).toBe("openai/gpt-4o");
+    const putBody = (await put.json()) as { assistantModel: string | null; effectiveAssistantModel: string | null };
+    expect(putBody.assistantModel).toBe("openai/gpt-4o");
+    expect(putBody.effectiveAssistantModel).toBe("openai/gpt-4o");
 
     const get = await handler(new Request("http://localhost/api/webui-settings"));
-    expect((await get.json()).orchestratorModel).toBe("openai/gpt-4o");
+    expect((await get.json()).assistantModel).toBe("openai/gpt-4o");
 
     const clear = await handler(
       new Request("http://localhost/api/webui-settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ orchestratorModel: null }),
+        body: JSON.stringify({ assistantModel: null }),
       }),
     );
     expect(clear.status).toBe(200);
-    expect((await clear.json()).orchestratorModel).toBeNull();
+    expect((await clear.json()).assistantModel).toBeNull();
   });
 
-  it("GET reports the Pi fallback model when no orchestrator default is configured", async () => {
+  it("GET reports the Pi fallback model when no assistant default is configured", async () => {
     setup({
       getWebuiSettings: () => readEffectiveWebuiSettings(configService, [{ provider: "oc", id: "deepseek-v4-flash-free" }]),
     });
     const res = await handler(new Request("http://localhost/api/webui-settings"));
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.orchestratorModel).toBeNull();
-    expect(body.effectiveOrchestratorModel).toBe("oc/deepseek-v4-flash-free");
+    expect(body.assistantModel).toBeNull();
+    expect(body.effectiveAssistantModel).toBe("oc/deepseek-v4-flash-free");
   });
 
-  it("forwards a null orchestratorModel patch to the settings store", async () => {
+  it("forwards a null assistantModel patch to the settings store", async () => {
     const updateWebuiSettingsMock = vi.fn(async (patch) => ({
       agentModels: {},
-      orchestratorModel: null,
-      effectiveOrchestratorModel: null,
+      assistantModel: null,
+      effectiveAssistantModel: null,
       ...patch,
     }));
     setup({ updateWebuiSettings: updateWebuiSettingsMock });
@@ -975,11 +975,11 @@ describe("web routes", () => {
       new Request("http://localhost/api/webui-settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ orchestratorModel: null }),
+        body: JSON.stringify({ assistantModel: null }),
       }),
     );
     expect(res.status).toBe(200);
-    expect(updateWebuiSettingsMock).toHaveBeenCalledWith({ orchestratorModel: null });
+    expect(updateWebuiSettingsMock).toHaveBeenCalledWith({ assistantModel: null });
   });
 
   it("returns the effective models for a session", async () => {
@@ -1051,7 +1051,7 @@ describe("web routes", () => {
       },
     });
     const res = await handler(
-      new Request("http://localhost/api/sessions/s1/agents/orchestrator/model", {
+      new Request("http://localhost/api/sessions/s1/agents/assistant/model", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ model: null }),
@@ -1095,10 +1095,10 @@ function sessionInfo(patch: Partial<SessionInfoLike>): SessionInfoLike {
 }
 
 describe("toUserSessionSummaries", () => {
-  it("excludes internal lazyresearch child session lines from the user home list", () => {
+  it("excludes internal easyresearch child session lines from the user home list", () => {
     expect(toUserSessionSummaries([
       sessionInfo({ id: "main", name: undefined, firstMessage: "write a paper" }),
-      sessionInfo({ id: "child", name: "lazyresearch:search", firstMessage: "Task: search" }),
+      sessionInfo({ id: "child", name: "easyresearch:search", firstMessage: "Task: search" }),
     ])).toEqual([
       expect.objectContaining({ id: "main", firstMessage: "write a paper" }),
     ]);
@@ -1106,9 +1106,9 @@ describe("toUserSessionSummaries", () => {
 
   it("uses literal startsWith filtering, including the exact internal prefix", () => {
     const results = toUserSessionSummaries([
-      sessionInfo({ id: "s1", name: "lazyresearch:search", firstMessage: "child" }),
-      sessionInfo({ id: "s2", name: "my lazyresearch:search notes", firstMessage: "user" }),
-      sessionInfo({ id: "s3", name: "lazyresearch:", firstMessage: "user" }),
+      sessionInfo({ id: "s1", name: "easyresearch:search", firstMessage: "child" }),
+      sessionInfo({ id: "s2", name: "my easyresearch:search notes", firstMessage: "user" }),
+      sessionInfo({ id: "s3", name: "easyresearch:", firstMessage: "user" }),
     ]);
     expect(results.map((session) => session.id)).toEqual(["s2"]);
   });

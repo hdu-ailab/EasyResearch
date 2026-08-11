@@ -4,9 +4,9 @@ import { join, resolve, sep } from "node:path";
 import { getAgentDir } from "./pi-import";
 
 /**
- * ADR-032: LazyResearch relies on Pi's native extension auto-discovery, which
- * the identity bootstrap (ADR-016) binds to `.lazyresearch` — global
- * `agent/extensions/`, project `.lazyresearch/extensions/`, and the settings
+ * ADR-032: EasyResearch relies on Pi's native extension auto-discovery, which
+ * the identity bootstrap (ADR-016) binds to `.easyresearch` — global
+ * `agent/extensions/`, project `.easyresearch/extensions/`, and the settings
  * `extensions` array all load through Pi. Those discovery roots can never
  * point at `~/.pi` by construction. This guard keeps the two remaining
  * invariants of ADR-018/ADR-032: the `packages` array stays banned, and no
@@ -28,13 +28,13 @@ export function assertSafeExtensionSources(options: ExtensionGuardOptions = {}):
   offenders.push(...foreignPiExtensions(globalSettings, "global settings.json"));
 
   if (options.cwd) {
-    const projectSettings = readFileSafe(join(options.cwd, ".lazyresearch", "settings.json"));
+    const projectSettings = readFileSafe(join(options.cwd, ".easyresearch", "settings.json"));
     offenders.push(...unlistedPackageArrays(projectSettings, "project settings.json"));
     offenders.push(...foreignPiExtensions(projectSettings, "project settings.json"));
   }
 
   if (offenders.length > 0) {
-    throw new ExtensionGuardError(`LazyResearch refused at startup: ${offenders.join("; ")}`);
+    throw new ExtensionGuardError(`EasyResearch refused at startup: ${offenders.join("; ")}`);
   }
 }
 

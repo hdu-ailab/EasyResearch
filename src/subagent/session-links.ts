@@ -1,5 +1,5 @@
-export const SUBAGENT_SESSION_PREFIX = "lazyresearch:";
-export const SUBAGENT_SESSION_LINK_ENTRY = "lazyresearch:subagent_session";
+export const SUBAGENT_SESSION_PREFIX = "easyresearch:";
+export const SUBAGENT_SESSION_LINK_ENTRY = "easyresearch:subagent_session";
 
 export interface SubagentSessionLink {
   toolCallId: string;

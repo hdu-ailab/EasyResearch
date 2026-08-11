@@ -194,15 +194,15 @@ export function parseWebuiSettings(value: unknown): WebuiSettingsDto {
     if (typeof model !== "string") throw new Error(`Invalid API response: agentModels.${name} must be a string`);
     agentModels[name] = model;
   }
-  const orchestratorModel = source.orchestratorModel;
-  const effectiveOrchestratorModel = source.effectiveOrchestratorModel;
-  if (orchestratorModel !== null && typeof orchestratorModel !== "string") {
-    throw new Error("Invalid API response: orchestratorModel must be a string or null");
+  const assistantModel = source.assistantModel;
+  const effectiveAssistantModel = source.effectiveAssistantModel;
+  if (assistantModel !== null && typeof assistantModel !== "string") {
+    throw new Error("Invalid API response: assistantModel must be a string or null");
   }
-  if (effectiveOrchestratorModel !== null && typeof effectiveOrchestratorModel !== "string") {
-    throw new Error("Invalid API response: effectiveOrchestratorModel must be a string or null");
+  if (effectiveAssistantModel !== null && typeof effectiveAssistantModel !== "string") {
+    throw new Error("Invalid API response: effectiveAssistantModel must be a string or null");
   }
-  return { agentModels, orchestratorModel, effectiveOrchestratorModel };
+  return { agentModels, assistantModel, effectiveAssistantModel };
 }
 
 export function parseEffectiveModels(value: unknown): AgentEffectiveModelDto[] {

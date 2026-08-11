@@ -76,7 +76,7 @@ class FakeRpcClient {
 }
 
 const cliPath = fileURLToPath(new URL("../runtime/pi-bootstrap.mjs", import.meta.url));
-const extensionPath = fileURLToPath(new URL("../runtime/orchestrator-extension.ts", import.meta.url));
+const extensionPath = fileURLToPath(new URL("../runtime/assistant-extension.ts", import.meta.url));
 
 describe("PiRpcSessionFactory", () => {
   beforeEach(() => {
@@ -101,7 +101,7 @@ describe("PiRpcSessionFactory", () => {
     expect(client.options.args).toContain("/agent/sessions/--project--/old.jsonl");
     expect(client.options.args).toContain("--approve");
     expect(client.options.args).not.toContain("--no-approve");
-    expect(client.options.env).toEqual({ LAZYRESEARCH_RPC_CHILD: "1" });
+    expect(client.options.env).toEqual({ EASYRESEARCH_RPC_CHILD: "1" });
   });
 
   it("always passes --approve even without a session (ADR-018)", () => {

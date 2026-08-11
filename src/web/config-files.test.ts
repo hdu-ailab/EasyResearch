@@ -20,7 +20,7 @@ vi.mock("node:fs", async (importOriginal) => {
 const tempDirs: string[] = [];
 
 function freshDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "lazyresearch-config-"));
+  const dir = mkdtempSync(join(tmpdir(), "easyresearch-config-"));
   tempDirs.push(dir);
   return dir;
 }
@@ -162,7 +162,7 @@ describe("ConfigFileService", () => {
     expect(after.find((e) => e.name === "settings.json")?.type).toBe("file");
   });
 
-  it("creates the project .lazyresearch root lazily on write", async () => {
+  it("creates the project .easyresearch root lazily on write", async () => {
     expect(await service.list({ scope: "project", cwd })).toEqual([]);
     await service.createDirectory({ scope: "project", cwd, path: "sub" });
     const entries = await service.list({ scope: "project", cwd });

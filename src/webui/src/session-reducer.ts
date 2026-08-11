@@ -37,7 +37,7 @@ export interface SessionMessageView {
   isThinking?: boolean;
   streaming: boolean;
   error: boolean;
-  /** Agent that produced this message; undefined means the orchestrator. */
+  /** Agent that produced this message; undefined means the assistant. */
   agentId?: string;
   /** Position in the shared message/tool stream; tools interleave with messages. */
   order: number;
@@ -50,7 +50,7 @@ export interface SessionViewState {
   tools: ToolView[];
   isStreaming: boolean;
   error: string | null;
-  /** Agent name when this session line is a `lazyresearch:` subagent line. */
+  /** Agent name when this session line is a `easyresearch:` subagent line. */
   subagentName?: string;
   /** Next value of the shared message/tool stream counter. */
   nextOrder: number;
@@ -61,7 +61,7 @@ export interface SessionViewState {
 }
 
 /** ADR-022: named subagent session lines share this prefix (`subagent/tool.ts`). */
-const SUBAGENT_SESSION_PREFIX = "lazyresearch:";
+const SUBAGENT_SESSION_PREFIX = "easyresearch:";
 
 const emptyState: SessionViewState = {
   messages: [],
@@ -220,10 +220,10 @@ function usableText(text: string | undefined): string | undefined {
 }
 
 /** Label to apply to a message on a subagent line: dispatches come from the
- * orchestrator, replies belong to the agent running that line. */
+ * assistant, replies belong to the agent running that line. */
 function labelFor(role: string, subagentName?: string): string | undefined {
   if (!subagentName) return undefined;
-  return role === "user" ? "Orchestrator" : subagentName;
+  return role === "user" ? "Assistant" : subagentName;
 }
 
 function subagentNameOf(snapshot: SessionSnapshotDto): string | undefined {

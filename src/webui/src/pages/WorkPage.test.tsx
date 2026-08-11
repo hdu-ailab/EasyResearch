@@ -109,7 +109,7 @@ describe("WorkPage", () => {
     vi.mocked(api.getEffectiveModels).mockReset();
     vi.mocked(api.setAgentModel).mockReset();
     vi.mocked(api.listAgents).mockResolvedValue([
-      { name: "orchestrator", description: "Runs the pipeline", tools: ["subagent"] },
+      { name: "assistant", description: "Runs the pipeline", tools: ["subagent"] },
       { name: "search", description: "Finds papers" },
       { name: "experiment", description: "Runs experiments", subagents: ["search"] },
       { name: "writing", description: "Writes the paper", subagents: ["search", "figures"] },
@@ -120,7 +120,7 @@ describe("WorkPage", () => {
       { provider: "anthropic", id: "claude" },
     ]);
     vi.mocked(api.getEffectiveModels).mockResolvedValue([
-      { name: "orchestrator", model: "openai/gpt-4o", source: "inherit" },
+      { name: "assistant", model: "openai/gpt-4o", source: "inherit" },
       { name: "search", model: "anthropic/claude", source: "override" },
       { name: "experiment", model: null, source: "inherit" },
       { name: "writing", model: null, source: "inherit" },
@@ -128,7 +128,7 @@ describe("WorkPage", () => {
     ]);
     vi.mocked(api.getSnapshot).mockResolvedValue(snapshot);
     vi.mocked(api.getChildSnapshot).mockResolvedValue({
-      session: { id: "child-default", cwd: "/p", sessionName: "lazyresearch:search" },
+      session: { id: "child-default", cwd: "/p", sessionName: "easyresearch:search" },
       messages: [],
     });
     vi.mocked(api.listEntries).mockResolvedValue([{ kind: "file", name: "notes.md", path: "/p/notes.md" }]);
@@ -313,8 +313,8 @@ describe("WorkPage", () => {
     const latestMessage = "scanning arxiv for recent fault-diagnosis papers";
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await screen.findByText("starting research");
-    const orchestratorTab = screen.getByRole("button", { name: /agent research mentor/i });
-    expect(orchestratorTab.getAttribute("aria-pressed")).toBe("true");
+    const assistantTab = screen.getByRole("button", { name: /agent paper assistant/i });
+    expect(assistantTab.getAttribute("aria-pressed")).toBe("true");
     emitInAct({
       type: "tool_execution_start",
       toolCallId: "sub-1",
@@ -343,7 +343,7 @@ describe("WorkPage", () => {
     });
     await waitFor(() => expect(screen.queryByRole("button", { name: /agent search/i })).toBeNull());
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: /agent research mentor/i }).getAttribute("aria-pressed")).toBe("true"),
+      expect(screen.getByRole("button", { name: /agent paper assistant/i }).getAttribute("aria-pressed")).toBe("true"),
     );
   });
 
@@ -397,7 +397,7 @@ describe("WorkPage", () => {
   it("loads inherited history exactly once when a retained temporary tab receives a delayed UUID", async () => {
     const user = userEvent.setup();
     vi.mocked(api.getChildSnapshot).mockResolvedValue({
-      session: { id: "child-delayed", cwd: "/p", sessionName: "lazyresearch:search" },
+      session: { id: "child-delayed", cwd: "/p", sessionName: "easyresearch:search" },
       messages: [{ role: "user", content: [{ type: "text", text: "inherited before this dispatch" }] }],
     } as never);
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
@@ -439,7 +439,7 @@ describe("WorkPage", () => {
       ],
     } as never);
     vi.mocked(api.getChildSnapshot).mockResolvedValue({
-      session: { id: "child-history", cwd: "/p", sessionName: "lazyresearch:search" },
+      session: { id: "child-history", cwd: "/p", sessionName: "easyresearch:search" },
       messages: [
         { role: "user", content: [{ type: "text", text: "older inherited task" }] },
         { role: "assistant", content: [{ type: "text", text: "complete child answer" }] },
@@ -452,7 +452,7 @@ describe("WorkPage", () => {
     expect(await screen.findByText("older inherited task")).toBeVisible();
     expect(screen.getByText("complete child answer")).toBeVisible();
     const conversation = screen.getByLabelText("Conversation");
-    expect(conversation).toHaveTextContent("Research Mentor");
+    expect(conversation).toHaveTextContent("Paper Assistant");
     expect(conversation).toHaveTextContent("Search");
     expect(screen.getByRole("textbox", { name: /message/i })).toBeDisabled();
     expect(within(conversation).queryByRole("button", { name: "View details" })).toBeNull();
@@ -505,7 +505,7 @@ describe("WorkPage", () => {
     });
     expect(await screen.findByText("live tokens")).toBeVisible();
     resolveChild({
-      session: { id: "child-live", cwd: "/p", sessionName: "lazyresearch:search" },
+      session: { id: "child-live", cwd: "/p", sessionName: "easyresearch:search" },
       messages: [{ role: "user", content: [{ type: "text", text: "older task" }] }],
     } as never);
     expect(await screen.findByText("older task")).toBeVisible();
@@ -546,13 +546,13 @@ describe("WorkPage", () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     const details = await screen.findAllByRole("button", { name: "View details" });
     await user.click(details[0]!);
-    await user.click(screen.getByRole("button", { name: /agent research mentor/i }));
+    await user.click(screen.getByRole("button", { name: /agent paper assistant/i }));
     await user.click((await screen.findAllByRole("button", { name: "View details" }))[1]!);
     expect(screen.getByRole("button", { name: /agent search · 11111111/i })).toBeVisible();
     expect(screen.getByRole("button", { name: /agent search · 22222222/i })).toBeVisible();
     expect(await screen.findByText("Child session unavailable.")).toBeVisible();
     expect(screen.getAllByRole("button", { name: /Close agent tab:/ })).toHaveLength(2);
-    await user.click(screen.getByRole("button", { name: /agent research mentor/i }));
+    await user.click(screen.getByRole("button", { name: /agent paper assistant/i }));
     expect(screen.getByText("parent remains")).toBeVisible();
   });
 
@@ -570,11 +570,11 @@ describe("WorkPage", () => {
     } as never);
     vi.mocked(api.getChildSnapshot)
       .mockResolvedValueOnce({
-        session: { id: "child-refresh", cwd: "/p", sessionName: "lazyresearch:search" },
+        session: { id: "child-refresh", cwd: "/p", sessionName: "easyresearch:search" },
         messages: [{ id: "child-message", role: "assistant", content: [{ type: "text", text: "before reconnect" }] }],
       } as never)
       .mockResolvedValueOnce({
-        session: { id: "child-refresh", cwd: "/p", sessionName: "lazyresearch:search" },
+        session: { id: "child-refresh", cwd: "/p", sessionName: "easyresearch:search" },
         messages: [
           { id: "child-message", role: "assistant", content: [{ type: "text", text: "recovered from JSONL" }] },
         ],
@@ -620,7 +620,7 @@ describe("WorkPage", () => {
           }),
       )
       .mockResolvedValueOnce({
-        session: { id: "child-overlap", cwd: "/p", sessionName: "lazyresearch:search" },
+        session: { id: "child-overlap", cwd: "/p", sessionName: "easyresearch:search" },
         messages: [
           { id: "child-message", role: "assistant", content: [{ type: "text", text: "recovered after overlap" }] },
         ],
@@ -642,7 +642,7 @@ describe("WorkPage", () => {
     });
     act(() =>
       resolveInitial({
-        session: { id: "child-overlap", cwd: "/p", sessionName: "lazyresearch:search" },
+        session: { id: "child-overlap", cwd: "/p", sessionName: "easyresearch:search" },
         messages: [
           { id: "child-message", role: "assistant", content: [{ type: "text", text: "stale in-flight response" }] },
         ],
@@ -674,7 +674,7 @@ describe("WorkPage", () => {
           }),
       )
       .mockResolvedValueOnce({
-        session: { id: "child-retry", cwd: "/p", sessionName: "lazyresearch:search" },
+        session: { id: "child-retry", cwd: "/p", sessionName: "easyresearch:search" },
         messages: [{ role: "assistant", content: [{ type: "text", text: "retry recovered" }] }],
       } as never);
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
@@ -705,7 +705,7 @@ describe("WorkPage", () => {
     });
     const select = await screen.findByRole("button", { name: /agent search/i });
     const stop = await screen.findByRole("button", { name: /stop agent/i });
-    const orchestrator = screen.getByRole("button", { name: /agent research mentor/i });
+    const assistant = screen.getByRole("button", { name: /agent paper assistant/i });
     expect(select.contains(stop)).toBe(false);
     expect(select.parentElement).toBe(stop.parentElement);
     expect(select.parentElement).toHaveClass("rounded-full", "border");
@@ -713,11 +713,11 @@ describe("WorkPage", () => {
     await user.click(stop);
     await waitFor(() => expect(api.abortSession).toHaveBeenCalledWith("s1"));
     expect(select).toHaveAttribute("aria-pressed", "false");
-    expect(orchestrator).toHaveAttribute("aria-pressed", "true");
+    expect(assistant).toHaveAttribute("aria-pressed", "true");
 
     await user.click(select);
     expect(select).toHaveAttribute("aria-pressed", "true");
-    expect(orchestrator).toHaveAttribute("aria-pressed", "false");
+    expect(assistant).toHaveAttribute("aria-pressed", "false");
   });
 
   it("keeps a retained chain UUID active while creating and promoting the next step tab", async () => {
@@ -792,7 +792,7 @@ describe("WorkPage", () => {
           session: {
             id: childId,
             cwd: "/p",
-            sessionName: childId.endsWith("search") ? "lazyresearch:search" : "lazyresearch:writing",
+            sessionName: childId.endsWith("search") ? "easyresearch:search" : "easyresearch:writing",
           },
           messages: [{ role: "assistant", content: [{ type: "text", text: `history for ${childId}` }] }],
         }) as never,
@@ -801,7 +801,7 @@ describe("WorkPage", () => {
 
     await user.click(await screen.findByRole("button", { name: "View details: Step 1" }));
     expect(await screen.findByText("history for child-history-search")).toBeVisible();
-    await user.click(screen.getByRole("button", { name: /agent research mentor/i }));
+    await user.click(screen.getByRole("button", { name: /agent paper assistant/i }));
     await user.click(screen.getByRole("button", { name: "View details: Step 2" }));
 
     expect(await screen.findByText("history for child-history-writing")).toBeVisible();
@@ -863,7 +863,7 @@ describe("WorkPage", () => {
 
   it("disables the composer on a subagent session line (history browse only)", async () => {
     vi.mocked(api.getSnapshot).mockResolvedValue({
-      session: { id: "s3", cwd: "/p", isStreaming: false, status: "ready", sessionName: "lazyresearch:search" },
+      session: { id: "s3", cwd: "/p", isStreaming: false, status: "ready", sessionName: "easyresearch:search" },
       messages: [{ role: "user", content: [{ type: "text", text: "Task: search" }] }],
     } as never);
     render(<WorkPage id="s3" cwd="/p" onBack={() => {}} />);
@@ -1335,7 +1335,7 @@ describe("WorkPage", () => {
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
     await waitFor(() => {
-      for (const display of ["Research Mentor", "Search", "Experiment", "Writing", "Figures"]) {
+      for (const display of ["Paper Assistant", "Search", "Experiment", "Writing", "Figures"]) {
         expect(within(region).getAllByText(display).length).toBeGreaterThan(0);
       }
     });
@@ -1349,20 +1349,20 @@ describe("WorkPage", () => {
     await screen.findByText("starting research");
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
-    expect(await within(region).findByText(/Research Mentor for the paper pipeline/)).toBeTruthy();
+    expect(await within(region).findByText(/Paper Assistant for the paper pipeline/)).toBeTruthy();
     expect(within(region).getByText(/Experiment agent/)).toBeTruthy();
     expect(within(region).queryByText("Subagents")).toBeNull();
     expect(within(region).queryByText("search, figures")).toBeNull();
   });
 
-  it("keeps the orchestrator card when the agents endpoint fails", async () => {
+  it("keeps the assistant card when the agents endpoint fails", async () => {
     const user = userEvent.setup();
     vi.mocked(api.listAgents).mockRejectedValue(new Error("boom"));
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await screen.findByText("starting research");
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
-    expect(await within(region).findByText("Research Mentor")).toBeTruthy();
+    expect(await within(region).findByText("Paper Assistant")).toBeTruthy();
   });
 
   it("shows each agent's effective model in its model dropdown", async () => {

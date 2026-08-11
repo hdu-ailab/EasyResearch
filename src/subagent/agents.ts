@@ -30,8 +30,8 @@ export interface AgentDiscoveryResult {
   agents: AgentConfig[];
 }
 
-/** The orchestrator's fixed session agent can never be disabled (ADR-034). */
-export const ORCHESTRATOR_AGENT = "orchestrator";
+/** The assistant's fixed session agent can never be disabled (ADR-034). */
+export const ASSISTANT_AGENT = "assistant";
 
 function bundledRegistryPath(): string {
   return join(dirname(fileURLToPath(import.meta.url)), "..", "agents", "agents.json");
@@ -39,7 +39,7 @@ function bundledRegistryPath(): string {
 
 function readBundledRegistry(): AgentRegistry {
   try {
-    return parseAgentRegistry({ lazyresearch: { agents: JSON.parse(readFileSync(bundledRegistryPath(), "utf8")) } });
+    return parseAgentRegistry({ easyresearch: { agents: JSON.parse(readFileSync(bundledRegistryPath(), "utf8")) } });
   } catch {
     return {};
   }
@@ -77,7 +77,7 @@ function resolveMergedRegistry(opts: { registry?: AgentRegistry; bundled?: Agent
 }
 
 function isDisabled(entry: AgentRegistryEntry | undefined, name: string): boolean {
-  return entry?.disabled === true && name !== ORCHESTRATOR_AGENT;
+  return entry?.disabled === true && name !== ASSISTANT_AGENT;
 }
 
 export async function discoverAgents(opts: {

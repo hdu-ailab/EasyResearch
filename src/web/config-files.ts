@@ -85,7 +85,7 @@ function canonicalizeNearestAncestor(target: string): string {
 
 /**
  * Bounded local config editor. Global scope is the agent root; project scope is
- * the selected cwd's `.lazyresearch` directory. JSON files are validated before
+ * the selected cwd's `.easyresearch` directory. JSON files are validated before
  * any write; writes are atomic same-directory temp files with mode 0o600.
  * File contents are never logged or embedded in errors.
  */
@@ -124,7 +124,7 @@ export class ConfigFileService {
       target = resolveAllowedConfigPath(root, input.path, "read");
     } catch (error) {
       // Read-mode root resolution realpaths the root, which throws a raw ENOENT
-      // when the project `.lazyresearch` directory itself is absent yet.
+      // when the project `.easyresearch` directory itself is absent yet.
       if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
         throw new ConfigServiceError(404, `does not exist: ${input.path}`);
       }
@@ -184,6 +184,6 @@ export class ConfigFileService {
       throw new ConfigServiceError(404, `does not exist: ${cwd}`);
     }
     if (!stat.isDirectory()) throw new ConfigServiceError(400, `not a directory: ${cwd}`);
-    return join(fs.realpathSync(cwd), ".lazyresearch");
+    return join(fs.realpathSync(cwd), ".easyresearch");
   }
 }

@@ -59,9 +59,9 @@ describe("buildPiArgs", () => {
 
   it("adds --session when inheriting a session line (ADR-022)", () => {
     const agent = maker("search");
-    const args = buildPiArgs(agent, undefined, "task", "/tmp/lazyresearch-search.jsonl");
+    const args = buildPiArgs(agent, undefined, "task", "/tmp/easyresearch-search.jsonl");
     expect(args).toContain("--session");
-    expect(args[args.indexOf("--session") + 1]).toBe("/tmp/lazyresearch-search.jsonl");
+    expect(args[args.indexOf("--session") + 1]).toBe("/tmp/easyresearch-search.jsonl");
   });
 
   it("does not add --session for a fresh session (ADR-022)", () => {
@@ -120,7 +120,7 @@ describe("buildPiArgs", () => {
 });
 
 describe("sessionNameFor", () => {
-  it("names session lines with the lazyresearch prefix (ADR-022)", () => {
+  it("names session lines with the easyresearch prefix (ADR-022)", () => {
     expect(sessionNameFor("search")).toBe(`${SUBAGENT_SESSION_PREFIX}search`);
   });
 });
@@ -128,7 +128,7 @@ describe("sessionNameFor", () => {
 describe("filterAgentsByAllowlist (ADR-022)", () => {
   const agents = [maker("search"), maker("experiment"), maker("writing")];
 
-  it("keeps all agents without an allowlist (orchestrator runtime)", () => {
+  it("keeps all agents without an allowlist (assistant runtime)", () => {
     expect(filterAgentsByAllowlist(agents, undefined).map((a) => a.name)).toEqual(["search", "experiment", "writing"]);
   });
 
@@ -207,7 +207,7 @@ describe("final subagent output (ADR-040)", () => {
     const { getAgentDir } = await import("../runtime/pi-import");
     vi.mocked(discoverAgents).mockResolvedValue({ agents: [maker("search")] });
     vi.mocked(resolveModelForSpawn).mockResolvedValue(undefined);
-    vi.mocked(getAgentDir).mockReturnValue("/tmp/lazyresearch-test-agent");
+    vi.mocked(getAgentDir).mockReturnValue("/tmp/easyresearch-test-agent");
     spawnMock.mockImplementationOnce(() => {
       const stdout = new EventEmitter();
       const stderr = new EventEmitter();
@@ -239,7 +239,7 @@ describe("final subagent output (ADR-040)", () => {
       { agent: "search", task: "find papers", session: "new" },
       undefined,
       undefined,
-      { cwd: "/tmp/lazyresearch-test-project" } as never,
+      { cwd: "/tmp/easyresearch-test-project" } as never,
     );
 
     expect(result.content).toEqual([{ type: "text", text: "first section\n\nsecond section" }]);
@@ -253,7 +253,7 @@ describe("subagent session link persistence", () => {
     const { getAgentDir, importPi } = await import("../runtime/pi-import");
     vi.mocked(discoverAgents).mockResolvedValue({ agents: [maker("search")] });
     vi.mocked(resolveModelForSpawn).mockResolvedValue(undefined);
-    vi.mocked(getAgentDir).mockReturnValue("/tmp/lazyresearch-test-agent");
+    vi.mocked(getAgentDir).mockReturnValue("/tmp/easyresearch-test-agent");
     vi.mocked(importPi).mockResolvedValue({
       SessionManager: {
         list: vi.fn(async () => [{ name: sessionNameFor("search"), path: "/old-child.jsonl", modified: new Date() }]),
@@ -273,7 +273,7 @@ describe("subagent session link persistence", () => {
       { agent: "search", task: "fresh task" },
       undefined,
       undefined,
-      { cwd: "/tmp/lazyresearch-test-project" } as never,
+      { cwd: "/tmp/easyresearch-test-project" } as never,
     );
 
     const args = spawnMock.mock.calls[0]?.[1] as string[];
@@ -286,7 +286,7 @@ describe("subagent session link persistence", () => {
     const { getAgentDir } = await import("../runtime/pi-import");
     vi.mocked(discoverAgents).mockResolvedValue({ agents: [maker("search")] });
     vi.mocked(resolveModelForSpawn).mockResolvedValue(undefined);
-    vi.mocked(getAgentDir).mockReturnValue("/tmp/lazyresearch-test-agent");
+    vi.mocked(getAgentDir).mockReturnValue("/tmp/easyresearch-test-agent");
     spawnMock.mockImplementationOnce(() => {
       const stdout = new EventEmitter();
       const stderr = new EventEmitter();
@@ -315,7 +315,7 @@ describe("subagent session link persistence", () => {
       { agent: "search", task: "find papers", session: "new" },
       undefined,
       undefined,
-      { cwd: "/tmp/lazyresearch-test-project" } as never,
+      { cwd: "/tmp/easyresearch-test-project" } as never,
     );
 
     expect(persistSessionLink).toHaveBeenCalledTimes(1);
@@ -332,7 +332,7 @@ describe("subagent session link persistence", () => {
     const { getAgentDir } = await import("../runtime/pi-import");
     vi.mocked(discoverAgents).mockResolvedValue({ agents: [maker("search")] });
     vi.mocked(resolveModelForSpawn).mockResolvedValue(undefined);
-    vi.mocked(getAgentDir).mockReturnValue("/tmp/lazyresearch-test-agent");
+    vi.mocked(getAgentDir).mockReturnValue("/tmp/easyresearch-test-agent");
     spawnMock.mockImplementationOnce(() => {
       const stdout = new EventEmitter();
       const stderr = new EventEmitter();
@@ -359,7 +359,7 @@ describe("subagent session link persistence", () => {
       { agent: "search", task: "find papers", session: "new" },
       undefined,
       onUpdate,
-      { cwd: "/tmp/lazyresearch-test-project" } as never,
+      { cwd: "/tmp/easyresearch-test-project" } as never,
     );
 
     const nestedEventUpdate = onUpdate.mock.calls
@@ -533,7 +533,7 @@ describe("serial lock (ADR-022)", () => {
 
 describe("resolveInheritedSession (ADR-044)", () => {
   let dir: string;
-  const cwd = "/tmp/lazyresearch-pipeline";
+  const cwd = "/tmp/easyresearch-pipeline";
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), "lazy-sessions-"));
@@ -567,15 +567,15 @@ describe("resolveInheritedSession (ADR-044)", () => {
   }
 
   it("does not use an unlinked named child as an inheritance fallback", async () => {
-    makeSession("lazyresearch:search", "2026-08-06T00:00:00.000Z", crypto.randomUUID());
+    makeSession("easyresearch:search", "2026-08-06T00:00:00.000Z", crypto.randomUUID());
     expect(await resolveInheritedSession(cwd, "search", dir, [])).toBeUndefined();
   });
 
   it("resumes the child UUID linked from the current parent, not another parent's newer child", async () => {
     const linkedId = crypto.randomUUID();
     const unrelatedId = crypto.randomUUID();
-    const linked = makeSession("lazyresearch:search", "2026-08-06T01:00:00.000Z", linkedId);
-    const unrelated = makeSession("lazyresearch:search", "2026-08-06T02:00:00.000Z", unrelatedId);
+    const linked = makeSession("easyresearch:search", "2026-08-06T01:00:00.000Z", linkedId);
+    const unrelated = makeSession("easyresearch:search", "2026-08-06T02:00:00.000Z", unrelatedId);
     expect(await resolveInheritedSession(cwd, "search", dir, [{
       type: "custom",
       customType: SUBAGENT_SESSION_LINK_ENTRY,
@@ -611,8 +611,8 @@ describe("subagent model resolution logging", () => {
   }
 
   it("logs the resolved model at dispatch", async () => {
-    const previous = process.env.LAZYRESEARCH_RPC_CHILD;
-    delete process.env.LAZYRESEARCH_RPC_CHILD;
+    const previous = process.env.EASYRESEARCH_RPC_CHILD;
+    delete process.env.EASYRESEARCH_RPC_CHILD;
     try {
       vi.resetModules();
       await stubFreshToolDeps();
@@ -625,7 +625,7 @@ describe("subagent model resolution logging", () => {
         { chain: [{ agent: "search", task: "find papers" }] },
         undefined,
         undefined,
-        { cwd: "/tmp/lazyresearch-pipeline", sessionManager: { getEntries: () => [] } } as never,
+        { cwd: "/tmp/easyresearch-pipeline", sessionManager: { getEntries: () => [] } } as never,
       );
 
       expect(loggerMock.debug).toHaveBeenCalledWith("subagent model resolved", {
@@ -633,14 +633,14 @@ describe("subagent model resolution logging", () => {
         model: "p/m",
       });
     } finally {
-      if (previous === undefined) delete process.env.LAZYRESEARCH_RPC_CHILD;
-      else process.env.LAZYRESEARCH_RPC_CHILD = previous;
+      if (previous === undefined) delete process.env.EASYRESEARCH_RPC_CHILD;
+      else process.env.EASYRESEARCH_RPC_CHILD = previous;
     }
   });
 
-  it("creates no logger inside RPC children (LAZYRESEARCH_RPC_CHILD=1)", async () => {
-    const previous = process.env.LAZYRESEARCH_RPC_CHILD;
-    process.env.LAZYRESEARCH_RPC_CHILD = "1";
+  it("creates no logger inside RPC children (EASYRESEARCH_RPC_CHILD=1)", async () => {
+    const previous = process.env.EASYRESEARCH_RPC_CHILD;
+    process.env.EASYRESEARCH_RPC_CHILD = "1";
     try {
       createLoggerMock.mockClear();
       loggerMock.debug.mockClear();
@@ -657,14 +657,14 @@ describe("subagent model resolution logging", () => {
         { agent: "search", task: "find papers" },
         undefined,
         undefined,
-        { cwd: "/tmp/lazyresearch-pipeline", sessionManager: { getEntries: () => [] } } as never,
+        { cwd: "/tmp/easyresearch-pipeline", sessionManager: { getEntries: () => [] } } as never,
       );
 
       expect(createLoggerMock).not.toHaveBeenCalled();
       expect(loggerMock.debug).not.toHaveBeenCalled();
     } finally {
-      if (previous === undefined) delete process.env.LAZYRESEARCH_RPC_CHILD;
-      else process.env.LAZYRESEARCH_RPC_CHILD = previous;
+      if (previous === undefined) delete process.env.EASYRESEARCH_RPC_CHILD;
+      else process.env.EASYRESEARCH_RPC_CHILD = previous;
     }
   });
 });
