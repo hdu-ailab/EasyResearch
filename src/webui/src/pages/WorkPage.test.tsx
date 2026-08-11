@@ -156,6 +156,38 @@ describe("WorkPage", () => {
     expect(screen.getByText("starting research")).toBeTruthy();
   });
 
+  it("does not render an empty assistant bubble for reasoning-only tool-call messages", async () => {
+    vi.mocked(api.getSnapshot).mockResolvedValue({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      subagents: [],
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "first reasoning" },
+            { type: "toolCall", id: "tool-1", name: "bash", arguments: '{"command":"first"}' },
+          ],
+        },
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "second reasoning" },
+            { type: "toolCall", id: "tool-2", name: "bash", arguments: '{"command":"second"}' },
+          ],
+        },
+      ],
+    } as never);
+
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+
+    const conversation = await screen.findByLabelText("Conversation");
+    const reasoningButtons = within(conversation).getAllByRole("button", { name: /show details/i });
+    expect(reasoningButtons).toHaveLength(2);
+    for (const button of reasoningButtons) {
+      expect(button.closest("li")?.querySelector("div.v2-md")).toBeNull();
+    }
+  });
+
   it("sends nonblank text via sendPrompt and keeps the user message visible", async () => {
     const user = userEvent.setup();
     stubEvents();
@@ -1405,14 +1437,67 @@ describe("WorkPage", () => {
     await user.type(screen.getByRole("textbox", { name: /message/i }), "continue please");
     await user.click(screen.getByRole("button", { name: /send/i }));
     await waitFor(() => expect(api.openSession).toHaveBeenCalledWith("/agent/sessions/--p--/a.jsonl"));
-    expect(api.sendPrompt).toHaveBeenCalledTimes(2);
-    expect(api.sendPrompt).toHaveBeenLastCalledWith("s2", "continue please");
     await waitFor(() => expect(api.connectSessionEvents).toHaveBeenCalledTimes(2));
     expect(api.connectSessionEvents).toHaveBeenNthCalledWith(1, "s1", expect.anything());
     expect(api.connectSessionEvents).toHaveBeenNthCalledWith(2, "s2", expect.anything());
     expect(unsubscribeFn).toHaveBeenCalledTimes(1);
+    emitInAct({
+      type: "snapshot",
+      session: { id: "s2", cwd: "/p", isStreaming: false, status: "ready" },
+      messages: [{ role: "user", content: [{ type: "text", text: "continue please" }] }],
+      subagents: [],
+    });
+    await waitFor(() => expect(api.sendPrompt).toHaveBeenCalledTimes(2));
+    expect(api.sendPrompt).toHaveBeenLastCalledWith("s2", "continue please");
     expect(screen.queryByRole("alert")).toBeNull();
     expect(await screen.findByText("continue please")).toBeTruthy();
+  });
+
+  it("waits for the reopened SSE subscription before sending the prompt", async () => {
+    const user = userEvent.setup();
+    let connections = 0;
+    let secondSendConnections = 0;
+    vi.mocked(api.connectSessionEvents).mockImplementation((_id, handlers) => {
+      connections += 1;
+      latestHandlers = handlers;
+      if (connections === 2) {
+        handlers.onEvent({
+          type: "snapshot",
+          session: { id: "s2", cwd: "/p", isStreaming: false, status: "ready" },
+          messages: [{ role: "user", content: [{ type: "text", text: "continue please" }] }],
+          subagents: [],
+        });
+      }
+      return vi.fn();
+    });
+    vi.mocked(api.sendPrompt)
+      .mockRejectedValueOnce(new api.ApiError(404, { error: "Unknown session: s1" }))
+      .mockImplementationOnce(async () => {
+        secondSendConnections = connections;
+      });
+    vi.mocked(api.openSession).mockResolvedValueOnce({
+      id: "s2",
+      cwd: "/p",
+      sessionFile: "/agent/sessions/--p--/a.jsonl",
+      isStreaming: false,
+      status: "ready",
+    } as never);
+    vi.mocked(api.getSnapshot)
+      .mockResolvedValueOnce(snapshot)
+      .mockResolvedValue({
+        session: { id: "s2", cwd: "/p", isStreaming: false, status: "ready" },
+        messages: [{ role: "user", content: [{ type: "text", text: "continue please" }] }],
+        subagents: [],
+      } as never);
+
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    await user.type(screen.getByRole("textbox", { name: /message/i }), "continue please");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+
+    await waitFor(() => expect(api.sendPrompt).toHaveBeenCalledTimes(2));
+    expect(secondSendConnections).toBe(2);
+    expect(await screen.findByText("continue please")).toBeVisible();
   });
 
   it("re-subs scribes events when reopening returns the same session id", async () => {
@@ -1442,6 +1527,13 @@ describe("WorkPage", () => {
     await waitFor(() => expect(api.connectSessionEvents).toHaveBeenCalledTimes(2));
     expect(api.connectSessionEvents).toHaveBeenNthCalledWith(1, "s1", expect.anything());
     expect(api.connectSessionEvents).toHaveBeenNthCalledWith(2, "s1", expect.anything());
+    emitInAct({
+      type: "snapshot",
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      messages: [{ role: "user", content: [{ type: "text", text: "continue please" }] }],
+      subagents: [],
+    });
+    await waitFor(() => expect(api.sendPrompt).toHaveBeenCalledTimes(2));
     expect(api.sendPrompt).toHaveBeenLastCalledWith("s1", "continue please");
     emit({
       type: "message_start",

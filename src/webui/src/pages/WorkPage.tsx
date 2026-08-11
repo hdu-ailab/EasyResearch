@@ -42,6 +42,13 @@ export interface WorkPageProps {
 
 type Panel = "files" | "agents" | null;
 
+interface PendingStreamReady {
+  sessionId: string;
+  generation: number;
+  resolve: () => void;
+  reject: (error: Error) => void;
+}
+
 const emptyView: SessionViewState = { messages: [], tools: [], isStreaming: false, error: null, nextOrder: 0 };
 
 function mergeChildView(snapshot: SessionViewState, live: SessionViewState): SessionViewState {
@@ -106,6 +113,8 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   // the stream the authoritative view; later HTTP snapshot resolutions must
   // not overwrite it with a stale earlier state (ADR-037 race).
   const eventsReceivedRef = useRef(false);
+  const streamGenerationRef = useRef(0);
+  const pendingStreamReadyRef = useRef<PendingStreamReady | null>(null);
   const [panel, setPanel] = useState<Panel>(defaultPanel);
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < CONVERSATION_FIRST_BREAKPOINT);
   const [mobileView, setMobileView] = useState<WorkView>("chat");
@@ -283,6 +292,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   useEffect(() => {
     void subscribeEpoch;
     let active = true;
+    const connectionGeneration = ++streamGenerationRef.current;
     eventsReceivedRef.current = false;
     hydrate(sessionId)
       .then((snapshot) => {
@@ -302,6 +312,11 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
         setStatusText((current) => (current === tRef.current("work.connectionLost") ? null : current));
         const typed = event as { type?: string };
         if (typed.type === "snapshot") {
+          const pending = pendingStreamReadyRef.current;
+          if (pending?.sessionId === sessionId && pending.generation === connectionGeneration) {
+            pendingStreamReadyRef.current = null;
+            pending.resolve();
+          }
           const snapshotEvent = typed as { session?: { sessionFile?: string } };
           if (typeof snapshotEvent.session?.sessionFile === "string") {
             sessionPathRef.current = snapshotEvent.session.sessionFile;
@@ -309,6 +324,20 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
           setSessionView((current) => mergeSnapshot(current, typed as never));
           for (const tab of tabsStateRef.current.tabs) {
             if (tab.sessionId) void loadChild(tab.sessionId, true);
+          }
+          return;
+        }
+        if (typed.type === "error") {
+          const pending = pendingStreamReadyRef.current;
+          if (pending?.sessionId === sessionId && pending.generation === connectionGeneration) {
+            pendingStreamReadyRef.current = null;
+            pending.reject(
+              new Error(
+                typeof (typed as { error?: unknown }).error === "string"
+                  ? (typed as { error: string }).error
+                  : "Session stream failed",
+              ),
+            );
           }
           return;
         }
@@ -486,10 +515,20 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
           try {
             const dto = await openSession(path);
             sessionPathRef.current = dto.sessionFile ?? path;
+            const generation = streamGenerationRef.current + 1;
+            const streamReady = new Promise<void>((resolve, reject) => {
+              pendingStreamReadyRef.current = {
+                sessionId: dto.id,
+                generation,
+                resolve,
+                reject: (error) => reject(error),
+              };
+            });
             setSessionId(dto.id);
             setSubscribeEpoch((epoch) => epoch + 1);
             const snapshot = await getSnapshot(dto.id);
-            if (!eventsReceivedRef.current) setSessionView(fromSnapshot(snapshot));
+            setSessionView(fromSnapshot(snapshot));
+            await streamReady;
             await sendPrompt(dto.id, text);
             setAccepting(false);
             return;
