@@ -24,6 +24,7 @@ export const routes = {
   messages: (id: string) => `${session(id)}/messages`,
   abort: (id: string) => `${session(id)}/abort`,
   stop: (id: string) => `${session(id)}/stop`,
+  touch: (id: string) => `${session(id)}/touch`,
   restart: (id: string) => `${session(id)}/restart`,
   events: (id: string) => `${session(id)}/events`,
   config: (scope: ConfigScope, cwd?: string, path?: string) => {

@@ -21,6 +21,7 @@ interface ActiveRecord {
   listeners: Set<(event: unknown) => void>;
   dispose: () => void;
   stopPromise: Promise<void> | null;
+  idleTimer: ReturnType<typeof setTimeout> | null;
 }
 
 export interface CreateSessionInput {
@@ -32,6 +33,10 @@ export interface OpenSessionInput {
   sessionPath: string;
 }
 
+export interface ActiveSessionRegistryOptions {
+  idleTimeoutMs?: number;
+}
+
 /**
  * In-memory registry owning one Pi RPC child per active Web session. Browser
  * disconnects only unsubscribe listeners; the child survives. Explicit stop,
@@ -40,11 +45,15 @@ export interface OpenSessionInput {
  */
 export class ActiveSessionRegistry {
   private readonly records = new Map<string, ActiveRecord>();
+  private readonly idleTimeoutMs: number;
 
   constructor(
     private readonly factory: RpcSessionFactory,
     private readonly logger?: Logger,
-  ) {}
+    options: ActiveSessionRegistryOptions = {},
+  ) {
+    this.idleTimeoutMs = options.idleTimeoutMs ?? 3_600_000;
+  }
 
   async create(input: CreateSessionInput): Promise<ActiveSessionDto> {
     return this.launch({ cwd: input.cwd });
@@ -56,7 +65,8 @@ export class ActiveSessionRegistry {
         record.sessionPath === input.sessionPath &&
         (record.dto.status === "starting" || record.dto.status === "ready" || record.dto.status === "running")
       ) {
-        return record.dto;
+        this.resetIdleTimer(record);
+        return { ...record.dto };
       }
     }
     return this.launch({
@@ -67,6 +77,12 @@ export class ActiveSessionRegistry {
 
   list(): ActiveSessionDto[] {
     return [...this.records.values()].map((r) => ({ ...r.dto }));
+  }
+
+  listActive(): ActiveSessionDto[] {
+    return [...this.records.values()]
+      .filter((record) => isConnectedStatus(record.dto.status))
+      .map((record) => ({ ...record.dto }));
   }
 
   async snapshot(id: string): Promise<{ session: ActiveSessionDto; messages: AgentMessage[] }> {
@@ -91,7 +107,14 @@ export class ActiveSessionRegistry {
    */
   async prompt(id: string, message: string): Promise<void> {
     return this.withRecord(id, async (record) => {
-      await record.client.prompt(message);
+      this.clearIdleTimer(record);
+      try {
+        await record.client.prompt(message);
+      } catch (error) {
+        if (record.dto.status === "ready") this.scheduleIdleStop(record);
+        throw error;
+      }
+      if (record.dto.status === "ready") this.scheduleIdleStop(record);
     });
   }
 
@@ -101,7 +124,14 @@ export class ActiveSessionRegistry {
       record.dto.isStreaming = false;
       if (record.dto.status !== "stopped" && record.dto.status !== "error") {
         record.dto.status = "ready";
+        this.scheduleIdleStop(record);
       }
+    });
+  }
+
+  async touch(id: string): Promise<void> {
+    return this.withRecord(id, async (record) => {
+      this.resetIdleTimer(record);
     });
   }
 
@@ -133,6 +163,7 @@ export class ActiveSessionRegistry {
   async stop(id: string): Promise<void> {
     const record = this.records.get(id);
     if (!record) return;
+    this.clearIdleTimer(record);
     if (!record.stopPromise) {
       record.stopPromise = (async () => {
         for (const listener of record.listeners) {
@@ -198,6 +229,7 @@ export class ActiveSessionRegistry {
       listeners,
       dispose: () => {},
       stopPromise: null,
+      idleTimer: null,
     };
     (this.logger ?? logger).info("session launch", { cwd: options.cwd, sessionPath: options.sessionPath ?? "" });
     try {
@@ -220,6 +252,7 @@ export class ActiveSessionRegistry {
       });
       const eventLogCancel = attachEventLogger(dto.id, record.cwd, client.onEvent.bind(client), this.logger ?? logger);
       const exitCancel = client.onExit((error) => {
+        this.clearIdleTimer(record);
         (this.logger ?? logger).error("rpc child exited", { sessionId: record.dto.id, error: error.message });
         record.dto.isStreaming = false;
         record.dto.status = "error";
@@ -232,6 +265,7 @@ export class ActiveSessionRegistry {
       };
 
       this.records.set(dto.id, record);
+      this.scheduleIdleStop(record);
     } catch (error) {
       (this.logger ?? logger).error("rpc child launch failed", {
         cwd: options.cwd,
@@ -256,18 +290,39 @@ export class ActiveSessionRegistry {
   private syncDtoFromEvent(record: ActiveRecord, event: unknown): void {
     const type = (event as { type?: string }).type;
     if (type === "agent_start") {
+      this.clearIdleTimer(record);
       record.dto.isStreaming = true;
       if (record.dto.status !== "stopped" && record.dto.status !== "error") {
         record.dto.status = "running";
       }
     }
     if (type === "agent_settled") {
-      void this.deactivate(record);
+      record.dto.isStreaming = false;
+      if (record.dto.status !== "stopped" && record.dto.status !== "error") {
+        record.dto.status = "ready";
+        this.scheduleIdleStop(record);
+      }
     }
   }
 
-  private async deactivate(record: ActiveRecord): Promise<void> {
-    await this.stop(record.dto.id);
+  private clearIdleTimer(record: ActiveRecord): void {
+    if (record.idleTimer === null) return;
+    clearTimeout(record.idleTimer);
+    record.idleTimer = null;
+  }
+
+  private resetIdleTimer(record: ActiveRecord): void {
+    this.clearIdleTimer(record);
+    if (record.dto.status === "ready") this.scheduleIdleStop(record);
+  }
+
+  private scheduleIdleStop(record: ActiveRecord): void {
+    this.clearIdleTimer(record);
+    if (this.idleTimeoutMs < 0 || record.dto.status !== "ready") return;
+    record.idleTimer = setTimeout(() => {
+      record.idleTimer = null;
+      if (!record.dto.isStreaming && record.dto.status === "ready") void this.stop(record.dto.id);
+    }, this.idleTimeoutMs);
   }
 
   private async refreshFromClient(record: ActiveRecord): Promise<void> {
@@ -292,4 +347,8 @@ export class ActiveSessionRegistry {
     if (!record) return Promise.reject(new UnknownSessionError(`Unknown session: ${id}`));
     return run(record);
   }
+}
+
+function isConnectedStatus(status: ActiveSessionDto["status"]): boolean {
+  return status === "starting" || status === "ready" || status === "running";
 }

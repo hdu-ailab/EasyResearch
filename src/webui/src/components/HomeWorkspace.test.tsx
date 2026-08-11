@@ -41,6 +41,7 @@ function renderWorkspace(history: SessionSummaryDto[], active: ActiveSessionDto[
       onChooseDirectory={vi.fn()}
       onCreateInProject={vi.fn()}
       onOpenActive={vi.fn()}
+      onDisconnectActive={vi.fn()}
       onOpenHistory={vi.fn()}
     />,
   );
@@ -69,4 +70,15 @@ it("falls back to the first eight real id characters for an active session witho
   renderWorkspace([], [active()]);
   expect(screen.getByText("01234567")).toBeVisible();
   expect(screen.queryByText("Custom active name")).toBeNull();
+});
+
+it("renders a ready session in the active list with the idle status", () => {
+  renderWorkspace([], [active({ id: "idle-session", status: "ready", sessionName: "Idle session" })]);
+  expect(screen.getByText("idle-ses")).toBeVisible();
+  expect(screen.getByText("Idle")).toBeVisible();
+});
+
+it("renders a separate disconnect control for an active session", () => {
+  renderWorkspace([], [active({ sessionName: "Disconnectable" })]);
+  expect(screen.getByRole("button", { name: /disconnect/i })).toBeVisible();
 });

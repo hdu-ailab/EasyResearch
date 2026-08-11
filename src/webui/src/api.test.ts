@@ -19,6 +19,7 @@ import {
   sendPrompt,
   setAgentModel,
   stopSession,
+  touchSession,
   writeConfigFile,
 } from "./api";
 
@@ -111,6 +112,11 @@ describe("api transport", () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("/api/sessions/open");
     expect(JSON.parse(init.body as string)).toEqual({ path: "/agent/s/a.jsonl" });
+  });
+
+  it("touchSession POSTs the encoded session endpoint", async () => {
+    await touchSession("abc/123");
+    expect(fetchMock).toHaveBeenCalledWith("/api/sessions/abc%2F123/touch", { method: "POST" });
   });
 
   it("getSnapshot GETs session snapshot", async () => {
