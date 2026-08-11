@@ -1371,12 +1371,12 @@ describe("WorkPage", () => {
     expect(within(region).queryByRole("button", { name: /^set$/i })).toBeNull();
   });
 
-  it("shows a session-ended notice and keeps the transcript on session_deactivated", async () => {
+  it("keeps the transcript without a session-ended notice on session_deactivated", async () => {
     stubEvents();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await screen.findByText("starting research");
-    emit({ type: "session_deactivated", sessionId: "s1" });
-    expect(await screen.findByText(/session ended/i)).toBeTruthy();
+    emitInAct({ type: "session_deactivated", sessionId: "s1" });
+    expect(screen.queryByText(/session ended/i)).toBeNull();
     expect(screen.getByText("write a paper")).toBeTruthy();
     expect(screen.getByText("starting research")).toBeTruthy();
   });
