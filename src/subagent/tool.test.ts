@@ -12,7 +12,7 @@ import {
   resolveInheritedSession,
   subagentTool,
 } from "./tool";
-import { sessionNameFor, SUBAGENT_SESSION_PREFIX } from "./session-links";
+import { sessionNameFor, SUBAGENT_SESSION_LINK_ENTRY, SUBAGENT_SESSION_PREFIX } from "./session-links";
 import { releaseSubagentLock, tryAcquireSubagentLock } from "./serial";
 
 const [loggerMock, createLoggerMock, spawnMock] = vi.hoisted(() => {
@@ -247,6 +247,39 @@ describe("final subagent output (ADR-040)", () => {
 });
 
 describe("subagent session link persistence", () => {
+  it("starts a fresh child when session is omitted, even if a named child exists", async () => {
+    const { discoverAgents } = await import("./agents");
+    const { resolveModelForSpawn } = await import("./model-resolution");
+    const { getAgentDir, importPi } = await import("../runtime/pi-import");
+    vi.mocked(discoverAgents).mockResolvedValue({ agents: [maker("search")] });
+    vi.mocked(resolveModelForSpawn).mockResolvedValue(undefined);
+    vi.mocked(getAgentDir).mockReturnValue("/tmp/lazyresearch-test-agent");
+    vi.mocked(importPi).mockResolvedValue({
+      SessionManager: {
+        list: vi.fn(async () => [{ name: sessionNameFor("search"), path: "/old-child.jsonl", modified: new Date() }]),
+      },
+    } as never);
+    spawnMock.mockClear();
+    spawnMock.mockImplementationOnce(() => {
+      const stdout = new EventEmitter();
+      const stderr = new EventEmitter();
+      const child = Object.assign(new EventEmitter(), { stdout, stderr, killed: false, kill: vi.fn() });
+      queueMicrotask(() => child.emit("close", 0));
+      return child;
+    });
+
+    await subagentTool.execute(
+      "parent-fresh-call",
+      { agent: "search", task: "fresh task" },
+      undefined,
+      undefined,
+      { cwd: "/tmp/lazyresearch-test-project" } as never,
+    );
+
+    const args = spawnMock.mock.calls[0]?.[1] as string[];
+    expect(args).not.toContain("--session");
+  });
+
   it("persists the exact child UUID against the real parent tool call id", async () => {
     const { discoverAgents } = await import("./agents");
     const { resolveModelForSpawn } = await import("./model-resolution");
@@ -498,22 +531,25 @@ describe("serial lock (ADR-022)", () => {
   });
 });
 
-describe("resolveInheritedSession (ADR-022)", () => {
+describe("resolveInheritedSession (ADR-044)", () => {
   let dir: string;
   const cwd = "/tmp/lazyresearch-pipeline";
 
-  beforeEach(() => {
+  beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), "lazy-sessions-"));
+    const runtime = await vi.importActual<typeof import("../runtime/pi-import")>("../runtime/pi-import");
+    const { importPi } = await import("../runtime/pi-import");
+    vi.mocked(importPi).mockImplementation(runtime.importPi);
   });
 
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  function makeSession(name: string | undefined, headerTimestamp: string): string {
+  function makeSession(name: string | undefined, headerTimestamp: string, id = crypto.randomUUID()): string {
     const filePath = join(dir, `${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`);
     const lines = [
-      JSON.stringify({ type: "session", version: 3, id: crypto.randomUUID(), timestamp: headerTimestamp, cwd }),
+      JSON.stringify({ type: "session", version: 3, id, timestamp: headerTimestamp, cwd }),
     ];
     if (name !== undefined) {
       lines.push(
@@ -530,17 +566,22 @@ describe("resolveInheritedSession (ADR-022)", () => {
     return filePath;
   }
 
-  it("returns undefined when the agent has no named session yet", async () => {
-    makeSession("lazyresearch:writing", "2026-08-06T00:00:00.000Z");
-    expect(await resolveInheritedSession(cwd, "search", dir)).toBeUndefined();
+  it("does not use an unlinked named child as an inheritance fallback", async () => {
+    makeSession("lazyresearch:search", "2026-08-06T00:00:00.000Z", crypto.randomUUID());
+    expect(await resolveInheritedSession(cwd, "search", dir, [])).toBeUndefined();
   });
 
-  it("picks the most recent of the agent's named session lines", async () => {
-    const older = makeSession("lazyresearch:search", "2026-08-06T01:00:00.000Z");
-    const newer = makeSession("lazyresearch:search", "2026-08-06T02:00:00.000Z");
-    makeSession("lazyresearch:writing", "2026-08-06T03:00:00.000Z");
-    expect(await resolveInheritedSession(cwd, "search", dir)).toBe(newer);
-    expect(newer).not.toBe(older);
+  it("resumes the child UUID linked from the current parent, not another parent's newer child", async () => {
+    const linkedId = crypto.randomUUID();
+    const unrelatedId = crypto.randomUUID();
+    const linked = makeSession("lazyresearch:search", "2026-08-06T01:00:00.000Z", linkedId);
+    const unrelated = makeSession("lazyresearch:search", "2026-08-06T02:00:00.000Z", unrelatedId);
+    expect(await resolveInheritedSession(cwd, "search", dir, [{
+      type: "custom",
+      customType: SUBAGENT_SESSION_LINK_ENTRY,
+      data: { toolCallId: "parent-call", childSessionId: linkedId, agent: "search" },
+    }])).toBe(linked);
+    expect(linked).not.toBe(unrelated);
   });
 });
 

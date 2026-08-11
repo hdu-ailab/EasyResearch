@@ -47,12 +47,47 @@ describe("session reducer", () => {
     expect(state.isStreaming).toBe(true);
   });
 
+  it("does not add direct bash execution output to the snapshot transcript", () => {
+    const state = fromSnapshot({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" } as never,
+      subagents: [],
+      messages: [{
+        role: "bashExecution",
+        command: "ls",
+        output: "secretly duplicated output",
+        exitCode: 0,
+        cancelled: false,
+        truncated: false,
+      }] as never,
+    });
+
+    expect(state.messages).toEqual([]);
+    expect(state.tools).toEqual([]);
+  });
+
   it("appends a message on message_start", () => {
     const state = reduceSessionEvent(emptyState, assistantEvent("message_start", ""));
     expect(state.messages).toHaveLength(1);
     expect(state.messages[0]!.role).toBe("assistant");
     expect(state.messages[0]!.streaming).toBe(true);
     expect(state.isStreaming).toBe(true);
+  });
+
+  it("ignores live bash execution messages", () => {
+    const state = reduceSessionEvent(emptyState, {
+      type: "message_start",
+      message: {
+        role: "bashExecution",
+        command: "ls",
+        output: "secretly duplicated output",
+        exitCode: 0,
+        cancelled: false,
+        truncated: false,
+      },
+    } as never);
+
+    expect(state.messages).toEqual([]);
+    expect(state.isStreaming).toBe(false);
   });
 
   it("updates the streaming message in place per token delta", () => {

@@ -229,6 +229,10 @@ function subagentNameOf(snapshot: SessionSnapshotDto): string | undefined {
   return agent.length > 0 ? agent : undefined;
 }
 
+function isDirectBashExecution(message: UnknownMessage): boolean {
+  return message.role === "bashExecution";
+}
+
 export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
   const subagentName = subagentNameOf(snapshot);
   const state: SessionViewState = {
@@ -241,6 +245,7 @@ export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
   };
   const next = () => state.nextOrder++;
   snapshot.messages.forEach((message, index) => {
+    if (isDirectBashExecution(message as UnknownMessage)) return;
     if (message.role === "toolResult") {
       const toolMessage = message as unknown as { toolCallId?: unknown; toolName?: unknown; isError?: unknown };
       const tool = state.tools.find((t) => t.key === String(toolMessage.toolCallId));
@@ -411,6 +416,7 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
   switch (event.type) {
     case "message_start": {
       const message = event.message as UnknownMessage;
+      if (isDirectBashExecution(message)) return state;
       const identity = identityFor(message);
       if (identity !== undefined && state.messages.some((candidate) => candidate.identity === identity)) return state;
       const role = message.role === "user" || message.role === "assistant" ? message.role : "system";

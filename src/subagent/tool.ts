@@ -12,7 +12,7 @@ import { createLogger, type Logger } from "../runtime/logger";
 import { getAgentDir, importPi } from "../runtime/pi-import";
 import { discoverAgents, type AgentConfig } from "./agents";
 import { resolveModelForSpawn } from "./model-resolution";
-import { sessionNameFor, type SubagentSessionLink } from "./session-links";
+import { readSubagentSessionLinks, sessionNameFor, type SubagentSessionLink } from "./session-links";
 import { resolveSkillDirectories } from "./skill-resolution";
 import { releaseSubagentLock, tryAcquireSubagentLock } from "./serial";
 
@@ -216,22 +216,22 @@ export function filterAgentsByAllowlist(agents: AgentConfig[], allowlistEnv?: st
 }
 
 /**
- * ADR-022: resolve the agent's most recent named session line under `cwd` so
- * the call can inherit its previous context. Returns undefined when no such
- * session exists yet (the call then starts a fresh named session).
+ * ADR-044: resolve an explicitly requested inherited child from the current
+ * parent's persisted UUID links. A repeatable child display name is not enough
+ * to establish ownership because multiple parent sessions share a cwd.
  */
 export async function resolveInheritedSession(
   cwd: string,
   agentName: string,
   sessionDir?: string,
+  parentEntries: readonly unknown[] = [],
 ): Promise<string | undefined> {
   const { SessionManager } = await importPi();
+  const links = readSubagentSessionLinks(parentEntries).filter((link) => link.agent === agentName);
+  const link = links[links.length - 1];
+  if (!link) return undefined;
   const sessions = await SessionManager.list(cwd, sessionDir);
-  const target = sessionNameFor(agentName);
-  const matches = sessions.filter((s) => s.name === target);
-  if (matches.length === 0) return undefined;
-  matches.sort((a, b) => b.modified.getTime() - a.modified.getTime());
-  return matches[0]!.path;
+  return sessions.find((session) => session.id === link.childSessionId)?.path;
 }
 
 export function buildPiArgs(
@@ -426,7 +426,7 @@ function getPiInvocation(): { command: string; args: string[] } {
 }
 
 const SessionMode = Type.Union([Type.Literal("inherit"), Type.Literal("new")], {
-  description: "inherit resumes the agent's previous session line; new starts a fresh one (default: inherit)",
+  description: "inherit resumes this parent session's mapped child; new starts a fresh one (default: new)",
 });
 
 const SingleParams = Type.Object({
@@ -461,7 +461,7 @@ export function createSubagentTool(options: {
     "Delegate tasks to specialized subagents with isolated context.",
     "Modes: single (agent + task) or chain (sequential with {previous} placeholder).",
     "Invocations are strictly serial: while one subagent runs, further calls return an error.",
-    "session defaults to inherit: the agent resumes its previous session line and remembers its prior work; use session=new for a fresh line.",
+    "session defaults to new: each call gets a fresh child; use session=inherit only to resume this parent session's mapped child.",
     "Available agents are defined in the config root agents dir.",
   ].join(" "),
   parameters: SubagentParams,
@@ -519,7 +519,9 @@ export function createSubagentTool(options: {
         for (let i = 0; i < params.chain.length; i++) {
           const step = params.chain[i]!;
           const sessionPath =
-            step.session === "new" ? undefined : await resolveInheritedSession(ctx.cwd, step.agent);
+            step.session === "inherit"
+              ? await resolveInheritedSession(step.cwd ?? ctx.cwd, step.agent, undefined, ctx.sessionManager.getEntries())
+              : undefined;
           const taskWithContext = step.task.replace(/\{previous\}/g, previousOutput);
           const model = await resolveModelForSpawn(ctx, step.agent, fallbackModel);
           subagentLogger?.debug("subagent model resolved", { agent: step.agent, model: model ?? "" });
@@ -553,7 +555,9 @@ export function createSubagentTool(options: {
       }
 
       if (params.agent && params.task) {
-        const sessionPath = params.session === "new" ? undefined : await resolveInheritedSession(ctx.cwd, params.agent);
+        const sessionPath = params.session === "inherit"
+          ? await resolveInheritedSession(params.cwd ?? ctx.cwd, params.agent, undefined, ctx.sessionManager.getEntries())
+          : undefined;
         const model = await resolveModelForSpawn(ctx, params.agent, fallbackModel);
         subagentLogger?.debug("subagent model resolved", { agent: params.agent, model: model ?? "" });
         const result = await runSingleAgent({
