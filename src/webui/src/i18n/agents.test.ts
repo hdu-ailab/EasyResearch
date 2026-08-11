@@ -7,9 +7,9 @@ describe("agentDisplayName", () => {
   const zh = ((key: keyof typeof messages.en) => messages["zh-CN"][key]) as Translate;
 
   it("localizes known roster agent ids in both languages", () => {
-    expect(agentDisplayName(en, "orchestrator")).toBe("Orchestrator");
+    expect(agentDisplayName(en, "orchestrator")).toBe("Research Mentor");
     expect(agentDisplayName(en, "search")).toBe("Search");
-    expect(agentDisplayName(zh, "orchestrator")).toBe("编排者");
+    expect(agentDisplayName(zh, "orchestrator")).toBe("论文导师");
     expect(agentDisplayName(zh, "search")).toBe("检索");
     expect(agentDisplayName(zh, "experiment")).toBe("实验");
     expect(agentDisplayName(zh, "writing")).toBe("写作");
@@ -17,7 +17,7 @@ describe("agentDisplayName", () => {
   });
 
   it("matches the label casing agents arrive in", () => {
-    expect(agentDisplayName(en, "Orchestrator")).toBe("Orchestrator");
+    expect(agentDisplayName(en, "Orchestrator")).toBe("Research Mentor");
     expect(agentDisplayName(zh, "Search")).toBe("检索");
   });
 

@@ -18,7 +18,7 @@ function tab(patch: Partial<SubagentTabState> = {}): SubagentTabState {
 }
 
 describe("AgentTabBar", () => {
-  it("keeps Orchestrator first and fixed while a temporary tab has sibling select and Stop controls", async () => {
+  it("keeps Research Mentor first and fixed while a temporary tab has sibling select and Stop controls", async () => {
     const onSelect = vi.fn();
     const onStop = vi.fn();
     render(<AgentTabBar
@@ -31,7 +31,7 @@ describe("AgentTabBar", () => {
     />);
 
     const buttons = screen.getAllByRole("button");
-    expect(buttons[0]).toHaveAccessibleName("Agent Orchestrator");
+    expect(buttons[0]).toHaveAccessibleName("Agent Research Mentor");
     expect(screen.queryByRole("button", { name: "Close agent tab" })).toBeNull();
     const select = screen.getByRole("button", { name: "Agent Search" });
     const stop = screen.getByRole("button", { name: "Stop agent" });
