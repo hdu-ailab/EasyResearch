@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { RpcEventListener, RpcSessionState } from "@earendil-works/pi-coding-agent";
 import { ActiveSessionRegistry, UnknownSessionError } from "./active-sessions";
@@ -114,8 +114,12 @@ describe("ActiveSessionRegistry", () => {
 
   beforeEach(() => {
     factory = new FakeFactory();
-    registry = new ActiveSessionRegistry(factory, noopLogger);
+    registry = new ActiveSessionRegistry(factory, noopLogger, { idleTimeoutMs: -1 });
     vi.mocked(assertSafeExtensionSources).mockClear();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("creates a session with exact cwd and launches a client", async () => {
@@ -222,15 +226,16 @@ describe("ActiveSessionRegistry", () => {
     expect(factory.created[1]?.stats.started).toBe(1);
   });
 
-  it("open re-launches a session deactivated by agent_settled", async () => {
+  it("open reuses an idle session after agent_settled", async () => {
     const created = await registry.open({ cwd, sessionPath });
     const adapter = factory.created[0]!;
     adapter.events.forEach((l) => l({ type: "agent_start" } as never));
     adapter.events.forEach((l) => l({ type: "agent_settled" } as never));
-    await vi.waitFor(() => expect(registry.list().find((s) => s.id === created.id)).toBeUndefined());
     const reopened = await registry.open({ cwd, sessionPath });
     expect(reopened.status).toBe("ready");
-    expect(factory.created).toHaveLength(2);
+    expect(reopened.id).toBe(created.id);
+    expect(factory.created).toHaveLength(1);
+    expect(factory.created[0]?.stats.stopped).toBe(0);
   });
 
   it("snapshot rejects after deactivation", async () => {
@@ -270,7 +275,7 @@ describe("ActiveSessionRegistry", () => {
     expect(dto?.isStreaming).toBe(false);
   });
 
-  it("deactivates on agent_settled: stops child, removes entry, emits event", async () => {
+  it("retains an idle child on agent_settled", async () => {
     const created = await registry.create({ cwd });
     const adapter = factory.created[0]!;
     const listener = vi.fn();
@@ -278,12 +283,63 @@ describe("ActiveSessionRegistry", () => {
     adapter.events.forEach((l) => l({ type: "agent_start" } as never));
     expect(registry.list().find((s) => s.id === created.id)?.status).toBe("running");
     adapter.events.forEach((l) => l({ type: "agent_settled" } as never));
+    expect(registry.list().find((s) => s.id === created.id)?.status).toBe("ready");
+    expect(registry.listActive().find((s) => s.id === created.id)?.status).toBe("ready");
+    expect(factory.created[0]?.stats.stopped).toBe(0);
+    expect(listener).not.toHaveBeenCalledWith({ type: "session_deactivated", sessionId: created.id });
+  });
+
+  it("expires an idle child after the configured timeout", async () => {
+    vi.useFakeTimers();
+    registry = new ActiveSessionRegistry(factory, noopLogger, { idleTimeoutMs: 1000 });
+    const created = await registry.create({ cwd });
+    const adapter = factory.created[0]!;
+    adapter.events.forEach((l) => l({ type: "agent_start" } as never));
+    adapter.events.forEach((l) => l({ type: "agent_settled" } as never));
+
+    await vi.advanceTimersByTimeAsync(999);
+    expect(factory.created[0]?.stats.stopped).toBe(0);
+    await vi.advanceTimersByTimeAsync(1);
     await vi.waitFor(() => expect(registry.list().find((s) => s.id === created.id)).toBeUndefined());
     expect(factory.created[0]?.stats.stopped).toBe(1);
-    expect(listener).toHaveBeenCalledWith({ type: "session_deactivated", sessionId: created.id });
-    expect(
-      listener.mock.calls.filter(([event]) => (event as { type?: string }).type === "session_deactivated"),
-    ).toHaveLength(1);
+  });
+
+  it("resets an idle timeout when the active session is touched", async () => {
+    vi.useFakeTimers();
+    registry = new ActiveSessionRegistry(factory, noopLogger, { idleTimeoutMs: 1000 });
+    const created = await registry.create({ cwd });
+    await vi.advanceTimersByTimeAsync(900);
+    await registry.touch(created.id);
+    await vi.advanceTimersByTimeAsync(900);
+    expect(factory.created[0]?.stats.stopped).toBe(0);
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.waitFor(() => expect(factory.created[0]?.stats.stopped).toBe(1));
+  });
+
+  it("does not expire when the timeout is disabled", async () => {
+    vi.useFakeTimers();
+    registry = new ActiveSessionRegistry(factory, noopLogger, { idleTimeoutMs: -1 });
+    const created = await registry.create({ cwd });
+    await vi.advanceTimersByTimeAsync(3_600_001);
+    expect(registry.list().find((s) => s.id === created.id)).toBeDefined();
+    expect(factory.created[0]?.stats.stopped).toBe(0);
+  });
+
+  it("disconnects immediately when the timeout is zero", async () => {
+    vi.useFakeTimers();
+    registry = new ActiveSessionRegistry(factory, noopLogger, { idleTimeoutMs: 0 });
+    const created = await registry.create({ cwd });
+    expect(registry.list().find((s) => s.id === created.id)).toBeDefined();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.waitFor(() => expect(registry.list().find((s) => s.id === created.id)).toBeUndefined());
+  });
+
+  it("lists connected records but excludes unexpected errors", async () => {
+    const ready = await registry.create({ cwd });
+    const errored = await registry.create({ cwd: "/other/project" });
+    factory.created[1]?.onExitListeners.forEach((listener) => listener(new Error("crash")));
+    expect(registry.listActive().map((session) => session.id)).toEqual([ready.id]);
+    expect(registry.list().find((session) => session.id === errored.id)?.status).toBe("error");
   });
 
   it("ignores message events when deciding run status", async () => {

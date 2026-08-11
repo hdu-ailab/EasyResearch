@@ -121,6 +121,10 @@ export function stopSession(id: string): Promise<void> {
   return requestVoid(routes.stop(id), { method: "POST" });
 }
 
+export function touchSession(id: string): Promise<void> {
+  return requestVoid(routes.touch(id), { method: "POST" });
+}
+
 export function restartSession(id: string): Promise<ActiveSessionDto> {
   return requestJson(routes.restart(id), parseActiveSession, { method: "POST" });
 }

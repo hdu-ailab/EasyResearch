@@ -61,7 +61,7 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
           agentDir: services.config.globalRoot,
           homeDir: services.directories.homeDir,
           sessions: await services.listAllSessions(),
-          activeSessions: services.registry.list(),
+          activeSessions: services.registry.listActive(),
         });
       }
 
@@ -109,7 +109,13 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       }
 
       if (req.method === "GET" && path === "/api/active-sessions") {
-        return jsonResponse({ sessions: services.registry.list() });
+        return jsonResponse({ sessions: services.registry.listActive() });
+      }
+
+      const touchMatch = path.match(/^\/api\/sessions\/([^/]+)\/touch$/);
+      if (req.method === "POST" && touchMatch) {
+        await services.registry.touch(touchMatch[1]!);
+        return jsonResponse({ ok: true });
       }
 
       const childSnapshotMatch = path.match(/^\/api\/sessions\/([^/]+)\/subagents\/([^/]+)\/snapshot$/);
