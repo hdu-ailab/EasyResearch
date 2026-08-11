@@ -1,5 +1,5 @@
 {
-  "name": "lazyresearch",
+  "name": "easyresearch",
   "version": "0.1.0",
   "description": "Automated academic paper writing CLI built on the Pi agent harness",
   "type": "module",
@@ -10,12 +10,12 @@
     "AGENTS.md"
   ],
   "piConfig": {
-    "name": "lazyresearch",
-    "configDir": ".lazyresearch"
+    "name": "easyresearch",
+    "configDir": ".easyresearch"
   },
   "module": "src/cli/index.ts",
   "bin": {
-    "lazyresearch": "./src/cli/index.ts"
+    "easyresearch": "./src/cli/index.ts"
   },
   "scripts": {
     "test": "vitest run",

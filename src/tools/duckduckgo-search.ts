@@ -21,7 +21,7 @@ import { Type } from "typebox";
  * ADR-031 (amended by ADR-038): the bundled web-search tool (registered as
  * `web-search`), ported verbatim from the upstream Pi duckduckgo-search
  * extension (the user's `~/.pi` copy is the sole source). Registration happens
- * in the two bundled extension surfaces (orchestrator + subagent); pure
+ * in the two bundled extension surfaces (assistant + subagent); pure
  * helpers are exported for tests.
  */
 export const DEFAULT_RESULT_COUNT = 5;

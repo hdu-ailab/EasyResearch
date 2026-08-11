@@ -2,7 +2,7 @@ import type { MessageKey } from "./messages";
 
 /** Roster agent ids mapped to their localized display-name keys (ADR-035). */
 const AGENT_NAME_KEYS: Record<string, MessageKey> = {
-  orchestrator: "agent.orchestrator",
+  assistant: "agent.assistant",
   search: "agent.search",
   experiment: "agent.experiment",
   writing: "agent.writing",
@@ -11,7 +11,7 @@ const AGENT_NAME_KEYS: Record<string, MessageKey> = {
 
 /** Roster agent ids mapped to their localized description keys (ADR-035). */
 const AGENT_DESCRIPTION_KEYS: Record<string, MessageKey> = {
-  orchestrator: "agentDesc.orchestrator",
+  assistant: "agentDesc.assistant",
   search: "agentDesc.search",
   experiment: "agentDesc.experiment",
   writing: "agentDesc.writing",

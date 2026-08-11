@@ -147,7 +147,7 @@ describe("ChatTranscript", () => {
     renderTranscript(<ChatTranscript messages={[]} tools={[]} pending />);
     const row = screen.getByLabelText("Working");
     expect(row.textContent).toContain("Working…");
-    expect(row.textContent).toContain("Research Mentor");
+    expect(row.textContent).toContain("Paper Assistant");
   });
 
   it("pins to the bottom on content change, unpins on manual scroll, and re-pins at the bottom", () => {
@@ -387,11 +387,11 @@ describe("ChatTranscript", () => {
     expect(document.querySelector(".katex")).toBeTruthy();
   });
 
-  it("renders subagent dispatch under the orchestrator label, never as You", () => {
+  it("renders subagent dispatch under the assistant label, never as You", () => {
     renderTranscript(
       <ChatTranscript
         messages={[
-          msg({ key: "d", role: "user", text: "Task: search papers", label: "Orchestrator", order: 0 }),
+          msg({ key: "d", role: "user", text: "Task: search papers", label: "Assistant", order: 0 }),
           msg({ key: "r", role: "assistant", text: "found 3 papers", label: "search", order: 1 }),
         ]}
         tools={[]}
@@ -399,7 +399,7 @@ describe("ChatTranscript", () => {
     );
     const container = screen.getByLabelText("Conversation");
     expect(container.textContent).not.toContain("You");
-    expect(container.textContent).toContain("Research Mentor");
+    expect(container.textContent).toContain("Paper Assistant");
     expect(container.textContent).toContain("Search");
   });
 

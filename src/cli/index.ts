@@ -15,7 +15,7 @@ export async function runCli(
     if (argv.length === 0) await deps.runTui();
     else if (argv.length === 1 && argv[0] === "web") await deps.runWeb();
     else {
-      console.error("Usage: lazyresearch\n       lazyresearch web");
+      console.error("Usage: easyresearch\n       easyresearch web");
       return 1;
     }
     return 0;

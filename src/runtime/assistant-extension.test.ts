@@ -3,59 +3,59 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
-import { createOrchestratorExtension, loadOrchestratorPrompt } from "./orchestrator-extension";
+import { createAssistantExtension, loadAssistantPrompt } from "./assistant-extension";
 
 const tempDirs: string[] = [];
 
 function makeAgentsDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "lazyresearch-agents-"));
+  const dir = mkdtempSync(join(tmpdir(), "easyresearch-agents-"));
   tempDirs.push(dir);
   return dir;
 }
 
 beforeEach(() => {
-  process.env.LAZYRESEARCH_RPC_CHILD = "1";
+  process.env.EASYRESEARCH_RPC_CHILD = "1";
 });
 
 afterEach(() => {
-  delete process.env.LAZYRESEARCH_RPC_CHILD;
+  delete process.env.EASYRESEARCH_RPC_CHILD;
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-describe("loadOrchestratorPrompt", () => {
-  it("reads the orchestrator body from the agents dir", () => {
+describe("loadAssistantPrompt", () => {
+  it("reads the assistant body from the agents dir", () => {
     const agentsDir = makeAgentsDir();
     writeFileSync(
-      join(agentsDir, "orchestrator.md"),
-      "---\nname: orchestrator\ntools: subagent\n---\n\nYou are the orchestrator\n",
+      join(agentsDir, "assistant.md"),
+      "---\nname: assistant\ntools: subagent\n---\n\nYou are the assistant\n",
     );
 
-    const prompt = loadOrchestratorPrompt(agentsDir);
-    expect(prompt).toContain("You are the orchestrator");
+    const prompt = loadAssistantPrompt(agentsDir);
+    expect(prompt).toContain("You are the assistant");
     expect(prompt).not.toContain("---");
   });
 
-  it("throws when the global orchestrator definition is missing", () => {
+  it("throws when the global assistant definition is missing", () => {
     const agentsDir = makeAgentsDir();
-    expect(() => loadOrchestratorPrompt(agentsDir)).toThrow(/Missing global orchestrator definition/);
+    expect(() => loadAssistantPrompt(agentsDir)).toThrow(/Missing global assistant definition/);
   });
 
-  it("throws on an orchestrator file without frontmatter", () => {
+  it("throws on an assistant file without frontmatter", () => {
     const agentsDir = makeAgentsDir();
-    writeFileSync(join(agentsDir, "orchestrator.md"), "no frontmatter here\n");
-    expect(() => loadOrchestratorPrompt(agentsDir)).toThrow(/frontmatter/i);
+    writeFileSync(join(agentsDir, "assistant.md"), "no frontmatter here\n");
+    expect(() => loadAssistantPrompt(agentsDir)).toThrow(/frontmatter/i);
   });
 });
 
-describe("createOrchestratorExtension", () => {
-  it("appends the orchestrator prompt to the base system prompt once", async () => {
+describe("createAssistantExtension", () => {
+  it("appends the assistant prompt to the base system prompt once", async () => {
     const agentsDir = makeAgentsDir();
     writeFileSync(
-      join(agentsDir, "orchestrator.md"),
-      "---\nname: orchestrator\ntools: subagent\n---\n\nOrchestrator body\n",
+      join(agentsDir, "assistant.md"),
+      "---\nname: assistant\ntools: subagent\n---\n\nAssistant body\n",
     );
 
-    const extension = createOrchestratorExtension({ agentsDir });
+    const extension = createAssistantExtension({ agentsDir });
     const registerTool = vi.fn();
     let capturedHandler: ((event: { systemPrompt: string }) => unknown) | undefined;
     let trustHandler: (() => unknown) | undefined;
@@ -74,19 +74,19 @@ describe("createOrchestratorExtension", () => {
     expect(toolNames).toContain("web-search");
     const result = capturedHandler?.({ systemPrompt: "pi base" }) as { systemPrompt: string };
     expect(result.systemPrompt).toContain("pi base");
-    expect(result.systemPrompt).toContain("Orchestrator body");
-    expect(result.systemPrompt.indexOf("pi base")).toBeLessThan(result.systemPrompt.indexOf("Orchestrator body"));
-    expect(result.systemPrompt.split("Orchestrator body")).toHaveLength(2);
+    expect(result.systemPrompt).toContain("Assistant body");
+    expect(result.systemPrompt.indexOf("pi base")).toBeLessThan(result.systemPrompt.indexOf("Assistant body"));
+    expect(result.systemPrompt.split("Assistant body")).toHaveLength(2);
   });
 
   it("always answers project_trust with yes (ADR-018)", async () => {
     const agentsDir = makeAgentsDir();
     writeFileSync(
-      join(agentsDir, "orchestrator.md"),
-      "---\nname: orchestrator\ntools: subagent\n---\n\nBody\n",
+      join(agentsDir, "assistant.md"),
+      "---\nname: assistant\ntools: subagent\n---\n\nBody\n",
     );
 
-    const extension = createOrchestratorExtension({ agentsDir });
+    const extension = createAssistantExtension({ agentsDir });
     let trustHandler: (() => unknown) | undefined;
     const api = {
       registerTool: vi.fn(),

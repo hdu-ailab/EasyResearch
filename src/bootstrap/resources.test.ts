@@ -7,11 +7,11 @@ import { bootstrapBundledResources } from "./resources";
 const tempDirs: string[] = [];
 
 function setUpFixture(): { agentDir: string; bundledAgentsDir: string; bundledSkillsDir: string } {
-  const agentDir = mkdtempSync(join(tmpdir(), "lazyresearch-agent-"));
+  const agentDir = mkdtempSync(join(tmpdir(), "easyresearch-agent-"));
   const bundledAgentsDir = mkdtempSync(join(tmpdir(), "bundled-agents-"));
   const bundledSkillsDir = mkdtempSync(join(tmpdir(), "bundled-skills-"));
   tempDirs.push(agentDir, bundledAgentsDir, bundledSkillsDir);
-  writeFileSync(join(bundledAgentsDir, "orchestrator.md"), "# orchestrator\n");
+  writeFileSync(join(bundledAgentsDir, "assistant.md"), "# assistant\n");
   mkdirSync(join(bundledSkillsDir, "paper-search"));
   writeFileSync(join(bundledSkillsDir, "paper-search", "SKILL.md"), "# paper-search\n");
   return { agentDir, bundledAgentsDir, bundledSkillsDir };
@@ -26,14 +26,14 @@ describe("bootstrapBundledResources", () => {
     const { agentDir, bundledAgentsDir, bundledSkillsDir } = setUpFixture();
 
     const first = await bootstrapBundledResources({ agentDir, bundledAgentsDir, bundledSkillsDir });
-    expect(first.copiedAgents).toEqual(["orchestrator.md"]);
+    expect(first.copiedAgents).toEqual(["assistant.md"]);
     expect(first.copiedSkills).toEqual(["paper-search"]);
 
-    writeFileSync(join(agentDir, "agents", "orchestrator.md"), "user edit");
+    writeFileSync(join(agentDir, "agents", "assistant.md"), "user edit");
     writeFileSync(join(agentDir, "skills", "paper-search", "SKILL.md"), "user skill");
     const second = await bootstrapBundledResources({ agentDir, bundledAgentsDir, bundledSkillsDir });
     expect(second).toEqual({ copiedAgents: [], copiedSkills: [] });
-    expect(readFileSync(join(agentDir, "agents", "orchestrator.md"), "utf8")).toBe("user edit");
+    expect(readFileSync(join(agentDir, "agents", "assistant.md"), "utf8")).toBe("user edit");
     expect(readFileSync(join(agentDir, "skills", "paper-search", "SKILL.md"), "utf8")).toBe("user skill");
   });
 

@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { parseAgentRegistry, mergeAgentRegistry, extractRegistryModels, type AgentRegistry } from "./registry";
 
 describe("parseAgentRegistry", () => {
-  it("recognizes the lazyresearch.agents key only", () => {
+  it("recognizes the easyresearch.agents key only", () => {
     const reg = parseAgentRegistry({
-      lazyresearch: {
+      easyresearch: {
         agents: {
           search: { definition: "agents/search.md", tools: ["bash"], skills: ["paper-search"] },
         },
@@ -12,12 +12,12 @@ describe("parseAgentRegistry", () => {
     });
     expect(reg.search?.definition).toBe("agents/search.md");
     expect(parseAgentRegistry({})).toEqual({});
-    expect(parseAgentRegistry({ lazyresearch: {} })).toEqual({});
+    expect(parseAgentRegistry({ easyresearch: {} })).toEqual({});
   });
 
   it("drops malformed entries and non-string scalars", () => {
     const reg = parseAgentRegistry({
-      lazyresearch: {
+      easyresearch: {
         agents: {
           ok: { definition: "agents/ok.md", model: "p/m", tools: "not-array", subagents: 3 },
           bad: null,
@@ -40,7 +40,7 @@ describe("parseAgentRegistry", () => {
 
   it("parses disabled only for literal booleans", () => {
     const reg = parseAgentRegistry({
-      lazyresearch: {
+      easyresearch: {
         agents: {
           gone: { disabled: true },
           back: { disabled: false },

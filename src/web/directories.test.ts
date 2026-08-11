@@ -7,7 +7,7 @@ import { DirectoryService, DirectoryServiceError, FILE_PREVIEW_LIMIT } from "./d
 let fakeHome: string;
 
 beforeEach(() => {
-  fakeHome = join(tmpdir(), `lazyresearch-dirs-${Math.random().toString(36).slice(2)}`);
+  fakeHome = join(tmpdir(), `easyresearch-dirs-${Math.random().toString(36).slice(2)}`);
   mkdirSync(join(fakeHome, "project", "a-dir"), { recursive: true });
   mkdirSync(join(fakeHome, "project", "z-dir"), { recursive: true });
   mkdirSync(join(fakeHome, "empty"), { recursive: true });

@@ -172,7 +172,7 @@ describe("ActiveSessionRegistry", () => {
     await expect(registry.setModel("nope", "openai", "gpt-4o")).rejects.toThrow(UnknownSessionError);
     await expect(registry.getSessionPath("nope")).rejects.toThrow(UnknownSessionError);
     await expect(registry.getCwd("nope")).rejects.toThrow(UnknownSessionError);
-    await expect(registry.getOrchestratorModel("nope")).rejects.toThrow(UnknownSessionError);
+    await expect(registry.getAssistantModel("nope")).rejects.toThrow(UnknownSessionError);
   });
 
   it("exposes the record session path and cwd", async () => {
@@ -181,15 +181,15 @@ describe("ActiveSessionRegistry", () => {
     await expect(registry.getCwd(created.id)).resolves.toBe(cwd);
   });
 
-  it("reports the orchestrator model from session state as provider/id", async () => {
+  it("reports the assistant model from session state as provider/id", async () => {
     const created = await registry.create({ cwd });
     factory.created[0]!.stateOverrides = { model: { provider: "deepseek", id: "ds-v3" } as never };
-    await expect(registry.getOrchestratorModel(created.id)).resolves.toBe("deepseek/ds-v3");
+    await expect(registry.getAssistantModel(created.id)).resolves.toBe("deepseek/ds-v3");
   });
 
-  it("reports no orchestrator model when session state has none", async () => {
+  it("reports no assistant model when session state has none", async () => {
     const created = await registry.create({ cwd });
-    await expect(registry.getOrchestratorModel(created.id)).resolves.toBeUndefined();
+    await expect(registry.getAssistantModel(created.id)).resolves.toBeUndefined();
   });
 
   it("makes two simultaneous stops call child stop once", async () => {

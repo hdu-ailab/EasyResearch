@@ -10,39 +10,39 @@ import { mountWelcomeBanner } from "../tui/welcome-banner";
 import { createLogger } from "./logger";
 import { mountPiEventLogger, type PiEventBus } from "./pi-event-logger";
 
-export interface OrchestratorExtensionOptions {
+export interface AssistantExtensionOptions {
   agentsDir?: string;
 }
 
-export function loadOrchestratorPrompt(agentsDir: string): string {
-  const path = join(agentsDir, "orchestrator.md");
+export function loadAssistantPrompt(agentsDir: string): string {
+  const path = join(agentsDir, "assistant.md");
   let content: string;
   try {
     content = readFileSync(path, "utf8");
   } catch {
-    throw new Error("Missing global orchestrator definition: expected ~/.lazyresearch/agent/agents/orchestrator.md");
+    throw new Error("Missing global assistant definition: expected ~/.easyresearch/agent/agents/assistant.md");
   }
   const frontmatter = parseFrontmatter(content);
   if (frontmatter == null || Object.keys(frontmatter.frontmatter ?? {}).length === 0) {
-    throw new Error(`Invalid orchestrator definition: ${path} is missing frontmatter`);
+    throw new Error(`Invalid assistant definition: ${path} is missing frontmatter`);
   }
   return frontmatter.body.trim();
 }
 
-export function createOrchestratorExtension(options: OrchestratorExtensionOptions = {}): InlineExtension {
+export function createAssistantExtension(options: AssistantExtensionOptions = {}): InlineExtension {
   return async (pi) => {
     const { getAgentDir } = await importPi();
-    const prompt = loadOrchestratorPrompt(options.agentsDir ?? join(getAgentDir(), "agents"));
+    const prompt = loadAssistantPrompt(options.agentsDir ?? join(getAgentDir(), "agents"));
     pi.registerTool(createSubagentTool({
       persistSessionLink: (link) => pi.appendEntry(SUBAGENT_SESSION_LINK_ENTRY, link),
     }));
     pi.registerTool(webSearchTool);
     mountWelcomeBanner(pi);
-    const isRpcChild = process.env.LAZYRESEARCH_RPC_CHILD === "1";
+    const isRpcChild = process.env.EASYRESEARCH_RPC_CHILD === "1";
     if (!isRpcChild) {
-      const logger = createLogger("orchestrator");
+      const logger = createLogger("assistant");
       mountPiEventLogger(pi as unknown as PiEventBus, logger);
-      logger.info("orchestrator session started", { cwd: process.cwd() });
+      logger.info("assistant session started", { cwd: process.cwd() });
     }
     pi.on("before_agent_start", (event) => ({
       systemPrompt: `${event.systemPrompt}\n\n${prompt}`,
@@ -52,4 +52,4 @@ export function createOrchestratorExtension(options: OrchestratorExtensionOption
   };
 }
 
-export default createOrchestratorExtension();
+export default createAssistantExtension();

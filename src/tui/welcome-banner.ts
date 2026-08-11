@@ -2,9 +2,9 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 
 /**
- * LazyResearch TUI welcome banner (see .docs/tui.md, ADR-023).
+ * EasyResearch TUI welcome banner (see .docs/tui.md, ADR-023).
  *
- * On session start in the native TUI, the "LAZYRESEARCH" wordmark replaces
+ * On session start in the native TUI, the "EASYRESEARCH" wordmark replaces
  * Pi's built-in startup header (logo line, keybinding hints, onboarding text)
  * via `ctx.ui.setHeader`. The banner is the persistent header for the session
  * and shows regardless of whether the global agent directory exists — the
@@ -13,17 +13,17 @@ import { truncateToWidth } from "@earendil-works/pi-tui";
  */
 
 /**
- * figlet -f ANSI Shadow, rendered per letter and stacked per word: the "LAZY"
+ * figlet -f ANSI Shadow, rendered per letter and stacked per word: the "EASY"
  * block (letters spaced out to roughly match the "RESEARCH" block width) sits
  * above the "RESEARCH" block. Trailing whitespace trimmed per line.
  */
 export const BANNER_LINES: readonly string[] = [
-  "██╗                 █████╗           ███████╗          ██╗   ██╗",
-  "██║                ██╔══██╗          ╚══███╔╝          ╚██╗ ██╔╝",
-  "██║                ███████║            ███╔╝            ╚████╔╝",
-  "██║                ██╔══██║           ███╔╝              ╚██╔╝",
-  "███████╗           ██║  ██║          ███████╗             ██║",
-  "╚══════╝           ╚═╝  ╚═╝          ╚══════╝             ╚═╝",
+  "███████╗            █████╗            ███████╗          ██╗   ██╗",
+  "██╔════╝           ██╔══██╗           ██╔════╝          ╚██╗ ██╔╝",
+  "███████╗           ███████║           ███████╗           ╚████╔╝",
+  "╚════██║           ██╔══██║           ╚════██║            ╚██╔╝",
+  "███████║           ██║  ██║           ███████║             ██║",
+  "╚══════╝           ╚═╝  ╚═╝           ╚══════╝             ╚═╝",
   "██████╗ ███████╗███████╗███████╗ █████╗ ██████╗  ██████╗██╗  ██╗",
   "██╔══██╗██╔════╝██╔════╝██╔════╝██╔══██╗██╔══██╗██╔════╝██║  ██║",
   "██████╔╝█████╗  ███████╗█████╗  ███████║██████╔╝██║     ███████║",
@@ -48,7 +48,7 @@ export function welcomeBannerLines(theme: WelcomeTheme, width: number): string[]
 }
 
 /**
- * Mount the welcome banner on the orchestrator extension.
+ * Mount the welcome banner on the assistant extension.
  * TUI-only: `setHeader` component factories are terminal-only features, and the
  * same extension file runs in Web RPC children where they would be inert.
  */

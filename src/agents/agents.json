@@ -1,6 +1,6 @@
 {
-  "orchestrator": {
-    "definition": "agents/orchestrator.md",
+  "assistant": {
+    "definition": "agents/assistant.md",
     "tools": ["read", "bash", "edit", "write", "grep", "find", "ls", "subagent"],
     "skills": ["research-project-workflow"]
   },

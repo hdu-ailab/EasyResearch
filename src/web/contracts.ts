@@ -90,11 +90,11 @@ export interface AgentEffectiveModelDto {
 
 export interface WebuiSettingsDto {
   agentModels: Record<string, string>;
-  orchestratorModel: string | null;
-  effectiveOrchestratorModel: string | null;
+  assistantModel: string | null;
+  effectiveAssistantModel: string | null;
 }
 
 export interface WebuiSettingsUpdate {
   agentModels?: Record<string, string>;
-  orchestratorModel?: string | null;
+  assistantModel?: string | null;
 }

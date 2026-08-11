@@ -265,7 +265,7 @@ describe("HomePage", () => {
   it("surfaces a create failure inline without a trust dialog", async () => {
     const user = userEvent.setup();
     vi.mocked(api.createSession).mockRejectedValueOnce(
-      new ApiError(400, { error: "LazyResearch does not load user-added Pi extensions" }),
+      new ApiError(400, { error: "EasyResearch does not load user-added Pi extensions" }),
     );
     render(
       <HomePage

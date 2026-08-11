@@ -20,7 +20,7 @@ description: |-
 
 ## Placeholders
 
-This is a sanitized template. Replace every `{{TOKEN}}` with your own values before first use (your global copy at `~/.lazyresearch/agent/skills/ssh-experiment/` is never overwritten by startup).
+This is a sanitized template. Replace every `{{TOKEN}}` with your own values before first use (your global copy at `~/.easyresearch/agent/skills/ssh-experiment/` is never overwritten by startup).
 
 | Token | Meaning | Generic example |
 |-------|---------|-----------------|

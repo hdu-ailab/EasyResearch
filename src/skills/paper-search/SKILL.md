@@ -58,7 +58,7 @@ paper-search \
 paper-search --query "{topic}"
 ```
 
-如果不是在 Skill 目录内运行，先找到 Skill 目录（通常在 `~/.lazyresearch/agent/skills/paper-search/`），再使用相对路径：
+如果不是在 Skill 目录内运行，先找到 Skill 目录（通常在 `~/.easyresearch/agent/skills/paper-search/`），再使用相对路径：
 ```bash
 <skill-dir>/.venv/bin/python \
   <skill-dir>/scripts/fetch_papers.py \

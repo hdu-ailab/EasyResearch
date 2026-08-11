@@ -21,8 +21,8 @@ function parseModelRef(model: string): { provider: string; modelId: string } {
   return { provider: model.slice(0, index), modelId: model.slice(index + 1) };
 }
 
-function readOrchestratorFromRegistry(settings: Record<string, unknown> | undefined): string | null {
-  const entry = settings ? parseAgentRegistry(settings)["orchestrator"] : undefined;
+function readAssistantFromRegistry(settings: Record<string, unknown> | undefined): string | null {
+  const entry = settings ? parseAgentRegistry(settings)["assistant"] : undefined;
   const model = entry?.model;
   return typeof model === "string" && model !== "" ? model : null;
 }
@@ -46,13 +46,13 @@ export async function readWebuiSettings(config: ConfigFileService): Promise<Webu
   const settings = await readSettings(config);
   return {
     agentModels: extractRegistryModels(parseAgentRegistry(settings)) ?? {},
-    orchestratorModel: readOrchestratorFromRegistry(settings),
-    effectiveOrchestratorModel: null,
+    assistantModel: readAssistantFromRegistry(settings),
+    effectiveAssistantModel: null,
   };
 }
 
 function validatePatch(patch: WebuiSettingsUpdate): void {
-  const known = new Set(["agentModels", "orchestratorModel"]);
+  const known = new Set(["agentModels", "assistantModel"]);
   for (const key of Object.keys(patch)) {
     if (!known.has(key)) throw new WebuiSettingsError(400, `Unknown webui setting: ${key}`);
   }
@@ -66,18 +66,18 @@ function validatePatch(patch: WebuiSettingsUpdate): void {
       }
     }
   }
-  if (patch.orchestratorModel !== undefined && patch.orchestratorModel !== null) {
-    if (typeof patch.orchestratorModel !== "string") {
-      throw new WebuiSettingsError(400, 'orchestratorModel must be a "provider/id" string or null');
+  if (patch.assistantModel !== undefined && patch.assistantModel !== null) {
+    if (typeof patch.assistantModel !== "string") {
+      throw new WebuiSettingsError(400, 'assistantModel must be a "provider/id" string or null');
     }
-    parseModelRef(patch.orchestratorModel);
+    parseModelRef(patch.assistantModel);
   }
 }
 
 export async function updateWebuiSettings(config: ConfigFileService, patch: WebuiSettingsUpdate): Promise<WebuiSettingsDto> {
   validatePatch(patch);
   const settings = (await readSettings(config)) ?? {};
-  const lazy = (settings.lazyresearch as Record<string, unknown> | undefined) ?? {};
+  const lazy = (settings.easyresearch as Record<string, unknown> | undefined) ?? {};
   if (patch.agentModels !== undefined) {
     const agents = (lazy.agents as Record<string, unknown> | undefined) ?? {};
     const current = extractRegistryModels(parseAgentRegistry(settings)) ?? {};
@@ -93,15 +93,15 @@ export async function updateWebuiSettings(config: ConfigFileService, patch: Webu
     }
     lazy.agents = agents;
   }
-  if (patch.orchestratorModel !== undefined) {
+  if (patch.assistantModel !== undefined) {
     const agents = (lazy.agents as Record<string, unknown> | undefined) ?? {};
-    const entry = (agents["orchestrator"] as Record<string, unknown> | undefined) ?? {};
-    if (patch.orchestratorModel === null) delete entry.model;
-    else entry.model = patch.orchestratorModel;
-    agents["orchestrator"] = entry;
+    const entry = (agents["assistant"] as Record<string, unknown> | undefined) ?? {};
+    if (patch.assistantModel === null) delete entry.model;
+    else entry.model = patch.assistantModel;
+    agents["assistant"] = entry;
     lazy.agents = agents;
   }
-  (settings as Record<string, unknown>).lazyresearch = lazy;
+  (settings as Record<string, unknown>).easyresearch = lazy;
   await config.write({ scope: "global", path: "settings.json", content: JSON.stringify(settings, null, 2) });
   return readWebuiSettings(config);
 }
@@ -157,13 +157,13 @@ const PI_DEFAULT_MODEL_PER_PROVIDER: Record<string, string> = {
 };
 
 /**
- * The model a new orchestrator session would use, mirroring Pi's
+ * The model a new assistant session would use, mirroring Pi's
  * `findInitialModel` fallback chain (model-resolver.js) for a fresh session
  * without CLI args or model scoping: the configured default pair if set, else
  * the first auth-available model matching Pi's per-provider default table, else
  * the first auth-available model, else null.
  */
-export function pickEffectiveOrchestratorModel(
+export function pickEffectiveAssistantModel(
   configured: string | null,
   available: ReadonlyArray<{ provider: string; id: string }>,
 ): string | null {
@@ -176,7 +176,7 @@ export function pickEffectiveOrchestratorModel(
 }
 
 /**
- * `readWebuiSettings` plus the GET-only `effectiveOrchestratorModel` field: the
+ * `readWebuiSettings` plus the GET-only `effectiveAssistantModel` field: the
  * stored default when configured, otherwise the model Pi's `findInitialModel`
  * would pick for a fresh session over the auth-available models. Tests inject
  * `available`; the live server lets Pi resolve them via `ModelRuntime`.
@@ -186,10 +186,10 @@ export async function readEffectiveWebuiSettings(
   available?: ReadonlyArray<{ provider: string; id: string }>,
 ): Promise<WebuiSettingsDto> {
   const settings = await readWebuiSettings(config);
-  if (settings.orchestratorModel) return { ...settings, effectiveOrchestratorModel: settings.orchestratorModel };
+  if (settings.assistantModel) return { ...settings, effectiveAssistantModel: settings.assistantModel };
   if (!available) {
     const { ModelRuntime } = await importPi();
     available = await (await ModelRuntime.create()).getAvailable();
   }
-  return { ...settings, effectiveOrchestratorModel: pickEffectiveOrchestratorModel(null, available) };
+  return { ...settings, effectiveAssistantModel: pickEffectiveAssistantModel(null, available) };
 }

@@ -120,8 +120,8 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
   const [agents, setAgents] = useState<AgentDto[]>([]);
   const [models, setModels] = useState<Array<{ provider: string; id: string }>>([]);
   const [agentModels, setAgentModels] = useState<Record<string, string>>({});
-  const [orchestratorModel, setOrchestratorModelState] = useState<string | null>(null);
-  const [effectiveOrchestratorModel, setEffectiveOrchestratorModel] = useState<string | null>(null);
+  const [assistantModel, setAssistantModelState] = useState<string | null>(null);
+  const [effectiveAssistantModel, setEffectiveAssistantModel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -129,8 +129,8 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
     Promise.all([getWebuiSettings(), listAgents(), listModels()])
       .then(([s, a, m]) => {
         setAgentModels(s.agentModels);
-        setOrchestratorModelState(s.orchestratorModel);
-        setEffectiveOrchestratorModel(s.effectiveOrchestratorModel);
+        setAssistantModelState(s.assistantModel);
+        setEffectiveAssistantModel(s.effectiveAssistantModel);
         setAgents(a);
         setModels(m);
       })
@@ -149,32 +149,32 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
       .finally(() => setBusy(false));
   };
 
-  const setOrchestratorModel = (value: string) => {
+  const setAssistantModel = (value: string) => {
     setBusy(true);
     setError(null);
-    updateWebuiSettings({ orchestratorModel: value === "" ? null : value })
+    updateWebuiSettings({ assistantModel: value === "" ? null : value })
       .then((s) => {
-        setOrchestratorModelState(s.orchestratorModel);
-        setEffectiveOrchestratorModel(s.effectiveOrchestratorModel);
+        setAssistantModelState(s.assistantModel);
+        setEffectiveAssistantModel(s.effectiveAssistantModel);
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setBusy(false));
   };
 
-  const orchestratorValue = orchestratorModel ?? effectiveOrchestratorModel ?? "";
-  const orchestratorOptions =
-    effectiveOrchestratorModel !== null && !models.some((m) => `${m.provider}/${m.id}` === effectiveOrchestratorModel)
+  const assistantValue = assistantModel ?? effectiveAssistantModel ?? "";
+  const assistantOptions =
+    effectiveAssistantModel !== null && !models.some((m) => `${m.provider}/${m.id}` === effectiveAssistantModel)
       ? [
           ...models,
           {
-            provider: effectiveOrchestratorModel.slice(0, effectiveOrchestratorModel.indexOf("/")),
-            id: effectiveOrchestratorModel.slice(effectiveOrchestratorModel.indexOf("/") + 1),
+            provider: effectiveAssistantModel.slice(0, effectiveAssistantModel.indexOf("/")),
+            id: effectiveAssistantModel.slice(effectiveAssistantModel.indexOf("/") + 1),
           },
         ]
       : models;
 
-  /** Pin the orchestrator to the first row, keeping the rest in API order. */
-  const roster = [...agents].sort((a, b) => (a.name === "orchestrator" ? -1 : b.name === "orchestrator" ? 1 : 0));
+  /** Pin the assistant to the first row, keeping the rest in API order. */
+  const roster = [...agents].sort((a, b) => (a.name === "assistant" ? -1 : b.name === "assistant" ? 1 : 0));
 
   return (
     <div className="flex h-full flex-col">
@@ -284,20 +284,20 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
             </header>
             <div className="flex flex-col gap-3 px-4 py-4">
               {roster.map((agent) =>
-                agent.name === "orchestrator" ? (
+                agent.name === "assistant" ? (
                   <div key={agent.name}>
                     <label className="flex items-center justify-between gap-4">
                       <span className="text-[13px] font-medium text-v2-text-text-base">
-                        {agentDisplayName(t, "orchestrator")}
+                        {agentDisplayName(t, "assistant")}
                       </span>
                       <select
                         className="h-8 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600 disabled:opacity-50"
                         aria-label={`${t("settings.agents.selectModelFor")} ${agentDisplayName(t, agent.name)}`}
-                        value={orchestratorValue}
-                        onChange={(e) => setOrchestratorModel(e.target.value)}
+                        value={assistantValue}
+                        onChange={(e) => setAssistantModel(e.target.value)}
                         disabled={busy}
                       >
-                        {orchestratorOptions.map((m) => (
+                        {assistantOptions.map((m) => (
                           <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
                             {m.provider}/{m.id}
                           </option>

@@ -10,10 +10,10 @@ describe("getInternalPiInvocation", () => {
     expect(basename(invocation.args[0] ?? "")).toBe("pi-bootstrap.mjs");
   });
 
-  it("does not expose the public lazyresearch entry", () => {
+  it("does not expose the public easyresearch entry", () => {
     const invocation = getInternalPiInvocation();
-    expect(invocation.command).not.toMatch(/lazyresearch$/);
-    expect(invocation.args.join(" ")).not.toContain("lazyresearch");
+    expect(basename(invocation.command)).not.toBe("easyresearch");
+    expect(basename(invocation.args[0] ?? "")).not.toBe("index.ts");
   });
 
   it("resolves the private entry relative to the runtime module", () => {

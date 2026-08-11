@@ -34,8 +34,8 @@ vi.mock("../bootstrap/resources", () => ({
 vi.mock("./extensions-guard", () => ({
   assertSafeExtensionSources: () => hoisted.guard(),
 }));
-vi.mock("./orchestrator-extension", () => ({
-  createOrchestratorExtension: () => hoisted.createExtension(),
+vi.mock("./assistant-extension", () => ({
+  createAssistantExtension: () => hoisted.createExtension(),
 }));
 
 function tempAgentDir(): string {
@@ -170,7 +170,7 @@ describe("runNativeTui", () => {
     expect(hoisted.main).toHaveBeenCalledTimes(1);
   });
 
-  it("bootstraps resources, guards extensions, and mounts the orchestrator extension", async () => {
+  it("bootstraps resources, guards extensions, and mounts the assistant extension", async () => {
     await runNativeTui();
     expect(hoisted.main).toHaveBeenCalledTimes(1);
     expect(hoisted.main).toHaveBeenCalledWith([], {

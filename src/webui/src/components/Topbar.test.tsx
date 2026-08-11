@@ -26,7 +26,7 @@ describe("Topbar", () => {
     expect(home).toHaveAttribute("aria-current", "page");
     expect(home.querySelector(".lucide-house")).not.toBeNull();
     expect(
-      home.compareDocumentPosition(screen.getByText("LazyResearch")) & Node.DOCUMENT_POSITION_FOLLOWING,
+      home.compareDocumentPosition(screen.getByText("EasyResearch")) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
 
     await userEvent.setup().click(home);
@@ -40,6 +40,6 @@ describe("Topbar", () => {
 
   it("keeps the product mark at a fixed 16px size", () => {
     render(<ProductMark />);
-    expect(screen.getByText("LazyResearch").previousElementSibling).toHaveClass("size-[16px]");
+    expect(screen.getByText("EasyResearch").previousElementSibling).toHaveClass("size-[16px]");
   });
 });

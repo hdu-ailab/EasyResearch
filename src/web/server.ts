@@ -12,7 +12,7 @@ import { readEffectiveWebuiSettings, updateWebuiSettings } from "./webui-setting
 import { discoverAgents } from "../subagent/agents";
 import {
   readAgentModels,
-  readOrchestratorDefaults,
+  readAssistantDefaults,
   readSessionOverrides,
   resolveAgentModelsService,
   routeSetAgentModel,
@@ -29,11 +29,11 @@ export interface Server {
 const WEBUI_DIST = join(fileURLToPath(new URL("..", import.meta.url)), "webui", "dist");
 
 /**
- * The orchestrator is the agent whose session line the Web session runs. Its
- * name matches the hardcoded orchestrator definition file
- * (`<agent-dir>/agents/orchestrator.md`, orchestrator-extension.ts).
+ * The assistant is the agent whose session line the Web session runs. Its
+ * name matches the hardcoded assistant definition file
+ * (`<agent-dir>/agents/assistant.md`, assistant-extension.ts).
  */
-const ORCHESTRATOR_AGENT = "orchestrator";
+const ASSISTANT_AGENT = "assistant";
 
 export function agentToDto(agent: AgentConfig): AgentDto {
   return {
@@ -65,7 +65,7 @@ interface SessionInfoLike {
 }
 
 /**
- * Home-list session summaries. Internal `lazyresearch:` child session lines
+ * Home-list session summaries. Internal `easyresearch:` child session lines
  * are excluded: they are not user sessions and are browsed through their
  * parent's snapshot endpoint instead.
  */
@@ -111,7 +111,7 @@ export async function startServer(): Promise<Server> {
     readEntries: (sessionPath) => readSessionOverrides(sessionPath),
     projectAgentModels: (cwd) => readAgentModels(config, { scope: "project", cwd }),
     globalAgentModels: () => readAgentModels(config, { scope: "global" }),
-    orchestratorModel: (id) => registry.getOrchestratorModel(id),
+    assistantModel: (id) => registry.getAssistantModel(id),
     getCwd: (id) => registry.getCwd(id),
   });
   const services: RouteServices = {
@@ -130,11 +130,11 @@ export async function startServer(): Promise<Server> {
     setAgentModel: (sessionId, agentName, model) =>
       routeSetAgentModel(
         {
-          isOrchestrator: (name) => name === ORCHESTRATOR_AGENT,
+          isAssistant: (name) => name === ASSISTANT_AGENT,
           isKnownAgent: async (name) => isKnownAgentName((await discoverAgents()).agents, name),
-          setOrchestrator: (provider, modelId) => registry.setModel(sessionId, provider, modelId),
+          setAssistant: (provider, modelId) => registry.setModel(sessionId, provider, modelId),
           writeOverride: (agentName, model) => agentModels.set(sessionId, agentName, model),
-          orchestratorDefaults: async () => readOrchestratorDefaults(config, await registry.getCwd(sessionId)),
+          assistantDefaults: async () => readAssistantDefaults(config, await registry.getCwd(sessionId)),
         },
         agentName,
         model,

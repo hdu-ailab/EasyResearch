@@ -4,7 +4,7 @@ export interface AgentRegistryEntry {
   tools?: string[];
   skills?: string[];
   subagents?: string[];
-  /** true → remove the agent from discovery (ADR-034). Never applies to `orchestrator`. */
+  /** true → remove the agent from discovery (ADR-034). Never applies to `assistant`. */
   disabled?: boolean;
 }
 
@@ -15,7 +15,7 @@ const STRING_ARRAY_FIELD = ["tools", "skills", "subagents"] as const;
 const BOOLEAN_FIELD = ["disabled"] as const;
 
 export function parseAgentRegistry(settings: unknown): AgentRegistry {
-  const agents = (settings as { lazyresearch?: { agents?: unknown } } | undefined)?.lazyresearch?.agents;
+  const agents = (settings as { easyresearch?: { agents?: unknown } } | undefined)?.easyresearch?.agents;
   if (typeof agents !== "object" || agents === null || Array.isArray(agents)) return {};
   const out: AgentRegistry = {};
   for (const [name, value] of Object.entries(agents as Record<string, unknown>)) {

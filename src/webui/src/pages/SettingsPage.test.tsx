@@ -26,11 +26,11 @@ beforeEach(() => {
   vi.mocked(api.listModels).mockReset();
   vi.mocked(api.getWebuiSettings).mockResolvedValue({
     agentModels: { search: "openai/gpt-4o" },
-    orchestratorModel: null,
-    effectiveOrchestratorModel: "openai/gpt-4o",
+    assistantModel: null,
+    effectiveAssistantModel: "openai/gpt-4o",
   } as never);
   vi.mocked(api.listAgents).mockResolvedValue([
-    { name: "orchestrator", description: "Coordinates" },
+    { name: "assistant", description: "Coordinates" },
     { name: "search", description: "Searches" },
     { name: "writing", description: "Writes" },
   ] as never);
@@ -196,19 +196,19 @@ describe("SettingsPage", () => {
     expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}")).toMatchObject({ language: "zh-CN" });
   });
 
-  it("shows stage agents with their configured model and the orchestrator settable", async () => {
+  it("shows stage agents with their configured model and the assistant settable", async () => {
     renderSettings();
     await screen.findByRole("combobox", { name: "Select model for Search" });
     expect(screen.getByRole("combobox", { name: "Select model for Search" })).toHaveValue("openai/gpt-4o");
     expect(screen.getByRole("combobox", { name: "Select model for Writing" })).toHaveValue("");
-    expect(screen.getByRole("combobox", { name: "Select model for Research Mentor" })).toHaveValue("openai/gpt-4o");
+    expect(screen.getByRole("combobox", { name: "Select model for Paper Assistant" })).toHaveValue("openai/gpt-4o");
   });
 
   it("includes a configured stage model that is absent from the model catalog", async () => {
     vi.mocked(api.getWebuiSettings).mockResolvedValue({
       agentModels: { search: "custom/missing-model" },
-      orchestratorModel: null,
-      effectiveOrchestratorModel: "openai/gpt-4o",
+      assistantModel: null,
+      effectiveAssistantModel: "openai/gpt-4o",
     } as never);
     renderSettings();
 
@@ -222,45 +222,45 @@ describe("SettingsPage", () => {
     renderSettings();
     await user.click(screen.getByRole("button", { name: "简体中文" }));
 
-    expect(await screen.findByRole("combobox", { name: "选择模型： 论文导师" })).toBeTruthy();
+    expect(await screen.findByRole("combobox", { name: "选择模型： 论文助手" })).toBeTruthy();
     expect(screen.getByRole("combobox", { name: "选择模型： 检索" })).toBeTruthy();
   });
 
-  it("pins the orchestrator to the first Agent models row regardless of API order", async () => {
+  it("pins the assistant to the first Agent models row regardless of API order", async () => {
     vi.mocked(api.listAgents).mockResolvedValue([
       { name: "writing", description: "Writes" },
-      { name: "orchestrator", description: "Coordinates" },
+      { name: "assistant", description: "Coordinates" },
       { name: "search", description: "Searches" },
     ] as never);
     renderSettings();
-    await screen.findByRole("combobox", { name: "Select model for Research Mentor" });
-    const orchestratorBox = screen.getByRole("combobox", { name: "Select model for Research Mentor" });
+    await screen.findByRole("combobox", { name: "Select model for Paper Assistant" });
+    const assistantBox = screen.getByRole("combobox", { name: "Select model for Paper Assistant" });
     const searchBox = screen.getByRole("combobox", { name: "Select model for Search" });
-    expect(orchestratorBox.compareDocumentPosition(searchBox) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+    expect(assistantBox.compareDocumentPosition(searchBox) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
   });
 
-  it("shows the configured orchestrator default without any inherit option", async () => {
+  it("shows the configured assistant default without any inherit option", async () => {
     vi.mocked(api.getWebuiSettings).mockResolvedValue({
       agentModels: { search: "openai/gpt-4o" },
-      orchestratorModel: "openai/gpt-4o",
-      effectiveOrchestratorModel: "openai/gpt-4o",
+      assistantModel: "openai/gpt-4o",
+      effectiveAssistantModel: "openai/gpt-4o",
     } as never);
     renderSettings();
-    const combobox = await screen.findByRole("combobox", { name: "Select model for Research Mentor" });
+    const combobox = await screen.findByRole("combobox", { name: "Select model for Paper Assistant" });
     expect(combobox).toHaveValue("openai/gpt-4o");
     expect(within(combobox).queryAllByRole("option", { name: /inherit/i })).toHaveLength(0);
   });
 
-  it("auto-selects the effective Pi model when no orchestrator default is configured", async () => {
+  it("auto-selects the effective Pi model when no assistant default is configured", async () => {
     vi.mocked(api.getWebuiSettings).mockResolvedValue({
       agentModels: {},
-      orchestratorModel: null,
-      effectiveOrchestratorModel: "anthropic/claude-opus-4-8",
+      assistantModel: null,
+      effectiveAssistantModel: "anthropic/claude-opus-4-8",
     } as never);
     renderSettings();
-    const combobox = await screen.findByRole("combobox", { name: "Select model for Research Mentor" });
+    const combobox = await screen.findByRole("combobox", { name: "Select model for Paper Assistant" });
     expect(combobox).toHaveValue("anthropic/claude-opus-4-8");
     expect(within(combobox).getAllByRole("option", { name: "anthropic/claude-opus-4-8" })).toHaveLength(1);
     expect(within(combobox).queryAllByRole("option", { name: /inherit/i })).toHaveLength(0);
@@ -269,32 +269,32 @@ describe("SettingsPage", () => {
   it("auto-selects a default already in the catalog without duplicating it", async () => {
     vi.mocked(api.getWebuiSettings).mockResolvedValue({
       agentModels: {},
-      orchestratorModel: null,
-      effectiveOrchestratorModel: "openai/gpt-4o",
+      assistantModel: null,
+      effectiveAssistantModel: "openai/gpt-4o",
     } as never);
     renderSettings();
-    const combobox = await screen.findByRole("combobox", { name: "Select model for Research Mentor" });
+    const combobox = await screen.findByRole("combobox", { name: "Select model for Paper Assistant" });
     expect(combobox).toHaveValue("openai/gpt-4o");
     expect(within(combobox).queryAllByRole("option", { name: "openai/gpt-4o" })).toHaveLength(1);
   });
 
-  it("sets the orchestrator default via an orchestratorModel patch", async () => {
+  it("sets the assistant default via an assistantModel patch", async () => {
     const user = userEvent.setup();
     vi.mocked(api.updateWebuiSettings).mockResolvedValue({
       agentModels: { search: "openai/gpt-4o" },
-      orchestratorModel: "anthropic/claude-sonnet-4",
-      effectiveOrchestratorModel: "anthropic/claude-sonnet-4",
+      assistantModel: "anthropic/claude-sonnet-4",
+      effectiveAssistantModel: "anthropic/claude-sonnet-4",
     } as never);
     renderSettings();
-    await screen.findByRole("combobox", { name: "Select model for Research Mentor" });
+    await screen.findByRole("combobox", { name: "Select model for Paper Assistant" });
     await user.selectOptions(
-      screen.getByRole("combobox", { name: "Select model for Research Mentor" }),
+      screen.getByRole("combobox", { name: "Select model for Paper Assistant" }),
       "anthropic/claude-sonnet-4",
     );
     await waitFor(() =>
-      expect(api.updateWebuiSettings).toHaveBeenCalledWith({ orchestratorModel: "anthropic/claude-sonnet-4" }),
+      expect(api.updateWebuiSettings).toHaveBeenCalledWith({ assistantModel: "anthropic/claude-sonnet-4" }),
     );
-    expect(screen.getByRole("combobox", { name: "Select model for Research Mentor" })).toHaveValue(
+    expect(screen.getByRole("combobox", { name: "Select model for Paper Assistant" })).toHaveValue(
       "anthropic/claude-sonnet-4",
     );
   });

@@ -33,8 +33,8 @@ describe("resolveSkillDirectories", () => {
     expect(resolveSkillDirectories([], deps)).toEqual([]);
   });
 
-  it("resolves a name by project .lazyresearch/skills first", () => {
-    const projectSite = join(cwd, ".lazyresearch", "skills");
+  it("resolves a name by project .easyresearch/skills first", () => {
+    const projectSite = join(cwd, ".easyresearch", "skills");
     const globalSite = join(agentDir, "skills");
     withSkill(projectSite, "paper-search");
     withSkill(globalSite, "paper-search");

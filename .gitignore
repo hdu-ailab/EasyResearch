@@ -11,7 +11,7 @@ __pycache__/
 .playwright-cli/
 .superpowers/
 .worktrees/
-.lazyresearch/
+.easyresearch/
 testpaper/
 docs/superpowers/
 .docs

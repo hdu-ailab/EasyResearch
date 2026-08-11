@@ -51,17 +51,15 @@ describe("API response parsers", () => {
     expect(
       parseWebuiSettings({
         agentModels: { search: "openai/gpt-4o" },
-        orchestratorModel: null,
-        effectiveOrchestratorModel: "openai/gpt-4o",
+        assistantModel: null,
+        effectiveAssistantModel: "openai/gpt-4o",
       }),
     ).toEqual({
       agentModels: { search: "openai/gpt-4o" },
-      orchestratorModel: null,
-      effectiveOrchestratorModel: "openai/gpt-4o",
+      assistantModel: null,
+      effectiveAssistantModel: "openai/gpt-4o",
     });
-    expect(() =>
-      parseWebuiSettings({ agentModels: {}, orchestratorModel: 42, effectiveOrchestratorModel: null }),
-    ).toThrow();
+    expect(() => parseWebuiSettings({ agentModels: {}, assistantModel: 42, effectiveAssistantModel: null })).toThrow();
   });
 
   it("parses directory, file, and text-content responses", () => {
@@ -95,10 +93,10 @@ describe("API response parsers", () => {
     ).toMatchObject({ session, messages: [{ role: "assistant" }] });
     expect(
       parseChildSnapshot({
-        session: { id: "child-1", cwd: "/p", sessionName: "lazyresearch:search" },
+        session: { id: "child-1", cwd: "/p", sessionName: "easyresearch:search" },
         messages: [],
       }).session,
-    ).toEqual({ id: "child-1", cwd: "/p", sessionName: "lazyresearch:search" });
+    ).toEqual({ id: "child-1", cwd: "/p", sessionName: "easyresearch:search" });
     expect(() => parseActiveSession({ ...session, status: "unknown" })).toThrow();
     expect(() => parseSessionSnapshot({ session, messages: {}, subagents: [] })).toThrow();
   });

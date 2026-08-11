@@ -25,19 +25,19 @@ function parseLevel(value: string | undefined): LogLevel | undefined {
 }
 
 /**
- * Resolve the process-level logging config. Order: LAZYRESEARCH_LOG_LEVEL
- * env var, then the global settings.json `lazyresearch.logging` object,
+ * Resolve the process-level logging config. Order: EASYRESEARCH_LOG_LEVEL
+ * env var, then the global settings.json `easyresearch.logging` object,
  * then defaults (info, 7 days, <agentDir>/logs). Project settings are never
  * read: the Web server serves many project cwds, so the level is
  * process-level. Invalid configured values fall back to the defaults.
  */
 export function resolveLogConfig(agentDir: string): LogConfig {
-  const envLevel = parseLevel(process.env.LAZYRESEARCH_LOG_LEVEL);
+  const envLevel = parseLevel(process.env.EASYRESEARCH_LOG_LEVEL);
   let settings: { level?: unknown; keepDays?: unknown; logDir?: unknown } = {};
   try {
     const raw = readFileSync(join(agentDir, "settings.json"), "utf8");
-    const parsed = JSON.parse(raw) as { lazyresearch?: { logging?: { level?: unknown; keepDays?: unknown; logDir?: unknown } } };
-    settings = parsed?.lazyresearch?.logging ?? {};
+    const parsed = JSON.parse(raw) as { easyresearch?: { logging?: { level?: unknown; keepDays?: unknown; logDir?: unknown } } };
+    settings = parsed?.easyresearch?.logging ?? {};
   } catch {
     // missing/malformed global settings: defaults apply
   }
@@ -58,7 +58,7 @@ export function dayStamp(now: Date = new Date()): string {
 
 function dayFile(logDir: string, now: Date = new Date()): string {
   const stamp = dayStamp(now);
-  return join(logDir, `lazyresearch-${stamp}.log`);
+  return join(logDir, `easyresearch-${stamp}.log`);
 }
 
 function formatLine(level: LogLevel, pid: number, scope: string, msg: string, fields?: Record<string, unknown>): string {
@@ -100,7 +100,7 @@ export function createLogger(scope: string, options?: { agentDir?: string; level
     const rawLevel = rawConfiguredLevel(agentDir);
     if (rawLevel !== undefined && parseLevel(rawLevel) === undefined) {
       // eslint-disable-next-line no-console
-      console.warn(`[lazyresearch:logger] invalid log level "${rawLevel}", falling back to info`);
+      console.warn(`[easyresearch:logger] invalid log level "${rawLevel}", falling back to info`);
     }
   }
 
@@ -108,7 +108,7 @@ export function createLogger(scope: string, options?: { agentDir?: string; level
     try {
       const cutoff = Date.now() - config.keepDays * 24 * 60 * 60 * 1000;
       for (const name of readdirSync(config.logDir)) {
-        if (!name.startsWith("lazyresearch-") || !name.endsWith(".log")) continue;
+        if (!name.startsWith("easyresearch-") || !name.endsWith(".log")) continue;
         const filePath = join(config.logDir, name);
         const stat = statSync(filePath);
         if (stat.mtimeMs < cutoff) unlinkSync(filePath);
@@ -133,7 +133,7 @@ export function createLogger(scope: string, options?: { agentDir?: string; level
       if (!warnedInvalid) {
         warnedInvalid = true;
         // eslint-disable-next-line no-console
-        console.error(`[lazyresearch:logger] cannot write log file under ${config.logDir}; logging failed`);
+        console.error(`[easyresearch:logger] cannot write log file under ${config.logDir}; logging failed`);
       }
     }
   };
@@ -151,12 +151,12 @@ export function createLogger(scope: string, options?: { agentDir?: string; level
  * sets one). Used only to detect invalid values for the spec-5 warning.
  */
 function rawConfiguredLevel(agentDir: string): string | undefined {
-  const envLevel = process.env.LAZYRESEARCH_LOG_LEVEL;
+  const envLevel = process.env.EASYRESEARCH_LOG_LEVEL;
   if (envLevel !== undefined) return envLevel;
   try {
     const raw = readFileSync(join(agentDir, "settings.json"), "utf8");
-    const parsed = JSON.parse(raw) as { lazyresearch?: { logging?: { level?: unknown } } };
-    const level = parsed?.lazyresearch?.logging?.level;
+    const parsed = JSON.parse(raw) as { easyresearch?: { logging?: { level?: unknown } } };
+    const level = parsed?.easyresearch?.logging?.level;
     return typeof level === "string" ? level : undefined;
   } catch {
     return undefined;

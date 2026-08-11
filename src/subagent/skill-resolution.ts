@@ -15,7 +15,7 @@ function expandHome(p: string, home?: string): string {
 }
 
 const NAME_SITES = (deps: SkillResolverDeps): string[] => [
-  join(deps.cwd, ".lazyresearch", "skills"),
+  join(deps.cwd, ".easyresearch", "skills"),
   join(deps.cwd, ".agents", "skills"),
   join(deps.agentDir, "skills"),
   join(deps.homeDir ?? homedir(), ".agents", "skills"),

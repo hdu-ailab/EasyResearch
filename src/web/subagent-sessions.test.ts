@@ -93,7 +93,7 @@ describe("SubagentSessionService", () => {
     const parent = createSession();
     const child = createSession();
     appendParentMessage(parent);
-    child.appendSessionInfo("lazyresearch:search");
+    child.appendSessionInfo("easyresearch:search");
     child.appendMessage(user("find papers"));
     child.appendMessage(assistant("final child reply"));
     link(parent, child);
@@ -108,7 +108,7 @@ describe("SubagentSessionService", () => {
       session: {
         id: child.getSessionId(),
         cwd,
-        sessionName: "lazyresearch:search",
+        sessionName: "easyresearch:search",
       },
       messages: [{ role: "user" }, { role: "assistant" }],
     });

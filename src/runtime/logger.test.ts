@@ -9,7 +9,7 @@ function makeAgentDir(): string {
 }
 
 function logFiles(agentDir: string): string[] {
-  return readdirSync(join(agentDir, "logs")).filter((f) => f.startsWith("lazyresearch-")).sort();
+  return readdirSync(join(agentDir, "logs")).filter((f) => f.startsWith("easyresearch-")).sort();
 }
 
 describe("dayStamp", () => {
@@ -44,27 +44,27 @@ describe("resolveLogConfig", () => {
     const agentDir = makeAgentDir();
     writeFileSync(
       join(agentDir, "settings.json"),
-      JSON.stringify({ lazyresearch: { logging: { level: "debug", keepDays: 3, logDir: "/tmp/alt-logs" } } }),
+      JSON.stringify({ easyresearch: { logging: { level: "debug", keepDays: 3, logDir: "/tmp/alt-logs" } } }),
     );
     expect(resolveLogConfig(agentDir)).toEqual({ level: "debug", keepDays: 3, logDir: "/tmp/alt-logs" });
   });
 
-  it("env LAZYRESEARCH_LOG_LEVEL wins over settings", () => {
+  it("env EASYRESEARCH_LOG_LEVEL wins over settings", () => {
     const agentDir = makeAgentDir();
-    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ lazyresearch: { logging: { level: "debug" } } }));
-    const previous = process.env.LAZYRESEARCH_LOG_LEVEL;
-    process.env.LAZYRESEARCH_LOG_LEVEL = "warn";
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ easyresearch: { logging: { level: "debug" } } }));
+    const previous = process.env.EASYRESEARCH_LOG_LEVEL;
+    process.env.EASYRESEARCH_LOG_LEVEL = "warn";
     try {
       expect(resolveLogConfig(agentDir).level).toBe("warn");
     } finally {
-      if (previous === undefined) delete process.env.LAZYRESEARCH_LOG_LEVEL;
-      else process.env.LAZYRESEARCH_LOG_LEVEL = previous;
+      if (previous === undefined) delete process.env.EASYRESEARCH_LOG_LEVEL;
+      else process.env.EASYRESEARCH_LOG_LEVEL = previous;
     }
   });
 
   it("invalid configured level falls back to info", () => {
     const agentDir = makeAgentDir();
-    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ lazyresearch: { logging: { level: "verbose" } } }));
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ easyresearch: { logging: { level: "verbose" } } }));
     expect(resolveLogConfig(agentDir).level).toBe("info");
   });
 });
@@ -72,7 +72,7 @@ describe("resolveLogConfig", () => {
 describe("invalid-level warning (spec 5)", () => {
   it("warns once on invalid configured level, silent on valid", () => {
     const agentDir = makeAgentDir();
-    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ lazyresearch: { logging: { level: "verbose" } } }));
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ easyresearch: { logging: { level: "verbose" } } }));
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       const logger = createLogger("t", { agentDir });
@@ -85,7 +85,7 @@ describe("invalid-level warning (spec 5)", () => {
 
     const warn2 = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
-      writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ lazyresearch: { logging: { level: "info" } } }));
+      writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ easyresearch: { logging: { level: "info" } } }));
       createLogger("t2", { agentDir }).info("c");
       expect(warn2).not.toHaveBeenCalled();
     } finally {
@@ -93,23 +93,23 @@ describe("invalid-level warning (spec 5)", () => {
     }
   });
 
-  it("warns once on invalid LAZYRESEARCH_LOG_LEVEL env value, env wins over settings", () => {
+  it("warns once on invalid EASYRESEARCH_LOG_LEVEL env value, env wins over settings", () => {
     const agentDir = makeAgentDir();
-    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ lazyresearch: { logging: { level: "info" } } }));
-    const previous = process.env.LAZYRESEARCH_LOG_LEVEL;
-    process.env.LAZYRESEARCH_LOG_LEVEL = "verbose";
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ easyresearch: { logging: { level: "info" } } }));
+    const previous = process.env.EASYRESEARCH_LOG_LEVEL;
+    process.env.EASYRESEARCH_LOG_LEVEL = "verbose";
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       const logger = createLogger("t", { agentDir });
-      expect(process.env.LAZYRESEARCH_LOG_LEVEL).toBe("verbose");
+      expect(process.env.EASYRESEARCH_LOG_LEVEL).toBe("verbose");
       logger.info("a");
       logger.info("b");
       expect(warn).toHaveBeenCalledTimes(1);
       expect(warn.mock.calls[0]![0]).toContain('invalid log level "verbose"');
     } finally {
       warn.mockRestore();
-      if (previous === undefined) delete process.env.LAZYRESEARCH_LOG_LEVEL;
-      else process.env.LAZYRESEARCH_LOG_LEVEL = previous;
+      if (previous === undefined) delete process.env.EASYRESEARCH_LOG_LEVEL;
+      else process.env.EASYRESEARCH_LOG_LEVEL = previous;
     }
   });
 });
@@ -133,7 +133,7 @@ describe("createLogger", () => {
     logger.info("hello");
     const files = logFiles(agentDir);
     expect(files).toHaveLength(1);
-    expect(files[0]).toMatch(/^lazyresearch-\d{4}-\d{2}-\d{2}\.log$/);
+    expect(files[0]).toMatch(/^easyresearch-\d{4}-\d{2}-\d{2}\.log$/);
     const line = readFileSync(join(agentDir, "logs", files[0]!), "utf8").trim();
     expect(line).toMatch(/^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\] \[INFO\] \[pid=\d+\] \[scope-a\] hello$/);
   });
@@ -158,8 +158,8 @@ describe("createLogger", () => {
   it("deletes log files older than keepDays on a new write", async () => {
     const agentDir = makeAgentDir();
     mkdirSync(join(agentDir, "logs"), { recursive: true });
-    const oldFile = join(agentDir, "logs", "lazyresearch-2000-01-01.log");
-    const freshFile = join(agentDir, "logs", "lazyresearch-2099-01-01.log");
+    const oldFile = join(agentDir, "logs", "easyresearch-2000-01-01.log");
+    const freshFile = join(agentDir, "logs", "easyresearch-2099-01-01.log");
     writeFileSync(oldFile, "old");
     writeFileSync(freshFile, "fresh");
     const oldTime = new Date("2000-01-01").getTime();
@@ -170,13 +170,13 @@ describe("createLogger", () => {
     const logger = createLogger("t", { agentDir, level: "info", keepDays: 7 });
     logger.info("now");
     const remaining = logFiles(agentDir);
-    expect(remaining).not.toContain("lazyresearch-2000-01-01.log");
-    expect(remaining).toContain("lazyresearch-2099-01-01.log");
+    expect(remaining).not.toContain("easyresearch-2000-01-01.log");
+    expect(remaining).toContain("easyresearch-2099-01-01.log");
   });
 
   it("never throws into application logic on unwritable log dir", () => {
     const agentDir = makeAgentDir();
-    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ lazyresearch: { logging: { logDir: "/proc/definitely/not/writable" } } }));
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ easyresearch: { logging: { logDir: "/proc/definitely/not/writable" } } }));
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       const logger = createLogger("t", { agentDir, level: "info" });
