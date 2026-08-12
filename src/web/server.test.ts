@@ -852,8 +852,8 @@ describe("web routes", () => {
   it("lists the agent roster with tools/subagents/skills without leaking system prompts or model", async () => {
     setup({
       listAgents: async () => [
-        { name: "assistant", description: "Runs the pipeline", tools: ["subagent"], skills: ["research-project-workflow"] },
-        { name: "search", description: "Finds papers", subagents: [], skills: [] },
+        { name: "assistant", description: "Runs the pipeline", enabled: true, builtin: true, source: "bundled", filePath: "assistant.md", tools: ["subagent"], effectiveTools: ["subagent"], skills: ["research-project-workflow"], effectiveSkills: ["research-project-workflow"] },
+        { name: "search", description: "Finds papers", enabled: true, builtin: true, source: "bundled", filePath: "search.md", effectiveTools: [], subagents: [], skills: [], effectiveSkills: [] },
       ],
     });
     const res = await handler(new Request("http://localhost/api/agents"));
@@ -880,9 +880,13 @@ describe("web routes", () => {
       agentToDto({
         name: "search",
         description: "Finds papers",
+        enabled: true,
+        builtin: true,
         tools: ["bash"],
+        effectiveTools: ["bash"],
         subagents: ["experiment"],
         skills: ["paper-search"],
+        effectiveSkills: ["paper-search"],
         model: "deepseek/ds-v3",
         systemPrompt: "SECRET PROMPT",
         source: "global",
@@ -891,21 +895,27 @@ describe("web routes", () => {
     ).toEqual({
       name: "search",
       description: "Finds papers",
+      enabled: true,
+      builtin: true,
+      source: "global",
+      filePath: "/agent/agents/search.md",
+      model: "deepseek/ds-v3",
       tools: ["bash"],
+      effectiveTools: ["bash"],
       subagents: ["experiment"],
       skills: ["paper-search"],
+      effectiveSkills: ["paper-search"],
     });
   });
 
-  it("recognizes registry-discovered agent names via isKnownAgentName", async () => {
+  it("recognizes discovered agent names via isKnownAgentName", async () => {
     mkdirSync(join(agentDir, "agents"), { recursive: true });
     writeFileSync(join(agentDir, "agents", "search.md"), "---\nname: search\ndescription: finds papers\n---\nbody", "utf-8");
     const { agents } = await discoverAgents({
       agentDir,
-      registry: { search: { definition: "agents/search.md", tools: ["bash"] } },
     });
     expect(isKnownAgentName(agents, "search")).toBe(true);
-    expect(isKnownAgentName(agents, "writing")).toBe(false);
+    expect(isKnownAgentName(agents, "writing")).toBe(true);
   });
 
   it("lists available models", async () => {
@@ -1150,6 +1160,7 @@ describe("toUserSessionSummaries", () => {
       sessionInfo({ id: "s1", name: "easyresearch:search", firstMessage: "child" }),
       sessionInfo({ id: "s2", name: "my easyresearch:search notes", firstMessage: "user" }),
       sessionInfo({ id: "s3", name: "easyresearch:", firstMessage: "user" }),
+      sessionInfo({ id: "s4", name: "lazyresearch:search", firstMessage: "legacy child" }),
     ]);
     expect(results.map((session) => session.id)).toEqual(["s2"]);
   });
