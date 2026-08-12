@@ -895,6 +895,7 @@ describe("session reducer", () => {
       tools: [
         {
           key: "chain-call",
+          toolCallId: "chain-call",
           name: "subagent",
           running: true,
           done: false,
@@ -939,6 +940,7 @@ describe("session reducer", () => {
       tools: [
         {
           key: "chain-call",
+          toolCallId: "chain-call",
           name: "subagent",
           running: true,
           done: false,
@@ -976,6 +978,7 @@ describe("session reducer", () => {
       tools: [
         {
           key: "chain-call",
+          toolCallId: "chain-call",
           name: "subagent",
           running: true,
           done: false,
@@ -999,6 +1002,54 @@ describe("session reducer", () => {
     } as never;
 
     expect(mergeSnapshot(prior, snapshot).tools[0]).toMatchObject({ agentName: "writing", step: 2 });
+  });
+
+  it("does not enrich an id-less snapshot subagent tool from a colliding fallback key", () => {
+    const prior: SessionViewState = {
+      ...emptyState,
+      tools: [
+        {
+          key: "subagent",
+          toolCallId: "subagent",
+          name: "subagent",
+          running: true,
+          done: false,
+          error: false,
+          agentName: "writing",
+          step: 2,
+          sessionId: "child-writing",
+          latestMessage: "prior metadata",
+          order: 0,
+        },
+      ],
+      nextOrder: 1,
+    };
+    const snapshot = {
+      session: { id: "parent", cwd: "/p", isStreaming: true, status: "running" },
+      subagents: [
+        {
+          toolCallId: "subagent",
+          childSessionId: "child-summary",
+          agent: "figures",
+          step: 3,
+          latestMessage: "persisted metadata",
+        },
+      ],
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", name: "subagent", arguments: '{"agent":"search"}' }],
+        },
+      ],
+    } as never;
+
+    const merged = mergeSnapshot(prior, snapshot).tools[0]!;
+
+    expect(merged).toMatchObject({ key: "subagent", agentName: "search" });
+    expect(merged.toolCallId).toBeUndefined();
+    expect(merged.step).toBeUndefined();
+    expect(merged.sessionId).toBeUndefined();
+    expect(merged.latestMessage).toBeUndefined();
   });
 
   it("discards prior ordinary messages and generic tools absent from the reconnect snapshot", () => {

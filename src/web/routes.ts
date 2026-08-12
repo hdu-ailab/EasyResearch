@@ -335,16 +335,19 @@ function sessionEvents(services: RouteServices, id: string): Response {
   const encoder = new TextEncoder();
   let controllerRef: ReadableStreamDefaultController<Uint8Array> | null = null;
   let unsubscribe: (() => void) | null = null;
+  let snapshotAcquired = false;
   let initialized = false;
   let cancelled = false;
-  const pendingEvents: unknown[] = [];
+  const preBarrierSupplements: unknown[] = [];
+  const postBarrierEvents: unknown[] = [];
   const send = (controller: ReadableStreamDefaultController<Uint8Array>, event: unknown): void => {
     controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
   };
   const disconnect = (): void => {
     if (cancelled) return;
     cancelled = true;
-    pendingEvents.length = 0;
+    preBarrierSupplements.length = 0;
+    postBarrierEvents.length = 0;
     const stopListening = unsubscribe;
     unsubscribe = null;
     stopListening?.();
@@ -355,7 +358,11 @@ function sessionEvents(services: RouteServices, id: string): Response {
     unsubscribe = registry.subscribe(id, (event) => {
       if (cancelled) return;
       if (!initialized) {
-        pendingEvents.push(event);
+        if (snapshotAcquired) {
+          postBarrierEvents.push(event);
+        } else if (isPreBarrierSupplement(event)) {
+          preBarrierSupplements.push(event);
+        }
         return;
       }
       if (controllerRef) send(controllerRef, event);
@@ -367,13 +374,20 @@ function sessionEvents(services: RouteServices, id: string): Response {
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       controllerRef = controller;
-      Promise.all([registry.snapshot(id), subagentSessions.summaries(id)]).then(
+      Promise.all([
+        registry.snapshot(id, () => {
+          snapshotAcquired = true;
+        }),
+        subagentSessions.summaries(id),
+      ]).then(
         ([{ session, messages }, subagents]) => {
           if (cancelled) return;
           send(controller, { type: "snapshot", session, messages, subagents });
+          for (const event of preBarrierSupplements) send(controller, event);
+          for (const event of postBarrierEvents) send(controller, event);
+          preBarrierSupplements.length = 0;
+          postBarrierEvents.length = 0;
           initialized = true;
-          for (const event of pendingEvents) send(controller, event);
-          pendingEvents.length = 0;
         },
         (error) => {
           if (cancelled) return;
@@ -389,6 +403,32 @@ function sessionEvents(services: RouteServices, id: string): Response {
     },
   });
   return new Response(stream, { headers: SSE_HEADERS });
+}
+
+function isPreBarrierSupplement(event: unknown): boolean {
+  if (!event || typeof event !== "object") return false;
+  const value = event as {
+    type?: unknown;
+    toolCallId?: unknown;
+    partialResult?: { details?: { subagent?: { agent?: unknown; sessionId?: unknown } } };
+  };
+  if (
+    value.type === "file.watcher.updated" ||
+    value.type === "agent_start" ||
+    value.type === "agent_settled" ||
+    value.type === "session_deactivated" ||
+    value.type === "error"
+  ) {
+    return true;
+  }
+  if (value.type !== "tool_execution_update" || typeof value.toolCallId !== "string" || !value.toolCallId.trim()) {
+    return false;
+  }
+  const subagent = value.partialResult?.details?.subagent;
+  return Boolean(
+    (typeof subagent?.agent === "string" && subagent.agent.trim()) ||
+      (typeof subagent?.sessionId === "string" && subagent.sessionId.trim()),
+  );
 }
 
 function configFileParams(url: URL): { scope: ConfigScope; cwd?: string; path?: string } {
