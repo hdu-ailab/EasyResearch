@@ -1040,7 +1040,7 @@ describe("WorkPage", () => {
     expect(api.getChildSnapshot).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps subagent selection and stop as sibling buttons with independent effects", async () => {
+  it("keeps subagent selection and stop as siblings, then collapses the stopped temporary tab", async () => {
     const user = userEvent.setup();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await screen.findByText("starting research");
@@ -1059,12 +1059,8 @@ describe("WorkPage", () => {
 
     await user.click(stop);
     await waitFor(() => expect(api.abortSession).toHaveBeenCalledWith("s1"));
-    expect(select).toHaveAttribute("aria-pressed", "false");
     expect(assistant).toHaveAttribute("aria-pressed", "true");
-
-    await user.click(select);
-    expect(select).toHaveAttribute("aria-pressed", "true");
-    expect(assistant).toHaveAttribute("aria-pressed", "false");
+    await waitFor(() => expect(screen.queryByRole("button", { name: /agent search/i })).toBeNull());
   });
 
   it("keeps a retained chain UUID active while creating and promoting the next step tab", async () => {
