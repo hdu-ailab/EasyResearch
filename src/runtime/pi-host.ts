@@ -119,9 +119,11 @@ function readUpstreamVersion(packageDir: string): string | undefined {
 export async function runNativeTui(): Promise<void> {
   disableVersionUpdateCheck();
   await primeChangelogSeenVersion();
-  const { main } = await importPi();
+  const pi = await importPi();
   await bootstrapBundledResources();
   assertSafeExtensionSources({ cwd: process.cwd() });
   const { createAssistantExtension } = await import("./assistant-extension");
-  await main([], { extensionFactories: [createAssistantExtension()] });
+  await pi.main(["--no-skills"], {
+    extensionFactories: [createAssistantExtension()],
+  });
 }

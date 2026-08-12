@@ -197,6 +197,7 @@ export class PiRpcSessionFactory implements RpcSessionFactory {
       "--extension",
       EXTENSION_PATH,
       "--approve",
+      "--no-skills",
       ...(options.sessionPath ? ["--session", options.sessionPath] : []),
     ];
     const client = new this.clientCtor({

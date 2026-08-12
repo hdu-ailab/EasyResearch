@@ -97,14 +97,16 @@ function PreferenceSwitch({
   label,
   checked,
   onChange,
+  showLabel = true,
 }: {
   label: string;
   checked: boolean;
   onChange: (checked: boolean) => void;
+  showLabel?: boolean;
 }) {
   return (
     <div className="flex items-center justify-between gap-4">
-      <span className="text-[13px] text-v2-text-text-base">{label}</span>
+      {showLabel && <span className="text-[13px] text-v2-text-text-base">{label}</span>}
       <button
         type="button"
         role="switch"
@@ -431,13 +433,6 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
                       <span className="text-[13px] font-medium text-v2-text-text-base">
                         {agentDisplayName(t, agent.name)}
                       </span>
-                      <div className="ml-auto flex items-center">
-                        <PreferenceSwitch
-                          label={agentDisplayName(t, agent.name)}
-                          checked={agent.enabled !== false}
-                          onChange={() => void toggleAgent(agent)}
-                        />
-                      </div>
                     </div>
                     <p className="mt-1 text-[12px] text-v2-text-text-muted">{agent.description}</p>
                     <button
@@ -447,32 +442,34 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
                     >
                       {formatToolsSkills(t, agent)}
                     </button>
-                    <label className="flex items-center justify-between gap-4">
-                      <span className="text-[13px] font-medium text-v2-text-text-base">
-                        {agentDisplayName(t, "assistant")}
-                      </span>
-                      <select
-                        className="h-8 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600 disabled:opacity-50"
-                        aria-label={`${t("settings.agents.selectModelFor")} ${agentDisplayName(t, agent.name)}`}
-                        value={assistantValue}
-                        onChange={(e) => setAssistantModel(e.target.value)}
-                        disabled={busy}
+                    <div className="mt-2 flex items-center justify-between gap-3">
+                      <button
+                        type="button"
+                        className="text-[12px] text-v2-blue-600 hover:underline"
+                        aria-label={t("settings.agents.edit").replace("{name}", agentDisplayName(t, agent.name))}
+                        onClick={() => void openAgentEditor(agent.name)}
                       >
-                        {assistantOptions.map((m) => (
-                          <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
-                            {m.provider}/{m.id}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <button
-                      type="button"
-                      className="mt-2 text-[12px] text-v2-blue-600 hover:underline"
-                      aria-label={t("settings.agents.edit").replace("{name}", agentDisplayName(t, agent.name))}
-                      onClick={() => void openAgentEditor(agent.name)}
-                    >
-                      {t("settings.agents.edit").replace("{name}", agentDisplayName(t, agent.name))}
-                    </button>
+                        {t("settings.agents.edit").replace("{name}", agentDisplayName(t, agent.name))}
+                      </button>
+                      <label className="flex min-w-0 items-center gap-2">
+                        <span className="shrink-0 text-[12px] text-v2-text-text-muted">
+                          {t("settings.agents.model")}
+                        </span>
+                        <select
+                          className="h-8 min-w-0 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600 disabled:opacity-50"
+                          aria-label={`${t("settings.agents.selectModelFor")} ${agentDisplayName(t, agent.name)}`}
+                          value={assistantValue}
+                          onChange={(e) => setAssistantModel(e.target.value)}
+                          disabled={busy}
+                        >
+                          {assistantOptions.map((m) => (
+                            <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
+                              {m.provider}/{m.id}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
                     {agentEditor?.name === agent.name && (
                       <AgentMarkdownEditor
                         resource={agentEditor}
@@ -497,6 +494,7 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
                           label={agentDisplayName(t, agent.name)}
                           checked={agent.enabled !== false}
                           onChange={() => void toggleAgent(agent)}
+                          showLabel={false}
                         />
                       </div>
                     </div>
@@ -508,31 +506,35 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
                     >
                       {formatToolsSkills(t, agent)}
                     </button>
-                    <label className="mt-2 flex items-center justify-between gap-4">
-                      <span className="text-[12px] text-v2-text-text-muted">{agentDisplayName(t, agent.name)}</span>
-                      <select
-                        className="h-8 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600 disabled:opacity-50"
-                        aria-label={`${t("settings.agents.selectModelFor")} ${agentDisplayName(t, agent.name)}`}
-                        value={agentModels[agent.name] ?? ""}
-                        onChange={(e) => setAgentModel(agent.name, e.target.value)}
-                        disabled={busy}
+                    <div className="mt-2 flex items-center justify-between gap-3">
+                      <button
+                        type="button"
+                        className="text-[12px] text-v2-blue-600 hover:underline"
+                        aria-label={t("settings.agents.edit").replace("{name}", agentDisplayName(t, agent.name))}
+                        onClick={() => void openAgentEditor(agent.name)}
                       >
-                        <option value="">{t("settings.agents.inherit")}</option>
-                        {withConfiguredModel(models, agentModels[agent.name]).map((m) => (
-                          <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
-                            {m.provider}/{m.id}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <button
-                      type="button"
-                      className="mt-2 text-[12px] text-v2-blue-600 hover:underline"
-                      aria-label={t("settings.agents.edit").replace("{name}", agentDisplayName(t, agent.name))}
-                      onClick={() => void openAgentEditor(agent.name)}
-                    >
-                      {t("settings.agents.edit").replace("{name}", agentDisplayName(t, agent.name))}
-                    </button>
+                        {t("settings.agents.edit").replace("{name}", agentDisplayName(t, agent.name))}
+                      </button>
+                      <label className="flex min-w-0 items-center gap-2">
+                        <span className="shrink-0 text-[12px] text-v2-text-text-muted">
+                          {t("settings.agents.model")}
+                        </span>
+                        <select
+                          className="h-8 min-w-0 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600 disabled:opacity-50"
+                          aria-label={`${t("settings.agents.selectModelFor")} ${agentDisplayName(t, agent.name)}`}
+                          value={agentModels[agent.name] ?? ""}
+                          onChange={(e) => setAgentModel(agent.name, e.target.value)}
+                          disabled={busy}
+                        >
+                          <option value="">{t("settings.agents.inherit")}</option>
+                          {withConfiguredModel(models, agentModels[agent.name]).map((m) => (
+                            <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
+                              {m.provider}/{m.id}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
                     {agentEditor?.name === agent.name && (
                       <AgentMarkdownEditor
                         resource={agentEditor}

@@ -7,6 +7,7 @@ import type { AgentResourceDto, SkillResourceDto } from "./contracts";
 import type { ConfigFileService } from "./config-files";
 import { ConfigServiceError } from "./config-files";
 import { starterAgentMarkdown } from "./agent-markdown";
+import { isDotAgentsSkillEnabled } from "../subagent/skill-resolution";
 
 function globalAgentPath(config: ConfigFileService, agent: Pick<AgentConfig, "name" | "source" | "filePath">): string {
   const target = join(config.globalRoot, "agents", `${agent.name}.md`);
@@ -58,11 +59,18 @@ function skillDirectories(root: string): string[] {
 
 export async function listGlobalSkills(config: ConfigFileService): Promise<SkillResourceDto[]> {
   const bundledRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "skills");
-  const roots = [
+  const roots: Array<{ root: string; source: SkillResourceDto["source"] }> = [
     { root: join(config.globalRoot, "skills"), source: "global" as const },
-    { root: join(homedir(), ".agents", "skills"), source: "home" as const },
     { root: bundledRoot, source: "bundled" as const },
   ];
+  let enableDotAgentsSkill = false;
+  try {
+    const settings = JSON.parse(await config.read({ scope: "global", path: "settings.json" })) as unknown;
+    enableDotAgentsSkill = isDotAgentsSkillEnabled(settings);
+  } catch {
+    enableDotAgentsSkill = false;
+  }
+  if (enableDotAgentsSkill) roots.splice(1, 0, { root: join(homedir(), ".agents", "skills"), source: "home" as const });
   const names = new Set(roots.flatMap(({ root }) => skillDirectories(root)));
   return [...names].sort((a, b) => a.localeCompare(b)).map((name) => {
     const chosen = roots.find(({ root }) => existsSync(join(root, name, "SKILL.md"))) ?? roots[0]!;

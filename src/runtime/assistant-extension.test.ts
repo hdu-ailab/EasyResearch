@@ -40,6 +40,13 @@ describe("loadAssistantPrompt", () => {
     await expect(loadAssistantPrompt(agentsDir)).rejects.toThrow(/Missing global assistant definition/);
   });
 
+  it("uses the bundled assistant definition when the global copy is missing", async () => {
+    const agentsDir = makeAgentsDir();
+    const bundledDir = makeAgentsDir();
+    writeFileSync(join(bundledDir, "assistant.md"), "---\nname: assistant\n---\nBundled assistant\n");
+    await expect(loadAssistantPrompt(agentsDir, undefined, bundledDir)).resolves.toContain("Bundled assistant");
+  });
+
   it("throws on an assistant file without frontmatter", async () => {
     const agentsDir = makeAgentsDir();
     writeFileSync(join(agentsDir, "assistant.md"), "no frontmatter here\n");

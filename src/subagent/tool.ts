@@ -13,7 +13,7 @@ import { getAgentDir, importPi } from "../runtime/pi-import";
 import { discoverAgents, type AgentConfig } from "./agents";
 import { resolveModelForSpawn } from "./model-resolution";
 import { readSubagentSessionLinks, sessionNameFor, type SubagentSessionLink } from "./session-links";
-import { resolveSkillDirectories } from "./skill-resolution";
+import { buildDefaultSkillArgs, readGlobalDotAgentsSkillSetting, resolveSkillDirectories } from "./skill-resolution";
 import { releaseSubagentLock, tryAcquireSubagentLock } from "./serial";
 
 /**
@@ -240,7 +240,7 @@ export function buildPiArgs(
   model: string | undefined,
   task: string,
   sessionPath?: string,
-  skillDeps?: { cwd: string; agentDir: string },
+  skillDeps?: { cwd: string; agentDir: string; homeDir?: string; enableDotAgentsSkill?: boolean },
 ): string[] {
   const args: string[] = ["--mode", "json", "-p"];
   if (model) args.push("--model", model);
@@ -248,6 +248,8 @@ export function buildPiArgs(
   if (agent.skills !== undefined && skillDeps) {
     args.push("--no-skills");
     for (const dir of resolveSkillDirectories(agent.skills, skillDeps) ?? []) args.push("--skill", dir);
+  } else if (skillDeps) {
+    args.push(...buildDefaultSkillArgs(skillDeps));
   }
   // ADR-022: nested dispatch needs the subagent tool inside stage runtimes.
   args.push("--extension", SUBAGENT_EXTENSION_PATH);
@@ -307,7 +309,12 @@ async function runSingleAgent(opts: RunSingleOptions): Promise<SingleResult> {
 
   let tmpPromptPath: string | null = null;
   try {
-    const args = buildPiArgs(agent, model, task, sessionPath, { cwd: cwd ?? defaultCwd, agentDir: getAgentDir() });
+    const enableDotAgentsSkill = await readGlobalDotAgentsSkillSetting(cwd ?? defaultCwd, getAgentDir());
+    const args = buildPiArgs(agent, model, task, sessionPath, {
+      cwd: cwd ?? defaultCwd,
+      agentDir: getAgentDir(),
+      enableDotAgentsSkill,
+    });
     if (agent.systemPrompt.trim()) {
       tmpPromptPath = await writePromptToTempFile(agent.name, agent.systemPrompt);
       args.push("--append-system-prompt", tmpPromptPath);
