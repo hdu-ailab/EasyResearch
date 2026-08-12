@@ -887,6 +887,7 @@ describe("web routes", () => {
         subagents: ["experiment"],
         skills: ["paper-search"],
         effectiveSkills: ["paper-search"],
+        missingSkills: [],
         model: "deepseek/ds-v3",
         systemPrompt: "SECRET PROMPT",
         source: "global",

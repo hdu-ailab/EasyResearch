@@ -116,7 +116,7 @@ function parseAgentFile(
       homeDir: options.homeDir ?? homedir(),
       bundledSkillsDir: options.bundledSkillsDir,
       enableDotAgentsSkill,
-    }) ?? [];
+    });
     return {
       name,
       description: typeof frontmatter.description === "string" && frontmatter.description.trim() ? frontmatter.description : name,
