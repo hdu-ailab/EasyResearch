@@ -62,6 +62,7 @@ beforeEach(() => {
     filePath: "src/agents/search.md",
     effectiveTools: ["read", "web-search"],
     effectiveSkills: ["paper-search", "arxiv"],
+    missingSkills: [],
     content: "---\nname: search\ndescription: Searches\nenable: true\n---\nPrompt\n",
   });
   vi.mocked(api.writeAgentResource).mockResolvedValue({} as never);
@@ -74,6 +75,7 @@ beforeEach(() => {
     filePath: "/agent/agents/reviewer.md",
     effectiveTools: [],
     effectiveSkills: [],
+    missingSkills: [],
     content: "---\nname: reviewer\ndescription: reviewer agent\nenable: true\n---\n",
   });
   vi.mocked(api.listSkillResources).mockResolvedValue([

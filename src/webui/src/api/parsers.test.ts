@@ -34,7 +34,16 @@ describe("API response parsers", () => {
 
   it("parses agent and model catalog rows with optional metadata", () => {
     expect(
-      parseAgents([{ name: "search", description: "Finds papers", tools: ["web"], subagents: [], skills: ["arxiv"] }]),
+      parseAgents([
+        {
+          name: "search",
+          description: "Finds papers",
+          tools: ["web"],
+          subagents: [],
+          skills: ["arxiv"],
+          missingSkills: [],
+        },
+      ]),
     ).toEqual([
       {
         name: "search",
@@ -48,6 +57,7 @@ describe("API response parsers", () => {
         filePath: "",
         effectiveTools: ["web"],
         effectiveSkills: ["arxiv"],
+        missingSkills: [],
       },
     ]);
     expect(parseModels({ models: [{ provider: "openai", id: "gpt-4o" }] })).toEqual([

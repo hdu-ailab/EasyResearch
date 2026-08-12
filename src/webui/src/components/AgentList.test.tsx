@@ -26,6 +26,7 @@ beforeEach(() => {
       filePath: "assistant.md",
       effectiveTools: [],
       effectiveSkills: [],
+      missingSkills: [],
     },
     {
       name: "search",
@@ -36,6 +37,7 @@ beforeEach(() => {
       filePath: "search.md",
       effectiveTools: [],
       effectiveSkills: [],
+      missingSkills: [],
     },
   ]);
   vi.mocked(api.listModels).mockResolvedValue([{ provider: "openai", id: "gpt-4o" }]);

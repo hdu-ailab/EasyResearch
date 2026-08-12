@@ -86,6 +86,7 @@ export interface AgentDto {
   subagents?: string[];
   skills?: string[];
   effectiveSkills: string[];
+  missingSkills: string[];
 }
 
 export interface AgentResourceDto extends AgentDto {
