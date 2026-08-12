@@ -1,5 +1,6 @@
 export const SUBAGENT_SESSION_PREFIX = "easyresearch:";
 export const SUBAGENT_SESSION_LINK_ENTRY = "easyresearch:subagent_session";
+const LEGACY_SUBAGENT_SESSION_PREFIX = "lazyresearch:";
 
 export interface SubagentSessionLink {
   toolCallId: string;
@@ -13,7 +14,8 @@ export function sessionNameFor(agentName: string): string {
 }
 
 export function isSubagentSessionName(name: string | undefined): boolean {
-  return typeof name === "string" && name.startsWith(SUBAGENT_SESSION_PREFIX);
+  return typeof name === "string"
+    && (name.startsWith(SUBAGENT_SESSION_PREFIX) || name.startsWith(LEGACY_SUBAGENT_SESSION_PREFIX));
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
