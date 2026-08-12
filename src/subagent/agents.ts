@@ -2,8 +2,8 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "../runtime/pi-import";
+import { importPi } from "../runtime/pi-import";
 import { resolveSkillDirectories } from "./skill-resolution";
 
 export type AgentSource = "bundled" | "global" | "project";
@@ -78,7 +78,16 @@ function readMd(path: string): string | undefined {
   }
 }
 
-function parseAgentFile(filePath: string, name: string, builtin: boolean, source: AgentSource, options: DiscoveryOptions): AgentConfig | undefined {
+type FrontmatterParser = <T extends Record<string, unknown>>(content: string) => { frontmatter: T; body: string };
+
+function parseAgentFile(
+  filePath: string,
+  name: string,
+  builtin: boolean,
+  source: AgentSource,
+  options: DiscoveryOptions,
+  parseFrontmatter: FrontmatterParser,
+): AgentConfig | undefined {
   const content = readMd(filePath);
   if (content === undefined) return undefined;
   try {
@@ -141,30 +150,31 @@ function pathForCustom(directory: string, name: string): string {
   return join(directory, `${name}.md`);
 }
 
-function loadBuiltin(options: DiscoveryOptions, name: string): AgentConfig | undefined {
+function loadBuiltin(options: DiscoveryOptions, name: string, parseFrontmatter: FrontmatterParser): AgentConfig | undefined {
   for (const { source, directory } of sourcePriority(options)) {
     const path = pathForBuiltin(directory, name);
     if (!path) continue;
-    const parsed = parseAgentFile(path, name, true, source, options);
+    const parsed = parseAgentFile(path, name, true, source, options, parseFrontmatter);
     if (parsed) return parsed;
   }
   return undefined;
 }
 
-function loadCustom(options: DiscoveryOptions, name: string): AgentConfig | undefined {
+function loadCustom(options: DiscoveryOptions, name: string, parseFrontmatter: FrontmatterParser): AgentConfig | undefined {
   for (const { source, directory } of sourcePriority(options).slice(0, 2)) {
     const path = pathForCustom(directory, name);
     if (!existsSync(path)) continue;
-    const parsed = parseAgentFile(path, name, false, source, options);
+    const parsed = parseAgentFile(path, name, false, source, options, parseFrontmatter);
     if (parsed) return parsed;
   }
   return undefined;
 }
 
 export async function discoverAgents(options: DiscoveryOptions = {}): Promise<AgentDiscoveryResult> {
+  const { parseFrontmatter } = await importPi();
   const agents: AgentConfig[] = [];
   for (const name of BUILTIN_ORDER) {
-    const agent = loadBuiltin(options, name);
+    const agent = loadBuiltin(options, name, parseFrontmatter);
     if (agent) agents.push(agent);
   }
   const builtinNames = new Set(BUILTIN_ORDER);
@@ -176,7 +186,7 @@ export async function discoverAgents(options: DiscoveryOptions = {}): Promise<Ag
     }
   }
   for (const name of [...customNames].sort((a, b) => a.localeCompare(b))) {
-    const agent = loadCustom(options, name);
+    const agent = loadCustom(options, name, parseFrontmatter);
     if (agent) agents.push(agent);
   }
   return { agents };

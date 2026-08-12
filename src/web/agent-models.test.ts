@@ -17,9 +17,32 @@ import {
   type EntryRow,
 } from "./agent-models";
 
-vi.mock("../runtime/pi-import", () => ({
-  importPi: vi.fn(),
+const sessionManager = vi.hoisted(() => ({
+  open: vi.fn(),
 }));
+const parseFrontmatter = vi.hoisted(() => (content: string) => {
+  const match = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/.exec(content);
+  const frontmatter = Object.fromEntries(
+    (match?.[1] ?? "")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => {
+        const index = line.indexOf(":");
+        const key = line.slice(0, index).trim();
+        const value = line.slice(index + 1).trim();
+        return [key, key === "model" && /^\d+(?:\.\d+)?$/.test(value) ? Number(value) : value];
+      }),
+  );
+  return { frontmatter, body: match?.[2] ?? content };
+});
+
+vi.mock("../runtime/pi-import", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../runtime/pi-import")>();
+  return {
+    ...actual,
+    importPi: vi.fn(async () => ({ ...(await actual.importPi()), SessionManager: sessionManager })),
+  };
+});
 
 import { importPi } from "../runtime/pi-import";
 
@@ -60,13 +83,14 @@ describe("agent-models session I/O", () => {
   const sessionPath = "/agent/sessions/--p--/a.jsonl";
   const getEntries = vi.fn();
   const appendCustomEntry = vi.fn();
-  const open = vi.fn(() => ({ getEntries, appendCustomEntry }));
+  const open = sessionManager.open;
 
   beforeEach(() => {
-    vi.mocked(importPi).mockResolvedValue({ SessionManager: { open } } as never);
+    vi.mocked(importPi).mockResolvedValue({ parseFrontmatter, SessionManager: { open } } as never);
     getEntries.mockReset();
     appendCustomEntry.mockReset();
     open.mockClear();
+    open.mockImplementation(() => ({ getEntries, appendCustomEntry }));
   });
 
   it("returns no overrides for a session without a session file", async () => {

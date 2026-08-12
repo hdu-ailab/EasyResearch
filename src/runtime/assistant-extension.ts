@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
-import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { importPi } from "./pi-import";
 import { createSubagentTool } from "../subagent/tool";
 import { SUBAGENT_SESSION_LINK_ENTRY } from "../subagent/session-links";
@@ -14,7 +13,10 @@ export interface AssistantExtensionOptions {
   agentsDir?: string;
 }
 
-export function loadAssistantPrompt(agentsDir: string): string {
+export async function loadAssistantPrompt(
+  agentsDir: string,
+  parseFrontmatter?: <T extends Record<string, unknown>>(content: string) => { frontmatter: T; body: string },
+): Promise<string> {
   const path = join(agentsDir, "assistant.md");
   let content: string;
   try {
@@ -22,7 +24,8 @@ export function loadAssistantPrompt(agentsDir: string): string {
   } catch {
     throw new Error("Missing global assistant definition: expected ~/.easyresearch/agent/agents/assistant.md");
   }
-  const frontmatter = parseFrontmatter(content);
+  const parser = parseFrontmatter ?? (await importPi()).parseFrontmatter;
+  const frontmatter = parser(content);
   if (frontmatter == null || Object.keys(frontmatter.frontmatter ?? {}).length === 0) {
     throw new Error(`Invalid assistant definition: ${path} is missing frontmatter`);
   }
@@ -31,8 +34,8 @@ export function loadAssistantPrompt(agentsDir: string): string {
 
 export function createAssistantExtension(options: AssistantExtensionOptions = {}): InlineExtension {
   return async (pi) => {
-    const { getAgentDir } = await importPi();
-    const prompt = loadAssistantPrompt(options.agentsDir ?? join(getAgentDir(), "agents"));
+    const { getAgentDir, parseFrontmatter } = await importPi();
+    const prompt = await loadAssistantPrompt(options.agentsDir ?? join(getAgentDir(), "agents"), parseFrontmatter);
     pi.registerTool(createSubagentTool({
       persistSessionLink: (link) => pi.appendEntry(SUBAGENT_SESSION_LINK_ENTRY, link),
     }));
