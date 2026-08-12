@@ -10,6 +10,7 @@ export type AgentStatus = "idle" | "working" | "error";
 const BUILTIN_ORDER = ["assistant", "search", "experiment", "writing", "figures"];
 
 export interface AgentListProps {
+  cwd: string;
   statusByAgent: Record<string, AgentStatus>;
   sessionId: string;
 }
@@ -18,7 +19,7 @@ function dotClass(status: AgentStatus): string {
   return status === "working" ? "bg-v2-status-success" : status === "error" ? "bg-v2-status-warning" : "bg-v2-grey-400";
 }
 
-export function AgentList({ statusByAgent, sessionId }: AgentListProps) {
+export function AgentList({ cwd, statusByAgent, sessionId }: AgentListProps) {
   const { t } = useI18n();
   const [roster, setRoster] = useState<AgentDto[] | null>(null);
   const [models, setModels] = useState<Array<{ provider: string; id: string }>>([]);
@@ -27,7 +28,7 @@ export function AgentList({ statusByAgent, sessionId }: AgentListProps) {
 
   useEffect(() => {
     let alive = true;
-    Promise.all([listAgents(), listModels(), getEffectiveModels(sessionId)])
+    Promise.all([listAgents(cwd), listModels(), getEffectiveModels(sessionId)])
       .then(([agents, catalog, eff]) => {
         if (!alive) return;
         setRoster(agents);
@@ -40,7 +41,7 @@ export function AgentList({ statusByAgent, sessionId }: AgentListProps) {
     return () => {
       alive = false;
     };
-  }, [sessionId]);
+  }, [cwd, sessionId]);
 
   const applyModel = useCallback(
     async (agentName: string, model: string | null) => {
@@ -120,13 +121,6 @@ function AgentCard({ agent, fallbackName, fallbackDescription, status, entry, mo
         <span className={`size-2 rounded-full ${dotClass(status)}`} aria-hidden />
         <span className="text-[13px] font-medium text-v2-text-text-base">{agentDisplayName(t, name)}</span>
         <span className="ml-auto flex items-center gap-2 text-[12px] text-v2-text-text-faint">
-          {agent && (
-            <PreferenceSwitch
-              label={t("settings.agents.enable").replace("{name}", agentDisplayName(t, name))}
-              checked={agent.enabled}
-              onChange={() => undefined}
-            />
-          )}
           {statusLabel(t, status)}
         </span>
       </div>
@@ -140,32 +134,6 @@ function AgentCard({ agent, fallbackName, fallbackDescription, status, entry, mo
       )}
       <ModelRow entry={entry} models={models} busy={busy} onApply={onApply} />
     </div>
-  );
-}
-
-function PreferenceSwitch({
-  label,
-  checked,
-  onChange,
-}: {
-  label: string;
-  checked: boolean;
-  onChange: (value: boolean) => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-label={label}
-      aria-checked={checked}
-      onClick={() => onChange(!checked)}
-      className={`relative h-[20px] w-[36px] shrink-0 overflow-hidden rounded-full ${checked ? "bg-v2-blue-600" : "bg-v2-grey-400"}`}
-    >
-      <span
-        aria-hidden
-        className={`absolute left-0 top-[2px] size-[16px] rounded-full bg-white ${checked ? "translate-x-[18px]" : "translate-x-[2px]"}`}
-      />
-    </button>
   );
 }
 
