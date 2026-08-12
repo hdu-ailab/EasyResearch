@@ -1,11 +1,11 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactElement } from "react";
+import { createRef, type ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { STORAGE_KEY, type WebUiPreferences, writePreferences } from "../preferences";
 import { PreferencesProvider } from "../preferences/PreferencesProvider";
 import type { SessionMessageView, ToolView } from "../session-reducer";
-import { ChatTranscript } from "./ChatTranscript";
+import { ChatTranscript, type ChatTranscriptHandle } from "./ChatTranscript";
 
 vi.mock("mermaid", () => ({
   default: {
@@ -253,9 +253,10 @@ describe("ChatTranscript", () => {
     expect(el.scrollTop).toBe(700);
   });
 
-  it("jumps to the bottom on a new prompt even while unpinned", () => {
+  it("jumps to the bottom when scrollToLatest is called while unpinned", () => {
     const first = [msg({ key: "a", text: "one" })];
-    const { rerender } = renderTranscript(<ChatTranscript messages={first} tools={[]} pending={false} />);
+    const ref = createRef<ChatTranscriptHandle>();
+    renderTranscript(<ChatTranscript ref={ref} messages={first} tools={[]} />);
     const el = scrollContainer();
     flushFollowFrame();
     expect(el.scrollTop).toBe(400);
@@ -263,23 +264,7 @@ describe("ChatTranscript", () => {
     el.scrollTop = 100;
     fireEvent.scroll(el);
 
-    rerender(<ChatTranscript messages={first} tools={[]} pending />);
-    flushFollowFrame();
-    expect(el.scrollTop).toBe(400);
-  });
-
-  it("jumps to the bottom when the conversation is replaced", () => {
-    const parent = [msg({ key: "parent-a", text: "assistant message" })];
-    const { rerender } = renderTranscript(<ChatTranscript messages={parent} tools={[]} />);
-    const el = scrollContainer();
-    flushFollowFrame();
-    expect(el.scrollTop).toBe(400);
-
-    el.scrollTop = 100;
-    fireEvent.scroll(el);
-
-    const child = [msg({ key: "child-a", text: "child message" })];
-    rerender(<ChatTranscript messages={child} tools={[]} />);
+    ref.current?.scrollToLatest();
     flushFollowFrame();
     expect(el.scrollTop).toBe(400);
   });
@@ -299,10 +284,11 @@ describe("ChatTranscript", () => {
     expect(el.scrollTop).toBe(100);
   });
 
-  it("follows later content growth after a prompt jump", () => {
+  it("follows later content growth after scrollToLatest", () => {
     let scrollHeight = 400;
     const first = [msg({ key: "a", text: "one" })];
-    const { rerender } = renderTranscript(<ChatTranscript messages={first} tools={[]} pending={false} />);
+    const ref = createRef<ChatTranscriptHandle>();
+    renderTranscript(<ChatTranscript ref={ref} messages={first} tools={[]} />);
     const el = screen.getByLabelText("Conversation") as HTMLDivElement;
     Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => scrollHeight });
     Object.defineProperty(el, "clientHeight", { configurable: true, get: () => 200 });
@@ -310,7 +296,7 @@ describe("ChatTranscript", () => {
 
     el.scrollTop = 100;
     fireEvent.scroll(el);
-    rerender(<ChatTranscript messages={[...first, msg({ key: "b", text: "two" })]} tools={[]} pending />);
+    ref.current?.scrollToLatest();
     flushFollowFrame();
     expect(el.scrollTop).toBe(400);
 
