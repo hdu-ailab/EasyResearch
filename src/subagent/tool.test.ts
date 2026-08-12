@@ -48,6 +48,15 @@ vi.mock("../runtime/pi-import", async (importOriginal) => {
   };
 });
 
+beforeEach(async () => {
+  const { discoverAgents } = await import("./agents");
+  const { resolveModelForSpawn } = await import("./model-resolution");
+  vi.mocked(discoverAgents).mockReset();
+  vi.mocked(resolveModelForSpawn).mockReset();
+  spawnMock.mockReset();
+  loggerMock.debug.mockClear();
+});
+
 describe("buildPiArgs", () => {
   it("uses json + prompt-only mode, mounts the subagent extension, names the session line, and never uses --no-session", () => {
     const agent = maker("search");
@@ -206,6 +215,22 @@ describe("filterAgentsByAllowlist (ADR-022)", () => {
       "assistant,search,writing",
     ).map((agent) => agent.name)).toEqual(["search"]);
   });
+
+  it("excludes a stage caller when its subagents policy is omitted", () => {
+    expect(filterAgentsByAllowlist(
+      [maker("search"), maker("reviewer"), maker("writing")],
+      undefined,
+      "reviewer",
+    ).map((agent) => agent.name)).toEqual(["search", "writing"]);
+  });
+
+  it("excludes a stage caller even when its explicit allowlist names itself", () => {
+    expect(filterAgentsByAllowlist(
+      [maker("search"), maker("reviewer"), maker("writing")],
+      "reviewer,search",
+      "reviewer",
+    ).map((agent) => agent.name)).toEqual(["search"]);
+  });
 });
 
 describe("createSubagentTool agent provider", () => {
@@ -340,6 +365,95 @@ describe("final subagent output (ADR-040)", () => {
 });
 
 describe("subagent session link persistence", () => {
+  it("resolves a single child definition and model from its explicit cwd", async () => {
+    const { discoverAgents } = await import("./agents");
+    const { resolveModelForSpawn } = await import("./model-resolution");
+    const { getAgentDir } = await import("../runtime/pi-import");
+    vi.mocked(discoverAgents).mockImplementation(async ({ cwd } = {}) => ({
+      agents: [{ ...maker("search", cwd === "/paper/child" ? "read" : "bash"), source: "project" }],
+    }));
+    vi.mocked(resolveModelForSpawn).mockImplementation(async (ctx) =>
+      ctx.cwd === "/paper/child" ? "child/model" : "parent/model");
+    vi.mocked(getAgentDir).mockReturnValue("/tmp/easyresearch-test-agent");
+    spawnMock.mockImplementationOnce(() => {
+      const child = Object.assign(new EventEmitter(), {
+        stdout: new EventEmitter(),
+        stderr: new EventEmitter(),
+        killed: false,
+        kill: vi.fn(),
+      });
+      queueMicrotask(() => child.emit("close", 0));
+      return child;
+    });
+
+    await subagentTool.execute(
+      "explicit-child-cwd",
+      { agent: "search", task: "find papers", cwd: "/paper/child" },
+      undefined,
+      undefined,
+      { cwd: "/paper/parent", sessionManager: { getEntries: () => [] } } as never,
+    );
+
+    expect(discoverAgents).toHaveBeenCalledWith(expect.objectContaining({ cwd: "/paper/child" }));
+    expect(resolveModelForSpawn).toHaveBeenCalledWith(
+      expect.objectContaining({ cwd: "/paper/child" }),
+      "search",
+      undefined,
+    );
+    const args = spawnMock.mock.calls[0]?.[1] as string[];
+    expect(args[args.indexOf("--tools") + 1]).toBe("read");
+    expect(args[args.indexOf("--model") + 1]).toBe("child/model");
+  });
+
+  it("resolves every chain step from that step's effective cwd", async () => {
+    const { discoverAgents } = await import("./agents");
+    const { resolveModelForSpawn } = await import("./model-resolution");
+    const { getAgentDir } = await import("../runtime/pi-import");
+    vi.mocked(discoverAgents).mockImplementation(async ({ cwd } = {}) => ({
+      agents: [{ ...maker("search", cwd === "/paper/a" ? "read" : "grep"), source: "project" }],
+    }));
+    vi.mocked(resolveModelForSpawn).mockImplementation(async (ctx) => `${ctx.cwd}/model`);
+    vi.mocked(getAgentDir).mockReturnValue("/tmp/easyresearch-test-agent");
+    for (let i = 0; i < 2; i++) {
+      spawnMock.mockImplementationOnce(() => {
+        const stdout = new EventEmitter();
+        const child = Object.assign(new EventEmitter(), {
+          stdout,
+          stderr: new EventEmitter(),
+          killed: false,
+          kill: vi.fn(),
+        });
+        queueMicrotask(() => {
+          stdout.emit("data", Buffer.from(`${JSON.stringify({
+            type: "message_end",
+            message: { role: "assistant", content: [{ type: "text", text: `step ${i + 1}` }] },
+          })}\n`));
+          child.emit("close", 0);
+        });
+        return child;
+      });
+    }
+
+    await subagentTool.execute(
+      "explicit-chain-cwds",
+      { chain: [
+        { agent: "search", task: "first", cwd: "/paper/a" },
+        { agent: "search", task: "second {previous}", cwd: "/paper/b" },
+      ] },
+      undefined,
+      undefined,
+      { cwd: "/paper/parent", sessionManager: { getEntries: () => [] } } as never,
+    );
+
+    expect(discoverAgents).toHaveBeenCalledWith(expect.objectContaining({ cwd: "/paper/a" }));
+    expect(discoverAgents).toHaveBeenCalledWith(expect.objectContaining({ cwd: "/paper/b" }));
+    expect(vi.mocked(resolveModelForSpawn).mock.calls.map(([ctx]) => ctx.cwd)).toEqual(["/paper/a", "/paper/b"]);
+    const firstArgs = spawnMock.mock.calls[0]?.[1] as string[];
+    const secondArgs = spawnMock.mock.calls[1]?.[1] as string[];
+    expect(firstArgs[firstArgs.indexOf("--tools") + 1]).toBe("read");
+    expect(secondArgs[secondArgs.indexOf("--tools") + 1]).toBe("grep");
+  });
+
   it("marks missing tools as all while preserving an explicit leaf allowlist", async () => {
     const { discoverAgents } = await import("./agents");
     const { resolveModelForSpawn } = await import("./model-resolution");
@@ -370,6 +484,7 @@ describe("subagent session link persistence", () => {
     const options = spawnMock.mock.calls[0]?.[2] as { env?: NodeJS.ProcessEnv };
     expect(options.env?.EASYRESEARCH_AGENT_TOOLS).toBe("all");
     expect(options.env?.EASYRESEARCH_AGENTS_ALLOWLIST).toBe("");
+    expect(options.env?.EASYRESEARCH_CALLER_AGENT).toBe("search");
   });
 
   it("does not inherit parent stage capability markers", async () => {

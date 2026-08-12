@@ -102,14 +102,44 @@ describe("resolveSkillDirectories", () => {
     const dirs = resolveSkillDirectories([abs, "~/gone"], deps)!;
     expect(dirs).toEqual([abs]);
   });
+
+  it("resolves both Pi-native directory and root Markdown Skill shapes", () => {
+    const projectSite = join(cwd, ".easyresearch", "skills");
+    withSkill(projectSite, "directory-skill");
+    writeFileSync(join(projectSite, "file-skill.md"), "# file skill\n");
+
+    expect(resolveSkillDirectories(["directory-skill", "file-skill"], deps)).toEqual([
+      join(projectSite, "directory-skill"),
+      join(projectSite, "file-skill.md"),
+    ]);
+  });
+
+  it("rejects existing directories without SKILL.md and non-Markdown files", () => {
+    const projectSite = join(cwd, ".easyresearch", "skills");
+    mkdirSync(join(projectSite, "invalid-dir"), { recursive: true });
+    writeFileSync(join(projectSite, "invalid-file.txt"), "not a skill\n");
+
+    expect(resolveSkillSelection(["invalid-dir", "./.easyresearch/skills/invalid-file.txt"], deps)).toEqual({
+      effectiveSkills: [],
+      missingSkills: ["invalid-dir", "./.easyresearch/skills/invalid-file.txt"],
+    });
+  });
+
+  it("resolves relative path references from the exact dependency cwd", () => {
+    const relativeSkill = join(cwd, "local-skills", "relative");
+    withSkill(join(cwd, "local-skills"), "relative");
+
+    expect(resolveSkillDirectories(["./local-skills/relative"], deps)).toEqual([relativeSkill]);
+  });
 });
 
 describe("resolveSkillSelection", () => {
   it("returns all controlled Skills without missing diagnostics when configuration means all", () => {
     withSkill(bundledSkillsDir, "available-skill");
+    writeFileSync(join(bundledSkillsDir, "file-skill.md"), "# file skill\n");
 
     expect(resolveSkillSelection(undefined, deps)).toEqual({
-      effectiveSkills: ["available-skill"],
+      effectiveSkills: ["available-skill", "file-skill"],
       missingSkills: [],
     });
   });

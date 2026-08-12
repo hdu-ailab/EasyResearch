@@ -489,6 +489,69 @@ describe("SettingsPage", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "paper-search" })).toBeNull());
   });
 
+  it("refreshes current Global diagnostics after a successful Agent save", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listAgents)
+      .mockResolvedValueOnce([{ name: "search", description: "Searches", missingSkills: ["before-save"] }] as never)
+      .mockResolvedValueOnce([{ name: "search", description: "Searches", missingSkills: ["after-save"] }] as never);
+    renderSettings();
+    expect(await screen.findByText("before-save")).toBeVisible();
+
+    await user.click(await screen.findByRole("button", { name: "Edit Search" }));
+    await user.click(screen.getByRole("button", { name: /save agent/i }));
+
+    expect(await screen.findByText("after-save")).toBeVisible();
+    expect(screen.queryByText("before-save")).toBeNull();
+    expect(api.listAgents).toHaveBeenLastCalledWith(undefined);
+  });
+
+  it("refreshes the selected project diagnostics after a successful global Skill save", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listAgents)
+      .mockResolvedValueOnce([{ name: "search", description: "Searches", missingSkills: ["global-missing"] }] as never)
+      .mockResolvedValueOnce([
+        { name: "writing", description: "Writes", missingSkills: ["before-skill-save"] },
+      ] as never)
+      .mockResolvedValueOnce([
+        { name: "writing", description: "Writes", missingSkills: ["after-skill-save"] },
+      ] as never);
+    renderSettings();
+    const scope = await screen.findByRole("combobox", { name: "Skill diagnostic scope" });
+    await user.selectOptions(scope, "/papers/project-a");
+    expect(await screen.findByText("before-skill-save")).toBeVisible();
+
+    await user.click(await screen.findByRole("button", { name: /edit skill.*paper-search/i }));
+    await user.click(screen.getByRole("button", { name: /save skill/i }));
+
+    expect(await screen.findByText("after-skill-save")).toBeVisible();
+    expect(api.listAgents).toHaveBeenLastCalledWith("/papers/project-a");
+    expect(api.listSkillResources).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not let a pre-save diagnostic response overwrite the post-save refresh", async () => {
+    const user = userEvent.setup();
+    const stale = deferred<Awaited<ReturnType<typeof api.listAgents>>>();
+    vi.mocked(api.listAgents)
+      .mockResolvedValueOnce([{ name: "search", description: "Searches", missingSkills: ["global-missing"] }] as never)
+      .mockReturnValueOnce(stale.promise)
+      .mockResolvedValueOnce([
+        { name: "writing", description: "Writes", missingSkills: ["fresh-after-save"] },
+      ] as never);
+    renderSettings();
+    const scope = await screen.findByRole("combobox", { name: "Skill diagnostic scope" });
+    await user.selectOptions(scope, "/papers/project-a");
+    await user.click(await screen.findByRole("button", { name: /edit skill.*paper-search/i }));
+    await user.click(screen.getByRole("button", { name: /save skill/i }));
+    expect(await screen.findByText("fresh-after-save")).toBeVisible();
+
+    await act(async () => {
+      stale.resolve([{ name: "writing", description: "Writes", missingSkills: ["stale-before-save"] }] as never);
+      await stale.promise;
+    });
+    expect(screen.getByText("fresh-after-save")).toBeVisible();
+    expect(screen.queryByText("stale-before-save")).toBeNull();
+  });
+
   it("defaults Skill diagnostics to Global and groups affected Agents by missing Skill", async () => {
     vi.mocked(api.listAgents).mockResolvedValue([
       { name: "search", description: "Searches", missingSkills: ["missing-skill"] },

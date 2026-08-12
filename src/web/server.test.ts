@@ -14,7 +14,7 @@ import type { SessionSummaryDto } from "./contracts";
 import { AgentModelError } from "./agent-models";
 import { WebuiSettingsError, readEffectiveWebuiSettings, updateWebuiSettings } from "./webui-settings";
 import { discoverAgents } from "../subagent/agents";
-import { agentToDto, isKnownAgentName, toUserSessionSummaries } from "./server";
+import { agentToDto, discoverAgentsForWeb, isKnownAgentName, toUserSessionSummaries } from "./server";
 import type { Logger } from "../runtime/logger";
 import { SubagentSessionNotFoundError } from "./subagent-sessions";
 import type { FileWatcherEvent, FileWatcherFactory } from "./file-watcher";
@@ -933,6 +933,59 @@ describe("web routes", () => {
     expect(agent?.effectiveSkills).toEqual(["paper-search"]);
     expect(agent?.missingSkills).toEqual(["missing-skill"]);
     expect(agent).not.toHaveProperty("systemPrompt");
+  });
+
+  it("keeps Global Agent diagnostics isolated when Web starts inside a project cwd", async () => {
+    const originalCwd = process.cwd();
+    mkdirSync(join(projectDir, ".easyresearch", "agents"), { recursive: true });
+    mkdirSync(join(projectDir, ".easyresearch", "skills", "project-only"), { recursive: true });
+    writeFileSync(
+      join(projectDir, ".easyresearch", "agents", "project-custom.md"),
+      "---\nname: project-custom\ndescription: Project only\n---\nProject prompt\n",
+      "utf-8",
+    );
+    writeFileSync(join(projectDir, ".easyresearch", "skills", "project-only", "SKILL.md"), "# Project only\n", "utf-8");
+    mkdirSync(join(agentDir, "agents"), { recursive: true });
+    writeFileSync(
+      join(agentDir, "agents", "diagnostic.md"),
+      "---\nname: diagnostic\ndescription: Global diagnostic\nskills: [project-only]\n---\nGlobal prompt\n",
+      "utf-8",
+    );
+    setup();
+
+    try {
+      process.chdir(projectDir);
+      const res = await handler(new Request("http://localhost/api/agent-resources"));
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Array<Record<string, unknown>>;
+      expect(body.find((item) => item.name === "project-custom")).toBeUndefined();
+      expect(body.find((item) => item.name === "diagnostic")).toMatchObject({
+        effectiveSkills: [],
+        missingSkills: ["project-only"],
+      });
+    } finally {
+      process.chdir(originalCwd);
+    }
+  });
+
+  it("keeps the Global diagnostic roster project-free when Web starts inside a project cwd", async () => {
+    const originalCwd = process.cwd();
+    mkdirSync(join(projectDir, ".easyresearch", "agents"), { recursive: true });
+    writeFileSync(
+      join(projectDir, ".easyresearch", "agents", "project-custom.md"),
+      "---\nname: project-custom\ndescription: Project only\n---\nProject prompt\n",
+      "utf-8",
+    );
+
+    try {
+      process.chdir(projectDir);
+      const global = await discoverAgentsForWeb(undefined, agentDir);
+      const project = await discoverAgentsForWeb(projectDir, agentDir);
+      expect(global.map((agent) => agent.name)).not.toContain("project-custom");
+      expect(project.map((agent) => agent.name)).toContain("project-custom");
+    } finally {
+      process.chdir(originalCwd);
+    }
   });
 
   it("recognizes discovered agent names via isKnownAgentName", async () => {
