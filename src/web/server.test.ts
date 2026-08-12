@@ -75,6 +75,7 @@ class FakeAdapter implements RpcSessionAdapter {
   stopped = 0;
   setModels: Array<{ provider: string; modelId: string }> = [];
   messages: AgentMessage[] = [];
+  getMessagesPromise: Promise<AgentMessage[]> | null = null;
   constructor(public options: StartRpcSessionOptions) {
     FakeAdapter.all.push(this);
   }
@@ -106,7 +107,7 @@ class FakeAdapter implements RpcSessionAdapter {
     };
   }
   async getMessages(): Promise<AgentMessage[]> {
-    return this.messages;
+    return this.getMessagesPromise ?? this.messages;
   }
   onEvent(listener: RpcEventListener) {
     this.events.add(listener);
@@ -116,6 +117,16 @@ class FakeAdapter implements RpcSessionAdapter {
     this.exitListeners.add(listener);
     return () => this.exitListeners.delete(listener);
   }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 class FakeFactory implements RpcSessionFactory {
@@ -589,20 +600,17 @@ describe("web routes", () => {
     reader.cancel();
   });
 
-  it("buffers live events until the initial snapshot is sent", async () => {
-    let resolveSummaries: ((summaries: SubagentSessionSummaryDto[]) => void) | undefined;
-    let summariesRequested: (() => void) | undefined;
-    const summaries = new Promise<SubagentSessionSummaryDto[]>((resolve) => {
-      resolveSummaries = resolve;
-    });
-    const requested = new Promise<void>((resolve) => {
-      summariesRequested = resolve;
-    });
+  it("applies the acquisition barrier before enrichment and preserves only stable pre-barrier supplements", async () => {
+    const messages = deferred<AgentMessage[]>();
+    const messagesRequested = deferred<void>();
+    const summaries = deferred<SubagentSessionSummaryDto[]>();
+    const summariesRequested = deferred<void>();
+    const barrierCrossed = deferred<void>();
     setup({
       subagentSessions: {
         summaries: async () => {
-          summariesRequested?.();
-          return summaries;
+          summariesRequested.resolve();
+          return summaries.promise;
         },
         snapshot: async () => {
           throw new Error("not used");
@@ -610,21 +618,67 @@ describe("web routes", () => {
       },
     });
     const created = await registry.create({ cwd: projectDir });
+    const adapter = factory.created[0]!;
+    adapter.getMessagesPromise = messages.promise;
+    const getMessages = adapter.getMessages.bind(adapter);
+    vi.spyOn(adapter, "getMessages").mockImplementation(() => {
+      messagesRequested.resolve();
+      return getMessages();
+    });
+    const snapshot = registry.snapshot.bind(registry);
+    vi.spyOn(registry, "snapshot").mockImplementation((id, onAcquired) =>
+      snapshot(id, () => {
+        onAcquired?.();
+        barrierCrossed.resolve();
+      }),
+    );
     const res = await handler(new Request(`http://localhost/api/sessions/${created.id}/events`));
     const reader = res.body!.getReader();
     const decoder = new TextDecoder();
 
     try {
       const firstRead = reader.read();
-      await requested;
-      const adapter = factory.created[0]!;
-      adapter.events.forEach((listener) => listener({ type: "agent_start" } as never));
-      adapter.events.forEach((listener) => listener({ type: "message_start" } as never));
-      resolveSummaries?.([]);
+      await Promise.all([messagesRequested.promise, summariesRequested.promise]);
+      const emit = (event: unknown) => adapter.events.forEach((listener) => listener(event as never));
+      emit({ type: "message_start", message: assistant("overlapping message") });
+      emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "overlap" } });
+      emit({ type: "tool_execution_start", toolCallId: "generic-before", toolName: "bash" });
+      emit({
+        type: "tool_execution_update",
+        toolCallId: "generic-before",
+        partialResult: { content: [{ type: "text", text: "overlap" }] },
+      });
+      emit({
+        type: "tool_execution_update",
+        toolCallId: "",
+        partialResult: { details: { subagent: { agent: "search" } } },
+      });
+      emit({
+        type: "file.watcher.updated",
+        properties: { file: `${projectDir}/before.md`, event: "change" },
+      });
+      emit({ type: "agent_start" });
+      emit({ type: "agent_settled" });
+      emit({ type: "session_deactivated", sessionId: created.id });
+      emit({ type: "error", error: "pre-barrier lifecycle error" });
+      emit({
+        type: "tool_execution_update",
+        toolCallId: "subagent-before",
+        partialResult: { details: { subagent: { agent: "search", sessionId: "child-1" } } },
+      });
 
-      const frames: Array<{ type: string }> = [];
+      messages.resolve([assistant("committed")]);
+      await barrierCrossed.promise;
+      emit({
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "after acquisition" },
+      });
+      emit({ type: "tool_execution_start", toolCallId: "generic-after", toolName: "bash" });
+      summaries.resolve([]);
+
+      const frames: Array<{ type: string; messages?: AgentMessage[] }> = [];
       let body = "";
-      while (frames.length < 3) {
+      while (frames.length < 9) {
         const { done, value } = await (frames.length === 0 ? firstRead : reader.read());
         if (done) break;
         body += decoder.decode(value, { stream: true });
@@ -635,7 +689,18 @@ describe("web routes", () => {
         }
       }
 
-      expect(frames.map((frame) => frame.type)).toEqual(["snapshot", "agent_start", "message_start"]);
+      expect(frames.map((frame) => frame.type)).toEqual([
+        "snapshot",
+        "file.watcher.updated",
+        "agent_start",
+        "agent_settled",
+        "session_deactivated",
+        "error",
+        "tool_execution_update",
+        "message_update",
+        "tool_execution_start",
+      ]);
+      expect(frames[0]?.messages).toEqual([assistant("committed")]);
     } finally {
       await reader.cancel();
     }
@@ -674,60 +739,6 @@ describe("web routes", () => {
 
     expect(activeListeners).toBe(0);
     expect(await reader.read()).toEqual({ done: true, value: undefined });
-  });
-
-  it("keeps buffered events after a committed snapshot in Pi acquisition order", async () => {
-    let resolveSummaries!: (summaries: SubagentSessionSummaryDto[]) => void;
-    const summaries = new Promise<SubagentSessionSummaryDto[]>((resolve) => {
-      resolveSummaries = resolve;
-    });
-    setup({
-      subagentSessions: {
-        summaries: async () => summaries,
-        snapshot: async () => {
-          throw new Error("not used");
-        },
-      },
-    });
-    const created = await registry.create({ cwd: projectDir });
-    const adapter = factory.created[0]!;
-    adapter.messages = [assistant("committed")];
-    const res = await handler(new Request(`http://localhost/api/sessions/${created.id}/events`));
-    const reader = res.body!.getReader();
-    const decoder = new TextDecoder();
-
-    try {
-      // Pi exposes assistant text through getMessages only after that message is
-      // committed/message_end. Events arriving after that acquisition belong
-      // to the next live message; Pi does not emit a duplicate delta for the
-      // already committed snapshot message.
-      adapter.events.forEach((listener) =>
-        listener({ type: "message_start", message: { ...assistant(""), timestamp: 2 } } as never),
-      );
-      adapter.events.forEach((listener) =>
-        listener({
-          type: "message_update",
-          assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "next" },
-        } as never),
-      );
-      resolveSummaries([]);
-
-      let body = "";
-      const frames: Array<{ type: string; messages?: AgentMessage[] }> = [];
-      while (frames.length < 3) {
-        const { value } = await reader.read();
-        body += decoder.decode(value, { stream: true });
-        const chunks = body.split("\n\n");
-        body = chunks.pop() ?? "";
-        for (const chunk of chunks) {
-          frames.push(JSON.parse(chunk.slice("data: ".length)) as { type: string; messages?: AgentMessage[] });
-        }
-      }
-      expect(frames.map((frame) => frame.type)).toEqual(["snapshot", "message_start", "message_update"]);
-      expect(frames[0]?.messages).toEqual([assistant("committed")]);
-    } finally {
-      await reader.cancel();
-    }
   });
 
   it("closes and unsubscribes when SSE snapshot initialization fails", async () => {

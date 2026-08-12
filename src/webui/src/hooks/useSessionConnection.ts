@@ -236,7 +236,10 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
         }
         if (isAgentSessionEvent(event)) {
           if (type === "agent_start") setStatus("running");
-          if (type === "agent_settled") setStatus("ready");
+          if (type === "agent_settled") {
+            clearTerminalState("ready");
+            return;
+          }
           setView((current) => reduceSessionEvent(current, event));
         }
       },

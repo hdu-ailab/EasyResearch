@@ -3,6 +3,8 @@ import type { SessionSnapshotDto, SubagentSessionSummaryDto } from "../../web/co
 
 export interface ToolView {
   key: string;
+  /** Stable Pi tool-call identity. Fallback render keys do not populate this. */
+  toolCallId?: string;
   name: string;
   running: boolean;
   done: boolean;
@@ -279,6 +281,9 @@ export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
       } else {
         state.tools.push({
           key: String(toolMessage.toolCallId ?? index),
+          ...(typeof toolMessage.toolCallId === "string" && toolMessage.toolCallId
+            ? { toolCallId: toolMessage.toolCallId }
+            : {}),
           name: toolName,
           running: false,
           done: true,
@@ -319,8 +324,10 @@ export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
     if (text || reasoning || nextMessage.error || toolCallBlocks.length === 0) state.messages.push(nextMessage);
     if (role === "assistant") {
       for (const b of toolCallBlocks) {
+        const toolCallId = typeof b.id === "string" && b.id ? b.id : undefined;
         state.tools.push({
           key: String(b.id ?? b.name ?? index),
+          ...(toolCallId ? { toolCallId } : {}),
           name: typeof b.name === "string" ? b.name : "tool",
           running: false,
           done: false,
@@ -357,7 +364,7 @@ export function applySubagentSummaries(
   }
   let changed = false;
   const tools = state.tools.map((tool) => {
-    const links = byToolCall.get(tool.key);
+    const links = tool.toolCallId === undefined ? undefined : byToolCall.get(tool.toolCallId);
     if (tool.name !== "subagent" || !links?.length) return tool;
     const summary = links.at(-1);
     if (!summary) return tool;
@@ -405,14 +412,15 @@ export function mergeSnapshot(state: SessionViewState, snapshot: SessionSnapshot
   const next = fromSnapshot(snapshot);
   const summaries = new Map<string, SubagentSessionSummaryDto>();
   for (const summary of snapshot.subagents ?? []) summaries.set(summary.toolCallId, summary);
-  const priorSubagents = new Map(
-    state.tools.filter((tool) => tool.name === "subagent").map((tool) => [tool.key, tool]),
-  );
+  const priorSubagents = new Map<string, ToolView>();
+  for (const tool of state.tools) {
+    if (tool.name === "subagent" && tool.toolCallId !== undefined) priorSubagents.set(tool.toolCallId, tool);
+  }
   next.tools = next.tools.map((tool) => {
-    if (tool.name !== "subagent") return tool;
-    const prior = priorSubagents.get(tool.key);
+    if (tool.name !== "subagent" || tool.toolCallId === undefined) return tool;
+    const prior = priorSubagents.get(tool.toolCallId);
     if (!prior) return tool;
-    const summary = summaries.get(tool.key);
+    const summary = summaries.get(tool.toolCallId);
     const compatible =
       summary === undefined ||
       (summary.step === prior.step && (prior.sessionId === undefined || summary.childSessionId === prior.sessionId));
@@ -648,6 +656,7 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
           ...state.tools,
           {
             key: toolCallId,
+            toolCallId,
             name: toolName,
             running: true,
             done: false,

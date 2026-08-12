@@ -88,7 +88,10 @@ export class ActiveSessionRegistry {
       .map((record) => ({ ...record.dto }));
   }
 
-  async snapshot(id: string): Promise<{ session: ActiveSessionDto; messages: AgentMessage[] }> {
+  async snapshot(
+    id: string,
+    onMessagesAcquired?: () => void,
+  ): Promise<{ session: ActiveSessionDto; messages: AgentMessage[] }> {
     return this.withRecord(id, async (record) => {
       await this.refreshFromClient(record);
       const live =
@@ -96,6 +99,7 @@ export class ActiveSessionRegistry {
         record.dto.status === "ready" ||
         record.dto.status === "running";
       const messages = live ? await record.client.getMessages() : [];
+      onMessagesAcquired?.();
       return { session: { ...record.dto }, messages };
     });
   }

@@ -149,6 +149,41 @@ describe("useSessionConnection", () => {
     expect(result.current.view.isStreaming).toBe(false);
   });
 
+  it("treats agent settlement as terminal while a prompt request is still pending", async () => {
+    const pendingPrompt = deferred<void>();
+    vi.mocked(api.sendPrompt).mockReturnValueOnce(pendingPrompt.promise);
+    const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    let sending!: Promise<void>;
+    act(() => {
+      sending = result.current.send("continue");
+    });
+    await waitFor(() => expect(result.current.accepting).toBe(true));
+    emit({ type: "agent_start" });
+    emit({ type: "message_start", message: { id: "settled-row", role: "assistant", content: [] } });
+    emit({
+      type: "message_update",
+      assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "working" },
+    });
+
+    emit({ type: "agent_settled" });
+
+    expect(result.current.status).toBe("ready");
+    expect(result.current.accepting).toBe(false);
+    expect(result.current.pendingOutput).toBe(false);
+    expect(result.current.view.isStreaming).toBe(false);
+    expect(result.current.view.activeMessageKey).toBeUndefined();
+    expect(result.current.view.messages.at(-1)).toMatchObject({ streaming: false, isThinking: false });
+
+    pendingPrompt.resolve();
+    await act(async () => sending);
+    expect(result.current.status).toBe("ready");
+    expect(result.current.accepting).toBe(false);
+    expect(result.current.pendingOutput).toBe(false);
+    expect(result.current.view.isStreaming).toBe(false);
+  });
+
   it("clears pending ownership and reports a send failure", async () => {
     vi.mocked(api.sendPrompt).mockRejectedValueOnce(new Error("prompt failed"));
     const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
