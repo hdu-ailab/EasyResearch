@@ -1821,4 +1821,19 @@ describe("WorkPage", () => {
     expect(api.openSession).not.toHaveBeenCalled();
     expect(api.sendPrompt).toHaveBeenCalledTimes(1);
   });
+
+  it("shows the actionable reopen failure instead of the original unknown-session error", async () => {
+    const user = userEvent.setup();
+    stubEvents();
+    vi.mocked(api.sendPrompt).mockRejectedValueOnce(new api.ApiError(404, { error: "Unknown session: s1" }));
+    vi.mocked(api.openSession).mockRejectedValueOnce(new Error("Session file can no longer be reopened"));
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+
+    await user.type(screen.getByRole("textbox", { name: /message/i }), "continue please");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Session file can no longer be reopened");
+    expect(screen.queryByText("Unknown session: s1")).toBeNull();
+  });
 });
