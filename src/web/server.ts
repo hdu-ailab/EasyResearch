@@ -50,6 +50,7 @@ export function agentToDto(agent: AgentConfig): AgentDto {
     subagents: agent.subagents,
     skills: agent.skills,
     effectiveSkills: agent.effectiveSkills,
+    missingSkills: agent.missingSkills,
   };
 }
 

@@ -849,14 +849,15 @@ describe("web routes", () => {
     expect(await worker.text()).toBe("self.streamSink");
   });
 
-  it("lists the agent roster with tools/subagents/skills without leaking system prompts or model", async () => {
+  it("lists the agent roster for the exact cwd with missing-skill diagnostics", async () => {
+    const listAgents = vi.fn(async () => [
+      { name: "assistant", description: "Runs the pipeline", enabled: true, builtin: true, source: "bundled" as const, filePath: "assistant.md", tools: ["subagent"], effectiveTools: ["subagent"], skills: ["research-project-workflow", "missing-skill"], effectiveSkills: ["research-project-workflow"], missingSkills: ["missing-skill"] },
+      { name: "search", description: "Finds papers", enabled: true, builtin: true, source: "bundled" as const, filePath: "search.md", effectiveTools: [], subagents: [], skills: [], effectiveSkills: [], missingSkills: [] },
+    ]);
     setup({
-      listAgents: async () => [
-        { name: "assistant", description: "Runs the pipeline", enabled: true, builtin: true, source: "bundled", filePath: "assistant.md", tools: ["subagent"], effectiveTools: ["subagent"], skills: ["research-project-workflow"], effectiveSkills: ["research-project-workflow"] },
-        { name: "search", description: "Finds papers", enabled: true, builtin: true, source: "bundled", filePath: "search.md", effectiveTools: [], subagents: [], skills: [], effectiveSkills: [] },
-      ],
+      listAgents,
     });
-    const res = await handler(new Request("http://localhost/api/agents"));
+    const res = await handler(new Request("http://localhost/api/agents?cwd=%2Fexact%2Fproject"));
     expect(res.status).toBe(200);
     const body = (await res.json()) as Array<{
       name: string;
@@ -864,12 +865,17 @@ describe("web routes", () => {
       tools?: string[];
       subagents?: string[];
       skills?: string[];
+      effectiveSkills: string[];
+      missingSkills: string[];
       systemPrompt?: string;
       model?: string;
     }>;
+    expect(listAgents).toHaveBeenCalledWith("/exact/project");
     expect(body.map((a) => a.name)).toEqual(["assistant", "search"]);
     expect(body[0]?.tools).toEqual(["subagent"]);
-    expect(body[0]?.skills).toEqual(["research-project-workflow"]);
+    expect(body[0]?.skills).toEqual(["research-project-workflow", "missing-skill"]);
+    expect(body[0]?.effectiveSkills).toEqual(["research-project-workflow"]);
+    expect(body[0]?.missingSkills).toEqual(["missing-skill"]);
     expect(body[1]?.skills).toEqual([]);
     expect(body[0]?.systemPrompt).toBeUndefined();
     expect(body[0]?.model).toBeUndefined();
@@ -885,9 +891,9 @@ describe("web routes", () => {
         tools: ["bash"],
         effectiveTools: ["bash"],
         subagents: ["experiment"],
-        skills: ["paper-search"],
+        skills: ["paper-search", "missing-skill"],
         effectiveSkills: ["paper-search"],
-        missingSkills: [],
+        missingSkills: ["missing-skill"],
         model: "deepseek/ds-v3",
         systemPrompt: "SECRET PROMPT",
         source: "global",
@@ -904,9 +910,29 @@ describe("web routes", () => {
       tools: ["bash"],
       effectiveTools: ["bash"],
       subagents: ["experiment"],
-      skills: ["paper-search"],
+      skills: ["paper-search", "missing-skill"],
       effectiveSkills: ["paper-search"],
+      missingSkills: ["missing-skill"],
     });
+  });
+
+  it("lists missing skills from global agent resources without leaking system prompts", async () => {
+    mkdirSync(join(agentDir, "agents"), { recursive: true });
+    writeFileSync(
+      join(agentDir, "agents", "diagnostic.md"),
+      "---\nname: diagnostic\ndescription: Checks configured skills\nskills:\n  - paper-search\n  - missing-skill\n---\nSECRET PROMPT",
+      "utf-8",
+    );
+    setup();
+
+    const res = await handler(new Request("http://localhost/api/agent-resources"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Array<Record<string, unknown>>;
+    const agent = body.find((item) => item.name === "diagnostic");
+    expect(agent?.skills).toEqual(["paper-search", "missing-skill"]);
+    expect(agent?.effectiveSkills).toEqual(["paper-search"]);
+    expect(agent?.missingSkills).toEqual(["missing-skill"]);
+    expect(agent).not.toHaveProperty("systemPrompt");
   });
 
   it("recognizes discovered agent names via isKnownAgentName", async () => {

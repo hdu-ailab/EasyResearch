@@ -85,13 +85,57 @@ describe("api transport", () => {
     expect(url).toBe("/api/directories?path=%2Fhome%2Fuser");
   });
 
-  it("listAgents GETs /api/agents", async () => {
+  it("listAgents GETs /api/agents for the exact cwd and preserves missing skills", async () => {
     fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify([{ name: "search", description: "Finds papers" }]), { status: 200 }),
+      new Response(
+        JSON.stringify([
+          {
+            name: "search",
+            description: "Finds papers",
+            enabled: true,
+            builtin: true,
+            source: "project",
+            filePath: "/exact/project/.easyresearch/agents/search.md",
+            tools: ["web-search"],
+            effectiveTools: ["web-search"],
+            subagents: [],
+            skills: ["paper-search", "missing-skill"],
+            effectiveSkills: ["paper-search"],
+            missingSkills: ["missing-skill"],
+          },
+        ]),
+        { status: 200 },
+      ),
     );
-    const agents = await listAgents();
-    expect(fetchMock).toHaveBeenCalledWith("/api/agents", expect.objectContaining({ method: "GET" }));
-    expect(agents[0]?.name).toBe("search");
+    const agents = await listAgents("/exact/project");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/agents?cwd=%2Fexact%2Fproject",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(agents[0]?.skills).toEqual(["paper-search", "missing-skill"]);
+    expect(agents[0]?.effectiveSkills).toEqual(["paper-search"]);
+    expect(agents[0]?.missingSkills).toEqual(["missing-skill"]);
+  });
+
+  it.each([
+    ["absent", undefined],
+    ["not an array", "missing-skill"],
+    ["contains non-strings", ["missing-skill", 42]],
+  ])("rejects an agent payload when missingSkills is %s", async (_case, missingSkills) => {
+    const agent: Record<string, unknown> = {
+      name: "search",
+      description: "Finds papers",
+      enabled: true,
+      builtin: true,
+      source: "bundled",
+      filePath: "search.md",
+      effectiveTools: [],
+      effectiveSkills: [],
+    };
+    if (missingSkills !== undefined) agent.missingSkills = missingSkills;
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify([agent]), { status: 200 }));
+
+    await expect(listAgents()).rejects.toThrow();
   });
 
   it("createSession POSTs cwd only", async () => {
