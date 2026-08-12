@@ -442,6 +442,7 @@ describe("SettingsPage", () => {
       "search",
       "---\nname: search\ndescription: Updated\nenable: true\n---\nNew prompt\n",
     );
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "search" })).toBeNull());
   });
 
   it("creates a new agent and opens its Markdown editor", async () => {
@@ -465,5 +466,45 @@ describe("SettingsPage", () => {
     await user.type(editor, "# Updated skill\n");
     await user.click(screen.getByRole("button", { name: /save skill/i }));
     expect(api.writeSkillResource).toHaveBeenCalledWith("paper-search", "# Updated skill\n");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "paper-search" })).toBeNull());
+  });
+
+  it("shows deduplicated resource lists and opens agent resource details", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listAgents).mockResolvedValue([
+      {
+        name: "assistant",
+        description: "Coordinates",
+        enabled: true,
+        builtin: true,
+        source: "bundled",
+        filePath: "src/agents/assistant.md",
+        effectiveTools: ["read", "subagent"],
+        effectiveSkills: ["workflow"],
+      },
+      {
+        name: "search",
+        description: "Searches",
+        enabled: true,
+        builtin: true,
+        source: "bundled",
+        filePath: "src/agents/search.md",
+        effectiveTools: ["read", "web-search"],
+        effectiveSkills: ["paper-search", "arxiv"],
+      },
+    ] as never);
+    renderSettings();
+
+    expect(await screen.findByRole("button", { name: "2 tools, 2 skills" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Tools" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Skills" })).toBeTruthy();
+    expect(screen.getAllByText("read")).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: /edit tool/i })).toBeNull();
+    expect(screen.queryByText("Enable Search")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "2 tools, 2 skills" }));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(within(screen.getByRole("dialog")).getByText("web-search")).toBeTruthy();
+    expect(within(screen.getByRole("dialog")).getByText("paper-search")).toBeTruthy();
   });
 });

@@ -15,6 +15,7 @@ import {
   writeSkillResource,
 } from "../api";
 import { AgentMarkdownEditor } from "../components/AgentMarkdownEditor";
+import { AgentResourceDetailsDialog } from "../components/AgentResourceDetailsDialog";
 import { SkillResourceEditor } from "../components/SkillResourceEditor";
 import { ProductMark, Topbar } from "../components/Topbar";
 import type { Translate } from "../i18n/agents";
@@ -159,6 +160,7 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
   const [skills, setSkills] = useState<SkillResourceDto[]>([]);
   const [agentEditor, setAgentEditor] = useState<AgentResourceDto | null>(null);
   const [skillEditor, setSkillEditor] = useState<SkillResourceDto | null>(null);
+  const [detailsAgent, setDetailsAgent] = useState<AgentDto | null>(null);
   const [addAgentOpen, setAddAgentOpen] = useState(false);
   const [newAgentName, setNewAgentName] = useState("");
 
@@ -191,13 +193,13 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
     }
   };
 
-  const saveAgent = async () => {
-    if (!agentEditor?.content) return;
+  const saveAgent = async (content: string) => {
+    if (!agentEditor) return;
     setBusy(true);
     try {
-      const savedAgent = await writeAgentResource(agentEditor.name, agentEditor.content);
-      setAgentEditor(savedAgent);
+      await writeAgentResource(agentEditor.name, content);
       await refreshAgents();
+      setAgentEditor(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -244,12 +246,13 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
     }
   };
 
-  const saveSkill = async () => {
-    if (!skillEditor?.content) return;
+  const saveSkill = async (content: string) => {
+    if (!skillEditor) return;
     setBusy(true);
     try {
-      setSkillEditor(await writeSkillResource(skillEditor.name, skillEditor.content));
+      await writeSkillResource(skillEditor.name, content);
       setSkills(await listSkillResources());
+      setSkillEditor(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -300,6 +303,9 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
     if (b.name === "assistant") return 1;
     return a.name.localeCompare(b.name);
   });
+  const toolInventory = [...new Set(roster.flatMap((agent) => agent.effectiveTools ?? agent.tools ?? []))].sort(
+    (a, b) => a.localeCompare(b),
+  );
 
   return (
     <div className="flex h-full flex-col">
@@ -425,14 +431,22 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
                       <span className="text-[13px] font-medium text-v2-text-text-base">
                         {agentDisplayName(t, agent.name)}
                       </span>
-                      <PreferenceSwitch
-                        label={t("settings.agents.enable").replace("{name}", agentDisplayName(t, agent.name))}
-                        checked={agent.enabled !== false}
-                        onChange={() => void toggleAgent(agent)}
-                      />
+                      <div className="ml-auto flex items-center">
+                        <PreferenceSwitch
+                          label={agentDisplayName(t, agent.name)}
+                          checked={agent.enabled !== false}
+                          onChange={() => void toggleAgent(agent)}
+                        />
+                      </div>
                     </div>
                     <p className="mt-1 text-[12px] text-v2-text-text-muted">{agent.description}</p>
-                    <p className="mt-1 text-[11px] text-v2-text-text-faint">{formatToolsSkills(t, agent)}</p>
+                    <button
+                      type="button"
+                      className="mt-1 rounded-md bg-v2-grey-100 px-2 py-1 text-left text-[11px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-200"
+                      onClick={() => setDetailsAgent(agent)}
+                    >
+                      {formatToolsSkills(t, agent)}
+                    </button>
                     <label className="flex items-center justify-between gap-4">
                       <span className="text-[13px] font-medium text-v2-text-text-base">
                         {agentDisplayName(t, "assistant")}
@@ -463,8 +477,7 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
                       <AgentMarkdownEditor
                         resource={agentEditor}
                         busy={busy}
-                        onChange={(content) => setAgentEditor({ ...agentEditor, content })}
-                        onSave={() => void saveAgent()}
+                        onSave={(content) => void saveAgent(content)}
                         onClose={() => setAgentEditor(null)}
                       />
                     )}
@@ -479,14 +492,22 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
                       <span className="text-[13px] font-medium text-v2-text-text-base">
                         {agentDisplayName(t, agent.name)}
                       </span>
-                      <PreferenceSwitch
-                        label={t("settings.agents.enable").replace("{name}", agentDisplayName(t, agent.name))}
-                        checked={agent.enabled !== false}
-                        onChange={() => void toggleAgent(agent)}
-                      />
+                      <div className="ml-auto flex items-center">
+                        <PreferenceSwitch
+                          label={agentDisplayName(t, agent.name)}
+                          checked={agent.enabled !== false}
+                          onChange={() => void toggleAgent(agent)}
+                        />
+                      </div>
                     </div>
                     <p className="mt-1 text-[12px] text-v2-text-text-muted">{agent.description}</p>
-                    <p className="mt-1 text-[11px] text-v2-text-text-faint">{formatToolsSkills(t, agent)}</p>
+                    <button
+                      type="button"
+                      className="mt-1 rounded-md bg-v2-grey-100 px-2 py-1 text-left text-[11px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-200"
+                      onClick={() => setDetailsAgent(agent)}
+                    >
+                      {formatToolsSkills(t, agent)}
+                    </button>
                     <label className="mt-2 flex items-center justify-between gap-4">
                       <span className="text-[12px] text-v2-text-text-muted">{agentDisplayName(t, agent.name)}</span>
                       <select
@@ -516,52 +537,66 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
                       <AgentMarkdownEditor
                         resource={agentEditor}
                         busy={busy}
-                        onChange={(content) => setAgentEditor({ ...agentEditor, content })}
-                        onSave={() => void saveAgent()}
+                        onSave={(content) => void saveAgent(content)}
                         onClose={() => setAgentEditor(null)}
                       />
                     )}
                   </div>
                 ),
               )}
-              <div className="border-t border-v2-grey-200 pt-3">
-                <h3 className="text-[12px] font-semibold text-v2-text-text-base">{t("settings.agents.skillsTitle")}</h3>
-                {skills.map((skill) => (
-                  <div
-                    key={skill.name}
-                    className="mt-2 flex items-center gap-2 rounded-md border border-v2-grey-200 px-3 py-2"
-                  >
-                    <span className="font-mono text-[12px]">{skill.name}</span>
-                    <span className="text-[11px] text-v2-text-text-faint">{skill.source}</span>
-                    <button
-                      type="button"
-                      className="ml-auto text-[12px] text-v2-blue-600 hover:underline"
-                      aria-label={t("settings.agents.editSkill").replace("{name}", skill.name)}
-                      onClick={() => void openSkillEditor(skill.name)}
-                    >
-                      {t("settings.agents.editSkill").replace("{name}", skill.name)}
-                    </button>
-                    {skillEditor?.name === skill.name && (
-                      <SkillResourceEditor
-                        resource={skillEditor}
-                        busy={busy}
-                        onChange={(content) => setSkillEditor({ ...skillEditor, content })}
-                        onSave={() => void saveSkill()}
-                        onClose={() => setSkillEditor(null)}
-                      />
-                    )}
-                  </div>
-                ))}
-                {agentEditor && !roster.some((agent) => agent.name === agentEditor.name) && (
-                  <AgentMarkdownEditor
-                    resource={agentEditor}
-                    busy={busy}
-                    onChange={(content) => setAgentEditor({ ...agentEditor, content })}
-                    onSave={() => void saveAgent()}
-                    onClose={() => setAgentEditor(null)}
-                  />
-                )}
+              <div className="border-t border-v2-grey-200 pt-4">
+                <div className="flex items-baseline justify-between gap-3">
+                  <h3 className="text-[12px] font-semibold text-v2-text-text-base">{t("settings.resources.tools")}</h3>
+                  <span className="text-[11px] text-v2-text-text-faint">{t("settings.resources.toolsHint")}</span>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {toolInventory.length > 0 ? (
+                    toolInventory.map((tool) => (
+                      <span
+                        key={tool}
+                        className="rounded-md border border-v2-grey-200 px-2 py-1 font-mono text-[11px] text-v2-text-text-base"
+                      >
+                        {tool}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="text-[12px] text-v2-text-text-faint">{t("settings.resources.noTools")}</span>
+                  )}
+                </div>
               </div>
+              <div className="border-t border-v2-grey-200 pt-4">
+                <div className="flex items-baseline justify-between gap-3">
+                  <h3 className="text-[12px] font-semibold text-v2-text-text-base">{t("settings.resources.skills")}</h3>
+                  <span className="text-[11px] text-v2-text-text-faint">{t("settings.resources.skillsHint")}</span>
+                </div>
+                <div className="mt-2 flex flex-col gap-2">
+                  {skills.map((skill) => (
+                    <div
+                      key={skill.name}
+                      className="flex items-center gap-2 rounded-md border border-v2-grey-200 px-3 py-2"
+                    >
+                      <span className="font-mono text-[12px]">{skill.name}</span>
+                      <span className="text-[11px] text-v2-text-text-faint">{skill.source}</span>
+                      <button
+                        type="button"
+                        className="ml-auto text-[12px] text-v2-blue-600 hover:underline"
+                        aria-label={t("settings.resources.editSkill").replace("{name}", skill.name)}
+                        onClick={() => void openSkillEditor(skill.name)}
+                      >
+                        {t("settings.resources.editSkill").replace("{name}", skill.name)}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              {agentEditor && !roster.some((agent) => agent.name === agentEditor.name) && (
+                <AgentMarkdownEditor
+                  resource={agentEditor}
+                  busy={busy}
+                  onSave={(content) => void saveAgent(content)}
+                  onClose={() => setAgentEditor(null)}
+                />
+              )}
             </div>
           </section>
 
@@ -615,6 +650,22 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
             </div>
           </div>
         </div>
+      )}
+      {skillEditor && (
+        <SkillResourceEditor
+          resource={skillEditor}
+          busy={busy}
+          onSave={(content) => void saveSkill(content)}
+          onClose={() => setSkillEditor(null)}
+        />
+      )}
+      {detailsAgent && (
+        <AgentResourceDetailsDialog
+          agentName={agentDisplayName(t, detailsAgent.name)}
+          tools={detailsAgent.effectiveTools ?? detailsAgent.tools ?? []}
+          skills={detailsAgent.effectiveSkills ?? detailsAgent.skills ?? []}
+          onClose={() => setDetailsAgent(null)}
+        />
       )}
     </div>
   );

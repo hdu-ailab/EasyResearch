@@ -4,8 +4,26 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AGENT_MODEL_ENTRY, extractAgentModels, resolveEffectiveModel, resolveModelForSpawn } from "./model-resolution";
 
-const getAgentDirMock = vi.hoisted(() => vi.fn(() => "/fake/agent"));
-vi.mock("../runtime/pi-import", () => ({ getAgentDir: getAgentDirMock }));
+const piMocks = vi.hoisted(() => ({
+  getAgentDir: vi.fn(() => "/fake/agent"),
+  parseFrontmatter: (content: string) => {
+    const match = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/.exec(content);
+    const frontmatter = Object.fromEntries(
+      (match?.[1] ?? "")
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => {
+          const index = line.indexOf(":");
+          return [line.slice(0, index).trim(), line.slice(index + 1).trim()];
+        }),
+    );
+    return { frontmatter, body: match?.[2] ?? content };
+  },
+}));
+vi.mock("../runtime/pi-import", () => ({
+  getAgentDir: piMocks.getAgentDir,
+  importPi: vi.fn(async () => ({ parseFrontmatter: piMocks.parseFrontmatter })),
+}));
 
 let root: string;
 let project: string;
@@ -21,7 +39,7 @@ beforeEach(() => {
   project = join(root, "project");
   globalAgent = join(root, "global");
   mkdirSync(project, { recursive: true });
-  getAgentDirMock.mockReturnValue(globalAgent);
+  piMocks.getAgentDir.mockReturnValue(globalAgent);
 });
 
 afterEach(() => rmSync(root, { recursive: true, force: true }));

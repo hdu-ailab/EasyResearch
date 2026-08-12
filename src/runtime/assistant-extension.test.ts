@@ -23,27 +23,27 @@ afterEach(() => {
 });
 
 describe("loadAssistantPrompt", () => {
-  it("reads the assistant body from the agents dir", () => {
+  it("reads the assistant body from the agents dir", async () => {
     const agentsDir = makeAgentsDir();
     writeFileSync(
       join(agentsDir, "assistant.md"),
       "---\nname: assistant\ntools: subagent\n---\n\nYou are the assistant\n",
     );
 
-    const prompt = loadAssistantPrompt(agentsDir);
+    const prompt = await loadAssistantPrompt(agentsDir);
     expect(prompt).toContain("You are the assistant");
     expect(prompt).not.toContain("---");
   });
 
-  it("throws when the global assistant definition is missing", () => {
+  it("throws when the global assistant definition is missing", async () => {
     const agentsDir = makeAgentsDir();
-    expect(() => loadAssistantPrompt(agentsDir)).toThrow(/Missing global assistant definition/);
+    await expect(loadAssistantPrompt(agentsDir)).rejects.toThrow(/Missing global assistant definition/);
   });
 
-  it("throws on an assistant file without frontmatter", () => {
+  it("throws on an assistant file without frontmatter", async () => {
     const agentsDir = makeAgentsDir();
     writeFileSync(join(agentsDir, "assistant.md"), "no frontmatter here\n");
-    expect(() => loadAssistantPrompt(agentsDir)).toThrow(/frontmatter/i);
+    await expect(loadAssistantPrompt(agentsDir)).rejects.toThrow(/frontmatter/i);
   });
 });
 
