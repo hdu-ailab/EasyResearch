@@ -19,6 +19,7 @@ vi.mock("../api", async (importOriginal) => {
     readAgentResource: vi.fn(),
     writeAgentResource: vi.fn(),
     createAgentResource: vi.fn(),
+    listConfigProjects: vi.fn(),
     listSkillResources: vi.fn(),
     readSkillResource: vi.fn(),
     writeSkillResource: vi.fn(),
@@ -35,6 +36,7 @@ beforeEach(() => {
   vi.mocked(api.readAgentResource).mockReset();
   vi.mocked(api.writeAgentResource).mockReset();
   vi.mocked(api.createAgentResource).mockReset();
+  vi.mocked(api.listConfigProjects).mockReset();
   vi.mocked(api.listSkillResources).mockReset();
   vi.mocked(api.readSkillResource).mockReset();
   vi.mocked(api.writeSkillResource).mockReset();
@@ -77,6 +79,10 @@ beforeEach(() => {
     effectiveSkills: [],
     missingSkills: [],
     content: "---\nname: reviewer\ndescription: reviewer agent\nenable: true\n---\n",
+  });
+  vi.mocked(api.listConfigProjects).mockResolvedValue({
+    home: "/agent",
+    projects: [{ cwd: "/papers/project-a" }, { cwd: "/papers/project-b" }],
   });
   vi.mocked(api.listSkillResources).mockResolvedValue([
     {
@@ -471,6 +477,49 @@ describe("SettingsPage", () => {
     await user.click(screen.getByRole("button", { name: /save skill/i }));
     expect(api.writeSkillResource).toHaveBeenCalledWith("paper-search", "# Updated skill\n");
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "paper-search" })).toBeNull());
+  });
+
+  it("defaults Skill diagnostics to Global and groups affected Agents by missing Skill", async () => {
+    vi.mocked(api.listAgents).mockResolvedValue([
+      { name: "search", description: "Searches", missingSkills: ["missing-skill"] },
+      { name: "writing", description: "Writes", missingSkills: ["missing-skill"] },
+    ] as never);
+
+    renderSettings();
+
+    expect(await screen.findByRole("combobox", { name: "Skill diagnostic scope" })).toHaveValue("global");
+    const warning = screen.getByText("missing-skill").parentElement!;
+    expect(within(warning).getByText(/Search/)).toBeVisible();
+    expect(within(warning).getByText(/Writing/)).toBeVisible();
+  });
+
+  it("refetches only diagnostic Agents when a project scope is selected", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listAgents)
+      .mockResolvedValueOnce([{ name: "search", description: "Searches", missingSkills: ["global-missing"] }] as never)
+      .mockResolvedValueOnce([{ name: "writing", description: "Writes", missingSkills: ["project-missing"] }] as never);
+
+    renderSettings();
+    const scope = await screen.findByRole("combobox", { name: "Skill diagnostic scope" });
+    expect(screen.getByText("global-missing")).toBeVisible();
+
+    await user.selectOptions(scope, "/papers/project-a");
+
+    await waitFor(() => expect(api.listAgents).toHaveBeenCalledWith("/papers/project-a"));
+    expect(await screen.findByText("project-missing")).toBeVisible();
+    expect(screen.queryByText("global-missing")).toBeNull();
+    expect(api.listSkillResources).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Edit skill paper-search" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Edit skill project-missing" })).toBeNull();
+  });
+
+  it("keeps global Skill resources available when diagnostic project discovery fails", async () => {
+    vi.mocked(api.listConfigProjects).mockRejectedValueOnce(new Error("project discovery failed"));
+
+    renderSettings();
+
+    expect(await screen.findByRole("button", { name: "Edit skill paper-search" })).toBeVisible();
+    expect(screen.getByRole("alert")).toHaveTextContent("project discovery failed");
   });
 
   it("shows deduplicated resource lists and opens agent resource details", async () => {
