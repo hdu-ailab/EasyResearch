@@ -1,5 +1,5 @@
 import { AlertTriangle, Check, ChevronDown, ChevronRight } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { useExpandable } from "../hooks/useExpandable";
 import { agentDisplayName } from "../i18n/agents";
 import type { MessageKey } from "../i18n/messages";
@@ -16,6 +16,10 @@ export interface ChatTranscriptProps {
   /** While true, renders a working agent row under the newest user message. */
   pending?: boolean;
   onViewDetails?: (toolCallId: string, step?: number) => void;
+}
+
+export interface ChatTranscriptHandle {
+  scrollToLatest(): void;
 }
 
 const ROLE_LABELS: Record<string, MessageKey> = {
@@ -160,7 +164,10 @@ function MessageRow({ message, initialThinkingOpen }: { message: SessionMessageV
  * The list pins to the bottom while the user stays at the bottom; any
  * manual scroll away unpins it, and returning to the bottom re-pins.
  */
-export function ChatTranscript({ messages, tools, emptyHint, pending = false, onViewDetails }: ChatTranscriptProps) {
+export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptProps>(function ChatTranscript(
+  { messages, tools, emptyHint, pending = false, onViewDetails },
+  ref,
+) {
   const { t } = useI18n();
   const { preferences } = usePreferences();
   const hint = emptyHint ?? t("transcript.sendToStart");
@@ -187,6 +194,13 @@ export function ChatTranscript({ messages, tools, emptyHint, pending = false, on
       if (element && stickRef.current) element.scrollTop = element.scrollHeight;
     });
   };
+
+  useImperativeHandle(ref, () => ({
+    scrollToLatest() {
+      stickRef.current = true;
+      scheduleFollow();
+    },
+  }));
 
   // The callback intentionally reads refs; recreating this observer for every render would lose the stream-following contract.
   // biome-ignore lint/correctness/useExhaustiveDependencies: scheduleFollow is ref-based and intentionally stable for this observer.
@@ -254,4 +268,4 @@ export function ChatTranscript({ messages, tools, emptyHint, pending = false, on
       </ul>
     </section>
   );
-}
+});

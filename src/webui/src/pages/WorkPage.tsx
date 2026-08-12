@@ -13,7 +13,7 @@ import {
 import { AgentList, type AgentStatus } from "../components/AgentList";
 import { AgentTabBar } from "../components/AgentTabBar";
 import { ChatComposer } from "../components/ChatComposer";
-import { ChatTranscript } from "../components/ChatTranscript";
+import { ChatTranscript, type ChatTranscriptHandle } from "../components/ChatTranscript";
 import { FileBrowser } from "../components/FileBrowser";
 import { ProductMark, Topbar, TopbarIconButton } from "../components/Topbar";
 import { WorkMobileTabs, type WorkView } from "../components/WorkMobileTabs";
@@ -133,6 +133,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   const [childViews, setChildViews] = useState<Record<string, SessionViewState>>({});
   const [childErrors, setChildErrors] = useState<Record<string, boolean>>({});
   const [activeTab, setActiveTab] = useState("assistant");
+  const transcriptRef = useRef<ChatTranscriptHandle>(null);
   const tabsStateRef = useRef(tabsState);
   const childSessionByTool = useRef(new Map<string, string>());
   const childLoaded = useRef(new Set<string>());
@@ -206,6 +207,10 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
       setActiveTab("assistant");
     }
   }, [tabsState.tabs, activeTab]);
+
+  useEffect(() => {
+    if (activeTab) transcriptRef.current?.scrollToLatest();
+  }, [activeTab]);
 
   const panelMin = Math.max(PANEL_MIN, window.innerWidth / 3);
   const panelMax = available === undefined ? 480 : Math.max(panelMin, available - CHAT_MIN - 8);
@@ -510,6 +515,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
 
   const send = useCallback(
     async (text: string) => {
+      transcriptRef.current?.scrollToLatest();
       setAccepting(true);
       setStatusText(null);
       pendingBaseline.current = assistantCount();
@@ -664,6 +670,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
             <p className="px-4 py-3 text-[13px] text-v2-text-text-muted">{t("work.childUnavailable")}</p>
           ) : null}
           <ChatTranscript
+            ref={transcriptRef}
             messages={activeMessages}
             tools={activeTools}
             emptyHint={activeTab === "assistant" ? undefined : t("work.noMessagesYet")}
