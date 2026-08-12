@@ -91,6 +91,14 @@ describe("buildPiArgs", () => {
     expect(args[args.indexOf("--tools") + 1]).toBe("read,bash,arxiv");
   });
 
+  it.each([
+    ["missing", undefined],
+    ["empty", []],
+  ])("leaves %s tools to stage all-tools activation", (_label, tools) => {
+    const agent = { ...maker("search"), tools };
+    expect(buildPiArgs(agent, undefined, "task")).not.toContain("--tools");
+  });
+
   it("adds --no-skills and --skill for a non-empty whitelist", () => {
     const agentDir = mkdtempSync(join(tmpdir(), "lr-args-"));
     const skillDir = join(agentDir, "skills", "paper-search");
@@ -129,11 +137,27 @@ describe("buildPiArgs", () => {
     expect(enabled).toContain(join(root, ".agents", "skills", "home-only"));
   });
 
-  it("emits only --no-skills for an explicit empty whitelist", () => {
+  it("mounts every controlled skill root for an explicit empty selection", () => {
+    const root = mkdtempSync(join(tmpdir(), "lr-empty-skills-"));
+    const cwd = join(root, "project");
+    const agentDir = join(root, "agent");
+    const projectSkills = join(cwd, ".easyresearch", "skills");
+    const globalSkills = join(agentDir, "skills");
+    const homeSkills = join(root, ".agents", "skills");
+    for (const directory of [projectSkills, globalSkills, homeSkills]) mkdirSync(directory, { recursive: true });
     const agent = { ...maker("search"), skills: [] };
-    const args = buildPiArgs(agent, undefined, "task", undefined, { cwd: "/tmp", agentDir: "/tmp" });
+    const args = buildPiArgs(agent, undefined, "task", undefined, {
+      cwd,
+      agentDir,
+      homeDir: root,
+      enableDotAgentsSkill: true,
+    });
     expect(args).toContain("--no-skills");
-    expect(args).not.toContain("--skill");
+    expect(args).toEqual(expect.arrayContaining([
+      "--skill", projectSkills,
+      "--skill", globalSkills,
+      "--skill", homeSkills,
+    ]));
   });
 
   it("disables default skill discovery when skills is undefined", () => {
@@ -270,6 +294,81 @@ describe("final subagent output (ADR-040)", () => {
 });
 
 describe("subagent session link persistence", () => {
+  it("marks missing tools as all while preserving an explicit leaf allowlist", async () => {
+    const { discoverAgents } = await import("./agents");
+    const { resolveModelForSpawn } = await import("./model-resolution");
+    const { getAgentDir } = await import("../runtime/pi-import");
+    vi.mocked(discoverAgents).mockResolvedValue({ agents: [{ ...maker("search"), subagents: [] }] });
+    vi.mocked(resolveModelForSpawn).mockResolvedValue(undefined);
+    vi.mocked(getAgentDir).mockReturnValue("/tmp/easyresearch-test-agent");
+    spawnMock.mockClear();
+    spawnMock.mockImplementationOnce(() => {
+      const child = Object.assign(new EventEmitter(), {
+        stdout: new EventEmitter(),
+        stderr: new EventEmitter(),
+        killed: false,
+        kill: vi.fn(),
+      });
+      queueMicrotask(() => child.emit("close", 0));
+      return child;
+    });
+
+    await subagentTool.execute(
+      "all-tools-leaf",
+      { agent: "search", task: "find papers" },
+      undefined,
+      undefined,
+      { cwd: "/tmp/easyresearch-test-project" } as never,
+    );
+
+    const options = spawnMock.mock.calls[0]?.[2] as { env?: NodeJS.ProcessEnv };
+    expect(options.env?.EASYRESEARCH_AGENT_TOOLS).toBe("all");
+    expect(options.env?.EASYRESEARCH_AGENTS_ALLOWLIST).toBe("");
+  });
+
+  it("does not inherit parent stage capability markers", async () => {
+    const { discoverAgents } = await import("./agents");
+    const { resolveModelForSpawn } = await import("./model-resolution");
+    const { getAgentDir } = await import("../runtime/pi-import");
+    vi.mocked(discoverAgents).mockResolvedValue({ agents: [{ ...maker("search", "read"), subagents: undefined }] });
+    vi.mocked(resolveModelForSpawn).mockResolvedValue(undefined);
+    vi.mocked(getAgentDir).mockReturnValue("/tmp/easyresearch-test-agent");
+    spawnMock.mockClear();
+    spawnMock.mockImplementationOnce(() => {
+      const child = Object.assign(new EventEmitter(), {
+        stdout: new EventEmitter(),
+        stderr: new EventEmitter(),
+        killed: false,
+        kill: vi.fn(),
+      });
+      queueMicrotask(() => child.emit("close", 0));
+      return child;
+    });
+    const previousTools = process.env.EASYRESEARCH_AGENT_TOOLS;
+    const previousAllowlist = process.env.EASYRESEARCH_AGENTS_ALLOWLIST;
+    process.env.EASYRESEARCH_AGENT_TOOLS = "all";
+    process.env.EASYRESEARCH_AGENTS_ALLOWLIST = "search";
+
+    try {
+      await subagentTool.execute(
+        "isolated-capabilities",
+        { agent: "search", task: "find papers" },
+        undefined,
+        undefined,
+        { cwd: "/tmp/easyresearch-test-project" } as never,
+      );
+    } finally {
+      if (previousTools === undefined) delete process.env.EASYRESEARCH_AGENT_TOOLS;
+      else process.env.EASYRESEARCH_AGENT_TOOLS = previousTools;
+      if (previousAllowlist === undefined) delete process.env.EASYRESEARCH_AGENTS_ALLOWLIST;
+      else process.env.EASYRESEARCH_AGENTS_ALLOWLIST = previousAllowlist;
+    }
+
+    const options = spawnMock.mock.calls[0]?.[2] as { env?: NodeJS.ProcessEnv };
+    expect(options.env).not.toHaveProperty("EASYRESEARCH_AGENT_TOOLS");
+    expect(options.env).not.toHaveProperty("EASYRESEARCH_AGENTS_ALLOWLIST");
+  });
+
   it("starts a fresh child when session is omitted, even if a named child exists", async () => {
     const { discoverAgents } = await import("./agents");
     const { resolveModelForSpawn } = await import("./model-resolution");

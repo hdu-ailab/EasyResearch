@@ -245,7 +245,7 @@ export function buildPiArgs(
   const args: string[] = ["--mode", "json", "-p"];
   if (model) args.push("--model", model);
   if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
-  if (agent.skills !== undefined && skillDeps) {
+  if (agent.skills && agent.skills.length > 0 && skillDeps) {
     args.push("--no-skills");
     for (const dir of resolveSkillDirectories(agent.skills, skillDeps) ?? []) args.push("--skill", dir);
   } else if (skillDeps) {
@@ -324,12 +324,20 @@ async function runSingleAgent(opts: RunSingleOptions): Promise<SingleResult> {
     let wasAborted = false;
     const exitCode = await new Promise<number>((resolve) => {
       const invocation = getPiInvocation();
+      const {
+        EASYRESEARCH_AGENT_TOOLS: _parentTools,
+        [ALLOWLIST_ENV]: _parentAllowlist,
+        ...baseEnv
+      } = process.env;
       const proc = spawn(invocation.command, [...invocation.args, ...args], {
         cwd: cwd ?? defaultCwd,
         shell: false,
         stdio: ["ignore", "pipe", "pipe"],
-        // ADR-022: the child runtime filters its available agents through this.
-        env: agent.subagents ? { ...process.env, [ALLOWLIST_ENV]: agent.subagents.join(",") } : undefined,
+        env: {
+          ...baseEnv,
+          ...(agent.tools === undefined ? { EASYRESEARCH_AGENT_TOOLS: "all" } : {}),
+          ...(agent.subagents ? { [ALLOWLIST_ENV]: agent.subagents.join(",") } : {}),
+        },
       });
       let buffer = "";
 
