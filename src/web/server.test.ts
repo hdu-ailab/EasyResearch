@@ -10,7 +10,7 @@ import type { RpcSessionAdapter, RpcSessionFactory, StartRpcSessionOptions } fro
 import { ActiveSessionRegistry, UnknownSessionError } from "./active-sessions";
 import { DirectoryService } from "./directories";
 import { ConfigFileService } from "./config-files";
-import type { SessionSummaryDto } from "./contracts";
+import type { SessionSummaryDto, SubagentSessionSummaryDto } from "./contracts";
 import { AgentModelError } from "./agent-models";
 import { WebuiSettingsError, readEffectiveWebuiSettings, updateWebuiSettings } from "./webui-settings";
 import { discoverAgents } from "../subagent/agents";
@@ -587,6 +587,58 @@ describe("web routes", () => {
     const second = await reader.read();
     expect(decoder.decode(second.value)).toContain('"type":"message_start"');
     reader.cancel();
+  });
+
+  it("buffers live events until the initial snapshot is sent", async () => {
+    let resolveSummaries: ((summaries: SubagentSessionSummaryDto[]) => void) | undefined;
+    let summariesRequested: (() => void) | undefined;
+    const summaries = new Promise<SubagentSessionSummaryDto[]>((resolve) => {
+      resolveSummaries = resolve;
+    });
+    const requested = new Promise<void>((resolve) => {
+      summariesRequested = resolve;
+    });
+    setup({
+      subagentSessions: {
+        summaries: async () => {
+          summariesRequested?.();
+          return summaries;
+        },
+        snapshot: async () => {
+          throw new Error("not used");
+        },
+      },
+    });
+    const created = await registry.create({ cwd: projectDir });
+    const res = await handler(new Request(`http://localhost/api/sessions/${created.id}/events`));
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+
+    try {
+      const firstRead = reader.read();
+      await requested;
+      const adapter = factory.created[0]!;
+      adapter.events.forEach((listener) => listener({ type: "agent_start" } as never));
+      adapter.events.forEach((listener) => listener({ type: "message_start" } as never));
+      resolveSummaries?.([]);
+
+      const frames: Array<{ type: string }> = [];
+      let body = "";
+      while (frames.length < 3) {
+        const { done, value } = await (frames.length === 0 ? firstRead : reader.read());
+        if (done) break;
+        body += decoder.decode(value, { stream: true });
+        const chunks = body.split("\n\n");
+        body = chunks.pop() ?? "";
+        for (const chunk of chunks) {
+          frames.push(JSON.parse(chunk.slice("data: ".length)) as { type: string });
+        }
+      }
+
+      expect(frames.map((frame) => frame.type)).toEqual(["snapshot", "agent_start", "message_start"]);
+    } finally {
+      await reader.cancel();
+    }
   });
 
   it("streams file watcher events over the existing SSE connection", async () => {
