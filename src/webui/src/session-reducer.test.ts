@@ -96,6 +96,24 @@ describe("session reducer", () => {
     expect(state.isStreaming).toBe(false);
   });
 
+  it("ignores live toolResult message_start instead of rendering a system bubble", () => {
+    const state = reduceSessionEvent(emptyState, {
+      type: "message_start",
+      message: {
+        role: "toolResult",
+        toolCallId: "t1",
+        toolName: "bash",
+        content: [{ type: "text", text: "secretly duplicated output" }],
+        isError: false,
+        timestamp: 123,
+      },
+    } as never);
+
+    expect(state.messages).toEqual([]);
+    expect(state.tools).toEqual([]);
+    expect(state.isStreaming).toBe(false);
+  });
+
   it("updates the streaming message in place per token delta", () => {
     const started = reduceSessionEvent(emptyState, assistantEvent("message_start", ""));
     const first = reduceSessionEvent(started, assistantEvent("message_update", "two "));

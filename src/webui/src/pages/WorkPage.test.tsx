@@ -1095,6 +1095,27 @@ describe("WorkPage", () => {
     expect(await screen.findByText("bash")).toBeTruthy();
   });
 
+  it("does not render a live toolResult message_start as a system bubble", async () => {
+    stubEvents();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    emit({
+      type: "message_start",
+      message: {
+        role: "toolResult",
+        toolCallId: "t1",
+        toolName: "bash",
+        content: [{ type: "text", text: "duplicated bash output" }],
+        isError: false,
+      },
+    });
+    emit({ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: { command: "ls" } });
+    emit({ type: "tool_execution_end", toolCallId: "t1", toolName: "bash", result: {}, isError: false });
+    const conversation = screen.getByLabelText(/conversation/i);
+    await within(conversation).findByText("bash");
+    expect(within(conversation).queryByText("duplicated bash output")).toBeNull();
+  });
+
   it("collapses reasoning by default and expands on demand", async () => {
     stubEvents();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);

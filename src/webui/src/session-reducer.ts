@@ -237,6 +237,14 @@ function isDirectBashExecution(message: UnknownMessage): boolean {
   return message.role === "bashExecution";
 }
 
+/** Tool results render as tool rows driven by `tool_execution_*` events and the
+ * assistant message's toolCall blocks; their live `message_start` replay must
+ * not produce a `system` bubble duplicating the tool row. Mirrors the snapshot
+ * path, which folds toolResult messages into tool rows only. */
+function isToolResultMessage(message: UnknownMessage): boolean {
+  return message.role === "toolResult";
+}
+
 export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
   const subagentName = subagentNameOf(snapshot);
   const state: SessionViewState = {
@@ -423,7 +431,7 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
   switch (event.type) {
     case "message_start": {
       const message = event.message as UnknownMessage;
-      if (isDirectBashExecution(message)) return state;
+      if (isDirectBashExecution(message) || isToolResultMessage(message)) return state;
       const identity = identityFor(message);
       if (identity !== undefined && state.messages.some((candidate) => candidate.identity === identity)) return state;
       const role = message.role === "user" || message.role === "assistant" ? message.role : "system";
