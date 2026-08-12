@@ -122,14 +122,7 @@ function identityFor(message: { id?: unknown; timestamp?: unknown }): string | u
 }
 
 function contentFingerprint(message: SessionMessageView): string {
-  return JSON.stringify([
-    message.role,
-    message.text,
-    message.reasoning,
-    message.error,
-    message.agentId,
-    message.label,
-  ]);
+  return JSON.stringify([message.role, message.text, message.reasoning, message.error, message.agentId, message.label]);
 }
 
 function assistantUpdateOf(
@@ -481,9 +474,7 @@ export function mergeSnapshot(state: SessionViewState, snapshot: SessionSnapshot
       next.tools.push(appended);
     }
   }
-  const activeMessageKey = next.isStreaming
-    ? (remappedPriorActiveAssistantKey ?? snapshotActiveMessageKey)
-    : undefined;
+  const activeMessageKey = next.isStreaming ? (remappedPriorActiveAssistantKey ?? snapshotActiveMessageKey) : undefined;
   next.messages = next.messages.map((message) => ({
     ...message,
     streaming: message.role === "assistant" && message.key === activeMessageKey,
