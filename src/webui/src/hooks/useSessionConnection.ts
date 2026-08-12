@@ -124,6 +124,7 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
   const connectionTokenRef = useRef<ConnectionToken | null>(null);
   const sendOperationRef = useRef<GenerationToken | null>(null);
   const pendingStreamReadyRef = useRef<PendingStreamReady | null>(null);
+  const runGenerationRef = useRef(0);
 
   const nextGeneration = useCallback(() => {
     generationRef.current += 1;
@@ -235,7 +236,10 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
           return;
         }
         if (isAgentSessionEvent(event)) {
-          if (type === "agent_start") setStatus("running");
+          if (type === "agent_start") {
+            runGenerationRef.current += 1;
+            setStatus("running");
+          }
           if (type === "agent_settled") {
             clearTerminalState("ready");
             return;
@@ -265,6 +269,7 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
   const send = useCallback(
     async (text: string) => {
       cancelOperation(sendOperationRef.current);
+      runGenerationRef.current += 1;
       const operation: GenerationToken = { generation: nextGeneration(), active: true };
       sendOperationRef.current = operation;
       setAccepting(true);
@@ -339,6 +344,14 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
   }, [pendingOutput, view]);
 
   const abort = useCallback(async () => {
+    const targetSessionId = sessionIdRef.current;
+    const connectionGeneration = connectionTokenRef.current?.generation;
+    const runGeneration = runGenerationRef.current;
+    const ownsAbort = () =>
+      mountedRef.current &&
+      sessionIdRef.current === targetSessionId &&
+      connectionTokenRef.current?.generation === connectionGeneration &&
+      runGenerationRef.current === runGeneration;
     cancelOperation(sendOperationRef.current);
     if (mountedRef.current) {
       setAccepting(false);
@@ -346,11 +359,11 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
       pendingBaseline.current = null;
     }
     try {
-      await abortSession(sessionIdRef.current);
-      if (!mountedRef.current) return;
+      await abortSession(targetSessionId);
+      if (!ownsAbort()) return;
       clearTerminalState("ready");
     } catch (error: unknown) {
-      if (!mountedRef.current) return;
+      if (!ownsAbort()) return;
       setNotice(error instanceof Error ? error.message : String(error));
     }
   }, [cancelOperation, clearTerminalState]);

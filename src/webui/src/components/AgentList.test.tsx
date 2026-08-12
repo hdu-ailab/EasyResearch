@@ -134,6 +134,21 @@ describe("AgentList", () => {
     await waitFor(() => expect(screen.queryByDisplayValue("openai/old")).toBeNull());
   });
 
+  it("does not leave the previous session roster interactive when the current load fails", async () => {
+    const { rerender } = render(
+      <AgentList cwd="/p" statusByAgent={{ "paper-assistant": "idle", search: "idle" }} sessionId="s1" />,
+    );
+    expect(await screen.findByText("Search")).toBeVisible();
+    expect(screen.getAllByRole("combobox")).toHaveLength(2);
+    vi.mocked(api.listAgents).mockRejectedValueOnce(new Error("current project unavailable"));
+
+    rerender(<AgentList cwd="/other" statusByAgent={{ "paper-assistant": "idle" }} sessionId="s2" />);
+
+    await waitFor(() => expect(screen.queryByText("Search")).toBeNull());
+    expect(screen.getByRole("combobox")).toBeDisabled();
+    expect(screen.queryByDisplayValue("openai/gpt-4o")).toBeNull();
+  });
+
   it("shows disabled stage agents read-only and disables their model selector", async () => {
     vi.mocked(api.listAgents).mockResolvedValueOnce([
       {

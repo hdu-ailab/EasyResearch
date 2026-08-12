@@ -480,6 +480,29 @@ describe("useSessionConnection", () => {
     expect(result.current.view.messages.at(-1)?.text).not.toContain("stale");
   });
 
+  it("does not let a stale abort response terminate a newer run", async () => {
+    const pendingAbort = deferred<void>();
+    vi.mocked(api.abortSession).mockReturnValueOnce(pendingAbort.promise);
+    const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    let aborting!: Promise<void>;
+    act(() => {
+      aborting = result.current.abort();
+    });
+    emit({ type: "agent_settled" });
+    await act(async () => result.current.send("new run"));
+    emit({ type: "agent_start" });
+    emit({ type: "message_start", message: { id: "new-row", role: "assistant", content: [] } });
+
+    await act(async () => pendingAbort.resolve());
+    await aborting;
+
+    expect(result.current.status).toBe("running");
+    expect(result.current.view.isStreaming).toBe(true);
+    expect(result.current.view.activeMessageKey).toBe("new-row");
+  });
+
   it.each([
     ["typed stream error", { type: "error", error: "stream failed" }, "error"],
     ["session deactivation", { type: "session_deactivated" }, "stopped"],

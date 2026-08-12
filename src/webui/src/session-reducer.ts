@@ -709,9 +709,9 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
       const output = compactOutput(partialResult?.content);
       let changed = false;
       const tools = state.tools.map((tool) => {
-        if (tool.key !== toolCallId || !tool.running) return tool;
+        if (tool.key !== toolCallId) return tool;
         if (tool.name !== "subagent") {
-          if (!output) return tool;
+          if (!tool.running || !output) return tool;
           changed = true;
           return { ...tool, output };
         }
