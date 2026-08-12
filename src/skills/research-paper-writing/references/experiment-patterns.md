@@ -427,8 +427,8 @@ Check the status of the [EXPERIMENT_NAME] experiment:
    - Report metrics in a table (Borda scores, accuracy, etc.)
    - Compute key comparisons between methods
 5. If all experiments in this batch are complete:
-   - Record the completed runs in `experiments/experiment-record.md`
-   - Promote only formal evidence to `experiments/results/`
+   - Report whether the expected records and formal evidence exist
+   - Identify each missing `experiments/` artifact for Experiment or the Assistant to address
    - Report final summary
 6. Key question: [SPECIFIC ANALYTICAL QUESTION]
 
@@ -443,7 +443,7 @@ If nothing has changed since the last check, respond with [SILENT].
 4. **Report in structured tables** — always include key metrics in a table
 5. **Answer the key question** — each experiment should have a specific analytical question to answer when done
 6. **[SILENT] for no-news** — suppress notifications when nothing has changed
-7. **Record on completion** — update `experiments/experiment-record.md` and promote only formal evidence to `experiments/results/`
+7. **Handoff on completion** — report existing evidence and identify exact missing record/result artifacts for Experiment or the Assistant; Writing does not modify `experiments/`
 
 ### Example Monitoring Report
 
@@ -460,8 +460,9 @@ If nothing has changed since the last check, respond with [SILENT].
 Key finding: Autoreason shows +2pp improvement over single pass, while 
 best-of-6 collapses due to single-public-test selection issue.
 
-Artifacts: promoted formal metrics under `experiments/results/haiku-code/` and recorded the completed batch in `experiments/experiment-record.md`
-Next: Run significance tests on these results.
+Evidence available: `experiments/results/haiku-code/metrics.json`
+Missing artifacts: matching run entry in `experiments/experiment-record.md`; formal significance summary under `experiments/results/haiku-code/`
+Next: Experiment should record the completed run and produce the missing formal significance summary before Writing relies on this evidence.
 ```
 
 ---
