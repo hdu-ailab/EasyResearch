@@ -427,7 +427,8 @@ Check the status of the [EXPERIMENT_NAME] experiment:
    - Report metrics in a table (Borda scores, accuracy, etc.)
    - Compute key comparisons between methods
 5. If all experiments in this batch are complete:
-   - git add -A && git commit -m "[COMMIT_MESSAGE]" && git push
+   - Record the completed runs in `experiments/experiment-record.md`
+   - Promote only formal evidence to `experiments/results/`
    - Report final summary
 6. Key question: [SPECIFIC ANALYTICAL QUESTION]
 
@@ -442,7 +443,7 @@ If nothing has changed since the last check, respond with [SILENT].
 4. **Report in structured tables** — always include key metrics in a table
 5. **Answer the key question** — each experiment should have a specific analytical question to answer when done
 6. **[SILENT] for no-news** — suppress notifications when nothing has changed
-7. **Commit on completion** — every completed batch gets committed with a descriptive message
+7. **Record on completion** — update `experiments/experiment-record.md` and promote only formal evidence to `experiments/results/`
 
 ### Example Monitoring Report
 
@@ -459,7 +460,7 @@ If nothing has changed since the last check, respond with [SILENT].
 Key finding: Autoreason shows +2pp improvement over single pass, while 
 best-of-6 collapses due to single-public-test selection issue.
 
-Committed: `git commit -m "Add Haiku code results (150 problems, 4 strategies)"`
+Artifacts: promoted formal metrics under `experiments/results/haiku-code/` and recorded the completed batch in `experiments/experiment-record.md`
 Next: Run significance tests on these results.
 ```
 
@@ -575,7 +576,7 @@ import scienceplots  # registers the styles
 with plt.style.context(['science', 'no-latex']):
     fig, ax = plt.subplots(figsize=(3.5, 2.5))  # single-column width
     # ... plot ...
-    fig.savefig('paper/fig_results.pdf', bbox_inches='tight')
+    fig.savefig('figures/fig_results.pdf', bbox_inches='tight')
 ```
 
 **Option B: Manual rcParams** (when you need full control):
@@ -675,7 +676,7 @@ with plt.style.context(style):
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     
-    fig.savefig('paper/fig_comparison.pdf', bbox_inches='tight')
+    fig.savefig('figures/fig_comparison.pdf', bbox_inches='tight')
 ```
 
 ### Complete Example: Convergence/Trajectory Line Chart
@@ -702,7 +703,7 @@ with plt.style.context(style):
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     
-    fig.savefig('paper/fig_trajectory.pdf', bbox_inches='tight')
+    fig.savefig('figures/fig_trajectory.pdf', bbox_inches='tight')
 ```
 
 ### Output Rules
