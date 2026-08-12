@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,7 @@ export interface SkillResolverDeps {
   homeDir?: string;
   bundledSkillsDir?: string;
   enableDotAgentsSkill?: boolean;
+  includeProject?: boolean;
 }
 
 function expandHome(path: string, home?: string): string {
@@ -21,7 +22,7 @@ function isPathRef(value: string): boolean {
 
 function skillSites(deps: SkillResolverDeps): string[] {
   return [
-    join(deps.cwd, ".easyresearch", "skills"),
+    ...(deps.includeProject === false ? [] : [join(deps.cwd, ".easyresearch", "skills")]),
     join(deps.agentDir, "skills"),
     ...(deps.enableDotAgentsSkill === true ? [join(deps.homeDir ?? homedir(), ".agents", "skills")] : []),
     deps.bundledSkillsDir ?? dirnameFromModule(),
@@ -39,7 +40,7 @@ export function defaultSkillDirectories(deps: SkillResolverDeps): string[] {
   return skillSites(deps).filter((site, index, sites) => sites.indexOf(site) === index && existsSync(site));
 }
 
-function skillNamesInDirectory(root: string): string[] {
+function skillNamesInDirectory(root: string, includeRootFiles = true): string[] {
   if (!existsSync(root)) return [];
   const names: string[] = [];
   let entries;
@@ -49,10 +50,24 @@ function skillNamesInDirectory(root: string): string[] {
     return names;
   }
   for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const skillRoot = join(root, entry.name);
-    if (existsSync(join(skillRoot, "SKILL.md"))) names.push(entry.name);
-    else names.push(...skillNamesInDirectory(skillRoot));
+    const entryPath = join(root, entry.name);
+    let isDirectory = entry.isDirectory();
+    let isFile = entry.isFile();
+    if (entry.isSymbolicLink()) {
+      try {
+        const stats = statSync(entryPath);
+        isDirectory = stats.isDirectory();
+        isFile = stats.isFile();
+      } catch {
+        continue;
+      }
+    }
+    if (isDirectory) {
+      if (validSkillPath(entryPath)) names.push(entry.name);
+      else names.push(...skillNamesInDirectory(entryPath, false));
+    } else if (includeRootFiles && isFile && entry.name.endsWith(".md")) {
+      names.push(entry.name.slice(0, -3));
+    }
   }
   return names;
 }
@@ -97,14 +112,33 @@ function dirnameFromModule(): string {
 
 function resolveOne(value: string, deps: SkillResolverDeps): string | undefined {
   if (isPathRef(value)) {
-    const target = resolve(expandHome(value, deps.homeDir));
-    return existsSync(target) ? target : undefined;
+    const expanded = expandHome(value, deps.homeDir);
+    return validSkillPath(resolve(deps.cwd, expanded));
   }
   for (const site of skillSites(deps)) {
-    const target = join(site, value);
-    if (existsSync(target)) return target;
+    const directory = validSkillPath(join(site, value));
+    if (directory) return directory;
+    const file = validSkillPath(join(site, `${value}.md`));
+    if (file) return file;
   }
   return undefined;
+}
+
+function validSkillPath(target: string): string | undefined {
+  if (!existsSync(target)) return undefined;
+  try {
+    const stats = statSync(target);
+    if (stats.isDirectory()) {
+      try {
+        return statSync(join(target, "SKILL.md")).isFile() ? target : undefined;
+      } catch {
+        return undefined;
+      }
+    }
+    return stats.isFile() && target.endsWith(".md") ? target : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function resolveSkillDirectories(skills: string[] | undefined, deps: SkillResolverDeps): string[] | undefined {

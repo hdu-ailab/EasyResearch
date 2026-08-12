@@ -196,6 +196,20 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
     setAgents(next);
   };
 
+  const refreshDiagnostics = async (scope = diagnosticScope) => {
+    const request = ++diagnosticRequest.current;
+    setDiagnosticAgents([]);
+    setDiagnosticError(null);
+    try {
+      const next = await listAgents(scope === "global" ? undefined : scope);
+      if (request === diagnosticRequest.current) setDiagnosticAgents(next);
+    } catch (e) {
+      if (request === diagnosticRequest.current) {
+        setDiagnosticError(e instanceof Error ? e.message : String(e));
+      }
+    }
+  };
+
   const openAgentEditor = async (name: string) => {
     setError(null);
     try {
@@ -210,7 +224,7 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
     setBusy(true);
     try {
       await writeAgentResource(agentEditor.name, content);
-      await refreshAgents();
+      await Promise.all([refreshAgents(), refreshDiagnostics()]);
       setAgentEditor(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -226,6 +240,7 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
       const savedAgent = await writeAgentResource(agent.name, content);
       setResourceAgents((current) => current.map((item) => (item.name === savedAgent.name ? savedAgent : item)));
       setAgents((current) => current.map((item) => (item.name === savedAgent.name ? savedAgent : item)));
+      await refreshDiagnostics();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -242,7 +257,7 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
       setAgentEditor(created);
       setResourceAgents((current) => [...current.filter((item) => item.name !== created.name), created]);
       setAgents((current) => [...current.filter((item) => item.name !== created.name), created]);
-      await refreshAgents();
+      await Promise.all([refreshAgents(), refreshDiagnostics()]);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -263,7 +278,7 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
     setBusy(true);
     try {
       await writeSkillResource(skillEditor.name, content);
-      setSkills(await listSkillResources());
+      await Promise.all([listSkillResources().then(setSkills), refreshDiagnostics()]);
       setSkillEditor(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -273,18 +288,8 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
   };
 
   const selectDiagnosticScope = async (scope: string) => {
-    const request = ++diagnosticRequest.current;
     setDiagnosticScope(scope);
-    setDiagnosticAgents([]);
-    setDiagnosticError(null);
-    try {
-      const next = await listAgents(scope === "global" ? undefined : scope);
-      if (request === diagnosticRequest.current) setDiagnosticAgents(next);
-    } catch (e) {
-      if (request === diagnosticRequest.current) {
-        setDiagnosticError(e instanceof Error ? e.message : String(e));
-      }
-    }
+    await refreshDiagnostics(scope);
   };
 
   const setAgentModel = (name: string, value: string) => {
