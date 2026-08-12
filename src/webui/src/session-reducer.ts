@@ -1,5 +1,6 @@
 import type { AgentSessionEvent, MessageUpdateEvent } from "@earendil-works/pi-coding-agent";
 import type { SessionSnapshotDto, SubagentSessionSummaryDto } from "../../web/contracts";
+import { PAPER_ASSISTANT_AGENT } from "./agent-identity";
 
 export interface ToolView {
   key: string;
@@ -226,7 +227,7 @@ function usableText(text: string | undefined): string | undefined {
  * assistant, replies belong to the agent running that line. */
 function labelFor(role: string, subagentName?: string): string | undefined {
   if (!subagentName) return undefined;
-  return role === "user" ? "Assistant" : subagentName;
+  return role === "user" ? PAPER_ASSISTANT_AGENT : subagentName;
 }
 
 function subagentNameOf(snapshot: SessionSnapshotDto): string | undefined {

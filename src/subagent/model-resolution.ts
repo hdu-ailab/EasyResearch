@@ -12,7 +12,7 @@ export function resolveEffectiveModel(
   override: string | null | undefined,
   projectAgentModels: Record<string, string> | undefined,
   globalAgentModels: Record<string, string> | undefined,
-  assistantModel: string | undefined,
+  paperAssistantModel: string | undefined,
   agentName: string,
 ): ModelSource | null {
   if (typeof override === "string") return { model: override, source: "override" };
@@ -20,7 +20,7 @@ export function resolveEffectiveModel(
   if (project) return { model: project, source: "project" };
   const global = globalAgentModels?.[agentName];
   if (global) return { model: global, source: "global" };
-  if (assistantModel) return { model: assistantModel, source: "inherit" };
+  if (paperAssistantModel) return { model: paperAssistantModel, source: "inherit" };
   return null;
 }
 
@@ -47,7 +47,7 @@ export async function resolveModelForSpawn(
     sessionManager: { getEntries(): Array<{ type: string; customType?: string; data?: unknown }> };
   },
   agentName: string,
-  assistantModel: string | undefined,
+  paperAssistantModel: string | undefined,
 ): Promise<string | undefined> {
   let override: string | null | undefined;
   for (const entry of ctx.sessionManager.getEntries()) {
@@ -59,5 +59,5 @@ export async function resolveModelForSpawn(
   }
   const project = await extractAgentModels(ctx.cwd);
   const global = await extractAgentModels(ctx.cwd, getAgentDir(), false);
-  return resolveEffectiveModel(override, project, global, assistantModel, agentName)?.model;
+  return resolveEffectiveModel(override, project, global, paperAssistantModel, agentName)?.model;
 }

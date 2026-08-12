@@ -110,15 +110,16 @@ describe("WorkPage", () => {
     vi.mocked(api.setAgentModel).mockReset();
     vi.mocked(api.listAgents).mockResolvedValue([
       {
-        name: "assistant",
+        name: "paper-assistant",
         description: "Runs the pipeline",
         enabled: true,
         builtin: true,
         source: "bundled",
-        filePath: "assistant.md",
+        filePath: "paper-assistant.md",
         tools: ["subagent"],
         effectiveTools: ["subagent"],
         effectiveSkills: [],
+        missingSkills: [],
       },
       {
         name: "search",
@@ -129,6 +130,7 @@ describe("WorkPage", () => {
         filePath: "search.md",
         effectiveTools: [],
         effectiveSkills: [],
+        missingSkills: [],
       },
       {
         name: "experiment",
@@ -139,6 +141,7 @@ describe("WorkPage", () => {
         filePath: "experiment.md",
         effectiveTools: [],
         effectiveSkills: [],
+        missingSkills: [],
         subagents: ["search"],
       },
       {
@@ -150,6 +153,7 @@ describe("WorkPage", () => {
         filePath: "writing.md",
         effectiveTools: [],
         effectiveSkills: [],
+        missingSkills: [],
         subagents: ["search", "figures"],
       },
       {
@@ -161,6 +165,7 @@ describe("WorkPage", () => {
         filePath: "figures.md",
         effectiveTools: [],
         effectiveSkills: [],
+        missingSkills: [],
       },
     ]);
     vi.mocked(api.listModels).mockResolvedValue([
@@ -168,7 +173,7 @@ describe("WorkPage", () => {
       { provider: "anthropic", id: "claude" },
     ]);
     vi.mocked(api.getEffectiveModels).mockResolvedValue([
-      { name: "assistant", model: "openai/gpt-4o", source: "inherit" },
+      { name: "paper-assistant", model: "openai/gpt-4o", source: "inherit" },
       { name: "search", model: "anthropic/claude", source: "override" },
       { name: "experiment", model: null, source: "inherit" },
       { name: "writing", model: null, source: "inherit" },
@@ -1739,7 +1744,7 @@ describe("WorkPage", () => {
     expect(within(region).queryByText("search, figures")).toBeNull();
   });
 
-  it("keeps the assistant card when the agents endpoint fails", async () => {
+  it("keeps the Paper Assistant card when the agents endpoint fails", async () => {
     const user = userEvent.setup();
     vi.mocked(api.listAgents).mockRejectedValue(new Error("boom"));
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);

@@ -9,10 +9,10 @@ import { readWebSessionIdleTimeout } from "./session-settings";
 import type { AgentDto, SessionSummaryDto } from "./contracts";
 import type { AgentConfig } from "../subagent/agents";
 import { readEffectiveWebuiSettings, updateWebuiSettings } from "./webui-settings";
-import { discoverAgents } from "../subagent/agents";
+import { discoverAgents, discoverGlobalAgents, PAPER_ASSISTANT_AGENT } from "../subagent/agents";
 import {
   readAgentModels,
-  readAssistantDefaults,
+  readPaperAssistantDefaults,
   readSessionOverrides,
   resolveAgentModelsService,
   routeSetAgentModel,
@@ -29,13 +29,6 @@ export interface Server {
 
 const WEBUI_DIST = join(fileURLToPath(new URL("..", import.meta.url)), "webui", "dist");
 
-/**
- * The assistant is the agent whose session line the Web session runs. Its
- * name matches the hardcoded assistant definition file
- * (`<agent-dir>/agents/assistant.md`, assistant-extension.ts).
- */
-const ASSISTANT_AGENT = "assistant";
-
 export function agentToDto(agent: AgentConfig): AgentDto {
   return {
     name: agent.name,
@@ -50,7 +43,13 @@ export function agentToDto(agent: AgentConfig): AgentDto {
     subagents: agent.subagents,
     skills: agent.skills,
     effectiveSkills: agent.effectiveSkills,
+    missingSkills: agent.missingSkills,
   };
+}
+
+export async function discoverAgentsForWeb(cwd: string | undefined, agentDir: string): Promise<AgentDto[]> {
+  const result = cwd ? await discoverAgents({ cwd, agentDir }) : await discoverGlobalAgents({ agentDir });
+  return result.agents.map(agentToDto);
 }
 
 export function isKnownAgentName(agents: AgentConfig[], name: string): boolean {
@@ -124,7 +123,7 @@ export async function startServer(): Promise<Server> {
     readEntries: (sessionPath) => readSessionOverrides(sessionPath),
     projectAgentModels: (cwd) => readAgentModels(config, { scope: "project", cwd }),
     globalAgentModels: () => readAgentModels(config, { scope: "global" }),
-    assistantModel: (id) => registry.getAssistantModel(id),
+    paperAssistantModel: (id) => registry.getPaperAssistantModel(id),
     getCwd: (id) => registry.getCwd(id),
   });
   const services: RouteServices = {
@@ -143,11 +142,12 @@ export async function startServer(): Promise<Server> {
     setAgentModel: (sessionId, agentName, model) =>
       routeSetAgentModel(
         {
-          isAssistant: (name) => name === ASSISTANT_AGENT,
-          isKnownAgent: async (name) => isKnownAgentName((await discoverAgents()).agents, name),
-          setAssistant: (provider, modelId) => registry.setModel(sessionId, provider, modelId),
+          isPaperAssistant: (name) => name === PAPER_ASSISTANT_AGENT,
+          isKnownAgent: async (name) =>
+            isKnownAgentName((await discoverAgents({ cwd: await registry.getCwd(sessionId) })).agents, name),
+          setPaperAssistant: (provider, modelId) => registry.setModel(sessionId, provider, modelId),
           writeOverride: (agentName, model) => agentModels.set(sessionId, agentName, model),
-          assistantDefaults: async () => readAssistantDefaults(config, await registry.getCwd(sessionId)),
+          paperAssistantDefaults: async () => readPaperAssistantDefaults(config, await registry.getCwd(sessionId)),
         },
         agentName,
         model,
@@ -167,7 +167,7 @@ export async function startServer(): Promise<Server> {
     config,
     subagentSessions,
     logger,
-    listAgents: async (cwd) => (await discoverAgents({ cwd })).agents.map(agentToDto),
+    listAgents: (cwd) => discoverAgentsForWeb(cwd, agentDir),
   };
   const handler = createRouteHandler(services);
 

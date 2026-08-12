@@ -76,7 +76,7 @@ class FakeRpcClient {
 }
 
 const cliPath = fileURLToPath(new URL("../runtime/pi-bootstrap.mjs", import.meta.url));
-const extensionPath = fileURLToPath(new URL("../runtime/assistant-extension.ts", import.meta.url));
+const extensionPath = fileURLToPath(new URL("../runtime/paper-assistant-extension.ts", import.meta.url));
 
 describe("PiRpcSessionFactory", () => {
   beforeEach(() => {
@@ -113,6 +113,14 @@ describe("PiRpcSessionFactory", () => {
     expect(client.options.args).toContain("--approve");
     expect(client.options.args).not.toContain("--no-approve");
     expect(client.options.args).toContain("--no-skills");
+  });
+
+  it("keeps skill discovery disabled at the RPC bootstrap boundary", () => {
+    const factory = new PiRpcSessionFactory(FakeRpcClient);
+    factory.create({ cwd: "/project-with-agent-config" });
+    const args = FakeRpcClient.instances[0]!.options.args;
+    expect(args).toContain("--no-skills");
+    expect(args).not.toContain("--skill");
   });
 });
 

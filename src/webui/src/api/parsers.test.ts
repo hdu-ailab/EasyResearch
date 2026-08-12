@@ -34,7 +34,16 @@ describe("API response parsers", () => {
 
   it("parses agent and model catalog rows with optional metadata", () => {
     expect(
-      parseAgents([{ name: "search", description: "Finds papers", tools: ["web"], subagents: [], skills: ["arxiv"] }]),
+      parseAgents([
+        {
+          name: "search",
+          description: "Finds papers",
+          tools: ["web"],
+          subagents: [],
+          skills: ["arxiv"],
+          missingSkills: [],
+        },
+      ]),
     ).toEqual([
       {
         name: "search",
@@ -48,6 +57,7 @@ describe("API response parsers", () => {
         filePath: "",
         effectiveTools: ["web"],
         effectiveSkills: ["arxiv"],
+        missingSkills: [],
       },
     ]);
     expect(parseModels({ models: [{ provider: "openai", id: "gpt-4o" }] })).toEqual([
@@ -65,15 +75,15 @@ describe("API response parsers", () => {
     expect(
       parseWebuiSettings({
         agentModels: { search: "openai/gpt-4o" },
-        assistantModel: null,
-        effectiveAssistantModel: "openai/gpt-4o",
+        paperAssistantModel: null,
+        effectivePaperAssistantModel: "openai/gpt-4o",
       }),
     ).toEqual({
       agentModels: { search: "openai/gpt-4o" },
-      assistantModel: null,
-      effectiveAssistantModel: "openai/gpt-4o",
+      paperAssistantModel: null,
+      effectivePaperAssistantModel: "openai/gpt-4o",
     });
-    expect(() => parseWebuiSettings({ agentModels: {}, assistantModel: 42, effectiveAssistantModel: null })).toThrow();
+    expect(() => parseWebuiSettings({ agentModels: {}, paperAssistantModel: 42, effectivePaperAssistantModel: null })).toThrow();
   });
 
   it("parses directory, file, and text-content responses", () => {

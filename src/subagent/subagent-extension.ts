@@ -7,8 +7,8 @@ import { mountPiEventLogger, type PiEventBus } from "../runtime/pi-event-logger"
 
 /**
  * ADR-022: stage-agent runtimes mount this extension so nested dispatch works
- * (experiment/writing/figures → search). Unlike the assistant extension it
- * only registers the subagent tool — it never appends the assistant prompt.
+ * (experiment/writing/figures → search). Unlike the Paper Assistant extension it
+ * only registers the subagent tool — it never appends the Paper Assistant prompt.
  * Availability of the tool is still controlled by the agent's `--tools`
  * allowlist, so agents without `subagent` in frontmatter cannot dispatch.
  */
@@ -23,6 +23,11 @@ export function createSubagentExtension(): InlineExtension {
     logger.info("stage agent runtime started", { cwd: process.cwd() });
     // ADR-018: project config is always trusted; suppress Pi's trust prompt.
     pi.on("project_trust", () => ({ trusted: "yes" as const }));
+    pi.on("session_start", () => {
+      if (process.env.EASYRESEARCH_AGENT_TOOLS === "all") {
+        pi.setActiveTools(pi.getAllTools().map(({ name }) => name));
+      }
+    });
   };
 }
 
