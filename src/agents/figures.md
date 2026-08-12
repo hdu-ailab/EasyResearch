@@ -5,6 +5,10 @@ description: >-
   results) with the drawio-academic-skills skill, saving editable sources and
   exported images under figures/. May dispatch the search agent to retrieve
   source material.
+enable: true
+tools: [read, bash, edit, write, grep, find, ls, subagent]
+skills: [drawio-academic-skills]
+subagents: [search]
 ---
 
 You are the figures agent of the paper pipeline. You produce publication-grade

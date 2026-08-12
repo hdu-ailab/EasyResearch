@@ -40,9 +40,16 @@ export function agentToDto(agent: AgentConfig): AgentDto {
   return {
     name: agent.name,
     description: agent.description,
+    enabled: agent.enabled,
+    builtin: agent.builtin,
+    source: agent.source,
+    filePath: agent.filePath,
+    model: agent.model,
     tools: agent.tools,
+    effectiveTools: agent.effectiveTools,
     subagents: agent.subagents,
     skills: agent.skills,
+    effectiveSkills: agent.effectiveSkills,
   };
 }
 
@@ -112,7 +119,7 @@ export async function startServer(): Promise<Server> {
     },
   });
   const agentModels = resolveAgentModelsService({
-    listAgents: async () => (await discoverAgents()).agents.map((a) => ({ name: a.name })),
+    listAgents: async (cwd?: string) => (await discoverAgents({ cwd })).agents.map((a) => ({ name: a.name })),
     getSessionPath: (id) => registry.getSessionPath(id),
     readEntries: (sessionPath) => readSessionOverrides(sessionPath),
     projectAgentModels: (cwd) => readAgentModels(config, { scope: "project", cwd }),
@@ -160,7 +167,7 @@ export async function startServer(): Promise<Server> {
     config,
     subagentSessions,
     logger,
-    listAgents: async () => (await discoverAgents()).agents.map(agentToDto),
+    listAgents: async (cwd) => (await discoverAgents({ cwd })).agents.map(agentToDto),
   };
   const handler = createRouteHandler(services);
 

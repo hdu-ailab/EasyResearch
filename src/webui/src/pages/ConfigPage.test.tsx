@@ -7,114 +7,102 @@ import { ConfigPage } from "./ConfigPage";
 
 vi.mock("../api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api")>();
-  return { ...actual, listConfigProjects: vi.fn(), readConfigFile: vi.fn(), writeConfigFile: vi.fn() };
+  return {
+    ...actual,
+    listConfigProjects: vi.fn(),
+    listConfig: vi.fn(),
+    readConfigFile: vi.fn(),
+    writeConfigFile: vi.fn(),
+    createConfigDirectory: vi.fn(),
+  };
 });
 
 describe("ConfigPage", () => {
   beforeEach(() => {
-    vi.mocked(api.listConfigProjects).mockReset();
-    vi.mocked(api.readConfigFile).mockReset();
-    vi.mocked(api.writeConfigFile).mockReset();
-    vi.mocked(api.listConfigProjects).mockResolvedValue({
-      home: "/home/u",
-      projects: [{ cwd: "/home/u/proj" }, { cwd: "/tmp/other" }],
-    });
-    vi.mocked(api.readConfigFile).mockResolvedValue({
-      path: "settings.json",
-      content: '{"easyresearch":{"agentModels":{"search":"a/1"}}}',
-    });
+    vi.mocked(api.listConfigProjects)
+      .mockReset()
+      .mockResolvedValue({
+        home: "/home/u",
+        projects: [{ cwd: "/home/u/proj" }, { cwd: "/tmp/other" }],
+      });
+    vi.mocked(api.listConfig)
+      .mockReset()
+      .mockResolvedValue([
+        { name: "settings.json", path: "settings.json", type: "file" },
+        { name: "notes.md", path: "notes.md", type: "file" },
+        { name: "agents", path: "agents", type: "directory" },
+      ]);
+    vi.mocked(api.readConfigFile).mockReset().mockResolvedValue({ path: "notes.md", content: "# Notes\n" });
+    vi.mocked(api.writeConfigFile).mockReset().mockResolvedValue();
+    vi.mocked(api.createConfigDirectory).mockReset().mockResolvedValue();
   });
 
-  it("navigates Home and starts config content 4px below the topbar", async () => {
-    const onHome = vi.fn();
-    const user = userEvent.setup();
-    render(<ConfigPage onBack={onHome} />);
-
-    await user.click(screen.getByRole("button", { name: /back to home/i }));
-    expect(onHome).toHaveBeenCalledOnce();
-    const root = await screen.findByRole("region", { name: /settings root/i });
-    expect(root.parentElement).toHaveClass("px-4", "pb-4", "pt-[4px]");
-    expect(root.parentElement).not.toHaveClass("p-4");
-  });
-
-  it("pins home on top labeled 全局配置", async () => {
+  it("lists the global root before project roots", async () => {
     render(<ConfigPage onBack={() => {}} />);
-    const list = await screen.findByRole("list", { name: /project folders/i });
+    const list = await screen.findByRole("list", { name: /project folder/i });
     const items = within(list).getAllByRole("listitem");
-    expect(items[0]).toHaveTextContent(/全局配置/);
+    expect(items[0]).toHaveTextContent(/Global/);
     expect(items[0]).toHaveTextContent("/home/u");
     expect(items[1]).toHaveTextContent("/home/u/proj");
   });
 
-  it("opens settings.json editor when a project is clicked, preserves other fields on save", async () => {
+  it("opens a project and reads a Markdown file without JSON parsing", async () => {
     const user = userEvent.setup();
     render(<ConfigPage onBack={() => {}} />);
-    await user.click(await screen.findByText("/home/u/proj"));
-    const editor = await screen.findByRole("textbox", { name: /settings.json/i });
-    expect(editor).toHaveValue(JSON.stringify({ easyresearch: { agentModels: { search: "a/1" } } }, null, 2));
-    await user.clear(editor);
-    fireEvent.change(editor, {
-      target: { value: '{"easyresearch":{"agentModels":{"search":"b/2"}},"theme":"light"}' },
-    });
+    await user.click(await screen.findByRole("button", { name: /\/home\/u\/proj/ }));
+    await user.click(screen.getByRole("button", { name: "notes.md" }));
+    expect(api.readConfigFile).toHaveBeenCalledWith("project", "/home/u/proj", "notes.md");
+
+    vi.mocked(api.listConfig).mockResolvedValueOnce([{ name: "notes.md", path: "notes.md", type: "file" }]);
+    await user.click(screen.getByRole("button", { name: /back to files/i }));
+    await user.click(screen.getByRole("button", { name: /\/home\/u\/proj/ }));
+    await user.click(screen.getByRole("button", { name: "notes.md" }));
+    expect(await screen.findByRole("textbox", { name: /editor/i })).toHaveValue("# Notes\n");
+  });
+
+  it("saves Markdown verbatim", async () => {
+    const user = userEvent.setup();
+    render(<ConfigPage onBack={() => {}} />);
+    await user.click(await screen.findByRole("button", { name: /\/home\/u\/proj/ }));
+    await user.click(screen.getByRole("button", { name: "notes.md" }));
+    const editor = await screen.findByRole("textbox", { name: /editor/i });
+    fireEvent.change(editor, { target: { value: "---\nname: reviewer\n---\n# Draft\n" } });
     await user.click(screen.getByRole("button", { name: /save/i }));
     expect(api.writeConfigFile).toHaveBeenCalledWith(
       "project",
       "/home/u/proj",
-      "settings.json",
-      '{"easyresearch":{"agentModels":{"search":"b/2"}},"theme":"light"}',
+      "notes.md",
+      "---\nname: reviewer\n---\n# Draft\n",
     );
   });
 
-  it("shows field help when ? is clicked", async () => {
+  it("rejects malformed JSON while allowing other text", async () => {
     const user = userEvent.setup();
+    vi.mocked(api.readConfigFile).mockResolvedValue({ path: "settings.json", content: "{\n" });
     render(<ConfigPage onBack={() => {}} />);
-    await user.click(await screen.findByText("/home/u/proj"));
-    await user.click(await screen.findByRole("button", { name: /\?/i }));
-    const dialog = await screen.findByRole("dialog", { name: /settings help/i });
-    expect(within(dialog).getByText(/agents\.<name>\.model/i)).toBeTruthy();
-    expect(within(dialog).getByText(/example/i)).toBeTruthy();
+    await user.click(await screen.findByRole("button", { name: /\/home\/u\/proj/ }));
+    await user.click(screen.getByRole("button", { name: "settings.json" }));
+    await user.click(screen.getByRole("button", { name: /save/i }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/invalid json/i);
+    expect(api.writeConfigFile).not.toHaveBeenCalled();
   });
 
-  it("? overlay shows a wrapped example with the nested agent registry model shape", async () => {
+  it("creates a directory under the current config path", async () => {
     const user = userEvent.setup();
     render(<ConfigPage onBack={() => {}} />);
-    await user.click(await screen.findByText("/home/u/proj"));
-    await user.click(await screen.findByRole("button", { name: /\?/i }));
-    const dialog = await screen.findByRole("dialog", { name: /settings help/i });
-    const example = dialog.querySelector("pre");
-    expect(example?.className).toContain("whitespace-pre-wrap");
-    expect(JSON.parse(example?.textContent ?? "")).toEqual({
-      easyresearch: {
-        agents: {
-          search: { model: "provider/model-id" },
-        },
-      },
-    });
+    await user.click(await screen.findByRole("button", { name: /\/home\/u\/proj/ }));
+    await user.click(screen.getByTitle("New folder"));
+    await user.type(screen.getByRole("dialog").querySelector("input")!, "skills/reviewer");
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: /confirm/i }));
+    expect(api.createConfigDirectory).toHaveBeenCalledWith("project", "/home/u/proj", "skills/reviewer");
   });
 
-  it("stays on the projects list when a read fails with a non-404 error, hiding the stale editor", async () => {
+  it("keeps the editor error visible when a file read fails", async () => {
     const user = userEvent.setup();
-    vi.mocked(api.readConfigFile)
-      .mockResolvedValueOnce({ path: "settings.json", content: '{"old":1}' })
-      .mockRejectedValueOnce(new ApiError(500, { error: "boom" }));
+    vi.mocked(api.readConfigFile).mockRejectedValueOnce(new ApiError(500, { error: "boom" }));
     render(<ConfigPage onBack={() => {}} />);
-    await user.click(await screen.findByRole("button", { name: /全局配置/ }));
-    expect(await screen.findByRole("textbox", { name: /settings.json/i })).toHaveValue(
-      JSON.stringify({ old: 1 }, null, 2),
-    );
-    await user.click(screen.getByRole("button", { name: /back to projects/i }));
-    await user.click(await screen.findByText("/home/u/proj"));
-    expect(await screen.findByRole("list", { name: /project folders/i })).toBeTruthy();
-    expect(screen.queryByRole("textbox", { name: /settings.json/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: /save/i })).toBeNull();
-    expect(screen.getByRole("alert")).toHaveTextContent(/boom/);
-  });
-
-  it("opens an empty editor when the file does not exist (404)", async () => {
-    const user = userEvent.setup();
-    vi.mocked(api.readConfigFile).mockRejectedValueOnce(new ApiError(404, { error: "not found" }));
-    render(<ConfigPage onBack={() => {}} />);
-    await user.click(await screen.findByText("/home/u/proj"));
-    expect(await screen.findByRole("textbox", { name: /settings.json/i })).toHaveValue("{}");
+    await user.click(await screen.findByRole("button", { name: /\/home\/u\/proj/ }));
+    await user.click(screen.getByRole("button", { name: "settings.json" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("boom");
   });
 });

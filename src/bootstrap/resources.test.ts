@@ -22,19 +22,13 @@ afterEach(() => {
 });
 
 describe("bootstrapBundledResources", () => {
-  it("copies only missing agents and skills and then no-ops", async () => {
+  it("does not seed bundled resources during startup", async () => {
     const { agentDir, bundledAgentsDir, bundledSkillsDir } = setUpFixture();
 
-    const first = await bootstrapBundledResources({ agentDir, bundledAgentsDir, bundledSkillsDir });
-    expect(first.copiedAgents).toEqual(["assistant.md"]);
-    expect(first.copiedSkills).toEqual(["paper-search"]);
-
-    writeFileSync(join(agentDir, "agents", "assistant.md"), "user edit");
-    writeFileSync(join(agentDir, "skills", "paper-search", "SKILL.md"), "user skill");
-    const second = await bootstrapBundledResources({ agentDir, bundledAgentsDir, bundledSkillsDir });
-    expect(second).toEqual({ copiedAgents: [], copiedSkills: [] });
-    expect(readFileSync(join(agentDir, "agents", "assistant.md"), "utf8")).toBe("user edit");
-    expect(readFileSync(join(agentDir, "skills", "paper-search", "SKILL.md"), "utf8")).toBe("user skill");
+    const result = await bootstrapBundledResources({ agentDir, bundledAgentsDir, bundledSkillsDir });
+    expect(result).toEqual({ copiedAgents: [], copiedSkills: [] });
+    expect(existsSync(join(agentDir, "agents"))).toBe(false);
+    expect(existsSync(join(agentDir, "skills"))).toBe(false);
   });
 
   it("skips machine-local artifacts when copying a fresh skill", async () => {
@@ -48,11 +42,6 @@ describe("bootstrapBundledResources", () => {
     writeFileSync(join(skillSrc, "scripts", "stale.pyc"), "");
 
     await bootstrapBundledResources({ agentDir, bundledAgentsDir, bundledSkillsDir });
-
-    const target = join(agentDir, "skills", "paper-search");
-    expect(readFileSync(join(target, "scripts", "run.py"), "utf8")).toBe("print('ok')\n");
-    expect(existsSync(join(target, "scripts", ".venv"))).toBe(false);
-    expect(existsSync(join(target, "scripts", "__pycache__"))).toBe(false);
-    expect(existsSync(join(target, "scripts", "stale.pyc"))).toBe(false);
+    expect(existsSync(join(agentDir, "skills"))).toBe(false);
   });
 });

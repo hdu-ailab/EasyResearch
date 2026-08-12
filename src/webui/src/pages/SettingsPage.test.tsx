@@ -15,6 +15,13 @@ vi.mock("../api", async (importOriginal) => {
     updateWebuiSettings: vi.fn(),
     listAgents: vi.fn(),
     listModels: vi.fn(),
+    listAgentResources: vi.fn(),
+    readAgentResource: vi.fn(),
+    writeAgentResource: vi.fn(),
+    createAgentResource: vi.fn(),
+    listSkillResources: vi.fn(),
+    readSkillResource: vi.fn(),
+    writeSkillResource: vi.fn(),
   };
 });
 
@@ -24,6 +31,13 @@ beforeEach(() => {
   vi.mocked(api.updateWebuiSettings).mockReset();
   vi.mocked(api.listAgents).mockReset();
   vi.mocked(api.listModels).mockReset();
+  vi.mocked(api.listAgentResources).mockReset();
+  vi.mocked(api.readAgentResource).mockReset();
+  vi.mocked(api.writeAgentResource).mockReset();
+  vi.mocked(api.createAgentResource).mockReset();
+  vi.mocked(api.listSkillResources).mockReset();
+  vi.mocked(api.readSkillResource).mockReset();
+  vi.mocked(api.writeSkillResource).mockReset();
   vi.mocked(api.getWebuiSettings).mockResolvedValue({
     agentModels: { search: "openai/gpt-4o" },
     assistantModel: null,
@@ -38,6 +52,46 @@ beforeEach(() => {
     { provider: "openai", id: "gpt-4o" },
     { provider: "anthropic", id: "claude-sonnet-4" },
   ] as never);
+  vi.mocked(api.listAgentResources).mockResolvedValue([] as never);
+  vi.mocked(api.readAgentResource).mockResolvedValue({
+    name: "search",
+    description: "Searches",
+    enabled: true,
+    builtin: true,
+    source: "bundled",
+    filePath: "src/agents/search.md",
+    effectiveTools: ["read", "web-search"],
+    effectiveSkills: ["paper-search", "arxiv"],
+    content: "---\nname: search\ndescription: Searches\nenable: true\n---\nPrompt\n",
+  });
+  vi.mocked(api.writeAgentResource).mockResolvedValue({} as never);
+  vi.mocked(api.createAgentResource).mockResolvedValue({
+    name: "reviewer",
+    description: "reviewer agent",
+    enabled: true,
+    builtin: false,
+    source: "global",
+    filePath: "/agent/agents/reviewer.md",
+    effectiveTools: [],
+    effectiveSkills: [],
+    content: "---\nname: reviewer\ndescription: reviewer agent\nenable: true\n---\n",
+  });
+  vi.mocked(api.listSkillResources).mockResolvedValue([
+    {
+      name: "paper-search",
+      source: "bundled",
+      path: "src/skills/paper-search",
+      skillPath: "src/skills/paper-search/SKILL.md",
+    },
+  ] as never);
+  vi.mocked(api.readSkillResource).mockResolvedValue({
+    name: "paper-search",
+    source: "bundled",
+    path: "src/skills/paper-search",
+    skillPath: "src/skills/paper-search/SKILL.md",
+    content: "# Search skill\n",
+  });
+  vi.mocked(api.writeSkillResource).mockResolvedValue({} as never);
 });
 
 function renderSettings(onOpenConfigPage: () => void = () => {}, onHome: () => void = () => {}) {
@@ -330,7 +384,86 @@ describe("SettingsPage", () => {
     const user = userEvent.setup();
     const onOpenConfigPage = vi.fn();
     renderSettings(onOpenConfigPage);
-    await user.click(screen.getByRole("button", { name: /edit.*json/i }));
+    await user.click(screen.getByRole("button", { name: /open config browser/i }));
     expect(onOpenConfigPage).toHaveBeenCalled();
+  });
+
+  it("shows pinned agents with effective tool and skill counts and switches", async () => {
+    vi.mocked(api.listAgents).mockResolvedValue([
+      {
+        name: "reviewer",
+        description: "Reviews",
+        enabled: false,
+        builtin: false,
+        source: "global",
+        filePath: "/agent/agents/reviewer.md",
+        effectiveTools: ["read"],
+        effectiveSkills: ["review"],
+      },
+      {
+        name: "search",
+        description: "Searches",
+        enabled: true,
+        builtin: true,
+        source: "bundled",
+        filePath: "src/agents/search.md",
+        effectiveTools: ["read", "web-search"],
+        effectiveSkills: ["paper-search", "arxiv"],
+      },
+      {
+        name: "assistant",
+        description: "Coordinates",
+        enabled: true,
+        builtin: true,
+        source: "bundled",
+        filePath: "src/agents/assistant.md",
+        effectiveTools: ["read"],
+        effectiveSkills: ["workflow"],
+      },
+    ] as never);
+    renderSettings();
+    expect(await screen.findByText("2 tools, 2 skills")).toBeTruthy();
+    expect(screen.getAllByRole("switch").length).toBeGreaterThanOrEqual(5);
+    expect(screen.getByText("2 tools, 2 skills")).toBeTruthy();
+    expect(screen.getAllByText("1 tools, 1 skills").length).toBeGreaterThan(0);
+    const names = screen.getAllByText(/Paper Assistant|Search|reviewer/).map((node) => node.textContent);
+    expect(names.indexOf("Paper Assistant")).toBeLessThan(names.indexOf("reviewer"));
+  });
+
+  it("opens and saves a complete agent Markdown definition", async () => {
+    const user = userEvent.setup();
+    renderSettings();
+    await user.click(await screen.findByRole("button", { name: "Edit Search" }));
+    const editor = await screen.findByRole("textbox", { name: /agent markdown/i });
+    await user.clear(editor);
+    await user.type(editor, "---\nname: search\ndescription: Updated\nenable: true\n---\nNew prompt\n");
+    await user.click(screen.getByRole("button", { name: /save agent/i }));
+    expect(api.writeAgentResource).toHaveBeenCalledWith(
+      "search",
+      "---\nname: search\ndescription: Updated\nenable: true\n---\nNew prompt\n",
+    );
+  });
+
+  it("creates a new agent and opens its Markdown editor", async () => {
+    const user = userEvent.setup();
+    renderSettings();
+    await user.click(screen.getByRole("button", { name: /add agent/i }));
+    await user.type(screen.getByRole("dialog").querySelector("input")!, "reviewer");
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: /create/i }));
+    expect(api.createAgentResource).toHaveBeenCalledWith("reviewer");
+    expect(await screen.findByRole("textbox", { name: /agent markdown/i })).toHaveValue(
+      "---\nname: reviewer\ndescription: reviewer agent\nenable: true\n---\n",
+    );
+  });
+
+  it("copies a bundled skill when its editor is opened and saves its Markdown", async () => {
+    const user = userEvent.setup();
+    renderSettings();
+    await user.click(await screen.findByRole("button", { name: /edit skill.*paper-search/i }));
+    const editor = await screen.findByRole("textbox", { name: /skill markdown/i });
+    await user.clear(editor);
+    await user.type(editor, "# Updated skill\n");
+    await user.click(screen.getByRole("button", { name: /save skill/i }));
+    expect(api.writeSkillResource).toHaveBeenCalledWith("paper-search", "# Updated skill\n");
   });
 });

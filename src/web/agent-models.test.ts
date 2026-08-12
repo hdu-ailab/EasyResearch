@@ -100,18 +100,16 @@ describe("settings sources", () => {
     config = new ConfigFileService(agentDir);
   });
 
-  it("reads agent models from the easyresearch.agents registry", async () => {
-    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ easyresearch: { agents: { search: { model: "a/1" } } } }));
+  it("reads agent models from global Markdown frontmatter", async () => {
+    mkdirSync(join(agentDir, "agents"), { recursive: true });
+    writeFileSync(join(agentDir, "agents", "search.md"), "---\nname: search\ndescription: finds papers\nmodel: a/1\n---\nbody");
     await expect(readAgentModels(config, { scope: "global" })).resolves.toEqual({ search: "a/1" });
   });
 
-  it("treats a missing settings file or registry with no models as no config", async () => {
+  it("treats a missing Markdown model or an agent without one as no config", async () => {
     await expect(readAgentModels(config, { scope: "global" })).resolves.toBeUndefined();
-    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ theme: "dark" }));
-    await expect(readAgentModels(config, { scope: "global" })).resolves.toBeUndefined();
-    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ easyresearch: {} }));
-    await expect(readAgentModels(config, { scope: "global" })).resolves.toBeUndefined();
-    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ easyresearch: { agents: {} } }));
+    mkdirSync(join(agentDir, "agents"), { recursive: true });
+    writeFileSync(join(agentDir, "agents", "search.md"), "---\nname: search\ndescription: finds papers\n---\nbody");
     await expect(readAgentModels(config, { scope: "global" })).resolves.toBeUndefined();
   });
 
@@ -119,48 +117,38 @@ describe("settings sources", () => {
     await expect(readAgentModels(config, { scope: "project", cwd })).resolves.toBeUndefined();
   });
 
-  it("reads project-scoped agent models from <cwd>/.easyresearch/settings.json", async () => {
-    mkdirSync(join(cwd, ".easyresearch"));
-    writeFileSync(join(cwd, ".easyresearch", "settings.json"), JSON.stringify({ easyresearch: { agents: { writing: { model: "b/2" } } } }));
+  it("reads only project-scoped agent Markdown models", async () => {
+    mkdirSync(join(agentDir, "agents"), { recursive: true });
+    writeFileSync(join(agentDir, "agents", "search.md"), "---\nname: search\ndescription: finds papers\nmodel: a/1\n---\nbody");
+    mkdirSync(join(cwd, ".easyresearch", "agents"), { recursive: true });
+    writeFileSync(join(cwd, ".easyresearch", "agents", "writing.md"), "---\nname: writing\ndescription: writes papers\nmodel: b/2\n---\nbody");
     await expect(readAgentModels(config, { scope: "project", cwd })).resolves.toEqual({ writing: "b/2" });
   });
 
   it("ignores non-string agent model values", async () => {
-    writeFileSync(
-      join(agentDir, "settings.json"),
-      JSON.stringify({ easyresearch: { agents: { search: { model: "a/1" }, writing: { model: 42 } } } }),
-    );
+    mkdirSync(join(agentDir, "agents"), { recursive: true });
+    writeFileSync(join(agentDir, "agents", "search.md"), "---\nname: search\ndescription: finds papers\nmodel: a/1\n---\nbody");
+    writeFileSync(join(agentDir, "agents", "writing.md"), "---\nname: writing\ndescription: writes papers\nmodel: 42\n---\nbody");
     await expect(readAgentModels(config, { scope: "global" })).resolves.toEqual({ search: "a/1" });
   });
 
   it("returns the global default model when no project settings exist", async () => {
-    writeFileSync(
-      join(agentDir, "settings.json"),
-      JSON.stringify({ easyresearch: { agents: { assistant: { model: "openai/gpt-4o" } } } }),
-    );
+    mkdirSync(join(agentDir, "agents"), { recursive: true });
+    writeFileSync(join(agentDir, "agents", "assistant.md"), "---\nname: assistant\ndescription: assistant\nmodel: openai/gpt-4o\n---\nbody");
     await expect(readAssistantDefaults(config, cwd)).resolves.toEqual({ provider: "openai", modelId: "gpt-4o" });
   });
 
   it("lets the project assistant model win over the global one", async () => {
-    writeFileSync(
-      join(agentDir, "settings.json"),
-      JSON.stringify({ easyresearch: { agents: { assistant: { model: "openai/gpt-4o" } } } }),
-    );
-    mkdirSync(join(cwd, ".easyresearch"));
-    writeFileSync(
-      join(cwd, ".easyresearch", "settings.json"),
-      JSON.stringify({ easyresearch: { agents: { assistant: { model: "deepseek/ds-v3" } } } }),
-    );
+    mkdirSync(join(agentDir, "agents"), { recursive: true });
+    writeFileSync(join(agentDir, "agents", "assistant.md"), "---\nname: assistant\ndescription: assistant\nmodel: openai/gpt-4o\n---\nbody");
+    mkdirSync(join(cwd, ".easyresearch", "agents"), { recursive: true });
+    writeFileSync(join(cwd, ".easyresearch", "agents", "assistant.md"), "---\nname: assistant\ndescription: assistant\nmodel: deepseek/ds-v3\n---\nbody");
     await expect(readAssistantDefaults(config, cwd)).resolves.toEqual({ provider: "deepseek", modelId: "ds-v3" });
   });
 
-  it("returns undefined when the assistant registry model is unset", async () => {
-    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ easyresearch: {} }));
-    await expect(readAssistantDefaults(config, cwd)).resolves.toBeUndefined();
-    writeFileSync(
-      join(agentDir, "settings.json"),
-      JSON.stringify({ easyresearch: { agents: { assistant: { definition: "agents/assistant.md" } } } }),
-    );
+  it("returns undefined when the assistant Markdown model is unset", async () => {
+    mkdirSync(join(agentDir, "agents"), { recursive: true });
+    writeFileSync(join(agentDir, "agents", "assistant.md"), "---\nname: assistant\ndescription: assistant\n---\nbody");
     await expect(readAssistantDefaults(config, cwd)).resolves.toBeUndefined();
   });
 });

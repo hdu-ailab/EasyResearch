@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../api";
@@ -6,6 +6,7 @@ import { DirectoryDialog } from "./DirectoryDialog";
 
 vi.mock("../api", () => ({
   listDirectories: vi.fn(),
+  createDirectory: vi.fn(),
 }));
 
 const HOME = "/home/user";
@@ -21,6 +22,7 @@ function mockListing(map: Record<string, string[]>) {
 describe("DirectoryDialog", () => {
   beforeEach(() => {
     vi.mocked(api.listDirectories).mockReset();
+    vi.mocked(api.createDirectory).mockReset();
   });
 
   it("loads the home tree on mount", async () => {
@@ -173,5 +175,41 @@ describe("DirectoryDialog", () => {
     vi.mocked(api.listDirectories).mockRejectedValueOnce(new Error("boom"));
     render(<DirectoryDialog homeDir={HOME} onSelect={() => {}} onClose={() => {}} />);
     expect(await screen.findByText(/boom/)).toBeTruthy();
+  });
+
+  it("creates a nested folder under the current view, enters it, and selects it", async () => {
+    const user = userEvent.setup();
+    mockListing({ [HOME]: ["papers"], [`${HOME}/papers`]: [], [`${HOME}/papers/new folder/review`]: [] });
+    vi.mocked(api.createDirectory).mockResolvedValue({ path: `${HOME}/papers/new folder/review` });
+    render(<DirectoryDialog homeDir={HOME} onSelect={() => {}} onClose={() => {}} />);
+    await user.click(await screen.findByText("papers"));
+    await user.click(screen.getByRole("button", { name: /expand papers/i }));
+    const pathInput = screen.getByRole("combobox");
+    await user.clear(pathInput);
+    await user.type(pathInput, `${HOME}/papers`);
+    await user.keyboard("{Enter}");
+    await user.click(screen.getByRole("button", { name: /create folder/i }));
+    const createDialog = screen.getByRole("dialog", { name: "Create folder" });
+    await user.type(createDialog.querySelector("input")!, "new folder/review");
+    await user.click(within(createDialog).getByRole("button", { name: /create/i }));
+    expect(api.createDirectory).toHaveBeenCalledWith(`${HOME}/papers/new folder/review`);
+    expect(screen.getByRole("combobox")).toHaveValue(`${HOME}/papers/new folder/review`);
+  });
+
+  it("shows a folder creation error inline and rejects null bytes", async () => {
+    const user = userEvent.setup();
+    mockListing({ [HOME]: [] });
+    vi.mocked(api.createDirectory).mockRejectedValue(new Error("cannot create"));
+    render(<DirectoryDialog homeDir={HOME} onSelect={() => {}} onClose={() => {}} />);
+    await user.click(screen.getByRole("button", { name: /create folder/i }));
+    const createDialog = screen.getByRole("dialog", { name: "Create folder" });
+    await user.type(createDialog.querySelector("input")!, "bad\0name");
+    await user.click(within(createDialog).getByRole("button", { name: /create/i }));
+    expect(api.createDirectory).not.toHaveBeenCalled();
+    expect(await screen.findByText(/null byte|invalid/i)).toBeTruthy();
+    await user.clear(createDialog.querySelector("input")!);
+    await user.type(createDialog.querySelector("input")!, "folder");
+    await user.click(within(createDialog).getByRole("button", { name: /create/i }));
+    expect(await screen.findByText(/cannot create/)).toBeTruthy();
   });
 });

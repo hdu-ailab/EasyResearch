@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import type { AgentConfig } from "./agents";
 import {
   buildPiArgs,
   describeModel,
@@ -669,20 +670,19 @@ describe("subagent model resolution logging", () => {
   });
 });
 
-function maker(name: string, tools = ""): {
-  name: string;
-  description: string;
-  tools: string[] | undefined;
-  subagents: string[] | undefined;
-  systemPrompt: string;
-  source: "global";
-  filePath: string;
-} {
+function maker(name: string, tools = ""): AgentConfig {
+  const configuredTools = tools ? tools.split(", ").map((t) => t.trim()).filter(Boolean) : undefined;
   return {
     name,
     description: "test agent",
-    tools: tools ? tools.split(", ").map((t) => t.trim()).filter(Boolean) : undefined,
+    enabled: true,
+    builtin: false,
+    tools: configuredTools,
+    effectiveTools: configuredTools ?? ["read", "bash", "edit", "write", "grep", "find", "ls"],
+    skills: undefined,
+    effectiveSkills: [],
     subagents: undefined,
+    model: undefined,
     systemPrompt: "",
     source: "global",
     filePath: name,

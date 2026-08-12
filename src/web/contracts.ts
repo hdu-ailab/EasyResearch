@@ -76,9 +76,28 @@ export interface FileContentDto {
 export interface AgentDto {
   name: string;
   description: string;
+  enabled: boolean;
+  builtin: boolean;
+  source: "bundled" | "global" | "project";
+  filePath: string;
+  model?: string;
   tools?: string[];
+  effectiveTools: string[];
   subagents?: string[];
   skills?: string[];
+  effectiveSkills: string[];
+}
+
+export interface AgentResourceDto extends AgentDto {
+  content?: string;
+}
+
+export interface SkillResourceDto {
+  name: string;
+  source: "bundled" | "global" | "project" | "home";
+  path: string;
+  skillPath: string;
+  content?: string;
 }
 
 export type ConfigScope = "global" | "project";

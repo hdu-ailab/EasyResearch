@@ -1,4 +1,4 @@
-import { accessSync, closeSync, constants, openSync, readFileSync, readdirSync, readSync, realpathSync, statSync } from "node:fs";
+import { accessSync, closeSync, constants, mkdirSync, openSync, readFileSync, readdirSync, readSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { DirectoryEntryDto, FileContentDto, FileEntryDto } from "./contracts";
@@ -63,6 +63,17 @@ export class DirectoryService {
       .map((d) => ({ name: d.name, path: join(real, d.name) }))
       .sort((a, b) => a.name.localeCompare(b.name));
     return { path: real, entries };
+  }
+
+  createDirectory(path: string): string {
+    const parent = path.replace(/\/+$/, "");
+    if (!parent || parent.includes("\0")) throw new DirectoryServiceError(400, "invalid directory path");
+    try {
+      mkdirSync(parent, { recursive: true });
+      return realpathSync(parent);
+    } catch {
+      throw new DirectoryServiceError(400, `cannot create directory: ${path}`);
+    }
   }
 
   /**

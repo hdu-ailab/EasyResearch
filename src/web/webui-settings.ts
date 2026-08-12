@@ -1,8 +1,10 @@
+import { cpSync, existsSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 import type { WebuiSettingsDto, WebuiSettingsUpdate } from "./contracts";
 import type { ConfigFileService } from "./config-files";
-import { ConfigPathError, ConfigServiceError } from "./config-files";
-import { importPi } from "../runtime/pi-import";
-import { extractRegistryModels, parseAgentRegistry } from "../subagent/registry";
+import { getAgentDir } from "../runtime/pi-import";
+import { discoverAgents, type AgentConfig } from "../subagent/agents";
+import { readTextFile, updateFrontmatter, writeTextFile } from "./agent-markdown";
 
 export class WebuiSettingsError extends Error {
   constructor(
@@ -21,32 +23,24 @@ function parseModelRef(model: string): { provider: string; modelId: string } {
   return { provider: model.slice(0, index), modelId: model.slice(index + 1) };
 }
 
-function readAssistantFromRegistry(settings: Record<string, unknown> | undefined): string | null {
-  const entry = settings ? parseAgentRegistry(settings)["assistant"] : undefined;
-  const model = entry?.model;
-  return typeof model === "string" && model !== "" ? model : null;
+function globalAgentPath(agent: AgentConfig, agentDir: string): string {
+  const target = join(agentDir, "agents", `${agent.name}.md`);
+  if (agent.source === "global") return agent.filePath;
+  mkdirSync(join(agentDir, "agents"), { recursive: true });
+  if (!existsSync(target)) cpSync(agent.filePath, target);
+  return target;
 }
 
-async function readSettings(config: ConfigFileService): Promise<Record<string, unknown> | undefined> {
-  try {
-    const content = await config.read({ scope: "global", path: "settings.json" });
-    return JSON.parse(content) as Record<string, unknown>;
-  } catch (error) {
-    if (error instanceof ConfigPathError) return undefined;
-    if (error instanceof ConfigServiceError && error.status === 404) return undefined;
-    if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return undefined;
-    if (error instanceof SyntaxError) {
-      throw new WebuiSettingsError(400, "settings.json is not valid JSON");
-    }
-    throw error;
-  }
+async function globalAgents(config: ConfigFileService): Promise<AgentConfig[]> {
+  return (await discoverAgents({ cwd: process.cwd(), agentDir: config.globalRoot, includeProject: false })).agents;
 }
 
 export async function readWebuiSettings(config: ConfigFileService): Promise<WebuiSettingsDto> {
-  const settings = await readSettings(config);
+  const agents = await globalAgents(config);
+  const agentModels = Object.fromEntries(agents.flatMap((agent) => (agent.model ? [[agent.name, agent.model]] : [])));
   return {
-    agentModels: extractRegistryModels(parseAgentRegistry(settings)) ?? {},
-    assistantModel: readAssistantFromRegistry(settings),
+    agentModels,
+    assistantModel: agents.find((agent) => agent.name === "assistant")?.model ?? null,
     effectiveAssistantModel: null,
   };
 }
@@ -64,6 +58,7 @@ function validatePatch(patch: WebuiSettingsUpdate): void {
       if (typeof model !== "string" || model === "") {
         throw new WebuiSettingsError(400, `agentModels entry ${agent} must be a non-empty "provider/id" string`);
       }
+      parseModelRef(model);
     }
   }
   if (patch.assistantModel !== undefined && patch.assistantModel !== null) {
@@ -74,113 +69,57 @@ function validatePatch(patch: WebuiSettingsUpdate): void {
   }
 }
 
+async function updateAgentModel(config: ConfigFileService, agent: AgentConfig, model: string | null): Promise<void> {
+  const path = globalAgentPath(agent, config.globalRoot);
+  const content = readTextFile(path);
+  writeTextFile(path, updateFrontmatter(content, { model }));
+}
+
 export async function updateWebuiSettings(config: ConfigFileService, patch: WebuiSettingsUpdate): Promise<WebuiSettingsDto> {
   validatePatch(patch);
-  const settings = (await readSettings(config)) ?? {};
-  const lazy = (settings.easyresearch as Record<string, unknown> | undefined) ?? {};
+  const agents = await globalAgents(config);
+  const byName = new Map(agents.map((agent) => [agent.name, agent]));
   if (patch.agentModels !== undefined) {
-    const agents = (lazy.agents as Record<string, unknown> | undefined) ?? {};
-    const current = extractRegistryModels(parseAgentRegistry(settings)) ?? {};
-    for (const name of Object.keys(current)) {
-      if (name in patch.agentModels) continue;
-      const entry = agents[name] as Record<string, unknown> | undefined;
-      if (entry) delete entry.model;
+    for (const agent of agents) {
+      await updateAgentModel(config, agent, patch.agentModels[agent.name] ?? null);
     }
     for (const [name, model] of Object.entries(patch.agentModels)) {
-      const entry = (agents[name] as Record<string, unknown> | undefined) ?? {};
-      entry.model = model;
-      agents[name] = entry;
+      const agent = byName.get(name);
+      if (!agent) throw new WebuiSettingsError(404, `Unknown agent: ${name}`);
+      await updateAgentModel(config, agent, model);
     }
-    lazy.agents = agents;
   }
   if (patch.assistantModel !== undefined) {
-    const agents = (lazy.agents as Record<string, unknown> | undefined) ?? {};
-    const entry = (agents["assistant"] as Record<string, unknown> | undefined) ?? {};
-    if (patch.assistantModel === null) delete entry.model;
-    else entry.model = patch.assistantModel;
-    agents["assistant"] = entry;
-    lazy.agents = agents;
+    const assistant = byName.get("assistant");
+    if (!assistant) throw new WebuiSettingsError(404, "Unknown agent: assistant");
+    await updateAgentModel(config, assistant, patch.assistantModel);
   }
-  (settings as Record<string, unknown>).easyresearch = lazy;
-  await config.write({ scope: "global", path: "settings.json", content: JSON.stringify(settings, null, 2) });
   return readWebuiSettings(config);
 }
 
-/**
- * Pi's per-provider default model IDs, mirrored verbatim (key order included)
- * from `@earendil-works/pi-coding-agent@0.84.1` `dist/core/model-resolver.js`
- * `defaultModelPerProvider` — the package `exports` map blocks the deep import.
- * `findInitialModel` prefers the first provider whose default is available with
- * auth, so key order is part of the contract.
- */
 const PI_DEFAULT_MODEL_PER_PROVIDER: Record<string, string> = {
   "amazon-bedrock": "us.anthropic.claude-opus-4-6-v1",
-  "ant-ling": "Ring-2.6-1T",
   anthropic: "claude-opus-4-8",
   openai: "gpt-5.5",
-  "azure-openai-responses": "gpt-5.4",
   "openai-codex": "gpt-5.5",
-  radius: "auto",
-  nvidia: "nvidia/nemotron-3-super-120b-a12b",
-  deepseek: "deepseek-v4-pro",
   google: "gemini-3.1-pro-preview",
   "google-vertex": "gemini-3.1-pro-preview",
-  "github-copilot": "gpt-5.4",
   openrouter: "moonshotai/kimi-k2.6",
-  "vercel-ai-gateway": "zai/glm-5.1",
-  xai: "grok-4.5",
-  groq: "openai/gpt-oss-120b",
-  cerebras: "zai-glm-4.7",
-  zai: "glm-5.1",
-  "zai-coding-cn": "glm-5.1",
-  mistral: "devstral-medium-latest",
-  minimax: "MiniMax-M2.7",
-  "minimax-cn": "MiniMax-M2.7",
-  moonshotai: "kimi-k2.6",
-  "moonshotai-cn": "kimi-k2.6",
-  huggingface: "moonshotai/Kimi-K2.6",
-  fireworks: "accounts/fireworks/models/kimi-k2p6",
-  together: "moonshotai/Kimi-K2.6",
-  baseten: "zai-org/GLM-5.2",
-  opencode: "kimi-k2.6",
-  "opencode-go": "kimi-k2.6",
-  "kimi-coding": "kimi-for-coding",
-  "cloudflare-workers-ai": "@cf/moonshotai/kimi-k2.6",
-  "cloudflare-ai-gateway": "workers-ai/@cf/moonshotai/kimi-k2.6",
-  "qwen-token-plan": "qwen3.7-max",
-  "qwen-token-plan-cn": "qwen3.7-max",
-  "qwen-token-plan-individual": "qwen3.8-max",
-  xiaomi: "mimo-v2.5-pro",
-  "xiaomi-token-plan-cn": "mimo-v2.5-pro",
-  "xiaomi-token-plan-ams": "mimo-v2.5-pro",
-  "xiaomi-token-plan-sgp": "mimo-v2.5-pro",
+  deepseek: "deepseek-v4-pro",
 };
 
-/**
- * The model a new assistant session would use, mirroring Pi's
- * `findInitialModel` fallback chain (model-resolver.js) for a fresh session
- * without CLI args or model scoping: the configured default pair if set, else
- * the first auth-available model matching Pi's per-provider default table, else
- * the first auth-available model, else null.
- */
 export function pickEffectiveAssistantModel(
   configured: string | null,
   available: ReadonlyArray<{ provider: string; id: string }>,
 ): string | null {
   if (configured) return configured;
   for (const [provider, id] of Object.entries(PI_DEFAULT_MODEL_PER_PROVIDER)) {
-    if (available.some((m) => m.provider === provider && m.id === id)) return `${provider}/${id}`;
+    if (available.some((model) => model.provider === provider && model.id === id)) return `${provider}/${id}`;
   }
   const first = available[0];
   return first ? `${first.provider}/${first.id}` : null;
 }
 
-/**
- * `readWebuiSettings` plus the GET-only `effectiveAssistantModel` field: the
- * stored default when configured, otherwise the model Pi's `findInitialModel`
- * would pick for a fresh session over the auth-available models. Tests inject
- * `available`; the live server lets Pi resolve them via `ModelRuntime`.
- */
 export async function readEffectiveWebuiSettings(
   config: ConfigFileService,
   available?: ReadonlyArray<{ provider: string; id: string }>,
@@ -188,7 +127,7 @@ export async function readEffectiveWebuiSettings(
   const settings = await readWebuiSettings(config);
   if (settings.assistantModel) return { ...settings, effectiveAssistantModel: settings.assistantModel };
   if (!available) {
-    const { ModelRuntime } = await importPi();
+    const { ModelRuntime } = await import("../runtime/pi-import").then(({ importPi }) => importPi());
     available = await (await ModelRuntime.create()).getAvailable();
   }
   return { ...settings, effectiveAssistantModel: pickEffectiveAssistantModel(null, available) };

@@ -6,6 +6,7 @@ import { resolveSkillDirectories, type SkillResolverDeps } from "./skill-resolut
 
 let cwd: string;
 let agentDir: string;
+let bundledSkillsDir: string;
 let deps: SkillResolverDeps;
 
 function withSkill(siteDir: string, name: string): void {
@@ -17,11 +18,12 @@ function withSkill(siteDir: string, name: string): void {
 beforeEach(() => {
   cwd = mkdtempSync(join(tmpdir(), "lr-cwd-"));
   agentDir = mkdtempSync(join(tmpdir(), "lr-agent-"));
-  deps = { cwd, agentDir, homeDir: join(tmpdir(), "fake-home") };
+  bundledSkillsDir = mkdtempSync(join(tmpdir(), "lr-bundled-skills-"));
+  deps = { cwd, agentDir, homeDir: join(tmpdir(), "fake-home"), bundledSkillsDir };
 });
 
 afterEach(() => {
-  for (const dir of [cwd, agentDir, join(tmpdir(), "fake-home")]) rmSync(dir, { recursive: true, force: true });
+  for (const dir of [cwd, agentDir, bundledSkillsDir, join(tmpdir(), "fake-home")]) rmSync(dir, { recursive: true, force: true });
 });
 
 describe("resolveSkillDirectories", () => {
@@ -43,14 +45,14 @@ describe("resolveSkillDirectories", () => {
     expect(dirs[0]).toBe(join(projectSite, "paper-search"));
   });
 
-  it("falls back project .agents/skills then global agentDir/skills", () => {
-    const pAgents = join(cwd, ".agents", "skills");
+  it("falls back global EasyResearch skills before ~/.agents skills", () => {
     const gAgent = join(agentDir, "skills");
-    withSkill(pAgents, "arxiv");
+    const gAgents = join(deps.homeDir!, ".agents", "skills");
+    withSkill(gAgents, "arxiv");
     withSkill(gAgent, "arxiv");
     const dirs = resolveSkillDirectories(["arxiv"], deps)!;
     expect(dirs).toHaveLength(1);
-    expect(dirs[0]).toBe(join(pAgents, "arxiv"));
+    expect(dirs[0]).toBe(join(gAgent, "arxiv"));
   });
 
   it("resolves a global .agents/skills name as last resort", () => {
@@ -61,6 +63,18 @@ describe("resolveSkillDirectories", () => {
     expect(dirs[0]).toBe(join(gAgents, "latex-pdf"));
   });
 
+  it("falls back to the bundled skill directory", () => {
+    withSkill(bundledSkillsDir, "paper-search");
+    const dirs = resolveSkillDirectories(["paper-search"], deps)!;
+    expect(dirs).toEqual([join(bundledSkillsDir, "paper-search")]);
+  });
+
+  it("uses the source bundled skill directory when no override is supplied", () => {
+    expect(resolveSkillDirectories(["paper-search"], { cwd, agentDir, homeDir: deps.homeDir })).toEqual([
+      join(dirnameForTest(), "paper-search"),
+    ]);
+  });
+
   it("keeps absolute and ~ paths, omitting non-existent ones", () => {
     const abs = join(cwd, "custom", "drawio");
     withSkill(join(cwd, "custom"), "drawio");
@@ -68,3 +82,7 @@ describe("resolveSkillDirectories", () => {
     expect(dirs).toEqual([abs]);
   });
 });
+
+function dirnameForTest(): string {
+  return join(process.cwd(), "src", "skills");
+}
