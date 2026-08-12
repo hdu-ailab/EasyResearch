@@ -703,6 +703,7 @@ function maker(name: string, tools = ""): AgentConfig {
     effectiveTools: configuredTools ?? ["read", "bash", "edit", "write", "grep", "find", "ls"],
     skills: undefined,
     effectiveSkills: [],
+    missingSkills: [],
     subagents: undefined,
     model: undefined,
     systemPrompt: "",
