@@ -973,6 +973,51 @@ describe("session reducer", () => {
     expect(merged.messages.map((message) => [message.role, message.text])).toEqual([["assistant", "persisted answer"]]);
   });
 
+  it("keeps newer live text when a running no-id snapshot is stale", () => {
+    const snapshot = {
+      session: { id: "parent", cwd: "/p", isStreaming: true, status: "running" },
+      subagents: [],
+      messages: [assistantMessage("partial")],
+    } as never;
+    let prior = fromSnapshot(snapshot);
+    prior = reduceSessionEvent(prior, assistantEvent("message_update", " answer"));
+
+    const merged = mergeSnapshot(prior, snapshot);
+
+    expect(merged.messages).toEqual([
+      expect.objectContaining({ role: "assistant", text: "partial answer", streaming: true }),
+    ]);
+    expect(merged.activeMessageKey).toBe(merged.messages[0]!.key);
+    expect(merged.messages.filter((message) => message.streaming)).toEqual([merged.messages[0]]);
+
+    const updated = reduceSessionEvent(merged, assistantEvent("message_update", " continued"));
+    expect(updated.messages).toEqual([expect.objectContaining({ text: "partial answer continued", streaming: true })]);
+  });
+
+  it("keeps a distinct identical no-id row when reconciling the active assistant", () => {
+    const snapshot = {
+      session: { id: "parent", cwd: "/p", isStreaming: true, status: "running" },
+      subagents: [],
+      messages: [assistantMessage("partial")],
+    } as never;
+    let prior = fromSnapshot(snapshot);
+    prior = reduceSessionEvent(prior, assistantEvent("message_update", " answer"));
+    prior = {
+      ...prior,
+      messages: [
+        prior.messages[0]!,
+        { ...prior.messages[0]!, key: "distinct-identical", streaming: false, order: prior.nextOrder },
+      ],
+      nextOrder: prior.nextOrder + 1,
+    };
+
+    const merged = mergeSnapshot(prior, snapshot);
+
+    expect(merged.messages.map((message) => message.text)).toEqual(["partial answer", "partial answer"]);
+    expect(merged.activeMessageKey).toBe(merged.messages[0]!.key);
+    expect(merged.messages.filter((message) => message.streaming)).toEqual([merged.messages[0]]);
+  });
+
   it("extracts nested child deltas and reduces them token-by-token into only that child state", () => {
     const start = nestedSubagentEvent({
       type: "tool_execution_update",
