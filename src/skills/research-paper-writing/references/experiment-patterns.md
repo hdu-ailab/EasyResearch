@@ -11,29 +11,24 @@ Patterns and best practices distilled from running research experiments at scale
 Organize experiments with a consistent structure:
 
 ```
-workspace/
-  experiments/
+experiments/
+  src/
     run_main.py                # Core experiment runner
     run_baselines.py           # Baseline comparison
     run_ablation.py            # Ablation studies
     strategies.py              # Method implementations
-    config.yaml                # Shared configuration
-  results/
-    <experiment_name>/
-      <task_or_problem>/
-        <strategy>/
-          result.json          # Final metrics
-          final_output.md      # Final output artifact
-          history.json         # Full trajectory/log
-          pass_01/             # Per-iteration artifacts (if iterative)
-            intermediate.md
-  analysis/
     analyze_results.py         # Statistical analysis
     compute_stats.py           # Significance tests
-    make_charts.py             # Visualization
-  paper/
-    paper.tex                  # LaTeX source
-    fig_*.pdf                  # Generated figures
+  outputs/
+    <run-id>/                  # Raw and intermediate artifacts
+  results/
+    <run-id>/                  # Promoted formal evidence
+  experiment-record.md
+manuscript/
+  manuscript.md               # Authoritative manuscript
+  latex/                       # Derived LaTeX source
+  manuscript.pdf              # Compiled deliverable
+figures/                       # Publication figures
 ```
 
 ### Script Design Principles
@@ -432,7 +427,8 @@ Check the status of the [EXPERIMENT_NAME] experiment:
    - Report metrics in a table (Borda scores, accuracy, etc.)
    - Compute key comparisons between methods
 5. If all experiments in this batch are complete:
-   - git add -A && git commit -m "[COMMIT_MESSAGE]" && git push
+   - Report whether the expected records and formal evidence exist
+   - Identify each missing `experiments/` artifact for Experiment or the Paper Assistant to address
    - Report final summary
 6. Key question: [SPECIFIC ANALYTICAL QUESTION]
 
@@ -447,7 +443,7 @@ If nothing has changed since the last check, respond with [SILENT].
 4. **Report in structured tables** — always include key metrics in a table
 5. **Answer the key question** — each experiment should have a specific analytical question to answer when done
 6. **[SILENT] for no-news** — suppress notifications when nothing has changed
-7. **Commit on completion** — every completed batch gets committed with a descriptive message
+7. **Handoff on completion** — report existing evidence and identify exact missing record/result artifacts for Experiment or the Paper Assistant; Writing does not modify `experiments/`
 
 ### Example Monitoring Report
 
@@ -464,8 +460,9 @@ If nothing has changed since the last check, respond with [SILENT].
 Key finding: Autoreason shows +2pp improvement over single pass, while 
 best-of-6 collapses due to single-public-test selection issue.
 
-Committed: `git commit -m "Add Haiku code results (150 problems, 4 strategies)"`
-Next: Run significance tests on these results.
+Evidence available: `experiments/results/haiku-code/metrics.json`
+Missing artifacts: matching run entry in `experiments/experiment-record.md`; formal significance summary under `experiments/results/haiku-code/`
+Next: Experiment should record the completed run and produce the missing formal significance summary before Writing relies on this evidence.
 ```
 
 ---
@@ -580,7 +577,7 @@ import scienceplots  # registers the styles
 with plt.style.context(['science', 'no-latex']):
     fig, ax = plt.subplots(figsize=(3.5, 2.5))  # single-column width
     # ... plot ...
-    fig.savefig('paper/fig_results.pdf', bbox_inches='tight')
+    fig.savefig('figures/fig_results.pdf', bbox_inches='tight')
 ```
 
 **Option B: Manual rcParams** (when you need full control):
@@ -680,7 +677,7 @@ with plt.style.context(style):
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     
-    fig.savefig('paper/fig_comparison.pdf', bbox_inches='tight')
+    fig.savefig('figures/fig_comparison.pdf', bbox_inches='tight')
 ```
 
 ### Complete Example: Convergence/Trajectory Line Chart
@@ -707,7 +704,7 @@ with plt.style.context(style):
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     
-    fig.savefig('paper/fig_trajectory.pdf', bbox_inches='tight')
+    fig.savefig('figures/fig_trajectory.pdf', bbox_inches='tight')
 ```
 
 ### Output Rules

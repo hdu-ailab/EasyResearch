@@ -23,8 +23,8 @@ describe("AgentTabBar", () => {
     render(
       <AgentTabBar
         tabs={[tab()]}
-        activeKey="assistant"
-        assistantStatus="idle"
+        activeKey="paper-assistant"
+        paperAssistantStatus="idle"
         onSelect={onSelect}
         onClose={vi.fn()}
         onStop={onStop}
@@ -51,7 +51,7 @@ describe("AgentTabBar", () => {
       <AgentTabBar
         tabs={[tab({ key: "session:child-uuid", sessionId: "child-uuid", retained: true, running: false })]}
         activeKey="session:child-uuid"
-        assistantStatus="working"
+        paperAssistantStatus="working"
         onSelect={vi.fn()}
         onClose={onClose}
         onStop={onStop}
@@ -71,8 +71,8 @@ describe("AgentTabBar", () => {
           tab({ key: "session:11111111-aaaa", sessionId: "11111111-aaaa", retained: true }),
           tab({ key: "session:22222222-bbbb", toolCallId: "call-2", sessionId: "22222222-bbbb", retained: true }),
         ]}
-        activeKey="assistant"
-        assistantStatus="error"
+        activeKey="paper-assistant"
+        paperAssistantStatus="error"
         onSelect={vi.fn()}
         onClose={vi.fn()}
         onStop={vi.fn()}

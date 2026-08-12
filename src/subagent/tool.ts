@@ -10,7 +10,7 @@ import { Type } from "typebox";
 import { getInternalPiInvocation } from "../runtime/internal-invocation";
 import { createLogger, type Logger } from "../runtime/logger";
 import { getAgentDir, importPi } from "../runtime/pi-import";
-import { discoverAgents, type AgentConfig } from "./agents";
+import { discoverAgents, PAPER_ASSISTANT_AGENT, type AgentConfig } from "./agents";
 import { resolveModelForSpawn } from "./model-resolution";
 import { readSubagentSessionLinks, sessionNameFor, type SubagentSessionLink } from "./session-links";
 import { buildDefaultSkillArgs, readGlobalDotAgentsSkillSetting, resolveSkillDirectories } from "./skill-resolution";
@@ -32,6 +32,7 @@ const subagentLogger: Logger | null =
 
 /** Environment variable carrying the caller's subagent allowlist (ADR-022). */
 export const ALLOWLIST_ENV = "EASYRESEARCH_AGENTS_ALLOWLIST";
+export const CALLER_AGENT_ENV = "EASYRESEARCH_CALLER_AGENT";
 
 interface UsageStats {
   input: number;
@@ -205,12 +206,17 @@ async function writePromptToTempFile(agentName: string, prompt: string): Promise
 }
 
 /**
- * ADR-022: filter agents by the caller's allowlist. The assistant runtime
- * has no allowlist env and sees all agents; stage runtimes receive their
- * allowlist from `subagents:` frontmatter via the spawn environment.
+ * ADR-022: filter agents by the caller's allowlist. The Paper Assistant runtime
+ * has no allowlist env and sees all enabled specialists; stage runtimes
+ * receive their allowlist from `subagents:` frontmatter via the spawn
+ * environment. The main Assistant is never a recursive dispatch target.
  */
-export function filterAgentsByAllowlist(agents: AgentConfig[], allowlistEnv?: string): AgentConfig[] {
-  agents = agents.filter((agent) => agent.enabled || agent.name === "assistant");
+export function filterAgentsByAllowlist(
+  agents: AgentConfig[],
+  allowlistEnv?: string,
+  callerAgent?: string,
+): AgentConfig[] {
+  agents = agents.filter((agent) => agent.enabled && agent.name !== PAPER_ASSISTANT_AGENT && agent.name !== callerAgent);
   if (allowlistEnv === undefined) return agents;
   const allowed = new Set(allowlistEnv.split(",").map((s) => s.trim()).filter(Boolean));
   return agents.filter((a) => allowed.has(a.name));
@@ -245,7 +251,7 @@ export function buildPiArgs(
   const args: string[] = ["--mode", "json", "-p"];
   if (model) args.push("--model", model);
   if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
-  if (agent.skills !== undefined && skillDeps) {
+  if (agent.skills && agent.skills.length > 0 && skillDeps) {
     args.push("--no-skills");
     for (const dir of resolveSkillDirectories(agent.skills, skillDeps) ?? []) args.push("--skill", dir);
   } else if (skillDeps) {
@@ -324,12 +330,22 @@ async function runSingleAgent(opts: RunSingleOptions): Promise<SingleResult> {
     let wasAborted = false;
     const exitCode = await new Promise<number>((resolve) => {
       const invocation = getPiInvocation();
+      const {
+        EASYRESEARCH_AGENT_TOOLS: _parentTools,
+        [ALLOWLIST_ENV]: _parentAllowlist,
+        [CALLER_AGENT_ENV]: _parentCaller,
+        ...baseEnv
+      } = process.env;
       const proc = spawn(invocation.command, [...invocation.args, ...args], {
         cwd: cwd ?? defaultCwd,
         shell: false,
         stdio: ["ignore", "pipe", "pipe"],
-        // ADR-022: the child runtime filters its available agents through this.
-        env: agent.subagents ? { ...process.env, [ALLOWLIST_ENV]: agent.subagents.join(",") } : undefined,
+        env: {
+          ...baseEnv,
+          ...(agent.tools === undefined ? { EASYRESEARCH_AGENT_TOOLS: "all" } : {}),
+          ...(agent.subagents ? { [ALLOWLIST_ENV]: agent.subagents.join(",") } : {}),
+          [CALLER_AGENT_ENV]: agent.name,
+        },
       });
       let buffer = "";
 
@@ -461,6 +477,7 @@ const SubagentParams = Type.Object({
 
 export function createSubagentTool(options: {
   persistSessionLink?: (link: SubagentSessionLink) => void;
+  agentProvider?: (cwd: string) => Promise<AgentConfig[]>;
 } = {}) {
   return defineTool({
     name: "subagent",
@@ -497,41 +514,58 @@ export function createSubagentTool(options: {
           ? { toolCallId, childSessionId, agent }
           : { toolCallId, childSessionId, agent, step });
       };
-      const agents = filterAgentsByAllowlist((await discoverAgents()).agents, process.env[ALLOWLIST_ENV]);
       const fallbackModel = describeModel(ctx);
-      const detailsBase = (mode: "single" | "chain") => makeDetails(mode, agents);
+      const agentsForCwd = async (cwd: string) => {
+        const discovered = options.agentProvider
+          ? await options.agentProvider(cwd)
+          : (await discoverAgents({ cwd })).agents;
+        return filterAgentsByAllowlist(
+          discovered,
+          options.agentProvider ? undefined : process.env[ALLOWLIST_ENV],
+          options.agentProvider ? undefined : process.env[CALLER_AGENT_ENV],
+        );
+      };
+      const detailsBase = (mode: "single" | "chain", agents: AgentConfig[]) => makeDetails(mode, agents);
 
       const hasChain = (params.chain?.length ?? 0) > 0;
       const hasSingle = Boolean(params.agent && params.task);
       const modeCount = Number(hasChain) + Number(hasSingle);
 
-      if (agents.length === 0) {
-        return {
-          content: [{ type: "text", text: "No agents are available in this runtime." }],
-          details: { ...detailsBase("single"), results: [] },
-          isError: true,
-        };
-      }
-
       if (modeCount !== 1) {
+        const agents = await agentsForCwd(ctx.cwd);
         const available = agents.map((a) => `${a.name} (${a.source})`).join(", ") || "none";
         return {
           content: [{ type: "text", text: `Invalid parameters. Provide exactly one mode.\nAvailable agents: ${available}` }],
-          details: { ...detailsBase("single"), results: [] },
+          details: { ...detailsBase("single", agents), results: [] },
         };
       }
 
       if (params.chain && params.chain.length > 0) {
         const results: SingleResult[] = [];
         let previousOutput = "";
+        let lastAgents: AgentConfig[] = [];
         for (let i = 0; i < params.chain.length; i++) {
           const step = params.chain[i]!;
+          const effectiveCwd = step.cwd ?? ctx.cwd;
+          const agents = await agentsForCwd(effectiveCwd);
+          lastAgents = agents;
+          if (agents.length === 0) {
+            return {
+              content: [{ type: "text", text: "No agents are available in this runtime." }],
+              details: { ...detailsBase("chain", agents), results },
+              isError: true,
+            };
+          }
           const sessionPath =
             step.session === "inherit"
-              ? await resolveInheritedSession(step.cwd ?? ctx.cwd, step.agent, undefined, ctx.sessionManager.getEntries())
+              ? await resolveInheritedSession(effectiveCwd, step.agent, undefined, ctx.sessionManager.getEntries())
               : undefined;
           const taskWithContext = step.task.replace(/\{previous\}/g, previousOutput);
-          const model = await resolveModelForSpawn(ctx, step.agent, fallbackModel);
+          const model = await resolveModelForSpawn(
+            { cwd: effectiveCwd, sessionManager: ctx.sessionManager },
+            step.agent,
+            fallbackModel,
+          );
           subagentLogger?.debug("subagent model resolved", { agent: step.agent, model: model ?? "" });
           const result = await runSingleAgent({
             defaultCwd: ctx.cwd,
@@ -550,7 +584,7 @@ export function createSubagentTool(options: {
           if (isFailedResult(result)) {
             return {
               content: [{ type: "text", text: `Chain stopped at step ${i + 1} (${step.agent}): ${getResultOutput(result)}` }],
-              details: { ...detailsBase("chain"), results },
+              details: { ...detailsBase("chain", agents), results },
               isError: true,
             };
           }
@@ -558,15 +592,28 @@ export function createSubagentTool(options: {
         }
         return {
           content: [{ type: "text", text: getFinalOutput(results[results.length - 1]!.messages) || "(no output)" }],
-          details: { ...detailsBase("chain"), results },
+          details: { ...detailsBase("chain", lastAgents), results },
         };
       }
 
       if (params.agent && params.task) {
+        const effectiveCwd = params.cwd ?? ctx.cwd;
+        const agents = await agentsForCwd(effectiveCwd);
+        if (agents.length === 0) {
+          return {
+            content: [{ type: "text", text: "No agents are available in this runtime." }],
+            details: { ...detailsBase("single", agents), results: [] },
+            isError: true,
+          };
+        }
         const sessionPath = params.session === "inherit"
-          ? await resolveInheritedSession(params.cwd ?? ctx.cwd, params.agent, undefined, ctx.sessionManager.getEntries())
+          ? await resolveInheritedSession(effectiveCwd, params.agent, undefined, ctx.sessionManager.getEntries())
           : undefined;
-        const model = await resolveModelForSpawn(ctx, params.agent, fallbackModel);
+        const model = await resolveModelForSpawn(
+          { cwd: effectiveCwd, sessionManager: ctx.sessionManager },
+          params.agent,
+          fallbackModel,
+        );
         subagentLogger?.debug("subagent model resolved", { agent: params.agent, model: model ?? "" });
         const result = await runSingleAgent({
           defaultCwd: ctx.cwd,
@@ -583,20 +630,21 @@ export function createSubagentTool(options: {
         if (isFailedResult(result)) {
           return {
             content: [{ type: "text", text: `Agent ${result.stopReason || "failed"}: ${getResultOutput(result)}` }],
-            details: { ...detailsBase("single"), results: [result] },
+            details: { ...detailsBase("single", agents), results: [result] },
             isError: true,
           };
         }
         return {
           content: [{ type: "text", text: getFinalOutput(result.messages) || "(no output)" }],
-          details: { ...detailsBase("single"), results: [result] },
+          details: { ...detailsBase("single", agents), results: [result] },
         };
       }
 
+      const agents = await agentsForCwd(ctx.cwd);
       const available = agents.map((a) => `${a.name} (${a.source})`).join(", ") || "none";
       return {
         content: [{ type: "text", text: `Invalid parameters. Available agents: ${available}` }],
-        details: { ...detailsBase("single"), results: [] },
+        details: { ...detailsBase("single", agents), results: [] },
       };
     } finally {
       releaseSubagentLock();

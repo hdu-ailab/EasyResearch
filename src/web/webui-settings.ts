@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { WebuiSettingsDto, WebuiSettingsUpdate } from "./contracts";
 import type { ConfigFileService } from "./config-files";
 import { getAgentDir } from "../runtime/pi-import";
-import { discoverAgents, type AgentConfig } from "../subagent/agents";
+import { discoverGlobalAgents, PAPER_ASSISTANT_AGENT, type AgentConfig } from "../subagent/agents";
 import { readTextFile, updateFrontmatter, writeTextFile } from "./agent-markdown";
 
 export class WebuiSettingsError extends Error {
@@ -32,7 +32,7 @@ function globalAgentPath(agent: AgentConfig, agentDir: string): string {
 }
 
 async function globalAgents(config: ConfigFileService): Promise<AgentConfig[]> {
-  return (await discoverAgents({ cwd: process.cwd(), agentDir: config.globalRoot, includeProject: false })).agents;
+  return (await discoverGlobalAgents({ agentDir: config.globalRoot })).agents;
 }
 
 export async function readWebuiSettings(config: ConfigFileService): Promise<WebuiSettingsDto> {
@@ -40,13 +40,13 @@ export async function readWebuiSettings(config: ConfigFileService): Promise<Webu
   const agentModels = Object.fromEntries(agents.flatMap((agent) => (agent.model ? [[agent.name, agent.model]] : [])));
   return {
     agentModels,
-    assistantModel: agents.find((agent) => agent.name === "assistant")?.model ?? null,
-    effectiveAssistantModel: null,
+    paperAssistantModel: agents.find((agent) => agent.name === PAPER_ASSISTANT_AGENT)?.model ?? null,
+    effectivePaperAssistantModel: null,
   };
 }
 
 function validatePatch(patch: WebuiSettingsUpdate): void {
-  const known = new Set(["agentModels", "assistantModel"]);
+  const known = new Set(["agentModels", "paperAssistantModel"]);
   for (const key of Object.keys(patch)) {
     if (!known.has(key)) throw new WebuiSettingsError(400, `Unknown webui setting: ${key}`);
   }
@@ -61,11 +61,11 @@ function validatePatch(patch: WebuiSettingsUpdate): void {
       parseModelRef(model);
     }
   }
-  if (patch.assistantModel !== undefined && patch.assistantModel !== null) {
-    if (typeof patch.assistantModel !== "string") {
-      throw new WebuiSettingsError(400, 'assistantModel must be a "provider/id" string or null');
+  if (patch.paperAssistantModel !== undefined && patch.paperAssistantModel !== null) {
+    if (typeof patch.paperAssistantModel !== "string") {
+      throw new WebuiSettingsError(400, 'paperAssistantModel must be a "provider/id" string or null');
     }
-    parseModelRef(patch.assistantModel);
+    parseModelRef(patch.paperAssistantModel);
   }
 }
 
@@ -89,10 +89,10 @@ export async function updateWebuiSettings(config: ConfigFileService, patch: Webu
       await updateAgentModel(config, agent, model);
     }
   }
-  if (patch.assistantModel !== undefined) {
-    const assistant = byName.get("assistant");
-    if (!assistant) throw new WebuiSettingsError(404, "Unknown agent: assistant");
-    await updateAgentModel(config, assistant, patch.assistantModel);
+  if (patch.paperAssistantModel !== undefined) {
+    const paperAssistant = byName.get(PAPER_ASSISTANT_AGENT);
+    if (!paperAssistant) throw new WebuiSettingsError(404, `Unknown agent: ${PAPER_ASSISTANT_AGENT}`);
+    await updateAgentModel(config, paperAssistant, patch.paperAssistantModel);
   }
   return readWebuiSettings(config);
 }
@@ -108,7 +108,7 @@ const PI_DEFAULT_MODEL_PER_PROVIDER: Record<string, string> = {
   deepseek: "deepseek-v4-pro",
 };
 
-export function pickEffectiveAssistantModel(
+export function pickEffectivePaperAssistantModel(
   configured: string | null,
   available: ReadonlyArray<{ provider: string; id: string }>,
 ): string | null {
@@ -125,10 +125,12 @@ export async function readEffectiveWebuiSettings(
   available?: ReadonlyArray<{ provider: string; id: string }>,
 ): Promise<WebuiSettingsDto> {
   const settings = await readWebuiSettings(config);
-  if (settings.assistantModel) return { ...settings, effectiveAssistantModel: settings.assistantModel };
+  if (settings.paperAssistantModel) {
+    return { ...settings, effectivePaperAssistantModel: settings.paperAssistantModel };
+  }
   if (!available) {
     const { ModelRuntime } = await import("../runtime/pi-import").then(({ importPi }) => importPi());
     available = await (await ModelRuntime.create()).getAvailable();
   }
-  return { ...settings, effectiveAssistantModel: pickEffectiveAssistantModel(null, available) };
+  return { ...settings, effectivePaperAssistantModel: pickEffectivePaperAssistantModel(null, available) };
 }

@@ -49,7 +49,7 @@ export interface RpcClientLikeOptions {
 export type RpcClientLikeConstructor = new (options: RpcClientLikeOptions) => RpcClientLike;
 
 const CLI_PATH = fileURLToPath(new URL("../runtime/pi-bootstrap.mjs", import.meta.url));
-const EXTENSION_PATH = fileURLToPath(new URL("../runtime/assistant-extension.ts", import.meta.url));
+const EXTENSION_PATH = fileURLToPath(new URL("../runtime/paper-assistant-extension.ts", import.meta.url));
 
 export interface HeartbeatOptions {
   heartbeatIntervalMs?: number;

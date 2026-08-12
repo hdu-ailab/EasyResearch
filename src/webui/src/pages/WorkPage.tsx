@@ -9,6 +9,7 @@ import { ChatTranscript, type ChatTranscriptHandle } from "../components/ChatTra
 import { FileBrowser } from "../components/FileBrowser";
 import { ProductMark, Topbar, TopbarIconButton } from "../components/Topbar";
 import { WorkMobileTabs, type WorkView } from "../components/WorkMobileTabs";
+import { PAPER_ASSISTANT_AGENT } from "../agent-identity";
 import { parseFileWatcherEvent } from "../file-watcher";
 import { usePanelTransition } from "../hooks/usePanelTransition";
 import { useSessionConnection } from "../hooks/useSessionConnection";
@@ -95,7 +96,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   const [tabsState, setTabsState] = useState<SubagentTabsState>({ tabs: [], hiddenRunningToolCalls: [] });
   const [childViews, setChildViews] = useState<Record<string, SessionViewState>>({});
   const [childErrors, setChildErrors] = useState<Record<string, boolean>>({});
-  const [activeTab, setActiveTab] = useState("assistant");
+  const [activeTab, setActiveTab] = useState(PAPER_ASSISTANT_AGENT);
   const transcriptRef = useRef<ChatTranscriptHandle>(null);
   const tabsStateRef = useRef(tabsState);
   const childSessionByTool = useRef(new Map<string, string>());
@@ -225,8 +226,8 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   }, [sessionView.tools]);
 
   useEffect(() => {
-    if (activeTab !== "assistant" && !tabsState.tabs.some((tab) => tab.key === activeTab)) {
-      setActiveTab("assistant");
+    if (activeTab !== PAPER_ASSISTANT_AGENT && !tabsState.tabs.some((tab) => tab.key === activeTab)) {
+      setActiveTab(PAPER_ASSISTANT_AGENT);
     }
   }, [tabsState.tabs, activeTab]);
 
@@ -245,10 +246,10 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
         : Math.min(defaultPanelWidth, panelMax);
   const activeChildId = activeTab.startsWith("session:") ? activeTab.slice(8) : undefined;
   const activeView = activeChildId ? childViews[activeChildId] : undefined;
-  const activeMessages = activeTab === "assistant" ? sessionView.messages : (activeView?.messages ?? []);
-  const activeTools = activeTab === "assistant" ? sessionView.tools : activeChildId ? (activeView?.tools ?? []) : [];
+  const activeMessages = activeTab === PAPER_ASSISTANT_AGENT ? sessionView.messages : (activeView?.messages ?? []);
+  const activeTools = activeTab === PAPER_ASSISTANT_AGENT ? sessionView.tools : activeChildId ? (activeView?.tools ?? []) : [];
   const statusByAgent = Object.fromEntries([
-    ["assistant", sessionView.error !== null ? "error" : sessionView.isStreaming ? "working" : "idle"],
+    [PAPER_ASSISTANT_AGENT, sessionView.error !== null ? "error" : sessionView.isStreaming ? "working" : "idle"],
     ...tabsState.tabs.map((tab) => [tab.agent, tab.running ? "working" : "idle"]),
   ]) as Record<string, AgentStatus>;
   const projectName = cwd.split("/").filter(Boolean).at(-1) ?? cwd;
@@ -377,7 +378,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
 
   const selectAgentTab = useCallback(
     (key: string) => {
-      if (key === "assistant") {
+      if (key === PAPER_ASSISTANT_AGENT) {
         setActiveTab(key);
         return;
       }
@@ -409,7 +410,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
 
   const closeAgentTab = useCallback((key: string) => {
     setTabsState((current) => closeSubagentTab(current, key));
-    setActiveTab("assistant");
+    setActiveTab(PAPER_ASSISTANT_AGENT);
   }, []);
 
   const startResize = useCallback(
@@ -533,7 +534,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
           <AgentTabBar
             tabs={tabsState.tabs}
             activeKey={activeTab}
-            assistantStatus={sessionView.error !== null ? "error" : sessionView.isStreaming ? "working" : "idle"}
+            paperAssistantStatus={sessionView.error !== null ? "error" : sessionView.isStreaming ? "working" : "idle"}
             onSelect={selectAgentTab}
             onClose={closeAgentTab}
             onStop={() => abort()}
@@ -545,17 +546,17 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
             ref={transcriptRef}
             messages={activeMessages}
             tools={activeTools}
-            emptyHint={activeTab === "assistant" ? undefined : t("work.noMessagesYet")}
-            pending={pendingOutput && activeTab === "assistant"}
-            onViewDetails={activeTab === "assistant" ? openSubagentTool : undefined}
+            emptyHint={activeTab === PAPER_ASSISTANT_AGENT ? undefined : t("work.noMessagesYet")}
+            pending={pendingOutput && activeTab === PAPER_ASSISTANT_AGENT}
+            onViewDetails={activeTab === PAPER_ASSISTANT_AGENT ? openSubagentTool : undefined}
           />
           <footer className="shrink-0 border-t border-v2-grey-200 p-3">
-            {activeTab !== "assistant" || sessionView.subagentName ? (
+            {activeTab !== PAPER_ASSISTANT_AGENT || sessionView.subagentName ? (
               <p className="mb-2 text-[12px] text-v2-text-text-faint">{t("work.subagentLineNote")}</p>
             ) : null}
             <ChatComposer
-              disabled={accepting || activeTab !== "assistant" || sessionView.subagentName !== undefined}
-              streaming={activeTab === "assistant" && sessionView.isStreaming}
+              disabled={accepting || activeTab !== PAPER_ASSISTANT_AGENT || sessionView.subagentName !== undefined}
+              streaming={activeTab === PAPER_ASSISTANT_AGENT && sessionView.isStreaming}
               onSend={send}
               onAbort={abort}
             />

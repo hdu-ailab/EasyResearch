@@ -36,8 +36,8 @@ vi.mock("../bootstrap/resources", () => ({
 vi.mock("./extensions-guard", () => ({
   assertSafeExtensionSources: () => hoisted.guard(),
 }));
-vi.mock("./assistant-extension", () => ({
-  createAssistantExtension: () => hoisted.createExtension(),
+vi.mock("./paper-assistant-extension", () => ({
+  createPaperAssistantExtension: () => hoisted.createExtension(),
 }));
 
 function tempAgentDir(): string {
@@ -172,12 +172,19 @@ describe("runNativeTui", () => {
     expect(hoisted.main).toHaveBeenCalledTimes(1);
   });
 
-  it("bootstraps resources, guards extensions, and mounts the assistant extension", async () => {
+  it("bootstraps resources, guards extensions, and mounts the Paper Assistant extension", async () => {
     await runNativeTui();
     expect(hoisted.main).toHaveBeenCalledTimes(1);
     expect(hoisted.main).toHaveBeenCalledWith(expect.arrayContaining(["--no-skills"]), {
       extensionFactories: [{ inner: true }],
     });
+  });
+
+  it("keeps skill discovery disabled at the TUI host boundary", async () => {
+    await runNativeTui();
+    const args = hoisted.main.mock.calls[0]?.[0] as string[];
+    expect(args).toContain("--no-skills");
+    expect(args).not.toContain("--skill");
   });
 
   it("does not touch PI_OFFLINE", async () => {

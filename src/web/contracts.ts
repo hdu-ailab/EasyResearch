@@ -86,6 +86,7 @@ export interface AgentDto {
   subagents?: string[];
   skills?: string[];
   effectiveSkills: string[];
+  missingSkills: string[];
 }
 
 export interface AgentResourceDto extends AgentDto {
@@ -116,11 +117,11 @@ export interface AgentEffectiveModelDto {
 
 export interface WebuiSettingsDto {
   agentModels: Record<string, string>;
-  assistantModel: string | null;
-  effectiveAssistantModel: string | null;
+  paperAssistantModel: string | null;
+  effectivePaperAssistantModel: string | null;
 }
 
 export interface WebuiSettingsUpdate {
   agentModels?: Record<string, string>;
-  assistantModel?: string | null;
+  paperAssistantModel?: string | null;
 }

@@ -19,6 +19,7 @@ vi.mock("../api", async (importOriginal) => {
     readAgentResource: vi.fn(),
     writeAgentResource: vi.fn(),
     createAgentResource: vi.fn(),
+    listConfigProjects: vi.fn(),
     listSkillResources: vi.fn(),
     readSkillResource: vi.fn(),
     writeSkillResource: vi.fn(),
@@ -35,16 +36,17 @@ beforeEach(() => {
   vi.mocked(api.readAgentResource).mockReset();
   vi.mocked(api.writeAgentResource).mockReset();
   vi.mocked(api.createAgentResource).mockReset();
+  vi.mocked(api.listConfigProjects).mockReset();
   vi.mocked(api.listSkillResources).mockReset();
   vi.mocked(api.readSkillResource).mockReset();
   vi.mocked(api.writeSkillResource).mockReset();
   vi.mocked(api.getWebuiSettings).mockResolvedValue({
     agentModels: { search: "openai/gpt-4o" },
-    assistantModel: null,
-    effectiveAssistantModel: "openai/gpt-4o",
+    paperAssistantModel: null,
+    effectivePaperAssistantModel: "openai/gpt-4o",
   } as never);
   vi.mocked(api.listAgents).mockResolvedValue([
-    { name: "assistant", description: "Coordinates" },
+    { name: "paper-assistant", description: "Coordinates" },
     { name: "search", description: "Searches" },
     { name: "writing", description: "Writes" },
   ] as never);
@@ -62,6 +64,7 @@ beforeEach(() => {
     filePath: "src/agents/search.md",
     effectiveTools: ["read", "web-search"],
     effectiveSkills: ["paper-search", "arxiv"],
+    missingSkills: [],
     content: "---\nname: search\ndescription: Searches\nenable: true\n---\nPrompt\n",
   });
   vi.mocked(api.writeAgentResource).mockResolvedValue({} as never);
@@ -74,7 +77,12 @@ beforeEach(() => {
     filePath: "/agent/agents/reviewer.md",
     effectiveTools: [],
     effectiveSkills: [],
+    missingSkills: [],
     content: "---\nname: reviewer\ndescription: reviewer agent\nenable: true\n---\n",
+  });
+  vi.mocked(api.listConfigProjects).mockResolvedValue({
+    home: "/agent",
+    projects: [{ cwd: "/papers/project-a" }, { cwd: "/papers/project-b" }],
   });
   vi.mocked(api.listSkillResources).mockResolvedValue([
     {
@@ -102,6 +110,16 @@ function renderSettings(onOpenConfigPage: () => void = () => {}, onHome: () => v
       </I18nProvider>
     </PreferencesProvider>,
   );
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 describe("SettingsPage", () => {
@@ -250,7 +268,7 @@ describe("SettingsPage", () => {
     expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}")).toMatchObject({ language: "zh-CN" });
   });
 
-  it("shows stage agents with their configured model while the assistant has no disable switch", async () => {
+  it("shows stage agents with their configured model while the Paper Assistant has no disable switch", async () => {
     renderSettings();
     await screen.findByRole("combobox", { name: "Select model for Search" });
     expect(screen.getByRole("combobox", { name: "Select model for Search" })).toHaveValue("openai/gpt-4o");
@@ -263,8 +281,8 @@ describe("SettingsPage", () => {
   it("includes a configured stage model that is absent from the model catalog", async () => {
     vi.mocked(api.getWebuiSettings).mockResolvedValue({
       agentModels: { search: "custom/missing-model" },
-      assistantModel: null,
-      effectiveAssistantModel: "openai/gpt-4o",
+      paperAssistantModel: null,
+      effectivePaperAssistantModel: "openai/gpt-4o",
     } as never);
     renderSettings();
 
@@ -282,10 +300,10 @@ describe("SettingsPage", () => {
     expect(screen.getByRole("combobox", { name: "选择模型： 检索" })).toBeTruthy();
   });
 
-  it("pins the assistant to the first Agent models row regardless of API order", async () => {
+  it("pins the Paper Assistant to the first Agent models row regardless of API order", async () => {
     vi.mocked(api.listAgents).mockResolvedValue([
       { name: "writing", description: "Writes" },
-      { name: "assistant", description: "Coordinates" },
+      { name: "paper-assistant", description: "Coordinates" },
       { name: "search", description: "Searches" },
     ] as never);
     renderSettings();
@@ -297,11 +315,11 @@ describe("SettingsPage", () => {
     );
   });
 
-  it("shows the configured assistant default without any inherit option", async () => {
+  it("shows the configured Paper Assistant default without any inherit option", async () => {
     vi.mocked(api.getWebuiSettings).mockResolvedValue({
       agentModels: { search: "openai/gpt-4o" },
-      assistantModel: "openai/gpt-4o",
-      effectiveAssistantModel: "openai/gpt-4o",
+      paperAssistantModel: "openai/gpt-4o",
+      effectivePaperAssistantModel: "openai/gpt-4o",
     } as never);
     renderSettings();
     const combobox = await screen.findByRole("combobox", { name: "Select model for Paper Assistant" });
@@ -309,11 +327,11 @@ describe("SettingsPage", () => {
     expect(within(combobox).queryAllByRole("option", { name: /inherit/i })).toHaveLength(0);
   });
 
-  it("auto-selects the effective Pi model when no assistant default is configured", async () => {
+  it("auto-selects the effective Pi model when no Paper Assistant default is configured", async () => {
     vi.mocked(api.getWebuiSettings).mockResolvedValue({
       agentModels: {},
-      assistantModel: null,
-      effectiveAssistantModel: "anthropic/claude-opus-4-8",
+      paperAssistantModel: null,
+      effectivePaperAssistantModel: "anthropic/claude-opus-4-8",
     } as never);
     renderSettings();
     const combobox = await screen.findByRole("combobox", { name: "Select model for Paper Assistant" });
@@ -325,8 +343,8 @@ describe("SettingsPage", () => {
   it("auto-selects a default already in the catalog without duplicating it", async () => {
     vi.mocked(api.getWebuiSettings).mockResolvedValue({
       agentModels: {},
-      assistantModel: null,
-      effectiveAssistantModel: "openai/gpt-4o",
+      paperAssistantModel: null,
+      effectivePaperAssistantModel: "openai/gpt-4o",
     } as never);
     renderSettings();
     const combobox = await screen.findByRole("combobox", { name: "Select model for Paper Assistant" });
@@ -334,12 +352,12 @@ describe("SettingsPage", () => {
     expect(within(combobox).queryAllByRole("option", { name: "openai/gpt-4o" })).toHaveLength(1);
   });
 
-  it("sets the assistant default via an assistantModel patch", async () => {
+  it("sets the Paper Assistant default via a paperAssistantModel patch", async () => {
     const user = userEvent.setup();
     vi.mocked(api.updateWebuiSettings).mockResolvedValue({
       agentModels: { search: "openai/gpt-4o" },
-      assistantModel: "anthropic/claude-sonnet-4",
-      effectiveAssistantModel: "anthropic/claude-sonnet-4",
+      paperAssistantModel: "anthropic/claude-sonnet-4",
+      effectivePaperAssistantModel: "anthropic/claude-sonnet-4",
     } as never);
     renderSettings();
     await screen.findByRole("combobox", { name: "Select model for Paper Assistant" });
@@ -348,7 +366,7 @@ describe("SettingsPage", () => {
       "anthropic/claude-sonnet-4",
     );
     await waitFor(() =>
-      expect(api.updateWebuiSettings).toHaveBeenCalledWith({ assistantModel: "anthropic/claude-sonnet-4" }),
+      expect(api.updateWebuiSettings).toHaveBeenCalledWith({ paperAssistantModel: "anthropic/claude-sonnet-4" }),
     );
     expect(screen.getByRole("combobox", { name: "Select model for Paper Assistant" })).toHaveValue(
       "anthropic/claude-sonnet-4",
@@ -413,12 +431,12 @@ describe("SettingsPage", () => {
         effectiveSkills: ["paper-search", "arxiv"],
       },
       {
-        name: "assistant",
+        name: "paper-assistant",
         description: "Coordinates",
         enabled: true,
         builtin: true,
         source: "bundled",
-        filePath: "src/agents/assistant.md",
+        filePath: "src/agents/paper-assistant.md",
         effectiveTools: ["read"],
         effectiveSkills: ["workflow"],
       },
@@ -471,16 +489,177 @@ describe("SettingsPage", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "paper-search" })).toBeNull());
   });
 
+  it("refreshes current Global diagnostics after a successful Agent save", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listAgents)
+      .mockResolvedValueOnce([{ name: "search", description: "Searches", missingSkills: ["before-save"] }] as never)
+      .mockResolvedValueOnce([{ name: "search", description: "Searches", missingSkills: ["after-save"] }] as never);
+    renderSettings();
+    expect(await screen.findByText("before-save")).toBeVisible();
+
+    await user.click(await screen.findByRole("button", { name: "Edit Search" }));
+    await user.click(screen.getByRole("button", { name: /save agent/i }));
+
+    expect(await screen.findByText("after-save")).toBeVisible();
+    expect(screen.queryByText("before-save")).toBeNull();
+    expect(api.listAgents).toHaveBeenLastCalledWith(undefined);
+  });
+
+  it("refreshes the selected project diagnostics after a successful global Skill save", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listAgents)
+      .mockResolvedValueOnce([{ name: "search", description: "Searches", missingSkills: ["global-missing"] }] as never)
+      .mockResolvedValueOnce([
+        { name: "writing", description: "Writes", missingSkills: ["before-skill-save"] },
+      ] as never)
+      .mockResolvedValueOnce([
+        { name: "writing", description: "Writes", missingSkills: ["after-skill-save"] },
+      ] as never);
+    renderSettings();
+    const scope = await screen.findByRole("combobox", { name: "Skill diagnostic scope" });
+    await user.selectOptions(scope, "/papers/project-a");
+    expect(await screen.findByText("before-skill-save")).toBeVisible();
+
+    await user.click(await screen.findByRole("button", { name: /edit skill.*paper-search/i }));
+    await user.click(screen.getByRole("button", { name: /save skill/i }));
+
+    expect(await screen.findByText("after-skill-save")).toBeVisible();
+    expect(api.listAgents).toHaveBeenLastCalledWith("/papers/project-a");
+    expect(api.listSkillResources).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not let a pre-save diagnostic response overwrite the post-save refresh", async () => {
+    const user = userEvent.setup();
+    const stale = deferred<Awaited<ReturnType<typeof api.listAgents>>>();
+    vi.mocked(api.listAgents)
+      .mockResolvedValueOnce([{ name: "search", description: "Searches", missingSkills: ["global-missing"] }] as never)
+      .mockReturnValueOnce(stale.promise)
+      .mockResolvedValueOnce([
+        { name: "writing", description: "Writes", missingSkills: ["fresh-after-save"] },
+      ] as never);
+    renderSettings();
+    const scope = await screen.findByRole("combobox", { name: "Skill diagnostic scope" });
+    await user.selectOptions(scope, "/papers/project-a");
+    await user.click(await screen.findByRole("button", { name: /edit skill.*paper-search/i }));
+    await user.click(screen.getByRole("button", { name: /save skill/i }));
+    expect(await screen.findByText("fresh-after-save")).toBeVisible();
+
+    await act(async () => {
+      stale.resolve([{ name: "writing", description: "Writes", missingSkills: ["stale-before-save"] }] as never);
+      await stale.promise;
+    });
+    expect(screen.getByText("fresh-after-save")).toBeVisible();
+    expect(screen.queryByText("stale-before-save")).toBeNull();
+  });
+
+  it("defaults Skill diagnostics to Global and groups affected Agents by missing Skill", async () => {
+    vi.mocked(api.listAgents).mockResolvedValue([
+      { name: "search", description: "Searches", missingSkills: ["missing-skill"] },
+      { name: "writing", description: "Writes", missingSkills: ["missing-skill"] },
+    ] as never);
+
+    renderSettings();
+
+    const scope = await screen.findByRole("combobox", { name: "Skill diagnostic scope" });
+    expect(scope).toHaveValue("global");
+    expect(scope).toHaveClass("focus:outline-2", "focus:outline-offset-2", "focus:outline-v2-blue-600");
+    const warning = screen.getByText("missing-skill").parentElement!;
+    expect(within(warning).getByText(/Search/)).toBeVisible();
+    expect(within(warning).getByText(/Writing/)).toBeVisible();
+  });
+
+  it("refetches only diagnostic Agents when a project scope is selected", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listAgents)
+      .mockResolvedValueOnce([{ name: "search", description: "Searches", missingSkills: ["global-missing"] }] as never)
+      .mockResolvedValueOnce([{ name: "writing", description: "Writes", missingSkills: ["project-missing"] }] as never);
+
+    renderSettings();
+    const scope = await screen.findByRole("combobox", { name: "Skill diagnostic scope" });
+    expect(screen.getByText("global-missing")).toBeVisible();
+
+    await user.selectOptions(scope, "/papers/project-a");
+
+    await waitFor(() => expect(api.listAgents).toHaveBeenCalledWith("/papers/project-a"));
+    expect(await screen.findByText("project-missing")).toBeVisible();
+    expect(screen.queryByText("global-missing")).toBeNull();
+    expect(api.listSkillResources).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Edit skill paper-search" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Edit skill project-missing" })).toBeNull();
+  });
+
+  it("keeps the latest diagnostic scope when an earlier request resolves last", async () => {
+    const user = userEvent.setup();
+    const projectA = deferred<Awaited<ReturnType<typeof api.listAgents>>>();
+    const projectB = deferred<Awaited<ReturnType<typeof api.listAgents>>>();
+    vi.mocked(api.listAgents)
+      .mockResolvedValueOnce([{ name: "search", description: "Searches", missingSkills: ["global-missing"] }] as never)
+      .mockReturnValueOnce(projectA.promise)
+      .mockReturnValueOnce(projectB.promise);
+
+    renderSettings();
+    const scope = await screen.findByRole("combobox", { name: "Skill diagnostic scope" });
+    await user.selectOptions(scope, "/papers/project-a");
+    await user.selectOptions(scope, "/papers/project-b");
+
+    await act(async () => {
+      projectB.resolve([{ name: "writing", description: "Writes", missingSkills: ["project-b-missing"] }] as never);
+      await projectB.promise;
+    });
+    expect(screen.getByText("project-b-missing")).toBeVisible();
+
+    await act(async () => {
+      projectA.resolve([{ name: "search", description: "Searches", missingSkills: ["project-a-missing"] }] as never);
+      await projectA.promise;
+    });
+    expect(scope).toHaveValue("/papers/project-b");
+    expect(screen.getByText("project-b-missing")).toBeVisible();
+    expect(screen.queryByText("project-a-missing")).toBeNull();
+    expect(api.listSkillResources).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears stale diagnostics on failure and clears the diagnostic error after recovery", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listAgents)
+      .mockResolvedValueOnce([{ name: "search", description: "Searches", missingSkills: ["global-missing"] }] as never)
+      .mockRejectedValueOnce(new Error("diagnostic failed"))
+      .mockResolvedValueOnce([
+        { name: "writing", description: "Writes", missingSkills: ["recovered-missing"] },
+      ] as never);
+
+    renderSettings();
+    const scope = await screen.findByRole("combobox", { name: "Skill diagnostic scope" });
+    expect(screen.getByText("global-missing")).toBeVisible();
+
+    await user.selectOptions(scope, "/papers/project-a");
+    expect(await screen.findByRole("alert")).toHaveTextContent("diagnostic failed");
+    expect(screen.queryByText("global-missing")).toBeNull();
+
+    await user.selectOptions(scope, "/papers/project-b");
+    expect(await screen.findByText("recovered-missing")).toBeVisible();
+    expect(screen.queryByText("diagnostic failed")).toBeNull();
+    expect(api.listSkillResources).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps global Skill resources available when diagnostic project discovery fails", async () => {
+    vi.mocked(api.listConfigProjects).mockRejectedValueOnce(new Error("project discovery failed"));
+
+    renderSettings();
+
+    expect(await screen.findByRole("button", { name: "Edit skill paper-search" })).toBeVisible();
+    expect(screen.getByRole("alert")).toHaveTextContent("project discovery failed");
+  });
+
   it("shows deduplicated resource lists and opens agent resource details", async () => {
     const user = userEvent.setup();
     vi.mocked(api.listAgents).mockResolvedValue([
       {
-        name: "assistant",
+        name: "paper-assistant",
         description: "Coordinates",
         enabled: true,
         builtin: true,
         source: "bundled",
-        filePath: "src/agents/assistant.md",
+        filePath: "src/agents/paper-assistant.md",
         effectiveTools: ["read", "subagent"],
         effectiveSkills: ["workflow"],
       },

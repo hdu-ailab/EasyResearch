@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { discoverAgents, filterEnabledAgents, type AgentConfig } from "./agents";
+import { discoverAgents, discoverGlobalAgents, filterEnabledAgents, type AgentConfig } from "./agents";
 
 let root: string;
 let agentDir: string;
@@ -33,11 +33,11 @@ function options() {
 
 describe("discoverAgents (Markdown layers)", () => {
   it("uses bundled agents when the global agents directory is absent", async () => {
-    writeAgent(bundledDir, "assistant", ["enable: true", "tools: [read, bash]", "skills: [workflow]"]);
+    writeAgent(bundledDir, "paper-assistant", ["enable: true", "tools: [read, bash]", "skills: [workflow]"]);
     const { agents } = await discoverAgents(options());
 
     expect(agents).toHaveLength(1);
-    expect(agents[0]).toMatchObject({ name: "assistant", enabled: true, builtin: true, source: "bundled" });
+    expect(agents[0]).toMatchObject({ name: "paper-assistant", enabled: true, builtin: true, source: "bundled" });
   });
 
   it("lets a project Markdown file completely replace a global file", async () => {
@@ -50,12 +50,12 @@ describe("discoverAgents (Markdown layers)", () => {
   });
 
   it("appends custom Markdown agents and keeps built-ins before them", async () => {
-    writeAgent(bundledDir, "assistant");
+    writeAgent(bundledDir, "paper-assistant");
     writeAgent(bundledDir, "search");
     writeAgent(agentDir, "审稿人", ["description: Custom reviewer"]);
     const { agents } = await discoverAgents(options());
 
-    expect(agents.map((agent) => agent.name)).toEqual(["assistant", "search", "审稿人"]);
+    expect(agents.map((agent) => agent.name)).toEqual(["paper-assistant", "search", "审稿人"]);
     expect(agents[2]).toMatchObject({ builtin: false, source: "global" });
   });
 
@@ -69,18 +69,53 @@ describe("discoverAgents (Markdown layers)", () => {
     expect(agents[0]).toMatchObject({ name: "search", description: "primary override", filePath: join(agentDir, "agents", "search.md") });
   });
 
+  it("treats assistant.md as custom while paper-assistant remains the built-in", async () => {
+    writeAgent(bundledDir, "paper-assistant", ["enable: true"]);
+    writeAgent(agentDir, "assistant", ["enable: true"]);
+    writeAgent(join(root, "project", ".easyresearch"), "assistant", ["description: Project custom assistant"]);
+    writeAgent(join(root, "project", ".easyresearch"), "paper-assistant", ["description: Project Paper Assistant"]);
+
+    const { agents } = await discoverAgents(options());
+
+    expect(agents[0]).toMatchObject({
+      name: "paper-assistant",
+      builtin: true,
+      source: "project",
+      description: "Project Paper Assistant",
+    });
+    expect(agents.find((agent) => agent.name === "assistant")).toMatchObject({
+      builtin: false,
+      source: "project",
+      description: "Project custom assistant",
+    });
+  });
+
+  it("uses the localized Paper Assistant alias and keeps it enabled", async () => {
+    writeAgent(agentDir, "Paper Assistant", ["enable: false"]);
+
+    const { agents } = await discoverAgents(options());
+
+    expect(agents[0]).toMatchObject({
+      name: "paper-assistant",
+      enabled: true,
+      builtin: true,
+      source: "global",
+      filePath: join(agentDir, "agents", "Paper Assistant.md"),
+    });
+  });
+
   it("keeps disabled agents visible and filters them from dispatch targets", async () => {
-    writeAgent(bundledDir, "assistant");
+    writeAgent(bundledDir, "paper-assistant");
     writeAgent(bundledDir, "search", ["enable: false"]);
     writeAgent(bundledDir, "writing");
     const { agents } = await discoverAgents(options());
 
     expect(agents.map((agent) => [agent.name, agent.enabled])).toEqual([
-      ["assistant", true],
+      ["paper-assistant", true],
       ["search", false],
       ["writing", true],
     ]);
-    expect(filterEnabledAgents(agents).map((agent) => agent.name)).toEqual(["assistant", "writing"]);
+    expect(filterEnabledAgents(agents).map((agent) => agent.name)).toEqual(["paper-assistant", "writing"]);
   });
 
   it("defaults enable to true and reads complete frontmatter configuration", async () => {
@@ -97,6 +132,48 @@ describe("discoverAgents (Markdown layers)", () => {
     });
   });
 
+  it.each([
+    { label: "omitted", fields: [] },
+    { label: "YAML-empty", fields: ["tools:", "skills:"] },
+    { label: "empty arrays", fields: ["tools: []", "skills: []"] },
+  ])("normalizes $label tool and Skill configuration to all capabilities", async ({ fields }) => {
+    const bundledSkillsDir = join(root, "bundled-skills");
+    mkdirSync(join(bundledSkillsDir, "available-skill"), { recursive: true });
+    writeFileSync(join(bundledSkillsDir, "available-skill", "SKILL.md"), "# Available\n");
+    writeAgent(bundledDir, "paper-assistant", fields);
+
+    const { agents } = await discoverAgents({ ...options(), bundledSkillsDir });
+    const paperAssistant = agents[0] as AgentConfig;
+
+    expect(paperAssistant.tools).toBeUndefined();
+    expect(paperAssistant.skills).toBeUndefined();
+    expect(paperAssistant.effectiveTools).toEqual(expect.arrayContaining(["read", "subagent", "web-search"]));
+    expect(paperAssistant.effectiveSkills).toEqual(["available-skill"]);
+    expect(paperAssistant.missingSkills).toEqual([]);
+  });
+
+  it("keeps valid configured Skills and diagnoses missing ones", async () => {
+    const bundledSkillsDir = join(root, "bundled-skills");
+    mkdirSync(join(bundledSkillsDir, "available-skill"), { recursive: true });
+    writeFileSync(join(bundledSkillsDir, "available-skill", "SKILL.md"), "# Available\n");
+    writeAgent(bundledDir, "paper-assistant", ["skills: [available-skill, missing-skill]"]);
+
+    const { agents } = await discoverAgents({ ...options(), bundledSkillsDir });
+    const paperAssistant = agents[0] as AgentConfig;
+
+    expect(paperAssistant.skills).toEqual(["available-skill", "missing-skill"]);
+    expect(paperAssistant.effectiveSkills).toEqual(["available-skill"]);
+    expect(paperAssistant.missingSkills).toEqual(["missing-skill"]);
+  });
+
+  it("preserves an empty subagent allowlist for leaf agents", async () => {
+    writeAgent(bundledDir, "search", ["subagents: []"]);
+
+    const { agents } = await discoverAgents(options());
+
+    expect(agents[0]?.subagents).toEqual([]);
+  });
+
   it("only includes home .agents skills when the global setting is enabled", async () => {
     const homeDir = join(root, "home");
     const bundledSkillsDir = join(root, "bundled-skills");
@@ -111,5 +188,27 @@ describe("discoverAgents (Markdown layers)", () => {
 
     const enabled = await discoverAgents({ ...options(), homeDir, bundledSkillsDir, enableDotAgentsSkill: true });
     expect(enabled.agents[0]?.effectiveSkills).toEqual(["home-only"]);
+  });
+
+  it("keeps global discovery free of project Agent and Skill roots", async () => {
+    const project = join(root, "project");
+    const bundledSkillsDir = join(root, "bundled-skills");
+    writeAgent(bundledDir, "paper-assistant", ["skills: [project-only]"]);
+    writeAgent(join(project, ".easyresearch"), "project-custom");
+    mkdirSync(join(project, ".easyresearch", "skills", "project-only"), { recursive: true });
+    writeFileSync(join(project, ".easyresearch", "skills", "project-only", "SKILL.md"), "# Project only\n");
+
+    const { agents } = await discoverGlobalAgents({
+      cwd: project,
+      agentDir,
+      bundledAgentsDir: bundledDir,
+      bundledSkillsDir,
+    });
+
+    expect(agents.map((agent) => agent.name)).not.toContain("project-custom");
+    expect(agents.find((agent) => agent.name === "paper-assistant")).toMatchObject({
+      effectiveSkills: [],
+      missingSkills: ["project-only"],
+    });
   });
 });
