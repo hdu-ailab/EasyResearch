@@ -413,11 +413,10 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
             <header className="flex items-center gap-2 border-b border-v2-grey-200 px-4 py-2.5">
               <Settings2 size={14} className="text-v2-icon-icon-muted" aria-hidden />
               <h2 className="text-[13px] font-semibold text-v2-text-text-base">{t("settings.agents.title")}</h2>
-              <span className="ml-auto text-[12px] text-v2-text-text-faint">{t("settings.agents.globalHint")}</span>
               <button
                 type="button"
                 aria-label={t("settings.agents.add")}
-                className="flex h-7 items-center gap-1 rounded-md border border-v2-grey-200 px-2 text-[12px] hover:bg-v2-grey-100"
+                className="ml-auto flex h-7 items-center gap-1 rounded-md border border-v2-grey-200 px-2 text-[12px] hover:bg-v2-grey-100"
                 onClick={() => setAddAgentOpen(true)}
               >
                 <UserPlus size={13} aria-hidden />
@@ -547,10 +546,7 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
                 ),
               )}
               <div className="border-t border-v2-grey-200 pt-4">
-                <div className="flex items-baseline justify-between gap-3">
-                  <h3 className="text-[12px] font-semibold text-v2-text-text-base">{t("settings.resources.tools")}</h3>
-                  <span className="text-[11px] text-v2-text-text-faint">{t("settings.resources.toolsHint")}</span>
-                </div>
+                <h3 className="text-[12px] font-semibold text-v2-text-text-base">{t("settings.resources.tools")}</h3>
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   {toolInventory.length > 0 ? (
                     toolInventory.map((tool) => (
@@ -567,10 +563,7 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
                 </div>
               </div>
               <div className="border-t border-v2-grey-200 pt-4">
-                <div className="flex items-baseline justify-between gap-3">
-                  <h3 className="text-[12px] font-semibold text-v2-text-text-base">{t("settings.resources.skills")}</h3>
-                  <span className="text-[11px] text-v2-text-text-faint">{t("settings.resources.skillsHint")}</span>
-                </div>
+                <h3 className="text-[12px] font-semibold text-v2-text-text-base">{t("settings.resources.skills")}</h3>
                 <div className="mt-2 flex flex-col gap-2">
                   {skills.map((skill) => (
                     <div
