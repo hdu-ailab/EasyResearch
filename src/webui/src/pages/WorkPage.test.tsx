@@ -281,6 +281,26 @@ describe("WorkPage", () => {
     expect(await screen.findByText("on it")).toBeTruthy();
   });
 
+  it("replaces the working agent row when the first real output is a tool call", async () => {
+    const user = userEvent.setup();
+    stubEvents();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    await user.type(screen.getByRole("textbox", { name: /message/i }), "inspect files");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+    expect(await screen.findByLabelText("Working")).toBeTruthy();
+
+    emit({
+      type: "tool_execution_start",
+      toolCallId: "t1",
+      toolName: "bash",
+      args: { command: "ls" },
+    });
+
+    await waitFor(() => expect(screen.queryByLabelText("Working")).toBeNull());
+    expect(await screen.findByText(/Running tool: bash/)).toBeTruthy();
+  });
+
   it("clears the working agent row when the send fails", async () => {
     const user = userEvent.setup();
     stubEvents();
