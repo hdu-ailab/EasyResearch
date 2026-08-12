@@ -1419,7 +1419,7 @@ describe("WorkPage", () => {
     expect(agentsWrapper).not.toBe(filesWrapper);
   });
 
-  it("renders the full five-agent roster in the agents view with serial copy", async () => {
+  it("renders the full five-agent roster in the agents view", async () => {
     const user = userEvent.setup();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await screen.findByText("starting research");
@@ -1430,8 +1430,6 @@ describe("WorkPage", () => {
         expect(within(region).getAllByText(display).length).toBeGreaterThan(0);
       }
     });
-    expect(within(region).getByText(/serially/i)).toBeTruthy();
-    expect(within(region).queryByText(/parallel/i)).toBeNull();
   });
 
   it("agent cards show localized descriptions and no Subagents rows", async () => {

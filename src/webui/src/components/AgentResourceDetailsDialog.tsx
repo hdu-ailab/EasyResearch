@@ -19,12 +19,9 @@ export function AgentResourceDetailsDialog({ agentName, tools, skills, onClose }
         className="w-full max-w-[520px] rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-overlay)]"
       >
         <header className="flex items-center gap-3 border-b border-v2-grey-200 px-4 py-3">
-          <div className="min-w-0">
-            <h2 className="truncate text-[14px] font-semibold text-v2-text-text-base">
-              {t("settings.resources.detailsTitle").replace("{name}", agentName)}
-            </h2>
-            <p className="mt-0.5 text-[12px] text-v2-text-text-muted">{t("settings.resources.readOnly")}</p>
-          </div>
+          <h2 className="min-w-0 truncate text-[14px] font-semibold text-v2-text-text-base">
+            {t("settings.resources.detailsTitle").replace("{name}", agentName)}
+          </h2>
           <button
             type="button"
             aria-label={t("settings.resources.closeDetails")}
