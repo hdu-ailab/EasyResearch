@@ -23,6 +23,11 @@ export function createSubagentExtension(): InlineExtension {
     logger.info("stage agent runtime started", { cwd: process.cwd() });
     // ADR-018: project config is always trusted; suppress Pi's trust prompt.
     pi.on("project_trust", () => ({ trusted: "yes" as const }));
+    pi.on("session_start", () => {
+      if (process.env.EASYRESEARCH_AGENT_TOOLS === "all") {
+        pi.setActiveTools(pi.getAllTools().map(({ name }) => name));
+      }
+    });
   };
 }
 
