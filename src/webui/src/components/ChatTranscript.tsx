@@ -168,6 +168,8 @@ export function ChatTranscript({ messages, tools, emptyHint, pending = false, on
   const contentRef = useRef<HTMLUListElement>(null);
   const stickRef = useRef(true);
   const frameRef = useRef<number | null>(null);
+  const pendingRef = useRef(pending);
+  const entriesRef = useRef<typeof entries>([]);
   const entries = useMemo(
     () => [...messages, ...tools].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
     [messages, tools],
@@ -208,6 +210,32 @@ export function ChatTranscript({ messages, tools, emptyHint, pending = false, on
   useEffect(() => {
     scheduleFollow();
   }, [entries, pending]);
+
+  // A new prompt (pending false -> true) is an explicit latest-content
+  // action: re-pin and jump to the bottom even from an unpinned position.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: scheduleFollow is ref-based and intentionally stable.
+  useEffect(() => {
+    if (pending && !pendingRef.current) {
+      stickRef.current = true;
+      scheduleFollow();
+    }
+    pendingRef.current = pending;
+  }, [pending]);
+
+  // A conversation replacement (focused agent tab switch) shares no keys with
+  // the previous transcript: re-pin and jump to the new latest content.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: scheduleFollow is ref-based and intentionally stable.
+  useEffect(() => {
+    const previous = entriesRef.current;
+    entriesRef.current = entries;
+    if (previous === entries) return;
+    const previousKeys = new Set(previous.map((entry) => entry.key));
+    const sharesKeys = entries.some((entry) => previousKeys.has(entry.key));
+    if (!sharesKeys) {
+      stickRef.current = true;
+      scheduleFollow();
+    }
+  }, [entries]);
 
   return (
     <section

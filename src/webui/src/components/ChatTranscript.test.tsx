@@ -253,6 +253,72 @@ describe("ChatTranscript", () => {
     expect(el.scrollTop).toBe(700);
   });
 
+  it("jumps to the bottom on a new prompt even while unpinned", () => {
+    const first = [msg({ key: "a", text: "one" })];
+    const { rerender } = renderTranscript(<ChatTranscript messages={first} tools={[]} pending={false} />);
+    const el = scrollContainer();
+    flushFollowFrame();
+    expect(el.scrollTop).toBe(400);
+
+    el.scrollTop = 100;
+    fireEvent.scroll(el);
+
+    rerender(<ChatTranscript messages={first} tools={[]} pending />);
+    flushFollowFrame();
+    expect(el.scrollTop).toBe(400);
+  });
+
+  it("jumps to the bottom when the conversation is replaced", () => {
+    const parent = [msg({ key: "parent-a", text: "assistant message" })];
+    const { rerender } = renderTranscript(<ChatTranscript messages={parent} tools={[]} />);
+    const el = scrollContainer();
+    flushFollowFrame();
+    expect(el.scrollTop).toBe(400);
+
+    el.scrollTop = 100;
+    fireEvent.scroll(el);
+
+    const child = [msg({ key: "child-a", text: "child message" })];
+    rerender(<ChatTranscript messages={child} tools={[]} />);
+    flushFollowFrame();
+    expect(el.scrollTop).toBe(400);
+  });
+
+  it("keeps the reading position when content grows while unpinned", () => {
+    const first = [msg({ key: "a", text: "one" })];
+    const { rerender } = renderTranscript(<ChatTranscript messages={first} tools={[]} />);
+    const el = scrollContainer();
+    flushFollowFrame();
+    expect(el.scrollTop).toBe(400);
+
+    el.scrollTop = 100;
+    fireEvent.scroll(el);
+
+    rerender(<ChatTranscript messages={[...first, msg({ key: "b", text: "two" })]} tools={[]} />);
+    flushFollowFrame();
+    expect(el.scrollTop).toBe(100);
+  });
+
+  it("follows later content growth after a prompt jump", () => {
+    let scrollHeight = 400;
+    const first = [msg({ key: "a", text: "one" })];
+    const { rerender } = renderTranscript(<ChatTranscript messages={first} tools={[]} pending={false} />);
+    const el = screen.getByLabelText("Conversation") as HTMLDivElement;
+    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => scrollHeight });
+    Object.defineProperty(el, "clientHeight", { configurable: true, get: () => 200 });
+    flushFollowFrame();
+
+    el.scrollTop = 100;
+    fireEvent.scroll(el);
+    rerender(<ChatTranscript messages={[...first, msg({ key: "b", text: "two" })]} tools={[]} pending />);
+    flushFollowFrame();
+    expect(el.scrollTop).toBe(400);
+
+    scrollHeight = 600;
+    fireContentResize();
+    expect(el.scrollTop).toBe(600);
+  });
+
   it("never forces reasoning or generic tool expansion into view", () => {
     renderTranscript(
       <ChatTranscript
