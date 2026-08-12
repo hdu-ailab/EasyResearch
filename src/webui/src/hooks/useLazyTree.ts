@@ -21,6 +21,7 @@ export interface UseLazyTreeResult<T> {
   toggle: (path: string) => void;
   retry: (path: string) => void;
   refresh: (path: string) => void;
+  refreshDirectory: (path: string) => void;
 }
 
 /**
@@ -35,6 +36,7 @@ export function useLazyTree<T>({ root, loadChildren }: UseLazyTreeOptions<T>): U
   const [stateMap, setStateMap] = useState<Map<string, NodeLoadState<T>>>(() => new Map());
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const inFlight = useRef<Map<string, number>>(new Map());
+  const pendingRefresh = useRef<Set<string>>(new Set());
   const tokens = useRef(0);
 
   const load = useCallback(
@@ -71,10 +73,19 @@ export function useLazyTree<T>({ root, loadChildren }: UseLazyTreeOptions<T>): U
   // biome-ignore lint/correctness/useExhaustiveDependencies: load is intentionally excluded from the root reset boundary.
   useEffect(() => {
     inFlight.current.clear();
+    pendingRefresh.current.clear();
     setStateMap(new Map());
     setExpanded(new Set());
     load(root);
   }, [root]);
+
+  useEffect(() => {
+    for (const path of pendingRefresh.current) {
+      if (stateMap.get(path)?.status !== "loaded") continue;
+      pendingRefresh.current.delete(path);
+      load(path);
+    }
+  }, [load, stateMap]);
 
   const toggle = useCallback(
     (path: string) => {
@@ -117,9 +128,23 @@ export function useLazyTree<T>({ root, loadChildren }: UseLazyTreeOptions<T>): U
     [load],
   );
 
+  const refreshDirectory = useCallback(
+    (path: string) => {
+      const node = stateMap.get(path);
+      if (!node || node.status === "unloaded" || node.status === "error") return;
+      if (node.status === "loading") {
+        pendingRefresh.current.add(path);
+        return;
+      }
+      inFlight.current.delete(path);
+      load(path);
+    },
+    [load, stateMap],
+  );
+
   const children = useCallback((path: string) => stateMap.get(path)?.children ?? [], [stateMap]);
   const status = useCallback((path: string) => stateMap.get(path)?.status ?? "unloaded", [stateMap]);
   const error = useCallback((path: string) => stateMap.get(path)?.error, [stateMap]);
 
-  return { children, status, error, expanded, toggle, retry, refresh };
+  return { children, status, error, expanded, toggle, retry, refresh, refreshDirectory };
 }

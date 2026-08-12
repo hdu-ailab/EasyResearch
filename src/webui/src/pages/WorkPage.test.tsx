@@ -883,6 +883,28 @@ describe("WorkPage", () => {
     expect(screen.queryByText("No files.")).toBeNull();
   });
 
+  it("routes valid file watcher events to the file browser and ignores out-of-root events", async () => {
+    let entries: FileEntryDto[] = [{ kind: "file", name: "notes.md", path: "/p/notes.md" }];
+    vi.mocked(api.listEntries).mockImplementation(async () => entries);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    await screen.findByText("notes.md");
+
+    entries = [...entries, { kind: "file", name: "generated.md", path: "/p/generated.md" }];
+    emitInAct({
+      type: "file.watcher.updated",
+      properties: { file: "/p/generated.md", event: "add" },
+    });
+    expect(await screen.findByText("generated.md")).toBeVisible();
+    const callsAfterValidEvent = vi.mocked(api.listEntries).mock.calls.length;
+
+    emitInAct({
+      type: "file.watcher.updated",
+      properties: { file: "/outside/generated.md", event: "add" },
+    });
+    expect(vi.mocked(api.listEntries).mock.calls.length).toBe(callsAfterValidEvent);
+  });
+
   it("opens a file from the files panel into a tab and previews its content", async () => {
     const user = userEvent.setup();
     vi.mocked(api.readFileContent).mockResolvedValue({

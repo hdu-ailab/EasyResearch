@@ -17,6 +17,7 @@ import { discoverAgents } from "../subagent/agents";
 import { agentToDto, isKnownAgentName, toUserSessionSummaries } from "./server";
 import type { Logger } from "../runtime/logger";
 import { SubagentSessionNotFoundError } from "./subagent-sessions";
+import type { FileWatcherEvent, FileWatcherFactory } from "./file-watcher";
 
 const [loggerMock, createLoggerMock] = vi.hoisted(() => {
   const mockLogger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
@@ -126,12 +127,27 @@ class FakeFactory implements RpcSessionFactory {
   }
 }
 
+class FakeWatcherFactory implements FileWatcherFactory {
+  created: Array<{ cwd: string; onEvent: (event: FileWatcherEvent) => void }> = [];
+
+  create({ cwd, onEvent }: { cwd: string; onEvent: (event: FileWatcherEvent) => void }) {
+    const close = vi.fn(async () => {});
+    this.created.push({ cwd, onEvent });
+    return { close };
+  }
+
+  emit(event: FileWatcherEvent) {
+    this.created.at(-1)?.onEvent(event);
+  }
+}
+
 describe("web routes", () => {
   let webuiDist: string;
   let homeDir: string;
   let agentDir: string;
   let projectDir: string;
   let factory: FakeFactory;
+  let watcherFactory: FakeWatcherFactory;
   let registry: ActiveSessionRegistry;
   let directoryService: DirectoryService;
   let configService: ConfigFileService;
@@ -147,7 +163,8 @@ describe("web routes", () => {
     FakeAdapter.all = [];
     FakeAdapter.nextId = 0;
     factory = new FakeFactory();
-    registry = new ActiveSessionRegistry(factory, noopLogger);
+    watcherFactory = new FakeWatcherFactory();
+    registry = new ActiveSessionRegistry(factory, noopLogger, watcherFactory);
     directoryService = new DirectoryService(homeDir);
     configService = new ConfigFileService(agentDir);
     historySessions = [];
@@ -546,6 +563,30 @@ describe("web routes", () => {
     const second = await reader.read();
     expect(decoder.decode(second.value)).toContain('"type":"message_start"');
     reader.cancel();
+  });
+
+  it("streams file watcher events over the existing SSE connection", async () => {
+    setup();
+    const created = await registry.create({ cwd: projectDir });
+    const res = await handler(new Request(`http://localhost/api/sessions/${created.id}/events`));
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    try {
+      await reader.read();
+      watcherFactory.emit({
+        type: "file.watcher.updated",
+        properties: { file: `${projectDir}/new.md`, event: "add" },
+      });
+      const next = await reader.read();
+      expect(decoder.decode(next.value)).toContain(
+        JSON.stringify({
+          type: "file.watcher.updated",
+          properties: { file: `${projectDir}/new.md`, event: "add" },
+        }),
+      );
+    } finally {
+      await reader.cancel();
+    }
   });
 
   it("includes the same subagent summaries in the first SSE snapshot", async () => {
