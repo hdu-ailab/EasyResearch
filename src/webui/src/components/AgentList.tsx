@@ -1,4 +1,4 @@
-import { Bot, FolderOpen } from "lucide-react";
+import { Bot } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { AgentDto, AgentEffectiveModelDto } from "../../../web/contracts";
 import { getEffectiveModels, listAgents, listModels, setAgentModel } from "../api";
@@ -95,10 +95,6 @@ export function AgentList({ statusByAgent, sessionId }: AgentListProps) {
             onApply={(model) => applyModel(agent.name, model)}
           />
         ))}
-        <p className="mt-3 flex items-center gap-2 text-[12px] text-v2-text-text-faint">
-          <FolderOpen size={12} />
-          {t("work.strictlySerialNote")}
-        </p>
       </div>
     </div>
   );
