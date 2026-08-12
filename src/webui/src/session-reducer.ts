@@ -447,6 +447,7 @@ export function terminateSessionRun(state: SessionViewState, clearError = false)
     error: clearError ? null : state.error,
     activeMessageKey: undefined,
     messages: state.messages.map((message) => ({ ...message, isThinking: false, streaming: false })),
+    tools: state.tools.map((tool) => ({ ...tool, running: false })),
   };
 }
 
