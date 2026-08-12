@@ -26,10 +26,27 @@ export interface SessionConnection {
 
 interface PendingStreamReady {
   sessionId: string;
-  generation: number;
+  connectionGeneration: number;
+  operation: GenerationToken;
   resolve: () => void;
   reject: (error: Error) => void;
 }
+
+interface GenerationToken {
+  generation: number;
+  active: boolean;
+}
+
+interface ConnectionToken extends GenerationToken {
+  receivedStreamData: boolean;
+}
+
+interface ConnectionTarget {
+  sessionId: string;
+  generation: number;
+}
+
+const OPERATION_CANCELLED = new Error("Session operation cancelled");
 
 type SnapshotEvent = Omit<SessionSnapshotDto, "subagents"> & {
   type: "snapshot";
@@ -82,128 +99,213 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
   const viewRef = useRef(view);
   viewRef.current = view;
   const [status, setStatus] = useState<ActiveSessionDto["status"]>("starting");
-  const [sessionId, setSessionId] = useState(initialSessionId);
+  const generationRef = useRef(1);
+  const [connectionTarget, setConnectionTarget] = useState<ConnectionTarget>({
+    sessionId: initialSessionId,
+    generation: 1,
+  });
+  const sessionId = connectionTarget.sessionId;
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
   const [sessionPath, setSessionPath] = useState<string | null>(null);
   const sessionPathRef = useRef<string | null>(null);
-  const [subscribeEpoch, setSubscribeEpoch] = useState(0);
   const [accepting, setAccepting] = useState(false);
   const [pendingOutput, setPendingOutput] = useState(false);
   const pendingBaseline = useRef<number | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const eventsReceivedRef = useRef(false);
-  const streamGenerationRef = useRef(0);
+  const mountedRef = useRef(true);
+  const connectionTokenRef = useRef<ConnectionToken | null>(null);
+  const sendOperationRef = useRef<GenerationToken | null>(null);
   const pendingStreamReadyRef = useRef<PendingStreamReady | null>(null);
+
+  const nextGeneration = useCallback(() => {
+    generationRef.current += 1;
+    return generationRef.current;
+  }, []);
+
+  const isCurrentOperation = useCallback(
+    (operation: GenerationToken) => mountedRef.current && operation.active && sendOperationRef.current === operation,
+    [],
+  );
+
+  const rejectPendingStream = useCallback((error: Error, operation?: GenerationToken) => {
+    const pending = pendingStreamReadyRef.current;
+    if (!pending || (operation && pending.operation !== operation)) return;
+    pendingStreamReadyRef.current = null;
+    pending.reject(error);
+  }, []);
+
+  const cancelOperation = useCallback(
+    (operation: GenerationToken | null) => {
+      if (!operation?.active) return;
+      operation.active = false;
+      rejectPendingStream(OPERATION_CANCELLED, operation);
+      if (sendOperationRef.current === operation) sendOperationRef.current = null;
+    },
+    [rejectPendingStream],
+  );
 
   const updateSessionPath = useCallback((path: string | null) => {
     sessionPathRef.current = path;
     setSessionPath(path);
   }, []);
 
-  const hydrate = useCallback(
-    async (targetId: string) => {
-      const snapshot = await getSnapshot(targetId);
-      updateSessionPath(snapshot.session.sessionFile ?? null);
-      setSessionId(snapshot.session.id);
-      setStatus(snapshot.session.status);
-      return snapshot;
+  useEffect(
+    () => () => {
+      mountedRef.current = false;
+      cancelOperation(sendOperationRef.current);
     },
-    [updateSessionPath],
+    [cancelOperation],
   );
 
   useEffect(() => {
-    void subscribeEpoch;
-    let active = true;
-    const connectionGeneration = ++streamGenerationRef.current;
-    eventsReceivedRef.current = false;
-    hydrate(sessionId)
+    const connectionToken: ConnectionToken = {
+      generation: connectionTarget.generation,
+      active: true,
+      receivedStreamData: false,
+    };
+    connectionTokenRef.current = connectionToken;
+    const isCurrentConnection = () =>
+      mountedRef.current && connectionToken.active && connectionTokenRef.current === connectionToken;
+    getSnapshot(sessionId)
       .then((snapshot) => {
-        if (active && !eventsReceivedRef.current) setView(fromSnapshot(snapshot));
+        if (!isCurrentConnection()) return;
+        updateSessionPath(snapshot.session.sessionFile ?? null);
+        if (connectionToken.receivedStreamData) return;
+        setStatus(snapshot.session.status);
+        setView(fromSnapshot(snapshot));
       })
       .catch((error: unknown) => {
-        if (!active) return;
+        if (!isCurrentConnection() || connectionToken.receivedStreamData) return;
         setStatus("error");
         setNotice(error instanceof Error ? error.message : String(error));
       });
     const unsubscribe = connectSessionEvents(sessionId, {
       onEvent: (event) => {
-        eventsReceivedRef.current = true;
+        if (!isCurrentConnection()) return;
+        connectionToken.receivedStreamData = true;
         setNotice((current) => (current === tRef.current("work.connectionLost") ? null : current));
         if (onEventRef.current?.(event)) return;
         if (isSnapshotEvent(event)) {
           const pending = pendingStreamReadyRef.current;
-          if (pending?.sessionId === sessionId && pending.generation === connectionGeneration) {
+          if (
+            pending?.sessionId === sessionId &&
+            pending.connectionGeneration === connectionToken.generation &&
+            pending.operation.active
+          ) {
             pendingStreamReadyRef.current = null;
             pending.resolve();
           }
           if (typeof event.session.sessionFile === "string") updateSessionPath(event.session.sessionFile);
+          setStatus(event.session.status);
           setView((current) => mergeSnapshot(current, { ...event, subagents: event.subagents ?? [] }));
           return;
         }
         const type = eventType(event);
         if (type === "error") {
           const pending = pendingStreamReadyRef.current;
-          if (pending?.sessionId === sessionId && pending.generation === connectionGeneration) {
-            pendingStreamReadyRef.current = null;
+          if (pending?.connectionGeneration === connectionToken.generation) {
             const error = (event as { error?: unknown }).error;
-            pending.reject(new Error(typeof error === "string" ? error : "Session stream failed"));
+            rejectPendingStream(new Error(typeof error === "string" ? error : "Session stream failed"));
           }
+          setStatus("error");
           return;
         }
-        if (type === "session_deactivated") return;
-        if (isAgentSessionEvent(event)) setView((current) => reduceSessionEvent(current, event));
+        if (type === "session_deactivated") {
+          setStatus("stopped");
+          return;
+        }
+        if (isAgentSessionEvent(event)) {
+          if (type === "agent_start") setStatus("running");
+          if (type === "agent_settled") setStatus("ready");
+          setView((current) => reduceSessionEvent(current, event));
+        }
       },
-      onError: () => setNotice(tRef.current("work.connectionLost")),
+      onError: () => {
+        if (!isCurrentConnection()) return;
+        const message = tRef.current("work.connectionLost");
+        if (pendingStreamReadyRef.current?.connectionGeneration === connectionToken.generation) {
+          rejectPendingStream(new Error(message));
+        }
+        setNotice(message);
+      },
     });
     return () => {
-      active = false;
+      connectionToken.active = false;
+      if (connectionTokenRef.current === connectionToken) connectionTokenRef.current = null;
+      if (pendingStreamReadyRef.current?.connectionGeneration === connectionToken.generation) {
+        rejectPendingStream(OPERATION_CANCELLED);
+      }
       unsubscribe();
     };
-  }, [hydrate, sessionId, subscribeEpoch, updateSessionPath]);
+  }, [connectionTarget.generation, rejectPendingStream, sessionId, updateSessionPath]);
 
   const send = useCallback(
     async (text: string) => {
+      cancelOperation(sendOperationRef.current);
+      const operation: GenerationToken = { generation: nextGeneration(), active: true };
+      sendOperationRef.current = operation;
       setAccepting(true);
       setNotice(null);
       pendingBaseline.current = assistantOutputCount(viewRef.current);
       setPendingOutput(true);
       try {
         await sendPrompt(sessionId, text);
+        if (!isCurrentOperation(operation)) return;
         setAccepting(false);
+        operation.active = false;
+        sendOperationRef.current = null;
       } catch (error: unknown) {
+        if (!isCurrentOperation(operation)) return;
         const message = error instanceof Error ? error.message : String(error);
         const path = sessionPathRef.current;
         if (isUnknownSession(error) && path) {
           try {
             const dto = await openSession(path);
+            if (!isCurrentOperation(operation)) return;
             updateSessionPath(dto.sessionFile ?? path);
-            const generation = streamGenerationRef.current + 1;
+            sessionIdRef.current = dto.id;
+            const connectionGeneration = nextGeneration();
             const streamReady = new Promise<void>((resolve, reject) => {
               pendingStreamReadyRef.current = {
                 sessionId: dto.id,
-                generation,
+                connectionGeneration,
+                operation,
                 resolve,
-                reject: (streamError) => reject(streamError),
+                reject,
               };
             });
-            if (dto.id === sessionId) setSubscribeEpoch((epoch) => epoch + 1);
-            else setSessionId(dto.id);
-            const snapshot = await getSnapshot(dto.id);
-            setView(fromSnapshot(snapshot));
+            if (connectionTokenRef.current) connectionTokenRef.current.active = false;
+            setConnectionTarget({ sessionId: dto.id, generation: connectionGeneration });
             await streamReady;
+            if (!isCurrentOperation(operation)) return;
             await sendPrompt(dto.id, text);
+            if (!isCurrentOperation(operation)) return;
             setAccepting(false);
+            operation.active = false;
+            sendOperationRef.current = null;
             return;
           } catch (reopenError: unknown) {
+            if (!isCurrentOperation(operation)) return;
+            setAccepting(false);
+            setPendingOutput(false);
+            pendingBaseline.current = null;
             setNotice(reopenError instanceof Error ? reopenError.message : String(reopenError));
+            operation.active = false;
+            sendOperationRef.current = null;
+            return;
           }
         }
+        if (!isCurrentOperation(operation)) return;
         setAccepting(false);
         setPendingOutput(false);
         pendingBaseline.current = null;
         setNotice(message);
+        operation.active = false;
+        sendOperationRef.current = null;
       }
     },
-    [sessionId, updateSessionPath],
+    [cancelOperation, isCurrentOperation, nextGeneration, sessionId, updateSessionPath],
   );
 
   useEffect(() => {
@@ -215,16 +317,22 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
   }, [pendingOutput, view]);
 
   const abort = useCallback(async () => {
-    try {
-      await abortSession(sessionId);
-      setView((current) => ({ ...current, isStreaming: false }));
-      setStatus("ready");
+    cancelOperation(sendOperationRef.current);
+    if (mountedRef.current) {
+      setAccepting(false);
       setPendingOutput(false);
       pendingBaseline.current = null;
+    }
+    try {
+      await abortSession(sessionIdRef.current);
+      if (!mountedRef.current) return;
+      setView((current) => ({ ...current, isStreaming: false }));
+      setStatus("ready");
     } catch (error: unknown) {
+      if (!mountedRef.current) return;
       setNotice(error instanceof Error ? error.message : String(error));
     }
-  }, [sessionId]);
+  }, [cancelOperation]);
 
   return {
     sessionId,
