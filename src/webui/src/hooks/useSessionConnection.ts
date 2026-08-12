@@ -3,7 +3,14 @@ import { type Dispatch, type SetStateAction, useCallback, useEffect, useRef, use
 import type { ActiveSessionDto, SessionSnapshotDto } from "../../../web/contracts";
 import { abortSession, connectSessionEvents, getSnapshot, isUnknownSession, openSession, sendPrompt } from "../api";
 import { useI18n } from "../i18n/useI18n";
-import { emptyState, fromSnapshot, mergeSnapshot, reduceSessionEvent, type SessionViewState } from "../session-reducer";
+import {
+  emptyState,
+  fromSnapshot,
+  mergeSnapshot,
+  reduceSessionEvent,
+  type SessionViewState,
+  terminateSessionRun,
+} from "../session-reducer";
 
 export interface UseSessionConnectionOptions {
   initialSessionId: string;
@@ -150,10 +157,22 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
     setSessionPath(path);
   }, []);
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
       mountedRef.current = false;
       cancelOperation(sendOperationRef.current);
+    };
+  }, [cancelOperation]);
+
+  const clearTerminalState = useCallback(
+    (nextStatus: ActiveSessionDto["status"]) => {
+      cancelOperation(sendOperationRef.current);
+      setAccepting(false);
+      setPendingOutput(false);
+      pendingBaseline.current = null;
+      setView((current) => terminateSessionRun(current));
+      setStatus(nextStatus);
     },
     [cancelOperation],
   );
@@ -208,11 +227,11 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
             const error = (event as { error?: unknown }).error;
             rejectPendingStream(new Error(typeof error === "string" ? error : "Session stream failed"));
           }
-          setStatus("error");
+          clearTerminalState("error");
           return;
         }
         if (type === "session_deactivated") {
-          setStatus("stopped");
+          clearTerminalState("stopped");
           return;
         }
         if (isAgentSessionEvent(event)) {
@@ -238,7 +257,7 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
       }
       unsubscribe();
     };
-  }, [connectionTarget.generation, rejectPendingStream, sessionId, updateSessionPath]);
+  }, [clearTerminalState, connectionTarget.generation, rejectPendingStream, sessionId, updateSessionPath]);
 
   const send = useCallback(
     async (text: string) => {
@@ -326,13 +345,12 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
     try {
       await abortSession(sessionIdRef.current);
       if (!mountedRef.current) return;
-      setView((current) => ({ ...current, isStreaming: false }));
-      setStatus("ready");
+      clearTerminalState("ready");
     } catch (error: unknown) {
       if (!mountedRef.current) return;
       setNotice(error instanceof Error ? error.message : String(error));
     }
-  }, [cancelOperation]);
+  }, [cancelOperation, clearTerminalState]);
 
   return {
     sessionId,

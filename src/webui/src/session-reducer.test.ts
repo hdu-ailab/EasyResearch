@@ -92,6 +92,74 @@ describe("session reducer", () => {
     expect(hydrated.messages.every((message) => !message.streaming)).toBe(true);
   });
 
+  it("creates one temporary assistant row when a running empty snapshot receives its first delta", () => {
+    const hydrated = fromSnapshot({
+      session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
+      subagents: [],
+      messages: [],
+    });
+
+    const updated = reduceSessionEvent(hydrated, assistantEvent("message_update", "first token"));
+
+    expect(updated.messages).toEqual([
+      expect.objectContaining({ role: "assistant", text: "first token", streaming: true }),
+    ]);
+    expect(updated.activeMessageKey).toBe(updated.messages[0]!.key);
+  });
+
+  it("reconciles a missing assistant row from the authoritative message_end", () => {
+    const hydrated = fromSnapshot({
+      session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
+      subagents: [],
+      messages: [],
+    });
+    const withDelta = reduceSessionEvent(hydrated, assistantEvent("message_update", "partial"));
+
+    const ended = reduceSessionEvent(withDelta, {
+      type: "message_end",
+      message: { id: "final-id", role: "assistant", content: [{ type: "text", text: "authoritative final" }] },
+    } as never);
+
+    expect(ended.messages).toEqual([
+      expect.objectContaining({
+        identity: "final-id",
+        role: "assistant",
+        text: "authoritative final",
+        streaming: false,
+      }),
+    ]);
+    expect(ended.activeMessageKey).toBeUndefined();
+  });
+
+  it("creates a missing assistant row directly from message_end", () => {
+    const hydrated = fromSnapshot({
+      session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
+      subagents: [],
+      messages: [],
+    });
+
+    const ended = reduceSessionEvent(hydrated, assistantEvent("message_end", "authoritative final"));
+
+    expect(ended.messages).toEqual([
+      expect.objectContaining({ role: "assistant", text: "authoritative final", streaming: false }),
+    ]);
+  });
+
+  it("does not overwrite a user row when message_end must create a missing assistant row", () => {
+    const hydrated = fromSnapshot({
+      session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
+      subagents: [],
+      messages: [userMessage("question")],
+    });
+
+    const ended = reduceSessionEvent(hydrated, assistantEvent("message_end", "authoritative final"));
+
+    expect(ended.messages.map((message) => [message.role, message.text])).toEqual([
+      ["user", "question"],
+      ["assistant", "authoritative final"],
+    ]);
+  });
+
   it("tracks agent lifecycle independently from assistant message completion", () => {
     const running = reduceSessionEvent(emptyState, { type: "agent_start" } as AgentSessionEvent);
     expect(running.isStreaming).toBe(true);
@@ -861,8 +929,45 @@ describe("session reducer", () => {
       agentName: "writing",
       step: 2,
       sessionId: "child-writing",
-      latestMessage: "live progress",
     });
+    expect(mergeSnapshot(prior, snapshot).tools[0]!.latestMessage).toBeUndefined();
+  });
+
+  it("does not carry child metadata across incompatible chain steps", () => {
+    const prior: SessionViewState = {
+      ...emptyState,
+      tools: [
+        {
+          key: "chain-call",
+          name: "subagent",
+          running: true,
+          done: false,
+          error: false,
+          agentName: "search",
+          step: 1,
+          sessionId: "child-search",
+          latestMessage: "search output",
+          sessionLinks: [{ toolCallId: "chain-call", childSessionId: "child-search", agent: "search", step: 1 }],
+          order: 0,
+        },
+      ],
+      nextOrder: 1,
+    };
+    const snapshot = {
+      session: { id: "parent", cwd: "/p", isStreaming: true, status: "running" },
+      subagents: [{ toolCallId: "chain-call", childSessionId: "child-writing", agent: "writing", step: 2 }],
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "chain-call", name: "subagent", arguments: '{"chain":[]}' }],
+        },
+      ],
+    } as never;
+
+    const merged = mergeSnapshot(prior, snapshot).tools[0]!;
+
+    expect(merged).toMatchObject({ step: 2, sessionId: "child-writing", agentName: "writing" });
+    expect(merged.latestMessage).toBeUndefined();
   });
 
   it("preserves prior live chain agent and step when the snapshot has no summary", () => {

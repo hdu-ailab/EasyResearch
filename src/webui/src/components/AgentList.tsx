@@ -1,5 +1,5 @@
 import { Bot } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentDto, AgentEffectiveModelDto } from "../../../web/contracts";
 import { getEffectiveModels, listAgents, listModels, setAgentModel } from "../api";
 import { agentDescription, agentDisplayName, type Translate } from "../i18n/agents";
@@ -25,34 +25,39 @@ export function AgentList({ cwd, statusByAgent, sessionId }: AgentListProps) {
   const [models, setModels] = useState<Array<{ provider: string; id: string }>>([]);
   const [effective, setEffective] = useState<AgentEffectiveModelDto[] | null>(null);
   const [busy, setBusy] = useState(false);
+  const requestGeneration = useRef(0);
 
   useEffect(() => {
-    let alive = true;
+    const generation = ++requestGeneration.current;
+    setBusy(false);
     Promise.all([listAgents(cwd), listModels(), getEffectiveModels(sessionId)])
       .then(([agents, catalog, eff]) => {
-        if (!alive) return;
+        if (generation !== requestGeneration.current) return;
         setRoster(agents);
         setModels(catalog);
         setEffective(eff);
       })
       .catch(() => {
-        if (alive) setRoster([]);
+        if (generation === requestGeneration.current) setRoster([]);
       });
     return () => {
-      alive = false;
+      if (generation === requestGeneration.current) requestGeneration.current += 1;
     };
   }, [cwd, sessionId]);
 
   const applyModel = useCallback(
     async (agentName: string, model: string | null) => {
+      const ownedSession = sessionId;
+      const generation = ++requestGeneration.current;
       setBusy(true);
       try {
-        await setAgentModel(sessionId, agentName, model);
-        setEffective(await getEffectiveModels(sessionId));
+        await setAgentModel(ownedSession, agentName, model);
+        const next = await getEffectiveModels(ownedSession);
+        if (generation === requestGeneration.current) setEffective(next);
       } catch {
         // Keep the last known models; the next interaction can retry.
       } finally {
-        setBusy(false);
+        if (generation === requestGeneration.current) setBusy(false);
       }
     },
     [sessionId],
@@ -82,6 +87,7 @@ export function AgentList({ cwd, statusByAgent, sessionId }: AgentListProps) {
           status={statusByAgent.assistant ?? "idle"}
           entry={effective?.find((item) => item.name === "assistant")}
           models={models}
+          disabled={false}
           busy={busy}
           onApply={(model) => applyModel("assistant", model)}
         />
@@ -92,6 +98,7 @@ export function AgentList({ cwd, statusByAgent, sessionId }: AgentListProps) {
             status={statusByAgent[agent.name] ?? "idle"}
             entry={effective?.find((item) => item.name === agent.name)}
             models={models}
+            disabled={!agent.enabled}
             busy={busy}
             onApply={(model) => applyModel(agent.name, model)}
           />
@@ -108,11 +115,22 @@ interface AgentCardProps {
   status: AgentStatus;
   entry: AgentEffectiveModelDto | undefined;
   models: Array<{ provider: string; id: string }>;
+  disabled: boolean;
   busy: boolean;
   onApply: (model: string | null) => void;
 }
 
-function AgentCard({ agent, fallbackName, fallbackDescription, status, entry, models, busy, onApply }: AgentCardProps) {
+function AgentCard({
+  agent,
+  fallbackName,
+  fallbackDescription,
+  status,
+  entry,
+  models,
+  disabled,
+  busy,
+  onApply,
+}: AgentCardProps) {
   const { t } = useI18n();
   const name = agent?.name ?? fallbackName ?? "agent";
   return (
@@ -121,7 +139,7 @@ function AgentCard({ agent, fallbackName, fallbackDescription, status, entry, mo
         <span className={`size-2 rounded-full ${dotClass(status)}`} aria-hidden />
         <span className="text-[13px] font-medium text-v2-text-text-base">{agentDisplayName(t, name)}</span>
         <span className="ml-auto flex items-center gap-2 text-[12px] text-v2-text-text-faint">
-          {statusLabel(t, status)}
+          {disabled ? t("work.disabled") : statusLabel(t, status)}
         </span>
       </div>
       <p className="mt-2 text-[12px] text-v2-text-text-muted">
@@ -132,7 +150,7 @@ function AgentCard({ agent, fallbackName, fallbackDescription, status, entry, mo
           {agent.effectiveTools.length} tools, {agent.effectiveSkills.length} skills
         </p>
       )}
-      <ModelRow entry={entry} models={models} busy={busy} onApply={onApply} />
+      <ModelRow entry={entry} models={models} disabled={disabled || busy} onApply={onApply} />
     </div>
   );
 }
@@ -144,11 +162,11 @@ function statusLabel(t: Translate, status: AgentStatus): string {
 interface ModelRowProps {
   entry: AgentEffectiveModelDto | undefined;
   models: Array<{ provider: string; id: string }>;
-  busy: boolean;
+  disabled: boolean;
   onApply: (model: string | null) => void;
 }
 
-function ModelRow({ entry, models, busy, onApply }: ModelRowProps) {
+function ModelRow({ entry, models, disabled, onApply }: ModelRowProps) {
   const { t } = useI18n();
   const current = entry?.model ?? "";
   const slash = current.indexOf("/");
@@ -163,7 +181,7 @@ function ModelRow({ entry, models, busy, onApply }: ModelRowProps) {
         aria-label={t("work.selectModel")}
         value={current}
         onChange={(event) => onApply(event.target.value === "" ? null : event.target.value)}
-        disabled={busy}
+        disabled={disabled}
         className="h-6 min-w-0 flex-1 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-1 text-[11px] text-v2-text-text-base outline-none focus:border-v2-blue-600"
       >
         <option value="">{t("work.models")}</option>

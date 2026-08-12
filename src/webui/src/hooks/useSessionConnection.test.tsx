@@ -1,4 +1,5 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
+import { type ReactNode, StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionSnapshotDto } from "../../../web/contracts";
 import * as api from "../api";
@@ -92,6 +93,37 @@ describe("useSessionConnection", () => {
     });
 
     expect(result.current.view.messages.map((message) => message.text)).toEqual(["authoritative reconnect"]);
+  });
+
+  it("survives StrictMode effect replay and continues hydrating, receiving events, and sending", async () => {
+    const delayedSnapshot = deferred<SessionSnapshotDto>();
+    const delayedSend = deferred<void>();
+    vi.mocked(api.getSnapshot)
+      .mockReset()
+      .mockImplementation(() => delayedSnapshot.promise);
+    vi.mocked(api.sendPrompt).mockReturnValueOnce(delayedSend.promise);
+    const wrapper = ({ children }: { children: ReactNode }) => <StrictMode>{children}</StrictMode>;
+    const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }), {
+      wrapper,
+    });
+
+    delayedSnapshot.resolve(initialSnapshot);
+    await waitFor(() => expect(result.current.view.messages[0]?.text).toBe("snapshot text"));
+    emit({ type: "agent_start" });
+    emit({ type: "message_start", message: { id: "strict", role: "assistant", content: [] } });
+    emit({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "after replay" },
+    });
+    let sending!: Promise<void>;
+    act(() => {
+      sending = result.current.send("continue");
+    });
+    delayedSend.resolve();
+    await act(async () => sending);
+
+    expect(result.current.view.messages.at(-1)?.text).toBe("after replay");
+    expect(api.sendPrompt).toHaveBeenCalledWith("s1", "continue");
   });
 
   it("reduces the parent run lifecycle independently from message completion", async () => {
@@ -389,13 +421,59 @@ describe("useSessionConnection", () => {
     const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
     await waitFor(() => expect(result.current.status).toBe("ready"));
     emit({ type: "agent_start" });
+    emit({ type: "message_start", message: { id: "abort-row", role: "assistant", content: [] } });
+    emit({
+      type: "message_update",
+      assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "working" },
+    });
     expect(result.current.status).toBe("running");
 
     await act(async () => result.current.abort());
 
     expect(api.abortSession).toHaveBeenCalledWith("s1");
     expect(result.current.view.isStreaming).toBe(false);
+    expect(result.current.view.activeMessageKey).toBeUndefined();
+    expect(result.current.view.messages.at(-1)).toMatchObject({ streaming: false, isThinking: false });
     expect(result.current.status).toBe("ready");
+    expect(result.current.accepting).toBe(false);
     expect(result.current.pendingOutput).toBe(false);
+
+    emit({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: " stale" },
+    });
+    expect(result.current.view.messages.at(-1)?.text).not.toContain("stale");
+  });
+
+  it.each([
+    ["typed stream error", { type: "error", error: "stream failed" }, "error"],
+    ["session deactivation", { type: "session_deactivated" }, "stopped"],
+  ] as const)("clears all local run ownership on %s", async (_name, terminalEvent, expectedStatus) => {
+    const pendingPrompt = deferred<void>();
+    vi.mocked(api.sendPrompt).mockReturnValueOnce(pendingPrompt.promise);
+    const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    act(() => void result.current.send("continue"));
+    emit({ type: "agent_start" });
+    emit({ type: "message_start", message: { id: "terminal-row", role: "assistant", content: [] } });
+    emit({
+      type: "message_update",
+      assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "working" },
+    });
+
+    emit(terminalEvent);
+
+    expect(result.current.status).toBe(expectedStatus);
+    expect(result.current.accepting).toBe(false);
+    expect(result.current.pendingOutput).toBe(false);
+    expect(result.current.view.isStreaming).toBe(false);
+    expect(result.current.view.activeMessageKey).toBeUndefined();
+    expect(result.current.view.messages.at(-1)).toMatchObject({ streaming: false, isThinking: false });
+    emit({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: " stale" },
+    });
+    expect(result.current.view.messages.at(-1)?.text).not.toContain("stale");
+    pendingPrompt.resolve();
   });
 });

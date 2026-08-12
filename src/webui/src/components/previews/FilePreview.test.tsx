@@ -5,7 +5,7 @@ import type { FileContentDto } from "../../../../web/contracts";
 import { rawFileUrl } from "../../api";
 import { FilePreview } from "./FilePreview";
 import { PdfPreview } from "./PdfPreview";
-import { type FakePdfRenderCall, fakePdfLoader } from "./pdf-runtime";
+import { type FakePdfRenderCall, fakePdfLoader, type PdfDocumentHandle } from "./pdf-runtime";
 import { resolveLocalPreviewPath } from "./preview-paths";
 
 const scrollIntoViewTargets: HTMLElement[] = [];
@@ -213,6 +213,42 @@ describe("PdfPreview", () => {
     expect(destroyA).toHaveBeenCalledOnce();
     expect(screen.getByRole("link", { name: "Download PDF" })).toHaveAttribute("href", rawFileUrl("/p/b.pdf"));
   });
+
+  it.each(["resolve", "reject"] as const)(
+    "ignores a stale PDF render callback after document switch (%s)",
+    async (outcome) => {
+      let settleA!: (value?: unknown) => void;
+      let rejectA!: (error: Error) => void;
+      const renderA = new Promise<unknown>((resolve, reject) => {
+        settleA = resolve;
+        rejectA = reject;
+      });
+      const documentA: PdfDocumentHandle = {
+        numPages: 1,
+        page: vi.fn(async () => ({
+          viewport: (scale: number, rotation: number) => ({ scale, rotation, width: 100, height: 140 }),
+          render: () => ({ promise: renderA, cancel: vi.fn() }),
+        })),
+        destroy: vi.fn(),
+      };
+      const renderLogB: FakePdfRenderCall[] = [];
+      const documentB = await fakePdfLoader({ pages: 1, renderLog: renderLogB }).load({ url: "" });
+      const { rerender } = render(
+        <PdfPreview path="/p/a.pdf" loader={{ load: vi.fn().mockResolvedValue(documentA) }} />,
+      );
+      await waitFor(() => expect(documentA.page).toHaveBeenCalled());
+
+      rerender(<PdfPreview path="/p/b.pdf" loader={{ load: vi.fn().mockResolvedValue(documentB) }} />);
+      await waitFor(() => expect(renderLogB).toHaveLength(1));
+      if (outcome === "resolve") settleA();
+      else rejectA(new Error("stale render failed"));
+      await Promise.resolve();
+
+      expect(screen.getByRole("link", { name: "Download PDF" })).toHaveAttribute("href", rawFileUrl("/p/b.pdf"));
+      expect(screen.queryByText(/stale render failed/)).toBeNull();
+      expect(renderLogB).toHaveLength(1);
+    },
+  );
 
   it("keeps only page, zoom, and download controls", async () => {
     render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 1 })} />);
