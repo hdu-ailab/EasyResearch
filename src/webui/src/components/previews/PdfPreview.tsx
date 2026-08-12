@@ -41,11 +41,21 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const canvasRefs = useRef<(HTMLCanvasElement | null)[]>([]);
   const renderedPages = useRef(new Map<number, number>());
+  const documentGeneration = useRef(0);
+  const loadedDocumentGeneration = useRef(0);
 
   useEffect(() => {
     void retryToken;
+    const generation = ++documentGeneration.current;
     let cancelled = false;
     let loaded: PdfDocumentHandle | null = null;
+    renderedPages.current.clear();
+    for (const canvas of canvasRefs.current) {
+      if (!canvas) continue;
+      canvas.width = 0;
+      canvas.height = 0;
+    }
+    canvasRefs.current = [];
     setDoc(null);
     setPageSizes([]);
     setNumPages(0);
@@ -54,7 +64,7 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
     effectiveLoader
       .load({ url: rawFileUrl(path) })
       .then(async (document) => {
-        if (cancelled) {
+        if (cancelled || generation !== documentGeneration.current) {
           document.destroy();
           return;
         }
@@ -65,13 +75,16 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
           const base = page.viewport(1, 0);
           sizes.push({ width: base.width, height: base.height });
         }
-        if (cancelled) return;
+        if (cancelled || generation !== documentGeneration.current) return;
+        loadedDocumentGeneration.current = generation;
         setDoc(document);
         setPageSizes(sizes);
         setNumPages(document.numPages);
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        if (!cancelled && generation === documentGeneration.current) {
+          setError(e instanceof Error ? e.message : String(e));
+        }
       });
     return () => {
       cancelled = true;
@@ -81,6 +94,8 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
 
   useEffect(() => {
     if (!doc) return;
+    const generation = loadedDocumentGeneration.current;
+    if (generation !== documentGeneration.current) return;
     const windowStart = Math.max(1, currentPage - RENDER_BUFFER);
     const windowEnd = Math.min(numPages, currentPage + RENDER_BUFFER);
     const dpr = globalThis.devicePixelRatio ?? 1;
@@ -114,14 +129,18 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
         tasks.push(task);
         task.promise
           .then(() => {
-            if (!cancelled) renderedPages.current.set(n, scale);
+            if (!cancelled && generation === documentGeneration.current) renderedPages.current.set(n, scale);
           })
           .catch((e: unknown) => {
-            if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+            if (!cancelled && generation === documentGeneration.current) {
+              setError(e instanceof Error ? e.message : String(e));
+            }
           });
       }
     })().catch((e: unknown) => {
-      if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+      if (!cancelled && generation === documentGeneration.current) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
     });
     return () => {
       cancelled = true;

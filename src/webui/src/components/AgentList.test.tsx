@@ -48,16 +48,29 @@ beforeEach(() => {
 
 describe("AgentList", () => {
   it("renders the assistant card and preserves an effective model absent from the catalog", async () => {
-    render(<AgentList statusByAgent={{ assistant: "idle", search: "working" }} sessionId="s1" />);
+    render(<AgentList cwd="/p" statusByAgent={{ assistant: "idle", search: "working" }} sessionId="s1" />);
 
     expect(await screen.findByText("Paper Assistant")).toBeVisible();
+    expect(api.listAgents).toHaveBeenCalledWith("/p");
+    expect(screen.queryByRole("switch")).toBeNull();
     expect(screen.getAllByRole("combobox")[1]).toHaveDisplayValue("custom/model");
     expect(screen.getAllByRole("combobox")[1]).toHaveTextContent("custom/model");
   });
 
+  it("reloads the effective roster when the project cwd changes", async () => {
+    const { rerender } = render(
+      <AgentList cwd="/p" statusByAgent={{ assistant: "idle", search: "idle" }} sessionId="s1" />,
+    );
+    await screen.findByText("Paper Assistant");
+
+    rerender(<AgentList cwd="/other" statusByAgent={{ assistant: "idle", search: "idle" }} sessionId="s1" />);
+
+    await waitFor(() => expect(api.listAgents).toHaveBeenCalledWith("/other"));
+  });
+
   it("sends null when a stage agent is reset to the default model", async () => {
     const user = userEvent.setup();
-    render(<AgentList statusByAgent={{ assistant: "idle", search: "idle" }} sessionId="s1" />);
+    render(<AgentList cwd="/p" statusByAgent={{ assistant: "idle", search: "idle" }} sessionId="s1" />);
 
     const searchSelect = await screen.findByDisplayValue("custom/model");
     await user.selectOptions(searchSelect, "");
@@ -67,7 +80,7 @@ describe("AgentList", () => {
 
   it("keeps its header mounted when agent data fails", async () => {
     vi.mocked(api.listAgents).mockRejectedValue(new Error("unavailable"));
-    render(<AgentList statusByAgent={{ assistant: "idle" }} sessionId="s1" />);
+    render(<AgentList cwd="/p" statusByAgent={{ assistant: "idle" }} sessionId="s1" />);
 
     expect(screen.getByText("Agents")).toBeVisible();
   });

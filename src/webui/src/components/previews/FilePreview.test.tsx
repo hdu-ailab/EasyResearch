@@ -196,6 +196,24 @@ describe("PdfPreview", () => {
     expect(screen.getByRole("link", { name: "Download PDF" })).toHaveAttribute("href", rawFileUrl("/p/paper.pdf"));
   });
 
+  it("switches PDF documents without reusing rendered page metadata", async () => {
+    const renderLogA: FakePdfRenderCall[] = [];
+    const renderLogB: FakePdfRenderCall[] = [];
+    const documentA = await fakePdfLoader({ pages: 1, renderLog: renderLogA }).load({ url: "" });
+    const documentB = await fakePdfLoader({ pages: 1, renderLog: renderLogB }).load({ url: "" });
+    const destroyA = vi.spyOn(documentA, "destroy");
+    const loaderA = { load: vi.fn().mockResolvedValue(documentA) };
+    const loaderB = { load: vi.fn().mockResolvedValue(documentB) };
+    const { rerender } = render(<PdfPreview path="/p/a.pdf" loader={loaderA} />);
+    await waitFor(() => expect(renderLogA.length).toBeGreaterThan(0));
+
+    rerender(<PdfPreview path="/p/b.pdf" loader={loaderB} />);
+
+    await waitFor(() => expect(renderLogB.length).toBeGreaterThan(0));
+    expect(destroyA).toHaveBeenCalledOnce();
+    expect(screen.getByRole("link", { name: "Download PDF" })).toHaveAttribute("href", rawFileUrl("/p/b.pdf"));
+  });
+
   it("keeps only page, zoom, and download controls", async () => {
     render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 1 })} />);
     await screen.findByText("1 / 1");
