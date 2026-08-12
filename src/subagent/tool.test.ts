@@ -6,6 +6,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import type { AgentConfig } from "./agents";
 import {
   buildPiArgs,
+  createSubagentTool,
   describeModel,
   filterAgentsByAllowlist,
   handleChildLine,
@@ -186,6 +187,33 @@ describe("filterAgentsByAllowlist (ADR-022)", () => {
 
   it("allows no agents for an empty allowlist", () => {
     expect(filterAgentsByAllowlist(agents, "")).toEqual([]);
+  });
+});
+
+describe("createSubagentTool agent provider", () => {
+  it("uses an injected per-cwd provider instead of the process stage allowlist", async () => {
+    const previous = process.env.EASYRESEARCH_AGENTS_ALLOWLIST;
+    process.env.EASYRESEARCH_AGENTS_ALLOWLIST = "writing";
+    try {
+      const agentProvider = vi.fn(async () => [maker("search")]);
+      const tool = createSubagentTool({ agentProvider });
+
+      const result = await tool.execute(
+        "assistant-call",
+        {},
+        undefined,
+        undefined,
+        { cwd: "/paper", sessionManager: { getEntries: () => [] } } as never,
+      );
+
+      expect(agentProvider).toHaveBeenCalledWith("/paper");
+      expect(result.content[0]).toMatchObject({ text: expect.stringContaining("search (global)") });
+      expect(result.content[0]).not.toMatchObject({ text: expect.stringContaining("writing") });
+      expect(process.env.EASYRESEARCH_AGENTS_ALLOWLIST).toBe("writing");
+    } finally {
+      if (previous === undefined) delete process.env.EASYRESEARCH_AGENTS_ALLOWLIST;
+      else process.env.EASYRESEARCH_AGENTS_ALLOWLIST = previous;
+    }
   });
 });
 

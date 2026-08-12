@@ -469,6 +469,7 @@ const SubagentParams = Type.Object({
 
 export function createSubagentTool(options: {
   persistSessionLink?: (link: SubagentSessionLink) => void;
+  agentProvider?: (cwd: string) => Promise<AgentConfig[]>;
 } = {}) {
   return defineTool({
     name: "subagent",
@@ -505,7 +506,13 @@ export function createSubagentTool(options: {
           ? { toolCallId, childSessionId, agent }
           : { toolCallId, childSessionId, agent, step });
       };
-      const agents = filterAgentsByAllowlist((await discoverAgents()).agents, process.env[ALLOWLIST_ENV]);
+      const discoveredAgents = options.agentProvider
+        ? await options.agentProvider(ctx.cwd)
+        : (await discoverAgents({ cwd: ctx.cwd })).agents;
+      const agents = filterAgentsByAllowlist(
+        discoveredAgents,
+        options.agentProvider ? undefined : process.env[ALLOWLIST_ENV],
+      );
       const fallbackModel = describeModel(ctx);
       const detailsBase = (mode: "single" | "chain") => makeDetails(mode, agents);
 
