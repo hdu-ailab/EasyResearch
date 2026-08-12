@@ -6,6 +6,7 @@ import {
   nestedSubagentEvent,
   reduceSessionEvent,
   type SessionViewState,
+  terminateSessionRun,
 } from "./session-reducer";
 
 const emptyState: SessionViewState = { messages: [], tools: [], isStreaming: false, error: null, nextOrder: 0 };
@@ -398,6 +399,51 @@ describe("session reducer", () => {
     const settled = reduceSessionEvent(started, { type: "agent_settled" } as AgentSessionEvent);
     expect(settled.isStreaming).toBe(false);
     expect(settled.messages[0]!.streaming).toBe(false);
+  });
+
+  it.each([
+    ["agent_settled", (state: SessionViewState) => reduceSessionEvent(state, { type: "agent_settled" } as never)],
+    ["terminal helper", (state: SessionViewState) => terminateSessionRun(state)],
+  ])("settles orphaned tool rows through %s without discarding their metadata", (_name, terminate) => {
+    let state = reduceSessionEvent(emptyState, { type: "agent_start" } as AgentSessionEvent);
+    state = reduceSessionEvent(state, assistantEvent("message_start", "partial"));
+    state = reduceSessionEvent(state, {
+      type: "message_update",
+      assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "working" },
+    } as never);
+    state = reduceSessionEvent(state, toolEvent("tool_execution_start", "generic", "bash"));
+    state = reduceSessionEvent(state, {
+      type: "tool_execution_update",
+      toolCallId: "generic",
+      partialResult: { content: [{ type: "text", text: "partial output" }] },
+    } as never);
+    state = reduceSessionEvent(state, toolEvent("tool_execution_start", "child", "subagent"));
+    state = reduceSessionEvent(state, {
+      type: "tool_execution_update",
+      toolCallId: "child",
+      partialResult: { details: { subagent: { agent: "search", latestMessage: "papers found" } } },
+    } as never);
+
+    const terminated = terminate(state);
+
+    expect(terminated).toMatchObject({ isStreaming: false, activeMessageKey: undefined });
+    expect(terminated.messages[0]).toMatchObject({ streaming: false, isThinking: false });
+    expect(terminated.tools).toEqual([
+      expect.objectContaining({
+        key: "generic",
+        running: false,
+        done: false,
+        error: false,
+        output: "partial output",
+      }),
+      expect.objectContaining({
+        key: "child",
+        running: false,
+        done: false,
+        error: false,
+        latestMessage: "papers found",
+      }),
+    ]);
   });
 
   it("adds a tool block on start and marks it done on end", () => {
