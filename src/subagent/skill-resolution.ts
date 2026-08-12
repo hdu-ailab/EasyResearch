@@ -58,14 +58,26 @@ function skillNamesInDirectory(root: string): string[] {
 }
 
 export function resolveEffectiveSkillNames(skills: string[] | undefined, deps: SkillResolverDeps): string[] {
+  return resolveSkillSelection(skills, deps).effectiveSkills;
+}
+
+export function resolveSkillSelection(
+  skills: string[] | undefined,
+  deps: SkillResolverDeps,
+): { effectiveSkills: string[]; missingSkills: string[] } {
   if (skills !== undefined) {
-    return skills.filter((skill) => resolveOne(skill, deps) !== undefined);
+    const effectiveSkills: string[] = [];
+    const missingSkills: string[] = [];
+    for (const skill of skills) {
+      (resolveOne(skill, deps) === undefined ? missingSkills : effectiveSkills).push(skill);
+    }
+    return { effectiveSkills, missingSkills };
   }
   const names = new Set<string>();
   for (const site of skillSites(deps)) {
     for (const name of skillNamesInDirectory(site)) names.add(name);
   }
-  return [...names].sort((a, b) => a.localeCompare(b));
+  return { effectiveSkills: [...names].sort((a, b) => a.localeCompare(b)), missingSkills: [] };
 }
 
 export function buildDefaultSkillArgs(deps: SkillResolverDeps): string[] {

@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir } from "../runtime/pi-import";
 import { importPi } from "../runtime/pi-import";
-import { isDotAgentsSkillEnabled, resolveEffectiveSkillNames } from "./skill-resolution";
+import { isDotAgentsSkillEnabled, resolveSkillSelection } from "./skill-resolution";
 
 export type AgentSource = "bundled" | "global" | "project";
 
@@ -18,6 +18,7 @@ export interface AgentConfig {
   subagents?: string[];
   skills?: string[];
   effectiveSkills: string[];
+  missingSkills: string[];
   model?: string;
   systemPrompt: string;
   source: AgentSource;
@@ -30,7 +31,17 @@ export interface AgentDiscoveryResult {
 
 export const ASSISTANT_AGENT = "assistant";
 
-const DEFAULT_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
+export const CONTROLLED_TOOL_INVENTORY = [
+  "read",
+  "bash",
+  "edit",
+  "write",
+  "grep",
+  "find",
+  "ls",
+  "subagent",
+  "web-search",
+] as const;
 const BUILTIN_ALIASES: Record<string, string> = {
   assistant: "Paper Assistant",
   search: "检索",
@@ -96,10 +107,10 @@ function parseAgentFile(
     const parsed = parseFrontmatter<Record<string, unknown>>(content);
     const frontmatter = parsed.frontmatter ?? {};
     if (typeof frontmatter.name !== "string" || !frontmatter.name.trim()) return undefined;
-    const tools = stringArray(frontmatter.tools);
-    const skills = stringArray(frontmatter.skills);
-    const effectiveTools = tools ?? DEFAULT_TOOLS;
-    const effectiveSkills = resolveEffectiveSkillNames(skills, {
+    const tools = configuredCapabilityList(frontmatter.tools);
+    const skills = configuredCapabilityList(frontmatter.skills);
+    const effectiveTools = tools ?? [...CONTROLLED_TOOL_INVENTORY];
+    const { effectiveSkills, missingSkills } = resolveSkillSelection(skills, {
       cwd: options.cwd ?? process.cwd(),
       agentDir: options.agentDir ?? getAgentDir(),
       homeDir: options.homeDir ?? homedir(),
@@ -115,6 +126,7 @@ function parseAgentFile(
       effectiveTools,
       skills,
       effectiveSkills,
+      missingSkills,
       subagents: stringArray(frontmatter.subagents),
       model: typeof frontmatter.model === "string" && frontmatter.model ? frontmatter.model : undefined,
       systemPrompt: parsed.body.trim(),
@@ -125,6 +137,12 @@ function parseAgentFile(
     if (process.env.DEBUG_AGENT_DISCOVERY === "1") console.log("agent parse error", error);
     return undefined;
   }
+}
+
+export function configuredCapabilityList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const names = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+  return names.length > 0 ? names : undefined;
 }
 
 function stringArray(value: unknown): string[] | undefined {
