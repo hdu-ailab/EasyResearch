@@ -19,6 +19,7 @@ import {
 import { createLogger } from "../runtime/logger";
 import { SubagentSessionService } from "./subagent-sessions";
 import { isSubagentSessionName } from "../subagent/session-links";
+import { createFileWatcherFactory } from "./file-watcher";
 
 export interface Server {
   port: number;
@@ -92,7 +93,11 @@ export async function startServer(): Promise<Server> {
   const { assertSafeExtensionSources } = await import("../runtime/extensions-guard");
   assertSafeExtensionSources();
   const logger = createLogger("web-server");
-  const registry = new ActiveSessionRegistry(await PiRpcSessionFactory.resolve());
+  const registry = new ActiveSessionRegistry(
+    await PiRpcSessionFactory.resolve(),
+    logger,
+    createFileWatcherFactory(logger),
+  );
   const { SessionManager, getAgentDir } = await importPi();
   const subagentSessions = new SubagentSessionService({
     open: (path) => SessionManager.open(path),

@@ -57,6 +57,13 @@ export interface FileEntryDto extends DirectoryEntryDto {
   kind: "file" | "directory";
 }
 
+export type FileWatcherEventKind = "add" | "change" | "unlink";
+
+export interface FileWatcherEvent {
+  type: "file.watcher.updated";
+  properties: { file: string; event: FileWatcherEventKind };
+}
+
 export interface FileContentDto {
   path: string;
   content: string;

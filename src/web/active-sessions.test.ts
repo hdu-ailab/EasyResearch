@@ -5,6 +5,7 @@ import { ActiveSessionRegistry, UnknownSessionError } from "./active-sessions";
 import { assertSafeExtensionSources } from "../runtime/extensions-guard";
 import type { RpcSessionAdapter, RpcSessionFactory, StartRpcSessionOptions } from "./rpc-session";
 import type { Logger } from "../runtime/logger";
+import type { FileWatcherEvent, FileWatcherFactory } from "./file-watcher";
 
 const [loggerMock, createLoggerMock] = vi.hoisted(() => {
   const mockLogger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
@@ -108,13 +109,29 @@ class FakeFactory implements RpcSessionFactory {
   }
 }
 
+class FakeWatcherFactory implements FileWatcherFactory {
+  created: Array<{ cwd: string; onEvent: (event: FileWatcherEvent) => void; close: ReturnType<typeof vi.fn> }> = [];
+
+  create({ cwd, onEvent }: { cwd: string; onEvent: (event: FileWatcherEvent) => void }) {
+    const close = vi.fn(async () => {});
+    this.created.push({ cwd, onEvent, close });
+    return { close };
+  }
+
+  emit(event: FileWatcherEvent) {
+    this.created.at(-1)?.onEvent(event);
+  }
+}
+
 describe("ActiveSessionRegistry", () => {
   let factory: FakeFactory;
   let registry: ActiveSessionRegistry;
+  let watcherFactory: FakeWatcherFactory;
 
   beforeEach(() => {
     factory = new FakeFactory();
-    registry = new ActiveSessionRegistry(factory, noopLogger);
+    watcherFactory = new FakeWatcherFactory();
+    registry = new ActiveSessionRegistry(factory, noopLogger, watcherFactory);
     vi.mocked(assertSafeExtensionSources).mockClear();
   });
 
@@ -134,6 +151,34 @@ describe("ActiveSessionRegistry", () => {
     const unsubscribe = registry.subscribe(created.id, listener);
     unsubscribe();
     expect(factory.created[0]?.stats.stopped).toBe(0);
+  });
+
+  it("starts a cwd watcher and forwards its event to session subscribers", async () => {
+    const created = await registry.create({ cwd });
+    const listener = vi.fn();
+    registry.subscribe(created.id, listener);
+
+    watcherFactory.emit({
+      type: "file.watcher.updated",
+      properties: { file: `${cwd}/new.md`, event: "add" },
+    });
+
+    expect(watcherFactory.created[0]?.cwd).toBe(cwd);
+    expect(listener).toHaveBeenCalledWith({
+      type: "file.watcher.updated",
+      properties: { file: `${cwd}/new.md`, event: "add" },
+    });
+  });
+
+  it("closes the watcher on stop and replaces it on restart", async () => {
+    const created = await registry.create({ cwd });
+    const first = watcherFactory.created[0]!;
+
+    await registry.restart(created.id);
+
+    expect(first.close).toHaveBeenCalledTimes(1);
+    expect(watcherFactory.created).toHaveLength(2);
+    expect(watcherFactory.created[1]?.cwd).toBe(cwd);
   });
 
   it("prompts the underlying adapter", async () => {
