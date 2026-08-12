@@ -112,6 +112,16 @@ function renderSettings(onOpenConfigPage: () => void = () => {}, onHome: () => v
   );
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("SettingsPage", () => {
   it("navigates Home and starts settings content 4px below the topbar", async () => {
     const onHome = vi.fn();
@@ -487,7 +497,9 @@ describe("SettingsPage", () => {
 
     renderSettings();
 
-    expect(await screen.findByRole("combobox", { name: "Skill diagnostic scope" })).toHaveValue("global");
+    const scope = await screen.findByRole("combobox", { name: "Skill diagnostic scope" });
+    expect(scope).toHaveValue("global");
+    expect(scope).toHaveClass("focus:outline-2", "focus:outline-offset-2", "focus:outline-v2-blue-600");
     const warning = screen.getByText("missing-skill").parentElement!;
     expect(within(warning).getByText(/Search/)).toBeVisible();
     expect(within(warning).getByText(/Writing/)).toBeVisible();
@@ -511,6 +523,59 @@ describe("SettingsPage", () => {
     expect(api.listSkillResources).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("button", { name: "Edit skill paper-search" })).toBeVisible();
     expect(screen.queryByRole("button", { name: "Edit skill project-missing" })).toBeNull();
+  });
+
+  it("keeps the latest diagnostic scope when an earlier request resolves last", async () => {
+    const user = userEvent.setup();
+    const projectA = deferred<Awaited<ReturnType<typeof api.listAgents>>>();
+    const projectB = deferred<Awaited<ReturnType<typeof api.listAgents>>>();
+    vi.mocked(api.listAgents)
+      .mockResolvedValueOnce([{ name: "search", description: "Searches", missingSkills: ["global-missing"] }] as never)
+      .mockReturnValueOnce(projectA.promise)
+      .mockReturnValueOnce(projectB.promise);
+
+    renderSettings();
+    const scope = await screen.findByRole("combobox", { name: "Skill diagnostic scope" });
+    await user.selectOptions(scope, "/papers/project-a");
+    await user.selectOptions(scope, "/papers/project-b");
+
+    await act(async () => {
+      projectB.resolve([{ name: "writing", description: "Writes", missingSkills: ["project-b-missing"] }] as never);
+      await projectB.promise;
+    });
+    expect(screen.getByText("project-b-missing")).toBeVisible();
+
+    await act(async () => {
+      projectA.resolve([{ name: "search", description: "Searches", missingSkills: ["project-a-missing"] }] as never);
+      await projectA.promise;
+    });
+    expect(scope).toHaveValue("/papers/project-b");
+    expect(screen.getByText("project-b-missing")).toBeVisible();
+    expect(screen.queryByText("project-a-missing")).toBeNull();
+    expect(api.listSkillResources).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears stale diagnostics on failure and clears the diagnostic error after recovery", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listAgents)
+      .mockResolvedValueOnce([{ name: "search", description: "Searches", missingSkills: ["global-missing"] }] as never)
+      .mockRejectedValueOnce(new Error("diagnostic failed"))
+      .mockResolvedValueOnce([
+        { name: "writing", description: "Writes", missingSkills: ["recovered-missing"] },
+      ] as never);
+
+    renderSettings();
+    const scope = await screen.findByRole("combobox", { name: "Skill diagnostic scope" });
+    expect(screen.getByText("global-missing")).toBeVisible();
+
+    await user.selectOptions(scope, "/papers/project-a");
+    expect(await screen.findByRole("alert")).toHaveTextContent("diagnostic failed");
+    expect(screen.queryByText("global-missing")).toBeNull();
+
+    await user.selectOptions(scope, "/papers/project-b");
+    expect(await screen.findByText("recovered-missing")).toBeVisible();
+    expect(screen.queryByText("diagnostic failed")).toBeNull();
+    expect(api.listSkillResources).toHaveBeenCalledTimes(1);
   });
 
   it("keeps global Skill resources available when diagnostic project discovery fails", async () => {
