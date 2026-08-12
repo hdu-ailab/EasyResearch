@@ -260,7 +260,9 @@ export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
     nextOrder: 0,
   };
   const next = () => state.nextOrder++;
+  let cursorCandidate: SessionMessageView | undefined;
   snapshot.messages.forEach((message, index) => {
+    cursorCandidate = undefined;
     if (isDirectBashExecution(message as UnknownMessage)) return;
     if (message.role === "toolResult") {
       const toolMessage = message as unknown as { toolCallId?: unknown; toolName?: unknown; isError?: unknown };
@@ -321,7 +323,10 @@ export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
     if (label) nextMessage.label = label;
     if (reasoning) nextMessage.reasoning = reasoning;
     // A message made only of tool calls renders as tool rows, not a bubble.
-    if (text || reasoning || nextMessage.error || toolCallBlocks.length === 0) state.messages.push(nextMessage);
+    if (text || reasoning || nextMessage.error || toolCallBlocks.length === 0) {
+      state.messages.push(nextMessage);
+      if (role === "assistant" && toolCallBlocks.length === 0) cursorCandidate = nextMessage;
+    }
     if (role === "assistant") {
       for (const b of toolCallBlocks) {
         const toolCallId = typeof b.id === "string" && b.id ? b.id : undefined;
@@ -343,10 +348,9 @@ export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
     ...tool,
     running: tool.done ? false : isStreaming,
   }));
-  const candidate = state.messages.at(-1);
-  if (isStreaming && candidate?.role === "assistant") {
-    state.activeMessageKey = candidate.key;
-    candidate.streaming = true;
+  if (isStreaming && cursorCandidate) {
+    state.activeMessageKey = cursorCandidate.key;
+    cursorCandidate.streaming = true;
   }
   return applySubagentSummaries(state, snapshot.subagents ?? []);
 }
