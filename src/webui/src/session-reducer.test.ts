@@ -896,84 +896,34 @@ describe("session reducer", () => {
     expect(mergeSnapshot(prior, snapshot).tools[0]).toMatchObject({ agentName: "writing", step: 2 });
   });
 
-  it("preserves live-only rows after reconnect snapshot rows without duplicating persisted rows", () => {
-    const persistedSnapshot = {
-      session: { id: "parent", cwd: "/p", isStreaming: true, status: "running" },
-      subagents: [],
-      messages: [{ id: "persisted", role: "user", content: [{ type: "text", text: "question" }] }],
-    } as never;
-    let prior = fromSnapshot(persistedSnapshot);
-    prior = reduceSessionEvent(prior, {
+  it("discards prior ordinary messages and generic tools absent from the reconnect snapshot", () => {
+    let prior = reduceSessionEvent(emptyState, {
       type: "message_start",
-      message: { id: "live-assistant", role: "assistant", content: [{ type: "text", text: "newer reply" }] },
-    } as never);
-    prior = reduceSessionEvent(prior, {
-      type: "tool_execution_start",
-      toolCallId: "live-tool",
-      toolName: "bash",
-      args: { command: "pwd" },
-    } as never);
-
-    const merged = mergeSnapshot(prior, persistedSnapshot);
-    const rows = [...merged.messages, ...merged.tools].sort((left, right) => left.order - right.order);
-
-    expect(merged.messages.map((message) => message.identity)).toEqual(["persisted", "live-assistant"]);
-    expect(merged.tools.map((tool) => tool.key)).toEqual(["live-tool"]);
-    expect(rows.map((row) => row.key)).toEqual(["persisted", "live-assistant", "live-tool"]);
-    expect(merged.activeMessageKey).toBe("live-assistant");
-    expect(merged.messages.filter((message) => message.streaming).map((message) => message.key)).toEqual([
-      "live-assistant",
-    ]);
-  });
-
-  it("remaps colliding fallback keys for live-only rows and preserves the active assistant cursor", () => {
-    let prior = reduceSessionEvent(emptyState, { type: "agent_start" } as AgentSessionEvent);
-    prior = reduceSessionEvent(prior, {
-      type: "message_start",
-      message: assistantMessage("live answer"),
+      message: userMessage("repeat"),
     } as AgentSessionEvent);
-    expect(prior.activeMessageKey).toBe("0");
-    prior = reduceSessionEvent(prior, toolEvent("tool_execution_start", "0", "bash"));
-    const snapshot = {
-      session: { id: "parent", cwd: "/p", isStreaming: true, status: "running" },
-      subagents: [],
-      messages: [userMessage("persisted question")],
-    } as never;
-
-    const merged = mergeSnapshot(prior, snapshot);
-    const liveAssistant = merged.messages.find((message) => message.text === "live answer")!;
-    const keys = [...merged.messages, ...merged.tools].map((row) => row.key);
-
-    expect(merged.messages.map((message) => [message.role, message.text])).toEqual([
-      ["user", "persisted question"],
-      ["assistant", "live answer"],
-    ]);
-    expect(keys).toEqual(["0", "0-1", "0-2"]);
-    expect(new Set(keys).size).toBe(keys.length);
-    expect(liveAssistant.key).toBe("0-1");
-    expect(merged.activeMessageKey).toBe("0-1");
-    expect(merged.messages.filter((message) => message.streaming).map((message) => message.key)).toEqual([
-      liveAssistant.key,
-    ]);
-
-    const updated = reduceSessionEvent(merged, assistantEvent("message_update", " continued"));
-    expect(updated.messages.find((message) => message.key === liveAssistant.key)?.text).toBe("live answer continued");
-  });
-
-  it("does not duplicate an unchanged no-id message from the snapshot", () => {
+    prior = reduceSessionEvent(prior, {
+      type: "message_start",
+      message: userMessage("repeat"),
+    } as AgentSessionEvent);
+    prior = reduceSessionEvent(prior, assistantEvent("message_start", "Plan A"));
+    prior = reduceSessionEvent(prior, toolEvent("tool_execution_start", "live-tool", "bash"));
     const snapshot = {
       session: { id: "parent", cwd: "/p", isStreaming: false, status: "ready" },
       subagents: [],
-      messages: [assistantMessage("persisted answer")],
+      messages: [userMessage("repeat"), assistantMessage("Plan")],
     } as never;
-    const prior = fromSnapshot(snapshot);
 
     const merged = mergeSnapshot(prior, snapshot);
 
-    expect(merged.messages.map((message) => [message.role, message.text])).toEqual([["assistant", "persisted answer"]]);
+    expect(merged.messages.map((message) => [message.role, message.text])).toEqual([
+      ["user", "repeat"],
+      ["assistant", "Plan"],
+    ]);
+    expect(merged.tools).toEqual([]);
+    expect(merged.activeMessageKey).toBeUndefined();
   });
 
-  it("keeps newer live text when a running no-id snapshot is stale", () => {
+  it("uses the running snapshot final assistant as the sole cursor for the next delta", () => {
     const snapshot = {
       session: { id: "parent", cwd: "/p", isStreaming: true, status: "running" },
       subagents: [],
@@ -984,61 +934,12 @@ describe("session reducer", () => {
 
     const merged = mergeSnapshot(prior, snapshot);
 
-    expect(merged.messages).toEqual([
-      expect.objectContaining({ role: "assistant", text: "partial answer", streaming: true }),
-    ]);
+    expect(merged.messages).toEqual([expect.objectContaining({ role: "assistant", text: "partial", streaming: true })]);
     expect(merged.activeMessageKey).toBe(merged.messages[0]!.key);
     expect(merged.messages.filter((message) => message.streaming)).toEqual([merged.messages[0]]);
 
     const updated = reduceSessionEvent(merged, assistantEvent("message_update", " continued"));
-    expect(updated.messages).toEqual([expect.objectContaining({ text: "partial answer continued", streaming: true })]);
-  });
-
-  it("preserves unrelated no-id prefix rows and routes updates to the snapshot active row", () => {
-    let prior = reduceSessionEvent(emptyState, { type: "agent_start" } as AgentSessionEvent);
-    prior = reduceSessionEvent(prior, assistantEvent("message_start", "Plan A"));
-    const snapshot = {
-      session: { id: "parent", cwd: "/p", isStreaming: true, status: "running" },
-      subagents: [],
-      messages: [assistantMessage("Plan")],
-    } as never;
-
-    const merged = mergeSnapshot(prior, snapshot);
-    const keys = merged.messages.map((message) => message.key);
-
-    expect(merged.messages.map((message) => [message.text, message.streaming])).toEqual([
-      ["Plan", true],
-      ["Plan A", false],
-    ]);
-    expect(new Set(keys).size).toBe(keys.length);
-    expect(merged.activeMessageKey).toBe(merged.messages[0]!.key);
-
-    const updated = reduceSessionEvent(merged, assistantEvent("message_update", " B"));
-    expect(updated.messages.map((message) => message.text)).toEqual(["Plan B", "Plan A"]);
-  });
-
-  it("keeps a distinct identical no-id row when reconciling the active assistant", () => {
-    const snapshot = {
-      session: { id: "parent", cwd: "/p", isStreaming: true, status: "running" },
-      subagents: [],
-      messages: [assistantMessage("partial")],
-    } as never;
-    let prior = fromSnapshot(snapshot);
-    prior = reduceSessionEvent(prior, assistantEvent("message_update", " answer"));
-    prior = {
-      ...prior,
-      messages: [
-        prior.messages[0]!,
-        { ...prior.messages[0]!, key: "distinct-identical", streaming: false, order: prior.nextOrder },
-      ],
-      nextOrder: prior.nextOrder + 1,
-    };
-
-    const merged = mergeSnapshot(prior, snapshot);
-
-    expect(merged.messages.map((message) => message.text)).toEqual(["partial answer", "partial answer"]);
-    expect(merged.activeMessageKey).toBe(merged.messages[0]!.key);
-    expect(merged.messages.filter((message) => message.streaming)).toEqual([merged.messages[0]]);
+    expect(updated.messages).toEqual([expect.objectContaining({ text: "partial continued", streaming: true })]);
   });
 
   it("extracts nested child deltas and reduces them token-by-token into only that child state", () => {
