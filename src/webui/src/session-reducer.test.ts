@@ -14,6 +14,10 @@ function userMessage(text: string) {
   return { role: "user", content: [{ type: "text", text }] } as never;
 }
 
+function assistantMessage(text: string) {
+  return { role: "assistant", content: [{ type: "text", text }] } as never;
+}
+
 function assistantEvent(type: "message_start" | "message_update" | "message_end", text: string): AgentSessionEvent {
   if (type === "message_update") {
     return {
@@ -51,6 +55,45 @@ describe("session reducer", () => {
     expect(state.isStreaming).toBe(true);
   });
 
+  it("restores the assistant delta cursor from a running snapshot", () => {
+    const hydrated = fromSnapshot({
+      session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
+      subagents: [],
+      messages: [userMessage("question"), assistantMessage("partial")],
+    });
+
+    const updated = reduceSessionEvent(hydrated, assistantEvent("message_update", " answer"));
+
+    expect(updated.messages.at(-1)?.text).toBe("partial answer");
+    expect(updated.activeMessageKey).toBe(hydrated.messages.at(-1)?.key);
+  });
+
+  it("does not fabricate an assistant cursor when a running snapshot ends in a user message", () => {
+    const hydrated = fromSnapshot({
+      session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
+      subagents: [],
+      messages: [assistantMessage("earlier"), userMessage("follow-up")],
+    });
+
+    expect(hydrated.isStreaming).toBe(true);
+    expect(hydrated.activeMessageKey).toBeUndefined();
+    expect(hydrated.messages.every((message) => !message.streaming)).toBe(true);
+  });
+
+  it("tracks agent lifecycle independently from assistant message completion", () => {
+    const running = reduceSessionEvent(emptyState, { type: "agent_start" } as AgentSessionEvent);
+    expect(running.isStreaming).toBe(true);
+
+    const withAssistant = reduceSessionEvent(running, assistantEvent("message_start", "partial"));
+    const afterAssistantMessageEnd = reduceSessionEvent(withAssistant, assistantEvent("message_end", "complete"));
+    expect(afterAssistantMessageEnd.isStreaming).toBe(true);
+
+    const afterAgentSettled = reduceSessionEvent(afterAssistantMessageEnd, {
+      type: "agent_settled",
+    } as AgentSessionEvent);
+    expect(afterAgentSettled.isStreaming).toBe(false);
+  });
+
   it("does not add direct bash execution output to the snapshot transcript", () => {
     const state = fromSnapshot({
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" } as never,
@@ -72,7 +115,8 @@ describe("session reducer", () => {
   });
 
   it("appends a message on message_start", () => {
-    const state = reduceSessionEvent(emptyState, assistantEvent("message_start", ""));
+    const running = reduceSessionEvent(emptyState, { type: "agent_start" } as AgentSessionEvent);
+    const state = reduceSessionEvent(running, assistantEvent("message_start", ""));
     expect(state.messages).toHaveLength(1);
     expect(state.messages[0]!.role).toBe("assistant");
     expect(state.messages[0]!.streaming).toBe(true);
@@ -838,6 +882,32 @@ describe("session reducer", () => {
     } as never;
 
     expect(mergeSnapshot(prior, snapshot).tools[0]).toMatchObject({ agentName: "writing", step: 2 });
+  });
+
+  it("preserves live-only rows after reconnect snapshot rows without duplicating persisted rows", () => {
+    const persistedSnapshot = {
+      session: { id: "parent", cwd: "/p", isStreaming: true, status: "running" },
+      subagents: [],
+      messages: [{ id: "persisted", role: "user", content: [{ type: "text", text: "question" }] }],
+    } as never;
+    let prior = fromSnapshot(persistedSnapshot);
+    prior = reduceSessionEvent(prior, {
+      type: "message_start",
+      message: { id: "live-assistant", role: "assistant", content: [{ type: "text", text: "newer reply" }] },
+    } as never);
+    prior = reduceSessionEvent(prior, {
+      type: "tool_execution_start",
+      toolCallId: "live-tool",
+      toolName: "bash",
+      args: { command: "pwd" },
+    } as never);
+
+    const merged = mergeSnapshot(prior, persistedSnapshot);
+    const rows = [...merged.messages, ...merged.tools].sort((left, right) => left.order - right.order);
+
+    expect(merged.messages.map((message) => message.identity)).toEqual(["persisted", "live-assistant"]);
+    expect(merged.tools.map((tool) => tool.key)).toEqual(["live-tool"]);
+    expect(rows.map((row) => ("role" in row ? row.key : row.key))).toEqual(["persisted", "live-assistant", "live-tool"]);
   });
 
   it("extracts nested child deltas and reduces them token-by-token into only that child state", () => {
