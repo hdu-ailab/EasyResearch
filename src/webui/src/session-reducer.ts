@@ -504,17 +504,20 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
           : update.kind === "text-start"
             ? {
                 ...target,
+                text: target.text === "..." ? "" : target.text,
                 isThinking: false,
                 streaming: true,
               }
             : update.kind === "thinking-start"
               ? {
                   ...target,
+                  text: target.text === "..." ? "" : target.text,
                   isThinking: true,
                   streaming: true,
                 }
               : {
                   ...target,
+                  text: target.text === "..." ? "" : target.text,
                   reasoning: update.complete ? update.delta : (target.reasoning ?? "") + update.delta,
                   isThinking: !update.complete,
                   streaming: true,
@@ -523,9 +526,30 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
     }
     case "message_end": {
       const key = state.activeMessageKey ?? keyFor(event.message, 0);
-      const nextMessages = state.messages.map((m) =>
-        m.key === key ? { ...m, isThinking: false, streaming: false } : m,
-      );
+      const message = event.message as UnknownMessage;
+      const { text, reasoning } = splitContent(message);
+      const content = message.content;
+      const hasToolCall = Array.isArray(content)
+        ? content.some(
+            (block) => block && typeof block === "object" && (block as { type?: string }).type === "toolCall",
+          )
+        : false;
+      const error = typeof message.errorMessage === "string" && Boolean(message.errorMessage);
+      const omitToolCallOnlyRow = message.role === "assistant" && hasToolCall && !text && !reasoning && !error;
+      const nextMessages = omitToolCallOnlyRow
+        ? state.messages.filter((m) => m.key !== key)
+        : state.messages.map((m) =>
+            m.key === key
+              ? {
+                  ...m,
+                  text,
+                  ...(reasoning ? { reasoning } : { reasoning: undefined }),
+                  isThinking: false,
+                  streaming: false,
+                  error,
+                }
+              : m,
+          );
       return { ...state, messages: nextMessages, activeMessageKey: undefined };
     }
     case "tool_execution_start": {

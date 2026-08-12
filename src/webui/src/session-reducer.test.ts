@@ -153,6 +153,60 @@ describe("session reducer", () => {
     expect(state.messages[0]!.isThinking).toBe(false);
   });
 
+  it("reconciles a thinking and tool-call message without retaining the live placeholder body", () => {
+    let state = reduceSessionEvent(emptyState, {
+      type: "message_start",
+      message: { id: "m1", role: "assistant", content: [] },
+    } as never);
+    state = reduceSessionEvent(state, {
+      type: "message_update",
+      assistantMessageEvent: { type: "thinking_start", contentIndex: 0 },
+    } as never);
+    state = reduceSessionEvent(state, {
+      type: "message_update",
+      assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "inspect first" },
+    } as never);
+    state = reduceSessionEvent(state, {
+      type: "message_end",
+      message: {
+        id: "m1",
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "inspect first" },
+          { type: "toolCall", id: "t1", name: "bash", arguments: { command: "pwd" } },
+        ],
+      },
+    } as never);
+    state = reduceSessionEvent(state, {
+      type: "tool_execution_start",
+      toolCallId: "t1",
+      toolName: "bash",
+      args: { command: "pwd" },
+    } as never);
+
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]).toMatchObject({ text: "", reasoning: "inspect first", streaming: false });
+    expect(state.tools).toHaveLength(1);
+    expect(state.messages[0]!.order).toBeLessThan(state.tools[0]!.order);
+  });
+
+  it("removes the temporary assistant row when the final message contains only a tool call", () => {
+    let state = reduceSessionEvent(emptyState, {
+      type: "message_start",
+      message: { id: "m1", role: "assistant", content: [] },
+    } as never);
+    state = reduceSessionEvent(state, {
+      type: "message_end",
+      message: {
+        id: "m1",
+        role: "assistant",
+        content: [{ type: "toolCall", id: "t1", name: "bash", arguments: { command: "pwd" } }],
+      },
+    } as never);
+
+    expect(state.messages).toEqual([]);
+  });
+
   it("clears active thinking when text output starts or the agent settles", () => {
     let state = reduceSessionEvent(emptyState, assistantEvent("message_start", ""));
     state = reduceSessionEvent(state, {
@@ -187,7 +241,7 @@ describe("session reducer", () => {
     } as never);
 
     expect(state.messages[0]!.isThinking).toBe(false);
-    expect(state.messages[0]!.text).toBe("...");
+    expect(state.messages[0]!.text).toBe("");
   });
 
   it("ignores empty text deltas without ending active thinking", () => {
@@ -200,7 +254,7 @@ describe("session reducer", () => {
     state = reduceSessionEvent(state, assistantEvent("message_update", ""));
 
     expect(state.messages[0]!.isThinking).toBe(true);
-    expect(state.messages[0]!.text).toBe("...");
+    expect(state.messages[0]!.text).toBe("");
   });
 
   it("clears active thinking when the assistant message ends", () => {
