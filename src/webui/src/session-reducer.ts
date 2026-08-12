@@ -414,6 +414,7 @@ export function nestedSubagentEvent(event: AgentSessionEvent):
  * subagent progress that is not persisted in the session transcript. */
 export function mergeSnapshot(state: SessionViewState, snapshot: SessionSnapshotDto): SessionViewState {
   const next = fromSnapshot(snapshot);
+  const snapshotActiveMessageKey = next.activeMessageKey;
   const summaries = new Map<string, SubagentSessionSummaryDto>();
   for (const summary of snapshot.subagents ?? []) summaries.set(summary.toolCallId, summary);
   const priorSubagents = new Map(
@@ -458,22 +459,36 @@ export function mergeSnapshot(state: SessionViewState, snapshot: SessionSnapshot
     }),
     ...state.tools.filter((tool) => !snapshotToolKeys.has(tool.key)),
   ].sort((left, right) => left.order - right.order);
+  const reservedKeys = new Set([...next.messages.map((message) => message.key), ...next.tools.map((tool) => tool.key)]);
+  let remappedPriorActiveAssistantKey: string | undefined;
   for (const row of liveOnlyRows) {
-    const appended = { ...row, order: next.nextOrder++ };
+    const order = next.nextOrder++;
+    let key = row.key;
+    if (reservedKeys.has(key)) {
+      const base = `${key}-${order}`;
+      key = base;
+      let suffix = 1;
+      while (reservedKeys.has(key)) key = `${base}-${suffix++}`;
+    }
+    reservedKeys.add(key);
+    const appended = { ...row, key, order };
     if ("role" in appended) {
       next.messages.push(appended);
+      if (appended.role === "assistant" && row.key === state.activeMessageKey) {
+        remappedPriorActiveAssistantKey = key;
+      }
     } else {
       next.tools.push(appended);
     }
   }
-  const active = next.isStreaming ? next.messages.at(-1) : undefined;
-  if (active?.role === "assistant" && active.streaming) {
-    next.messages = next.messages.map((message) => ({ ...message, streaming: message.key === active.key }));
-    next.activeMessageKey = active.key;
-  } else {
-    next.messages = next.messages.map((message) => ({ ...message, streaming: false }));
-    next.activeMessageKey = undefined;
-  }
+  const activeMessageKey = next.isStreaming
+    ? (remappedPriorActiveAssistantKey ?? snapshotActiveMessageKey)
+    : undefined;
+  next.messages = next.messages.map((message) => ({
+    ...message,
+    streaming: message.role === "assistant" && message.key === activeMessageKey,
+  }));
+  next.activeMessageKey = activeMessageKey;
   return next;
 }
 

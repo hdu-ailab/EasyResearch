@@ -926,23 +926,38 @@ describe("session reducer", () => {
     ]);
   });
 
-  it("preserves distinct no-id live messages when snapshot fallback keys collide", () => {
-    const prior = reduceSessionEvent(emptyState, {
+  it("remaps colliding fallback keys for live-only rows and preserves the active assistant cursor", () => {
+    let prior = reduceSessionEvent(emptyState, { type: "agent_start" } as AgentSessionEvent);
+    prior = reduceSessionEvent(prior, {
       type: "message_start",
-      message: userMessage("live question"),
+      message: assistantMessage("live answer"),
     } as AgentSessionEvent);
+    expect(prior.activeMessageKey).toBe("0");
+    prior = reduceSessionEvent(prior, toolEvent("tool_execution_start", "0", "bash"));
     const snapshot = {
-      session: { id: "parent", cwd: "/p", isStreaming: false, status: "ready" },
+      session: { id: "parent", cwd: "/p", isStreaming: true, status: "running" },
       subagents: [],
-      messages: [assistantMessage("persisted answer")],
+      messages: [userMessage("persisted question")],
     } as never;
 
     const merged = mergeSnapshot(prior, snapshot);
+    const liveAssistant = merged.messages.find((message) => message.text === "live answer")!;
+    const keys = [...merged.messages, ...merged.tools].map((row) => row.key);
 
     expect(merged.messages.map((message) => [message.role, message.text])).toEqual([
-      ["assistant", "persisted answer"],
-      ["user", "live question"],
+      ["user", "persisted question"],
+      ["assistant", "live answer"],
     ]);
+    expect(keys).toEqual(["0", "0-1", "0-2"]);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(liveAssistant.key).toBe("0-1");
+    expect(merged.activeMessageKey).toBe("0-1");
+    expect(merged.messages.filter((message) => message.streaming).map((message) => message.key)).toEqual([
+      liveAssistant.key,
+    ]);
+
+    const updated = reduceSessionEvent(merged, assistantEvent("message_update", " continued"));
+    expect(updated.messages.find((message) => message.key === liveAssistant.key)?.text).toBe("live answer continued");
   });
 
   it("does not duplicate an unchanged no-id message from the snapshot", () => {
