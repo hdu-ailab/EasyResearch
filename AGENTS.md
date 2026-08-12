@@ -52,13 +52,13 @@ EasyResearch is a CLI tool (package name `easyresearch`) for automated academic 
 - **CLI**: only parameterless `easyresearch` (native Pi TUI in the shell's exact cwd) and `easyresearch web`, which also accepts no additional arguments. No `new`, `run`, config/package-management subcommands, or public print/JSON/RPC flags.
 - **TUI**: Pi's native TUI and session lifecycle (`/new`, `/resume`, `/tree`, `/login`, `/model`, `/settings`) with the EasyResearch assistant and subagent extension mounted.
 - **Web UI**: Two-level pages - homepage is a unified status panel (brief info for all sessions across all projects); after selecting/creating a session, enter the work page (fixed assistant chat tab + dynamic subagent tabs + status area + file browser + agent details).
-- **Session model**: The assistant tab is fixed and cannot be closed. Untouched temporary subagent tabs collapse when done; selecting a temporary tab or pressing View details retains it and promotes it to a UUID-backed closable child tab showing complete history with a disabled composer (ADR-041). Non-running subagent tabs have input disabled, history browse only; a subagent can only be "interrupted while running -> then injected into". Users can force-interrupt/stop all agents. Subagent invocations are strictly serial and omitted `session` starts a new child; explicit `session: "inherit"` continues only the current parent's mapped child for that agent.
+- **Session model**: The Paper Assistant tab is fixed and cannot be closed. Untouched temporary subagent tabs collapse when done; selecting a temporary tab or pressing View details retains it and promotes it to a UUID-backed closable child tab showing complete history with a disabled composer (ADR-041). Retained child tabs are read-only; users can abort only the active parent run. Subagent invocations are strictly serial and omitted `session` starts a new child; explicit `session: "inherit"` continues only the current parent's mapped child for that agent.
 
 ### Tech Stack
 
 - Bun + TypeScript; runtime is the exact unmodified upstream Pi 0.84.1 package initialized through EasyResearch's identity bootstrap
 - Session/workflow state: Pi SessionManager JSONL in the global agent directory, grouped by exact cwd; no separate project `state.json`
-- Web backend: Bun HTTP + SSE/WebSocket managing one Pi RPC child per active session; frontend: React + Vite + Tailwind CSS v4 with design tokens/class names aligned to opencode's v2 light theme (ADR-019); config editing in the Web covers the global and project roots (ADR-020 amended by ADR-027)
+- Web backend: Bun HTTP + SSE/EventSource managing one Pi RPC child per active session; frontend: React + Vite + Tailwind CSS v4 with design tokens/class names aligned to opencode's v2 light theme (ADR-019); config editing in the Web covers the global and project roots (ADR-020 amended by ADR-027)
 - Single npm package carrying both build artifacts and source code (so users can fork)
 
 ### Model Configuration

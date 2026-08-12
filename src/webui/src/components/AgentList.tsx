@@ -30,16 +30,24 @@ export function AgentList({ cwd, statusByAgent, sessionId }: AgentListProps) {
 
   useEffect(() => {
     const generation = ++requestGeneration.current;
-    setBusy(false);
+    setRoster(null);
+    setModels([]);
+    setEffective(null);
+    setBusy(true);
     Promise.all([listAgents(cwd), listModels(), getEffectiveModels(sessionId)])
       .then(([agents, catalog, eff]) => {
         if (generation !== requestGeneration.current) return;
         setRoster(agents);
         setModels(catalog);
         setEffective(eff);
+        setBusy(false);
       })
       .catch(() => {
-        if (generation === requestGeneration.current) setRoster([]);
+        if (generation !== requestGeneration.current) return;
+        setRoster([]);
+        setModels([]);
+        setEffective(null);
+        setBusy(false);
       });
     return () => {
       if (generation === requestGeneration.current) requestGeneration.current += 1;
@@ -89,7 +97,7 @@ export function AgentList({ cwd, statusByAgent, sessionId }: AgentListProps) {
           entry={effective?.find((item) => item.name === PAPER_ASSISTANT_AGENT)}
           models={models}
           disabled={false}
-          busy={busy}
+          busy={busy || effective === null}
           onApply={(model) => applyModel(PAPER_ASSISTANT_AGENT, model)}
         />
         {subagents.map((agent) => (
@@ -100,7 +108,7 @@ export function AgentList({ cwd, statusByAgent, sessionId }: AgentListProps) {
             entry={effective?.find((item) => item.name === agent.name)}
             models={models}
             disabled={!agent.enabled}
-            busy={busy}
+            busy={busy || effective === null}
             onApply={(model) => applyModel(agent.name, model)}
           />
         ))}

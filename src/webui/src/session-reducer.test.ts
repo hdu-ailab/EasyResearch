@@ -948,6 +948,42 @@ describe("session reducer", () => {
     });
   });
 
+  it("applies stable child identity after the snapshot tool row has settled", () => {
+    const snapshot = fromSnapshot({
+      session: { id: "parent", cwd: "/p", isStreaming: false, status: "ready" } as never,
+      subagents: [],
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "sub-linked", name: "subagent", arguments: '{"agent":"search"}' }],
+        },
+        {
+          role: "toolResult",
+          toolCallId: "sub-linked",
+          toolName: "subagent",
+          content: [{ type: "text", text: "complete" }],
+        },
+      ] as never,
+    });
+    const settled = reduceSessionEvent(snapshot, { type: "agent_settled" } as AgentSessionEvent);
+
+    const updated = reduceSessionEvent(settled, {
+      type: "tool_execution_update",
+      toolCallId: "sub-linked",
+      partialResult: {
+        details: { subagent: { agent: "search", sessionId: "child-uuid", latestMessage: "saved result" } },
+      },
+    } as never);
+
+    expect(updated.tools[0]).toMatchObject({
+      running: false,
+      done: true,
+      agentName: "search",
+      sessionId: "child-uuid",
+      latestMessage: "saved result",
+    });
+  });
+
   it("preserves every historical chain-step mapping on one parent tool row", () => {
     const state = fromSnapshot({
       session: { id: "parent", cwd: "/p", isStreaming: false, status: "ready" } as never,
