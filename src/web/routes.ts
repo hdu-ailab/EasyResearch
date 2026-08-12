@@ -335,9 +335,20 @@ function sessionEvents(services: RouteServices, id: string): Response {
   const encoder = new TextEncoder();
   let controllerRef: ReadableStreamDefaultController<Uint8Array> | null = null;
   let unsubscribe: (() => void) | null = null;
+  let initialized = false;
+  let cancelled = false;
+  const pendingEvents: unknown[] = [];
+  const send = (controller: ReadableStreamDefaultController<Uint8Array>, event: unknown): void => {
+    controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+  };
   try {
     unsubscribe = registry.subscribe(id, (event) => {
-      controllerRef?.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+      if (cancelled) return;
+      if (!initialized) {
+        pendingEvents.push(event);
+        return;
+      }
+      if (controllerRef) send(controllerRef, event);
     });
   } catch {
     throw new UnknownSessionError(`Unknown session: ${id}`);
@@ -348,19 +359,21 @@ function sessionEvents(services: RouteServices, id: string): Response {
       controllerRef = controller;
       Promise.all([registry.snapshot(id), subagentSessions.summaries(id)]).then(
         ([{ session, messages }, subagents]) => {
-          controller.enqueue(
-            encoder.encode(`data: ${JSON.stringify({ type: "snapshot", session, messages, subagents })}\n\n`),
-          );
+          if (cancelled) return;
+          send(controller, { type: "snapshot", session, messages, subagents });
+          initialized = true;
+          for (const event of pendingEvents) send(controller, event);
+          pendingEvents.length = 0;
         },
         (error) => {
-          controller.enqueue(
-            encoder.encode(`data: ${JSON.stringify({ type: "error", error: String(error) })}\n\n`),
-          );
+          if (!cancelled) send(controller, { type: "error", error: String(error) });
         },
       );
     },
     cancel() {
       // Browser disconnect only unsubscribes; the registry entry keeps running.
+      cancelled = true;
+      pendingEvents.length = 0;
       unsubscribe?.();
       logger.info("sse disconnected", { sessionId: id });
     },
