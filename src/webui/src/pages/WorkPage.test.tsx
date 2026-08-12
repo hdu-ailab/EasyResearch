@@ -281,6 +281,68 @@ describe("WorkPage", () => {
     expect(await screen.findByText("on it")).toBeTruthy();
   });
 
+  it("jumps to the bottom on send even when the transcript was scrolled up", async () => {
+    const user = userEvent.setup();
+    stubEvents();
+    let flushFrame: FrameRequestCallback | undefined;
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      flushFrame = callback;
+      return 1;
+    });
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    const el = screen.getByLabelText("Conversation") as HTMLDivElement;
+    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => 400 });
+    Object.defineProperty(el, "clientHeight", { configurable: true, get: () => 200 });
+    el.scrollTop = 100;
+    fireEvent.scroll(el);
+
+    await user.type(screen.getByRole("textbox", { name: /message/i }), "continue please");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+    flushFrame?.(0);
+
+    await waitFor(() => expect(el.scrollTop).toBe(400));
+  });
+
+  it("jumps to the bottom when switching to a child agent tab", async () => {
+    const user = userEvent.setup();
+    stubEvents();
+    let flushFrame: FrameRequestCallback | undefined;
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      flushFrame = callback;
+      return 1;
+    });
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    vi.mocked(api.getChildSnapshot).mockResolvedValue({
+      session: { id: "child-switch", cwd: "/p", sessionName: "easyresearch:search" },
+      messages: [
+        { role: "user", content: [{ type: "text", text: "child task" }] },
+        { role: "assistant", content: [{ type: "text", text: "child answer" }] },
+      ],
+    } as never);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    const el = screen.getByLabelText("Conversation") as HTMLDivElement;
+    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => 400 });
+    Object.defineProperty(el, "clientHeight", { configurable: true, get: () => 200 });
+    el.scrollTop = 100;
+    fireEvent.scroll(el);
+
+    emitInAct({
+      type: "tool_execution_start",
+      toolCallId: "sub-switch",
+      toolName: "subagent",
+      args: { agent: "search", task: "find" },
+    });
+    emitChildHeader("sub-switch", "search", "child-switch");
+    await user.click(await screen.findByRole("button", { name: /agent search/i }));
+    flushFrame?.(0);
+
+    await waitFor(() => expect(el.scrollTop).toBe(400));
+    expect(await screen.findByText("child answer")).toBeTruthy();
+  });
+
   it("clears the working agent row when the send fails", async () => {
     const user = userEvent.setup();
     stubEvents();
