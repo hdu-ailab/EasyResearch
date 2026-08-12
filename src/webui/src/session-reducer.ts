@@ -29,8 +29,6 @@ export interface SessionMessageView {
   key: string;
   /** Stable Pi identity used to deduplicate snapshot/live overlap when available. */
   identity?: string;
-  /** Immutable internal lineage for messages without a stable Pi identity. */
-  snapshotFingerprint?: string;
   role: "user" | "assistant" | "tool" | "system";
   text: string;
   /** Reasoning/thinking content, rendered as a collapsible block. */
@@ -121,10 +119,6 @@ function keyFor(message: { id?: unknown; timestamp?: unknown }, fallback: number
 function identityFor(message: { id?: unknown; timestamp?: unknown }): string | undefined {
   const identity = message.id ?? message.timestamp;
   return identity === undefined || identity === null ? undefined : String(identity);
-}
-
-function contentFingerprint(message: SessionMessageView): string {
-  return JSON.stringify([message.role, message.text, message.reasoning, message.error, message.agentId, message.label]);
 }
 
 function assistantUpdateOf(
@@ -321,7 +315,6 @@ export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
     const label = labelFor(role, subagentName);
     if (label) nextMessage.label = label;
     if (reasoning) nextMessage.reasoning = reasoning;
-    if (nextMessage.identity === undefined) nextMessage.snapshotFingerprint = contentFingerprint(nextMessage);
     // A message made only of tool calls renders as tool rows, not a bubble.
     if (text || reasoning || nextMessage.error || toolCallBlocks.length === 0) state.messages.push(nextMessage);
     if (role === "assistant") {
@@ -406,11 +399,10 @@ export function nestedSubagentEvent(event: AgentSessionEvent):
   };
 }
 
-/** Rehydrate authoritative snapshot state without discarding richer live-only
- * subagent progress that is not persisted in the session transcript. */
+/** Rehydrate authoritative snapshot state while retaining subagent metadata
+ * that is keyed by the persisted tool invocation. */
 export function mergeSnapshot(state: SessionViewState, snapshot: SessionSnapshotDto): SessionViewState {
   const next = fromSnapshot(snapshot);
-  const snapshotActiveMessageKey = next.activeMessageKey;
   const summaries = new Map<string, SubagentSessionSummaryDto>();
   for (const summary of snapshot.subagents ?? []) summaries.set(summary.toolCallId, summary);
   const priorSubagents = new Map(
@@ -434,87 +426,6 @@ export function mergeSnapshot(state: SessionViewState, snapshot: SessionSnapshot
         : {}),
     };
   });
-  const priorActiveNoIdentityAssistant = state.messages.find(
-    (message) =>
-      message.key === state.activeMessageKey && message.role === "assistant" && message.identity === undefined,
-  );
-  const snapshotActiveNoIdentityAssistant = next.messages.find(
-    (message) =>
-      message.key === snapshotActiveMessageKey && message.role === "assistant" && message.identity === undefined,
-  );
-  const reconciledPriorActive =
-    priorActiveNoIdentityAssistant &&
-    snapshotActiveNoIdentityAssistant &&
-    priorActiveNoIdentityAssistant.snapshotFingerprint !== undefined &&
-    priorActiveNoIdentityAssistant.snapshotFingerprint === snapshotActiveNoIdentityAssistant.snapshotFingerprint &&
-    priorActiveNoIdentityAssistant.role === snapshotActiveNoIdentityAssistant.role &&
-    priorActiveNoIdentityAssistant.error === snapshotActiveNoIdentityAssistant.error &&
-    priorActiveNoIdentityAssistant.agentId === snapshotActiveNoIdentityAssistant.agentId &&
-    priorActiveNoIdentityAssistant.label === snapshotActiveNoIdentityAssistant.label
-      ? priorActiveNoIdentityAssistant
-      : undefined;
-  if (reconciledPriorActive && snapshotActiveNoIdentityAssistant) {
-    snapshotActiveNoIdentityAssistant.text = reconciledPriorActive.text;
-    snapshotActiveNoIdentityAssistant.reasoning = reconciledPriorActive.reasoning;
-    snapshotActiveNoIdentityAssistant.error = reconciledPriorActive.error;
-    snapshotActiveNoIdentityAssistant.isThinking = reconciledPriorActive.isThinking;
-  }
-  const snapshotMessageIdentities = new Set(
-    next.messages.flatMap((message): string[] => (message.identity === undefined ? [] : [message.identity])),
-  );
-  const snapshotNoIdentityCounts = new Map<string, number>();
-  for (const message of next.messages) {
-    if (message.identity !== undefined) continue;
-    const fingerprint = contentFingerprint(message);
-    snapshotNoIdentityCounts.set(fingerprint, (snapshotNoIdentityCounts.get(fingerprint) ?? 0) + 1);
-  }
-  if (reconciledPriorActive && snapshotActiveNoIdentityAssistant) {
-    const fingerprint = contentFingerprint(snapshotActiveNoIdentityAssistant);
-    const remaining = snapshotNoIdentityCounts.get(fingerprint) ?? 0;
-    if (remaining <= 1) snapshotNoIdentityCounts.delete(fingerprint);
-    else snapshotNoIdentityCounts.set(fingerprint, remaining - 1);
-  }
-  const snapshotToolKeys = new Set(next.tools.map((tool) => tool.key));
-  const liveOnlyRows: Array<SessionMessageView | ToolView> = [
-    ...state.messages.filter((message) => {
-      if (message === reconciledPriorActive) return false;
-      if (message.identity !== undefined) return !snapshotMessageIdentities.has(message.identity);
-      const fingerprint = contentFingerprint(message);
-      const remaining = snapshotNoIdentityCounts.get(fingerprint) ?? 0;
-      if (remaining === 0) return true;
-      snapshotNoIdentityCounts.set(fingerprint, remaining - 1);
-      return false;
-    }),
-    ...state.tools.filter((tool) => !snapshotToolKeys.has(tool.key)),
-  ].sort((left, right) => left.order - right.order);
-  const reservedKeys = new Set([...next.messages.map((message) => message.key), ...next.tools.map((tool) => tool.key)]);
-  let remappedPriorActiveAssistantKey: string | undefined;
-  for (const row of liveOnlyRows) {
-    const order = next.nextOrder++;
-    let key = row.key;
-    if (reservedKeys.has(key)) {
-      const base = `${key}-${order}`;
-      key = base;
-      let suffix = 1;
-      while (reservedKeys.has(key)) key = `${base}-${suffix++}`;
-    }
-    reservedKeys.add(key);
-    const appended = { ...row, key, order };
-    if ("role" in appended) {
-      next.messages.push(appended);
-      if (appended.role === "assistant" && row.key === state.activeMessageKey) {
-        remappedPriorActiveAssistantKey = key;
-      }
-    } else {
-      next.tools.push(appended);
-    }
-  }
-  const activeMessageKey = next.isStreaming ? (snapshotActiveMessageKey ?? remappedPriorActiveAssistantKey) : undefined;
-  next.messages = next.messages.map((message) => ({
-    ...message,
-    streaming: message.role === "assistant" && message.key === activeMessageKey,
-  }));
-  next.activeMessageKey = activeMessageKey;
   return next;
 }
 
@@ -555,7 +466,6 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
       const label = labelFor(role, state.subagentName);
       if (label) view.label = label;
       if (reasoning) view.reasoning = reasoning;
-      if (view.identity === undefined) view.snapshotFingerprint = contentFingerprint(view);
       next.messages = [...state.messages, view];
       next.activeMessageKey = role === "assistant" ? key : undefined;
       return next;

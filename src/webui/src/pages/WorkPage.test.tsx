@@ -1207,7 +1207,7 @@ describe("WorkPage", () => {
       messages: [{ role: "assistant", content: [{ type: "text", text: "after reconnect" }] }],
     });
     expect(await screen.findByText("after reconnect")).toBeTruthy();
-    expect(screen.getByText("starting research")).toBeTruthy();
+    expect(screen.queryByText("starting research")).toBeNull();
   });
 
   it("rehydrates a running subagent tab and card, then updates both in place", async () => {
