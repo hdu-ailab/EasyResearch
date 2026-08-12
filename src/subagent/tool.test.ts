@@ -188,6 +188,24 @@ describe("filterAgentsByAllowlist (ADR-022)", () => {
   it("allows no agents for an empty allowlist", () => {
     expect(filterAgentsByAllowlist(agents, "")).toEqual([]);
   });
+
+  it("omits the Assistant and disabled specialists when no allowlist is configured", () => {
+    const assistant = maker("assistant");
+    const disabled = { ...maker("writing"), enabled: false };
+
+    expect(filterAgentsByAllowlist([assistant, maker("search"), disabled], undefined).map((agent) => agent.name))
+      .toEqual(["search"]);
+  });
+
+  it("does not make disabled or Assistant targets dispatchable through an explicit allowlist", () => {
+    const disabledAssistant = { ...maker("assistant"), enabled: false };
+    const disabled = { ...maker("writing"), enabled: false };
+
+    expect(filterAgentsByAllowlist(
+      [disabledAssistant, maker("search"), disabled],
+      "assistant,search,writing",
+    ).map((agent) => agent.name)).toEqual(["search"]);
+  });
 });
 
 describe("createSubagentTool agent provider", () => {

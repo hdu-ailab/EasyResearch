@@ -195,6 +195,35 @@ describe("createAssistantExtension", () => {
     expect(resources.skillPaths).toEqual([projectSkills, globalSkills, bundledSkillsDir]);
   });
 
+  it("keeps a disabled main Assistant available without exposing it or disabled specialists for dispatch", async () => {
+    const root = makeRoot();
+    const cwd = join(root, "project");
+    const agentDir = join(root, "global");
+    const bundledAgentsDir = join(root, "bundled");
+    writeAgent(join(bundledAgentsDir, "agents"), "assistant", definition("Disabled main Assistant", [
+      "enable: false",
+      "tools: [read, subagent]",
+    ]));
+    writeAgent(join(bundledAgentsDir, "agents"), "search", definition("Search").replace("name: assistant", "name: search"));
+    writeAgent(join(bundledAgentsDir, "agents"), "writing", definition("Writing", ["enable: false"])
+      .replace("name: assistant", "name: writing"));
+    const { handlers, registeredTools, setActiveTools } = await loadExtension({ agentDir, bundledAgentsDir });
+
+    await handlers.get("session_start")?.({ reason: "startup" }, { cwd, mode: "rpc" });
+    expect(setActiveTools).toHaveBeenCalledWith(["read", "subagent"]);
+
+    const result = await registeredTools.find((tool) => tool.name === "subagent")?.execute?.(
+      "call-omitted-policy",
+      {},
+      undefined,
+      undefined,
+      { cwd, sessionManager: { getEntries: () => [] } },
+    );
+    expect(result.content[0].text).toContain("search (bundled)");
+    expect(result.content[0].text).not.toContain("assistant (bundled)");
+    expect(result.content[0].text).not.toContain("writing (bundled)");
+  });
+
   it("always answers project_trust with yes (ADR-018)", async () => {
     const root = makeRoot();
     const bundledAgentsDir = join(root, "bundled");
