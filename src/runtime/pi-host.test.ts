@@ -180,6 +180,13 @@ describe("runNativeTui", () => {
     });
   });
 
+  it("keeps skill discovery disabled at the TUI host boundary", async () => {
+    await runNativeTui();
+    const args = hoisted.main.mock.calls[0]?.[0] as string[];
+    expect(args).toContain("--no-skills");
+    expect(args).not.toContain("--skill");
+  });
+
   it("does not touch PI_OFFLINE", async () => {
     hoisted.originalEnv = process.env.PI_OFFLINE;
     await runNativeTui();

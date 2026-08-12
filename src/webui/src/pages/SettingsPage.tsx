@@ -1,11 +1,12 @@
 import { Activity, FileJson, Languages, MessageSquare, Minus, Plus, Settings2, UserPlus } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AgentDto, AgentResourceDto, SkillResourceDto } from "../../../web/contracts";
 import {
   createAgentResource,
   getWebuiSettings,
   listAgentResources,
   listAgents,
+  listConfigProjects,
   listModels,
   listSkillResources,
   readAgentResource,
@@ -160,6 +161,11 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
   const [busy, setBusy] = useState(false);
   const [resourceAgents, setResourceAgents] = useState<AgentResourceDto[]>([]);
   const [skills, setSkills] = useState<SkillResourceDto[]>([]);
+  const [diagnosticScope, setDiagnosticScope] = useState("global");
+  const [diagnosticAgents, setDiagnosticAgents] = useState<AgentDto[]>([]);
+  const [diagnosticError, setDiagnosticError] = useState<string | null>(null);
+  const [projects, setProjects] = useState<Array<{ cwd: string }>>([]);
+  const diagnosticRequest = useRef(0);
   const [agentEditor, setAgentEditor] = useState<AgentResourceDto | null>(null);
   const [skillEditor, setSkillEditor] = useState<SkillResourceDto | null>(null);
   const [detailsAgent, setDetailsAgent] = useState<AgentDto | null>(null);
@@ -174,9 +180,13 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
         setEffectiveAssistantModel(s.effectiveAssistantModel);
         setResourceAgents(globalAgents);
         setAgents(globalAgents.length > 0 ? globalAgents : fallbackAgents);
+        if (diagnosticRequest.current === 0) setDiagnosticAgents(fallbackAgents);
         setModels(m);
         setSkills(skillRows);
       })
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    listConfigProjects()
+      .then((configProjects) => setProjects(configProjects.projects))
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, []);
 
@@ -184,6 +194,20 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
     const next = await listAgentResources();
     setResourceAgents(next);
     setAgents(next);
+  };
+
+  const refreshDiagnostics = async (scope = diagnosticScope) => {
+    const request = ++diagnosticRequest.current;
+    setDiagnosticAgents([]);
+    setDiagnosticError(null);
+    try {
+      const next = await listAgents(scope === "global" ? undefined : scope);
+      if (request === diagnosticRequest.current) setDiagnosticAgents(next);
+    } catch (e) {
+      if (request === diagnosticRequest.current) {
+        setDiagnosticError(e instanceof Error ? e.message : String(e));
+      }
+    }
   };
 
   const openAgentEditor = async (name: string) => {
@@ -200,7 +224,7 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
     setBusy(true);
     try {
       await writeAgentResource(agentEditor.name, content);
-      await refreshAgents();
+      await Promise.all([refreshAgents(), refreshDiagnostics()]);
       setAgentEditor(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -216,6 +240,7 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
       const savedAgent = await writeAgentResource(agent.name, content);
       setResourceAgents((current) => current.map((item) => (item.name === savedAgent.name ? savedAgent : item)));
       setAgents((current) => current.map((item) => (item.name === savedAgent.name ? savedAgent : item)));
+      await refreshDiagnostics();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -232,7 +257,7 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
       setAgentEditor(created);
       setResourceAgents((current) => [...current.filter((item) => item.name !== created.name), created]);
       setAgents((current) => [...current.filter((item) => item.name !== created.name), created]);
-      await refreshAgents();
+      await Promise.all([refreshAgents(), refreshDiagnostics()]);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -253,13 +278,18 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
     setBusy(true);
     try {
       await writeSkillResource(skillEditor.name, content);
-      setSkills(await listSkillResources());
+      await Promise.all([listSkillResources().then(setSkills), refreshDiagnostics()]);
       setSkillEditor(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
+  };
+
+  const selectDiagnosticScope = async (scope: string) => {
+    setDiagnosticScope(scope);
+    await refreshDiagnostics(scope);
   };
 
   const setAgentModel = (name: string, value: string) => {
@@ -308,6 +338,14 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
   const toolInventory = [...new Set(roster.flatMap((agent) => agent.effectiveTools ?? agent.tools ?? []))].sort(
     (a, b) => a.localeCompare(b),
   );
+  const missingSkills = new Map<string, string[]>();
+  for (const agent of diagnosticAgents) {
+    for (const skill of agent.missingSkills ?? []) {
+      const names = missingSkills.get(skill) ?? [];
+      names.push(agentDisplayName(t, agent.name));
+      missingSkills.set(skill, names);
+    }
+  }
 
   return (
     <div className="flex h-full flex-col">
@@ -563,7 +601,42 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
                 </div>
               </div>
               <div className="border-t border-v2-grey-200 pt-4">
-                <h3 className="text-[12px] font-semibold text-v2-text-text-base">{t("settings.resources.skills")}</h3>
+                <div className="flex min-w-0 items-center justify-between gap-3">
+                  <h3 className="text-[12px] font-semibold text-v2-text-text-base">{t("settings.resources.skills")}</h3>
+                  <select
+                    aria-label={t("settings.resources.diagnosticScope")}
+                    className="h-7 min-w-0 max-w-[240px] rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[12px] text-v2-text-text-base outline-none focus:border-v2-blue-600 focus:outline-2 focus:outline-offset-2 focus:outline-v2-blue-600"
+                    value={diagnosticScope}
+                    onChange={(event) => void selectDiagnosticScope(event.target.value)}
+                  >
+                    <option value="global">{t("config.global")}</option>
+                    {projects.map((project) => (
+                      <option key={project.cwd} value={project.cwd}>
+                        {project.cwd}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {missingSkills.size > 0 && (
+                  <div className="mt-2 flex flex-col gap-1.5">
+                    {[...missingSkills].map(([skill, agentNames]) => (
+                      <div
+                        key={skill}
+                        className="flex min-w-0 items-center justify-between gap-3 rounded-md border border-v2-grey-200 px-3 py-2"
+                      >
+                        <span className="font-mono text-[12px] text-v2-text-text-base">{skill}</span>
+                        <span className="min-w-0 text-right text-[11px] text-v2-text-text-muted">
+                          {t("settings.resources.missingFor").replace("{agents}", agentNames.join(", "))}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {diagnosticError && (
+                  <p className="mt-2 text-[12px] text-v2-status-error" role="alert">
+                    {diagnosticError}
+                  </p>
+                )}
                 <div className="mt-2 flex flex-col gap-2">
                   {skills.map((skill) => (
                     <div

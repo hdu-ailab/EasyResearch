@@ -1,63 +1,83 @@
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 import { importPi } from "./pi-import";
 import { createSubagentTool } from "../subagent/tool";
+import { discoverAgents, type AgentConfig } from "../subagent/agents";
 import { SUBAGENT_SESSION_LINK_ENTRY } from "../subagent/session-links";
 import { webSearchTool } from "../tools/duckduckgo-search";
 import { mountWelcomeBanner } from "../tui/welcome-banner";
 import { createLogger } from "./logger";
 import { mountPiEventLogger, type PiEventBus } from "./pi-event-logger";
-import { defaultSkillDirectories, isDotAgentsSkillEnabled } from "../subagent/skill-resolution";
+import {
+  defaultSkillDirectories,
+  isDotAgentsSkillEnabled,
+  resolveSkillDirectories,
+} from "../subagent/skill-resolution";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export interface AssistantExtensionOptions {
-  agentsDir?: string;
+  agentDir?: string;
+  bundledAgentsDir?: string;
+  bundledSkillsDir?: string;
+  homeDir?: string;
 }
 
-function bundledAgentsDir(): string {
-  return join(dirname(fileURLToPath(import.meta.url)), "..", "agents");
+function bundledSkillsDir(): string {
+  return join(dirname(fileURLToPath(import.meta.url)), "..", "skills");
 }
 
-export async function loadAssistantPrompt(
-  agentsDir: string,
-  parseFrontmatter?: <T extends Record<string, unknown>>(content: string) => { frontmatter: T; body: string },
-  fallbackAgentsDir?: string,
-): Promise<string> {
-  let path = join(agentsDir, "assistant.md");
-  let content: string;
-  try {
-    content = readFileSync(path, "utf8");
-  } catch {
-    if (!fallbackAgentsDir) {
-      throw new Error("Missing global assistant definition: expected ~/.easyresearch/agent/agents/assistant.md");
-    }
-    path = join(fallbackAgentsDir, "assistant.md");
-    try {
-      content = readFileSync(path, "utf8");
-    } catch {
-      throw new Error("Missing bundled assistant definition: expected src/agents/assistant.md");
-    }
-  }
-  const parser = parseFrontmatter ?? (await importPi()).parseFrontmatter;
-  const frontmatter = parser(content);
-  if (frontmatter == null || Object.keys(frontmatter.frontmatter ?? {}).length === 0) {
-    throw new Error(`Invalid assistant definition: ${path} is missing frontmatter`);
-  }
-  return frontmatter.body.trim();
+export interface LoadAssistantConfigOptions extends AssistantExtensionOptions {
+  cwd: string;
+  agentDir: string;
+}
+
+export async function loadAssistantConfig(options: LoadAssistantConfigOptions): Promise<AgentConfig> {
+  const { agents } = await discoverAgents({
+    cwd: options.cwd,
+    agentDir: options.agentDir,
+    bundledAgentsDir: options.bundledAgentsDir,
+    bundledSkillsDir: options.bundledSkillsDir,
+    homeDir: options.homeDir,
+  });
+  const assistant = agents.find((agent) => agent.name === "assistant");
+  if (!assistant) throw new Error("Missing valid Assistant definition");
+  return assistant;
 }
 
 export function createAssistantExtension(options: AssistantExtensionOptions = {}): InlineExtension {
   return async (pi) => {
-    const { getAgentDir, parseFrontmatter, SettingsManager } = await importPi();
-    const prompt = await loadAssistantPrompt(
-      options.agentsDir ?? join(getAgentDir(), "agents"),
-      parseFrontmatter,
-      bundledAgentsDir(),
-    );
+    const { getAgentDir, SettingsManager } = await importPi();
+    const agentDir = options.agentDir ?? getAgentDir();
+    const controlledBundledSkillsDir = options.bundledSkillsDir ?? bundledSkillsDir();
+    let current: { cwd: string; config: AgentConfig } | undefined;
+    const resolveAssistant = async (cwd: string, refresh = false): Promise<AgentConfig> => {
+      if (!refresh && current?.cwd === cwd) return current.config;
+      const config = await loadAssistantConfig({
+        cwd,
+        agentDir,
+        bundledAgentsDir: options.bundledAgentsDir,
+        bundledSkillsDir: controlledBundledSkillsDir,
+        homeDir: options.homeDir,
+      });
+      current = { cwd, config };
+      return config;
+    };
     pi.registerTool(createSubagentTool({
       persistSessionLink: (link) => pi.appendEntry(SUBAGENT_SESSION_LINK_ENTRY, link),
+      agentProvider: async (cwd) => {
+        const config = await resolveAssistant(cwd);
+        const { agents } = await discoverAgents({
+          cwd,
+          agentDir,
+          bundledAgentsDir: options.bundledAgentsDir,
+          bundledSkillsDir: controlledBundledSkillsDir,
+          homeDir: options.homeDir,
+        });
+        if (config.subagents === undefined) return agents;
+        const allowed = new Set(config.subagents);
+        return agents.filter((agent) => allowed.has(agent.name));
+      },
     }));
     pi.registerTool(webSearchTool);
     mountWelcomeBanner(pi);
@@ -67,20 +87,33 @@ export function createAssistantExtension(options: AssistantExtensionOptions = {}
       mountPiEventLogger(pi as unknown as PiEventBus, logger);
       logger.info("assistant session started", { cwd: process.cwd() });
     }
-    pi.on("before_agent_start", (event) => ({
-      systemPrompt: `${event.systemPrompt}\n\n${prompt}`,
-    }));
+    pi.on("session_start", async (_event, ctx) => {
+      const config = await resolveAssistant(ctx.cwd, true);
+      pi.setActiveTools(config.tools ?? pi.getAllTools().map(({ name }) => name));
+    });
+    pi.on("before_agent_start", async (event, ctx) => {
+      const config = await resolveAssistant(ctx.cwd);
+      return { systemPrompt: `${event.systemPrompt}\n\n${config.systemPrompt}` };
+    });
     // ADR-018: project config is always trusted; suppress Pi's trust prompt.
     pi.on("project_trust", () => ({ trusted: "yes" as const }));
-    pi.on("resources_discover", (event) => ({
-      skillPaths: defaultSkillDirectories({
+    pi.on("resources_discover", async (event) => {
+      const config = await resolveAssistant(event.cwd);
+      const deps = {
         cwd: event.cwd,
-        agentDir: getAgentDir(),
+        agentDir,
+        homeDir: options.homeDir,
+        bundledSkillsDir: controlledBundledSkillsDir,
         enableDotAgentsSkill: isDotAgentsSkillEnabled(
-          SettingsManager.create(event.cwd, getAgentDir()).getGlobalSettings(),
+          SettingsManager.create(event.cwd, agentDir).getGlobalSettings(),
         ),
-      }),
-    }));
+      };
+      return {
+        skillPaths: config.skills === undefined
+          ? defaultSkillDirectories(deps)
+          : resolveSkillDirectories(config.skills, deps) ?? [],
+      };
+    });
   };
 }
 

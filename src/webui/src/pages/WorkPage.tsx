@@ -727,7 +727,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
             hidden={agentsHidden}
             className={`h-full min-h-0 overflow-hidden min-[820px]:rounded-[10px] ${!agentsHidden ? "animate-v2-fade-in motion-reduce:animate-none" : ""}`}
           >
-            <AgentList statusByAgent={statusByAgent} sessionId={sessionId} />
+            <AgentList cwd={cwd} statusByAgent={statusByAgent} sessionId={sessionId} />
           </div>
         </section>
       </div>

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { WebuiSettingsDto, WebuiSettingsUpdate } from "./contracts";
 import type { ConfigFileService } from "./config-files";
 import { getAgentDir } from "../runtime/pi-import";
-import { discoverAgents, type AgentConfig } from "../subagent/agents";
+import { discoverGlobalAgents, type AgentConfig } from "../subagent/agents";
 import { readTextFile, updateFrontmatter, writeTextFile } from "./agent-markdown";
 
 export class WebuiSettingsError extends Error {
@@ -32,7 +32,7 @@ function globalAgentPath(agent: AgentConfig, agentDir: string): string {
 }
 
 async function globalAgents(config: ConfigFileService): Promise<AgentConfig[]> {
-  return (await discoverAgents({ cwd: process.cwd(), agentDir: config.globalRoot, includeProject: false })).agents;
+  return (await discoverGlobalAgents({ agentDir: config.globalRoot })).agents;
 }
 
 export async function readWebuiSettings(config: ConfigFileService): Promise<WebuiSettingsDto> {

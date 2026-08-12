@@ -25,13 +25,13 @@ Most practical model innovations are not invented from nothing. They are discove
 
 Do not jump directly to a proposed model. Read papers first, build baselines first, then try component combinations.
 
-When used inside `research-project-workflow`, apply this skill to `workspace/experiments/` as the experiment root.
+In the bundled paper workflow, apply this skill to exact-cwd `experiments/` as the experiment root. Follow a different existing root only when the dispatch explicitly supplies it.
 
 ## Required Directory Layout
 Create or maintain this structure under the user-specified experiment root:
 
 ```text
-experiment/
+experiments/
   .venv/
   src/
   external/
@@ -50,7 +50,7 @@ experiment/
   experiment-record.md
 ```
 
-The `experiment/` name in the diagram is a placeholder for the experiment root. In the full project workflow, this same layout lives under `workspace/experiments/`.
+The bundled default is exact-cwd `experiments/`; the diagram names that concrete root. An explicitly supplied existing user layout may use another root.
 
 Directory rules:
 - `.venv/`: main experiment environment managed by `uv`; use it only for this project's own experiment code, routers, models, analysis, plotting, and lightweight adapters.

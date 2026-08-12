@@ -119,6 +119,7 @@ describe("WorkPage", () => {
         tools: ["subagent"],
         effectiveTools: ["subagent"],
         effectiveSkills: [],
+        missingSkills: [],
       },
       {
         name: "search",
@@ -129,6 +130,7 @@ describe("WorkPage", () => {
         filePath: "search.md",
         effectiveTools: [],
         effectiveSkills: [],
+        missingSkills: [],
       },
       {
         name: "experiment",
@@ -139,6 +141,7 @@ describe("WorkPage", () => {
         filePath: "experiment.md",
         effectiveTools: [],
         effectiveSkills: [],
+        missingSkills: [],
         subagents: ["search"],
       },
       {
@@ -150,6 +153,7 @@ describe("WorkPage", () => {
         filePath: "writing.md",
         effectiveTools: [],
         effectiveSkills: [],
+        missingSkills: [],
         subagents: ["search", "figures"],
       },
       {
@@ -161,6 +165,7 @@ describe("WorkPage", () => {
         filePath: "figures.md",
         effectiveTools: [],
         effectiveSkills: [],
+        missingSkills: [],
       },
     ]);
     vi.mocked(api.listModels).mockResolvedValue([

@@ -9,7 +9,7 @@ import { readWebSessionIdleTimeout } from "./session-settings";
 import type { AgentDto, SessionSummaryDto } from "./contracts";
 import type { AgentConfig } from "../subagent/agents";
 import { readEffectiveWebuiSettings, updateWebuiSettings } from "./webui-settings";
-import { discoverAgents } from "../subagent/agents";
+import { discoverAgents, discoverGlobalAgents } from "../subagent/agents";
 import {
   readAgentModels,
   readAssistantDefaults,
@@ -50,7 +50,13 @@ export function agentToDto(agent: AgentConfig): AgentDto {
     subagents: agent.subagents,
     skills: agent.skills,
     effectiveSkills: agent.effectiveSkills,
+    missingSkills: agent.missingSkills,
   };
+}
+
+export async function discoverAgentsForWeb(cwd: string | undefined, agentDir: string): Promise<AgentDto[]> {
+  const result = cwd ? await discoverAgents({ cwd, agentDir }) : await discoverGlobalAgents({ agentDir });
+  return result.agents.map(agentToDto);
 }
 
 export function isKnownAgentName(agents: AgentConfig[], name: string): boolean {
@@ -144,7 +150,8 @@ export async function startServer(): Promise<Server> {
       routeSetAgentModel(
         {
           isAssistant: (name) => name === ASSISTANT_AGENT,
-          isKnownAgent: async (name) => isKnownAgentName((await discoverAgents()).agents, name),
+          isKnownAgent: async (name) =>
+            isKnownAgentName((await discoverAgents({ cwd: await registry.getCwd(sessionId) })).agents, name),
           setAssistant: (provider, modelId) => registry.setModel(sessionId, provider, modelId),
           writeOverride: (agentName, model) => agentModels.set(sessionId, agentName, model),
           assistantDefaults: async () => readAssistantDefaults(config, await registry.getCwd(sessionId)),
@@ -167,7 +174,7 @@ export async function startServer(): Promise<Server> {
     config,
     subagentSessions,
     logger,
-    listAgents: async (cwd) => (await discoverAgents({ cwd })).agents.map(agentToDto),
+    listAgents: (cwd) => discoverAgentsForWeb(cwd, agentDir),
   };
   const handler = createRouteHandler(services);
 
