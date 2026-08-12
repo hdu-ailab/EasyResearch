@@ -10,7 +10,7 @@ EasyResearch is a CLI tool (package name `easyresearch`) for automated academic 
 
 ## Core Design Principles
 
-1. **Assistant autonomous loop**: The `assistant` agent is the default user-facing window. It inspects available evidence, dispatches only the needed stage agents via the `subagent` tool, waits in place for each result, and autonomously decides the next step until the requested paper task is done.
+1. **Paper Assistant autonomous loop**: The `paper-assistant` agent is the default user-facing window. It inspects available evidence, dispatches only the needed stage agents via the `subagent` tool, waits in place for each result, and autonomously decides the next step until the requested paper task is done.
 2. **Agent responsibility isolation**: Bundled agents declare non-empty role-specific tool and Skill allowlists. Subagent policies are role-specific allowlists or `subagents: []` for the Search leaf. The assistant does not create specialist artifacts or substitute for stage agents.
 3. **Documentation-driven development** (highest priority): This project is pure Vibe Coding. **Before adding features, fixing bugs, or changing design, you MUST read the documents specified in the reading table below, and synchronize the docs per the "Document Update Rules".** Documents are the authoritative source of design; code is the execution of documents.
 4. **Artifact conventions live in skills, not code**: Directory structure and artifact formats inside a paper project are defined by the SKILL.md files agents load, not enforced in code.
@@ -25,7 +25,7 @@ EasyResearch is a CLI tool (package name `easyresearch`) for automated academic 
 
 | Agent | Responsibility and boundary | Tool scope | Skills to mount | Subagents |
 |---|---|---|---|---|
-| `assistant` | Clarify, inspect evidence, dispatch, confirm checkpoints, and synthesize; never creates specialist artifacts | Read-only project inspection plus `subagent`; no write/edit or direct Web search | research-project-workflow | every enabled specialist permitted by the effective definition |
+| `paper-assistant` | Clarify, inspect evidence, dispatch, confirm checkpoints, and synthesize; never creates specialist artifacts | Read-only project inspection plus `subagent`; no write/edit or direct Web search | research-project-workflow | every enabled specialist permitted by the effective definition |
 | `search` | Retrieve candidates, verify metadata, acquire permitted PDFs, convert readable text, and produce the material package; no literature-review/manuscript prose | File inspection/material-package writing, Bash, web-search | paper-search, arxiv, pdf-to-markdown | none (`subagents: []`) |
 | `experiment` | Create reproducible experiments and promote formal evidence; no manuscript drafting or publication figures | Coding, file, command, and `subagent` capabilities | experiment, ssh-experiment (sanitized) | search |
 | `writing` | Check readiness, draft and revise authoritative Markdown, verify citations, produce LaTeX and PDF; never invents evidence or runs experiments | File editing, compilation commands, and `subagent` | research-paper-writing, latex-pdf, arxiv | search, figures |
@@ -37,7 +37,7 @@ EasyResearch is a CLI tool (package name `easyresearch`) for automated academic 
 - Missing, YAML-empty, or `skills: []` loads every controlled project/global/optional-home/bundled Skill; a non-empty `skills` list is a strict resolved allowlist.
 - Missing explicitly configured Skills are ignored at runtime while valid Skills continue to load. Diagnostics appear only in Web Settings Skills, never chat, stage results, or runtime failures.
 - `subagents` remains distinct: omitted means all enabled agents, `subagents: []` means a leaf agent, and a non-empty list is an allowlist.
-- Assistant and stage/custom runtimes consume the same effective exact-cwd definition with project-over-global-over-bundled precedence.
+- Paper Assistant and stage/custom runtimes consume the same effective exact-cwd definition with project-over-global-over-bundled precedence.
 - Every bundled Agent prompt states its role boundary, inputs and artifact
   checks, procedure, nested dispatch targets, completion criteria, and final
   `complete | partial | blocked` handoff with artifacts, gaps, and next action.
@@ -65,8 +65,8 @@ EasyResearch is a CLI tool (package name `easyresearch`) for automated academic 
 
 - Pi-native global `~/.easyresearch/agent/settings.json` plus exact-cwd `.easyresearch/settings.json`; models/auth remain global
 - Agent behavior lives in complete Markdown files (ADR-049): project `.easyresearch/agents` -> global `~/.easyresearch/agent/agents` -> bundled `src/agents`. The old `easyresearch.agents` JSON registry and `src/agents/agents.json` are removed without migration or compatibility. `enable`, `model`, `tools`, `skills`, and `subagents` are Markdown frontmatter.
-- Four-level agent model resolution (ADR-049): session override (`easyresearch:agent_model` custom entry on the assistant session line) -> project agent Markdown -> global agent Markdown -> inherit the assistant's current model.
-- Missing `enable` defaults true; disabled non-assistant agents remain visible but cannot be selected by the subagent tool.
+- Four-level agent model resolution (ADR-049): session override (`easyresearch:agent_model` custom entry on the Paper Assistant session line) -> project agent Markdown -> global agent Markdown -> inherit the Paper Assistant's current model.
+- Missing `enable` defaults true; disabled non-Paper-Assistant agents remain visible but cannot be selected by the subagent tool.
 
 ## Documentation System
 
@@ -215,3 +215,4 @@ Each rung adds more permanent surface. Choose the highest (least-footprint) rung
 - ADR-035: localized fixed roster and simplified Agent model cards.
 - ADR-041: UUID-backed retained child tabs and user-facing Home sessions.
 - ADR-054: concise, task-oriented Web interface copy.
+- ADR-057: the built-in main-agent identity is `paper-assistant` (`paper-assistant.md`, `paper-assistant-extension.ts`, Paper Assistant model DTOs); `role: "assistant"` remains the Pi/LLM message protocol role, and no former-`assistant` compatibility is provided.

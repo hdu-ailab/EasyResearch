@@ -24,6 +24,7 @@ import { agentDisplayName } from "../i18n/agents";
 import { useI18n } from "../i18n/useI18n";
 import { CHAT_FONT_MAX, CHAT_FONT_MIN, FILES_FONT_MAX, FILES_FONT_MIN } from "../preferences";
 import { usePreferences } from "../preferences/PreferencesProvider";
+import { PAPER_ASSISTANT_AGENT } from "../agent-identity";
 
 export interface SettingsPageProps {
   onBack: () => void;
@@ -155,8 +156,8 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
   const [agents, setAgents] = useState<AgentDto[]>([]);
   const [models, setModels] = useState<Array<{ provider: string; id: string }>>([]);
   const [agentModels, setAgentModels] = useState<Record<string, string>>({});
-  const [assistantModel, setAssistantModelState] = useState<string | null>(null);
-  const [effectiveAssistantModel, setEffectiveAssistantModel] = useState<string | null>(null);
+  const [paperAssistantModel, setPaperAssistantModelState] = useState<string | null>(null);
+  const [effectivePaperAssistantModel, setEffectivePaperAssistantModel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [resourceAgents, setResourceAgents] = useState<AgentResourceDto[]>([]);
@@ -176,8 +177,8 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
     Promise.all([getWebuiSettings(), listAgentResources(), listAgents(), listModels(), listSkillResources()])
       .then(([s, globalAgents, fallbackAgents, m, skillRows]) => {
         setAgentModels(s.agentModels);
-        setAssistantModelState(s.assistantModel);
-        setEffectiveAssistantModel(s.effectiveAssistantModel);
+        setPaperAssistantModelState(s.paperAssistantModel);
+        setEffectivePaperAssistantModel(s.effectivePaperAssistantModel);
         setResourceAgents(globalAgents);
         setAgents(globalAgents.length > 0 ? globalAgents : fallbackAgents);
         if (diagnosticRequest.current === 0) setDiagnosticAgents(fallbackAgents);
@@ -304,26 +305,26 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
       .finally(() => setBusy(false));
   };
 
-  const setAssistantModel = (value: string) => {
+  const setPaperAssistantModel = (value: string) => {
     setBusy(true);
     setError(null);
-    updateWebuiSettings({ assistantModel: value === "" ? null : value })
+    updateWebuiSettings({ paperAssistantModel: value === "" ? null : value })
       .then((s) => {
-        setAssistantModelState(s.assistantModel);
-        setEffectiveAssistantModel(s.effectiveAssistantModel);
+        setPaperAssistantModelState(s.paperAssistantModel);
+        setEffectivePaperAssistantModel(s.effectivePaperAssistantModel);
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setBusy(false));
   };
 
-  const assistantValue = assistantModel ?? effectiveAssistantModel ?? "";
-  const assistantOptions =
-    effectiveAssistantModel !== null && !models.some((m) => `${m.provider}/${m.id}` === effectiveAssistantModel)
+  const paperAssistantValue = paperAssistantModel ?? effectivePaperAssistantModel ?? "";
+  const paperAssistantOptions =
+    effectivePaperAssistantModel !== null && !models.some((m) => `${m.provider}/${m.id}` === effectivePaperAssistantModel)
       ? [
           ...models,
           {
-            provider: effectiveAssistantModel.slice(0, effectiveAssistantModel.indexOf("/")),
-            id: effectiveAssistantModel.slice(effectiveAssistantModel.indexOf("/") + 1),
+            provider: effectivePaperAssistantModel.slice(0, effectivePaperAssistantModel.indexOf("/")),
+            id: effectivePaperAssistantModel.slice(effectivePaperAssistantModel.indexOf("/") + 1),
           },
         ]
       : models;
@@ -331,8 +332,8 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
   /** Pin the assistant to the first row, keeping the rest in API order. */
   const roster = [...(resourceAgents.length > 0 ? resourceAgents : agents)].sort((a, b) => {
     if (a.builtin !== b.builtin) return a.builtin ? -1 : 1;
-    if (a.name === "assistant") return -1;
-    if (b.name === "assistant") return 1;
+    if (a.name === PAPER_ASSISTANT_AGENT) return -1;
+    if (b.name === PAPER_ASSISTANT_AGENT) return 1;
     return a.name.localeCompare(b.name);
   });
   const toolInventory = [...new Set(roster.flatMap((agent) => agent.effectiveTools ?? agent.tools ?? []))].sort(
@@ -463,7 +464,7 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
             </header>
             <div className="flex flex-col gap-3 px-4 py-4">
               {roster.map((agent) =>
-                agent.name === "assistant" ? (
+                agent.name === PAPER_ASSISTANT_AGENT ? (
                   <div key={agent.name} className="rounded-md border border-v2-grey-200 p-3">
                     <div className="flex items-center gap-2">
                       <span className="size-2 rounded-full bg-v2-grey-400" aria-hidden />
@@ -495,11 +496,11 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
                         <select
                           className="h-8 min-w-0 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600 disabled:opacity-50"
                           aria-label={`${t("settings.agents.selectModelFor")} ${agentDisplayName(t, agent.name)}`}
-                          value={assistantValue}
-                          onChange={(e) => setAssistantModel(e.target.value)}
+                          value={paperAssistantValue}
+                          onChange={(e) => setPaperAssistantModel(e.target.value)}
                           disabled={busy}
                         >
-                          {assistantOptions.map((m) => (
+                          {paperAssistantOptions.map((m) => (
                             <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
                               {m.provider}/{m.id}
                             </option>

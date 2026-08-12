@@ -27,7 +27,7 @@ describe("bundled agent definitions", () => {
     expect(byName.experiment!.subagents).toEqual(["search"]);
     expect(byName.writing!.subagents).toEqual(["search", "figures"]);
     expect(byName.figures!.effectiveSkills).toEqual(expect.arrayContaining(["drawio", "drawio-academic-skills"]));
-    expect(byName.assistant!.effectiveTools).toContain("subagent");
-    expect(byName.assistant!.effectiveTools).not.toContain("write");
+    expect(byName["paper-assistant"]!.effectiveTools).toContain("subagent");
+    expect(byName["paper-assistant"]!.effectiveTools).not.toContain("write");
   });
 });

@@ -49,7 +49,7 @@ describe("resolveEffectiveModel", () => {
     expect(resolveEffectiveModel("openai/gpt-4o", { search: "a/b" }, { search: "x/y" }, "o/1", "search")).toEqual({ model: "openai/gpt-4o", source: "override" });
   });
 
-  it("uses project, global, then assistant inheritance", () => {
+  it("uses project, global, then Paper Assistant inheritance", () => {
     expect(resolveEffectiveModel(undefined, { search: "a/b" }, { search: "x/y" }, "o/1", "search")).toEqual({ model: "a/b", source: "project" });
     expect(resolveEffectiveModel(undefined, undefined, { search: "x/y" }, "o/1", "search")).toEqual({ model: "x/y", source: "global" });
     expect(resolveEffectiveModel(undefined, undefined, undefined, "o/1", "search")).toEqual({ model: "o/1", source: "inherit" });
@@ -91,7 +91,7 @@ describe("resolveModelForSpawn", () => {
     await expect(resolveModelForSpawn(ctx(override(null)), "search", "o/1")).resolves.toBe("b/2");
   });
 
-  it("inherits the assistant model when no Markdown model exists", async () => {
+  it("inherits the Paper Assistant model when no Markdown model exists", async () => {
     await expect(resolveModelForSpawn(ctx([]), "search", "o/1")).resolves.toBe("o/1");
     await expect(resolveModelForSpawn(ctx([]), "search", undefined)).resolves.toBeUndefined();
   });

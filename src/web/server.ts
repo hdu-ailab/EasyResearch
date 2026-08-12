@@ -9,10 +9,10 @@ import { readWebSessionIdleTimeout } from "./session-settings";
 import type { AgentDto, SessionSummaryDto } from "./contracts";
 import type { AgentConfig } from "../subagent/agents";
 import { readEffectiveWebuiSettings, updateWebuiSettings } from "./webui-settings";
-import { discoverAgents, discoverGlobalAgents } from "../subagent/agents";
+import { discoverAgents, discoverGlobalAgents, PAPER_ASSISTANT_AGENT } from "../subagent/agents";
 import {
   readAgentModels,
-  readAssistantDefaults,
+  readPaperAssistantDefaults,
   readSessionOverrides,
   resolveAgentModelsService,
   routeSetAgentModel,
@@ -28,13 +28,6 @@ export interface Server {
 }
 
 const WEBUI_DIST = join(fileURLToPath(new URL("..", import.meta.url)), "webui", "dist");
-
-/**
- * The assistant is the agent whose session line the Web session runs. Its
- * name matches the hardcoded assistant definition file
- * (`<agent-dir>/agents/assistant.md`, assistant-extension.ts).
- */
-const ASSISTANT_AGENT = "assistant";
 
 export function agentToDto(agent: AgentConfig): AgentDto {
   return {
@@ -130,7 +123,7 @@ export async function startServer(): Promise<Server> {
     readEntries: (sessionPath) => readSessionOverrides(sessionPath),
     projectAgentModels: (cwd) => readAgentModels(config, { scope: "project", cwd }),
     globalAgentModels: () => readAgentModels(config, { scope: "global" }),
-    assistantModel: (id) => registry.getAssistantModel(id),
+    paperAssistantModel: (id) => registry.getPaperAssistantModel(id),
     getCwd: (id) => registry.getCwd(id),
   });
   const services: RouteServices = {
@@ -149,12 +142,12 @@ export async function startServer(): Promise<Server> {
     setAgentModel: (sessionId, agentName, model) =>
       routeSetAgentModel(
         {
-          isAssistant: (name) => name === ASSISTANT_AGENT,
+          isPaperAssistant: (name) => name === PAPER_ASSISTANT_AGENT,
           isKnownAgent: async (name) =>
             isKnownAgentName((await discoverAgents({ cwd: await registry.getCwd(sessionId) })).agents, name),
-          setAssistant: (provider, modelId) => registry.setModel(sessionId, provider, modelId),
+          setPaperAssistant: (provider, modelId) => registry.setModel(sessionId, provider, modelId),
           writeOverride: (agentName, model) => agentModels.set(sessionId, agentName, model),
-          assistantDefaults: async () => readAssistantDefaults(config, await registry.getCwd(sessionId)),
+          paperAssistantDefaults: async () => readPaperAssistantDefaults(config, await registry.getCwd(sessionId)),
         },
         agentName,
         model,

@@ -29,7 +29,7 @@ export interface AgentDiscoveryResult {
   agents: AgentConfig[];
 }
 
-export const ASSISTANT_AGENT = "assistant";
+export const PAPER_ASSISTANT_AGENT = "paper-assistant";
 
 export const CONTROLLED_TOOL_INVENTORY = [
   "read",
@@ -43,13 +43,13 @@ export const CONTROLLED_TOOL_INVENTORY = [
   "web-search",
 ] as const;
 const BUILTIN_ALIASES: Record<string, string> = {
-  assistant: "Paper Assistant",
+  [PAPER_ASSISTANT_AGENT]: "Paper Assistant",
   search: "检索",
   experiment: "实验",
   writing: "写作",
   figures: "图表",
 };
-const BUILTIN_ORDER = ["assistant", "search", "experiment", "writing", "figures"];
+const BUILTIN_ORDER = [PAPER_ASSISTANT_AGENT, "search", "experiment", "writing", "figures"];
 
 export interface DiscoveryOptions {
   agentDir?: string;
@@ -126,7 +126,7 @@ function parseAgentFile(
     return {
       name,
       description: typeof frontmatter.description === "string" && frontmatter.description.trim() ? frontmatter.description : name,
-      enabled: frontmatter.enable !== false,
+      enabled: builtin && name === PAPER_ASSISTANT_AGENT ? true : frontmatter.enable !== false,
       builtin,
       tools,
       effectiveTools,

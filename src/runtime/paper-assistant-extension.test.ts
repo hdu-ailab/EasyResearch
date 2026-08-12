@@ -3,12 +3,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
-import { createAssistantExtension, loadAssistantConfig } from "./assistant-extension";
+import {
+  createPaperAssistantExtension,
+  loadPaperAssistantPrompt,
+} from "./paper-assistant-extension";
 
 const tempDirs: string[] = [];
 
 function makeRoot(): string {
-  const dir = mkdtempSync(join(tmpdir(), "easyresearch-assistant-"));
+  const dir = mkdtempSync(join(tmpdir(), "easyresearch-paper-assistant-"));
   tempDirs.push(dir);
   return dir;
 }
@@ -16,8 +19,8 @@ function makeRoot(): string {
 function definition(body: string, fields: string[] = []): string {
   return [
     "---",
-    "name: assistant",
-    "description: Assistant",
+    "name: paper-assistant",
+    "description: Paper Assistant",
     ...fields,
     "---",
     body,
@@ -40,27 +43,27 @@ afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-describe("loadAssistantConfig", () => {
+describe("loadPaperAssistantPrompt", () => {
   it("returns the effective project AgentConfig over global, alias, and bundled definitions", async () => {
     const root = makeRoot();
     const cwd = join(root, "project");
     const agentDir = join(root, "global");
     const bundledAgentsDir = join(root, "bundled");
-    writeAgent(join(bundledAgentsDir, "agents"), "assistant", definition("Bundled assistant"));
-    writeAgent(join(agentDir, "agents"), "Paper Assistant", definition("Global alias assistant", ["tools: [bash]"]));
-    writeAgent(join(cwd, ".easyresearch", "agents"), "assistant", definition("Project assistant", [
+    writeAgent(join(bundledAgentsDir, "agents"), "paper-assistant", definition("Bundled Paper Assistant"));
+    writeAgent(join(agentDir, "agents"), "Paper Assistant", definition("Global alias Paper Assistant", ["tools: [bash]"]));
+    writeAgent(join(cwd, ".easyresearch", "agents"), "paper-assistant", definition("Project Paper Assistant", [
       "tools: [read, subagent]",
       "skills: [research-project-workflow]",
     ]));
 
-    const config = await loadAssistantConfig({ cwd, agentDir, bundledAgentsDir });
+    const config = await loadPaperAssistantPrompt({ cwd, agentDir, bundledAgentsDir });
 
     expect(config).toMatchObject({
-      name: "assistant",
+      name: "paper-assistant",
       source: "project",
       tools: ["read", "subagent"],
       skills: ["research-project-workflow"],
-      systemPrompt: "Project assistant",
+      systemPrompt: "Project Paper Assistant",
     });
   });
 
@@ -69,14 +72,14 @@ describe("loadAssistantConfig", () => {
     const cwd = join(root, "project");
     const agentDir = join(root, "global");
     const bundledAgentsDir = join(root, "bundled");
-    writeAgent(join(bundledAgentsDir, "agents"), "assistant", definition("Bundled assistant"));
-    writeAgent(join(agentDir, "agents"), "Paper Assistant", definition("Global alias assistant", ["tools: [read]"]));
+    writeAgent(join(bundledAgentsDir, "agents"), "paper-assistant", definition("Bundled Paper Assistant"));
+    writeAgent(join(agentDir, "agents"), "Paper Assistant", definition("Global alias Paper Assistant", ["tools: [read]"]));
 
-    await expect(loadAssistantConfig({ cwd, agentDir, bundledAgentsDir })).resolves.toMatchObject({
-      name: "assistant",
+    await expect(loadPaperAssistantPrompt({ cwd, agentDir, bundledAgentsDir })).resolves.toMatchObject({
+      name: "paper-assistant",
       source: "global",
       tools: ["read"],
-      systemPrompt: "Global alias assistant",
+      systemPrompt: "Global alias Paper Assistant",
     });
   });
 
@@ -85,22 +88,22 @@ describe("loadAssistantConfig", () => {
     const cwd = join(root, "project");
     const agentDir = join(root, "global");
     const bundledAgentsDir = join(root, "bundled");
-    writeAgent(join(bundledAgentsDir, "agents"), "assistant", definition("Bundled assistant"));
+    writeAgent(join(bundledAgentsDir, "agents"), "paper-assistant", definition("Bundled Paper Assistant"));
 
-    await expect(loadAssistantConfig({ cwd, agentDir, bundledAgentsDir })).resolves.toMatchObject({
-      name: "assistant",
+    await expect(loadPaperAssistantPrompt({ cwd, agentDir, bundledAgentsDir })).resolves.toMatchObject({
+      name: "paper-assistant",
       source: "bundled",
-      systemPrompt: "Bundled assistant",
+      systemPrompt: "Bundled Paper Assistant",
     });
   });
 
-  it("throws when no valid Assistant definition exists", async () => {
+  it("throws when no valid Paper Assistant definition exists", async () => {
     const root = makeRoot();
-    await expect(loadAssistantConfig({
+    await expect(loadPaperAssistantPrompt({
       cwd: join(root, "project"),
       agentDir: join(root, "global"),
       bundledAgentsDir: join(root, "bundled"),
-    })).rejects.toThrow(/assistant definition/i);
+    })).rejects.toThrow(/Missing valid Paper Assistant definition/);
   });
 });
 
@@ -110,7 +113,7 @@ interface ExtensionHarness {
   setActiveTools: ReturnType<typeof vi.fn>;
 }
 
-async function loadExtension(options: Parameters<typeof createAssistantExtension>[0]): Promise<ExtensionHarness> {
+async function loadExtension(options: Parameters<typeof createPaperAssistantExtension>[0]): Promise<ExtensionHarness> {
   const handlers = new Map<string, (...args: any[]) => any>();
   const registeredTools: Array<{ name: string; execute?: (...args: any[]) => Promise<any> }> = [];
   const setActiveTools = vi.fn();
@@ -121,11 +124,11 @@ async function loadExtension(options: Parameters<typeof createAssistantExtension
     registerTool: vi.fn((tool: { name: string; execute?: (...args: any[]) => Promise<any> }) => registeredTools.push(tool)),
     setActiveTools,
   };
-  await (createAssistantExtension(options) as ExtensionFactory)(api as never);
+  await (createPaperAssistantExtension(options) as ExtensionFactory)(api as never);
   return { handlers, registeredTools, setActiveTools };
 }
 
-describe("createAssistantExtension", () => {
+describe("createPaperAssistantExtension", () => {
   it("applies one exact-cwd definition to tools, Skills, prompt, and subagents", async () => {
     const root = makeRoot();
     const cwd = join(root, "project");
@@ -135,10 +138,10 @@ describe("createAssistantExtension", () => {
     const workflowSkill = join(bundledSkillsDir, "research-project-workflow");
     mkdirSync(workflowSkill, { recursive: true });
     writeFileSync(join(workflowSkill, "SKILL.md"), "# Workflow\n", "utf8");
-    writeAgent(join(bundledAgentsDir, "agents"), "assistant", definition("Bundled assistant"));
-    writeAgent(join(bundledAgentsDir, "agents"), "search", definition("Search").replace("name: assistant", "name: search"));
-    writeAgent(join(bundledAgentsDir, "agents"), "writing", definition("Writing").replace("name: assistant", "name: writing"));
-    writeAgent(join(cwd, ".easyresearch", "agents"), "assistant", definition("Project assistant", [
+    writeAgent(join(bundledAgentsDir, "agents"), "paper-assistant", definition("Bundled Paper Assistant"));
+    writeAgent(join(bundledAgentsDir, "agents"), "search", definition("Search").replace("name: paper-assistant", "name: search"));
+    writeAgent(join(bundledAgentsDir, "agents"), "writing", definition("Writing").replace("name: paper-assistant", "name: writing"));
+    writeAgent(join(cwd, ".easyresearch", "agents"), "paper-assistant", definition("Project Paper Assistant", [
       "tools: [read, subagent]",
       "skills: [research-project-workflow]",
       "subagents: [search]",
@@ -161,7 +164,7 @@ describe("createAssistantExtension", () => {
       { cwd },
     );
     expect(prompt.systemPrompt).toContain("Pi base");
-    expect(prompt.systemPrompt).toContain("Project assistant");
+    expect(prompt.systemPrompt).toContain("Project Paper Assistant");
 
     const subagent = registeredTools.find((tool) => tool.name === "subagent");
     const result = await subagent?.execute?.(
@@ -185,7 +188,7 @@ describe("createAssistantExtension", () => {
     const projectSkills = join(cwd, ".easyresearch", "skills");
     const globalSkills = join(agentDir, "skills");
     for (const directory of [projectSkills, globalSkills, bundledSkillsDir]) mkdirSync(directory, { recursive: true });
-    writeAgent(join(bundledAgentsDir, "agents"), "assistant", definition("All capabilities", ["tools: []", "skills: []"]));
+    writeAgent(join(bundledAgentsDir, "agents"), "paper-assistant", definition("All capabilities", ["tools: []", "skills: []"]));
     const { handlers, setActiveTools } = await loadExtension({ agentDir, bundledAgentsDir, bundledSkillsDir });
 
     await handlers.get("session_start")?.({ reason: "startup" }, { cwd, mode: "tui" });
@@ -195,18 +198,18 @@ describe("createAssistantExtension", () => {
     expect(resources.skillPaths).toEqual([projectSkills, globalSkills, bundledSkillsDir]);
   });
 
-  it("keeps a disabled main Assistant available without exposing it or disabled specialists for dispatch", async () => {
+  it("keeps a disabled Paper Assistant available without exposing it or disabled specialists for dispatch", async () => {
     const root = makeRoot();
     const cwd = join(root, "project");
     const agentDir = join(root, "global");
     const bundledAgentsDir = join(root, "bundled");
-    writeAgent(join(bundledAgentsDir, "agents"), "assistant", definition("Disabled main Assistant", [
+    writeAgent(join(bundledAgentsDir, "agents"), "paper-assistant", definition("Disabled Paper Assistant", [
       "enable: false",
       "tools: [read, subagent]",
     ]));
-    writeAgent(join(bundledAgentsDir, "agents"), "search", definition("Search").replace("name: assistant", "name: search"));
+    writeAgent(join(bundledAgentsDir, "agents"), "search", definition("Search").replace("name: paper-assistant", "name: search"));
     writeAgent(join(bundledAgentsDir, "agents"), "writing", definition("Writing", ["enable: false"])
-      .replace("name: assistant", "name: writing"));
+      .replace("name: paper-assistant", "name: writing"));
     const { handlers, registeredTools, setActiveTools } = await loadExtension({ agentDir, bundledAgentsDir });
 
     await handlers.get("session_start")?.({ reason: "startup" }, { cwd, mode: "rpc" });
@@ -220,14 +223,14 @@ describe("createAssistantExtension", () => {
       { cwd, sessionManager: { getEntries: () => [] } },
     );
     expect(result.content[0].text).toContain("search (bundled)");
-    expect(result.content[0].text).not.toContain("assistant (bundled)");
+    expect(result.content[0].text).not.toContain("paper-assistant (bundled)");
     expect(result.content[0].text).not.toContain("writing (bundled)");
   });
 
   it("always answers project_trust with yes (ADR-018)", async () => {
     const root = makeRoot();
     const bundledAgentsDir = join(root, "bundled");
-    writeAgent(join(bundledAgentsDir, "agents"), "assistant", definition("Body"));
+    writeAgent(join(bundledAgentsDir, "agents"), "paper-assistant", definition("Body"));
     const { handlers } = await loadExtension({
       agentDir: join(root, "global"),
       bundledAgentsDir,

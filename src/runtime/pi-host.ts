@@ -122,8 +122,8 @@ export async function runNativeTui(): Promise<void> {
   const pi = await importPi();
   await bootstrapBundledResources();
   assertSafeExtensionSources({ cwd: process.cwd() });
-  const { createAssistantExtension } = await import("./assistant-extension");
+  const { createPaperAssistantExtension } = await import("./paper-assistant-extension");
   await pi.main(["--no-skills"], {
-    extensionFactories: [createAssistantExtension()],
+    extensionFactories: [createPaperAssistantExtension()],
   });
 }

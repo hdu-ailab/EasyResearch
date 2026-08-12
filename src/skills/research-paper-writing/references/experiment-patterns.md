@@ -428,7 +428,7 @@ Check the status of the [EXPERIMENT_NAME] experiment:
    - Compute key comparisons between methods
 5. If all experiments in this batch are complete:
    - Report whether the expected records and formal evidence exist
-   - Identify each missing `experiments/` artifact for Experiment or the Assistant to address
+   - Identify each missing `experiments/` artifact for Experiment or the Paper Assistant to address
    - Report final summary
 6. Key question: [SPECIFIC ANALYTICAL QUESTION]
 
@@ -443,7 +443,7 @@ If nothing has changed since the last check, respond with [SILENT].
 4. **Report in structured tables** — always include key metrics in a table
 5. **Answer the key question** — each experiment should have a specific analytical question to answer when done
 6. **[SILENT] for no-news** — suppress notifications when nothing has changed
-7. **Handoff on completion** — report existing evidence and identify exact missing record/result artifacts for Experiment or the Assistant; Writing does not modify `experiments/`
+7. **Handoff on completion** — report existing evidence and identify exact missing record/result artifacts for Experiment or the Paper Assistant; Writing does not modify `experiments/`
 
 ### Example Monitoring Report
 

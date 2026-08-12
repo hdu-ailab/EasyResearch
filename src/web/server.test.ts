@@ -183,8 +183,8 @@ describe("web routes", () => {
       config: configService,
       logger: noopLogger,
       listAgents: async () => [],
-      getWebuiSettings: vi.fn(async () => ({ agentModels: {}, assistantModel: null, effectiveAssistantModel: null })),
-      updateWebuiSettings: vi.fn(async (patch) => ({ agentModels: {}, assistantModel: null, effectiveAssistantModel: null, ...patch })),
+      getWebuiSettings: vi.fn(async () => ({ agentModels: {}, paperAssistantModel: null, effectivePaperAssistantModel: null })),
+      updateWebuiSettings: vi.fn(async (patch) => ({ agentModels: {}, paperAssistantModel: null, effectivePaperAssistantModel: null, ...patch })),
       subagentSessions: {
         summaries: async () => [],
         snapshot: async (_parentSessionId: string, childSessionId: string) => {
@@ -851,7 +851,7 @@ describe("web routes", () => {
 
   it("lists the agent roster for the exact cwd with missing-skill diagnostics", async () => {
     const listAgents = vi.fn(async () => [
-      { name: "assistant", description: "Runs the pipeline", enabled: true, builtin: true, source: "bundled" as const, filePath: "assistant.md", tools: ["subagent"], effectiveTools: ["subagent"], skills: ["research-project-workflow", "missing-skill"], effectiveSkills: ["research-project-workflow"], missingSkills: ["missing-skill"] },
+      { name: "paper-assistant", description: "Runs the pipeline", enabled: true, builtin: true, source: "bundled" as const, filePath: "paper-assistant.md", tools: ["subagent"], effectiveTools: ["subagent"], skills: ["research-project-workflow", "missing-skill"], effectiveSkills: ["research-project-workflow"], missingSkills: ["missing-skill"] },
       { name: "search", description: "Finds papers", enabled: true, builtin: true, source: "bundled" as const, filePath: "search.md", effectiveTools: [], subagents: [], skills: [], effectiveSkills: [], missingSkills: [] },
     ]);
     setup({
@@ -871,7 +871,7 @@ describe("web routes", () => {
       model?: string;
     }>;
     expect(listAgents).toHaveBeenCalledWith("/exact/project");
-    expect(body.map((a) => a.name)).toEqual(["assistant", "search"]);
+    expect(body.map((a) => a.name)).toEqual(["paper-assistant", "search"]);
     expect(body[0]?.tools).toEqual(["subagent"]);
     expect(body[0]?.skills).toEqual(["research-project-workflow", "missing-skill"]);
     expect(body[0]?.effectiveSkills).toEqual(["research-project-workflow"]);
@@ -1048,7 +1048,7 @@ describe("web routes", () => {
     expect((await res.json()).error).toContain("agentModels");
   });
 
-  it("round-trips the assistant default model through the real settings store", async () => {
+  it("round-trips the Paper Assistant default model through the real settings store", async () => {
     const TEST_AVAILABLE = [{ provider: "oc", id: "deepseek-v4-flash-free" }];
     setup({
       getWebuiSettings: () => readEffectiveWebuiSettings(configService, TEST_AVAILABLE),
@@ -1061,44 +1061,44 @@ describe("web routes", () => {
       new Request("http://localhost/api/webui-settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ assistantModel: "openai/gpt-4o" }),
+        body: JSON.stringify({ paperAssistantModel: "openai/gpt-4o" }),
       }),
     );
     expect(put.status).toBe(200);
-    const putBody = (await put.json()) as { assistantModel: string | null; effectiveAssistantModel: string | null };
-    expect(putBody.assistantModel).toBe("openai/gpt-4o");
-    expect(putBody.effectiveAssistantModel).toBe("openai/gpt-4o");
+    const putBody = (await put.json()) as { paperAssistantModel: string | null; effectivePaperAssistantModel: string | null };
+    expect(putBody.paperAssistantModel).toBe("openai/gpt-4o");
+    expect(putBody.effectivePaperAssistantModel).toBe("openai/gpt-4o");
 
     const get = await handler(new Request("http://localhost/api/webui-settings"));
-    expect((await get.json()).assistantModel).toBe("openai/gpt-4o");
+    expect((await get.json()).paperAssistantModel).toBe("openai/gpt-4o");
 
     const clear = await handler(
       new Request("http://localhost/api/webui-settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ assistantModel: null }),
+        body: JSON.stringify({ paperAssistantModel: null }),
       }),
     );
     expect(clear.status).toBe(200);
-    expect((await clear.json()).assistantModel).toBeNull();
+    expect((await clear.json()).paperAssistantModel).toBeNull();
   });
 
-  it("GET reports the Pi fallback model when no assistant default is configured", async () => {
+  it("GET reports the Pi fallback model when no Paper Assistant default is configured", async () => {
     setup({
       getWebuiSettings: () => readEffectiveWebuiSettings(configService, [{ provider: "oc", id: "deepseek-v4-flash-free" }]),
     });
     const res = await handler(new Request("http://localhost/api/webui-settings"));
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.assistantModel).toBeNull();
-    expect(body.effectiveAssistantModel).toBe("oc/deepseek-v4-flash-free");
+    expect(body.paperAssistantModel).toBeNull();
+    expect(body.effectivePaperAssistantModel).toBe("oc/deepseek-v4-flash-free");
   });
 
-  it("forwards a null assistantModel patch to the settings store", async () => {
+  it("forwards a null paperAssistantModel patch to the settings store", async () => {
     const updateWebuiSettingsMock = vi.fn(async (patch) => ({
       agentModels: {},
-      assistantModel: null,
-      effectiveAssistantModel: null,
+      paperAssistantModel: null,
+      effectivePaperAssistantModel: null,
       ...patch,
     }));
     setup({ updateWebuiSettings: updateWebuiSettingsMock });
@@ -1106,11 +1106,11 @@ describe("web routes", () => {
       new Request("http://localhost/api/webui-settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ assistantModel: null }),
+        body: JSON.stringify({ paperAssistantModel: null }),
       }),
     );
     expect(res.status).toBe(200);
-    expect(updateWebuiSettingsMock).toHaveBeenCalledWith({ assistantModel: null });
+    expect(updateWebuiSettingsMock).toHaveBeenCalledWith({ paperAssistantModel: null });
   });
 
   it("returns the effective models for a session", async () => {
@@ -1182,7 +1182,7 @@ describe("web routes", () => {
       },
     });
     const res = await handler(
-      new Request("http://localhost/api/sessions/s1/agents/assistant/model", {
+      new Request("http://localhost/api/sessions/s1/agents/paper-assistant/model", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ model: null }),

@@ -2,13 +2,14 @@ import { X } from "lucide-react";
 import { agentDisplayName } from "../i18n/agents";
 import { useI18n } from "../i18n/useI18n";
 import { childTabLabel, type SubagentTabState } from "../subagent-tabs";
+import { PAPER_ASSISTANT_AGENT } from "../agent-identity";
 
 export type AgentStatus = "idle" | "working" | "error";
 
 export interface AgentTabBarProps {
   tabs: SubagentTabState[];
   activeKey: string;
-  assistantStatus: AgentStatus;
+  paperAssistantStatus: AgentStatus;
   onSelect(key: string): void;
   onClose(key: string): void;
   onStop(toolCallId: string): void;
@@ -24,21 +25,21 @@ function tabClass(focused: boolean): string {
     : "border-v2-grey-200 text-v2-text-text-muted hover:bg-v2-grey-100";
 }
 
-export function AgentTabBar({ tabs, activeKey, assistantStatus, onSelect, onClose, onStop }: AgentTabBarProps) {
+export function AgentTabBar({ tabs, activeKey, paperAssistantStatus, onSelect, onClose, onStop }: AgentTabBarProps) {
   const { t } = useI18n();
-  const assistantFocused = activeKey === "assistant";
+  const paperAssistantFocused = activeKey === PAPER_ASSISTANT_AGENT;
 
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-v2-grey-200 px-3 py-2">
       <button
         type="button"
-        aria-pressed={assistantFocused}
-        aria-label={`${t("work.agentChip")} ${agentDisplayName(t, "assistant")}`}
-        onClick={() => onSelect("assistant")}
-        className={`flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-[12px] transition-colors ${tabClass(assistantFocused)}`}
+        aria-pressed={paperAssistantFocused}
+        aria-label={`${t("work.agentChip")} ${agentDisplayName(t, PAPER_ASSISTANT_AGENT)}`}
+        onClick={() => onSelect(PAPER_ASSISTANT_AGENT)}
+        className={`flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-[12px] transition-colors ${tabClass(paperAssistantFocused)}`}
       >
-        <span className={`size-2 shrink-0 rounded-full ${dotClass(assistantStatus)}`} aria-hidden />
-        <span className="truncate">{agentDisplayName(t, "assistant")}</span>
+        <span className={`size-2 shrink-0 rounded-full ${dotClass(paperAssistantStatus)}`} aria-hidden />
+        <span className="truncate">{agentDisplayName(t, PAPER_ASSISTANT_AGENT)}</span>
       </button>
       {tabs.map((tab) => {
         const focused = activeKey === tab.key;

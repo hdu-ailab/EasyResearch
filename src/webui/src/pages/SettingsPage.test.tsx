@@ -42,11 +42,11 @@ beforeEach(() => {
   vi.mocked(api.writeSkillResource).mockReset();
   vi.mocked(api.getWebuiSettings).mockResolvedValue({
     agentModels: { search: "openai/gpt-4o" },
-    assistantModel: null,
-    effectiveAssistantModel: "openai/gpt-4o",
+    paperAssistantModel: null,
+    effectivePaperAssistantModel: "openai/gpt-4o",
   } as never);
   vi.mocked(api.listAgents).mockResolvedValue([
-    { name: "assistant", description: "Coordinates" },
+    { name: "paper-assistant", description: "Coordinates" },
     { name: "search", description: "Searches" },
     { name: "writing", description: "Writes" },
   ] as never);
@@ -268,7 +268,7 @@ describe("SettingsPage", () => {
     expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}")).toMatchObject({ language: "zh-CN" });
   });
 
-  it("shows stage agents with their configured model while the assistant has no disable switch", async () => {
+  it("shows stage agents with their configured model while the Paper Assistant has no disable switch", async () => {
     renderSettings();
     await screen.findByRole("combobox", { name: "Select model for Search" });
     expect(screen.getByRole("combobox", { name: "Select model for Search" })).toHaveValue("openai/gpt-4o");
@@ -281,8 +281,8 @@ describe("SettingsPage", () => {
   it("includes a configured stage model that is absent from the model catalog", async () => {
     vi.mocked(api.getWebuiSettings).mockResolvedValue({
       agentModels: { search: "custom/missing-model" },
-      assistantModel: null,
-      effectiveAssistantModel: "openai/gpt-4o",
+      paperAssistantModel: null,
+      effectivePaperAssistantModel: "openai/gpt-4o",
     } as never);
     renderSettings();
 
@@ -300,10 +300,10 @@ describe("SettingsPage", () => {
     expect(screen.getByRole("combobox", { name: "选择模型： 检索" })).toBeTruthy();
   });
 
-  it("pins the assistant to the first Agent models row regardless of API order", async () => {
+  it("pins the Paper Assistant to the first Agent models row regardless of API order", async () => {
     vi.mocked(api.listAgents).mockResolvedValue([
       { name: "writing", description: "Writes" },
-      { name: "assistant", description: "Coordinates" },
+      { name: "paper-assistant", description: "Coordinates" },
       { name: "search", description: "Searches" },
     ] as never);
     renderSettings();
@@ -315,11 +315,11 @@ describe("SettingsPage", () => {
     );
   });
 
-  it("shows the configured assistant default without any inherit option", async () => {
+  it("shows the configured Paper Assistant default without any inherit option", async () => {
     vi.mocked(api.getWebuiSettings).mockResolvedValue({
       agentModels: { search: "openai/gpt-4o" },
-      assistantModel: "openai/gpt-4o",
-      effectiveAssistantModel: "openai/gpt-4o",
+      paperAssistantModel: "openai/gpt-4o",
+      effectivePaperAssistantModel: "openai/gpt-4o",
     } as never);
     renderSettings();
     const combobox = await screen.findByRole("combobox", { name: "Select model for Paper Assistant" });
@@ -327,11 +327,11 @@ describe("SettingsPage", () => {
     expect(within(combobox).queryAllByRole("option", { name: /inherit/i })).toHaveLength(0);
   });
 
-  it("auto-selects the effective Pi model when no assistant default is configured", async () => {
+  it("auto-selects the effective Pi model when no Paper Assistant default is configured", async () => {
     vi.mocked(api.getWebuiSettings).mockResolvedValue({
       agentModels: {},
-      assistantModel: null,
-      effectiveAssistantModel: "anthropic/claude-opus-4-8",
+      paperAssistantModel: null,
+      effectivePaperAssistantModel: "anthropic/claude-opus-4-8",
     } as never);
     renderSettings();
     const combobox = await screen.findByRole("combobox", { name: "Select model for Paper Assistant" });
@@ -343,8 +343,8 @@ describe("SettingsPage", () => {
   it("auto-selects a default already in the catalog without duplicating it", async () => {
     vi.mocked(api.getWebuiSettings).mockResolvedValue({
       agentModels: {},
-      assistantModel: null,
-      effectiveAssistantModel: "openai/gpt-4o",
+      paperAssistantModel: null,
+      effectivePaperAssistantModel: "openai/gpt-4o",
     } as never);
     renderSettings();
     const combobox = await screen.findByRole("combobox", { name: "Select model for Paper Assistant" });
@@ -352,12 +352,12 @@ describe("SettingsPage", () => {
     expect(within(combobox).queryAllByRole("option", { name: "openai/gpt-4o" })).toHaveLength(1);
   });
 
-  it("sets the assistant default via an assistantModel patch", async () => {
+  it("sets the Paper Assistant default via a paperAssistantModel patch", async () => {
     const user = userEvent.setup();
     vi.mocked(api.updateWebuiSettings).mockResolvedValue({
       agentModels: { search: "openai/gpt-4o" },
-      assistantModel: "anthropic/claude-sonnet-4",
-      effectiveAssistantModel: "anthropic/claude-sonnet-4",
+      paperAssistantModel: "anthropic/claude-sonnet-4",
+      effectivePaperAssistantModel: "anthropic/claude-sonnet-4",
     } as never);
     renderSettings();
     await screen.findByRole("combobox", { name: "Select model for Paper Assistant" });
@@ -366,7 +366,7 @@ describe("SettingsPage", () => {
       "anthropic/claude-sonnet-4",
     );
     await waitFor(() =>
-      expect(api.updateWebuiSettings).toHaveBeenCalledWith({ assistantModel: "anthropic/claude-sonnet-4" }),
+      expect(api.updateWebuiSettings).toHaveBeenCalledWith({ paperAssistantModel: "anthropic/claude-sonnet-4" }),
     );
     expect(screen.getByRole("combobox", { name: "Select model for Paper Assistant" })).toHaveValue(
       "anthropic/claude-sonnet-4",
@@ -431,12 +431,12 @@ describe("SettingsPage", () => {
         effectiveSkills: ["paper-search", "arxiv"],
       },
       {
-        name: "assistant",
+        name: "paper-assistant",
         description: "Coordinates",
         enabled: true,
         builtin: true,
         source: "bundled",
-        filePath: "src/agents/assistant.md",
+        filePath: "src/agents/paper-assistant.md",
         effectiveTools: ["read"],
         effectiveSkills: ["workflow"],
       },
@@ -654,12 +654,12 @@ describe("SettingsPage", () => {
     const user = userEvent.setup();
     vi.mocked(api.listAgents).mockResolvedValue([
       {
-        name: "assistant",
+        name: "paper-assistant",
         description: "Coordinates",
         enabled: true,
         builtin: true,
         source: "bundled",
-        filePath: "src/agents/assistant.md",
+        filePath: "src/agents/paper-assistant.md",
         effectiveTools: ["read", "subagent"],
         effectiveSkills: ["workflow"],
       },

@@ -236,15 +236,15 @@ export function parseWebuiSettings(value: unknown): WebuiSettingsDto {
     if (typeof model !== "string") throw new Error(`Invalid API response: agentModels.${name} must be a string`);
     agentModels[name] = model;
   }
-  const assistantModel = source.assistantModel;
-  const effectiveAssistantModel = source.effectiveAssistantModel;
-  if (assistantModel !== null && typeof assistantModel !== "string") {
-    throw new Error("Invalid API response: assistantModel must be a string or null");
+  const paperAssistantModel = source.paperAssistantModel;
+  const effectivePaperAssistantModel = source.effectivePaperAssistantModel;
+  if (paperAssistantModel !== null && typeof paperAssistantModel !== "string") {
+    throw new Error("Invalid API response: paperAssistantModel must be a string or null");
   }
-  if (effectiveAssistantModel !== null && typeof effectiveAssistantModel !== "string") {
-    throw new Error("Invalid API response: effectiveAssistantModel must be a string or null");
+  if (effectivePaperAssistantModel !== null && typeof effectivePaperAssistantModel !== "string") {
+    throw new Error("Invalid API response: effectivePaperAssistantModel must be a string or null");
   }
-  return { agentModels, assistantModel, effectiveAssistantModel };
+  return { agentModels, paperAssistantModel, effectivePaperAssistantModel };
 }
 
 export function parseEffectiveModels(value: unknown): AgentEffectiveModelDto[] {

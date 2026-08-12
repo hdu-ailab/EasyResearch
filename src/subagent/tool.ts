@@ -10,7 +10,7 @@ import { Type } from "typebox";
 import { getInternalPiInvocation } from "../runtime/internal-invocation";
 import { createLogger, type Logger } from "../runtime/logger";
 import { getAgentDir, importPi } from "../runtime/pi-import";
-import { discoverAgents, type AgentConfig } from "./agents";
+import { discoverAgents, PAPER_ASSISTANT_AGENT, type AgentConfig } from "./agents";
 import { resolveModelForSpawn } from "./model-resolution";
 import { readSubagentSessionLinks, sessionNameFor, type SubagentSessionLink } from "./session-links";
 import { buildDefaultSkillArgs, readGlobalDotAgentsSkillSetting, resolveSkillDirectories } from "./skill-resolution";
@@ -206,7 +206,7 @@ async function writePromptToTempFile(agentName: string, prompt: string): Promise
 }
 
 /**
- * ADR-022: filter agents by the caller's allowlist. The assistant runtime
+ * ADR-022: filter agents by the caller's allowlist. The Paper Assistant runtime
  * has no allowlist env and sees all enabled specialists; stage runtimes
  * receive their allowlist from `subagents:` frontmatter via the spawn
  * environment. The main Assistant is never a recursive dispatch target.
@@ -216,7 +216,7 @@ export function filterAgentsByAllowlist(
   allowlistEnv?: string,
   callerAgent?: string,
 ): AgentConfig[] {
-  agents = agents.filter((agent) => agent.enabled && agent.name !== "assistant" && agent.name !== callerAgent);
+  agents = agents.filter((agent) => agent.enabled && agent.name !== PAPER_ASSISTANT_AGENT && agent.name !== callerAgent);
   if (allowlistEnv === undefined) return agents;
   const allowed = new Set(allowlistEnv.split(",").map((s) => s.trim()).filter(Boolean));
   return agents.filter((a) => allowed.has(a.name));
