@@ -1,15 +1,7 @@
 import { Bot, FileSearch } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FileWatcherEvent } from "../../../web/contracts";
-import {
-  abortSession,
-  connectSessionEvents,
-  getChildSnapshot,
-  getSnapshot,
-  isUnknownSession,
-  openSession,
-  sendPrompt,
-} from "../api";
+import { getChildSnapshot } from "../api";
 import { AgentList, type AgentStatus } from "../components/AgentList";
 import { AgentTabBar } from "../components/AgentTabBar";
 import { ChatComposer } from "../components/ChatComposer";
@@ -19,14 +11,9 @@ import { ProductMark, Topbar, TopbarIconButton } from "../components/Topbar";
 import { WorkMobileTabs, type WorkView } from "../components/WorkMobileTabs";
 import { parseFileWatcherEvent } from "../file-watcher";
 import { usePanelTransition } from "../hooks/usePanelTransition";
+import { useSessionConnection } from "../hooks/useSessionConnection";
 import { useI18n } from "../i18n/useI18n";
-import {
-  fromSnapshot,
-  mergeSnapshot,
-  nestedSubagentEvent,
-  reduceSessionEvent,
-  type SessionViewState,
-} from "../session-reducer";
+import { fromSnapshot, nestedSubagentEvent, reduceSessionEvent, type SessionViewState } from "../session-reducer";
 import {
   closeSubagentTab,
   promoteSubagentTab,
@@ -43,13 +30,6 @@ export interface WorkPageProps {
 }
 
 type Panel = "files" | "agents" | null;
-
-interface PendingStreamReady {
-  sessionId: string;
-  generation: number;
-  resolve: () => void;
-  reject: (error: Error) => void;
-}
 
 const emptyView: SessionViewState = { messages: [], tools: [], isStreaming: false, error: null, nextOrder: 0 };
 
@@ -100,24 +80,7 @@ function defaultPanel(): Panel {
 
 export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   const { t } = useI18n();
-  const tRef = useRef(t);
-  tRef.current = t;
-  const [sessionView, setSessionView] = useState<SessionViewState>(emptyView);
-  const [status, setStatus] = useState<string>("starting");
   const [fileEvent, setFileEvent] = useState<FileWatcherEvent | null>(null);
-  const [sessionId, setSessionId] = useState(id);
-  const [subscribeEpoch, setSubscribeEpoch] = useState(0);
-  const [accepting, setAccepting] = useState(false);
-  const [pendingOutput, setPendingOutput] = useState(false);
-  const pendingBaseline = useRef<number | null>(null);
-  const [statusText, setStatusText] = useState<string | null>(null);
-  const sessionPathRef = useRef<string | null>(null);
-  // Any event-stream delivery (the connection snapshot or live deltas) makes
-  // the stream the authoritative view; later HTTP snapshot resolutions must
-  // not overwrite it with a stale earlier state (ADR-037 race).
-  const eventsReceivedRef = useRef(false);
-  const streamGenerationRef = useRef(0);
-  const pendingStreamReadyRef = useRef<PendingStreamReady | null>(null);
   const [panel, setPanel] = useState<Panel>(defaultPanel);
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < CONVERSATION_FIRST_BREAKPOINT);
   const [mobileView, setMobileView] = useState<WorkView>("chat");
@@ -142,6 +105,48 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   const loadChildRef = useRef<(childId: string, refresh?: boolean) => Promise<void>>(async () => {});
   const resizing = useRef(false);
   const rowRef = useRef<HTMLDivElement>(null);
+
+  const handleWorkEvent = useCallback(
+    (event: unknown) => {
+      const watcherEvent = parseFileWatcherEvent(event, cwd);
+      if (watcherEvent) {
+        setFileEvent(watcherEvent);
+        return true;
+      }
+      if (event && typeof event === "object" && (event as { type?: unknown }).type === "snapshot") {
+        for (const tab of tabsStateRef.current.tabs) {
+          if (tab.sessionId) void loadChildRef.current(tab.sessionId, true);
+        }
+        return false;
+      }
+      if (!event || typeof event !== "object" || (event as { type?: unknown }).type !== "tool_execution_update") {
+        return false;
+      }
+      const nested = nestedSubagentEvent(event as Parameters<typeof reduceSessionEvent>[1]);
+      if (nested?.sessionId) childSessionByTool.current.set(nested.toolCallId, nested.sessionId);
+      const nestedSessionId =
+        nested?.sessionId ?? (nested ? childSessionByTool.current.get(nested.toolCallId) : undefined);
+      const nestedEvent = nested?.event;
+      if (nestedSessionId && nestedEvent) {
+        setChildViews((current) => ({
+          ...current,
+          [nestedSessionId]: reduceSessionEvent(
+            current[nestedSessionId] ?? { ...emptyView, subagentName: nested.agent },
+            nestedEvent,
+          ),
+        }));
+      }
+      return false;
+    },
+    [cwd],
+  );
+  const connection = useSessionConnection({ initialSessionId: id, cwd, onEvent: handleWorkEvent });
+  const sessionView = connection.view;
+  const sessionId = connection.sessionId;
+  const status = connection.status;
+  const statusText = connection.notice;
+  const accepting = connection.accepting;
+  const pendingOutput = connection.pendingOutput;
 
   useEffect(() => {
     tabsStateRef.current = tabsState;
@@ -234,14 +239,6 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   const filesHidden = isMobile ? mobileView !== "files" : panel !== "files";
   const agentsHidden = isMobile ? mobileView !== "agents" : panel !== "agents";
 
-  const hydrate = useCallback(async (targetId: string) => {
-    const snapshot = await getSnapshot(targetId);
-    sessionPathRef.current = snapshot.session.sessionFile ?? null;
-    setSessionId(snapshot.session.id);
-    setStatus(snapshot.session.status);
-    return snapshot;
-  }, []);
-
   const loadChild = useCallback(
     (childId: string, refresh = false): Promise<void> => {
       const requestKey = `${sessionId}:${childId}`;
@@ -296,92 +293,6 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
     [sessionId],
   );
   loadChildRef.current = loadChild;
-
-  useEffect(() => {
-    void subscribeEpoch;
-    let active = true;
-    const connectionGeneration = ++streamGenerationRef.current;
-    eventsReceivedRef.current = false;
-    setFileEvent(null);
-    hydrate(sessionId)
-      .then((snapshot) => {
-        if (active && !eventsReceivedRef.current) {
-          setSessionView(fromSnapshot(snapshot));
-        }
-      })
-      .catch((e: unknown) => {
-        if (active) {
-          setStatus("error");
-          setStatusText(e instanceof Error ? e.message : String(e));
-        }
-      });
-    const unsubscribe = connectSessionEvents(sessionId, {
-      onEvent: (event) => {
-        eventsReceivedRef.current = true;
-        setStatusText((current) => (current === tRef.current("work.connectionLost") ? null : current));
-        const fileWatcherEvent = parseFileWatcherEvent(event, cwd);
-        if (fileWatcherEvent) {
-          setFileEvent(fileWatcherEvent);
-          return;
-        }
-        const typed = event as { type?: string };
-        if (typed.type === "snapshot") {
-          const pending = pendingStreamReadyRef.current;
-          if (pending?.sessionId === sessionId && pending.generation === connectionGeneration) {
-            pendingStreamReadyRef.current = null;
-            pending.resolve();
-          }
-          const snapshotEvent = typed as { session?: { sessionFile?: string } };
-          if (typeof snapshotEvent.session?.sessionFile === "string") {
-            sessionPathRef.current = snapshotEvent.session.sessionFile;
-          }
-          setSessionView((current) => mergeSnapshot(current, typed as never));
-          for (const tab of tabsStateRef.current.tabs) {
-            if (tab.sessionId) void loadChild(tab.sessionId, true);
-          }
-          return;
-        }
-        if (typed.type === "error") {
-          const pending = pendingStreamReadyRef.current;
-          if (pending?.sessionId === sessionId && pending.generation === connectionGeneration) {
-            pendingStreamReadyRef.current = null;
-            pending.reject(
-              new Error(
-                typeof (typed as { error?: unknown }).error === "string"
-                  ? (typed as { error: string }).error
-                  : "Session stream failed",
-              ),
-            );
-          }
-          return;
-        }
-        if (typed.type === "session_deactivated") {
-          return;
-        }
-        const agentEvent = event as Parameters<typeof reduceSessionEvent>[1];
-        const nested = nestedSubagentEvent(agentEvent);
-        if (nested?.sessionId) childSessionByTool.current.set(nested.toolCallId, nested.sessionId);
-        const nestedSessionId =
-          nested?.sessionId ?? (nested ? childSessionByTool.current.get(nested.toolCallId) : undefined);
-        const nestedEvent = nested?.event;
-        if (nestedSessionId && nestedEvent) {
-          setChildViews((current) => ({
-            ...current,
-            [nestedSessionId]: reduceSessionEvent(
-              current[nestedSessionId] ?? { ...emptyView, subagentName: nested.agent },
-              nestedEvent,
-            ),
-          }));
-        }
-        setSessionView((prev) => reduceSessionEvent(prev, agentEvent));
-      },
-      onError: () => setStatusText(tRef.current("work.connectionLost")),
-    });
-    return () => {
-      active = false;
-      unsubscribe();
-    };
-  }, [sessionId, hydrate, loadChild, subscribeEpoch, cwd]);
 
   useEffect(() => {
     if (activeTab.startsWith("session:")) loadChild(activeTab.slice(8));
@@ -507,78 +418,14 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
     [panelMax, panelMin, clampedPanelWidth],
   );
 
-  const assistantCount = useCallback(() => {
-    let n = sessionView.tools.length;
-    for (const m of sessionView.messages) if (m.role !== "user") n += 1;
-    return n;
-  }, [sessionView]);
-
   const send = useCallback(
     async (text: string) => {
       transcriptRef.current?.scrollToLatest();
-      setAccepting(true);
-      setStatusText(null);
-      pendingBaseline.current = assistantCount();
-      setPendingOutput(true);
-      try {
-        await sendPrompt(sessionId, text);
-        setAccepting(false);
-      } catch (e) {
-        const error = e instanceof Error ? e.message : String(e);
-        const path = sessionPathRef.current;
-        if (isUnknownSession(e) && path) {
-          try {
-            const dto = await openSession(path);
-            sessionPathRef.current = dto.sessionFile ?? path;
-            const generation = streamGenerationRef.current + 1;
-            const streamReady = new Promise<void>((resolve, reject) => {
-              pendingStreamReadyRef.current = {
-                sessionId: dto.id,
-                generation,
-                resolve,
-                reject: (error) => reject(error),
-              };
-            });
-            setSessionId(dto.id);
-            setSubscribeEpoch((epoch) => epoch + 1);
-            const snapshot = await getSnapshot(dto.id);
-            setSessionView(fromSnapshot(snapshot));
-            await streamReady;
-            await sendPrompt(dto.id, text);
-            setAccepting(false);
-            return;
-          } catch (reopenError) {
-            setStatusText(reopenError instanceof Error ? reopenError.message : String(reopenError));
-          }
-        }
-        setAccepting(false);
-        setPendingOutput(false);
-        pendingBaseline.current = null;
-        setStatusText(error);
-      }
+      await connection.send(text);
     },
-    [sessionId, assistantCount],
+    [connection.send],
   );
-
-  useEffect(() => {
-    if (!pendingOutput || pendingBaseline.current === null) return;
-    if (sessionView.isStreaming || assistantCount() > pendingBaseline.current) {
-      setPendingOutput(false);
-      pendingBaseline.current = null;
-    }
-  }, [sessionView, pendingOutput, assistantCount]);
-
-  const abort = useCallback(async () => {
-    try {
-      await abortSession(sessionId);
-      setSessionView((prev) => ({ ...prev, isStreaming: false }));
-      setStatus("ready");
-      setPendingOutput(false);
-      pendingBaseline.current = null;
-    } catch (e) {
-      setStatusText(e instanceof Error ? e.message : String(e));
-    }
-  }, [sessionId]);
+  const abort = connection.abort;
 
   const togglePanel = (next: Exclude<Panel, null>) => {
     setPanel((current) => (current === next ? null : next));
