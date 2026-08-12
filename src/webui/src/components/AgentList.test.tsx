@@ -49,8 +49,33 @@ beforeEach(() => {
 });
 
 describe("AgentList", () => {
+  it("loads the effective roster for the exact session cwd", async () => {
+    vi.mocked(api.listAgents).mockImplementation(async (cwd) =>
+      cwd === "/papers/project"
+        ? [
+            {
+              name: "project-reviewer",
+              description: "Project-only reviewer",
+              enabled: true,
+              builtin: false,
+              source: "project",
+              filePath: "/papers/project/.easyresearch/agents/project-reviewer.md",
+              effectiveTools: [],
+              effectiveSkills: [],
+              missingSkills: [],
+            },
+          ]
+        : [],
+    );
+
+    render(<AgentList cwd="/papers/project" statusByAgent={{ "project-reviewer": "idle" }} sessionId="s1" />);
+
+    expect(await screen.findByText("project-reviewer")).toBeVisible();
+    expect(screen.getByText("Project-only reviewer")).toBeVisible();
+  });
+
   it("renders the assistant card and preserves an effective model absent from the catalog", async () => {
-    render(<AgentList statusByAgent={{ assistant: "idle", search: "working" }} sessionId="s1" />);
+    render(<AgentList cwd="/papers/project" statusByAgent={{ assistant: "idle", search: "working" }} sessionId="s1" />);
 
     expect(await screen.findByText("Paper Assistant")).toBeVisible();
     expect(screen.getAllByRole("combobox")[1]).toHaveDisplayValue("custom/model");
@@ -59,7 +84,7 @@ describe("AgentList", () => {
 
   it("sends null when a stage agent is reset to the default model", async () => {
     const user = userEvent.setup();
-    render(<AgentList statusByAgent={{ assistant: "idle", search: "idle" }} sessionId="s1" />);
+    render(<AgentList cwd="/papers/project" statusByAgent={{ assistant: "idle", search: "idle" }} sessionId="s1" />);
 
     const searchSelect = await screen.findByDisplayValue("custom/model");
     await user.selectOptions(searchSelect, "");
@@ -69,7 +94,7 @@ describe("AgentList", () => {
 
   it("keeps its header mounted when agent data fails", async () => {
     vi.mocked(api.listAgents).mockRejectedValue(new Error("unavailable"));
-    render(<AgentList statusByAgent={{ assistant: "idle" }} sessionId="s1" />);
+    render(<AgentList cwd="/papers/project" statusByAgent={{ assistant: "idle" }} sessionId="s1" />);
 
     expect(screen.getByText("Agents")).toBeVisible();
   });
