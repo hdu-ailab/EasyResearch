@@ -223,11 +223,12 @@ describe("PdfPreview", () => {
         settleA = resolve;
         rejectA = reject;
       });
+      const renderPageA = vi.fn(() => ({ promise: renderA, cancel: vi.fn() }));
       const documentA: PdfDocumentHandle = {
         numPages: 1,
         page: vi.fn(async () => ({
           viewport: (scale: number, rotation: number) => ({ scale, rotation, width: 100, height: 140 }),
-          render: () => ({ promise: renderA, cancel: vi.fn() }),
+          render: renderPageA,
         })),
         destroy: vi.fn(),
       };
@@ -236,17 +237,18 @@ describe("PdfPreview", () => {
       const { rerender } = render(
         <PdfPreview path="/p/a.pdf" loader={{ load: vi.fn().mockResolvedValue(documentA) }} />,
       );
-      await waitFor(() => expect(documentA.page).toHaveBeenCalled());
+      await waitFor(() => expect(renderPageA).toHaveBeenCalledOnce());
 
       rerender(<PdfPreview path="/p/b.pdf" loader={{ load: vi.fn().mockResolvedValue(documentB) }} />);
       await waitFor(() => expect(renderLogB).toHaveLength(1));
       if (outcome === "resolve") settleA();
       else rejectA(new Error("stale render failed"));
-      await Promise.resolve();
 
-      expect(screen.getByRole("link", { name: "Download PDF" })).toHaveAttribute("href", rawFileUrl("/p/b.pdf"));
-      expect(screen.queryByText(/stale render failed/)).toBeNull();
-      expect(renderLogB).toHaveLength(1);
+      await waitFor(() => {
+        expect(screen.getByRole("link", { name: "Download PDF" })).toHaveAttribute("href", rawFileUrl("/p/b.pdf"));
+        expect(screen.queryByText(/stale render failed/)).toBeNull();
+        expect(renderLogB).toHaveLength(1);
+      });
     },
   );
 
