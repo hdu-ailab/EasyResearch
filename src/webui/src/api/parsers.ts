@@ -160,6 +160,7 @@ function parseAgent(value: unknown): AgentDto {
     source.effectiveTools === undefined ? (tools ?? []) : stringArray(source.effectiveTools, "effectiveTools");
   const effectiveSkills =
     source.effectiveSkills === undefined ? (skills ?? []) : stringArray(source.effectiveSkills, "effectiveSkills");
+  const missingSkills = stringArray(source.missingSkills, "missingSkills");
   return {
     name: requiredString(source, "name"),
     description: requiredString(source, "description"),
@@ -173,6 +174,7 @@ function parseAgent(value: unknown): AgentDto {
     ...(typeof source.model === "string" ? { model: source.model } : {}),
     effectiveTools,
     effectiveSkills,
+    missingSkills,
     ...(tools !== undefined ? { tools } : {}),
     ...(subagents !== undefined ? { subagents } : {}),
     ...(skills !== undefined ? { skills } : {}),

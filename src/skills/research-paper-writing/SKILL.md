@@ -32,14 +32,15 @@ Even when evidence is sufficient, **never start drafting the full paper without 
 Before drafting Introduction, Method, Experiments, or Abstract, inspect the available experiment evidence.
 
 Read when available:
-- `experiment/experiment-record.md`
-- `workspace/experiments/experiment-record.md`
-- `experiment/results/`
-- `workspace/experiments/results/`
-- `experiment/outputs/` only for context or failed-run diagnosis
-- `experiment/logs/` only when needed to verify commands or failures
+- `experiments/experiment-record.md`
+- `experiments/results/`
+- `experiments/outputs/` only for context or failed-run diagnosis
+- `experiments/logs/` only when needed to verify commands or failures
 - result summary CSV/JSON/Markdown files
 - ablation files and dataset/split manifests
+
+These paths are relative to the exact session cwd. Follow another existing
+layout only when the dispatch explicitly supplies it.
 
 The manuscript body may be drafted only when ALL of:
 - These conditions are satisfied (or explicitly waived by the user).
@@ -86,12 +87,14 @@ Not ready / Ready with caveats / Ready
 Unless the user explicitly asks for LaTeX or a venue template, write the paper draft in Markdown.
 
 Default files:
-- `draft/manuscript-draft.md`
-- `draft/citation-verification.md`
-- `draft/writing-readiness-report.md` when needed
-- `draft/revision-report.md` after revision or audit passes
+- `manuscript/manuscript.md`
+- `manuscript/citation-verification.md`
+- `manuscript/writing-readiness-report.md` when needed
+- `manuscript/revision-report.md` after revision or audit passes
+- `manuscript/latex/` for derived LaTeX
+- `manuscript/manuscript.pdf` for the compiled PDF
 
-Create `draft/` only after the writing readiness gate passes, unless the user explicitly asks for a preliminary outline or readiness report.
+Create `manuscript/` only when an authorized deliverable or readiness report needs it. Keep `manuscript/manuscript.md` authoritative and LaTeX/PDF derived.
 
 Markdown drafts may contain LaTeX math blocks for formulas. Do not convert to a conference LaTeX template unless the user asks.
 
@@ -194,8 +197,7 @@ Include:
 - Main comparison table.
 - Ablation table or ablation summary.
 - Negative or weak cases when they exist.
-- Reproducibility details pointing to `experiment/results/` and `experiment-record.md`.
-- If using `research-project-workflow`, reproducibility details should point to `workspace/experiments/results/` and `workspace/experiments/experiment-record.md`.
+- Reproducibility details pointing to `experiments/results/` and `experiments/experiment-record.md`.
 
 Do not hide failed or underperforming settings if they are relevant to the claim.
 

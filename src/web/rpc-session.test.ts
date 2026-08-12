@@ -114,6 +114,14 @@ describe("PiRpcSessionFactory", () => {
     expect(client.options.args).not.toContain("--no-approve");
     expect(client.options.args).toContain("--no-skills");
   });
+
+  it("keeps skill discovery disabled at the RPC bootstrap boundary", () => {
+    const factory = new PiRpcSessionFactory(FakeRpcClient);
+    factory.create({ cwd: "/project-with-agent-config" });
+    const args = FakeRpcClient.instances[0]!.options.args;
+    expect(args).toContain("--no-skills");
+    expect(args).not.toContain("--skill");
+  });
 });
 
 describe("RpcSessionAdapter", () => {

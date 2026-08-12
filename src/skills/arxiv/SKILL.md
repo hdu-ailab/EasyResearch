@@ -26,10 +26,10 @@ metadata:
 优先用 `paper-search` 做主题级论文搜索；本 skill 只处理已知论文或少量精确查询。
 
 ## Workflow Integration
-- 在完整论文项目中，先由 `research-project-workflow` 收集候选论文并维护 `workspace/ref_papers/source.json`。
+- 在完整论文项目中，由 Search agent 维护 exact-cwd 下的 `ref_papers/source.json`；若 dispatch 明确给出已有用户布局，则沿用该布局。
 - 本 skill 用于核验已选论文的 arXiv ID、版本、标题、作者、BibTeX、引用数和参考文献信息。
 - 若 `source.json` 存在，把核验结果作为字段补充进去；不要用本 skill 重新做大范围主题搜索。
-- PDF 下载和 PDF 转 Markdown 由 `research-project-workflow` 负责安排，并优先使用全局 `pdf-to-markdown` skill。
+- PDF 获取和 PDF 转 Markdown 由 Search agent 负责，并优先使用 `pdf-to-markdown` skill；编排层不直接执行转换。
 
 ## Helper Script
 在 skill 目录运行：

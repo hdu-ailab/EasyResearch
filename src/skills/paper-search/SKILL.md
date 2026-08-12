@@ -27,9 +27,9 @@ metadata:
 ## Workflow Integration
 - 在完整论文项目中，先由 `research-project-workflow` 统筹目录和阶段顺序，再调用本 skill 搜索候选论文。
 - 本 skill 只负责返回候选论文列表；PDF 下载、文本转换、实验和正文写作不在本 skill 内完成。
-- 若工作流目录存在，把脚本 JSON 输出整理或保存到 `workspace/ref_papers/source.json`。
+- 在论文项目中，把脚本 JSON 输出整理或保存到 exact-cwd 下的 `ref_papers/source.json`；若 dispatch 明确给出已有用户布局，则沿用该布局。
 - 对最终选中的 arXiv 论文，用 `arxiv` skill 进一步核验 ID、版本、BibTeX 和引用信息。
-- 若需要把公开 PDF 转为 Markdown，交给 `research-project-workflow` 调用全局 `pdf-to-markdown` skill。
+- 若需要获取公开 PDF 并转为 Markdown，由 Search agent 使用 `pdf-to-markdown` skill 完成，不交给编排层直接执行。
 
 ## Inputs
 从用户请求中提取以下信息：

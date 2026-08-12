@@ -20,7 +20,7 @@ description: |-
 
 ## Placeholders
 
-This is a sanitized template. Replace every `{{TOKEN}}` with your own values before first use (your global copy at `~/.easyresearch/agent/skills/ssh-experiment/` is never overwritten by startup).
+This is a sanitized template. Replace every `{{TOKEN}}` with your own values before first use (your global copy at `~/.easyresearch/agent/skills/ssh-experiment` is never overwritten by startup).
 
 | Token | Meaning | Generic example |
 |-------|---------|-----------------|
@@ -28,6 +28,8 @@ This is a sanitized template. Replace every `{{TOKEN}}` with your own values bef
 | `{{SSH_USER}}` | SSH login username | `your-username` |
 | `{{SSH_PRIMARY_HOST}}` | Primary LAN host for primary-first connection | `192.168.0.x` |
 | `{{SSHFS_MOUNT}}` | Local directory where the server home is sshfs-mounted | `~/server-mount` |
+| `{{REMOTE_PROJECT_ROOT}}` | Absolute remote path corresponding to the paper project's exact session cwd | `/home/user/papers/my-paper` |
+| `{{SSHFS_PROJECT_ROOT}}` | Local SSHFS path corresponding to the same exact project root | `~/server-mount/papers/my-paper` |
 
 ## Server Info
 
@@ -48,15 +50,15 @@ rssh
 rssh "nvidia-smi"
 
 # Launch experiment with log (returns immediately)
-rssh -f "cd ~/workspace/experiments && CUDA_VISIBLE_DEVICES=1 uv run python src/train.py --epochs 200 > logs/<run-id>.log 2>&1"
+rssh -f "cd {{REMOTE_PROJECT_ROOT}}/experiments && CUDA_VISIBLE_DEVICES=1 uv run python src/train.py --epochs 200 > logs/<run-id>.log 2>&1"
 
 # Mount if {{SSHFS_MOUNT}} is empty
 sshfs {{SSH_USER}}@{{SSH_HOST}}: {{SSHFS_MOUNT}}
 ```
 
-Edit code, check logs — use Read/Edit/Write tools on `{{SSHFS_MOUNT}}/workspace/experiments/` (no SSH).
+Edit code and check logs with Read/Edit/Write tools under `{{SSHFS_PROJECT_ROOT}}/experiments/` (no SSH). This mirrors exact-cwd `experiments/`; follow another path only when the dispatch explicitly supplies an existing user layout.
 
-**All SSH to {{SSH_HOST}} MUST use `rssh`** (`.opencode/skills/ssh-experiment/scripts/rssh`). This wrapper adds keepalive (`ServerAliveInterval=30`, `ServerAliveCountMax=10`) and timeout handling to prevent connection drops. Use `-f` to launch background jobs that return immediately.
+**All SSH to {{SSH_HOST}} MUST use `rssh`** (the installed Skill's `scripts/rssh`). This wrapper adds keepalive (`ServerAliveInterval=30`, `ServerAliveCountMax=10`) and timeout handling to prevent connection drops. Use `-f` to launch background jobs that return immediately.
 
 For interactive sessions, use `rssh-tmux`.
 
@@ -76,12 +78,12 @@ The mount is a direct SSHFS mirror of the remote home directory. Files written h
 
 | Action | Where | How |
 |--------|-------|-----|
-| Edit code, write files | **Local** | Use Edit/Write tools on `{{SSHFS_MOUNT}}/workspace/experiments/src/` |
-| Read logs, check outputs | **Local** | Use Read tool on `{{SSHFS_MOUNT}}/workspace/experiments/logs/` |
+| Edit code, write files | **Local** | Use Edit/Write tools on `{{SSHFS_PROJECT_ROOT}}/experiments/src/` |
+| Read logs, check outputs | **Local** | Use Read tool on `{{SSHFS_PROJECT_ROOT}}/experiments/logs/` |
 | Compile PDF, LaTeX | **Local** | latexmk on local path |
-| Run `python` scripts | **Server via SSH** | `rssh -f "cd ~/workspace/experiments && CUDA_VISIBLE_DEVICES=1 uv run python src/train.py"` |
+| Run `python` scripts | **Server via SSH** | `rssh -f "cd {{REMOTE_PROJECT_ROOT}}/experiments && CUDA_VISIBLE_DEVICES=1 uv run python src/train.py"` |
 | nvidia-smi, GPU check | **Server via SSH** | `rssh "nvidia-smi"` |
-| Install packages in server venv | **Server via SSH** | `rssh "cd ~/workspace/experiments && uv pip install ..."` |
+| Install packages in server venv | **Server via SSH** | `rssh "cd {{REMOTE_PROJECT_ROOT}}/experiments && uv pip install ..."` |
 | mkdir, file ops on server | **Either** | Local writes appear on server via sshfs; SSH also works |
 
 ## GPU Selection Protocol
@@ -97,12 +99,12 @@ Before launching any GPU job:
 
 3. **Set CUDA_VISIBLE_DEVICES** in the job command:
    ```bash
-   rssh -f "cd ~/workspace/experiments && CUDA_VISIBLE_DEVICES=1 uv run python src/train.py"
+   rssh -f "cd {{REMOTE_PROJECT_ROOT}}/experiments && CUDA_VISIBLE_DEVICES=1 uv run python src/train.py"
    ```
 
 4. **Multi-GPU:** when using multiple GPUs, list them comma-separated:
    ```bash
-   rssh -f "cd ~/workspace/experiments && CUDA_VISIBLE_DEVICES=1,2 uv run python -m torch.distributed.launch src/train.py"
+   rssh -f "cd {{REMOTE_PROJECT_ROOT}}/experiments && CUDA_VISIBLE_DEVICES=1,2 uv run python -m torch.distributed.launch src/train.py"
    ```
 
 ## Running Experiments
@@ -111,20 +113,20 @@ Before launching any GPU job:
 
 ### 1. Write code locally
 
-Use Edit/Write tools on `{{SSHFS_MOUNT}}/workspace/experiments/src/` — mirrored to server instantly via sshfs.
+Use Edit/Write tools on `{{SSHFS_PROJECT_ROOT}}/experiments/src/` — mirrored to server instantly via sshfs.
 
 ### 2. Launch on server
 
 Use `rssh -f` with log redirection (returns immediately):
 
 ```bash
-rssh -f "cd ~/workspace/experiments && CUDA_VISIBLE_DEVICES=<gpu_id> uv run python src/train.py --epochs 200 > logs/<run-id>.log 2>&1"
+rssh -f "cd {{REMOTE_PROJECT_ROOT}}/experiments && CUDA_VISIBLE_DEVICES=<gpu_id> uv run python src/train.py --epochs 200 > logs/<run-id>.log 2>&1"
 ```
 
 For short debugging runs, use `rssh` without `-f`:
 
 ```bash
-rssh "cd ~/workspace/experiments && CUDA_VISIBLE_DEVICES=<gpu_id> uv run python src/train.py --epochs 2 2>&1 | tee logs/<run-id>.log"
+rssh "cd {{REMOTE_PROJECT_ROOT}}/experiments && CUDA_VISIBLE_DEVICES=<gpu_id> uv run python src/train.py --epochs 2 2>&1 | tee logs/<run-id>.log"
 ```
 
 ### 3. Poll and monitor
@@ -134,7 +136,7 @@ After launching, poll logs **locally** (no SSH) with this adaptive sleep schedul
 1. **Launch + sleep 60s** — quick sanity check that the process started.
 2. **Read log locally** — use Read tool or `cat` on the mounted path. NO SSH needed:
    ```
-   cat {{SSHFS_MOUNT}}/workspace/.../logs/<run-id>.log
+   cat {{SSHFS_PROJECT_ROOT}}/experiments/logs/<run-id>.log
    ```
    Check for: epoch progress, loss values, ETA, errors, or completion markers.
 3. **If running normally → sleep 1h**, then read log again.
@@ -160,7 +162,7 @@ rssh-tmux start
 
 # Send commands to the running session  
 rssh-tmux send "nvidia-smi"
-rssh-tmux send "tail -f ~/workspace/experiments/logs/<run-id>.log"
+rssh-tmux send "tail -f {{REMOTE_PROJECT_ROOT}}/experiments/logs/<run-id>.log"
 
 # Capture last 100 lines of output
 rssh-tmux capture 100

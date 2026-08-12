@@ -2,7 +2,7 @@ import { cpSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { discoverAgents, type AgentConfig } from "../subagent/agents";
+import { discoverGlobalAgents, type AgentConfig } from "../subagent/agents";
 import type { AgentResourceDto, SkillResourceDto } from "./contracts";
 import type { ConfigFileService } from "./config-files";
 import { ConfigServiceError } from "./config-files";
@@ -18,8 +18,22 @@ function globalAgentPath(config: ConfigFileService, agent: Pick<AgentConfig, "na
 }
 
 export async function listGlobalAgents(config: ConfigFileService): Promise<AgentResourceDto[]> {
-  const result = await discoverAgents({ cwd: process.cwd(), agentDir: config.globalRoot, includeProject: false });
-  return result.agents.map((agent) => ({ ...agent, content: undefined }));
+  const result = await discoverGlobalAgents({ agentDir: config.globalRoot });
+  return result.agents.map((agent) => ({
+    name: agent.name,
+    description: agent.description,
+    enabled: agent.enabled,
+    builtin: agent.builtin,
+    source: agent.source,
+    filePath: agent.filePath,
+    model: agent.model,
+    tools: agent.tools,
+    effectiveTools: agent.effectiveTools,
+    subagents: agent.subagents,
+    skills: agent.skills,
+    effectiveSkills: agent.effectiveSkills,
+    missingSkills: agent.missingSkills,
+  }));
 }
 
 export async function readGlobalAgent(config: ConfigFileService, name: string): Promise<AgentResourceDto> {

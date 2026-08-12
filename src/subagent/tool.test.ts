@@ -6,6 +6,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import type { AgentConfig } from "./agents";
 import {
   buildPiArgs,
+  createSubagentTool,
   describeModel,
   filterAgentsByAllowlist,
   handleChildLine,
@@ -45,6 +46,15 @@ vi.mock("../runtime/pi-import", async (importOriginal) => {
     importPi: vi.fn(actual.importPi),
     getAgentDir: vi.fn(actual.getAgentDir),
   };
+});
+
+beforeEach(async () => {
+  const { discoverAgents } = await import("./agents");
+  const { resolveModelForSpawn } = await import("./model-resolution");
+  vi.mocked(discoverAgents).mockReset();
+  vi.mocked(resolveModelForSpawn).mockReset();
+  spawnMock.mockReset();
+  loggerMock.debug.mockClear();
 });
 
 describe("buildPiArgs", () => {
@@ -91,6 +101,14 @@ describe("buildPiArgs", () => {
     expect(args[args.indexOf("--tools") + 1]).toBe("read,bash,arxiv");
   });
 
+  it.each([
+    ["missing", undefined],
+    ["empty", []],
+  ])("leaves %s tools to stage all-tools activation", (_label, tools) => {
+    const agent = { ...maker("search"), tools };
+    expect(buildPiArgs(agent, undefined, "task")).not.toContain("--tools");
+  });
+
   it("adds --no-skills and --skill for a non-empty whitelist", () => {
     const agentDir = mkdtempSync(join(tmpdir(), "lr-args-"));
     const skillDir = join(agentDir, "skills", "paper-search");
@@ -129,11 +147,27 @@ describe("buildPiArgs", () => {
     expect(enabled).toContain(join(root, ".agents", "skills", "home-only"));
   });
 
-  it("emits only --no-skills for an explicit empty whitelist", () => {
+  it("mounts every controlled skill root for an explicit empty selection", () => {
+    const root = mkdtempSync(join(tmpdir(), "lr-empty-skills-"));
+    const cwd = join(root, "project");
+    const agentDir = join(root, "agent");
+    const projectSkills = join(cwd, ".easyresearch", "skills");
+    const globalSkills = join(agentDir, "skills");
+    const homeSkills = join(root, ".agents", "skills");
+    for (const directory of [projectSkills, globalSkills, homeSkills]) mkdirSync(directory, { recursive: true });
     const agent = { ...maker("search"), skills: [] };
-    const args = buildPiArgs(agent, undefined, "task", undefined, { cwd: "/tmp", agentDir: "/tmp" });
+    const args = buildPiArgs(agent, undefined, "task", undefined, {
+      cwd,
+      agentDir,
+      homeDir: root,
+      enableDotAgentsSkill: true,
+    });
     expect(args).toContain("--no-skills");
-    expect(args).not.toContain("--skill");
+    expect(args).toEqual(expect.arrayContaining([
+      "--skill", projectSkills,
+      "--skill", globalSkills,
+      "--skill", homeSkills,
+    ]));
   });
 
   it("disables default skill discovery when skills is undefined", () => {
@@ -162,6 +196,67 @@ describe("filterAgentsByAllowlist (ADR-022)", () => {
 
   it("allows no agents for an empty allowlist", () => {
     expect(filterAgentsByAllowlist(agents, "")).toEqual([]);
+  });
+
+  it("omits the Assistant and disabled specialists when no allowlist is configured", () => {
+    const assistant = maker("assistant");
+    const disabled = { ...maker("writing"), enabled: false };
+
+    expect(filterAgentsByAllowlist([assistant, maker("search"), disabled], undefined).map((agent) => agent.name))
+      .toEqual(["search"]);
+  });
+
+  it("does not make disabled or Assistant targets dispatchable through an explicit allowlist", () => {
+    const disabledAssistant = { ...maker("assistant"), enabled: false };
+    const disabled = { ...maker("writing"), enabled: false };
+
+    expect(filterAgentsByAllowlist(
+      [disabledAssistant, maker("search"), disabled],
+      "assistant,search,writing",
+    ).map((agent) => agent.name)).toEqual(["search"]);
+  });
+
+  it("excludes a stage caller when its subagents policy is omitted", () => {
+    expect(filterAgentsByAllowlist(
+      [maker("search"), maker("reviewer"), maker("writing")],
+      undefined,
+      "reviewer",
+    ).map((agent) => agent.name)).toEqual(["search", "writing"]);
+  });
+
+  it("excludes a stage caller even when its explicit allowlist names itself", () => {
+    expect(filterAgentsByAllowlist(
+      [maker("search"), maker("reviewer"), maker("writing")],
+      "reviewer,search",
+      "reviewer",
+    ).map((agent) => agent.name)).toEqual(["search"]);
+  });
+});
+
+describe("createSubagentTool agent provider", () => {
+  it("uses an injected per-cwd provider instead of the process stage allowlist", async () => {
+    const previous = process.env.EASYRESEARCH_AGENTS_ALLOWLIST;
+    process.env.EASYRESEARCH_AGENTS_ALLOWLIST = "writing";
+    try {
+      const agentProvider = vi.fn(async () => [maker("search")]);
+      const tool = createSubagentTool({ agentProvider });
+
+      const result = await tool.execute(
+        "assistant-call",
+        {},
+        undefined,
+        undefined,
+        { cwd: "/paper", sessionManager: { getEntries: () => [] } } as never,
+      );
+
+      expect(agentProvider).toHaveBeenCalledWith("/paper");
+      expect(result.content[0]).toMatchObject({ text: expect.stringContaining("search (global)") });
+      expect(result.content[0]).not.toMatchObject({ text: expect.stringContaining("writing") });
+      expect(process.env.EASYRESEARCH_AGENTS_ALLOWLIST).toBe("writing");
+    } finally {
+      if (previous === undefined) delete process.env.EASYRESEARCH_AGENTS_ALLOWLIST;
+      else process.env.EASYRESEARCH_AGENTS_ALLOWLIST = previous;
+    }
   });
 });
 
@@ -270,6 +365,171 @@ describe("final subagent output (ADR-040)", () => {
 });
 
 describe("subagent session link persistence", () => {
+  it("resolves a single child definition and model from its explicit cwd", async () => {
+    const { discoverAgents } = await import("./agents");
+    const { resolveModelForSpawn } = await import("./model-resolution");
+    const { getAgentDir } = await import("../runtime/pi-import");
+    vi.mocked(discoverAgents).mockImplementation(async ({ cwd } = {}) => ({
+      agents: [{ ...maker("search", cwd === "/paper/child" ? "read" : "bash"), source: "project" }],
+    }));
+    vi.mocked(resolveModelForSpawn).mockImplementation(async (ctx) =>
+      ctx.cwd === "/paper/child" ? "child/model" : "parent/model");
+    vi.mocked(getAgentDir).mockReturnValue("/tmp/easyresearch-test-agent");
+    spawnMock.mockImplementationOnce(() => {
+      const child = Object.assign(new EventEmitter(), {
+        stdout: new EventEmitter(),
+        stderr: new EventEmitter(),
+        killed: false,
+        kill: vi.fn(),
+      });
+      queueMicrotask(() => child.emit("close", 0));
+      return child;
+    });
+
+    await subagentTool.execute(
+      "explicit-child-cwd",
+      { agent: "search", task: "find papers", cwd: "/paper/child" },
+      undefined,
+      undefined,
+      { cwd: "/paper/parent", sessionManager: { getEntries: () => [] } } as never,
+    );
+
+    expect(discoverAgents).toHaveBeenCalledWith(expect.objectContaining({ cwd: "/paper/child" }));
+    expect(resolveModelForSpawn).toHaveBeenCalledWith(
+      expect.objectContaining({ cwd: "/paper/child" }),
+      "search",
+      undefined,
+    );
+    const args = spawnMock.mock.calls[0]?.[1] as string[];
+    expect(args[args.indexOf("--tools") + 1]).toBe("read");
+    expect(args[args.indexOf("--model") + 1]).toBe("child/model");
+  });
+
+  it("resolves every chain step from that step's effective cwd", async () => {
+    const { discoverAgents } = await import("./agents");
+    const { resolveModelForSpawn } = await import("./model-resolution");
+    const { getAgentDir } = await import("../runtime/pi-import");
+    vi.mocked(discoverAgents).mockImplementation(async ({ cwd } = {}) => ({
+      agents: [{ ...maker("search", cwd === "/paper/a" ? "read" : "grep"), source: "project" }],
+    }));
+    vi.mocked(resolveModelForSpawn).mockImplementation(async (ctx) => `${ctx.cwd}/model`);
+    vi.mocked(getAgentDir).mockReturnValue("/tmp/easyresearch-test-agent");
+    for (let i = 0; i < 2; i++) {
+      spawnMock.mockImplementationOnce(() => {
+        const stdout = new EventEmitter();
+        const child = Object.assign(new EventEmitter(), {
+          stdout,
+          stderr: new EventEmitter(),
+          killed: false,
+          kill: vi.fn(),
+        });
+        queueMicrotask(() => {
+          stdout.emit("data", Buffer.from(`${JSON.stringify({
+            type: "message_end",
+            message: { role: "assistant", content: [{ type: "text", text: `step ${i + 1}` }] },
+          })}\n`));
+          child.emit("close", 0);
+        });
+        return child;
+      });
+    }
+
+    await subagentTool.execute(
+      "explicit-chain-cwds",
+      { chain: [
+        { agent: "search", task: "first", cwd: "/paper/a" },
+        { agent: "search", task: "second {previous}", cwd: "/paper/b" },
+      ] },
+      undefined,
+      undefined,
+      { cwd: "/paper/parent", sessionManager: { getEntries: () => [] } } as never,
+    );
+
+    expect(discoverAgents).toHaveBeenCalledWith(expect.objectContaining({ cwd: "/paper/a" }));
+    expect(discoverAgents).toHaveBeenCalledWith(expect.objectContaining({ cwd: "/paper/b" }));
+    expect(vi.mocked(resolveModelForSpawn).mock.calls.map(([ctx]) => ctx.cwd)).toEqual(["/paper/a", "/paper/b"]);
+    const firstArgs = spawnMock.mock.calls[0]?.[1] as string[];
+    const secondArgs = spawnMock.mock.calls[1]?.[1] as string[];
+    expect(firstArgs[firstArgs.indexOf("--tools") + 1]).toBe("read");
+    expect(secondArgs[secondArgs.indexOf("--tools") + 1]).toBe("grep");
+  });
+
+  it("marks missing tools as all while preserving an explicit leaf allowlist", async () => {
+    const { discoverAgents } = await import("./agents");
+    const { resolveModelForSpawn } = await import("./model-resolution");
+    const { getAgentDir } = await import("../runtime/pi-import");
+    vi.mocked(discoverAgents).mockResolvedValue({ agents: [{ ...maker("search"), subagents: [] }] });
+    vi.mocked(resolveModelForSpawn).mockResolvedValue(undefined);
+    vi.mocked(getAgentDir).mockReturnValue("/tmp/easyresearch-test-agent");
+    spawnMock.mockClear();
+    spawnMock.mockImplementationOnce(() => {
+      const child = Object.assign(new EventEmitter(), {
+        stdout: new EventEmitter(),
+        stderr: new EventEmitter(),
+        killed: false,
+        kill: vi.fn(),
+      });
+      queueMicrotask(() => child.emit("close", 0));
+      return child;
+    });
+
+    await subagentTool.execute(
+      "all-tools-leaf",
+      { agent: "search", task: "find papers" },
+      undefined,
+      undefined,
+      { cwd: "/tmp/easyresearch-test-project" } as never,
+    );
+
+    const options = spawnMock.mock.calls[0]?.[2] as { env?: NodeJS.ProcessEnv };
+    expect(options.env?.EASYRESEARCH_AGENT_TOOLS).toBe("all");
+    expect(options.env?.EASYRESEARCH_AGENTS_ALLOWLIST).toBe("");
+    expect(options.env?.EASYRESEARCH_CALLER_AGENT).toBe("search");
+  });
+
+  it("does not inherit parent stage capability markers", async () => {
+    const { discoverAgents } = await import("./agents");
+    const { resolveModelForSpawn } = await import("./model-resolution");
+    const { getAgentDir } = await import("../runtime/pi-import");
+    vi.mocked(discoverAgents).mockResolvedValue({ agents: [{ ...maker("search", "read"), subagents: undefined }] });
+    vi.mocked(resolveModelForSpawn).mockResolvedValue(undefined);
+    vi.mocked(getAgentDir).mockReturnValue("/tmp/easyresearch-test-agent");
+    spawnMock.mockClear();
+    spawnMock.mockImplementationOnce(() => {
+      const child = Object.assign(new EventEmitter(), {
+        stdout: new EventEmitter(),
+        stderr: new EventEmitter(),
+        killed: false,
+        kill: vi.fn(),
+      });
+      queueMicrotask(() => child.emit("close", 0));
+      return child;
+    });
+    const previousTools = process.env.EASYRESEARCH_AGENT_TOOLS;
+    const previousAllowlist = process.env.EASYRESEARCH_AGENTS_ALLOWLIST;
+    process.env.EASYRESEARCH_AGENT_TOOLS = "all";
+    process.env.EASYRESEARCH_AGENTS_ALLOWLIST = "search";
+
+    try {
+      await subagentTool.execute(
+        "isolated-capabilities",
+        { agent: "search", task: "find papers" },
+        undefined,
+        undefined,
+        { cwd: "/tmp/easyresearch-test-project" } as never,
+      );
+    } finally {
+      if (previousTools === undefined) delete process.env.EASYRESEARCH_AGENT_TOOLS;
+      else process.env.EASYRESEARCH_AGENT_TOOLS = previousTools;
+      if (previousAllowlist === undefined) delete process.env.EASYRESEARCH_AGENTS_ALLOWLIST;
+      else process.env.EASYRESEARCH_AGENTS_ALLOWLIST = previousAllowlist;
+    }
+
+    const options = spawnMock.mock.calls[0]?.[2] as { env?: NodeJS.ProcessEnv };
+    expect(options.env).not.toHaveProperty("EASYRESEARCH_AGENT_TOOLS");
+    expect(options.env).not.toHaveProperty("EASYRESEARCH_AGENTS_ALLOWLIST");
+  });
+
   it("starts a fresh child when session is omitted, even if a named child exists", async () => {
     const { discoverAgents } = await import("./agents");
     const { resolveModelForSpawn } = await import("./model-resolution");
@@ -703,6 +963,7 @@ function maker(name: string, tools = ""): AgentConfig {
     effectiveTools: configuredTools ?? ["read", "bash", "edit", "write", "grep", "find", "ls"],
     skills: undefined,
     effectiveSkills: [],
+    missingSkills: [],
     subagents: undefined,
     model: undefined,
     systemPrompt: "",
