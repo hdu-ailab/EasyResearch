@@ -641,6 +641,66 @@ describe("web routes", () => {
     }
   });
 
+  it("closes and unsubscribes when SSE snapshot initialization fails", async () => {
+    let rejectSummaries: ((error: Error) => void) | undefined;
+    let summariesRequested: (() => void) | undefined;
+    const summaries = new Promise<SubagentSessionSummaryDto[]>((_resolve, reject) => {
+      rejectSummaries = reject;
+    });
+    const requested = new Promise<void>((resolve) => {
+      summariesRequested = resolve;
+    });
+    const logger = fakeLogger();
+    const subscribe = registry.subscribe.bind(registry);
+    let activeListeners = 0;
+    let unsubscribeCalls = 0;
+    vi.spyOn(registry, "subscribe").mockImplementation((id, listener) => {
+      const unsubscribe = subscribe(id, listener);
+      activeListeners++;
+      return () => {
+        unsubscribeCalls++;
+        activeListeners--;
+        unsubscribe();
+      };
+    });
+    setup({
+      logger,
+      subagentSessions: {
+        summaries: async () => {
+          summariesRequested?.();
+          return summaries;
+        },
+        snapshot: async () => {
+          throw new Error("not used");
+        },
+      },
+    });
+    const created = await registry.create({ cwd: projectDir });
+    const res = await handler(new Request(`http://localhost/api/sessions/${created.id}/events`));
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+
+    try {
+      const firstRead = reader.read();
+      await requested;
+      factory.created[0]!.events.forEach((listener) => listener({ type: "agent_start" } as never));
+      rejectSummaries?.(new Error("summary failed"));
+
+      const errorFrame = await firstRead;
+      expect(decoder.decode(errorFrame.value)).toBe('data: {"type":"error","error":"Error: summary failed"}\n\n');
+      await vi.waitFor(() => expect(activeListeners).toBe(0));
+      expect(await reader.read()).toEqual({ done: true, value: undefined });
+
+      await reader.cancel();
+      expect(unsubscribeCalls).toBe(1);
+      expect(logger.calls.filter(([, message]) => message === "sse disconnected")).toEqual([
+        ["info", "sse disconnected", { sessionId: created.id }],
+      ]);
+    } finally {
+      await reader.cancel();
+    }
+  });
+
   it("streams file watcher events over the existing SSE connection", async () => {
     setup();
     const created = await registry.create({ cwd: projectDir });

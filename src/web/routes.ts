@@ -341,6 +341,16 @@ function sessionEvents(services: RouteServices, id: string): Response {
   const send = (controller: ReadableStreamDefaultController<Uint8Array>, event: unknown): void => {
     controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
   };
+  const disconnect = (): void => {
+    if (cancelled) return;
+    cancelled = true;
+    pendingEvents.length = 0;
+    const stopListening = unsubscribe;
+    unsubscribe = null;
+    stopListening?.();
+    controllerRef = null;
+    logger.info("sse disconnected", { sessionId: id });
+  };
   try {
     unsubscribe = registry.subscribe(id, (event) => {
       if (cancelled) return;
@@ -366,16 +376,16 @@ function sessionEvents(services: RouteServices, id: string): Response {
           pendingEvents.length = 0;
         },
         (error) => {
-          if (!cancelled) send(controller, { type: "error", error: String(error) });
+          if (cancelled) return;
+          send(controller, { type: "error", error: String(error) });
+          disconnect();
+          controller.close();
         },
       );
     },
     cancel() {
       // Browser disconnect only unsubscribes; the registry entry keeps running.
-      cancelled = true;
-      pendingEvents.length = 0;
-      unsubscribe?.();
-      logger.info("sse disconnected", { sessionId: id });
+      disconnect();
     },
   });
   return new Response(stream, { headers: SSE_HEADERS });

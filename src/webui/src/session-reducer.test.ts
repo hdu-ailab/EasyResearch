@@ -68,6 +68,18 @@ describe("session reducer", () => {
     expect(updated.activeMessageKey).toBe(hydrated.messages.at(-1)?.key);
   });
 
+  it("restores run and assistant cursor state when status is running but isStreaming is false", () => {
+    const hydrated = fromSnapshot({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "running" },
+      subagents: [],
+      messages: [userMessage("question"), assistantMessage("partial")],
+    });
+
+    expect(hydrated.isStreaming).toBe(true);
+    expect(hydrated.activeMessageKey).toBe(hydrated.messages.at(-1)?.key);
+    expect(hydrated.messages.map((message) => message.streaming)).toEqual([false, true]);
+  });
+
   it("does not fabricate an assistant cursor when a running snapshot ends in a user message", () => {
     const hydrated = fromSnapshot({
       session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
@@ -907,7 +919,45 @@ describe("session reducer", () => {
 
     expect(merged.messages.map((message) => message.identity)).toEqual(["persisted", "live-assistant"]);
     expect(merged.tools.map((tool) => tool.key)).toEqual(["live-tool"]);
-    expect(rows.map((row) => ("role" in row ? row.key : row.key))).toEqual(["persisted", "live-assistant", "live-tool"]);
+    expect(rows.map((row) => row.key)).toEqual(["persisted", "live-assistant", "live-tool"]);
+    expect(merged.activeMessageKey).toBe("live-assistant");
+    expect(merged.messages.filter((message) => message.streaming).map((message) => message.key)).toEqual([
+      "live-assistant",
+    ]);
+  });
+
+  it("preserves distinct no-id live messages when snapshot fallback keys collide", () => {
+    const prior = reduceSessionEvent(emptyState, {
+      type: "message_start",
+      message: userMessage("live question"),
+    } as AgentSessionEvent);
+    const snapshot = {
+      session: { id: "parent", cwd: "/p", isStreaming: false, status: "ready" },
+      subagents: [],
+      messages: [assistantMessage("persisted answer")],
+    } as never;
+
+    const merged = mergeSnapshot(prior, snapshot);
+
+    expect(merged.messages.map((message) => [message.role, message.text])).toEqual([
+      ["assistant", "persisted answer"],
+      ["user", "live question"],
+    ]);
+  });
+
+  it("does not duplicate an unchanged no-id message from the snapshot", () => {
+    const snapshot = {
+      session: { id: "parent", cwd: "/p", isStreaming: false, status: "ready" },
+      subagents: [],
+      messages: [assistantMessage("persisted answer")],
+    } as never;
+    const prior = fromSnapshot(snapshot);
+
+    const merged = mergeSnapshot(prior, snapshot);
+
+    expect(merged.messages.map((message) => [message.role, message.text])).toEqual([
+      ["assistant", "persisted answer"],
+    ]);
   });
 
   it("extracts nested child deltas and reduces them token-by-token into only that child state", () => {

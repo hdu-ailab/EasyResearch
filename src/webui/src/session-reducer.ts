@@ -121,6 +121,17 @@ function identityFor(message: { id?: unknown; timestamp?: unknown }): string | u
   return identity === undefined || identity === null ? undefined : String(identity);
 }
 
+function contentFingerprint(message: SessionMessageView): string {
+  return JSON.stringify([
+    message.role,
+    message.text,
+    message.reasoning,
+    message.error,
+    message.agentId,
+    message.label,
+  ]);
+}
+
 function assistantUpdateOf(
   event: MessageUpdateEvent,
 ):
@@ -429,14 +440,22 @@ export function mergeSnapshot(state: SessionViewState, snapshot: SessionSnapshot
   const snapshotMessageIdentities = new Set(
     next.messages.flatMap((message): string[] => (message.identity === undefined ? [] : [message.identity])),
   );
-  const snapshotMessageKeys = new Set(next.messages.map((message) => message.key));
+  const snapshotNoIdentityCounts = new Map<string, number>();
+  for (const message of next.messages) {
+    if (message.identity !== undefined) continue;
+    const fingerprint = contentFingerprint(message);
+    snapshotNoIdentityCounts.set(fingerprint, (snapshotNoIdentityCounts.get(fingerprint) ?? 0) + 1);
+  }
   const snapshotToolKeys = new Set(next.tools.map((tool) => tool.key));
   const liveOnlyRows: Array<SessionMessageView | ToolView> = [
-    ...state.messages.filter(
-      (message) =>
-        (message.identity === undefined || !snapshotMessageIdentities.has(message.identity)) &&
-        !snapshotMessageKeys.has(message.key),
-    ),
+    ...state.messages.filter((message) => {
+      if (message.identity !== undefined) return !snapshotMessageIdentities.has(message.identity);
+      const fingerprint = contentFingerprint(message);
+      const remaining = snapshotNoIdentityCounts.get(fingerprint) ?? 0;
+      if (remaining === 0) return true;
+      snapshotNoIdentityCounts.set(fingerprint, remaining - 1);
+      return false;
+    }),
     ...state.tools.filter((tool) => !snapshotToolKeys.has(tool.key)),
   ].sort((left, right) => left.order - right.order);
   for (const row of liveOnlyRows) {
