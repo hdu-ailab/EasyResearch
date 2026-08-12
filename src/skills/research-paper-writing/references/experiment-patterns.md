@@ -11,29 +11,24 @@ Patterns and best practices distilled from running research experiments at scale
 Organize experiments with a consistent structure:
 
 ```
-workspace/
-  experiments/
+experiments/
+  src/
     run_main.py                # Core experiment runner
     run_baselines.py           # Baseline comparison
     run_ablation.py            # Ablation studies
     strategies.py              # Method implementations
-    config.yaml                # Shared configuration
-  results/
-    <experiment_name>/
-      <task_or_problem>/
-        <strategy>/
-          result.json          # Final metrics
-          final_output.md      # Final output artifact
-          history.json         # Full trajectory/log
-          pass_01/             # Per-iteration artifacts (if iterative)
-            intermediate.md
-  analysis/
     analyze_results.py         # Statistical analysis
     compute_stats.py           # Significance tests
-    make_charts.py             # Visualization
-  paper/
-    paper.tex                  # LaTeX source
-    fig_*.pdf                  # Generated figures
+  outputs/
+    <run-id>/                  # Raw and intermediate artifacts
+  results/
+    <run-id>/                  # Promoted formal evidence
+  experiment-record.md
+manuscript/
+  manuscript.md               # Authoritative manuscript
+  latex/                       # Derived LaTeX source
+  manuscript.pdf              # Compiled deliverable
+figures/                       # Publication figures
 ```
 
 ### Script Design Principles

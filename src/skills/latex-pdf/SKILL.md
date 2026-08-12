@@ -26,6 +26,17 @@ description: |-
 - Check graphics paths from `\includegraphics{...}` when image errors occur.
 - Check whether the project uses inline `thebibliography`, BibTeX (`\bibliography{...}`), or BibLaTeX (`\addbibresource{...}`).
 
+## Paper Pipeline Paths
+
+- In the bundled paper workflow, treat the exact session cwd as the project
+  root, keep derived LaTeX under `manuscript/latex/`, and deliver the compiled
+  PDF at `manuscript/manuscript.pdf`.
+- Keep `manuscript/manuscript.md` authoritative; compilation must not replace
+  it with generated LaTeX.
+- Follow another existing layout only when the task explicitly supplies it.
+- When the TeX engine writes the PDF inside `manuscript/latex/`, copy the
+  successful final PDF to `manuscript/manuscript.pdf` and verify that path.
+
 ## Build Commands
 
 Run commands from the directory containing the main `.tex` file. Use the Bash tool `workdir` parameter rather than `cd`.

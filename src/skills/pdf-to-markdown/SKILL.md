@@ -45,30 +45,32 @@ Use MarkItDown when:
 Do not use it to bypass paywalls, login walls, captcha, DRM, or institutional access restrictions.
 
 ## Standard Research Workflow
-For project workspaces with this layout:
+For paper projects rooted at the exact session cwd:
 
 ```text
-workspace/
-  ref_papers/
-    pdf/
-    text/
-    source.json
+ref_papers/
+  pdf/
+  text/
+  source.json
 ```
 
 Convert one PDF:
 
 ```bash
-markitdown workspace/ref_papers/pdf/paper.pdf -o workspace/ref_papers/text/paper.md
+markitdown ref_papers/pdf/paper.pdf -o ref_papers/text/paper.md
 ```
 
 Batch conversion pattern:
 
 ```bash
-for pdf in workspace/ref_papers/pdf/*.pdf; do
+for pdf in ref_papers/pdf/*.pdf; do
   name=$(basename "$pdf" .pdf)
-  markitdown "$pdf" -o "workspace/ref_papers/text/$name.md"
+  markitdown "$pdf" -o "ref_papers/text/$name.md"
 done
 ```
+
+Follow a different existing user layout only when the dispatch explicitly
+supplies it.
 
 After conversion:
 - Read the first part of the Markdown output.
