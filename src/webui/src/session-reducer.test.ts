@@ -93,6 +93,45 @@ describe("session reducer", () => {
     expect(hydrated.messages.every((message) => !message.streaming)).toBe(true);
   });
 
+  it("starts a new assistant row when a running snapshot ends in a tool-call-only message", () => {
+    const hydrated = fromSnapshot({
+      session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
+      subagents: [],
+      messages: [
+        assistantMessage("earlier answer"),
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "t1", name: "bash", arguments: { command: "pwd" } }],
+        },
+      ] as never,
+    });
+
+    const updated = reduceSessionEvent(hydrated, assistantEvent("message_update", "new answer"));
+
+    expect(updated.messages.map((message) => message.text)).toEqual(["earlier answer", "new answer"]);
+    expect(updated.messages.at(-1)).toEqual(expect.objectContaining({ role: "assistant", streaming: true }));
+  });
+
+  it("starts a new assistant row when a running snapshot ends in a tool result", () => {
+    const hydrated = fromSnapshot({
+      session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
+      subagents: [],
+      messages: [
+        assistantMessage("earlier answer"),
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "t1", name: "bash", arguments: { command: "pwd" } }],
+        },
+        { role: "toolResult", toolCallId: "t1", toolName: "bash", content: [{ type: "text", text: "/p" }] },
+      ] as never,
+    });
+
+    const updated = reduceSessionEvent(hydrated, assistantEvent("message_update", "new answer"));
+
+    expect(updated.messages.map((message) => message.text)).toEqual(["earlier answer", "new answer"]);
+    expect(updated.messages.at(-1)).toEqual(expect.objectContaining({ role: "assistant", streaming: true }));
+  });
+
   it("creates one temporary assistant row when a running empty snapshot receives its first delta", () => {
     const hydrated = fromSnapshot({
       session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
