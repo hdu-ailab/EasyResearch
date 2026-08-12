@@ -1,11 +1,11 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactElement } from "react";
+import { createRef, type ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { STORAGE_KEY, type WebUiPreferences, writePreferences } from "../preferences";
 import { PreferencesProvider } from "../preferences/PreferencesProvider";
 import type { SessionMessageView, ToolView } from "../session-reducer";
-import { ChatTranscript } from "./ChatTranscript";
+import { ChatTranscript, type ChatTranscriptHandle } from "./ChatTranscript";
 
 vi.mock("mermaid", () => ({
   default: {
@@ -251,6 +251,58 @@ describe("ChatTranscript", () => {
     fireContentResize();
 
     expect(el.scrollTop).toBe(700);
+  });
+
+  it("jumps to the bottom when scrollToLatest is called while unpinned", () => {
+    const first = [msg({ key: "a", text: "one" })];
+    const ref = createRef<ChatTranscriptHandle>();
+    renderTranscript(<ChatTranscript ref={ref} messages={first} tools={[]} />);
+    const el = scrollContainer();
+    flushFollowFrame();
+    expect(el.scrollTop).toBe(400);
+
+    el.scrollTop = 100;
+    fireEvent.scroll(el);
+
+    ref.current?.scrollToLatest();
+    flushFollowFrame();
+    expect(el.scrollTop).toBe(400);
+  });
+
+  it("keeps the reading position when content grows while unpinned", () => {
+    const first = [msg({ key: "a", text: "one" })];
+    const { rerender } = renderTranscript(<ChatTranscript messages={first} tools={[]} />);
+    const el = scrollContainer();
+    flushFollowFrame();
+    expect(el.scrollTop).toBe(400);
+
+    el.scrollTop = 100;
+    fireEvent.scroll(el);
+
+    rerender(<ChatTranscript messages={[...first, msg({ key: "b", text: "two" })]} tools={[]} />);
+    flushFollowFrame();
+    expect(el.scrollTop).toBe(100);
+  });
+
+  it("follows later content growth after scrollToLatest", () => {
+    let scrollHeight = 400;
+    const first = [msg({ key: "a", text: "one" })];
+    const ref = createRef<ChatTranscriptHandle>();
+    renderTranscript(<ChatTranscript ref={ref} messages={first} tools={[]} />);
+    const el = screen.getByLabelText("Conversation") as HTMLDivElement;
+    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => scrollHeight });
+    Object.defineProperty(el, "clientHeight", { configurable: true, get: () => 200 });
+    flushFollowFrame();
+
+    el.scrollTop = 100;
+    fireEvent.scroll(el);
+    ref.current?.scrollToLatest();
+    flushFollowFrame();
+    expect(el.scrollTop).toBe(400);
+
+    scrollHeight = 600;
+    fireContentResize();
+    expect(el.scrollTop).toBe(600);
   });
 
   it("never forces reasoning or generic tool expansion into view", () => {
