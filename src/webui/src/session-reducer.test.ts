@@ -994,6 +994,29 @@ describe("session reducer", () => {
     expect(updated.messages).toEqual([expect.objectContaining({ text: "partial answer continued", streaming: true })]);
   });
 
+  it("preserves unrelated no-id prefix rows and routes updates to the snapshot active row", () => {
+    let prior = reduceSessionEvent(emptyState, { type: "agent_start" } as AgentSessionEvent);
+    prior = reduceSessionEvent(prior, assistantEvent("message_start", "Plan A"));
+    const snapshot = {
+      session: { id: "parent", cwd: "/p", isStreaming: true, status: "running" },
+      subagents: [],
+      messages: [assistantMessage("Plan")],
+    } as never;
+
+    const merged = mergeSnapshot(prior, snapshot);
+    const keys = merged.messages.map((message) => message.key);
+
+    expect(merged.messages.map((message) => [message.text, message.streaming])).toEqual([
+      ["Plan", true],
+      ["Plan A", false],
+    ]);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(merged.activeMessageKey).toBe(merged.messages[0]!.key);
+
+    const updated = reduceSessionEvent(merged, assistantEvent("message_update", " B"));
+    expect(updated.messages.map((message) => message.text)).toEqual(["Plan B", "Plan A"]);
+  });
+
   it("keeps a distinct identical no-id row when reconciling the active assistant", () => {
     const snapshot = {
       session: { id: "parent", cwd: "/p", isStreaming: true, status: "running" },
