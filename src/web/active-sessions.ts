@@ -8,6 +8,7 @@ import type {
 import { createLogger } from "../runtime/logger";
 import { attachEventLogger } from "./event-logger";
 import type { Logger } from "../runtime/logger";
+import { createNoopFileWatcherFactory, type FileWatcher, type FileWatcherFactory } from "./file-watcher";
 
 const logger = createLogger("web-registry");
 
@@ -18,6 +19,7 @@ interface ActiveRecord {
   cwd: string;
   sessionPath?: string;
   client: RpcSessionAdapter;
+  fileWatcher: FileWatcher;
   listeners: Set<(event: unknown) => void>;
   dispose: () => void;
   stopPromise: Promise<void> | null;
@@ -51,6 +53,7 @@ export class ActiveSessionRegistry {
     private readonly factory: RpcSessionFactory,
     private readonly logger?: Logger,
     options: ActiveSessionRegistryOptions = {},
+    private readonly fileWatcherFactory: FileWatcherFactory = createNoopFileWatcherFactory(),
   ) {
     this.idleTimeoutMs = options.idleTimeoutMs ?? 3_600_000;
   }
@@ -169,6 +172,12 @@ export class ActiveSessionRegistry {
         for (const listener of record.listeners) {
           listener({ type: "session_deactivated", sessionId: record.dto.id });
         }
+        await record.fileWatcher.close().catch((error: unknown) => {
+          (this.logger ?? logger).warn("file watcher close failed", {
+            sessionId: record.dto.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
         await record.client.stop();
         record.dto.isStreaming = false;
         record.dto.status = "stopped";
@@ -226,6 +235,7 @@ export class ActiveSessionRegistry {
       cwd: options.cwd,
       sessionPath: options.sessionPath,
       client,
+      fileWatcher: createNoopFileWatcherFactory().create({ cwd: options.cwd, onEvent: () => {} }),
       listeners,
       dispose: () => {},
       stopPromise: null,
@@ -245,6 +255,20 @@ export class ActiveSessionRegistry {
       if (state.sessionName) dto.sessionName = state.sessionName;
       dto.isStreaming = state.isStreaming;
       dto.status = state.isStreaming ? "running" : "ready";
+
+      try {
+        record.fileWatcher = this.fileWatcherFactory.create({
+          cwd: record.cwd,
+          onEvent: (event) => {
+            for (const listener of record.listeners) listener(event);
+          },
+        });
+      } catch (error) {
+        (this.logger ?? logger).warn("file watcher unavailable", {
+          cwd: record.cwd,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
 
       const eventCancel = client.onEvent((event) => {
         for (const listener of record.listeners) listener(event);
@@ -272,6 +296,7 @@ export class ActiveSessionRegistry {
         sessionPath: options.sessionPath ?? "",
         error: error instanceof Error ? error.message : String(error),
       });
+      await record.fileWatcher.close().catch(() => {});
       await client.stop().catch(() => {});
       throw error;
     }

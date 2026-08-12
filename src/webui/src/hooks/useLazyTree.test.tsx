@@ -158,6 +158,56 @@ describe("useLazyTree", () => {
     expect(result.current.status("/p/c")).toBe("loaded");
   });
 
+  it("refreshes one loaded directory without collapsing it or its siblings", async () => {
+    let aChildren = [folder("/p/a/old")];
+    const loadChildren = vi.fn(async (path: string): Promise<Entry[]> => {
+      if (path === "/p") return [folder("/p/a"), folder("/p/c")];
+      if (path === "/p/a") return aChildren;
+      return [];
+    });
+    const { result } = renderHook(() => useLazyTree({ root: "/p", loadChildren }));
+    await settle();
+    act(() => {
+      result.current.toggle("/p/a");
+      result.current.toggle("/p/c");
+    });
+    await settle();
+    expect(result.current.expanded.has("/p/a")).toBe(true);
+    expect(result.current.expanded.has("/p/c")).toBe(true);
+
+    aChildren = [folder("/p/a/new")];
+    act(() => result.current.refreshDirectory("/p/a"));
+    await settle();
+
+    expect(result.current.children("/p/a")).toEqual([folder("/p/a/new")]);
+    expect(result.current.status("/p/c")).toBe("loaded");
+    expect(result.current.expanded.has("/p/a")).toBe(true);
+    expect(result.current.expanded.has("/p/c")).toBe(true);
+  });
+
+  it("queues a targeted refresh requested while the directory is loading", async () => {
+    const pending = deferred<Entry[]>();
+    let folderChildren = [folder("/p/folder/old")];
+    let folderLoads = 0;
+    const loadChildren = vi.fn((path: string): Promise<Entry[]> => {
+      if (path === "/p") return Promise.resolve([folder("/p/folder")]);
+      folderLoads += 1;
+      return folderLoads === 1 ? pending.promise : Promise.resolve(folderChildren);
+    });
+    const { result } = renderHook(() => useLazyTree({ root: "/p", loadChildren }));
+    await settle();
+    act(() => result.current.toggle("/p/folder"));
+    expect(result.current.status("/p/folder")).toBe("loading");
+
+    folderChildren = [folder("/p/folder/new")];
+    act(() => result.current.refreshDirectory("/p/folder"));
+    await act(async () => pending.resolve([folder("/p/folder/old")]));
+    await settle();
+
+    expect(result.current.children("/p/folder")).toEqual([folder("/p/folder/new")]);
+    expect(loadChildren).toHaveBeenCalledTimes(3);
+  });
+
   it("ignores stale resolutions after the root changes", async () => {
     const pendingOldRoot = deferred<Entry[]>();
     const loadChildren = vi.fn((path: string): Promise<Entry[]> => {
