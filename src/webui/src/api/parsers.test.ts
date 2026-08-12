@@ -75,15 +75,15 @@ describe("API response parsers", () => {
     expect(
       parseWebuiSettings({
         agentModels: { search: "openai/gpt-4o" },
-        assistantModel: null,
-        effectiveAssistantModel: "openai/gpt-4o",
+        paperAssistantModel: null,
+        effectivePaperAssistantModel: "openai/gpt-4o",
       }),
     ).toEqual({
       agentModels: { search: "openai/gpt-4o" },
-      assistantModel: null,
-      effectiveAssistantModel: "openai/gpt-4o",
+      paperAssistantModel: null,
+      effectivePaperAssistantModel: "openai/gpt-4o",
     });
-    expect(() => parseWebuiSettings({ agentModels: {}, assistantModel: 42, effectiveAssistantModel: null })).toThrow();
+    expect(() => parseWebuiSettings({ agentModels: {}, paperAssistantModel: 42, effectivePaperAssistantModel: null })).toThrow();
   });
 
   it("parses directory, file, and text-content responses", () => {

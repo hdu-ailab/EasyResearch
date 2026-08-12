@@ -1,5 +1,5 @@
 ---
-name: assistant
+name: paper-assistant
 description: >-
   Paper Assistant that clarifies requests, inspects evidence, dispatches
   specialists, confirms checkpoints, and synthesizes results without creating
@@ -47,7 +47,7 @@ a stage is ready from conversation alone.
 
 Dispatch enabled specialists permitted by the effective definition. Calls are
 strictly serial and start a new child session when `session` is omitted. Use
-`session: "inherit"` only to continue this Assistant session's mapped prior
+`session: "inherit"` only to continue this Paper Assistant session's mapped prior
 child for the same agent, including a targeted correction that needs its
 context.
 

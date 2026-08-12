@@ -443,7 +443,7 @@ describe("ChatTranscript", () => {
     renderTranscript(
       <ChatTranscript
         messages={[
-          msg({ key: "d", role: "user", text: "Task: search papers", label: "Assistant", order: 0 }),
+          msg({ key: "d", role: "user", text: "Task: search papers", label: "paper-assistant", order: 0 }),
           msg({ key: "r", role: "assistant", text: "found 3 papers", label: "search", order: 1 }),
         ]}
         tools={[]}

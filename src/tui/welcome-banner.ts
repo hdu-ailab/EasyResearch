@@ -48,7 +48,7 @@ export function welcomeBannerLines(theme: WelcomeTheme, width: number): string[]
 }
 
 /**
- * Mount the welcome banner on the assistant extension.
+ * Mount the welcome banner on the Paper Assistant extension.
  * TUI-only: `setHeader` component factories are terminal-only features, and the
  * same extension file runs in Web RPC children where they would be inert.
  */

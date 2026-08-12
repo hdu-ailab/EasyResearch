@@ -117,11 +117,11 @@ export interface AgentEffectiveModelDto {
 
 export interface WebuiSettingsDto {
   agentModels: Record<string, string>;
-  assistantModel: string | null;
-  effectiveAssistantModel: string | null;
+  paperAssistantModel: string | null;
+  effectivePaperAssistantModel: string | null;
 }
 
 export interface WebuiSettingsUpdate {
   agentModels?: Record<string, string>;
-  assistantModel?: string | null;
+  paperAssistantModel?: string | null;
 }

@@ -3,6 +3,7 @@ import { importPi } from "../runtime/pi-import";
 import type { AgentEffectiveModelDto, ConfigScope } from "./contracts";
 import type { ConfigFileService } from "./config-files";
 import { ConfigPathError, ConfigServiceError } from "./config-files";
+import { PAPER_ASSISTANT_AGENT } from "../subagent/agents";
 
 export interface EntryRow {
   type: string;
@@ -67,14 +68,14 @@ export async function readAgentModels(
   return extractAgentModels(input.cwd ?? process.cwd(), config.globalRoot, input.scope === "project", input.scope);
 }
 
-/** Read the configured assistant model, preferring the project Markdown layer. */
-export async function readAssistantDefaults(
+/** Read the configured Paper Assistant model, preferring the project Markdown layer. */
+export async function readPaperAssistantDefaults(
   config: ConfigFileService,
   cwd: string,
 ): Promise<{ provider: string; modelId: string } | undefined> {
   const project = await extractAgentModels(cwd, config.globalRoot, true, "project");
   const global = await extractAgentModels(cwd, config.globalRoot, false, "global");
-  const model = project?.assistant ?? global?.assistant;
+  const model = project?.[PAPER_ASSISTANT_AGENT] ?? global?.[PAPER_ASSISTANT_AGENT];
   if (model === undefined) return undefined;
   const index = model.indexOf("/");
   if (index <= 0 || index === model.length - 1) return undefined;
@@ -100,18 +101,18 @@ async function readSettingsJson(
 }
 
 /**
- * Route a set-agent-model request: the assistant's model is the session
+ * Route a set-agent-model request: the Paper Assistant's model is the session
  * model itself (RPC `set_model`), stage agents get a custom entry on the
- * assistant session line. `null` resets the assistant to the configured
+ * Paper Assistant session line. `null` resets the Paper Assistant to the configured
  * default model or fails with 409.
  */
 export async function routeSetAgentModel(
   router: {
-    isAssistant: (agentName: string) => boolean;
+    isPaperAssistant: (agentName: string) => boolean;
     isKnownAgent: (agentName: string) => boolean | Promise<boolean>;
-    setAssistant: (provider: string, modelId: string) => Promise<void>;
+    setPaperAssistant: (provider: string, modelId: string) => Promise<void>;
     writeOverride: (agentName: string, model: string | null) => Promise<void>;
-    assistantDefaults: () => Promise<{ provider: string; modelId: string } | undefined>;
+    paperAssistantDefaults: () => Promise<{ provider: string; modelId: string } | undefined>;
   },
   agentName: string,
   model: string | null,
@@ -119,20 +120,20 @@ export async function routeSetAgentModel(
   if (!(await router.isKnownAgent(agentName))) {
     throw new AgentModelError(404, `Unknown agent: ${agentName}`);
   }
-  if (router.isAssistant(agentName)) {
+  if (router.isPaperAssistant(agentName)) {
     if (model === null) {
-      const defaults = await router.assistantDefaults();
+      const defaults = await router.paperAssistantDefaults();
       if (!defaults) {
         throw new AgentModelError(
           409,
-          "No default model configured: set model in the assistant Markdown definition",
+          "No default model configured: set model in the Paper Assistant Markdown definition",
         );
       }
-      await router.setAssistant(defaults.provider, defaults.modelId);
+      await router.setPaperAssistant(defaults.provider, defaults.modelId);
       return;
     }
     const { provider, modelId } = splitModelRef(model);
-    await router.setAssistant(provider, modelId);
+    await router.setPaperAssistant(provider, modelId);
     return;
   }
   await router.writeOverride(agentName, model);
@@ -144,7 +145,7 @@ export function resolveAgentModelsService(deps: {
   readEntries: (sessionPath: string | undefined) => Promise<EntryRow[]>;
   projectAgentModels: (cwd: string) => Promise<Record<string, string> | undefined>;
   globalAgentModels: () => Promise<Record<string, string> | undefined>;
-  assistantModel: (id: string) => Promise<string | undefined>;
+  paperAssistantModel: (id: string) => Promise<string | undefined>;
   getCwd: (id: string) => Promise<string>;
 }) {
   return {
@@ -155,11 +156,11 @@ export function resolveAgentModelsService(deps: {
       const rows = await deps.readEntries(sessionPath);
       const project = await deps.projectAgentModels(cwd);
       const global = await deps.globalAgentModels();
-      const orch = await deps.assistantModel(id);
+      const paperAssistantModel = await deps.paperAssistantModel(id);
       const out: AgentEffectiveModelDto[] = [];
       for (const agent of agents) {
         const override = readOverrideForAgent(rows, agent.name);
-        const resolved = resolveEffectiveModel(override, project, global, orch, agent.name);
+        const resolved = resolveEffectiveModel(override, project, global, paperAssistantModel, agent.name);
         out.push(
           resolved
             ? { name: agent.name, model: resolved.model, source: resolved.source }

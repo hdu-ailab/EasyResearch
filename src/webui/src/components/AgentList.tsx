@@ -4,10 +4,11 @@ import type { AgentDto, AgentEffectiveModelDto } from "../../../web/contracts";
 import { getEffectiveModels, listAgents, listModels, setAgentModel } from "../api";
 import { agentDescription, agentDisplayName, type Translate } from "../i18n/agents";
 import { useI18n } from "../i18n/useI18n";
+import { PAPER_ASSISTANT_AGENT } from "../agent-identity";
 
 export type AgentStatus = "idle" | "working" | "error";
 
-const BUILTIN_ORDER = ["assistant", "search", "experiment", "writing", "figures"];
+const BUILTIN_ORDER = [PAPER_ASSISTANT_AGENT, "search", "experiment", "writing", "figures"];
 
 export interface AgentListProps {
   cwd: string;
@@ -59,9 +60,9 @@ export function AgentList({ cwd, statusByAgent, sessionId }: AgentListProps) {
   );
 
   const agents = roster ?? [];
-  const assistant = agents.find((agent) => agent.name === "assistant");
+  const paperAssistant = agents.find((agent) => agent.name === PAPER_ASSISTANT_AGENT);
   const subagents = agents
-    .filter((agent) => agent.name !== "assistant")
+    .filter((agent) => agent.name !== PAPER_ASSISTANT_AGENT)
     .sort((a, b) => {
       if (a.builtin !== b.builtin) return a.builtin ? -1 : 1;
       if (a.builtin) return BUILTIN_ORDER.indexOf(a.name) - BUILTIN_ORDER.indexOf(b.name);
@@ -76,14 +77,14 @@ export function AgentList({ cwd, statusByAgent, sessionId }: AgentListProps) {
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         <AgentCard
-          agent={assistant}
-          fallbackName="assistant"
-          fallbackDescription={t("work.assistantFallback")}
-          status={statusByAgent.assistant ?? "idle"}
-          entry={effective?.find((item) => item.name === "assistant")}
+          agent={paperAssistant}
+          fallbackName={PAPER_ASSISTANT_AGENT}
+          fallbackDescription={t("work.paperAssistantFallback")}
+          status={statusByAgent[PAPER_ASSISTANT_AGENT] ?? "idle"}
+          entry={effective?.find((item) => item.name === PAPER_ASSISTANT_AGENT)}
           models={models}
           busy={busy}
-          onApply={(model) => applyModel("assistant", model)}
+          onApply={(model) => applyModel(PAPER_ASSISTANT_AGENT, model)}
         />
         {subagents.map((agent) => (
           <AgentCard

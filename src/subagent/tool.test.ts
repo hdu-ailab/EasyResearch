@@ -32,6 +32,7 @@ vi.mock("../runtime/logger", () => ({
 }));
 
 vi.mock("./agents", () => ({
+  PAPER_ASSISTANT_AGENT: "paper-assistant",
   discoverAgents: vi.fn(),
 }));
 
@@ -185,7 +186,7 @@ describe("sessionNameFor", () => {
 describe("filterAgentsByAllowlist (ADR-022)", () => {
   const agents = [maker("search"), maker("experiment"), maker("writing")];
 
-  it("keeps all agents without an allowlist (assistant runtime)", () => {
+  it("keeps all agents without an allowlist (Paper Assistant runtime)", () => {
     expect(filterAgentsByAllowlist(agents, undefined).map((a) => a.name)).toEqual(["search", "experiment", "writing"]);
   });
 
@@ -198,21 +199,21 @@ describe("filterAgentsByAllowlist (ADR-022)", () => {
     expect(filterAgentsByAllowlist(agents, "")).toEqual([]);
   });
 
-  it("omits the Assistant and disabled specialists when no allowlist is configured", () => {
-    const assistant = maker("assistant");
+  it("omits the Paper Assistant and disabled specialists when no allowlist is configured", () => {
+    const paperAssistant = maker("paper-assistant");
     const disabled = { ...maker("writing"), enabled: false };
 
-    expect(filterAgentsByAllowlist([assistant, maker("search"), disabled], undefined).map((agent) => agent.name))
+    expect(filterAgentsByAllowlist([paperAssistant, maker("search"), disabled], undefined).map((agent) => agent.name))
       .toEqual(["search"]);
   });
 
-  it("does not make disabled or Assistant targets dispatchable through an explicit allowlist", () => {
-    const disabledAssistant = { ...maker("assistant"), enabled: false };
+  it("does not make disabled or Paper Assistant targets dispatchable through an explicit allowlist", () => {
+    const disabledPaperAssistant = { ...maker("paper-assistant"), enabled: false };
     const disabled = { ...maker("writing"), enabled: false };
 
     expect(filterAgentsByAllowlist(
-      [disabledAssistant, maker("search"), disabled],
-      "assistant,search,writing",
+      [disabledPaperAssistant, maker("search"), disabled],
+      "paper-assistant,search,writing",
     ).map((agent) => agent.name)).toEqual(["search"]);
   });
 

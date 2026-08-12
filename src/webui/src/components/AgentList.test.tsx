@@ -18,12 +18,12 @@ beforeEach(() => {
   vi.mocked(api.setAgentModel).mockReset();
   vi.mocked(api.listAgents).mockResolvedValue([
     {
-      name: "assistant",
+      name: "paper-assistant",
       description: "Coordinates work",
       enabled: true,
       builtin: true,
       source: "bundled",
-      filePath: "assistant.md",
+      filePath: "paper-assistant.md",
       effectiveTools: [],
       effectiveSkills: [],
       missingSkills: [],
@@ -42,7 +42,7 @@ beforeEach(() => {
   ]);
   vi.mocked(api.listModels).mockResolvedValue([{ provider: "openai", id: "gpt-4o" }]);
   vi.mocked(api.getEffectiveModels).mockResolvedValue([
-    { name: "assistant", model: "openai/gpt-4o", source: "inherit" },
+    { name: "paper-assistant", model: "openai/gpt-4o", source: "inherit" },
     { name: "search", model: "custom/model", source: "override" },
   ]);
   vi.mocked(api.setAgentModel).mockResolvedValue(undefined);
@@ -74,8 +74,8 @@ describe("AgentList", () => {
     expect(screen.getByText("Project-only reviewer")).toBeVisible();
   });
 
-  it("renders the assistant card and preserves an effective model absent from the catalog", async () => {
-    render(<AgentList cwd="/papers/project" statusByAgent={{ assistant: "idle", search: "working" }} sessionId="s1" />);
+  it("renders the Paper Assistant card and preserves an effective model absent from the catalog", async () => {
+    render(<AgentList cwd="/papers/project" statusByAgent={{ "paper-assistant": "idle", search: "working" }} sessionId="s1" />);
 
     expect(await screen.findByText("Paper Assistant")).toBeVisible();
     expect(screen.getAllByRole("combobox")[1]).toHaveDisplayValue("custom/model");
@@ -84,7 +84,7 @@ describe("AgentList", () => {
 
   it("sends null when a stage agent is reset to the default model", async () => {
     const user = userEvent.setup();
-    render(<AgentList cwd="/papers/project" statusByAgent={{ assistant: "idle", search: "idle" }} sessionId="s1" />);
+    render(<AgentList cwd="/papers/project" statusByAgent={{ "paper-assistant": "idle", search: "idle" }} sessionId="s1" />);
 
     const searchSelect = await screen.findByDisplayValue("custom/model");
     await user.selectOptions(searchSelect, "");
@@ -94,7 +94,7 @@ describe("AgentList", () => {
 
   it("keeps its header mounted when agent data fails", async () => {
     vi.mocked(api.listAgents).mockRejectedValue(new Error("unavailable"));
-    render(<AgentList cwd="/papers/project" statusByAgent={{ assistant: "idle" }} sessionId="s1" />);
+    render(<AgentList cwd="/papers/project" statusByAgent={{ "paper-assistant": "idle" }} sessionId="s1" />);
 
     expect(screen.getByText("Agents")).toBeVisible();
   });

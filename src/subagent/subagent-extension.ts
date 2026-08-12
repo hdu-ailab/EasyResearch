@@ -7,8 +7,8 @@ import { mountPiEventLogger, type PiEventBus } from "../runtime/pi-event-logger"
 
 /**
  * ADR-022: stage-agent runtimes mount this extension so nested dispatch works
- * (experiment/writing/figures → search). Unlike the assistant extension it
- * only registers the subagent tool — it never appends the assistant prompt.
+ * (experiment/writing/figures → search). Unlike the Paper Assistant extension it
+ * only registers the subagent tool — it never appends the Paper Assistant prompt.
  * Availability of the tool is still controlled by the agent's `--tools`
  * allowlist, so agents without `subagent` in frontmatter cannot dispatch.
  */
