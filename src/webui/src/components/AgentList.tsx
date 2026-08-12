@@ -10,6 +10,7 @@ export type AgentStatus = "idle" | "working" | "error";
 const BUILTIN_ORDER = ["assistant", "search", "experiment", "writing", "figures"];
 
 export interface AgentListProps {
+  cwd: string;
   statusByAgent: Record<string, AgentStatus>;
   sessionId: string;
 }
@@ -18,7 +19,7 @@ function dotClass(status: AgentStatus): string {
   return status === "working" ? "bg-v2-status-success" : status === "error" ? "bg-v2-status-warning" : "bg-v2-grey-400";
 }
 
-export function AgentList({ statusByAgent, sessionId }: AgentListProps) {
+export function AgentList({ cwd, statusByAgent, sessionId }: AgentListProps) {
   const { t } = useI18n();
   const [roster, setRoster] = useState<AgentDto[] | null>(null);
   const [models, setModels] = useState<Array<{ provider: string; id: string }>>([]);
@@ -27,7 +28,7 @@ export function AgentList({ statusByAgent, sessionId }: AgentListProps) {
 
   useEffect(() => {
     let alive = true;
-    Promise.all([listAgents(), listModels(), getEffectiveModels(sessionId)])
+    Promise.all([listAgents(cwd), listModels(), getEffectiveModels(sessionId)])
       .then(([agents, catalog, eff]) => {
         if (!alive) return;
         setRoster(agents);
@@ -40,7 +41,7 @@ export function AgentList({ statusByAgent, sessionId }: AgentListProps) {
     return () => {
       alive = false;
     };
-  }, [sessionId]);
+  }, [cwd, sessionId]);
 
   const applyModel = useCallback(
     async (agentName: string, model: string | null) => {
