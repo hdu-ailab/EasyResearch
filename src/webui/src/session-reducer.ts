@@ -48,6 +48,7 @@ export interface SessionMessageView {
 export interface SessionViewState {
   messages: SessionMessageView[];
   tools: ToolView[];
+  /** True while an agent run is active, independently of message streaming. */
   isStreaming: boolean;
   error: string | null;
   /** Agent name when this session line is a `easyresearch:` subagent line. */
@@ -247,10 +248,11 @@ function isToolResultMessage(message: UnknownMessage): boolean {
 
 export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
   const subagentName = subagentNameOf(snapshot);
+  const isStreaming = snapshot.session.isStreaming || snapshot.session.status === "running";
   const state: SessionViewState = {
     messages: [],
     tools: [],
-    isStreaming: snapshot.session.isStreaming,
+    isStreaming,
     error: null,
     subagentName,
     nextOrder: 0,
@@ -332,8 +334,13 @@ export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
   });
   state.tools = state.tools.map((tool) => ({
     ...tool,
-    running: tool.done ? false : snapshot.session.isStreaming,
+    running: tool.done ? false : isStreaming,
   }));
+  const candidate = state.messages.at(-1);
+  if (isStreaming && candidate?.role === "assistant") {
+    state.activeMessageKey = candidate.key;
+    candidate.streaming = true;
+  }
   return applySubagentSummaries(state, snapshot.subagents ?? []);
 }
 
@@ -419,6 +426,35 @@ export function mergeSnapshot(state: SessionViewState, snapshot: SessionSnapshot
         : {}),
     };
   });
+  const snapshotMessageIdentities = new Set(
+    next.messages.flatMap((message): string[] => (message.identity === undefined ? [] : [message.identity])),
+  );
+  const snapshotMessageKeys = new Set(next.messages.map((message) => message.key));
+  const snapshotToolKeys = new Set(next.tools.map((tool) => tool.key));
+  const liveOnlyRows: Array<SessionMessageView | ToolView> = [
+    ...state.messages.filter(
+      (message) =>
+        (message.identity === undefined || !snapshotMessageIdentities.has(message.identity)) &&
+        !snapshotMessageKeys.has(message.key),
+    ),
+    ...state.tools.filter((tool) => !snapshotToolKeys.has(tool.key)),
+  ].sort((left, right) => left.order - right.order);
+  for (const row of liveOnlyRows) {
+    const appended = { ...row, order: next.nextOrder++ };
+    if ("role" in appended) {
+      next.messages.push(appended);
+    } else {
+      next.tools.push(appended);
+    }
+  }
+  const active = next.isStreaming ? next.messages.at(-1) : undefined;
+  if (active?.role === "assistant" && active.streaming) {
+    next.messages = next.messages.map((message) => ({ ...message, streaming: message.key === active.key }));
+    next.activeMessageKey = active.key;
+  } else {
+    next.messages = next.messages.map((message) => ({ ...message, streaming: false }));
+    next.activeMessageKey = undefined;
+  }
   return next;
 }
 
@@ -429,6 +465,8 @@ export function mergeSnapshot(state: SessionViewState, snapshot: SessionSnapshot
  */
 export function reduceSessionEvent(state: SessionViewState, event: AgentSessionEvent): SessionViewState {
   switch (event.type) {
+    case "agent_start":
+      return { ...state, isStreaming: true };
     case "message_start": {
       const message = event.message as UnknownMessage;
       if (isDirectBashExecution(message) || isToolResultMessage(message)) return state;
@@ -440,7 +478,6 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
       const key = keyFor(message, state.messages.length);
       const next: SessionViewState = {
         ...state,
-        isStreaming: true,
         error: typeof errorMessage === "string" && errorMessage ? errorMessage : null,
         nextOrder: state.nextOrder + 1,
       };
@@ -459,7 +496,7 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
       if (label) view.label = label;
       if (reasoning) view.reasoning = reasoning;
       next.messages = [...state.messages, view];
-      next.activeMessageKey = key;
+      next.activeMessageKey = role === "assistant" ? key : undefined;
       return next;
     }
     case "message_update": {
@@ -522,7 +559,7 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
                   isThinking: !update.complete,
                   streaming: true,
                 };
-      return { ...state, messages: nextMessages, isStreaming: true };
+      return { ...state, messages: nextMessages };
     }
     case "message_end": {
       const key = state.activeMessageKey ?? keyFor(event.message, 0);

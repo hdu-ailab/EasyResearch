@@ -528,7 +528,7 @@ describe("WorkPage", () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await screen.findByText("starting research");
     expect(screen.queryByRole("button", { name: /stop/i })).toBeNull();
-    emit({ type: "message_start", message: { role: "assistant", id: "m3", content: [] } });
+    emitInAct({ type: "agent_start" });
     await screen.findByRole("button", { name: /stop/i });
     await userEvent.setup().click(screen.getByRole("button", { name: /stop/i }));
     await waitFor(() => expect(api.abortSession).toHaveBeenCalledWith("s1"));
@@ -1207,7 +1207,7 @@ describe("WorkPage", () => {
       messages: [{ role: "assistant", content: [{ type: "text", text: "after reconnect" }] }],
     });
     expect(await screen.findByText("after reconnect")).toBeTruthy();
-    expect(screen.queryByText("starting research")).toBeNull();
+    expect(screen.getByText("starting research")).toBeTruthy();
   });
 
   it("rehydrates a running subagent tab and card, then updates both in place", async () => {
