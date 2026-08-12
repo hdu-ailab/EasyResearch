@@ -1,5 +1,5 @@
 import { Activity, FileJson, Languages, MessageSquare, Minus, Plus, Settings2, UserPlus } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AgentDto, AgentResourceDto, SkillResourceDto } from "../../../web/contracts";
 import {
   createAgentResource,
@@ -163,7 +163,9 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
   const [skills, setSkills] = useState<SkillResourceDto[]>([]);
   const [diagnosticScope, setDiagnosticScope] = useState("global");
   const [diagnosticAgents, setDiagnosticAgents] = useState<AgentDto[]>([]);
+  const [diagnosticError, setDiagnosticError] = useState<string | null>(null);
   const [projects, setProjects] = useState<Array<{ cwd: string }>>([]);
+  const diagnosticRequest = useRef(0);
   const [agentEditor, setAgentEditor] = useState<AgentResourceDto | null>(null);
   const [skillEditor, setSkillEditor] = useState<SkillResourceDto | null>(null);
   const [detailsAgent, setDetailsAgent] = useState<AgentDto | null>(null);
@@ -178,7 +180,7 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
         setEffectiveAssistantModel(s.effectiveAssistantModel);
         setResourceAgents(globalAgents);
         setAgents(globalAgents.length > 0 ? globalAgents : fallbackAgents);
-        setDiagnosticAgents(fallbackAgents);
+        if (diagnosticRequest.current === 0) setDiagnosticAgents(fallbackAgents);
         setModels(m);
         setSkills(skillRows);
       })
@@ -271,11 +273,17 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
   };
 
   const selectDiagnosticScope = async (scope: string) => {
+    const request = ++diagnosticRequest.current;
     setDiagnosticScope(scope);
+    setDiagnosticAgents([]);
+    setDiagnosticError(null);
     try {
-      setDiagnosticAgents(await listAgents(scope === "global" ? undefined : scope));
+      const next = await listAgents(scope === "global" ? undefined : scope);
+      if (request === diagnosticRequest.current) setDiagnosticAgents(next);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (request === diagnosticRequest.current) {
+        setDiagnosticError(e instanceof Error ? e.message : String(e));
+      }
     }
   };
 
@@ -592,7 +600,7 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
                   <h3 className="text-[12px] font-semibold text-v2-text-text-base">{t("settings.resources.skills")}</h3>
                   <select
                     aria-label={t("settings.resources.diagnosticScope")}
-                    className="h-7 min-w-0 max-w-[240px] rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[12px] text-v2-text-text-base outline-none focus:border-v2-blue-600"
+                    className="h-7 min-w-0 max-w-[240px] rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[12px] text-v2-text-text-base outline-none focus:border-v2-blue-600 focus:outline-2 focus:outline-offset-2 focus:outline-v2-blue-600"
                     value={diagnosticScope}
                     onChange={(event) => void selectDiagnosticScope(event.target.value)}
                   >
@@ -618,6 +626,11 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
                       </div>
                     ))}
                   </div>
+                )}
+                {diagnosticError && (
+                  <p className="mt-2 text-[12px] text-v2-status-error" role="alert">
+                    {diagnosticError}
+                  </p>
                 )}
                 <div className="mt-2 flex flex-col gap-2">
                   {skills.map((skill) => (
