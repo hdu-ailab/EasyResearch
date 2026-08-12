@@ -879,6 +879,127 @@ describe("WorkPage", () => {
     expect(api.getChildSnapshot).toHaveBeenCalledTimes(2);
   });
 
+  it("preserves nested child output that arrives after a refresh request begins", async () => {
+    const user = userEvent.setup();
+    let resolveRefresh!: (value: Awaited<ReturnType<typeof api.getChildSnapshot>>) => void;
+    vi.mocked(api.getSnapshot).mockResolvedValue({
+      session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
+      subagents: [{ toolCallId: "sub-race", childSessionId: "child-race", agent: "search" }],
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "sub-race", name: "subagent", arguments: '{"agent":"search"}' }],
+        },
+      ],
+    } as never);
+    vi.mocked(api.getChildSnapshot)
+      .mockResolvedValueOnce({
+        session: { id: "child-race", cwd: "/p", sessionName: "easyresearch:search" },
+        messages: [],
+      } as never)
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveRefresh = resolve;
+          }),
+      );
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await user.click(await screen.findByRole("button", { name: "View details" }));
+    await waitFor(() => expect(api.getChildSnapshot).toHaveBeenCalledTimes(1));
+
+    emitInAct({
+      type: "snapshot",
+      session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
+      subagents: [{ toolCallId: "sub-race", childSessionId: "child-race", agent: "search" }],
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "sub-race", name: "subagent", arguments: '{"agent":"search"}' }],
+        },
+      ],
+    });
+    await waitFor(() => expect(api.getChildSnapshot).toHaveBeenCalledTimes(2));
+    emitChildHeader("sub-race", "search", "child-race");
+    emitRawChildEvent("sub-race", "search", {
+      type: "message_start",
+      message: { id: "race-message", role: "assistant", content: [] },
+    });
+    emitRawChildEvent("sub-race", "search", {
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "new nested output" },
+    });
+    expect(await screen.findByText("new nested output")).toBeVisible();
+
+    act(() =>
+      resolveRefresh({
+        session: { id: "child-race", cwd: "/p", sessionName: "easyresearch:search" },
+        messages: [
+          {
+            id: "race-message",
+            role: "assistant",
+            content: [{ type: "text", text: "stale refresh output" }],
+          },
+        ],
+      } as never),
+    );
+
+    await waitFor(() => expect(screen.getByText("new nested output")).toBeVisible());
+    expect(screen.queryByText("stale refresh output")).toBeNull();
+  });
+
+  it("ignores a delayed child response from an old parent session", async () => {
+    const user = userEvent.setup();
+    let resolveOld!: (value: Awaited<ReturnType<typeof api.getChildSnapshot>>) => void;
+    vi.mocked(api.getSnapshot)
+      .mockResolvedValueOnce({
+        session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+        subagents: [{ toolCallId: "old-tool", childSessionId: "shared-child", agent: "search" }],
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "toolCall", id: "old-tool", name: "subagent", arguments: '{"agent":"search"}' }],
+          },
+        ],
+      } as never)
+      .mockResolvedValueOnce({
+        session: { id: "s2", cwd: "/p", isStreaming: false, status: "ready" },
+        subagents: [{ toolCallId: "new-tool", childSessionId: "shared-child", agent: "writing" }],
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "toolCall", id: "new-tool", name: "subagent", arguments: '{"agent":"writing"}' }],
+          },
+        ],
+      } as never);
+    vi.mocked(api.getChildSnapshot)
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveOld = resolve;
+          }),
+      )
+      .mockResolvedValueOnce({
+        session: { id: "shared-child", cwd: "/p", sessionName: "easyresearch:writing" },
+        messages: [{ role: "assistant", content: [{ type: "text", text: "new parent child" }] }],
+      } as never);
+    const { rerender } = render(<WorkPage key="s1" id="s1" cwd="/p" onBack={() => {}} />);
+    await user.click(await screen.findByRole("button", { name: "View details" }));
+
+    rerender(<WorkPage key="s2" id="s2" cwd="/p" onBack={() => {}} />);
+    await user.click(await screen.findByRole("button", { name: "View details" }));
+    expect(await screen.findByText("new parent child")).toBeVisible();
+    act(() =>
+      resolveOld({
+        session: { id: "shared-child", cwd: "/p", sessionName: "easyresearch:search" },
+        messages: [{ role: "assistant", content: [{ type: "text", text: "old parent child" }] }],
+      } as never),
+    );
+
+    await Promise.resolve();
+    expect(screen.getByText("new parent child")).toBeVisible();
+    expect(screen.queryByText("old parent child")).toBeNull();
+  });
+
   it("retries a failed child load after close and reopen without duplicate concurrent requests", async () => {
     const user = userEvent.setup();
     let rejectFirst!: (error: unknown) => void;

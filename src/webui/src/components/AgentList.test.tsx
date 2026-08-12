@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../api";
@@ -84,4 +84,65 @@ describe("AgentList", () => {
 
     expect(screen.getByText("Agents")).toBeVisible();
   });
+
+  it("does not let an old session model response replace the current session", async () => {
+    const oldModels = deferred<Awaited<ReturnType<typeof api.getEffectiveModels>>>();
+    vi.mocked(api.getEffectiveModels)
+      .mockReturnValueOnce(oldModels.promise)
+      .mockResolvedValueOnce([
+        { name: "assistant", model: "openai/current", source: "override" },
+        { name: "search", model: "openai/current", source: "override" },
+      ]);
+    const { rerender } = render(
+      <AgentList cwd="/p" statusByAgent={{ assistant: "idle", search: "idle" }} sessionId="s1" />,
+    );
+    rerender(<AgentList cwd="/p" statusByAgent={{ assistant: "idle", search: "idle" }} sessionId="s2" />);
+    expect(await screen.findAllByDisplayValue("openai/current")).toHaveLength(2);
+
+    oldModels.resolve([
+      { name: "assistant", model: "openai/old", source: "override" },
+      { name: "search", model: "openai/old", source: "override" },
+    ]);
+
+    await waitFor(() => expect(screen.queryByDisplayValue("openai/old")).toBeNull());
+  });
+
+  it("shows disabled stage agents read-only and disables their model selector", async () => {
+    vi.mocked(api.listAgents).mockResolvedValueOnce([
+      {
+        name: "assistant",
+        description: "Coordinates work",
+        enabled: true,
+        builtin: true,
+        source: "bundled",
+        filePath: "assistant.md",
+        effectiveTools: [],
+        effectiveSkills: [],
+      },
+      {
+        name: "search",
+        description: "Finds papers",
+        enabled: false,
+        builtin: true,
+        source: "bundled",
+        filePath: "search.md",
+        effectiveTools: [],
+        effectiveSkills: [],
+      },
+    ]);
+    render(<AgentList cwd="/p" statusByAgent={{ assistant: "idle", search: "idle" }} sessionId="s1" />);
+
+    const search = (await screen.findByText("Search")).closest<HTMLElement>("div.mt-3")!;
+    expect(within(search).getByText("Disabled")).toBeVisible();
+    expect(within(search).getByRole("combobox")).toBeDisabled();
+    expect(screen.queryByRole("switch")).toBeNull();
+  });
 });
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}

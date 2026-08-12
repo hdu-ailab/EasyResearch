@@ -413,20 +413,33 @@ export function mergeSnapshot(state: SessionViewState, snapshot: SessionSnapshot
     const prior = priorSubagents.get(tool.key);
     if (!prior) return tool;
     const summary = summaries.get(tool.key);
+    const compatible =
+      summary === undefined ||
+      (summary.step === prior.step && (prior.sessionId === undefined || summary.childSessionId === prior.sessionId));
     return {
       ...tool,
-      ...(usableText(tool.latestMessage) === undefined && usableText(prior.latestMessage) !== undefined
+      ...(compatible && usableText(tool.latestMessage) === undefined && usableText(prior.latestMessage) !== undefined
         ? { latestMessage: prior.latestMessage }
         : {}),
-      ...(summary === undefined && prior.agentName !== undefined ? { agentName: prior.agentName } : {}),
-      ...(summary?.step === undefined && prior.step !== undefined ? { step: prior.step } : {}),
-      ...(summary === undefined && prior.sessionId !== undefined ? { sessionId: prior.sessionId } : {}),
-      ...(tool.sessionLinks === undefined && prior.sessionLinks !== undefined
+      ...(compatible && summary === undefined && prior.agentName !== undefined ? { agentName: prior.agentName } : {}),
+      ...(compatible && summary?.step === undefined && prior.step !== undefined ? { step: prior.step } : {}),
+      ...(compatible && summary === undefined && prior.sessionId !== undefined ? { sessionId: prior.sessionId } : {}),
+      ...(compatible && tool.sessionLinks === undefined && prior.sessionLinks !== undefined
         ? { sessionLinks: prior.sessionLinks }
         : {}),
     };
   });
   return next;
+}
+
+export function terminateSessionRun(state: SessionViewState, clearError = false): SessionViewState {
+  return {
+    ...state,
+    isStreaming: false,
+    error: clearError ? null : state.error,
+    activeMessageKey: undefined,
+    messages: state.messages.map((message) => ({ ...message, isThinking: false, streaming: false })),
+  };
 }
 
 /**
@@ -473,11 +486,36 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
     case "message_update": {
       const update = assistantUpdateOf(event);
       if (!update) return state;
-      const key = state.activeMessageKey;
+      let currentState = state;
+      if (currentState.activeMessageKey === undefined && !currentState.messages.some((message) => message.streaming)) {
+        if (!currentState.isStreaming) return currentState;
+        const key = `stream:${currentState.nextOrder}`;
+        currentState = {
+          ...currentState,
+          activeMessageKey: key,
+          nextOrder: currentState.nextOrder + 1,
+          messages: [
+            ...currentState.messages,
+            {
+              key,
+              role: "assistant",
+              text: "...",
+              isThinking: false,
+              streaming: true,
+              error: false,
+              order: currentState.nextOrder,
+              ...(labelFor("assistant", currentState.subagentName)
+                ? { label: labelFor("assistant", currentState.subagentName) }
+                : {}),
+            },
+          ],
+        };
+      }
+      const key = currentState.activeMessageKey;
       let lastIndex = -1;
       if (key !== undefined) {
-        for (let i = state.messages.length - 1; i >= 0; i--) {
-          if (state.messages[i]?.key === key) {
+        for (let i = currentState.messages.length - 1; i >= 0; i--) {
+          if (currentState.messages[i]?.key === key) {
             lastIndex = i;
             break;
           }
@@ -485,22 +523,22 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
       }
       if (lastIndex === -1) {
         // fallback: last streaming message (no active key or row already cleared)
-        for (let i = state.messages.length - 1; i >= 0; i--) {
-          if (state.messages[i]?.streaming) {
+        for (let i = currentState.messages.length - 1; i >= 0; i--) {
+          if (currentState.messages[i]?.streaming) {
             lastIndex = i;
             break;
           }
         }
       }
-      if (lastIndex === -1) return state;
+      if (lastIndex === -1) return currentState;
       if (
         (update.kind === "text" && !update.delta) ||
         (update.kind === "thinking" && !update.delta && !update.complete)
       )
-        return state;
-      const target = state.messages[lastIndex];
-      if (!target) return state;
-      const nextMessages = [...state.messages];
+        return currentState;
+      const target = currentState.messages[lastIndex];
+      if (!target) return currentState;
+      const nextMessages = [...currentState.messages];
       nextMessages[lastIndex] =
         update.kind === "text"
           ? {
@@ -530,11 +568,16 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
                   isThinking: !update.complete,
                   streaming: true,
                 };
-      return { ...state, messages: nextMessages };
+      return { ...currentState, messages: nextMessages };
     }
     case "message_end": {
-      const key = state.activeMessageKey ?? keyFor(event.message, 0);
       const message = event.message as UnknownMessage;
+      const identity = identityFor(message);
+      const key =
+        state.activeMessageKey ??
+        (identity === undefined
+          ? undefined
+          : state.messages.find((candidate) => candidate.role === "assistant" && candidate.identity === identity)?.key);
       const { text, reasoning } = splitContent(message);
       const content = message.content;
       const hasToolCall = Array.isArray(content)
@@ -544,12 +587,15 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
         : false;
       const error = typeof message.errorMessage === "string" && Boolean(message.errorMessage);
       const omitToolCallOnlyRow = message.role === "assistant" && hasToolCall && !text && !reasoning && !error;
-      const nextMessages = omitToolCallOnlyRow
-        ? state.messages.filter((m) => m.key !== key)
+      let nextMessages = omitToolCallOnlyRow
+        ? key === undefined
+          ? state.messages
+          : state.messages.filter((m) => m.key !== key)
         : state.messages.map((m) =>
-            m.key === key
+            key !== undefined && m.key === key
               ? {
                   ...m,
+                  ...(identity !== undefined ? { identity } : {}),
                   text,
                   ...(reasoning ? { reasoning } : { reasoning: undefined }),
                   isThinking: false,
@@ -558,7 +604,35 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
                 }
               : m,
           );
-      return { ...state, messages: nextMessages, activeMessageKey: undefined };
+      if (
+        !omitToolCallOnlyRow &&
+        message.role === "assistant" &&
+        !nextMessages.some((candidate) => candidate.key === key)
+      ) {
+        const existingIndex = identity ? nextMessages.findIndex((candidate) => candidate.identity === identity) : -1;
+        const finalMessage: SessionMessageView = {
+          key: keyFor(message, state.nextOrder),
+          ...(identity !== undefined ? { identity } : {}),
+          role: "assistant",
+          text,
+          ...(reasoning ? { reasoning } : {}),
+          isThinking: false,
+          streaming: false,
+          error,
+          order: existingIndex >= 0 ? (nextMessages[existingIndex]?.order ?? state.nextOrder) : state.nextOrder,
+          ...(labelFor("assistant", state.subagentName) ? { label: labelFor("assistant", state.subagentName) } : {}),
+        };
+        nextMessages =
+          existingIndex >= 0
+            ? nextMessages.map((candidate, index) => (index === existingIndex ? finalMessage : candidate))
+            : [...nextMessages, finalMessage];
+      }
+      return {
+        ...state,
+        messages: nextMessages,
+        nextOrder: nextMessages.length > state.messages.length ? state.nextOrder + 1 : state.nextOrder,
+        activeMessageKey: undefined,
+      };
     }
     case "tool_execution_start": {
       const { toolCallId, toolName, args } = event as unknown as {
@@ -667,13 +741,7 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
       return changed ? { ...state, tools } : state;
     }
     case "agent_settled": {
-      return {
-        ...state,
-        isStreaming: false,
-        error: null,
-        activeMessageKey: undefined,
-        messages: state.messages.map((m) => ({ ...m, isThinking: false, streaming: false })),
-      };
+      return terminateSessionRun(state, true);
     }
     default:
       return state;

@@ -102,6 +102,8 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   const childLoaded = useRef(new Set<string>());
   const childRequests = useRef(new Map<string, Promise<void>>());
   const childRefreshPending = useRef(new Set<string>());
+  const childRevisions = useRef(new Map<string, number>());
+  const parentOwner = useRef({ id, generation: 1 });
   const loadChildRef = useRef<(childId: string, refresh?: boolean) => Promise<void>>(async () => {});
   const resizing = useRef(false);
   const rowRef = useRef<HTMLDivElement>(null);
@@ -128,6 +130,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
         nested?.sessionId ?? (nested ? childSessionByTool.current.get(nested.toolCallId) : undefined);
       const nestedEvent = nested?.event;
       if (nestedSessionId && nestedEvent) {
+        childRevisions.current.set(nestedSessionId, (childRevisions.current.get(nestedSessionId) ?? 0) + 1);
         setChildViews((current) => ({
           ...current,
           [nestedSessionId]: reduceSessionEvent(
@@ -143,6 +146,9 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   const connection = useSessionConnection({ initialSessionId: id, cwd, onEvent: handleWorkEvent });
   const sessionView = connection.view;
   const sessionId = connection.sessionId;
+  if (parentOwner.current.id !== sessionId) {
+    parentOwner.current = { id: sessionId, generation: parentOwner.current.generation + 1 };
+  }
   const status = connection.status;
   const statusText = connection.notice;
   const accepting = connection.accepting;
@@ -151,6 +157,17 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   useEffect(() => {
     tabsStateRef.current = tabsState;
   }, [tabsState]);
+
+  useEffect(() => {
+    if (parentOwner.current.id !== sessionId) return;
+    setChildViews({});
+    setChildErrors({});
+    childSessionByTool.current.clear();
+    childLoaded.current.clear();
+    childRequests.current.clear();
+    childRefreshPending.current.clear();
+    childRevisions.current.clear();
+  }, [sessionId]);
 
   useEffect(() => {
     const row = rowRef.current;
@@ -249,9 +266,13 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
       }
       if (!refresh && childLoaded.current.has(requestKey)) return Promise.resolve();
 
+      const owner = parentOwner.current;
+      const startRevision = childRevisions.current.get(childId) ?? 0;
+      const ownsRequest = () => parentOwner.current === owner && owner.id === sessionId;
       setChildErrors((current) => (current[childId] ? { ...current, [childId]: false } : current));
       const request = getChildSnapshot(sessionId, childId)
         .then((snapshot) => {
+          if (!ownsRequest()) return;
           const hydrated = fromSnapshot({
             session: {
               ...snapshot.session,
@@ -272,16 +293,20 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
             ...current,
             [childId]: current[childId]
               ? refresh
-                ? mergeChildView(current[childId], hydrated)
+                ? (childRevisions.current.get(childId) ?? 0) > startRevision
+                  ? mergeChildView(hydrated, current[childId])
+                  : mergeChildView(current[childId], hydrated)
                 : mergeChildView(hydrated, current[childId])
               : hydrated,
           }));
         })
         .catch(() => {
+          if (!ownsRequest()) return;
           childLoaded.current.delete(requestKey);
           setChildErrors((current) => ({ ...current, [childId]: true }));
         })
         .finally(() => {
+          if (!ownsRequest()) return;
           childRequests.current.delete(requestKey);
           if (childRefreshPending.current.delete(requestKey)) {
             void loadChildRef.current(childId, true);

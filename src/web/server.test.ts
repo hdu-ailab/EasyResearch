@@ -641,6 +641,95 @@ describe("web routes", () => {
     }
   });
 
+  it("cancels cleanly while SSE snapshot summaries are still pending", async () => {
+    let resolveSummaries!: (summaries: SubagentSessionSummaryDto[]) => void;
+    const summaries = new Promise<SubagentSessionSummaryDto[]>((resolve) => {
+      resolveSummaries = resolve;
+    });
+    let activeListeners = 0;
+    const subscribe = registry.subscribe.bind(registry);
+    vi.spyOn(registry, "subscribe").mockImplementation((id, listener) => {
+      const unsubscribe = subscribe(id, listener);
+      activeListeners += 1;
+      return () => {
+        activeListeners -= 1;
+        unsubscribe();
+      };
+    });
+    setup({
+      subagentSessions: {
+        summaries: async () => summaries,
+        snapshot: async () => {
+          throw new Error("not used");
+        },
+      },
+    });
+    const created = await registry.create({ cwd: projectDir });
+    const res = await handler(new Request(`http://localhost/api/sessions/${created.id}/events`));
+    const reader = res.body!.getReader();
+
+    await reader.cancel();
+    resolveSummaries([]);
+    await Promise.resolve();
+
+    expect(activeListeners).toBe(0);
+    expect(await reader.read()).toEqual({ done: true, value: undefined });
+  });
+
+  it("keeps buffered events after a committed snapshot in Pi acquisition order", async () => {
+    let resolveSummaries!: (summaries: SubagentSessionSummaryDto[]) => void;
+    const summaries = new Promise<SubagentSessionSummaryDto[]>((resolve) => {
+      resolveSummaries = resolve;
+    });
+    setup({
+      subagentSessions: {
+        summaries: async () => summaries,
+        snapshot: async () => {
+          throw new Error("not used");
+        },
+      },
+    });
+    const created = await registry.create({ cwd: projectDir });
+    const adapter = factory.created[0]!;
+    adapter.messages = [assistant("committed")];
+    const res = await handler(new Request(`http://localhost/api/sessions/${created.id}/events`));
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+
+    try {
+      // Pi exposes assistant text through getMessages only after that message is
+      // committed/message_end. Events arriving after that acquisition belong
+      // to the next live message; Pi does not emit a duplicate delta for the
+      // already committed snapshot message.
+      adapter.events.forEach((listener) =>
+        listener({ type: "message_start", message: { ...assistant(""), timestamp: 2 } } as never),
+      );
+      adapter.events.forEach((listener) =>
+        listener({
+          type: "message_update",
+          assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "next" },
+        } as never),
+      );
+      resolveSummaries([]);
+
+      let body = "";
+      const frames: Array<{ type: string; messages?: AgentMessage[] }> = [];
+      while (frames.length < 3) {
+        const { value } = await reader.read();
+        body += decoder.decode(value, { stream: true });
+        const chunks = body.split("\n\n");
+        body = chunks.pop() ?? "";
+        for (const chunk of chunks) {
+          frames.push(JSON.parse(chunk.slice("data: ".length)) as { type: string; messages?: AgentMessage[] });
+        }
+      }
+      expect(frames.map((frame) => frame.type)).toEqual(["snapshot", "message_start", "message_update"]);
+      expect(frames[0]?.messages).toEqual([assistant("committed")]);
+    } finally {
+      await reader.cancel();
+    }
+  });
+
   it("closes and unsubscribes when SSE snapshot initialization fails", async () => {
     let rejectSummaries: ((error: Error) => void) | undefined;
     let summariesRequested: (() => void) | undefined;
