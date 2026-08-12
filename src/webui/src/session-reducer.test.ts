@@ -970,9 +970,7 @@ describe("session reducer", () => {
 
     const merged = mergeSnapshot(prior, snapshot);
 
-    expect(merged.messages.map((message) => [message.role, message.text])).toEqual([
-      ["assistant", "persisted answer"],
-    ]);
+    expect(merged.messages.map((message) => [message.role, message.text])).toEqual([["assistant", "persisted answer"]]);
   });
 
   it("extracts nested child deltas and reduces them token-by-token into only that child state", () => {
