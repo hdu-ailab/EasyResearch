@@ -123,9 +123,8 @@ export function FileBrowser({ root, fileEvent = null }: FileBrowserProps) {
           {activeTab ? (
             <FilePreview path={activeTab} textFile={contents[activeTab] ?? null} onOpenFile={openPath} />
           ) : (
-            <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
+            <div className="flex h-full items-center justify-center text-center">
               <p className="text-[13px] font-medium text-v2-text-text-base">{t("files.emptyTitle")}</p>
-              <p className="text-[12px] text-v2-text-text-faint">{t("files.emptyHint")}</p>
             </div>
           )}
         </div>
