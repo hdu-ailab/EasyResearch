@@ -431,6 +431,30 @@ export function mergeSnapshot(state: SessionViewState, snapshot: SessionSnapshot
         : {}),
     };
   });
+  const priorActiveNoIdentityAssistant = state.messages.find(
+    (message) =>
+      message.key === state.activeMessageKey && message.role === "assistant" && message.identity === undefined,
+  );
+  const snapshotActiveNoIdentityAssistant = next.messages.find(
+    (message) =>
+      message.key === snapshotActiveMessageKey && message.role === "assistant" && message.identity === undefined,
+  );
+  const reconciledPriorActive =
+    priorActiveNoIdentityAssistant &&
+    snapshotActiveNoIdentityAssistant &&
+    priorActiveNoIdentityAssistant.error === snapshotActiveNoIdentityAssistant.error &&
+    priorActiveNoIdentityAssistant.agentId === snapshotActiveNoIdentityAssistant.agentId &&
+    priorActiveNoIdentityAssistant.label === snapshotActiveNoIdentityAssistant.label &&
+    priorActiveNoIdentityAssistant.text.startsWith(snapshotActiveNoIdentityAssistant.text) &&
+    (priorActiveNoIdentityAssistant.reasoning ?? "").startsWith(snapshotActiveNoIdentityAssistant.reasoning ?? "")
+      ? priorActiveNoIdentityAssistant
+      : undefined;
+  if (reconciledPriorActive && snapshotActiveNoIdentityAssistant) {
+    snapshotActiveNoIdentityAssistant.text = reconciledPriorActive.text;
+    snapshotActiveNoIdentityAssistant.reasoning = reconciledPriorActive.reasoning;
+    snapshotActiveNoIdentityAssistant.error = reconciledPriorActive.error;
+    snapshotActiveNoIdentityAssistant.isThinking = reconciledPriorActive.isThinking;
+  }
   const snapshotMessageIdentities = new Set(
     next.messages.flatMap((message): string[] => (message.identity === undefined ? [] : [message.identity])),
   );
@@ -440,9 +464,16 @@ export function mergeSnapshot(state: SessionViewState, snapshot: SessionSnapshot
     const fingerprint = contentFingerprint(message);
     snapshotNoIdentityCounts.set(fingerprint, (snapshotNoIdentityCounts.get(fingerprint) ?? 0) + 1);
   }
+  if (reconciledPriorActive && snapshotActiveNoIdentityAssistant) {
+    const fingerprint = contentFingerprint(snapshotActiveNoIdentityAssistant);
+    const remaining = snapshotNoIdentityCounts.get(fingerprint) ?? 0;
+    if (remaining <= 1) snapshotNoIdentityCounts.delete(fingerprint);
+    else snapshotNoIdentityCounts.set(fingerprint, remaining - 1);
+  }
   const snapshotToolKeys = new Set(next.tools.map((tool) => tool.key));
   const liveOnlyRows: Array<SessionMessageView | ToolView> = [
     ...state.messages.filter((message) => {
+      if (message === reconciledPriorActive) return false;
       if (message.identity !== undefined) return !snapshotMessageIdentities.has(message.identity);
       const fingerprint = contentFingerprint(message);
       const remaining = snapshotNoIdentityCounts.get(fingerprint) ?? 0;
