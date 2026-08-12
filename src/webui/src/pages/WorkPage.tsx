@@ -1,6 +1,7 @@
 import { Bot, FileSearch } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FileWatcherEvent } from "../../../web/contracts";
+import { PAPER_ASSISTANT_AGENT } from "../agent-identity";
 import { getChildSnapshot } from "../api";
 import { AgentList, type AgentStatus } from "../components/AgentList";
 import { AgentTabBar } from "../components/AgentTabBar";
@@ -9,7 +10,6 @@ import { ChatTranscript, type ChatTranscriptHandle } from "../components/ChatTra
 import { FileBrowser } from "../components/FileBrowser";
 import { ProductMark, Topbar, TopbarIconButton } from "../components/Topbar";
 import { WorkMobileTabs, type WorkView } from "../components/WorkMobileTabs";
-import { PAPER_ASSISTANT_AGENT } from "../agent-identity";
 import { parseFileWatcherEvent } from "../file-watcher";
 import { usePanelTransition } from "../hooks/usePanelTransition";
 import { useSessionConnection } from "../hooks/useSessionConnection";
@@ -247,7 +247,8 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   const activeChildId = activeTab.startsWith("session:") ? activeTab.slice(8) : undefined;
   const activeView = activeChildId ? childViews[activeChildId] : undefined;
   const activeMessages = activeTab === PAPER_ASSISTANT_AGENT ? sessionView.messages : (activeView?.messages ?? []);
-  const activeTools = activeTab === PAPER_ASSISTANT_AGENT ? sessionView.tools : activeChildId ? (activeView?.tools ?? []) : [];
+  const activeTools =
+    activeTab === PAPER_ASSISTANT_AGENT ? sessionView.tools : activeChildId ? (activeView?.tools ?? []) : [];
   const statusByAgent = Object.fromEntries([
     [PAPER_ASSISTANT_AGENT, sessionView.error !== null ? "error" : sessionView.isStreaming ? "working" : "idle"],
     ...tabsState.tabs.map((tab) => [tab.agent, tab.running ? "working" : "idle"]),

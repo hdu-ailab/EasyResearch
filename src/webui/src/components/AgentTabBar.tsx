@@ -1,8 +1,8 @@
 import { X } from "lucide-react";
+import { PAPER_ASSISTANT_AGENT } from "../agent-identity";
 import { agentDisplayName } from "../i18n/agents";
 import { useI18n } from "../i18n/useI18n";
 import { childTabLabel, type SubagentTabState } from "../subagent-tabs";
-import { PAPER_ASSISTANT_AGENT } from "../agent-identity";
 
 export type AgentStatus = "idle" | "working" | "error";
 

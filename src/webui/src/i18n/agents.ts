@@ -1,5 +1,5 @@
-import type { MessageKey } from "./messages";
 import { PAPER_ASSISTANT_AGENT } from "../agent-identity";
+import type { MessageKey } from "./messages";
 
 /** Roster agent ids mapped to their localized display-name keys (ADR-035). */
 const AGENT_NAME_KEYS: Record<string, MessageKey> = {

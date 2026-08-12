@@ -1,6 +1,7 @@
 import { Activity, FileJson, Languages, MessageSquare, Minus, Plus, Settings2, UserPlus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { AgentDto, AgentResourceDto, SkillResourceDto } from "../../../web/contracts";
+import { PAPER_ASSISTANT_AGENT } from "../agent-identity";
 import {
   createAgentResource,
   getWebuiSettings,
@@ -24,7 +25,6 @@ import { agentDisplayName } from "../i18n/agents";
 import { useI18n } from "../i18n/useI18n";
 import { CHAT_FONT_MAX, CHAT_FONT_MIN, FILES_FONT_MAX, FILES_FONT_MIN } from "../preferences";
 import { usePreferences } from "../preferences/PreferencesProvider";
-import { PAPER_ASSISTANT_AGENT } from "../agent-identity";
 
 export interface SettingsPageProps {
   onBack: () => void;
@@ -319,7 +319,8 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
 
   const paperAssistantValue = paperAssistantModel ?? effectivePaperAssistantModel ?? "";
   const paperAssistantOptions =
-    effectivePaperAssistantModel !== null && !models.some((m) => `${m.provider}/${m.id}` === effectivePaperAssistantModel)
+    effectivePaperAssistantModel !== null &&
+    !models.some((m) => `${m.provider}/${m.id}` === effectivePaperAssistantModel)
       ? [
           ...models,
           {

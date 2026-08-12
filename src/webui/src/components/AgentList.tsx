@@ -1,10 +1,10 @@
 import { Bot } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentDto, AgentEffectiveModelDto } from "../../../web/contracts";
+import { PAPER_ASSISTANT_AGENT } from "../agent-identity";
 import { getEffectiveModels, listAgents, listModels, setAgentModel } from "../api";
 import { agentDescription, agentDisplayName, type Translate } from "../i18n/agents";
 import { useI18n } from "../i18n/useI18n";
-import { PAPER_ASSISTANT_AGENT } from "../agent-identity";
 
 export type AgentStatus = "idle" | "working" | "error";
 

@@ -83,7 +83,9 @@ describe("API response parsers", () => {
       paperAssistantModel: null,
       effectivePaperAssistantModel: "openai/gpt-4o",
     });
-    expect(() => parseWebuiSettings({ agentModels: {}, paperAssistantModel: 42, effectivePaperAssistantModel: null })).toThrow();
+    expect(() =>
+      parseWebuiSettings({ agentModels: {}, paperAssistantModel: 42, effectivePaperAssistantModel: null }),
+    ).toThrow();
   });
 
   it("parses directory, file, and text-content responses", () => {
