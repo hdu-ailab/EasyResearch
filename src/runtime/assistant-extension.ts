@@ -8,21 +8,37 @@ import { webSearchTool } from "../tools/duckduckgo-search";
 import { mountWelcomeBanner } from "../tui/welcome-banner";
 import { createLogger } from "./logger";
 import { mountPiEventLogger, type PiEventBus } from "./pi-event-logger";
+import { defaultSkillDirectories, isDotAgentsSkillEnabled } from "../subagent/skill-resolution";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export interface AssistantExtensionOptions {
   agentsDir?: string;
 }
 
+function bundledAgentsDir(): string {
+  return join(dirname(fileURLToPath(import.meta.url)), "..", "agents");
+}
+
 export async function loadAssistantPrompt(
   agentsDir: string,
   parseFrontmatter?: <T extends Record<string, unknown>>(content: string) => { frontmatter: T; body: string },
+  fallbackAgentsDir?: string,
 ): Promise<string> {
-  const path = join(agentsDir, "assistant.md");
+  let path = join(agentsDir, "assistant.md");
   let content: string;
   try {
     content = readFileSync(path, "utf8");
   } catch {
-    throw new Error("Missing global assistant definition: expected ~/.easyresearch/agent/agents/assistant.md");
+    if (!fallbackAgentsDir) {
+      throw new Error("Missing global assistant definition: expected ~/.easyresearch/agent/agents/assistant.md");
+    }
+    path = join(fallbackAgentsDir, "assistant.md");
+    try {
+      content = readFileSync(path, "utf8");
+    } catch {
+      throw new Error("Missing bundled assistant definition: expected src/agents/assistant.md");
+    }
   }
   const parser = parseFrontmatter ?? (await importPi()).parseFrontmatter;
   const frontmatter = parser(content);
@@ -34,8 +50,12 @@ export async function loadAssistantPrompt(
 
 export function createAssistantExtension(options: AssistantExtensionOptions = {}): InlineExtension {
   return async (pi) => {
-    const { getAgentDir, parseFrontmatter } = await importPi();
-    const prompt = await loadAssistantPrompt(options.agentsDir ?? join(getAgentDir(), "agents"), parseFrontmatter);
+    const { getAgentDir, parseFrontmatter, SettingsManager } = await importPi();
+    const prompt = await loadAssistantPrompt(
+      options.agentsDir ?? join(getAgentDir(), "agents"),
+      parseFrontmatter,
+      bundledAgentsDir(),
+    );
     pi.registerTool(createSubagentTool({
       persistSessionLink: (link) => pi.appendEntry(SUBAGENT_SESSION_LINK_ENTRY, link),
     }));
@@ -52,6 +72,15 @@ export function createAssistantExtension(options: AssistantExtensionOptions = {}
     }));
     // ADR-018: project config is always trusted; suppress Pi's trust prompt.
     pi.on("project_trust", () => ({ trusted: "yes" as const }));
+    pi.on("resources_discover", (event) => ({
+      skillPaths: defaultSkillDirectories({
+        cwd: event.cwd,
+        agentDir: getAgentDir(),
+        enableDotAgentsSkill: isDotAgentsSkillEnabled(
+          SettingsManager.create(event.cwd, getAgentDir()).getGlobalSettings(),
+        ),
+      }),
+    }));
   };
 }
 

@@ -100,6 +100,7 @@ describe("PiRpcSessionFactory", () => {
     expect(client.options.args).toContain("--session");
     expect(client.options.args).toContain("/agent/sessions/--project--/old.jsonl");
     expect(client.options.args).toContain("--approve");
+    expect(client.options.args).toContain("--no-skills");
     expect(client.options.args).not.toContain("--no-approve");
     expect(client.options.env).toEqual({ EASYRESEARCH_RPC_CHILD: "1" });
   });
@@ -111,6 +112,7 @@ describe("PiRpcSessionFactory", () => {
     expect(client.options.args).not.toContain("--session");
     expect(client.options.args).toContain("--approve");
     expect(client.options.args).not.toContain("--no-approve");
+    expect(client.options.args).toContain("--no-skills");
   });
 });
 

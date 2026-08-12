@@ -19,6 +19,7 @@ const hoisted = vi.hoisted(() => ({
   createExtension: vi.fn(() => ({ inner: true })),
   agentDir: "" as string,
   packageDir: "" as string,
+  settings: {} as Record<string, unknown>,
 }));
 
 vi.mock("./pi-import", () => ({
@@ -26,6 +27,7 @@ vi.mock("./pi-import", () => ({
     main: hoisted.main,
     getAgentDir: () => hoisted.agentDir,
     getPackageDir: () => hoisted.packageDir,
+    SettingsManager: { create: () => ({ getGlobalSettings: () => hoisted.settings }) },
   }),
 }));
 vi.mock("../bootstrap/resources", () => ({
@@ -173,7 +175,7 @@ describe("runNativeTui", () => {
   it("bootstraps resources, guards extensions, and mounts the assistant extension", async () => {
     await runNativeTui();
     expect(hoisted.main).toHaveBeenCalledTimes(1);
-    expect(hoisted.main).toHaveBeenCalledWith([], {
+    expect(hoisted.main).toHaveBeenCalledWith(expect.arrayContaining(["--no-skills"]), {
       extensionFactories: [{ inner: true }],
     });
   });

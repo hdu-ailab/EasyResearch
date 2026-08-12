@@ -106,6 +106,29 @@ describe("buildPiArgs", () => {
     expect(args[args.indexOf("--skill") + 1]!.startsWith("/")).toBe(true);
   });
 
+  it("does not mount a home .agents skill unless the resolver is enabled", () => {
+    const root = mkdtempSync(join(tmpdir(), "lr-home-skill-"));
+    const homeSkill = join(root, ".agents", "skills", "home-only");
+    mkdirSync(homeSkill, { recursive: true });
+    writeFileSync(join(homeSkill, "SKILL.md"), "# home-only");
+    const agent = { ...maker("search"), skills: ["home-only"] };
+
+    const disabled = buildPiArgs(agent, undefined, "task", undefined, {
+      cwd: root,
+      agentDir: join(root, "agent"),
+      homeDir: root,
+    });
+    expect(disabled).not.toContain(join(root, ".agents", "skills", "home-only"));
+
+    const enabled = buildPiArgs(agent, undefined, "task", undefined, {
+      cwd: root,
+      agentDir: join(root, "agent"),
+      homeDir: root,
+      enableDotAgentsSkill: true,
+    });
+    expect(enabled).toContain(join(root, ".agents", "skills", "home-only"));
+  });
+
   it("emits only --no-skills for an explicit empty whitelist", () => {
     const agent = { ...maker("search"), skills: [] };
     const args = buildPiArgs(agent, undefined, "task", undefined, { cwd: "/tmp", agentDir: "/tmp" });
@@ -113,10 +136,9 @@ describe("buildPiArgs", () => {
     expect(args).not.toContain("--skill");
   });
 
-  it("omits skill flags when skills is undefined", () => {
-    const args = buildPiArgs(maker("search"), undefined, "task");
-    expect(args).not.toContain("--no-skills");
-    expect(args).not.toContain("--skill");
+  it("disables default skill discovery when skills is undefined", () => {
+    const args = buildPiArgs(maker("search"), undefined, "task", undefined, { cwd: "/tmp", agentDir: "/tmp/agent" });
+    expect(args).toContain("--no-skills");
   });
 });
 

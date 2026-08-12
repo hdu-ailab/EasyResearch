@@ -2,7 +2,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { resolveSkillDirectories, type SkillResolverDeps } from "./skill-resolution";
+import {
+  isDotAgentsSkillEnabled,
+  readGlobalDotAgentsSkillSetting,
+  resolveSkillDirectories,
+  type SkillResolverDeps,
+} from "./skill-resolution";
 
 let cwd: string;
 let agentDir: string;
@@ -31,6 +36,14 @@ describe("resolveSkillDirectories", () => {
     expect(resolveSkillDirectories(undefined, deps)).toBeUndefined();
   });
 
+  it("resolves effective default skill names from the allowed roots", async () => {
+    const projectSkill = join(cwd, ".easyresearch", "skills", "project-only");
+    mkdirSync(projectSkill, { recursive: true });
+    writeFileSync(join(projectSkill, "SKILL.md"), "# project-only\n");
+    const { resolveEffectiveSkillNames } = await import("./skill-resolution");
+    expect(resolveEffectiveSkillNames(undefined, deps)).toEqual(["project-only"]);
+  });
+
   it("returns [] for an explicit empty array", () => {
     expect(resolveSkillDirectories([], deps)).toEqual([]);
   });
@@ -55,12 +68,19 @@ describe("resolveSkillDirectories", () => {
     expect(dirs[0]).toBe(join(gAgent, "arxiv"));
   });
 
-  it("resolves a global .agents/skills name as last resort", () => {
+  it("does not resolve a global .agents/skills name by default", () => {
     const gAgents = join(deps.homeDir!, ".agents", "skills");
     withSkill(gAgents, "latex-pdf");
+    withSkill(bundledSkillsDir, "latex-pdf");
     const dirs = resolveSkillDirectories(["latex-pdf"], deps)!;
-    expect(dirs).toHaveLength(1);
-    expect(dirs[0]).toBe(join(gAgents, "latex-pdf"));
+    expect(dirs).toEqual([join(bundledSkillsDir, "latex-pdf")]);
+  });
+
+  it("resolves a global .agents/skills name only when explicitly enabled", () => {
+    const gAgents = join(deps.homeDir!, ".agents", "skills");
+    withSkill(gAgents, "latex-pdf");
+    const dirs = resolveSkillDirectories(["latex-pdf"], { ...deps, enableDotAgentsSkill: true })!;
+    expect(dirs).toEqual([join(gAgents, "latex-pdf")]);
   });
 
   it("falls back to the bundled skill directory", () => {
@@ -80,6 +100,23 @@ describe("resolveSkillDirectories", () => {
     withSkill(join(cwd, "custom"), "drawio");
     const dirs = resolveSkillDirectories([abs, "~/gone"], deps)!;
     expect(dirs).toEqual([abs]);
+  });
+});
+
+describe("enable_dot_agents_skill", () => {
+  it("requires an exact boolean true in the global easyresearch namespace", () => {
+    expect(isDotAgentsSkillEnabled({})).toBe(false);
+    expect(isDotAgentsSkillEnabled({ easyresearch: { enable_dot_agents_skill: false } })).toBe(false);
+    expect(isDotAgentsSkillEnabled({ easyresearch: { enable_dot_agents_skill: "true" } })).toBe(false);
+    expect(isDotAgentsSkillEnabled({ easyresearch: { enable_dot_agents_skill: true } })).toBe(true);
+  });
+
+  it("reads the global setting through Pi SettingsManager", async () => {
+    writeFileSync(
+      join(agentDir, "settings.json"),
+      JSON.stringify({ easyresearch: { enable_dot_agents_skill: true } }),
+    );
+    await expect(readGlobalDotAgentsSkillSetting(cwd, agentDir)).resolves.toBe(true);
   });
 });
 

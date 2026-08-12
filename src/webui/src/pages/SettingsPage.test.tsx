@@ -250,12 +250,14 @@ describe("SettingsPage", () => {
     expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}")).toMatchObject({ language: "zh-CN" });
   });
 
-  it("shows stage agents with their configured model and the assistant settable", async () => {
+  it("shows stage agents with their configured model while the assistant has no disable switch", async () => {
     renderSettings();
     await screen.findByRole("combobox", { name: "Select model for Search" });
     expect(screen.getByRole("combobox", { name: "Select model for Search" })).toHaveValue("openai/gpt-4o");
     expect(screen.getByRole("combobox", { name: "Select model for Writing" })).toHaveValue("");
     expect(screen.getByRole("combobox", { name: "Select model for Paper Assistant" })).toHaveValue("openai/gpt-4o");
+    expect(screen.queryByRole("switch", { name: "Paper Assistant" })).toBeNull();
+    expect(screen.getByRole("switch", { name: "Search" })).toBeTruthy();
   });
 
   it("includes a configured stage model that is absent from the model catalog", async () => {
@@ -506,5 +508,13 @@ describe("SettingsPage", () => {
     expect(screen.getByRole("dialog")).toBeTruthy();
     expect(within(screen.getByRole("dialog")).getByText("web-search")).toBeTruthy();
     expect(within(screen.getByRole("dialog")).getByText("paper-search")).toBeTruthy();
+  });
+
+  it("keeps agent enable switches unlabeled and puts edit beside the model select", async () => {
+    renderSettings();
+    const edit = await screen.findByRole("button", { name: "Edit Search" });
+    expect(screen.queryByText("Enable Search")).toBeNull();
+    expect(within(edit.parentElement!).getByText("Model")).toBeTruthy();
+    expect(within(edit.parentElement!).getByRole("combobox", { name: "Select model for Search" })).toBeTruthy();
   });
 });

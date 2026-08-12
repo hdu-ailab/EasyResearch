@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir } from "../runtime/pi-import";
 import { importPi } from "../runtime/pi-import";
-import { resolveSkillDirectories } from "./skill-resolution";
+import { isDotAgentsSkillEnabled, resolveEffectiveSkillNames } from "./skill-resolution";
 
 export type AgentSource = "bundled" | "global" | "project";
 
@@ -49,6 +49,7 @@ interface DiscoveryOptions {
   includeProject?: boolean;
   includeGlobal?: boolean;
   includeBundled?: boolean;
+  enableDotAgentsSkill?: boolean;
 }
 
 function bundledAgentsDir(): string {
@@ -87,6 +88,7 @@ function parseAgentFile(
   source: AgentSource,
   options: DiscoveryOptions,
   parseFrontmatter: FrontmatterParser,
+  enableDotAgentsSkill: boolean,
 ): AgentConfig | undefined {
   const content = readMd(filePath);
   if (content === undefined) return undefined;
@@ -97,11 +99,12 @@ function parseAgentFile(
     const tools = stringArray(frontmatter.tools);
     const skills = stringArray(frontmatter.skills);
     const effectiveTools = tools ?? DEFAULT_TOOLS;
-    const effectiveSkills = resolveSkillDirectories(skills, {
+    const effectiveSkills = resolveEffectiveSkillNames(skills, {
       cwd: options.cwd ?? process.cwd(),
       agentDir: options.agentDir ?? getAgentDir(),
       homeDir: options.homeDir ?? homedir(),
       bundledSkillsDir: options.bundledSkillsDir,
+      enableDotAgentsSkill,
     }) ?? [];
     return {
       name,
@@ -150,31 +153,45 @@ function pathForCustom(directory: string, name: string): string {
   return join(directory, `${name}.md`);
 }
 
-function loadBuiltin(options: DiscoveryOptions, name: string, parseFrontmatter: FrontmatterParser): AgentConfig | undefined {
+function loadBuiltin(
+  options: DiscoveryOptions,
+  name: string,
+  parseFrontmatter: FrontmatterParser,
+  enableDotAgentsSkill: boolean,
+): AgentConfig | undefined {
   for (const { source, directory } of sourcePriority(options)) {
     const path = pathForBuiltin(directory, name);
     if (!path) continue;
-    const parsed = parseAgentFile(path, name, true, source, options, parseFrontmatter);
+    const parsed = parseAgentFile(path, name, true, source, options, parseFrontmatter, enableDotAgentsSkill);
     if (parsed) return parsed;
   }
   return undefined;
 }
 
-function loadCustom(options: DiscoveryOptions, name: string, parseFrontmatter: FrontmatterParser): AgentConfig | undefined {
+function loadCustom(
+  options: DiscoveryOptions,
+  name: string,
+  parseFrontmatter: FrontmatterParser,
+  enableDotAgentsSkill: boolean,
+): AgentConfig | undefined {
   for (const { source, directory } of sourcePriority(options).slice(0, 2)) {
     const path = pathForCustom(directory, name);
     if (!existsSync(path)) continue;
-    const parsed = parseAgentFile(path, name, false, source, options, parseFrontmatter);
+    const parsed = parseAgentFile(path, name, false, source, options, parseFrontmatter, enableDotAgentsSkill);
     if (parsed) return parsed;
   }
   return undefined;
 }
 
 export async function discoverAgents(options: DiscoveryOptions = {}): Promise<AgentDiscoveryResult> {
-  const { parseFrontmatter } = await importPi();
+  const pi = await importPi();
+  const settings = pi.SettingsManager
+    ? pi.SettingsManager.create(options.cwd ?? process.cwd(), options.agentDir ?? getAgentDir()).getGlobalSettings()
+    : undefined;
+  const enableDotAgentsSkill = options.enableDotAgentsSkill ?? isDotAgentsSkillEnabled(settings);
   const agents: AgentConfig[] = [];
   for (const name of BUILTIN_ORDER) {
-    const agent = loadBuiltin(options, name, parseFrontmatter);
+    const agent = loadBuiltin(options, name, pi.parseFrontmatter, enableDotAgentsSkill);
     if (agent) agents.push(agent);
   }
   const builtinNames = new Set(BUILTIN_ORDER);
@@ -186,7 +203,7 @@ export async function discoverAgents(options: DiscoveryOptions = {}): Promise<Ag
     }
   }
   for (const name of [...customNames].sort((a, b) => a.localeCompare(b))) {
-    const agent = loadCustom(options, name, parseFrontmatter);
+    const agent = loadCustom(options, name, pi.parseFrontmatter, enableDotAgentsSkill);
     if (agent) agents.push(agent);
   }
   return { agents };

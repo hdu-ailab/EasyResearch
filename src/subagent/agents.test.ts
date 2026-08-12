@@ -96,4 +96,20 @@ describe("discoverAgents (Markdown layers)", () => {
       subagents: ["search"],
     });
   });
+
+  it("only includes home .agents skills when the global setting is enabled", async () => {
+    const homeDir = join(root, "home");
+    const bundledSkillsDir = join(root, "bundled-skills");
+    mkdirSync(join(homeDir, ".agents", "skills", "home-only"), { recursive: true });
+    mkdirSync(join(bundledSkillsDir, "home-only"), { recursive: true });
+    writeFileSync(join(homeDir, ".agents", "skills", "home-only", "SKILL.md"), "# Home\n");
+    writeFileSync(join(bundledSkillsDir, "home-only", "SKILL.md"), "# Bundled\n");
+    writeAgent(bundledDir, "search", ["skills: [home-only]"]);
+
+    const disabled = await discoverAgents({ ...options(), homeDir, bundledSkillsDir });
+    expect(disabled.agents[0]?.effectiveSkills).toEqual(["home-only"]);
+
+    const enabled = await discoverAgents({ ...options(), homeDir, bundledSkillsDir, enableDotAgentsSkill: true });
+    expect(enabled.agents[0]?.effectiveSkills).toEqual(["home-only"]);
+  });
 });
