@@ -305,6 +305,43 @@ describe("WorkPage", () => {
     await waitFor(() => expect(el.scrollTop).toBe(400));
   });
 
+  it("jumps to the bottom on every send while the previous prompt remains pending", async () => {
+    const user = userEvent.setup();
+    let flushFrame: FrameRequestCallback | undefined;
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      flushFrame = callback;
+      return 1;
+    });
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    const flushCapturedFrame = () => {
+      const callback = flushFrame;
+      flushFrame = undefined;
+      callback?.(0);
+    };
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    await screen.findByText("starting research");
+    const el = screen.getByLabelText("Conversation") as HTMLDivElement;
+    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => 400 });
+    Object.defineProperty(el, "clientHeight", { configurable: true, get: () => 200 });
+    flushCapturedFrame();
+
+    el.scrollTop = 100;
+    fireEvent.scroll(el);
+    await user.type(screen.getByRole("textbox", { name: /message/i }), "first prompt");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+    flushCapturedFrame();
+    expect(el.scrollTop).toBe(400);
+
+    el.scrollTop = 100;
+    fireEvent.scroll(el);
+    await user.type(screen.getByRole("textbox", { name: /message/i }), "second prompt");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+    flushCapturedFrame();
+
+    expect(el.scrollTop).toBe(400);
+    expect(api.sendPrompt).toHaveBeenCalledTimes(2);
+  });
+
   it("jumps to the bottom when switching to a child agent tab", async () => {
     const user = userEvent.setup();
     stubEvents();
@@ -341,6 +378,65 @@ describe("WorkPage", () => {
 
     await waitFor(() => expect(el.scrollTop).toBe(400));
     expect(await screen.findByText("child answer")).toBeTruthy();
+  });
+
+  it("jumps on every switch between an already loaded child and the assistant", async () => {
+    const user = userEvent.setup();
+    let flushFrame: FrameRequestCallback | undefined;
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      flushFrame = callback;
+      return 1;
+    });
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    const flushCapturedFrame = () => {
+      const callback = flushFrame;
+      flushFrame = undefined;
+      callback?.(0);
+    };
+    vi.mocked(api.getSnapshot).mockResolvedValue({
+      session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
+      messages: [
+        { role: "user", timestamp: 1000, content: [{ type: "text", text: "parent task" }] },
+        { role: "assistant", timestamp: 1001, content: [{ type: "text", text: "parent answer" }] },
+      ],
+      subagents: [],
+    } as never);
+    vi.mocked(api.getChildSnapshot).mockResolvedValue({
+      session: { id: "child-loaded", cwd: "/p", sessionName: "easyresearch:search" },
+      messages: [
+        { role: "user", timestamp: 1000, content: [{ type: "text", text: "child task" }] },
+        { role: "assistant", timestamp: 1001, content: [{ type: "text", text: "child answer loaded" }] },
+      ],
+    } as never);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    expect(await screen.findByText("parent answer")).toBeTruthy();
+    const el = screen.getByLabelText("Conversation") as HTMLDivElement;
+    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => 400 });
+    Object.defineProperty(el, "clientHeight", { configurable: true, get: () => 200 });
+    flushCapturedFrame();
+
+    emitInAct({
+      type: "tool_execution_start",
+      toolCallId: "sub-loaded",
+      toolName: "subagent",
+      args: { agent: "search", task: "find" },
+    });
+    emitChildHeader("sub-loaded", "search", "child-loaded");
+    await user.click(await screen.findByRole("button", { name: /agent search/i }));
+    expect(await screen.findByText("child answer loaded")).toBeTruthy();
+    flushCapturedFrame();
+
+    el.scrollTop = 100;
+    fireEvent.scroll(el);
+    await user.click(screen.getByRole("button", { name: /agent paper assistant/i }));
+    flushCapturedFrame();
+    expect(el.scrollTop).toBe(400);
+
+    el.scrollTop = 100;
+    fireEvent.scroll(el);
+    await user.click(screen.getByRole("button", { name: /agent search/i }));
+    flushCapturedFrame();
+    expect(el.scrollTop).toBe(400);
   });
 
   it("clears the working agent row when the send fails", async () => {
