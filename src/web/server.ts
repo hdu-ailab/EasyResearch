@@ -20,6 +20,7 @@ import {
 import { createLogger } from "../runtime/logger";
 import { SubagentSessionService } from "./subagent-sessions";
 import { isSubagentSessionName } from "../subagent/session-links";
+import { createFileWatcherFactory } from "./file-watcher";
 
 export interface Server {
   port: number;
@@ -97,7 +98,12 @@ export async function startServer(): Promise<Server> {
   const agentDir = getAgentDir();
   const config = new ConfigFileService(agentDir);
   const idleTimeoutMs = await readWebSessionIdleTimeout(config);
-  const registry = new ActiveSessionRegistry(await PiRpcSessionFactory.resolve(), logger, { idleTimeoutMs });
+  const registry = new ActiveSessionRegistry(
+    await PiRpcSessionFactory.resolve(),
+    logger,
+    { idleTimeoutMs },
+    createFileWatcherFactory(logger),
+  );
   const subagentSessions = new SubagentSessionService({
     open: (path) => SessionManager.open(path),
     listAll: async () => {

@@ -1,13 +1,15 @@
 import { ChevronRight, File as FileIcon, Folder, FolderOpen, RefreshCw, Search } from "lucide-react";
-import { useMemo, useState } from "react";
-import type { FileEntryDto } from "../../../web/contracts";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { FileEntryDto, FileWatcherEvent } from "../../../web/contracts";
 import { listEntries } from "../api";
+import { parentPath } from "../file-watcher";
 import { useLazyTree } from "../hooks/useLazyTree";
 import { useI18n } from "../i18n/useI18n";
 
 export interface FilesPanelProps {
   root: string;
   onOpenFile: (entry: FileEntryDto) => void;
+  fileEvent?: FileWatcherEvent | null;
 }
 
 interface TreeRow {
@@ -15,10 +17,27 @@ interface TreeRow {
   depth: number;
 }
 
-export function FilesPanel({ root, onOpenFile }: FilesPanelProps) {
+export function FilesPanel({ root, onOpenFile, fileEvent = null }: FilesPanelProps) {
   const { t } = useI18n();
   const [filter, setFilter] = useState("");
   const tree = useLazyTree<FileEntryDto>({ root, loadChildren: listEntries });
+  const handledEvent = useRef<FileWatcherEvent | null>(null);
+
+  useEffect(() => {
+    if (!fileEvent || handledEvent.current === fileEvent) return;
+    handledEvent.current = fileEvent;
+    const changedPath = fileEvent.properties.file;
+    const target =
+      fileEvent.properties.event === "add" || fileEvent.properties.event === "unlink"
+        ? parentPath(changedPath)
+        : changedPath === root ||
+            tree
+              .children(parentPath(changedPath))
+              .some((entry) => entry.path === changedPath && entry.kind === "directory")
+          ? changedPath
+          : null;
+    if (target && tree.status(target) === "loaded") tree.refreshDirectory(target);
+  }, [fileEvent, root, tree.children, tree.refreshDirectory, tree.status]);
 
   const rows = useMemo(() => {
     const out: TreeRow[] = [];

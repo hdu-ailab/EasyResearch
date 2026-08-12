@@ -1,5 +1,6 @@
 import { Bot, FileSearch } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { FileWatcherEvent } from "../../../web/contracts";
 import {
   abortSession,
   connectSessionEvents,
@@ -16,6 +17,7 @@ import { ChatTranscript } from "../components/ChatTranscript";
 import { FileBrowser } from "../components/FileBrowser";
 import { ProductMark, Topbar, TopbarIconButton } from "../components/Topbar";
 import { WorkMobileTabs, type WorkView } from "../components/WorkMobileTabs";
+import { parseFileWatcherEvent } from "../file-watcher";
 import { usePanelTransition } from "../hooks/usePanelTransition";
 import { useI18n } from "../i18n/useI18n";
 import {
@@ -102,6 +104,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   tRef.current = t;
   const [sessionView, setSessionView] = useState<SessionViewState>(emptyView);
   const [status, setStatus] = useState<string>("starting");
+  const [fileEvent, setFileEvent] = useState<FileWatcherEvent | null>(null);
   const [sessionId, setSessionId] = useState(id);
   const [subscribeEpoch, setSubscribeEpoch] = useState(0);
   const [accepting, setAccepting] = useState(false);
@@ -294,6 +297,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
     let active = true;
     const connectionGeneration = ++streamGenerationRef.current;
     eventsReceivedRef.current = false;
+    setFileEvent(null);
     hydrate(sessionId)
       .then((snapshot) => {
         if (active && !eventsReceivedRef.current) {
@@ -310,6 +314,11 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
       onEvent: (event) => {
         eventsReceivedRef.current = true;
         setStatusText((current) => (current === tRef.current("work.connectionLost") ? null : current));
+        const fileWatcherEvent = parseFileWatcherEvent(event, cwd);
+        if (fileWatcherEvent) {
+          setFileEvent(fileWatcherEvent);
+          return;
+        }
         const typed = event as { type?: string };
         if (typed.type === "snapshot") {
           const pending = pendingStreamReadyRef.current;
@@ -367,7 +376,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
       active = false;
       unsubscribe();
     };
-  }, [sessionId, hydrate, loadChild, subscribeEpoch]);
+  }, [sessionId, hydrate, loadChild, subscribeEpoch, cwd]);
 
   useEffect(() => {
     if (activeTab.startsWith("session:")) loadChild(activeTab.slice(8));
@@ -702,7 +711,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
             hidden={filesHidden}
             className={`h-full min-h-0 overflow-hidden min-[820px]:rounded-[10px] ${!filesHidden ? "animate-v2-fade-in motion-reduce:animate-none" : ""}`}
           >
-            <FileBrowser root={cwd} />
+            <FileBrowser root={cwd} fileEvent={fileEvent} />
           </div>
           <div
             id="work-panel-agents"

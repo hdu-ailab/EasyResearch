@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { FileWatcherEvent } from "../../../web/contracts";
 import { listEntries, readFileContent } from "../api";
 import { FileBrowser } from "./FileBrowser";
 
@@ -45,6 +46,37 @@ describe("FileBrowser", () => {
     await user.click(await screen.findByText("notes.md"));
     expect(await screen.findByRole("heading", { name: "Notes" })).toBeVisible();
     expect(readFileContent).toHaveBeenCalledWith("/p/notes.md");
+  });
+
+  it("reloads an opened text preview after a file change event", async () => {
+    const user = userEvent.setup();
+    vi.mocked(readFileContent)
+      .mockResolvedValueOnce({
+        path: "/p/notes.md",
+        content: "# Notes\n\nold content",
+        byteCount: 20,
+        truncated: false,
+        binary: false,
+      })
+      .mockResolvedValueOnce({
+        path: "/p/notes.md",
+        content: "# Notes\n\nnew content",
+        byteCount: 20,
+        truncated: false,
+        binary: false,
+      });
+    const { rerender } = render(<FileBrowser root="/p" fileEvent={null} />);
+    await user.click(await screen.findByText("notes.md"));
+    expect(await screen.findByText("old content")).toBeVisible();
+
+    const event: FileWatcherEvent = {
+      type: "file.watcher.updated",
+      properties: { file: "/p/notes.md", event: "change" },
+    };
+    rerender(<FileBrowser root="/p" fileEvent={event} />);
+
+    expect(await screen.findByText("new content")).toBeVisible();
+    expect(readFileContent).toHaveBeenCalledTimes(2);
   });
 
   it("renders the tree toggle as the first tab-bar element with aria-expanded=true", async () => {
