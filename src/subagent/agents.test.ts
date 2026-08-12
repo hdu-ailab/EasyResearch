@@ -2,129 +2,98 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { discoverAgents, mergeRegistryChain } from "./agents";
-import type { AgentRegistry } from "./registry";
+import { discoverAgents, filterEnabledAgents, type AgentConfig } from "./agents";
 
-let dir: string;
+let root: string;
+let agentDir: string;
+let bundledDir: string;
 
-function md(name: string, body = "You run things."): string {
-  return `---\nname: ${name}\ndescription: ${name} stage agent\n---\n${body}`;
+function agentFile(name: string, fields: string[] = [], body = "Prompt"): string {
+  const description = fields.some((field) => field.startsWith("description:")) ? "" : `description: ${name} description\n`;
+  return `---\nname: ${name}\n${description}${fields.join("\n")}\n---\n${body}\n`;
 }
 
-function writeAgent(name: string, body?: string): void {
+function writeAgent(dir: string, name: string, fields: string[] = [], body?: string): void {
   mkdirSync(join(dir, "agents"), { recursive: true });
-  writeFileSync(join(dir, "agents", `${name}.md`), md(name, body), "utf-8");
+  writeFileSync(join(dir, "agents", `${name}.md`), agentFile(name, fields, body), "utf8");
 }
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), "lazy-agents-"));
+  root = mkdtempSync(join(tmpdir(), "easyresearch-agents-"));
+  agentDir = join(root, "global");
+  bundledDir = join(root, "bundled");
+  mkdirSync(join(bundledDir, "agents"), { recursive: true });
 });
 
-afterEach(() => {
-  rmSync(dir, { recursive: true, force: true });
-});
+afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-const REG: AgentRegistry = {
-  search: { definition: "agents/search.md", tools: ["bash"], skills: [] },
-  experiment: { definition: "agents/experiment.md" },
-};
+function options() {
+  return { agentDir, bundledAgentsDir: bundledDir, cwd: join(root, "project") };
+}
 
-describe("discoverAgents (registry)", () => {
-  it("discovers only registry entries; unregistered .md is ignored", async () => {
-    writeAgent("search");
-    writeAgent("experiment");
-    writeAgent("ghost");
-    const { agents } = await discoverAgents({ agentDir: dir, registry: REG });
-    expect(agents.map((a) => a.name)).toEqual(["experiment", "search"]);
+describe("discoverAgents (Markdown layers)", () => {
+  it("uses bundled agents when the global agents directory is absent", async () => {
+    writeAgent(bundledDir, "assistant", ["enable: true", "tools: [read, bash]", "skills: [workflow]"]);
+    const { agents } = await discoverAgents(options());
+
+    expect(agents).toHaveLength(1);
+    expect(agents[0]).toMatchObject({ name: "assistant", enabled: true, builtin: true, source: "bundled" });
   });
 
-  it("loads tools/skills/subagents/model from the registry entry and identity from frontmatter", async () => {
-    writeAgent("search");
-    const search = {
-      ...REG.search,
-      model: "p/m",
-      subagents: ["experiment"],
-    };
-    const { agents } = await discoverAgents({ agentDir: dir, registry: { search } });
-    const got = agents.find((a) => a.name === "search")!;
-    expect(got.tools).toEqual(["bash"]);
-    expect(got.skills).toEqual([]);
-    expect(got.subagents).toEqual(["experiment"]);
-    expect(got.model).toBe("p/m");
-    expect(got.description).toContain("stage agent");
+  it("lets a project Markdown file completely replace a global file", async () => {
+    writeAgent(bundledDir, "search", ["tools: [read]", "skills: [bundled]"]);
+    writeAgent(agentDir, "search", ["tools: [bash]", "skills: [global]", "model: global/model"]);
+    writeAgent(join(root, "project", ".easyresearch"), "search", ["enable: false", "tools: [grep]"]);
+    const { agents } = await discoverAgents(options());
+
+    expect(agents[0]).toMatchObject({ name: "search", enabled: false, tools: ["grep"], skills: undefined, model: undefined });
   });
 
-  it("deactivates entries whose definition file is missing", async () => {
-    const { agents } = await discoverAgents({ agentDir: dir, registry: REG });
-    expect(agents.map((a) => a.name)).not.toContain("experiment");
+  it("appends custom Markdown agents and keeps built-ins before them", async () => {
+    writeAgent(bundledDir, "assistant");
+    writeAgent(bundledDir, "search");
+    writeAgent(agentDir, "审稿人", ["description: Custom reviewer"]);
+    const { agents } = await discoverAgents(options());
+
+    expect(agents.map((agent) => agent.name)).toEqual(["assistant", "search", "审稿人"]);
+    expect(agents[2]).toMatchObject({ builtin: false, source: "global" });
   });
 
-  it("uses the registry-only discovery when registry given (no dir scan fallback)", async () => {
-    const { agents } = await discoverAgents({ agentDir: join(dir, "missing"), registry: REG });
-    expect(agents.every((a) => a.name !== "ghost")).toBe(true);
-  });
-});
+  it("uses the primary built-in filename before its localized alias", async () => {
+    writeAgent(bundledDir, "search", ["description: bundled search"]);
+    writeAgent(agentDir, "检索", ["description: alias override"]);
+    writeAgent(agentDir, "search", ["description: primary override"]);
+    const { agents } = await discoverAgents(options());
 
-describe("mergeRegistryChain (ADR-034)", () => {
-  it("uses bundled defaults when no user layer configures an agent", () => {
-    const bundled = { search: { definition: "agents/search.md", tools: ["bash"], skills: ["paper-search"] } };
-    const merged = mergeRegistryChain(bundled, {}, {});
-    expect(merged.search).toEqual({
-      definition: "agents/search.md",
-      tools: ["bash"],
-      skills: ["paper-search"],
+    expect(agents).toHaveLength(1);
+    expect(agents[0]).toMatchObject({ name: "search", description: "primary override", filePath: join(agentDir, "agents", "search.md") });
+  });
+
+  it("keeps disabled agents visible and filters them from dispatch targets", async () => {
+    writeAgent(bundledDir, "assistant");
+    writeAgent(bundledDir, "search", ["enable: false"]);
+    writeAgent(bundledDir, "writing");
+    const { agents } = await discoverAgents(options());
+
+    expect(agents.map((agent) => [agent.name, agent.enabled])).toEqual([
+      ["assistant", true],
+      ["search", false],
+      ["writing", true],
+    ]);
+    expect(filterEnabledAgents(agents).map((agent) => agent.name)).toEqual(["assistant", "writing"]);
+  });
+
+  it("defaults enable to true and reads complete frontmatter configuration", async () => {
+    writeAgent(bundledDir, "experiment", ["model: provider/model", "tools: [bash, subagent]", "skills: [experiment]", "subagents: [search]"]);
+    const { agents } = await discoverAgents(options());
+    const experiment = agents[0] as AgentConfig;
+
+    expect(experiment).toMatchObject({
+      enabled: true,
+      model: "provider/model",
+      tools: ["bash", "subagent"],
+      skills: ["experiment"],
+      subagents: ["search"],
     });
-  });
-
-  it("lets project override global and global override bundled per field", () => {
-    const bundled = {
-      search: { definition: "agents/search.md", model: "b/m", tools: ["read"], skills: ["paper-search"] },
-    };
-    const global = { search: { model: "g/m" } };
-    const project = { search: { tools: ["search"] } };
-    const merged = mergeRegistryChain(bundled, global, project);
-    expect(merged.search).toEqual({
-      definition: "agents/search.md",
-      model: "g/m",
-      tools: ["search"],
-      skills: ["paper-search"],
-    });
-  });
-
-  it("keeps bundled-only agents that no user layer touches", () => {
-    const bundled = {
-      search: { definition: "agents/search.md" },
-      figures: { definition: "agents/figures.md" },
-    };
-    const merged = mergeRegistryChain(bundled, { search: { model: "g/m" } }, {});
-    expect(Object.keys(merged).sort()).toEqual(["figures", "search"]);
-  });
-});
-
-describe("disabled agents (ADR-034)", () => {
-  it("skips an entry whose merged registry disables it", async () => {
-    writeAgent("search");
-    writeAgent("figures");
-    const { agents } = await discoverAgents({
-      agentDir: dir,
-      registry: {
-        search: { definition: "agents/search.md", disabled: true },
-        figures: { definition: "agents/figures.md" },
-      },
-    });
-    expect(agents.map((a) => a.name)).toEqual(["figures"]);
-  });
-
-  it("ignores disabled on the assistant", async () => {
-    writeAgent("assistant");
-    writeAgent("search");
-    const { agents } = await discoverAgents({
-      agentDir: dir,
-      registry: {
-        assistant: { definition: "agents/assistant.md", disabled: true },
-        search: { definition: "agents/search.md" },
-      },
-    });
-    expect(agents.map((a) => a.name)).toEqual(["assistant", "search"]);
   });
 });

@@ -17,8 +17,26 @@ beforeEach(() => {
   vi.mocked(api.getEffectiveModels).mockReset();
   vi.mocked(api.setAgentModel).mockReset();
   vi.mocked(api.listAgents).mockResolvedValue([
-    { name: "assistant", description: "Coordinates work" },
-    { name: "search", description: "Finds papers" },
+    {
+      name: "assistant",
+      description: "Coordinates work",
+      enabled: true,
+      builtin: true,
+      source: "bundled",
+      filePath: "assistant.md",
+      effectiveTools: [],
+      effectiveSkills: [],
+    },
+    {
+      name: "search",
+      description: "Finds papers",
+      enabled: true,
+      builtin: true,
+      source: "bundled",
+      filePath: "search.md",
+      effectiveTools: [],
+      effectiveSkills: [],
+    },
   ]);
   vi.mocked(api.listModels).mockResolvedValue([{ provider: "openai", id: "gpt-4o" }]);
   vi.mocked(api.getEffectiveModels).mockResolvedValue([

@@ -210,6 +210,7 @@ async function writePromptToTempFile(agentName: string, prompt: string): Promise
  * allowlist from `subagents:` frontmatter via the spawn environment.
  */
 export function filterAgentsByAllowlist(agents: AgentConfig[], allowlistEnv?: string): AgentConfig[] {
+  agents = agents.filter((agent) => agent.enabled || agent.name === "assistant");
   if (allowlistEnv === undefined) return agents;
   const allowed = new Set(allowlistEnv.split(",").map((s) => s.trim()).filter(Boolean));
   return agents.filter((a) => allowed.has(a.name));

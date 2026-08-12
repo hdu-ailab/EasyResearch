@@ -3,6 +3,7 @@ import type {
   ActiveSessionDto,
   AgentDto,
   AgentEffectiveModelDto,
+  AgentResourceDto,
   ChildSessionSnapshotDto,
   ConfigEntryDto,
   DirectoryEntryDto,
@@ -155,9 +156,23 @@ function parseAgent(value: unknown): AgentDto {
   const tools = source.tools === undefined ? undefined : stringArray(source.tools, "tools");
   const subagents = source.subagents === undefined ? undefined : stringArray(source.subagents, "subagents");
   const skills = source.skills === undefined ? undefined : stringArray(source.skills, "skills");
+  const effectiveTools =
+    source.effectiveTools === undefined ? (tools ?? []) : stringArray(source.effectiveTools, "effectiveTools");
+  const effectiveSkills =
+    source.effectiveSkills === undefined ? (skills ?? []) : stringArray(source.effectiveSkills, "effectiveSkills");
   return {
     name: requiredString(source, "name"),
     description: requiredString(source, "description"),
+    enabled: source.enabled !== false,
+    builtin: source.builtin === true,
+    source:
+      source.source === "project" || source.source === "global" || source.source === "bundled"
+        ? source.source
+        : "global",
+    filePath: typeof source.filePath === "string" ? source.filePath : "",
+    ...(typeof source.model === "string" ? { model: source.model } : {}),
+    effectiveTools,
+    effectiveSkills,
     ...(tools !== undefined ? { tools } : {}),
     ...(subagents !== undefined ? { subagents } : {}),
     ...(skills !== undefined ? { skills } : {}),
@@ -176,6 +191,31 @@ export function parseStatus(value: unknown): StatusDto {
 
 export function parseAgents(value: unknown): AgentDto[] {
   return arrayOf(value, "agents", parseAgent);
+}
+
+export function parseAgentResource(value: unknown): AgentResourceDto {
+  const agent = parseAgent(value);
+  const source = record(value, "agent resource");
+  return { ...agent, ...(typeof source.content === "string" ? { content: source.content } : {}) };
+}
+
+export function parseAgentResources(value: unknown): AgentResourceDto[] {
+  return arrayOf(value, "agent resources", parseAgentResource);
+}
+
+export function parseSkillResource(value: unknown) {
+  const source = record(value, "skill resource");
+  return {
+    name: requiredString(source, "name"),
+    source: requiredString(source, "source") as "bundled" | "global" | "project" | "home",
+    path: requiredString(source, "path"),
+    skillPath: requiredString(source, "skillPath"),
+    ...(typeof source.content === "string" ? { content: source.content } : {}),
+  };
+}
+
+export function parseSkillResources(value: unknown) {
+  return arrayOf(value, "skill resources", parseSkillResource);
 }
 
 export function parseModels(value: unknown): ModelOption[] {

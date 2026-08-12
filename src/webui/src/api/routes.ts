@@ -6,13 +6,21 @@ const session = (id: string) => `${API_ROOT}/sessions/${encodeURIComponent(id)}`
 
 export const routes = {
   status: () => `${API_ROOT}/status`,
-  agents: () => `${API_ROOT}/agents`,
+  agents: (cwd?: string) => {
+    const query = cwd ? `?cwd=${encodeURIComponent(cwd)}` : "";
+    return `${API_ROOT}/agents${query}`;
+  },
+  agentResources: () => `${API_ROOT}/agent-resources`,
+  agentResource: (name: string) => `${API_ROOT}/agent-resources/${encodeURIComponent(name)}`,
+  skillResources: () => `${API_ROOT}/skill-resources`,
+  skillResource: (name: string) => `${API_ROOT}/skill-resources/${encodeURIComponent(name)}`,
   models: () => `${API_ROOT}/models`,
   webuiSettings: () => `${API_ROOT}/webui-settings`,
   effectiveModels: (sessionId: string) => `${session(sessionId)}/agents/effective-models`,
   agentModel: (sessionId: string, agentName: string) =>
     `${session(sessionId)}/agents/${encodeURIComponent(agentName)}/model`,
   directories: (path: string) => `${API_ROOT}/directories?${new URLSearchParams({ path }).toString()}`,
+  createDirectory: () => `${API_ROOT}/directories`,
   entries: (path: string) => `${API_ROOT}/entries?${new URLSearchParams({ path }).toString()}`,
   file: (path: string) => `${API_ROOT}/file?${new URLSearchParams({ path }).toString()}`,
   rawFile: (path: string) => `${API_ROOT}/file/raw?${new URLSearchParams({ path }).toString()}`,

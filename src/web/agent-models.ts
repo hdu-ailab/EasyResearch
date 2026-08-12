@@ -1,5 +1,4 @@
 import { AGENT_MODEL_ENTRY, extractAgentModels, resolveEffectiveModel } from "../subagent/model-resolution";
-import { parseAgentRegistry } from "../subagent/registry";
 import { importPi } from "../runtime/pi-import";
 import type { AgentEffectiveModelDto, ConfigScope } from "./contracts";
 import type { ConfigFileService } from "./config-files";
@@ -60,39 +59,22 @@ export async function writeAgentOverride(sessionPath: string | undefined, agentN
   await session.appendCustomEntry(AGENT_MODEL_ENTRY, { agent: agentName, model });
 }
 
-/**
- * Read `<root>/settings.json` via ConfigFileService and parse each agent's
- * `model` out of the `easyresearch.agents` registry. Absent settings files and
- * a registry with no models both mean "no config" (undefined); a malformed
- * file is a real error and propagates.
- */
+/** Read agent model frontmatter from the requested Markdown configuration layer. */
 export async function readAgentModels(
   config: ConfigFileService,
   input: { scope: ConfigScope; cwd?: string },
 ): Promise<Record<string, string> | undefined> {
-  const settings = await readSettingsJson(config, input);
-  return settings ? extractAgentModels(settings) : undefined;
+  return extractAgentModels(input.cwd ?? process.cwd(), config.globalRoot, input.scope === "project", input.scope);
 }
 
-function readAssistantRegistryModel(settings: Record<string, unknown> | undefined): string | undefined {
-  if (!settings) return undefined;
-  const model = parseAgentRegistry(settings)["assistant"]?.model;
-  return typeof model === "string" && model !== "" ? model : undefined;
-}
-
-/**
- * Read the configured default model for the assistant reset: the project's
- * `easyresearch.agents.assistant.model` wins over the global one (per-field
- * merge, Pi-native semantics). Undefined when neither level configures a
- * `"provider/id"` model for the assistant.
- */
+/** Read the configured assistant model, preferring the project Markdown layer. */
 export async function readAssistantDefaults(
   config: ConfigFileService,
   cwd: string,
 ): Promise<{ provider: string; modelId: string } | undefined> {
-  const global = await readSettingsJson(config, { scope: "global" });
-  const project = await readSettingsJson(config, { scope: "project", cwd });
-  const model = readAssistantRegistryModel(project) ?? readAssistantRegistryModel(global);
+  const project = await extractAgentModels(cwd, config.globalRoot, true, "project");
+  const global = await extractAgentModels(cwd, config.globalRoot, false, "global");
+  const model = project?.assistant ?? global?.assistant;
   if (model === undefined) return undefined;
   const index = model.indexOf("/");
   if (index <= 0 || index === model.length - 1) return undefined;
@@ -143,7 +125,7 @@ export async function routeSetAgentModel(
       if (!defaults) {
         throw new AgentModelError(
           409,
-          "No default model configured: set easyresearch.agents.assistant.model in settings.json",
+          "No default model configured: set model in the assistant Markdown definition",
         );
       }
       await router.setAssistant(defaults.provider, defaults.modelId);
@@ -157,7 +139,7 @@ export async function routeSetAgentModel(
 }
 
 export function resolveAgentModelsService(deps: {
-  listAgents: () => Promise<Array<{ name: string }>>;
+  listAgents: (cwd?: string) => Promise<Array<{ name: string }>>;
   getSessionPath: (id: string) => Promise<string | undefined>;
   readEntries: (sessionPath: string | undefined) => Promise<EntryRow[]>;
   projectAgentModels: (cwd: string) => Promise<Record<string, string> | undefined>;
@@ -167,10 +149,11 @@ export function resolveAgentModelsService(deps: {
 }) {
   return {
     async effective(id: string): Promise<AgentEffectiveModelDto[]> {
-      const agents = await deps.listAgents();
+      const cwd = await deps.getCwd(id);
+      const agents = await deps.listAgents(cwd);
       const sessionPath = await deps.getSessionPath(id);
       const rows = await deps.readEntries(sessionPath);
-      const project = await deps.projectAgentModels(await deps.getCwd(id));
+      const project = await deps.projectAgentModels(cwd);
       const global = await deps.globalAgentModels();
       const orch = await deps.assistantModel(id);
       const out: AgentEffectiveModelDto[] = [];

@@ -2,6 +2,7 @@ import type {
   ActiveSessionDto,
   AgentDto,
   AgentEffectiveModelDto,
+  AgentResourceDto,
   ChildSessionSnapshotDto,
   ConfigEntryDto,
   ConfigScope,
@@ -16,6 +17,8 @@ import type {
 import {
   type ModelOption,
   parseActiveSession,
+  parseAgentResource,
+  parseAgentResources,
   parseAgents,
   parseChildSnapshot,
   parseConfigEntries,
@@ -27,6 +30,8 @@ import {
   parseFileContent,
   parseModels,
   parseSessionSnapshot,
+  parseSkillResource,
+  parseSkillResources,
   parseStatus,
   parseWebuiSettings,
 } from "./api/parsers";
@@ -52,8 +57,30 @@ export function listStatus(): Promise<StatusDto> {
   return requestJson(routes.status(), parseStatus);
 }
 
-export function listAgents(): Promise<AgentDto[]> {
-  return requestJson(routes.agents(), parseAgents);
+export function listAgents(cwd?: string): Promise<AgentDto[]> {
+  return requestJson(routes.agents(cwd), parseAgents);
+}
+
+export function listAgentResources(): Promise<AgentResourceDto[]> {
+  return requestJson(routes.agentResources(), parseAgentResources);
+}
+export function readAgentResource(name: string): Promise<AgentResourceDto> {
+  return requestJson(routes.agentResource(name), parseAgentResource);
+}
+export function writeAgentResource(name: string, content: string): Promise<AgentResourceDto> {
+  return requestJson(routes.agentResource(name), parseAgentResource, json("PUT", { content }));
+}
+export function createAgentResource(name: string): Promise<AgentResourceDto> {
+  return requestJson(routes.agentResources(), parseAgentResource, json("POST", { name }));
+}
+export function listSkillResources() {
+  return requestJson(routes.skillResources(), parseSkillResources);
+}
+export function readSkillResource(name: string) {
+  return requestJson(routes.skillResource(name), parseSkillResource);
+}
+export function writeSkillResource(name: string, content: string) {
+  return requestJson(routes.skillResource(name), parseSkillResource, json("PUT", { content }));
 }
 
 export function listModels(): Promise<ModelOption[]> {
@@ -78,6 +105,19 @@ export function setAgentModel(sessionId: string, agentName: string, model: strin
 
 export function listDirectories(path: string): Promise<DirectoryEntryDto[]> {
   return requestJson(routes.directories(path), parseDirectories);
+}
+
+export function createDirectory(path: string): Promise<{ path: string }> {
+  return requestJson(
+    routes.createDirectory(),
+    (value) => {
+      if (!value || typeof value !== "object" || typeof (value as { path?: unknown }).path !== "string") {
+        throw new Error("Invalid API response: created directory");
+      }
+      return value as { path: string };
+    },
+    json("POST", { path }),
+  );
 }
 
 export function listEntries(path: string): Promise<FileEntryDto[]> {

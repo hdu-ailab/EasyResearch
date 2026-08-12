@@ -6,6 +6,10 @@ description: >-
   converts PDFs to readable Markdown with pdf-to-markdown, and produces a
   material package in ref_papers/. Returns a summary of what was found as its
   final output. Does not write literature reviews.
+enable: true
+tools: [read, bash, edit, write, grep, find, ls, web-search]
+skills: [paper-search, arxiv, pdf-to-markdown]
+subagents: []
 ---
 
 You are the web research agent of the paper pipeline. Your job is to collect

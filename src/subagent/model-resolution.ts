@@ -1,20 +1,11 @@
 import { getAgentDir, importPi } from "../runtime/pi-import";
-import { extractRegistryModels, parseAgentRegistry } from "./registry";
+import { discoverAgents } from "./agents";
 
 export const AGENT_MODEL_ENTRY = "easyresearch:agent_model";
 
 export interface ModelSource {
   model: string;
   source: "override" | "project" | "global" | "inherit";
-}
-
-/**
- * Parse each agent's `model` out of the `easyresearch.agents` registry. Absent
- * or malformed config means "no config" (undefined); non-string or empty
- * models are skipped.
- */
-export function extractAgentModels(settings: unknown): Record<string, string> | undefined {
-  return extractRegistryModels(parseAgentRegistry(settings));
 }
 
 export function resolveEffectiveModel(
@@ -33,14 +24,23 @@ export function resolveEffectiveModel(
   return null;
 }
 
-/**
- * Resolve the model a subagent should be spawned with. Session overrides are
- * `easyresearch:agent_model` custom entries on the assistant session line;
- * the latest entry per agent wins, and `model: null` is a reset marker.
- * Project/global config models are sourced from settings.json via Pi's
- * SettingsManager; `resolveEffectiveModel` applies the per-agent chain
- * override → project → global → inherit.
- */
+export async function extractAgentModels(
+  cwd: string,
+  agentDir = getAgentDir(),
+  includeProject = true,
+  layer: "effective" | "project" | "global" = "effective",
+): Promise<Record<string, string> | undefined> {
+  const { agents } = await discoverAgents({
+    cwd,
+    agentDir,
+    includeProject: layer === "global" ? false : includeProject,
+    includeGlobal: layer === "project" ? false : true,
+    includeBundled: layer === "project" || layer === "global" ? false : true,
+  });
+  const models = Object.fromEntries(agents.flatMap((agent) => (agent.model ? [[agent.name, agent.model]] : [])));
+  return Object.keys(models).length > 0 ? models : undefined;
+}
+
 export async function resolveModelForSpawn(
   ctx: {
     cwd: string;
@@ -50,22 +50,14 @@ export async function resolveModelForSpawn(
   assistantModel: string | undefined,
 ): Promise<string | undefined> {
   let override: string | null | undefined;
-  // Nested stage→stage dispatch runs in the stage's own session context, which
-  // never carries `easyresearch:agent_model` entries — session overrides apply
-  // only when the assistant dispatches directly; config levels always apply.
   for (const entry of ctx.sessionManager.getEntries()) {
     if (entry.type !== "custom" || entry.customType !== AGENT_MODEL_ENTRY) continue;
     const data = entry.data as { agent?: unknown; model?: unknown } | undefined;
     if (!data || typeof data.agent !== "string" || data.agent !== agentName) continue;
-    // A malformed newer entry (non-string, non-null model) is skipped so the
-    // last valid entry still wins; a corrupt write must not wipe a working override.
     if (typeof data.model !== "string" && data.model !== null) continue;
     override = data.model;
   }
-  const { SettingsManager } = await importPi();
-  const manager = SettingsManager.create(ctx.cwd, getAgentDir());
-  const project = extractAgentModels(manager.getProjectSettings());
-  const global = extractAgentModels(manager.getGlobalSettings());
-  const resolved = resolveEffectiveModel(override, project, global, assistantModel, agentName);
-  return resolved?.model;
+  const project = await extractAgentModels(ctx.cwd);
+  const global = await extractAgentModels(ctx.cwd, getAgentDir(), false);
+  return resolveEffectiveModel(override, project, global, assistantModel, agentName)?.model;
 }

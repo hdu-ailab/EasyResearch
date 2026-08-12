@@ -1,25 +1,23 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import { getAgentDir, importPi } from "../runtime/pi-import";
-import {
-  mergeAgentRegistry,
-  parseAgentRegistry,
-  type AgentRegistry,
-  type AgentRegistryEntry,
-} from "./registry";
+import { getAgentDir } from "../runtime/pi-import";
+import { resolveSkillDirectories } from "./skill-resolution";
 
-export type AgentSource = "global";
+export type AgentSource = "bundled" | "global" | "project";
 
 export interface AgentConfig {
   name: string;
   description: string;
+  enabled: boolean;
+  builtin: boolean;
   tools?: string[];
-  /** Agents this agent may dispatch via the subagent tool; absent = all (ADR-022). */
+  effectiveTools: string[];
   subagents?: string[];
   skills?: string[];
+  effectiveSkills: string[];
   model?: string;
   systemPrompt: string;
   source: AgentSource;
@@ -30,103 +28,160 @@ export interface AgentDiscoveryResult {
   agents: AgentConfig[];
 }
 
-/** The assistant's fixed session agent can never be disabled (ADR-034). */
 export const ASSISTANT_AGENT = "assistant";
 
-function bundledRegistryPath(): string {
-  return join(dirname(fileURLToPath(import.meta.url)), "..", "agents", "agents.json");
-}
+const DEFAULT_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
+const BUILTIN_ALIASES: Record<string, string> = {
+  assistant: "Paper Assistant",
+  search: "检索",
+  experiment: "实验",
+  writing: "写作",
+  figures: "图表",
+};
+const BUILTIN_ORDER = ["assistant", "search", "experiment", "writing", "figures"];
 
-function readBundledRegistry(): AgentRegistry {
-  try {
-    return parseAgentRegistry({ easyresearch: { agents: JSON.parse(readFileSync(bundledRegistryPath(), "utf8")) } });
-  } catch {
-    return {};
-  }
-}
-
-/** The two user registry layers for an exact cwd: project and global settings. */
-async function readRegistryLayersForCwd(cwd?: string): Promise<{ global: AgentRegistry; project: AgentRegistry }> {
-  const { SettingsManager } = await importPi();
-  const manager = SettingsManager.create(cwd ?? process.cwd(), getAgentDir());
-  return {
-    global: parseAgentRegistry(manager.getGlobalSettings()),
-    project: parseAgentRegistry(manager.getProjectSettings()),
-  };
-}
-
-/**
- * `<project.settings>` over `<global.settings>` over the bundled default
- * registry (ADR-034). Pure and exported for tests: `mergeRegistryChain`
- * merges three explicit layers, lowest precedence first.
- */
-export function mergeRegistryChain(bundled: AgentRegistry, global: AgentRegistry, project: AgentRegistry): AgentRegistry {
-  return mergeAgentRegistry(mergeAgentRegistry(project, global), bundled);
-}
-
-/**
- * Resolves the effective registry for `discoverAgents`. An explicitly injected
- * `opts.registry` is treated as the complete effective registry (test
- * injection); otherwise the bundled `src/agents/agents.json` is the read-only
- * base layer merged under the merged project+global settings.
- */
-function resolveMergedRegistry(opts: { registry?: AgentRegistry; bundled?: AgentRegistry; cwd?: string }): Promise<AgentRegistry> {
-  if (opts.registry) return Promise.resolve(opts.registry);
-  const bundled = opts.bundled ?? readBundledRegistry();
-  return readRegistryLayersForCwd(opts.cwd).then(({ global, project }) => mergeRegistryChain(bundled, global, project));
-}
-
-function isDisabled(entry: AgentRegistryEntry | undefined, name: string): boolean {
-  return entry?.disabled === true && name !== ASSISTANT_AGENT;
-}
-
-export async function discoverAgents(opts: {
+interface DiscoveryOptions {
   agentDir?: string;
-  registry?: AgentRegistry;
-  bundled?: AgentRegistry;
   cwd?: string;
-} = {}): Promise<AgentDiscoveryResult> {
-  const agentDir = opts.agentDir ?? getAgentDir();
-  const registry = await resolveMergedRegistry(opts);
-  const agents: AgentConfig[] = [];
-  for (const [name, entry] of Object.entries(registry)) {
-    if (isDisabled(entry, name)) continue;
-    const definitionPath = entry.definition ? resolveDefinition(agentDir, entry.definition) : join(agentDir, "agents", `${name}.md`);
-    if (!existsSync(definitionPath)) continue;
-    const parsed = parseAgentFile(definitionPath, name);
-    if (!parsed) continue;
-    agents.push({
-      ...parsed,
-      tools: entry.tools,
-      skills: entry.skills,
-      subagents: entry.subagents,
-      model: entry.model,
-    });
+  bundledAgentsDir?: string;
+  bundledSkillsDir?: string;
+  homeDir?: string;
+  includeProject?: boolean;
+  includeGlobal?: boolean;
+  includeBundled?: boolean;
+}
+
+function bundledAgentsDir(): string {
+  return join(dirname(fileURLToPath(import.meta.url)), "..", "agents");
+}
+
+function sourceDirectory(options: DiscoveryOptions, source: AgentSource): string {
+  if (source === "bundled") return options.bundledAgentsDir ? join(options.bundledAgentsDir, "agents") : bundledAgentsDir();
+  if (source === "global") return join(options.agentDir ?? getAgentDir(), "agents");
+  return join(options.cwd ?? process.cwd(), ".easyresearch", "agents");
+}
+
+function sourcePriority(options: DiscoveryOptions): Array<{ source: AgentSource; directory: string }> {
+  return [
+    ...(options.includeProject === false ? [] : [{ source: "project" as const, directory: sourceDirectory(options, "project") }]),
+    ...(options.includeGlobal === false ? [] : [{ source: "global" as const, directory: sourceDirectory(options, "global") }]),
+    ...(options.includeBundled === false ? [] : [{ source: "bundled" as const, directory: sourceDirectory(options, "bundled") }]),
+  ];
+}
+
+function readMd(path: string): string | undefined {
+  try {
+    return readFileSync(path, "utf8");
+  } catch (error) {
+    if (process.env.DEBUG_AGENT_DISCOVERY === "1") console.log("parse error", error);
+    return undefined;
   }
-  agents.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function parseAgentFile(filePath: string, name: string, builtin: boolean, source: AgentSource, options: DiscoveryOptions): AgentConfig | undefined {
+  const content = readMd(filePath);
+  if (content === undefined) return undefined;
+  try {
+    const parsed = parseFrontmatter<Record<string, unknown>>(content);
+    const frontmatter = parsed.frontmatter ?? {};
+    if (typeof frontmatter.name !== "string" || !frontmatter.name.trim()) return undefined;
+    const tools = stringArray(frontmatter.tools);
+    const skills = stringArray(frontmatter.skills);
+    const effectiveTools = tools ?? DEFAULT_TOOLS;
+    const effectiveSkills = resolveSkillDirectories(skills, {
+      cwd: options.cwd ?? process.cwd(),
+      agentDir: options.agentDir ?? getAgentDir(),
+      homeDir: options.homeDir ?? homedir(),
+      bundledSkillsDir: options.bundledSkillsDir,
+    }) ?? [];
+    return {
+      name,
+      description: typeof frontmatter.description === "string" && frontmatter.description.trim() ? frontmatter.description : name,
+      enabled: frontmatter.enable !== false,
+      builtin,
+      tools,
+      effectiveTools,
+      skills,
+      effectiveSkills,
+      subagents: stringArray(frontmatter.subagents),
+      model: typeof frontmatter.model === "string" && frontmatter.model ? frontmatter.model : undefined,
+      systemPrompt: parsed.body.trim(),
+      source,
+      filePath,
+    };
+  } catch (error) {
+    if (process.env.DEBUG_AGENT_DISCOVERY === "1") console.log("agent parse error", error);
+    return undefined;
+  }
+}
+
+function stringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((item): item is string => typeof item === "string");
+}
+
+function mdNames(directory: string): string[] {
+  try {
+    return readdirSync(directory).filter((name) => name.endsWith(".md"));
+  } catch {
+    return [];
+  }
+}
+
+function pathForBuiltin(directory: string, name: string): string | undefined {
+  const primary = join(directory, `${name}.md`);
+  if (existsSync(primary)) return primary;
+  const alias = BUILTIN_ALIASES[name];
+  if (!alias) return undefined;
+  const aliasPath = join(directory, `${alias}.md`);
+  return existsSync(aliasPath) ? aliasPath : undefined;
+}
+
+function pathForCustom(directory: string, name: string): string {
+  return join(directory, `${name}.md`);
+}
+
+function loadBuiltin(options: DiscoveryOptions, name: string): AgentConfig | undefined {
+  for (const { source, directory } of sourcePriority(options)) {
+    const path = pathForBuiltin(directory, name);
+    if (!path) continue;
+    const parsed = parseAgentFile(path, name, true, source, options);
+    if (parsed) return parsed;
+  }
+  return undefined;
+}
+
+function loadCustom(options: DiscoveryOptions, name: string): AgentConfig | undefined {
+  for (const { source, directory } of sourcePriority(options).slice(0, 2)) {
+    const path = pathForCustom(directory, name);
+    if (!existsSync(path)) continue;
+    const parsed = parseAgentFile(path, name, false, source, options);
+    if (parsed) return parsed;
+  }
+  return undefined;
+}
+
+export async function discoverAgents(options: DiscoveryOptions = {}): Promise<AgentDiscoveryResult> {
+  const agents: AgentConfig[] = [];
+  for (const name of BUILTIN_ORDER) {
+    const agent = loadBuiltin(options, name);
+    if (agent) agents.push(agent);
+  }
+  const builtinNames = new Set(BUILTIN_ORDER);
+  const customNames = new Set<string>();
+  for (const directory of sourcePriority(options).slice(0, 2).map(({ directory }) => directory)) {
+    for (const file of mdNames(directory)) {
+      const stem = file.slice(0, -3);
+      if (!builtinNames.has(stem) && !Object.values(BUILTIN_ALIASES).includes(stem)) customNames.add(stem);
+    }
+  }
+  for (const name of [...customNames].sort((a, b) => a.localeCompare(b))) {
+    const agent = loadCustom(options, name);
+    if (agent) agents.push(agent);
+  }
   return { agents };
 }
 
-function resolveDefinition(agentDir: string, p: string): string {
-  if (p.startsWith("~")) return join(homedir(), p.slice(1));
-  if (p.startsWith("/")) return p;
-  return join(agentDir, p);
-}
-
-function parseAgentFile(defPath: string, name: string): Pick<AgentConfig, "name" | "description" | "systemPrompt" | "source" | "filePath"> | null {
-  let content: string;
-  try {
-    content = readFileSync(defPath, "utf-8");
-  } catch {
-    return null;
-  }
-  const { frontmatter, body } = parseFrontmatter<Record<string, string>>(content);
-  if (Object.keys(frontmatter).length === 0) return null;
-  return {
-    name,
-    description: typeof frontmatter.description === "string" ? frontmatter.description : name,
-    systemPrompt: body,
-    source: "global",
-    filePath: defPath,
-  };
+export function filterEnabledAgents(agents: AgentConfig[]): AgentConfig[] {
+  return agents.filter((agent) => agent.enabled);
 }

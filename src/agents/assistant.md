@@ -8,6 +8,9 @@ description: >-
   whether to proceed, revise through a specialist, or ask the user. Quality
   checkpoints remain user-confirmed. The Paper Assistant dispatches and
   synthesizes; it does not replace specialist work.
+enable: true
+tools: [read, bash, edit, write, grep, find, ls, subagent]
+skills: [research-project-workflow]
 ---
 
 You are the Paper Assistant for an automated paper-writing pipeline. Internally

@@ -7,6 +7,8 @@ import { useI18n } from "../i18n/useI18n";
 
 export type AgentStatus = "idle" | "working" | "error";
 
+const BUILTIN_ORDER = ["assistant", "search", "experiment", "writing", "figures"];
+
 export interface AgentListProps {
   statusByAgent: Record<string, AgentStatus>;
   sessionId: string;
@@ -57,7 +59,13 @@ export function AgentList({ statusByAgent, sessionId }: AgentListProps) {
 
   const agents = roster ?? [];
   const assistant = agents.find((agent) => agent.name === "assistant");
-  const subagents = agents.filter((agent) => agent.name !== "assistant");
+  const subagents = agents
+    .filter((agent) => agent.name !== "assistant")
+    .sort((a, b) => {
+      if (a.builtin !== b.builtin) return a.builtin ? -1 : 1;
+      if (a.builtin) return BUILTIN_ORDER.indexOf(a.name) - BUILTIN_ORDER.indexOf(b.name);
+      return a.name.localeCompare(b.name);
+    });
 
   return (
     <div className="flex h-full flex-col">
@@ -115,13 +123,53 @@ function AgentCard({ agent, fallbackName, fallbackDescription, status, entry, mo
       <div className="flex items-center gap-2">
         <span className={`size-2 rounded-full ${dotClass(status)}`} aria-hidden />
         <span className="text-[13px] font-medium text-v2-text-text-base">{agentDisplayName(t, name)}</span>
-        <span className="ml-auto text-[12px] text-v2-text-text-faint">{statusLabel(t, status)}</span>
+        <span className="ml-auto flex items-center gap-2 text-[12px] text-v2-text-text-faint">
+          {agent && (
+            <PreferenceSwitch
+              label={t("settings.agents.enable").replace("{name}", agentDisplayName(t, name))}
+              checked={agent.enabled}
+              onChange={() => undefined}
+            />
+          )}
+          {statusLabel(t, status)}
+        </span>
       </div>
       <p className="mt-2 text-[12px] text-v2-text-text-muted">
         {agentDescription(t, name, agent?.description ?? fallbackDescription ?? "")}
       </p>
+      {agent && (
+        <p className="mt-1 text-[11px] text-v2-text-text-faint">
+          {agent.effectiveTools.length} tools, {agent.effectiveSkills.length} skills
+        </p>
+      )}
       <ModelRow entry={entry} models={models} busy={busy} onApply={onApply} />
     </div>
+  );
+}
+
+function PreferenceSwitch({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (value: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-label={label}
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className={`relative h-[20px] w-[36px] shrink-0 overflow-hidden rounded-full ${checked ? "bg-v2-blue-600" : "bg-v2-grey-400"}`}
+    >
+      <span
+        aria-hidden
+        className={`absolute left-0 top-[2px] size-[16px] rounded-full bg-white ${checked ? "translate-x-[18px]" : "translate-x-[2px]"}`}
+      />
+    </button>
   );
 }
 

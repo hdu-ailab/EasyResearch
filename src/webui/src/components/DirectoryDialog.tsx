@@ -1,7 +1,7 @@
-import { ChevronRight, Folder, FolderOpen, Home, RefreshCw, X } from "lucide-react";
+import { ChevronRight, Folder, FolderOpen, FolderPlus, Home, RefreshCw, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DirectoryEntryDto } from "../../../web/contracts";
-import { listDirectories } from "../api";
+import { createDirectory, listDirectories } from "../api";
 import { useLazyTree } from "../hooks/useLazyTree";
 import { useI18n } from "../i18n/useI18n";
 
@@ -45,6 +45,9 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   const [activeSuggestion, setActiveSuggestion] = useState(-1);
   const [treeError, setTreeError] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createName, setCreateName] = useState("");
+  const [createError, setCreateError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const tree = useLazyTree<DirectoryEntryDto>({ root: viewPath, loadChildren: listDirectories });
 
@@ -169,6 +172,24 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
 
   const rootError = tree.error(viewPath);
 
+  const createFolder = async () => {
+    const relative = createName.trim();
+    if (!relative || relative.includes("\0")) {
+      setCreateError("Invalid folder name");
+      return;
+    }
+    try {
+      const created = await createDirectory(`${viewPath.replace(/\/$/, "")}/${relative}`);
+      setCreateOpen(false);
+      setCreateName("");
+      setCreateError(null);
+      tree.refresh(viewPath);
+      navigate(created.path);
+    } catch (error) {
+      setCreateError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: the backdrop intentionally closes the dialog on pointer dismissal.
     <div
@@ -224,6 +245,18 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
               onClick={() => navigate(homeDir)}
             >
               <Home size={14} />~
+            </button>
+            <button
+              type="button"
+              className="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100"
+              title={t("dialog.createFolder")}
+              aria-label={t("dialog.createFolder")}
+              onClick={() => {
+                setCreateOpen(true);
+                setCreateError(null);
+              }}
+            >
+              <FolderPlus size={14} />
             </button>
             <button
               type="button"
@@ -369,6 +402,40 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
           </button>
         </footer>
       </section>
+      {createOpen && (
+        <div className="fixed inset-0 z-10 flex items-center justify-center bg-v2-grey-1200/20 p-4">
+          <div
+            role="dialog"
+            aria-label={t("dialog.createFolder")}
+            className="w-full max-w-[360px] rounded-[10px] bg-v2-background-bg-base p-4 shadow-[var(--v2-elevation-overlay)]"
+          >
+            <h2 className="mb-3 text-[13px] font-semibold">{t("dialog.createFolder")}</h2>
+            <input
+              className="h-8 w-full rounded-md border border-v2-grey-200 px-2 font-mono text-[12px]"
+              value={createName}
+              onChange={(event) => setCreateName(event.target.value)}
+              onKeyDown={(event) => event.key === "Enter" && void createFolder()}
+            />
+            {createError && (
+              <p role="alert" className="mt-2 text-[12px] text-v2-status-error">
+                {createError}
+              </p>
+            )}
+            <div className="mt-3 flex justify-end gap-2">
+              <button type="button" className="px-3 py-1 text-[12px]" onClick={() => setCreateOpen(false)}>
+                {t("dialog.cancel")}
+              </button>
+              <button
+                type="button"
+                className="rounded-md bg-v2-grey-1100 px-3 py-1 text-[12px] text-v2-grey-50"
+                onClick={() => void createFolder()}
+              >
+                Create
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -6,6 +6,10 @@ description: >-
   (local or remote GPU per configuration), and records formal results in the
   experiments/ area. May dispatch the search agent to retrieve papers or
   material.
+enable: true
+tools: [read, bash, edit, write, grep, find, ls, subagent]
+skills: [experiment, ssh-experiment]
+subagents: [search]
 ---
 
 You are the experiment agent of the paper pipeline. Your job is to turn the

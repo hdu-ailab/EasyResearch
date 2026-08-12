@@ -9,6 +9,7 @@ import type {
   WebuiSettingsDto,
   WebuiSettingsUpdate,
 } from "./contracts";
+import { createGlobalAgent, listGlobalAgents, readGlobalAgent, writeGlobalAgent, listGlobalSkills, readGlobalSkill, writeGlobalSkill } from "./agent-resources";
 import type { DirectoryService } from "./directories";
 import { DirectoryServiceError } from "./directories";
 import { parseByteRange, RawFileRangeError, type ByteRange, type RawFileDescriptor } from "./raw-file";
@@ -24,7 +25,7 @@ import { SubagentSessionNotFoundError, type SubagentSessionService } from "./sub
 export interface RouteServices {
   webuiDist: string;
   listAllSessions: () => Promise<SessionSummaryDto[]>;
-  listAgents: () => Promise<AgentDto[]>;
+  listAgents: (cwd?: string) => Promise<AgentDto[]>;
   listModels: () => Promise<Array<{ provider: string; id: string }>>;
   effectiveModels: (sessionId: string) => Promise<AgentEffectiveModelDto[]>;
   setAgentModel: (sessionId: string, agentName: string, model: string | null) => Promise<void>;
@@ -66,7 +67,37 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       }
 
       if (req.method === "GET" && path === "/api/agents") {
-        return jsonResponse(await services.listAgents());
+        return jsonResponse(await services.listAgents(url.searchParams.get("cwd") ?? undefined));
+      }
+
+      if (req.method === "GET" && path === "/api/agent-resources") {
+        return jsonResponse(await listGlobalAgents(services.config));
+      }
+
+      const agentResourceMatch = path.match(/^\/api\/agent-resources\/([^/]+)$/);
+      if (agentResourceMatch && req.method === "GET") {
+        return jsonResponse(await readGlobalAgent(services.config, decodeURIComponent(agentResourceMatch[1]!)));
+      }
+      if (agentResourceMatch && req.method === "PUT") {
+        const body = await jsonBody<{ content: string }>(req);
+        return jsonResponse(await writeGlobalAgent(services.config, decodeURIComponent(agentResourceMatch[1]!), body.content));
+      }
+
+      if (req.method === "POST" && path === "/api/agent-resources") {
+        const body = await jsonBody<{ name: string }>(req);
+        return jsonResponse(await createGlobalAgent(services.config, body.name));
+      }
+
+      if (req.method === "GET" && path === "/api/skill-resources") {
+        return jsonResponse(await listGlobalSkills(services.config));
+      }
+      const skillResourceMatch = path.match(/^\/api\/skill-resources\/([^/]+)$/);
+      if (skillResourceMatch && req.method === "GET") {
+        return jsonResponse(await readGlobalSkill(services.config, decodeURIComponent(skillResourceMatch[1]!)));
+      }
+      if (skillResourceMatch && req.method === "PUT") {
+        const body = await jsonBody<{ content: string }>(req);
+        return jsonResponse(await writeGlobalSkill(services.config, decodeURIComponent(skillResourceMatch[1]!), body.content));
       }
 
       if (req.method === "GET" && path === "/api/models") {
@@ -84,6 +115,12 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
 
       if (req.method === "GET" && path === "/api/directories") {
         return jsonResponse(services.directories.list(url.searchParams.get("path") ?? undefined));
+      }
+
+      if (req.method === "POST" && path === "/api/directories") {
+        const body = await jsonBody<{ path: string }>(req);
+        if (typeof body.path !== "string" || !body.path) return errorResponse(400, "path is required");
+        return jsonResponse({ path: services.directories.createDirectory(body.path) });
       }
 
       if (req.method === "GET" && path === "/api/entries") {
