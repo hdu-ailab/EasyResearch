@@ -97,6 +97,48 @@ describe("discoverAgents (Markdown layers)", () => {
     });
   });
 
+  it.each([
+    { label: "omitted", fields: [] },
+    { label: "YAML-empty", fields: ["tools:", "skills:"] },
+    { label: "empty arrays", fields: ["tools: []", "skills: []"] },
+  ])("normalizes $label tool and Skill configuration to all capabilities", async ({ fields }) => {
+    const bundledSkillsDir = join(root, "bundled-skills");
+    mkdirSync(join(bundledSkillsDir, "available-skill"), { recursive: true });
+    writeFileSync(join(bundledSkillsDir, "available-skill", "SKILL.md"), "# Available\n");
+    writeAgent(bundledDir, "assistant", fields);
+
+    const { agents } = await discoverAgents({ ...options(), bundledSkillsDir });
+    const assistant = agents[0] as AgentConfig;
+
+    expect(assistant.tools).toBeUndefined();
+    expect(assistant.skills).toBeUndefined();
+    expect(assistant.effectiveTools).toEqual(expect.arrayContaining(["read", "subagent", "web-search"]));
+    expect(assistant.effectiveSkills).toEqual(["available-skill"]);
+    expect(assistant.missingSkills).toEqual([]);
+  });
+
+  it("keeps valid configured Skills and diagnoses missing ones", async () => {
+    const bundledSkillsDir = join(root, "bundled-skills");
+    mkdirSync(join(bundledSkillsDir, "available-skill"), { recursive: true });
+    writeFileSync(join(bundledSkillsDir, "available-skill", "SKILL.md"), "# Available\n");
+    writeAgent(bundledDir, "assistant", ["skills: [available-skill, missing-skill]"]);
+
+    const { agents } = await discoverAgents({ ...options(), bundledSkillsDir });
+    const assistant = agents[0] as AgentConfig;
+
+    expect(assistant.skills).toEqual(["available-skill", "missing-skill"]);
+    expect(assistant.effectiveSkills).toEqual(["available-skill"]);
+    expect(assistant.missingSkills).toEqual(["missing-skill"]);
+  });
+
+  it("preserves an empty subagent allowlist for leaf agents", async () => {
+    writeAgent(bundledDir, "search", ["subagents: []"]);
+
+    const { agents } = await discoverAgents(options());
+
+    expect(agents[0]?.subagents).toEqual([]);
+  });
+
   it("only includes home .agents skills when the global setting is enabled", async () => {
     const homeDir = join(root, "home");
     const bundledSkillsDir = join(root, "bundled-skills");

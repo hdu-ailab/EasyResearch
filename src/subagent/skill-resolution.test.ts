@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   isDotAgentsSkillEnabled,
   readGlobalDotAgentsSkillSetting,
+  resolveSkillSelection,
   resolveSkillDirectories,
   type SkillResolverDeps,
 } from "./skill-resolution";
@@ -100,6 +101,26 @@ describe("resolveSkillDirectories", () => {
     withSkill(join(cwd, "custom"), "drawio");
     const dirs = resolveSkillDirectories([abs, "~/gone"], deps)!;
     expect(dirs).toEqual([abs]);
+  });
+});
+
+describe("resolveSkillSelection", () => {
+  it("returns all controlled Skills without missing diagnostics when configuration means all", () => {
+    withSkill(bundledSkillsDir, "available-skill");
+
+    expect(resolveSkillSelection(undefined, deps)).toEqual({
+      effectiveSkills: ["available-skill"],
+      missingSkills: [],
+    });
+  });
+
+  it("keeps valid configured Skills while reporting unresolved names", () => {
+    withSkill(bundledSkillsDir, "available-skill");
+
+    expect(resolveSkillSelection(["available-skill", "missing-skill"], deps)).toEqual({
+      effectiveSkills: ["available-skill"],
+      missingSkills: ["missing-skill"],
+    });
   });
 });
 
