@@ -7,6 +7,7 @@ import {
   createPaperAssistantExtension,
   loadPaperAssistantPrompt,
 } from "./paper-assistant-extension";
+import { SubagentExecutionError } from "../subagent/tool";
 
 const tempDirs: string[] = [];
 
@@ -167,15 +168,16 @@ describe("createPaperAssistantExtension", () => {
     expect(prompt.systemPrompt).toContain("Project Paper Assistant");
 
     const subagent = registeredTools.find((tool) => tool.name === "subagent");
-    const result = await subagent?.execute?.(
+    const error = await subagent?.execute?.(
       "call-1",
       {},
       undefined,
       undefined,
       { cwd, sessionManager: { getEntries: () => [] } },
-    );
-    expect(result.content[0].text).toContain("search (bundled)");
-    expect(result.content[0].text).not.toContain("writing (bundled)");
+    ).catch((value) => value);
+    expect(error).toBeInstanceOf(SubagentExecutionError);
+    expect(error.message).toContain("search (bundled)");
+    expect(error.message).not.toContain("writing (bundled)");
     expect(process.env.EASYRESEARCH_AGENTS_ALLOWLIST).toBe("writing");
   });
 
@@ -215,16 +217,17 @@ describe("createPaperAssistantExtension", () => {
     await handlers.get("session_start")?.({ reason: "startup" }, { cwd, mode: "rpc" });
     expect(setActiveTools).toHaveBeenCalledWith(["read", "subagent"]);
 
-    const result = await registeredTools.find((tool) => tool.name === "subagent")?.execute?.(
+    const error = await registeredTools.find((tool) => tool.name === "subagent")?.execute?.(
       "call-omitted-policy",
       {},
       undefined,
       undefined,
       { cwd, sessionManager: { getEntries: () => [] } },
-    );
-    expect(result.content[0].text).toContain("search (bundled)");
-    expect(result.content[0].text).not.toContain("paper-assistant (bundled)");
-    expect(result.content[0].text).not.toContain("writing (bundled)");
+    ).catch((value) => value);
+    expect(error).toBeInstanceOf(SubagentExecutionError);
+    expect(error.message).toContain("search (bundled)");
+    expect(error.message).not.toContain("paper-assistant (bundled)");
+    expect(error.message).not.toContain("writing (bundled)");
   });
 
   it("always answers project_trust with yes (ADR-018)", async () => {

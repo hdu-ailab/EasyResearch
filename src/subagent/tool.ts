@@ -57,6 +57,8 @@ export interface SingleResult {
   errorMessage?: string;
   step?: number;
   sessionId?: string;
+  sessionPath?: string;
+  wasAborted?: boolean;
 }
 
 export interface SubagentDetails {
@@ -65,6 +67,16 @@ export interface SubagentDetails {
   results: SingleResult[];
   /** Live progress from the running subagent child (ADR-040). */
   subagent?: SubagentStreamUpdate;
+}
+
+export class SubagentExecutionError extends Error {
+  constructor(
+    message: string,
+    readonly details: SubagentDetails,
+  ) {
+    super(message);
+    this.name = "SubagentExecutionError";
+  }
 }
 
 /** Complete latest-message payload streamed via the tool update callback (ADR-040). */
@@ -181,11 +193,12 @@ function getFinalOutput(messages: Message[]): string {
 }
 
 function isFailedResult(result: SingleResult): boolean {
-  return result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
+  return result.wasAborted === true || result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
 }
 
 function getResultOutput(result: SingleResult): string {
   if (isFailedResult(result)) {
+    if (result.wasAborted) return "Subagent was aborted";
     return result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)";
   }
   return getFinalOutput(result.messages) || "(no output)";
@@ -233,12 +246,20 @@ export async function resolveInheritedSession(
   sessionDir?: string,
   parentEntries: readonly unknown[] = [],
 ): Promise<string | undefined> {
-  const { SessionManager } = await importPi();
   const links = readSubagentSessionLinks(parentEntries).filter((link) => link.agent === agentName);
   const link = links[links.length - 1];
   if (!link) return undefined;
+  return resolveSessionPath(cwd, link.childSessionId, sessionDir);
+}
+
+export async function resolveSessionPath(
+  cwd: string,
+  sessionId: string,
+  sessionDir?: string,
+): Promise<string | undefined> {
+  const { SessionManager } = await importPi();
   const sessions = await SessionManager.list(cwd, sessionDir);
-  return sessions.find((session) => session.id === link.childSessionId)?.path;
+  return sessions.find((session) => session.id === sessionId)?.path;
 }
 
 export function buildPiArgs(
@@ -311,6 +332,7 @@ async function runSingleAgent(opts: RunSingleOptions): Promise<SingleResult> {
     usage: emptyUsage,
     model,
     step,
+    sessionPath,
   };
 
   let tmpPromptPath: string | null = null;
@@ -348,6 +370,8 @@ async function runSingleAgent(opts: RunSingleOptions): Promise<SingleResult> {
         },
       });
       let buffer = "";
+      let exited = false;
+      let abortListener: (() => void) | undefined;
 
       const processLine = (line: string) => {
         handleChildLine(line, agentName, step, {
@@ -410,6 +434,8 @@ async function runSingleAgent(opts: RunSingleOptions): Promise<SingleResult> {
         result.stderr += data.toString();
       });
       proc.on("close", (code) => {
+        exited = true;
+        if (signal && abortListener) signal.removeEventListener("abort", abortListener);
         if (buffer.trim()) processLine(buffer);
         resolve(code ?? 0);
       });
@@ -420,16 +446,24 @@ async function runSingleAgent(opts: RunSingleOptions): Promise<SingleResult> {
           wasAborted = true;
           proc.kill("SIGTERM");
           setTimeout(() => {
-            if (!proc.killed) proc.kill("SIGKILL");
+            if (!exited) proc.kill("SIGKILL");
           }, 5000);
         };
+        abortListener = killProc;
         if (signal.aborted) killProc();
         else signal.addEventListener("abort", killProc, { once: true });
       }
     });
 
     result.exitCode = exitCode;
-    if (wasAborted) throw new Error("Subagent was aborted");
+    result.wasAborted = wasAborted;
+    if (!result.sessionPath && result.sessionId) {
+      try {
+        result.sessionPath = await resolveSessionPath(cwd ?? defaultCwd, result.sessionId);
+      } catch {
+        // Session-history metadata must not replace the child outcome.
+      }
+    }
     return result;
   } finally {
     if (tmpPromptPath) {
@@ -441,6 +475,52 @@ async function runSingleAgent(opts: RunSingleOptions): Promise<SingleResult> {
       }
     }
   }
+}
+
+function formatSessionHistory(results: readonly SingleResult[], mode: "single" | "chain"): string {
+  const persisted = results.filter((result) => result.sessionPath);
+  if (persisted.length === 0) return "";
+  const paths = mode === "single"
+    ? [`Session history JSONL: ${persisted[0]!.sessionPath}`]
+    : persisted.map((result) =>
+      `Session history JSONL (step ${result.step}, ${result.agent}): ${result.sessionPath}`);
+  const instruction = persisted.length === 1
+    ? 'Inspect this file from the bottom for the latest saved progress. To continue this agent in the current parent session, call subagent with session: "inherit".'
+    : 'Inspect these files from the bottom for the latest saved progress. To continue an agent in the current parent session, call subagent with that agent and session: "inherit".';
+  return [...paths, instruction].join("\n");
+}
+
+function appendSessionHistory(output: string, results: readonly SingleResult[], mode: "single" | "chain"): string {
+  const history = formatSessionHistory(results, mode);
+  return history ? `${output}\n\n${history}` : output;
+}
+
+function formatSingleSuccess(result: SingleResult): string {
+  return appendSessionHistory(getFinalOutput(result.messages) || "(no output)", [result], "single");
+}
+
+function formatChainSuccess(results: readonly SingleResult[]): string {
+  return appendSessionHistory(
+    getFinalOutput(results[results.length - 1]!.messages) || "(no output)",
+    results,
+    "chain",
+  );
+}
+
+function formatSingleFailure(result: SingleResult): string {
+  return appendSessionHistory(
+    `Agent ${result.stopReason || "failed"}: ${getResultOutput(result)}`,
+    [result],
+    "single",
+  );
+}
+
+function formatChainFailure(result: SingleResult, results: readonly SingleResult[]): string {
+  return appendSessionHistory(
+    `Chain stopped at step ${result.step} (${result.agent}): ${getResultOutput(result)}`,
+    results,
+    "chain",
+  );
 }
 
 function getPiInvocation(): { command: string; args: string[] } {
@@ -493,16 +573,10 @@ export function createSubagentTool(options: {
 
   async execute(toolCallId, params, signal, onUpdate, ctx: ExtensionContext) {
     if (!tryAcquireSubagentLock()) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: "Another subagent is still running. Subagent invocations are strictly serial; wait for it to complete and call this tool again.",
-          },
-        ],
-        details: { mode: "single", projectAgentsDir: getAgentDir(), results: [] },
-        isError: true,
-      };
+      throw new SubagentExecutionError(
+        "Another subagent is still running. Subagent invocations are strictly serial; wait for it to complete and call this tool again.",
+        { mode: "single", projectAgentsDir: getAgentDir(), results: [] },
+      );
     }
     try {
       const persistedSessionLinks = new Set<string>();
@@ -534,10 +608,10 @@ export function createSubagentTool(options: {
       if (modeCount !== 1) {
         const agents = await agentsForCwd(ctx.cwd);
         const available = agents.map((a) => `${a.name} (${a.source})`).join(", ") || "none";
-        return {
-          content: [{ type: "text", text: `Invalid parameters. Provide exactly one mode.\nAvailable agents: ${available}` }],
-          details: { ...detailsBase("single", agents), results: [] },
-        };
+        throw new SubagentExecutionError(
+          `Invalid parameters. Provide exactly one mode.\nAvailable agents: ${available}`,
+          { ...detailsBase("single", agents), results: [] },
+        );
       }
 
       if (params.chain && params.chain.length > 0) {
@@ -550,11 +624,10 @@ export function createSubagentTool(options: {
           const agents = await agentsForCwd(effectiveCwd);
           lastAgents = agents;
           if (agents.length === 0) {
-            return {
-              content: [{ type: "text", text: "No agents are available in this runtime." }],
-              details: { ...detailsBase("chain", agents), results },
-              isError: true,
-            };
+            throw new SubagentExecutionError(
+              "No agents are available in this runtime.",
+              { ...detailsBase("chain", agents), results },
+            );
           }
           const sessionPath =
             step.session === "inherit"
@@ -582,16 +655,15 @@ export function createSubagentTool(options: {
           });
           results.push(result);
           if (isFailedResult(result)) {
-            return {
-              content: [{ type: "text", text: `Chain stopped at step ${i + 1} (${step.agent}): ${getResultOutput(result)}` }],
-              details: { ...detailsBase("chain", agents), results },
-              isError: true,
-            };
+            throw new SubagentExecutionError(
+              formatChainFailure(result, results),
+              { ...detailsBase("chain", agents), results },
+            );
           }
           previousOutput = getFinalOutput(result.messages);
         }
         return {
-          content: [{ type: "text", text: getFinalOutput(results[results.length - 1]!.messages) || "(no output)" }],
+          content: [{ type: "text", text: formatChainSuccess(results) }],
           details: { ...detailsBase("chain", lastAgents), results },
         };
       }
@@ -600,11 +672,10 @@ export function createSubagentTool(options: {
         const effectiveCwd = params.cwd ?? ctx.cwd;
         const agents = await agentsForCwd(effectiveCwd);
         if (agents.length === 0) {
-          return {
-            content: [{ type: "text", text: "No agents are available in this runtime." }],
-            details: { ...detailsBase("single", agents), results: [] },
-            isError: true,
-          };
+          throw new SubagentExecutionError(
+            "No agents are available in this runtime.",
+            { ...detailsBase("single", agents), results: [] },
+          );
         }
         const sessionPath = params.session === "inherit"
           ? await resolveInheritedSession(effectiveCwd, params.agent, undefined, ctx.sessionManager.getEntries())
@@ -628,24 +699,23 @@ export function createSubagentTool(options: {
           onSessionHeader: (header) => persistSessionLink(params.agent!, undefined, header.id),
         });
         if (isFailedResult(result)) {
-          return {
-            content: [{ type: "text", text: `Agent ${result.stopReason || "failed"}: ${getResultOutput(result)}` }],
-            details: { ...detailsBase("single", agents), results: [result] },
-            isError: true,
-          };
+          throw new SubagentExecutionError(
+            formatSingleFailure(result),
+            { ...detailsBase("single", agents), results: [result] },
+          );
         }
         return {
-          content: [{ type: "text", text: getFinalOutput(result.messages) || "(no output)" }],
+          content: [{ type: "text", text: formatSingleSuccess(result) }],
           details: { ...detailsBase("single", agents), results: [result] },
         };
       }
 
       const agents = await agentsForCwd(ctx.cwd);
       const available = agents.map((a) => `${a.name} (${a.source})`).join(", ") || "none";
-      return {
-        content: [{ type: "text", text: `Invalid parameters. Available agents: ${available}` }],
-        details: { ...detailsBase("single", agents), results: [] },
-      };
+      throw new SubagentExecutionError(
+        `Invalid parameters. Available agents: ${available}`,
+        { ...detailsBase("single", agents), results: [] },
+      );
     } finally {
       releaseSubagentLock();
     }
