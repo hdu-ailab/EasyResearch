@@ -1,6 +1,10 @@
 import { fileURLToPath } from "node:url";
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 import { createPaperAssistantExtension } from "./paper-assistant";
+import { createSubagentDispatchExtension } from "./subagent-dispatch";
+import { createWelcomeBannerExtension } from "./welcome-banner";
+import { createEventLoggerExtension } from "./event-logger";
+import { createProjectTrustExtension } from "./project-trust";
 import duckDuckGoSearchExtension from "./web-search";
 
 /**
@@ -9,6 +13,10 @@ import duckDuckGoSearchExtension from "./web-search";
  * Mirrors upstream Pi's `dist/extensions/index.js` (builtInExtensions merged
  * into `extensionFactories` in `main()`), extended with a `path` so spawned
  * children can load the same extension via the CLI `--extension` channel.
+ *
+ * ADR-063: the former monolithic paper-assistant extension is atomized — each
+ * entry below owns exactly one responsibility (definition application, subagent
+ * dispatch, welcome banner, event logger, project trust, web search).
  *
  * The subagent (stage) extension is intentionally absent: it is only mounted in
  * stage-agent child processes, and its path lives in `src/subagent/tool.ts`
@@ -27,6 +35,26 @@ export const assistantExtensions: BundledExtension[] = [
     name: "paper-assistant",
     factory: createPaperAssistantExtension(),
     path: fileURLToPath(new URL("./paper-assistant/index.ts", import.meta.url)),
+  },
+  {
+    name: "subagent-dispatch",
+    factory: createSubagentDispatchExtension(),
+    path: fileURLToPath(new URL("./subagent-dispatch/index.ts", import.meta.url)),
+  },
+  {
+    name: "welcome-banner",
+    factory: createWelcomeBannerExtension(),
+    path: fileURLToPath(new URL("./welcome-banner/index.ts", import.meta.url)),
+  },
+  {
+    name: "event-logger",
+    factory: createEventLoggerExtension(),
+    path: fileURLToPath(new URL("./event-logger/index.ts", import.meta.url)),
+  },
+  {
+    name: "project-trust",
+    factory: createProjectTrustExtension(),
+    path: fileURLToPath(new URL("./project-trust/index.ts", import.meta.url)),
   },
   {
     name: "web-search",
