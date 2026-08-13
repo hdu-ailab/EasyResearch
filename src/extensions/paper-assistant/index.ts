@@ -1,20 +1,18 @@
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
-import { importPi } from "./pi-import";
-import { createSubagentTool } from "../subagent/tool";
-import { discoverAgents, PAPER_ASSISTANT_AGENT, type AgentConfig } from "../subagent/agents";
-import { SUBAGENT_SESSION_LINK_ENTRY } from "../subagent/session-links";
-import { webSearchTool } from "../tools/duckduckgo-search";
-import { mountWelcomeBanner } from "../tui/welcome-banner";
-import { createLogger } from "./logger";
-import { mountPiEventLogger, type PiEventBus } from "./pi-event-logger";
+import { importPi } from "../../runtime/pi-import";
+import { createSubagentTool } from "../../subagent/tool";
+import { discoverAgents, PAPER_ASSISTANT_AGENT, type AgentConfig } from "../../subagent/agents";
+import { SUBAGENT_SESSION_LINK_ENTRY } from "../../subagent/session-links";
+import { mountWelcomeBanner } from "../../tui/welcome-banner";
+import { createLogger } from "../../runtime/logger";
+import { mountPiEventLogger, type PiEventBus } from "../../runtime/pi-event-logger";
 import {
   defaultSkillDirectories,
   isDotAgentsSkillEnabled,
   resolveSkillDirectories,
-} from "../subagent/skill-resolution";
-import { dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+} from "../../subagent/skill-resolution";
 
 export interface PaperAssistantExtensionOptions {
   agentDir?: string;
@@ -24,7 +22,7 @@ export interface PaperAssistantExtensionOptions {
 }
 
 function bundledSkillsDir(): string {
-  return join(dirname(fileURLToPath(import.meta.url)), "..", "skills");
+  return join(dirname(fileURLToPath(import.meta.url)), "..", "..", "skills");
 }
 
 export interface LoadPaperAssistantPromptOptions extends PaperAssistantExtensionOptions {
@@ -80,7 +78,6 @@ export function createPaperAssistantExtension(options: PaperAssistantExtensionOp
         return specialists.filter((agent) => allowed.has(agent.name));
       },
     }));
-    pi.registerTool(webSearchTool);
     mountWelcomeBanner(pi);
     const isRpcChild = process.env.EASYRESEARCH_RPC_CHILD === "1";
     if (!isRpcChild) {

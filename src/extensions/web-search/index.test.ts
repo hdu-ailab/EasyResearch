@@ -11,7 +11,7 @@ import {
   textContent,
   truncateOutput,
   webSearchTool,
-} from "./duckduckgo-search";
+} from "./index";
 
 describe("search tool definition (ADR-031 as amended by ADR-038)", () => {
   it("is named web-search", () => {

@@ -19,9 +19,15 @@ import { releaseSubagentLock, tryAcquireSubagentLock } from "./serial";
 
 /**
  * ADR-022: stage-agent runtimes mount the subagent-only extension so nested
- * dispatch (experiment/writing/figures → search) works.
+ * dispatch (experiment/writing/figures → search) works. The path lives here
+ * rather than the bundled-extension registry because only this module spawns
+ * stage children, and importing the aggregator would create a static import
+ * cycle through the Paper Assistant extension.
  */
-const SUBAGENT_EXTENSION_PATH = fileURLToPath(new URL("./subagent-extension.ts", import.meta.url));
+const STAGE_EXTENSION_PATH = fileURLToPath(new URL("../extensions/subagent/index.ts", import.meta.url));
+
+/** Stage-agent runtime extension path, exported for registry invariants. */
+export const stageExtensionPath: string = STAGE_EXTENSION_PATH;
 
 /**
  * Pre-flight ruling (2026-08-08): `execute` runs inside the Web RPC child in
@@ -282,7 +288,7 @@ export function buildPiArgs(
     args.push(...buildDefaultSkillArgs(skillDeps));
   }
   // ADR-022: nested dispatch needs the subagent tool inside stage runtimes.
-  args.push("--extension", SUBAGENT_EXTENSION_PATH);
+  args.push("--extension", stageExtensionPath);
   args.push("--name", sessionNameFor(agent.name));
   if (sessionPath) args.push("--session", sessionPath);
   return args;

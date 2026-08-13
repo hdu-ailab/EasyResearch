@@ -36,8 +36,11 @@ vi.mock("../bootstrap/resources", () => ({
 vi.mock("./extensions-guard", () => ({
   assertSafeExtensionSources: () => hoisted.guard(),
 }));
-vi.mock("./paper-assistant-extension", () => ({
-  createPaperAssistantExtension: () => hoisted.createExtension(),
+vi.mock("../extensions", () => ({
+  assistantExtensions: [
+    { name: "paper-assistant", factory: hoisted.createExtension(), path: "/ext/paper-assistant" },
+    { name: "web-search", factory: hoisted.createExtension(), path: "/ext/web-search" },
+  ],
 }));
 
 function tempAgentDir(): string {
@@ -172,11 +175,11 @@ describe("runNativeTui", () => {
     expect(hoisted.main).toHaveBeenCalledTimes(1);
   });
 
-  it("bootstraps resources, guards extensions, and mounts the Paper Assistant extension", async () => {
+  it("bootstraps resources, guards extensions, and mounts the assistant extensions", async () => {
     await runNativeTui();
     expect(hoisted.main).toHaveBeenCalledTimes(1);
     expect(hoisted.main).toHaveBeenCalledWith(expect.arrayContaining(["--no-skills"]), {
-      extensionFactories: [{ inner: true }],
+      extensionFactories: [{ inner: true }, { inner: true }],
     });
   });
 

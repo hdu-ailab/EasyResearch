@@ -404,6 +404,6 @@ export const webSearchTool = defineTool({
 });
 
 /** Extension factory kept for parity with the upstream duckduckgo-search extension shape. */
-export function duckduckGoSearchExtension(pi: ExtensionAPI): void {
+export default function duckDuckGoSearchExtension(pi: ExtensionAPI): void {
   pi.registerTool(webSearchTool);
 }

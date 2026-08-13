@@ -6,8 +6,8 @@ import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import {
   createPaperAssistantExtension,
   loadPaperAssistantPrompt,
-} from "./paper-assistant-extension";
-import { SubagentExecutionError } from "../subagent/tool";
+} from "./index";
+import { SubagentExecutionError } from "../../subagent/tool";
 
 const tempDirs: string[] = [];
 
