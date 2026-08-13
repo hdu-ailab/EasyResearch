@@ -81,6 +81,7 @@ class FakeRpcClient {
 }
 
 const cliPath = fileURLToPath(new URL("../runtime/pi-bootstrap.mjs", import.meta.url));
+const extensionPaths = assistantExtensions.map((extension) => extension.path);
 
 describe("PiRpcSessionFactory", () => {
   beforeEach(() => {
@@ -88,7 +89,7 @@ describe("PiRpcSessionFactory", () => {
   });
 
   it("maps options to cwd, bundled child path, and native args", () => {
-    const factory = new PiRpcSessionFactory(FakeRpcClient);
+    const factory = new PiRpcSessionFactory(FakeRpcClient, {}, extensionPaths);
     const options: StartRpcSessionOptions = {
       cwd: "/project",
       sessionPath: "/agent/sessions/--project--/old.jsonl",
@@ -100,7 +101,7 @@ describe("PiRpcSessionFactory", () => {
     expect(client.options.cwd).toBe("/project");
     expect(client.options.cliPath).toBe(cliPath);
     expect(client.options.args).toContain("--extension");
-    for (const extensionPath of assistantExtensions.map((extension) => extension.path)) {
+    for (const extensionPath of extensionPaths) {
       expect(client.options.args).toContain(extensionPath);
     }
     expect(client.options.args).toContain("--session");
@@ -140,6 +141,22 @@ describe("PiRpcSessionFactory", () => {
 
     factory.create({ cwd: "/plain" });
     expect(FakeRpcClient.instances[2]!.options.args).not.toContain("--thinking");
+  });
+
+  it("must not statically load the extension registry before the identity bootstrap (ADR-016)", async () => {
+    // ADR-016: only `importPi()` may evaluate Pi. Statically importing the
+    // extension registry would evaluate Pi's `config.js` without `PI_PACKAGE_DIR`
+    // and capture the wrong `.pi` config dir — redirecting sessions/reports to
+    // `~/.pi/agent`. The mock factory must never run while loading this module.
+    const registryLoaded: { value: boolean } = { value: false };
+    vi.doMock("../extensions", () => {
+      registryLoaded.value = true;
+      return { assistantExtensions: [] };
+    });
+    vi.resetModules();
+    registryLoaded.value = false;
+    await import("./rpc-session");
+    expect(registryLoaded.value).toBe(false);
   });
 });
 
