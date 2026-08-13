@@ -12,6 +12,8 @@ import {
   handleChildLine,
   progressFromMessage,
   resolveInheritedSession,
+  resolveSessionPath,
+  SubagentExecutionError,
   subagentTool,
 } from "./tool";
 import { sessionNameFor, SUBAGENT_SESSION_LINK_ENTRY, SUBAGENT_SESSION_PREFIX } from "./session-links";
@@ -50,12 +52,17 @@ vi.mock("../runtime/pi-import", async (importOriginal) => {
 });
 
 beforeEach(async () => {
+  releaseSubagentLock();
   const { discoverAgents } = await import("./agents");
   const { resolveModelForSpawn } = await import("./model-resolution");
   vi.mocked(discoverAgents).mockReset();
   vi.mocked(resolveModelForSpawn).mockReset();
   spawnMock.mockReset();
   loggerMock.debug.mockClear();
+});
+
+afterEach(() => {
+  releaseSubagentLock();
 });
 
 describe("buildPiArgs", () => {
@@ -242,17 +249,18 @@ describe("createSubagentTool agent provider", () => {
       const agentProvider = vi.fn(async () => [maker("search")]);
       const tool = createSubagentTool({ agentProvider });
 
-      const result = await tool.execute(
+      const error = await tool.execute(
         "assistant-call",
         {},
         undefined,
         undefined,
         { cwd: "/paper", sessionManager: { getEntries: () => [] } } as never,
-      );
+      ).catch((value) => value);
 
       expect(agentProvider).toHaveBeenCalledWith("/paper");
-      expect(result.content[0]).toMatchObject({ text: expect.stringContaining("search (global)") });
-      expect(result.content[0]).not.toMatchObject({ text: expect.stringContaining("writing") });
+      expect(error).toBeInstanceOf(SubagentExecutionError);
+      expect(error.message).toContain("search (global)");
+      expect(error.message).not.toContain("writing");
       expect(process.env.EASYRESEARCH_AGENTS_ALLOWLIST).toBe("writing");
     } finally {
       if (previous === undefined) delete process.env.EASYRESEARCH_AGENTS_ALLOWLIST;
@@ -362,6 +370,613 @@ describe("final subagent output (ADR-040)", () => {
     );
 
     expect(result.content).toEqual([{ type: "text", text: "first section\n\nsecond section" }]);
+  });
+
+  it("returns a successful fresh child's confirmed JSONL path", async () => {
+    const { discoverAgents } = await import("./agents");
+    const { resolveModelForSpawn } = await import("./model-resolution");
+    const { getAgentDir, importPi } = await import("../runtime/pi-import");
+    vi.mocked(discoverAgents).mockResolvedValue({ agents: [maker("search")] });
+    vi.mocked(resolveModelForSpawn).mockResolvedValue(undefined);
+    vi.mocked(getAgentDir).mockReturnValue("/tmp/easyresearch-test-agent");
+    vi.mocked(importPi).mockResolvedValue({
+      SessionManager: {
+        list: vi.fn(async () => [{ id: "child-success", path: "/sessions/child-success.jsonl" }]),
+      },
+    } as never);
+    spawnMock.mockImplementationOnce(() => {
+      const stdout = new EventEmitter();
+      const child = Object.assign(new EventEmitter(), {
+        stdout,
+        stderr: new EventEmitter(),
+        killed: false,
+        kill: vi.fn(),
+      });
+      queueMicrotask(() => {
+        stdout.emit("data", Buffer.from([
+          '{"type":"session","version":3,"id":"child-success","cwd":"/paper"}',
+          JSON.stringify({
+            type: "message_end",
+            message: { role: "assistant", content: [{ type: "text", text: "status: complete" }] },
+          }),
+          "",
+        ].join("\n")));
+        child.emit("close", 0);
+      });
+      return child;
+    });
+
+    const result = await subagentTool.execute(
+      "call-success-path",
+      { agent: "search", task: "find papers" },
+      undefined,
+      undefined,
+      { cwd: "/paper", sessionManager: { getEntries: () => [] } } as never,
+    );
+
+    expect(result.content).toEqual([{ type: "text", text: [
+      "status: complete",
+      "",
+      "Session history JSONL: /sessions/child-success.jsonl",
+      'Inspect this file from the bottom for the latest saved progress. To continue this agent in the current parent session, call subagent with session: "inherit".',
+    ].join("\n") }]);
+    expect((result.details as { results: Array<{ sessionId?: string; sessionPath?: string }> }).results[0]).toMatchObject({
+      sessionId: "child-success",
+      sessionPath: "/sessions/child-success.jsonl",
+    });
+  });
+
+  it("does not report an unflushed child session as a JSONL path", async () => {
+    const { discoverAgents } = await import("./agents");
+    const { resolveModelForSpawn } = await import("./model-resolution");
+    const { getAgentDir, importPi } = await import("../runtime/pi-import");
+    vi.mocked(discoverAgents).mockResolvedValue({ agents: [maker("search")] });
+    vi.mocked(resolveModelForSpawn).mockResolvedValue(undefined);
+    vi.mocked(getAgentDir).mockReturnValue("/tmp/easyresearch-test-agent");
+    vi.mocked(importPi).mockResolvedValue({
+      SessionManager: { list: vi.fn(async () => []) },
+    } as never);
+    spawnMock.mockImplementationOnce(() => {
+      const stdout = new EventEmitter();
+      const child = Object.assign(new EventEmitter(), {
+        stdout,
+        stderr: new EventEmitter(),
+        killed: false,
+        kill: vi.fn(),
+      });
+      queueMicrotask(() => {
+        stdout.emit("data", Buffer.from([
+          '{"type":"session","version":3,"id":"child-unflushed","cwd":"/paper"}',
+          JSON.stringify({
+            type: "message_end",
+            message: { role: "assistant", content: [{ type: "text", text: "status: complete" }] },
+          }),
+          "",
+        ].join("\n")));
+        child.emit("close", 0);
+      });
+      return child;
+    });
+
+    const result = await subagentTool.execute(
+      "call-unflushed",
+      { agent: "search", task: "find papers" },
+      undefined,
+      undefined,
+      { cwd: "/paper", sessionManager: { getEntries: () => [] } } as never,
+    );
+
+    expect(result.content).toEqual([{ type: "text", text: "status: complete" }]);
+    expect((result.details as { results: Array<{ sessionPath?: string }> }).results[0]?.sessionPath).toBeUndefined();
+  });
+
+  it("returns the same mapped JSONL path for an inherited success", async () => {
+    const { resolveModelForSpawn } = await import("./model-resolution");
+    const { getAgentDir, importPi } = await import("../runtime/pi-import");
+    vi.mocked(resolveModelForSpawn).mockResolvedValue(undefined);
+    vi.mocked(getAgentDir).mockReturnValue("/tmp/easyresearch-test-agent");
+    vi.mocked(importPi).mockResolvedValue({
+      SessionManager: {
+        list: vi.fn(async () => [{ id: "child-inherited", path: "/sessions/inherited.jsonl" }]),
+      },
+    } as never);
+    spawnMock.mockImplementationOnce(() => {
+      const stdout = new EventEmitter();
+      const child = Object.assign(new EventEmitter(), {
+        stdout,
+        stderr: new EventEmitter(),
+        killed: false,
+        kill: vi.fn(),
+      });
+      queueMicrotask(() => {
+        stdout.emit("data", Buffer.from([
+          '{"type":"session","version":3,"id":"child-inherited","cwd":"/paper"}',
+          JSON.stringify({
+            type: "message_end",
+            message: { role: "assistant", content: [{ type: "text", text: "continued" }] },
+          }),
+          "",
+        ].join("\n")));
+        child.emit("close", 0);
+      });
+      return child;
+    });
+    const tool = createSubagentTool({ agentProvider: async () => [maker("search")] });
+
+    const result = await tool.execute(
+      "call-inherited-success",
+      { agent: "search", task: "continue", session: "inherit" },
+      undefined,
+      undefined,
+      {
+        cwd: "/paper",
+        sessionManager: {
+          getEntries: () => [{
+            type: "custom",
+            customType: SUBAGENT_SESSION_LINK_ENTRY,
+            data: { toolCallId: "prior-call", childSessionId: "child-inherited", agent: "search" },
+          }],
+        },
+      } as never,
+    );
+
+    const args = spawnMock.mock.calls[0]?.[1] as string[];
+    expect(args[args.indexOf("--session") + 1]).toBe("/sessions/inherited.jsonl");
+    expect((result.details as { results: Array<{ sessionPath?: string }> }).results[0]?.sessionPath).toBe("/sessions/inherited.jsonl");
+    expect(result.content[0]).toMatchObject({ text: expect.stringContaining("/sessions/inherited.jsonl") });
+  });
+
+  it("returns every successful chain step JSONL path in order", async () => {
+    const { resolveModelForSpawn } = await import("./model-resolution");
+    const { getAgentDir, importPi } = await import("../runtime/pi-import");
+    vi.mocked(resolveModelForSpawn).mockResolvedValue(undefined);
+    vi.mocked(getAgentDir).mockReturnValue("/tmp/easyresearch-test-agent");
+    vi.mocked(importPi).mockResolvedValue({
+      SessionManager: {
+        list: vi.fn(async () => [
+          { id: "chain-a", path: "/sessions/chain-a.jsonl" },
+          { id: "chain-b", path: "/sessions/chain-b.jsonl" },
+        ]),
+      },
+    } as never);
+    for (const [sessionId, text] of [["chain-a", "searched"], ["chain-b", "written"]] as const) {
+      spawnMock.mockImplementationOnce(() => {
+        const stdout = new EventEmitter();
+        const child = Object.assign(new EventEmitter(), {
+          stdout,
+          stderr: new EventEmitter(),
+          killed: false,
+          kill: vi.fn(),
+        });
+        queueMicrotask(() => {
+          stdout.emit("data", Buffer.from([
+            `{"type":"session","version":3,"id":"${sessionId}","cwd":"/paper"}`,
+            JSON.stringify({
+              type: "message_end",
+              message: { role: "assistant", content: [{ type: "text", text }] },
+            }),
+            "",
+          ].join("\n")));
+          child.emit("close", 0);
+        });
+        return child;
+      });
+    }
+    const tool = createSubagentTool({ agentProvider: async () => [maker("search"), maker("writing")] });
+
+    const result = await tool.execute(
+      "call-chain-success",
+      { chain: [
+        { agent: "search", task: "find papers" },
+        { agent: "writing", task: "use {previous}" },
+      ] },
+      undefined,
+      undefined,
+      { cwd: "/paper", sessionManager: { getEntries: () => [] } } as never,
+    );
+
+    const text = (result.content[0] as { text: string }).text;
+    expect(text.indexOf("step 1, search")).toBeLessThan(text.indexOf("step 2, writing"));
+    expect((result.details as { results: Array<{ sessionPath?: string }> }).results.map((item) => item.sessionPath)).toEqual([
+      "/sessions/chain-a.jsonl",
+      "/sessions/chain-b.jsonl",
+    ]);
+  });
+});
+
+describe("subagent failure contract (ADR-059)", () => {
+  async function prepareFailureDeps(sessionId = "child-failed", sessionPath = "/sessions/failed.jsonl") {
+    const { resolveModelForSpawn } = await import("./model-resolution");
+    const { getAgentDir, importPi } = await import("../runtime/pi-import");
+    vi.mocked(resolveModelForSpawn).mockResolvedValue(undefined);
+    vi.mocked(getAgentDir).mockReturnValue("/tmp/easyresearch-test-agent");
+    vi.mocked(importPi).mockResolvedValue({
+      SessionManager: {
+        list: vi.fn(async () => [{ id: sessionId, path: sessionPath }]),
+      },
+    } as never);
+  }
+
+  it.each([
+    { name: "non-zero exit", exitCode: 2, stopReason: undefined, errorMessage: undefined, stderr: "stderr failure" },
+    { name: "assistant error", exitCode: 0, stopReason: "error", errorMessage: "provider failed", stderr: "" },
+    { name: "assistant aborted", exitCode: 0, stopReason: "aborted", errorMessage: "request aborted", stderr: "" },
+  ])("rejects $name with the recoverable JSONL path", async ({ exitCode, stopReason, errorMessage, stderr }) => {
+    await prepareFailureDeps();
+    spawnMock.mockImplementationOnce(() => {
+      const stdout = new EventEmitter();
+      const stderrStream = new EventEmitter();
+      const child = Object.assign(new EventEmitter(), {
+        stdout,
+        stderr: stderrStream,
+        killed: false,
+        kill: vi.fn(),
+      });
+      queueMicrotask(() => {
+        stdout.emit("data", Buffer.from([
+          '{"type":"session","version":3,"id":"child-failed","cwd":"/paper"}',
+          ...(stopReason ? [JSON.stringify({
+            type: "message_end",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "saved progress" }],
+              stopReason,
+              errorMessage,
+            },
+          })] : []),
+          "",
+        ].join("\n")));
+        if (stderr) stderrStream.emit("data", Buffer.from(stderr));
+        child.emit("close", exitCode);
+      });
+      return child;
+    });
+    const tool = createSubagentTool({ agentProvider: async () => [maker("search")] });
+
+    const error = await tool.execute(
+      "call-failed",
+      { agent: "search", task: "find papers" },
+      undefined,
+      undefined,
+      { cwd: "/paper", sessionManager: { getEntries: () => [] } } as never,
+    ).catch((value) => value);
+
+    expect(error).toBeInstanceOf(SubagentExecutionError);
+    expect(error.message).toContain(errorMessage || stderr);
+    expect(error.message).toContain("Session history JSONL: /sessions/failed.jsonl");
+    expect(error.message).toContain('session: "inherit"');
+  });
+
+  it.each(["partial", "blocked"])("keeps a normal %s handoff successful", async (status) => {
+    await prepareFailureDeps("child-handoff", "/sessions/handoff.jsonl");
+    spawnMock.mockImplementationOnce(() => {
+      const stdout = new EventEmitter();
+      const child = Object.assign(new EventEmitter(), {
+        stdout,
+        stderr: new EventEmitter(),
+        killed: false,
+        kill: vi.fn(),
+      });
+      queueMicrotask(() => {
+        stdout.emit("data", Buffer.from([
+          '{"type":"session","version":3,"id":"child-handoff","cwd":"/paper"}',
+          JSON.stringify({
+            type: "message_end",
+            message: { role: "assistant", content: [{ type: "text", text: `status: ${status}` }], stopReason: "stop" },
+          }),
+          "",
+        ].join("\n")));
+        child.emit("close", 0);
+      });
+      return child;
+    });
+    const tool = createSubagentTool({ agentProvider: async () => [maker("search")] });
+
+    const result = await tool.execute(
+      `call-${status}`,
+      { agent: "search", task: "find papers" },
+      undefined,
+      undefined,
+      { cwd: "/paper", sessionManager: { getEntries: () => [] } } as never,
+    );
+
+    expect(result.content[0]).toMatchObject({ text: expect.stringContaining(`status: ${status}`) });
+    expect(result.content[0]).toMatchObject({ text: expect.stringContaining("/sessions/handoff.jsonl") });
+  });
+
+  it("rejects invalid parameters instead of returning a successful tool result", async () => {
+    const tool = createSubagentTool({ agentProvider: async () => [maker("search")] });
+
+    await expect(tool.execute(
+      "call-invalid",
+      {},
+      undefined,
+      undefined,
+      { cwd: "/paper", sessionManager: { getEntries: () => [] } } as never,
+    )).rejects.toThrow(/Invalid parameters/);
+  });
+
+  it("rejects an unknown agent instead of returning a successful tool result", async () => {
+    await prepareFailureDeps();
+    const tool = createSubagentTool({ agentProvider: async () => [maker("search")] });
+
+    await expect(tool.execute(
+      "call-unknown",
+      { agent: "writing", task: "draft" },
+      undefined,
+      undefined,
+      { cwd: "/paper", sessionManager: { getEntries: () => [] } } as never,
+    )).rejects.toThrow(/Unknown agent: "writing"/);
+  });
+
+  it("rejects a concurrent invocation as a real tool failure", async () => {
+    releaseSubagentLock();
+    expect(tryAcquireSubagentLock()).toBe(true);
+    const tool = createSubagentTool({ agentProvider: async () => [maker("search")] });
+    try {
+      await expect(tool.execute(
+        "call-concurrent",
+        { agent: "search", task: "find papers" },
+        undefined,
+        undefined,
+        { cwd: "/paper", sessionManager: { getEntries: () => [] } } as never,
+      )).rejects.toThrow(/Another subagent is still running/);
+    } finally {
+      releaseSubagentLock();
+    }
+  });
+
+  it("returns prior and failed chain paths and stops before later steps", async () => {
+    const { resolveModelForSpawn } = await import("./model-resolution");
+    const { getAgentDir, importPi } = await import("../runtime/pi-import");
+    vi.mocked(resolveModelForSpawn).mockResolvedValue(undefined);
+    vi.mocked(getAgentDir).mockReturnValue("/tmp/easyresearch-test-agent");
+    vi.mocked(importPi).mockResolvedValue({
+      SessionManager: {
+        list: vi.fn(async () => [
+          { id: "chain-ok", path: "/sessions/chain-ok.jsonl" },
+          { id: "chain-failed", path: "/sessions/chain-failed.jsonl" },
+        ]),
+      },
+    } as never);
+    for (const [sessionId, text, exitCode] of [
+      ["chain-ok", "searched", 0],
+      ["chain-failed", "saved draft", 2],
+    ] as const) {
+      spawnMock.mockImplementationOnce(() => {
+        const stdout = new EventEmitter();
+        const stderr = new EventEmitter();
+        const child = Object.assign(new EventEmitter(), {
+          stdout,
+          stderr,
+          killed: false,
+          kill: vi.fn(),
+        });
+        queueMicrotask(() => {
+          stdout.emit("data", Buffer.from([
+            `{"type":"session","version":3,"id":"${sessionId}","cwd":"/paper"}`,
+            JSON.stringify({
+              type: "message_end",
+              message: { role: "assistant", content: [{ type: "text", text }] },
+            }),
+            "",
+          ].join("\n")));
+          if (exitCode !== 0) stderr.emit("data", Buffer.from("compile failed"));
+          child.emit("close", exitCode);
+        });
+        return child;
+      });
+    }
+    const tool = createSubagentTool({
+      agentProvider: async () => [maker("search"), maker("writing"), maker("figures")],
+    });
+
+    const error = await tool.execute(
+      "call-chain-failure",
+      { chain: [
+        { agent: "search", task: "find papers" },
+        { agent: "writing", task: "draft from {previous}" },
+        { agent: "figures", task: "draw" },
+      ] },
+      undefined,
+      undefined,
+      { cwd: "/paper", sessionManager: { getEntries: () => [] } } as never,
+    ).catch((value) => value);
+
+    expect(error).toBeInstanceOf(SubagentExecutionError);
+    expect(error.message).toMatch(/Chain stopped at step 2 \(writing\): compile failed/);
+    expect(error.message).toMatch(/step 1, search[\s\S]*step 2, writing/);
+    expect(error.details.results.map((item: { sessionPath?: string }) => item.sessionPath)).toEqual([
+      "/sessions/chain-ok.jsonl",
+      "/sessions/chain-failed.jsonl",
+    ]);
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("recovers the confirmed JSONL path when the user aborts", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await prepareFailureDeps("child-user-abort", "/sessions/user-abort.jsonl");
+      let child: EventEmitter & {
+        stdout: EventEmitter;
+        stderr: EventEmitter;
+        killed: boolean;
+        kill: ReturnType<typeof vi.fn>;
+      };
+      spawnMock.mockImplementationOnce(() => {
+        const stdout = new EventEmitter();
+        child = Object.assign(new EventEmitter(), {
+          stdout,
+          stderr: new EventEmitter(),
+          killed: false,
+          kill: vi.fn(function (this: { killed: boolean }) {
+            this.killed = true;
+            return true;
+          }),
+        });
+        queueMicrotask(() => {
+          stdout.emit("data", Buffer.from('{"type":"session","version":3,"id":"child-user-abort","cwd":"/paper"}\n'));
+        });
+        return child;
+      });
+      const tool = createSubagentTool({ agentProvider: async () => [maker("search")] });
+      const controller = new AbortController();
+      const execution = tool.execute(
+        "call-user-abort",
+        { agent: "search", task: "find papers" },
+        controller.signal,
+        undefined,
+        { cwd: "/paper", sessionManager: { getEntries: () => [] } } as never,
+      );
+      for (let i = 0; i < 10 && !child!; i++) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      expect(child!).toBeDefined();
+
+      controller.abort();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(child!.kill).toHaveBeenNthCalledWith(1, "SIGTERM");
+      expect(child!.kill).toHaveBeenNthCalledWith(2, "SIGKILL");
+      child!.emit("close", 0);
+
+      const error = await execution.catch((value) => value);
+      expect(error).toBeInstanceOf(SubagentExecutionError);
+      expect(error.message).toContain("Subagent was aborted");
+      expect(error.message).toContain("/sessions/user-abort.jsonl");
+      expect(error.message).toContain('session: "inherit"');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not escalate an abort after the child exits", async () => {
+    let escalation: (() => void) | undefined;
+    const timeout = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+      ...args: unknown[]
+    ) => {
+      escalation = args[0] as () => void;
+      return 1 as unknown as NodeJS.Timeout;
+    }) as unknown as typeof setTimeout);
+    try {
+      await prepareFailureDeps("child-fast-abort", "/sessions/fast-abort.jsonl");
+      let child: EventEmitter & {
+        stdout: EventEmitter;
+        stderr: EventEmitter;
+        killed: boolean;
+        kill: ReturnType<typeof vi.fn>;
+      };
+      spawnMock.mockImplementationOnce(() => {
+        const stdout = new EventEmitter();
+        child = Object.assign(new EventEmitter(), {
+          stdout,
+          stderr: new EventEmitter(),
+          killed: false,
+          kill: vi.fn(),
+        });
+        queueMicrotask(() => {
+          stdout.emit("data", Buffer.from('{"type":"session","version":3,"id":"child-fast-abort","cwd":"/paper"}\n'));
+        });
+        return child;
+      });
+      const tool = createSubagentTool({ agentProvider: async () => [maker("search")] });
+      const controller = new AbortController();
+      const execution = tool.execute(
+        "call-fast-abort",
+        { agent: "search", task: "find papers" },
+        controller.signal,
+        undefined,
+        { cwd: "/paper", sessionManager: { getEntries: () => [] } } as never,
+      );
+      for (let i = 0; i < 10 && !child!; i++) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      expect(child!).toBeDefined();
+
+      controller.abort();
+      child!.emit("close", 0);
+      await execution.catch(() => undefined);
+      expect(escalation).toBeTypeOf("function");
+      escalation!();
+
+      expect(child!.kill).toHaveBeenCalledTimes(1);
+      expect(child!.kill).toHaveBeenCalledWith("SIGTERM");
+    } finally {
+      timeout.mockRestore();
+    }
+  });
+});
+
+describe("Pi tool-error integration (ADR-059)", () => {
+  it("records a thrown subagent failure as a real tool error", async () => {
+    const { runAgentLoop } = await import("@earendil-works/pi-agent-core");
+    const { createAssistantMessageEventStream, fauxAssistantMessage, fauxToolCall } = await import("@earendil-works/pi-ai");
+    const definition = createSubagentTool({ agentProvider: async () => [] });
+    const tool = {
+      name: definition.name,
+      label: definition.label,
+      description: definition.description,
+      parameters: definition.parameters,
+      execute: (toolCallId: string, params: unknown, signal?: AbortSignal, onUpdate?: never) =>
+        definition.execute(
+          toolCallId,
+          params as never,
+          signal,
+          onUpdate,
+          { cwd: "/paper", sessionManager: { getEntries: () => [] } } as never,
+        ),
+    };
+    const firstCallId = "integrated-tool-call";
+    const responses = [
+      fauxAssistantMessage([fauxToolCall("subagent", { agent: "search", task: "find papers" }, { id: firstCallId })]),
+      fauxAssistantMessage("done"),
+    ];
+    let responseIndex = 0;
+    const streamFn = () => {
+      const stream = createAssistantMessageEventStream();
+      const message = responses[responseIndex++]!;
+      queueMicrotask(() => {
+        stream.push({ type: "start", partial: { ...message } });
+        stream.push({ type: "done", reason: message.stopReason as "stop", message });
+        stream.end(message);
+      });
+      return stream;
+    };
+    const model = {
+      api: "faux",
+      provider: "faux",
+      id: "faux-1",
+      name: "Faux Model",
+      baseUrl: "http://localhost:0",
+    } as never;
+    const events: Array<{ type: string; [key: string]: unknown }> = [];
+    await runAgentLoop(
+      [{ role: "user", content: [{ type: "text" as const, text: "run search" }], timestamp: Date.now() }],
+      { systemPrompt: "test", messages: [], tools: [tool as never] },
+      {
+        model,
+        convertToLlm: async (messages: unknown) => messages as never,
+      },
+      async (event) => {
+        events.push(event as { type: string; [key: string]: unknown });
+      },
+      undefined,
+      streamFn,
+    );
+
+    const end = events.find((event) => event.type === "tool_execution_end");
+    expect(end).toMatchObject({ toolName: "subagent", toolCallId: firstCallId, isError: true });
+
+    const toolResultEnd = events.find(
+      (event) => event.type === "message_end" && (event.message as { role?: string })?.role === "toolResult",
+    );
+    expect(toolResultEnd?.message).toMatchObject({
+      toolName: "subagent",
+      toolCallId: firstCallId,
+      isError: true,
+    });
+    expect((toolResultEnd?.message as { content?: Array<{ text?: string }> })?.content?.[0]?.text).toContain(
+      "No agents are available in this runtime.",
+    );
   });
 });
 
@@ -867,6 +1482,16 @@ describe("resolveInheritedSession (ADR-044)", () => {
     }])).toBe(linked);
     expect(linked).not.toBe(unrelated);
   });
+
+  it("resolves a child JSONL only by exact UUID", async () => {
+    const wantedId = crypto.randomUUID();
+    const otherId = crypto.randomUUID();
+    const wanted = makeSession("easyresearch:search", "2026-08-13T01:00:00.000Z", wantedId);
+    makeSession("easyresearch:search", "2026-08-13T02:00:00.000Z", otherId);
+
+    await expect(resolveSessionPath(cwd, wantedId, dir)).resolves.toBe(wanted);
+    await expect(resolveSessionPath(cwd, crypto.randomUUID(), dir)).resolves.toBeUndefined();
+  });
 });
 
 describe("describeModel", () => {
@@ -886,12 +1511,31 @@ describe("subagent model resolution logging", () => {
     const { discoverAgents } = await import("./agents");
     const { resolveModelForSpawn } = await import("./model-resolution");
     const { importPi, getAgentDir } = await import("../runtime/pi-import");
-    vi.mocked(discoverAgents).mockResolvedValue({ agents: [maker("other")] });
+    vi.mocked(discoverAgents).mockResolvedValue({ agents: [maker("search")] });
     vi.mocked(resolveModelForSpawn).mockResolvedValue("p/m");
     vi.mocked(getAgentDir).mockReturnValue("/fake/agent");
     vi.mocked(importPi).mockResolvedValue({
       SessionManager: { list: vi.fn(async () => []) },
     } as never);
+    spawnMock.mockImplementationOnce(() => {
+      const stdout = new EventEmitter();
+      const child = Object.assign(new EventEmitter(), {
+        stdout,
+        stderr: new EventEmitter(),
+        killed: false,
+        kill: vi.fn(),
+      });
+      queueMicrotask(() => {
+        stdout.emit("data", Buffer.from(
+          JSON.stringify({
+            type: "message_end",
+            message: { role: "assistant", content: [{ type: "text", text: "status: complete" }] },
+          }),
+        ));
+        child.emit("close", 0);
+      });
+      return child;
+    });
   }
 
   it("logs the resolved model at dispatch", async () => {
