@@ -4,6 +4,7 @@ import type { WebuiSettingsDto, WebuiSettingsUpdate } from "./contracts";
 import type { ConfigFileService } from "./config-files";
 import { getAgentDir } from "../runtime/pi-import";
 import { discoverGlobalAgents, PAPER_ASSISTANT_AGENT, type AgentConfig } from "../subagent/agents";
+import { isThinkingLevel } from "../thinking-levels";
 import { readTextFile, updateFrontmatter, writeTextFile } from "./agent-markdown";
 
 export class WebuiSettingsError extends Error {
@@ -38,15 +39,18 @@ async function globalAgents(config: ConfigFileService): Promise<AgentConfig[]> {
 export async function readWebuiSettings(config: ConfigFileService): Promise<WebuiSettingsDto> {
   const agents = await globalAgents(config);
   const agentModels = Object.fromEntries(agents.flatMap((agent) => (agent.model ? [[agent.name, agent.model]] : [])));
+  const agentThinking = Object.fromEntries(agents.flatMap((agent) => (agent.thinking ? [[agent.name, agent.thinking]] : [])));
   return {
     agentModels,
     paperAssistantModel: agents.find((agent) => agent.name === PAPER_ASSISTANT_AGENT)?.model ?? null,
     effectivePaperAssistantModel: null,
+    agentThinking,
+    paperAssistantThinking: agents.find((agent) => agent.name === PAPER_ASSISTANT_AGENT)?.thinking ?? null,
   };
 }
 
 function validatePatch(patch: WebuiSettingsUpdate): void {
-  const known = new Set(["agentModels", "paperAssistantModel"]);
+  const known = new Set(["agentModels", "paperAssistantModel", "agentThinking", "paperAssistantThinking"]);
   for (const key of Object.keys(patch)) {
     if (!known.has(key)) throw new WebuiSettingsError(400, `Unknown webui setting: ${key}`);
   }
@@ -67,12 +71,35 @@ function validatePatch(patch: WebuiSettingsUpdate): void {
     }
     parseModelRef(patch.paperAssistantModel);
   }
+  const validateThinking = (entry: unknown, label: string): void => {
+    if (!isThinkingLevel(entry)) {
+      throw new WebuiSettingsError(400, `${label} must be a thinking level or null`);
+    }
+  };
+  if (patch.agentThinking !== undefined) {
+    if (typeof patch.agentThinking !== "object" || patch.agentThinking === null || Array.isArray(patch.agentThinking)) {
+      throw new WebuiSettingsError(400, "agentThinking must be an object of agent name to thinking level");
+    }
+    for (const [agent, level] of Object.entries(patch.agentThinking)) validateThinking(level, `agentThinking entry ${agent}`);
+  }
+  if (patch.paperAssistantThinking !== undefined && patch.paperAssistantThinking !== null) {
+    if (typeof patch.paperAssistantThinking !== "string") {
+      throw new WebuiSettingsError(400, 'paperAssistantThinking must be a thinking level or null');
+    }
+    validateThinking(patch.paperAssistantThinking, "paperAssistantThinking");
+  }
 }
 
 async function updateAgentModel(config: ConfigFileService, agent: AgentConfig, model: string | null): Promise<void> {
   const path = globalAgentPath(agent, config.globalRoot);
   const content = readTextFile(path);
   writeTextFile(path, updateFrontmatter(content, { model }));
+}
+
+async function updateAgentThinking(config: ConfigFileService, agent: AgentConfig, thinking: string | null): Promise<void> {
+  const path = globalAgentPath(agent, config.globalRoot);
+  const content = readTextFile(path);
+  writeTextFile(path, updateFrontmatter(content, { thinking }));
 }
 
 export async function updateWebuiSettings(config: ConfigFileService, patch: WebuiSettingsUpdate): Promise<WebuiSettingsDto> {
@@ -93,6 +120,21 @@ export async function updateWebuiSettings(config: ConfigFileService, patch: Webu
     const paperAssistant = byName.get(PAPER_ASSISTANT_AGENT);
     if (!paperAssistant) throw new WebuiSettingsError(404, `Unknown agent: ${PAPER_ASSISTANT_AGENT}`);
     await updateAgentModel(config, paperAssistant, patch.paperAssistantModel);
+  }
+  if (patch.agentThinking !== undefined) {
+    for (const agent of agents) {
+      await updateAgentThinking(config, agent, patch.agentThinking[agent.name] ?? null);
+    }
+    for (const [name, level] of Object.entries(patch.agentThinking)) {
+      const agent = byName.get(name);
+      if (!agent) throw new WebuiSettingsError(404, `Unknown agent: ${name}`);
+      await updateAgentThinking(config, agent, level);
+    }
+  }
+  if (patch.paperAssistantThinking !== undefined) {
+    const paperAssistant = byName.get(PAPER_ASSISTANT_AGENT);
+    if (!paperAssistant) throw new WebuiSettingsError(404, `Unknown agent: ${PAPER_ASSISTANT_AGENT}`);
+    await updateAgentThinking(config, paperAssistant, patch.paperAssistantThinking);
   }
   return readWebuiSettings(config);
 }

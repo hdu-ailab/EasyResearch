@@ -5,6 +5,8 @@ import type { RpcEventListener, RpcSessionState } from "@earendil-works/pi-codin
 export interface StartRpcSessionOptions {
   cwd: string;
   sessionPath?: string;
+  /** Thinking level to apply at launch via `--thinking` for fresh sessions. */
+  thinking?: string;
 }
 
 export interface RpcSessionAdapter {
@@ -13,6 +15,7 @@ export interface RpcSessionAdapter {
   prompt(message: string): Promise<void>;
   abort(): Promise<void>;
   setModel(provider: string, modelId: string): Promise<void>;
+  setThinkingLevel(level: string): Promise<void>;
   getState(): Promise<RpcSessionState>;
   getMessages(): Promise<AgentMessage[]>;
   onEvent(listener: RpcEventListener): () => void;
@@ -35,6 +38,7 @@ export interface RpcClientLike {
   prompt(message: string): Promise<void>;
   abort(): Promise<void>;
   setModel(provider: string, modelId: string): Promise<void>;
+  setThinkingLevel(level: string): Promise<void>;
   getState(): Promise<RpcSessionState>;
   getMessages(): Promise<AgentMessage[]>;
 }
@@ -100,6 +104,10 @@ class DefaultRpcSessionAdapter implements RpcSessionAdapter {
 
   async setModel(provider: string, modelId: string): Promise<void> {
     await this.withExitProbe(() => this.client.setModel(provider, modelId));
+  }
+
+  async setThinkingLevel(level: string): Promise<void> {
+    await this.withExitProbe(() => this.client.setThinkingLevel(level));
   }
 
   async getState(): Promise<RpcSessionState> {
@@ -199,6 +207,7 @@ export class PiRpcSessionFactory implements RpcSessionFactory {
       "--approve",
       "--no-skills",
       ...(options.sessionPath ? ["--session", options.sessionPath] : []),
+      ...(options.sessionPath || !options.thinking ? [] : ["--thinking", options.thinking]),
     ];
     const client = new this.clientCtor({
       cwd: options.cwd,

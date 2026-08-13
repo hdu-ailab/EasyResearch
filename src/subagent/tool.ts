@@ -12,6 +12,7 @@ import { createLogger, type Logger } from "../runtime/logger";
 import { getAgentDir, importPi } from "../runtime/pi-import";
 import { discoverAgents, PAPER_ASSISTANT_AGENT, type AgentConfig } from "./agents";
 import { resolveModelForSpawn } from "./model-resolution";
+import { resolveThinkingForSpawn } from "./thinking-resolution";
 import { readSubagentSessionLinks, sessionNameFor, type SubagentSessionLink } from "./session-links";
 import { buildDefaultSkillArgs, readGlobalDotAgentsSkillSetting, resolveSkillDirectories } from "./skill-resolution";
 import { releaseSubagentLock, tryAcquireSubagentLock } from "./serial";
@@ -268,9 +269,11 @@ export function buildPiArgs(
   task: string,
   sessionPath?: string,
   skillDeps?: { cwd: string; agentDir: string; homeDir?: string; enableDotAgentsSkill?: boolean },
+  thinking?: string,
 ): string[] {
   const args: string[] = ["--mode", "json", "-p"];
   if (model) args.push("--model", model);
+  if (thinking) args.push("--thinking", thinking);
   if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
   if (agent.skills && agent.skills.length > 0 && skillDeps) {
     args.push("--no-skills");
@@ -293,6 +296,8 @@ export interface RunSingleOptions {
   cwd?: string;
   /** Effective model to spawn the agent with (ADR-008 superseded: resolved upstream). */
   model?: string;
+  /** Effective thinking level to spawn the agent with. */
+  thinking?: string;
   sessionPath?: string;
   signal?: AbortSignal;
   step?: number;
@@ -302,7 +307,7 @@ export interface RunSingleOptions {
 }
 
 async function runSingleAgent(opts: RunSingleOptions): Promise<SingleResult> {
-  const { defaultCwd, agents, agentName, task, cwd, model, sessionPath, signal, step, onUpdate, onSessionHeader } = opts;
+  const { defaultCwd, agents, agentName, task, cwd, model, thinking, sessionPath, signal, step, onUpdate, onSessionHeader } = opts;
   const agent = agents.find((a) => a.name === agentName);
   const detailsBase = { mode: "single" as const, projectAgentsDir: getAgentDir(), results: [] };
 
@@ -342,7 +347,7 @@ async function runSingleAgent(opts: RunSingleOptions): Promise<SingleResult> {
       cwd: cwd ?? defaultCwd,
       agentDir: getAgentDir(),
       enableDotAgentsSkill,
-    });
+    }, thinking);
     if (agent.systemPrompt.trim()) {
       tmpPromptPath = await writePromptToTempFile(agent.name, agent.systemPrompt);
       args.push("--append-system-prompt", tmpPromptPath);
@@ -589,6 +594,7 @@ export function createSubagentTool(options: {
           : { toolCallId, childSessionId, agent, step });
       };
       const fallbackModel = describeModel(ctx);
+      const fallbackThinking = describeThinking(ctx);
       const agentsForCwd = async (cwd: string) => {
         const discovered = options.agentProvider
           ? await options.agentProvider(cwd)
@@ -640,6 +646,12 @@ export function createSubagentTool(options: {
             fallbackModel,
           );
           subagentLogger?.debug("subagent model resolved", { agent: step.agent, model: model ?? "" });
+          const thinking = await resolveThinkingForSpawn(
+            { cwd: effectiveCwd, sessionManager: ctx.sessionManager },
+            step.agent,
+            fallbackThinking,
+          );
+          subagentLogger?.debug("subagent thinking resolved", { agent: step.agent, thinking });
           const result = await runSingleAgent({
             defaultCwd: ctx.cwd,
             agents,
@@ -647,6 +659,7 @@ export function createSubagentTool(options: {
             task: taskWithContext,
             cwd: step.cwd,
             model,
+            thinking,
             sessionPath,
             signal,
             step: i + 1,
@@ -686,6 +699,12 @@ export function createSubagentTool(options: {
           fallbackModel,
         );
         subagentLogger?.debug("subagent model resolved", { agent: params.agent, model: model ?? "" });
+        const thinking = await resolveThinkingForSpawn(
+          { cwd: effectiveCwd, sessionManager: ctx.sessionManager },
+          params.agent,
+          fallbackThinking,
+        );
+        subagentLogger?.debug("subagent thinking resolved", { agent: params.agent, thinking });
         const result = await runSingleAgent({
           defaultCwd: ctx.cwd,
           agents,
@@ -693,6 +712,7 @@ export function createSubagentTool(options: {
           task: params.task,
           cwd: params.cwd,
           model,
+          thinking,
           sessionPath,
           signal,
           onUpdate,
@@ -729,6 +749,10 @@ export function describeModel(ctx: ExtensionContext): string | undefined {
   const model = ctx.model;
   if (!model) return undefined;
   return `${model.provider}/${model.id}`;
+}
+
+export function describeThinking(ctx: ExtensionContext): string | undefined {
+  return ctx.thinkingLevel;
 }
 
 export type { AgentToolResult };

@@ -30,6 +30,8 @@ vi.mock("../api", async (importOriginal) => {
     listModels: vi.fn(),
     getEffectiveModels: vi.fn(),
     setAgentModel: vi.fn(),
+    getEffectiveThinking: vi.fn(),
+    setAgentThinking: vi.fn(),
   };
 });
 
@@ -108,6 +110,8 @@ describe("WorkPage", () => {
     vi.mocked(api.listModels).mockReset();
     vi.mocked(api.getEffectiveModels).mockReset();
     vi.mocked(api.setAgentModel).mockReset();
+    vi.mocked(api.getEffectiveThinking).mockReset();
+    vi.mocked(api.setAgentThinking).mockReset();
     vi.mocked(api.listAgents).mockResolvedValue([
       {
         name: "paper-assistant",
@@ -169,8 +173,8 @@ describe("WorkPage", () => {
       },
     ]);
     vi.mocked(api.listModels).mockResolvedValue([
-      { provider: "openai", id: "gpt-4o" },
-      { provider: "anthropic", id: "claude" },
+      { provider: "openai", id: "gpt-4o", reasoning: true, thinkingLevelMap: {} },
+      { provider: "anthropic", id: "claude", reasoning: false, thinkingLevelMap: {} },
     ]);
     vi.mocked(api.getEffectiveModels).mockResolvedValue([
       { name: "paper-assistant", model: "openai/gpt-4o", source: "inherit" },
@@ -179,6 +183,14 @@ describe("WorkPage", () => {
       { name: "writing", model: null, source: "inherit" },
       { name: "figures", model: null, source: "inherit" },
     ]);
+    vi.mocked(api.getEffectiveThinking).mockResolvedValue([
+      { name: "paper-assistant", thinking: null, source: "inherit" },
+      { name: "search", thinking: "high", source: "override" },
+      { name: "experiment", thinking: "low", source: "default" },
+      { name: "writing", thinking: null, source: "inherit" },
+      { name: "figures", thinking: null, source: "inherit" },
+    ]);
+    vi.mocked(api.setAgentThinking).mockResolvedValue(undefined);
     vi.mocked(api.getSnapshot).mockResolvedValue(snapshot);
     vi.mocked(api.getChildSnapshot).mockResolvedValue({
       session: { id: "child-default", cwd: "/p", sessionName: "easyresearch:search" },
@@ -1761,11 +1773,11 @@ describe("WorkPage", () => {
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
     const combos = within(region).getAllByRole("combobox");
-    expect(combos.length).toBe(5);
+    expect(combos.length).toBe(10);
     expect(combos[0]!).toHaveValue("openai/gpt-4o");
-    expect(combos[1]!).toHaveValue("anthropic/claude");
-    expect(combos[2]!).toHaveValue("");
-    expect(within(combos[2]!).getByText("Default model")).toBeTruthy();
+    expect(combos[2]!).toHaveValue("anthropic/claude");
+    expect(combos[4]!).toHaveValue("");
+    expect(within(combos[4]!).getByText("Default model")).toBeTruthy();
     expect(within(region).queryByText(/inherits session/)).toBeNull();
   });
 
@@ -1775,7 +1787,7 @@ describe("WorkPage", () => {
     await screen.findByText("starting research");
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
-    const searchCombo = within(region).getAllByRole("combobox")[1] as HTMLSelectElement;
+    const searchCombo = within(region).getAllByRole("combobox")[2] as HTMLSelectElement;
     await user.selectOptions(searchCombo, "");
     await waitFor(() => expect(api.setAgentModel).toHaveBeenCalledWith("s1", "search", null));
   });
@@ -1786,7 +1798,7 @@ describe("WorkPage", () => {
     await screen.findByText("starting research");
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
-    const searchCombo = within(region).getAllByRole("combobox")[1] as HTMLSelectElement;
+    const searchCombo = within(region).getAllByRole("combobox")[2] as HTMLSelectElement;
     await user.selectOptions(searchCombo, "openai/gpt-4o");
     await waitFor(() => expect(api.setAgentModel).toHaveBeenCalledWith("s1", "search", "openai/gpt-4o"));
     expect(within(region).queryByRole("button", { name: /^set$/i })).toBeNull();

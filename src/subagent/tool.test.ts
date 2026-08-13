@@ -42,6 +42,10 @@ vi.mock("./model-resolution", () => ({
   resolveModelForSpawn: vi.fn(),
 }));
 
+vi.mock("./thinking-resolution", () => ({
+  resolveThinkingForSpawn: vi.fn(),
+}));
+
 vi.mock("../runtime/pi-import", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../runtime/pi-import")>();
   return {
@@ -55,8 +59,10 @@ beforeEach(async () => {
   releaseSubagentLock();
   const { discoverAgents } = await import("./agents");
   const { resolveModelForSpawn } = await import("./model-resolution");
+  const { resolveThinkingForSpawn } = await import("./thinking-resolution");
   vi.mocked(discoverAgents).mockReset();
   vi.mocked(resolveModelForSpawn).mockReset();
+  vi.mocked(resolveThinkingForSpawn).mockReset();
   spawnMock.mockReset();
   loggerMock.debug.mockClear();
 });
@@ -94,6 +100,18 @@ describe("buildPiArgs", () => {
     const args = buildPiArgs(agent, "oc/mimo-v2.5-free", "task");
     expect(args).toContain("--model");
     expect(args[args.indexOf("--model") + 1]).toBe("oc/mimo-v2.5-free");
+  });
+
+  it("adds --thinking with the resolved thinking level", () => {
+    const agent = maker("search");
+    const args = buildPiArgs(agent, undefined, "task", undefined, undefined, "high");
+    expect(args).toContain("--thinking");
+    expect(args[args.indexOf("--thinking") + 1]).toBe("high");
+  });
+
+  it("omits --thinking when no level is resolved", () => {
+    const agent = maker("search");
+    expect(buildPiArgs(agent, undefined, "task")).not.toContain("--thinking");
   });
 
   it("omits --model when no model is resolved", () => {
@@ -424,6 +442,59 @@ describe("final subagent output (ADR-040)", () => {
       sessionId: "child-success",
       sessionPath: "/sessions/child-success.jsonl",
     });
+  });
+
+    it("spawns the child with the resolved thinking level as --thinking", async () => {
+    const { discoverAgents } = await import("./agents");
+    const { resolveModelForSpawn } = await import("./model-resolution");
+    const { resolveThinkingForSpawn } = await import("./thinking-resolution");
+    const { getAgentDir, importPi } = await import("../runtime/pi-import");
+    vi.mocked(discoverAgents).mockResolvedValue({ agents: [maker("search")] });
+    vi.mocked(resolveModelForSpawn).mockResolvedValue(undefined);
+    vi.mocked(resolveThinkingForSpawn).mockResolvedValue("high");
+    vi.mocked(getAgentDir).mockReturnValue("/tmp/easyresearch-test-agent");
+    vi.mocked(importPi).mockResolvedValue({
+      SessionManager: {
+        list: vi.fn(async () => [{ id: "child-thinking", path: "/sessions/child-thinking.jsonl" }]),
+      },
+    } as never);
+    spawnMock.mockImplementationOnce(() => {
+      const stdout = new EventEmitter();
+      const child = Object.assign(new EventEmitter(), {
+        stdout,
+        stderr: new EventEmitter(),
+        killed: false,
+        kill: vi.fn(),
+      });
+      queueMicrotask(() => {
+        stdout.emit("data", Buffer.from([
+          '{"type":"session","version":3,"id":"child-thinking","cwd":"/paper"}',
+          JSON.stringify({
+            type: "message_end",
+            message: { role: "assistant", content: [{ type: "text", text: "done" }] },
+          }),
+          "",
+        ].join("\n")));
+        child.emit("close", 0);
+      });
+      return child;
+    });
+
+    await subagentTool.execute(
+      "call-thinking",
+      { agent: "search", task: "find papers" },
+      undefined,
+      undefined,
+      { cwd: "/paper", sessionManager: { getEntries: () => [] }, thinkingLevel: "medium" } as never,
+    );
+
+    const args = spawnMock.mock.calls[0]?.[1] as string[];
+    expect(args[args.indexOf("--thinking") + 1]).toBe("high");
+    expect(resolveThinkingForSpawn).toHaveBeenCalledWith(
+      { cwd: "/paper", sessionManager: expect.anything() },
+      "search",
+      "medium",
+    );
   });
 
   it("does not report an unflushed child session as a JSONL path", async () => {

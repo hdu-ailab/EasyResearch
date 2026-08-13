@@ -19,6 +19,9 @@ export const routes = {
   effectiveModels: (sessionId: string) => `${session(sessionId)}/agents/effective-models`,
   agentModel: (sessionId: string, agentName: string) =>
     `${session(sessionId)}/agents/${encodeURIComponent(agentName)}/model`,
+  effectiveThinking: (sessionId: string) => `${session(sessionId)}/agents/effective-thinking`,
+  agentThinking: (sessionId: string, agentName: string) =>
+    `${session(sessionId)}/agents/${encodeURIComponent(agentName)}/thinking`,
   directories: (path: string) => `${API_ROOT}/directories?${new URLSearchParams({ path }).toString()}`,
   createDirectory: () => `${API_ROOT}/directories`,
   entries: (path: string) => `${API_ROOT}/entries?${new URLSearchParams({ path }).toString()}`,

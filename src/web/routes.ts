@@ -4,7 +4,9 @@ import type {
   ActiveSessionDto,
   AgentDto,
   AgentEffectiveModelDto,
+  AgentEffectiveThinkingDto,
   ConfigScope,
+  ModelOptionDto,
   SessionSummaryDto,
   WebuiSettingsDto,
   WebuiSettingsUpdate,
@@ -18,6 +20,7 @@ import { ExtensionGuardError } from "../runtime/extensions-guard";
 import type { ConfigFileService } from "./config-files";
 import { ConfigPathError, ConfigServiceError } from "./config-files";
 import { AgentModelError } from "./agent-models";
+import { AgentThinkingError } from "./agent-thinking";
 import { WebuiSettingsError, readWebuiSettings, updateWebuiSettings } from "./webui-settings";
 import type { Logger } from "../runtime/logger";
 import { SubagentSessionNotFoundError, type SubagentSessionService } from "./subagent-sessions";
@@ -26,9 +29,11 @@ export interface RouteServices {
   webuiDist: string;
   listAllSessions: () => Promise<SessionSummaryDto[]>;
   listAgents: (cwd?: string) => Promise<AgentDto[]>;
-  listModels: () => Promise<Array<{ provider: string; id: string }>>;
+  listModels: () => Promise<ModelOptionDto[]>;
   effectiveModels: (sessionId: string) => Promise<AgentEffectiveModelDto[]>;
   setAgentModel: (sessionId: string, agentName: string, model: string | null) => Promise<void>;
+  effectiveThinking: (sessionId: string) => Promise<AgentEffectiveThinkingDto[]>;
+  setAgentThinking: (sessionId: string, agentName: string, thinking: string | null) => Promise<void>;
   listConfigProjects: () => Promise<{ home: string; projects: Array<{ cwd: string }> }>;
   getWebuiSettings: () => Promise<WebuiSettingsDto>;
   updateWebuiSettings: (patch: WebuiSettingsUpdate) => Promise<WebuiSettingsDto>;
@@ -182,9 +187,14 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
         return jsonResponse({ ok: true });
       }
 
-      const effectiveModelsMatch = path.match(/^\/api\/sessions\/([^/]+)\/agents\/effective-models$/);
+            const effectiveModelsMatch = path.match(/^\/api\/sessions\/([^/]+)\/agents\/effective-models$/);
       if (req.method === "GET" && effectiveModelsMatch) {
         return jsonResponse(await services.effectiveModels(effectiveModelsMatch[1]!));
+      }
+
+      const effectiveThinkingMatch = path.match(/^\/api\/sessions\/([^/]+)\/agents\/effective-thinking$/);
+      if (req.method === "GET" && effectiveThinkingMatch) {
+        return jsonResponse(await services.effectiveThinking(effectiveThinkingMatch[1]!));
       }
 
       const agentModelMatch = path.match(/^\/api\/sessions\/([^/]+)\/agents\/([^/]+)\/model$/);
@@ -194,6 +204,16 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
           return errorResponse(400, "model must be a string or null");
         }
         await services.setAgentModel(agentModelMatch[1]!, agentModelMatch[2]!, body.model as string | null);
+        return jsonResponse({ ok: true });
+      }
+
+      const agentThinkingMatch = path.match(/^\/api\/sessions\/([^/]+)\/agents\/([^/]+)\/thinking$/);
+      if (req.method === "PUT" && agentThinkingMatch) {
+        const body = await jsonBody<{ thinking: unknown }>(req);
+        if (body.thinking !== null && typeof body.thinking !== "string") {
+          return errorResponse(400, "thinking must be a string or null");
+        }
+        await services.setAgentThinking(agentThinkingMatch[1]!, agentThinkingMatch[2]!, body.thinking as string | null);
         return jsonResponse({ ok: true });
       }
 
@@ -261,6 +281,7 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       if (error instanceof UnknownSessionError) return errorResponse(404, error.message);
       if (error instanceof SubagentSessionNotFoundError) return errorResponse(404, error.message);
       if (error instanceof AgentModelError) return errorResponse(error.status, error.message);
+      if (error instanceof AgentThinkingError) return errorResponse(error.status, error.message);
       if (error instanceof WebuiSettingsError) return errorResponse(error.status, error.message);
       if (error instanceof BodyError) return errorResponse(400, error.message);
       return errorResponse(500, "Internal server error");

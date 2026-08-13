@@ -16,9 +16,11 @@ import {
   writeAgentResource,
   writeSkillResource,
 } from "../api";
+import type { ModelOption } from "../api/parsers";
 import { AgentMarkdownEditor } from "../components/AgentMarkdownEditor";
 import { AgentResourceDetailsDialog } from "../components/AgentResourceDetailsDialog";
 import { SkillResourceEditor } from "../components/SkillResourceEditor";
+import { ThinkingLevelSelect, thinkingLevelsForModel } from "../components/ThinkingLevelSelect";
 import { ProductMark, Topbar } from "../components/Topbar";
 import type { Translate } from "../i18n/agents";
 import { agentDisplayName } from "../i18n/agents";
@@ -126,12 +128,12 @@ function PreferenceSwitch({
   );
 }
 
-type ModelOption = { provider: string; id: string };
-
 function withConfiguredModel(models: ModelOption[], configured?: string): ModelOption[] {
   if (!configured || models.some((model) => `${model.provider}/${model.id}` === configured)) return models;
   const slash = configured.indexOf("/");
-  return slash > 0 ? [...models, { provider: configured.slice(0, slash), id: configured.slice(slash + 1) }] : models;
+  return slash > 0
+    ? [...models, { provider: configured.slice(0, slash), id: configured.slice(slash + 1), reasoning: false }]
+    : models;
 }
 
 function formatToolsSkills(t: Translate, agent: AgentDto): string {
@@ -154,10 +156,12 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
   const { t, language, setLanguage } = useI18n();
   const { preferences: prefs, updatePreferences } = usePreferences();
   const [agents, setAgents] = useState<AgentDto[]>([]);
-  const [models, setModels] = useState<Array<{ provider: string; id: string }>>([]);
+  const [models, setModels] = useState<ModelOption[]>([]);
   const [agentModels, setAgentModels] = useState<Record<string, string>>({});
   const [paperAssistantModel, setPaperAssistantModelState] = useState<string | null>(null);
   const [effectivePaperAssistantModel, setEffectivePaperAssistantModel] = useState<string | null>(null);
+  const [agentThinking, setAgentThinking] = useState<Record<string, string>>({});
+  const [paperAssistantThinking, setPaperAssistantThinkingState] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [resourceAgents, setResourceAgents] = useState<AgentResourceDto[]>([]);
@@ -179,6 +183,8 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
         setAgentModels(s.agentModels);
         setPaperAssistantModelState(s.paperAssistantModel);
         setEffectivePaperAssistantModel(s.effectivePaperAssistantModel);
+        setAgentThinking(s.agentThinking ?? {});
+        setPaperAssistantThinkingState(s.paperAssistantThinking ?? null);
         setResourceAgents(globalAgents);
         setAgents(globalAgents.length > 0 ? globalAgents : fallbackAgents);
         if (diagnosticRequest.current === 0) setDiagnosticAgents(fallbackAgents);
@@ -313,6 +319,27 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
         setPaperAssistantModelState(s.paperAssistantModel);
         setEffectivePaperAssistantModel(s.effectivePaperAssistantModel);
       })
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setBusy(false));
+  };
+
+  const setAgentThinkingValue = (name: string, value: string) => {
+    const next = { ...agentThinking };
+    if (value === "") delete next[name];
+    else next[name] = value;
+    setBusy(true);
+    setError(null);
+    updateWebuiSettings({ agentThinking: next })
+      .then((s) => setAgentThinking(s.agentThinking))
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setBusy(false));
+  };
+
+  const setPaperAssistantThinkingValue = (value: string) => {
+    setBusy(true);
+    setError(null);
+    updateWebuiSettings({ paperAssistantThinking: value === "" ? null : value })
+      .then((s) => setPaperAssistantThinkingState(s.paperAssistantThinking))
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setBusy(false));
   };
@@ -490,24 +517,44 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
                       >
                         {t("settings.agents.edit").replace("{name}", agentDisplayName(t, agent.name))}
                       </button>
-                      <label className="flex min-w-0 items-center gap-2">
-                        <span className="shrink-0 text-[12px] text-v2-text-text-muted">
-                          {t("settings.agents.model")}
-                        </span>
-                        <select
-                          className="h-8 min-w-0 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600 disabled:opacity-50"
-                          aria-label={`${t("settings.agents.selectModelFor")} ${agentDisplayName(t, agent.name)}`}
-                          value={paperAssistantValue}
-                          onChange={(e) => setPaperAssistantModel(e.target.value)}
-                          disabled={busy}
-                        >
-                          {paperAssistantOptions.map((m) => (
-                            <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
-                              {m.provider}/{m.id}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
+                      <div className="flex min-w-0 flex-1 items-center justify-end gap-3">
+                        <label className="flex min-w-0 items-center gap-2">
+                          <span className="shrink-0 text-[12px] text-v2-text-text-muted">
+                            {t("settings.agents.model")}
+                          </span>
+                          <select
+                            className="h-8 min-w-0 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600 disabled:opacity-50"
+                            aria-label={`${t("settings.agents.selectModelFor")} ${agentDisplayName(t, agent.name)}`}
+                            value={paperAssistantValue}
+                            onChange={(e) => setPaperAssistantModel(e.target.value)}
+                            disabled={busy}
+                          >
+                            {paperAssistantOptions.map((m) => (
+                              <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
+                                {m.provider}/{m.id}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label htmlFor={`thinking-${agent.name}`} className="flex min-w-0 items-center gap-2">
+                          <span className="shrink-0 text-[12px] text-v2-text-text-muted">
+                            {t("settings.agents.thinking")}
+                          </span>
+                          <ThinkingLevelSelect
+                            id={`thinking-${agent.name}`}
+                            ariaLabel={`${t("settings.agents.selectThinkingFor")} ${agentDisplayName(t, agent.name)}`}
+                            value={paperAssistantThinking ?? ""}
+                            levels={thinkingLevelsForModel(
+                              models.find((m) => `${m.provider}/${m.id}` === paperAssistantValue),
+                              paperAssistantThinking ?? undefined,
+                            )}
+                            emptyLabel={t("settings.agents.defaultThinking")}
+                            disabled={busy}
+                            onChange={setPaperAssistantThinkingValue}
+                            className="h-8 min-w-0 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600 disabled:opacity-50"
+                          />
+                        </label>
+                      </div>
                     </div>
                     {agentEditor?.name === agent.name && (
                       <AgentMarkdownEditor
@@ -554,25 +601,47 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
                       >
                         {t("settings.agents.edit").replace("{name}", agentDisplayName(t, agent.name))}
                       </button>
-                      <label className="flex min-w-0 items-center gap-2">
-                        <span className="shrink-0 text-[12px] text-v2-text-text-muted">
-                          {t("settings.agents.model")}
-                        </span>
-                        <select
-                          className="h-8 min-w-0 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600 disabled:opacity-50"
-                          aria-label={`${t("settings.agents.selectModelFor")} ${agentDisplayName(t, agent.name)}`}
-                          value={agentModels[agent.name] ?? ""}
-                          onChange={(e) => setAgentModel(agent.name, e.target.value)}
-                          disabled={busy}
-                        >
-                          <option value="">{t("settings.agents.inherit")}</option>
-                          {withConfiguredModel(models, agentModels[agent.name]).map((m) => (
-                            <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
-                              {m.provider}/{m.id}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
+                      <div className="flex min-w-0 flex-1 items-center justify-end gap-3">
+                        <label className="flex min-w-0 items-center gap-2">
+                          <span className="shrink-0 text-[12px] text-v2-text-text-muted">
+                            {t("settings.agents.model")}
+                          </span>
+                          <select
+                            className="h-8 min-w-0 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600 disabled:opacity-50"
+                            aria-label={`${t("settings.agents.selectModelFor")} ${agentDisplayName(t, agent.name)}`}
+                            value={agentModels[agent.name] ?? ""}
+                            onChange={(e) => setAgentModel(agent.name, e.target.value)}
+                            disabled={busy}
+                          >
+                            <option value="">{t("settings.agents.inherit")}</option>
+                            {withConfiguredModel(models, agentModels[agent.name]).map((m) => (
+                              <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
+                                {m.provider}/{m.id}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label htmlFor={`thinking-${agent.name}`} className="flex min-w-0 items-center gap-2">
+                          <span className="shrink-0 text-[12px] text-v2-text-text-muted">
+                            {t("settings.agents.thinking")}
+                          </span>
+                          <ThinkingLevelSelect
+                            id={`thinking-${agent.name}`}
+                            ariaLabel={`${t("settings.agents.selectThinkingFor")} ${agentDisplayName(t, agent.name)}`}
+                            value={agentThinking[agent.name] ?? ""}
+                            levels={thinkingLevelsForModel(
+                              models.find(
+                                (m) => `${m.provider}/${m.id}` === (agentModels[agent.name] ?? paperAssistantValue),
+                              ),
+                              agentThinking[agent.name],
+                            )}
+                            emptyLabel={t("settings.agents.defaultThinking")}
+                            disabled={busy}
+                            onChange={(level) => setAgentThinkingValue(agent.name, level)}
+                            className="h-8 min-w-0 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600 disabled:opacity-50"
+                          />
+                        </label>
+                      </div>
                     </div>
                     {agentEditor?.name === agent.name && (
                       <AgentMarkdownEditor

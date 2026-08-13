@@ -60,13 +60,14 @@ describe("API response parsers", () => {
         missingSkills: [],
       },
     ]);
-    expect(parseModels({ models: [{ provider: "openai", id: "gpt-4o" }] })).toEqual([
-      { provider: "openai", id: "gpt-4o" },
-    ]);
+    expect(
+      parseModels({ models: [{ provider: "openai", id: "gpt-4o", reasoning: true, thinkingLevelMap: {} }] }),
+    ).toEqual([{ provider: "openai", id: "gpt-4o", reasoning: true, thinkingLevelMap: {} }]);
   });
 
   it("rejects malformed model, agent, and effective-model payloads", () => {
     expect(() => parseModels({ models: [{ provider: "openai" }] })).toThrow();
+    expect(() => parseModels({ models: [{ provider: "openai", id: "gpt-4o", reasoning: "yes" }] })).toThrow();
     expect(() => parseAgents([{ name: "search", description: 42 }])).toThrow();
     expect(() => parseEffectiveModels([{ name: "search", model: null, source: "unknown" }])).toThrow();
   });
@@ -77,14 +78,26 @@ describe("API response parsers", () => {
         agentModels: { search: "openai/gpt-4o" },
         paperAssistantModel: null,
         effectivePaperAssistantModel: "openai/gpt-4o",
+        agentThinking: { search: "high" },
+        paperAssistantThinking: null,
       }),
     ).toEqual({
       agentModels: { search: "openai/gpt-4o" },
       paperAssistantModel: null,
       effectivePaperAssistantModel: "openai/gpt-4o",
+      agentThinking: { search: "high" },
+      paperAssistantThinking: null,
     });
     expect(() =>
       parseWebuiSettings({ agentModels: {}, paperAssistantModel: 42, effectivePaperAssistantModel: null }),
+    ).toThrow();
+    expect(() =>
+      parseWebuiSettings({
+        agentModels: {},
+        agentThinking: { search: 42 },
+        paperAssistantModel: null,
+        effectivePaperAssistantModel: null,
+      }),
     ).toThrow();
   });
 

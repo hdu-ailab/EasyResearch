@@ -10,8 +10,9 @@ import type { RpcSessionAdapter, RpcSessionFactory, StartRpcSessionOptions } fro
 import { ActiveSessionRegistry, UnknownSessionError } from "./active-sessions";
 import { DirectoryService } from "./directories";
 import { ConfigFileService } from "./config-files";
-import type { SessionSummaryDto, SubagentSessionSummaryDto } from "./contracts";
+import type { SessionSummaryDto, SubagentSessionSummaryDto, ModelOptionDto } from "./contracts";
 import { AgentModelError } from "./agent-models";
+import { AgentThinkingError } from "./agent-thinking";
 import { WebuiSettingsError, readEffectiveWebuiSettings, updateWebuiSettings } from "./webui-settings";
 import { discoverAgents } from "../subagent/agents";
 import { agentToDto, discoverAgentsForWeb, isKnownAgentName, toUserSessionSummaries } from "./server";
@@ -74,6 +75,7 @@ class FakeAdapter implements RpcSessionAdapter {
   aborts = 0;
   stopped = 0;
   setModels: Array<{ provider: string; modelId: string }> = [];
+  setThinkingLevels: string[] = [];
   messages: AgentMessage[] = [];
   getMessagesPromise: Promise<AgentMessage[]> | null = null;
   constructor(public options: StartRpcSessionOptions) {
@@ -91,6 +93,9 @@ class FakeAdapter implements RpcSessionAdapter {
   }
   async setModel(provider: string, modelId: string) {
     this.setModels.push({ provider, modelId });
+  }
+  async setThinkingLevel(level: string) {
+    this.setThinkingLevels.push(level);
   }
   async getState(): Promise<RpcSessionState> {
     return {
@@ -188,14 +193,16 @@ describe("web routes", () => {
       listModels: async () => [],
       effectiveModels: async () => [],
       setAgentModel: async () => {},
+      effectiveThinking: async () => [],
+      setAgentThinking: async () => {},
       listConfigProjects: async () => ({ home: agentDir, projects: [] }),
       directories: directoryService,
       registry,
       config: configService,
       logger: noopLogger,
       listAgents: async () => [],
-      getWebuiSettings: vi.fn(async () => ({ agentModels: {}, paperAssistantModel: null, effectivePaperAssistantModel: null })),
-      updateWebuiSettings: vi.fn(async (patch) => ({ agentModels: {}, paperAssistantModel: null, effectivePaperAssistantModel: null, ...patch })),
+      getWebuiSettings: vi.fn(async () => ({ agentModels: {}, paperAssistantModel: null, effectivePaperAssistantModel: null, agentThinking: {}, paperAssistantThinking: null })),
+      updateWebuiSettings: vi.fn(async (patch) => ({ agentModels: {}, paperAssistantModel: null, effectivePaperAssistantModel: null, agentThinking: {}, paperAssistantThinking: null, ...patch })),
       subagentSessions: {
         summaries: async () => [],
         snapshot: async (_parentSessionId: string, childSessionId: string) => {
@@ -1210,19 +1217,22 @@ describe("web routes", () => {
     expect(isKnownAgentName(agents, "writing")).toBe(true);
   });
 
-  it("lists available models", async () => {
+  it("lists available models with reasoning and thinking map metadata", async () => {
     setup({
-      listModels: async () => [
-        { provider: "openai", id: "gpt-4o" },
-        { provider: "deepseek", id: "ds-v3" },
-      ],
+      listModels: async () =>
+        ([
+          { provider: "openai", id: "gpt-4o", reasoning: false, thinkingLevelMap: { xhigh: null, max: null } },
+          { provider: "deepseek", id: "ds-v3", reasoning: true, thinkingLevelMap: { low: null, xhigh: null, max: null } },
+          { provider: "anthropic", id: "claude", reasoning: true, thinkingLevelMap: { xhigh: "xhigh", high: "high" } },
+        ] as ModelOptionDto[]),
     });
     const res = await handler(new Request("http://localhost/api/models"));
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { models: Array<{ provider: string; id: string }> };
+    const body = (await res.json()) as { models: ModelOptionDto[] };
     expect(body.models).toEqual([
-      { provider: "openai", id: "gpt-4o" },
-      { provider: "deepseek", id: "ds-v3" },
+      { provider: "openai", id: "gpt-4o", reasoning: false, thinkingLevelMap: { xhigh: null, max: null } },
+      { provider: "deepseek", id: "ds-v3", reasoning: true, thinkingLevelMap: { low: null, xhigh: null, max: null } },
+      { provider: "anthropic", id: "claude", reasoning: true, thinkingLevelMap: { xhigh: "xhigh", high: "high" } },
     ]);
   });
 
@@ -1341,6 +1351,84 @@ describe("web routes", () => {
       },
     });
     const res = await handler(new Request("http://localhost/api/sessions/nope/agents/effective-models"));
+    expect(res.status).toBe(404);
+  });
+
+  it("returns the effective thinking levels for a session", async () => {
+    const effectiveThinking = vi.fn(async () => [{ name: "search", thinking: "high", source: "override" as const }]);
+    setup({ effectiveThinking });
+    const res = await handler(new Request("http://localhost/api/sessions/s1/agents/effective-thinking"));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([{ name: "search", thinking: "high", source: "override" }]);
+    expect(effectiveThinking).toHaveBeenCalledWith("s1");
+  });
+
+  it("returns 404 for effective thinking of an unknown session", async () => {
+    setup({
+      effectiveThinking: async () => {
+        throw new UnknownSessionError("Unknown session: nope");
+      },
+    });
+    const res = await handler(new Request("http://localhost/api/sessions/nope/agents/effective-thinking"));
+    expect(res.status).toBe(404);
+  });
+
+  it("sets an agent thinking level via PUT", async () => {
+    const setAgentThinking = vi.fn(async () => {});
+    setup({ setAgentThinking });
+    const res = await handler(
+      new Request("http://localhost/api/sessions/s1/agents/search/thinking", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ thinking: "high" }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(setAgentThinking).toHaveBeenCalledWith("s1", "search", "high");
+  });
+
+  it("sets a null thinking level (reset) via PUT", async () => {
+    const setAgentThinking = vi.fn(async () => {});
+    setup({ setAgentThinking });
+    const res = await handler(
+      new Request("http://localhost/api/sessions/s1/agents/figures/thinking", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ thinking: null }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(setAgentThinking).toHaveBeenCalledWith("s1", "figures", null);
+  });
+
+  it("rejects a non-string thinking body with 400", async () => {
+    const setAgentThinking = vi.fn(async () => {});
+    setup({ setAgentThinking });
+    const res = await handler(
+      new Request("http://localhost/api/sessions/s1/agents/search/thinking", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ thinking: 42 }),
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect(setAgentThinking).not.toHaveBeenCalled();
+  });
+
+  it("surfaces AgentThinkingError statuses from setAgentThinking (404 unknown agent)", async () => {
+    setup({
+      setAgentThinking: async () => {
+        throw new AgentThinkingError(404, "Unknown agent: ghost");
+      },
+    });
+    const res = await handler(
+      new Request("http://localhost/api/sessions/s1/agents/ghost/thinking", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ thinking: "high" }),
+      }),
+    );
     expect(res.status).toBe(404);
   });
 

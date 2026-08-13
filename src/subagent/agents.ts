@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir } from "../runtime/pi-import";
 import { importPi } from "../runtime/pi-import";
+import { isThinkingLevel } from "../thinking-levels";
 import { isDotAgentsSkillEnabled, resolveSkillSelection } from "./skill-resolution";
 
 export type AgentSource = "bundled" | "global" | "project";
@@ -20,6 +21,7 @@ export interface AgentConfig {
   effectiveSkills: string[];
   missingSkills: string[];
   model?: string;
+  thinking?: string;
   systemPrompt: string;
   source: AgentSource;
   filePath: string;
@@ -135,6 +137,8 @@ function parseAgentFile(
       missingSkills,
       subagents: stringArray(frontmatter.subagents),
       model: typeof frontmatter.model === "string" && frontmatter.model ? frontmatter.model : undefined,
+      thinking:
+        typeof frontmatter.thinking === "string" && isThinkingLevel(frontmatter.thinking) ? frontmatter.thinking : undefined,
       systemPrompt: parsed.body.trim(),
       source,
       filePath,

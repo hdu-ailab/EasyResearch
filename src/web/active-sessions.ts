@@ -37,6 +37,8 @@ export interface OpenSessionInput {
 
 export interface ActiveSessionRegistryOptions {
   idleTimeoutMs?: number;
+  /** Resolves the Paper Assistant thinking default for fresh session launches. */
+  resolveLaunchThinking?: (cwd: string) => Promise<string | undefined>;
 }
 
 /**
@@ -48,6 +50,7 @@ export interface ActiveSessionRegistryOptions {
 export class ActiveSessionRegistry {
   private readonly records = new Map<string, ActiveRecord>();
   private readonly idleTimeoutMs: number;
+  private readonly resolveLaunchThinking?: (cwd: string) => Promise<string | undefined>;
 
   constructor(
     private readonly factory: RpcSessionFactory,
@@ -56,6 +59,7 @@ export class ActiveSessionRegistry {
     private readonly fileWatcherFactory: FileWatcherFactory = createNoopFileWatcherFactory(),
   ) {
     this.idleTimeoutMs = options.idleTimeoutMs ?? 3_600_000;
+    this.resolveLaunchThinking = options.resolveLaunchThinking;
   }
 
   async create(input: CreateSessionInput): Promise<ActiveSessionDto> {
@@ -146,6 +150,14 @@ export class ActiveSessionRegistry {
     return this.withRecord(id, (record) => record.client.setModel(provider, modelId));
   }
 
+  /**
+   * Set the Paper Assistant's live thinking level. Pi applies the change to
+   * the next LLM call, even while a run is in progress.
+   */
+  async setThinkingLevel(id: string, level: string): Promise<void> {
+    return this.withRecord(id, (record) => record.client.setThinkingLevel(level));
+  }
+
   async getSessionPath(id: string): Promise<string | undefined> {
     return this.withRecord(id, (record) => Promise.resolve(record.sessionPath));
   }
@@ -164,6 +176,18 @@ export class ActiveSessionRegistry {
       const state = await record.client.getState();
       const model = state.model;
       return model ? `${model.provider}/${model.id}` : undefined;
+    });
+  }
+
+  /**
+   * The Paper Assistant's live thinking level from session state, the level-4
+   * fallback for stage agents in this session. Undefined when the session has
+   * no level (e.g. no active session record).
+   */
+  async getPaperAssistantThinking(id: string): Promise<string | undefined> {
+    return this.withRecord(id, async (record) => {
+      const state = await record.client.getState();
+      return state.thinkingLevel ?? undefined;
     });
   }
 
@@ -233,7 +257,10 @@ export class ActiveSessionRegistry {
       isStreaming: false,
       status: "starting",
     };
-    const client = this.factory.create(options);
+    // Fresh sessions apply the Paper Assistant Markdown thinking default via
+    // `--thinking`; resumed sessions keep their persisted JSONL level.
+    const launchThinking = !options.sessionPath ? await this.resolveLaunchThinking?.(options.cwd) : undefined;
+    const client = this.factory.create(launchThinking === undefined ? options : { ...options, thinking: launchThinking });
     const record: ActiveRecord = {
       dto,
       cwd: options.cwd,

@@ -3,6 +3,7 @@ import type {
   ActiveSessionDto,
   AgentDto,
   AgentEffectiveModelDto,
+  AgentEffectiveThinkingDto,
   AgentResourceDto,
   ChildSessionSnapshotDto,
   ConfigEntryDto,
@@ -20,6 +21,8 @@ import type { ConfigFileDto, ConfigProjectsDto } from "../types";
 export interface ModelOption {
   provider: string;
   id: string;
+  reasoning: boolean;
+  thinkingLevelMap?: Record<string, string | null>;
 }
 
 type RecordValue = Record<string, unknown>;
@@ -224,8 +227,27 @@ export function parseModels(value: unknown): ModelOption[] {
   const source = record(value, "models");
   return arrayOf(source.models, "models", (item) => {
     const model = record(item, "model");
-    return { provider: requiredString(model, "provider"), id: requiredString(model, "id") };
+    const thinkingLevelMap = optionalThinkingLevelMap(model.thinkingLevelMap);
+    return {
+      provider: requiredString(model, "provider"),
+      id: requiredString(model, "id"),
+      reasoning: requiredBoolean(model, "reasoning"),
+      ...(thinkingLevelMap !== undefined ? { thinkingLevelMap } : {}),
+    };
   });
+}
+
+function optionalThinkingLevelMap(value: unknown): Record<string, string | null> | undefined {
+  if (value === undefined) return undefined;
+  const source = record(value, "thinkingLevelMap");
+  const map: Record<string, string | null> = {};
+  for (const [level, mapped] of Object.entries(source)) {
+    if (mapped !== null && typeof mapped !== "string") {
+      throw new Error(`Invalid API response: thinkingLevelMap.${level} must be a string or null`);
+    }
+    map[level] = mapped;
+  }
+  return map;
 }
 
 export function parseWebuiSettings(value: unknown): WebuiSettingsDto {
@@ -236,15 +258,31 @@ export function parseWebuiSettings(value: unknown): WebuiSettingsDto {
     if (typeof model !== "string") throw new Error(`Invalid API response: agentModels.${name} must be a string`);
     agentModels[name] = model;
   }
+  const thinking = record(source.agentThinking, "agentThinking");
+  const agentThinking: Record<string, string> = {};
+  for (const [name, level] of Object.entries(thinking)) {
+    if (typeof level !== "string") throw new Error(`Invalid API response: agentThinking.${name} must be a string`);
+    agentThinking[name] = level;
+  }
   const paperAssistantModel = source.paperAssistantModel;
   const effectivePaperAssistantModel = source.effectivePaperAssistantModel;
+  const paperAssistantThinking = source.paperAssistantThinking;
   if (paperAssistantModel !== null && typeof paperAssistantModel !== "string") {
     throw new Error("Invalid API response: paperAssistantModel must be a string or null");
   }
   if (effectivePaperAssistantModel !== null && typeof effectivePaperAssistantModel !== "string") {
     throw new Error("Invalid API response: effectivePaperAssistantModel must be a string or null");
   }
-  return { agentModels, paperAssistantModel, effectivePaperAssistantModel };
+  if (paperAssistantThinking !== null && typeof paperAssistantThinking !== "string") {
+    throw new Error("Invalid API response: paperAssistantThinking must be a string or null");
+  }
+  return {
+    agentModels,
+    paperAssistantModel,
+    effectivePaperAssistantModel,
+    agentThinking,
+    paperAssistantThinking,
+  };
 }
 
 export function parseEffectiveModels(value: unknown): AgentEffectiveModelDto[] {
@@ -262,6 +300,19 @@ export function parseEffectiveModels(value: unknown): AgentEffectiveModelDto[] {
       throw new Error("Invalid API response: model source is invalid");
     }
     return { name: requiredString(source, "name"), model, source: source.source };
+  });
+}
+
+export function parseEffectiveThinking(value: unknown): AgentEffectiveThinkingDto[] {
+  return arrayOf(value, "effective thinking", (item) => {
+    const source = record(item, "effective thinking");
+    const thinking = source.thinking;
+    if (thinking !== null && typeof thinking !== "string")
+      throw new Error("Invalid API response: thinking must be a string or null");
+    if (source.source !== "override" && source.source !== "default" && source.source !== "inherit") {
+      throw new Error("Invalid API response: thinking source is invalid");
+    }
+    return { name: requiredString(source, "name"), thinking, source: source.source };
   });
 }
 
