@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, readdirSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,11 @@ import { ConfigServiceError } from "./config-files";
 import { starterAgentMarkdown } from "./agent-markdown";
 import { isDotAgentsSkillEnabled } from "../subagent/skill-resolution";
 
+/**
+ * Resolve the writable user-layer agent file. A bundled agent is materialized
+ * into the global agents directory before returning the target — this copy is
+ * committed only on Save (ADR-058); read paths must not call it.
+ */
 function globalAgentPath(config: ConfigFileService, agent: Pick<AgentConfig, "name" | "source" | "filePath">): string {
   const target = join(config.globalRoot, "agents", `${agent.name}.md`);
   if (agent.source === "global") return agent.filePath;
@@ -36,14 +41,21 @@ export async function listGlobalAgents(config: ConfigFileService): Promise<Agent
   }));
 }
 
+/**
+ * Serve the effective agent content (bundled or global) without writing any
+ * user-layer override. Opening an editor never materializes a copy (ADR-058).
+ */
 export async function readGlobalAgent(config: ConfigFileService, name: string): Promise<AgentResourceDto> {
   const agent = (await listGlobalAgents(config)).find((item) => item.name === name);
   if (!agent) throw new ConfigServiceError(404, `unknown agent: ${name}`);
-  const path = globalAgentPath(config, agent);
-  const content = await config.read({ scope: "global", path: path.slice(config.globalRoot.length + 1) });
-  return { ...agent, filePath: path, content };
+  const content = readFileSync(agent.filePath, "utf8");
+  return { ...agent, filePath: agent.filePath, content };
 }
 
+/**
+ * Save materializes a bundled agent into the global agents directory when no
+ * user-layer copy exists, then writes the edited content (ADR-058).
+ */
 export async function writeGlobalAgent(config: ConfigFileService, name: string, content: string): Promise<AgentResourceDto> {
   const agent = (await listGlobalAgents(config)).find((item) => item.name === name);
   if (!agent) throw new ConfigServiceError(404, `unknown agent: ${name}`);
@@ -97,10 +109,27 @@ export async function listGlobalSkills(config: ConfigFileService): Promise<Skill
   });
 }
 
+/**
+ * Serve the effective skill content (bundled/global/home) without creating any
+ * user-layer skill directory. Opening an editor never materializes a copy
+ * (ADR-058).
+ */
 export async function readGlobalSkill(config: ConfigFileService, name: string): Promise<SkillResourceDto> {
   const skill = (await listGlobalSkills(config)).find((item) => item.name === name);
   if (!skill) throw new ConfigServiceError(404, `unknown skill: ${name}`);
-  if (skill.source === "bundled") {
+  const content = readFileSync(skill.skillPath, "utf8");
+  return { ...skill, content };
+}
+
+/**
+ * Save materializes a bundled/home skill directory into the global skills
+ * directory when no user-layer copy exists, then writes the edited SKILL.md
+ * (ADR-058).
+ */
+export async function writeGlobalSkill(config: ConfigFileService, name: string, content: string): Promise<SkillResourceDto> {
+  const skill = (await listGlobalSkills(config)).find((item) => item.name === name);
+  if (!skill) throw new ConfigServiceError(404, `unknown skill: ${name}`);
+  if (skill.source === "bundled" || skill.source === "home") {
     const target = join(config.globalRoot, "skills", name);
     if (!existsSync(target)) {
       mkdirSync(join(config.globalRoot, "skills"), { recursive: true });
@@ -110,12 +139,6 @@ export async function readGlobalSkill(config: ConfigFileService, name: string): 
     skill.skillPath = join(target, "SKILL.md");
     skill.source = "global";
   }
-  const content = await config.read({ scope: "global", path: skill.skillPath.slice(config.globalRoot.length + 1) });
-  return { ...skill, content };
-}
-
-export async function writeGlobalSkill(config: ConfigFileService, name: string, content: string): Promise<SkillResourceDto> {
-  const skill = await readGlobalSkill(config, name);
   await config.write({ scope: "global", path: skill.skillPath.slice(config.globalRoot.length + 1), content });
   return readGlobalSkill(config, name);
 }
