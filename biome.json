@@ -30,6 +30,16 @@
           }
         }
       }
+    },
+    {
+      "includes": ["src/webui/src/components/ChatTranscript.tsx"],
+      "linter": {
+        "rules": {
+          "a11y": {
+            "noNoninteractiveTabindex": "off"
+          }
+        }
+      }
     }
   ]
 }
