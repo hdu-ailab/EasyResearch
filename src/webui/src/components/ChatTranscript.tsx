@@ -440,7 +440,7 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
         ) : null}
         <div
           ref={bindContentRef}
-          className="relative mx-auto w-full max-w-[1000px] px-4"
+          className="relative mx-auto w-full max-w-[1000px]"
           style={{ height: virtualizer.getTotalSize() }}
         >
           {virtualizer.getVirtualItems().map((virtualRow) => {
@@ -452,6 +452,7 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
                 <div
                   data-index={virtualRow.index}
                   ref={virtualizer.measureElement}
+                  className="px-4"
                   style={{ minHeight: `${virtualRow.size}px`, paddingBottom: ROW_GAP_PX }}
                 >
                   {"kind" in entry ? (
