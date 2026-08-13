@@ -5,6 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { STORAGE_KEY, type WebUiPreferences, writePreferences } from "../preferences";
 import { PreferencesProvider } from "../preferences/PreferencesProvider";
 import type { SessionMessageView, ToolView } from "../session-reducer";
+import {
+  fireTranscriptGrowth,
+  hydrateTranscript,
+  metricStub,
+  smallTranscript,
+  transcriptContentObserver,
+  wheelUp,
+} from "../testing/transcriptTest";
 import { ChatTranscript, type ChatTranscriptHandle } from "./ChatTranscript";
 
 vi.mock("mermaid", () => ({
@@ -45,80 +53,35 @@ const defaultPreferences: WebUiPreferences = {
   expandSubagentOutput: false,
 };
 
-let notifyResize: ResizeObserverCallback;
-let flushFrame: FrameRequestCallback | undefined;
-let observedContent: Element | undefined;
-let resizeObserver: ResizeObserverStub;
-let requestFrame: ReturnType<typeof vi.fn>;
-let cancelFrame: ReturnType<typeof vi.fn>;
+let frames: FrameRequestCallback[] = [];
 let scrollIntoViewSpy: ReturnType<typeof vi.spyOn>;
 const originalScrollIntoView = Object.getOwnPropertyDescriptor(Element.prototype, "scrollIntoView");
 
-class ResizeObserverStub {
-  constructor(callback: ResizeObserverCallback) {
-    notifyResize = callback;
-    resizeObserver = this;
-  }
-
-  observe = vi.fn((element: Element) => {
-    observedContent = element;
-  });
-
-  disconnect = vi.fn();
-}
-
 function flushFollowFrame() {
-  const callback = flushFrame;
-  flushFrame = undefined;
-  callback?.(0);
-}
-
-function fireContentResize() {
-  notifyResize([], resizeObserver as unknown as ResizeObserver);
-  flushFollowFrame();
+  const pending = frames;
+  frames = [];
+  for (const callback of pending) act(() => callback(0));
 }
 
 function renderTranscript(ui: ReactElement, preferences: Partial<WebUiPreferences> = {}) {
   writePreferences(window.localStorage, { ...defaultPreferences, ...preferences });
-  return render(ui, { wrapper: PreferencesProvider });
+  const result = render(ui, { wrapper: PreferencesProvider });
+  hydrateTranscript(result.container);
+  return result;
 }
 
 function scrollContainer(): HTMLDivElement {
-  const el = screen.getByLabelText("Conversation") as HTMLDivElement;
-  Object.defineProperty(el, "scrollHeight", {
-    configurable: true,
-    get: () => 400,
-  });
-  Object.defineProperty(el, "clientHeight", {
-    configurable: true,
-    get: () => 200,
-  });
-  return el;
-}
-
-/**
- * Stubs the container metrics after render, then forces the pin effect to
- * re-run with real scroll metrics (jsdom reports scrollHeight 0 until the
- * stub is in place).
- */
-function pinnedContainer(rerender: (ui: ReactElement) => void): HTMLDivElement {
-  const el = scrollContainer();
-  rerender(<ChatTranscript messages={[]} tools={[]} />);
-  return el;
+  return screen.getByLabelText("Conversation") as HTMLDivElement;
 }
 
 describe("ChatTranscript", () => {
   beforeEach(() => {
-    flushFrame = undefined;
-    observedContent = undefined;
-    requestFrame = vi.fn((callback: FrameRequestCallback) => {
-      flushFrame = callback;
-      return 1;
+    frames = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
     });
-    cancelFrame = vi.fn();
-    vi.stubGlobal("ResizeObserver", ResizeObserverStub);
-    vi.stubGlobal("requestAnimationFrame", requestFrame);
-    vi.stubGlobal("cancelAnimationFrame", cancelFrame);
+    vi.stubGlobal("cancelAnimationFrame", () => {});
     if (!originalScrollIntoView) {
       Object.defineProperty(Element.prototype, "scrollIntoView", {
         configurable: true,
@@ -150,24 +113,27 @@ describe("ChatTranscript", () => {
     expect(row.textContent).toContain("Paper Assistant");
   });
 
-  it("pins to the bottom on content change, unpins on manual scroll, and re-pins at the bottom", () => {
+  it("pins to the bottom on content change, unpins on a wheel gesture, and re-pins at the bottom", () => {
     const first = [msg({ key: "a", text: "one" })];
-    const { rerender } = renderTranscript(<ChatTranscript messages={first} tools={[]} />);
-    const el = pinnedContainer(rerender);
-    flushFollowFrame();
+    const { rerender, container } = renderTranscript(<ChatTranscript messages={first} tools={[]} />);
+    const el = scrollContainer();
+    smallTranscript(container, 400);
+    fireTranscriptGrowth(container);
     expect(el.scrollTop).toBe(400);
 
     rerender(<ChatTranscript messages={[...first, msg({ key: "b", text: "two" })]} tools={[]} />);
-    flushFollowFrame();
+    fireTranscriptGrowth(container);
     expect(el.scrollTop).toBe(400);
 
     el.scrollTop = 100;
     fireEvent.scroll(el);
+    wheelUp(el);
     rerender(<ChatTranscript messages={[...first, msg({ key: "b" }), msg({ key: "c", text: "three" })]} tools={[]} />);
-    flushFollowFrame();
+    fireTranscriptGrowth(container);
     expect(el.scrollTop).toBe(100);
 
     el.scrollTop = 400;
+    wheelUp(el);
     fireEvent.scroll(el);
     rerender(
       <ChatTranscript
@@ -175,133 +141,165 @@ describe("ChatTranscript", () => {
         tools={[]}
       />,
     );
-    flushFollowFrame();
+    fireTranscriptGrowth(container);
     expect(el.scrollTop).toBe(400);
   });
 
   it("stays at the bottom when a tool event arrives while pinned", () => {
     const first = [msg({ key: "a" })];
-    const { rerender } = renderTranscript(<ChatTranscript messages={first} tools={[]} />);
-    const el = pinnedContainer(rerender);
-    flushFollowFrame();
+    const { rerender, container } = renderTranscript(<ChatTranscript messages={first} tools={[]} />);
+    const el = scrollContainer();
+    smallTranscript(container, 400);
+    fireTranscriptGrowth(container);
     rerender(<ChatTranscript messages={first} tools={[tool({ key: "t2" })]} />);
-    flushFollowFrame();
+    fireTranscriptGrowth(container);
     expect(el.scrollTop).toBe(400);
   });
 
-  it("follows observed content growth while pinned and coalesces resize work per frame", () => {
-    let scrollHeight = 400;
-    renderTranscript(<ChatTranscript messages={[msg({ key: "a" })]} tools={[]} />);
-    const el = screen.getByLabelText("Conversation") as HTMLDivElement;
-    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => scrollHeight });
-    Object.defineProperty(el, "clientHeight", { configurable: true, get: () => 200 });
-    flushFollowFrame();
+  it("follows observed content growth while pinned", () => {
+    const { container } = renderTranscript(<ChatTranscript messages={[msg({ key: "a" })]} tools={[]} />);
+    const el = scrollContainer();
+    smallTranscript(container, 400);
+    fireTranscriptGrowth(container);
+    expect(el.scrollTop).toBe(400);
 
-    expect(observedContent).toBe(el.querySelector("ul"));
-    scrollHeight = 600;
-    notifyResize([], resizeObserver as unknown as ResizeObserver);
-    notifyResize([], resizeObserver as unknown as ResizeObserver);
-
-    expect(requestFrame).toHaveBeenCalledTimes(2);
-    flushFollowFrame();
+    el.scrollTop = 200;
+    metricStub(el, { scrollHeight: 600, clientHeight: 200 });
+    fireTranscriptGrowth(container);
     expect(el.scrollTop).toBe(600);
   });
 
-  it("shares one queued frame between a pending-row change and ResizeObserver notification", () => {
-    const { rerender } = renderTranscript(<ChatTranscript messages={[]} tools={[]} />);
-    flushFollowFrame();
-    requestFrame.mockClear();
-
-    rerender(<ChatTranscript messages={[]} tools={[]} pending />);
-    notifyResize([], resizeObserver as unknown as ResizeObserver);
-
-    expect(requestFrame).toHaveBeenCalledOnce();
-    flushFollowFrame();
-  });
-
-  it("preserves the reading position when observed content grows while unpinned", () => {
-    let scrollHeight = 400;
-    renderTranscript(<ChatTranscript messages={[msg({ key: "a" })]} tools={[]} />);
-    const el = screen.getByLabelText("Conversation") as HTMLDivElement;
-    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => scrollHeight });
-    Object.defineProperty(el, "clientHeight", { configurable: true, get: () => 200 });
-    flushFollowFrame();
+  it("preserves the reading position when content grows while unpinned", () => {
+    const { container } = renderTranscript(<ChatTranscript messages={[msg({ key: "a" })]} tools={[]} />);
+    const el = scrollContainer();
+    smallTranscript(container, 400);
+    fireTranscriptGrowth(container);
 
     el.scrollTop = 100;
     fireEvent.scroll(el);
-    scrollHeight = 600;
-    fireContentResize();
-
+    wheelUp(el);
+    metricStub(el, { scrollHeight: 600, clientHeight: 200 });
+    fireTranscriptGrowth(container);
     expect(el.scrollTop).toBe(100);
   });
 
-  it("re-engages resize following after scrolling within 24px of the bottom", () => {
-    let scrollHeight = 600;
-    renderTranscript(<ChatTranscript messages={[msg({ key: "a" })]} tools={[]} />);
-    const el = screen.getByLabelText("Conversation") as HTMLDivElement;
-    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => scrollHeight });
-    Object.defineProperty(el, "clientHeight", { configurable: true, get: () => 200 });
-    flushFollowFrame();
+  it("re-engages following after scrolling within 10px of the bottom", () => {
+    const { container } = renderTranscript(<ChatTranscript messages={[msg({ key: "a" })]} tools={[]} />);
+    const el = scrollContainer();
+    smallTranscript(container, 400);
+    fireTranscriptGrowth(container);
 
     el.scrollTop = 100;
     fireEvent.scroll(el);
-    el.scrollTop = 376;
-    fireEvent.scroll(el);
-    scrollHeight = 700;
-    fireContentResize();
+    wheelUp(el);
+    expect(el.scrollTop).toBe(100);
 
-    expect(el.scrollTop).toBe(700);
+    wheelUp(el);
+    el.scrollTop = 196;
+    fireEvent.scroll(el);
+    metricStub(el, { scrollHeight: 600, clientHeight: 200 });
+    fireTranscriptGrowth(container);
+    expect(el.scrollTop).toBe(600);
   });
 
-  it("jumps to the bottom when scrollToLatest is called while unpinned", () => {
-    const first = [msg({ key: "a", text: "one" })];
+  it("jumps to the bottom when scrollToLatest is called while unpinned and re-follows growth", () => {
     const ref = createRef<ChatTranscriptHandle>();
-    renderTranscript(<ChatTranscript ref={ref} messages={first} tools={[]} />);
+    const { container } = renderTranscript(
+      <ChatTranscript ref={ref} messages={[msg({ key: "a", text: "one" })]} tools={[]} />,
+    );
     const el = scrollContainer();
-    flushFollowFrame();
+    smallTranscript(container, 400);
+    fireTranscriptGrowth(container);
     expect(el.scrollTop).toBe(400);
 
     el.scrollTop = 100;
     fireEvent.scroll(el);
+    wheelUp(el);
 
     ref.current?.scrollToLatest();
-    flushFollowFrame();
     expect(el.scrollTop).toBe(400);
+
+    el.scrollTop = 200;
+    metricStub(el, { scrollHeight: 600, clientHeight: 200 });
+    fireTranscriptGrowth(container);
+    expect(el.scrollTop).toBe(600);
   });
 
-  it("keeps the reading position when content grows while unpinned", () => {
-    const first = [msg({ key: "a", text: "one" })];
-    const { rerender } = renderTranscript(<ChatTranscript messages={first} tools={[]} />);
+  it("shows the jump-to-latest button only when scrolled far from the bottom", () => {
+    renderTranscript(<ChatTranscript messages={[msg({ key: "a" }), msg({ key: "b" })]} tools={[]} />);
     const el = scrollContainer();
+    metricStub(el, { scrollHeight: 1000, clientHeight: 200 });
+
+    el.scrollTop = 1000;
+    fireEvent.scroll(el);
     flushFollowFrame();
-    expect(el.scrollTop).toBe(400);
+    expect(screen.queryByRole("button", { name: /jump to latest/i })).toBeNull();
 
     el.scrollTop = 100;
     fireEvent.scroll(el);
-
-    rerender(<ChatTranscript messages={[...first, msg({ key: "b", text: "two" })]} tools={[]} />);
     flushFollowFrame();
+    expect(screen.getByRole("button", { name: /jump to latest/i })).toBeVisible();
+
+    el.scrollTop = 780;
+    fireEvent.scroll(el);
+    flushFollowFrame();
+    expect(screen.queryByRole("button", { name: /jump to latest/i })).toBeNull();
+
+    el.scrollTop = 100;
+    fireEvent.scroll(el);
+    flushFollowFrame();
+    fireEvent.click(screen.getByRole("button", { name: /jump to latest/i }));
+    expect(el.scrollTop).toBe(1000);
+  });
+
+  it("arms a scroll gesture on scroll keys over the transcript", () => {
+    const { container } = renderTranscript(<ChatTranscript messages={[msg({ key: "a" })]} tools={[]} />);
+    const el = scrollContainer();
+    smallTranscript(container, 400);
+    fireTranscriptGrowth(container);
+    expect(el.scrollTop).toBe(400);
+
+    fireEvent.keyDown(el, { key: "End" });
+    el.scrollTop = 100;
+    fireEvent.scroll(el);
+    metricStub(el, { scrollHeight: 600, clientHeight: 200 });
+    fireTranscriptGrowth(container);
     expect(el.scrollTop).toBe(100);
   });
 
-  it("follows later content growth after scrollToLatest", () => {
-    let scrollHeight = 400;
-    const first = [msg({ key: "a", text: "one" })];
-    const ref = createRef<ChatTranscriptHandle>();
-    renderTranscript(<ChatTranscript ref={ref} messages={first} tools={[]} />);
-    const el = screen.getByLabelText("Conversation") as HTMLDivElement;
-    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => scrollHeight });
-    Object.defineProperty(el, "clientHeight", { configurable: true, get: () => 200 });
-    flushFollowFrame();
+  it("does not arm a page scroll gesture when the target is an interactive control", () => {
+    const { container } = renderTranscript(
+      <ChatTranscript messages={[msg({ key: "a", reasoning: "deep thought" })]} tools={[]} />,
+    );
+    const el = scrollContainer();
+    smallTranscript(container, 400);
+    fireTranscriptGrowth(container);
 
+    const toggle = screen.getByRole("button", { name: /show details/i });
+    fireEvent.keyDown(toggle, { key: "PageDown" });
     el.scrollTop = 100;
     fireEvent.scroll(el);
-    ref.current?.scrollToLatest();
-    flushFollowFrame();
+    metricStub(el, { scrollHeight: 600, clientHeight: 200 });
+    fireTranscriptGrowth(container);
+    expect(el.scrollTop).toBe(600);
+  });
+
+  it("does not unpin when wheel-scrolling inside a nested data-scrollable region", () => {
+    const { container } = renderTranscript(
+      <ChatTranscript messages={[]} tools={[tool({ key: "t1", output: "tool output here" })]} />,
+      { autoExpandTools: true },
+    );
+    const el = scrollContainer();
+    smallTranscript(container, 400);
+    fireTranscriptGrowth(container);
     expect(el.scrollTop).toBe(400);
 
-    scrollHeight = 600;
-    fireContentResize();
+    const output = screen.getByText("tool output here").closest("[data-scrollable]") as HTMLElement;
+    metricStub(output, { scrollHeight: 400, clientHeight: 200, scrollTop: 200 });
+    wheelUp(output);
+    el.scrollTop = 200;
+    metricStub(el, { scrollHeight: 600, clientHeight: 200 });
+    fireTranscriptGrowth(container);
     expect(el.scrollTop).toBe(600);
   });
 
@@ -323,14 +321,13 @@ describe("ChatTranscript", () => {
     expect(scrollIntoViewSpy).not.toHaveBeenCalled();
   });
 
-  it("disconnects content observation and cancels queued follow work on unmount", () => {
-    const { unmount } = renderTranscript(<ChatTranscript messages={[msg({ key: "a" })]} tools={[]} />);
-    const observer = resizeObserver;
-
+  it("disconnects the content observer on unmount", () => {
+    const { unmount, container } = renderTranscript(<ChatTranscript messages={[msg({ key: "a" })]} tools={[]} />);
+    const contentObserver = transcriptContentObserver(container);
+    expect(contentObserver).toBeTruthy();
+    const disconnect = vi.spyOn(contentObserver!, "disconnect");
     unmount();
-
-    expect(observer.disconnect).toHaveBeenCalledOnce();
-    expect(cancelFrame).toHaveBeenCalledWith(1);
+    expect(disconnect).toHaveBeenCalledOnce();
   });
 
   it("expands the reasoning body with a pop-down animation and retracts it with a collapse-up animation", () => {
@@ -422,7 +419,7 @@ describe("ChatTranscript", () => {
         tools={[tool({ key: "t1", name: "bash", args: "ls", order: 2 })]}
       />,
     );
-    const container = screen.getByLabelText("Conversation");
+    const container = scrollContainer();
     const texts = [...container.querySelectorAll("li")]
       .map((li) => li.textContent ?? "")
       .filter((t) => t.trim().length > 0);
@@ -449,7 +446,7 @@ describe("ChatTranscript", () => {
         tools={[]}
       />,
     );
-    const container = screen.getByLabelText("Conversation");
+    const container = scrollContainer();
     expect(container.textContent).not.toContain("You");
     expect(container.textContent).toContain("Paper Assistant");
     expect(container.textContent).toContain("Search");
@@ -551,5 +548,20 @@ describe("ChatTranscript", () => {
     );
 
     expect(screen.queryByRole("button", { name: "View details" })).toBeNull();
+  });
+
+  it("keeps a row's collapsed state across rerenders that remove and re-add it", () => {
+    const reasoning = msg({ key: "reason-1", reasoning: "deep thought", text: "answer", order: 1 });
+    const { rerender } = renderTranscript(<ChatTranscript messages={[reasoning]} tools={[]} />, {
+      autoExpandThinking: true,
+    });
+    const toggle = screen.getByRole("button", { name: /hide details/i });
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+
+    rerender(<ChatTranscript messages={[]} tools={[]} />);
+    rerender(<ChatTranscript messages={[reasoning]} tools={[]} />);
+
+    expect(screen.getByRole("button", { name: /show details/i })).toHaveAttribute("aria-expanded", "false");
   });
 });

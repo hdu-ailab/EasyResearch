@@ -7,6 +7,7 @@ import * as api from "../api";
 import { I18nProvider } from "../i18n/I18nProvider";
 import { STORAGE_KEY } from "../preferences";
 import { PreferencesProvider } from "../preferences/PreferencesProvider";
+import { hydrateTranscript, observerFor } from "../testing/transcriptTest";
 import { WorkPage } from "./WorkPage";
 
 vi.mock("../api", async (importOriginal) => {
@@ -82,13 +83,22 @@ function emitRawChildEvent(toolCallId: string, agent: string, event: unknown, st
 }
 
 function render(ui: ReactElement) {
-  return renderWithTestingLibrary(ui, {
+  const result = renderWithTestingLibrary(ui, {
     wrapper: ({ children }: { children: ReactNode }) => (
       <PreferencesProvider>
         <I18nProvider>{children}</I18nProvider>
       </PreferencesProvider>
     ),
   });
+  hydrateTranscript(result.container);
+  return result;
+}
+
+function panelObserver() {
+  const panel = screen.getByRole("region", { name: /file browser/i });
+  const observer = observerFor(panel.parentElement as HTMLElement);
+  expect(observer).toBeTruthy();
+  return observer as unknown as { __fire: (n: number) => void };
 }
 
 describe("WorkPage", () => {
@@ -999,10 +1009,11 @@ describe("WorkPage", () => {
         session: { id: "shared-child", cwd: "/p", sessionName: "easyresearch:writing" },
         messages: [{ role: "assistant", content: [{ type: "text", text: "new parent child" }] }],
       } as never);
-    const { rerender } = render(<WorkPage key="s1" id="s1" cwd="/p" onBack={() => {}} />);
+    const { rerender, container } = render(<WorkPage key="s1" id="s1" cwd="/p" onBack={() => {}} />);
     await user.click(await screen.findByRole("button", { name: "View details" }));
 
     rerender(<WorkPage key="s2" id="s2" cwd="/p" onBack={() => {}} />);
+    hydrateTranscript(container);
     await user.click(await screen.findByRole("button", { name: "View details" }));
     expect(await screen.findByText("new parent child")).toBeVisible();
     act(() =>
@@ -1526,7 +1537,7 @@ describe("WorkPage", () => {
     const chat = screen.getByText("starting research").closest("section");
     const panel = screen.getByRole("region", { name: /file browser/i });
     expect(chat).toBeTruthy();
-    expect(chat?.className).toContain("flex-1");
+    expect(chat?.parentElement?.className).toContain("flex-1");
     expect(panel.className).toContain("min-[820px]:shrink-0");
     expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*320px/);
   });
@@ -1534,8 +1545,7 @@ describe("WorkPage", () => {
   it("resizes the panel within min/max while dragging", async () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await screen.findByText("starting research");
-    const RO = (globalThis as unknown as { FakeResizeObserver: typeof ResizeObserver }).FakeResizeObserver;
-    const observer = (RO as unknown as { instances: { __fire: (n: number) => void }[] }).instances.at(-1);
+    const observer = panelObserver();
     expect(observer).toBeTruthy();
     observer!.__fire(1200);
     await waitFor(() =>
@@ -1565,8 +1575,7 @@ describe("WorkPage", () => {
   it("remembers the dragged width for the session after the first drag", async () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await screen.findByText("starting research");
-    const RO = (globalThis as unknown as { FakeResizeObserver: typeof ResizeObserver }).FakeResizeObserver;
-    const observer = (RO as unknown as { instances: { __fire: (n: number) => void }[] }).instances.at(-1);
+    const observer = panelObserver();
     observer!.__fire(1200);
     await waitFor(() =>
       expect(screen.getByRole("region", { name: /file browser/i }).getAttribute("style")).toMatch(/--panel-w:\s*600px/),
@@ -1596,8 +1605,7 @@ describe("WorkPage", () => {
   it("never lets the drag shrink the panel below one third of the screen", async () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
     await screen.findByText("starting research");
-    const RO = (globalThis as unknown as { FakeResizeObserver: typeof ResizeObserver }).FakeResizeObserver;
-    const observer = (RO as unknown as { instances: { __fire: (n: number) => void }[] }).instances.at(-1);
+    const observer = panelObserver();
     observer!.__fire(1200);
     await waitFor(() =>
       expect(screen.getByRole("region", { name: /file browser/i }).getAttribute("style")).toMatch(/--panel-w:\s*600px/),

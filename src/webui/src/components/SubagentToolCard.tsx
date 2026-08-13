@@ -32,16 +32,25 @@ export function subagentMessagePreview(text: string, maxLength = 240): string {
 export function SubagentToolCard({
   tool,
   initialOpen,
+  open,
+  onToggle,
   onViewDetails,
 }: {
   tool: ToolView;
   initialOpen: boolean;
+  /** Controlled expansion state (virtualized lists keep state across unmounts). */
+  open?: boolean;
+  /** Called with the next expansion state when `open` is controlled. */
+  onToggle?: (open: boolean) => void;
   onViewDetails?: (toolCallId: string, step?: number) => void;
 }) {
   const { t } = useI18n();
-  const [open, setOpen] = useState(initialOpen);
+  const [internalOpen, setInternalOpen] = useState(initialOpen);
+  const isControlled = open !== undefined;
+  const isOpen = isControlled ? open : internalOpen;
+  const setOpen = isControlled ? (onToggle ?? (() => {})) : setInternalOpen;
   const reducedMotion = usePrefersReducedMotion();
-  const { mounted, phase } = useExpandable(open);
+  const { mounted, phase } = useExpandable(isOpen);
   const message = tool.latestMessage ?? tool.output ?? "";
   const agentName = agentDisplayName(t, tool.agentName ?? "subagent");
   const running = tool.running && !tool.done;
@@ -82,10 +91,10 @@ export function SubagentToolCard({
           <button
             type="button"
             className="flex w-full items-center gap-2 text-left text-[12px] text-v2-text-text-muted transition-colors hover:text-v2-text-text-base"
-            aria-expanded={open}
-            onClick={() => setOpen((current) => !current)}
+            aria-expanded={isOpen}
+            onClick={() => setOpen(!isOpen)}
           >
-            <span className="sr-only">{open ? t("transcript.hideDetails") : t("transcript.showDetails")}</span>
+            <span className="sr-only">{isOpen ? t("transcript.hideDetails") : t("transcript.showDetails")}</span>
             {running ? <span className="v2-spinner shrink-0" aria-hidden /> : null}
             {tool.done && !tool.error ? (
               <Check className="shrink-0 text-v2-status-success" size={14} aria-hidden />
@@ -94,7 +103,7 @@ export function SubagentToolCard({
             <span className="min-w-0 flex-1 truncate font-medium text-v2-text-text-base">{agentName}</span>
             <span className={tool.error ? "text-v2-status-error" : "text-v2-text-text-faint"}>{state}</span>
             {step ? <span className="text-v2-text-text-faint">{step}</span> : null}
-            {open ? (
+            {isOpen ? (
               <ChevronDown className="shrink-0" size={14} aria-hidden />
             ) : (
               <ChevronRight className="shrink-0" size={14} aria-hidden />

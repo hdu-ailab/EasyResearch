@@ -34,6 +34,7 @@
     "@earendil-works/pi-ai": "0.84.1",
     "@earendil-works/pi-coding-agent": "0.84.1",
     "@earendil-works/pi-tui": "0.84.1",
+    "@tanstack/react-virtual": "3.14.9",
     "cheerio": "1.1.2",
     "chokidar": "4.0.3",
     "katex": "0.18.1",
