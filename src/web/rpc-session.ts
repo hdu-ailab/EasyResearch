@@ -1,7 +1,6 @@
 import { fileURLToPath } from "node:url";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { RpcEventListener, RpcSessionState } from "@earendil-works/pi-coding-agent";
-import { assistantExtensions } from "../extensions";
 
 export interface StartRpcSessionOptions {
   cwd: string;
@@ -54,7 +53,6 @@ export interface RpcClientLikeOptions {
 export type RpcClientLikeConstructor = new (options: RpcClientLikeOptions) => RpcClientLike;
 
 const CLI_PATH = fileURLToPath(new URL("../runtime/pi-bootstrap.mjs", import.meta.url));
-const ASSISTANT_EXTENSION_PATHS = assistantExtensions.map((extension) => extension.path);
 
 export interface HeartbeatOptions {
   heartbeatIntervalMs?: number;
@@ -174,6 +172,12 @@ function toError(value: unknown): Error {
  * the identity bootstrap; use `PiRpcSessionFactory.resolve()` (which also runs
  * `bootstrapBundledResources()`) for the production entry point.
  * `clientCtor` is injectable for tests.
+ *
+ * The bundled extension paths are resolved lazily inside `resolve()` (after
+ * `importPi()` has bound `.easyresearch` identity) rather than at module scope:
+ * statically importing the extension registry would evaluate Pi's `config.js`
+ * without `PI_PACKAGE_DIR` set, capturing the wrong `.pi` config dir and
+ * redirecting sessions to `~/.pi/agent` (ADR-016 bootstrap contract).
  */
 export class PiRpcSessionFactory implements RpcSessionFactory {
   /**
@@ -186,24 +190,29 @@ export class PiRpcSessionFactory implements RpcSessionFactory {
     const { bootstrapBundledResources } = await import("../bootstrap/resources");
     await bootstrapBundledResources();
     const pi = await importPi();
-    return new PiRpcSessionFactory(pi.RpcClient as unknown as RpcClientLikeConstructor, heartbeatOptions);
+    const { assistantExtensions } = await import("../extensions");
+    const extensionPaths = assistantExtensions.map((extension) => extension.path);
+    return new PiRpcSessionFactory(pi.RpcClient as unknown as RpcClientLikeConstructor, heartbeatOptions, extensionPaths);
   }
 
   private readonly clientCtor: RpcClientLikeConstructor;
   private readonly heartbeatOptions: HeartbeatOptions;
+  private readonly extensionPaths: string[];
 
   constructor(
     clientCtor: RpcClientLikeConstructor,
     heartbeatOptions: HeartbeatOptions = {},
+    extensionPaths: string[] = [],
   ) {
     this.clientCtor = clientCtor;
     this.heartbeatOptions = heartbeatOptions;
+    this.extensionPaths = extensionPaths;
   }
 
   create(options: StartRpcSessionOptions): RpcSessionAdapter {
     // ADR-018: project config is always trusted — no trust prompt, ever.
     const args = [
-      ...ASSISTANT_EXTENSION_PATHS.flatMap((extensionPath) => ["--extension", extensionPath]),
+      ...this.extensionPaths.flatMap((extensionPath) => ["--extension", extensionPath]),
       "--approve",
       "--no-skills",
       ...(options.sessionPath ? ["--session", options.sessionPath] : []),
