@@ -2,6 +2,7 @@ import type {
   ActiveSessionDto,
   AgentDto,
   AgentEffectiveModelDto,
+  AgentEffectiveThinkingDto,
   AgentResourceDto,
   ChildSessionSnapshotDto,
   ConfigEntryDto,
@@ -26,6 +27,7 @@ import {
   parseConfigProjects,
   parseDirectories,
   parseEffectiveModels,
+  parseEffectiveThinking,
   parseEntries,
   parseFileContent,
   parseModels,
@@ -101,6 +103,14 @@ export function getEffectiveModels(sessionId: string): Promise<AgentEffectiveMod
 
 export function setAgentModel(sessionId: string, agentName: string, model: string | null): Promise<void> {
   return requestVoid(routes.agentModel(sessionId, agentName), json("PUT", { model }));
+}
+
+export function getEffectiveThinking(sessionId: string): Promise<AgentEffectiveThinkingDto[]> {
+  return requestJson(routes.effectiveThinking(sessionId), parseEffectiveThinking);
+}
+
+export function setAgentThinking(sessionId: string, agentName: string, thinking: string | null): Promise<void> {
+  return requestVoid(routes.agentThinking(sessionId, agentName), json("PUT", { thinking }));
 }
 
 export function listDirectories(path: string): Promise<DirectoryEntryDto[]> {

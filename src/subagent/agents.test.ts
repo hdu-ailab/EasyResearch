@@ -132,6 +132,23 @@ describe("discoverAgents (Markdown layers)", () => {
     });
   });
 
+  it("parses the thinking frontmatter field as a string default", async () => {
+    writeAgent(bundledDir, "search", ["thinking: medium"]);
+    const { agents } = await discoverAgents(options());
+
+    expect(agents[0]?.thinking).toBe("medium");
+  });
+
+  it.each([["thinking: ultra"], ["thinking:"], ["thinking: [high]"]])(
+    "drops a non-level thinking value ($#)",
+    async (field) => {
+      writeAgent(bundledDir, "search", [field]);
+      const { agents } = await discoverAgents(options());
+
+      expect(agents[0]?.thinking).toBeUndefined();
+    },
+  );
+
   it.each([
     { label: "omitted", fields: [] },
     { label: "YAML-empty", fields: ["tools:", "skills:"] },

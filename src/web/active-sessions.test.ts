@@ -46,6 +46,7 @@ interface FakeAdapterStats {
   prompts: string[];
   aborts: number;
   setModels: Array<{ provider: string; modelId: string }>;
+  setThinkingLevels: string[];
   exits: Array<{ listener: (error: Error) => void }>;
 }
 
@@ -54,7 +55,7 @@ class FakeAdapter implements RpcSessionAdapter {
   static nextId = 0;
   events = new Set<RpcEventListener>();
   onExitListeners = new Set<(error: Error) => void>();
-  stats: FakeAdapterStats = { started: 0, stopped: 0, prompts: [], aborts: 0, setModels: [], exits: [] };
+  stats: FakeAdapterStats = { started: 0, stopped: 0, prompts: [], aborts: 0, setModels: [], setThinkingLevels: [], exits: [] };
   stateOverrides: Partial<RpcSessionState> = {};
   startError: Error | null = null;
   getStateError: Error | null = null;
@@ -78,6 +79,9 @@ class FakeAdapter implements RpcSessionAdapter {
   }
   async setModel(provider: string, modelId: string) {
     this.stats.setModels.push({ provider, modelId });
+  }
+  async setThinkingLevel(level: string) {
+    this.stats.setThinkingLevels.push(level);
   }
   async getState(): Promise<RpcSessionState> {
     if (this.getStateError) throw this.getStateError;
@@ -215,9 +219,11 @@ describe("ActiveSessionRegistry", () => {
 
   it("throws UnknownSessionError for unknown ids in model accessors", async () => {
     await expect(registry.setModel("nope", "openai", "gpt-4o")).rejects.toThrow(UnknownSessionError);
+    await expect(registry.setThinkingLevel("nope", "high")).rejects.toThrow(UnknownSessionError);
     await expect(registry.getSessionPath("nope")).rejects.toThrow(UnknownSessionError);
     await expect(registry.getCwd("nope")).rejects.toThrow(UnknownSessionError);
     await expect(registry.getPaperAssistantModel("nope")).rejects.toThrow(UnknownSessionError);
+    await expect(registry.getPaperAssistantThinking("nope")).rejects.toThrow(UnknownSessionError);
   });
 
   it("exposes the record session path and cwd", async () => {
@@ -235,6 +241,45 @@ describe("ActiveSessionRegistry", () => {
   it("reports no Paper Assistant model when session state has none", async () => {
     const created = await registry.create({ cwd });
     await expect(registry.getPaperAssistantModel(created.id)).resolves.toBeUndefined();
+  });
+
+  it("forwards setThinkingLevel to the adapter", async () => {
+    const created = await registry.create({ cwd });
+    await registry.setThinkingLevel(created.id, "high");
+    expect(factory.created[0]?.stats.setThinkingLevels).toEqual(["high"]);
+  });
+
+  it("reports the Paper Assistant thinking level from session state", async () => {
+    const created = await registry.create({ cwd });
+    factory.created[0]!.stateOverrides = { thinkingLevel: "high" };
+    await expect(registry.getPaperAssistantThinking(created.id)).resolves.toBe("high");
+  });
+
+  it("launches a fresh session with the resolved thinking level", async () => {
+    const resolving = new ActiveSessionRegistry(
+      factory,
+      noopLogger,
+      { idleTimeoutMs: -1, resolveLaunchThinking: async () => "medium" },
+      watcherFactory,
+    );
+    await resolving.create({ cwd });
+    expect(factory.created[0]?.options.thinking).toBe("medium");
+  });
+
+  it("never passes a resolved thinking level to resumed sessions", async () => {
+    const resolving = new ActiveSessionRegistry(
+      factory,
+      noopLogger,
+      { idleTimeoutMs: -1, resolveLaunchThinking: async () => "medium" },
+      watcherFactory,
+    );
+    await resolving.open({ cwd, sessionPath });
+    expect(factory.created[0]?.options.thinking).toBeUndefined();
+  });
+
+  it("passes no thinking level when nothing is resolved", async () => {
+    await registry.create({ cwd });
+    expect(factory.created[0]?.options.thinking).toBeUndefined();
   });
 
   it("makes two simultaneous stops call child stop once", async () => {

@@ -44,6 +44,8 @@ beforeEach(() => {
     agentModels: { search: "openai/gpt-4o" },
     paperAssistantModel: null,
     effectivePaperAssistantModel: "openai/gpt-4o",
+    agentThinking: { search: "high" },
+    paperAssistantThinking: null,
   } as never);
   vi.mocked(api.listAgents).mockResolvedValue([
     { name: "paper-assistant", description: "Coordinates" },
@@ -51,8 +53,8 @@ beforeEach(() => {
     { name: "writing", description: "Writes" },
   ] as never);
   vi.mocked(api.listModels).mockResolvedValue([
-    { provider: "openai", id: "gpt-4o" },
-    { provider: "anthropic", id: "claude-sonnet-4" },
+    { provider: "openai", id: "gpt-4o", reasoning: true, thinkingLevelMap: {} },
+    { provider: "anthropic", id: "claude-sonnet-4", reasoning: false, thinkingLevelMap: {} },
   ] as never);
   vi.mocked(api.listAgentResources).mockResolvedValue([] as never);
   vi.mocked(api.readAgentResource).mockResolvedValue({
@@ -389,6 +391,27 @@ describe("SettingsPage", () => {
         agentModels: { search: "openai/gpt-4o", writing: "anthropic/claude-sonnet-4" },
       }),
     );
+  });
+
+  it("renders the per-agent thinking default and applies it via an agentThinking patch", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.updateWebuiSettings).mockResolvedValue({
+      agentThinking: { search: "low", writing: "medium", experiments: "low", figures: "off" },
+    } as never);
+    renderSettings();
+    const searchThinking = await screen.findByRole("combobox", { name: "Select thinking for Search" });
+    expect(searchThinking).toHaveValue("high");
+    await user.selectOptions(searchThinking, "low");
+    await waitFor(() => expect(api.updateWebuiSettings).toHaveBeenCalledWith({ agentThinking: { search: "low" } }));
+  });
+
+  it("clears a thinking default to the off fallback via the empty option", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.updateWebuiSettings).mockResolvedValue({ agentThinking: {} } as never);
+    renderSettings();
+    const searchThinking = await screen.findByRole("combobox", { name: "Select thinking for Search" });
+    await user.selectOptions(searchThinking, "");
+    await waitFor(() => expect(api.updateWebuiSettings).toHaveBeenCalledWith({ agentThinking: {} }));
   });
 
   it("surfaces an agentModels update failure", async () => {

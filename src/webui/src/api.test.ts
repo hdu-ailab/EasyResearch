@@ -6,6 +6,7 @@ import {
   createConfigDirectory,
   createSession,
   getEffectiveModels,
+  getEffectiveThinking,
   getSnapshot,
   listAgents,
   listConfig,
@@ -18,6 +19,7 @@ import {
   restartSession,
   sendPrompt,
   setAgentModel,
+  setAgentThinking,
   stopSession,
   touchSession,
   writeConfigFile,
@@ -50,11 +52,18 @@ describe("api transport", () => {
 
   it("listModels GETs /api/models", async () => {
     fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ models: [{ provider: "openai", id: "gpt-4o" }] }), { status: 200 }),
+      new Response(
+        JSON.stringify({
+          models: [{ provider: "openai", id: "gpt-4o", reasoning: true, thinkingLevelMap: { xhigh: null, max: null } }],
+        }),
+        { status: 200 },
+      ),
     );
     const models = await listModels();
     expect(fetchMock).toHaveBeenCalledWith("/api/models", expect.objectContaining({ method: "GET" }));
     expect(models[0]?.id).toBe("gpt-4o");
+    expect(models[0]?.reasoning).toBe(true);
+    expect(models[0]?.thinkingLevelMap).toEqual({ xhigh: null, max: null });
   });
 
   it("getEffectiveModels GETs the session endpoint", async () => {
@@ -74,6 +83,27 @@ describe("api transport", () => {
     await setAgentModel("s1", "search", "openai/gpt-4o");
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("/api/sessions/s1/agents/search/model");
+    expect(init.method).toBe("PUT");
+  });
+
+  it("getEffectiveThinking GETs the session effective-thinking endpoint", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify([{ name: "search", thinking: "high", source: "default" }]), { status: 200 }),
+    );
+    const list = await getEffectiveThinking("s1");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/sessions/s1/agents/effective-thinking",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(list[0]?.thinking).toBe("high");
+    expect(list[0]?.source).toBe("default");
+  });
+
+  it("setAgentThinking PUTs the agent thinking", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    await setAgentThinking("s1", "search", "high");
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/sessions/s1/agents/search/thinking");
     expect(init.method).toBe("PUT");
   });
 

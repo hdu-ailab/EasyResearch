@@ -109,19 +109,36 @@ export interface ConfigEntryDto {
   type: "file" | "directory";
 }
 
+export interface ModelOptionDto {
+  provider: string;
+  id: string;
+  reasoning: boolean;
+  thinkingLevelMap?: Record<string, string | null>;
+}
+
 export interface AgentEffectiveModelDto {
   name: string;
   model: string | null;
   source: "override" | "project" | "global" | "inherit";
 }
 
+export interface AgentEffectiveThinkingDto {
+  name: string;
+  thinking: string | null;
+  source: "override" | "default" | "inherit";
+}
+
 export interface WebuiSettingsDto {
   agentModels: Record<string, string>;
   paperAssistantModel: string | null;
   effectivePaperAssistantModel: string | null;
+  agentThinking: Record<string, string>;
+  paperAssistantThinking: string | null;
 }
 
 export interface WebuiSettingsUpdate {
   agentModels?: Record<string, string>;
   paperAssistantModel?: string | null;
+  agentThinking?: Record<string, string>;
+  paperAssistantThinking?: string | null;
 }

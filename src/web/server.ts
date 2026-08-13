@@ -17,6 +17,12 @@ import {
   resolveAgentModelsService,
   routeSetAgentModel,
 } from "./agent-models";
+import {
+  readAgentThinking,
+  readPaperAssistantThinkingDefault,
+  resolveAgentThinkingService,
+  routeSetAgentThinking,
+} from "./agent-thinking";
 import { createLogger } from "../runtime/logger";
 import { SubagentSessionService } from "./subagent-sessions";
 import { isSubagentSessionName } from "../subagent/session-links";
@@ -107,7 +113,11 @@ export async function startServer(): Promise<Server> {
   const registry = new ActiveSessionRegistry(
     await PiRpcSessionFactory.resolve(),
     logger,
-    { idleTimeoutMs },
+    {
+      idleTimeoutMs,
+      resolveLaunchThinking: async (cwd) =>
+        (await discoverAgents({ cwd })).agents.find((agent) => agent.name === PAPER_ASSISTANT_AGENT)?.thinking,
+    },
     createFileWatcherFactory(logger),
   );
   const subagentSessions = new SubagentSessionService({
@@ -126,6 +136,15 @@ export async function startServer(): Promise<Server> {
     paperAssistantModel: (id) => registry.getPaperAssistantModel(id),
     getCwd: (id) => registry.getCwd(id),
   });
+  const agentThinking = resolveAgentThinkingService({
+    listAgents: async (cwd?: string) => (await discoverAgents({ cwd })).agents.map((a) => ({ name: a.name })),
+    getSessionPath: (id) => registry.getSessionPath(id),
+    readEntries: (sessionPath) => readSessionOverrides(sessionPath),
+    projectAgentThinking: (cwd) => readAgentThinking(config, { scope: "project", cwd }),
+    globalAgentThinking: () => readAgentThinking(config, { scope: "global" }),
+    paperAssistantThinking: (id) => registry.getPaperAssistantThinking(id),
+    getCwd: (id) => registry.getCwd(id),
+  });
   const services: RouteServices = {
     webuiDist: WEBUI_DIST,
     listAllSessions: async () => {
@@ -136,7 +155,12 @@ export async function startServer(): Promise<Server> {
       const { ModelRuntime } = await importPi();
       const runtime = await ModelRuntime.create();
       const available = await runtime.getAvailable();
-      return available.map((model) => ({ provider: model.provider, id: model.id }));
+      return available.map((model) => ({
+        provider: model.provider,
+        id: model.id,
+        reasoning: model.reasoning,
+        thinkingLevelMap: model.thinkingLevelMap ? { ...model.thinkingLevelMap } : undefined,
+      }));
     },
     effectiveModels: (sessionId) => agentModels.effective(sessionId),
     setAgentModel: (sessionId, agentName, model) =>
@@ -151,6 +175,20 @@ export async function startServer(): Promise<Server> {
         },
         agentName,
         model,
+      ),
+    effectiveThinking: (sessionId) => agentThinking.effective(sessionId),
+    setAgentThinking: (sessionId, agentName, thinking) =>
+      routeSetAgentThinking(
+        {
+          isPaperAssistant: (name) => name === PAPER_ASSISTANT_AGENT,
+          isKnownAgent: async (name) =>
+            isKnownAgentName((await discoverAgents({ cwd: await registry.getCwd(sessionId) })).agents, name),
+          setPaperAssistant: (level) => registry.setThinkingLevel(sessionId, level),
+          writeOverride: (agentName, level) => agentThinking.set(sessionId, agentName, level),
+          paperAssistantDefault: async () => readPaperAssistantThinkingDefault(config, await registry.getCwd(sessionId)),
+        },
+        agentName,
+        thinking,
       ),
     listConfigProjects: async () => {
       const sessions = await SessionManager.listAll(undefined);

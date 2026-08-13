@@ -32,6 +32,7 @@ class FakeRpcClient {
   promptCalls: string[] = [];
   abortCalls = 0;
   setModelCalls: Array<{ provider: string; modelId: string }> = [];
+  setThinkingLevelCalls: string[] = [];
   stateCalls = 0;
   messagesCalls = 0;
   listeners = new Set<RpcEventListener>();
@@ -59,6 +60,9 @@ class FakeRpcClient {
   }
   async setModel(provider: string, modelId: string) {
     this.setModelCalls.push({ provider, modelId });
+  }
+  async setThinkingLevel(level: string) {
+    this.setThinkingLevelCalls.push(level);
   }
   async getState() {
     this.stateCalls++;
@@ -122,6 +126,19 @@ describe("PiRpcSessionFactory", () => {
     expect(args).toContain("--no-skills");
     expect(args).not.toContain("--skill");
   });
+
+  it("appends the launched thinking level only for fresh sessions", () => {
+    const factory = new PiRpcSessionFactory(FakeRpcClient);
+    factory.create({ cwd: "/fresh", thinking: "medium" });
+    expect(FakeRpcClient.instances[0]!.options.args).toContain("--thinking");
+    expect(FakeRpcClient.instances[0]!.options.args).toContain("medium");
+
+    factory.create({ cwd: "/resume", sessionPath: "/sessions/a.jsonl", thinking: "medium" });
+    expect(FakeRpcClient.instances[1]!.options.args).not.toContain("--thinking");
+
+    factory.create({ cwd: "/plain" });
+    expect(FakeRpcClient.instances[2]!.options.args).not.toContain("--thinking");
+  });
 });
 
 describe("RpcSessionAdapter", () => {
@@ -156,6 +173,15 @@ describe("RpcSessionAdapter", () => {
 
     await adapter.setModel("openai", "gpt-4o");
     expect(client.setModelCalls).toEqual([{ provider: "openai", modelId: "gpt-4o" }]);
+  });
+
+  it("forwards setThinkingLevel with the level", async () => {
+    const factory = new PiRpcSessionFactory(FakeRpcClient);
+    const adapter = factory.create({ cwd: "/project" });
+    const client = FakeRpcClient.instances[0]!;
+
+    await adapter.setThinkingLevel("high");
+    expect(client.setThinkingLevelCalls).toEqual(["high"]);
   });
 
   it("forwards events from the client to listeners", async () => {
