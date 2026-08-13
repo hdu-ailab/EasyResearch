@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fileURLToPath } from "node:url";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { RpcEventListener, RpcSessionState } from "@earendil-works/pi-coding-agent";
+import { assistantExtensions } from "../extensions";
 import { PiRpcSessionFactory, type StartRpcSessionOptions } from "./rpc-session";
 
 const fakeState: RpcSessionState = {
@@ -80,7 +81,6 @@ class FakeRpcClient {
 }
 
 const cliPath = fileURLToPath(new URL("../runtime/pi-bootstrap.mjs", import.meta.url));
-const extensionPath = fileURLToPath(new URL("../runtime/paper-assistant-extension.ts", import.meta.url));
 
 describe("PiRpcSessionFactory", () => {
   beforeEach(() => {
@@ -100,7 +100,9 @@ describe("PiRpcSessionFactory", () => {
     expect(client.options.cwd).toBe("/project");
     expect(client.options.cliPath).toBe(cliPath);
     expect(client.options.args).toContain("--extension");
-    expect(client.options.args).toContain(extensionPath);
+    for (const extensionPath of assistantExtensions.map((extension) => extension.path)) {
+      expect(client.options.args).toContain(extensionPath);
+    }
     expect(client.options.args).toContain("--session");
     expect(client.options.args).toContain("/agent/sessions/--project--/old.jsonl");
     expect(client.options.args).toContain("--approve");

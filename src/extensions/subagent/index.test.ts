@@ -1,12 +1,12 @@
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createSubagentExtension } from "./subagent-extension";
+import { createSubagentExtension } from "./index";
 
-vi.mock("../runtime/logger", () => ({
+vi.mock("../../runtime/logger", () => ({
   createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
 }));
 
-vi.mock("../runtime/pi-event-logger", () => ({
+vi.mock("../../runtime/pi-event-logger", () => ({
   mountPiEventLogger: vi.fn(),
 }));
 

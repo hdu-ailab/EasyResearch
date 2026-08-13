@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { RpcEventListener, RpcSessionState } from "@earendil-works/pi-coding-agent";
+import { assistantExtensions } from "../extensions";
 
 export interface StartRpcSessionOptions {
   cwd: string;
@@ -53,7 +54,7 @@ export interface RpcClientLikeOptions {
 export type RpcClientLikeConstructor = new (options: RpcClientLikeOptions) => RpcClientLike;
 
 const CLI_PATH = fileURLToPath(new URL("../runtime/pi-bootstrap.mjs", import.meta.url));
-const EXTENSION_PATH = fileURLToPath(new URL("../runtime/paper-assistant-extension.ts", import.meta.url));
+const ASSISTANT_EXTENSION_PATHS = assistantExtensions.map((extension) => extension.path);
 
 export interface HeartbeatOptions {
   heartbeatIntervalMs?: number;
@@ -202,8 +203,7 @@ export class PiRpcSessionFactory implements RpcSessionFactory {
   create(options: StartRpcSessionOptions): RpcSessionAdapter {
     // ADR-018: project config is always trusted — no trust prompt, ever.
     const args = [
-      "--extension",
-      EXTENSION_PATH,
+      ...ASSISTANT_EXTENSION_PATHS.flatMap((extensionPath) => ["--extension", extensionPath]),
       "--approve",
       "--no-skills",
       ...(options.sessionPath ? ["--session", options.sessionPath] : []),
