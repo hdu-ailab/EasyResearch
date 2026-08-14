@@ -33,6 +33,9 @@ export const routes = {
   childSnapshot: (parentId: string, childId: string) =>
     `${session(parentId)}/subagents/${encodeURIComponent(childId)}/snapshot`,
   messages: (id: string) => `${session(id)}/messages`,
+  commands: (id: string) => `${session(id)}/commands`,
+  tree: (id: string) => `${session(id)}/tree`,
+  treeNavigate: (id: string) => `${session(id)}/tree/navigate`,
   abort: (id: string) => `${session(id)}/abort`,
   stop: (id: string) => `${session(id)}/stop`,
   touch: (id: string) => `${session(id)}/touch`,

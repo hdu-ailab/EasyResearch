@@ -1,9 +1,11 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { SessionTreeNode } from "@earendil-works/pi-coding-agent";
 import type { ActiveSessionDto } from "./contracts";
 import type {
   RpcSessionAdapter,
   RpcSessionFactory,
   StartRpcSessionOptions,
+  WebSlashCommand,
 } from "./rpc-session";
 import { createLogger } from "../runtime/logger";
 import { attachEventLogger } from "./event-logger";
@@ -189,6 +191,27 @@ export class ActiveSessionRegistry {
       const state = await record.client.getState();
       return state.thinkingLevel ?? undefined;
     });
+  }
+
+  /**
+   * Commands available on the session's agent (extension commands, prompt
+   * templates, and the agent's registered skills).
+   */
+  async getCommands(id: string): Promise<WebSlashCommand[]> {
+    return this.withRecord(id, (record) => record.client.getCommands());
+  }
+
+  async getTree(id: string): Promise<{ tree: SessionTreeNode[]; leafId: string | null }> {
+    return this.withRecord(id, (record) => record.client.getTree());
+  }
+
+  /**
+   * Move the session leaf to a target entry in place (same session file),
+   * driven by the web-tree extension command. Navigate then re-fetch the
+   * snapshot to view the new branch path.
+   */
+  async navigateTree(id: string, entryId: string): Promise<void> {
+    return this.withRecord(id, (record) => record.client.navigateTree(entryId));
   }
 
   async stop(id: string): Promise<void> {

@@ -1,9 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { RpcEventListener, RpcSessionState } from "@earendil-works/pi-coding-agent";
+import type { RpcEventListener, RpcSessionState, SessionTreeNode } from "@earendil-works/pi-coding-agent";
 import { ActiveSessionRegistry, UnknownSessionError } from "./active-sessions";
 import { assertSafeExtensionSources } from "../runtime/extensions-guard";
-import type { RpcSessionAdapter, RpcSessionFactory, StartRpcSessionOptions } from "./rpc-session";
+import type {
+  RpcSessionAdapter,
+  RpcSessionFactory,
+  StartRpcSessionOptions,
+  WebSlashCommand,
+} from "./rpc-session";
 import type { Logger } from "../runtime/logger";
 import type { FileWatcherEvent, FileWatcherFactory } from "./file-watcher";
 
@@ -59,6 +64,9 @@ class FakeAdapter implements RpcSessionAdapter {
   stateOverrides: Partial<RpcSessionState> = {};
   startError: Error | null = null;
   getStateError: Error | null = null;
+  commandsResult: WebSlashCommand[] = [];
+  treeResult: { tree: SessionTreeNode[]; leafId: string | null } = { tree: [], leafId: null };
+  navigateCalls: string[] = [];
 
   constructor(public options: StartRpcSessionOptions) {
     FakeAdapter.all.push(this);
@@ -89,6 +97,15 @@ class FakeAdapter implements RpcSessionAdapter {
   }
   async getMessages(): Promise<AgentMessage[]> {
     return [];
+  }
+  async getCommands(): Promise<WebSlashCommand[]> {
+    return this.commandsResult;
+  }
+  async getTree(): Promise<{ tree: SessionTreeNode[]; leafId: string | null }> {
+    return this.treeResult;
+  }
+  async navigateTree(entryId: string): Promise<void> {
+    this.navigateCalls.push(entryId);
   }
   onEvent(listener: RpcEventListener) {
     this.events.add(listener);
@@ -481,5 +498,25 @@ describe("ActiveSessionRegistry", () => {
     await registry.open({ cwd, sessionPath });
     await registry.shutdown();
     expect(factory.created.every((a) => a.stats.stopped >= 1)).toBe(true);
+  });
+
+  describe("tree and commands (ADR-066)", () => {
+    it("delegates getCommands/getTree/navigateTree to the adapter", async () => {
+      const created = await registry.create({ cwd });
+      const adapter = FakeAdapter.all.at(-1)!;
+      adapter.commandsResult = [{ name: "skill:arxiv", source: "skill" }];
+      adapter.treeResult = { tree: [], leafId: "leaf-1" };
+
+      await expect(registry.getCommands(created.id)).resolves.toEqual(adapter.commandsResult);
+      await expect(registry.getTree(created.id)).resolves.toEqual(adapter.treeResult);
+      await registry.navigateTree(created.id, "entry-7");
+      expect(adapter.navigateCalls).toEqual(["entry-7"]);
+    });
+
+    it("rejects unknown sessions", async () => {
+      await expect(registry.getCommands("nope")).rejects.toThrow(UnknownSessionError);
+      await expect(registry.getTree("nope")).rejects.toThrow(UnknownSessionError);
+      await expect(registry.navigateTree("nope", "e1")).rejects.toThrow(UnknownSessionError);
+    });
   });
 });

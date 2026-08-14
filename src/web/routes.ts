@@ -22,6 +22,7 @@ import type { DirectoryService } from "./directories";
 import { DirectoryServiceError } from "./directories";
 import { parseByteRange, RawFileRangeError, type ByteRange, type RawFileDescriptor } from "./raw-file";
 import { UnknownSessionError, type ActiveSessionRegistry } from "./active-sessions";
+import { flattenMessageTree } from "./session-tree";
 import { ExtensionGuardError } from "../runtime/extensions-guard";
 import type { ConfigFileService } from "./config-files";
 import { ConfigPathError, ConfigServiceError } from "./config-files";
@@ -192,6 +193,33 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
           return errorResponse(400, "message is required");
         }
         await services.registry.prompt(messagesMatch[1]!, body.message);
+        return jsonResponse({ ok: true });
+      }
+
+      const commandsMatch = path.match(/^\/api\/sessions\/([^/]+)\/commands$/);
+      if (req.method === "GET" && commandsMatch) {
+        const commands = await services.registry.getCommands(commandsMatch[1]!);
+        return jsonResponse({
+          commands: commands
+            .filter((command) => command.source === "skill")
+            .map((command) => ({
+              name: command.name.startsWith("skill:") ? command.name.slice("skill:".length) : command.name,
+              ...(command.description !== undefined ? { description: command.description } : {}),
+            })),
+        });
+      }
+
+      const treeMatch = path.match(/^\/api\/sessions\/([^/]+)\/tree$/);
+      if (req.method === "GET" && treeMatch) {
+        const { tree, leafId } = await services.registry.getTree(treeMatch[1]!);
+        return jsonResponse({ tree: flattenMessageTree(tree), leafId });
+      }
+
+      const treeNavigateMatch = path.match(/^\/api\/sessions\/([^/]+)\/tree\/navigate$/);
+      if (req.method === "POST" && treeNavigateMatch) {
+        const body = await jsonBody<{ entryId: unknown }>(req);
+        if (typeof body.entryId !== "string" || !body.entryId) return errorResponse(400, "entryId is required");
+        await services.registry.navigateTree(treeNavigateMatch[1]!, body.entryId);
         return jsonResponse({ ok: true });
       }
 

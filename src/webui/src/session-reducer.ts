@@ -46,6 +46,10 @@ export interface SessionMessageView {
   order: number;
   /** Display label overriding the role-based default (e.g. subagent-line dispatches). */
   label?: string;
+  /** Skill command expansion (`/skill:name args`) detected on user messages;
+   * the transcript renders a compact card instead of the expanded content
+   * (ADR-066). */
+  skillInvocation?: { name: string; args?: string };
 }
 
 export interface SessionViewState {
@@ -127,6 +131,18 @@ function splitContent(message: UnknownMessage): { text: string; reasoning: strin
 
 function keyFor(message: { id?: unknown; timestamp?: unknown }, fallback: number): string {
   return String(message.id ?? message.timestamp ?? fallback);
+}
+
+const SKILL_INVOCATION_PATTERN = /^<skill name="([^"]+)"[^>]*>[\s\S]*?<\/skill>(?:\s+([\s\S]*))?$/;
+
+export function parseSkillInvocation(text: string): { name: string; args?: string } | undefined {
+  if (!text.startsWith("<skill name=")) return undefined;
+  const match = SKILL_INVOCATION_PATTERN.exec(text);
+  if (!match) return undefined;
+  const name = match[1] ?? "";
+  const args = match[2]?.trim();
+  if (!name) return undefined;
+  return { name, ...(args ? { args } : {}) };
 }
 
 function identityFor(message: { id?: unknown; timestamp?: unknown }): string | undefined {
@@ -334,6 +350,10 @@ export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
     const label = labelFor(role, subagentName);
     if (label) nextMessage.label = label;
     if (reasoning) nextMessage.reasoning = reasoning;
+    if (role === "user") {
+      const skill = parseSkillInvocation(text);
+      if (skill) nextMessage.skillInvocation = skill;
+    }
     // A message made only of tool calls renders as tool rows, not a bubble.
     if (text || reasoning || nextMessage.error || toolCallBlocks.length === 0) {
       state.messages.push(nextMessage);
@@ -505,6 +525,10 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
       const label = labelFor(role, state.subagentName);
       if (label) view.label = label;
       if (reasoning) view.reasoning = reasoning;
+      if (role === "user") {
+        const skill = parseSkillInvocation(text);
+        if (skill) view.skillInvocation = skill;
+      }
       next.messages = [...state.messages, view];
       next.activeMessageKey = role === "assistant" ? key : undefined;
       return next;
@@ -627,6 +651,9 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
                   isThinking: false,
                   streaming: false,
                   error,
+                  ...(m.role === "user" && parseSkillInvocation(text)
+                    ? { skillInvocation: parseSkillInvocation(text) }
+                    : {}),
                 }
               : m,
           );
