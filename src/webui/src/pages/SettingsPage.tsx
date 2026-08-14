@@ -25,6 +25,7 @@ import { ProviderConnectModal } from "../components/ProviderConnectModal";
 import { SkillResourceEditor } from "../components/SkillResourceEditor";
 import { thinkingLevelsForModel } from "../components/ThinkingLevelSelect";
 import { ProductMark, Topbar } from "../components/Topbar";
+import { useModalLayer } from "../hooks/useModalLayer";
 import type { Translate } from "../i18n/agents";
 import { agentDisplayName } from "../i18n/agents";
 import { useI18n } from "../i18n/useI18n";
@@ -659,34 +660,12 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
         </div>
       </div>
       {addAgentOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-v2-grey-1200/30 p-4">
-          <div
-            role="dialog"
-            aria-label={t("settings.agents.add")}
-            className="w-full max-w-[380px] rounded-[10px] bg-v2-background-bg-base p-4 shadow-[var(--v2-elevation-overlay)]"
-          >
-            <h2 className="mb-3 text-[13px] font-semibold text-v2-text-text-base">{t("settings.agents.add")}</h2>
-            <input
-              aria-label={t("settings.agents.agentName")}
-              className="h-8 w-full rounded-md border border-v2-grey-200 px-2 font-mono text-[12px]"
-              value={newAgentName}
-              onChange={(event) => setNewAgentName(event.target.value)}
-              onKeyDown={(event) => event.key === "Enter" && void addAgent()}
-            />
-            <div className="mt-3 flex justify-end gap-2">
-              <button type="button" className="px-3 py-1 text-[12px]" onClick={() => setAddAgentOpen(false)}>
-                {t("config.cancel")}
-              </button>
-              <button
-                type="button"
-                className="rounded-md bg-v2-grey-1100 px-3 py-1 text-[12px] text-v2-grey-50"
-                onClick={() => void addAgent()}
-              >
-                {t("settings.agents.create")}
-              </button>
-            </div>
-          </div>
-        </div>
+        <AddAgentDialog
+          newAgentName={newAgentName}
+          onNameChange={setNewAgentName}
+          onCreate={() => void addAgent()}
+          onCancel={() => setAddAgentOpen(false)}
+        />
       )}
       {skillEditor && (
         <SkillResourceEditor
@@ -754,6 +733,51 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
           onShowDetails={() => setDetailsAgent(agentModal)}
         />
       )}
+    </div>
+  );
+}
+
+function AddAgentDialog({
+  newAgentName,
+  onNameChange,
+  onCreate,
+  onCancel,
+}: {
+  newAgentName: string;
+  onNameChange: (value: string) => void;
+  onCreate: () => void;
+  onCancel: () => void;
+}) {
+  const { t } = useI18n();
+  const zIndex = useModalLayer(onCancel);
+  return (
+    <div className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/30 p-4" style={{ zIndex }}>
+      <div
+        role="dialog"
+        aria-label={t("settings.agents.add")}
+        className="w-full max-w-[380px] rounded-[10px] bg-v2-background-bg-base p-4 shadow-[var(--v2-elevation-overlay)]"
+      >
+        <h2 className="mb-3 text-[13px] font-semibold text-v2-text-text-base">{t("settings.agents.add")}</h2>
+        <input
+          aria-label={t("settings.agents.agentName")}
+          className="h-8 w-full rounded-md border border-v2-grey-200 px-2 font-mono text-[12px]"
+          value={newAgentName}
+          onChange={(event) => onNameChange(event.target.value)}
+          onKeyDown={(event) => event.key === "Enter" && onCreate()}
+        />
+        <div className="mt-3 flex justify-end gap-2">
+          <button type="button" className="px-3 py-1 text-[12px]" onClick={onCancel}>
+            {t("config.cancel")}
+          </button>
+          <button
+            type="button"
+            className="rounded-md bg-v2-grey-1100 px-3 py-1 text-[12px] text-v2-grey-50"
+            onClick={onCreate}
+          >
+            {t("settings.agents.create")}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

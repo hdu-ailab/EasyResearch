@@ -1,4 +1,5 @@
 import { X } from "lucide-react";
+import { useModalLayer } from "../hooks/useModalLayer";
 import { useI18n } from "../i18n/useI18n";
 
 export interface AgentResourceDetailsDialogProps {
@@ -10,8 +11,9 @@ export interface AgentResourceDetailsDialogProps {
 
 export function AgentResourceDetailsDialog({ agentName, tools, skills, onClose }: AgentResourceDetailsDialogProps) {
   const { t } = useI18n();
+  const zIndex = useModalLayer(onClose);
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-v2-grey-1200/30 p-4">
+    <div className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/30 p-4" style={{ zIndex }}>
       <div
         role="dialog"
         aria-modal="true"
