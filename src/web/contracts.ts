@@ -35,6 +35,23 @@ export interface SessionSnapshotDto {
   subagents: SubagentSessionSummaryDto[];
 }
 
+export interface SkillCommandDto {
+  name: string;
+  description?: string;
+}
+
+export interface WebTreeEntryDto {
+  id: string;
+  parentId: string | null;
+  role: "user" | "assistant";
+  text: string;
+}
+
+export interface SessionTreeDto {
+  tree: WebTreeEntryDto[];
+  leafId: string | null;
+}
+
 export interface SubagentSessionSummaryDto extends SubagentSessionLink {
   latestMessage?: string;
 }
