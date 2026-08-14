@@ -1,5 +1,5 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuthFlowEventDto } from "../../../web/contracts";
 import * as api from "../api";
 import { useProviderAuthFlow } from "./useProviderAuthFlow";
@@ -9,9 +9,28 @@ vi.mock("../api", async (importOriginal) => {
   return {
     ...actual,
     listAuthProviders: vi.fn(async () => [
-      { id: "anthropic", name: "Anthropic", authMethods: ["api_key"], connectable: true, authStatus: { configured: false } },
-      { id: "xai", name: "xAI", authMethods: ["api_key", "oauth"], connectable: true, authStatus: { configured: true } },
-      { id: "google-vertex", name: "Google Vertex AI", authMethods: ["api_key"], connectable: false, authStatus: { configured: false }, hint: "ambient" },
+      {
+        id: "anthropic",
+        name: "Anthropic",
+        authMethods: ["api_key"],
+        connectable: true,
+        authStatus: { configured: false },
+      },
+      {
+        id: "xai",
+        name: "xAI",
+        authMethods: ["api_key", "oauth"],
+        connectable: true,
+        authStatus: { configured: true },
+      },
+      {
+        id: "google-vertex",
+        name: "Google Vertex AI",
+        authMethods: ["api_key"],
+        connectable: false,
+        authStatus: { configured: false },
+        hint: "ambient",
+      },
     ]),
     startAuthFlow: vi.fn(async () => ({ flowId: "f1" })),
     respondAuthFlow: vi.fn(async () => {}),
