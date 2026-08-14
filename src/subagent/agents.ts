@@ -46,10 +46,6 @@ export const CONTROLLED_TOOL_INVENTORY = [
 ] as const;
 const BUILTIN_ALIASES: Record<string, string> = {
   [PAPER_ASSISTANT_AGENT]: "Paper Assistant",
-  search: "检索",
-  experiment: "实验",
-  writing: "写作",
-  figures: "图表",
 };
 const BUILTIN_ORDER = [PAPER_ASSISTANT_AGENT, "search", "experiment", "writing", "figures"];
 

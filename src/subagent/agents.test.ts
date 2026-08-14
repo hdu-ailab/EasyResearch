@@ -59,14 +59,14 @@ describe("discoverAgents (Markdown layers)", () => {
     expect(agents[2]).toMatchObject({ builtin: false, source: "global" });
   });
 
-  it("uses the primary built-in filename before its localized alias", async () => {
-    writeAgent(bundledDir, "search", ["description: bundled search"]);
-    writeAgent(agentDir, "检索", ["description: alias override"]);
-    writeAgent(agentDir, "search", ["description: primary override"]);
+  it("uses the primary built-in filename before its alias", async () => {
+    writeAgent(bundledDir, "paper-assistant", ["description: bundled paper assistant"]);
+    writeAgent(agentDir, "Paper Assistant", ["description: alias override"]);
+    writeAgent(agentDir, "paper-assistant", ["description: primary override"]);
     const { agents } = await discoverAgents(options());
 
     expect(agents).toHaveLength(1);
-    expect(agents[0]).toMatchObject({ name: "search", description: "primary override", filePath: join(agentDir, "agents", "search.md") });
+    expect(agents[0]).toMatchObject({ name: "paper-assistant", description: "primary override", filePath: join(agentDir, "agents", "paper-assistant.md") });
   });
 
   it("treats assistant.md as custom while paper-assistant remains the built-in", async () => {
