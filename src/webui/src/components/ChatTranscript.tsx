@@ -1,14 +1,5 @@
 import { elementScroll, useVirtualizer } from "@tanstack/react-virtual";
-import {
-  AlertTriangle,
-  Check,
-  ChevronDown,
-  ChevronLeft,
-  ChevronRight,
-  Copy,
-  Pencil,
-  Zap,
-} from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Pencil, Zap } from "lucide-react";
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { isScrollKeyTarget, normalizeWheelDelta, scrollKey, scrollKeyOwner } from "../hooks/scrollGesture";
 import { useAutoScroll } from "../hooks/useAutoScroll";
@@ -145,6 +136,60 @@ function ToolRow({ tool, open, onToggle }: { tool: ToolView; open: boolean; onTo
   );
 }
 
+/** In-place editor for a historical user message (ADR-066). Focus lands on
+ * the textarea when the row mounts; Enter submits, Shift+Enter newlines. */
+function EditMessageDraft({
+  draft,
+  onDraftChange,
+  onCancelEdit,
+  onSubmitEdit,
+}: {
+  draft: string;
+  onDraftChange: (text: string) => void;
+  onCancelEdit: () => void;
+  onSubmitEdit: (text: string) => void;
+}) {
+  const { t } = useI18n();
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    textareaRef.current?.focus();
+  }, []);
+  return (
+    <div className="flex w-full max-w-[85%] flex-col items-end gap-1.5">
+      <textarea
+        ref={textareaRef}
+        value={draft}
+        onChange={(e) => onDraftChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            onSubmitEdit(draft.trim());
+          }
+        }}
+        aria-label={t("transcript.editMessage")}
+        className="min-h-[52px] w-full resize-none rounded-lg border border-v2-blue-600 bg-v2-background-bg-base px-3 py-2 text-[13px] text-v2-text-text-base outline-none"
+      />
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={onCancelEdit}
+          className="rounded-md px-2 py-1 text-[12px] text-v2-text-text-muted hover:bg-v2-grey-100"
+        >
+          {t("transcript.cancelEdit")}
+        </button>
+        <button
+          type="button"
+          disabled={!draft.trim()}
+          onClick={() => onSubmitEdit(draft.trim())}
+          className="rounded-md bg-v2-grey-1100 px-2 py-1 text-[12px] text-v2-grey-50 hover:opacity-90 disabled:opacity-40"
+        >
+          {t("composer.send")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** A single message bubble. Human messages align right with the You label;
  * anything labeled otherwise (subagent-line dispatches, agent replies)
  * aligns left under its own label. User messages with tree metadata gain
@@ -191,38 +236,12 @@ function MessageRow({
         </span>
       ) : null}
       {editing && isYou ? (
-        <div className="flex w-full max-w-[85%] flex-col items-end gap-1.5">
-          <textarea
-            autoFocus
-            value={draft}
-            onChange={(e) => onDraftChange(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                onSubmitEdit(draft.trim());
-              }
-            }}
-            aria-label={t("transcript.editMessage")}
-            className="min-h-[52px] w-full resize-none rounded-lg border border-v2-blue-600 bg-v2-background-bg-base px-3 py-2 text-[13px] text-v2-text-text-base outline-none"
-          />
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onCancelEdit}
-              className="rounded-md px-2 py-1 text-[12px] text-v2-text-text-muted hover:bg-v2-grey-100"
-            >
-              {t("transcript.cancelEdit")}
-            </button>
-            <button
-              type="button"
-              disabled={!draft.trim()}
-              onClick={() => onSubmitEdit(draft.trim())}
-              className="rounded-md bg-v2-grey-1100 px-2 py-1 text-[12px] text-v2-grey-50 hover:opacity-90 disabled:opacity-40"
-            >
-              {t("composer.send")}
-            </button>
-          </div>
-        </div>
+        <EditMessageDraft
+          draft={draft}
+          onDraftChange={onDraftChange}
+          onCancelEdit={onCancelEdit}
+          onSubmitEdit={onSubmitEdit}
+        />
       ) : hasBody && (message.role === "assistant" || message.role === "user") ? (
         <div
           className={`v2-md max-w-full rounded-lg px-3 py-2 text-[length:var(--v2-chat-font-size)] ${

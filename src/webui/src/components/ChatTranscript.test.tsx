@@ -589,7 +589,7 @@ describe("ChatTranscript", () => {
       renderTranscript(
         <ChatTranscript
           messages={[
-            msg({ key: "m1", role: "user", skillInvocation: { name: "drawio" }, text: "<skill name=\"drawio\">" }),
+            msg({ key: "m1", role: "user", skillInvocation: { name: "drawio" }, text: '<skill name="drawio">' }),
           ]}
           tools={[]}
         />,

@@ -32,7 +32,7 @@ export function ChatComposer({ disabled, streaming, onSend, onAbort, commands = 
     const prefix = text.slice(0, selectionStart);
     const match = SLASH_PREFIX.exec(prefix);
     if (!match || commands.length === 0 || disabled) return undefined;
-    return { prefixLength: match[0].length, query: match[2]!.toLowerCase() };
+    return { prefixLength: match[0].length, query: (match[2] ?? "").toLowerCase() };
   }, [text, selectionStart, commands, disabled]);
 
   const filtered = useMemo(() => {
@@ -117,7 +117,9 @@ export function ChatComposer({ disabled, streaming, onSend, onAbort, commands = 
             if (slash && filtered.length > 0) {
               if (e.key === "ArrowDown" || e.key === "ArrowUp") {
                 e.preventDefault();
-                setActiveIndex((current) => (current + (e.key === "ArrowDown" ? 1 : -1) + filtered.length) % filtered.length);
+                setActiveIndex(
+                  (current) => (current + (e.key === "ArrowDown" ? 1 : -1) + filtered.length) % filtered.length,
+                );
                 return;
               }
               if (e.key === "Escape") {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { WebTreeEntryDto } from "../../web/contracts";
-import type { SessionMessageView } from "./session-reducer";
 import { buildMessageTreeMeta, versionTarget } from "./message-tree";
+import type { SessionMessageView } from "./session-reducer";
 
 const entry = (id: string, parentId: string | null, role: "user" | "assistant", text = ""): WebTreeEntryDto => ({
   id,
