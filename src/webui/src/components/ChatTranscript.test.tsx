@@ -602,18 +602,22 @@ describe("ChatTranscript", () => {
     const userMsg = (key: string, overrides: Partial<SessionMessageView> = {}) =>
       msg({ key, role: "user", text: "hello", ...overrides });
 
+    let writeTextMock: ReturnType<typeof vi.fn>;
+
     beforeEach(() => {
-      const clipboard = { writeText: vi.fn().mockResolvedValue(undefined), readText: vi.fn().mockResolvedValue("hello") };
-      Object.defineProperty(navigator, "clipboard", { configurable: true, value: clipboard });
+      writeTextMock = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: { writeText: writeTextMock },
+      });
     });
 
     it("shows Edit/Copy actions and copies the message text", async () => {
-      const clipboard = navigator.clipboard as { writeText: ReturnType<typeof vi.fn> };
       renderTranscript(
         <ChatTranscript messages={[userMsg("k1")]} tools={[]} messageMeta={{ k1: { entryId: "e1" } }} />,
       );
       fireEvent.click(screen.getByRole("button", { name: /copy/i }));
-      expect(clipboard.writeText).toHaveBeenCalledWith("hello");
+      expect(writeTextMock).toHaveBeenCalledWith("hello");
     });
 
     it("enters edit mode, cancels, and sends edits with the entry id", async () => {
