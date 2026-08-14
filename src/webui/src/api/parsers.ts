@@ -5,6 +5,8 @@ import type {
   AgentEffectiveModelDto,
   AgentEffectiveThinkingDto,
   AgentResourceDto,
+  AuthFlowEventDto,
+  AuthProviderInfoDto,
   ChildSessionSnapshotDto,
   ConfigEntryDto,
   DirectoryEntryDto,
@@ -384,4 +386,150 @@ export function parseConfigProjects(value: unknown): ConfigProjectsDto {
 export function parseConfigFile(value: unknown): ConfigFileDto {
   const source = record(value, "config file");
   return { path: requiredString(source, "path"), content: requiredString(source, "content") };
+}
+
+// ---- Provider auth (ADR-065) ---------------------------------------------
+
+export function parseAuthProviderList(body: unknown): AuthProviderInfoDto[] {
+  const obj = record(body, "authProviders");
+  return arrayOf(obj.providers, "providers", (item) => {
+    const r = record(item, "provider");
+    const statusRecord = record(r.authStatus, "authStatus");
+    const authMethods = arrayOf(r.authMethods, "authMethods", (m) => {
+      if (m !== "api_key" && m !== "oauth") {
+        throw new Error("Invalid API response: authMethods entry must be api_key or oauth");
+      }
+      return m;
+    });
+    return {
+      id: requiredString(r, "id"),
+      name: requiredString(r, "name"),
+      authMethods,
+      connectable: requiredBoolean(r, "connectable"),
+      authStatus: {
+        configured: requiredBoolean(statusRecord, "configured"),
+        ...(typeof statusRecord.source === "string" ? { source: statusRecord.source } : {}),
+      },
+      ...(typeof r.source === "string" ? { source: r.source } : {}),
+      ...(typeof r.hint === "string" ? { hint: r.hint } : {}),
+    } satisfies AuthProviderInfoDto;
+  });
+}
+
+export function parseAuthLoginResponse(body: unknown): { flowId: string } {
+  const r = record(body, "authLogin");
+  return { flowId: requiredString(r, "flowId") };
+}
+
+function parsePromptOptions(value: unknown): { id: string; label: string; description?: string }[] {
+  return arrayOf(value, "prompt options", (item) => {
+    const r = record(item, "prompt option");
+    return {
+      id: requiredString(r, "id"),
+      label: requiredString(r, "label"),
+      ...(typeof r.description === "string" ? { description: r.description } : {}),
+    };
+  });
+}
+
+export function parseAuthFlowEvent(body: unknown): AuthFlowEventDto {
+  const r = record(body, "authFlowEvent");
+  const t = requiredString(r, "type");
+  if (t === "prompt") {
+    const kind = requiredString(r, "kind");
+    if (kind !== "text" && kind !== "secret" && kind !== "select" && kind !== "manual_code") {
+      throw new Error("Invalid API response: prompt kind is invalid");
+    }
+    return {
+      type: "prompt",
+      kind,
+      message: requiredString(r, "message"),
+      ...(typeof r.placeholder === "string" ? { placeholder: r.placeholder } : {}),
+      ...(kind === "select" ? { options: parsePromptOptions(r.options) } : {}),
+    } as AuthFlowEventDto;
+  }
+  if (t === "notify") {
+    const e = record(r.event, "notify.event");
+    const kind = requiredString(e, "kind");
+    if (kind === "info") {
+      return {
+        type: "notify",
+        event: {
+          kind: "info",
+          message: requiredString(e, "message"),
+          ...(Array.isArray(e.links)
+            ? {
+                links: arrayOf(e.links, "links", (link) => {
+                  const lr = record(link, "link");
+                  return {
+                    url: requiredString(lr, "url"),
+                    ...(typeof lr.label === "string" ? { label: lr.label } : {}),
+                  };
+                }),
+              }
+            : {}),
+        },
+      } as AuthFlowEventDto;
+    }
+    if (kind === "auth_url") {
+      return {
+        type: "notify",
+        event: {
+          kind: "auth_url",
+          url: requiredString(e, "url"),
+          ...(typeof e.instructions === "string" ? { instructions: e.instructions } : {}),
+        },
+      } as AuthFlowEventDto;
+    }
+    if (kind === "device_code") {
+      return {
+        type: "notify",
+        event: {
+          kind: "device_code",
+          userCode: requiredString(e, "userCode"),
+          verificationUri: requiredString(e, "verificationUri"),
+          ...(typeof e.intervalSeconds === "number" ? { intervalSeconds: e.intervalSeconds } : {}),
+          ...(typeof e.expiresInSeconds === "number" ? { expiresInSeconds: e.expiresInSeconds } : {}),
+        },
+      } as AuthFlowEventDto;
+    }
+    if (kind === "progress") {
+      return {
+        type: "notify",
+        event: { kind: "progress", message: requiredString(e, "message") },
+      } as AuthFlowEventDto;
+    }
+    throw new Error(`Invalid API response: unknown notify kind ${kind}`);
+  }
+  if (t === "done") {
+    const c = record(r.credential, "done.credential");
+    const cType = requiredString(c, "type");
+    if (cType === "api_key") {
+      return {
+        type: "done",
+        credential: { type: "api_key" },
+        ...(typeof r.warning === "string" ? { warning: r.warning } : {}),
+      } as AuthFlowEventDto;
+    }
+    if (cType === "oauth") {
+      return {
+        type: "done",
+        credential: { type: "oauth", expires: requiredNumber(c, "expires") },
+        ...(typeof r.warning === "string" ? { warning: r.warning } : {}),
+      } as AuthFlowEventDto;
+    }
+    throw new Error(`Invalid API response: unknown credential type ${cType}`);
+  }
+  if (t === "error") {
+    const reason = r.reason;
+    if (reason !== undefined && reason !== "aborted" && reason !== "timeout" && reason !== "reject") {
+      throw new Error("Invalid API response: error reason is invalid");
+    }
+    return {
+      type: "error",
+      message: requiredString(r, "message"),
+      ...(typeof reason === "string" ? { reason: reason } : {}),
+    } as AuthFlowEventDto;
+  }
+  throw new Error(`Invalid API response: unknown auth flow event type ${t}`);
 }
