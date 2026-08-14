@@ -20,9 +20,9 @@ const view = (key: string, role: "user" | "assistant"): SessionMessageView => ({
 });
 
 describe("buildMessageTreeMeta", () => {
-  // root: m1(user) -> a1(assistant)
-  //   m1 -> m2(user, edited v2) -> a2(assistant)
-  // leaf = a2
+  // root has two version siblings: m1(user) -> a1(assistant) and
+  // m2(user, edited) -> a2(assistant). The leaf determines which version
+  // appears in the transcript.
   const tree = [
     entry("m1", null, "user", "v1"),
     entry("a1", "m1", "assistant", "r1"),
@@ -31,12 +31,17 @@ describe("buildMessageTreeMeta", () => {
   ];
 
   it("zips leaf-path entries with view messages and computes version groups", () => {
-    const messages = [view("k1", "user"), view("k2", "assistant"), view("k3", "user"), view("k4", "assistant")];
+    const messages = [view("k1", "user"), view("k2", "assistant")];
     const meta = buildMessageTreeMeta(messages, tree, "a2");
+    expect(meta.k1).toEqual({ entryId: "m2", version: { index: 2, count: 2 } });
+    expect(meta.k2).toEqual({ entryId: "a2" });
+  });
+
+  it("reflects the active version when the older branch is the leaf", () => {
+    const messages = [view("k1", "user"), view("k2", "assistant")];
+    const meta = buildMessageTreeMeta(messages, tree, "a1");
     expect(meta.k1).toEqual({ entryId: "m1", version: { index: 1, count: 2 } });
     expect(meta.k2).toEqual({ entryId: "a1" });
-    expect(meta.k3).toEqual({ entryId: "m2", version: { index: 2, count: 2 } });
-    expect(meta.k4).toEqual({ entryId: "a2" });
   });
 
   it("leaves out version info for single-version messages", () => {
