@@ -8,6 +8,7 @@ import { AgentTabBar } from "../components/AgentTabBar";
 import { ChatComposer } from "../components/ChatComposer";
 import { ChatTranscript, type ChatTranscriptHandle } from "../components/ChatTranscript";
 import { FileBrowser } from "../components/FileBrowser";
+import { RetryBanner } from "../components/RetryBanner";
 import { ProductMark, Topbar, TopbarIconButton } from "../components/Topbar";
 import { WorkMobileTabs, type WorkView } from "../components/WorkMobileTabs";
 import { parseFileWatcherEvent } from "../file-watcher";
@@ -32,7 +33,14 @@ export interface WorkPageProps {
 
 type Panel = "files" | "agents" | null;
 
-const emptyView: SessionViewState = { messages: [], tools: [], isStreaming: false, error: null, retry: null, nextOrder: 0 };
+const emptyView: SessionViewState = {
+  messages: [],
+  tools: [],
+  isStreaming: false,
+  error: null,
+  retry: null,
+  nextOrder: 0,
+};
 
 function mergeChildView(snapshot: SessionViewState, live: SessionViewState): SessionViewState {
   const entries = [
@@ -64,6 +72,7 @@ function mergeChildView(snapshot: SessionViewState, live: SessionViewState): Ses
       .map((entry) => entry.value as SessionViewState["tools"][number]),
     isStreaming: live.isStreaming,
     error: live.error,
+    retry: live.retry,
     nextOrder: ordered.length,
     activeMessageKey: live.activeMessageKey,
   };
@@ -523,6 +532,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
           {statusText}
         </p>
       )}
+      {sessionView.retry ? <RetryBanner retry={sessionView.retry} /> : null}
       <WorkMobileTabs active={mobileView} onChange={setMobileView} />
       <div ref={rowRef} className="relative flex min-h-0 flex-1 gap-2 overflow-x-clip px-2 pb-2 pt-[4px]">
         <section
