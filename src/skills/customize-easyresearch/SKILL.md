@@ -65,7 +65,7 @@ Project files: `settings.json`, `agents/`, `skills/`, `extensions/`, `prompts/`,
 Agents resolve project → global → bundled. Same-name files completely replace
 lower layers; user-only files append. Built-in agents (`paper-assistant`,
 `search`, `experiment`, `writing`, `figures`) also have localized alias
-filenames (e.g. `论文助手.md` for `paper-assistant`) — either filename overrides
+filenames (e.g. `Paper Assistant.md` for `paper-assistant`) — either filename overrides
 the same built-in and never creates a duplicate.
 
 Skills resolve in this order:
