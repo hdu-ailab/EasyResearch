@@ -23,6 +23,7 @@ vi.mock("../api", async (importOriginal) => {
     listSkillResources: vi.fn(),
     readSkillResource: vi.fn(),
     writeSkillResource: vi.fn(),
+    listAuthProviders: vi.fn(),
   };
 });
 
@@ -40,6 +41,7 @@ beforeEach(() => {
   vi.mocked(api.listSkillResources).mockReset();
   vi.mocked(api.readSkillResource).mockReset();
   vi.mocked(api.writeSkillResource).mockReset();
+  vi.mocked(api.listAuthProviders).mockReset();
   vi.mocked(api.getWebuiSettings).mockResolvedValue({
     agentModels: { search: "openai/gpt-4o" },
     paperAssistantModel: null,
@@ -102,6 +104,24 @@ beforeEach(() => {
     content: "# Search skill\n",
   });
   vi.mocked(api.writeSkillResource).mockResolvedValue({} as never);
+  vi.mocked(api.listAuthProviders).mockResolvedValue([
+    {
+      id: "anthropic",
+      name: "Anthropic",
+      authMethods: ["api_key"],
+      connectable: true,
+      authStatus: { configured: true },
+      modelsJson: false,
+    },
+    {
+      id: "xai",
+      name: "xAI",
+      authMethods: ["api_key", "oauth"],
+      connectable: true,
+      authStatus: { configured: false },
+      modelsJson: false,
+    },
+  ] as never);
 });
 
 function renderSettings(onOpenConfigPage: () => void = () => {}, onHome: () => void = () => {}) {
@@ -112,6 +132,11 @@ function renderSettings(onOpenConfigPage: () => void = () => {}, onHome: () => v
       </I18nProvider>
     </PreferencesProvider>,
   );
+}
+
+async function openAgentConfig(user: ReturnType<typeof userEvent.setup>, name: string) {
+  await user.click(await screen.findByRole("button", { name: `Configure ${name}` }));
+  return screen.getByRole("dialog", { name: "Agents" });
 }
 
 function deferred<T>() {
@@ -221,7 +246,7 @@ describe("SettingsPage", () => {
 
   it("follows font preference changes from another tab", async () => {
     renderSettings();
-    await screen.findByRole("combobox", { name: "Select model for Search" });
+    await screen.findByRole("button", { name: "Configure Search" });
     window.localStorage.setItem(
       STORAGE_KEY,
       JSON.stringify({
@@ -271,16 +296,22 @@ describe("SettingsPage", () => {
   });
 
   it("shows stage agents with their configured model while the Paper Assistant has no disable switch", async () => {
+    const user = userEvent.setup();
     renderSettings();
-    await screen.findByRole("combobox", { name: "Select model for Search" });
+    await openAgentConfig(user, "Search");
     expect(screen.getByRole("combobox", { name: "Select model for Search" })).toHaveValue("openai/gpt-4o");
+    expect(screen.getByRole("switch", { name: "Enable Search" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Close editor" }));
+    await openAgentConfig(user, "Writing");
     expect(screen.getByRole("combobox", { name: "Select model for Writing" })).toHaveValue("");
+    await user.click(screen.getByRole("button", { name: "Close editor" }));
+    await openAgentConfig(user, "Paper Assistant");
     expect(screen.getByRole("combobox", { name: "Select model for Paper Assistant" })).toHaveValue("openai/gpt-4o");
-    expect(screen.queryByRole("switch", { name: "Paper Assistant" })).toBeNull();
-    expect(screen.getByRole("switch", { name: "Search" })).toBeTruthy();
+    expect(screen.queryByRole("switch", { name: "Enable Paper Assistant" })).toBeNull();
   });
 
   it("includes a configured stage model that is absent from the model catalog", async () => {
+    const user = userEvent.setup();
     vi.mocked(api.getWebuiSettings).mockResolvedValue({
       agentModels: { search: "custom/missing-model" },
       paperAssistantModel: null,
@@ -288,7 +319,8 @@ describe("SettingsPage", () => {
     } as never);
     renderSettings();
 
-    const searchModel = await screen.findByRole("combobox", { name: "Select model for Search" });
+    await openAgentConfig(user, "Search");
+    const searchModel = screen.getByRole("combobox", { name: "Select model for Search" });
     expect(searchModel).toHaveValue("custom/missing-model");
     expect(within(searchModel).getByRole("option", { name: "custom/missing-model" })).toBeTruthy();
   });
@@ -298,58 +330,67 @@ describe("SettingsPage", () => {
     renderSettings();
     await user.click(screen.getByRole("button", { name: "简体中文" }));
 
-    expect(await screen.findByRole("combobox", { name: "选择模型： 论文助手" })).toBeTruthy();
+    await user.click(await screen.findByRole("button", { name: "配置 论文助手" }));
+    expect(screen.getByRole("combobox", { name: "选择模型： 论文助手" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "关闭编辑器" }));
+    await user.click(await screen.findByRole("button", { name: "配置 检索" }));
     expect(screen.getByRole("combobox", { name: "选择模型： 检索" })).toBeTruthy();
   });
 
-  it("pins the Paper Assistant to the first Agent models row regardless of API order", async () => {
+  it("pins the Paper Assistant card to the first position regardless of API order", async () => {
     vi.mocked(api.listAgents).mockResolvedValue([
       { name: "writing", description: "Writes" },
       { name: "paper-assistant", description: "Coordinates" },
       { name: "search", description: "Searches" },
     ] as never);
     renderSettings();
-    await screen.findByRole("combobox", { name: "Select model for Paper Assistant" });
-    const assistantBox = screen.getByRole("combobox", { name: "Select model for Paper Assistant" });
-    const searchBox = screen.getByRole("combobox", { name: "Select model for Search" });
-    expect(assistantBox.compareDocumentPosition(searchBox) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+    await screen.findByRole("button", { name: "Configure Paper Assistant" });
+    const assistantCard = screen.getByRole("button", { name: "Configure Paper Assistant" });
+    const searchCard = screen.getByRole("button", { name: "Configure Search" });
+    expect(assistantCard.compareDocumentPosition(searchCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
   });
 
   it("shows the configured Paper Assistant default without any inherit option", async () => {
+    const user = userEvent.setup();
     vi.mocked(api.getWebuiSettings).mockResolvedValue({
       agentModels: { search: "openai/gpt-4o" },
       paperAssistantModel: "openai/gpt-4o",
       effectivePaperAssistantModel: "openai/gpt-4o",
     } as never);
     renderSettings();
-    const combobox = await screen.findByRole("combobox", { name: "Select model for Paper Assistant" });
+    await openAgentConfig(user, "Paper Assistant");
+    const combobox = screen.getByRole("combobox", { name: "Select model for Paper Assistant" });
     expect(combobox).toHaveValue("openai/gpt-4o");
     expect(within(combobox).queryAllByRole("option", { name: /inherit/i })).toHaveLength(0);
   });
 
   it("auto-selects the effective Pi model when no Paper Assistant default is configured", async () => {
+    const user = userEvent.setup();
     vi.mocked(api.getWebuiSettings).mockResolvedValue({
       agentModels: {},
       paperAssistantModel: null,
       effectivePaperAssistantModel: "anthropic/claude-opus-4-8",
     } as never);
     renderSettings();
-    const combobox = await screen.findByRole("combobox", { name: "Select model for Paper Assistant" });
+    await openAgentConfig(user, "Paper Assistant");
+    const combobox = screen.getByRole("combobox", { name: "Select model for Paper Assistant" });
     expect(combobox).toHaveValue("anthropic/claude-opus-4-8");
     expect(within(combobox).getAllByRole("option", { name: "anthropic/claude-opus-4-8" })).toHaveLength(1);
     expect(within(combobox).queryAllByRole("option", { name: /inherit/i })).toHaveLength(0);
   });
 
   it("auto-selects a default already in the catalog without duplicating it", async () => {
+    const user = userEvent.setup();
     vi.mocked(api.getWebuiSettings).mockResolvedValue({
       agentModels: {},
       paperAssistantModel: null,
       effectivePaperAssistantModel: "openai/gpt-4o",
     } as never);
     renderSettings();
-    const combobox = await screen.findByRole("combobox", { name: "Select model for Paper Assistant" });
+    await openAgentConfig(user, "Paper Assistant");
+    const combobox = screen.getByRole("combobox", { name: "Select model for Paper Assistant" });
     expect(combobox).toHaveValue("openai/gpt-4o");
     expect(within(combobox).queryAllByRole("option", { name: "openai/gpt-4o" })).toHaveLength(1);
   });
@@ -362,7 +403,7 @@ describe("SettingsPage", () => {
       effectivePaperAssistantModel: "anthropic/claude-sonnet-4",
     } as never);
     renderSettings();
-    await screen.findByRole("combobox", { name: "Select model for Paper Assistant" });
+    await openAgentConfig(user, "Paper Assistant");
     await user.selectOptions(
       screen.getByRole("combobox", { name: "Select model for Paper Assistant" }),
       "anthropic/claude-sonnet-4",
@@ -381,7 +422,7 @@ describe("SettingsPage", () => {
       agentModels: { search: "openai/gpt-4o", writing: "anthropic/claude-sonnet-4" },
     } as never);
     renderSettings();
-    await screen.findByRole("combobox", { name: "Select model for Writing" });
+    await openAgentConfig(user, "Writing");
     await user.selectOptions(
       screen.getByRole("combobox", { name: "Select model for Writing" }),
       "anthropic/claude-sonnet-4",
@@ -399,7 +440,8 @@ describe("SettingsPage", () => {
       agentThinking: { search: "low", writing: "medium", experiments: "low", figures: "off" },
     } as never);
     renderSettings();
-    const searchThinking = await screen.findByRole("combobox", { name: "Select thinking for Search" });
+    await openAgentConfig(user, "Search");
+    const searchThinking = screen.getByRole("combobox", { name: "Select thinking for Search" });
     expect(searchThinking).toHaveValue("high");
     await user.selectOptions(searchThinking, "low");
     await waitFor(() => expect(api.updateWebuiSettings).toHaveBeenCalledWith({ agentThinking: { search: "low" } }));
@@ -409,7 +451,8 @@ describe("SettingsPage", () => {
     const user = userEvent.setup();
     vi.mocked(api.updateWebuiSettings).mockResolvedValue({ agentThinking: {} } as never);
     renderSettings();
-    const searchThinking = await screen.findByRole("combobox", { name: "Select thinking for Search" });
+    await openAgentConfig(user, "Search");
+    const searchThinking = screen.getByRole("combobox", { name: "Select thinking for Search" });
     await user.selectOptions(searchThinking, "");
     await waitFor(() => expect(api.updateWebuiSettings).toHaveBeenCalledWith({ agentThinking: {} }));
   });
@@ -418,7 +461,7 @@ describe("SettingsPage", () => {
     const user = userEvent.setup();
     vi.mocked(api.updateWebuiSettings).mockRejectedValueOnce(new Error("boom"));
     renderSettings();
-    await screen.findByRole("combobox", { name: "Select model for Search" });
+    await openAgentConfig(user, "Search");
     await user.selectOptions(screen.getByRole("combobox", { name: "Select model for Search" }), "");
     expect(await screen.findByText(/boom/)).toBeTruthy();
   });
@@ -431,7 +474,7 @@ describe("SettingsPage", () => {
     expect(onOpenConfigPage).toHaveBeenCalled();
   });
 
-  it("shows pinned agents with effective tool and skill counts and switches", async () => {
+  it("shows pinned agents with effective tool and skill counts and details", async () => {
     vi.mocked(api.listAgents).mockResolvedValue([
       {
         name: "reviewer",
@@ -466,17 +509,19 @@ describe("SettingsPage", () => {
     ] as never);
     renderSettings();
     expect(await screen.findByText("2 tools, 2 skills")).toBeTruthy();
-    expect(screen.getAllByRole("switch").length).toBeGreaterThanOrEqual(5);
     expect(screen.getByText("2 tools, 2 skills")).toBeTruthy();
     expect(screen.getAllByText("1 tools, 1 skills").length).toBeGreaterThan(0);
-    const names = screen.getAllByText(/Paper Assistant|Search|reviewer/).map((node) => node.textContent);
-    expect(names.indexOf("Paper Assistant")).toBeLessThan(names.indexOf("reviewer"));
+    const names = screen
+      .getAllByRole("button", { name: /configure .*assistant|configure search|configure reviewer/i })
+      .map((node) => node.getAttribute("aria-label"));
+    expect(names.indexOf("Configure Paper Assistant")).toBeLessThan(names.indexOf("Configure reviewer"));
   });
 
   it("opens and saves a complete agent Markdown definition", async () => {
     const user = userEvent.setup();
     renderSettings();
-    await user.click(await screen.findByRole("button", { name: "Edit Search" }));
+    await openAgentConfig(user, "Search");
+    await user.click(screen.getByRole("button", { name: "Edit Search" }));
     const editor = await screen.findByRole("textbox", { name: /agent markdown/i });
     await user.clear(editor);
     await user.type(editor, "---\nname: search\ndescription: Updated\nenable: true\n---\nNew prompt\n");
@@ -520,7 +565,8 @@ describe("SettingsPage", () => {
     renderSettings();
     expect(await screen.findByText("before-save")).toBeVisible();
 
-    await user.click(await screen.findByRole("button", { name: "Edit Search" }));
+    await openAgentConfig(user, "Search");
+    await user.click(screen.getByRole("button", { name: "Edit Search" }));
     await user.click(screen.getByRole("button", { name: /save agent/i }));
 
     expect(await screen.findByText("after-save")).toBeVisible();
@@ -586,7 +632,7 @@ describe("SettingsPage", () => {
     const scope = await screen.findByRole("combobox", { name: "Skill diagnostic scope" });
     expect(scope).toHaveValue("global");
     expect(scope).toHaveClass("focus:outline-2", "focus:outline-offset-2", "focus:outline-v2-blue-600");
-    const warning = screen.getByText("missing-skill").parentElement!;
+    const warning = (await screen.findByText("missing-skill")).parentElement!;
     expect(within(warning).getByText(/Search/)).toBeVisible();
     expect(within(warning).getByText(/Writing/)).toBeVisible();
   });
@@ -652,7 +698,7 @@ describe("SettingsPage", () => {
 
     renderSettings();
     const scope = await screen.findByRole("combobox", { name: "Skill diagnostic scope" });
-    expect(screen.getByText("global-missing")).toBeVisible();
+    expect(await screen.findByText("global-missing")).toBeVisible();
 
     await user.selectOptions(scope, "/papers/project-a");
     expect(await screen.findByRole("alert")).toHaveTextContent("diagnostic failed");
@@ -699,24 +745,67 @@ describe("SettingsPage", () => {
     ] as never);
     renderSettings();
 
-    expect(await screen.findByRole("button", { name: "2 tools, 2 skills" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "View details for Search" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Tools" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Skills" })).toBeTruthy();
     expect(screen.getAllByText("read")).toHaveLength(1);
-    expect(screen.queryByRole("button", { name: /edit tool/i })).toBeNull();
-    expect(screen.queryByText("Enable Search")).toBeNull();
 
-    await user.click(screen.getByRole("button", { name: "2 tools, 2 skills" }));
+    await user.click(screen.getByRole("button", { name: "View details for Search" }));
     expect(screen.getByRole("dialog")).toBeTruthy();
     expect(within(screen.getByRole("dialog")).getByText("web-search")).toBeTruthy();
     expect(within(screen.getByRole("dialog")).getByText("paper-search")).toBeTruthy();
   });
 
-  it("keeps agent enable switches unlabeled and puts edit beside the model select", async () => {
+  it("opens the agent config modal with the enable switch, model, thinking, and edit controls", async () => {
+    const user = userEvent.setup();
     renderSettings();
-    const edit = await screen.findByRole("button", { name: "Edit Search" });
-    expect(screen.queryByText("Enable Search")).toBeNull();
-    expect(within(edit.parentElement!).getByText("Model")).toBeTruthy();
-    expect(within(edit.parentElement!).getByRole("combobox", { name: "Select model for Search" })).toBeTruthy();
+    const dialog = await openAgentConfig(user, "Search");
+    expect(within(dialog).getByRole("switch", { name: "Enable Search" })).toBeTruthy();
+    expect(within(dialog).getByRole("combobox", { name: "Select model for Search" })).toBeTruthy();
+    expect(within(dialog).getByRole("combobox", { name: "Select thinking for Search" })).toBeTruthy();
+    expect(within(dialog).getByRole("button", { name: "Edit Search" })).toBeTruthy();
+    expect(within(dialog).getByRole("button", { name: "View tools & skills details" })).toBeTruthy();
+  });
+
+  it("toggles an agent enable switch inside the modal", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listAgents).mockResolvedValue([
+      { name: "search", description: "Searches", enabled: true },
+      { name: "writing", description: "Writes", enabled: true },
+    ] as never);
+    vi.mocked(api.readAgentResource).mockResolvedValue({
+      name: "search",
+      description: "Searches",
+      enabled: true,
+      builtin: true,
+      source: "bundled",
+      filePath: "src/agents/search.md",
+      effectiveTools: ["read", "web-search"],
+      effectiveSkills: ["paper-search", "arxiv"],
+      missingSkills: [],
+      content: "---\nname: search\ndescription: Searches\nenable: true\n---\nPrompt\n",
+    });
+    vi.mocked(api.writeAgentResource).mockResolvedValue({
+      name: "search",
+      description: "Searches",
+      enabled: false,
+      builtin: true,
+      source: "bundled",
+      filePath: "src/agents/search.md",
+      effectiveTools: ["read", "web-search"],
+      effectiveSkills: ["paper-search", "arxiv"],
+      missingSkills: [],
+      content: "---\nname: search\ndescription: Searches\nenable: false\n---\nPrompt\n",
+    });
+    renderSettings();
+    const dialog = await openAgentConfig(user, "Search");
+    const toggle = within(dialog).getByRole("switch", { name: "Enable Search" });
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    await user.click(toggle);
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "false"));
+    expect(api.writeAgentResource).toHaveBeenCalledWith(
+      "search",
+      "---\nname: search\ndescription: Searches\nenable: false\n---\nPrompt\n",
+    );
   });
 });

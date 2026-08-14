@@ -30,17 +30,24 @@ export interface AuthProviderInfoDto {
   authStatus: { configured: boolean; source?: string };
   source?: string;
   hint?: string;
+  /** True when the provider is declared in `models.json` (custom provider). */
+  modelsJson: boolean;
 }
 
 /**
  * Build the immutable DTO describing a provider's auth surface from the raw
  * Pi provider, its cached auth status, and (optionally) the resolved auth
  * check. Pure: no Pi imports, no async, no I/O — unit tested directly.
+ *
+ * `modelsJsonProviderIds` marks providers the user declared in `models.json`
+ * (custom providers); they surface as `modelsJson: true` so the UI can pin
+ * them with the configured ones.
  */
 export function assembleProviderInfo(
   provider: ProviderLike,
   status: AuthStatusLike,
   authCheck: AuthCheckLike | undefined,
+  modelsJsonProviderIds: ReadonlySet<string> = new Set(),
 ): AuthProviderInfoDto {
   const methods: AuthType[] = [];
   if (provider.auth?.apiKey) methods.push("api_key");
@@ -63,6 +70,7 @@ export function assembleProviderInfo(
     authStatus: { configured: status.configured, source: status.source },
     source: authCheck?.source,
     hint,
+    modelsJson: modelsJsonProviderIds.has(provider.id),
   };
 }
 

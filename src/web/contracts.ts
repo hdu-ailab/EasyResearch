@@ -153,6 +153,8 @@ export interface AuthProviderInfoDto {
   authStatus: { configured: boolean; source?: string };
   source?: string;
   hint?: string;
+  /** True when the provider is declared in `models.json` (custom provider). */
+  modelsJson: boolean;
 }
 
 export interface AuthProvidersResponseDto {

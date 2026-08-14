@@ -70,7 +70,7 @@ function fakeStore(records: Record<string, Partial<AuthFlowRecord>> = {}): AuthF
 describe("auth routes", () => {
   it("GET /api/auth/providers returns the AuthProvidersResponseDto", async () => {
     const providers: AuthProviderInfoDto[] = [
-      { id: "anthropic", name: "Anthropic", authMethods: ["api_key"], connectable: true, authStatus: { configured: false } },
+      { id: "anthropic", name: "Anthropic", authMethods: ["api_key"], connectable: true, authStatus: { configured: false }, modelsJson: false },
     ];
     const gw = { listProviders: vi.fn(async () => providers) } as unknown as AuthGateway;
     const handler = createRouteHandler(makeServices(gw));
