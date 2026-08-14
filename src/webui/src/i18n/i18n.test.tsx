@@ -116,7 +116,7 @@ describe("i18n", () => {
     expect(messages.en["work.retrying"].replace("{attempt}", "2").replace("{maxAttempts}", "3")).toBe(
       "Retrying API call 2/3",
     );
-    expect(messages.zhCN["work.retrying"].replace("{attempt}", "2").replace("{maxAttempts}", "3")).toBe(
+    expect(messages["zh-CN"]["work.retrying"].replace("{attempt}", "2").replace("{maxAttempts}", "3")).toBe(
       "API 调用失败，正在重试 2/3",
     );
   });
