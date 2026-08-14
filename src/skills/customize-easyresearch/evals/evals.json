@@ -1,0 +1,23 @@
+{
+  "skill_name": "customize-easyresearch",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "我在本地跑了一个 OpenAI 兼容的模型服务（http://127.0.0.1:20129/v1，镜像 OpenRouter 返回结构），想把它加进 EasyResearch 的 models.json（provider 名 myapi），主要用 deepseek/deepseek-v4-flash-0731 这个推理模型。请生成该模型的完整 models.json 条目。不要改动任何真实配置文件，把结果写到输出目录。",
+      "expected_output": "models.json 条目，值（contextWindow/maxTokens/reasoning/input）与 API 实际一致，即 agent 主动探测了端点",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "帮我添加 google/gemini-flash-2 到 EasyResearch 的 models.json（provider 名 myapi，服务地址 http://127.0.0.1:20129/v1，OpenRouter 结构），它支持图像输入但不支持推理。请给出 models.json 条目。不要改动任何真实配置文件，把结果写到输出目录。",
+      "expected_output": "models.json 条目，contextWindow/maxTokens 与 API 实际一致（agent 主动探测），input=[\"text\",\"image\"]，无 reasoning 字段",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "我要在 EasyResearch 的 models.json 里添加 deepseek/deepseek-v4-flash-0731（provider myapi，API 见 http://127.0.0.1:20129/v1/models，OpenRouter 返回结构）。请给出完整 models.json 条目：为它设计 thinkingLevelMap，并处理它 deepseek 风格的 thinkingFormat。不要改动任何真实配置文件，把结果写到输出目录。",
+      "expected_output": "条目含探测值 contextWindow=1048576/maxTokens=393216，thinkingLevelMap 覆盖 supported_efforts 的 low/high/max，含 compat.thinkingFormat",
+      "files": []
+    }
+  ]
+}
