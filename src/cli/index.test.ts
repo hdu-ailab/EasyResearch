@@ -1,10 +1,11 @@
+import { createServer } from "node:http";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { dayStamp } from "../runtime/logger";
-import { runCli, type CliDependencies } from "./index";
-import { serverPidPath, writeServerPid } from "./server-process";
+import { runCli, waitForReady, type CliDependencies } from "./index";
+import { readServerPid, serverPidPath, writeServerPid } from "./server-process";
 
 let root: string;
 
@@ -36,6 +37,7 @@ describe("runCli argument parsing", () => {
     const deps = makeDeps();
     await runCli(["-p", "4000", "--host", "0.0.0.0"], deps, { agentDir: root });
     expect(deps.spawnBackground).toHaveBeenCalledWith("0.0.0.0", 4000);
+    expect(deps.waitForReady).toHaveBeenCalledWith("0.0.0.0", 4000);
     expect(deps.openBrowser).not.toHaveBeenCalled();
   });
 
@@ -51,7 +53,26 @@ describe("runCli argument parsing", () => {
     const deps = makeDeps();
     expect(await runCli([], deps, { agentDir: root })).toBe(0);
     expect(deps.spawnBackground).not.toHaveBeenCalled();
+    expect(deps.waitForReady).toHaveBeenCalledWith("127.0.0.1", 3000);
     expect(deps.openBrowser).toHaveBeenCalledWith("http://127.0.0.1:3000");
+  });
+
+  it("refuses to reuse a live pid when nothing listens on the requested port", async () => {
+    writeServerPid(root, process.pid);
+    const deps = makeDeps({ waitForReady: vi.fn(async () => false) });
+    const messages: string[] = [];
+    const errorSpy = vi.spyOn(console, "error").mockImplementation((msg: unknown) => {
+      messages.push(String(msg));
+    });
+    try {
+      expect(await runCli(["-p", "4000"], deps, { agentDir: root })).toBe(1);
+    } finally {
+      errorSpy.mockRestore();
+    }
+    expect(deps.spawnBackground).not.toHaveBeenCalled();
+    expect(deps.openBrowser).not.toHaveBeenCalled();
+    expect(messages.join("\n")).toContain("4000");
+    expect(readServerPid(root)).toBe(process.pid);
   });
 
   it("exit without a pid file prints a notice and exits 0", async () => {
@@ -118,5 +139,46 @@ describe("runCli argument parsing", () => {
     }
     const expected = join(root, "logs", `easyresearch-${dayStamp()}.log`);
     expect(messages.join("\n")).toContain(expected);
+  });
+
+  it("probes readiness on the bound host", async () => {
+    const deps = makeDeps();
+    await runCli(["--host", "192.168.1.5"], deps, { agentDir: root });
+    expect(deps.spawnBackground).toHaveBeenCalledWith("192.168.1.5", 3000);
+    expect(deps.waitForReady).toHaveBeenCalledWith("192.168.1.5", 3000);
+  });
+});
+
+describe("waitForReady", () => {
+  it("probes the given host", async () => {
+    const server = createServer((_req, res) => {
+      res.writeHead(200);
+      res.end("ok");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as { port: number }).port;
+    try {
+      expect(await waitForReady("127.0.0.1", port, 2000)).toBe(true);
+    } finally {
+      server.close();
+    }
+  });
+
+  it.each(["0.0.0.0", "::"])("falls back to the loopback probe for %s", async (host) => {
+    const server = createServer((_req, res) => {
+      res.writeHead(200);
+      res.end("ok");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as { port: number }).port;
+    try {
+      expect(await waitForReady(host, port, 2000)).toBe(true);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("times out when nothing listens on the probe host", async () => {
+    expect(await waitForReady("127.0.0.1", 1, 300)).toBe(false);
   });
 });

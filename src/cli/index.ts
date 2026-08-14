@@ -16,7 +16,7 @@ import { runServe } from "./commands/serve";
 export interface CliDependencies {
   serve: (host: string, port: number) => Promise<number>;
   openBrowser: (url: string) => Promise<boolean>;
-  waitForReady: (port: number, timeoutMs?: number) => Promise<boolean>;
+  waitForReady: (host: string, port: number, timeoutMs?: number) => Promise<boolean>;
   spawnBackground: (host: string, port: number) => void;
 }
 
@@ -45,11 +45,16 @@ export async function openBrowser(url: string): Promise<boolean> {
   });
 }
 
-export async function waitForReady(port: number, timeoutMs = READY_TIMEOUT_MS): Promise<boolean> {
+export async function waitForReady(
+  host: string,
+  port: number,
+  timeoutMs = READY_TIMEOUT_MS,
+): Promise<boolean> {
+  const probeHost = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/api/status`);
+      const response = await fetch(`http://${probeHost}:${port}/api/status`);
       if (response.ok) return true;
     } catch {
       // not ready yet
@@ -111,6 +116,11 @@ export async function runCli(
 
     const existing = readServerPid(agentDir);
     if (existing !== undefined && isProcessAlive(existing)) {
+      const ready = await deps.waitForReady(host, port);
+      if (!ready) {
+        console.error(`No service is listening on port ${port}.`);
+        return 1;
+      }
       const url = `http://${host}:${port}`;
       console.log(`EasyResearch: ${url}`);
       if (open && isLoopbackHost(host)) await deps.openBrowser(url);
@@ -119,7 +129,7 @@ export async function runCli(
     if (existing !== undefined) removeServerPid(agentDir);
 
     deps.spawnBackground(host, port);
-    const ready = await deps.waitForReady(port);
+    const ready = await deps.waitForReady(host, port);
     if (!ready) {
       console.error(`EasyResearch failed to start within ${READY_TIMEOUT_MS}ms. See ${serverLogFile(agentDir)}.`);
       return 1;
