@@ -18,6 +18,8 @@ description: |-
 - Prefer `latexmk` when available because it handles repeated runs, BibTeX/Biber, and cross-references automatically.
 - Use `pdflatex` for IEEE/JSEN and most standard journal templates unless the document requires Unicode/CJK text or system fonts.
 - Use `xelatex` or `lualatex` when the source uses `fontspec`, CJK body text, or system font selection.
+- When no local TeX toolchain is detected, use the Overleaf compilation flow
+  below instead of failing or guessing.
 
 ## Discovery
 
@@ -36,6 +38,41 @@ description: |-
 - Follow another existing layout only when the task explicitly supplies it.
 - When the TeX engine writes the PDF inside `manuscript/latex/`, copy the
   successful final PDF to `manuscript/manuscript.pdf` and verify that path.
+
+## Environment Detection
+
+Before building, detect a local TeX toolchain. Prefer local compilation when
+available; fall back to the Overleaf flow below when it is not.
+
+Unix (Linux/macOS):
+
+```bash
+which latexmk pdflatex xelatex
+```
+
+Windows PowerShell:
+
+```powershell
+Get-Command latexmk,pdflatex,xelatex -ErrorAction SilentlyContinue
+```
+
+If the commands are not on PATH, probe the common Windows install locations:
+
+```powershell
+Test-Path "$env:LOCALAPPDATA\Programs\MiKTeX\miktex\bin\x64\latexmk.exe"
+Get-ChildItem C:\texlive -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
+```
+
+When only a probed path is found (e.g. MiKTeX or TeX Live bin directory), call
+the engines by their absolute path instead of modifying the system PATH. For
+example:
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\MiKTeX\miktex\bin\x64\latexmk.exe" -pdf -interaction=nonstopmode -halt-on-error main.tex
+```
+
+A toolchain counts as available when `latexmk` or `pdflatex` resolves. When
+neither resolves anywhere, proceed to `## Overleaf Compilation` below.
 
 ## Build Commands
 
@@ -77,6 +114,24 @@ For CJK/fontspec documents:
 ```bash
 latexmk -xelatex -interaction=nonstopmode -halt-on-error main.tex
 ```
+
+## Installation Guides
+
+When the user prefers a local toolchain over Overleaf, install one of these.
+After installing, reopen the terminal so PATH refreshes, then re-run
+`## Environment Detection`.
+
+| Platform | Install method | Command / guide |
+|---|---|---|
+| Debian/Ubuntu | apt | `sudo apt install texlive-latex-recommended texlive-latex-extra texlive-xetex texlive-bibtex-extra` |
+| Arch Linux | pacman | `sudo pacman -S texlive-most texlive-lang` |
+| macOS | Homebrew | `brew install --cask mactex` (full) or `brew install --cask basictex` (minimal) |
+| Windows | MiKTeX | Download the MiKTeX installer from https://miktex.org/download, install, then open a new terminal so PATH updates |
+
+For missing individual packages on an existing TeX Live install, keep the
+existing guidance in `## Error Handling`: check whether the package is used,
+remove unused `\usepackage{...}` lines, and only then recommend the TeX Live
+package for the user's distribution.
 
 ## Cleanup
 
