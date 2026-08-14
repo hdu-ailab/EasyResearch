@@ -59,12 +59,15 @@ function makeFlow(overrides: Partial<UseProviderAuthFlow> = {}): UseProviderAuth
 }
 
 describe("ProviderConnectModal", () => {
-  it("renders the provider list with status dots and ambient hint", () => {
+  it("renders the provider list with status dots and ambient hint", async () => {
     mockedUse.mockReturnValue(makeFlow());
+    const user = userEvent.setup();
     render(<ProviderConnectModal onClose={() => {}} />);
     expect(screen.getByText("Anthropic")).toBeInTheDocument();
     expect(screen.getByText("xAI")).toBeInTheDocument();
     expect(screen.getByText("Google Vertex AI")).toBeInTheDocument();
+    expect(screen.getByText("Ambient-only: configure via environment or config file.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Google Vertex AI/ }));
     expect(screen.getByText("ambient creds")).toBeInTheDocument();
   });
 
@@ -73,29 +76,32 @@ describe("ProviderConnectModal", () => {
     mockedUse.mockReturnValue(flow);
     const user = userEvent.setup();
     render(<ProviderConnectModal onClose={() => {}} />);
-    await user.click(screen.getAllByText("Connect")[0]!);
+    await user.click(screen.getByRole("button", { name: "Anthropic" }));
     expect(flow.start).toHaveBeenCalledWith("anthropic", "api_key");
   });
 
-  it("shows a method picker for a dual-method provider", async () => {
+  it("shows a method picker in the connection view for a dual-method provider", async () => {
     const flow = makeFlow();
     mockedUse.mockReturnValue(flow);
     const user = userEvent.setup();
     render(<ProviderConnectModal onClose={() => {}} />);
-    await user.click(screen.getAllByText("Connect")[1]!);
+    await user.click(screen.getByRole("button", { name: "xAI" }));
     expect(flow.start).not.toHaveBeenCalled();
     expect(screen.getByText("Use an API key")).toBeInTheDocument();
     expect(screen.getByText("Use subscription")).toBeInTheDocument();
+    await user.click(screen.getByText("Use subscription"));
+    expect(flow.start).toHaveBeenCalledWith("xai", "oauth");
   });
 
-  it("calls disconnect for a connected provider", async () => {
+  it("disconnects a configured provider from its connection view", async () => {
     const flow = makeFlow({
       providers: [{ ...apiKeyProvider, authStatus: { configured: true } }, dualProvider, ambientProvider],
     });
     mockedUse.mockReturnValue(flow);
     const user = userEvent.setup();
     render(<ProviderConnectModal onClose={() => {}} />);
-    await user.click(screen.getByText("Disconnect"));
+    await user.click(screen.getByRole("button", { name: "Anthropic" }));
+    await user.click(screen.getByText("Disconnect Anthropic"));
     expect(flow.logout).toHaveBeenCalledWith("anthropic");
   });
 
@@ -184,5 +190,51 @@ describe("ProviderConnectModal", () => {
     render(<ProviderConnectModal onClose={() => {}} />);
     expect(screen.getByText("provider rejected")).toBeInTheDocument();
     expect(screen.getByText("Retry")).toBeInTheDocument();
+  });
+
+  it("renders a provider logo for known providers and the synthetic fallback for unknown ones", () => {
+    mockedUse.mockReturnValue(
+      makeFlow({
+        providers: [
+          { ...apiKeyProvider, id: "anthropic" },
+          { ...dualProvider, id: "custom-local" },
+        ],
+      }),
+    );
+    render(<ProviderConnectModal onClose={() => {}} />);
+    const known = document.querySelector('[data-component="provider-icon"] use');
+    expect(known?.getAttribute("href")).toMatch(/#anthropic$/);
+    const icons = document.querySelectorAll('[data-component="provider-icon"] use');
+    expect(icons[1]?.getAttribute("href")).toMatch(/#synthetic$/);
+  });
+
+  it("filters providers by name and shows the no-results message", async () => {
+    const user = userEvent.setup();
+    mockedUse.mockReturnValue(makeFlow());
+    render(<ProviderConnectModal onClose={() => {}} />);
+    expect(screen.getByText("Anthropic")).toBeInTheDocument();
+    expect(screen.getByText("xAI")).toBeInTheDocument();
+
+    const search = screen.getByRole("searchbox");
+    await user.type(search, "anthrop");
+    expect(screen.getByText("Anthropic")).toBeInTheDocument();
+    expect(screen.queryByText("xAI")).toBeNull();
+
+    await user.clear(search);
+    await user.type(search, "nonexistent-provider");
+    expect(screen.getByText("No providers match your search.")).toBeInTheDocument();
+  });
+
+  it("navigates the filtered list with ArrowDown/ArrowUp and connects with Enter", async () => {
+    const flow = makeFlow();
+    mockedUse.mockReturnValue(flow);
+    const user = userEvent.setup();
+    render(<ProviderConnectModal onClose={() => {}} />);
+
+    const search = screen.getByRole("searchbox");
+    await user.click(search);
+    await user.keyboard("{ArrowDown}");
+    await user.keyboard("{Enter}");
+    expect(flow.start).toHaveBeenCalledWith("anthropic", "api_key");
   });
 });

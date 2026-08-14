@@ -110,6 +110,19 @@ describe("useProviderAuthFlow", () => {
     expect(result.current.errorReason).toBe("reject");
   });
 
+  it("returns to idle without an error card when a flow is aborted", async () => {
+    const { result } = renderHook(() => useProviderAuthFlow());
+    await waitFor(() => expect(result.current.providers).toHaveLength(3));
+    await act(async () => {
+      await result.current.start("anthropic", "api_key");
+    });
+    emit({ type: "error", message: "The operation was aborted.", reason: "aborted" });
+    await waitFor(() => expect(result.current.view).toBe("idle"));
+    expect(result.current.errorMessage).toBeUndefined();
+    expect(result.current.errorReason).toBeUndefined();
+    expect(result.current.activeProviderId).toBeUndefined();
+  });
+
   it("respond posts the value and keeps the prompt until the next event", async () => {
     const { result } = renderHook(() => useProviderAuthFlow());
     await waitFor(() => expect(result.current.providers).toHaveLength(3));
