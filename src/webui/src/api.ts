@@ -12,6 +12,8 @@ import type {
   FileContentDto,
   FileEntryDto,
   SessionSnapshotDto,
+  SessionTreeDto,
+  SkillCommandDto,
   StatusDto,
   WebuiSettingsDto,
   WebuiSettingsUpdate,
@@ -35,6 +37,8 @@ import {
   parseFileContent,
   parseModels,
   parseSessionSnapshot,
+  parseSessionTree,
+  parseSkillCommands,
   parseSkillResource,
   parseSkillResources,
   parseStatus,
@@ -172,6 +176,18 @@ export function getChildSnapshot(parentId: string, childId: string): Promise<Chi
 
 export function sendPrompt(id: string, message: string): Promise<void> {
   return requestVoid(routes.messages(id), json("POST", { message }));
+}
+
+export function getSessionCommands(id: string): Promise<SkillCommandDto[]> {
+  return requestJson(routes.commands(id), parseSkillCommands);
+}
+
+export function getSessionTree(id: string): Promise<SessionTreeDto> {
+  return requestJson(routes.tree(id), parseSessionTree);
+}
+
+export function navigateSessionTree(id: string, entryId: string): Promise<void> {
+  return requestVoid(routes.treeNavigate(id), json("POST", { entryId }));
 }
 
 export function abortSession(id: string): Promise<void> {

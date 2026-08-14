@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fileURLToPath } from "node:url";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { RpcEventListener, RpcSessionState } from "@earendil-works/pi-coding-agent";
+import type { RpcEventListener, RpcSessionState, SessionTreeNode } from "@earendil-works/pi-coding-agent";
 import { assistantExtensions } from "../extensions";
-import { PiRpcSessionFactory, type StartRpcSessionOptions } from "./rpc-session";
+import { PiRpcSessionFactory, type StartRpcSessionOptions, type WebSlashCommand } from "./rpc-session";
 
 const fakeState: RpcSessionState = {
   thinkingLevel: "medium",
@@ -36,6 +36,8 @@ class FakeRpcClient {
   setThinkingLevelCalls: string[] = [];
   stateCalls = 0;
   messagesCalls = 0;
+  commandsResult: WebSlashCommand[] = [];
+  treeResult: { tree: SessionTreeNode[]; leafId: string | null } = { tree: [], leafId: null };
   listeners = new Set<RpcEventListener>();
   failState = false;
   startError: Error | null = null;
@@ -73,6 +75,12 @@ class FakeRpcClient {
   async getMessages(): Promise<AgentMessage[]> {
     this.messagesCalls++;
     return [];
+  }
+  async getCommands(): Promise<WebSlashCommand[]> {
+    return this.commandsResult;
+  }
+  async getTree(): Promise<{ tree: SessionTreeNode[]; leafId: string | null }> {
+    return this.treeResult;
   }
   onEvent(listener: RpcEventListener) {
     this.listeners.add(listener);
@@ -270,5 +278,41 @@ describe("RpcSessionAdapter", () => {
     client.failState = true;
     await expect(adapter.prompt("boom")).rejects.toThrow();
     expect(onExit).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("RpcSessionAdapter tree and commands (ADR-066)", () => {
+  beforeEach(() => {
+    FakeRpcClient.instances = [];
+  });
+
+  it("getCommands forwards client commands", async () => {
+    const factory = new PiRpcSessionFactory(FakeRpcClient);
+    const adapter = factory.create({ cwd: "/project" });
+    const client = FakeRpcClient.instances[0]!;
+    client.commandsResult = [
+      { name: "skill:arxiv", description: "arXiv", source: "skill" },
+      { name: "clear", description: "Clear", source: "extension" },
+    ];
+
+    await expect(adapter.getCommands()).resolves.toEqual(client.commandsResult);
+  });
+
+  it("getTree forwards client tree", async () => {
+    const factory = new PiRpcSessionFactory(FakeRpcClient);
+    const adapter = factory.create({ cwd: "/project" });
+    const client = FakeRpcClient.instances[0]!;
+    client.treeResult = { tree: [], leafId: "leaf-1" };
+
+    await expect(adapter.getTree()).resolves.toEqual(client.treeResult);
+  });
+
+  it("navigateTree prompts /web-tree navigate <entryId>", async () => {
+    const factory = new PiRpcSessionFactory(FakeRpcClient);
+    const adapter = factory.create({ cwd: "/project" });
+    const client = FakeRpcClient.instances[0]!;
+
+    await adapter.navigateTree("entry-1");
+    expect(client.promptCalls).toEqual(["/web-tree navigate entry-1"]);
   });
 });

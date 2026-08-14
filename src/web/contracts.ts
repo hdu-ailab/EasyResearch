@@ -35,6 +35,26 @@ export interface SessionSnapshotDto {
   subagents: SubagentSessionSummaryDto[];
 }
 
+export interface SkillCommandDto {
+  name: string;
+  description?: string;
+}
+
+export interface WebTreeEntryDto {
+  id: string;
+  parentId: string | null;
+  /** Mirrors the transcript bubble roles; non-bubble entries map to `other`. */
+  role: "user" | "assistant" | "other";
+  text: string;
+  /** Compaction entries only: the kept context starts at this entry. */
+  firstKeptEntryId?: string;
+}
+
+export interface SessionTreeDto {
+  tree: WebTreeEntryDto[];
+  leafId: string | null;
+}
+
 export interface SubagentSessionSummaryDto extends SubagentSessionLink {
   latestMessage?: string;
 }

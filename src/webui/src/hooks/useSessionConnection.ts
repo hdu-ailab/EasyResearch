@@ -1,7 +1,15 @@
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { type Dispatch, type SetStateAction, useCallback, useEffect, useRef, useState } from "react";
 import type { ActiveSessionDto, SessionSnapshotDto } from "../../../web/contracts";
-import { abortSession, connectSessionEvents, getSnapshot, isUnknownSession, openSession, sendPrompt } from "../api";
+import {
+  abortSession,
+  connectSessionEvents,
+  getSnapshot,
+  isUnknownSession,
+  navigateSessionTree,
+  openSession,
+  sendPrompt,
+} from "../api";
 import { useI18n } from "../i18n/useI18n";
 import {
   emptyState,
@@ -28,6 +36,8 @@ export interface SessionConnection {
   pendingOutput: boolean;
   send(text: string): Promise<void>;
   abort(): Promise<void>;
+  /** Move the session leaf to an entry in place, then refresh the view. */
+  navigateTree(entryId: string): Promise<void>;
   setView: Dispatch<SetStateAction<SessionViewState>>;
 }
 
@@ -370,6 +380,18 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
     }
   }, [cancelOperation, clearTerminalState]);
 
+  const navigateTree = useCallback(
+    async (entryId: string) => {
+      await navigateSessionTree(sessionIdRef.current, entryId);
+      const snapshot = await getSnapshot(sessionIdRef.current);
+      if (!mountedRef.current) return;
+      updateSessionPath(snapshot.session.sessionFile ?? null);
+      setStatus(snapshot.session.status);
+      setView((current) => mergeSnapshot(current, snapshot));
+    },
+    [updateSessionPath],
+  );
+
   return {
     sessionId,
     sessionPath,
@@ -380,6 +402,7 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
     pendingOutput,
     send,
     abort,
+    navigateTree,
     setView,
   };
 }
