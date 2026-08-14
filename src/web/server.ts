@@ -34,6 +34,11 @@ export interface Server {
   stop: () => Promise<void>;
 }
 
+export interface StartServerOptions {
+  host?: string;
+  port?: number;
+}
+
 const WEBUI_DIST = join(fileURLToPath(new URL("..", import.meta.url)), "webui", "dist");
 
 export function agentToDto(agent: AgentConfig): AgentDto {
@@ -99,10 +104,13 @@ export function toUserSessionSummaries(sessions: readonly SessionInfoLike[]): Se
 }
 
 /**
- * Start the Web panel backend on 127.0.0.1:3000. The server owns the active
- * session registry and stops every Pi RPC child on shutdown.
+ * Start the Web panel backend. Defaults to 127.0.0.1:3000; both are overridable.
+ * The server owns the active session registry and stops every Pi RPC child on
+ * shutdown.
  */
-export async function startServer(): Promise<Server> {
+export async function startServer(options: StartServerOptions = {}): Promise<Server> {
+  const host = options.host ?? "127.0.0.1";
+  const port = options.port ?? 3000;
   const { importPi } = await import("../runtime/pi-import");
   const { assertSafeExtensionSources } = await import("../runtime/extensions-guard");
   assertSafeExtensionSources();
@@ -213,16 +221,16 @@ export async function startServer(): Promise<Server> {
   const handler = createRouteHandler(services);
 
   const server = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 3000,
+    hostname: host,
+    port,
     fetch: handler,
     idleTimeout: 0,
   });
 
-  logger.info("web server started", { port: server.port ?? 3000 });
+  logger.info("web server started", { host, port: server.port ?? port });
 
   return {
-    port: server.port ?? 3000,
+    port: server.port ?? port,
     stop: async () => {
       logger.info("web server stopping");
       auth.shutdown();
