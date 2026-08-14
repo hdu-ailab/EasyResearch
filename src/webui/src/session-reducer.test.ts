@@ -4,6 +4,7 @@ import {
   fromSnapshot,
   mergeSnapshot,
   nestedSubagentEvent,
+  parseSkillInvocation,
   reduceSessionEvent,
   type SessionViewState,
   terminateSessionRun,
@@ -1492,5 +1493,64 @@ describe("session reducer", () => {
       messages: [assistantMessage("hello")],
     });
     expect(hydrated.retry).toBeNull();
+  });
+
+  describe("parseSkillInvocation (ADR-066)", () => {
+    const expanded = `<skill name="arxiv" location="/x/SKILL.md">\nReferences are relative to /x.\n\nbody\n</skill>`;
+
+    it("parses name and trailing args", () => {
+      expect(parseSkillInvocation(`${expanded}\n\n1706.03762`)).toEqual({ name: "arxiv", args: "1706.03762" });
+    });
+
+    it("parses a bare skill block without args", () => {
+      expect(parseSkillInvocation(expanded)).toEqual({ name: "arxiv" });
+    });
+
+    it("returns undefined for plain messages and malformed blocks", () => {
+      expect(parseSkillInvocation("hello")).toBeUndefined();
+      expect(parseSkillInvocation(`<skill name="arxiv">unclosed`)).toBeUndefined();
+    });
+  });
+
+  it("marks skill-invoked user messages with a compact view (fromSnapshot)", () => {
+    const state = fromSnapshot({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      subagents: [],
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: `<skill name="arxiv" location="/x/SKILL.md">\n\nbody\n</skill>\n\n1706.03762`,
+            },
+          ],
+        },
+      ] as never,
+    });
+    expect(state.messages[0]?.skillInvocation).toEqual({ name: "arxiv", args: "1706.03762" });
+  });
+
+  it("marks skill-invoked user messages arriving live (message_start/message_end)", () => {
+    let state = reduceSessionEvent(emptyState, {
+      type: "message_start",
+      message: { role: "user", content: `<skill name="arxiv" location="/x">\n\nbody\n</skill>` },
+    } as AgentSessionEvent);
+    expect(state.messages[0]?.skillInvocation).toEqual({ name: "arxiv" });
+
+    state = reduceSessionEvent(state, {
+      type: "message_end",
+      message: { role: "user", content: `<skill name="arxiv" location="/x">\n\nbody\n</skill>` },
+    } as AgentSessionEvent);
+    expect(state.messages[0]?.skillInvocation).toEqual({ name: "arxiv" });
+  });
+
+  it("does not mark ordinary messages", () => {
+    const state = fromSnapshot({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      subagents: [],
+      messages: [userMessage("plain text")],
+    });
+    expect(state.messages[0]?.skillInvocation).toBeUndefined();
   });
 });
