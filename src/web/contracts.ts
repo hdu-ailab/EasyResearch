@@ -142,3 +142,65 @@ export interface WebuiSettingsUpdate {
   agentThinking?: Record<string, string>;
   paperAssistantThinking?: string | null;
 }
+
+// ---- Provider auth gateway (ADR-065) --------------------------------------
+
+export interface AuthProviderInfoDto {
+  id: string;
+  name: string;
+  authMethods: ("api_key" | "oauth")[];
+  connectable: boolean;
+  authStatus: { configured: boolean; source?: string };
+  source?: string;
+  hint?: string;
+}
+
+export interface AuthProvidersResponseDto {
+  providers: AuthProviderInfoDto[];
+}
+
+export interface AuthLoginRequestDto {
+  providerId: string;
+  type: "api_key" | "oauth";
+}
+
+export interface AuthLoginResponseDto {
+  flowId: string;
+}
+
+export interface AuthLogoutRequestDto {
+  providerId: string;
+}
+
+export interface AuthRespondRequestDto {
+  value: string;
+}
+
+export type AuthFlowEventDto =
+  | {
+      type: "prompt";
+      kind: "text" | "secret" | "select" | "manual_code";
+      message: string;
+      placeholder?: string;
+      options?: { id: string; label: string; description?: string }[];
+    }
+  | {
+      type: "notify";
+      event:
+        | { kind: "info"; message: string; links?: { url: string; label?: string }[] }
+        | { kind: "auth_url"; url: string; instructions?: string }
+        | {
+            kind: "device_code";
+            userCode: string;
+            verificationUri: string;
+            intervalSeconds?: number;
+            expiresInSeconds?: number;
+          }
+        | { kind: "progress"; message: string };
+    }
+  | {
+      type: "done";
+      credential: { type: "api_key" } | { type: "oauth"; expires: number };
+      warning?: string;
+    }
+  | { type: "error"; message: string; reason?: "aborted" | "timeout" | "reject" };
