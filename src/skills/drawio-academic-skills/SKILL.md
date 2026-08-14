@@ -76,7 +76,7 @@ Only after the diagram plan is confirmed, and only with privacy approval before 
 Choose one route, then load only its files. `overlay` = this directory; `base` = the sibling, resolved from this directory.
 
 - `academic-create` — paper, thesis, IEEE, manuscript, journal, publication-ready figure → overlay `references/docs/publication-overlay.md`, `academic-figure-playbook.md`, `academic-export-checklist.md`; base `../drawio/references/workflows/create.md`
-- `math-formula` — formula, equation, LaTeX, AsciiMath, MathJax, 公式 → base `../drawio/references/docs/math-typesetting.md`, `design-system/formulas.md`
+- `math-formula` — formula, equation, LaTeX, AsciiMath, MathJax → base `../drawio/references/docs/math-typesetting.md`, `design-system/formulas.md`
 - `edit` — modify an academic bundle or imported `.drawio` → base `../drawio/references/workflows/edit.md`, `../drawio/references/docs/migration-readiness.md`
 - `replicate` — redraw screenshot, image, SVG, or reference paper figure → overlay `references/docs/publication-overlay.md`; base `../drawio/references/workflows/replicate.md`, `../drawio/references/docs/design-system/specification.md`, `color-guide.md`
 - `base-capabilities` — code/config/live imports, raster extraction, multi-page bundles, AI/SysML/BPMN stencils, or offline postprocess before publication checks → base `../drawio/references/docs/upstream-capability-compatibility.md`; overlay `references/docs/publication-overlay.md`
