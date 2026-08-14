@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { dayStamp } from "../runtime/logger";
 import { runCli, type CliDependencies } from "./index";
 import { serverPidPath, writeServerPid } from "./server-process";
 
@@ -83,5 +84,39 @@ describe("runCli argument parsing", () => {
     const deps = makeDeps();
     expect(await runCli(argv as string[], deps, { agentDir: root })).toBe(1);
     expect(deps.spawnBackground).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [["--serve"]],
+    [["--serve", "127.0.0.1", "3000"]],
+    [["--serve", "--no-open"]],
+    [["--serve", "127.0.0.1", "3000", "extra"]],
+  ])("rejects the internal --serve flag on the user path %j", async (argv) => {
+    const deps = makeDeps();
+    expect(await runCli(argv as string[], deps, { agentDir: root })).toBe(1);
+    expect(deps.spawnBackground).not.toHaveBeenCalled();
+    expect(deps.serve).not.toHaveBeenCalled();
+  });
+
+  it("exit combined with --serve does not start a daemon", async () => {
+    const deps = makeDeps();
+    expect(await runCli(["exit", "--serve"], deps, { agentDir: root })).toBe(1);
+    expect(deps.spawnBackground).not.toHaveBeenCalled();
+    expect(deps.serve).not.toHaveBeenCalled();
+  });
+
+  it("points the failure hint at the real web-server log file", async () => {
+    const deps = makeDeps({ waitForReady: vi.fn(async () => false) });
+    const messages: string[] = [];
+    const errorSpy = vi.spyOn(console, "error").mockImplementation((msg: unknown) => {
+      messages.push(String(msg));
+    });
+    try {
+      expect(await runCli([], deps, { agentDir: root })).toBe(1);
+    } finally {
+      errorSpy.mockRestore();
+    }
+    const expected = join(root, "logs", `easyresearch-${dayStamp()}.log`);
+    expect(messages.join("\n")).toContain(expected);
   });
 });

@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { dayStamp, resolveLogConfig } from "../runtime/logger";
 
 export function serverPidPath(agentDir: string): string {
   return join(agentDir, "server.pid");
@@ -7,6 +8,14 @@ export function serverPidPath(agentDir: string): string {
 
 export function serverLogPath(agentDir: string): string {
   return join(agentDir, "server.log");
+}
+
+/**
+ * The file the web-server logger actually writes to: the configured log dir
+ * (default <agentDir>/logs) plus the per-day `easyresearch-<date>.log` name.
+ */
+export function serverLogFile(agentDir: string): string {
+  return join(resolveLogConfig(agentDir).logDir, `easyresearch-${dayStamp()}.log`);
 }
 
 export function readServerPid(agentDir: string): number | undefined {
