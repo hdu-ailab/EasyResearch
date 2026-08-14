@@ -27,6 +27,7 @@ import { createLogger } from "../runtime/logger";
 import { SubagentSessionService } from "./subagent-sessions";
 import { isSubagentSessionName } from "../subagent/session-links";
 import { createFileWatcherFactory } from "./file-watcher";
+import { getAuthGateway } from "./auth-runtime";
 
 export interface Server {
   port: number;
@@ -108,6 +109,7 @@ export async function startServer(): Promise<Server> {
   const logger = createLogger("web-server");
   const { SessionManager, getAgentDir } = await importPi();
   const agentDir = getAgentDir();
+  const auth = await getAuthGateway();
   const config = new ConfigFileService(agentDir);
   const idleTimeoutMs = await readWebSessionIdleTimeout(config);
   const registry = new ActiveSessionRegistry(
@@ -204,6 +206,7 @@ export async function startServer(): Promise<Server> {
     registry,
     config,
     subagentSessions,
+    auth,
     logger,
     listAgents: (cwd) => discoverAgentsForWeb(cwd, agentDir),
   };
@@ -222,6 +225,7 @@ export async function startServer(): Promise<Server> {
     port: server.port ?? 3000,
     stop: async () => {
       logger.info("web server stopping");
+      auth.shutdown();
       await registry.shutdown();
       server.stop(true);
     },
