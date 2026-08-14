@@ -6,17 +6,12 @@ import {
   disableVersionUpdateCheck,
   parseVersion,
   primeChangelogSeenVersion,
-  runNativeTui,
   shouldPrimeChangelogVersion,
   VERSION_CHECK_ENV,
 } from "./pi-host";
 
 const hoisted = vi.hoisted(() => ({
   originalEnv: "" as string | undefined,
-  main: vi.fn(),
-  bootstrap: vi.fn(),
-  guard: vi.fn(),
-  createExtension: vi.fn(() => ({ inner: true })),
   agentDir: "" as string,
   packageDir: "" as string,
   settings: {} as Record<string, unknown>,
@@ -24,23 +19,10 @@ const hoisted = vi.hoisted(() => ({
 
 vi.mock("./pi-import", () => ({
   importPi: async () => ({
-    main: hoisted.main,
     getAgentDir: () => hoisted.agentDir,
     getPackageDir: () => hoisted.packageDir,
     SettingsManager: { create: () => ({ getGlobalSettings: () => hoisted.settings }) },
   }),
-}));
-vi.mock("../bootstrap/resources", () => ({
-  bootstrapBundledResources: () => hoisted.bootstrap(),
-}));
-vi.mock("./extensions-guard", () => ({
-  assertSafeExtensionSources: () => hoisted.guard(),
-}));
-vi.mock("../extensions", () => ({
-  assistantExtensions: [
-    { name: "paper-assistant", factory: hoisted.createExtension(), path: "/ext/paper-assistant" },
-    { name: "web-search", factory: hoisted.createExtension(), path: "/ext/web-search" },
-  ],
 }));
 
 function tempAgentDir(): string {
@@ -153,46 +135,5 @@ describe("primeChangelogSeenVersion (ADR-024)", () => {
     expect(wrote).toBe(false);
     expect(existsSync(join(agentDir, "settings.json"))).toBe(false);
     rmSync(agentDir, { recursive: true, force: true });
-  });
-});
-
-describe("runNativeTui", () => {
-  beforeEach(() => {
-    hoisted.agentDir = tempAgentDir();
-    hoisted.packageDir = tempAgentDir();
-  });
-
-  afterEach(() => {
-    rmSync(hoisted.agentDir, { recursive: true, force: true });
-    rmSync(hoisted.packageDir, { recursive: true, force: true });
-  });
-
-  it("disables the version update check before invoking Pi main", async () => {
-    hoisted.originalEnv = process.env[VERSION_CHECK_ENV];
-    delete process.env[VERSION_CHECK_ENV];
-    await runNativeTui();
-    expect(process.env[VERSION_CHECK_ENV]).toBe("1");
-    expect(hoisted.main).toHaveBeenCalledTimes(1);
-  });
-
-  it("bootstraps resources, guards extensions, and mounts the assistant extensions", async () => {
-    await runNativeTui();
-    expect(hoisted.main).toHaveBeenCalledTimes(1);
-    expect(hoisted.main).toHaveBeenCalledWith(expect.arrayContaining(["--no-skills"]), {
-      extensionFactories: [{ inner: true }, { inner: true }],
-    });
-  });
-
-  it("keeps skill discovery disabled at the TUI host boundary", async () => {
-    await runNativeTui();
-    const args = hoisted.main.mock.calls[0]?.[0] as string[];
-    expect(args).toContain("--no-skills");
-    expect(args).not.toContain("--skill");
-  });
-
-  it("does not touch PI_OFFLINE", async () => {
-    hoisted.originalEnv = process.env.PI_OFFLINE;
-    await runNativeTui();
-    expect(process.env.PI_OFFLINE).toBeUndefined();
   });
 });

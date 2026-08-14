@@ -1,8 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { importPi } from "./pi-import";
-import { bootstrapBundledResources } from "../bootstrap/resources";
-import { assertSafeExtensionSources } from "./extensions-guard";
 
 /** Pi's documented switch for the automatic version update check. */
 export const VERSION_CHECK_ENV = "PI_SKIP_VERSION_CHECK";
@@ -114,16 +112,4 @@ function readUpstreamVersion(packageDir: string): string | undefined {
   } catch {
     return undefined;
   }
-}
-
-export async function runNativeTui(): Promise<void> {
-  disableVersionUpdateCheck();
-  await primeChangelogSeenVersion();
-  const pi = await importPi();
-  await bootstrapBundledResources();
-  assertSafeExtensionSources({ cwd: process.cwd() });
-  const { assistantExtensions } = await import("../extensions");
-  await pi.main(["--no-skills"], {
-    extensionFactories: assistantExtensions.map((extension) => extension.factory),
-  });
 }
