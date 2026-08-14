@@ -1,8 +1,8 @@
 import { Bot, FileSearch } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { FileWatcherEvent } from "../../../web/contracts";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { FileWatcherEvent, SessionTreeDto, SkillCommandDto } from "../../../web/contracts";
 import { PAPER_ASSISTANT_AGENT } from "../agent-identity";
-import { getChildSnapshot } from "../api";
+import { getChildSnapshot, getSessionCommands, getSessionTree } from "../api";
 import { AgentList, type AgentStatus } from "../components/AgentList";
 import { AgentTabBar } from "../components/AgentTabBar";
 import { ChatComposer } from "../components/ChatComposer";
@@ -15,6 +15,7 @@ import { parseFileWatcherEvent } from "../file-watcher";
 import { usePanelTransition } from "../hooks/usePanelTransition";
 import { useSessionConnection } from "../hooks/useSessionConnection";
 import { useI18n } from "../i18n/useI18n";
+import { buildMessageTreeMeta, versionTarget } from "../message-tree";
 import { fromSnapshot, nestedSubagentEvent, reduceSessionEvent, type SessionViewState } from "../session-reducer";
 import {
   closeSubagentTab,
@@ -106,6 +107,8 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
   const [childViews, setChildViews] = useState<Record<string, SessionViewState>>({});
   const [childErrors, setChildErrors] = useState<Record<string, boolean>>({});
   const [activeTab, setActiveTab] = useState(PAPER_ASSISTANT_AGENT);
+  const [commands, setCommands] = useState<SkillCommandDto[]>([]);
+  const [tree, setTree] = useState<SessionTreeDto | null>(null);
   const transcriptRef = useRef<ChatTranscriptHandle>(null);
   const tabsStateRef = useRef(tabsState);
   const childSessionByTool = useRef(new Map<string, string>());
@@ -178,6 +181,32 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
     childRefreshPending.current.clear();
     childRevisions.current.clear();
   }, [sessionId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    getSessionCommands(sessionId)
+      .then((list) => {
+        if (!cancelled) setCommands(list);
+      })
+      .catch(() => {
+        if (!cancelled) setCommands([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
+
+  const refreshTree = useCallback(async () => {
+    try {
+      setTree(await getSessionTree(sessionId));
+    } catch {
+      // Tree metadata is best-effort; the transcript works without it.
+    }
+  }, [sessionId]);
+
+  useEffect(() => {
+    void refreshTree();
+  }, [refreshTree]);
 
   useEffect(() => {
     const row = rowRef.current;
@@ -458,10 +487,35 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
     async (text: string) => {
       transcriptRef.current?.scrollToLatest();
       await connection.send(text);
+      void refreshTree();
     },
-    [connection.send],
+    [connection.send, refreshTree],
   );
   const abort = connection.abort;
+
+  const messageMeta = useMemo(
+    () => buildMessageTreeMeta(sessionView.messages, tree?.tree ?? [], tree?.leafId ?? null),
+    [sessionView.messages, tree],
+  );
+
+  const onEditMessage = useCallback(
+    async (entryId: string, text: string) => {
+      await connection.navigateTree(entryId);
+      await send(text);
+      void refreshTree();
+    },
+    [connection.navigateTree, send, refreshTree],
+  );
+
+  const onSwitchBranch = useCallback(
+    async (entryId: string, direction: -1 | 1) => {
+      const target = tree ? versionTarget(tree.tree, entryId, direction) : undefined;
+      if (!target) return;
+      await connection.navigateTree(target);
+      void refreshTree();
+    },
+    [connection.navigateTree, tree, refreshTree],
+  );
 
   const togglePanel = (next: Exclude<Panel, null>) => {
     setPanel((current) => (current === next ? null : next));
@@ -560,6 +614,9 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
             emptyHint={activeTab === PAPER_ASSISTANT_AGENT ? undefined : t("work.noMessagesYet")}
             pending={pendingOutput && activeTab === PAPER_ASSISTANT_AGENT}
             onViewDetails={activeTab === PAPER_ASSISTANT_AGENT ? openSubagentTool : undefined}
+            messageMeta={activeTab === PAPER_ASSISTANT_AGENT ? messageMeta : undefined}
+            onEditMessage={activeTab === PAPER_ASSISTANT_AGENT ? onEditMessage : undefined}
+            onSwitchBranch={activeTab === PAPER_ASSISTANT_AGENT ? onSwitchBranch : undefined}
           />
           <footer className="shrink-0 border-t border-v2-grey-200 p-3">
             {activeTab !== PAPER_ASSISTANT_AGENT || sessionView.subagentName ? (
@@ -570,6 +627,7 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
               streaming={activeTab === PAPER_ASSISTANT_AGENT && sessionView.isStreaming}
               onSend={send}
               onAbort={abort}
+              commands={activeTab === PAPER_ASSISTANT_AGENT ? commands : []}
             />
           </footer>
         </section>
