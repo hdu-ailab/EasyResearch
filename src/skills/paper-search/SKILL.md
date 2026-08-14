@@ -44,32 +44,28 @@ metadata:
 如果用户没有明确给出搜索方向，先补问；如果没有给出时间范围，则默认使用 `2026-01-01` 到当前日期。
 
 ## Commands
-优先使用用户 PATH 中的快速命令；该命令会调用本 skill 自带 `.venv`，确保 arXiv 查询走 `arxiv` Python SDK：
-```bash
-paper-search \
-  --query "{topic}" \
-  --since "{since}" \
-  --until "{until}" \
-  --max-results 10
-```
+优先使用 EasyResearch skill venv（postinstall 自动创建）中的 Python：
 
-最简调用（推荐默认）：
 ```bash
-paper-search --query "{topic}"
-```
-
-如果不是在 Skill 目录内运行，先找到 Skill 目录（通常在 `~/.easyresearch/agent/skills/paper-search/`），再使用相对路径：
-```bash
-<skill-dir>/.venv/bin/python \
+$EASYRESEARCH_VENV/bin/python \
   <skill-dir>/scripts/fetch_papers.py \
   --query "{topic}"
 ```
 
-若 `.venv` 不存在或缺少依赖，先在 Skill 目录运行：
+在 Skill 目录内可直接用：
+
 ```bash
-python -m venv .venv
-.venv/bin/python -m pip install arxiv
+$EASYRESEARCH_VENV/bin/python scripts/fetch_papers.py --query "{topic}"
 ```
+
+Windows 布局：
+
+```powershell
+%EASYRESEARCH_VENV%\Scripts\python.exe scripts\fetch_papers.py --query "{topic}"
+```
+
+若 `$EASYRESEARCH_VENV` 未设置或其 python 缺失 `arxiv` 包，脚本自动降级到
+REST API（无需手工创建 `.venv`）；系统 `python3` 也可直接运行该脚本。
 
 若 OpenReview 抓取不可用，先确保 `playwright-cli` 可用，并优先使用本机 Chrome Stable：
 ```bash
@@ -106,7 +102,7 @@ paper-search --query "{topic}" --openreview-max-groups 20 --openreview-time-budg
 ```
 
 ## Script Behavior
-- 根据用户给定主题构造 arXiv 检索语句，并优先通过 `.venv` 中的 `arxiv` Python SDK 检索
+- 根据用户给定主题构造 arXiv 检索语句，并优先通过 `$EASYRESEARCH_VENV` 中的 `arxiv` Python SDK 检索
 - 若 `arxiv` SDK 不可用或请求失败，自动降级到原始 arXiv REST API 路径；若 REST 也无结果，再尝试 arXiv 网页搜索 fallback
 - 根据 OpenReview API 文档使用 `notes/search`，并显式传入 `term` 参数抓取候选论文
 - 根据用户给定时间范围生成 OpenReview 候选会议列表并抓取论文
@@ -160,7 +156,6 @@ Skill 返回格式：
 ## Directory Structure
 ```
 paper-search
-├─ .venv/
 ├─ SKILL.md
 ├─ references
 │  └─ test_fetch_papers.py
