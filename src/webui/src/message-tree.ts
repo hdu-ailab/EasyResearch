@@ -17,17 +17,12 @@ function subtreeLeaf(tree: WebTreeEntryDto[], entryId: string): string {
 }
 
 /**
- * Zip leaf-path tree entries onto the session view's user/assistant messages
- * (same order) and attach version-group info to user messages (ADR-066).
- * The transcript messages are exactly the leaf path, so every zipped message
- * corresponds to the currently active version of its group.
+ * The transcript message list is the session context, which pi builds from
+ * the leaf path with compaction semantics (summarized entries before the
+ * latest compaction's `firstKeptEntryId` are omitted). Mirror that here so
+ * tree entries zip 1:1 onto transcript bubbles (ADR-066).
  */
-export function buildMessageTreeMeta(
-  messages: SessionMessageView[],
-  tree: WebTreeEntryDto[],
-  leafId: string | null,
-): Record<string, SessionMessageMeta> {
-  const byId = new Map(tree.map((candidate) => [candidate.id, candidate]));
+function contextPath(byId: Map<string, WebTreeEntryDto>, leafId: string | null): string[] {
   const pathIds: string[] = [];
   let current: string | null = leafId;
   while (current !== null) {
@@ -36,7 +31,33 @@ export function buildMessageTreeMeta(
     pathIds.unshift(current);
     current = entry.parentId;
   }
-  const pathEntries = pathIds
+  const compaction = pathIds.map((id) => byId.get(id)).find((candidate) => candidate?.firstKeptEntryId !== undefined);
+  if (!compaction?.firstKeptEntryId) return pathIds;
+  const compactionIdx = pathIds.indexOf(compaction.id);
+  const contextIds = [compaction.id];
+  let foundFirstKept = false;
+  for (const id of pathIds.slice(0, compactionIdx)) {
+    if (id === compaction.firstKeptEntryId) foundFirstKept = true;
+    if (foundFirstKept) contextIds.push(id);
+  }
+  contextIds.push(...pathIds.slice(compactionIdx + 1));
+  return contextIds;
+}
+
+/**
+ * Zip the session context (leaf-path) tree entries onto the session view's
+ * user/assistant messages (same order) and attach version-group info to user
+ * messages (ADR-066). The transcript messages are exactly the active path,
+ * so every zipped message corresponds to the currently active version of its
+ * group.
+ */
+export function buildMessageTreeMeta(
+  messages: SessionMessageView[],
+  tree: WebTreeEntryDto[],
+  leafId: string | null,
+): Record<string, SessionMessageMeta> {
+  const byId = new Map(tree.map((candidate) => [candidate.id, candidate]));
+  const pathEntries = contextPath(byId, leafId)
     .map((id) => byId.get(id))
     .filter((candidate) => candidate?.role === "user" || candidate?.role === "assistant");
   const viewMessages = messages.filter((message) => message.role === "user" || message.role === "assistant");

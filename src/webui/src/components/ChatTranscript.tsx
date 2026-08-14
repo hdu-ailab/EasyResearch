@@ -275,27 +275,29 @@ function MessageRow({
         </span>
       ) : null}
       {isYou && !message.streaming && !message.error && meta ? (
-        <div className="mt-1 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-          <button
-            type="button"
-            aria-label={t("transcript.editMessage")}
-            title={t("transcript.editMessage")}
-            className="flex size-6 items-center justify-center rounded-md text-v2-text-text-muted hover:bg-v2-grey-100"
-            onClick={onStartEdit}
-          >
-            <Pencil size={12} />
-          </button>
-          <button
-            type="button"
-            aria-label={t("transcript.copyMessage")}
-            title={t("transcript.copyMessage")}
-            className="flex size-6 items-center justify-center rounded-md text-v2-text-text-muted hover:bg-v2-grey-100"
-            onClick={() => void navigator.clipboard?.writeText(message.text).catch(() => {})}
-          >
-            <Copy size={12} />
-          </button>
+        <>
+          <div className="mt-1 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+            <button
+              type="button"
+              aria-label={t("transcript.editMessage")}
+              title={t("transcript.editMessage")}
+              className="flex size-6 items-center justify-center rounded-md text-v2-text-text-muted hover:bg-v2-grey-100"
+              onClick={onStartEdit}
+            >
+              <Pencil size={12} />
+            </button>
+            <button
+              type="button"
+              aria-label={t("transcript.copyMessage")}
+              title={t("transcript.copyMessage")}
+              className="flex size-6 items-center justify-center rounded-md text-v2-text-text-muted hover:bg-v2-grey-100"
+              onClick={() => void navigator.clipboard?.writeText(message.text).catch(() => {})}
+            >
+              <Copy size={12} />
+            </button>
+          </div>
           {meta.version && meta.version.count > 1 ? (
-            <span className="ml-1 flex items-center gap-1 text-[11px] text-v2-text-text-faint">
+            <span className="-mt-1 flex items-center gap-1 text-[11px] text-v2-text-text-faint">
               <button
                 type="button"
                 aria-label={t("transcript.previousVersion")}
@@ -321,7 +323,7 @@ function MessageRow({
               </button>
             </span>
           ) : null}
-        </div>
+        </>
       ) : null}
     </li>
   );

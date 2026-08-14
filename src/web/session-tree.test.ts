@@ -27,22 +27,60 @@ describe("flattenMessageTree", () => {
     ]);
   });
 
-  it("skips non-message entries and maps unknown roles to assistant", () => {
+  it("keeps non-message entries as other so parent chains stay intact", () => {
+    const tree = [
+      node({
+        type: "thinking_level_change",
+        id: "t1",
+        parentId: null,
+        timestamp: "",
+        thinkingLevel: "high",
+      }),
+      node(messageEntry("m1", "t1", "user", "hi"), [
+        node({ type: "label", id: "l1", parentId: "m1", timestamp: "", targetId: "m1", label: "x" }),
+        node(messageEntry("m2", "l1", "assistant", "yo")),
+      ]),
+    ];
+    expect(flattenMessageTree(tree)).toEqual([
+      { id: "t1", parentId: null, role: "other", text: "" },
+      { id: "m1", parentId: "t1", role: "user", text: "hi" },
+      { id: "l1", parentId: "m1", role: "other", text: "" },
+      { id: "m2", parentId: "l1", role: "assistant", text: "yo" },
+    ]);
+  });
+
+  it("maps non-bubble message roles (toolResult/system) to other", () => {
+    const tree = [
+      node(messageEntry("m1", null, "user", "a")),
+      node(messageEntry("tr1", "m1", "toolResult", "tool output")),
+      node(messageEntry("m2", "tr1", "assistant", "b")),
+      node(messageEntry("sys1", "m2", "system", "system note")),
+    ];
+    expect(flattenMessageTree(tree)).toEqual([
+      { id: "m1", parentId: null, role: "user", text: "a" },
+      { id: "tr1", parentId: "m1", role: "other", text: "" },
+      { id: "m2", parentId: "tr1", role: "assistant", text: "b" },
+      { id: "sys1", parentId: "m2", role: "other", text: "" },
+    ]);
+  });
+
+  it("carries compaction summaries with firstKeptEntryId and branch summaries as other", () => {
     const tree = [
       node({
         type: "compaction",
         id: "c1",
         parentId: null,
         timestamp: "",
-        summary: "s",
-        firstKeptEntryId: "m1",
-        tokensBefore: 0,
+        summary: "summarized",
+        firstKeptEntryId: "m2",
+        tokensBefore: 100,
       }),
-      node(messageEntry("m1", null, "system", "sys"), [
-        node({ type: "label", id: "l1", parentId: "m1", timestamp: "", targetId: "m1", label: "x" }),
-      ]),
+      node({ type: "branch_summary", id: "b1", parentId: "c1", timestamp: "", fromId: "m9", summary: "branch" }),
     ];
-    expect(flattenMessageTree(tree)).toEqual([{ id: "m1", parentId: null, role: "assistant", text: "sys" }]);
+    expect(flattenMessageTree(tree)).toEqual([
+      { id: "c1", parentId: null, role: "other", text: "summarized", firstKeptEntryId: "m2" },
+      { id: "b1", parentId: "c1", role: "other", text: "branch" },
+    ]);
   });
 
   it("extracts text from block content", () => {

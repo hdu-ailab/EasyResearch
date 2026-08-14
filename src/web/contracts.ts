@@ -43,8 +43,11 @@ export interface SkillCommandDto {
 export interface WebTreeEntryDto {
   id: string;
   parentId: string | null;
-  role: "user" | "assistant";
+  /** Mirrors the transcript bubble roles; non-bubble entries map to `other`. */
+  role: "user" | "assistant" | "other";
   text: string;
+  /** Compaction entries only: the kept context starts at this entry. */
+  firstKeptEntryId?: string;
 }
 
 export interface SessionTreeDto {
