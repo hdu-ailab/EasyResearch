@@ -32,7 +32,7 @@ export interface WorkPageProps {
 
 type Panel = "files" | "agents" | null;
 
-const emptyView: SessionViewState = { messages: [], tools: [], isStreaming: false, error: null, nextOrder: 0 };
+const emptyView: SessionViewState = { messages: [], tools: [], isStreaming: false, error: null, retry: null, nextOrder: 0 };
 
 function mergeChildView(snapshot: SessionViewState, live: SessionViewState): SessionViewState {
   const entries = [
