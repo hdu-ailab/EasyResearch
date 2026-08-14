@@ -4,6 +4,7 @@ import type {
   AgentEffectiveModelDto,
   AgentEffectiveThinkingDto,
   AgentResourceDto,
+  AuthProviderInfoDto,
   ChildSessionSnapshotDto,
   ConfigEntryDto,
   ConfigScope,
@@ -21,6 +22,8 @@ import {
   parseAgentResource,
   parseAgentResources,
   parseAgents,
+  parseAuthLoginResponse,
+  parseAuthProviderList,
   parseChildSnapshot,
   parseConfigEntries,
   parseConfigFile,
@@ -38,9 +41,17 @@ import {
   parseWebuiSettings,
 } from "./api/parsers";
 import { routes } from "./api/routes";
-import { ApiError, connectEventStream, requestJson, requestVoid, type SessionEventHandlers } from "./api/transport";
+import {
+  ApiError,
+  type AuthFlowHandlers,
+  connectAuthFlow,
+  connectEventStream,
+  requestJson,
+  requestVoid,
+  type SessionEventHandlers,
+} from "./api/transport";
 
-export type { SessionEventHandlers } from "./api/transport";
+export type { AuthFlowHandlers, SessionEventHandlers } from "./api/transport";
 export { ApiError } from "./api/transport";
 
 export function isUnknownSession(error: unknown): boolean {
@@ -206,4 +217,30 @@ export function createConfigDirectory(scope: ConfigScope, cwd: string | undefine
 
 export function connectSessionEvents(id: string, handlers: SessionEventHandlers): () => void {
   return connectEventStream(routes.events(id), handlers);
+}
+
+// ---- Provider auth (ADR-065) ---------------------------------------------
+
+export function listAuthProviders(): Promise<AuthProviderInfoDto[]> {
+  return requestJson(routes.authProviders(), parseAuthProviderList);
+}
+
+export function startAuthFlow(req: { providerId: string; type: "api_key" | "oauth" }): Promise<{ flowId: string }> {
+  return requestJson(routes.authLogin(), parseAuthLoginResponse, json("POST", req));
+}
+
+export function respondAuthFlow(flowId: string, value: string): Promise<void> {
+  return requestVoid(routes.authFlowRespond(flowId), json("POST", { value }));
+}
+
+export function cancelAuthFlow(flowId: string): Promise<void> {
+  return requestVoid(routes.authFlowCancel(flowId), { method: "POST" });
+}
+
+export function logoutProvider(providerId: string): Promise<void> {
+  return requestVoid(routes.authLogout(), json("POST", { providerId }));
+}
+
+export function authFlowEventSource(flowId: string, handlers: AuthFlowHandlers): () => void {
+  return connectAuthFlow(flowId, handlers);
 }
