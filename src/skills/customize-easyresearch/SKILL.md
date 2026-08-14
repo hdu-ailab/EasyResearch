@@ -190,6 +190,51 @@ vLLM, OpenAI-compatible proxies, etc.). Credentials go in
 `~/.easyresearch/agent/auth.json`, an environment variable, or the provider's
 `apiKey` field.
 
+### Reading model capabilities from the API (probe first)
+
+Before interviewing the user, probe the provider's OpenAI-compatible model
+endpoint — it usually answers the questions directly (context window, max
+output, modalities, reasoning). Example: OpenRouter's public catalog
+(`https://openrouter.ai/api/v1/models`, no auth needed for the catalog):
+
+```bash
+curl -s https://openrouter.ai/api/v1/models | python3 -c "
+import json, sys
+for m in json.load(sys.stdin)['data']:
+    tp = m.get('top_provider', {})
+    r = m.get('reasoning', {})
+    print(m['id'],
+          '| ctx:', m.get('context_length') or tp.get('context_length'),
+          '| maxOut:', tp.get('max_completion_tokens'),
+          '| vision:', 'image' in m.get('architecture', {}).get('input_modalities', []),
+          '| reasoning:', bool(r), '| efforts:', r.get('supported_efforts'))
+"
+```
+
+Sample output:
+
+```
+deepseek/deepseek-v4-pro-0813 | ctx: 1048576 | maxOut: 384000 | vision: False | reasoning: True | efforts: ['max', 'high', 'low']
+google/gemini-3.7-flash | ctx: 1048576 | maxOut: 65536 | vision: True | reasoning: True | efforts: ['max', 'high', 'low']
+```
+
+Map results to the Pi model entry:
+
+- `context_length` / `top_provider.max_completion_tokens` → `contextWindow` / `maxTokens`
+- image in `architecture.input_modalities` → `input: ["text", "image"]`
+- `reasoning` present → `reasoning: true`
+- `reasoning.supported_efforts` → the levels for `thinkingLevelMap`; `reasoning.mandatory: true` → `"off": null`
+- For proxies with a distinct thinking style, `compat.thinkingFormat` (e.g. `deepseek`, `zai`, `qwen`) matches the server's expected `thinkingFormat`
+
+Caveats:
+
+- The values are the route's claim about its upstream — usable for compaction
+  and budget math, but a probe is not proof the API honors them in practice.
+- `top_provider.max_completion_tokens` is sometimes `null`; fall back to a
+  documented value or a safe default like 16384 rather than omitting maxTokens.
+- If the endpoint requires auth, pass the key the provider will use:
+  `curl -s -H "Authorization: Bearer $KEY" <baseUrl>/v1/models`.
+
 ### Adding a model — interview the user first
 
 When the user wants to add a model, do not guess the reasoning fields. Ask, in
