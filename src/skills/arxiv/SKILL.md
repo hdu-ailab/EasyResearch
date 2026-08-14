@@ -32,12 +32,21 @@ metadata:
 - PDF 获取和 PDF 转 Markdown 由 Search agent 负责，并优先使用 `pdf-to-markdown` skill；编排层不直接执行转换。
 
 ## Helper Script
-在 skill 目录运行：
+在 skill 目录运行（优先使用 EasyResearch skill venv 的 Python，未设置时回退系统 python3）：
+
 ```bash
-python scripts/search_arxiv.py --id 1706.03762
-python scripts/search_arxiv.py --id 1706.03762 --bibtex
-python scripts/search_arxiv.py --id 1706.03762,2402.03300
+$EASYRESEARCH_VENV/bin/python scripts/search_arxiv.py --id 1706.03762
+$EASYRESEARCH_VENV/bin/python scripts/search_arxiv.py --id 1706.03762 --bibtex
+$EASYRESEARCH_VENV/bin/python scripts/search_arxiv.py --id 1706.03762,2402.03300
 ```
+
+Windows 布局：
+
+```powershell
+%EASYRESEARCH_VENV%\Scripts\python.exe scripts\search_arxiv.py --id 1706.03762
+```
+
+脚本只依赖 Python 标准库；`$EASYRESEARCH_VENV` 未设置时直接用 `python3` 亦可。
 
 如果 arXiv Atom API 返回 `429`，脚本会对 `--id` 查询自动 fallback 到 `arxiv.org/abs/{id}` 页面解析基础元数据和 BibTeX。
 
