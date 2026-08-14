@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { STORAGE_KEY } from "../preferences";
 import { PreferencesProvider, usePreferences } from "../preferences/PreferencesProvider";
 import { I18nProvider } from "./I18nProvider";
+import { messages } from "./messages";
 import { useI18n } from "./useI18n";
 
 function Probe() {
@@ -109,5 +110,14 @@ describe("i18n", () => {
   it("falls back to en without a provider", () => {
     render(<Probe />);
     expect(screen.getByTestId("label").textContent).toBe("Language");
+  });
+
+  it("translates retry banner strings in both languages", () => {
+    expect(messages.en["work.retrying"].replace("{attempt}", "2").replace("{maxAttempts}", "3")).toBe(
+      "Retrying API call 2/3",
+    );
+    expect(messages.zhCN["work.retrying"].replace("{attempt}", "2").replace("{maxAttempts}", "3")).toBe(
+      "API 调用失败，正在重试 2/3",
+    );
   });
 });
