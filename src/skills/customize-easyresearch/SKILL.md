@@ -190,6 +190,34 @@ vLLM, OpenAI-compatible proxies, etc.). Credentials go in
 `~/.easyresearch/agent/auth.json`, an environment variable, or the provider's
 `apiKey` field.
 
+### Adding a model — interview the user first
+
+When the user wants to add a model, do not guess the reasoning fields. Ask, in
+order:
+
+1. **Does the model support thinking/reasoning at all?** (e.g. a reasoner like
+   o-series/DeepSeek-R1 vs. a plain fast model). This maps to the `reasoning`
+   boolean. If the user does not know, ask whether the model's provider docs
+   mention "reasoning", "thinking", or "extended thinking"; default to `false`.
+2. **If yes: does the model expose configurable reasoning strength?** (an
+   effort/thinking-level knob). Some reasoners think at a fixed strength and
+   cannot be tuned — then set `reasoning: true` without a `thinkingLevelMap`.
+3. **If yes: how many strength levels does it expose?** Count the actual
+   discrete levels the provider accepts (e.g. "low/medium/high" = 3, "5
+   levels" = 5). Ask what the level names are if the user can state them.
+
+Then build the model entry from the answers:
+
+- No thinking → `{ "id": "...", "name": "..." }`, no `reasoning` field.
+- Fixed-strength reasoning → add `"reasoning": true`.
+- Tunable reasoning → add `"reasoning": true` plus a `thinkingLevelMap` that
+  maps the user's levels onto Pi's levels. Pi's level order is
+  `off < minimal < low < medium < high < xhigh < max`. Map the user's N levels
+  onto a contiguous run of N levels from that order, matching the user's own
+  naming when they stated one; put `null` on every other Pi level so
+  unsupported strengths disappear from the UI. A model whose thinking cannot
+  be disabled also gets `"off": null`.
+
 ```json
 {
   "providers": {
@@ -198,12 +226,39 @@ vLLM, OpenAI-compatible proxies, etc.). Credentials go in
       "api": "openai-completions",
       "apiKey": "local",
       "models": [
-        { "id": "deepseek-v4-flash-free", "name": "DeepSeek V4 Flash Free", "reasoning": true }
+        { "id": "deepseek-v4-flash-free", "name": "DeepSeek V4 Flash Free", "reasoning": true },
+        {
+          "id": "reasoner-3level",
+          "name": "Reasoner (3 levels)",
+          "reasoning": true,
+          "thinkingLevelMap": {
+            "minimal": null,
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "xhigh": null,
+            "max": null
+          }
+        }
       ]
     }
   }
 }
 ```
+
+`thinkingLevelMap` keys are Pi thinking levels: `off`, `minimal`, `low`,
+`medium`, `high`, `xhigh`, `max`. A string value is what is sent to the
+provider; `null` marks the level unsupported and hidden from the UI; omitted
+keys mean standard levels through `high` use the provider's default mapping.
+Older `compat.reasoningEffortMap` configs should be migrated to
+model-level `thinkingLevelMap`. Show the user the resulting entry and confirm
+before saving, then remind them `models.json` reloads on `/model` — no restart
+needed.
+
+Other model fields: `input` (`["text"]` / `["text","image"]`), `contextWindow`,
+`maxTokens`, `samplingParams`, `cost`, `compat`. For servers that do not
+understand the `developer` role or `reasoning_effort`, set
+`compat.supportsDeveloperRole: false` / `compat.supportsReasoningEffort: false`.
 
 Auth:
 
