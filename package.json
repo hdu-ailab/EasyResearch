@@ -26,6 +26,7 @@
     "lint:web": "biome check src/webui vitest.config.ts",
     "check:web": "bun run typecheck && bun run test && bun run build:web && bun run lint:web",
     "prepack": "bun run build:web",
+    "postinstall": "bun src/setup-venv.ts",
     "dev": "bun run src/cli/index.ts",
     "dev:web": "vite --config src/webui/vite.config.ts"
   },

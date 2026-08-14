@@ -1,0 +1,71 @@
+#!/usr/bin/env bun
+import { existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { getAgentDir } from "./runtime/pi-import";
+
+export type RunFn = (command: string, args: string[]) => { status: number; stdout: string; stderr: string };
+
+export function venvPythonPath(venvDir: string, platform: NodeJS.Platform = process.platform): string {
+  return platform === "win32" ? join(venvDir, "Scripts", "python.exe") : join(venvDir, "bin", "python");
+}
+
+export function detectPython(run: RunFn): string | undefined {
+  for (const candidate of ["python3", "python"]) {
+    const result = run(candidate, ["--version"]);
+    if (result.status === 0) return candidate;
+  }
+  return undefined;
+}
+
+export interface SetupDeps {
+  venvDir: string;
+  run: RunFn;
+  log: (msg: string) => void;
+  platform?: NodeJS.Platform;
+}
+
+export interface SetupResult {
+  venvDir: string;
+  success: boolean;
+  reason?: string;
+}
+
+export function setupSkillVenv(deps: SetupDeps): SetupResult {
+  const { venvDir, run, log, platform } = deps;
+  const python = venvPythonPath(venvDir, platform);
+  if (existsSync(python)) {
+    const result = run(python, ["-m", "pip", "install", "--upgrade", "pip", "markitdown", "arxiv"]);
+    if (result.status !== 0) return { venvDir, success: false, reason: `pip install failed: ${result.stderr}` };
+    return { venvDir, success: true };
+  }
+  const pythonCmd = detectPython(run);
+  if (!pythonCmd) {
+    return { venvDir, success: false, reason: "python3/python not found on PATH" };
+  }
+  const create = run(pythonCmd, ["-m", "venv", venvDir]);
+  if (create.status !== 0) return { venvDir, success: false, reason: `venv creation failed: ${create.stderr}` };
+  const install = run(python, ["-m", "pip", "install", "--upgrade", "pip", "markitdown", "arxiv"]);
+  if (install.status !== 0) return { venvDir, success: false, reason: `pip install failed: ${install.stderr}` };
+  log(`Skill venv ready at ${venvDir}`);
+  return { venvDir, success: true };
+}
+
+function realRun(command: string, args: string[]): { status: number; stdout: string; stderr: string } {
+  const result = spawnSync(command, args, { encoding: "utf8", timeout: 600_000 });
+  return { status: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+}
+
+export function main(): number {
+  const venvDir = join(getAgentDir(), "venv");
+  const result = setupSkillVenv({ venvDir, run: realRun, log: (msg) => console.log(`[easyresearch] ${msg}`) });
+  if (!result.success) {
+    console.warn(
+      `[easyresearch] Skill venv setup skipped: ${result.reason}. PDF conversion and arXiv SDK features will fall back to system tools. Fix with: python3 -m venv "${venvDir}" && "${venvPythonPath(venvDir)}" -m pip install markitdown arxiv`,
+    );
+  }
+  return 0;
+}
+
+if (import.meta.main) process.exit(main());
