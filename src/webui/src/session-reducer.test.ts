@@ -9,7 +9,14 @@ import {
   terminateSessionRun,
 } from "./session-reducer";
 
-const emptyState: SessionViewState = { messages: [], tools: [], isStreaming: false, error: null, retry: null, nextOrder: 0 };
+const emptyState: SessionViewState = {
+  messages: [],
+  tools: [],
+  isStreaming: false,
+  error: null,
+  retry: null,
+  nextOrder: 0,
+};
 
 function userMessage(text: string) {
   return { role: "user", content: [{ type: "text", text }] } as never;
@@ -1465,7 +1472,11 @@ describe("session reducer", () => {
 
   it("clears retry state on auto_retry_end", () => {
     const started = reduceSessionEvent(emptyState, retryStartEvent());
-    const ended = reduceSessionEvent(started, { type: "auto_retry_end", success: true, attempt: 2 } as AgentSessionEvent);
+    const ended = reduceSessionEvent(started, {
+      type: "auto_retry_end",
+      success: true,
+      attempt: 2,
+    } as AgentSessionEvent);
     expect(ended.retry).toBeNull();
   });
 
