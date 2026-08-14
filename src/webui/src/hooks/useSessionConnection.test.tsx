@@ -553,7 +553,13 @@ describe("useSessionConnection", () => {
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
     const branched: SessionSnapshotDto = {
-      session: { id: "s1", cwd: "/paper", sessionFile: "/agent/sessions/--paper--/session.jsonl", isStreaming: false, status: "ready" },
+      session: {
+        id: "s1",
+        cwd: "/paper",
+        sessionFile: "/agent/sessions/--paper--/session.jsonl",
+        isStreaming: false,
+        status: "ready",
+      },
       messages: [{ role: "user", content: [{ type: "text", text: "edited" }] }],
       subagents: [],
     } as never;

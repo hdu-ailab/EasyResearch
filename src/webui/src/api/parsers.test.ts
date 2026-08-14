@@ -155,9 +155,7 @@ describe("API response parsers", () => {
   });
 
   it("parseSkillCommands extracts name and optional description", () => {
-    expect(
-      parseSkillCommands({ commands: [{ name: "arxiv", description: "arXiv" }, { name: "drawio" }] }),
-    ).toEqual([
+    expect(parseSkillCommands({ commands: [{ name: "arxiv", description: "arXiv" }, { name: "drawio" }] })).toEqual([
       { name: "arxiv", description: "arXiv" },
       { name: "drawio" },
     ]);
