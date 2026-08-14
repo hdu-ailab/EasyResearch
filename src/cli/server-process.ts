@@ -43,7 +43,13 @@ export async function stopServerProcess(agentDir: string): Promise<boolean> {
     removeServerPid(agentDir);
     return false;
   }
-  process.kill(pid, "SIGTERM");
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    removeServerPid(agentDir);
+    return false;
+  }
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
     if (!isProcessAlive(pid)) {
@@ -52,7 +58,13 @@ export async function stopServerProcess(agentDir: string): Promise<boolean> {
     }
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
-  if (isProcessAlive(pid)) process.kill(pid, "SIGKILL");
+  if (isProcessAlive(pid)) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    }
+  }
   removeServerPid(agentDir);
   return true;
 }

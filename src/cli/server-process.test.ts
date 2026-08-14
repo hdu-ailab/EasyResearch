@@ -1,13 +1,14 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   isProcessAlive,
   readServerPid,
   removeServerPid,
   serverLogPath,
   serverPidPath,
+  stopServerProcess,
   writeServerPid,
 } from "./server-process";
 
@@ -54,5 +55,21 @@ describe("isProcessAlive", () => {
   it("returns true for the current process and false for a dead pid", () => {
     expect(isProcessAlive(process.pid)).toBe(true);
     expect(isProcessAlive(99999999)).toBe(false);
+  });
+});
+
+describe("stopServerProcess", () => {
+  it("treats a SIGTERM ESRCH race as already stopped, returns false, and cleans the pid file", async () => {
+    writeServerPid(root, 4242);
+    const killSpy = vi.spyOn(process, "kill").mockImplementation((_pid, signal) => {
+      if (signal === 0) return true;
+      throw Object.assign(new Error("ESRCH: no such process"), { code: "ESRCH" });
+    });
+    try {
+      await expect(stopServerProcess(root)).resolves.toBe(false);
+    } finally {
+      killSpy.mockRestore();
+    }
+    expect(readServerPid(root)).toBeUndefined();
   });
 });
