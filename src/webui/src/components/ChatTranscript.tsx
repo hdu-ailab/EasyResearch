@@ -605,7 +605,11 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
                   data-index={virtualRow.index}
                   ref={virtualizer.measureElement}
                   className="px-4"
-                  style={{ minHeight: `${virtualRow.size}px`, paddingBottom: ROW_GAP_PX }}
+                  // No min-height here: pinning the measured element at
+                  // `virtualRow.size` makes ResizeObserver silent when content
+                  // shrinks (window resize, collapsed bodies), leaving stale
+                  // oversized rows and giant gaps between messages.
+                  style={{ paddingBottom: ROW_GAP_PX }}
                 >
                   {"kind" in entry ? (
                     <PendingRow />

@@ -106,6 +106,16 @@ describe("ChatTranscript", () => {
     expect(screen.queryByText("Send a message to start.")).toBeNull();
   });
 
+  it("does not pin the measured row height so content shrink re-measures", () => {
+    // Regression: a `minHeight: virtualRow.size` on the measured element makes
+    // ResizeObserver silent when content shrinks (window resize, collapsed
+    // bodies), leaving stale oversized rows and giant gaps between messages.
+    const { container } = renderTranscript(<ChatTranscript messages={[msg({ key: "a", text: "one" })]} tools={[]} />);
+    const row = container.querySelector("[data-index]") as HTMLElement;
+    expect(row.style.minHeight).toBe("");
+    expect(row.style.paddingBottom).toBe("12px");
+  });
+
   it("renders a working agent row while pending", () => {
     renderTranscript(<ChatTranscript messages={[]} tools={[]} pending />);
     const row = screen.getByLabelText("Working");
