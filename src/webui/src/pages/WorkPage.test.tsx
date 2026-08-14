@@ -1978,4 +1978,19 @@ describe("WorkPage", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Session file can no longer be reopened");
     expect(screen.queryByText("Unknown session: s1")).toBeNull();
   });
+
+  it("shows the retry banner while an API call is being retried and hides it on completion", async () => {
+    stubEvents();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    emitInAct({
+      type: "auto_retry_start",
+      attempt: 1,
+      maxAttempts: 3,
+      delayMs: 5000,
+      errorMessage: "429 rate limited",
+    });
+    expect(await screen.findByText(/Retrying API call 1\/3/)).toBeTruthy();
+    emitInAct({ type: "auto_retry_end", success: true, attempt: 1 });
+    await waitFor(() => expect(screen.queryByText(/Retrying API call 1\/3/)).toBeNull());
+  });
 });

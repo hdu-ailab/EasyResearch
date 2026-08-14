@@ -9,7 +9,7 @@ export function RetryBanner({ retry }: { retry: RetryView }) {
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, [retry.endsAt]);
+  }, []);
   const remaining = Math.max(0, Math.ceil((retry.endsAt - now) / 1000));
   const retrying = t("work.retrying")
     .replace("{attempt}", String(retry.attempt))
