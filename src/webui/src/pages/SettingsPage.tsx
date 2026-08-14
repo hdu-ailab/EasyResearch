@@ -1,4 +1,4 @@
-import { Activity, FileJson, Languages, MessageSquare, Minus, Plus, Settings2, UserPlus } from "lucide-react";
+import { Activity, FileJson, KeyRound, Languages, MessageSquare, Minus, Plus, Settings2, UserPlus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { AgentDto, AgentResourceDto, SkillResourceDto } from "../../../web/contracts";
 import { PAPER_ASSISTANT_AGENT } from "../agent-identity";
@@ -19,6 +19,7 @@ import {
 import type { ModelOption } from "../api/parsers";
 import { AgentMarkdownEditor } from "../components/AgentMarkdownEditor";
 import { AgentResourceDetailsDialog } from "../components/AgentResourceDetailsDialog";
+import { ProviderConnectModal } from "../components/ProviderConnectModal";
 import { SkillResourceEditor } from "../components/SkillResourceEditor";
 import { ThinkingLevelSelect, thinkingLevelsForModel } from "../components/ThinkingLevelSelect";
 import { ProductMark, Topbar } from "../components/Topbar";
@@ -170,6 +171,7 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
   const [diagnosticAgents, setDiagnosticAgents] = useState<AgentDto[]>([]);
   const [diagnosticError, setDiagnosticError] = useState<string | null>(null);
   const [projects, setProjects] = useState<Array<{ cwd: string }>>([]);
+  const [providerConnectOpen, setProviderConnectOpen] = useState(false);
   const diagnosticRequest = useRef(0);
   const [agentEditor, setAgentEditor] = useState<AgentResourceDto | null>(null);
   const [skillEditor, setSkillEditor] = useState<SkillResourceDto | null>(null);
@@ -750,6 +752,17 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
             </button>
           </section>
 
+          <section className={sectionClass} aria-label={t("settings.connectProviders")}>
+            <button
+              type="button"
+              className="flex h-9 w-full items-center gap-2 rounded-[10px] px-4 py-2 text-[13px] font-medium text-v2-text-text-base transition-colors hover:bg-v2-grey-100"
+              onClick={() => setProviderConnectOpen(true)}
+            >
+              <KeyRound size={14} className="text-v2-text-text-muted" aria-hidden />
+              {t("settings.connectProviders")}
+            </button>
+          </section>
+
           {error && (
             <p
               className="rounded-md border border-v2-status-error/30 bg-v2-status-error/5 px-3 py-2 text-[13px] text-v2-status-error"
@@ -806,6 +819,7 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
           onClose={() => setDetailsAgent(null)}
         />
       )}
+      {providerConnectOpen && <ProviderConnectModal onClose={() => setProviderConnectOpen(false)} />}
     </div>
   );
 }
