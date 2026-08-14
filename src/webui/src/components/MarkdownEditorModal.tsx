@@ -1,5 +1,6 @@
 import { X } from "lucide-react";
 import { useState } from "react";
+import { useModalLayer } from "../hooks/useModalLayer";
 import { useI18n } from "../i18n/useI18n";
 
 export interface MarkdownEditorModalProps {
@@ -29,9 +30,10 @@ export function MarkdownEditorModal({
     if (draft !== content && !window.confirm(t("settings.editor.discardConfirm"))) return;
     onClose();
   };
+  const zIndex = useModalLayer(close);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-v2-grey-1200/30 p-3 sm:p-6">
+    <div className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/30 p-3 sm:p-6" style={{ zIndex }}>
       <div
         role="dialog"
         aria-modal="true"

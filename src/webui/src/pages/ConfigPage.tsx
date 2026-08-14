@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import type { ConfigEntryDto, ConfigScope } from "../../../web/contracts";
 import { createConfigDirectory, listConfig, listConfigProjects, readConfigFile, writeConfigFile } from "../api";
 import { ProductMark, Topbar } from "../components/Topbar";
+import { useModalLayer } from "../hooks/useModalLayer";
 import { useI18n } from "../i18n/useI18n";
 import type { ConfigProjectsDto } from "../types";
 
@@ -263,35 +264,61 @@ export function ConfigPage({ onBack }: ConfigPageProps) {
         )}
       </div>
       {dialog && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-v2-grey-1200/30 p-4">
-          <div
-            role="dialog"
-            className="w-full max-w-[380px] rounded-[10px] bg-v2-background-bg-base p-4 shadow-[var(--v2-elevation-overlay)]"
-          >
-            <h2 className="mb-3 text-[13px] font-semibold">
-              {dialog === "file" ? t("config.newFile") : t("config.newFolder")}
-            </h2>
-            <input
-              className="h-8 w-full rounded-md border border-v2-grey-200 px-2 font-mono text-[12px]"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && void create()}
-            />
-            <div className="mt-3 flex justify-end gap-2">
-              <button type="button" className="px-3 py-1 text-[12px]" onClick={() => setDialog(null)}>
-                {t("config.cancel")}
-              </button>
-              <button
-                type="button"
-                className="rounded-md bg-v2-grey-1100 px-3 py-1 text-[12px] text-v2-grey-50"
-                onClick={() => void create()}
-              >
-                {t("config.confirm")}
-              </button>
-            </div>
-          </div>
-        </div>
+        <ConfigCreateDialog
+          kind={dialog}
+          name={name}
+          onNameChange={setName}
+          onCreate={() => void create()}
+          onCancel={() => setDialog(null)}
+        />
       )}
+    </div>
+  );
+}
+
+function ConfigCreateDialog({
+  kind,
+  name,
+  onNameChange,
+  onCreate,
+  onCancel,
+}: {
+  kind: "file" | "directory";
+  name: string;
+  onNameChange: (value: string) => void;
+  onCreate: () => void;
+  onCancel: () => void;
+}) {
+  const { t } = useI18n();
+  const zIndex = useModalLayer(onCancel);
+  return (
+    <div className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/30 p-4" style={{ zIndex }}>
+      <div
+        role="dialog"
+        className="w-full max-w-[380px] rounded-[10px] bg-v2-background-bg-base p-4 shadow-[var(--v2-elevation-overlay)]"
+      >
+        <h2 className="mb-3 text-[13px] font-semibold">
+          {kind === "file" ? t("config.newFile") : t("config.newFolder")}
+        </h2>
+        <input
+          className="h-8 w-full rounded-md border border-v2-grey-200 px-2 font-mono text-[12px]"
+          value={name}
+          onChange={(e) => onNameChange(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && onCreate()}
+        />
+        <div className="mt-3 flex justify-end gap-2">
+          <button type="button" className="px-3 py-1 text-[12px]" onClick={onCancel}>
+            {t("config.cancel")}
+          </button>
+          <button
+            type="button"
+            className="rounded-md bg-v2-grey-1100 px-3 py-1 text-[12px] text-v2-grey-50"
+            onClick={onCreate}
+          >
+            {t("config.confirm")}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

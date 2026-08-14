@@ -1,5 +1,6 @@
 import { AlertTriangle, Settings2, X } from "lucide-react";
 import type { AgentDto, AgentResourceDto } from "../../../web/contracts";
+import { useModalLayer } from "../hooks/useModalLayer";
 import { agentDisplayName } from "../i18n/agents";
 import { useI18n } from "../i18n/useI18n";
 import { AgentMarkdownEditor } from "./AgentMarkdownEditor";
@@ -43,11 +44,12 @@ export function AgentConfigModal({
   onShowDetails,
 }: AgentConfigModalProps) {
   const { t } = useI18n();
+  const zIndex = useModalLayer(onClose);
   const name = agentDisplayName(t, agent.name);
   const tools = agent.effectiveTools ?? agent.tools ?? [];
   const skills = agent.effectiveSkills ?? agent.skills ?? [];
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-v2-grey-1200/30 p-3 sm:p-6">
+    <div className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/30 p-3 sm:p-6" style={{ zIndex }}>
       <div
         role="dialog"
         aria-modal="true"

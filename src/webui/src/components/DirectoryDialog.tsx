@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DirectoryEntryDto } from "../../../web/contracts";
 import { createDirectory, listDirectories } from "../api";
 import { useLazyTree } from "../hooks/useLazyTree";
+import { useModalLayer } from "../hooks/useModalLayer";
 import { useI18n } from "../i18n/useI18n";
 
 export interface DirectoryDialogProps {
@@ -55,13 +56,7 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
     inputRef.current?.focus();
   }, []);
 
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  const zIndex = useModalLayer(onClose);
 
   const rows = useMemo(() => {
     const out: TreeRow[] = [];
@@ -193,7 +188,8 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: the backdrop intentionally closes the dialog on pointer dismissal.
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-v2-grey-1200/30 p-0 sm:p-6"
+      className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/30 p-0 sm:p-6"
+      style={{ zIndex }}
       role="presentation"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
@@ -403,39 +399,65 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
         </footer>
       </section>
       {createOpen && (
-        <div className="fixed inset-0 z-10 flex items-center justify-center bg-v2-grey-1200/20 p-4">
-          <div
-            role="dialog"
-            aria-label={t("dialog.createFolder")}
-            className="w-full max-w-[360px] rounded-[10px] bg-v2-background-bg-base p-4 shadow-[var(--v2-elevation-overlay)]"
-          >
-            <h2 className="mb-3 text-[13px] font-semibold">{t("dialog.createFolder")}</h2>
-            <input
-              className="h-8 w-full rounded-md border border-v2-grey-200 px-2 font-mono text-[12px]"
-              value={createName}
-              onChange={(event) => setCreateName(event.target.value)}
-              onKeyDown={(event) => event.key === "Enter" && void createFolder()}
-            />
-            {createError && (
-              <p role="alert" className="mt-2 text-[12px] text-v2-status-error">
-                {createError}
-              </p>
-            )}
-            <div className="mt-3 flex justify-end gap-2">
-              <button type="button" className="px-3 py-1 text-[12px]" onClick={() => setCreateOpen(false)}>
-                {t("dialog.cancel")}
-              </button>
-              <button
-                type="button"
-                className="rounded-md bg-v2-grey-1100 px-3 py-1 text-[12px] text-v2-grey-50"
-                onClick={() => void createFolder()}
-              >
-                Create
-              </button>
-            </div>
-          </div>
-        </div>
+        <CreateFolderDialog
+          name={createName}
+          error={createError}
+          onNameChange={setCreateName}
+          onCreate={() => void createFolder()}
+          onCancel={() => setCreateOpen(false)}
+        />
       )}
+    </div>
+  );
+}
+
+function CreateFolderDialog({
+  name,
+  error,
+  onNameChange,
+  onCreate,
+  onCancel,
+}: {
+  name: string;
+  error: string | null;
+  onNameChange: (value: string) => void;
+  onCreate: () => void;
+  onCancel: () => void;
+}) {
+  const { t } = useI18n();
+  const zIndex = useModalLayer(onCancel);
+  return (
+    <div className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/20 p-4" style={{ zIndex }}>
+      <div
+        role="dialog"
+        aria-label={t("dialog.createFolder")}
+        className="w-full max-w-[360px] rounded-[10px] bg-v2-background-bg-base p-4 shadow-[var(--v2-elevation-overlay)]"
+      >
+        <h2 className="mb-3 text-[13px] font-semibold">{t("dialog.createFolder")}</h2>
+        <input
+          className="h-8 w-full rounded-md border border-v2-grey-200 px-2 font-mono text-[12px]"
+          value={name}
+          onChange={(event) => onNameChange(event.target.value)}
+          onKeyDown={(event) => event.key === "Enter" && onCreate()}
+        />
+        {error && (
+          <p role="alert" className="mt-2 text-[12px] text-v2-status-error">
+            {error}
+          </p>
+        )}
+        <div className="mt-3 flex justify-end gap-2">
+          <button type="button" className="px-3 py-1 text-[12px]" onClick={onCancel}>
+            {t("dialog.cancel")}
+          </button>
+          <button
+            type="button"
+            className="rounded-md bg-v2-grey-1100 px-3 py-1 text-[12px] text-v2-grey-50"
+            onClick={onCreate}
+          >
+            Create
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

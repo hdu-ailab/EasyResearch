@@ -808,4 +808,25 @@ describe("SettingsPage", () => {
       "---\nname: search\ndescription: Searches\nenable: false\n---\nPrompt\n",
     );
   });
+
+  it("stacks the details dialog above the agent config modal and Esc unwinds top-down", async () => {
+    const user = userEvent.setup();
+    renderSettings();
+    const config = await openAgentConfig(user, "Search");
+    const configZ = Number((config.parentElement as HTMLElement).style.zIndex);
+
+    await user.click(within(config).getByRole("button", { name: "View tools & skills details" }));
+    const details = screen.getByRole("dialog", { name: "Search resources" });
+    const detailsZ = Number((details.parentElement as HTMLElement).style.zIndex);
+    expect(detailsZ).toBeGreaterThan(configZ);
+
+    // Escape closes the details dialog first, leaving the config modal open.
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Search resources" })).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Agents" })).toBeTruthy();
+
+    // A second Escape closes the config modal.
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Agents" })).toBeNull();
+  });
 });
