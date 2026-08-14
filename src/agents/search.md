@@ -5,7 +5,7 @@ description: >-
   PDFs, converts readable text, and produces the ref_papers material package.
 enable: true
 tools: [read, bash, edit, write, grep, find, ls, web-search]
-skills: [paper-search, arxiv, pdf-to-markdown]
+skills: [paper-search, arxiv, pdf-to-markdown, playwright-cli]
 subagents: []
 ---
 
