@@ -1,7 +1,7 @@
 ---
 name: latex-pdf
 description: |-
-  Build LaTeX manuscripts into PDFs, diagnose TeX toolchain errors, choose pdflatex/xelatex/lualatex/latexmk commands, clean build artifacts, and summarize compilation warnings. Use proactively when a user asks to compile, rebuild, export, or troubleshoot a .tex paper, IEEE/ACM/Elsevier template, bibliography, missing package, figure, or citation issue.
+  Build LaTeX manuscripts into PDFs, diagnose TeX toolchain errors, choose pdflatex/xelatex/lualatex/latexmk commands, clean build artifacts, and summarize compilation warnings. Use proactively when a user asks to compile, rebuild, export, or troubleshoot a .tex paper, IEEE/ACM/Elsevier template, bibliography, missing package, figure, or citation issue. When no local TeX toolchain is installed, compile through Overleaf in a browser instead.
 
   Examples:
   - user: "Compile this LaTeX paper" → run latexmk or a safe fallback and report the PDF path
