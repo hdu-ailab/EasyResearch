@@ -3,10 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { RpcEventListener, RpcSessionState } from "@earendil-works/pi-coding-agent";
+import type { RpcEventListener, RpcSessionState, SessionTreeNode } from "@earendil-works/pi-coding-agent";
 import type { RouteServices } from "./routes";
 import { createRouteHandler } from "./routes";
-import type { RpcSessionAdapter, RpcSessionFactory, StartRpcSessionOptions } from "./rpc-session";
+import type { RpcSessionAdapter, RpcSessionFactory, StartRpcSessionOptions, WebSlashCommand } from "./rpc-session";
 import { ActiveSessionRegistry, UnknownSessionError } from "./active-sessions";
 import { DirectoryService } from "./directories";
 import { ConfigFileService } from "./config-files";
@@ -113,6 +113,18 @@ class FakeAdapter implements RpcSessionAdapter {
   }
   async getMessages(): Promise<AgentMessage[]> {
     return this.getMessagesPromise ?? this.messages;
+  }
+  commandsResult: WebSlashCommand[] = [];
+  treeResult: { tree: SessionTreeNode[]; leafId: string | null } = { tree: [], leafId: null };
+  navigateCalls: string[] = [];
+  async getCommands(): Promise<WebSlashCommand[]> {
+    return this.commandsResult;
+  }
+  async getTree(): Promise<{ tree: SessionTreeNode[]; leafId: string | null }> {
+    return this.treeResult;
+  }
+  async navigateTree(entryId: string): Promise<void> {
+    this.navigateCalls.push(entryId);
   }
   onEvent(listener: RpcEventListener) {
     this.events.add(listener);
@@ -490,6 +502,67 @@ describe("web routes", () => {
     const body = (await res.json()) as { session: { id: string }; messages: unknown[] };
     expect(body.session.id).toBe(created.id);
     expect(body.messages).toEqual([]);
+  });
+
+  it("GET /api/sessions/:id/commands lists only skill commands without the skill: prefix", async () => {
+    setup();
+    const created = await registry.create({ cwd: projectDir });
+    const adapter = FakeAdapter.all.at(-1)!;
+    adapter.commandsResult = [
+      { name: "skill:arxiv", description: "arXiv", source: "skill" },
+      { name: "skill:drawio", source: "skill" },
+      { name: "clear", source: "extension" },
+    ];
+
+    const res = await handler(new Request(`http://localhost/api/sessions/${created.id}/commands`));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      commands: [
+        { name: "arxiv", description: "arXiv" },
+        { name: "drawio" },
+      ],
+    });
+  });
+
+  it("GET /api/sessions/:id/tree returns the flattened tree and leaf", async () => {
+    setup();
+    const created = await registry.create({ cwd: projectDir });
+    const adapter = FakeAdapter.all.at(-1)!;
+    adapter.treeResult = { tree: [], leafId: "leaf-1" };
+
+    const res = await handler(new Request(`http://localhost/api/sessions/${created.id}/tree`));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ tree: [], leafId: "leaf-1" });
+  });
+
+  it("POST /api/sessions/:id/tree/navigate forwards the entry id", async () => {
+    setup();
+    const created = await registry.create({ cwd: projectDir });
+    const adapter = FakeAdapter.all.at(-1)!;
+
+    const res = await handler(
+      new Request(`http://localhost/api/sessions/${created.id}/tree/navigate`, {
+        method: "POST",
+        body: JSON.stringify({ entryId: "entry-9" }),
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(adapter.navigateCalls).toEqual(["entry-9"]);
+  });
+
+  it("POST /api/sessions/:id/tree/navigate rejects a missing entry id", async () => {
+    setup();
+    const created = await registry.create({ cwd: projectDir });
+
+    const res = await handler(
+      new Request(`http://localhost/api/sessions/${created.id}/tree/navigate`, {
+        method: "POST",
+        body: JSON.stringify({}),
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    expect(res.status).toBe(400);
   });
 
   it("includes subagent summaries in a parent HTTP snapshot", async () => {
