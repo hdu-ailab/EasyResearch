@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { injectSkillVenvEnv } from "../runtime/venv-env";
 import { runNativeTui } from "../runtime/pi-host";
 import { runWeb } from "./commands/web";
 
@@ -12,6 +13,7 @@ export async function runCli(
   deps: CliDependencies = { runTui: runNativeTui, runWeb },
 ): Promise<number> {
   try {
+    injectSkillVenvEnv();
     if (argv.length === 0) await deps.runTui();
     else if (argv.length === 1 && argv[0] === "web") await deps.runWeb();
     else {
