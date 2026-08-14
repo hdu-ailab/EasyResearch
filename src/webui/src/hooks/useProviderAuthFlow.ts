@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { AuthFlowEventDto, AuthProviderInfoDto } from "../../../web/contracts";
 import {
   authFlowEventSource,
   cancelAuthFlow,
@@ -7,7 +8,6 @@ import {
   respondAuthFlow,
   startAuthFlow,
 } from "../api";
-import type { AuthFlowEventDto, AuthProviderInfoDto } from "../../../web/contracts";
 
 export type FlowView = "idle" | "flow" | "done" | "error";
 
@@ -18,24 +18,28 @@ export interface PendingPrompt {
   options?: { id: string; label: string; description?: string }[];
 }
 
-export type NotifyCard = {
-  kind: "info";
-  message: string;
-  links?: { url: string; label?: string }[];
-} | {
-  kind: "auth_url";
-  url: string;
-  instructions?: string;
-} | {
-  kind: "device_code";
-  userCode: string;
-  verificationUri: string;
-  intervalSeconds?: number;
-  expiresInSeconds?: number;
-} | {
-  kind: "progress";
-  message: string;
-};
+export type NotifyCard =
+  | {
+      kind: "info";
+      message: string;
+      links?: { url: string; label?: string }[];
+    }
+  | {
+      kind: "auth_url";
+      url: string;
+      instructions?: string;
+    }
+  | {
+      kind: "device_code";
+      userCode: string;
+      verificationUri: string;
+      intervalSeconds?: number;
+      expiresInSeconds?: number;
+    }
+  | {
+      kind: "progress";
+      message: string;
+    };
 
 export interface UseProviderAuthFlow {
   providers: AuthProviderInfoDto[];
