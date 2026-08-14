@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { RpcEventListener, RpcSessionState } from "@earendil-works/pi-coding-agent";
+import type { RpcEventListener, RpcSessionState, SessionTreeNode } from "@earendil-works/pi-coding-agent";
 
 export interface StartRpcSessionOptions {
   cwd: string;
@@ -8,6 +8,12 @@ export interface StartRpcSessionOptions {
   /** Thinking level to apply at launch via `--thinking` for fresh sessions. */
   thinking?: string;
 }
+
+export type WebSlashCommand = {
+  name: string;
+  description?: string;
+  source: "extension" | "prompt" | "skill";
+};
 
 export interface RpcSessionAdapter {
   start(): Promise<void>;
@@ -18,6 +24,9 @@ export interface RpcSessionAdapter {
   setThinkingLevel(level: string): Promise<void>;
   getState(): Promise<RpcSessionState>;
   getMessages(): Promise<AgentMessage[]>;
+  getCommands(): Promise<WebSlashCommand[]>;
+  getTree(): Promise<{ tree: SessionTreeNode[]; leafId: string | null }>;
+  navigateTree(entryId: string): Promise<void>;
   onEvent(listener: RpcEventListener): () => void;
   onExit(listener: (error: Error) => void): () => void;
 }
@@ -41,6 +50,8 @@ export interface RpcClientLike {
   setThinkingLevel(level: string): Promise<void>;
   getState(): Promise<RpcSessionState>;
   getMessages(): Promise<AgentMessage[]>;
+  getCommands(): Promise<WebSlashCommand[]>;
+  getTree(): Promise<{ tree: SessionTreeNode[]; leafId: string | null }>;
 }
 
 export interface RpcClientLikeOptions {
@@ -115,6 +126,18 @@ class DefaultRpcSessionAdapter implements RpcSessionAdapter {
 
   async getMessages(): Promise<AgentMessage[]> {
     return this.withExitProbe(() => this.client.getMessages());
+  }
+
+  async getCommands(): Promise<WebSlashCommand[]> {
+    return this.withExitProbe(() => this.client.getCommands());
+  }
+
+  async getTree(): Promise<{ tree: SessionTreeNode[]; leafId: string | null }> {
+    return this.withExitProbe(() => this.client.getTree());
+  }
+
+  async navigateTree(entryId: string): Promise<void> {
+    await this.withExitProbe(() => this.client.prompt(`/web-tree navigate ${entryId}`));
   }
 
   onEvent(listener: RpcEventListener): () => void {
