@@ -1,4 +1,5 @@
 import { getAgentDir } from "../../runtime/pi-import";
+import { createLogger } from "../../runtime/logger";
 import { serverLogFile, writeServerPid } from "../server-process";
 import { bootstrapBundledResources } from "../../bootstrap/resources";
 import { DEFAULT_HOST } from "../index";
@@ -26,7 +27,9 @@ export async function runServe(host = DEFAULT_HOST, port = 3000): Promise<number
     await onExit();
     return 0;
   } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(message);
+    createLogger("web-server").error(`EasyResearch server failed to start: ${message}`);
     const { removeServerPid } = await import("../server-process");
     removeServerPid(agentDir);
     return 1;
