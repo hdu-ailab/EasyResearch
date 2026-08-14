@@ -115,6 +115,46 @@ For CJK/fontspec documents:
 latexmk -xelatex -interaction=nonstopmode -halt-on-error main.tex
 ```
 
+## Overleaf Compilation
+
+Use Overleaf only when `## Environment Detection` finds no local TeX
+toolchain. Overleaf requires a logged-in account; the login state is reused
+through a dedicated Chrome profile, never through stored passwords.
+
+### First-time login (one time only)
+
+1. Ensure `playwright-cli` is available; prefer Chrome Stable.
+2. Open Overleaf with the dedicated profile and ask the user to log in:
+   ```bash
+   playwright-cli open --browser=chrome --profile=~/.cache/playwright-cli/overleaf-profile https://www.overleaf.com/login
+   ```
+3. Let the user complete the login in the opened browser and close it.
+   The cookies are saved in the profile for reuse.
+4. Do not ask for or store the user's Overleaf password.
+
+### Compile flow (every time)
+
+1. Open Overleaf with the same profile:
+   ```bash
+   playwright-cli open --browser=chrome --profile=~/.cache/playwright-cli/overleaf-profile https://www.overleaf.com/project
+   ```
+2. If the page asks for login, the stored login state has expired — repeat the
+   first-time login step and stop until the user confirms they are logged in.
+3. Create a new blank project (New Project → Blank Project).
+4. Upload every source file from `manuscript/latex/`: the main `*.tex`,
+   `*.bib`, all figures referenced by `\includegraphics{...}`, and any
+   `.cls`/`.sty` files. Preserve the project-internal layout.
+5. Click Recompile and wait for the build to finish.
+6. From the file tree, open the compiled PDF (named after the main `.tex`),
+   download it, and save it to `manuscript/manuscript.pdf`. Verify the file
+   exists and is a valid PDF.
+7. On compile failure, read the error list in the Overleaf log panel, report
+   the first fatal error and its log line, and follow the same missing-package
+   reasoning as `## Error Handling` (confirm usage before removing
+   `\usepackage{...}`, then fix or report).
+8. Treat Overleaf strictly as a build executor: do not make large
+   experimental edits to the manuscript in the Overleaf editor.
+
 ## Installation Guides
 
 When the user prefers a local toolchain over Overleaf, install one of these.
