@@ -95,6 +95,16 @@ describe("useSessionConnection", () => {
     expect(result.current.view.messages.map((message) => message.text)).toEqual(["authoritative reconnect"]);
   });
 
+  it("delivers auto_retry events to the reducer", async () => {
+    const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
+    await waitFor(() => expect(result.current.view.messages[0]?.text).toBe("snapshot text"));
+    emit({ type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 2000, errorMessage: "429 rate limited" });
+    await waitFor(() => expect(result.current.view.retry?.attempt).toBe(1));
+    expect(result.current.view.retry?.errorMessage).toBe("429 rate limited");
+    emit({ type: "auto_retry_end", success: true, attempt: 1 });
+    await waitFor(() => expect(result.current.view.retry).toBeNull());
+  });
+
   it("survives StrictMode effect replay and continues hydrating, receiving events, and sending", async () => {
     const delayedSnapshot = deferred<SessionSnapshotDto>();
     const delayedSend = deferred<void>();

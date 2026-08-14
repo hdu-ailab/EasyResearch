@@ -82,6 +82,8 @@ function isAgentSessionEvent(event: unknown): event is AgentSessionEvent {
     "tool_execution_update",
     "tool_execution_end",
     "agent_settled",
+    "auto_retry_start",
+    "auto_retry_end",
   ].includes(eventType(event) ?? "");
 }
 
