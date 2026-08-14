@@ -1,7 +1,7 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.5.7/schema.json",
   "files": {
-    "includes": ["src/webui/**", "!src/webui/dist/**", "vitest.config.ts"]
+    "includes": ["src/webui/**", "!src/webui/dist/**", "!src/webui/src/assets/provider-icons.svg", "vitest.config.ts"]
   },
   "css": {
     "parser": {

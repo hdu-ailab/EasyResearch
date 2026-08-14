@@ -1,16 +1,13 @@
-import { AlertTriangle, CheckCircle2, ExternalLink, KeyRound, ShieldCheck, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { AlertTriangle, CheckCircle2, ExternalLink, KeyRound, Search, ShieldCheck, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { AuthProviderInfoDto } from "../../../web/contracts";
+import { useModalLayer } from "../hooks/useModalLayer";
 import { type NotifyCard, type PendingPrompt, useProviderAuthFlow } from "../hooks/useProviderAuthFlow";
 import { useI18n } from "../i18n/useI18n";
+import { ProviderIcon } from "./ProviderIcon";
 
 export interface ProviderConnectModalProps {
   onClose: () => void;
-}
-
-interface LastRequest {
-  providerId: string;
-  type: "api_key" | "oauth";
 }
 
 function statusDot(configured: boolean): string {
@@ -20,31 +17,66 @@ function statusDot(configured: boolean): string {
 export function ProviderConnectModal({ onClose }: ProviderConnectModalProps) {
   const { t } = useI18n();
   const f = useProviderAuthFlow();
-  const [methodPickProviderId, setMethodPickProviderId] = useState<string | null>(null);
-  const [lastRequest, setLastRequest] = useState<LastRequest | null>(null);
+  const zIndex = useModalLayer(onClose);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [filter, setFilter] = useState("");
+  const [activeId, setActiveId] = useState<string | undefined>(undefined);
+  const listRef = useRef<HTMLDivElement | null>(null);
 
-  const begin = (providerId: string, methods: ("api_key" | "oauth")[]) => {
-    const type = methods[0] ?? "api_key";
-    setLastRequest({ providerId, type });
-    if (methods.length === 1) {
-      void f.start(providerId, type);
-    } else {
-      setMethodPickProviderId(providerId);
+  const selected = selectedId ? (f.providers.find((p) => p.id === selectedId) ?? null) : null;
+
+  // Leaving flow (abort/error/done/back) clears the selected provider so the
+  // list is the resting view.
+  useEffect(() => {
+    if (f.view !== "flow" && f.view !== "idle") return;
+    if (f.view === "idle") setSelectedId(null);
+  }, [f.view]);
+
+  const filtered = useMemo(() => {
+    const query = filter.trim().toLowerCase();
+    if (!query) return f.providers;
+    return f.providers.filter((p) => `${p.id} ${p.name}`.toLowerCase().includes(query));
+  }, [f.providers, filter]);
+
+  const openProvider = (providerId: string, methods: ("api_key" | "oauth")[]) => {
+    setSelectedId(providerId);
+    if (methods.length === 1 && methods[0]) {
+      void f.start(providerId, methods[0]);
     }
   };
 
   const pickMethod = (providerId: string, type: "api_key" | "oauth") => {
-    setMethodPickProviderId(null);
-    setLastRequest({ providerId, type });
     void f.start(providerId, type);
   };
 
   const retry = () => {
-    if (lastRequest) void f.start(lastRequest.providerId, lastRequest.type);
+    if (selected) openProvider(selected.id, selected.authMethods);
+  };
+
+  const move = (direction: 1 | -1) => {
+    if (filtered.length === 0) return;
+    const index = filtered.findIndex((p) => p.id === activeId);
+    const next =
+      index < 0 ? (direction > 0 ? 0 : filtered.length - 1) : (index + direction + filtered.length) % filtered.length;
+    const target = filtered[next];
+    if (!target) return;
+    setActiveId(target.id);
+    listRef.current
+      ?.querySelector<HTMLElement>(`[data-provider-id="${CSS.escape(target.id)}"]`)
+      ?.focus({ preventScroll: true });
+  };
+
+  const handleListKeyDown = (event: React.KeyboardEvent) => {
+    if (event.key === "ArrowDown") return move(1);
+    if (event.key === "ArrowUp") return move(-1);
+    if (event.key !== "Enter" || !activeId) return;
+    const provider = filtered.find((p) => p.id === activeId);
+    if (provider) openProvider(provider.id, provider.authMethods);
+    event.preventDefault();
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-v2-grey-1200/30 p-3 sm:p-6">
+    <div className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/30 p-3 sm:p-6" style={{ zIndex }}>
       <div
         role="dialog"
         aria-modal="true"
@@ -69,23 +101,70 @@ export function ProviderConnectModal({ onClose }: ProviderConnectModalProps) {
         </header>
 
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4">
-          {f.view === "idle" && (
-            <div className="flex flex-col gap-2">
-              {f.providers.map((p) => (
-                <ProviderRow
-                  key={p.id}
-                  provider={p}
-                  methodPick={methodPickProviderId === p.id}
-                  onConnect={() => begin(p.id, p.authMethods)}
-                  onPickMethod={(type) => pickMethod(p.id, type)}
-                  onDisconnect={() => void f.logout(p.id)}
+          {f.view === "idle" && !selected && (
+            <div className="flex min-h-0 flex-1 flex-col gap-3">
+              <div className="relative shrink-0">
+                <Search
+                  size={14}
+                  className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-v2-text-text-muted"
+                  aria-hidden
                 />
-              ))}
+                <input
+                  type="search"
+                  aria-label={t("providerConnect.search")}
+                  placeholder={t("providerConnect.search")}
+                  className="h-8 w-full rounded-md border border-v2-grey-200 bg-v2-background-bg-base pl-8 pr-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600"
+                  value={filter}
+                  onChange={(event) => {
+                    setFilter(event.target.value);
+                    setActiveId(undefined);
+                  }}
+                  onKeyDown={handleListKeyDown}
+                />
+              </div>
+              <div ref={listRef} className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
+                {filtered.map((p) => (
+                  <ProviderRow
+                    key={p.id}
+                    provider={p}
+                    active={activeId === p.id}
+                    onActivate={() => setActiveId(p.id)}
+                    onOpen={() => openProvider(p.id, p.authMethods)}
+                  />
+                ))}
+                {filtered.length === 0 && (
+                  <p className="px-3 py-4 text-center text-[12px] text-v2-text-text-muted">
+                    {t("providerConnect.noResults")}
+                  </p>
+                )}
+              </div>
             </div>
           )}
 
+          {f.view === "idle" && selected && (
+            <ConnectionView
+              provider={selected}
+              onPickMethod={(type) => pickMethod(selected.id, type)}
+              onDisconnect={() => void f.logout(selected.id)}
+              onBack={() => setSelectedId(null)}
+            />
+          )}
+
           {f.view === "flow" && (
-            <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-4">
+              <div className="flex items-center gap-3">
+                <ProviderIcon
+                  id={f.activeProviderId ?? "synthetic"}
+                  className="size-6 shrink-0 text-v2-icon-icon-base"
+                />
+                <div className="min-w-0">
+                  <h3 className="truncate text-[14px] font-semibold text-v2-text-text-base">
+                    {f.activeProviderId
+                      ? (f.providers.find((p) => p.id === f.activeProviderId)?.name ?? f.activeProviderId)
+                      : ""}
+                  </h3>
+                </div>
+              </div>
               {f.notifies.map((n, i) => (
                 // biome-ignore lint/suspicious/noArrayIndexKey: notifies are an ordered transient stream with no stable identity.
                 <NotifyCardView key={i} notify={n} />
@@ -104,20 +183,20 @@ export function ProviderConnectModal({ onClose }: ProviderConnectModalProps) {
           )}
 
           {f.view === "done" && (
-            <div className="rounded-md border border-emerald-300/40 bg-emerald-50/40 p-3">
+            <div className="flex flex-col gap-2">
               <div className="flex items-center gap-2 text-[13px] font-medium text-emerald-700">
                 <CheckCircle2 size={14} aria-hidden />
                 {t("providerConnect.done")}
               </div>
               {f.warning && (
-                <div className="mt-1.5 flex items-start gap-2 text-[12px] text-v2-status-warning">
+                <div className="flex items-start gap-2 text-[12px] text-v2-status-warning">
                   <AlertTriangle size={13} className="mt-0.5 shrink-0" aria-hidden />
                   {f.warning}
                 </div>
               )}
               <button
                 type="button"
-                className="mt-2 text-[12px] text-v2-blue-600 hover:underline"
+                className="mt-1 w-fit text-[12px] text-v2-blue-600 hover:underline"
                 onClick={f.backToList}
               >
                 {t("providerConnect.back")}
@@ -126,13 +205,13 @@ export function ProviderConnectModal({ onClose }: ProviderConnectModalProps) {
           )}
 
           {f.view === "error" && (
-            <div className="rounded-md border border-v2-status-error/30 bg-v2-status-error/5 p-3">
+            <div className="flex flex-col gap-2">
               <div className="flex items-center gap-2 text-[13px] font-medium text-v2-status-error">
                 <AlertTriangle size={14} aria-hidden />
                 {t("providerConnect.error")}
               </div>
-              {f.errorMessage && <p className="mt-1 text-[12px] text-v2-text-text-muted">{f.errorMessage}</p>}
-              <div className="mt-2 flex gap-3">
+              {f.errorMessage && <p className="text-[12px] text-v2-text-text-muted">{f.errorMessage}</p>}
+              <div className="mt-1 flex gap-3">
                 <button type="button" className="text-[12px] text-v2-blue-600 hover:underline" onClick={retry}>
                   {t("providerConnect.retry")}
                 </button>
@@ -154,70 +233,105 @@ export function ProviderConnectModal({ onClose }: ProviderConnectModalProps) {
 
 function ProviderRow({
   provider,
-  methodPick,
-  onConnect,
-  onPickMethod,
-  onDisconnect,
+  active,
+  onActivate,
+  onOpen,
 }: {
   provider: AuthProviderInfoDto;
-  methodPick: boolean;
-  onConnect: () => void;
-  onPickMethod: (type: "api_key" | "oauth") => void;
-  onDisconnect: () => void;
+  active: boolean;
+  onActivate: () => void;
+  onOpen: () => void;
 }) {
   const { t } = useI18n();
   return (
-    <div className="rounded-md border border-v2-grey-200 p-3">
-      <div className="flex items-center gap-2">
-        <span className={`size-2 shrink-0 rounded-full ${statusDot(provider.authStatus.configured)}`} aria-hidden />
-        <span className="min-w-0 truncate text-[13px] font-medium text-v2-text-text-base">{provider.name}</span>
-        <div className="ml-auto flex shrink-0 items-center gap-2">
-          {provider.connectable ? (
-            provider.authStatus.configured ? (
-              <button
-                type="button"
-                className="rounded-md border border-v2-grey-200 px-2 py-1 text-[12px] text-v2-text-text-base hover:bg-v2-grey-100"
-                onClick={onDisconnect}
-              >
-                {t("providerConnect.disconnect")}
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="rounded-md bg-v2-grey-1100 px-2 py-1 text-[12px] text-v2-grey-50 hover:bg-v2-grey-900"
-                onClick={onConnect}
-              >
-                {t("providerConnect.connect")}
-              </button>
-            )
-          ) : (
-            <span className="text-[11px] text-v2-text-text-faint">{t("providerConnect.ambient")}</span>
+    <button
+      type="button"
+      data-provider-id={provider.id}
+      onMouseEnter={onActivate}
+      onClick={onOpen}
+      className={`flex min-h-9 w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-[13px] leading-none tracking-[-0.04px] transition-colors ${
+        active ? "bg-v2-grey-100" : "hover:bg-v2-grey-100"
+      }`}
+    >
+      <ProviderIcon id={provider.id} className="size-4 shrink-0 text-v2-icon-icon-base" />
+      <span className="min-w-0 truncate font-medium text-v2-text-text-base">{provider.name}</span>
+      <span className={`size-1.5 shrink-0 rounded-full ${statusDot(provider.authStatus.configured)}`} aria-hidden />
+      {!provider.connectable && (
+        <span className="ml-auto shrink-0 text-[11px] text-v2-text-text-faint">{t("providerConnect.ambient")}</span>
+      )}
+    </button>
+  );
+}
+
+function ConnectionView({
+  provider,
+  onPickMethod,
+  onDisconnect,
+  onBack,
+}: {
+  provider: AuthProviderInfoDto;
+  onPickMethod: (type: "api_key" | "oauth") => void;
+  onDisconnect: () => void;
+  onBack: () => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-4">
+      <div className="flex items-center gap-3">
+        <ProviderIcon id={provider.id} className="size-6 shrink-0 text-v2-icon-icon-base" />
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <h3 className="truncate text-[14px] font-semibold text-v2-text-text-base">{provider.name}</h3>
+            <span className={`size-2 shrink-0 rounded-full ${statusDot(provider.authStatus.configured)}`} aria-hidden />
+          </div>
+          {provider.hint && !provider.connectable && (
+            <p className="mt-0.5 text-[12px] text-v2-text-text-muted">{provider.hint}</p>
           )}
         </div>
       </div>
-      {methodPick && (
-        <div className="mt-2 flex flex-col gap-1.5 border-t border-v2-grey-200 pt-2">
-          <button
-            type="button"
-            className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] text-v2-text-text-base hover:bg-v2-grey-100"
-            onClick={() => onPickMethod("api_key")}
-          >
-            <KeyRound size={13} className="text-v2-text-text-muted" aria-hidden />
-            {t("providerConnect.method.apiKey")}
-          </button>
-          <button
-            type="button"
-            className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] text-v2-text-text-base hover:bg-v2-grey-100"
-            onClick={() => onPickMethod("oauth")}
-          >
-            <ShieldCheck size={13} className="text-v2-text-text-muted" aria-hidden />
-            {t("providerConnect.method.subscription")}
-          </button>
+
+      {provider.connectable ? (
+        <div className="flex flex-col gap-2">
+          <div className="px-1 text-[13px] text-v2-text-text-muted">
+            {t("providerConnect.selectMethod").replace("{provider}", provider.name)}
+          </div>
+          {provider.authMethods.map((method) => (
+            <button
+              key={method}
+              type="button"
+              className="flex h-9 w-full items-center gap-2 rounded-md px-3 text-left text-[13px] text-v2-text-text-base transition-colors hover:bg-v2-grey-100"
+              onClick={() => onPickMethod(method)}
+            >
+              {method === "api_key" ? (
+                <KeyRound size={14} className="shrink-0 text-v2-text-text-muted" aria-hidden />
+              ) : (
+                <ShieldCheck size={14} className="shrink-0 text-v2-text-text-muted" aria-hidden />
+              )}
+              {method === "api_key" ? t("providerConnect.method.apiKey") : t("providerConnect.method.subscription")}
+            </button>
+          ))}
         </div>
+      ) : (
+        <p className="px-1 text-[12px] text-v2-text-text-muted">
+          {t("providerConnect.ambientLong").replace("{provider}", provider.name)}
+        </p>
       )}
-      {provider.hint && !provider.connectable && (
-        <p className="mt-1.5 text-[12px] text-v2-text-text-muted">{provider.hint}</p>
+
+      {provider.authStatus.configured && (
+        <button
+          type="button"
+          className="mt-auto w-fit text-[12px] text-v2-status-error hover:underline"
+          onClick={onDisconnect}
+        >
+          {t("providerConnect.disconnectProvider").replace("{provider}", provider.name)}
+        </button>
       )}
+
+      <div className="flex items-center justify-between border-t border-v2-grey-200 pt-3">
+        <button type="button" className="text-[12px] text-v2-text-text-muted hover:underline" onClick={onBack}>
+          {t("providerConnect.back")}
+        </button>
+      </div>
     </div>
   );
 }
@@ -226,19 +340,19 @@ function NotifyCardView({ notify }: { notify: NotifyCard }) {
   const { t } = useI18n();
   if (notify.kind === "info") {
     return (
-      <div className="rounded-md border border-v2-grey-200 p-3">
-        <p className="text-[12px] text-v2-text-text-muted">{notify.message}</p>
+      <div className="flex flex-col gap-1">
+        <p className="text-[13px] text-v2-text-text-muted">{notify.message}</p>
         {notify.links && notify.links.length > 0 && (
-          <div className="mt-1.5 flex flex-col gap-1">
+          <div className="flex flex-col gap-1">
             {notify.links.map((link) => (
               <a
                 key={link.url}
                 href={link.url}
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex items-center gap-1 break-all text-[12px] text-v2-blue-600 hover:underline"
+                className="inline-flex items-center gap-1 break-all text-[13px] text-v2-blue-600 hover:underline"
               >
-                <ExternalLink size={12} aria-hidden />
+                <ExternalLink size={13} aria-hidden />
                 {link.label ?? link.url}
               </a>
             ))}
@@ -249,15 +363,15 @@ function NotifyCardView({ notify }: { notify: NotifyCard }) {
   }
   if (notify.kind === "auth_url") {
     return (
-      <div className="rounded-md border border-v2-grey-200 p-3">
-        <p className="text-[12px] text-v2-text-text-muted">{notify.instructions ?? t("providerConnect.authUrl")}</p>
+      <div className="flex flex-col gap-1">
+        <p className="text-[13px] text-v2-text-text-muted">{notify.instructions ?? t("providerConnect.authUrl")}</p>
         <a
           href={notify.url}
           target="_blank"
           rel="noreferrer"
-          className="mt-1.5 inline-flex items-center gap-1 break-all text-[12px] text-v2-blue-600 hover:underline"
+          className="inline-flex items-center gap-1 break-all text-[13px] text-v2-blue-600 hover:underline"
         >
-          <ExternalLink size={12} aria-hidden />
+          <ExternalLink size={13} aria-hidden />
           {notify.url}
         </a>
       </div>
@@ -266,7 +380,7 @@ function NotifyCardView({ notify }: { notify: NotifyCard }) {
   if (notify.kind === "device_code") {
     return <DeviceCodeView notify={notify} />;
   }
-  return <p className="text-[12px] text-v2-text-text-muted">{notify.message}</p>;
+  return <p className="text-[13px] text-v2-text-text-muted">{notify.message}</p>;
 }
 
 function DeviceCodeView({ notify }: { notify: Extract<NotifyCard, { kind: "device_code" }> }) {
@@ -279,24 +393,24 @@ function DeviceCodeView({ notify }: { notify: Extract<NotifyCard, { kind: "devic
     return () => clearInterval(timer);
   }, [notify.expiresInSeconds]);
   return (
-    <div className="rounded-md border border-v2-grey-200 p-3">
-      <p className="text-[12px] text-v2-text-text-muted">{t("providerConnect.prompt.deviceCodeAt")}</p>
+    <div className="flex flex-col gap-2">
+      <p className="text-[13px] text-v2-text-text-muted">{t("providerConnect.prompt.deviceCodeAt")}</p>
       <a
         href={notify.verificationUri}
         target="_blank"
         rel="noreferrer"
-        className="mt-0.5 inline-flex items-center gap-1 break-all text-[12px] text-v2-blue-600 hover:underline"
+        className="inline-flex items-center gap-1 break-all text-[13px] text-v2-blue-600 hover:underline"
       >
-        <ExternalLink size={12} aria-hidden />
+        <ExternalLink size={13} aria-hidden />
         {notify.verificationUri}
       </a>
-      <div className="mt-2">
+      <div className="mt-1 flex flex-col gap-1">
         <span className="text-[11px] uppercase tracking-wide text-v2-text-text-faint">
           {t("providerConnect.prompt.deviceCode")}
         </span>
-        <div className="font-mono text-[20px] font-bold tracking-[0.2em] text-v2-text-text-base">{notify.userCode}</div>
+        <div className="font-mono text-[22px] font-bold tracking-[0.2em] text-v2-text-text-base">{notify.userCode}</div>
         {notify.expiresInSeconds !== undefined && (
-          <div className="mt-1 text-[11px] tabular-nums text-v2-text-text-muted" aria-live="polite">
+          <div className="text-[11px] tabular-nums text-v2-text-text-muted" aria-live="polite">
             {t("providerConnect.prompt.expiresIn").replace("{s}", String(remaining))}
           </div>
         )}
@@ -315,18 +429,15 @@ function PromptView({ prompt, onSubmit }: { prompt: PendingPrompt; onSubmit: (v:
     setValue("");
   };
   const inputType = prompt.kind === "secret" ? "password" : "text";
+  const inputClass =
+    "h-9 w-full rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-3 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600";
   return (
-    <div className="rounded-md border border-v2-grey-200 p-3">
-      <label htmlFor={inputId} className="block text-[12px] text-v2-text-text-muted">
+    <div className="flex flex-col gap-2">
+      <label htmlFor={inputId} className="text-[13px] text-v2-text-text-muted">
         {prompt.message}
       </label>
       {prompt.kind === "select" && prompt.options ? (
-        <select
-          id={inputId}
-          className="mt-1.5 h-8 w-full rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-        >
+        <select id={inputId} className={inputClass} value={value} onChange={(e) => setValue(e.target.value)}>
           <option value="" disabled>
             —
           </option>
@@ -342,7 +453,7 @@ function PromptView({ prompt, onSubmit }: { prompt: PendingPrompt; onSubmit: (v:
           type={inputType}
           placeholder={prompt.placeholder}
           autoComplete="off"
-          className="mt-1.5 h-8 w-full rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 font-mono text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600"
+          className={`${inputClass} font-mono`}
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => {
@@ -352,7 +463,7 @@ function PromptView({ prompt, onSubmit }: { prompt: PendingPrompt; onSubmit: (v:
       )}
       <button
         type="button"
-        className="mt-2 rounded-md bg-v2-grey-1100 px-3 py-1 text-[12px] text-v2-grey-50 disabled:opacity-50"
+        className="mt-1 w-fit rounded-md bg-v2-grey-1100 px-3 py-1.5 text-[12px] text-v2-grey-50 disabled:opacity-50"
         disabled={value.length === 0}
         onClick={submit}
       >

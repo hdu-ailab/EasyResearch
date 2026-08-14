@@ -160,10 +160,19 @@ export function useProviderAuthFlow(): UseProviderAuthFlow {
         } else if (event.type === "error") {
           terminalRef.current = true;
           setPendingPrompt(null);
+          closeStream();
+          if (event.reason === "aborted") {
+            // User-cancelled flows return straight to the list; an error card
+            // would look like a failure when the user asked to stop.
+            setView("idle");
+            flowIdRef.current = null;
+            setActiveProviderId(undefined);
+            void refresh();
+            return;
+          }
           setErrorMessage(event.message);
           setErrorReason(event.reason);
           setView("error");
-          closeStream();
         }
       };
       unsubRef.current = authFlowEventSource(flowId, {
