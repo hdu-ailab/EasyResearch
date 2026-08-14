@@ -14,18 +14,23 @@ The **Web panel is the primary interface**.
 git clone <this-repo> easyresearch
 cd easyresearch
 bun install
-bun run build:web     # build the Web frontend (served by `easyresearch web`)
+bun run build:web     # build the Web frontend (served by the background server)
 bun link              # exposes the `easyresearch` command on PATH
 ```
 
-## Start the Web panel
+## Start
 
 ```bash
-easyresearch web
-# open http://127.0.0.1:3000
+easyresearch
+# starts a background server on http://127.0.0.1:3000 and opens the browser
+
+easyresearch -p 4000            # custom port
+easyresearch --host 0.0.0.0     # listen on all interfaces (server use)
+easyresearch --no-open          # do not open the browser
+easyresearch exit               # stop the background server
 ```
 
-Without linking, run it directly: `bun run src/cli/index.ts web`.
+Without linking, run it directly: `bun run src/cli/index.ts`.
 
 On the home page, pick a paper project directory and start a session. The
 chosen directory is the project boundary: project config lives in
