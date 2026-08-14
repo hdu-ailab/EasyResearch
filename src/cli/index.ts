@@ -7,7 +7,7 @@ import {
   isProcessAlive,
   readServerPid,
   removeServerPid,
-  serverLogPath,
+  serverLogFile,
   stopServerProcess,
   writeServerPid,
 } from "./server-process";
@@ -121,7 +121,7 @@ export async function runCli(
     deps.spawnBackground(host, port);
     const ready = await deps.waitForReady(port);
     if (!ready) {
-      console.error(`EasyResearch failed to start within ${READY_TIMEOUT_MS}ms. See ${serverLogPath(agentDir)}.`);
+      console.error(`EasyResearch failed to start within ${READY_TIMEOUT_MS}ms. See ${serverLogFile(agentDir)}.`);
       return 1;
     }
 
@@ -139,14 +139,17 @@ export async function runCli(
 }
 
 if (import.meta.main) {
-  const isServe = process.argv.includes("--serve");
-  if (isServe) {
-    const serveIndex = process.argv.indexOf("--serve");
-    const host = process.argv[serveIndex + 1] ?? DEFAULT_HOST;
-    const port = parsePort(process.argv[serveIndex + 2] ?? String(DEFAULT_PORT)) ?? DEFAULT_PORT;
+  const args = process.argv.slice(2);
+  if (args.length === 3 && args[0] === "--serve") {
+    const host = args[1] as string;
+    const port = parsePort(args[2] as string);
+    if (port === undefined) {
+      console.error("Usage: easyresearch [-p <port>] [--host <host>] [--no-open] [exit]");
+      process.exit(1);
+    }
     process.exit(await runServe(host, port));
   }
-  process.exit(await runCli(process.argv.slice(2), {
+  process.exit(await runCli(args, {
     serve: runServe,
     openBrowser,
     waitForReady,

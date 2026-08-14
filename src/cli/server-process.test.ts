@@ -2,10 +2,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { dayStamp } from "../runtime/logger";
 import {
   isProcessAlive,
   readServerPid,
   removeServerPid,
+  serverLogFile,
   serverLogPath,
   serverPidPath,
   stopServerProcess,
@@ -24,6 +26,10 @@ describe("paths", () => {
   it("places pid and log under the agent dir", () => {
     expect(serverPidPath("/x/agent")).toBe("/x/agent/server.pid");
     expect(serverLogPath("/x/agent")).toBe("/x/agent/server.log");
+  });
+
+  it("points serverLogFile at the day-stamped file in the configured log dir", () => {
+    expect(serverLogFile(root)).toBe(join(root, "logs", `easyresearch-${dayStamp()}.log`));
   });
 });
 

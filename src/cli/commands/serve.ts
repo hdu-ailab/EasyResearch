@@ -1,5 +1,5 @@
 import { getAgentDir } from "../../runtime/pi-import";
-import { serverLogPath, writeServerPid } from "../server-process";
+import { serverLogFile, writeServerPid } from "../server-process";
 import { bootstrapBundledResources } from "../../bootstrap/resources";
 import { DEFAULT_HOST } from "../index";
 
@@ -18,7 +18,7 @@ export async function runServe(host = DEFAULT_HOST, port = 3000): Promise<number
     process.on("SIGTERM", shutdown);
     process.on("SIGINT", shutdown);
     console.log(`EasyResearch server listening on http://${host}:${server.port}`);
-    console.log(`Logs: ${serverLogPath(agentDir)}`);
+    console.log(`Logs: ${serverLogFile(agentDir)}`);
     return new Promise(() => {});
   };
   try {
