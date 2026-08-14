@@ -30,6 +30,21 @@ const STAGE_EXTENSION_PATH = fileURLToPath(new URL("../extensions/subagent/index
 export const stageExtensionPath: string = STAGE_EXTENSION_PATH;
 
 /**
+ * ADR-068: every shared tool extension a stage agent may use is mounted here
+ * (`subagent` + the web tools `web-search`, `webfetch`), mirroring the ADR-062
+ * template step 3. Availability is still gated per agent by the frontmatter
+ * `tools:` allowlist — registration ≠ availability.
+ */
+const STAGE_EXTENSION_PATHS: string[] = [
+  STAGE_EXTENSION_PATH,
+  fileURLToPath(new URL("../extensions/web-search/index.ts", import.meta.url)),
+  fileURLToPath(new URL("../extensions/webfetch/index.ts", import.meta.url)),
+];
+
+/** Stage-agent runtime extension paths, exported for registry invariants. */
+export const stageExtensionPaths: string[] = STAGE_EXTENSION_PATHS;
+
+/**
  * Pre-flight ruling (2026-08-08): `execute` runs inside the Web RPC child in
  * Web mode, so the module-scope logger is only created outside RPC children
  * (Constraint 4: RPC children never run their own logger).
@@ -287,8 +302,9 @@ export function buildPiArgs(
   } else if (skillDeps) {
     args.push(...buildDefaultSkillArgs(skillDeps));
   }
-  // ADR-022: nested dispatch needs the subagent tool inside stage runtimes.
-  args.push("--extension", stageExtensionPath);
+  // ADR-022/ADR-068: nested dispatch and shared web tools need their
+  // extensions mounted inside stage runtimes.
+  for (const extensionPath of STAGE_EXTENSION_PATHS) args.push("--extension", extensionPath);
   args.push("--name", sessionNameFor(agent.name));
   if (sessionPath) args.push("--session", sessionPath);
   return args;

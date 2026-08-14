@@ -4,8 +4,8 @@ description: >-
   Figures agent that creates evidence-grounded, editable publication figures
   and verified exports under figures/.
 enable: true
-tools: [read, bash, edit, write, grep, find, ls, subagent]
-skills: [drawio, drawio-academic-skills]
+tools: [read, bash, edit, write, subagent, web-search, webfetch]
+skills: [drawio, drawio-academic-skills, playwright-cli]
 subagents: [search]
 ---
 

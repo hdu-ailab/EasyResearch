@@ -5,8 +5,8 @@ description: >-
   specialists, confirms checkpoints, and synthesizes results without creating
   specialist artifacts.
 enable: true
-tools: [read, grep, find, ls, subagent]
-skills: [research-project-workflow, find-skills, skill-creator, customize-easyresearch]
+tools: [read, subagent, web-search, webfetch]
+skills: [research-project-workflow, find-skills, skill-creator, customize-easyresearch, playwright-cli]
 ---
 
 You are the Paper Assistant for an evidence-driven paper pipeline.

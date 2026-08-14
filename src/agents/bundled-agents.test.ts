@@ -30,4 +30,20 @@ describe("bundled agent definitions", () => {
     expect(byName["paper-assistant"]!.effectiveTools).toContain("subagent");
     expect(byName["paper-assistant"]!.effectiveTools).not.toContain("write");
   });
+
+  it("gives every bundled agent web tools and the playwright-cli skill, and never grep/find/ls (ADR-068)", async () => {
+    const { agents } = await discoverAgents({
+      agentDir: join(root, "agent"),
+      cwd: join(root, "project"),
+      homeDir: join(root, "home"),
+      includeProject: false,
+      includeGlobal: false,
+    });
+    expect(agents.length).toBeGreaterThan(0);
+    for (const agent of agents) {
+      expect(agent.effectiveTools).toEqual(expect.arrayContaining(["web-search", "webfetch"]));
+      expect(agent.effectiveTools).not.toEqual(expect.arrayContaining(["grep", "find", "ls"]));
+      expect(agent.effectiveSkills).toContain("playwright-cli");
+    }
+  });
 });

@@ -4,7 +4,7 @@ description: >-
   Search agent that retrieves candidates, verifies metadata, acquires permitted
   PDFs, converts readable text, and produces the ref_papers material package.
 enable: true
-tools: [read, bash, edit, write, grep, find, ls, web-search]
+tools: [read, bash, edit, write, web-search, webfetch]
 skills: [paper-search, arxiv, pdf-to-markdown, playwright-cli]
 subagents: []
 ---

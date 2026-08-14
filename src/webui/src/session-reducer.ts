@@ -20,6 +20,9 @@ export interface ToolView {
   step?: number;
   /** Agent name for `subagent` tool rows (ADR-037/ADR-040: tab derivation). */
   agentName?: string;
+  /** Skill name when a `read` tool call loads a SKILL.md (like the TUI's
+   * `[skill] <label>` classification); the transcript renders a skill card. */
+  skillName?: string;
   /** Exact persisted child session UUID for this invocation. */
   sessionId?: string;
   /** Every exact child mapping for this tool call, including chain steps. */
@@ -191,6 +194,24 @@ function compactArgs(args: unknown): string | undefined {
   }
   const text = typeof args === "string" ? args : JSON.stringify(args);
   return text.length > 80 ? `${text.slice(0, 77)}…` : text;
+}
+
+/** Skill name when a read tool call loads a SKILL.md file: the parent
+ * directory name, mirroring the pi TUI's `[skill] <label>` classification.
+ * Accepts the raw args object (`{ path }`) or a pre-compacted path string;
+ * absolute and relative paths both work. */
+export function readSkillName(args: unknown): string | undefined {
+  if (args === undefined || args === null) return undefined;
+  const raw =
+    typeof args === "string"
+      ? args
+      : typeof (args as { path?: unknown }).path === "string"
+        ? (args as { path: string }).path
+        : undefined;
+  if (typeof raw !== "string" || !raw.endsWith("/SKILL.md")) return undefined;
+  const dir = raw.slice(0, -"/SKILL.md".length);
+  const lastSlash = dir.lastIndexOf("/");
+  return lastSlash === -1 ? undefined : dir.slice(lastSlash + 1) || undefined;
 }
 
 /** Agent name from a subagent tool call's arguments (single or chain mode). */
@@ -371,6 +392,7 @@ export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
           error: false,
           args: compactArgs(b.arguments),
           agentName: b.name === "subagent" ? agentNameOfToolCall(b.arguments) : undefined,
+          skillName: b.name === "read" ? readSkillName(b.arguments) : undefined,
           order: next(),
         });
       }
@@ -722,6 +744,7 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
             error: false,
             args: compactArgs(args),
             agentName: toolName === "subagent" ? agentNameOfToolCall(args) : undefined,
+            skillName: toolName === "read" ? readSkillName(args) : undefined,
             order: state.nextOrder,
           },
         ],

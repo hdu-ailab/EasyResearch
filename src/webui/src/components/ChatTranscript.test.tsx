@@ -419,6 +419,18 @@ describe("ChatTranscript", () => {
     expect(screen.queryByText("private subagent progress")).toBeNull();
   });
 
+  it("renders a skill card instead of a generic tool row when the agent reads a skill", () => {
+    renderTranscript(
+      <ChatTranscript
+        messages={[]}
+        tools={[tool({ name: "read", args: "skills/arxiv/SKILL.md", skillName: "arxiv", output: undefined })]}
+      />,
+    );
+    expect(screen.getByText("Reading skill")).toBeVisible();
+    expect(screen.getByText("arxiv")).toBeVisible();
+    expect(screen.queryByRole("button", { name: /read/i })).toBeNull();
+  });
+
   it("interleaves tool rows at their stream position between messages", () => {
     renderTranscript(
       <ChatTranscript
