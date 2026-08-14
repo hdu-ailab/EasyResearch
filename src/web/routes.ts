@@ -1,10 +1,16 @@
 import { readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type {
   ActiveSessionDto,
   AgentDto,
   AgentEffectiveModelDto,
   AgentEffectiveThinkingDto,
+  AuthFlowEventDto,
+  AuthLoginRequestDto,
+  AuthLogoutRequestDto,
+  AuthProvidersResponseDto,
+  AuthRespondRequestDto,
   ConfigScope,
   ModelOptionDto,
   SessionSummaryDto,
@@ -24,6 +30,7 @@ import { AgentThinkingError } from "./agent-thinking";
 import { WebuiSettingsError, readWebuiSettings, updateWebuiSettings } from "./webui-settings";
 import type { Logger } from "../runtime/logger";
 import { SubagentSessionNotFoundError, type SubagentSessionService } from "./subagent-sessions";
+import { AuthGatewayError, type AuthGateway } from "./auth-gateway";
 
 export interface RouteServices {
   webuiDist: string;
@@ -41,6 +48,7 @@ export interface RouteServices {
   registry: ActiveSessionRegistry;
   config: ConfigFileService;
   subagentSessions: Pick<SubagentSessionService, "summaries" | "snapshot">;
+  auth?: AuthGateway;
   logger: Logger;
 }
 
@@ -261,6 +269,90 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
         return jsonResponse(await services.listConfigProjects());
       }
 
+      if (services.auth) {
+        if (req.method === "GET" && path === "/api/auth/providers") {
+          const providers = await services.auth.listProviders();
+          return jsonResponse({ providers } satisfies AuthProvidersResponseDto);
+        }
+
+        if (req.method === "POST" && path === "/api/auth/login") {
+          const body = await jsonBody<AuthLoginRequestDto>(req);
+          if (
+            !body.providerId ||
+            (body.type !== "api_key" && body.type !== "oauth")
+          ) {
+            return errorResponse(400, "providerId and type (api_key|oauth) are required");
+          }
+          try {
+            services.auth.preflight({ providerId: body.providerId, type: body.type });
+          } catch (err) {
+            if (err instanceof AuthGatewayError) {
+              if (err.status === 409) {
+                return errorResponse(409, err.message, { activeFlowId: services.auth.activeFlow() });
+              }
+              return errorResponse(err.status, err.message);
+            }
+            throw err;
+          }
+          const flowId = randomUUID();
+          void services.auth
+            .runFlow({ flowId, providerId: body.providerId, type: body.type })
+            .catch((err) => {
+              services.logger.error(`auth flow ${flowId} crashed`, { error: String(err) });
+            });
+          return jsonResponse({ flowId } as { flowId: string }, 202);
+        }
+
+        if (req.method === "GET" && path.startsWith("/api/auth/flows/") && path.endsWith("/events")) {
+          const flowId = decodeURIComponent(
+            path.slice("/api/auth/flows/".length, -"/events".length),
+          );
+          const store = services.auth.store();
+          if (!store.get(flowId)) return errorResponse(404, `unknown flow: ${flowId}`);
+          return authFlowSse(services, flowId);
+        }
+
+        if (req.method === "POST" && path.startsWith("/api/auth/flows/") && path.endsWith("/respond")) {
+          const flowId = decodeURIComponent(
+            path.slice("/api/auth/flows/".length, -"/respond".length),
+          );
+          const store = services.auth.store();
+          const rec = store.get(flowId);
+          if (!rec) return errorResponse(404, `unknown flow: ${flowId}`);
+          if (rec.terminated) return errorResponse(410, "flow already terminated");
+          if (!rec.pendingPrompt) {
+            return errorResponse(409, "no prompt pending", { expected: null });
+          }
+          const body = await jsonBody<AuthRespondRequestDto>(req);
+          if (typeof body.value !== "string") return errorResponse(400, "value (string) is required");
+          const ok = store.resolveRespond(flowId, body.value);
+          if (!ok) return errorResponse(409, "no prompt pending");
+          return jsonResponse({ ok: true });
+        }
+
+        if (req.method === "POST" && path.startsWith("/api/auth/flows/") && path.endsWith("/cancel")) {
+          const flowId = decodeURIComponent(
+            path.slice("/api/auth/flows/".length, -"/cancel".length),
+          );
+          const store = services.auth.store();
+          if (!store.get(flowId)) return errorResponse(404, `unknown flow: ${flowId}`);
+          store.cancel(flowId);
+          return jsonResponse({ ok: true });
+        }
+
+        if (req.method === "POST" && path === "/api/auth/logout") {
+          const body = await jsonBody<AuthLogoutRequestDto>(req);
+          if (!body.providerId) return errorResponse(400, "providerId is required");
+          try {
+            await services.auth.logout(body.providerId);
+          } catch (err) {
+            if (err instanceof AuthGatewayError) return errorResponse(err.status, err.message);
+            throw err;
+          }
+          return jsonResponse({ ok: true });
+        }
+      }
+
       if (req.method === "GET") {
         const assetPath = path === "/" ? "index.html" : path.replace(/^\//, "");
         const file = join(services.webuiDist, assetPath);
@@ -421,6 +513,54 @@ function sessionEvents(services: RouteServices, id: string): Response {
     cancel() {
       // Browser disconnect only unsubscribes; the registry entry keeps running.
       disconnect();
+    },
+  });
+  return new Response(stream, { headers: SSE_HEADERS });
+}
+
+function authFlowSse(services: RouteServices, flowId: string): Response {
+  const encoder = new TextEncoder();
+  let controllerRef: ReadableStreamDefaultController<Uint8Array> | null = null;
+  let unsubscribe: (() => void) | null = null;
+  let cancelled = false;
+  const store = services.auth!.store();
+  const rec = store.get(flowId);
+  const send = (controller: ReadableStreamDefaultController<Uint8Array>, event: AuthFlowEventDto) => {
+    controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+  };
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controllerRef = controller;
+      if (rec?.terminated) {
+        // Flow already finished before the SSE client connected: replay buffer
+        // + pending prompt + nothing else, then close.
+        for (const e of rec.bufferedNotifies) send(controller, e);
+        if (rec.pendingPrompt) send(controller, rec.pendingPrompt);
+        controller.close();
+        return;
+      }
+      // `store.subscribe` replays buffered notifies + pending prompt to this
+      // subscriber on first connect, then forwards live events.
+      unsubscribe = store.subscribe(flowId, (event) => {
+        if (cancelled) return;
+        if (controllerRef) send(controllerRef, event);
+        if (event.type === "done" || event.type === "error") {
+          cancelled = true;
+          try {
+            controllerRef?.close();
+          } catch {
+            // already closed
+          }
+          unsubscribe?.();
+          unsubscribe = null;
+        }
+      });
+    },
+    cancel() {
+      cancelled = true;
+      unsubscribe?.();
+      unsubscribe = null;
+      controllerRef = null;
     },
   });
   return new Response(stream, { headers: SSE_HEADERS });
