@@ -18,21 +18,29 @@ metadata:
 # arXiv Metadata
 
 ## When To Use
-- 已有 arXiv ID，需要核验标题、作者、摘要、版本、分类或链接
-- 需要为 arXiv 论文生成 BibTeX
-- 需要查看 arXiv abstract/PDF 页面内容
-- 需要用 Semantic Scholar 查询引用数、参考文献、被引论文或作者信息
+- An arXiv ID is already known and the title, authors, abstract, version, category, or links need verification
+- BibTeX is needed for an arXiv paper
+- The content of an arXiv abstract/PDF page needs inspection
+- Semantic Scholar is needed for citation counts, references, citing papers, or author information
 
-优先用 `paper-search` 做主题级论文搜索；本 skill 只处理已知论文或少量精确查询。
+Use `paper-search` for topic-level paper search; this skill only handles
+known papers or a small number of precise queries.
 
 ## Workflow Integration
-- 在完整论文项目中，由 Search agent 维护 exact-cwd 下的 `ref_papers/source.json`；若 dispatch 明确给出已有用户布局，则沿用该布局。
-- 本 skill 用于核验已选论文的 arXiv ID、版本、标题、作者、BibTeX、引用数和参考文献信息。
-- 若 `source.json` 存在，把核验结果作为字段补充进去；不要用本 skill 重新做大范围主题搜索。
-- PDF 获取和 PDF 转 Markdown 由 Search agent 负责，并优先使用 `pdf-to-markdown` skill；编排层不直接执行转换。
+- In a full paper project, the Search agent maintains `ref_papers/source.json`
+  under the exact cwd; if the dispatch explicitly supplies an existing user
+  layout, follow that layout.
+- This skill verifies arXiv ID, version, title, authors, BibTeX, citation
+  counts, and reference information for already-selected papers.
+- If `source.json` exists, fill in verification results as fields; do not
+  re-run broad topic searches with this skill.
+- PDF acquisition and PDF-to-Markdown conversion are the Search agent's
+  responsibility, preferring the `pdf-to-markdown` skill; the orchestration
+  layer never performs conversion directly.
 
 ## Helper Script
-在 skill 目录运行（优先使用 EasyResearch skill venv 的 Python，未设置时回退系统 python3）：
+Run from the skill directory (prefer the EasyResearch skill venv Python;
+fall back to system python3 when unset):
 
 ```bash
 $EASYRESEARCH_VENV/bin/python scripts/search_arxiv.py --id 1706.03762
@@ -40,37 +48,40 @@ $EASYRESEARCH_VENV/bin/python scripts/search_arxiv.py --id 1706.03762 --bibtex
 $EASYRESEARCH_VENV/bin/python scripts/search_arxiv.py --id 1706.03762,2402.03300
 ```
 
-Windows 布局：
+Windows layout:
 
 ```powershell
 %EASYRESEARCH_VENV%\Scripts\python.exe scripts\search_arxiv.py --id 1706.03762
 ```
 
-脚本只依赖 Python 标准库；`$EASYRESEARCH_VENV` 未设置时直接用 `python3` 亦可。
+The script depends only on the Python standard library; plain `python3` works
+when `$EASYRESEARCH_VENV` is unset.
 
-如果 arXiv Atom API 返回 `429`，脚本会对 `--id` 查询自动 fallback 到 `arxiv.org/abs/{id}` 页面解析基础元数据和 BibTeX。
+If the arXiv Atom API returns `429`, the script automatically falls back to
+parsing the `arxiv.org/abs/{id}` page for basic metadata and BibTeX.
 
-少量精确查询也可用，但不要替代 `paper-search` 的主题搜索：
+A small number of precise queries also work, but do not replace `paper-search`
+topic search:
 ```bash
 python scripts/search_arxiv.py --author "Yann LeCun" --max 5
 python scripts/search_arxiv.py --category cs.LG --sort date --max 5
 ```
 
 ## Read Pages
-使用当前 OpenCode 的 `webfetch` 工具读取页面：
+Use the current OpenCode `webfetch` tool to read pages:
 ```text
 https://arxiv.org/abs/{id}
 https://arxiv.org/pdf/{id}
 https://arxiv.org/html/{id}
 ```
 
-规则：
-- 摘要页优先用 `https://arxiv.org/abs/{id}`
-- PDF 仅用于需要正文时读取
-- HTML 页面不一定存在；失败时回到 PDF 或摘要页
+Rules:
+- Prefer `https://arxiv.org/abs/{id}` for abstract pages
+- Read the PDF only when the full text is needed
+- HTML pages may not exist; fall back to the PDF or abstract page on failure
 
 ## BibTeX Requirements
-生成 BibTeX 时包含：
+Include in generated BibTeX:
 - `title`
 - `author`
 - `year`
@@ -79,27 +90,29 @@ https://arxiv.org/html/{id}
 - `primaryClass`
 - `url`
 
-保留用户给出的版本后缀，例如 `1706.03762v7`；如果用户只给基础 ID，则使用 API 返回的最新版本。
+Preserve a version suffix given by the user, e.g. `1706.03762v7`; when the
+user provides only the base ID, use the latest version returned by the API.
 
 ## Semantic Scholar
-arXiv 不提供引用数据。需要引用、参考文献、相关论文或作者指标时，用 Semantic Scholar 公共 API。
+arXiv does not provide citation data. Use the Semantic Scholar public API for
+citations, references, related papers, or author metrics.
 
-论文详情：
+Paper details:
 ```bash
 curl -s "https://api.semanticscholar.org/graph/v1/paper/arXiv:2402.03300?fields=title,authors,citationCount,referenceCount,influentialCitationCount,year,abstract,externalIds" | python3 -m json.tool
 ```
 
-被引论文：
+Citing papers:
 ```bash
 curl -s "https://api.semanticscholar.org/graph/v1/paper/arXiv:2402.03300/citations?fields=title,authors,year,citationCount&limit=10" | python3 -m json.tool
 ```
 
-参考文献：
+References:
 ```bash
 curl -s "https://api.semanticscholar.org/graph/v1/paper/arXiv:2402.03300/references?fields=title,authors,year,citationCount&limit=10" | python3 -m json.tool
 ```
 
-作者检索：
+Author search:
 ```bash
 curl -s "https://api.semanticscholar.org/graph/v1/author/search?query=Yann+LeCun&fields=name,hIndex,citationCount,paperCount" | python3 -m json.tool
 ```

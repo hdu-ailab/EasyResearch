@@ -1,12 +1,12 @@
 ---
 name: paper-search
 description: |-
-  搜索并整理 OpenReview 与 arXiv 论文候选，按用户给定主题、时间范围和数据源返回结构化结果。Use proactively when 用户要求找论文、限定时间范围、优先看 OpenReview/arXiv、或需要 3区/4区方向样例。
+  Search and organize OpenReview and arXiv paper candidates, returning structured results for a user-given topic, time range, and data sources. Use proactively when the user asks to find papers, restrict a time range, prefer OpenReview/arXiv results, or wants examples of what a research direction looks like in target journals.
 
   Examples:
-  - user: "找 2026 年 diffusion model 论文" → 运行 fetch_papers.py 并整理结果
-  - user: "只看 arXiv 上 transformer attention 的最新论文" → 用 --sources arxiv 查询
-  - user: "这个方向 3区/4区论文长什么样" → 检索候选论文并提示需核验期刊分区
+  - user: "找 2026 年 diffusion model 论文" → run fetch_papers.py and organize the results
+  - user: "只看 arXiv 上 transformer attention 的最新论文" → query with --sources arxiv
+  - user: "这个方向 3区/4区论文长什么样" → retrieve candidates and note that journal quartiles need verification
 license: MIT
 metadata:
   hermes:
@@ -18,33 +18,44 @@ metadata:
 # Paper Search
 
 ## When To Use
-- 用户要求按研究方向搜索论文
-- 用户要求限定论文时间范围、返回条数或数据源
-- 用户要求优先查看 OpenReview 或 arXiv 结果
-- 用户需要结构化论文列表，便于后续阅读、筛选或总结
-- 用户想查看某个方向在 3区/4区等目标期刊中的论文样例、实验规模或写法
+- The user asks to search papers for a research direction
+- The user wants to restrict the time range, result count, or data sources
+- The user wants OpenReview or arXiv results prioritized
+- The user needs a structured paper list for later reading, filtering, or summarization
+- The user wants to see sample papers, experiment scales, or writing patterns of a direction in target journals (e.g. Q3/Q4 venues)
 
 ## Workflow Integration
-- 在完整论文项目中，先由 `research-project-workflow` 统筹目录和阶段顺序，再调用本 skill 搜索候选论文。
-- 本 skill 只负责返回候选论文列表；PDF 下载、文本转换、实验和正文写作不在本 skill 内完成。
-- 在论文项目中，把脚本 JSON 输出整理或保存到 exact-cwd 下的 `ref_papers/source.json`；若 dispatch 明确给出已有用户布局，则沿用该布局。
-- 对最终选中的 arXiv 论文，用 `arxiv` skill 进一步核验 ID、版本、BibTeX 和引用信息。
-- 若需要获取公开 PDF 并转为 Markdown，由 Search agent 使用 `pdf-to-markdown` skill 完成，不交给编排层直接执行。
+- In a full paper project, `research-project-workflow` first coordinates the
+  directory layout and stage order; then this skill searches candidate papers.
+- This skill only returns a candidate paper list; PDF download, text
+  conversion, experiments, and manuscript writing are outside its scope.
+- In a paper project, organize or save the script JSON output to
+  `ref_papers/source.json` under the exact cwd; if the dispatch explicitly
+  supplies an existing user layout, follow that layout.
+- For finally selected arXiv papers, use the `arxiv` skill to verify ID,
+  version, BibTeX, and citation information.
+- If public PDFs must be fetched and converted to Markdown, the Search agent
+  uses the `pdf-to-markdown` skill; the orchestration layer never performs
+  conversion directly.
 
 ## Inputs
-从用户请求中提取以下信息：
-- 搜索方向 / 主题（必需）
-- 起始日期 `since`（可选，格式 `YYYY-MM-DD`；默认 `2026-01-01`）
-- 结束日期 `until`（可选，格式 `YYYY-MM-DD`；默认当前日期）
-- 返回条数 `max-results`（可选，默认 10）
-- 数据源 `sources`（可选，默认同时搜索 `openreview` 与 `arxiv`）
+Extract from the user request:
+- Search direction / topic (required)
+- Start date `since` (optional, format `YYYY-MM-DD`; default `2026-01-01`)
+- End date `until` (optional, format `YYYY-MM-DD`; default today)
+- Result count `max-results` (optional, default 10)
+- Data sources `sources` (optional; default searches both `openreview` and `arxiv`)
 
-默认场景下只需要传 `query`，其余参数按默认值工作即可；仅在用户明确要求时再补充时间范围、数据源或返回条数。
+By default only `query` is needed; the remaining parameters use their
+defaults. Add a time range, data sources, or result count only when the user
+explicitly asks.
 
-如果用户没有明确给出搜索方向，先补问；如果没有给出时间范围，则默认使用 `2026-01-01` 到当前日期。
+If the user gives no search direction, ask for it first; if no time range is
+given, default to `2026-01-01` through today.
 
 ## Commands
-优先使用 EasyResearch skill venv（postinstall 自动创建）中的 Python：
+Prefer the Python from the EasyResearch skill venv (auto-created by
+postinstall):
 
 ```bash
 $EASYRESEARCH_VENV/bin/python \
@@ -52,106 +63,129 @@ $EASYRESEARCH_VENV/bin/python \
   --query "{topic}"
 ```
 
-在 Skill 目录内可直接用：
+From inside the Skill directory:
 
 ```bash
 $EASYRESEARCH_VENV/bin/python scripts/fetch_papers.py --query "{topic}"
 ```
 
-Windows 布局：
+Windows layout:
 
 ```powershell
 %EASYRESEARCH_VENV%\Scripts\python.exe scripts\fetch_papers.py --query "{topic}"
 ```
 
-若 `$EASYRESEARCH_VENV` 未设置或其 python 缺失 `arxiv` 包，脚本自动降级到
-REST API（无需手工创建 `.venv`）；系统 `python3` 也可直接运行该脚本。
+If `$EASYRESEARCH_VENV` is unset or its Python lacks the `arxiv` package, the
+script automatically falls back to the REST API (no manual `.venv` creation
+needed); the system `python3` can also run the script directly.
 
-若 OpenReview 抓取不可用，先确保 `playwright-cli` 可用，并优先使用本机 Chrome Stable：
+If OpenReview scraping is unavailable, ensure `playwright-cli` works and
+prefer the local Chrome Stable:
 ```bash
 playwright-cli open --browser=chrome https://example.com
 ```
 
-可选参数：
+Optional arguments:
 ```bash
-# 只搜索 OpenReview
+# OpenReview only
 paper-search --query "{topic}" --since "{since}" --until "{until}" --sources openreview
 
-# 只搜索 arXiv
+# arXiv only
 paper-search --query "{topic}" --since "{since}" --until "{until}" --sources arxiv
 
-# 调整返回条数
+# Adjust result count
 paper-search --query "{topic}" --since "{since}" --until "{until}" --max-results 20
 ```
 
 ## Advanced Options
-常规使用不需要填写这些参数；仅在需要控制速度、覆盖范围或稳定性时使用：
-- `--openreview-max-groups`（默认 `12`）：限制 OpenReview 最多查询多少个会议-年份分组（按新到旧）。值越小越快，覆盖范围越窄。
-- `--http-timeout`（默认 `15` 秒）：OpenReview、arXiv REST fallback 和 arXiv web-search fallback 的单次 HTTP 请求超时；arXiv SDK 自带重试与请求节流。
-- `--openreview-browser-timeout`（默认 `25` 秒）：OpenReview 通过 `playwright-cli` 抓取时的单次请求超时。
-- `--openreview-retries`（默认 `2`）：OpenReview Playwright 抓取失败时的重试次数。
-- `--openreview-time-budget`（默认 `90` 秒）：OpenReview 全部抓取的总时间预算；达到后提前停止后续分组抓取。
+Not needed for normal use; only when controlling speed, coverage, or
+stability:
+- `--openreview-max-groups` (default `12`): caps how many conference-year
+  groups OpenReview queries (newest first). Smaller is faster but narrower.
+- `--http-timeout` (default `15` s): per-request HTTP timeout for OpenReview,
+  the arXiv REST fallback, and the arXiv web-search fallback; the arXiv SDK
+  has its own retries and throttling.
+- `--openreview-browser-timeout` (default `25` s): per-request timeout when
+  OpenReview is scraped via `playwright-cli`.
+- `--openreview-retries` (default `2`): retry count when OpenReview Playwright
+  scraping fails.
+- `--openreview-time-budget` (default `90` s): total time budget for all
+  OpenReview scraping; stops fetching further groups early once reached.
 
-常见调优示例：
+Common tuning examples:
 ```bash
-# 快速模式：优先低延迟
+# Fast mode: prioritize low latency
 paper-search --query "{topic}" --openreview-max-groups 8 --openreview-time-budget 60 --openreview-browser-timeout 15 --http-timeout 10
 
-# 覆盖优先：允许更长抓取窗口
+# Coverage first: allow a longer scraping window
 paper-search --query "{topic}" --openreview-max-groups 20 --openreview-time-budget 150 --openreview-browser-timeout 35 --openreview-retries 3
 ```
 
 ## Script Behavior
-- 根据用户给定主题构造 arXiv 检索语句，并优先通过 `$EASYRESEARCH_VENV` 中的 `arxiv` Python SDK 检索
-- 若 `arxiv` SDK 不可用或请求失败，自动降级到原始 arXiv REST API 路径；若 REST 也无结果，再尝试 arXiv 网页搜索 fallback
-- 根据 OpenReview API 文档使用 `notes/search`，并显式传入 `term` 参数抓取候选论文
-- 根据用户给定时间范围生成 OpenReview 候选会议列表并抓取论文
-- OpenReview 默认按较新的会议年份优先抓取，并带有浏览器抓取重试与总时长预算，降低失败风险
-- OpenReview 统一通过 `playwright-cli` 管理的浏览器抓取 JSON，避免终端直连 API 在部分环境下被 403 拒绝
-- 对 OpenReview 结果做本地标准化与时间过滤
-- 对结果按标题去重，并优先保留 OpenReview 来源与更完整的来源信息
-- 输出排序优先展示 OpenReview 论文，再展示 arXiv 论文
-- 返回 JSON 列表，供 Skill 整理输出
+- Builds the arXiv query from the user topic and searches via the `arxiv`
+  Python SDK in `$EASYRESEARCH_VENV` first
+- If the `arxiv` SDK is unavailable or the request fails, falls back to the
+  raw arXiv REST API path; if REST yields nothing, tries the arXiv web search
+  fallback
+- Uses `notes/search` per the OpenReview API docs, passing `term` explicitly
+  to fetch candidate papers
+- Generates the OpenReview candidate conference list from the user's time
+  range and fetches papers
+- Scrapes newer conference years first by default, with browser retries and a
+  total time budget to reduce failure risk
+- Scrapes OpenReview JSON uniformly through a `playwright-cli`-managed browser
+  to avoid 403 rejections of direct API calls in some environments
+- Normalizes and time-filters OpenReview results locally
+- Deduplicates by title, preferring OpenReview sources and fuller source info
+- Orders output with OpenReview papers first, then arXiv papers
+- Returns a JSON list for the Skill to organize into output
 
 ## Output Format
-Skill 返回格式：
+Skill return format:
 ```
-### 检索结果
+### Search Results
 #### 1. {title}
-- 作者: {authors}
-- 发表日期: {published_date}
-- 来源: {source}
-- 会议/期刊: {venue}
-- 论文URL: {paper_url}
-- 摘要: {abstract}
+- Authors: {authors}
+- Published: {published_date}
+- Source: {source}
+- Venue: {venue}
+- Paper URL: {paper_url}
+- Abstract: {abstract}
 ```
 
-输出要求：
-- `来源` 只能写 `openreview` 或 `arxiv`
-- `会议/期刊` 必须尽量写详细名称，例如 `ICLR 2026 Poster`、`NeurIPS 2025 Oral`、`arXiv preprint`、具体 `journal_ref`
-- `论文URL` 必须是论文主页链接，不要输出 PDF 链接
-- 作者列表过长时可做适度截断，但不要遗漏第一作者
-- 若无结果，明确说明“在给定方向与时间范围内未找到匹配论文”
+Output requirements:
+- `Source` must be only `openreview` or `arxiv`
+- `Venue` must be as specific as possible, e.g. `ICLR 2026 Poster`, `NeurIPS 2025 Oral`, `arXiv preprint`, or a concrete `journal_ref`
+- `Paper URL` must be the paper's homepage link, not a PDF link
+- Long author lists may be truncated, but never drop the first author
+- If no results, state clearly that no matching paper was found in the given direction and time range
 
 ## Edge Cases
-- 无匹配结果：返回“在给定方向与时间范围内未找到匹配论文”
-- 单一数据源失败：保留另一个数据源的结果，并说明部分来源抓取失败
-- OpenReview 会议不存在或接口不可用：跳过对应会议并继续搜索
-- 用户时间范围非法（`since > until`）：提示用户修正时间范围
-- 若机器缺少可用的 `playwright-cli` 或 Chrome Stable：提示安装或修复本机 Chrome，并用 `playwright-cli open --browser=chrome https://example.com` 验证
+- No matches: return "no matching paper found in the given direction and time range"
+- A single source fails: keep the other source's results and note the partial source failure
+- OpenReview conference missing or API unavailable: skip that conference and continue searching
+- Invalid user time range (`since > until`): ask the user to correct it
+- If `playwright-cli` or Chrome Stable is missing: suggest installing or
+  fixing local Chrome and verify with
+  `playwright-cli open --browser=chrome https://example.com`
 
 ## Review Rules
-- 将脚本结果视为候选池；主题很窄或 OpenReview 结果明显泛化时，手动剔除弱相关论文
-- 严格同名论文稀缺时，说明“严格等价项稀缺”，再搜索相邻关键词
-- 做方向调研时，可把 OpenReview/arXiv 用作前沿信号；需要期刊、综述或引用量时再补充其他公开来源
-- 涉及 3区/4区样例时，必须说明分区口径需要用用户机构认可的最新 JCR/CAS/期刊官网信息核验
+- Treat script results as a candidate pool; manually drop weakly relevant
+  papers when the topic is narrow or OpenReview results are obviously generic
+- When exact same-title papers are scarce, state that strict equivalents are
+  scarce, then search adjacent keywords
+- For direction surveys, OpenReview/arXiv are frontier signals; add other
+  public sources for journals, reviews, or citation counts
+- For Q3/Q4 examples, always note that quartile assignments must be verified
+  against the latest JCR/CAS or journal-site information accepted by the
+  user's institution
 
 ## Constraints
-- 不在 Skill 内固定研究方向
-- 若用户未指定时间范围，默认使用 `2026-01-01` 到当前日期
-- 搜索方向由用户决定
-- OpenReview / arXiv 接口均为公开接口；若个别接口失败，Skill 应优雅降级
-- 输出结果必须包含标题、作者、发表日期、来源、会议/期刊名称与非 PDF 论文链接
+- Do not fix a research direction inside the Skill
+- If the user gives no time range, default to `2026-01-01` through today
+- The search direction is decided by the user
+- OpenReview/arXiv APIs are public; degrade gracefully when an individual API fails
+- Output must include title, authors, publication date, source, venue name, and a non-PDF paper link
 
 ## Directory Structure
 ```
