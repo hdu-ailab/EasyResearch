@@ -1,5 +1,5 @@
 import { AlertTriangle, CheckCircle2, ExternalLink, KeyRound, ShieldCheck, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { AuthProviderInfoDto } from "../../../web/contracts";
 import { type NotifyCard, type PendingPrompt, useProviderAuthFlow } from "../hooks/useProviderAuthFlow";
 import { useI18n } from "../i18n/useI18n";
@@ -98,13 +98,6 @@ export function ProviderConnectModal({ onClose }: ProviderConnectModalProps) {
                   onClick={() => void f.cancel()}
                 >
                   {t("providerConnect.cancel")}
-                </button>
-                <button
-                  type="button"
-                  className="text-[12px] text-v2-text-text-muted hover:underline"
-                  onClick={f.backToList}
-                >
-                  {t("providerConnect.back")}
                 </button>
               </div>
             </div>
@@ -231,6 +224,29 @@ function ProviderRow({
 
 function NotifyCardView({ notify }: { notify: NotifyCard }) {
   const { t } = useI18n();
+  if (notify.kind === "info") {
+    return (
+      <div className="rounded-md border border-v2-grey-200 p-3">
+        <p className="text-[12px] text-v2-text-text-muted">{notify.message}</p>
+        {notify.links && notify.links.length > 0 && (
+          <div className="mt-1.5 flex flex-col gap-1">
+            {notify.links.map((link) => (
+              <a
+                key={link.url}
+                href={link.url}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 break-all text-[12px] text-v2-blue-600 hover:underline"
+              >
+                <ExternalLink size={12} aria-hidden />
+                {link.label ?? link.url}
+              </a>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
   if (notify.kind === "auth_url") {
     return (
       <div className="rounded-md border border-v2-grey-200 p-3">
@@ -248,30 +264,45 @@ function NotifyCardView({ notify }: { notify: NotifyCard }) {
     );
   }
   if (notify.kind === "device_code") {
-    return (
-      <div className="rounded-md border border-v2-grey-200 p-3">
-        <p className="text-[12px] text-v2-text-text-muted">{t("providerConnect.prompt.deviceCodeAt")}</p>
-        <a
-          href={notify.verificationUri}
-          target="_blank"
-          rel="noreferrer"
-          className="mt-0.5 inline-flex items-center gap-1 break-all text-[12px] text-v2-blue-600 hover:underline"
-        >
-          <ExternalLink size={12} aria-hidden />
-          {notify.verificationUri}
-        </a>
-        <div className="mt-2">
-          <span className="text-[11px] uppercase tracking-wide text-v2-text-text-faint">
-            {t("providerConnect.prompt.deviceCode")}
-          </span>
-          <div className="font-mono text-[20px] font-bold tracking-[0.2em] text-v2-text-text-base">
-            {notify.userCode}
-          </div>
-        </div>
-      </div>
-    );
+    return <DeviceCodeView notify={notify} />;
   }
   return <p className="text-[12px] text-v2-text-text-muted">{notify.message}</p>;
+}
+
+function DeviceCodeView({ notify }: { notify: Extract<NotifyCard, { kind: "device_code" }> }) {
+  const { t } = useI18n();
+  const [remaining, setRemaining] = useState(notify.expiresInSeconds ?? 0);
+  useEffect(() => {
+    if (!notify.expiresInSeconds) return;
+    setRemaining(notify.expiresInSeconds);
+    const timer = setInterval(() => setRemaining((current) => Math.max(0, current - 1)), 1000);
+    return () => clearInterval(timer);
+  }, [notify.expiresInSeconds]);
+  return (
+    <div className="rounded-md border border-v2-grey-200 p-3">
+      <p className="text-[12px] text-v2-text-text-muted">{t("providerConnect.prompt.deviceCodeAt")}</p>
+      <a
+        href={notify.verificationUri}
+        target="_blank"
+        rel="noreferrer"
+        className="mt-0.5 inline-flex items-center gap-1 break-all text-[12px] text-v2-blue-600 hover:underline"
+      >
+        <ExternalLink size={12} aria-hidden />
+        {notify.verificationUri}
+      </a>
+      <div className="mt-2">
+        <span className="text-[11px] uppercase tracking-wide text-v2-text-text-faint">
+          {t("providerConnect.prompt.deviceCode")}
+        </span>
+        <div className="font-mono text-[20px] font-bold tracking-[0.2em] text-v2-text-text-base">{notify.userCode}</div>
+        {notify.expiresInSeconds !== undefined && (
+          <div className="mt-1 text-[11px] tabular-nums text-v2-text-text-muted" aria-live="polite">
+            {t("providerConnect.prompt.expiresIn").replace("{s}", String(remaining))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function PromptView({ prompt, onSubmit }: { prompt: PendingPrompt; onSubmit: (v: string) => void }) {

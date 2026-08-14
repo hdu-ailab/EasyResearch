@@ -59,6 +59,27 @@ describe("assembleProviderInfo", () => {
     const info = assembleProviderInfo(provider as never, { configured: false }, undefined);
     expect(info.source).toBeUndefined();
   });
+
+  it("marks modelsJson for providers declared in models.json", () => {
+    const provider = {
+      id: "my-local-llm",
+      name: "My Local LLM",
+      auth: {},
+    };
+    const ids = new Set(["my-local-llm"]);
+    const info = assembleProviderInfo(provider as never, { configured: false }, undefined, ids);
+    expect(info.modelsJson).toBe(true);
+  });
+
+  it("leaves modelsJson false for built-in providers", () => {
+    const provider = {
+      id: "anthropic",
+      name: "Anthropic",
+      auth: { apiKey: { name: "Anthropic API key", login: vi.fn() } },
+    };
+    const info = assembleProviderInfo(provider as never, { configured: true, source: "stored" }, undefined);
+    expect(info.modelsJson).toBe(false);
+  });
 });
 
 describe("singleFlightGuard", () => {

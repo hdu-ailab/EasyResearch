@@ -7,6 +7,7 @@ import {
   getWebuiSettings,
   listAgentResources,
   listAgents,
+  listAuthProviders,
   listConfigProjects,
   listModels,
   listSkillResources,
@@ -17,11 +18,12 @@ import {
   writeSkillResource,
 } from "../api";
 import type { ModelOption } from "../api/parsers";
+import { AgentConfigModal } from "../components/AgentConfigModal";
 import { AgentMarkdownEditor } from "../components/AgentMarkdownEditor";
 import { AgentResourceDetailsDialog } from "../components/AgentResourceDetailsDialog";
 import { ProviderConnectModal } from "../components/ProviderConnectModal";
 import { SkillResourceEditor } from "../components/SkillResourceEditor";
-import { ThinkingLevelSelect, thinkingLevelsForModel } from "../components/ThinkingLevelSelect";
+import { thinkingLevelsForModel } from "../components/ThinkingLevelSelect";
 import { ProductMark, Topbar } from "../components/Topbar";
 import type { Translate } from "../i18n/agents";
 import { agentDisplayName } from "../i18n/agents";
@@ -172,6 +174,8 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
   const [diagnosticError, setDiagnosticError] = useState<string | null>(null);
   const [projects, setProjects] = useState<Array<{ cwd: string }>>([]);
   const [providerConnectOpen, setProviderConnectOpen] = useState(false);
+  const [providerConnectedCount, setProviderConnectedCount] = useState<number | null>(null);
+  const [agentModal, setAgentModal] = useState<AgentDto | null>(null);
   const diagnosticRequest = useRef(0);
   const [agentEditor, setAgentEditor] = useState<AgentResourceDto | null>(null);
   const [skillEditor, setSkillEditor] = useState<SkillResourceDto | null>(null);
@@ -197,6 +201,9 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
     listConfigProjects()
       .then((configProjects) => setProjects(configProjects.projects))
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    listAuthProviders()
+      .then((providerList) => setProviderConnectedCount(providerList.filter((p) => p.authStatus?.configured).length))
+      .catch(() => setProviderConnectedCount(null));
   }, []);
 
   const refreshAgents = async () => {
@@ -249,6 +256,7 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
       const savedAgent = await writeAgentResource(agent.name, content);
       setResourceAgents((current) => current.map((item) => (item.name === savedAgent.name ? savedAgent : item)));
       setAgents((current) => current.map((item) => (item.name === savedAgent.name ? savedAgent : item)));
+      setAgentModal((current) => (current?.name === savedAgent.name ? savedAgent : current));
       await refreshDiagnostics();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -264,6 +272,7 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
       setAddAgentOpen(false);
       setNewAgentName("");
       setAgentEditor(created);
+      setAgentModal(created);
       setResourceAgents((current) => [...current.filter((item) => item.name !== created.name), created]);
       setAgents((current) => [...current.filter((item) => item.name !== created.name), created]);
       await Promise.all([refreshAgents(), refreshDiagnostics()]);
@@ -478,6 +487,22 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
             </div>
           </section>
 
+          <section className={sectionClass} aria-label={t("settings.connectProviders")}>
+            <button
+              type="button"
+              className="flex h-9 w-full items-center gap-2 rounded-[10px] px-4 py-2 text-[13px] font-medium text-v2-text-text-base transition-colors hover:bg-v2-grey-100"
+              onClick={() => setProviderConnectOpen(true)}
+            >
+              <KeyRound size={14} className="text-v2-text-text-muted" aria-hidden />
+              <span className="min-w-0">{t("settings.connectProviders")}</span>
+              {providerConnectedCount !== null && (
+                <span className="ml-auto shrink-0 text-[12px] text-v2-text-text-muted">
+                  {t("settings.connectedCount").replace("{n}", String(providerConnectedCount))}
+                </span>
+              )}
+            </button>
+          </section>
+
           <section className={sectionClass} aria-label={t("settings.agents.title")}>
             <header className="flex items-center gap-2 border-b border-v2-grey-200 px-4 py-2.5">
               <Settings2 size={14} className="text-v2-icon-icon-muted" aria-hidden />
@@ -492,170 +517,41 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
                 {t("settings.agents.add")}
               </button>
             </header>
-            <div className="flex flex-col gap-3 px-4 py-4">
-              {roster.map((agent) =>
-                agent.name === PAPER_ASSISTANT_AGENT ? (
-                  <div key={agent.name} className="rounded-md border border-v2-grey-200 p-3">
-                    <div className="flex items-center gap-2">
-                      <span className="size-2 rounded-full bg-v2-grey-400" aria-hidden />
-                      <span className="text-[13px] font-medium text-v2-text-text-base">
-                        {agentDisplayName(t, agent.name)}
-                      </span>
-                    </div>
-                    <p className="mt-1 text-[12px] text-v2-text-text-muted">{agent.description}</p>
-                    <button
-                      type="button"
-                      className="mt-1 rounded-md bg-v2-grey-100 px-2 py-1 text-left text-[11px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-200"
-                      onClick={() => setDetailsAgent(agent)}
-                    >
-                      {formatToolsSkills(t, agent)}
-                    </button>
-                    <div className="mt-2 flex items-center justify-between gap-3">
-                      <button
-                        type="button"
-                        className="text-[12px] text-v2-blue-600 hover:underline"
-                        aria-label={t("settings.agents.edit").replace("{name}", agentDisplayName(t, agent.name))}
-                        onClick={() => void openAgentEditor(agent.name)}
-                      >
-                        {t("settings.agents.edit").replace("{name}", agentDisplayName(t, agent.name))}
-                      </button>
-                      <div className="flex min-w-0 flex-1 items-center justify-end gap-3">
-                        <label className="flex min-w-0 items-center gap-2">
-                          <span className="shrink-0 text-[12px] text-v2-text-text-muted">
-                            {t("settings.agents.model")}
-                          </span>
-                          <select
-                            className="h-8 min-w-0 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600 disabled:opacity-50"
-                            aria-label={`${t("settings.agents.selectModelFor")} ${agentDisplayName(t, agent.name)}`}
-                            value={paperAssistantValue}
-                            onChange={(e) => setPaperAssistantModel(e.target.value)}
-                            disabled={busy}
-                          >
-                            {paperAssistantOptions.map((m) => (
-                              <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
-                                {m.provider}/{m.id}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <label htmlFor={`thinking-${agent.name}`} className="flex min-w-0 items-center gap-2">
-                          <span className="shrink-0 text-[12px] text-v2-text-text-muted">
-                            {t("settings.agents.thinking")}
-                          </span>
-                          <ThinkingLevelSelect
-                            id={`thinking-${agent.name}`}
-                            ariaLabel={`${t("settings.agents.selectThinkingFor")} ${agentDisplayName(t, agent.name)}`}
-                            value={paperAssistantThinking ?? ""}
-                            levels={thinkingLevelsForModel(
-                              models.find((m) => `${m.provider}/${m.id}` === paperAssistantValue),
-                              paperAssistantThinking ?? undefined,
-                            )}
-                            emptyLabel={t("settings.agents.defaultThinking")}
-                            disabled={busy}
-                            onChange={setPaperAssistantThinkingValue}
-                            className="h-8 min-w-0 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600 disabled:opacity-50"
-                          />
-                        </label>
-                      </div>
-                    </div>
-                    {agentEditor?.name === agent.name && (
-                      <AgentMarkdownEditor
-                        resource={agentEditor}
-                        busy={busy}
-                        onSave={(content) => void saveAgent(content)}
-                        onClose={() => setAgentEditor(null)}
-                      />
-                    )}
-                  </div>
-                ) : (
-                  <div
-                    key={agent.name}
-                    className={`rounded-md border border-v2-grey-200 p-3 ${agent.enabled === false ? "opacity-60" : ""}`}
+            <div className="flex flex-col gap-2 px-4 py-4">
+              {roster.map((agent) => (
+                <div
+                  key={agent.name}
+                  className={`flex min-w-0 items-center gap-2 rounded-md border border-v2-grey-200 px-3 py-2 transition-colors hover:bg-v2-grey-100 ${agent.enabled === false ? "opacity-60" : ""}`}
+                >
+                  <button
+                    type="button"
+                    aria-label={t("settings.agents.configure").replace("{name}", agentDisplayName(t, agent.name))}
+                    onClick={() => setAgentModal(agent)}
+                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
                   >
-                    <div className="flex items-center gap-2">
-                      <span className="size-2 rounded-full bg-v2-grey-400" aria-hidden />
-                      <span className="text-[13px] font-medium text-v2-text-text-base">
+                    <span
+                      className={`size-2 shrink-0 rounded-full ${agent.enabled === false ? "bg-v2-grey-400" : "bg-emerald-500"}`}
+                      aria-hidden
+                    />
+                    <span className="min-w-0">
+                      <span className="block truncate text-[13px] font-medium text-v2-text-text-base">
                         {agentDisplayName(t, agent.name)}
                       </span>
-                      <div className="ml-auto flex items-center">
-                        <PreferenceSwitch
-                          label={agentDisplayName(t, agent.name)}
-                          checked={agent.enabled !== false}
-                          onChange={() => void toggleAgent(agent)}
-                          showLabel={false}
-                        />
-                      </div>
-                    </div>
-                    <p className="mt-1 text-[12px] text-v2-text-text-muted">{agent.description}</p>
-                    <button
-                      type="button"
-                      className="mt-1 rounded-md bg-v2-grey-100 px-2 py-1 text-left text-[11px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-200"
-                      onClick={() => setDetailsAgent(agent)}
-                    >
-                      {formatToolsSkills(t, agent)}
-                    </button>
-                    <div className="mt-2 flex items-center justify-between gap-3">
-                      <button
-                        type="button"
-                        className="text-[12px] text-v2-blue-600 hover:underline"
-                        aria-label={t("settings.agents.edit").replace("{name}", agentDisplayName(t, agent.name))}
-                        onClick={() => void openAgentEditor(agent.name)}
-                      >
-                        {t("settings.agents.edit").replace("{name}", agentDisplayName(t, agent.name))}
-                      </button>
-                      <div className="flex min-w-0 flex-1 items-center justify-end gap-3">
-                        <label className="flex min-w-0 items-center gap-2">
-                          <span className="shrink-0 text-[12px] text-v2-text-text-muted">
-                            {t("settings.agents.model")}
-                          </span>
-                          <select
-                            className="h-8 min-w-0 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600 disabled:opacity-50"
-                            aria-label={`${t("settings.agents.selectModelFor")} ${agentDisplayName(t, agent.name)}`}
-                            value={agentModels[agent.name] ?? ""}
-                            onChange={(e) => setAgentModel(agent.name, e.target.value)}
-                            disabled={busy}
-                          >
-                            <option value="">{t("settings.agents.inherit")}</option>
-                            {withConfiguredModel(models, agentModels[agent.name]).map((m) => (
-                              <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
-                                {m.provider}/{m.id}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <label htmlFor={`thinking-${agent.name}`} className="flex min-w-0 items-center gap-2">
-                          <span className="shrink-0 text-[12px] text-v2-text-text-muted">
-                            {t("settings.agents.thinking")}
-                          </span>
-                          <ThinkingLevelSelect
-                            id={`thinking-${agent.name}`}
-                            ariaLabel={`${t("settings.agents.selectThinkingFor")} ${agentDisplayName(t, agent.name)}`}
-                            value={agentThinking[agent.name] ?? ""}
-                            levels={thinkingLevelsForModel(
-                              models.find(
-                                (m) => `${m.provider}/${m.id}` === (agentModels[agent.name] ?? paperAssistantValue),
-                              ),
-                              agentThinking[agent.name],
-                            )}
-                            emptyLabel={t("settings.agents.defaultThinking")}
-                            disabled={busy}
-                            onChange={(level) => setAgentThinkingValue(agent.name, level)}
-                            className="h-8 min-w-0 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600 disabled:opacity-50"
-                          />
-                        </label>
-                      </div>
-                    </div>
-                    {agentEditor?.name === agent.name && (
-                      <AgentMarkdownEditor
-                        resource={agentEditor}
-                        busy={busy}
-                        onSave={(content) => void saveAgent(content)}
-                        onClose={() => setAgentEditor(null)}
-                      />
-                    )}
-                  </div>
-                ),
-              )}
+                      {agent.description && (
+                        <span className="block truncate text-[12px] text-v2-text-text-muted">{agent.description}</span>
+                      )}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="shrink-0 rounded-md bg-v2-grey-100 px-2 py-1 text-left text-[11px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-200"
+                    aria-label={t("settings.agents.viewDetailsFor").replace("{name}", agentDisplayName(t, agent.name))}
+                    onClick={() => setDetailsAgent(agent)}
+                  >
+                    {formatToolsSkills(t, agent)}
+                  </button>
+                </div>
+              ))}
               <div className="border-t border-v2-grey-200 pt-4">
                 <h3 className="text-[12px] font-semibold text-v2-text-text-base">{t("settings.resources.tools")}</h3>
                 <div className="mt-2 flex flex-wrap gap-1.5">
@@ -730,7 +626,7 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
                   ))}
                 </div>
               </div>
-              {agentEditor && !roster.some((agent) => agent.name === agentEditor.name) && (
+              {agentEditor && !agentModal && !roster.some((agent) => agent.name === agentEditor.name) && (
                 <AgentMarkdownEditor
                   resource={agentEditor}
                   busy={busy}
@@ -749,17 +645,6 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
             >
               <FileJson size={14} className="text-v2-text-text-muted" aria-hidden />
               {t("settings.config.entry")}
-            </button>
-          </section>
-
-          <section className={sectionClass} aria-label={t("settings.connectProviders")}>
-            <button
-              type="button"
-              className="flex h-9 w-full items-center gap-2 rounded-[10px] px-4 py-2 text-[13px] font-medium text-v2-text-text-base transition-colors hover:bg-v2-grey-100"
-              onClick={() => setProviderConnectOpen(true)}
-            >
-              <KeyRound size={14} className="text-v2-text-text-muted" aria-hidden />
-              {t("settings.connectProviders")}
             </button>
           </section>
 
@@ -820,6 +705,55 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
         />
       )}
       {providerConnectOpen && <ProviderConnectModal onClose={() => setProviderConnectOpen(false)} />}
+      {agentModal && (
+        <AgentConfigModal
+          agent={agentModal}
+          busy={busy}
+          isPaperAssistant={agentModal.name === PAPER_ASSISTANT_AGENT}
+          modelOptions={
+            agentModal.name === PAPER_ASSISTANT_AGENT
+              ? paperAssistantOptions
+              : withConfiguredModel(models, agentModels[agentModal.name])
+          }
+          modelValue={
+            agentModal.name === PAPER_ASSISTANT_AGENT ? paperAssistantValue : (agentModels[agentModal.name] ?? "")
+          }
+          thinkingValue={
+            agentModal.name === PAPER_ASSISTANT_AGENT
+              ? (paperAssistantThinking ?? "")
+              : (agentThinking[agentModal.name] ?? "")
+          }
+          thinkingLevels={thinkingLevelsForModel(
+            models.find(
+              (m) =>
+                `${m.provider}/${m.id}` ===
+                (agentModal.name === PAPER_ASSISTANT_AGENT
+                  ? paperAssistantValue
+                  : (agentModels[agentModal.name] ?? paperAssistantValue)),
+            ),
+            agentModal.name === PAPER_ASSISTANT_AGENT
+              ? (paperAssistantThinking ?? undefined)
+              : agentThinking[agentModal.name],
+          )}
+          editorResource={agentEditor?.name === agentModal.name ? agentEditor : null}
+          onClose={() => setAgentModal(null)}
+          onToggle={() => void toggleAgent(agentModal)}
+          onModelChange={(value) =>
+            agentModal.name === PAPER_ASSISTANT_AGENT
+              ? setPaperAssistantModel(value)
+              : setAgentModel(agentModal.name, value)
+          }
+          onThinkingChange={(value) =>
+            agentModal.name === PAPER_ASSISTANT_AGENT
+              ? setPaperAssistantThinkingValue(value)
+              : setAgentThinkingValue(agentModal.name, value)
+          }
+          onEditMarkdown={() => void openAgentEditor(agentModal.name)}
+          onSaveMarkdown={(content) => void saveAgent(content)}
+          onCloseEditor={() => setAgentEditor(null)}
+          onShowDetails={() => setDetailsAgent(agentModal)}
+        />
+      )}
     </div>
   );
 }

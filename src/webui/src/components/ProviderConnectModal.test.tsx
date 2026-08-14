@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { AuthProviderInfoDto } from "../../../web/contracts";
@@ -17,6 +17,7 @@ const apiKeyProvider: AuthProviderInfoDto = {
   authMethods: ["api_key"],
   connectable: true,
   authStatus: { configured: false },
+  modelsJson: false,
 };
 const dualProvider: AuthProviderInfoDto = {
   id: "xai",
@@ -24,6 +25,7 @@ const dualProvider: AuthProviderInfoDto = {
   authMethods: ["api_key", "oauth"],
   connectable: true,
   authStatus: { configured: false },
+  modelsJson: false,
 };
 const ambientProvider: AuthProviderInfoDto = {
   id: "google-vertex",
@@ -32,6 +34,7 @@ const ambientProvider: AuthProviderInfoDto = {
   connectable: false,
   authStatus: { configured: false },
   hint: "ambient creds",
+  modelsJson: false,
 };
 
 function makeFlow(overrides: Partial<UseProviderAuthFlow> = {}): UseProviderAuthFlow {
@@ -109,6 +112,49 @@ describe("ProviderConnectModal", () => {
     render(<ProviderConnectModal onClose={() => {}} />);
     expect(screen.getByText("https://x/authorize")).toBeInTheDocument();
     expect(screen.getByText("ABCD-1234")).toBeInTheDocument();
+  });
+
+  it("renders info notify links as external anchors", () => {
+    mockedUse.mockReturnValue(
+      makeFlow({
+        view: "flow",
+        notifies: [
+          {
+            kind: "info",
+            message: "Visit the docs",
+            links: [{ url: "https://x/docs", label: "Documentation" }, { url: "https://x/guide" }],
+          },
+        ],
+      }),
+    );
+    render(<ProviderConnectModal onClose={() => {}} />);
+    expect(screen.getByText("Visit the docs")).toBeInTheDocument();
+    const docs = screen.getByText("Documentation");
+    expect(docs.tagName).toBe("A");
+    expect(docs).toHaveAttribute("href", "https://x/docs");
+    expect(screen.getByText("https://x/guide")).toHaveAttribute("href", "https://x/guide");
+  });
+
+  it("renders a device_code countdown from expiresInSeconds", () => {
+    vi.useFakeTimers();
+    try {
+      mockedUse.mockReturnValue(
+        makeFlow({
+          view: "flow",
+          notifies: [
+            { kind: "device_code", userCode: "ABCD", verificationUri: "https://x/device", expiresInSeconds: 60 },
+          ],
+        }),
+      );
+      render(<ProviderConnectModal onClose={() => {}} />);
+      expect(screen.getByText(/Expires in 60s/)).toBeInTheDocument();
+      act(() => {
+        vi.advanceTimersByTime(3000);
+      });
+      expect(screen.getByText(/Expires in 57s/)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("renders a secret prompt and submits its value", async () => {

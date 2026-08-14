@@ -40,6 +40,8 @@ export interface AuthGatewaySettings {
   timeoutMs: number;
   /** Optional info/warn logger (ADR-039). Secrets are never logged. */
   logger?: Pick<Logger, "info" | "warn">;
+  /** Provider ids declared in `models.json` (custom providers), for pinning. */
+  modelsJsonProviderIds?: ReadonlySet<string>;
 }
 
 /** Minimal view of `ModelRuntime` this gateway relies on. */
@@ -215,6 +217,7 @@ export function createAuthGateway(
             p as never,
             { configured: status?.configured ?? false, source: status?.source },
             authCheck as never,
+            settings.modelsJsonProviderIds,
           ),
         );
       }

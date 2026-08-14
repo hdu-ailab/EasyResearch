@@ -412,6 +412,7 @@ export function parseAuthProviderList(body: unknown): AuthProviderInfoDto[] {
       },
       ...(typeof r.source === "string" ? { source: r.source } : {}),
       ...(typeof r.hint === "string" ? { hint: r.hint } : {}),
+      modelsJson: r.modelsJson === true,
     } satisfies AuthProviderInfoDto;
   });
 }

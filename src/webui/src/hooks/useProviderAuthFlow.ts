@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AuthFlowEventDto, AuthProviderInfoDto } from "../../../web/contracts";
 import {
   authFlowEventSource,
@@ -59,6 +59,16 @@ export interface UseProviderAuthFlow {
   refresh(): Promise<void>;
 }
 
+/** A provider is "already configured" when auth is set up OR it is a custom
+ * `models.json`-declared provider; those are pinned above the rest. */
+function isPinned(provider: AuthProviderInfoDto): boolean {
+  return provider.authStatus?.configured === true || provider.modelsJson === true;
+}
+
+function sortProviders(providers: AuthProviderInfoDto[]): AuthProviderInfoDto[] {
+  return [...providers].sort((a, b) => Number(isPinned(b)) - Number(isPinned(a)));
+}
+
 export function useProviderAuthFlow(): UseProviderAuthFlow {
   const [providers, setProviders] = useState<AuthProviderInfoDto[]>([]);
   const [view, setView] = useState<FlowView>("idle");
@@ -71,9 +81,11 @@ export function useProviderAuthFlow(): UseProviderAuthFlow {
   const genRef = useRef(0);
   const unsubRef = useRef<(() => void) | null>(null);
   const flowIdRef = useRef<string | null>(null);
+  const terminalRef = useRef(false);
+  const errorStreakRef = useRef(0);
 
   const refresh = useCallback(async () => {
-    setProviders(await listAuthProviders());
+    setProviders(sortProviders(await listAuthProviders()));
   }, []);
 
   useEffect(() => {
@@ -85,9 +97,22 @@ export function useProviderAuthFlow(): UseProviderAuthFlow {
     unsubRef.current = null;
   }, []);
 
+  // Unmount cleanup: close the SSE stream and cancel any server-side flow so
+  // the single-flight lock is not held after the modal goes away.
+  useEffect(() => {
+    return () => {
+      closeStream();
+      const flowId = flowIdRef.current;
+      flowIdRef.current = null;
+      if (flowId) void cancelAuthFlow(flowId).catch(() => {});
+    };
+  }, [closeStream]);
+
   const start = useCallback(
     async (providerId: string, type: "api_key" | "oauth") => {
       closeStream();
+      terminalRef.current = false;
+      errorStreakRef.current = 0;
       setView("flow");
       setPendingPrompt(null);
       setNotifies([]);
@@ -95,11 +120,20 @@ export function useProviderAuthFlow(): UseProviderAuthFlow {
       setErrorMessage(undefined);
       setErrorReason(undefined);
       setActiveProviderId(providerId);
-      const { flowId } = await startAuthFlow({ providerId, type });
+      let flowId: string;
+      try {
+        ({ flowId } = await startAuthFlow({ providerId, type }));
+      } catch (error) {
+        setErrorMessage(error instanceof Error ? error.message : String(error));
+        setErrorReason("reject");
+        setView("error");
+        return;
+      }
       flowIdRef.current = flowId;
       const gen = ++genRef.current;
       const onEvent = (event: AuthFlowEventDto) => {
         if (genRef.current !== gen) return;
+        errorStreakRef.current = 0;
         if (event.type === "prompt") {
           setPendingPrompt({
             kind: event.kind,
@@ -108,25 +142,47 @@ export function useProviderAuthFlow(): UseProviderAuthFlow {
             options: event.options,
           });
         } else if (event.type === "notify") {
-          setNotifies((prev) => [...prev, event.event]);
+          setNotifies((prev) => {
+            if (event.event.kind === "progress") {
+              // Transient status line: the newest progress replaces any prior one.
+              const rest = prev.filter((n) => n.kind !== "progress");
+              return [...rest, event.event];
+            }
+            return [...prev, event.event];
+          });
         } else if (event.type === "done") {
+          terminalRef.current = true;
           setPendingPrompt(null);
           setWarning(event.warning);
           setView("done");
+          closeStream();
           void refresh();
         } else if (event.type === "error") {
+          terminalRef.current = true;
           setPendingPrompt(null);
           setErrorMessage(event.message);
           setErrorReason(event.reason);
           setView("error");
+          closeStream();
         }
       };
       unsubRef.current = authFlowEventSource(flowId, {
         onEvent,
         onError: () => {
           if (genRef.current !== gen) return;
-          setErrorMessage("Connection lost");
-          setView("error");
+          if (terminalRef.current) return;
+          // Transient network blip: the server replays the pending prompt and
+          // any buffered events on reconnect, so drop the notifies client-side
+          // to avoid duplicate cards. The pending prompt is kept (it is
+          // replayed identically) so a typed secret is not blanked.
+          errorStreakRef.current += 1;
+          if (errorStreakRef.current >= 3) {
+            setErrorMessage("Connection lost");
+            setErrorReason(undefined);
+            setView("error");
+          } else {
+            setNotifies([]);
+          }
         },
       });
     },
@@ -136,16 +192,28 @@ export function useProviderAuthFlow(): UseProviderAuthFlow {
   const respond = useCallback(async (value: string) => {
     if (!flowIdRef.current) return;
     await respondAuthFlow(flowIdRef.current, value);
-    setPendingPrompt(null);
   }, []);
 
   const cancel = useCallback(async () => {
-    if (flowIdRef.current) await cancelAuthFlow(flowIdRef.current);
+    const flowId = flowIdRef.current;
+    if (!flowId) return;
+    try {
+      await cancelAuthFlow(flowId);
+    } catch {
+      // The flow may already have terminated server-side; the SSE terminal
+      // event (or the error card) is the source of truth.
+    }
   }, []);
 
   const backToList = useCallback(() => {
+    // An active flow must be cancelled server-side or the single-flight lock
+    // stays held and the next Connect request gets a 409.
+    const flowId = flowIdRef.current;
+    if (flowId) void cancelAuthFlow(flowId).catch(() => {});
     closeStream();
     flowIdRef.current = null;
+    terminalRef.current = false;
+    errorStreakRef.current = 0;
     setView("idle");
     setPendingPrompt(null);
     setNotifies([]);
@@ -164,7 +232,7 @@ export function useProviderAuthFlow(): UseProviderAuthFlow {
     [refresh],
   );
 
-  const connectedCount = providers.filter((p) => p.authStatus?.configured).length;
+  const connectedCount = useMemo(() => providers.filter((p) => p.authStatus?.configured).length, [providers]);
 
   return {
     providers,

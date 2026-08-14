@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import { createAuthGateway, type AuthGateway } from "./auth-gateway";
 import { ConfigFileService } from "./config-files";
 import type { Logger } from "../runtime/logger";
@@ -9,6 +10,23 @@ let cached: AuthGateway | null = null;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Extract provider ids declared in `models.json` (custom providers the user
+ * added by hand). Never throws: unreadable/invalid files yield an empty set,
+ * which only disables pinning of custom providers, never the auth flows.
+ */
+export async function readModelsJsonProviderIds(modelsPath: string): Promise<ReadonlySet<string>> {
+  try {
+    const content = await readFile(modelsPath, "utf8");
+    const root = JSON.parse(content) as unknown;
+    const providers = isRecord(root) ? root.providers : undefined;
+    if (!isRecord(providers)) return new Set();
+    return new Set(Object.keys(providers));
+  } catch {
+    return new Set();
+  }
 }
 
 /**
@@ -60,7 +78,12 @@ export async function getAuthGateway(logger: Logger): Promise<AuthGateway> {
     modelsPath: join(agentDir, "models.json"),
     refreshOnCreate: false,
   });
-  cached = createAuthGateway(modelRuntime as never, undefined, { timeoutMs, logger });
+  const modelsJsonProviderIds = await readModelsJsonProviderIds(join(agentDir, "models.json"));
+  cached = createAuthGateway(modelRuntime as never, undefined, {
+    timeoutMs,
+    logger,
+    modelsJsonProviderIds,
+  });
   return cached;
 }
 
