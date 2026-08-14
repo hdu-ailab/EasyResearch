@@ -33,6 +33,9 @@ vi.mock("../api", async (importOriginal) => {
     setAgentModel: vi.fn(),
     getEffectiveThinking: vi.fn(),
     setAgentThinking: vi.fn(),
+    getSessionCommands: vi.fn().mockResolvedValue([]),
+    getSessionTree: vi.fn().mockResolvedValue({ tree: [], leafId: null }),
+    navigateSessionTree: vi.fn().mockResolvedValue(undefined),
   };
 });
 
@@ -1992,5 +1995,68 @@ describe("WorkPage", () => {
     expect(await screen.findByText(/Retrying API call 1\/3/)).toBeTruthy();
     emitInAct({ type: "auto_retry_end", success: true, attempt: 1 });
     await waitFor(() => expect(screen.queryByText(/Retrying API call 1\/3/)).toBeNull());
+  });
+
+  describe("skill slash commands and message branching (ADR-066)", () => {
+    const branchingTree = {
+      leafId: "a2",
+      tree: [
+        { id: "m1", parentId: null, role: "user", text: "write a paper" },
+        { id: "a1", parentId: "m1", role: "assistant", text: "starting research" },
+        { id: "m2", parentId: null, role: "user", text: "write a paper (edited)" },
+        { id: "a2", parentId: "m2", role: "assistant", text: "research restarted" },
+      ],
+    };
+
+    it("opens the skill popover and sends the inserted /skill: command", async () => {
+      const user = userEvent.setup();
+      vi.mocked(api.getSessionCommands).mockResolvedValue([{ name: "arxiv", description: "arXiv metadata" }]);
+      render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+      await screen.findByText("starting research");
+
+      const input = screen.getByRole("textbox", { name: /message/i });
+      await user.click(input);
+      await user.keyboard("/ar");
+      await user.click(await screen.findByRole("option", { name: /\/arxiv/ }));
+      expect((input as HTMLTextAreaElement).value).toBe("/skill:arxiv ");
+      await user.click(screen.getByRole("button", { name: /send/i }));
+      await waitFor(() => expect(api.sendPrompt).toHaveBeenCalledWith("s1", "/skill:arxiv"));
+    });
+
+    it("loads session tree metadata and offers the version switcher", async () => {
+      vi.mocked(api.getSessionTree).mockResolvedValue(branchingTree as never);
+      render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+      await screen.findByText("starting research");
+      expect(await screen.findByText("2/2")).toBeTruthy();
+    });
+
+    it("edits a historical message: navigate in place, then send the new text", async () => {
+      const user = userEvent.setup();
+      vi.mocked(api.getSessionTree).mockResolvedValue(branchingTree as never);
+      render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+      await screen.findByText("starting research");
+      await screen.findByText("2/2");
+
+      await user.click(screen.getByRole("button", { name: /edit/i }));
+      const textarea = screen.getByRole("textbox", { name: /edit/i });
+      await user.clear(textarea);
+      await user.type(textarea, "rewrite the paper");
+      const sendButtons = screen.getAllByRole("button", { name: /send/i });
+      await user.click(sendButtons.find((button) => button.textContent === "Send")!);
+
+      await waitFor(() => expect(api.navigateSessionTree).toHaveBeenCalledWith("s1", "m2"));
+      expect(api.sendPrompt).toHaveBeenCalledWith("s1", "rewrite the paper");
+    });
+
+    it("switches versions by navigating to the neighbor's subtree leaf", async () => {
+      const user = userEvent.setup();
+      vi.mocked(api.getSessionTree).mockResolvedValue(branchingTree as never);
+      render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+      await screen.findByText("starting research");
+      await screen.findByText("2/2");
+
+      await user.click(screen.getByRole("button", { name: /previous version/i }));
+      await waitFor(() => expect(api.navigateSessionTree).toHaveBeenCalledWith("s1", "a1"));
+    });
   });
 });

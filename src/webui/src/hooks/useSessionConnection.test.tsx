@@ -14,6 +14,7 @@ vi.mock("../api", async (importOriginal) => {
     sendPrompt: vi.fn(),
     openSession: vi.fn(),
     abortSession: vi.fn(),
+    navigateSessionTree: vi.fn(),
   };
 });
 
@@ -72,6 +73,7 @@ describe("useSessionConnection", () => {
     vi.mocked(api.sendPrompt).mockReset().mockResolvedValue(undefined);
     vi.mocked(api.openSession).mockReset();
     vi.mocked(api.abortSession).mockReset().mockResolvedValue(undefined);
+    vi.mocked(api.navigateSessionTree).mockReset().mockResolvedValue(undefined);
   });
 
   it("hydrates the parent session and lets reconnect snapshots replace ordinary transcript state", async () => {
@@ -543,5 +545,31 @@ describe("useSessionConnection", () => {
     });
     expect(result.current.view.messages.at(-1)?.text).not.toContain("stale");
     pendingPrompt.resolve();
+  });
+
+  it("navigateTree calls the API and refreshes the snapshot view", async () => {
+    vi.mocked(api.getSnapshot).mockResolvedValueOnce(initialSnapshot);
+    const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    const branched: SessionSnapshotDto = {
+      session: {
+        id: "s1",
+        cwd: "/paper",
+        sessionFile: "/agent/sessions/--paper--/session.jsonl",
+        isStreaming: false,
+        status: "ready",
+      },
+      messages: [{ role: "user", content: [{ type: "text", text: "edited" }] }],
+      subagents: [],
+    } as never;
+    vi.mocked(api.getSnapshot).mockResolvedValueOnce(branched);
+
+    await act(async () => {
+      await result.current.navigateTree("entry-1");
+    });
+
+    expect(api.navigateSessionTree).toHaveBeenCalledWith("s1", "entry-1");
+    expect(result.current.view.messages[0]?.text).toBe("edited");
   });
 });
