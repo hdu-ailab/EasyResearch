@@ -522,44 +522,40 @@ function authFlowSse(services: RouteServices, flowId: string): Response {
   const encoder = new TextEncoder();
   let controllerRef: ReadableStreamDefaultController<Uint8Array> | null = null;
   let unsubscribe: (() => void) | null = null;
-  let cancelled = false;
+  let closed = false;
   const store = services.auth!.store();
   const rec = store.get(flowId);
   const send = (controller: ReadableStreamDefaultController<Uint8Array>, event: AuthFlowEventDto) => {
     controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
   };
+  const finish = (): void => {
+    if (closed) return;
+    closed = true;
+    const stop = unsubscribe;
+    unsubscribe = null;
+    stop?.();
+    try {
+      controllerRef?.close();
+    } catch {
+      // already closed
+    }
+  };
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       controllerRef = controller;
-      if (rec?.terminated) {
-        // Flow already finished before the SSE client connected: replay buffer
-        // + pending prompt + nothing else, then close.
-        for (const e of rec.bufferedNotifies) send(controller, e);
-        if (rec.pendingPrompt) send(controller, rec.pendingPrompt);
-        controller.close();
-        return;
-      }
-      // `store.subscribe` replays buffered notifies + pending prompt to this
-      // subscriber on first connect, then forwards live events.
+      // `subscribe` replays buffered notifies + pending prompt + the terminal
+      // event (when the flow already terminated), then forwards live. A
+      // terminal `done`/`error` closes the stream.
       unsubscribe = store.subscribe(flowId, (event) => {
-        if (cancelled) return;
-        if (controllerRef) send(controllerRef, event);
-        if (event.type === "done" || event.type === "error") {
-          cancelled = true;
-          try {
-            controllerRef?.close();
-          } catch {
-            // already closed
-          }
-          unsubscribe?.();
-          unsubscribe = null;
-        }
+        if (closed) return;
+        send(controller, event);
+        if (event.type === "done" || event.type === "error") finish();
       });
+      // Defensive: a terminated flow must close even without a terminal event.
+      if (rec?.terminated) finish();
     },
     cancel() {
-      cancelled = true;
-      unsubscribe?.();
-      unsubscribe = null;
+      finish();
       controllerRef = null;
     },
   });

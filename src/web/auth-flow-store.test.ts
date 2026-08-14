@@ -71,6 +71,19 @@ describe("auth-flow-store", () => {
     const replay = store.terminate("f1", { type: "done", credential: { type: "api_key" } });
     expect(replay.map((e) => e.type)).toEqual(["notify", "prompt", "done"]);
     expect(store.get("f1")?.terminated).toBe(true);
+    expect(store.get("f1")?.terminalEvent?.type).toBe("done");
+  });
+
+  it("replays the terminal event to a late subscriber after terminate", () => {
+    const store = createAuthFlowStore();
+    store.create("f1", new AbortController().signal);
+    store.emit("f1", notifyInfo);
+    const final: AuthFlowEventDto = { type: "error", message: "boom", reason: "reject" };
+    store.terminate("f1", final);
+    const received: AuthFlowEventDto[] = [];
+    const unsub = store.subscribe("f1", (e) => received.push(e));
+    expect(received).toEqual([notifyInfo, final]);
+    unsub();
   });
 
   it("terminate on an unknown flow returns just the final event", () => {

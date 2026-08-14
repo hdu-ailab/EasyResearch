@@ -10,6 +10,7 @@ import {
 } from "./auth-gateway-logic";
 import { createAuthFlowStore, type AuthFlowStore } from "./auth-flow-store";
 import type { AuthFlowEventDto } from "./contracts";
+import type { Logger } from "../runtime/logger";
 
 // Type-only imports of Pi SDK types (erased at compile time; safe before
 // `importPi()` has bootstrapped the easyresearch identity).
@@ -35,7 +36,10 @@ export type AuthFlowId = string;
 export type AuthType = "api_key" | "oauth";
 
 export interface AuthGatewaySettings {
+  /** Flow timeout in ms. `0` disables it; `-1` never expires. Default 10 min. */
   timeoutMs: number;
+  /** Optional info/warn logger (ADR-039). Secrets are never logged. */
+  logger?: Pick<Logger, "info" | "warn">;
 }
 
 /** Minimal view of `ModelRuntime` this gateway relies on. */
@@ -86,10 +90,11 @@ export interface AuthGateway {
 export function createAuthGateway(
   runtime: AuthModelRuntime,
   store: AuthFlowStore = createAuthFlowStore(),
-  _settings: AuthGatewaySettings = { timeoutMs: 600_000 },
+  settings: AuthGatewaySettings = { timeoutMs: 600_000 },
 ): AuthGateway {
   const guard = singleFlightGuard();
   const externalAbortMap = new Map<AuthFlowId, AbortController>();
+  const { logger } = settings;
 
   const preflight = (req: PreflightRequest): void => {
     const provider = runtime.getProvider(req.providerId);
@@ -109,9 +114,20 @@ export function createAuthGateway(
     if (!guard.tryAcquire(req.flowId)) {
       throw new AuthGatewayError(409, "another auth flow is active");
     }
+    logger?.info("auth login start", { provider: req.providerId, type: req.type, flowId: req.flowId });
     const shutdownCtrl = new AbortController();
     externalAbortMap.set(req.flowId, shutdownCtrl);
     const rec = store.create(req.flowId, shutdownCtrl.signal);
+
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    if (settings.timeoutMs > 0) {
+      timer = setTimeout(() => {
+        timedOut = true;
+        rec.abortController.abort();
+      }, settings.timeoutMs);
+    }
+
     const interaction: AuthInteraction = {
       signal: rec.abortController.signal,
       prompt(p: AuthPrompt) {
@@ -144,15 +160,39 @@ export function createAuthGateway(
         credential: summary as never,
         warning,
       });
-    } catch (err) {
-      const reason: "aborted" | "reject" =
-        err instanceof DOMException && err.name === "AbortError" ? "aborted" : "reject";
-      store.terminate(req.flowId, {
-        type: "error",
-        message: err instanceof Error ? err.message : String(err),
-        reason,
+      logger?.info("auth login done", {
+        provider: req.providerId,
+        flowId: req.flowId,
+        outcome: warning ? "sync-error" : "ok",
       });
+    } catch (err) {
+      if (isCredentialSynchronizationError(err)) {
+        // Credential committed, local snapshot sync failed (ADR-065). Success
+        // with a warning, never an error.
+        const committed = (err as { credential?: Credential }).credential;
+        const summary = (committed
+          ? summarizeCredential(committed as never)
+          : { type: "api_key" }) as never as CredentialSummary;
+        store.terminate(req.flowId, {
+          type: "done",
+          credential: summary,
+          warning: "Credential saved; models may not refresh until restart.",
+        });
+        logger?.info("auth login done", { provider: req.providerId, flowId: req.flowId, outcome: "sync-error" });
+      } else {
+        const reason: "aborted" | "timeout" | "reject" = timedOut
+          ? "timeout"
+          : err instanceof DOMException && err.name === "AbortError"
+            ? "aborted"
+            : "reject";
+        store.terminate(req.flowId, {
+          type: "error",
+          message: err instanceof Error ? err.message : String(err),
+          reason,
+        });
+      }
     } finally {
+      if (timer !== undefined) clearTimeout(timer);
       guard.release(req.flowId);
       externalAbortMap.delete(req.flowId);
     }
@@ -187,6 +227,7 @@ export function createAuthGateway(
         throw new AuthGatewayError(404, `unknown provider: ${providerId}`);
       }
       await runtime.logout(providerId);
+      logger?.info("auth logout", { provider: providerId, outcome: "ok" });
     },
     activeFlow: () => guard.active(),
     store: () => store,
@@ -205,3 +246,15 @@ export function createAuthGateway(
 // type helpers are referenced only via JSDoc; they are exported above for
 // external test consumers.
 export type { SingleFlightGuard, CredentialSummary };
+
+/**
+ * Detect Pi's `CredentialSynchronizationError` by name and committed-credential
+ * shape, avoiding a value import of `@earendil-works/pi-coding-agent` (which
+ * would violate the bootstrap boundary). When true, the credential was already
+ * committed to `auth.json` but the local model/auth snapshot failed to sync.
+ */
+function isCredentialSynchronizationError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const e = err as { name?: unknown; credential?: unknown };
+  return e.name === "CredentialSynchronizationError" && typeof e.credential === "object";
+}

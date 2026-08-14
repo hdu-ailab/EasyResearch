@@ -237,3 +237,97 @@ describe("dual-method providers", () => {
     expect(() => gw.preflight({ providerId: "xai", type: "oauth" })).not.toThrow();
   });
 });
+
+describe("AuthGateway timeout", () => {
+  it("fires error reason:timeout when the flow exceeds timeoutMs", async () => {
+    vi.useFakeTimers();
+    try {
+      const loginImpl = vi.fn(async (_id: string, _type: string, interaction: any) => {
+        await interaction.prompt({ type: "secret", message: "API key" });
+        return { type: "api_key", key: "sk" };
+      });
+      const store = createAuthFlowStore();
+      const gw = createAuthGateway(fakeRuntime([anthropicProvider] as any, loginImpl as any), store, {
+        timeoutMs: 10_000,
+      });
+      const seen: AuthFlowEventDto[] = [];
+      const flow = gw.runFlow({ flowId: "f1", providerId: "anthropic", type: "api_key" });
+      const unsub = store.subscribe("f1", (e) => seen.push(e));
+      await vi.waitFor(() => expect(store.pendingKind("f1")).toBe("secret"));
+      await vi.advanceTimersByTimeAsync(10_000);
+      await flow;
+      const err = seen.find((e: any) => e.type === "error") as any;
+      expect(err).toBeTruthy();
+      expect(err.reason).toBe("timeout");
+      expect(gw.activeFlow()).toBeNull();
+      unsub();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not time out a flow when timeoutMs is 0", async () => {
+    vi.useFakeTimers();
+    try {
+      const loginImpl = vi.fn(async (_id: string, _type: string, interaction: any) => {
+        await interaction.prompt({ type: "secret", message: "API key" });
+        return { type: "api_key", key: "sk" };
+      });
+      const store = createAuthFlowStore();
+      const gw = createAuthGateway(fakeRuntime([anthropicProvider] as any, loginImpl as any), store, {
+        timeoutMs: 0,
+      });
+      const flow = gw.runFlow({ flowId: "f1", providerId: "anthropic", type: "api_key" });
+      await vi.waitFor(() => expect(store.pendingKind("f1")).toBe("secret"));
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(store.get("f1")?.terminated).toBe(false);
+      store.cancel("f1");
+      await flow;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("AuthGateway CredentialSynchronizationError", () => {
+  it("emits done with a warning instead of error", async () => {
+    const loginImpl = vi.fn(async () => {
+      const err = new Error("Credential login committed for anthropic, but local synchronization failed");
+      (err as any).name = "CredentialSynchronizationError";
+      (err as any).credential = { type: "api_key", key: "sk" };
+      throw err;
+    });
+    const store = createAuthFlowStore();
+    const gw = createAuthGateway(fakeRuntime([anthropicProvider] as any, loginImpl as any), store, {
+      timeoutMs: 600_000,
+    });
+    const seen: AuthFlowEventDto[] = [];
+    const flow = gw.runFlow({ flowId: "f1", providerId: "anthropic", type: "api_key" });
+    const unsub = store.subscribe("f1", (e) => seen.push(e));
+    await flow;
+    const done = seen.find((e: any) => e.type === "done") as any;
+    expect(done).toBeTruthy();
+    expect(done.warning).toBeTruthy();
+    expect(seen.find((e: any) => e.type === "error")).toBeUndefined();
+    unsub();
+  });
+});
+
+describe("AuthGateway logging", () => {
+  it("logs start, done, and logout without any secret payloads", async () => {
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    const loginImpl = vi.fn(async () => ({ type: "api_key", key: "sk" }));
+    const store = createAuthFlowStore();
+    const gw = createAuthGateway(fakeRuntime([anthropicProvider] as any, loginImpl as any), store, {
+      timeoutMs: 600_000,
+      logger: logger as any,
+    });
+    await gw.runFlow({ flowId: "f1", providerId: "anthropic", type: "api_key" });
+    await gw.logout("anthropic");
+    expect(logger.info).toHaveBeenCalledWith("auth login start", expect.objectContaining({ provider: "anthropic" }));
+    expect(logger.info).toHaveBeenCalledWith("auth login done", expect.objectContaining({ outcome: "ok" }));
+    expect(logger.info).toHaveBeenCalledWith("auth logout", expect.objectContaining({ provider: "anthropic" }));
+    const logged = JSON.stringify(logger.info.mock.calls);
+    expect(logged).not.toContain("sk");
+  });
+});
