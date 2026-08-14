@@ -563,10 +563,18 @@ export function parseSessionTree(value: unknown): SessionTreeDto {
       const parentId = entry.parentId;
       if (parentId !== null && typeof parentId !== "string") continue;
       const role = entry.role;
-      if (role !== "user" && role !== "assistant") continue;
+      if (role !== "user" && role !== "assistant" && role !== "other") continue;
       const text = entry.text;
       if (typeof text !== "string") continue;
-      tree.push({ id: entry.id, parentId: parentId as string | null, role, text });
+      const firstKeptEntryId = entry.firstKeptEntryId;
+      if (firstKeptEntryId !== undefined && typeof firstKeptEntryId !== "string") continue;
+      tree.push({
+        id: entry.id,
+        parentId: parentId as string | null,
+        role,
+        text,
+        ...(typeof firstKeptEntryId === "string" ? { firstKeptEntryId } : {}),
+      });
     }
   }
   const leafId = body.leafId;

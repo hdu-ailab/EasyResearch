@@ -18,18 +18,42 @@ function messageText(message: AgentMessage): string {
   return "";
 }
 
-/** Flatten a pi session tree into message-only DTO entries, depth-first. */
+/**
+ * Flatten a pi session tree into DTO entries, depth-first, keeping EVERY
+ * entry so parent chains stay intact (ADR-066).
+ *
+ * Role mapping mirrors how the Web transcript treats each entry:
+ * - `user`/`assistant` messages appear as bubbles in the transcript.
+ * - `toolResult`/`bashExecution`/`system`/`compaction`/`branch_summary`/
+ *   `custom_message`/`custom`/`thinking_level_change`/`model_change`/`label`/
+ *   `session_info` map to `other`: they never zip onto transcript bubbles,
+ *   but their nodes must remain so the leaf-path walk and version groups work.
+ * - `compaction` carries `firstKeptEntryId` so the frontend can mirror pi's
+ *   `buildContextEntries` (summarized entries are omitted from the context).
+ */
 export function flattenMessageTree(nodes: SessionTreeNode[]): WebTreeEntryDto[] {
   const out: WebTreeEntryDto[] = [];
   const visit = (node: SessionTreeNode): void => {
     const entry = node.entry;
     if (entry.type === "message") {
+      const role = entry.message.role;
+      if (role === "user" || role === "assistant") {
+        out.push({ id: entry.id, parentId: entry.parentId, role, text: messageText(entry.message) });
+      } else {
+        out.push({ id: entry.id, parentId: entry.parentId, role: "other", text: "" });
+      }
+    } else if (entry.type === "compaction") {
       out.push({
         id: entry.id,
         parentId: entry.parentId,
-        role: entry.message.role === "user" ? "user" : "assistant",
-        text: messageText(entry.message),
+        role: "other",
+        text: entry.summary,
+        firstKeptEntryId: entry.firstKeptEntryId,
       });
+    } else if (entry.type === "branch_summary") {
+      out.push({ id: entry.id, parentId: entry.parentId, role: "other", text: entry.summary });
+    } else {
+      out.push({ id: entry.id, parentId: entry.parentId, role: "other", text: "" });
     }
     for (const child of node.children) visit(child);
   };

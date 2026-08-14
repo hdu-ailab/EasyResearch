@@ -10,6 +10,12 @@ const entry = (id: string, parentId: string | null, role: "user" | "assistant", 
   text,
 });
 
+const otherEntry = (
+  id: string,
+  parentId: string | null,
+  extra: Partial<Pick<WebTreeEntryDto, "firstKeptEntryId" | "text">> = {},
+): WebTreeEntryDto => ({ id, parentId, role: "other", text: "", ...extra });
+
 const view = (key: string, role: "user" | "assistant"): SessionMessageView => ({
   key,
   role,
@@ -47,6 +53,55 @@ describe("buildMessageTreeMeta", () => {
   it("leaves out version info for single-version messages", () => {
     const meta = buildMessageTreeMeta([view("k1", "user")], [entry("m1", null, "user")], "m1");
     expect(meta.k1).toEqual({ entryId: "m1" });
+  });
+
+  it("walks through non-message entries so parent chains stay intact", () => {
+    // thinking_level_change nodes sit between messages and must not break the zip
+    const tree = [
+      otherEntry("t1", null),
+      entry("m1", "t1", "user"),
+      entry("a1", "m1", "assistant"),
+      otherEntry("t2", "a1"),
+      entry("m2", "t2", "user"),
+      entry("a2", "m2", "assistant"),
+    ];
+    const messages = [view("k1", "user"), view("k2", "assistant"), view("k3", "user"), view("k4", "assistant")];
+    const meta = buildMessageTreeMeta(messages, tree, "a2");
+    expect(meta.k1).toEqual({ entryId: "m1" });
+    expect(meta.k2).toEqual({ entryId: "a1" });
+    expect(meta.k3).toEqual({ entryId: "m2" });
+    expect(meta.k4).toEqual({ entryId: "a2" });
+  });
+
+  it("mirrors pi compaction semantics (summarized entries omitted)", () => {
+    const tree = [
+      entry("m1", null, "user"),
+      entry("a1", "m1", "assistant"),
+      otherEntry("c1", "a1", { text: "summary", firstKeptEntryId: "m2" }),
+      entry("m2", "c1", "user"),
+      entry("a2", "m2", "assistant"),
+    ];
+    // transcript context: [compaction summary (system), m2, a2] -> zip sees [m2, a2]
+    const messages = [view("k1", "user"), view("k2", "assistant")];
+    const meta = buildMessageTreeMeta(messages, tree, "a2");
+    expect(meta.k1).toEqual({ entryId: "m2" });
+    expect(meta.k2).toEqual({ entryId: "a2" });
+  });
+
+  it("skips toolResult entries on both sides of the zip", () => {
+    const tree = [
+      entry("m1", null, "user"),
+      entry("a1", "m1", "assistant"),
+      otherEntry("tr1", "a1"),
+      entry("m2", "tr1", "user"),
+      entry("a2", "m2", "assistant"),
+    ];
+    const messages = [view("k1", "user"), view("k2", "assistant"), view("k3", "user"), view("k4", "assistant")];
+    const meta = buildMessageTreeMeta(messages, tree, "a2");
+    expect(meta.k1).toEqual({ entryId: "m1" });
+    expect(meta.k2).toEqual({ entryId: "a1" });
+    expect(meta.k3).toEqual({ entryId: "m2" });
+    expect(meta.k4).toEqual({ entryId: "a2" });
   });
 });
 
