@@ -564,4 +564,112 @@ describe("ChatTranscript", () => {
 
     expect(screen.getByRole("button", { name: /show details/i })).toHaveAttribute("aria-expanded", "false");
   });
+
+  describe("skill invocation cards (ADR-066)", () => {
+    it("renders a compact skill card instead of the expanded content", () => {
+      renderTranscript(
+        <ChatTranscript
+          messages={[
+            msg({
+              key: "m1",
+              role: "user",
+              text: `<skill name="arxiv" location="/x">\n\nbody\n</skill>\n\n1706.03762`,
+              skillInvocation: { name: "arxiv", args: "1706.03762" },
+            }),
+          ]}
+          tools={[]}
+        />,
+      );
+      expect(screen.getByText("arxiv")).toBeTruthy();
+      expect(screen.getByText("1706.03762")).toBeTruthy();
+      expect(screen.queryByText(/<skill name=/)).toBeNull();
+    });
+
+    it("renders only the name for a skill without args", () => {
+      renderTranscript(
+        <ChatTranscript
+          messages={[
+            msg({ key: "m1", role: "user", skillInvocation: { name: "drawio" }, text: "<skill name=\"drawio\">" }),
+          ]}
+          tools={[]}
+        />,
+      );
+      expect(screen.getByText("drawio")).toBeTruthy();
+    });
+  });
+
+  describe("message hover actions and editing (ADR-066)", () => {
+    const userMsg = (key: string, overrides: Partial<SessionMessageView> = {}) =>
+      msg({ key, role: "user", text: "hello", ...overrides });
+
+    beforeEach(() => {
+      const clipboard = { writeText: vi.fn().mockResolvedValue(undefined), readText: vi.fn().mockResolvedValue("hello") };
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: clipboard });
+    });
+
+    it("shows Edit/Copy actions and copies the message text", async () => {
+      const clipboard = navigator.clipboard as { writeText: ReturnType<typeof vi.fn> };
+      renderTranscript(
+        <ChatTranscript messages={[userMsg("k1")]} tools={[]} messageMeta={{ k1: { entryId: "e1" } }} />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: /copy/i }));
+      expect(clipboard.writeText).toHaveBeenCalledWith("hello");
+    });
+
+    it("enters edit mode, cancels, and sends edits with the entry id", async () => {
+      const user = userEvent.setup();
+      const onEditMessage = vi.fn();
+      renderTranscript(
+        <ChatTranscript
+          messages={[userMsg("k1")]}
+          tools={[]}
+          messageMeta={{ k1: { entryId: "e1" } }}
+          onEditMessage={onEditMessage}
+        />,
+      );
+      await user.click(screen.getByRole("button", { name: /edit/i }));
+      const textarea = screen.getByRole("textbox");
+      expect(textarea).toHaveValue("hello");
+      await user.clear(textarea);
+      await user.type(textarea, "edited text");
+      await user.click(screen.getByRole("button", { name: /send/i }));
+      expect(onEditMessage).toHaveBeenCalledWith("e1", "edited text");
+      expect(screen.queryByRole("textbox")).toBeNull();
+    });
+
+    it("cancels editing and restores the bubble", async () => {
+      const user = userEvent.setup();
+      renderTranscript(
+        <ChatTranscript messages={[userMsg("k1")]} tools={[]} messageMeta={{ k1: { entryId: "e1" } }} />,
+      );
+      await user.click(screen.getByRole("button", { name: /edit/i }));
+      await user.click(screen.getByRole("button", { name: /cancel/i }));
+      expect(screen.queryByRole("textbox")).toBeNull();
+      expect(screen.getByText("hello")).toBeTruthy();
+    });
+
+    it("renders the version switcher and reports direction", async () => {
+      const user = userEvent.setup();
+      const onSwitchBranch = vi.fn();
+      renderTranscript(
+        <ChatTranscript
+          messages={[userMsg("k1")]}
+          tools={[]}
+          messageMeta={{ k1: { entryId: "m1", version: { index: 2, count: 3 } } }}
+          onSwitchBranch={onSwitchBranch}
+        />,
+      );
+      expect(screen.getByText("2/3")).toBeTruthy();
+      await user.click(screen.getByRole("button", { name: /previous version/i }));
+      expect(onSwitchBranch).toHaveBeenCalledWith("m1", -1);
+      await user.click(screen.getByRole("button", { name: /next version/i }));
+      expect(onSwitchBranch).toHaveBeenCalledWith("m1", 1);
+    });
+
+    it("hides actions without tree metadata", () => {
+      renderTranscript(<ChatTranscript messages={[userMsg("k1")]} tools={[]} />);
+      expect(screen.queryByRole("button", { name: /edit/i })).toBeNull();
+      expect(screen.queryByRole("button", { name: /copy/i })).toBeNull();
+    });
+  });
 });

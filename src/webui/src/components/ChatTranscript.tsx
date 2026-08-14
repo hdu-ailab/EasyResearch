@@ -1,5 +1,14 @@
 import { elementScroll, useVirtualizer } from "@tanstack/react-virtual";
-import { AlertTriangle, Check, ChevronDown, ChevronRight } from "lucide-react";
+import {
+  AlertTriangle,
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Copy,
+  Pencil,
+  Zap,
+} from "lucide-react";
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { isScrollKeyTarget, normalizeWheelDelta, scrollKey, scrollKeyOwner } from "../hooks/scrollGesture";
 import { useAutoScroll } from "../hooks/useAutoScroll";
@@ -8,6 +17,7 @@ import { useScrollGesture } from "../hooks/useScrollGesture";
 import { agentDisplayName } from "../i18n/agents";
 import type { MessageKey } from "../i18n/messages";
 import { useI18n } from "../i18n/useI18n";
+import type { SessionMessageMeta } from "../message-tree";
 import { usePreferences } from "../preferences/PreferencesProvider";
 import type { SessionMessageView, ToolView } from "../session-reducer";
 import { MarkdownBlock } from "./MarkdownBlock";
@@ -20,6 +30,12 @@ export interface ChatTranscriptProps {
   /** While true, renders a working agent row under the newest user message. */
   pending?: boolean;
   onViewDetails?: (toolCallId: string, step?: number) => void;
+  /** Tree metadata per message key (entry ids and version groups, ADR-066). */
+  messageMeta?: Record<string, SessionMessageMeta>;
+  /** Edit a historical user message: branch in place, then re-send. */
+  onEditMessage?: (entryId: string, text: string) => void;
+  /** Switch to the previous/next version of a user message. */
+  onSwitchBranch?: (entryId: string, direction: -1 | 1) => void;
 }
 
 export interface ChatTranscriptHandle {
@@ -131,15 +147,33 @@ function ToolRow({ tool, open, onToggle }: { tool: ToolView; open: boolean; onTo
 
 /** A single message bubble. Human messages align right with the You label;
  * anything labeled otherwise (subagent-line dispatches, agent replies)
- * aligns left under its own label. */
+ * aligns left under its own label. User messages with tree metadata gain
+ * hover Edit/Copy actions and a version switcher (ADR-066); skill-invoked
+ * messages render a compact card instead of the expanded content. */
 function MessageRow({
   message,
   open,
   onToggle,
+  meta,
+  editing,
+  draft,
+  onStartEdit,
+  onCancelEdit,
+  onDraftChange,
+  onSubmitEdit,
+  onSwitchBranch,
 }: {
   message: SessionMessageView;
   open: boolean;
   onToggle: (open: boolean) => void;
+  meta?: SessionMessageMeta;
+  editing: boolean;
+  draft: string;
+  onStartEdit: () => void;
+  onCancelEdit: () => void;
+  onDraftChange: (text: string) => void;
+  onSubmitEdit: (text: string) => void;
+  onSwitchBranch?: (entryId: string, direction: -1 | 1) => void;
 }) {
   const { t } = useI18n();
   const roleKey = ROLE_LABELS[message.role];
@@ -147,7 +181,7 @@ function MessageRow({
   const isYou = message.role === "user" && message.label == null;
   const hasBody = Boolean(message.text) || message.error || message.streaming;
   return (
-    <li className={`flex flex-col gap-1 ${isYou ? "items-end" : "items-start"}`}>
+    <li className={`group flex flex-col gap-1 ${isYou ? "items-end" : "items-start"}`}>
       <span className="text-[11px] font-medium uppercase tracking-wide text-v2-text-text-faint">{label}</span>
       {message.reasoning ? (
         <ReasoningBlock text={message.reasoning} open={open} onToggle={onToggle} active={Boolean(message.isThinking)} />
@@ -156,13 +190,59 @@ function MessageRow({
           {t("transcript.thinking")}
         </span>
       ) : null}
-      {hasBody && (message.role === "assistant" || message.role === "user") ? (
+      {editing && isYou ? (
+        <div className="flex w-full max-w-[85%] flex-col items-end gap-1.5">
+          <textarea
+            autoFocus
+            value={draft}
+            onChange={(e) => onDraftChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                onSubmitEdit(draft.trim());
+              }
+            }}
+            aria-label={t("transcript.editMessage")}
+            className="min-h-[52px] w-full resize-none rounded-lg border border-v2-blue-600 bg-v2-background-bg-base px-3 py-2 text-[13px] text-v2-text-text-base outline-none"
+          />
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onCancelEdit}
+              className="rounded-md px-2 py-1 text-[12px] text-v2-text-text-muted hover:bg-v2-grey-100"
+            >
+              {t("transcript.cancelEdit")}
+            </button>
+            <button
+              type="button"
+              disabled={!draft.trim()}
+              onClick={() => onSubmitEdit(draft.trim())}
+              className="rounded-md bg-v2-grey-1100 px-2 py-1 text-[12px] text-v2-grey-50 hover:opacity-90 disabled:opacity-40"
+            >
+              {t("composer.send")}
+            </button>
+          </div>
+        </div>
+      ) : hasBody && (message.role === "assistant" || message.role === "user") ? (
         <div
           className={`v2-md max-w-full rounded-lg px-3 py-2 text-[length:var(--v2-chat-font-size)] ${
             isYou ? "bg-v2-blue-100/60 text-v2-text-text-base" : "bg-v2-background-bg-deep text-v2-text-text-base"
           } ${message.error ? "text-v2-status-error" : ""}`}
         >
-          <MarkdownBlock text={message.text} />
+          {message.skillInvocation ? (
+            <>
+              <div className="flex items-center gap-1.5 rounded-md border border-v2-blue-200 bg-v2-blue-100/40 px-2 py-1 text-[12px]">
+                <Zap size={13} className="text-v2-blue-600" aria-hidden />
+                <span className="font-medium text-v2-text-text-base">{t("transcript.skillInvocation")}</span>
+                <span className="font-mono text-v2-blue-700">{message.skillInvocation.name}</span>
+              </div>
+              {message.skillInvocation.args ? (
+                <p className="mt-1 text-[12px] text-v2-text-text-muted">{message.skillInvocation.args}</p>
+              ) : null}
+            </>
+          ) : (
+            <MarkdownBlock text={message.text} />
+          )}
           {message.streaming && <span className="v2-caret" aria-hidden />}
         </div>
       ) : hasBody ? (
@@ -174,6 +254,55 @@ function MessageRow({
           {message.text}
           {message.streaming && <span className="v2-caret" aria-hidden />}
         </span>
+      ) : null}
+      {isYou && !message.streaming && !message.error && meta ? (
+        <div className="mt-1 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+          <button
+            type="button"
+            aria-label={t("transcript.editMessage")}
+            title={t("transcript.editMessage")}
+            className="flex size-6 items-center justify-center rounded-md text-v2-text-text-muted hover:bg-v2-grey-100"
+            onClick={onStartEdit}
+          >
+            <Pencil size={12} />
+          </button>
+          <button
+            type="button"
+            aria-label={t("transcript.copyMessage")}
+            title={t("transcript.copyMessage")}
+            className="flex size-6 items-center justify-center rounded-md text-v2-text-text-muted hover:bg-v2-grey-100"
+            onClick={() => void navigator.clipboard?.writeText(message.text).catch(() => {})}
+          >
+            <Copy size={12} />
+          </button>
+          {meta.version && meta.version.count > 1 ? (
+            <span className="ml-1 flex items-center gap-1 text-[11px] text-v2-text-text-faint">
+              <button
+                type="button"
+                aria-label={t("transcript.previousVersion")}
+                title={t("transcript.previousVersion")}
+                disabled={meta.version.index <= 1}
+                className="flex size-5 items-center justify-center rounded hover:bg-v2-grey-100 disabled:opacity-30"
+                onClick={() => onSwitchBranch?.(meta.entryId, -1)}
+              >
+                <ChevronLeft size={12} />
+              </button>
+              <span>
+                {meta.version.index}/{meta.version.count}
+              </span>
+              <button
+                type="button"
+                aria-label={t("transcript.nextVersion")}
+                title={t("transcript.nextVersion")}
+                disabled={meta.version.index >= meta.version.count}
+                className="flex size-5 items-center justify-center rounded hover:bg-v2-grey-100 disabled:opacity-30"
+                onClick={() => onSwitchBranch?.(meta.entryId, 1)}
+              >
+                <ChevronRight size={12} />
+              </button>
+            </span>
+          ) : null}
+        </div>
       ) : null}
     </li>
   );
@@ -205,7 +334,7 @@ function PendingRow() {
  * rows keep their open/closed state across unmount/remount.
  */
 export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptProps>(function ChatTranscript(
-  { messages, tools, emptyHint, pending = false, onViewDetails },
+  { messages, tools, emptyHint, pending = false, onViewDetails, messageMeta, onEditMessage, onSwitchBranch },
   ref,
 ) {
   const { t } = useI18n();
@@ -214,6 +343,8 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const [openByKey, setOpenByKey] = useState<Record<string, boolean>>({});
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
 
   const entries = useMemo<TranscriptEntry[]>(() => {
     const base = [...messages, ...tools].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
@@ -478,6 +609,21 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
                       message={entry}
                       open={openByKey[key] ?? preferences.autoExpandThinking}
                       onToggle={(next) => setOpenByKey((current) => ({ ...current, [key]: next }))}
+                      meta={messageMeta?.[entry.key]}
+                      editing={editingKey === entry.key}
+                      draft={draft}
+                      onStartEdit={() => {
+                        setEditingKey(entry.key);
+                        setDraft(entry.text);
+                      }}
+                      onCancelEdit={() => setEditingKey(null)}
+                      onDraftChange={setDraft}
+                      onSubmitEdit={(text) => {
+                        const meta = messageMeta?.[entry.key];
+                        if (meta) onEditMessage?.(meta.entryId, text);
+                        setEditingKey(null);
+                      }}
+                      onSwitchBranch={onSwitchBranch}
                     />
                   )}
                 </div>
