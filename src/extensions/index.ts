@@ -6,6 +6,7 @@ import { createWelcomeBannerExtension } from "./welcome-banner";
 import { createEventLoggerExtension } from "./event-logger";
 import { createProjectTrustExtension } from "./project-trust";
 import duckDuckGoSearchExtension from "./web-search";
+import { createWebTreeExtension } from "./web-tree";
 
 /**
  * Bundled extensions mounted in the assistant (TUI + Web RPC) processes.
@@ -60,5 +61,10 @@ export const assistantExtensions: BundledExtension[] = [
     name: "web-search",
     factory: duckDuckGoSearchExtension,
     path: fileURLToPath(new URL("./web-search/index.ts", import.meta.url)),
+  },
+  {
+    name: "web-tree",
+    factory: createWebTreeExtension(),
+    path: fileURLToPath(new URL("./web-tree/index.ts", import.meta.url)),
   },
 ];
