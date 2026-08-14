@@ -1,5 +1,5 @@
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   fromSnapshot,
   mergeSnapshot,
@@ -9,7 +9,7 @@ import {
   terminateSessionRun,
 } from "./session-reducer";
 
-const emptyState: SessionViewState = { messages: [], tools: [], isStreaming: false, error: null, nextOrder: 0 };
+const emptyState: SessionViewState = { messages: [], tools: [], isStreaming: false, error: null, retry: null, nextOrder: 0 };
 
 function userMessage(text: string) {
   return { role: "user", content: [{ type: "text", text }] } as never;
@@ -1425,5 +1425,61 @@ describe("session reducer", () => {
     } as never);
     expect(state.activeMessageKey).toBeUndefined();
     expect(state.messages[0]!.streaming).toBe(false);
+  });
+
+  function retryStartEvent(overrides: Record<string, unknown> = {}): AgentSessionEvent {
+    return {
+      type: "auto_retry_start",
+      attempt: 2,
+      maxAttempts: 3,
+      delayMs: 4000,
+      errorMessage: "rate limit exceeded",
+      ...overrides,
+    } as AgentSessionEvent;
+  }
+
+  it("sets retry state on auto_retry_start", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const state = reduceSessionEvent(emptyState, retryStartEvent());
+    expect(state.retry).toEqual({
+      attempt: 2,
+      maxAttempts: 3,
+      errorMessage: "rate limit exceeded",
+      endsAt: new Date("2026-01-01T00:00:00Z").getTime() + 4000,
+    });
+    vi.useRealTimers();
+  });
+
+  it("overwrites retry state on a consecutive auto_retry_start", () => {
+    const first = reduceSessionEvent(emptyState, retryStartEvent());
+    const second = reduceSessionEvent(first, retryStartEvent({ attempt: 3, delayMs: 8000 }));
+    expect(second.retry).toMatchObject({ attempt: 3, maxAttempts: 3 });
+    expect(second.retry?.endsAt).toBeGreaterThan(first.retry?.endsAt ?? 0);
+  });
+
+  it("normalizes malformed auto_retry_start payloads", () => {
+    const state = reduceSessionEvent(emptyState, { type: "auto_retry_start" } as AgentSessionEvent);
+    expect(state.retry).toEqual({ attempt: 1, maxAttempts: 1, errorMessage: "", endsAt: expect.any(Number) });
+  });
+
+  it("clears retry state on auto_retry_end", () => {
+    const started = reduceSessionEvent(emptyState, retryStartEvent());
+    const ended = reduceSessionEvent(started, { type: "auto_retry_end", success: true, attempt: 2 } as AgentSessionEvent);
+    expect(ended.retry).toBeNull();
+  });
+
+  it("clears retry state on terminateSessionRun", () => {
+    const started = reduceSessionEvent(emptyState, retryStartEvent());
+    expect(terminateSessionRun(started).retry).toBeNull();
+  });
+
+  it("hydrates retry as null from a snapshot", () => {
+    const hydrated = fromSnapshot({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      subagents: [],
+      messages: [assistantMessage("hello")],
+    });
+    expect(hydrated.retry).toBeNull();
   });
 });
