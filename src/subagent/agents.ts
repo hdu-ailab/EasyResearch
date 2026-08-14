@@ -38,11 +38,9 @@ export const CONTROLLED_TOOL_INVENTORY = [
   "bash",
   "edit",
   "write",
-  "grep",
-  "find",
-  "ls",
   "subagent",
   "web-search",
+  "webfetch",
 ] as const;
 const BUILTIN_ALIASES: Record<string, string> = {
   [PAPER_ASSISTANT_AGENT]: "Paper Assistant",

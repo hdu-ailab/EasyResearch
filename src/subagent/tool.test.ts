@@ -18,6 +18,7 @@ import {
 } from "./tool";
 import { sessionNameFor, SUBAGENT_SESSION_LINK_ENTRY, SUBAGENT_SESSION_PREFIX } from "./session-links";
 import { releaseSubagentLock, tryAcquireSubagentLock } from "./serial";
+import { stageExtensionPaths } from "./tool";
 
 const [loggerMock, createLoggerMock, spawnMock] = vi.hoisted(() => {
   const mockLogger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
@@ -80,6 +81,15 @@ describe("buildPiArgs", () => {
     expect(args).toContain("--name");
     expect(args[args.indexOf("--name") + 1]).toBe(`${SUBAGENT_SESSION_PREFIX}search`);
     expect(args).not.toContain("--no-session");
+  });
+
+  it("mounts the shared web tool extensions in stage runtimes (ADR-068)", () => {
+    const agent = maker("search");
+    const args = buildPiArgs(agent, undefined, "task");
+    const extensionFlags = args
+      .map((arg, index) => (arg === "--extension" ? args[index + 1] : undefined))
+      .filter((path): path is string => typeof path === "string");
+    expect(extensionFlags).toEqual(expect.arrayContaining(stageExtensionPaths));
   });
 
   it("adds --session when inheriting a session line (ADR-022)", () => {

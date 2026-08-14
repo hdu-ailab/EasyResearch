@@ -4,8 +4,8 @@ description: >-
   Writing agent that checks readiness, drafts and revises the authoritative
   Markdown manuscript, verifies citations, creates LaTeX, and compiles the PDF.
 enable: true
-tools: [read, bash, edit, write, grep, find, ls, subagent]
-skills: [research-paper-writing, latex-pdf, arxiv]
+tools: [read, bash, edit, write, subagent, web-search, webfetch]
+skills: [research-paper-writing, latex-pdf, arxiv, playwright-cli]
 subagents: [search, figures]
 ---
 

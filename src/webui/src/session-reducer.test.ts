@@ -592,6 +592,50 @@ describe("session reducer", () => {
     expect(done.tools[0]).toMatchObject({ output: "total 8", done: true });
   });
 
+  it("derives a skill name when a read tool loads a SKILL.md file", () => {
+    const active = reduceSessionEvent(emptyState, {
+      type: "tool_execution_start",
+      toolCallId: "t1",
+      toolName: "read",
+      args: { path: "/home/me/.config/opencode/skills/arxiv/SKILL.md" },
+    } as never);
+    expect(active.tools[0]).toMatchObject({
+      name: "read",
+      args: "/home/me/.config/opencode/skills/arxiv/SKILL.md",
+      skillName: "arxiv",
+    });
+
+    const relative = reduceSessionEvent(emptyState, {
+      type: "tool_execution_start",
+      toolCallId: "t2",
+      toolName: "read",
+      args: { path: "skills/latex-pdf/SKILL.md" },
+    } as never);
+    expect(relative.tools[0]!.skillName).toBe("latex-pdf");
+
+    const plain = reduceSessionEvent(emptyState, {
+      type: "tool_execution_start",
+      toolCallId: "t3",
+      toolName: "read",
+      args: { path: "src/webui/App.tsx" },
+    } as never);
+    expect(plain.tools[0]!.skillName).toBeUndefined();
+  });
+
+  it("restores a skill name from a snapshot read tool call", () => {
+    const state = fromSnapshot({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "done" } as never,
+      subagents: [],
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "t1", name: "read", arguments: { path: "skills/drawio/SKILL.md" } }],
+        },
+      ] as never,
+    });
+    expect(state.tools[0]).toMatchObject({ name: "read", skillName: "drawio" });
+  });
+
   it("shows textual partial content from generic tool updates", () => {
     const active = reduceSessionEvent(emptyState, toolEvent("tool_execution_start", "t1", "bash"));
     const updated = reduceSessionEvent(active, {

@@ -4,8 +4,8 @@ description: >-
   Experiment agent that implements reproducible baselines and proposed methods,
   runs controlled trials, records every run, and promotes formal evidence.
 enable: true
-tools: [read, bash, edit, write, grep, find, ls, subagent]
-skills: [experiment, ssh-experiment]
+tools: [read, bash, edit, write, subagent, web-search, webfetch]
+skills: [experiment, ssh-experiment, playwright-cli]
 subagents: [search]
 ---
 

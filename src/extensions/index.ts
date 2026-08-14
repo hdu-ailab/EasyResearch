@@ -6,6 +6,7 @@ import { createWelcomeBannerExtension } from "./welcome-banner";
 import { createEventLoggerExtension } from "./event-logger";
 import { createProjectTrustExtension } from "./project-trust";
 import duckDuckGoSearchExtension from "./web-search";
+import webFetchExtension from "./webfetch";
 import { createWebTreeExtension } from "./web-tree";
 
 /**
@@ -61,6 +62,11 @@ export const assistantExtensions: BundledExtension[] = [
     name: "web-search",
     factory: duckDuckGoSearchExtension,
     path: fileURLToPath(new URL("./web-search/index.ts", import.meta.url)),
+  },
+  {
+    name: "webfetch",
+    factory: webFetchExtension,
+    path: fileURLToPath(new URL("./webfetch/index.ts", import.meta.url)),
   },
   {
     name: "web-tree",

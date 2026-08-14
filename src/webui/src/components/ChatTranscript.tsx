@@ -96,6 +96,18 @@ function ToolRow({ tool, open, onToggle }: { tool: ToolView; open: boolean; onTo
       : "border-v2-grey-200 text-v2-text-text-muted hover:bg-v2-grey-100"
     : "border-v2-blue-200 text-v2-blue-600 hover:bg-v2-blue-100/50";
 
+  if (tool.skillName) {
+    return (
+      <li className="flex flex-col gap-1 items-start">
+        <div className="flex items-center gap-1.5 rounded-md border border-v2-blue-200 bg-v2-blue-100/40 px-2 py-1 text-[12px]">
+          <Zap size={13} className="text-v2-blue-600" aria-hidden />
+          <span className="font-medium text-v2-text-text-base">{t("transcript.readingSkill")}</span>
+          <span className="font-mono text-v2-blue-700">{tool.skillName}</span>
+        </div>
+      </li>
+    );
+  }
+
   return (
     <li className="flex flex-col gap-1 items-start">
       <button
