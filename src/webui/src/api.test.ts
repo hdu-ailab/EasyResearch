@@ -7,6 +7,8 @@ import {
   createSession,
   getEffectiveModels,
   getEffectiveThinking,
+  getSessionCommands,
+  getSessionTree,
   getSnapshot,
   listAgents,
   listConfig,
@@ -14,6 +16,7 @@ import {
   listDirectories,
   listModels,
   listStatus,
+  navigateSessionTree,
   openSession,
   readConfigFile,
   restartSession,
@@ -214,6 +217,34 @@ describe("api transport", () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("/api/sessions/s1/messages");
     expect(JSON.parse(init.body as string)).toEqual({ message: "hello" });
+  });
+
+  it("getSessionCommands GETs the session commands endpoint", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ commands: [{ name: "arxiv", description: "arXiv" }] }), { status: 200 }),
+    );
+    const commands = await getSessionCommands("s1");
+    expect(fetchMock).toHaveBeenCalledWith("/api/sessions/s1/commands", expect.objectContaining({ method: "GET" }));
+    expect(commands).toEqual([{ name: "arxiv", description: "arXiv" }]);
+  });
+
+  it("getSessionTree GETs the session tree endpoint", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ leafId: "m2", tree: [{ id: "m1", parentId: null, role: "user", text: "hi" }] }), {
+        status: 200,
+      }),
+    );
+    const tree = await getSessionTree("s1");
+    expect(fetchMock).toHaveBeenCalledWith("/api/sessions/s1/tree", expect.objectContaining({ method: "GET" }));
+    expect(tree.leafId).toBe("m2");
+    expect(tree.tree).toHaveLength(1);
+  });
+
+  it("navigateSessionTree POSTs the entry id", async () => {
+    await navigateSessionTree("s1", "entry-9");
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/sessions/s1/tree/navigate");
+    expect(JSON.parse(init.body as string)).toEqual({ entryId: "entry-9" });
   });
 
   it("abortSession, stopSession, restartSession hit their endpoints", async () => {

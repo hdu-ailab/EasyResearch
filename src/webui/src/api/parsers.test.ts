@@ -12,6 +12,8 @@ import {
   parseFileContent,
   parseModels,
   parseSessionSnapshot,
+  parseSessionTree,
+  parseSkillCommands,
   parseStatus,
   parseWebuiSettings,
 } from "./parsers";
@@ -150,5 +152,44 @@ describe("API response parsers", () => {
     });
     expect(parseConfigFile({ path: "settings.json", content: "{}" })).toEqual({ path: "settings.json", content: "{}" });
     expect(() => parseConfigEntries([{ name: "x", path: "x", type: "socket" }])).toThrow();
+  });
+
+  it("parseSkillCommands extracts name and optional description", () => {
+    expect(
+      parseSkillCommands({ commands: [{ name: "arxiv", description: "arXiv" }, { name: "drawio" }] }),
+    ).toEqual([
+      { name: "arxiv", description: "arXiv" },
+      { name: "drawio" },
+    ]);
+    expect(parseSkillCommands({ commands: "nope" })).toEqual([]);
+    expect(parseSkillCommands({ commands: [{ description: 3 }] })).toEqual([]);
+    expect(() => parseSkillCommands(null)).toThrow();
+  });
+
+  it("parseSessionTree parses entries and leaf id", () => {
+    expect(
+      parseSessionTree({
+        leafId: "m2",
+        tree: [
+          { id: "m1", parentId: null, role: "user", text: "hi" },
+          { id: "m2", parentId: "m1", role: "assistant", text: "yo" },
+        ],
+      }),
+    ).toEqual({
+      leafId: "m2",
+      tree: [
+        { id: "m1", parentId: null, role: "user", text: "hi" },
+        { id: "m2", parentId: "m1", role: "assistant", text: "yo" },
+      ],
+    });
+  });
+
+  it("parseSessionTree drops malformed entries and non-string leaf ids", () => {
+    expect(
+      parseSessionTree({
+        leafId: null,
+        tree: [{ id: 1 }, { id: "ok", parentId: null, role: "user", text: "" }],
+      }),
+    ).toEqual({ leafId: null, tree: [{ id: "ok", parentId: null, role: "user", text: "" }] });
   });
 });

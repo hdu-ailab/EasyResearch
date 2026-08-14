@@ -14,8 +14,11 @@ import type {
   FileEntryDto,
   SessionSnapshotDto,
   SessionSummaryDto,
+  SessionTreeDto,
+  SkillCommandDto,
   StatusDto,
   SubagentSessionSummaryDto,
+  WebTreeEntryDto,
   WebuiSettingsDto,
 } from "../../../web/contracts";
 import type { ConfigFileDto, ConfigProjectsDto } from "../types";
@@ -533,4 +536,39 @@ export function parseAuthFlowEvent(body: unknown): AuthFlowEventDto {
     } as AuthFlowEventDto;
   }
   throw new Error(`Invalid API response: unknown auth flow event type ${t}`);
+}
+
+export function parseSkillCommands(value: unknown): SkillCommandDto[] {
+  const body = record(value, "commands");
+  const list = body.commands;
+  if (!Array.isArray(list)) return [];
+  const out: SkillCommandDto[] = [];
+  for (const item of list) {
+    const entry = record(item, "command");
+    if (typeof entry.name !== "string" || !entry.name) continue;
+    const description = optionalString(entry, "description");
+    out.push({ name: entry.name, ...(description !== undefined ? { description } : {}) });
+  }
+  return out;
+}
+
+export function parseSessionTree(value: unknown): SessionTreeDto {
+  const body = record(value, "tree");
+  const list = body.tree;
+  const tree: WebTreeEntryDto[] = [];
+  if (Array.isArray(list)) {
+    for (const item of list) {
+      const entry = record(item, "tree entry");
+      if (typeof entry.id !== "string" || !entry.id) continue;
+      const parentId = entry.parentId;
+      if (parentId !== null && typeof parentId !== "string") continue;
+      const role = entry.role;
+      if (role !== "user" && role !== "assistant") continue;
+      const text = entry.text;
+      if (typeof text !== "string") continue;
+      tree.push({ id: entry.id, parentId: parentId as string | null, role, text });
+    }
+  }
+  const leafId = body.leafId;
+  return { tree, leafId: typeof leafId === "string" ? leafId : null };
 }
