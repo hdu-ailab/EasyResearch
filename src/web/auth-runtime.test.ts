@@ -1,12 +1,33 @@
 import { describe, it, expect, vi } from "vitest";
 import { createAuthGateway } from "./auth-gateway";
 import { createAuthFlowStore } from "./auth-flow-store";
+import { resolveAuthFlowTimeout } from "./auth-runtime";
 
 const anthropicProvider = {
   id: "anthropic",
   name: "Anthropic",
   auth: { apiKey: { name: "Anthropic API key", login: vi.fn() } },
 };
+
+describe("resolveAuthFlowTimeout", () => {
+  it("defaults to 10 minutes", () => {
+    expect(resolveAuthFlowTimeout(undefined)).toBe(600_000);
+    expect(resolveAuthFlowTimeout({})).toBe(600_000);
+    expect(resolveAuthFlowTimeout({ easyresearch: {} })).toBe(600_000);
+  });
+
+  it("respects positive, 0, and -1 values", () => {
+    expect(resolveAuthFlowTimeout({ easyresearch: { web: { authFlowTimeoutMs: 30_000 } } })).toBe(30_000);
+    expect(resolveAuthFlowTimeout({ easyresearch: { web: { authFlowTimeoutMs: 0 } } })).toBe(0);
+    expect(resolveAuthFlowTimeout({ easyresearch: { web: { authFlowTimeoutMs: -1 } } })).toBe(-1);
+  });
+
+  it("falls back for non-integer or non-positive values", () => {
+    expect(resolveAuthFlowTimeout({ easyresearch: { web: { authFlowTimeoutMs: -5 } } })).toBe(600_000);
+    expect(resolveAuthFlowTimeout({ easyresearch: { web: { authFlowTimeoutMs: "1000" } } })).toBe(600_000);
+    expect(resolveAuthFlowTimeout({ easyresearch: { web: { authFlowTimeoutMs: 1.5 } } })).toBe(600_000);
+  });
+});
 
 describe("auth gateway shutdown aborts active flows", () => {
   it("aborts pending prompt after shutdown() so the flow terminates", async () => {

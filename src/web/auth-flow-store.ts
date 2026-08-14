@@ -5,6 +5,8 @@ export interface AuthFlowRecord {
   flowId: string;
   bufferedNotifies: AuthFlowEventDto[];
   pendingPrompt: AuthFlowEventDto | null;
+  /** Terminal `done`/`error` event, set once by `terminate`. Replayed to late SSE clients. */
+  terminalEvent: AuthFlowEventDto | null;
   resolveRespond: ((value: string) => void) | null;
   rejectRespond: ((err: Error) => void) | null;
   abortController: AbortController;
@@ -68,6 +70,7 @@ export function createAuthFlowStore(): AuthFlowStore {
         flowId,
         bufferedNotifies: [],
         pendingPrompt: null,
+        terminalEvent: null,
         resolveRespond: null,
         rejectRespond: null,
         abortController,
@@ -143,6 +146,7 @@ export function createAuthFlowStore(): AuthFlowStore {
         if (rec.pendingPrompt) ordered.push(rec.pendingPrompt);
       }
       ordered.push(finalEvent);
+      rec.terminalEvent = finalEvent;
       rec.terminated = true;
       broadcast(rec, finalEvent);
       rec.subscribers.clear();
@@ -151,8 +155,12 @@ export function createAuthFlowStore(): AuthFlowStore {
     subscribe(flowId, onEvent) {
       const rec = ensure(flowId);
       if (!rec) return () => {};
+      // Replay buffered notifies, any pending prompt, then the terminal event
+      // (when the flow already terminated) so a late client is loss-free.
       for (const e of rec.bufferedNotifies) onEvent(e);
       if (rec.pendingPrompt) onEvent(rec.pendingPrompt);
+      if (rec.terminalEvent) onEvent(rec.terminalEvent);
+      if (rec.terminated) return () => {};
       rec.subscribers.add(onEvent);
       return () => {
         rec.subscribers.delete(onEvent);

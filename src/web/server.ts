@@ -109,7 +109,7 @@ export async function startServer(): Promise<Server> {
   const logger = createLogger("web-server");
   const { SessionManager, getAgentDir } = await importPi();
   const agentDir = getAgentDir();
-  const auth = await getAuthGateway();
+  const auth = await getAuthGateway(logger);
   const config = new ConfigFileService(agentDir);
   const idleTimeoutMs = await readWebSessionIdleTimeout(config);
   const registry = new ActiveSessionRegistry(

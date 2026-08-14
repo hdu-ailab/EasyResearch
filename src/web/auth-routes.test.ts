@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { createRouteHandler, type RouteServices } from "./routes";
 import { AuthGatewayError, type AuthGateway } from "./auth-gateway";
-import type { AuthFlowStore, AuthFlowRecord } from "./auth-flow-store";
+import { createAuthFlowStore, type AuthFlowStore, type AuthFlowRecord } from "./auth-flow-store";
 import type {
   AuthFlowEventDto,
   AuthProviderInfoDto,
@@ -16,6 +16,7 @@ function flowRecordStub(): AuthFlowRecord {
     flowId: "f1",
     bufferedNotifies: [],
     pendingPrompt: null,
+    terminalEvent: null,
     resolveRespond: null,
     rejectRespond: null,
     abortController: new AbortController(),
@@ -307,5 +308,27 @@ describe("auth routes", () => {
     const handler = createRouteHandler(makeServices(undefined));
     const res = await handler(new Request("http://l/api/auth/providers"));
     expect(res.status).toBe(404);
+  });
+
+  it("GET /api/auth/flows/:id/events replays the terminal event for an already-terminated flow", async () => {
+    const store = createAuthFlowStore();
+    store.create("f1", new AbortController().signal);
+    store.emit("f1", { type: "notify", event: { kind: "info", message: "hi" } } as AuthFlowEventDto);
+    store.terminate("f1", { type: "done", credential: { type: "api_key" } } as AuthFlowEventDto);
+    const gw = { store: () => store } as unknown as AuthGateway;
+    const handler = createRouteHandler(makeServices(gw));
+    const res = await handler(new Request("http://l/api/auth/flows/f1/events"));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/event-stream");
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let received = "";
+    for (let i = 0; i < 2; i++) {
+      const { value } = await reader.read();
+      received += decoder.decode(value);
+    }
+    expect(received).toContain('"type":"notify"');
+    expect(received).toContain('"type":"done"');
+    reader.cancel();
   });
 });
