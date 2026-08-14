@@ -1,7 +1,7 @@
 ---
 name: pdf-to-markdown
 description: |-
-  Convert research PDFs and other documents to Markdown using a locally installed Microsoft MarkItDown CLI ({{MARKITDOWN_BIN}}). Use proactively when papers must be converted into readable text for agent analysis, especially inside ref_papers/pdf to ref_papers/text workflows.
+  Convert research PDFs and other documents to Markdown using MarkItDown from the EasyResearch skill venv ($EASYRESEARCH_VENV). Use proactively when papers must be converted into readable text for agent analysis, especially inside ref_papers/pdf to ref_papers/text workflows.
 
   Examples:
   - user: "Convert these papers to Markdown" then run markitdown on each PDF and save .md files
@@ -16,23 +16,25 @@ metadata:
 
 # PDF To Markdown
 
-## Placeholders
-
-| Token | Meaning | Generic example |
-|-------|---------|-----------------|
-| `{{MARKITDOWN_BIN}}` | Absolute path of the local MarkItDown CLI | `~/tools/markitdown/.venv/bin/markitdown` |
-
 ## Tool
-Use the local Microsoft MarkItDown installation:
+Use the MarkItDown CLI from the EasyResearch skill venv (created at install
+time by the postinstall script):
 
 ```bash
-markitdown input.pdf -o output.md
+$EASYRESEARCH_VENV/bin/markitdown input.pdf -o output.md
 ```
 
-The alias is configured for bash and fish. If aliases are unavailable in a non-interactive shell, use the absolute CLI path:
+On Windows the venv layout differs — use:
 
+```powershell
+%EASYRESEARCH_VENV%\Scripts\markitdown.exe input.pdf -o output.md
+```
+
+If `$EASYRESEARCH_VENV` is unset or the binary is missing, fall back to
+`markitdown` on PATH. Verify with:
 ```bash
-{{MARKITDOWN_BIN}} input.pdf -o output.md
+echo $EASYRESEARCH_VENV
+$EASYRESEARCH_VENV/bin/markitdown --help
 ```
 
 ## When To Use
@@ -57,7 +59,7 @@ ref_papers/
 Convert one PDF:
 
 ```bash
-markitdown ref_papers/pdf/paper.pdf -o ref_papers/text/paper.md
+$EASYRESEARCH_VENV/bin/markitdown ref_papers/pdf/paper.pdf -o ref_papers/text/paper.md
 ```
 
 Batch conversion pattern:
@@ -65,7 +67,7 @@ Batch conversion pattern:
 ```bash
 for pdf in ref_papers/pdf/*.pdf; do
   name=$(basename "$pdf" .pdf)
-  markitdown "$pdf" -o "ref_papers/text/$name.md"
+  "$EASYRESEARCH_VENV/bin/markitdown" "$pdf" -o "ref_papers/text/$name.md"
 done
 ```
 
@@ -117,14 +119,9 @@ When a `source.json` manifest exists, update or create fields like:
 ```
 
 ## Verification Commands
-Check the CLI:
+Check the skill venv CLI (falls back to `markitdown` on PATH when
+`$EASYRESEARCH_VENV` is unset):
 
 ```bash
-markitdown --help
-```
-
-Check the installed absolute path:
-
-```bash
-{{MARKITDOWN_BIN}} --help
+"$EASYRESEARCH_VENV/bin/markitdown" --help
 ```
