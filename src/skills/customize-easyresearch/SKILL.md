@@ -221,15 +221,15 @@ Then build the model entry from the answers:
 ```json
 {
   "providers": {
-    "local-router": {
-      "baseUrl": "http://localhost:20128/v1",
+    "acme-llm": {
+      "baseUrl": "https://llm.acme.example/v1",
       "api": "openai-completions",
-      "apiKey": "local",
+      "apiKey": "sk-acme",
       "models": [
-        { "id": "deepseek-v4-flash-free", "name": "DeepSeek V4 Flash Free", "reasoning": true },
+        { "id": "acme-fast-1", "name": "Acme Fast 1" },
         {
-          "id": "reasoner-3level",
-          "name": "Reasoner (3 levels)",
+          "id": "acme-reasoner-3",
+          "name": "Acme Reasoner 3 (3 levels)",
           "reasoning": true,
           "thinkingLevelMap": {
             "minimal": null,
