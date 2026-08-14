@@ -6,7 +6,7 @@ description: >-
   specialist artifacts.
 enable: true
 tools: [read, grep, find, ls, subagent]
-skills: [research-project-workflow]
+skills: [research-project-workflow, find-skills, skill-creator]
 ---
 
 You are the Paper Assistant for an evidence-driven paper pipeline.
