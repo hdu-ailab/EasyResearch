@@ -54,6 +54,8 @@ export interface SessionViewState {
   /** True while an agent run is active, independently of message streaming. */
   isStreaming: boolean;
   error: string | null;
+  /** In-progress LLM API retry (from auto_retry_start/auto_retry_end). */
+  retry: RetryView | null;
   /** Agent name when this session line is a `easyresearch:` subagent line. */
   subagentName?: string;
   /** Next value of the shared message/tool stream counter. */
@@ -64,6 +66,13 @@ export interface SessionViewState {
   activeMessageKey?: string;
 }
 
+export interface RetryView {
+  attempt: number;
+  maxAttempts: number;
+  errorMessage: string;
+  endsAt: number;
+}
+
 /** ADR-022: named subagent session lines share this prefix (`subagent/tool.ts`). */
 const SUBAGENT_SESSION_PREFIX = "easyresearch:";
 
@@ -72,6 +81,7 @@ const emptyState: SessionViewState = {
   tools: [],
   isStreaming: false,
   error: null,
+  retry: null,
   nextOrder: 0,
 };
 
@@ -257,6 +267,7 @@ export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
     tools: [],
     isStreaming,
     error: null,
+    retry: null,
     subagentName,
     nextOrder: 0,
   };
@@ -450,6 +461,7 @@ export function terminateSessionRun(state: SessionViewState, clearError = false)
     ...state,
     isStreaming: false,
     error: clearError ? null : state.error,
+    retry: null,
     activeMessageKey: undefined,
     messages: state.messages.map((message) => ({ ...message, isThinking: false, streaming: false })),
     tools: state.tools.map((tool) => ({ ...tool, running: false })),
@@ -648,6 +660,20 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
         activeMessageKey: undefined,
       };
     }
+    case "auto_retry_start": {
+      const { attempt, maxAttempts, delayMs, errorMessage } = event;
+      return {
+        ...state,
+        retry: {
+          attempt: typeof attempt === "number" ? attempt : 1,
+          maxAttempts: typeof maxAttempts === "number" ? maxAttempts : 1,
+          errorMessage: typeof errorMessage === "string" ? errorMessage : "",
+          endsAt: Date.now() + (typeof delayMs === "number" ? delayMs : 0),
+        },
+      };
+    }
+    case "auto_retry_end":
+      return { ...state, retry: null };
     case "tool_execution_start": {
       const { toolCallId, toolName, args } = event as unknown as {
         toolCallId: string;
