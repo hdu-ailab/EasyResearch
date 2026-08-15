@@ -2,6 +2,7 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { bundledSourceRoot } from "../runtime/bundled-assets";
 
 export interface SkillResolverDeps {
   cwd: string;
@@ -107,7 +108,7 @@ export async function readGlobalDotAgentsSkillSetting(cwd: string, agentDir: str
 }
 
 function dirnameFromModule(): string {
-  return join(dirname(fileURLToPath(import.meta.url)), "..", "skills");
+  return join(bundledSourceRoot(), "skills");
 }
 
 function resolveOne(value: string, deps: SkillResolverDeps): string | undefined {

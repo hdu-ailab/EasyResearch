@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
+import { bundledFilePath } from "../runtime/bundled-assets";
 import type {
   ActiveSessionDto,
   AgentDto,
@@ -383,7 +384,8 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
 
       if (req.method === "GET") {
         const assetPath = path === "/" ? "index.html" : path.replace(/^\//, "");
-        const file = join(services.webuiDist, assetPath);
+        const file =
+          bundledFilePath(`webui/dist/${assetPath}`) ?? join(services.webuiDist, assetPath);
         try {
           const content = readFileSync(file);
           return new Response(content, { headers: { "Content-Type": contentType(file) } });
