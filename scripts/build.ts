@@ -60,6 +60,8 @@ function collectFiles(root: string, prefix: string): string[] {
 /**
  * Enumerate every file shipped inside the standalone binary: web UI bundle,
  * bundled agents/skills, and pi's runtime assets (package.json, README, themes).
+ * The materialized `pi/package.json` is EasyResearch's own: pi reads
+ * `piConfig.configDir` (`.easyresearch`) from it to keep the native identity.
  */
 export function collectEmbeddedAssets(): string[] {
   const piPkg = join(ROOT, "node_modules", "@earendil-works", "pi-coding-agent");
@@ -67,7 +69,7 @@ export function collectEmbeddedAssets(): string[] {
     ...collectFiles(join(ROOT, "src", "webui", "dist"), "webui/dist/"),
     ...collectFiles(join(ROOT, "src", "agents"), "agents/").filter((rel) => rel.endsWith(".md")),
     ...collectFiles(join(ROOT, "src", "skills"), "skills/"),
-    ...["package.json", "README.md"].map((file) => `pi/${file}`),
+    ...["pi/package.json", "pi/README.md"],
     ...collectFiles(join(piPkg, "dist", "modes", "interactive", "theme"), "pi/theme/").filter((rel) =>
       rel.endsWith(".json"),
     ),
@@ -106,13 +108,16 @@ export function generateEmbeddedAssetsModule(): string[] {
 }
 
 function moduleRelative(rel: string): string {
+  if (rel === "pi/package.json") {
+    return "../../package.json";
+  }
+  if (rel === "pi/README.md") {
+    return `../../node_modules/@earendil-works/pi-coding-agent/README.md`;
+  }
   if (rel.startsWith("pi/theme/")) {
     return `../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/${rel.slice(
       "pi/theme/".length,
     )}`;
-  }
-  if (rel.startsWith("pi/")) {
-    return `../../node_modules/@earendil-works/pi-coding-agent/${rel.slice("pi/".length)}`;
   }
   return `../${rel}`;
 }

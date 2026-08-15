@@ -949,7 +949,7 @@ import _e944 from "../skills/skill-creator/scripts/utils.py" with { type: "file"
 import _e945 from "../skills/ssh-experiment/SKILL.md" with { type: "file" };
 import _e946 from "../skills/ssh-experiment/scripts/rssh" with { type: "file" };
 import _e947 from "../skills/ssh-experiment/scripts/rssh-tmux" with { type: "file" };
-import _e948 from "../../node_modules/@earendil-works/pi-coding-agent/package.json" with { type: "file" };
+import _e948 from "../../package.json" with { type: "file" };
 import _e949 from "../../node_modules/@earendil-works/pi-coding-agent/README.md" with { type: "file" };
 import _e950 from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/dark.json" with { type: "file" };
 import _e951 from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/light.json" with { type: "file" };
