@@ -113,6 +113,7 @@ function assembleMainPackage(version: string, targets: string[]): void {
     optionalDependencies: Object.fromEntries(targets.map((name) => [`easyresearch-${name}`, version])),
   });
   cpSync(join(ROOT, "postinstall.mjs"), join(pkgDir, "postinstall.mjs"));
+  cpSync(join(ROOT, "LICENSE"), join(pkgDir, "LICENSE"));
   const stubPath = join(binDir, "easyresearch.exe");
   writeFileSync(stubPath, BIN_STUB);
   chmodSync(stubPath, 0o755);
