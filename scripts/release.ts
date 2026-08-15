@@ -44,7 +44,7 @@ function publishPackage(dir: string, name: string, version: string, dryRun: bool
   }
   const args = ["publish"];
   if (dryRun) args.push("--dry-run");
-  console.log(`[release] ${dryRun ? "DRY RUN: " : ""}publishing ${label}…`);
+  console.log(`[release] ${dryRun ? "DRY RUN: " : ""}publishing ${name}…`);
   const result = spawnSync("npm", args, { cwd: dir, stdio: "inherit" });
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
@@ -133,10 +133,19 @@ async function main(): Promise<void> {
   const flags = parseFlags();
   const version = repoPackageVersion();
   const targets = TARGETS.filter((t) => flags.only === undefined || t.name === flags.only);
+  const mainPublished = !flags.dryRun && isAlreadyPublished(MAIN_PACKAGE, version);
+  const missing = flags.dryRun ? targets : targets.filter((t) => !isAlreadyPublished(`easyresearch-${t.name}`, version));
+  const skipCount = targets.length - missing.length;
+  if (skipCount > 0) console.log(`[release] skipping ${skipCount} already-published platform package(s)`);
+
+  if (missing.length === 0 && mainPublished) {
+    console.log(`[release] ${MAIN_PACKAGE}@${version} and all platform packages already published`);
+    return;
+  }
 
   if (!flags.skipBuild) {
-    console.log(`[release] building ${targets.length} target(s) for easyresearch@${version}`);
-    await buildTargets(flags.only);
+    console.log(`[release] building ${missing.length} target(s) for easyresearch@${version}`);
+    await buildTargets(flags.only, missing.map((t) => t.name));
   } else {
     for (const t of targets) {
       if (!existsSync(join(platformPackageDir(t.name), "bin", platformBinaryName(t)))) {
@@ -148,13 +157,17 @@ async function main(): Promise<void> {
 
   if (!flags.dryRun) requireNpmAuth();
 
-  for (const t of targets) {
+  for (const t of missing) {
     assemblePlatformPackage(t.name, version);
     publishPackage(platformPackageDir(t.name), `easyresearch-${t.name}`, version, flags.dryRun);
   }
 
-  assembleMainPackage(version, targets.map((t) => t.name));
-  publishPackage(join(releaseDir(), MAIN_PACKAGE), MAIN_PACKAGE, version, flags.dryRun);
+  if (!mainPublished) {
+    assembleMainPackage(version, targets.map((t) => t.name));
+    publishPackage(join(releaseDir(), MAIN_PACKAGE), MAIN_PACKAGE, version, flags.dryRun);
+  } else {
+    console.log(`[release] ${MAIN_PACKAGE}@${version} already published, skipping`);
+  }
   console.log(`[release] done${flags.dryRun ? " (dry run)" : ""}`);
 }
 

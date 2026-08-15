@@ -157,10 +157,12 @@ export async function compileTarget(target: PlatformTarget): Promise<string> {
   return outfile;
 }
 
-export async function buildTargets(only?: string): Promise<PlatformTarget[]> {
+export async function buildTargets(only?: string, prefer?: string[]): Promise<PlatformTarget[]> {
   await buildWebUi();
   generateEmbeddedAssetsModule(true);
-  const targets = TARGETS.filter((t) => only === undefined || t.name === only);
+  const targets = TARGETS.filter(
+    (t) => (only === undefined || t.name === only) && (prefer === undefined || prefer.includes(t.name)),
+  );
   if (targets.length === 0) throw new Error(`unknown target: ${only}`);
   for (const target of targets) {
     console.log(`[build] compiling ${target.name} (${target.target})…`);
