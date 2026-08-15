@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir } from "../runtime/pi-import";
 import { importPi } from "../runtime/pi-import";
+import { bundledSourceRoot } from "../runtime/bundled-assets";
 import { isThinkingLevel } from "../thinking-levels";
 import { isDotAgentsSkillEnabled, resolveSkillSelection } from "./skill-resolution";
 
@@ -61,7 +62,7 @@ export interface DiscoveryOptions {
 }
 
 function bundledAgentsDir(): string {
-  return join(dirname(fileURLToPath(import.meta.url)), "..", "agents");
+  return join(bundledSourceRoot(), "agents");
 }
 
 function sourceDirectory(options: DiscoveryOptions, source: AgentSource): string {

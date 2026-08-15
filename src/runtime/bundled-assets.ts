@@ -43,11 +43,12 @@ export function defaultAgentDir(): string {
 
 /**
  * Root used by bundled-asset consumers (agents, skills, pi assets). In
- * compiled binaries this is the first-run materialized directory; in source
- * mode it is the repo root, so nothing is ever copied.
+ * compiled binaries this is the first-run materialized directory (contains
+ * `agents/`, `skills/`, `pi/` directly); in source mode it is the `src/`
+ * tree, where those resources actually live.
  */
 export function bundledSourceRoot(): string {
-  return process.env.EASYRESEARCH_BUNDLED_ROOT ?? devSourceRoot();
+  return process.env.EASYRESEARCH_BUNDLED_ROOT ?? join(devSourceRoot(), "src");
 }
 
 export function bundledMaterializeRoot(agentDir: string): string {
