@@ -14,6 +14,9 @@
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "noEmit": true,
+    "paths": {
+      "@easyresearch/embedded-assets": ["./src/generated/embedded-assets.ts"]
+    },
 
     // Best practices
     "strict": true,
