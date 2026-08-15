@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, renameSync, rmSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { getAgentDir } from "./runtime/pi-import";
+import { bundledSourceRoot } from "./runtime/bundled-assets";
 
 export interface RenameOptions {
   agentDir: string;
@@ -93,7 +93,7 @@ export function renameSameNameToBak(options: RenameOptions): RenameResult {
 
 export function main(): number {
   const agentDir = getAgentDir();
-  const sourceDir = dirname(fileURLToPath(import.meta.url));
+  const sourceDir = bundledSourceRoot();
   const result = renameSameNameToBak({
     agentDir,
     bundledAgentsDir: join(sourceDir, "agents"),

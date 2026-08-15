@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { dayStamp } from "../runtime/logger";
-import { runCli, waitForReady, type CliDependencies } from "./index";
+import { runCli, waitForReady, type CliDependencies, type CliOptions } from "./index";
 import { readServerPid, serverPidPath, writeServerPid } from "./server-process";
 
 let root: string;
@@ -25,17 +25,22 @@ function makeDeps(overrides: Partial<CliDependencies> = {}): CliDependencies {
   };
 }
 
+/** runCli with first-run setup stubbed out (tests must not touch real venvs). */
+function runTestCli(argv: string[], deps: CliDependencies, options: Partial<CliOptions> = {}) {
+  return runCli(argv, deps, { setup: vi.fn(), ...options });
+}
+
 describe("runCli argument parsing", () => {
   it("starts a background server with defaults for an empty argv", async () => {
     const deps = makeDeps();
-    expect(await runCli([], deps, { agentDir: root })).toBe(0);
+    expect(await runTestCli([], deps, { agentDir: root })).toBe(0);
     expect(deps.spawnBackground).toHaveBeenCalledWith("127.0.0.1", 3000);
     expect(deps.openBrowser).toHaveBeenCalledWith("http://127.0.0.1:3000");
   });
 
   it("parses -p port and --host", async () => {
     const deps = makeDeps();
-    await runCli(["-p", "4000", "--host", "0.0.0.0"], deps, { agentDir: root });
+    await runTestCli(["-p", "4000", "--host", "0.0.0.0"], deps, { agentDir: root });
     expect(deps.spawnBackground).toHaveBeenCalledWith("0.0.0.0", 4000);
     expect(deps.waitForReady).toHaveBeenCalledWith("0.0.0.0", 4000);
     expect(deps.openBrowser).not.toHaveBeenCalled();
@@ -43,7 +48,7 @@ describe("runCli argument parsing", () => {
 
   it("skips opening the browser with --no-open", async () => {
     const deps = makeDeps();
-    await runCli(["--no-open"], deps, { agentDir: root });
+    await runTestCli(["--no-open"], deps, { agentDir: root });
     expect(deps.spawnBackground).toHaveBeenCalledWith("127.0.0.1", 3000);
     expect(deps.openBrowser).not.toHaveBeenCalled();
   });
@@ -51,7 +56,7 @@ describe("runCli argument parsing", () => {
   it("reuses an existing alive process (idempotent start)", async () => {
     writeServerPid(root, process.pid);
     const deps = makeDeps();
-    expect(await runCli([], deps, { agentDir: root })).toBe(0);
+    expect(await runTestCli([], deps, { agentDir: root })).toBe(0);
     expect(deps.spawnBackground).not.toHaveBeenCalled();
     expect(deps.waitForReady).toHaveBeenCalledWith("127.0.0.1", 3000);
     expect(deps.openBrowser).toHaveBeenCalledWith("http://127.0.0.1:3000");
@@ -65,7 +70,7 @@ describe("runCli argument parsing", () => {
       messages.push(String(msg));
     });
     try {
-      expect(await runCli(["-p", "4000"], deps, { agentDir: root })).toBe(1);
+      expect(await runTestCli(["-p", "4000"], deps, { agentDir: root })).toBe(1);
     } finally {
       errorSpy.mockRestore();
     }
@@ -77,7 +82,7 @@ describe("runCli argument parsing", () => {
 
   it("exit without a pid file prints a notice and exits 0", async () => {
     const deps = makeDeps();
-    expect(await runCli(["exit"], deps, { agentDir: root })).toBe(0);
+    expect(await runTestCli(["exit"], deps, { agentDir: root })).toBe(0);
     expect(deps.serve).not.toHaveBeenCalled();
   });
 
@@ -89,7 +94,7 @@ describe("runCli argument parsing", () => {
       throw Object.assign(new Error("ESRCH: no such process"), { code: "ESRCH" });
     });
     try {
-      expect(await runCli(["exit"], deps, { agentDir: root })).toBe(0);
+      expect(await runTestCli(["exit"], deps, { agentDir: root })).toBe(0);
     } finally {
       killSpy.mockRestore();
     }
@@ -103,7 +108,7 @@ describe("runCli argument parsing", () => {
     [["web"]],
   ])("rejects invalid argv %j", async (argv) => {
     const deps = makeDeps();
-    expect(await runCli(argv as string[], deps, { agentDir: root })).toBe(1);
+    expect(await runTestCli(argv as string[], deps, { agentDir: root })).toBe(1);
     expect(deps.spawnBackground).not.toHaveBeenCalled();
   });
 
@@ -114,14 +119,14 @@ describe("runCli argument parsing", () => {
     [["--serve", "127.0.0.1", "3000", "extra"]],
   ])("rejects the internal --serve flag on the user path %j", async (argv) => {
     const deps = makeDeps();
-    expect(await runCli(argv as string[], deps, { agentDir: root })).toBe(1);
+    expect(await runTestCli(argv as string[], deps, { agentDir: root })).toBe(1);
     expect(deps.spawnBackground).not.toHaveBeenCalled();
     expect(deps.serve).not.toHaveBeenCalled();
   });
 
   it("exit combined with --serve does not start a daemon", async () => {
     const deps = makeDeps();
-    expect(await runCli(["exit", "--serve"], deps, { agentDir: root })).toBe(1);
+    expect(await runTestCli(["exit", "--serve"], deps, { agentDir: root })).toBe(1);
     expect(deps.spawnBackground).not.toHaveBeenCalled();
     expect(deps.serve).not.toHaveBeenCalled();
   });
@@ -133,7 +138,7 @@ describe("runCli argument parsing", () => {
       messages.push(String(msg));
     });
     try {
-      expect(await runCli([], deps, { agentDir: root })).toBe(1);
+      expect(await runTestCli([], deps, { agentDir: root })).toBe(1);
     } finally {
       errorSpy.mockRestore();
     }
@@ -143,7 +148,7 @@ describe("runCli argument parsing", () => {
 
   it("probes readiness on the bound host", async () => {
     const deps = makeDeps();
-    await runCli(["--host", "192.168.1.5"], deps, { agentDir: root });
+    await runTestCli(["--host", "192.168.1.5"], deps, { agentDir: root });
     expect(deps.spawnBackground).toHaveBeenCalledWith("192.168.1.5", 3000);
     expect(deps.waitForReady).toHaveBeenCalledWith("192.168.1.5", 3000);
   });
@@ -180,5 +185,36 @@ describe("waitForReady", () => {
 
   it("times out when nothing listens on the probe host", async () => {
     expect(await waitForReady("127.0.0.1", 1, 300)).toBe(false);
+  });
+});
+
+describe("first-run setup", () => {
+  it("runs injected setup on normal start", async () => {
+    const setup = vi.fn();
+    const deps = makeDeps();
+    await runCli([], deps, { agentDir: root, setup });
+    expect(setup).toHaveBeenCalledTimes(1);
+    expect(setup).toHaveBeenCalledWith(root, expect.any(Function));
+  });
+
+  it("skips setup for the exit command", async () => {
+    const setup = vi.fn();
+    const deps = makeDeps();
+    await runCli(["exit"], deps, { agentDir: root, setup });
+    expect(setup).not.toHaveBeenCalled();
+  });
+
+  it("respects EASYRESEARCH_SKIP_SETUP=1", async () => {
+    const previous = process.env.EASYRESEARCH_SKIP_SETUP;
+    process.env.EASYRESEARCH_SKIP_SETUP = "1";
+    try {
+      const setup = vi.fn();
+      const deps = makeDeps();
+      await runCli([], deps, { agentDir: root, setup });
+      expect(setup).not.toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) delete process.env.EASYRESEARCH_SKIP_SETUP;
+      else process.env.EASYRESEARCH_SKIP_SETUP = previous;
+    }
   });
 });

@@ -1,9 +1,21 @@
 {
   "name": "easyresearch",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "description": "Automated academic paper writing CLI built on the Pi agent harness",
   "type": "module",
   "private": false,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hdu-ailab/EasyResearch.git"
+  },
+  "keywords": [
+    "research",
+    "paper-writing",
+    "cli",
+    "ai",
+    "academic"
+  ],
   "files": [
     "src",
     "README.md",
@@ -26,7 +38,8 @@
     "lint:web": "biome check src/webui vitest.config.ts",
     "check:web": "bun run typecheck && bun run test && bun run build:web && bun run lint:web",
     "prepack": "bun run build:web",
-    "postinstall": "bun src/setup-venv.ts && bun src/setup-resources.ts",
+    "build:release": "bun scripts/build.ts",
+    "release": "bun scripts/release.ts",
     "dev": "bun run src/cli/index.ts",
     "dev:web": "vite --config src/webui/vite.config.ts"
   },

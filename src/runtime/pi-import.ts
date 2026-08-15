@@ -1,15 +1,24 @@
 import { join, dirname } from "path";
 import { homedir } from "os";
 import { fileURLToPath } from "url";
+import { bundledSourceRoot, devSourceRoot, isEmbeddedBuild } from "./bundled-assets";
 
-const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+/**
+ * Base directory pi uses to resolve its shipped assets (package.json, themes,
+ * README). Source mode points at the repo root (pi's assets ship inside
+ * node_modules); compiled binaries use the first-run materialized `pi`
+ * directory.
+ */
+function piPackageRoot(): string {
+  return isEmbeddedBuild() ? join(bundledSourceRoot(), "pi") : devSourceRoot();
+}
 
 let cachedPi: typeof import("@earendil-works/pi-coding-agent") | null = null;
 
 export async function importPi(): Promise<typeof import("@earendil-works/pi-coding-agent")> {
 	if (cachedPi) return cachedPi;
 	const previous = process.env.PI_PACKAGE_DIR;
-	process.env.PI_PACKAGE_DIR = packageRoot;
+	process.env.PI_PACKAGE_DIR = piPackageRoot();
 	try {
 		cachedPi = await import("@earendil-works/pi-coding-agent");
 		return cachedPi;

@@ -1,6 +1,5 @@
 .opencode/
 AGENTS.md
-AGENTS_cn.md
 .docs/
 node_modules/
 src/webui/dist/
@@ -15,3 +14,5 @@ __pycache__/
 testpaper/
 docs/superpowers/
 .docs
+release/
+.npmrc

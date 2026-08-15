@@ -1,8 +1,19 @@
 #!/usr/bin/env bun
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir } from "../runtime/pi-import";
 import { injectSkillVenvEnv } from "../runtime/venv-env";
+import {
+  bundledSourceRoot,
+  defaultAgentDir,
+  embeddedPackageVersion,
+  isEmbeddedBuild,
+  materializeBundledIfNeeded,
+} from "../runtime/bundled-assets";
+import { ensureSkillVenv } from "../setup-venv";
+import { renameSameNameToBak } from "../setup-resources";
 import {
   isProcessAlive,
   readServerPid,
@@ -22,11 +33,65 @@ export interface CliDependencies {
 
 export interface CliOptions {
   agentDir?: string;
+  /** First-run bootstrap, injectable for tests. Defaults to ensureFirstRunSetup. */
+  setup?: (agentDir: string, log: (msg: string) => void) => void;
 }
 
 export const DEFAULT_HOST = "127.0.0.1";
 export const DEFAULT_PORT = 3000;
 export const READY_TIMEOUT_MS = 10_000;
+
+export function isSkipSetupEnabled(): boolean {
+  const value = process.env.EASYRESEARCH_SKIP_SETUP;
+  return value === "1" || value === "true" || value === "yes";
+}
+
+/**
+ * Compiled binaries hold an exclusive lock on the executable file and
+ * silently fail when they spawn a second instance of themselves. Work
+ * around it by copying the binary under `<agentDir>/bin` and spawning the
+ * copy. The copy is refreshed only when the source binary changes
+ * (size + mtime stamp).
+ */
+export function daemonBinaryPath(agentDir: string): string {
+  const source = process.execPath;
+  const binDir = join(agentDir, "bin");
+  mkdirSync(binDir, { recursive: true });
+  const target = join(binDir, process.platform === "win32" ? "easyresearch-daemon.exe" : "easyresearch-daemon");
+  const stampPath = join(binDir, ".daemon-source-stamp");
+  try {
+    const srcStat = statSync(source);
+    const stamp = existsSync(stampPath) ? readFileSync(stampPath, "utf8") : "";
+    if (stamp === `${srcStat.size}:${srcStat.mtimeMs}` && existsSync(target)) return target;
+    copyFileSync(source, target);
+    chmodSync(target, 0o755);
+    writeFileSync(stampPath, `${srcStat.size}:${srcStat.mtimeMs}`);
+  } catch {
+    // Fall back to the original executable when the copy fails.
+    return source;
+  }
+  return target;
+}
+
+/**
+ * First-run bootstrap: materialize embedded bundled assets (compiled builds
+ * only), create the skill Python venv with live progress, and retire
+ * same-name user agents/skills so bundled versions take effect. Idempotent;
+ * failures never abort startup.
+ */
+export function ensureFirstRunSetup(agentDir: string, log: (msg: string) => void): void {
+  materializeBundledIfNeeded(agentDir, embeddedPackageVersion(), log);
+  ensureSkillVenv(agentDir, { stream: true, log });
+  const bundledRoot = bundledSourceRoot();
+  const retired = renameSameNameToBak({
+    agentDir,
+    bundledAgentsDir: join(bundledRoot, "agents"),
+    bundledSkillsDir: join(bundledRoot, "skills"),
+    log,
+  });
+  const count = retired.entries.filter((entry) => entry.renamed).length;
+  if (count > 0) log(`Retired ${count} same-name user agent/skill copies to .bak`);
+}
 
 export function isLoopbackHost(host: string): boolean {
   return host === "127.0.0.1" || host === "localhost" || host === "::1";
@@ -74,7 +139,6 @@ export async function runCli(
   deps: CliDependencies,
   options: CliOptions = {},
 ): Promise<number> {
-  injectSkillVenvEnv();
   const agentDir = options.agentDir ?? getAgentDir();
 
   try {
@@ -83,6 +147,10 @@ export async function runCli(
       console.log(stopped ? "EasyResearch service stopped." : "EasyResearch service is not running.");
       return 0;
     }
+
+    const setup = options.setup ?? ensureFirstRunSetup;
+    if (!isSkipSetupEnabled()) setup(agentDir, (msg) => console.log(`[easyresearch] ${msg}`));
+    injectSkillVenvEnv();
 
     let host = DEFAULT_HOST;
     let port = DEFAULT_PORT;
@@ -150,6 +218,10 @@ export async function runCli(
 
 if (import.meta.main) {
   const args = process.argv.slice(2);
+  if (args[0] === "--version" || args[0] === "-v") {
+    console.log(`easyresearch ${embeddedPackageVersion()}`);
+    process.exit(0);
+  }
   if (args.length === 3 && args[0] === "--serve") {
     const host = args[1] as string;
     const port = parsePort(args[2] as string);
@@ -164,12 +236,17 @@ if (import.meta.main) {
     openBrowser,
     waitForReady,
     spawnBackground: (host, port) => {
-      const cliPath = fileURLToPath(import.meta.url);
-      const child = spawn(process.execPath, [cliPath, "--serve", host, String(port)], {
-        detached: true,
-        stdio: "ignore",
-        env: process.env,
-      });
+      const child = isEmbeddedBuild()
+        ? spawn(daemonBinaryPath(defaultAgentDir()), ["--serve", host, String(port)], {
+            detached: true,
+            stdio: "ignore",
+            env: process.env,
+          })
+        : spawn(process.execPath, [fileURLToPath(import.meta.url), "--serve", host, String(port)], {
+            detached: true,
+            stdio: "ignore",
+            env: process.env,
+          });
       child.unref();
     },
   }));
