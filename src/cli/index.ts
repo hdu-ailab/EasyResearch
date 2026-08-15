@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,6 +7,7 @@ import { getAgentDir } from "../runtime/pi-import";
 import { injectSkillVenvEnv } from "../runtime/venv-env";
 import {
   bundledSourceRoot,
+  defaultAgentDir,
   embeddedPackageVersion,
   isEmbeddedBuild,
   materializeBundledIfNeeded,
@@ -42,6 +44,33 @@ export const READY_TIMEOUT_MS = 10_000;
 export function isSkipSetupEnabled(): boolean {
   const value = process.env.EASYRESEARCH_SKIP_SETUP;
   return value === "1" || value === "true" || value === "yes";
+}
+
+/**
+ * Compiled binaries hold an exclusive lock on the executable file and
+ * silently fail when they spawn a second instance of themselves. Work
+ * around it by copying the binary under `<agentDir>/bin` and spawning the
+ * copy. The copy is refreshed only when the source binary changes
+ * (size + mtime stamp).
+ */
+export function daemonBinaryPath(agentDir: string): string {
+  const source = process.execPath;
+  const binDir = join(agentDir, "bin");
+  mkdirSync(binDir, { recursive: true });
+  const target = join(binDir, process.platform === "win32" ? "easyresearch-daemon.exe" : "easyresearch-daemon");
+  const stampPath = join(binDir, ".daemon-source-stamp");
+  try {
+    const srcStat = statSync(source);
+    const stamp = existsSync(stampPath) ? readFileSync(stampPath, "utf8") : "";
+    if (stamp === `${srcStat.size}:${srcStat.mtimeMs}` && existsSync(target)) return target;
+    copyFileSync(source, target);
+    chmodSync(target, 0o755);
+    writeFileSync(stampPath, `${srcStat.size}:${srcStat.mtimeMs}`);
+  } catch {
+    // Fall back to the original executable when the copy fails.
+    return source;
+  }
+  return target;
 }
 
 /**
@@ -207,12 +236,17 @@ if (import.meta.main) {
     openBrowser,
     waitForReady,
     spawnBackground: (host, port) => {
-      const cliPath = isEmbeddedBuild() ? process.execPath : fileURLToPath(import.meta.url);
-      const child = spawn(process.execPath, [cliPath, "--serve", host, String(port)], {
-        detached: true,
-        stdio: "ignore",
-        env: process.env,
-      });
+      const child = isEmbeddedBuild()
+        ? spawn(daemonBinaryPath(defaultAgentDir()), ["--serve", host, String(port)], {
+            detached: true,
+            stdio: "ignore",
+            env: process.env,
+          })
+        : spawn(process.execPath, [fileURLToPath(import.meta.url), "--serve", host, String(port)], {
+            detached: true,
+            stdio: "ignore",
+            env: process.env,
+          });
       child.unref();
     },
   }));
