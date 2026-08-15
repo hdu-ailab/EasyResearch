@@ -37,12 +37,21 @@ function requireNpmAuth(): void {
   console.log(`[release] Publishing as ${(result.stdout ?? "").trim()}`);
 }
 
-function publishPackage(dir: string, dryRun: boolean, label: string): void {
+function publishPackage(dir: string, name: string, version: string, dryRun: boolean): void {
+  if (!dryRun && isAlreadyPublished(name, version)) {
+    console.log(`[release] ${name}@${version} already published, skipping`);
+    return;
+  }
   const args = ["publish"];
   if (dryRun) args.push("--dry-run");
   console.log(`[release] ${dryRun ? "DRY RUN: " : ""}publishing ${label}…`);
   const result = spawnSync("npm", args, { cwd: dir, stdio: "inherit" });
   if (result.status !== 0) process.exit(result.status ?? 1);
+}
+
+function isAlreadyPublished(name: string, version: string): boolean {
+  const result = spawnSync("npm", ["view", `${name}@${version}`, "version"], { encoding: "utf8" });
+  return result.status === 0 && (result.stdout ?? "").trim() === version;
 }
 
 function writeJson(file: string, value: unknown): void {
@@ -141,11 +150,11 @@ async function main(): Promise<void> {
 
   for (const t of targets) {
     assemblePlatformPackage(t.name, version);
-    publishPackage(platformPackageDir(t.name), flags.dryRun, `easyresearch-${t.name}`);
+    publishPackage(platformPackageDir(t.name), `easyresearch-${t.name}`, version, flags.dryRun);
   }
 
   assembleMainPackage(version, targets.map((t) => t.name));
-  publishPackage(join(releaseDir(), MAIN_PACKAGE), flags.dryRun, MAIN_PACKAGE);
+  publishPackage(join(releaseDir(), MAIN_PACKAGE), MAIN_PACKAGE, version, flags.dryRun);
   console.log(`[release] done${flags.dryRun ? " (dry run)" : ""}`);
 }
 
