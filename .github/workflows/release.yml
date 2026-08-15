@@ -54,7 +54,7 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Configure npm registry
-        run: echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > .npmrc
+        run: echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > ~/.npmrc
 
       - name: Publish platform packages and meta package
         run: bun run release
