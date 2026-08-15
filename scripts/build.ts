@@ -62,11 +62,15 @@ function collectFiles(root: string, prefix: string): string[] {
  * bundled agents/skills, and pi's runtime assets (package.json, README, themes).
  * The materialized `pi/package.json` is EasyResearch's own: pi reads
  * `piConfig.configDir` (`.easyresearch`) from it to keep the native identity.
+ *
+ * `includeWebUi` is true only during compilation: the committed module must
+ * not reference `webui/dist` (gitignored; missing on fresh checkouts would
+ * break direct `bun` imports in tests). Dev mode falls back to the disk tree.
  */
-export function collectEmbeddedAssets(): string[] {
+export function collectEmbeddedAssets(includeWebUi = false): string[] {
   const piPkg = join(ROOT, "node_modules", "@earendil-works", "pi-coding-agent");
   return [
-    ...collectFiles(join(ROOT, "src", "webui", "dist"), "webui/dist/"),
+    ...(includeWebUi ? collectFiles(join(ROOT, "src", "webui", "dist"), "webui/dist/") : []),
     ...collectFiles(join(ROOT, "src", "agents"), "agents/").filter((rel) => rel.endsWith(".md")),
     ...collectFiles(join(ROOT, "src", "skills"), "skills/"),
     ...["pi/package.json", "pi/README.md"],
@@ -81,9 +85,13 @@ export function collectEmbeddedAssets(): string[] {
  * "file" }` imports so the bundler embeds each asset into compiled binaries;
  * running from source the same imports resolve to real disk paths. A
  * `@ts-nocheck` header keeps tsc happy about non-TS module imports.
+ *
+ * `includeWebUi` toggles `webui/dist` entries: true only while compiling (the
+ * binary must embed the UI); the committed/restored state excludes them so
+ * fresh checkouts (no gitignored dist) stay importable.
  */
-export function generateEmbeddedAssetsModule(): string[] {
-  const rels = collectEmbeddedAssets();
+export function generateEmbeddedAssetsModule(includeWebUi = true): string[] {
+  const rels = collectEmbeddedAssets(includeWebUi);
   const version = repoPackageVersion();
   const lines: string[] = [
     "// @ts-nocheck",
@@ -145,7 +153,7 @@ export async function compileTarget(target: PlatformTarget): Promise<string> {
 
 export async function buildTargets(only?: string): Promise<PlatformTarget[]> {
   await buildWebUi();
-  generateEmbeddedAssetsModule();
+  generateEmbeddedAssetsModule(true);
   const targets = TARGETS.filter((t) => only === undefined || t.name === only);
   if (targets.length === 0) throw new Error(`unknown target: ${only}`);
   for (const target of targets) {
@@ -154,6 +162,8 @@ export async function buildTargets(only?: string): Promise<PlatformTarget[]> {
     const size = statSync(outfile).size;
     console.log(`[build] ${target.name} -> ${outfile} (${(size / 1024 / 1024).toFixed(1)} MiB)`);
   }
+  // Restore the git-clean committed state (webui/dist excluded).
+  generateEmbeddedAssetsModule(false);
   return targets;
 }
 
