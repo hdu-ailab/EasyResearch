@@ -57,14 +57,53 @@ function realRun(command: string, args: string[]): { status: number; stdout: str
   return { status: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }
 
-export function main(): number {
-  const venvDir = join(getAgentDir(), "venv");
-  const result = setupSkillVenv({ venvDir, run: realRun, log: (msg) => console.log(`[easyresearch] ${msg}`) });
+function streamingRun(command: string, args: string[]): { status: number; stdout: string; stderr: string } {
+  const result = spawnSync(command, args, { stdio: "inherit", timeout: 600_000 });
+  return { status: result.status ?? 1, stdout: "", stderr: "" };
+}
+
+export interface EnsureVenvOptions {
+  /** Stream venv creation and pip output to the terminal (progress display). */
+  stream?: boolean;
+  log?: (msg: string) => void;
+  /** Test-only: inject a run function. */
+  run?: RunFn;
+}
+
+/**
+ * Idempotent first-run setup. Reuses an existing venv (quick import check
+ * instead of reinstalling), recreates it when broken, and streams progress
+ * to the terminal when `stream` is enabled. Never throws; failures degrade
+ * to a warning so the CLI can keep working without the Python extras.
+ */
+export function ensureSkillVenv(agentDir: string, options: EnsureVenvOptions = {}): SetupResult {
+  const run = options.run ?? (options.stream ? streamingRun : realRun);
+  const log = options.log ?? (() => {});
+  const venvDir = join(agentDir, "venv");
+  const python = venvPythonPath(venvDir);
+
+  if (existsSync(python)) {
+    const check = run(python, ["-c", "import markitdown, arxiv"]);
+    if (check.status === 0) {
+      log(`Skill venv already ready: ${venvDir}`);
+      return { venvDir, success: true };
+    }
+    log("Skill venv missing packages — reinstalling markitdown + arxiv…");
+  } else {
+    log(`First run: creating skill Python venv at ${venvDir}`);
+  }
+
+  const result = setupSkillVenv({ venvDir, run, log });
   if (!result.success) {
-    console.warn(
-      `[easyresearch] Skill venv setup skipped: ${result.reason}. PDF conversion and arXiv SDK features will fall back to system tools. Fix with: python3 -m venv "${venvDir}" && "${venvPythonPath(venvDir)}" -m pip install markitdown arxiv`,
+    log(
+      `Skill venv setup skipped: ${result.reason}. PDF conversion and arXiv SDK features will fall back to system tools. Fix with: python3 -m venv "${venvDir}" && "${python}" -m pip install markitdown arxiv`,
     );
   }
+  return result;
+}
+
+export function main(): number {
+  ensureSkillVenv(getAgentDir(), { stream: true, log: (msg) => console.log(`[easyresearch] ${msg}`) });
   return 0;
 }
 
