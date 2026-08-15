@@ -1,24 +1,18 @@
 # EasyResearch
 
+[![Release](https://github.com/hdu-ailab/EasyResearch/actions/workflows/release.yml/badge.svg)](https://github.com/hdu-ailab/EasyResearch/actions/workflows/release.yml)
+
 Automated academic paper writing built on the Pi agent harness. A "lazy person can still produce a paper": the Paper Assistant dispatches stage agents (search, experiment, writing, figures), waits in place, and loops until the manuscript is done.
 
 The **Web panel is the primary interface**.
 
 ## Requirements
 
-- [Bun](https://bun.sh) 1.x or newer
+- [Bun](https://bun.sh) 1.x or newer (development only — the npm binary needs nothing)
 
 ## Install
 
-```bash
-git clone <this-repo> easyresearch
-cd easyresearch
-bun install
-bun run build:web     # build the Web frontend (served by the background server)
-bun link              # exposes the `easyresearch` command on PATH
-```
-
-### Install from npm
+### Install from npm (recommended)
 
 ```bash
 npm install -g easyresearch
@@ -31,6 +25,29 @@ extracts bundled agents/skills. Requires Python 3 on PATH for PDF
 conversion and arXiv features; without it those features degrade.
 
 Set `EASYRESEARCH_SKIP_SETUP=1` to skip first-run setup.
+
+### Install from source (development)
+
+```bash
+git clone <this-repo> easyresearch
+cd easyresearch
+bun install
+bun run build:web     # build the Web frontend (served by the background server)
+bun link              # exposes the `easyresearch` command on PATH
+```
+
+## Releases
+
+Pushing a version tag runs the release pipeline (ADR-072): tests and
+typecheck on the `check:web` gate, then a cross-compiled build of all
+platform binaries and automatic npm publish — no manual steps:
+
+```bash
+git tag v0.0.1
+git push origin v0.0.1
+```
+
+The tag must match the `version` in `package.json`.
 
 ## Start
 
