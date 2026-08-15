@@ -37,16 +37,24 @@ function requireNpmAuth(): void {
   console.log(`[release] Publishing as ${(result.stdout ?? "").trim()}`);
 }
 
-function publishPackage(dir: string, name: string, version: string, dryRun: boolean): void {
+async function publishPackage(dir: string, name: string, version: string, dryRun: boolean): Promise<void> {
   if (!dryRun && isAlreadyPublished(name, version)) {
     console.log(`[release] ${name}@${version} already published, skipping`);
     return;
   }
   const args = ["publish"];
   if (dryRun) args.push("--dry-run");
-  console.log(`[release] ${dryRun ? "DRY RUN: " : ""}publishing ${name}…`);
-  const result = spawnSync("npm", args, { cwd: dir, stdio: "inherit" });
-  if (result.status !== 0) process.exit(result.status ?? 1);
+  for (let attempt = 1; attempt <= 6; attempt += 1) {
+    console.log(`[release] ${dryRun ? "DRY RUN: " : ""}publishing ${name} (attempt ${attempt})…`);
+    const result = spawnSync("npm", args, { cwd: dir, stdio: ["inherit", "inherit", "pipe"], encoding: "utf8" });
+    if (result.status === 0) return;
+    const stderr = (result.stderr ?? "").toLowerCase();
+    const rateLimited = stderr.includes("e429") || stderr.includes("rate limit");
+    if (!rateLimited || attempt === 6) process.exit(result.status ?? 1);
+    const waitSec = 60 * attempt;
+    console.log(`[release] npm rate limited; retrying ${name} in ${waitSec}s…`);
+    await new Promise((resolve) => setTimeout(resolve, waitSec * 1000));
+  }
 }
 
 function isAlreadyPublished(name: string, version: string): boolean {
@@ -163,12 +171,12 @@ async function main(): Promise<void> {
 
   for (const t of missing) {
     assemblePlatformPackage(t.name, version);
-    publishPackage(platformPackageDir(t.name), `easyresearch-${t.name}`, version, flags.dryRun);
+    await publishPackage(platformPackageDir(t.name), `easyresearch-${t.name}`, version, flags.dryRun);
   }
 
   if (!mainPublished) {
     assembleMainPackage(version, targets.map((t) => t.name));
-    publishPackage(join(releaseDir(), MAIN_PACKAGE), MAIN_PACKAGE, version, flags.dryRun);
+    await publishPackage(join(releaseDir(), MAIN_PACKAGE), MAIN_PACKAGE, version, flags.dryRun);
   } else {
     console.log(`[release] ${MAIN_PACKAGE}@${version} already published, skipping`);
   }
