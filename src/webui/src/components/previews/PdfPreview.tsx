@@ -1,5 +1,5 @@
 import { AlertTriangle, ChevronLeft, ChevronRight, Download, FileText, Minus, Plus } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { rawFileUrl } from "../../api";
 import { useI18n } from "../../i18n/useI18n";
 import { createPdfLoader, type PdfDocumentHandle, type PdfLoader } from "./pdf-runtime";
@@ -176,7 +176,7 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
     [numPages, scrollToCanvas],
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     const onScroll = () => {

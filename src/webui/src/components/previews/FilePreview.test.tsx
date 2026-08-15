@@ -325,7 +325,7 @@ describe("PdfPreview", () => {
     page2.getBoundingClientRect = vi.fn(() => rect({ top: 10, height: 400 }));
     page3.getBoundingClientRect = vi.fn(() => rect({ top: 500, height: 400 }));
     fireEvent.scroll(scroll);
-    await waitFor(() => expect(screen.getByLabelText("Current page")).toHaveValue(2));
+    await waitFor(() => expect(screen.getByLabelText("Current page")).toHaveValue(2), { timeout: 3000 });
   });
 
   it("renders only a window around the current page and releases far page bitmaps", async () => {

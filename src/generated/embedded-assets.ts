@@ -7,825 +7,435 @@ import _e2 from "../agents/paper-assistant.md" with { type: "file" };
 import _e3 from "../agents/search.md" with { type: "file" };
 import _e4 from "../agents/writing.md" with { type: "file" };
 import _e5 from "../skills/arxiv/SKILL.md" with { type: "file" };
-import _e6 from "../skills/arxiv/scripts/__pycache__/search_arxiv.cpython-314.pyc" with { type: "file" };
-import _e7 from "../skills/arxiv/scripts/search_arxiv.py" with { type: "file" };
-import _e8 from "../skills/customize-easyresearch/SKILL.md" with { type: "file" };
-import _e9 from "../skills/customize-easyresearch/evals/evals.json" with { type: "file" };
-import _e10 from "../skills/drawio-academic-skills/.gitignore" with { type: "file" };
-import _e11 from "../skills/drawio-academic-skills/CHANGELOG.md" with { type: "file" };
-import _e12 from "../skills/drawio-academic-skills/README.md" with { type: "file" };
-import _e13 from "../skills/drawio-academic-skills/README_CN.md" with { type: "file" };
-import _e14 from "../skills/drawio-academic-skills/SKILL.md" with { type: "file" };
-import _e15 from "../skills/drawio-academic-skills/agents/interface.yaml" with { type: "file" };
-import _e16 from "../skills/drawio-academic-skills/agents/openai.yaml" with { type: "file" };
-import _e17 from "../skills/drawio-academic-skills/evals/README.md" with { type: "file" };
-import _e18 from "../skills/drawio-academic-skills/evals/baseline-prompts.json" with { type: "file" };
-import _e19 from "../skills/drawio-academic-skills/evals/darwin-results.tsv" with { type: "file" };
-import _e20 from "../skills/drawio-academic-skills/evals/evals.json" with { type: "file" };
-import _e21 from "../skills/drawio-academic-skills/evals/test-prompts.json" with { type: "file" };
-import _e22 from "../skills/drawio-academic-skills/references/docs/academic-export-checklist.md" with { type: "file" };
-import _e23 from "../skills/drawio-academic-skills/references/docs/academic-figure-playbook.md" with { type: "file" };
-import _e24 from "../skills/drawio-academic-skills/references/docs/publication-overlay.md" with { type: "file" };
-import _e25 from "../skills/drawio-academic-skills/references/examples/ablation-study-pipeline.yaml" with { type: "file" };
-import _e26 from "../skills/drawio-academic-skills/references/examples/ieee-network-paper.yaml" with { type: "file" };
-import _e27 from "../skills/drawio-academic-skills/references/examples/industrial-architecture-cn-paper.yaml" with { type: "file" };
-import _e28 from "../skills/drawio-academic-skills/references/examples/max-pooling-operation-paper.yaml" with { type: "file" };
-import _e29 from "../skills/drawio-academic-skills/references/examples/research-pipeline.yaml" with { type: "file" };
-import _e30 from "../skills/drawio-academic-skills/references/examples/system-architecture-paper.yaml" with { type: "file" };
-import _e31 from "../skills/drawio-academic-skills/references/examples/technical-roadmap-paper.yaml" with { type: "file" };
-import _e32 from "../skills/drawio-academic-skills/references/examples/yolo-model-architecture-paper.yaml" with { type: "file" };
-import _e33 from "../skills/drawio-academic-skills/references/templates/multi-module-system-compact.yaml" with { type: "file" };
-import _e34 from "../skills/drawio-academic-skills/references/templates/neural-network-architecture-compact.yaml" with { type: "file" };
-import _e35 from "../skills/drawio/.mcp.json" with { type: "file" };
-import _e36 from "../skills/drawio/CHANGELOG.md" with { type: "file" };
-import _e37 from "../skills/drawio/SKILL.md" with { type: "file" };
-import _e38 from "../skills/drawio/agents/interface.yaml" with { type: "file" };
-import _e39 from "../skills/drawio/agents/openai.yaml" with { type: "file" };
-import _e40 from "../skills/drawio/assets/catalog/ai-icons.json.gz" with { type: "file" };
-import _e41 from "../skills/drawio/assets/catalog/shape-catalog.json.gz" with { type: "file" };
-import _e42 from "../skills/drawio/assets/catalog/shape-index.json.gz" with { type: "file" };
-import _e43 from "../skills/drawio/assets/examples/login-flow-test.drawio" with { type: "file" };
-import _e44 from "../skills/drawio/assets/examples/login-flow.drawio" with { type: "file" };
-import _e45 from "../skills/drawio/assets/examples/microservices.drawio" with { type: "file" };
-import _e46 from "../skills/drawio/assets/examples/neural-network.drawio" with { type: "file" };
-import _e47 from "../skills/drawio/assets/licenses/architecture-diagram-generator-MIT.txt" with { type: "file" };
-import _e48 from "../skills/drawio/assets/licenses/drawio-mcp-shape-index-Apache-2.0.txt" with { type: "file" };
-import _e49 from "../skills/drawio/assets/licenses/lobe-icons-MIT.txt" with { type: "file" };
-import _e50 from "../skills/drawio/assets/licenses/lucide-ISC.txt" with { type: "file" };
-import _e51 from "../skills/drawio/assets/palettes/c4-blue.json" with { type: "file" };
-import _e52 from "../skills/drawio/assets/palettes/cloud-aws.json" with { type: "file" };
-import _e53 from "../skills/drawio/assets/palettes/drawio-classic.json" with { type: "file" };
-import _e54 from "../skills/drawio/assets/palettes/ieee-bw.json" with { type: "file" };
-import _e55 from "../skills/drawio/assets/palettes/ieee-color.json" with { type: "file" };
-import _e56 from "../skills/drawio/assets/palettes/journal-jama.json" with { type: "file" };
-import _e57 from "../skills/drawio/assets/palettes/journal-npg.json" with { type: "file" };
-import _e58 from "../skills/drawio/assets/palettes/matlab-lines.json" with { type: "file" };
-import _e59 from "../skills/drawio/assets/palettes/morandi.json" with { type: "file" };
-import _e60 from "../skills/drawio/assets/palettes/okabe-ito.json" with { type: "file" };
-import _e61 from "../skills/drawio/assets/palettes/seaborn-colorblind.json" with { type: "file" };
-import _e62 from "../skills/drawio/assets/palettes/tol-bright.json" with { type: "file" };
-import _e63 from "../skills/drawio/assets/palettes/tol-high-contrast.json" with { type: "file" };
-import _e64 from "../skills/drawio/assets/palettes/tol-light-fill.json" with { type: "file" };
-import _e65 from "../skills/drawio/assets/palettes/tol-muted.json" with { type: "file" };
-import _e66 from "../skills/drawio/assets/schemas/graph-projection.schema.json" with { type: "file" };
-import _e67 from "../skills/drawio/assets/schemas/spec.schema.json" with { type: "file" };
-import _e68 from "../skills/drawio/assets/themes/academic-color.json" with { type: "file" };
-import _e69 from "../skills/drawio/assets/themes/academic.json" with { type: "file" };
-import _e70 from "../skills/drawio/assets/themes/arch-dark.json" with { type: "file" };
-import _e71 from "../skills/drawio/assets/themes/blueprint.json" with { type: "file" };
-import _e72 from "../skills/drawio/assets/themes/dark-luxury.json" with { type: "file" };
-import _e73 from "../skills/drawio/assets/themes/dark-terminal.json" with { type: "file" };
-import _e74 from "../skills/drawio/assets/themes/dark.json" with { type: "file" };
-import _e75 from "../skills/drawio/assets/themes/high-contrast.json" with { type: "file" };
-import _e76 from "../skills/drawio/assets/themes/nature.json" with { type: "file" };
-import _e77 from "../skills/drawio/assets/themes/notion-clean.json" with { type: "file" };
-import _e78 from "../skills/drawio/assets/themes/tech-blue.json" with { type: "file" };
-import _e79 from "../skills/drawio/evals/README.md" with { type: "file" };
-import _e80 from "../skills/drawio/evals/ai-icon-catalog-cases.json" with { type: "file" };
-import _e81 from "../skills/drawio/evals/baseline-prompts.json" with { type: "file" };
-import _e82 from "../skills/drawio/evals/darwin-results.tsv" with { type: "file" };
-import _e83 from "../skills/drawio/evals/evals.json" with { type: "file" };
-import _e84 from "../skills/drawio/evals/evidence/ai-icon-catalog-desktop.json" with { type: "file" };
-import _e85 from "../skills/drawio/evals/fixtures/ai-icons-advanced-svg.yaml" with { type: "file" };
-import _e86 from "../skills/drawio/evals/fixtures/ai-icons-cjk-agent-rag.yaml" with { type: "file" };
-import _e87 from "../skills/drawio/evals/fixtures/ai-icons-core-aliases.yaml" with { type: "file" };
-import _e88 from "../skills/drawio/evals/fixtures/ai-icons-current-color.yaml" with { type: "file" };
-import _e89 from "../skills/drawio/evals/fixtures/ai-icons-gradients.yaml" with { type: "file" };
-import _e90 from "../skills/drawio/evals/fixtures/import-simple-compressed.drawio" with { type: "file" };
-import _e91 from "../skills/drawio/evals/fixtures/import-simple.drawio" with { type: "file" };
-import _e92 from "../skills/drawio/evals/fixtures/industrial-architecture.yaml" with { type: "file" };
-import _e93 from "../skills/drawio/evals/fixtures/replicate-academic-highlight.svg" with { type: "file" };
-import _e94 from "../skills/drawio/evals/fixtures/replicate-brand-architecture.svg" with { type: "file" };
-import _e95 from "../skills/drawio/evals/fixtures/replicate-warm-approval.svg" with { type: "file" };
-import _e96 from "../skills/drawio/evals/fixtures/vision-tall-workflow.yaml" with { type: "file" };
-import _e97 from "../skills/drawio/evals/upstream-integration-cases.json" with { type: "file" };
-import _e98 from "../skills/drawio/evals/vision-preview-cases.json" with { type: "file" };
-import _e99 from "../skills/drawio/references/docs/agent-diagrams.md" with { type: "file" };
-import _e100 from "../skills/drawio/references/docs/ah-format.md" with { type: "file" };
-import _e101 from "../skills/drawio/references/docs/architecture-diagrams.md" with { type: "file" };
-import _e102 from "../skills/drawio/references/docs/canonical-graph-projection.md" with { type: "file" };
-import _e103 from "../skills/drawio/references/docs/code-importers.md" with { type: "file" };
-import _e104 from "../skills/drawio/references/docs/config-importers.md" with { type: "file" };
-import _e105 from "../skills/drawio/references/docs/design-system/README.md" with { type: "file" };
-import _e106 from "../skills/drawio/references/docs/design-system/color-guide.md" with { type: "file" };
-import _e107 from "../skills/drawio/references/docs/design-system/connectors.md" with { type: "file" };
-import _e108 from "../skills/drawio/references/docs/design-system/formulas.md" with { type: "file" };
-import _e109 from "../skills/drawio/references/docs/design-system/icons.md" with { type: "file" };
-import _e110 from "../skills/drawio/references/docs/design-system/shapes.md" with { type: "file" };
-import _e111 from "../skills/drawio/references/docs/design-system/specification.md" with { type: "file" };
-import _e112 from "../skills/drawio/references/docs/design-system/themes.md" with { type: "file" };
-import _e113 from "../skills/drawio/references/docs/design-system/tokens.md" with { type: "file" };
-import _e114 from "../skills/drawio/references/docs/edge-quality-rules.md" with { type: "file" };
-import _e115 from "../skills/drawio/references/docs/ieee-network-diagrams.md" with { type: "file" };
-import _e116 from "../skills/drawio/references/docs/live-snapshots-drift.md" with { type: "file" };
-import _e117 from "../skills/drawio/references/docs/math-typesetting.md" with { type: "file" };
-import _e118 from "../skills/drawio/references/docs/mcp-tools.md" with { type: "file" };
-import _e119 from "../skills/drawio/references/docs/migration-readiness.md" with { type: "file" };
-import _e120 from "../skills/drawio/references/docs/stencil-library-guide.md" with { type: "file" };
-import _e121 from "../skills/drawio/references/docs/style-extraction.md" with { type: "file" };
-import _e122 from "../skills/drawio/references/docs/style-presets.md" with { type: "file" };
-import _e123 from "../skills/drawio/references/docs/upstream-capability-compatibility.md" with { type: "file" };
-import _e124 from "../skills/drawio/references/docs/xml-format.md" with { type: "file" };
-import _e125 from "../skills/drawio/references/examples/README.md" with { type: "file" };
-import _e126 from "../skills/drawio/references/examples/agentic-rag.yaml" with { type: "file" };
-import _e127 from "../skills/drawio/references/examples/arch-dark-aws-serverless.yaml" with { type: "file" };
-import _e128 from "../skills/drawio/references/examples/arch-dark-microservices.yaml" with { type: "file" };
-import _e129 from "../skills/drawio/references/examples/arch-dark-web-app.yaml" with { type: "file" };
-import _e130 from "../skills/drawio/references/examples/auto-layout-workflow.yaml" with { type: "file" };
-import _e131 from "../skills/drawio/references/examples/aws-vpc-topology.yaml" with { type: "file" };
-import _e132 from "../skills/drawio/references/examples/campus-lan-topology.yaml" with { type: "file" };
-import _e133 from "../skills/drawio/references/examples/cloud-reference-architecture.yaml" with { type: "file" };
-import _e134 from "../skills/drawio/references/examples/e-commerce.yaml" with { type: "file" };
-import _e135 from "../skills/drawio/references/examples/importers/README.md" with { type: "file" };
-import _e136 from "../skills/drawio/references/examples/importers/live/compose-drift-evidence.json" with { type: "file" };
-import _e137 from "../skills/drawio/references/examples/importers/live/compose-drift-report.json" with { type: "file" };
-import _e138 from "../skills/drawio/references/examples/importers/live/compose-drift.spec.yaml" with { type: "file" };
-import _e139 from "../skills/drawio/references/examples/importers/live/docker-inspect.json" with { type: "file" };
-import _e140 from "../skills/drawio/references/examples/importers/live/drift-declared-compose.yaml" with { type: "file" };
-import _e141 from "../skills/drawio/references/examples/importers/live/kubernetes-live.json" with { type: "file" };
-import _e142 from "../skills/drawio/references/examples/importers/live/terraform-state.json" with { type: "file" };
-import _e143 from "../skills/drawio/references/examples/importers/schema.sql" with { type: "file" };
-import _e144 from "../skills/drawio/references/examples/importers/terraform.tf" with { type: "file" };
-import _e145 from "../skills/drawio/references/examples/login-flow.yaml" with { type: "file" };
-import _e146 from "../skills/drawio/references/examples/mem0-memory-layer.yaml" with { type: "file" };
-import _e147 from "../skills/drawio/references/examples/microservices.yaml" with { type: "file" };
-import _e148 from "../skills/drawio/references/examples/multi-agent-orchestration.yaml" with { type: "file" };
-import _e149 from "../skills/drawio/references/examples/neural-network.yaml" with { type: "file" };
-import _e150 from "../skills/drawio/references/examples/onprem-dmz-topology.yaml" with { type: "file" };
-import _e151 from "../skills/drawio/references/examples/palettes/README.md" with { type: "file" };
-import _e152 from "../skills/drawio/references/examples/palettes/c4-blue.drawio" with { type: "file" };
-import _e153 from "../skills/drawio/references/examples/palettes/c4-blue.svg" with { type: "file" };
-import _e154 from "../skills/drawio/references/examples/palettes/cloud-aws.drawio" with { type: "file" };
-import _e155 from "../skills/drawio/references/examples/palettes/cloud-aws.svg" with { type: "file" };
-import _e156 from "../skills/drawio/references/examples/palettes/drawio-classic.drawio" with { type: "file" };
-import _e157 from "../skills/drawio/references/examples/palettes/drawio-classic.svg" with { type: "file" };
-import _e158 from "../skills/drawio/references/examples/palettes/ieee-bw.drawio" with { type: "file" };
-import _e159 from "../skills/drawio/references/examples/palettes/ieee-bw.svg" with { type: "file" };
-import _e160 from "../skills/drawio/references/examples/palettes/ieee-color.drawio" with { type: "file" };
-import _e161 from "../skills/drawio/references/examples/palettes/ieee-color.svg" with { type: "file" };
-import _e162 from "../skills/drawio/references/examples/palettes/journal-jama.drawio" with { type: "file" };
-import _e163 from "../skills/drawio/references/examples/palettes/journal-jama.svg" with { type: "file" };
-import _e164 from "../skills/drawio/references/examples/palettes/journal-npg.drawio" with { type: "file" };
-import _e165 from "../skills/drawio/references/examples/palettes/journal-npg.svg" with { type: "file" };
-import _e166 from "../skills/drawio/references/examples/palettes/matlab-lines.drawio" with { type: "file" };
-import _e167 from "../skills/drawio/references/examples/palettes/matlab-lines.svg" with { type: "file" };
-import _e168 from "../skills/drawio/references/examples/palettes/morandi.drawio" with { type: "file" };
-import _e169 from "../skills/drawio/references/examples/palettes/morandi.svg" with { type: "file" };
-import _e170 from "../skills/drawio/references/examples/palettes/okabe-ito.drawio" with { type: "file" };
-import _e171 from "../skills/drawio/references/examples/palettes/okabe-ito.svg" with { type: "file" };
-import _e172 from "../skills/drawio/references/examples/palettes/palette-swatch.template.yaml" with { type: "file" };
-import _e173 from "../skills/drawio/references/examples/palettes/seaborn-colorblind.drawio" with { type: "file" };
-import _e174 from "../skills/drawio/references/examples/palettes/seaborn-colorblind.svg" with { type: "file" };
-import _e175 from "../skills/drawio/references/examples/palettes/tol-bright.drawio" with { type: "file" };
-import _e176 from "../skills/drawio/references/examples/palettes/tol-bright.svg" with { type: "file" };
-import _e177 from "../skills/drawio/references/examples/palettes/tol-high-contrast.drawio" with { type: "file" };
-import _e178 from "../skills/drawio/references/examples/palettes/tol-high-contrast.svg" with { type: "file" };
-import _e179 from "../skills/drawio/references/examples/palettes/tol-light-fill.drawio" with { type: "file" };
-import _e180 from "../skills/drawio/references/examples/palettes/tol-light-fill.svg" with { type: "file" };
-import _e181 from "../skills/drawio/references/examples/palettes/tol-muted.drawio" with { type: "file" };
-import _e182 from "../skills/drawio/references/examples/palettes/tol-muted.svg" with { type: "file" };
-import _e183 from "../skills/drawio/references/examples/rag-pipeline.yaml" with { type: "file" };
-import _e184 from "../skills/drawio/references/examples/replicated-brand-flow.yaml" with { type: "file" };
-import _e185 from "../skills/drawio/references/examples/swimlane-engineering-review.yaml" with { type: "file" };
-import _e186 from "../skills/drawio/references/examples/tiered-network-topology.yaml" with { type: "file" };
-import _e187 from "../skills/drawio/references/examples/tool-call-loop.yaml" with { type: "file" };
-import _e188 from "../skills/drawio/references/examples/vendor-device-mapping.yaml" with { type: "file" };
-import _e189 from "../skills/drawio/references/official/style-reference.md" with { type: "file" };
-import _e190 from "../skills/drawio/references/official/xml-reference.md" with { type: "file" };
-import _e191 from "../skills/drawio/references/palette.schema.json" with { type: "file" };
-import _e192 from "../skills/drawio/references/theme.schema.json" with { type: "file" };
-import _e193 from "../skills/drawio/references/upstream/pure-drawio-skill.md" with { type: "file" };
-import _e194 from "../skills/drawio/references/workflows/create.md" with { type: "file" };
-import _e195 from "../skills/drawio/references/workflows/edit.md" with { type: "file" };
-import _e196 from "../skills/drawio/references/workflows/replicate.md" with { type: "file" };
-import _e197 from "../skills/drawio/references/workflows/visual-review.md" with { type: "file" };
-import _e198 from "../skills/drawio/reports/output_quality_scorecard.md" with { type: "file" };
-import _e199 from "../skills/drawio/reports/upstream-port-release-evidence.md" with { type: "file" };
-import _e200 from "../skills/drawio/scripts/adapters/ci.js" with { type: "file" };
-import _e201 from "../skills/drawio/scripts/adapters/ci.test.js" with { type: "file" };
-import _e202 from "../skills/drawio/scripts/adapters/code-common.js" with { type: "file" };
-import _e203 from "../skills/drawio/scripts/adapters/code-imports.test.js" with { type: "file" };
-import _e204 from "../skills/drawio/scripts/adapters/code-parsers.integration.test.js" with { type: "file" };
-import _e205 from "../skills/drawio/scripts/adapters/compose.js" with { type: "file" };
-import _e206 from "../skills/drawio/scripts/adapters/compose.test.js" with { type: "file" };
-import _e207 from "../skills/drawio/scripts/adapters/config-adapters.integration.test.js" with { type: "file" };
-import _e208 from "../skills/drawio/scripts/adapters/config-common.js" with { type: "file" };
-import _e209 from "../skills/drawio/scripts/adapters/config-common.test.js" with { type: "file" };
-import _e210 from "../skills/drawio/scripts/adapters/docker-inspect.js" with { type: "file" };
-import _e211 from "../skills/drawio/scripts/adapters/docker-inspect.test.js" with { type: "file" };
-import _e212 from "../skills/drawio/scripts/adapters/fixtures/raster-extraction.json" with { type: "file" };
-import _e213 from "../skills/drawio/scripts/adapters/go-code-adapter.test.js" with { type: "file" };
-import _e214 from "../skills/drawio/scripts/adapters/go-code.js" with { type: "file" };
-import _e215 from "../skills/drawio/scripts/adapters/graph-drift.file.test.js" with { type: "file" };
-import _e216 from "../skills/drawio/scripts/adapters/graph-drift.js" with { type: "file" };
-import _e217 from "../skills/drawio/scripts/adapters/graph-drift.test.js" with { type: "file" };
-import _e218 from "../skills/drawio/scripts/adapters/graph-projection.js" with { type: "file" };
-import _e219 from "../skills/drawio/scripts/adapters/graph-projection.test.js" with { type: "file" };
-import _e220 from "../skills/drawio/scripts/adapters/identity.js" with { type: "file" };
-import _e221 from "../skills/drawio/scripts/adapters/identity.test.js" with { type: "file" };
-import _e222 from "../skills/drawio/scripts/adapters/index.js" with { type: "file" };
-import _e223 from "../skills/drawio/scripts/adapters/index.test.js" with { type: "file" };
-import _e224 from "../skills/drawio/scripts/adapters/js-code-adapter.test.js" with { type: "file" };
-import _e225 from "../skills/drawio/scripts/adapters/js-code.js" with { type: "file" };
-import _e226 from "../skills/drawio/scripts/adapters/kubernetes-live.test.js" with { type: "file" };
-import _e227 from "../skills/drawio/scripts/adapters/kubernetes.js" with { type: "file" };
-import _e228 from "../skills/drawio/scripts/adapters/kubernetes.test.js" with { type: "file" };
-import _e229 from "../skills/drawio/scripts/adapters/openapi.js" with { type: "file" };
-import _e230 from "../skills/drawio/scripts/adapters/openapi.test.js" with { type: "file" };
-import _e231 from "../skills/drawio/scripts/adapters/optional-python-code.js" with { type: "file" };
-import _e232 from "../skills/drawio/scripts/adapters/optional-python.integration.test.js" with { type: "file" };
-import _e233 from "../skills/drawio/scripts/adapters/optional-python.js" with { type: "file" };
-import _e234 from "../skills/drawio/scripts/adapters/optional-python.test.js" with { type: "file" };
-import _e235 from "../skills/drawio/scripts/adapters/projection-to-spec.js" with { type: "file" };
-import _e236 from "../skills/drawio/scripts/adapters/projection-to-spec.test.js" with { type: "file" };
-import _e237 from "../skills/drawio/scripts/adapters/python-code-adapter.test.js" with { type: "file" };
-import _e238 from "../skills/drawio/scripts/adapters/python-code.js" with { type: "file" };
-import _e239 from "../skills/drawio/scripts/adapters/python/code-parser-worker.py" with { type: "file" };
-import _e240 from "../skills/drawio/scripts/adapters/python/config-parser-worker.py" with { type: "file" };
-import _e241 from "../skills/drawio/scripts/adapters/python/requirements.txt" with { type: "file" };
-import _e242 from "../skills/drawio/scripts/adapters/raster-extraction.js" with { type: "file" };
-import _e243 from "../skills/drawio/scripts/adapters/raster-extraction.test.js" with { type: "file" };
-import _e244 from "../skills/drawio/scripts/adapters/rust-code-adapter.test.js" with { type: "file" };
-import _e245 from "../skills/drawio/scripts/adapters/rust-code.js" with { type: "file" };
-import _e246 from "../skills/drawio/scripts/adapters/sql-ddl.js" with { type: "file" };
-import _e247 from "../skills/drawio/scripts/adapters/sql-ddl.test.js" with { type: "file" };
-import _e248 from "../skills/drawio/scripts/adapters/terraform-config.js" with { type: "file" };
-import _e249 from "../skills/drawio/scripts/adapters/terraform-config.test.js" with { type: "file" };
-import _e250 from "../skills/drawio/scripts/adapters/terraform-state.js" with { type: "file" };
-import _e251 from "../skills/drawio/scripts/adapters/terraform-state.test.js" with { type: "file" };
-import _e252 from "../skills/drawio/scripts/cli.js" with { type: "file" };
-import _e253 from "../skills/drawio/scripts/dsl/ah-to-drawio.js" with { type: "file" };
-import _e254 from "../skills/drawio/scripts/dsl/ah-to-drawio.test.js" with { type: "file" };
-import _e255 from "../skills/drawio/scripts/dsl/ai-icon-catalog.js" with { type: "file" };
-import _e256 from "../skills/drawio/scripts/dsl/ai-icon-catalog.test.js" with { type: "file" };
-import _e257 from "../skills/drawio/scripts/dsl/auto-layout.js" with { type: "file" };
-import _e258 from "../skills/drawio/scripts/dsl/auto-layout.test.js" with { type: "file" };
-import _e259 from "../skills/drawio/scripts/dsl/catalog-ranking.js" with { type: "file" };
-import _e260 from "../skills/drawio/scripts/dsl/catalog-search.js" with { type: "file" };
-import _e261 from "../skills/drawio/scripts/dsl/catalog-search.test.js" with { type: "file" };
-import _e262 from "../skills/drawio/scripts/dsl/document-spec.js" with { type: "file" };
-import _e263 from "../skills/drawio/scripts/dsl/document-spec.test.js" with { type: "file" };
-import _e264 from "../skills/drawio/scripts/dsl/drawio-to-spec.js" with { type: "file" };
-import _e265 from "../skills/drawio/scripts/dsl/examples-baseline.test.js" with { type: "file" };
-import _e266 from "../skills/drawio/scripts/dsl/icon-mappings.js" with { type: "file" };
-import _e267 from "../skills/drawio/scripts/dsl/icon-mappings.test.js" with { type: "file" };
-import _e268 from "../skills/drawio/scripts/dsl/icon-resolver.js" with { type: "file" };
-import _e269 from "../skills/drawio/scripts/dsl/icon-resolver.test.js" with { type: "file" };
-import _e270 from "../skills/drawio/scripts/dsl/multi-page.js" with { type: "file" };
-import _e271 from "../skills/drawio/scripts/dsl/multi-page.test.js" with { type: "file" };
-import _e272 from "../skills/drawio/scripts/dsl/palette-catalog.test.js" with { type: "file" };
-import _e273 from "../skills/drawio/scripts/dsl/palette-integration.test.js" with { type: "file" };
-import _e274 from "../skills/drawio/scripts/dsl/palette-validate.js" with { type: "file" };
-import _e275 from "../skills/drawio/scripts/dsl/palette.js" with { type: "file" };
-import _e276 from "../skills/drawio/scripts/dsl/palette.test.js" with { type: "file" };
-import _e277 from "../skills/drawio/scripts/dsl/shape-catalog.js" with { type: "file" };
-import _e278 from "../skills/drawio/scripts/dsl/shape-catalog.test.js" with { type: "file" };
-import _e279 from "../skills/drawio/scripts/dsl/spec-to-drawio.js" with { type: "file" };
-import _e280 from "../skills/drawio/scripts/dsl/spec-to-drawio.test.js" with { type: "file" };
-import _e281 from "../skills/drawio/scripts/generate-palette-swatches.js" with { type: "file" };
-import _e282 from "../skills/drawio/scripts/install.bat" with { type: "file" };
-import _e283 from "../skills/drawio/scripts/install.sh" with { type: "file" };
-import _e284 from "../skills/drawio/scripts/math/index.js" with { type: "file" };
-import _e285 from "../skills/drawio/scripts/math/index.test.js" with { type: "file" };
-import _e286 from "../skills/drawio/scripts/package.json" with { type: "file" };
-import _e287 from "../skills/drawio/scripts/postprocess/artifacts.js" with { type: "file" };
-import _e288 from "../skills/drawio/scripts/postprocess/artifacts.test.js" with { type: "file" };
-import _e289 from "../skills/drawio/scripts/postprocess/cli.js" with { type: "file" };
-import _e290 from "../skills/drawio/scripts/postprocess/cli.test.js" with { type: "file" };
-import _e291 from "../skills/drawio/scripts/postprocess/fixtures/bundle.yaml" with { type: "file" };
-import _e292 from "../skills/drawio/scripts/postprocess/fixtures/legacy.yaml" with { type: "file" };
-import _e293 from "../skills/drawio/scripts/postprocess/html.js" with { type: "file" };
-import _e294 from "../skills/drawio/scripts/postprocess/html.test.js" with { type: "file" };
-import _e295 from "../skills/drawio/scripts/postprocess/index.js" with { type: "file" };
-import _e296 from "../skills/drawio/scripts/postprocess/input.js" with { type: "file" };
-import _e297 from "../skills/drawio/scripts/postprocess/input.test.js" with { type: "file" };
-import _e298 from "../skills/drawio/scripts/postprocess/mutate.js" with { type: "file" };
-import _e299 from "../skills/drawio/scripts/postprocess/mutate.test.js" with { type: "file" };
-import _e300 from "../skills/drawio/scripts/postprocess/projection.js" with { type: "file" };
-import _e301 from "../skills/drawio/scripts/postprocess/projection.test.js" with { type: "file" };
-import _e302 from "../skills/drawio/scripts/runtime/artifacts.js" with { type: "file" };
-import _e303 from "../skills/drawio/scripts/runtime/desktop.js" with { type: "file" };
-import _e304 from "../skills/drawio/scripts/runtime/desktop.test.js" with { type: "file" };
-import _e305 from "../skills/drawio/scripts/runtime/diagrams-net-url.js" with { type: "file" };
-import _e306 from "../skills/drawio/scripts/runtime/export-stability.js" with { type: "file" };
-import _e307 from "../skills/drawio/scripts/runtime/export-stability.test.js" with { type: "file" };
-import _e308 from "../skills/drawio/scripts/runtime/png-inspection.js" with { type: "file" };
-import _e309 from "../skills/drawio/scripts/runtime/png-inspection.test.js" with { type: "file" };
-import _e310 from "../skills/drawio/scripts/runtime/vision-preview.js" with { type: "file" };
-import _e311 from "../skills/drawio/scripts/runtime/vision-preview.test.js" with { type: "file" };
-import _e312 from "../skills/drawio/scripts/shared/ai-icon-contract.js" with { type: "file" };
-import _e313 from "../skills/drawio/scripts/shared/xml-utils.js" with { type: "file" };
-import _e314 from "../skills/drawio/scripts/svg/drawio-to-svg.js" with { type: "file" };
-import _e315 from "../skills/drawio/scripts/svg/drawio-to-svg.test.js" with { type: "file" };
-import _e316 from "../skills/drawio/scripts/tools/build-ai-icon-catalog.js" with { type: "file" };
-import _e317 from "../skills/drawio/scripts/tools/build-ai-icon-catalog.test.js" with { type: "file" };
-import _e318 from "../skills/drawio/scripts/tools/build-shape-catalog.js" with { type: "file" };
-import _e319 from "../skills/drawio/scripts/tools/build-shape-catalog.test.js" with { type: "file" };
-import _e320 from "../skills/drawio/scripts/tools/fixtures/ai-icons-package/icons/alpha-color.svg" with { type: "file" };
-import _e321 from "../skills/drawio/scripts/tools/fixtures/ai-icons-package/icons/alpha.svg" with { type: "file" };
-import _e322 from "../skills/drawio/scripts/tools/fixtures/ai-icons-package/icons/beta-brand-color.svg" with { type: "file" };
-import _e323 from "../skills/drawio/scripts/tools/fixtures/ai-icons-package/icons/beta.svg" with { type: "file" };
-import _e324 from "../skills/drawio/scripts/tools/fixtures/ai-icons-package/icons/civitai-text-color.svg" with { type: "file" };
-import _e325 from "../skills/drawio/scripts/tools/fixtures/ai-icons-package/icons/civitai.svg" with { type: "file" };
-import _e326 from "../skills/drawio/scripts/tools/fixtures/ai-icons-package/package.json" with { type: "file" };
-import _e327 from "../skills/drawio/scripts/vendor/elkjs/LICENSE.md" with { type: "file" };
-import _e328 from "../skills/drawio/scripts/vendor/elkjs/README.md" with { type: "file" };
-import _e329 from "../skills/drawio/scripts/vendor/elkjs/elk.bundled.cjs" with { type: "file" };
-import _e330 from "../skills/drawio/scripts/vendor/js-yaml/LICENSE.md" with { type: "file" };
-import _e331 from "../skills/drawio/scripts/vendor/js-yaml/README.md" with { type: "file" };
-import _e332 from "../skills/drawio/scripts/vendor/js-yaml/js-yaml.mjs" with { type: "file" };
-import _e333 from "../skills/drawio/styles/built-in/corporate.json" with { type: "file" };
-import _e334 from "../skills/drawio/styles/built-in/default.json" with { type: "file" };
-import _e335 from "../skills/drawio/styles/built-in/handdrawn.json" with { type: "file" };
-import _e336 from "../skills/drawio/styles/schema.json" with { type: "file" };
-import _e337 from "../skills/experiment/SKILL.md" with { type: "file" };
-import _e338 from "../skills/find-skills/SKILL.md" with { type: "file" };
-import _e339 from "../skills/latex-pdf/SKILL.md" with { type: "file" };
-import _e340 from "../skills/paper-search/.venv/.gitignore" with { type: "file" };
-import _e341 from "../skills/paper-search/.venv/.lock" with { type: "file" };
-import _e342 from "../skills/paper-search/.venv/CACHEDIR.TAG" with { type: "file" };
-import _e343 from "../skills/paper-search/.venv/bin/activate" with { type: "file" };
-import _e344 from "../skills/paper-search/.venv/bin/activate.bat" with { type: "file" };
-import _e345 from "../skills/paper-search/.venv/bin/activate.csh" with { type: "file" };
-import _e346 from "../skills/paper-search/.venv/bin/activate.fish" with { type: "file" };
-import _e347 from "../skills/paper-search/.venv/bin/activate.nu" with { type: "file" };
-import _e348 from "../skills/paper-search/.venv/bin/activate.ps1" with { type: "file" };
-import _e349 from "../skills/paper-search/.venv/bin/activate_this.py" with { type: "file" };
-import _e350 from "../skills/paper-search/.venv/bin/deactivate.bat" with { type: "file" };
-import _e351 from "../skills/paper-search/.venv/bin/idna" with { type: "file" };
-import _e352 from "../skills/paper-search/.venv/bin/normalizer" with { type: "file" };
-import _e353 from "../skills/paper-search/.venv/bin/pydoc.bat" with { type: "file" };
-import _e354 from "../skills/paper-search/.venv/lib/python3.12/site-packages/81d243bd2c585b0f4821__mypyc.cpython-312-x86_64-linux-gnu.so" with { type: "file" };
-import _e355 from "../skills/paper-search/.venv/lib/python3.12/site-packages/__pycache__/_virtualenv.cpython-312.pyc" with { type: "file" };
-import _e356 from "../skills/paper-search/.venv/lib/python3.12/site-packages/_virtualenv.pth" with { type: "file" };
-import _e357 from "../skills/paper-search/.venv/lib/python3.12/site-packages/_virtualenv.py" with { type: "file" };
-import _e358 from "../skills/paper-search/.venv/lib/python3.12/site-packages/arxiv-4.0.0.dist-info/INSTALLER" with { type: "file" };
-import _e359 from "../skills/paper-search/.venv/lib/python3.12/site-packages/arxiv-4.0.0.dist-info/METADATA" with { type: "file" };
-import _e360 from "../skills/paper-search/.venv/lib/python3.12/site-packages/arxiv-4.0.0.dist-info/RECORD" with { type: "file" };
-import _e361 from "../skills/paper-search/.venv/lib/python3.12/site-packages/arxiv-4.0.0.dist-info/REQUESTED" with { type: "file" };
-import _e362 from "../skills/paper-search/.venv/lib/python3.12/site-packages/arxiv-4.0.0.dist-info/WHEEL" with { type: "file" };
-import _e363 from "../skills/paper-search/.venv/lib/python3.12/site-packages/arxiv-4.0.0.dist-info/licenses/LICENSE.txt" with { type: "file" };
-import _e364 from "../skills/paper-search/.venv/lib/python3.12/site-packages/arxiv/__init__.py" with { type: "file" };
-import _e365 from "../skills/paper-search/.venv/lib/python3.12/site-packages/arxiv/__pycache__/__init__.cpython-312.pyc" with { type: "file" };
-import _e366 from "../skills/paper-search/.venv/lib/python3.12/site-packages/arxiv/__pycache__/_feed.cpython-312.pyc" with { type: "file" };
-import _e367 from "../skills/paper-search/.venv/lib/python3.12/site-packages/arxiv/_feed.py" with { type: "file" };
-import _e368 from "../skills/paper-search/.venv/lib/python3.12/site-packages/certifi-2026.6.17.dist-info/INSTALLER" with { type: "file" };
-import _e369 from "../skills/paper-search/.venv/lib/python3.12/site-packages/certifi-2026.6.17.dist-info/METADATA" with { type: "file" };
-import _e370 from "../skills/paper-search/.venv/lib/python3.12/site-packages/certifi-2026.6.17.dist-info/RECORD" with { type: "file" };
-import _e371 from "../skills/paper-search/.venv/lib/python3.12/site-packages/certifi-2026.6.17.dist-info/REQUESTED" with { type: "file" };
-import _e372 from "../skills/paper-search/.venv/lib/python3.12/site-packages/certifi-2026.6.17.dist-info/WHEEL" with { type: "file" };
-import _e373 from "../skills/paper-search/.venv/lib/python3.12/site-packages/certifi-2026.6.17.dist-info/licenses/LICENSE" with { type: "file" };
-import _e374 from "../skills/paper-search/.venv/lib/python3.12/site-packages/certifi-2026.6.17.dist-info/top_level.txt" with { type: "file" };
-import _e375 from "../skills/paper-search/.venv/lib/python3.12/site-packages/certifi/__init__.py" with { type: "file" };
-import _e376 from "../skills/paper-search/.venv/lib/python3.12/site-packages/certifi/__main__.py" with { type: "file" };
-import _e377 from "../skills/paper-search/.venv/lib/python3.12/site-packages/certifi/__pycache__/__init__.cpython-312.pyc" with { type: "file" };
-import _e378 from "../skills/paper-search/.venv/lib/python3.12/site-packages/certifi/__pycache__/core.cpython-312.pyc" with { type: "file" };
-import _e379 from "../skills/paper-search/.venv/lib/python3.12/site-packages/certifi/cacert.pem" with { type: "file" };
-import _e380 from "../skills/paper-search/.venv/lib/python3.12/site-packages/certifi/core.py" with { type: "file" };
-import _e381 from "../skills/paper-search/.venv/lib/python3.12/site-packages/certifi/py.typed" with { type: "file" };
-import _e382 from "../skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer-3.4.7.dist-info/INSTALLER" with { type: "file" };
-import _e383 from "../skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer-3.4.7.dist-info/METADATA" with { type: "file" };
-import _e384 from "../skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer-3.4.7.dist-info/RECORD" with { type: "file" };
-import _e385 from "../skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer-3.4.7.dist-info/REQUESTED" with { type: "file" };
-import _e386 from "../skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer-3.4.7.dist-info/WHEEL" with { type: "file" };
-import _e387 from "../skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer-3.4.7.dist-info/entry_points.txt" with { type: "file" };
-import _e388 from "../skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer-3.4.7.dist-info/licenses/LICENSE" with { type: "file" };
-import _e389 from "../skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer-3.4.7.dist-info/top_level.txt" with { type: "file" };
-import _e390 from "../skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/__init__.py" with { type: "file" };
-import _e391 from "../skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/__main__.py" with { type: "file" };
-import _e392 from "../skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/__pycache__/__init__.cpython-312.pyc" with { type: "file" };
-import _e393 from "../skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/__pycache__/api.cpython-312.pyc" with { type: "file" };
-import _e394 from "../skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/__pycache__/constant.cpython-312.pyc" with { type: "file" };
-import _e395 from "../skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/__pycache__/legacy.cpython-312.pyc" with { type: "file" };
-import _e396 from "../skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/__pycache__/models.cpython-312.pyc" with { type: "file" };
-import _e397 from "../skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/__pycache__/utils.cpython-312.pyc" with { type: "file" };
-import _e398 from "../skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/__pycache__/version.cpython-312.pyc" with { type: "file" };
-import _e399 from "../skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/api.py" with { type: "file" };
-import _e400 from "../skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/cd.cpython-312-x86_64-linux-gnu.so" with { type: "file" };
-import _e401 from "../skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/cd.py" with { type: "file" };
-import _e402 from "../skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/cli/__init__.py" with { type: "file" };
-import _e403 from "../skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/cli/__main__.py" with { type: "file" };
-import _e404 from "../skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/constant.py" with { type: "file" };
-import _e405 from "../skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/legacy.py" with { type: "file" };
-import _e406 from "../skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/md.cpython-312-x86_64-linux-gnu.so" with { type: "file" };
-import _e407 from "../skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/md.py" with { type: "file" };
-import _e408 from "../skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/models.py" with { type: "file" };
-import _e409 from "../skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/py.typed" with { type: "file" };
-import _e410 from "../skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/utils.py" with { type: "file" };
-import _e411 from "../skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/version.py" with { type: "file" };
-import _e412 from "../skills/paper-search/.venv/lib/python3.12/site-packages/idna-3.18.dist-info/INSTALLER" with { type: "file" };
-import _e413 from "../skills/paper-search/.venv/lib/python3.12/site-packages/idna-3.18.dist-info/METADATA" with { type: "file" };
-import _e414 from "../skills/paper-search/.venv/lib/python3.12/site-packages/idna-3.18.dist-info/RECORD" with { type: "file" };
-import _e415 from "../skills/paper-search/.venv/lib/python3.12/site-packages/idna-3.18.dist-info/REQUESTED" with { type: "file" };
-import _e416 from "../skills/paper-search/.venv/lib/python3.12/site-packages/idna-3.18.dist-info/WHEEL" with { type: "file" };
-import _e417 from "../skills/paper-search/.venv/lib/python3.12/site-packages/idna-3.18.dist-info/entry_points.txt" with { type: "file" };
-import _e418 from "../skills/paper-search/.venv/lib/python3.12/site-packages/idna-3.18.dist-info/licenses/LICENSE.md" with { type: "file" };
-import _e419 from "../skills/paper-search/.venv/lib/python3.12/site-packages/idna/__init__.py" with { type: "file" };
-import _e420 from "../skills/paper-search/.venv/lib/python3.12/site-packages/idna/__main__.py" with { type: "file" };
-import _e421 from "../skills/paper-search/.venv/lib/python3.12/site-packages/idna/__pycache__/__init__.cpython-312.pyc" with { type: "file" };
-import _e422 from "../skills/paper-search/.venv/lib/python3.12/site-packages/idna/__pycache__/core.cpython-312.pyc" with { type: "file" };
-import _e423 from "../skills/paper-search/.venv/lib/python3.12/site-packages/idna/__pycache__/idnadata.cpython-312.pyc" with { type: "file" };
-import _e424 from "../skills/paper-search/.venv/lib/python3.12/site-packages/idna/__pycache__/intranges.cpython-312.pyc" with { type: "file" };
-import _e425 from "../skills/paper-search/.venv/lib/python3.12/site-packages/idna/__pycache__/package_data.cpython-312.pyc" with { type: "file" };
-import _e426 from "../skills/paper-search/.venv/lib/python3.12/site-packages/idna/cli.py" with { type: "file" };
-import _e427 from "../skills/paper-search/.venv/lib/python3.12/site-packages/idna/codec.py" with { type: "file" };
-import _e428 from "../skills/paper-search/.venv/lib/python3.12/site-packages/idna/compat.py" with { type: "file" };
-import _e429 from "../skills/paper-search/.venv/lib/python3.12/site-packages/idna/core.py" with { type: "file" };
-import _e430 from "../skills/paper-search/.venv/lib/python3.12/site-packages/idna/idnadata.py" with { type: "file" };
-import _e431 from "../skills/paper-search/.venv/lib/python3.12/site-packages/idna/intranges.py" with { type: "file" };
-import _e432 from "../skills/paper-search/.venv/lib/python3.12/site-packages/idna/package_data.py" with { type: "file" };
-import _e433 from "../skills/paper-search/.venv/lib/python3.12/site-packages/idna/py.typed" with { type: "file" };
-import _e434 from "../skills/paper-search/.venv/lib/python3.12/site-packages/idna/uts46data.py" with { type: "file" };
-import _e435 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml-6.1.1.dist-info/INSTALLER" with { type: "file" };
-import _e436 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml-6.1.1.dist-info/METADATA" with { type: "file" };
-import _e437 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml-6.1.1.dist-info/RECORD" with { type: "file" };
-import _e438 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml-6.1.1.dist-info/REQUESTED" with { type: "file" };
-import _e439 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml-6.1.1.dist-info/WHEEL" with { type: "file" };
-import _e440 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml-6.1.1.dist-info/licenses/LICENSE.txt" with { type: "file" };
-import _e441 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml-6.1.1.dist-info/licenses/LICENSES.txt" with { type: "file" };
-import _e442 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml-6.1.1.dist-info/top_level.txt" with { type: "file" };
-import _e443 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/ElementInclude.py" with { type: "file" };
-import _e444 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/__init__.py" with { type: "file" };
-import _e445 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/__pycache__/__init__.cpython-312.pyc" with { type: "file" };
-import _e446 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/_elementpath.cpython-312-x86_64-linux-gnu.so" with { type: "file" };
-import _e447 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/_elementpath.py" with { type: "file" };
-import _e448 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/apihelpers.pxi" with { type: "file" };
-import _e449 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/builder.cpython-312-x86_64-linux-gnu.so" with { type: "file" };
-import _e450 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/builder.py" with { type: "file" };
-import _e451 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/classlookup.pxi" with { type: "file" };
-import _e452 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/cleanup.pxi" with { type: "file" };
-import _e453 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/cssselect.py" with { type: "file" };
-import _e454 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/debug.pxi" with { type: "file" };
-import _e455 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/docloader.pxi" with { type: "file" };
-import _e456 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/doctestcompare.py" with { type: "file" };
-import _e457 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/dtd.pxi" with { type: "file" };
-import _e458 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/etree.cpython-312-x86_64-linux-gnu.so" with { type: "file" };
-import _e459 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/etree.h" with { type: "file" };
-import _e460 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/etree.pyx" with { type: "file" };
-import _e461 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/etree_api.h" with { type: "file" };
-import _e462 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/extensions.pxi" with { type: "file" };
-import _e463 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/html/ElementSoup.py" with { type: "file" };
-import _e464 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/html/__init__.py" with { type: "file" };
-import _e465 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/html/_diffcommand.py" with { type: "file" };
-import _e466 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/html/_difflib.cpython-312-x86_64-linux-gnu.so" with { type: "file" };
-import _e467 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/html/_difflib.py" with { type: "file" };
-import _e468 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/html/_html5builder.py" with { type: "file" };
-import _e469 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/html/_setmixin.py" with { type: "file" };
-import _e470 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/html/builder.py" with { type: "file" };
-import _e471 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/html/clean.py" with { type: "file" };
-import _e472 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/html/defs.py" with { type: "file" };
-import _e473 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/html/diff.cpython-312-x86_64-linux-gnu.so" with { type: "file" };
-import _e474 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/html/diff.py" with { type: "file" };
-import _e475 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/html/formfill.py" with { type: "file" };
-import _e476 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/html/html5parser.py" with { type: "file" };
-import _e477 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/html/soupparser.py" with { type: "file" };
-import _e478 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/html/usedoctest.py" with { type: "file" };
-import _e479 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/__init__.pxd" with { type: "file" };
-import _e480 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/__init__.py" with { type: "file" };
-import _e481 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/c14n.pxd" with { type: "file" };
-import _e482 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/config.pxd" with { type: "file" };
-import _e483 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/dtdvalid.pxd" with { type: "file" };
-import _e484 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/etree_defs.h" with { type: "file" };
-import _e485 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/etreepublic.pxd" with { type: "file" };
-import _e486 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/extlibs/__init__.py" with { type: "file" };
-import _e487 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/extlibs/libcharset.h" with { type: "file" };
-import _e488 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/extlibs/localcharset.h" with { type: "file" };
-import _e489 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/extlibs/zconf.h" with { type: "file" };
-import _e490 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/extlibs/zlib.h" with { type: "file" };
-import _e491 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/htmlparser.pxd" with { type: "file" };
-import _e492 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libexslt/__init__.py" with { type: "file" };
-import _e493 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libexslt/exslt.h" with { type: "file" };
-import _e494 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libexslt/exsltconfig.h" with { type: "file" };
-import _e495 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libexslt/exsltexports.h" with { type: "file" };
-import _e496 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/HTMLparser.h" with { type: "file" };
-import _e497 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/HTMLtree.h" with { type: "file" };
-import _e498 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/SAX.h" with { type: "file" };
-import _e499 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/SAX2.h" with { type: "file" };
-import _e500 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/__init__.py" with { type: "file" };
-import _e501 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/c14n.h" with { type: "file" };
-import _e502 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/catalog.h" with { type: "file" };
-import _e503 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/chvalid.h" with { type: "file" };
-import _e504 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/debugXML.h" with { type: "file" };
-import _e505 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/dict.h" with { type: "file" };
-import _e506 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/encoding.h" with { type: "file" };
-import _e507 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/entities.h" with { type: "file" };
-import _e508 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/globals.h" with { type: "file" };
-import _e509 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/hash.h" with { type: "file" };
-import _e510 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/list.h" with { type: "file" };
-import _e511 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/nanoftp.h" with { type: "file" };
-import _e512 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/nanohttp.h" with { type: "file" };
-import _e513 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/parser.h" with { type: "file" };
-import _e514 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/parserInternals.h" with { type: "file" };
-import _e515 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/relaxng.h" with { type: "file" };
-import _e516 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/schemasInternals.h" with { type: "file" };
-import _e517 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/schematron.h" with { type: "file" };
-import _e518 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/threads.h" with { type: "file" };
-import _e519 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/tree.h" with { type: "file" };
-import _e520 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/uri.h" with { type: "file" };
-import _e521 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/valid.h" with { type: "file" };
-import _e522 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xinclude.h" with { type: "file" };
-import _e523 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xlink.h" with { type: "file" };
-import _e524 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xmlIO.h" with { type: "file" };
-import _e525 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xmlautomata.h" with { type: "file" };
-import _e526 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xmlerror.h" with { type: "file" };
-import _e527 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xmlexports.h" with { type: "file" };
-import _e528 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xmlmemory.h" with { type: "file" };
-import _e529 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xmlmodule.h" with { type: "file" };
-import _e530 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xmlreader.h" with { type: "file" };
-import _e531 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xmlregexp.h" with { type: "file" };
-import _e532 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xmlsave.h" with { type: "file" };
-import _e533 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xmlschemas.h" with { type: "file" };
-import _e534 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xmlschemastypes.h" with { type: "file" };
-import _e535 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xmlstring.h" with { type: "file" };
-import _e536 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xmlunicode.h" with { type: "file" };
-import _e537 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xmlversion.h" with { type: "file" };
-import _e538 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xmlwriter.h" with { type: "file" };
-import _e539 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xpath.h" with { type: "file" };
-import _e540 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xpathInternals.h" with { type: "file" };
-import _e541 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xpointer.h" with { type: "file" };
-import _e542 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/__init__.py" with { type: "file" };
-import _e543 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/attributes.h" with { type: "file" };
-import _e544 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/documents.h" with { type: "file" };
-import _e545 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/extensions.h" with { type: "file" };
-import _e546 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/extra.h" with { type: "file" };
-import _e547 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/functions.h" with { type: "file" };
-import _e548 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/imports.h" with { type: "file" };
-import _e549 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/keys.h" with { type: "file" };
-import _e550 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/namespaces.h" with { type: "file" };
-import _e551 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/numbersInternals.h" with { type: "file" };
-import _e552 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/pattern.h" with { type: "file" };
-import _e553 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/preproc.h" with { type: "file" };
-import _e554 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/security.h" with { type: "file" };
-import _e555 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/templates.h" with { type: "file" };
-import _e556 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/transform.h" with { type: "file" };
-import _e557 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/variables.h" with { type: "file" };
-import _e558 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/xslt.h" with { type: "file" };
-import _e559 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/xsltInternals.h" with { type: "file" };
-import _e560 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/xsltconfig.h" with { type: "file" };
-import _e561 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/xsltexports.h" with { type: "file" };
-import _e562 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/xsltlocale.h" with { type: "file" };
-import _e563 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/xsltutils.h" with { type: "file" };
-import _e564 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/lxml-version.h" with { type: "file" };
-import _e565 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/relaxng.pxd" with { type: "file" };
-import _e566 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/schematron.pxd" with { type: "file" };
-import _e567 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/tree.pxd" with { type: "file" };
-import _e568 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/uri.pxd" with { type: "file" };
-import _e569 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/xinclude.pxd" with { type: "file" };
-import _e570 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/xmlerror.pxd" with { type: "file" };
-import _e571 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/xmlparser.pxd" with { type: "file" };
-import _e572 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/xmlschema.pxd" with { type: "file" };
-import _e573 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/xpath.pxd" with { type: "file" };
-import _e574 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/xslt.pxd" with { type: "file" };
-import _e575 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/isoschematron/__init__.py" with { type: "file" };
-import _e576 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/isoschematron/resources/rng/iso-schematron.rng" with { type: "file" };
-import _e577 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/isoschematron/resources/xsl/RNG2Schtrn.xsl" with { type: "file" };
-import _e578 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/isoschematron/resources/xsl/XSD2Schtrn.xsl" with { type: "file" };
-import _e579 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/isoschematron/resources/xsl/iso-schematron-xslt1/iso_abstract_expand.xsl" with { type: "file" };
-import _e580 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/isoschematron/resources/xsl/iso-schematron-xslt1/iso_dsdl_include.xsl" with { type: "file" };
-import _e581 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/isoschematron/resources/xsl/iso-schematron-xslt1/iso_schematron_message.xsl" with { type: "file" };
-import _e582 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/isoschematron/resources/xsl/iso-schematron-xslt1/iso_schematron_skeleton_for_xslt1.xsl" with { type: "file" };
-import _e583 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/isoschematron/resources/xsl/iso-schematron-xslt1/iso_svrl_for_xslt1.xsl" with { type: "file" };
-import _e584 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/isoschematron/resources/xsl/iso-schematron-xslt1/readme.txt" with { type: "file" };
-import _e585 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/iterparse.pxi" with { type: "file" };
-import _e586 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/lxml.etree.h" with { type: "file" };
-import _e587 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/lxml.etree_api.h" with { type: "file" };
-import _e588 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/nsclasses.pxi" with { type: "file" };
-import _e589 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/objectify.cpython-312-x86_64-linux-gnu.so" with { type: "file" };
-import _e590 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/objectify.pyx" with { type: "file" };
-import _e591 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/objectpath.pxi" with { type: "file" };
-import _e592 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/parser.pxi" with { type: "file" };
-import _e593 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/parsertarget.pxi" with { type: "file" };
-import _e594 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/proxy.pxi" with { type: "file" };
-import _e595 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/public-api.pxi" with { type: "file" };
-import _e596 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/pyclasslookup.py" with { type: "file" };
-import _e597 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/readonlytree.pxi" with { type: "file" };
-import _e598 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/relaxng.pxi" with { type: "file" };
-import _e599 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/sax.cpython-312-x86_64-linux-gnu.so" with { type: "file" };
-import _e600 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/sax.py" with { type: "file" };
-import _e601 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/saxparser.pxi" with { type: "file" };
-import _e602 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/schematron.pxi" with { type: "file" };
-import _e603 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/serializer.pxi" with { type: "file" };
-import _e604 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/usedoctest.py" with { type: "file" };
-import _e605 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/xinclude.pxi" with { type: "file" };
-import _e606 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/xmlerror.pxi" with { type: "file" };
-import _e607 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/xmlid.pxi" with { type: "file" };
-import _e608 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/xmlschema.pxi" with { type: "file" };
-import _e609 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/xpath.pxi" with { type: "file" };
-import _e610 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/xslt.pxi" with { type: "file" };
-import _e611 from "../skills/paper-search/.venv/lib/python3.12/site-packages/lxml/xsltext.pxi" with { type: "file" };
-import _e612 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests-2.33.1.dist-info/INSTALLER" with { type: "file" };
-import _e613 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests-2.33.1.dist-info/METADATA" with { type: "file" };
-import _e614 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests-2.33.1.dist-info/RECORD" with { type: "file" };
-import _e615 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests-2.33.1.dist-info/REQUESTED" with { type: "file" };
-import _e616 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests-2.33.1.dist-info/WHEEL" with { type: "file" };
-import _e617 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests-2.33.1.dist-info/licenses/LICENSE" with { type: "file" };
-import _e618 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests-2.33.1.dist-info/licenses/NOTICE" with { type: "file" };
-import _e619 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests-2.33.1.dist-info/top_level.txt" with { type: "file" };
-import _e620 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/__init__.py" with { type: "file" };
-import _e621 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/__init__.cpython-312.pyc" with { type: "file" };
-import _e622 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/__version__.cpython-312.pyc" with { type: "file" };
-import _e623 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/_internal_utils.cpython-312.pyc" with { type: "file" };
-import _e624 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/adapters.cpython-312.pyc" with { type: "file" };
-import _e625 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/api.cpython-312.pyc" with { type: "file" };
-import _e626 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/auth.cpython-312.pyc" with { type: "file" };
-import _e627 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/certs.cpython-312.pyc" with { type: "file" };
-import _e628 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/compat.cpython-312.pyc" with { type: "file" };
-import _e629 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/cookies.cpython-312.pyc" with { type: "file" };
-import _e630 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/exceptions.cpython-312.pyc" with { type: "file" };
-import _e631 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/hooks.cpython-312.pyc" with { type: "file" };
-import _e632 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/models.cpython-312.pyc" with { type: "file" };
-import _e633 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/packages.cpython-312.pyc" with { type: "file" };
-import _e634 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/sessions.cpython-312.pyc" with { type: "file" };
-import _e635 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/status_codes.cpython-312.pyc" with { type: "file" };
-import _e636 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/structures.cpython-312.pyc" with { type: "file" };
-import _e637 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/utils.cpython-312.pyc" with { type: "file" };
-import _e638 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/__version__.py" with { type: "file" };
-import _e639 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/_internal_utils.py" with { type: "file" };
-import _e640 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/adapters.py" with { type: "file" };
-import _e641 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/api.py" with { type: "file" };
-import _e642 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/auth.py" with { type: "file" };
-import _e643 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/certs.py" with { type: "file" };
-import _e644 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/compat.py" with { type: "file" };
-import _e645 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/cookies.py" with { type: "file" };
-import _e646 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/exceptions.py" with { type: "file" };
-import _e647 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/help.py" with { type: "file" };
-import _e648 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/hooks.py" with { type: "file" };
-import _e649 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/models.py" with { type: "file" };
-import _e650 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/packages.py" with { type: "file" };
-import _e651 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/sessions.py" with { type: "file" };
-import _e652 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/status_codes.py" with { type: "file" };
-import _e653 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/structures.py" with { type: "file" };
-import _e654 from "../skills/paper-search/.venv/lib/python3.12/site-packages/requests/utils.py" with { type: "file" };
-import _e655 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3-2.7.0.dist-info/INSTALLER" with { type: "file" };
-import _e656 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3-2.7.0.dist-info/METADATA" with { type: "file" };
-import _e657 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3-2.7.0.dist-info/RECORD" with { type: "file" };
-import _e658 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3-2.7.0.dist-info/REQUESTED" with { type: "file" };
-import _e659 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3-2.7.0.dist-info/WHEEL" with { type: "file" };
-import _e660 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3-2.7.0.dist-info/licenses/LICENSE.txt" with { type: "file" };
-import _e661 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/__init__.py" with { type: "file" };
-import _e662 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/__pycache__/__init__.cpython-312.pyc" with { type: "file" };
-import _e663 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/__pycache__/_base_connection.cpython-312.pyc" with { type: "file" };
-import _e664 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/__pycache__/_collections.cpython-312.pyc" with { type: "file" };
-import _e665 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/__pycache__/_request_methods.cpython-312.pyc" with { type: "file" };
-import _e666 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/__pycache__/_version.cpython-312.pyc" with { type: "file" };
-import _e667 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/__pycache__/connection.cpython-312.pyc" with { type: "file" };
-import _e668 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/__pycache__/connectionpool.cpython-312.pyc" with { type: "file" };
-import _e669 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/__pycache__/exceptions.cpython-312.pyc" with { type: "file" };
-import _e670 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/__pycache__/fields.cpython-312.pyc" with { type: "file" };
-import _e671 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/__pycache__/filepost.cpython-312.pyc" with { type: "file" };
-import _e672 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/__pycache__/poolmanager.cpython-312.pyc" with { type: "file" };
-import _e673 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/__pycache__/response.cpython-312.pyc" with { type: "file" };
-import _e674 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/_base_connection.py" with { type: "file" };
-import _e675 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/_collections.py" with { type: "file" };
-import _e676 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/_request_methods.py" with { type: "file" };
-import _e677 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/_version.py" with { type: "file" };
-import _e678 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/connection.py" with { type: "file" };
-import _e679 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/connectionpool.py" with { type: "file" };
-import _e680 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/contrib/__init__.py" with { type: "file" };
-import _e681 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/contrib/__pycache__/__init__.cpython-312.pyc" with { type: "file" };
-import _e682 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/contrib/__pycache__/socks.cpython-312.pyc" with { type: "file" };
-import _e683 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/contrib/emscripten/__init__.py" with { type: "file" };
-import _e684 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/contrib/emscripten/connection.py" with { type: "file" };
-import _e685 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/contrib/emscripten/emscripten_fetch_worker.js" with { type: "file" };
-import _e686 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/contrib/emscripten/fetch.py" with { type: "file" };
-import _e687 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/contrib/emscripten/request.py" with { type: "file" };
-import _e688 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/contrib/emscripten/response.py" with { type: "file" };
-import _e689 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/contrib/pyopenssl.py" with { type: "file" };
-import _e690 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/contrib/socks.py" with { type: "file" };
-import _e691 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/exceptions.py" with { type: "file" };
-import _e692 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/fields.py" with { type: "file" };
-import _e693 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/filepost.py" with { type: "file" };
-import _e694 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/http2/__init__.py" with { type: "file" };
-import _e695 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/http2/__pycache__/__init__.cpython-312.pyc" with { type: "file" };
-import _e696 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/http2/__pycache__/probe.cpython-312.pyc" with { type: "file" };
-import _e697 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/http2/connection.py" with { type: "file" };
-import _e698 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/http2/probe.py" with { type: "file" };
-import _e699 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/poolmanager.py" with { type: "file" };
-import _e700 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/py.typed" with { type: "file" };
-import _e701 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/response.py" with { type: "file" };
-import _e702 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/__init__.py" with { type: "file" };
-import _e703 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/__pycache__/__init__.cpython-312.pyc" with { type: "file" };
-import _e704 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/__pycache__/connection.cpython-312.pyc" with { type: "file" };
-import _e705 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/__pycache__/proxy.cpython-312.pyc" with { type: "file" };
-import _e706 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/__pycache__/request.cpython-312.pyc" with { type: "file" };
-import _e707 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/__pycache__/response.cpython-312.pyc" with { type: "file" };
-import _e708 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/__pycache__/retry.cpython-312.pyc" with { type: "file" };
-import _e709 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/__pycache__/ssl_.cpython-312.pyc" with { type: "file" };
-import _e710 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/__pycache__/ssl_match_hostname.cpython-312.pyc" with { type: "file" };
-import _e711 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/__pycache__/ssltransport.cpython-312.pyc" with { type: "file" };
-import _e712 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/__pycache__/timeout.cpython-312.pyc" with { type: "file" };
-import _e713 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/__pycache__/url.cpython-312.pyc" with { type: "file" };
-import _e714 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/__pycache__/util.cpython-312.pyc" with { type: "file" };
-import _e715 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/__pycache__/wait.cpython-312.pyc" with { type: "file" };
-import _e716 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/connection.py" with { type: "file" };
-import _e717 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/proxy.py" with { type: "file" };
-import _e718 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/request.py" with { type: "file" };
-import _e719 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/response.py" with { type: "file" };
-import _e720 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/retry.py" with { type: "file" };
-import _e721 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/ssl_.py" with { type: "file" };
-import _e722 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/ssl_match_hostname.py" with { type: "file" };
-import _e723 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/ssltransport.py" with { type: "file" };
-import _e724 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/timeout.py" with { type: "file" };
-import _e725 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/url.py" with { type: "file" };
-import _e726 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/util.py" with { type: "file" };
-import _e727 from "../skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/wait.py" with { type: "file" };
-import _e728 from "../skills/paper-search/.venv/pyvenv.cfg" with { type: "file" };
-import _e729 from "../skills/paper-search/SKILL.md" with { type: "file" };
-import _e730 from "../skills/paper-search/scripts/fetch_papers.py" with { type: "file" };
-import _e731 from "../skills/pdf-to-markdown/SKILL.md" with { type: "file" };
-import _e732 from "../skills/playwright-cli/SKILL.md" with { type: "file" };
-import _e733 from "../skills/playwright-cli/references/element-attributes.md" with { type: "file" };
-import _e734 from "../skills/playwright-cli/references/playwright-tests.md" with { type: "file" };
-import _e735 from "../skills/playwright-cli/references/request-mocking.md" with { type: "file" };
-import _e736 from "../skills/playwright-cli/references/running-code.md" with { type: "file" };
-import _e737 from "../skills/playwright-cli/references/session-management.md" with { type: "file" };
-import _e738 from "../skills/playwright-cli/references/storage-state.md" with { type: "file" };
-import _e739 from "../skills/playwright-cli/references/test-generation.md" with { type: "file" };
-import _e740 from "../skills/playwright-cli/references/tracing.md" with { type: "file" };
-import _e741 from "../skills/playwright-cli/references/video-recording.md" with { type: "file" };
-import _e742 from "../skills/research-paper-writing/SKILL.md" with { type: "file" };
-import _e743 from "../skills/research-paper-writing/references/autoreason-methodology.md" with { type: "file" };
-import _e744 from "../skills/research-paper-writing/references/checklists.md" with { type: "file" };
-import _e745 from "../skills/research-paper-writing/references/citation-workflow.md" with { type: "file" };
-import _e746 from "../skills/research-paper-writing/references/experiment-patterns.md" with { type: "file" };
-import _e747 from "../skills/research-paper-writing/references/human-evaluation.md" with { type: "file" };
-import _e748 from "../skills/research-paper-writing/references/manuscript-revision-audit.md" with { type: "file" };
-import _e749 from "../skills/research-paper-writing/references/paper-types.md" with { type: "file" };
-import _e750 from "../skills/research-paper-writing/references/reviewer-guidelines.md" with { type: "file" };
-import _e751 from "../skills/research-paper-writing/references/sources.md" with { type: "file" };
-import _e752 from "../skills/research-paper-writing/references/writing-guide.md" with { type: "file" };
-import _e753 from "../skills/research-paper-writing/templates/README.md" with { type: "file" };
-import _e754 from "../skills/research-paper-writing/templates/aaai2026/README.md" with { type: "file" };
-import _e755 from "../skills/research-paper-writing/templates/aaai2026/aaai2026-unified-supp.tex" with { type: "file" };
-import _e756 from "../skills/research-paper-writing/templates/aaai2026/aaai2026-unified-template.tex" with { type: "file" };
-import _e757 from "../skills/research-paper-writing/templates/aaai2026/aaai2026.bib" with { type: "file" };
-import _e758 from "../skills/research-paper-writing/templates/aaai2026/aaai2026.bst" with { type: "file" };
-import _e759 from "../skills/research-paper-writing/templates/aaai2026/aaai2026.sty" with { type: "file" };
-import _e760 from "../skills/research-paper-writing/templates/acl/README.md" with { type: "file" };
-import _e761 from "../skills/research-paper-writing/templates/acl/acl.sty" with { type: "file" };
-import _e762 from "../skills/research-paper-writing/templates/acl/acl_latex.tex" with { type: "file" };
-import _e763 from "../skills/research-paper-writing/templates/acl/acl_lualatex.tex" with { type: "file" };
-import _e764 from "../skills/research-paper-writing/templates/acl/acl_natbib.bst" with { type: "file" };
-import _e765 from "../skills/research-paper-writing/templates/acl/anthology.bib.txt" with { type: "file" };
-import _e766 from "../skills/research-paper-writing/templates/acl/custom.bib" with { type: "file" };
-import _e767 from "../skills/research-paper-writing/templates/acl/formatting.md" with { type: "file" };
-import _e768 from "../skills/research-paper-writing/templates/colm2025/README.md" with { type: "file" };
-import _e769 from "../skills/research-paper-writing/templates/colm2025/colm2025_conference.bib" with { type: "file" };
-import _e770 from "../skills/research-paper-writing/templates/colm2025/colm2025_conference.bst" with { type: "file" };
-import _e771 from "../skills/research-paper-writing/templates/colm2025/colm2025_conference.pdf" with { type: "file" };
-import _e772 from "../skills/research-paper-writing/templates/colm2025/colm2025_conference.sty" with { type: "file" };
-import _e773 from "../skills/research-paper-writing/templates/colm2025/colm2025_conference.tex" with { type: "file" };
-import _e774 from "../skills/research-paper-writing/templates/colm2025/fancyhdr.sty" with { type: "file" };
-import _e775 from "../skills/research-paper-writing/templates/colm2025/math_commands.tex" with { type: "file" };
-import _e776 from "../skills/research-paper-writing/templates/colm2025/natbib.sty" with { type: "file" };
-import _e777 from "../skills/research-paper-writing/templates/iclr2026/fancyhdr.sty" with { type: "file" };
-import _e778 from "../skills/research-paper-writing/templates/iclr2026/iclr2026_conference.bib" with { type: "file" };
-import _e779 from "../skills/research-paper-writing/templates/iclr2026/iclr2026_conference.bst" with { type: "file" };
-import _e780 from "../skills/research-paper-writing/templates/iclr2026/iclr2026_conference.pdf" with { type: "file" };
-import _e781 from "../skills/research-paper-writing/templates/iclr2026/iclr2026_conference.sty" with { type: "file" };
-import _e782 from "../skills/research-paper-writing/templates/iclr2026/iclr2026_conference.tex" with { type: "file" };
-import _e783 from "../skills/research-paper-writing/templates/iclr2026/math_commands.tex" with { type: "file" };
-import _e784 from "../skills/research-paper-writing/templates/iclr2026/natbib.sty" with { type: "file" };
-import _e785 from "../skills/research-paper-writing/templates/icml2026/algorithm.sty" with { type: "file" };
-import _e786 from "../skills/research-paper-writing/templates/icml2026/algorithmic.sty" with { type: "file" };
-import _e787 from "../skills/research-paper-writing/templates/icml2026/example_paper.bib" with { type: "file" };
-import _e788 from "../skills/research-paper-writing/templates/icml2026/example_paper.pdf" with { type: "file" };
-import _e789 from "../skills/research-paper-writing/templates/icml2026/example_paper.tex" with { type: "file" };
-import _e790 from "../skills/research-paper-writing/templates/icml2026/fancyhdr.sty" with { type: "file" };
-import _e791 from "../skills/research-paper-writing/templates/icml2026/icml2026.bst" with { type: "file" };
-import _e792 from "../skills/research-paper-writing/templates/icml2026/icml2026.sty" with { type: "file" };
-import _e793 from "../skills/research-paper-writing/templates/icml2026/icml_numpapers.pdf" with { type: "file" };
-import _e794 from "../skills/research-paper-writing/templates/neurips2025/Makefile" with { type: "file" };
-import _e795 from "../skills/research-paper-writing/templates/neurips2025/extra_pkgs.tex" with { type: "file" };
-import _e796 from "../skills/research-paper-writing/templates/neurips2025/main.tex" with { type: "file" };
-import _e797 from "../skills/research-paper-writing/templates/neurips2025/neurips.sty" with { type: "file" };
-import _e798 from "../skills/research-project-workflow/SKILL.md" with { type: "file" };
-import _e799 from "../skills/skill-creator/LICENSE.txt" with { type: "file" };
-import _e800 from "../skills/skill-creator/SKILL.md" with { type: "file" };
-import _e801 from "../skills/skill-creator/agents/analyzer.md" with { type: "file" };
-import _e802 from "../skills/skill-creator/agents/comparator.md" with { type: "file" };
-import _e803 from "../skills/skill-creator/agents/grader.md" with { type: "file" };
-import _e804 from "../skills/skill-creator/assets/eval_review.html" with { type: "file" };
-import _e805 from "../skills/skill-creator/eval-viewer/generate_review.py" with { type: "file" };
-import _e806 from "../skills/skill-creator/eval-viewer/viewer.html" with { type: "file" };
-import _e807 from "../skills/skill-creator/references/schemas.md" with { type: "file" };
-import _e808 from "../skills/skill-creator/scripts/__init__.py" with { type: "file" };
-import _e809 from "../skills/skill-creator/scripts/aggregate_benchmark.py" with { type: "file" };
-import _e810 from "../skills/skill-creator/scripts/generate_report.py" with { type: "file" };
-import _e811 from "../skills/skill-creator/scripts/improve_description.py" with { type: "file" };
-import _e812 from "../skills/skill-creator/scripts/package_skill.py" with { type: "file" };
-import _e813 from "../skills/skill-creator/scripts/quick_validate.py" with { type: "file" };
-import _e814 from "../skills/skill-creator/scripts/run_eval.py" with { type: "file" };
-import _e815 from "../skills/skill-creator/scripts/run_loop.py" with { type: "file" };
-import _e816 from "../skills/skill-creator/scripts/utils.py" with { type: "file" };
-import _e817 from "../skills/ssh-experiment/SKILL.md" with { type: "file" };
-import _e818 from "../skills/ssh-experiment/scripts/rssh" with { type: "file" };
-import _e819 from "../skills/ssh-experiment/scripts/rssh-tmux" with { type: "file" };
-import _e820 from "../../package.json" with { type: "file" };
-import _e821 from "../../node_modules/@earendil-works/pi-coding-agent/README.md" with { type: "file" };
-import _e822 from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/dark.json" with { type: "file" };
-import _e823 from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/light.json" with { type: "file" };
-import _e824 from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme-schema.json" with { type: "file" };
+import _e6 from "../skills/arxiv/scripts/search_arxiv.py" with { type: "file" };
+import _e7 from "../skills/customize-easyresearch/SKILL.md" with { type: "file" };
+import _e8 from "../skills/customize-easyresearch/evals/evals.json" with { type: "file" };
+import _e9 from "../skills/drawio-academic-skills/.gitignore" with { type: "file" };
+import _e10 from "../skills/drawio-academic-skills/CHANGELOG.md" with { type: "file" };
+import _e11 from "../skills/drawio-academic-skills/README.md" with { type: "file" };
+import _e12 from "../skills/drawio-academic-skills/README_CN.md" with { type: "file" };
+import _e13 from "../skills/drawio-academic-skills/SKILL.md" with { type: "file" };
+import _e14 from "../skills/drawio-academic-skills/agents/interface.yaml" with { type: "file" };
+import _e15 from "../skills/drawio-academic-skills/agents/openai.yaml" with { type: "file" };
+import _e16 from "../skills/drawio-academic-skills/evals/README.md" with { type: "file" };
+import _e17 from "../skills/drawio-academic-skills/evals/baseline-prompts.json" with { type: "file" };
+import _e18 from "../skills/drawio-academic-skills/evals/darwin-results.tsv" with { type: "file" };
+import _e19 from "../skills/drawio-academic-skills/evals/evals.json" with { type: "file" };
+import _e20 from "../skills/drawio-academic-skills/evals/test-prompts.json" with { type: "file" };
+import _e21 from "../skills/drawio-academic-skills/references/docs/academic-export-checklist.md" with { type: "file" };
+import _e22 from "../skills/drawio-academic-skills/references/docs/academic-figure-playbook.md" with { type: "file" };
+import _e23 from "../skills/drawio-academic-skills/references/docs/publication-overlay.md" with { type: "file" };
+import _e24 from "../skills/drawio-academic-skills/references/examples/ablation-study-pipeline.yaml" with { type: "file" };
+import _e25 from "../skills/drawio-academic-skills/references/examples/ieee-network-paper.yaml" with { type: "file" };
+import _e26 from "../skills/drawio-academic-skills/references/examples/industrial-architecture-cn-paper.yaml" with { type: "file" };
+import _e27 from "../skills/drawio-academic-skills/references/examples/max-pooling-operation-paper.yaml" with { type: "file" };
+import _e28 from "../skills/drawio-academic-skills/references/examples/research-pipeline.yaml" with { type: "file" };
+import _e29 from "../skills/drawio-academic-skills/references/examples/system-architecture-paper.yaml" with { type: "file" };
+import _e30 from "../skills/drawio-academic-skills/references/examples/technical-roadmap-paper.yaml" with { type: "file" };
+import _e31 from "../skills/drawio-academic-skills/references/examples/yolo-model-architecture-paper.yaml" with { type: "file" };
+import _e32 from "../skills/drawio-academic-skills/references/templates/multi-module-system-compact.yaml" with { type: "file" };
+import _e33 from "../skills/drawio-academic-skills/references/templates/neural-network-architecture-compact.yaml" with { type: "file" };
+import _e34 from "../skills/drawio/.mcp.json" with { type: "file" };
+import _e35 from "../skills/drawio/CHANGELOG.md" with { type: "file" };
+import _e36 from "../skills/drawio/SKILL.md" with { type: "file" };
+import _e37 from "../skills/drawio/agents/interface.yaml" with { type: "file" };
+import _e38 from "../skills/drawio/agents/openai.yaml" with { type: "file" };
+import _e39 from "../skills/drawio/assets/catalog/ai-icons.json.gz" with { type: "file" };
+import _e40 from "../skills/drawio/assets/catalog/shape-catalog.json.gz" with { type: "file" };
+import _e41 from "../skills/drawio/assets/catalog/shape-index.json.gz" with { type: "file" };
+import _e42 from "../skills/drawio/assets/examples/login-flow-test.drawio" with { type: "file" };
+import _e43 from "../skills/drawio/assets/examples/login-flow.drawio" with { type: "file" };
+import _e44 from "../skills/drawio/assets/examples/microservices.drawio" with { type: "file" };
+import _e45 from "../skills/drawio/assets/examples/neural-network.drawio" with { type: "file" };
+import _e46 from "../skills/drawio/assets/licenses/architecture-diagram-generator-MIT.txt" with { type: "file" };
+import _e47 from "../skills/drawio/assets/licenses/drawio-mcp-shape-index-Apache-2.0.txt" with { type: "file" };
+import _e48 from "../skills/drawio/assets/licenses/lobe-icons-MIT.txt" with { type: "file" };
+import _e49 from "../skills/drawio/assets/licenses/lucide-ISC.txt" with { type: "file" };
+import _e50 from "../skills/drawio/assets/palettes/c4-blue.json" with { type: "file" };
+import _e51 from "../skills/drawio/assets/palettes/cloud-aws.json" with { type: "file" };
+import _e52 from "../skills/drawio/assets/palettes/drawio-classic.json" with { type: "file" };
+import _e53 from "../skills/drawio/assets/palettes/ieee-bw.json" with { type: "file" };
+import _e54 from "../skills/drawio/assets/palettes/ieee-color.json" with { type: "file" };
+import _e55 from "../skills/drawio/assets/palettes/journal-jama.json" with { type: "file" };
+import _e56 from "../skills/drawio/assets/palettes/journal-npg.json" with { type: "file" };
+import _e57 from "../skills/drawio/assets/palettes/matlab-lines.json" with { type: "file" };
+import _e58 from "../skills/drawio/assets/palettes/morandi.json" with { type: "file" };
+import _e59 from "../skills/drawio/assets/palettes/okabe-ito.json" with { type: "file" };
+import _e60 from "../skills/drawio/assets/palettes/seaborn-colorblind.json" with { type: "file" };
+import _e61 from "../skills/drawio/assets/palettes/tol-bright.json" with { type: "file" };
+import _e62 from "../skills/drawio/assets/palettes/tol-high-contrast.json" with { type: "file" };
+import _e63 from "../skills/drawio/assets/palettes/tol-light-fill.json" with { type: "file" };
+import _e64 from "../skills/drawio/assets/palettes/tol-muted.json" with { type: "file" };
+import _e65 from "../skills/drawio/assets/schemas/graph-projection.schema.json" with { type: "file" };
+import _e66 from "../skills/drawio/assets/schemas/spec.schema.json" with { type: "file" };
+import _e67 from "../skills/drawio/assets/themes/academic-color.json" with { type: "file" };
+import _e68 from "../skills/drawio/assets/themes/academic.json" with { type: "file" };
+import _e69 from "../skills/drawio/assets/themes/arch-dark.json" with { type: "file" };
+import _e70 from "../skills/drawio/assets/themes/blueprint.json" with { type: "file" };
+import _e71 from "../skills/drawio/assets/themes/dark-luxury.json" with { type: "file" };
+import _e72 from "../skills/drawio/assets/themes/dark-terminal.json" with { type: "file" };
+import _e73 from "../skills/drawio/assets/themes/dark.json" with { type: "file" };
+import _e74 from "../skills/drawio/assets/themes/high-contrast.json" with { type: "file" };
+import _e75 from "../skills/drawio/assets/themes/nature.json" with { type: "file" };
+import _e76 from "../skills/drawio/assets/themes/notion-clean.json" with { type: "file" };
+import _e77 from "../skills/drawio/assets/themes/tech-blue.json" with { type: "file" };
+import _e78 from "../skills/drawio/evals/README.md" with { type: "file" };
+import _e79 from "../skills/drawio/evals/ai-icon-catalog-cases.json" with { type: "file" };
+import _e80 from "../skills/drawio/evals/baseline-prompts.json" with { type: "file" };
+import _e81 from "../skills/drawio/evals/darwin-results.tsv" with { type: "file" };
+import _e82 from "../skills/drawio/evals/evals.json" with { type: "file" };
+import _e83 from "../skills/drawio/evals/evidence/ai-icon-catalog-desktop.json" with { type: "file" };
+import _e84 from "../skills/drawio/evals/fixtures/ai-icons-advanced-svg.yaml" with { type: "file" };
+import _e85 from "../skills/drawio/evals/fixtures/ai-icons-cjk-agent-rag.yaml" with { type: "file" };
+import _e86 from "../skills/drawio/evals/fixtures/ai-icons-core-aliases.yaml" with { type: "file" };
+import _e87 from "../skills/drawio/evals/fixtures/ai-icons-current-color.yaml" with { type: "file" };
+import _e88 from "../skills/drawio/evals/fixtures/ai-icons-gradients.yaml" with { type: "file" };
+import _e89 from "../skills/drawio/evals/fixtures/import-simple-compressed.drawio" with { type: "file" };
+import _e90 from "../skills/drawio/evals/fixtures/import-simple.drawio" with { type: "file" };
+import _e91 from "../skills/drawio/evals/fixtures/industrial-architecture.yaml" with { type: "file" };
+import _e92 from "../skills/drawio/evals/fixtures/replicate-academic-highlight.svg" with { type: "file" };
+import _e93 from "../skills/drawio/evals/fixtures/replicate-brand-architecture.svg" with { type: "file" };
+import _e94 from "../skills/drawio/evals/fixtures/replicate-warm-approval.svg" with { type: "file" };
+import _e95 from "../skills/drawio/evals/fixtures/vision-tall-workflow.yaml" with { type: "file" };
+import _e96 from "../skills/drawio/evals/upstream-integration-cases.json" with { type: "file" };
+import _e97 from "../skills/drawio/evals/vision-preview-cases.json" with { type: "file" };
+import _e98 from "../skills/drawio/references/docs/agent-diagrams.md" with { type: "file" };
+import _e99 from "../skills/drawio/references/docs/ah-format.md" with { type: "file" };
+import _e100 from "../skills/drawio/references/docs/architecture-diagrams.md" with { type: "file" };
+import _e101 from "../skills/drawio/references/docs/canonical-graph-projection.md" with { type: "file" };
+import _e102 from "../skills/drawio/references/docs/code-importers.md" with { type: "file" };
+import _e103 from "../skills/drawio/references/docs/config-importers.md" with { type: "file" };
+import _e104 from "../skills/drawio/references/docs/design-system/README.md" with { type: "file" };
+import _e105 from "../skills/drawio/references/docs/design-system/color-guide.md" with { type: "file" };
+import _e106 from "../skills/drawio/references/docs/design-system/connectors.md" with { type: "file" };
+import _e107 from "../skills/drawio/references/docs/design-system/formulas.md" with { type: "file" };
+import _e108 from "../skills/drawio/references/docs/design-system/icons.md" with { type: "file" };
+import _e109 from "../skills/drawio/references/docs/design-system/shapes.md" with { type: "file" };
+import _e110 from "../skills/drawio/references/docs/design-system/specification.md" with { type: "file" };
+import _e111 from "../skills/drawio/references/docs/design-system/themes.md" with { type: "file" };
+import _e112 from "../skills/drawio/references/docs/design-system/tokens.md" with { type: "file" };
+import _e113 from "../skills/drawio/references/docs/edge-quality-rules.md" with { type: "file" };
+import _e114 from "../skills/drawio/references/docs/ieee-network-diagrams.md" with { type: "file" };
+import _e115 from "../skills/drawio/references/docs/live-snapshots-drift.md" with { type: "file" };
+import _e116 from "../skills/drawio/references/docs/math-typesetting.md" with { type: "file" };
+import _e117 from "../skills/drawio/references/docs/mcp-tools.md" with { type: "file" };
+import _e118 from "../skills/drawio/references/docs/migration-readiness.md" with { type: "file" };
+import _e119 from "../skills/drawio/references/docs/stencil-library-guide.md" with { type: "file" };
+import _e120 from "../skills/drawio/references/docs/style-extraction.md" with { type: "file" };
+import _e121 from "../skills/drawio/references/docs/style-presets.md" with { type: "file" };
+import _e122 from "../skills/drawio/references/docs/upstream-capability-compatibility.md" with { type: "file" };
+import _e123 from "../skills/drawio/references/docs/xml-format.md" with { type: "file" };
+import _e124 from "../skills/drawio/references/examples/README.md" with { type: "file" };
+import _e125 from "../skills/drawio/references/examples/agentic-rag.yaml" with { type: "file" };
+import _e126 from "../skills/drawio/references/examples/arch-dark-aws-serverless.yaml" with { type: "file" };
+import _e127 from "../skills/drawio/references/examples/arch-dark-microservices.yaml" with { type: "file" };
+import _e128 from "../skills/drawio/references/examples/arch-dark-web-app.yaml" with { type: "file" };
+import _e129 from "../skills/drawio/references/examples/auto-layout-workflow.yaml" with { type: "file" };
+import _e130 from "../skills/drawio/references/examples/aws-vpc-topology.yaml" with { type: "file" };
+import _e131 from "../skills/drawio/references/examples/campus-lan-topology.yaml" with { type: "file" };
+import _e132 from "../skills/drawio/references/examples/cloud-reference-architecture.yaml" with { type: "file" };
+import _e133 from "../skills/drawio/references/examples/e-commerce.yaml" with { type: "file" };
+import _e134 from "../skills/drawio/references/examples/importers/README.md" with { type: "file" };
+import _e135 from "../skills/drawio/references/examples/importers/live/compose-drift-evidence.json" with { type: "file" };
+import _e136 from "../skills/drawio/references/examples/importers/live/compose-drift-report.json" with { type: "file" };
+import _e137 from "../skills/drawio/references/examples/importers/live/compose-drift.spec.yaml" with { type: "file" };
+import _e138 from "../skills/drawio/references/examples/importers/live/docker-inspect.json" with { type: "file" };
+import _e139 from "../skills/drawio/references/examples/importers/live/drift-declared-compose.yaml" with { type: "file" };
+import _e140 from "../skills/drawio/references/examples/importers/live/kubernetes-live.json" with { type: "file" };
+import _e141 from "../skills/drawio/references/examples/importers/live/terraform-state.json" with { type: "file" };
+import _e142 from "../skills/drawio/references/examples/importers/schema.sql" with { type: "file" };
+import _e143 from "../skills/drawio/references/examples/importers/terraform.tf" with { type: "file" };
+import _e144 from "../skills/drawio/references/examples/login-flow.yaml" with { type: "file" };
+import _e145 from "../skills/drawio/references/examples/mem0-memory-layer.yaml" with { type: "file" };
+import _e146 from "../skills/drawio/references/examples/microservices.yaml" with { type: "file" };
+import _e147 from "../skills/drawio/references/examples/multi-agent-orchestration.yaml" with { type: "file" };
+import _e148 from "../skills/drawio/references/examples/neural-network.yaml" with { type: "file" };
+import _e149 from "../skills/drawio/references/examples/onprem-dmz-topology.yaml" with { type: "file" };
+import _e150 from "../skills/drawio/references/examples/palettes/README.md" with { type: "file" };
+import _e151 from "../skills/drawio/references/examples/palettes/c4-blue.drawio" with { type: "file" };
+import _e152 from "../skills/drawio/references/examples/palettes/c4-blue.svg" with { type: "file" };
+import _e153 from "../skills/drawio/references/examples/palettes/cloud-aws.drawio" with { type: "file" };
+import _e154 from "../skills/drawio/references/examples/palettes/cloud-aws.svg" with { type: "file" };
+import _e155 from "../skills/drawio/references/examples/palettes/drawio-classic.drawio" with { type: "file" };
+import _e156 from "../skills/drawio/references/examples/palettes/drawio-classic.svg" with { type: "file" };
+import _e157 from "../skills/drawio/references/examples/palettes/ieee-bw.drawio" with { type: "file" };
+import _e158 from "../skills/drawio/references/examples/palettes/ieee-bw.svg" with { type: "file" };
+import _e159 from "../skills/drawio/references/examples/palettes/ieee-color.drawio" with { type: "file" };
+import _e160 from "../skills/drawio/references/examples/palettes/ieee-color.svg" with { type: "file" };
+import _e161 from "../skills/drawio/references/examples/palettes/journal-jama.drawio" with { type: "file" };
+import _e162 from "../skills/drawio/references/examples/palettes/journal-jama.svg" with { type: "file" };
+import _e163 from "../skills/drawio/references/examples/palettes/journal-npg.drawio" with { type: "file" };
+import _e164 from "../skills/drawio/references/examples/palettes/journal-npg.svg" with { type: "file" };
+import _e165 from "../skills/drawio/references/examples/palettes/matlab-lines.drawio" with { type: "file" };
+import _e166 from "../skills/drawio/references/examples/palettes/matlab-lines.svg" with { type: "file" };
+import _e167 from "../skills/drawio/references/examples/palettes/morandi.drawio" with { type: "file" };
+import _e168 from "../skills/drawio/references/examples/palettes/morandi.svg" with { type: "file" };
+import _e169 from "../skills/drawio/references/examples/palettes/okabe-ito.drawio" with { type: "file" };
+import _e170 from "../skills/drawio/references/examples/palettes/okabe-ito.svg" with { type: "file" };
+import _e171 from "../skills/drawio/references/examples/palettes/palette-swatch.template.yaml" with { type: "file" };
+import _e172 from "../skills/drawio/references/examples/palettes/seaborn-colorblind.drawio" with { type: "file" };
+import _e173 from "../skills/drawio/references/examples/palettes/seaborn-colorblind.svg" with { type: "file" };
+import _e174 from "../skills/drawio/references/examples/palettes/tol-bright.drawio" with { type: "file" };
+import _e175 from "../skills/drawio/references/examples/palettes/tol-bright.svg" with { type: "file" };
+import _e176 from "../skills/drawio/references/examples/palettes/tol-high-contrast.drawio" with { type: "file" };
+import _e177 from "../skills/drawio/references/examples/palettes/tol-high-contrast.svg" with { type: "file" };
+import _e178 from "../skills/drawio/references/examples/palettes/tol-light-fill.drawio" with { type: "file" };
+import _e179 from "../skills/drawio/references/examples/palettes/tol-light-fill.svg" with { type: "file" };
+import _e180 from "../skills/drawio/references/examples/palettes/tol-muted.drawio" with { type: "file" };
+import _e181 from "../skills/drawio/references/examples/palettes/tol-muted.svg" with { type: "file" };
+import _e182 from "../skills/drawio/references/examples/rag-pipeline.yaml" with { type: "file" };
+import _e183 from "../skills/drawio/references/examples/replicated-brand-flow.yaml" with { type: "file" };
+import _e184 from "../skills/drawio/references/examples/swimlane-engineering-review.yaml" with { type: "file" };
+import _e185 from "../skills/drawio/references/examples/tiered-network-topology.yaml" with { type: "file" };
+import _e186 from "../skills/drawio/references/examples/tool-call-loop.yaml" with { type: "file" };
+import _e187 from "../skills/drawio/references/examples/vendor-device-mapping.yaml" with { type: "file" };
+import _e188 from "../skills/drawio/references/official/style-reference.md" with { type: "file" };
+import _e189 from "../skills/drawio/references/official/xml-reference.md" with { type: "file" };
+import _e190 from "../skills/drawio/references/palette.schema.json" with { type: "file" };
+import _e191 from "../skills/drawio/references/theme.schema.json" with { type: "file" };
+import _e192 from "../skills/drawio/references/upstream/pure-drawio-skill.md" with { type: "file" };
+import _e193 from "../skills/drawio/references/workflows/create.md" with { type: "file" };
+import _e194 from "../skills/drawio/references/workflows/edit.md" with { type: "file" };
+import _e195 from "../skills/drawio/references/workflows/replicate.md" with { type: "file" };
+import _e196 from "../skills/drawio/references/workflows/visual-review.md" with { type: "file" };
+import _e197 from "../skills/drawio/reports/output_quality_scorecard.md" with { type: "file" };
+import _e198 from "../skills/drawio/reports/upstream-port-release-evidence.md" with { type: "file" };
+import _e199 from "../skills/drawio/scripts/adapters/ci.js" with { type: "file" };
+import _e200 from "../skills/drawio/scripts/adapters/ci.test.js" with { type: "file" };
+import _e201 from "../skills/drawio/scripts/adapters/code-common.js" with { type: "file" };
+import _e202 from "../skills/drawio/scripts/adapters/code-imports.test.js" with { type: "file" };
+import _e203 from "../skills/drawio/scripts/adapters/code-parsers.integration.test.js" with { type: "file" };
+import _e204 from "../skills/drawio/scripts/adapters/compose.js" with { type: "file" };
+import _e205 from "../skills/drawio/scripts/adapters/compose.test.js" with { type: "file" };
+import _e206 from "../skills/drawio/scripts/adapters/config-adapters.integration.test.js" with { type: "file" };
+import _e207 from "../skills/drawio/scripts/adapters/config-common.js" with { type: "file" };
+import _e208 from "../skills/drawio/scripts/adapters/config-common.test.js" with { type: "file" };
+import _e209 from "../skills/drawio/scripts/adapters/docker-inspect.js" with { type: "file" };
+import _e210 from "../skills/drawio/scripts/adapters/docker-inspect.test.js" with { type: "file" };
+import _e211 from "../skills/drawio/scripts/adapters/fixtures/raster-extraction.json" with { type: "file" };
+import _e212 from "../skills/drawio/scripts/adapters/go-code-adapter.test.js" with { type: "file" };
+import _e213 from "../skills/drawio/scripts/adapters/go-code.js" with { type: "file" };
+import _e214 from "../skills/drawio/scripts/adapters/graph-drift.file.test.js" with { type: "file" };
+import _e215 from "../skills/drawio/scripts/adapters/graph-drift.js" with { type: "file" };
+import _e216 from "../skills/drawio/scripts/adapters/graph-drift.test.js" with { type: "file" };
+import _e217 from "../skills/drawio/scripts/adapters/graph-projection.js" with { type: "file" };
+import _e218 from "../skills/drawio/scripts/adapters/graph-projection.test.js" with { type: "file" };
+import _e219 from "../skills/drawio/scripts/adapters/identity.js" with { type: "file" };
+import _e220 from "../skills/drawio/scripts/adapters/identity.test.js" with { type: "file" };
+import _e221 from "../skills/drawio/scripts/adapters/index.js" with { type: "file" };
+import _e222 from "../skills/drawio/scripts/adapters/index.test.js" with { type: "file" };
+import _e223 from "../skills/drawio/scripts/adapters/js-code-adapter.test.js" with { type: "file" };
+import _e224 from "../skills/drawio/scripts/adapters/js-code.js" with { type: "file" };
+import _e225 from "../skills/drawio/scripts/adapters/kubernetes-live.test.js" with { type: "file" };
+import _e226 from "../skills/drawio/scripts/adapters/kubernetes.js" with { type: "file" };
+import _e227 from "../skills/drawio/scripts/adapters/kubernetes.test.js" with { type: "file" };
+import _e228 from "../skills/drawio/scripts/adapters/openapi.js" with { type: "file" };
+import _e229 from "../skills/drawio/scripts/adapters/openapi.test.js" with { type: "file" };
+import _e230 from "../skills/drawio/scripts/adapters/optional-python-code.js" with { type: "file" };
+import _e231 from "../skills/drawio/scripts/adapters/optional-python.integration.test.js" with { type: "file" };
+import _e232 from "../skills/drawio/scripts/adapters/optional-python.js" with { type: "file" };
+import _e233 from "../skills/drawio/scripts/adapters/optional-python.test.js" with { type: "file" };
+import _e234 from "../skills/drawio/scripts/adapters/projection-to-spec.js" with { type: "file" };
+import _e235 from "../skills/drawio/scripts/adapters/projection-to-spec.test.js" with { type: "file" };
+import _e236 from "../skills/drawio/scripts/adapters/python-code-adapter.test.js" with { type: "file" };
+import _e237 from "../skills/drawio/scripts/adapters/python-code.js" with { type: "file" };
+import _e238 from "../skills/drawio/scripts/adapters/python/code-parser-worker.py" with { type: "file" };
+import _e239 from "../skills/drawio/scripts/adapters/python/config-parser-worker.py" with { type: "file" };
+import _e240 from "../skills/drawio/scripts/adapters/python/requirements.txt" with { type: "file" };
+import _e241 from "../skills/drawio/scripts/adapters/raster-extraction.js" with { type: "file" };
+import _e242 from "../skills/drawio/scripts/adapters/raster-extraction.test.js" with { type: "file" };
+import _e243 from "../skills/drawio/scripts/adapters/rust-code-adapter.test.js" with { type: "file" };
+import _e244 from "../skills/drawio/scripts/adapters/rust-code.js" with { type: "file" };
+import _e245 from "../skills/drawio/scripts/adapters/sql-ddl.js" with { type: "file" };
+import _e246 from "../skills/drawio/scripts/adapters/sql-ddl.test.js" with { type: "file" };
+import _e247 from "../skills/drawio/scripts/adapters/terraform-config.js" with { type: "file" };
+import _e248 from "../skills/drawio/scripts/adapters/terraform-config.test.js" with { type: "file" };
+import _e249 from "../skills/drawio/scripts/adapters/terraform-state.js" with { type: "file" };
+import _e250 from "../skills/drawio/scripts/adapters/terraform-state.test.js" with { type: "file" };
+import _e251 from "../skills/drawio/scripts/cli.js" with { type: "file" };
+import _e252 from "../skills/drawio/scripts/dsl/ah-to-drawio.js" with { type: "file" };
+import _e253 from "../skills/drawio/scripts/dsl/ah-to-drawio.test.js" with { type: "file" };
+import _e254 from "../skills/drawio/scripts/dsl/ai-icon-catalog.js" with { type: "file" };
+import _e255 from "../skills/drawio/scripts/dsl/ai-icon-catalog.test.js" with { type: "file" };
+import _e256 from "../skills/drawio/scripts/dsl/auto-layout.js" with { type: "file" };
+import _e257 from "../skills/drawio/scripts/dsl/auto-layout.test.js" with { type: "file" };
+import _e258 from "../skills/drawio/scripts/dsl/catalog-ranking.js" with { type: "file" };
+import _e259 from "../skills/drawio/scripts/dsl/catalog-search.js" with { type: "file" };
+import _e260 from "../skills/drawio/scripts/dsl/catalog-search.test.js" with { type: "file" };
+import _e261 from "../skills/drawio/scripts/dsl/document-spec.js" with { type: "file" };
+import _e262 from "../skills/drawio/scripts/dsl/document-spec.test.js" with { type: "file" };
+import _e263 from "../skills/drawio/scripts/dsl/drawio-to-spec.js" with { type: "file" };
+import _e264 from "../skills/drawio/scripts/dsl/examples-baseline.test.js" with { type: "file" };
+import _e265 from "../skills/drawio/scripts/dsl/icon-mappings.js" with { type: "file" };
+import _e266 from "../skills/drawio/scripts/dsl/icon-mappings.test.js" with { type: "file" };
+import _e267 from "../skills/drawio/scripts/dsl/icon-resolver.js" with { type: "file" };
+import _e268 from "../skills/drawio/scripts/dsl/icon-resolver.test.js" with { type: "file" };
+import _e269 from "../skills/drawio/scripts/dsl/multi-page.js" with { type: "file" };
+import _e270 from "../skills/drawio/scripts/dsl/multi-page.test.js" with { type: "file" };
+import _e271 from "../skills/drawio/scripts/dsl/palette-catalog.test.js" with { type: "file" };
+import _e272 from "../skills/drawio/scripts/dsl/palette-integration.test.js" with { type: "file" };
+import _e273 from "../skills/drawio/scripts/dsl/palette-validate.js" with { type: "file" };
+import _e274 from "../skills/drawio/scripts/dsl/palette.js" with { type: "file" };
+import _e275 from "../skills/drawio/scripts/dsl/palette.test.js" with { type: "file" };
+import _e276 from "../skills/drawio/scripts/dsl/shape-catalog.js" with { type: "file" };
+import _e277 from "../skills/drawio/scripts/dsl/shape-catalog.test.js" with { type: "file" };
+import _e278 from "../skills/drawio/scripts/dsl/spec-to-drawio.js" with { type: "file" };
+import _e279 from "../skills/drawio/scripts/dsl/spec-to-drawio.test.js" with { type: "file" };
+import _e280 from "../skills/drawio/scripts/generate-palette-swatches.js" with { type: "file" };
+import _e281 from "../skills/drawio/scripts/install.bat" with { type: "file" };
+import _e282 from "../skills/drawio/scripts/install.sh" with { type: "file" };
+import _e283 from "../skills/drawio/scripts/math/index.js" with { type: "file" };
+import _e284 from "../skills/drawio/scripts/math/index.test.js" with { type: "file" };
+import _e285 from "../skills/drawio/scripts/package.json" with { type: "file" };
+import _e286 from "../skills/drawio/scripts/postprocess/artifacts.js" with { type: "file" };
+import _e287 from "../skills/drawio/scripts/postprocess/artifacts.test.js" with { type: "file" };
+import _e288 from "../skills/drawio/scripts/postprocess/cli.js" with { type: "file" };
+import _e289 from "../skills/drawio/scripts/postprocess/cli.test.js" with { type: "file" };
+import _e290 from "../skills/drawio/scripts/postprocess/fixtures/bundle.yaml" with { type: "file" };
+import _e291 from "../skills/drawio/scripts/postprocess/fixtures/legacy.yaml" with { type: "file" };
+import _e292 from "../skills/drawio/scripts/postprocess/html.js" with { type: "file" };
+import _e293 from "../skills/drawio/scripts/postprocess/html.test.js" with { type: "file" };
+import _e294 from "../skills/drawio/scripts/postprocess/index.js" with { type: "file" };
+import _e295 from "../skills/drawio/scripts/postprocess/input.js" with { type: "file" };
+import _e296 from "../skills/drawio/scripts/postprocess/input.test.js" with { type: "file" };
+import _e297 from "../skills/drawio/scripts/postprocess/mutate.js" with { type: "file" };
+import _e298 from "../skills/drawio/scripts/postprocess/mutate.test.js" with { type: "file" };
+import _e299 from "../skills/drawio/scripts/postprocess/projection.js" with { type: "file" };
+import _e300 from "../skills/drawio/scripts/postprocess/projection.test.js" with { type: "file" };
+import _e301 from "../skills/drawio/scripts/runtime/artifacts.js" with { type: "file" };
+import _e302 from "../skills/drawio/scripts/runtime/desktop.js" with { type: "file" };
+import _e303 from "../skills/drawio/scripts/runtime/desktop.test.js" with { type: "file" };
+import _e304 from "../skills/drawio/scripts/runtime/diagrams-net-url.js" with { type: "file" };
+import _e305 from "../skills/drawio/scripts/runtime/export-stability.js" with { type: "file" };
+import _e306 from "../skills/drawio/scripts/runtime/export-stability.test.js" with { type: "file" };
+import _e307 from "../skills/drawio/scripts/runtime/png-inspection.js" with { type: "file" };
+import _e308 from "../skills/drawio/scripts/runtime/png-inspection.test.js" with { type: "file" };
+import _e309 from "../skills/drawio/scripts/runtime/vision-preview.js" with { type: "file" };
+import _e310 from "../skills/drawio/scripts/runtime/vision-preview.test.js" with { type: "file" };
+import _e311 from "../skills/drawio/scripts/shared/ai-icon-contract.js" with { type: "file" };
+import _e312 from "../skills/drawio/scripts/shared/xml-utils.js" with { type: "file" };
+import _e313 from "../skills/drawio/scripts/svg/drawio-to-svg.js" with { type: "file" };
+import _e314 from "../skills/drawio/scripts/svg/drawio-to-svg.test.js" with { type: "file" };
+import _e315 from "../skills/drawio/scripts/tools/build-ai-icon-catalog.js" with { type: "file" };
+import _e316 from "../skills/drawio/scripts/tools/build-ai-icon-catalog.test.js" with { type: "file" };
+import _e317 from "../skills/drawio/scripts/tools/build-shape-catalog.js" with { type: "file" };
+import _e318 from "../skills/drawio/scripts/tools/build-shape-catalog.test.js" with { type: "file" };
+import _e319 from "../skills/drawio/scripts/tools/fixtures/ai-icons-package/icons/alpha-color.svg" with { type: "file" };
+import _e320 from "../skills/drawio/scripts/tools/fixtures/ai-icons-package/icons/alpha.svg" with { type: "file" };
+import _e321 from "../skills/drawio/scripts/tools/fixtures/ai-icons-package/icons/beta-brand-color.svg" with { type: "file" };
+import _e322 from "../skills/drawio/scripts/tools/fixtures/ai-icons-package/icons/beta.svg" with { type: "file" };
+import _e323 from "../skills/drawio/scripts/tools/fixtures/ai-icons-package/icons/civitai-text-color.svg" with { type: "file" };
+import _e324 from "../skills/drawio/scripts/tools/fixtures/ai-icons-package/icons/civitai.svg" with { type: "file" };
+import _e325 from "../skills/drawio/scripts/tools/fixtures/ai-icons-package/package.json" with { type: "file" };
+import _e326 from "../skills/drawio/scripts/vendor/elkjs/LICENSE.md" with { type: "file" };
+import _e327 from "../skills/drawio/scripts/vendor/elkjs/README.md" with { type: "file" };
+import _e328 from "../skills/drawio/scripts/vendor/elkjs/elk.bundled.cjs" with { type: "file" };
+import _e329 from "../skills/drawio/scripts/vendor/js-yaml/LICENSE.md" with { type: "file" };
+import _e330 from "../skills/drawio/scripts/vendor/js-yaml/README.md" with { type: "file" };
+import _e331 from "../skills/drawio/scripts/vendor/js-yaml/js-yaml.mjs" with { type: "file" };
+import _e332 from "../skills/drawio/styles/built-in/corporate.json" with { type: "file" };
+import _e333 from "../skills/drawio/styles/built-in/default.json" with { type: "file" };
+import _e334 from "../skills/drawio/styles/built-in/handdrawn.json" with { type: "file" };
+import _e335 from "../skills/drawio/styles/schema.json" with { type: "file" };
+import _e336 from "../skills/experiment/SKILL.md" with { type: "file" };
+import _e337 from "../skills/find-skills/SKILL.md" with { type: "file" };
+import _e338 from "../skills/latex-pdf/SKILL.md" with { type: "file" };
+import _e339 from "../skills/paper-search/SKILL.md" with { type: "file" };
+import _e340 from "../skills/paper-search/scripts/fetch_papers.py" with { type: "file" };
+import _e341 from "../skills/pdf-to-markdown/SKILL.md" with { type: "file" };
+import _e342 from "../skills/playwright-cli/SKILL.md" with { type: "file" };
+import _e343 from "../skills/playwright-cli/references/element-attributes.md" with { type: "file" };
+import _e344 from "../skills/playwright-cli/references/playwright-tests.md" with { type: "file" };
+import _e345 from "../skills/playwright-cli/references/request-mocking.md" with { type: "file" };
+import _e346 from "../skills/playwright-cli/references/running-code.md" with { type: "file" };
+import _e347 from "../skills/playwright-cli/references/session-management.md" with { type: "file" };
+import _e348 from "../skills/playwright-cli/references/storage-state.md" with { type: "file" };
+import _e349 from "../skills/playwright-cli/references/test-generation.md" with { type: "file" };
+import _e350 from "../skills/playwright-cli/references/tracing.md" with { type: "file" };
+import _e351 from "../skills/playwright-cli/references/video-recording.md" with { type: "file" };
+import _e352 from "../skills/research-paper-writing/SKILL.md" with { type: "file" };
+import _e353 from "../skills/research-paper-writing/references/autoreason-methodology.md" with { type: "file" };
+import _e354 from "../skills/research-paper-writing/references/checklists.md" with { type: "file" };
+import _e355 from "../skills/research-paper-writing/references/citation-workflow.md" with { type: "file" };
+import _e356 from "../skills/research-paper-writing/references/experiment-patterns.md" with { type: "file" };
+import _e357 from "../skills/research-paper-writing/references/human-evaluation.md" with { type: "file" };
+import _e358 from "../skills/research-paper-writing/references/manuscript-revision-audit.md" with { type: "file" };
+import _e359 from "../skills/research-paper-writing/references/paper-types.md" with { type: "file" };
+import _e360 from "../skills/research-paper-writing/references/reviewer-guidelines.md" with { type: "file" };
+import _e361 from "../skills/research-paper-writing/references/sources.md" with { type: "file" };
+import _e362 from "../skills/research-paper-writing/references/writing-guide.md" with { type: "file" };
+import _e363 from "../skills/research-paper-writing/templates/README.md" with { type: "file" };
+import _e364 from "../skills/research-paper-writing/templates/aaai2026/README.md" with { type: "file" };
+import _e365 from "../skills/research-paper-writing/templates/aaai2026/aaai2026-unified-supp.tex" with { type: "file" };
+import _e366 from "../skills/research-paper-writing/templates/aaai2026/aaai2026-unified-template.tex" with { type: "file" };
+import _e367 from "../skills/research-paper-writing/templates/aaai2026/aaai2026.bib" with { type: "file" };
+import _e368 from "../skills/research-paper-writing/templates/aaai2026/aaai2026.bst" with { type: "file" };
+import _e369 from "../skills/research-paper-writing/templates/aaai2026/aaai2026.sty" with { type: "file" };
+import _e370 from "../skills/research-paper-writing/templates/acl/README.md" with { type: "file" };
+import _e371 from "../skills/research-paper-writing/templates/acl/acl.sty" with { type: "file" };
+import _e372 from "../skills/research-paper-writing/templates/acl/acl_latex.tex" with { type: "file" };
+import _e373 from "../skills/research-paper-writing/templates/acl/acl_lualatex.tex" with { type: "file" };
+import _e374 from "../skills/research-paper-writing/templates/acl/acl_natbib.bst" with { type: "file" };
+import _e375 from "../skills/research-paper-writing/templates/acl/anthology.bib.txt" with { type: "file" };
+import _e376 from "../skills/research-paper-writing/templates/acl/custom.bib" with { type: "file" };
+import _e377 from "../skills/research-paper-writing/templates/acl/formatting.md" with { type: "file" };
+import _e378 from "../skills/research-paper-writing/templates/colm2025/README.md" with { type: "file" };
+import _e379 from "../skills/research-paper-writing/templates/colm2025/colm2025_conference.bib" with { type: "file" };
+import _e380 from "../skills/research-paper-writing/templates/colm2025/colm2025_conference.bst" with { type: "file" };
+import _e381 from "../skills/research-paper-writing/templates/colm2025/colm2025_conference.pdf" with { type: "file" };
+import _e382 from "../skills/research-paper-writing/templates/colm2025/colm2025_conference.sty" with { type: "file" };
+import _e383 from "../skills/research-paper-writing/templates/colm2025/colm2025_conference.tex" with { type: "file" };
+import _e384 from "../skills/research-paper-writing/templates/colm2025/fancyhdr.sty" with { type: "file" };
+import _e385 from "../skills/research-paper-writing/templates/colm2025/math_commands.tex" with { type: "file" };
+import _e386 from "../skills/research-paper-writing/templates/colm2025/natbib.sty" with { type: "file" };
+import _e387 from "../skills/research-paper-writing/templates/iclr2026/fancyhdr.sty" with { type: "file" };
+import _e388 from "../skills/research-paper-writing/templates/iclr2026/iclr2026_conference.bib" with { type: "file" };
+import _e389 from "../skills/research-paper-writing/templates/iclr2026/iclr2026_conference.bst" with { type: "file" };
+import _e390 from "../skills/research-paper-writing/templates/iclr2026/iclr2026_conference.pdf" with { type: "file" };
+import _e391 from "../skills/research-paper-writing/templates/iclr2026/iclr2026_conference.sty" with { type: "file" };
+import _e392 from "../skills/research-paper-writing/templates/iclr2026/iclr2026_conference.tex" with { type: "file" };
+import _e393 from "../skills/research-paper-writing/templates/iclr2026/math_commands.tex" with { type: "file" };
+import _e394 from "../skills/research-paper-writing/templates/iclr2026/natbib.sty" with { type: "file" };
+import _e395 from "../skills/research-paper-writing/templates/icml2026/algorithm.sty" with { type: "file" };
+import _e396 from "../skills/research-paper-writing/templates/icml2026/algorithmic.sty" with { type: "file" };
+import _e397 from "../skills/research-paper-writing/templates/icml2026/example_paper.bib" with { type: "file" };
+import _e398 from "../skills/research-paper-writing/templates/icml2026/example_paper.pdf" with { type: "file" };
+import _e399 from "../skills/research-paper-writing/templates/icml2026/example_paper.tex" with { type: "file" };
+import _e400 from "../skills/research-paper-writing/templates/icml2026/fancyhdr.sty" with { type: "file" };
+import _e401 from "../skills/research-paper-writing/templates/icml2026/icml2026.bst" with { type: "file" };
+import _e402 from "../skills/research-paper-writing/templates/icml2026/icml2026.sty" with { type: "file" };
+import _e403 from "../skills/research-paper-writing/templates/icml2026/icml_numpapers.pdf" with { type: "file" };
+import _e404 from "../skills/research-paper-writing/templates/neurips2025/Makefile" with { type: "file" };
+import _e405 from "../skills/research-paper-writing/templates/neurips2025/extra_pkgs.tex" with { type: "file" };
+import _e406 from "../skills/research-paper-writing/templates/neurips2025/main.tex" with { type: "file" };
+import _e407 from "../skills/research-paper-writing/templates/neurips2025/neurips.sty" with { type: "file" };
+import _e408 from "../skills/research-project-workflow/SKILL.md" with { type: "file" };
+import _e409 from "../skills/skill-creator/LICENSE.txt" with { type: "file" };
+import _e410 from "../skills/skill-creator/SKILL.md" with { type: "file" };
+import _e411 from "../skills/skill-creator/agents/analyzer.md" with { type: "file" };
+import _e412 from "../skills/skill-creator/agents/comparator.md" with { type: "file" };
+import _e413 from "../skills/skill-creator/agents/grader.md" with { type: "file" };
+import _e414 from "../skills/skill-creator/assets/eval_review.html" with { type: "file" };
+import _e415 from "../skills/skill-creator/eval-viewer/generate_review.py" with { type: "file" };
+import _e416 from "../skills/skill-creator/eval-viewer/viewer.html" with { type: "file" };
+import _e417 from "../skills/skill-creator/references/schemas.md" with { type: "file" };
+import _e418 from "../skills/skill-creator/scripts/__init__.py" with { type: "file" };
+import _e419 from "../skills/skill-creator/scripts/aggregate_benchmark.py" with { type: "file" };
+import _e420 from "../skills/skill-creator/scripts/generate_report.py" with { type: "file" };
+import _e421 from "../skills/skill-creator/scripts/improve_description.py" with { type: "file" };
+import _e422 from "../skills/skill-creator/scripts/package_skill.py" with { type: "file" };
+import _e423 from "../skills/skill-creator/scripts/quick_validate.py" with { type: "file" };
+import _e424 from "../skills/skill-creator/scripts/run_eval.py" with { type: "file" };
+import _e425 from "../skills/skill-creator/scripts/run_loop.py" with { type: "file" };
+import _e426 from "../skills/skill-creator/scripts/utils.py" with { type: "file" };
+import _e427 from "../skills/ssh-experiment/SKILL.md" with { type: "file" };
+import _e428 from "../skills/ssh-experiment/scripts/rssh" with { type: "file" };
+import _e429 from "../skills/ssh-experiment/scripts/rssh-tmux" with { type: "file" };
+import _e430 from "../../package.json" with { type: "file" };
+import _e431 from "../../node_modules/@earendil-works/pi-coding-agent/README.md" with { type: "file" };
+import _e432 from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/dark.json" with { type: "file" };
+import _e433 from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/light.json" with { type: "file" };
+import _e434 from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme-schema.json" with { type: "file" };
 
 export const embeddedFiles: Record<string, string> = {
   "agents/experiment.md": _e0,
@@ -834,825 +444,435 @@ export const embeddedFiles: Record<string, string> = {
   "agents/search.md": _e3,
   "agents/writing.md": _e4,
   "skills/arxiv/SKILL.md": _e5,
-  "skills/arxiv/scripts/__pycache__/search_arxiv.cpython-314.pyc": _e6,
-  "skills/arxiv/scripts/search_arxiv.py": _e7,
-  "skills/customize-easyresearch/SKILL.md": _e8,
-  "skills/customize-easyresearch/evals/evals.json": _e9,
-  "skills/drawio-academic-skills/.gitignore": _e10,
-  "skills/drawio-academic-skills/CHANGELOG.md": _e11,
-  "skills/drawio-academic-skills/README.md": _e12,
-  "skills/drawio-academic-skills/README_CN.md": _e13,
-  "skills/drawio-academic-skills/SKILL.md": _e14,
-  "skills/drawio-academic-skills/agents/interface.yaml": _e15,
-  "skills/drawio-academic-skills/agents/openai.yaml": _e16,
-  "skills/drawio-academic-skills/evals/README.md": _e17,
-  "skills/drawio-academic-skills/evals/baseline-prompts.json": _e18,
-  "skills/drawio-academic-skills/evals/darwin-results.tsv": _e19,
-  "skills/drawio-academic-skills/evals/evals.json": _e20,
-  "skills/drawio-academic-skills/evals/test-prompts.json": _e21,
-  "skills/drawio-academic-skills/references/docs/academic-export-checklist.md": _e22,
-  "skills/drawio-academic-skills/references/docs/academic-figure-playbook.md": _e23,
-  "skills/drawio-academic-skills/references/docs/publication-overlay.md": _e24,
-  "skills/drawio-academic-skills/references/examples/ablation-study-pipeline.yaml": _e25,
-  "skills/drawio-academic-skills/references/examples/ieee-network-paper.yaml": _e26,
-  "skills/drawio-academic-skills/references/examples/industrial-architecture-cn-paper.yaml": _e27,
-  "skills/drawio-academic-skills/references/examples/max-pooling-operation-paper.yaml": _e28,
-  "skills/drawio-academic-skills/references/examples/research-pipeline.yaml": _e29,
-  "skills/drawio-academic-skills/references/examples/system-architecture-paper.yaml": _e30,
-  "skills/drawio-academic-skills/references/examples/technical-roadmap-paper.yaml": _e31,
-  "skills/drawio-academic-skills/references/examples/yolo-model-architecture-paper.yaml": _e32,
-  "skills/drawio-academic-skills/references/templates/multi-module-system-compact.yaml": _e33,
-  "skills/drawio-academic-skills/references/templates/neural-network-architecture-compact.yaml": _e34,
-  "skills/drawio/.mcp.json": _e35,
-  "skills/drawio/CHANGELOG.md": _e36,
-  "skills/drawio/SKILL.md": _e37,
-  "skills/drawio/agents/interface.yaml": _e38,
-  "skills/drawio/agents/openai.yaml": _e39,
-  "skills/drawio/assets/catalog/ai-icons.json.gz": _e40,
-  "skills/drawio/assets/catalog/shape-catalog.json.gz": _e41,
-  "skills/drawio/assets/catalog/shape-index.json.gz": _e42,
-  "skills/drawio/assets/examples/login-flow-test.drawio": _e43,
-  "skills/drawio/assets/examples/login-flow.drawio": _e44,
-  "skills/drawio/assets/examples/microservices.drawio": _e45,
-  "skills/drawio/assets/examples/neural-network.drawio": _e46,
-  "skills/drawio/assets/licenses/architecture-diagram-generator-MIT.txt": _e47,
-  "skills/drawio/assets/licenses/drawio-mcp-shape-index-Apache-2.0.txt": _e48,
-  "skills/drawio/assets/licenses/lobe-icons-MIT.txt": _e49,
-  "skills/drawio/assets/licenses/lucide-ISC.txt": _e50,
-  "skills/drawio/assets/palettes/c4-blue.json": _e51,
-  "skills/drawio/assets/palettes/cloud-aws.json": _e52,
-  "skills/drawio/assets/palettes/drawio-classic.json": _e53,
-  "skills/drawio/assets/palettes/ieee-bw.json": _e54,
-  "skills/drawio/assets/palettes/ieee-color.json": _e55,
-  "skills/drawio/assets/palettes/journal-jama.json": _e56,
-  "skills/drawio/assets/palettes/journal-npg.json": _e57,
-  "skills/drawio/assets/palettes/matlab-lines.json": _e58,
-  "skills/drawio/assets/palettes/morandi.json": _e59,
-  "skills/drawio/assets/palettes/okabe-ito.json": _e60,
-  "skills/drawio/assets/palettes/seaborn-colorblind.json": _e61,
-  "skills/drawio/assets/palettes/tol-bright.json": _e62,
-  "skills/drawio/assets/palettes/tol-high-contrast.json": _e63,
-  "skills/drawio/assets/palettes/tol-light-fill.json": _e64,
-  "skills/drawio/assets/palettes/tol-muted.json": _e65,
-  "skills/drawio/assets/schemas/graph-projection.schema.json": _e66,
-  "skills/drawio/assets/schemas/spec.schema.json": _e67,
-  "skills/drawio/assets/themes/academic-color.json": _e68,
-  "skills/drawio/assets/themes/academic.json": _e69,
-  "skills/drawio/assets/themes/arch-dark.json": _e70,
-  "skills/drawio/assets/themes/blueprint.json": _e71,
-  "skills/drawio/assets/themes/dark-luxury.json": _e72,
-  "skills/drawio/assets/themes/dark-terminal.json": _e73,
-  "skills/drawio/assets/themes/dark.json": _e74,
-  "skills/drawio/assets/themes/high-contrast.json": _e75,
-  "skills/drawio/assets/themes/nature.json": _e76,
-  "skills/drawio/assets/themes/notion-clean.json": _e77,
-  "skills/drawio/assets/themes/tech-blue.json": _e78,
-  "skills/drawio/evals/README.md": _e79,
-  "skills/drawio/evals/ai-icon-catalog-cases.json": _e80,
-  "skills/drawio/evals/baseline-prompts.json": _e81,
-  "skills/drawio/evals/darwin-results.tsv": _e82,
-  "skills/drawio/evals/evals.json": _e83,
-  "skills/drawio/evals/evidence/ai-icon-catalog-desktop.json": _e84,
-  "skills/drawio/evals/fixtures/ai-icons-advanced-svg.yaml": _e85,
-  "skills/drawio/evals/fixtures/ai-icons-cjk-agent-rag.yaml": _e86,
-  "skills/drawio/evals/fixtures/ai-icons-core-aliases.yaml": _e87,
-  "skills/drawio/evals/fixtures/ai-icons-current-color.yaml": _e88,
-  "skills/drawio/evals/fixtures/ai-icons-gradients.yaml": _e89,
-  "skills/drawio/evals/fixtures/import-simple-compressed.drawio": _e90,
-  "skills/drawio/evals/fixtures/import-simple.drawio": _e91,
-  "skills/drawio/evals/fixtures/industrial-architecture.yaml": _e92,
-  "skills/drawio/evals/fixtures/replicate-academic-highlight.svg": _e93,
-  "skills/drawio/evals/fixtures/replicate-brand-architecture.svg": _e94,
-  "skills/drawio/evals/fixtures/replicate-warm-approval.svg": _e95,
-  "skills/drawio/evals/fixtures/vision-tall-workflow.yaml": _e96,
-  "skills/drawio/evals/upstream-integration-cases.json": _e97,
-  "skills/drawio/evals/vision-preview-cases.json": _e98,
-  "skills/drawio/references/docs/agent-diagrams.md": _e99,
-  "skills/drawio/references/docs/ah-format.md": _e100,
-  "skills/drawio/references/docs/architecture-diagrams.md": _e101,
-  "skills/drawio/references/docs/canonical-graph-projection.md": _e102,
-  "skills/drawio/references/docs/code-importers.md": _e103,
-  "skills/drawio/references/docs/config-importers.md": _e104,
-  "skills/drawio/references/docs/design-system/README.md": _e105,
-  "skills/drawio/references/docs/design-system/color-guide.md": _e106,
-  "skills/drawio/references/docs/design-system/connectors.md": _e107,
-  "skills/drawio/references/docs/design-system/formulas.md": _e108,
-  "skills/drawio/references/docs/design-system/icons.md": _e109,
-  "skills/drawio/references/docs/design-system/shapes.md": _e110,
-  "skills/drawio/references/docs/design-system/specification.md": _e111,
-  "skills/drawio/references/docs/design-system/themes.md": _e112,
-  "skills/drawio/references/docs/design-system/tokens.md": _e113,
-  "skills/drawio/references/docs/edge-quality-rules.md": _e114,
-  "skills/drawio/references/docs/ieee-network-diagrams.md": _e115,
-  "skills/drawio/references/docs/live-snapshots-drift.md": _e116,
-  "skills/drawio/references/docs/math-typesetting.md": _e117,
-  "skills/drawio/references/docs/mcp-tools.md": _e118,
-  "skills/drawio/references/docs/migration-readiness.md": _e119,
-  "skills/drawio/references/docs/stencil-library-guide.md": _e120,
-  "skills/drawio/references/docs/style-extraction.md": _e121,
-  "skills/drawio/references/docs/style-presets.md": _e122,
-  "skills/drawio/references/docs/upstream-capability-compatibility.md": _e123,
-  "skills/drawio/references/docs/xml-format.md": _e124,
-  "skills/drawio/references/examples/README.md": _e125,
-  "skills/drawio/references/examples/agentic-rag.yaml": _e126,
-  "skills/drawio/references/examples/arch-dark-aws-serverless.yaml": _e127,
-  "skills/drawio/references/examples/arch-dark-microservices.yaml": _e128,
-  "skills/drawio/references/examples/arch-dark-web-app.yaml": _e129,
-  "skills/drawio/references/examples/auto-layout-workflow.yaml": _e130,
-  "skills/drawio/references/examples/aws-vpc-topology.yaml": _e131,
-  "skills/drawio/references/examples/campus-lan-topology.yaml": _e132,
-  "skills/drawio/references/examples/cloud-reference-architecture.yaml": _e133,
-  "skills/drawio/references/examples/e-commerce.yaml": _e134,
-  "skills/drawio/references/examples/importers/README.md": _e135,
-  "skills/drawio/references/examples/importers/live/compose-drift-evidence.json": _e136,
-  "skills/drawio/references/examples/importers/live/compose-drift-report.json": _e137,
-  "skills/drawio/references/examples/importers/live/compose-drift.spec.yaml": _e138,
-  "skills/drawio/references/examples/importers/live/docker-inspect.json": _e139,
-  "skills/drawio/references/examples/importers/live/drift-declared-compose.yaml": _e140,
-  "skills/drawio/references/examples/importers/live/kubernetes-live.json": _e141,
-  "skills/drawio/references/examples/importers/live/terraform-state.json": _e142,
-  "skills/drawio/references/examples/importers/schema.sql": _e143,
-  "skills/drawio/references/examples/importers/terraform.tf": _e144,
-  "skills/drawio/references/examples/login-flow.yaml": _e145,
-  "skills/drawio/references/examples/mem0-memory-layer.yaml": _e146,
-  "skills/drawio/references/examples/microservices.yaml": _e147,
-  "skills/drawio/references/examples/multi-agent-orchestration.yaml": _e148,
-  "skills/drawio/references/examples/neural-network.yaml": _e149,
-  "skills/drawio/references/examples/onprem-dmz-topology.yaml": _e150,
-  "skills/drawio/references/examples/palettes/README.md": _e151,
-  "skills/drawio/references/examples/palettes/c4-blue.drawio": _e152,
-  "skills/drawio/references/examples/palettes/c4-blue.svg": _e153,
-  "skills/drawio/references/examples/palettes/cloud-aws.drawio": _e154,
-  "skills/drawio/references/examples/palettes/cloud-aws.svg": _e155,
-  "skills/drawio/references/examples/palettes/drawio-classic.drawio": _e156,
-  "skills/drawio/references/examples/palettes/drawio-classic.svg": _e157,
-  "skills/drawio/references/examples/palettes/ieee-bw.drawio": _e158,
-  "skills/drawio/references/examples/palettes/ieee-bw.svg": _e159,
-  "skills/drawio/references/examples/palettes/ieee-color.drawio": _e160,
-  "skills/drawio/references/examples/palettes/ieee-color.svg": _e161,
-  "skills/drawio/references/examples/palettes/journal-jama.drawio": _e162,
-  "skills/drawio/references/examples/palettes/journal-jama.svg": _e163,
-  "skills/drawio/references/examples/palettes/journal-npg.drawio": _e164,
-  "skills/drawio/references/examples/palettes/journal-npg.svg": _e165,
-  "skills/drawio/references/examples/palettes/matlab-lines.drawio": _e166,
-  "skills/drawio/references/examples/palettes/matlab-lines.svg": _e167,
-  "skills/drawio/references/examples/palettes/morandi.drawio": _e168,
-  "skills/drawio/references/examples/palettes/morandi.svg": _e169,
-  "skills/drawio/references/examples/palettes/okabe-ito.drawio": _e170,
-  "skills/drawio/references/examples/palettes/okabe-ito.svg": _e171,
-  "skills/drawio/references/examples/palettes/palette-swatch.template.yaml": _e172,
-  "skills/drawio/references/examples/palettes/seaborn-colorblind.drawio": _e173,
-  "skills/drawio/references/examples/palettes/seaborn-colorblind.svg": _e174,
-  "skills/drawio/references/examples/palettes/tol-bright.drawio": _e175,
-  "skills/drawio/references/examples/palettes/tol-bright.svg": _e176,
-  "skills/drawio/references/examples/palettes/tol-high-contrast.drawio": _e177,
-  "skills/drawio/references/examples/palettes/tol-high-contrast.svg": _e178,
-  "skills/drawio/references/examples/palettes/tol-light-fill.drawio": _e179,
-  "skills/drawio/references/examples/palettes/tol-light-fill.svg": _e180,
-  "skills/drawio/references/examples/palettes/tol-muted.drawio": _e181,
-  "skills/drawio/references/examples/palettes/tol-muted.svg": _e182,
-  "skills/drawio/references/examples/rag-pipeline.yaml": _e183,
-  "skills/drawio/references/examples/replicated-brand-flow.yaml": _e184,
-  "skills/drawio/references/examples/swimlane-engineering-review.yaml": _e185,
-  "skills/drawio/references/examples/tiered-network-topology.yaml": _e186,
-  "skills/drawio/references/examples/tool-call-loop.yaml": _e187,
-  "skills/drawio/references/examples/vendor-device-mapping.yaml": _e188,
-  "skills/drawio/references/official/style-reference.md": _e189,
-  "skills/drawio/references/official/xml-reference.md": _e190,
-  "skills/drawio/references/palette.schema.json": _e191,
-  "skills/drawio/references/theme.schema.json": _e192,
-  "skills/drawio/references/upstream/pure-drawio-skill.md": _e193,
-  "skills/drawio/references/workflows/create.md": _e194,
-  "skills/drawio/references/workflows/edit.md": _e195,
-  "skills/drawio/references/workflows/replicate.md": _e196,
-  "skills/drawio/references/workflows/visual-review.md": _e197,
-  "skills/drawio/reports/output_quality_scorecard.md": _e198,
-  "skills/drawio/reports/upstream-port-release-evidence.md": _e199,
-  "skills/drawio/scripts/adapters/ci.js": _e200,
-  "skills/drawio/scripts/adapters/ci.test.js": _e201,
-  "skills/drawio/scripts/adapters/code-common.js": _e202,
-  "skills/drawio/scripts/adapters/code-imports.test.js": _e203,
-  "skills/drawio/scripts/adapters/code-parsers.integration.test.js": _e204,
-  "skills/drawio/scripts/adapters/compose.js": _e205,
-  "skills/drawio/scripts/adapters/compose.test.js": _e206,
-  "skills/drawio/scripts/adapters/config-adapters.integration.test.js": _e207,
-  "skills/drawio/scripts/adapters/config-common.js": _e208,
-  "skills/drawio/scripts/adapters/config-common.test.js": _e209,
-  "skills/drawio/scripts/adapters/docker-inspect.js": _e210,
-  "skills/drawio/scripts/adapters/docker-inspect.test.js": _e211,
-  "skills/drawio/scripts/adapters/fixtures/raster-extraction.json": _e212,
-  "skills/drawio/scripts/adapters/go-code-adapter.test.js": _e213,
-  "skills/drawio/scripts/adapters/go-code.js": _e214,
-  "skills/drawio/scripts/adapters/graph-drift.file.test.js": _e215,
-  "skills/drawio/scripts/adapters/graph-drift.js": _e216,
-  "skills/drawio/scripts/adapters/graph-drift.test.js": _e217,
-  "skills/drawio/scripts/adapters/graph-projection.js": _e218,
-  "skills/drawio/scripts/adapters/graph-projection.test.js": _e219,
-  "skills/drawio/scripts/adapters/identity.js": _e220,
-  "skills/drawio/scripts/adapters/identity.test.js": _e221,
-  "skills/drawio/scripts/adapters/index.js": _e222,
-  "skills/drawio/scripts/adapters/index.test.js": _e223,
-  "skills/drawio/scripts/adapters/js-code-adapter.test.js": _e224,
-  "skills/drawio/scripts/adapters/js-code.js": _e225,
-  "skills/drawio/scripts/adapters/kubernetes-live.test.js": _e226,
-  "skills/drawio/scripts/adapters/kubernetes.js": _e227,
-  "skills/drawio/scripts/adapters/kubernetes.test.js": _e228,
-  "skills/drawio/scripts/adapters/openapi.js": _e229,
-  "skills/drawio/scripts/adapters/openapi.test.js": _e230,
-  "skills/drawio/scripts/adapters/optional-python-code.js": _e231,
-  "skills/drawio/scripts/adapters/optional-python.integration.test.js": _e232,
-  "skills/drawio/scripts/adapters/optional-python.js": _e233,
-  "skills/drawio/scripts/adapters/optional-python.test.js": _e234,
-  "skills/drawio/scripts/adapters/projection-to-spec.js": _e235,
-  "skills/drawio/scripts/adapters/projection-to-spec.test.js": _e236,
-  "skills/drawio/scripts/adapters/python-code-adapter.test.js": _e237,
-  "skills/drawio/scripts/adapters/python-code.js": _e238,
-  "skills/drawio/scripts/adapters/python/code-parser-worker.py": _e239,
-  "skills/drawio/scripts/adapters/python/config-parser-worker.py": _e240,
-  "skills/drawio/scripts/adapters/python/requirements.txt": _e241,
-  "skills/drawio/scripts/adapters/raster-extraction.js": _e242,
-  "skills/drawio/scripts/adapters/raster-extraction.test.js": _e243,
-  "skills/drawio/scripts/adapters/rust-code-adapter.test.js": _e244,
-  "skills/drawio/scripts/adapters/rust-code.js": _e245,
-  "skills/drawio/scripts/adapters/sql-ddl.js": _e246,
-  "skills/drawio/scripts/adapters/sql-ddl.test.js": _e247,
-  "skills/drawio/scripts/adapters/terraform-config.js": _e248,
-  "skills/drawio/scripts/adapters/terraform-config.test.js": _e249,
-  "skills/drawio/scripts/adapters/terraform-state.js": _e250,
-  "skills/drawio/scripts/adapters/terraform-state.test.js": _e251,
-  "skills/drawio/scripts/cli.js": _e252,
-  "skills/drawio/scripts/dsl/ah-to-drawio.js": _e253,
-  "skills/drawio/scripts/dsl/ah-to-drawio.test.js": _e254,
-  "skills/drawio/scripts/dsl/ai-icon-catalog.js": _e255,
-  "skills/drawio/scripts/dsl/ai-icon-catalog.test.js": _e256,
-  "skills/drawio/scripts/dsl/auto-layout.js": _e257,
-  "skills/drawio/scripts/dsl/auto-layout.test.js": _e258,
-  "skills/drawio/scripts/dsl/catalog-ranking.js": _e259,
-  "skills/drawio/scripts/dsl/catalog-search.js": _e260,
-  "skills/drawio/scripts/dsl/catalog-search.test.js": _e261,
-  "skills/drawio/scripts/dsl/document-spec.js": _e262,
-  "skills/drawio/scripts/dsl/document-spec.test.js": _e263,
-  "skills/drawio/scripts/dsl/drawio-to-spec.js": _e264,
-  "skills/drawio/scripts/dsl/examples-baseline.test.js": _e265,
-  "skills/drawio/scripts/dsl/icon-mappings.js": _e266,
-  "skills/drawio/scripts/dsl/icon-mappings.test.js": _e267,
-  "skills/drawio/scripts/dsl/icon-resolver.js": _e268,
-  "skills/drawio/scripts/dsl/icon-resolver.test.js": _e269,
-  "skills/drawio/scripts/dsl/multi-page.js": _e270,
-  "skills/drawio/scripts/dsl/multi-page.test.js": _e271,
-  "skills/drawio/scripts/dsl/palette-catalog.test.js": _e272,
-  "skills/drawio/scripts/dsl/palette-integration.test.js": _e273,
-  "skills/drawio/scripts/dsl/palette-validate.js": _e274,
-  "skills/drawio/scripts/dsl/palette.js": _e275,
-  "skills/drawio/scripts/dsl/palette.test.js": _e276,
-  "skills/drawio/scripts/dsl/shape-catalog.js": _e277,
-  "skills/drawio/scripts/dsl/shape-catalog.test.js": _e278,
-  "skills/drawio/scripts/dsl/spec-to-drawio.js": _e279,
-  "skills/drawio/scripts/dsl/spec-to-drawio.test.js": _e280,
-  "skills/drawio/scripts/generate-palette-swatches.js": _e281,
-  "skills/drawio/scripts/install.bat": _e282,
-  "skills/drawio/scripts/install.sh": _e283,
-  "skills/drawio/scripts/math/index.js": _e284,
-  "skills/drawio/scripts/math/index.test.js": _e285,
-  "skills/drawio/scripts/package.json": _e286,
-  "skills/drawio/scripts/postprocess/artifacts.js": _e287,
-  "skills/drawio/scripts/postprocess/artifacts.test.js": _e288,
-  "skills/drawio/scripts/postprocess/cli.js": _e289,
-  "skills/drawio/scripts/postprocess/cli.test.js": _e290,
-  "skills/drawio/scripts/postprocess/fixtures/bundle.yaml": _e291,
-  "skills/drawio/scripts/postprocess/fixtures/legacy.yaml": _e292,
-  "skills/drawio/scripts/postprocess/html.js": _e293,
-  "skills/drawio/scripts/postprocess/html.test.js": _e294,
-  "skills/drawio/scripts/postprocess/index.js": _e295,
-  "skills/drawio/scripts/postprocess/input.js": _e296,
-  "skills/drawio/scripts/postprocess/input.test.js": _e297,
-  "skills/drawio/scripts/postprocess/mutate.js": _e298,
-  "skills/drawio/scripts/postprocess/mutate.test.js": _e299,
-  "skills/drawio/scripts/postprocess/projection.js": _e300,
-  "skills/drawio/scripts/postprocess/projection.test.js": _e301,
-  "skills/drawio/scripts/runtime/artifacts.js": _e302,
-  "skills/drawio/scripts/runtime/desktop.js": _e303,
-  "skills/drawio/scripts/runtime/desktop.test.js": _e304,
-  "skills/drawio/scripts/runtime/diagrams-net-url.js": _e305,
-  "skills/drawio/scripts/runtime/export-stability.js": _e306,
-  "skills/drawio/scripts/runtime/export-stability.test.js": _e307,
-  "skills/drawio/scripts/runtime/png-inspection.js": _e308,
-  "skills/drawio/scripts/runtime/png-inspection.test.js": _e309,
-  "skills/drawio/scripts/runtime/vision-preview.js": _e310,
-  "skills/drawio/scripts/runtime/vision-preview.test.js": _e311,
-  "skills/drawio/scripts/shared/ai-icon-contract.js": _e312,
-  "skills/drawio/scripts/shared/xml-utils.js": _e313,
-  "skills/drawio/scripts/svg/drawio-to-svg.js": _e314,
-  "skills/drawio/scripts/svg/drawio-to-svg.test.js": _e315,
-  "skills/drawio/scripts/tools/build-ai-icon-catalog.js": _e316,
-  "skills/drawio/scripts/tools/build-ai-icon-catalog.test.js": _e317,
-  "skills/drawio/scripts/tools/build-shape-catalog.js": _e318,
-  "skills/drawio/scripts/tools/build-shape-catalog.test.js": _e319,
-  "skills/drawio/scripts/tools/fixtures/ai-icons-package/icons/alpha-color.svg": _e320,
-  "skills/drawio/scripts/tools/fixtures/ai-icons-package/icons/alpha.svg": _e321,
-  "skills/drawio/scripts/tools/fixtures/ai-icons-package/icons/beta-brand-color.svg": _e322,
-  "skills/drawio/scripts/tools/fixtures/ai-icons-package/icons/beta.svg": _e323,
-  "skills/drawio/scripts/tools/fixtures/ai-icons-package/icons/civitai-text-color.svg": _e324,
-  "skills/drawio/scripts/tools/fixtures/ai-icons-package/icons/civitai.svg": _e325,
-  "skills/drawio/scripts/tools/fixtures/ai-icons-package/package.json": _e326,
-  "skills/drawio/scripts/vendor/elkjs/LICENSE.md": _e327,
-  "skills/drawio/scripts/vendor/elkjs/README.md": _e328,
-  "skills/drawio/scripts/vendor/elkjs/elk.bundled.cjs": _e329,
-  "skills/drawio/scripts/vendor/js-yaml/LICENSE.md": _e330,
-  "skills/drawio/scripts/vendor/js-yaml/README.md": _e331,
-  "skills/drawio/scripts/vendor/js-yaml/js-yaml.mjs": _e332,
-  "skills/drawio/styles/built-in/corporate.json": _e333,
-  "skills/drawio/styles/built-in/default.json": _e334,
-  "skills/drawio/styles/built-in/handdrawn.json": _e335,
-  "skills/drawio/styles/schema.json": _e336,
-  "skills/experiment/SKILL.md": _e337,
-  "skills/find-skills/SKILL.md": _e338,
-  "skills/latex-pdf/SKILL.md": _e339,
-  "skills/paper-search/.venv/.gitignore": _e340,
-  "skills/paper-search/.venv/.lock": _e341,
-  "skills/paper-search/.venv/CACHEDIR.TAG": _e342,
-  "skills/paper-search/.venv/bin/activate": _e343,
-  "skills/paper-search/.venv/bin/activate.bat": _e344,
-  "skills/paper-search/.venv/bin/activate.csh": _e345,
-  "skills/paper-search/.venv/bin/activate.fish": _e346,
-  "skills/paper-search/.venv/bin/activate.nu": _e347,
-  "skills/paper-search/.venv/bin/activate.ps1": _e348,
-  "skills/paper-search/.venv/bin/activate_this.py": _e349,
-  "skills/paper-search/.venv/bin/deactivate.bat": _e350,
-  "skills/paper-search/.venv/bin/idna": _e351,
-  "skills/paper-search/.venv/bin/normalizer": _e352,
-  "skills/paper-search/.venv/bin/pydoc.bat": _e353,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/81d243bd2c585b0f4821__mypyc.cpython-312-x86_64-linux-gnu.so": _e354,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/__pycache__/_virtualenv.cpython-312.pyc": _e355,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/_virtualenv.pth": _e356,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/_virtualenv.py": _e357,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/arxiv-4.0.0.dist-info/INSTALLER": _e358,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/arxiv-4.0.0.dist-info/METADATA": _e359,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/arxiv-4.0.0.dist-info/RECORD": _e360,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/arxiv-4.0.0.dist-info/REQUESTED": _e361,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/arxiv-4.0.0.dist-info/WHEEL": _e362,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/arxiv-4.0.0.dist-info/licenses/LICENSE.txt": _e363,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/arxiv/__init__.py": _e364,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/arxiv/__pycache__/__init__.cpython-312.pyc": _e365,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/arxiv/__pycache__/_feed.cpython-312.pyc": _e366,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/arxiv/_feed.py": _e367,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/certifi-2026.6.17.dist-info/INSTALLER": _e368,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/certifi-2026.6.17.dist-info/METADATA": _e369,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/certifi-2026.6.17.dist-info/RECORD": _e370,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/certifi-2026.6.17.dist-info/REQUESTED": _e371,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/certifi-2026.6.17.dist-info/WHEEL": _e372,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/certifi-2026.6.17.dist-info/licenses/LICENSE": _e373,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/certifi-2026.6.17.dist-info/top_level.txt": _e374,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/certifi/__init__.py": _e375,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/certifi/__main__.py": _e376,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/certifi/__pycache__/__init__.cpython-312.pyc": _e377,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/certifi/__pycache__/core.cpython-312.pyc": _e378,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/certifi/cacert.pem": _e379,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/certifi/core.py": _e380,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/certifi/py.typed": _e381,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer-3.4.7.dist-info/INSTALLER": _e382,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer-3.4.7.dist-info/METADATA": _e383,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer-3.4.7.dist-info/RECORD": _e384,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer-3.4.7.dist-info/REQUESTED": _e385,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer-3.4.7.dist-info/WHEEL": _e386,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer-3.4.7.dist-info/entry_points.txt": _e387,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer-3.4.7.dist-info/licenses/LICENSE": _e388,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer-3.4.7.dist-info/top_level.txt": _e389,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/__init__.py": _e390,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/__main__.py": _e391,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/__pycache__/__init__.cpython-312.pyc": _e392,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/__pycache__/api.cpython-312.pyc": _e393,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/__pycache__/constant.cpython-312.pyc": _e394,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/__pycache__/legacy.cpython-312.pyc": _e395,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/__pycache__/models.cpython-312.pyc": _e396,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/__pycache__/utils.cpython-312.pyc": _e397,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/__pycache__/version.cpython-312.pyc": _e398,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/api.py": _e399,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/cd.cpython-312-x86_64-linux-gnu.so": _e400,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/cd.py": _e401,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/cli/__init__.py": _e402,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/cli/__main__.py": _e403,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/constant.py": _e404,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/legacy.py": _e405,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/md.cpython-312-x86_64-linux-gnu.so": _e406,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/md.py": _e407,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/models.py": _e408,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/py.typed": _e409,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/utils.py": _e410,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/charset_normalizer/version.py": _e411,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/idna-3.18.dist-info/INSTALLER": _e412,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/idna-3.18.dist-info/METADATA": _e413,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/idna-3.18.dist-info/RECORD": _e414,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/idna-3.18.dist-info/REQUESTED": _e415,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/idna-3.18.dist-info/WHEEL": _e416,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/idna-3.18.dist-info/entry_points.txt": _e417,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/idna-3.18.dist-info/licenses/LICENSE.md": _e418,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/idna/__init__.py": _e419,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/idna/__main__.py": _e420,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/idna/__pycache__/__init__.cpython-312.pyc": _e421,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/idna/__pycache__/core.cpython-312.pyc": _e422,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/idna/__pycache__/idnadata.cpython-312.pyc": _e423,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/idna/__pycache__/intranges.cpython-312.pyc": _e424,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/idna/__pycache__/package_data.cpython-312.pyc": _e425,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/idna/cli.py": _e426,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/idna/codec.py": _e427,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/idna/compat.py": _e428,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/idna/core.py": _e429,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/idna/idnadata.py": _e430,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/idna/intranges.py": _e431,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/idna/package_data.py": _e432,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/idna/py.typed": _e433,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/idna/uts46data.py": _e434,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml-6.1.1.dist-info/INSTALLER": _e435,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml-6.1.1.dist-info/METADATA": _e436,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml-6.1.1.dist-info/RECORD": _e437,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml-6.1.1.dist-info/REQUESTED": _e438,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml-6.1.1.dist-info/WHEEL": _e439,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml-6.1.1.dist-info/licenses/LICENSE.txt": _e440,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml-6.1.1.dist-info/licenses/LICENSES.txt": _e441,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml-6.1.1.dist-info/top_level.txt": _e442,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/ElementInclude.py": _e443,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/__init__.py": _e444,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/__pycache__/__init__.cpython-312.pyc": _e445,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/_elementpath.cpython-312-x86_64-linux-gnu.so": _e446,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/_elementpath.py": _e447,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/apihelpers.pxi": _e448,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/builder.cpython-312-x86_64-linux-gnu.so": _e449,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/builder.py": _e450,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/classlookup.pxi": _e451,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/cleanup.pxi": _e452,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/cssselect.py": _e453,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/debug.pxi": _e454,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/docloader.pxi": _e455,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/doctestcompare.py": _e456,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/dtd.pxi": _e457,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/etree.cpython-312-x86_64-linux-gnu.so": _e458,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/etree.h": _e459,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/etree.pyx": _e460,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/etree_api.h": _e461,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/extensions.pxi": _e462,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/html/ElementSoup.py": _e463,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/html/__init__.py": _e464,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/html/_diffcommand.py": _e465,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/html/_difflib.cpython-312-x86_64-linux-gnu.so": _e466,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/html/_difflib.py": _e467,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/html/_html5builder.py": _e468,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/html/_setmixin.py": _e469,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/html/builder.py": _e470,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/html/clean.py": _e471,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/html/defs.py": _e472,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/html/diff.cpython-312-x86_64-linux-gnu.so": _e473,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/html/diff.py": _e474,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/html/formfill.py": _e475,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/html/html5parser.py": _e476,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/html/soupparser.py": _e477,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/html/usedoctest.py": _e478,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/__init__.pxd": _e479,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/__init__.py": _e480,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/c14n.pxd": _e481,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/config.pxd": _e482,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/dtdvalid.pxd": _e483,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/etree_defs.h": _e484,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/etreepublic.pxd": _e485,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/extlibs/__init__.py": _e486,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/extlibs/libcharset.h": _e487,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/extlibs/localcharset.h": _e488,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/extlibs/zconf.h": _e489,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/extlibs/zlib.h": _e490,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/htmlparser.pxd": _e491,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libexslt/__init__.py": _e492,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libexslt/exslt.h": _e493,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libexslt/exsltconfig.h": _e494,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libexslt/exsltexports.h": _e495,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/HTMLparser.h": _e496,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/HTMLtree.h": _e497,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/SAX.h": _e498,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/SAX2.h": _e499,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/__init__.py": _e500,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/c14n.h": _e501,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/catalog.h": _e502,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/chvalid.h": _e503,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/debugXML.h": _e504,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/dict.h": _e505,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/encoding.h": _e506,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/entities.h": _e507,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/globals.h": _e508,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/hash.h": _e509,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/list.h": _e510,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/nanoftp.h": _e511,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/nanohttp.h": _e512,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/parser.h": _e513,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/parserInternals.h": _e514,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/relaxng.h": _e515,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/schemasInternals.h": _e516,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/schematron.h": _e517,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/threads.h": _e518,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/tree.h": _e519,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/uri.h": _e520,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/valid.h": _e521,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xinclude.h": _e522,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xlink.h": _e523,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xmlIO.h": _e524,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xmlautomata.h": _e525,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xmlerror.h": _e526,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xmlexports.h": _e527,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xmlmemory.h": _e528,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xmlmodule.h": _e529,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xmlreader.h": _e530,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xmlregexp.h": _e531,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xmlsave.h": _e532,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xmlschemas.h": _e533,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xmlschemastypes.h": _e534,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xmlstring.h": _e535,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xmlunicode.h": _e536,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xmlversion.h": _e537,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xmlwriter.h": _e538,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xpath.h": _e539,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xpathInternals.h": _e540,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxml/xpointer.h": _e541,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/__init__.py": _e542,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/attributes.h": _e543,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/documents.h": _e544,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/extensions.h": _e545,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/extra.h": _e546,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/functions.h": _e547,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/imports.h": _e548,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/keys.h": _e549,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/namespaces.h": _e550,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/numbersInternals.h": _e551,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/pattern.h": _e552,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/preproc.h": _e553,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/security.h": _e554,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/templates.h": _e555,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/transform.h": _e556,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/variables.h": _e557,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/xslt.h": _e558,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/xsltInternals.h": _e559,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/xsltconfig.h": _e560,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/xsltexports.h": _e561,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/xsltlocale.h": _e562,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/libxslt/xsltutils.h": _e563,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/lxml-version.h": _e564,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/relaxng.pxd": _e565,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/schematron.pxd": _e566,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/tree.pxd": _e567,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/uri.pxd": _e568,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/xinclude.pxd": _e569,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/xmlerror.pxd": _e570,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/xmlparser.pxd": _e571,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/xmlschema.pxd": _e572,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/xpath.pxd": _e573,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/includes/xslt.pxd": _e574,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/isoschematron/__init__.py": _e575,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/isoschematron/resources/rng/iso-schematron.rng": _e576,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/isoschematron/resources/xsl/RNG2Schtrn.xsl": _e577,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/isoschematron/resources/xsl/XSD2Schtrn.xsl": _e578,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/isoschematron/resources/xsl/iso-schematron-xslt1/iso_abstract_expand.xsl": _e579,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/isoschematron/resources/xsl/iso-schematron-xslt1/iso_dsdl_include.xsl": _e580,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/isoschematron/resources/xsl/iso-schematron-xslt1/iso_schematron_message.xsl": _e581,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/isoschematron/resources/xsl/iso-schematron-xslt1/iso_schematron_skeleton_for_xslt1.xsl": _e582,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/isoschematron/resources/xsl/iso-schematron-xslt1/iso_svrl_for_xslt1.xsl": _e583,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/isoschematron/resources/xsl/iso-schematron-xslt1/readme.txt": _e584,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/iterparse.pxi": _e585,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/lxml.etree.h": _e586,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/lxml.etree_api.h": _e587,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/nsclasses.pxi": _e588,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/objectify.cpython-312-x86_64-linux-gnu.so": _e589,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/objectify.pyx": _e590,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/objectpath.pxi": _e591,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/parser.pxi": _e592,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/parsertarget.pxi": _e593,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/proxy.pxi": _e594,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/public-api.pxi": _e595,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/pyclasslookup.py": _e596,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/readonlytree.pxi": _e597,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/relaxng.pxi": _e598,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/sax.cpython-312-x86_64-linux-gnu.so": _e599,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/sax.py": _e600,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/saxparser.pxi": _e601,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/schematron.pxi": _e602,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/serializer.pxi": _e603,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/usedoctest.py": _e604,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/xinclude.pxi": _e605,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/xmlerror.pxi": _e606,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/xmlid.pxi": _e607,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/xmlschema.pxi": _e608,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/xpath.pxi": _e609,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/xslt.pxi": _e610,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/lxml/xsltext.pxi": _e611,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests-2.33.1.dist-info/INSTALLER": _e612,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests-2.33.1.dist-info/METADATA": _e613,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests-2.33.1.dist-info/RECORD": _e614,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests-2.33.1.dist-info/REQUESTED": _e615,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests-2.33.1.dist-info/WHEEL": _e616,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests-2.33.1.dist-info/licenses/LICENSE": _e617,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests-2.33.1.dist-info/licenses/NOTICE": _e618,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests-2.33.1.dist-info/top_level.txt": _e619,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/__init__.py": _e620,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/__init__.cpython-312.pyc": _e621,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/__version__.cpython-312.pyc": _e622,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/_internal_utils.cpython-312.pyc": _e623,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/adapters.cpython-312.pyc": _e624,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/api.cpython-312.pyc": _e625,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/auth.cpython-312.pyc": _e626,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/certs.cpython-312.pyc": _e627,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/compat.cpython-312.pyc": _e628,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/cookies.cpython-312.pyc": _e629,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/exceptions.cpython-312.pyc": _e630,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/hooks.cpython-312.pyc": _e631,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/models.cpython-312.pyc": _e632,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/packages.cpython-312.pyc": _e633,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/sessions.cpython-312.pyc": _e634,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/status_codes.cpython-312.pyc": _e635,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/structures.cpython-312.pyc": _e636,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/__pycache__/utils.cpython-312.pyc": _e637,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/__version__.py": _e638,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/_internal_utils.py": _e639,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/adapters.py": _e640,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/api.py": _e641,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/auth.py": _e642,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/certs.py": _e643,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/compat.py": _e644,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/cookies.py": _e645,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/exceptions.py": _e646,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/help.py": _e647,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/hooks.py": _e648,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/models.py": _e649,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/packages.py": _e650,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/sessions.py": _e651,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/status_codes.py": _e652,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/structures.py": _e653,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/requests/utils.py": _e654,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3-2.7.0.dist-info/INSTALLER": _e655,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3-2.7.0.dist-info/METADATA": _e656,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3-2.7.0.dist-info/RECORD": _e657,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3-2.7.0.dist-info/REQUESTED": _e658,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3-2.7.0.dist-info/WHEEL": _e659,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3-2.7.0.dist-info/licenses/LICENSE.txt": _e660,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/__init__.py": _e661,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/__pycache__/__init__.cpython-312.pyc": _e662,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/__pycache__/_base_connection.cpython-312.pyc": _e663,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/__pycache__/_collections.cpython-312.pyc": _e664,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/__pycache__/_request_methods.cpython-312.pyc": _e665,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/__pycache__/_version.cpython-312.pyc": _e666,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/__pycache__/connection.cpython-312.pyc": _e667,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/__pycache__/connectionpool.cpython-312.pyc": _e668,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/__pycache__/exceptions.cpython-312.pyc": _e669,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/__pycache__/fields.cpython-312.pyc": _e670,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/__pycache__/filepost.cpython-312.pyc": _e671,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/__pycache__/poolmanager.cpython-312.pyc": _e672,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/__pycache__/response.cpython-312.pyc": _e673,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/_base_connection.py": _e674,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/_collections.py": _e675,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/_request_methods.py": _e676,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/_version.py": _e677,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/connection.py": _e678,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/connectionpool.py": _e679,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/contrib/__init__.py": _e680,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/contrib/__pycache__/__init__.cpython-312.pyc": _e681,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/contrib/__pycache__/socks.cpython-312.pyc": _e682,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/contrib/emscripten/__init__.py": _e683,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/contrib/emscripten/connection.py": _e684,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/contrib/emscripten/emscripten_fetch_worker.js": _e685,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/contrib/emscripten/fetch.py": _e686,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/contrib/emscripten/request.py": _e687,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/contrib/emscripten/response.py": _e688,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/contrib/pyopenssl.py": _e689,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/contrib/socks.py": _e690,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/exceptions.py": _e691,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/fields.py": _e692,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/filepost.py": _e693,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/http2/__init__.py": _e694,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/http2/__pycache__/__init__.cpython-312.pyc": _e695,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/http2/__pycache__/probe.cpython-312.pyc": _e696,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/http2/connection.py": _e697,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/http2/probe.py": _e698,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/poolmanager.py": _e699,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/py.typed": _e700,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/response.py": _e701,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/__init__.py": _e702,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/__pycache__/__init__.cpython-312.pyc": _e703,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/__pycache__/connection.cpython-312.pyc": _e704,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/__pycache__/proxy.cpython-312.pyc": _e705,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/__pycache__/request.cpython-312.pyc": _e706,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/__pycache__/response.cpython-312.pyc": _e707,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/__pycache__/retry.cpython-312.pyc": _e708,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/__pycache__/ssl_.cpython-312.pyc": _e709,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/__pycache__/ssl_match_hostname.cpython-312.pyc": _e710,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/__pycache__/ssltransport.cpython-312.pyc": _e711,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/__pycache__/timeout.cpython-312.pyc": _e712,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/__pycache__/url.cpython-312.pyc": _e713,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/__pycache__/util.cpython-312.pyc": _e714,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/__pycache__/wait.cpython-312.pyc": _e715,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/connection.py": _e716,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/proxy.py": _e717,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/request.py": _e718,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/response.py": _e719,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/retry.py": _e720,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/ssl_.py": _e721,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/ssl_match_hostname.py": _e722,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/ssltransport.py": _e723,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/timeout.py": _e724,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/url.py": _e725,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/util.py": _e726,
-  "skills/paper-search/.venv/lib/python3.12/site-packages/urllib3/util/wait.py": _e727,
-  "skills/paper-search/.venv/pyvenv.cfg": _e728,
-  "skills/paper-search/SKILL.md": _e729,
-  "skills/paper-search/scripts/fetch_papers.py": _e730,
-  "skills/pdf-to-markdown/SKILL.md": _e731,
-  "skills/playwright-cli/SKILL.md": _e732,
-  "skills/playwright-cli/references/element-attributes.md": _e733,
-  "skills/playwright-cli/references/playwright-tests.md": _e734,
-  "skills/playwright-cli/references/request-mocking.md": _e735,
-  "skills/playwright-cli/references/running-code.md": _e736,
-  "skills/playwright-cli/references/session-management.md": _e737,
-  "skills/playwright-cli/references/storage-state.md": _e738,
-  "skills/playwright-cli/references/test-generation.md": _e739,
-  "skills/playwright-cli/references/tracing.md": _e740,
-  "skills/playwright-cli/references/video-recording.md": _e741,
-  "skills/research-paper-writing/SKILL.md": _e742,
-  "skills/research-paper-writing/references/autoreason-methodology.md": _e743,
-  "skills/research-paper-writing/references/checklists.md": _e744,
-  "skills/research-paper-writing/references/citation-workflow.md": _e745,
-  "skills/research-paper-writing/references/experiment-patterns.md": _e746,
-  "skills/research-paper-writing/references/human-evaluation.md": _e747,
-  "skills/research-paper-writing/references/manuscript-revision-audit.md": _e748,
-  "skills/research-paper-writing/references/paper-types.md": _e749,
-  "skills/research-paper-writing/references/reviewer-guidelines.md": _e750,
-  "skills/research-paper-writing/references/sources.md": _e751,
-  "skills/research-paper-writing/references/writing-guide.md": _e752,
-  "skills/research-paper-writing/templates/README.md": _e753,
-  "skills/research-paper-writing/templates/aaai2026/README.md": _e754,
-  "skills/research-paper-writing/templates/aaai2026/aaai2026-unified-supp.tex": _e755,
-  "skills/research-paper-writing/templates/aaai2026/aaai2026-unified-template.tex": _e756,
-  "skills/research-paper-writing/templates/aaai2026/aaai2026.bib": _e757,
-  "skills/research-paper-writing/templates/aaai2026/aaai2026.bst": _e758,
-  "skills/research-paper-writing/templates/aaai2026/aaai2026.sty": _e759,
-  "skills/research-paper-writing/templates/acl/README.md": _e760,
-  "skills/research-paper-writing/templates/acl/acl.sty": _e761,
-  "skills/research-paper-writing/templates/acl/acl_latex.tex": _e762,
-  "skills/research-paper-writing/templates/acl/acl_lualatex.tex": _e763,
-  "skills/research-paper-writing/templates/acl/acl_natbib.bst": _e764,
-  "skills/research-paper-writing/templates/acl/anthology.bib.txt": _e765,
-  "skills/research-paper-writing/templates/acl/custom.bib": _e766,
-  "skills/research-paper-writing/templates/acl/formatting.md": _e767,
-  "skills/research-paper-writing/templates/colm2025/README.md": _e768,
-  "skills/research-paper-writing/templates/colm2025/colm2025_conference.bib": _e769,
-  "skills/research-paper-writing/templates/colm2025/colm2025_conference.bst": _e770,
-  "skills/research-paper-writing/templates/colm2025/colm2025_conference.pdf": _e771,
-  "skills/research-paper-writing/templates/colm2025/colm2025_conference.sty": _e772,
-  "skills/research-paper-writing/templates/colm2025/colm2025_conference.tex": _e773,
-  "skills/research-paper-writing/templates/colm2025/fancyhdr.sty": _e774,
-  "skills/research-paper-writing/templates/colm2025/math_commands.tex": _e775,
-  "skills/research-paper-writing/templates/colm2025/natbib.sty": _e776,
-  "skills/research-paper-writing/templates/iclr2026/fancyhdr.sty": _e777,
-  "skills/research-paper-writing/templates/iclr2026/iclr2026_conference.bib": _e778,
-  "skills/research-paper-writing/templates/iclr2026/iclr2026_conference.bst": _e779,
-  "skills/research-paper-writing/templates/iclr2026/iclr2026_conference.pdf": _e780,
-  "skills/research-paper-writing/templates/iclr2026/iclr2026_conference.sty": _e781,
-  "skills/research-paper-writing/templates/iclr2026/iclr2026_conference.tex": _e782,
-  "skills/research-paper-writing/templates/iclr2026/math_commands.tex": _e783,
-  "skills/research-paper-writing/templates/iclr2026/natbib.sty": _e784,
-  "skills/research-paper-writing/templates/icml2026/algorithm.sty": _e785,
-  "skills/research-paper-writing/templates/icml2026/algorithmic.sty": _e786,
-  "skills/research-paper-writing/templates/icml2026/example_paper.bib": _e787,
-  "skills/research-paper-writing/templates/icml2026/example_paper.pdf": _e788,
-  "skills/research-paper-writing/templates/icml2026/example_paper.tex": _e789,
-  "skills/research-paper-writing/templates/icml2026/fancyhdr.sty": _e790,
-  "skills/research-paper-writing/templates/icml2026/icml2026.bst": _e791,
-  "skills/research-paper-writing/templates/icml2026/icml2026.sty": _e792,
-  "skills/research-paper-writing/templates/icml2026/icml_numpapers.pdf": _e793,
-  "skills/research-paper-writing/templates/neurips2025/Makefile": _e794,
-  "skills/research-paper-writing/templates/neurips2025/extra_pkgs.tex": _e795,
-  "skills/research-paper-writing/templates/neurips2025/main.tex": _e796,
-  "skills/research-paper-writing/templates/neurips2025/neurips.sty": _e797,
-  "skills/research-project-workflow/SKILL.md": _e798,
-  "skills/skill-creator/LICENSE.txt": _e799,
-  "skills/skill-creator/SKILL.md": _e800,
-  "skills/skill-creator/agents/analyzer.md": _e801,
-  "skills/skill-creator/agents/comparator.md": _e802,
-  "skills/skill-creator/agents/grader.md": _e803,
-  "skills/skill-creator/assets/eval_review.html": _e804,
-  "skills/skill-creator/eval-viewer/generate_review.py": _e805,
-  "skills/skill-creator/eval-viewer/viewer.html": _e806,
-  "skills/skill-creator/references/schemas.md": _e807,
-  "skills/skill-creator/scripts/__init__.py": _e808,
-  "skills/skill-creator/scripts/aggregate_benchmark.py": _e809,
-  "skills/skill-creator/scripts/generate_report.py": _e810,
-  "skills/skill-creator/scripts/improve_description.py": _e811,
-  "skills/skill-creator/scripts/package_skill.py": _e812,
-  "skills/skill-creator/scripts/quick_validate.py": _e813,
-  "skills/skill-creator/scripts/run_eval.py": _e814,
-  "skills/skill-creator/scripts/run_loop.py": _e815,
-  "skills/skill-creator/scripts/utils.py": _e816,
-  "skills/ssh-experiment/SKILL.md": _e817,
-  "skills/ssh-experiment/scripts/rssh": _e818,
-  "skills/ssh-experiment/scripts/rssh-tmux": _e819,
-  "pi/package.json": _e820,
-  "pi/README.md": _e821,
-  "pi/theme/dark.json": _e822,
-  "pi/theme/light.json": _e823,
-  "pi/theme/theme-schema.json": _e824,
+  "skills/arxiv/scripts/search_arxiv.py": _e6,
+  "skills/customize-easyresearch/SKILL.md": _e7,
+  "skills/customize-easyresearch/evals/evals.json": _e8,
+  "skills/drawio-academic-skills/.gitignore": _e9,
+  "skills/drawio-academic-skills/CHANGELOG.md": _e10,
+  "skills/drawio-academic-skills/README.md": _e11,
+  "skills/drawio-academic-skills/README_CN.md": _e12,
+  "skills/drawio-academic-skills/SKILL.md": _e13,
+  "skills/drawio-academic-skills/agents/interface.yaml": _e14,
+  "skills/drawio-academic-skills/agents/openai.yaml": _e15,
+  "skills/drawio-academic-skills/evals/README.md": _e16,
+  "skills/drawio-academic-skills/evals/baseline-prompts.json": _e17,
+  "skills/drawio-academic-skills/evals/darwin-results.tsv": _e18,
+  "skills/drawio-academic-skills/evals/evals.json": _e19,
+  "skills/drawio-academic-skills/evals/test-prompts.json": _e20,
+  "skills/drawio-academic-skills/references/docs/academic-export-checklist.md": _e21,
+  "skills/drawio-academic-skills/references/docs/academic-figure-playbook.md": _e22,
+  "skills/drawio-academic-skills/references/docs/publication-overlay.md": _e23,
+  "skills/drawio-academic-skills/references/examples/ablation-study-pipeline.yaml": _e24,
+  "skills/drawio-academic-skills/references/examples/ieee-network-paper.yaml": _e25,
+  "skills/drawio-academic-skills/references/examples/industrial-architecture-cn-paper.yaml": _e26,
+  "skills/drawio-academic-skills/references/examples/max-pooling-operation-paper.yaml": _e27,
+  "skills/drawio-academic-skills/references/examples/research-pipeline.yaml": _e28,
+  "skills/drawio-academic-skills/references/examples/system-architecture-paper.yaml": _e29,
+  "skills/drawio-academic-skills/references/examples/technical-roadmap-paper.yaml": _e30,
+  "skills/drawio-academic-skills/references/examples/yolo-model-architecture-paper.yaml": _e31,
+  "skills/drawio-academic-skills/references/templates/multi-module-system-compact.yaml": _e32,
+  "skills/drawio-academic-skills/references/templates/neural-network-architecture-compact.yaml": _e33,
+  "skills/drawio/.mcp.json": _e34,
+  "skills/drawio/CHANGELOG.md": _e35,
+  "skills/drawio/SKILL.md": _e36,
+  "skills/drawio/agents/interface.yaml": _e37,
+  "skills/drawio/agents/openai.yaml": _e38,
+  "skills/drawio/assets/catalog/ai-icons.json.gz": _e39,
+  "skills/drawio/assets/catalog/shape-catalog.json.gz": _e40,
+  "skills/drawio/assets/catalog/shape-index.json.gz": _e41,
+  "skills/drawio/assets/examples/login-flow-test.drawio": _e42,
+  "skills/drawio/assets/examples/login-flow.drawio": _e43,
+  "skills/drawio/assets/examples/microservices.drawio": _e44,
+  "skills/drawio/assets/examples/neural-network.drawio": _e45,
+  "skills/drawio/assets/licenses/architecture-diagram-generator-MIT.txt": _e46,
+  "skills/drawio/assets/licenses/drawio-mcp-shape-index-Apache-2.0.txt": _e47,
+  "skills/drawio/assets/licenses/lobe-icons-MIT.txt": _e48,
+  "skills/drawio/assets/licenses/lucide-ISC.txt": _e49,
+  "skills/drawio/assets/palettes/c4-blue.json": _e50,
+  "skills/drawio/assets/palettes/cloud-aws.json": _e51,
+  "skills/drawio/assets/palettes/drawio-classic.json": _e52,
+  "skills/drawio/assets/palettes/ieee-bw.json": _e53,
+  "skills/drawio/assets/palettes/ieee-color.json": _e54,
+  "skills/drawio/assets/palettes/journal-jama.json": _e55,
+  "skills/drawio/assets/palettes/journal-npg.json": _e56,
+  "skills/drawio/assets/palettes/matlab-lines.json": _e57,
+  "skills/drawio/assets/palettes/morandi.json": _e58,
+  "skills/drawio/assets/palettes/okabe-ito.json": _e59,
+  "skills/drawio/assets/palettes/seaborn-colorblind.json": _e60,
+  "skills/drawio/assets/palettes/tol-bright.json": _e61,
+  "skills/drawio/assets/palettes/tol-high-contrast.json": _e62,
+  "skills/drawio/assets/palettes/tol-light-fill.json": _e63,
+  "skills/drawio/assets/palettes/tol-muted.json": _e64,
+  "skills/drawio/assets/schemas/graph-projection.schema.json": _e65,
+  "skills/drawio/assets/schemas/spec.schema.json": _e66,
+  "skills/drawio/assets/themes/academic-color.json": _e67,
+  "skills/drawio/assets/themes/academic.json": _e68,
+  "skills/drawio/assets/themes/arch-dark.json": _e69,
+  "skills/drawio/assets/themes/blueprint.json": _e70,
+  "skills/drawio/assets/themes/dark-luxury.json": _e71,
+  "skills/drawio/assets/themes/dark-terminal.json": _e72,
+  "skills/drawio/assets/themes/dark.json": _e73,
+  "skills/drawio/assets/themes/high-contrast.json": _e74,
+  "skills/drawio/assets/themes/nature.json": _e75,
+  "skills/drawio/assets/themes/notion-clean.json": _e76,
+  "skills/drawio/assets/themes/tech-blue.json": _e77,
+  "skills/drawio/evals/README.md": _e78,
+  "skills/drawio/evals/ai-icon-catalog-cases.json": _e79,
+  "skills/drawio/evals/baseline-prompts.json": _e80,
+  "skills/drawio/evals/darwin-results.tsv": _e81,
+  "skills/drawio/evals/evals.json": _e82,
+  "skills/drawio/evals/evidence/ai-icon-catalog-desktop.json": _e83,
+  "skills/drawio/evals/fixtures/ai-icons-advanced-svg.yaml": _e84,
+  "skills/drawio/evals/fixtures/ai-icons-cjk-agent-rag.yaml": _e85,
+  "skills/drawio/evals/fixtures/ai-icons-core-aliases.yaml": _e86,
+  "skills/drawio/evals/fixtures/ai-icons-current-color.yaml": _e87,
+  "skills/drawio/evals/fixtures/ai-icons-gradients.yaml": _e88,
+  "skills/drawio/evals/fixtures/import-simple-compressed.drawio": _e89,
+  "skills/drawio/evals/fixtures/import-simple.drawio": _e90,
+  "skills/drawio/evals/fixtures/industrial-architecture.yaml": _e91,
+  "skills/drawio/evals/fixtures/replicate-academic-highlight.svg": _e92,
+  "skills/drawio/evals/fixtures/replicate-brand-architecture.svg": _e93,
+  "skills/drawio/evals/fixtures/replicate-warm-approval.svg": _e94,
+  "skills/drawio/evals/fixtures/vision-tall-workflow.yaml": _e95,
+  "skills/drawio/evals/upstream-integration-cases.json": _e96,
+  "skills/drawio/evals/vision-preview-cases.json": _e97,
+  "skills/drawio/references/docs/agent-diagrams.md": _e98,
+  "skills/drawio/references/docs/ah-format.md": _e99,
+  "skills/drawio/references/docs/architecture-diagrams.md": _e100,
+  "skills/drawio/references/docs/canonical-graph-projection.md": _e101,
+  "skills/drawio/references/docs/code-importers.md": _e102,
+  "skills/drawio/references/docs/config-importers.md": _e103,
+  "skills/drawio/references/docs/design-system/README.md": _e104,
+  "skills/drawio/references/docs/design-system/color-guide.md": _e105,
+  "skills/drawio/references/docs/design-system/connectors.md": _e106,
+  "skills/drawio/references/docs/design-system/formulas.md": _e107,
+  "skills/drawio/references/docs/design-system/icons.md": _e108,
+  "skills/drawio/references/docs/design-system/shapes.md": _e109,
+  "skills/drawio/references/docs/design-system/specification.md": _e110,
+  "skills/drawio/references/docs/design-system/themes.md": _e111,
+  "skills/drawio/references/docs/design-system/tokens.md": _e112,
+  "skills/drawio/references/docs/edge-quality-rules.md": _e113,
+  "skills/drawio/references/docs/ieee-network-diagrams.md": _e114,
+  "skills/drawio/references/docs/live-snapshots-drift.md": _e115,
+  "skills/drawio/references/docs/math-typesetting.md": _e116,
+  "skills/drawio/references/docs/mcp-tools.md": _e117,
+  "skills/drawio/references/docs/migration-readiness.md": _e118,
+  "skills/drawio/references/docs/stencil-library-guide.md": _e119,
+  "skills/drawio/references/docs/style-extraction.md": _e120,
+  "skills/drawio/references/docs/style-presets.md": _e121,
+  "skills/drawio/references/docs/upstream-capability-compatibility.md": _e122,
+  "skills/drawio/references/docs/xml-format.md": _e123,
+  "skills/drawio/references/examples/README.md": _e124,
+  "skills/drawio/references/examples/agentic-rag.yaml": _e125,
+  "skills/drawio/references/examples/arch-dark-aws-serverless.yaml": _e126,
+  "skills/drawio/references/examples/arch-dark-microservices.yaml": _e127,
+  "skills/drawio/references/examples/arch-dark-web-app.yaml": _e128,
+  "skills/drawio/references/examples/auto-layout-workflow.yaml": _e129,
+  "skills/drawio/references/examples/aws-vpc-topology.yaml": _e130,
+  "skills/drawio/references/examples/campus-lan-topology.yaml": _e131,
+  "skills/drawio/references/examples/cloud-reference-architecture.yaml": _e132,
+  "skills/drawio/references/examples/e-commerce.yaml": _e133,
+  "skills/drawio/references/examples/importers/README.md": _e134,
+  "skills/drawio/references/examples/importers/live/compose-drift-evidence.json": _e135,
+  "skills/drawio/references/examples/importers/live/compose-drift-report.json": _e136,
+  "skills/drawio/references/examples/importers/live/compose-drift.spec.yaml": _e137,
+  "skills/drawio/references/examples/importers/live/docker-inspect.json": _e138,
+  "skills/drawio/references/examples/importers/live/drift-declared-compose.yaml": _e139,
+  "skills/drawio/references/examples/importers/live/kubernetes-live.json": _e140,
+  "skills/drawio/references/examples/importers/live/terraform-state.json": _e141,
+  "skills/drawio/references/examples/importers/schema.sql": _e142,
+  "skills/drawio/references/examples/importers/terraform.tf": _e143,
+  "skills/drawio/references/examples/login-flow.yaml": _e144,
+  "skills/drawio/references/examples/mem0-memory-layer.yaml": _e145,
+  "skills/drawio/references/examples/microservices.yaml": _e146,
+  "skills/drawio/references/examples/multi-agent-orchestration.yaml": _e147,
+  "skills/drawio/references/examples/neural-network.yaml": _e148,
+  "skills/drawio/references/examples/onprem-dmz-topology.yaml": _e149,
+  "skills/drawio/references/examples/palettes/README.md": _e150,
+  "skills/drawio/references/examples/palettes/c4-blue.drawio": _e151,
+  "skills/drawio/references/examples/palettes/c4-blue.svg": _e152,
+  "skills/drawio/references/examples/palettes/cloud-aws.drawio": _e153,
+  "skills/drawio/references/examples/palettes/cloud-aws.svg": _e154,
+  "skills/drawio/references/examples/palettes/drawio-classic.drawio": _e155,
+  "skills/drawio/references/examples/palettes/drawio-classic.svg": _e156,
+  "skills/drawio/references/examples/palettes/ieee-bw.drawio": _e157,
+  "skills/drawio/references/examples/palettes/ieee-bw.svg": _e158,
+  "skills/drawio/references/examples/palettes/ieee-color.drawio": _e159,
+  "skills/drawio/references/examples/palettes/ieee-color.svg": _e160,
+  "skills/drawio/references/examples/palettes/journal-jama.drawio": _e161,
+  "skills/drawio/references/examples/palettes/journal-jama.svg": _e162,
+  "skills/drawio/references/examples/palettes/journal-npg.drawio": _e163,
+  "skills/drawio/references/examples/palettes/journal-npg.svg": _e164,
+  "skills/drawio/references/examples/palettes/matlab-lines.drawio": _e165,
+  "skills/drawio/references/examples/palettes/matlab-lines.svg": _e166,
+  "skills/drawio/references/examples/palettes/morandi.drawio": _e167,
+  "skills/drawio/references/examples/palettes/morandi.svg": _e168,
+  "skills/drawio/references/examples/palettes/okabe-ito.drawio": _e169,
+  "skills/drawio/references/examples/palettes/okabe-ito.svg": _e170,
+  "skills/drawio/references/examples/palettes/palette-swatch.template.yaml": _e171,
+  "skills/drawio/references/examples/palettes/seaborn-colorblind.drawio": _e172,
+  "skills/drawio/references/examples/palettes/seaborn-colorblind.svg": _e173,
+  "skills/drawio/references/examples/palettes/tol-bright.drawio": _e174,
+  "skills/drawio/references/examples/palettes/tol-bright.svg": _e175,
+  "skills/drawio/references/examples/palettes/tol-high-contrast.drawio": _e176,
+  "skills/drawio/references/examples/palettes/tol-high-contrast.svg": _e177,
+  "skills/drawio/references/examples/palettes/tol-light-fill.drawio": _e178,
+  "skills/drawio/references/examples/palettes/tol-light-fill.svg": _e179,
+  "skills/drawio/references/examples/palettes/tol-muted.drawio": _e180,
+  "skills/drawio/references/examples/palettes/tol-muted.svg": _e181,
+  "skills/drawio/references/examples/rag-pipeline.yaml": _e182,
+  "skills/drawio/references/examples/replicated-brand-flow.yaml": _e183,
+  "skills/drawio/references/examples/swimlane-engineering-review.yaml": _e184,
+  "skills/drawio/references/examples/tiered-network-topology.yaml": _e185,
+  "skills/drawio/references/examples/tool-call-loop.yaml": _e186,
+  "skills/drawio/references/examples/vendor-device-mapping.yaml": _e187,
+  "skills/drawio/references/official/style-reference.md": _e188,
+  "skills/drawio/references/official/xml-reference.md": _e189,
+  "skills/drawio/references/palette.schema.json": _e190,
+  "skills/drawio/references/theme.schema.json": _e191,
+  "skills/drawio/references/upstream/pure-drawio-skill.md": _e192,
+  "skills/drawio/references/workflows/create.md": _e193,
+  "skills/drawio/references/workflows/edit.md": _e194,
+  "skills/drawio/references/workflows/replicate.md": _e195,
+  "skills/drawio/references/workflows/visual-review.md": _e196,
+  "skills/drawio/reports/output_quality_scorecard.md": _e197,
+  "skills/drawio/reports/upstream-port-release-evidence.md": _e198,
+  "skills/drawio/scripts/adapters/ci.js": _e199,
+  "skills/drawio/scripts/adapters/ci.test.js": _e200,
+  "skills/drawio/scripts/adapters/code-common.js": _e201,
+  "skills/drawio/scripts/adapters/code-imports.test.js": _e202,
+  "skills/drawio/scripts/adapters/code-parsers.integration.test.js": _e203,
+  "skills/drawio/scripts/adapters/compose.js": _e204,
+  "skills/drawio/scripts/adapters/compose.test.js": _e205,
+  "skills/drawio/scripts/adapters/config-adapters.integration.test.js": _e206,
+  "skills/drawio/scripts/adapters/config-common.js": _e207,
+  "skills/drawio/scripts/adapters/config-common.test.js": _e208,
+  "skills/drawio/scripts/adapters/docker-inspect.js": _e209,
+  "skills/drawio/scripts/adapters/docker-inspect.test.js": _e210,
+  "skills/drawio/scripts/adapters/fixtures/raster-extraction.json": _e211,
+  "skills/drawio/scripts/adapters/go-code-adapter.test.js": _e212,
+  "skills/drawio/scripts/adapters/go-code.js": _e213,
+  "skills/drawio/scripts/adapters/graph-drift.file.test.js": _e214,
+  "skills/drawio/scripts/adapters/graph-drift.js": _e215,
+  "skills/drawio/scripts/adapters/graph-drift.test.js": _e216,
+  "skills/drawio/scripts/adapters/graph-projection.js": _e217,
+  "skills/drawio/scripts/adapters/graph-projection.test.js": _e218,
+  "skills/drawio/scripts/adapters/identity.js": _e219,
+  "skills/drawio/scripts/adapters/identity.test.js": _e220,
+  "skills/drawio/scripts/adapters/index.js": _e221,
+  "skills/drawio/scripts/adapters/index.test.js": _e222,
+  "skills/drawio/scripts/adapters/js-code-adapter.test.js": _e223,
+  "skills/drawio/scripts/adapters/js-code.js": _e224,
+  "skills/drawio/scripts/adapters/kubernetes-live.test.js": _e225,
+  "skills/drawio/scripts/adapters/kubernetes.js": _e226,
+  "skills/drawio/scripts/adapters/kubernetes.test.js": _e227,
+  "skills/drawio/scripts/adapters/openapi.js": _e228,
+  "skills/drawio/scripts/adapters/openapi.test.js": _e229,
+  "skills/drawio/scripts/adapters/optional-python-code.js": _e230,
+  "skills/drawio/scripts/adapters/optional-python.integration.test.js": _e231,
+  "skills/drawio/scripts/adapters/optional-python.js": _e232,
+  "skills/drawio/scripts/adapters/optional-python.test.js": _e233,
+  "skills/drawio/scripts/adapters/projection-to-spec.js": _e234,
+  "skills/drawio/scripts/adapters/projection-to-spec.test.js": _e235,
+  "skills/drawio/scripts/adapters/python-code-adapter.test.js": _e236,
+  "skills/drawio/scripts/adapters/python-code.js": _e237,
+  "skills/drawio/scripts/adapters/python/code-parser-worker.py": _e238,
+  "skills/drawio/scripts/adapters/python/config-parser-worker.py": _e239,
+  "skills/drawio/scripts/adapters/python/requirements.txt": _e240,
+  "skills/drawio/scripts/adapters/raster-extraction.js": _e241,
+  "skills/drawio/scripts/adapters/raster-extraction.test.js": _e242,
+  "skills/drawio/scripts/adapters/rust-code-adapter.test.js": _e243,
+  "skills/drawio/scripts/adapters/rust-code.js": _e244,
+  "skills/drawio/scripts/adapters/sql-ddl.js": _e245,
+  "skills/drawio/scripts/adapters/sql-ddl.test.js": _e246,
+  "skills/drawio/scripts/adapters/terraform-config.js": _e247,
+  "skills/drawio/scripts/adapters/terraform-config.test.js": _e248,
+  "skills/drawio/scripts/adapters/terraform-state.js": _e249,
+  "skills/drawio/scripts/adapters/terraform-state.test.js": _e250,
+  "skills/drawio/scripts/cli.js": _e251,
+  "skills/drawio/scripts/dsl/ah-to-drawio.js": _e252,
+  "skills/drawio/scripts/dsl/ah-to-drawio.test.js": _e253,
+  "skills/drawio/scripts/dsl/ai-icon-catalog.js": _e254,
+  "skills/drawio/scripts/dsl/ai-icon-catalog.test.js": _e255,
+  "skills/drawio/scripts/dsl/auto-layout.js": _e256,
+  "skills/drawio/scripts/dsl/auto-layout.test.js": _e257,
+  "skills/drawio/scripts/dsl/catalog-ranking.js": _e258,
+  "skills/drawio/scripts/dsl/catalog-search.js": _e259,
+  "skills/drawio/scripts/dsl/catalog-search.test.js": _e260,
+  "skills/drawio/scripts/dsl/document-spec.js": _e261,
+  "skills/drawio/scripts/dsl/document-spec.test.js": _e262,
+  "skills/drawio/scripts/dsl/drawio-to-spec.js": _e263,
+  "skills/drawio/scripts/dsl/examples-baseline.test.js": _e264,
+  "skills/drawio/scripts/dsl/icon-mappings.js": _e265,
+  "skills/drawio/scripts/dsl/icon-mappings.test.js": _e266,
+  "skills/drawio/scripts/dsl/icon-resolver.js": _e267,
+  "skills/drawio/scripts/dsl/icon-resolver.test.js": _e268,
+  "skills/drawio/scripts/dsl/multi-page.js": _e269,
+  "skills/drawio/scripts/dsl/multi-page.test.js": _e270,
+  "skills/drawio/scripts/dsl/palette-catalog.test.js": _e271,
+  "skills/drawio/scripts/dsl/palette-integration.test.js": _e272,
+  "skills/drawio/scripts/dsl/palette-validate.js": _e273,
+  "skills/drawio/scripts/dsl/palette.js": _e274,
+  "skills/drawio/scripts/dsl/palette.test.js": _e275,
+  "skills/drawio/scripts/dsl/shape-catalog.js": _e276,
+  "skills/drawio/scripts/dsl/shape-catalog.test.js": _e277,
+  "skills/drawio/scripts/dsl/spec-to-drawio.js": _e278,
+  "skills/drawio/scripts/dsl/spec-to-drawio.test.js": _e279,
+  "skills/drawio/scripts/generate-palette-swatches.js": _e280,
+  "skills/drawio/scripts/install.bat": _e281,
+  "skills/drawio/scripts/install.sh": _e282,
+  "skills/drawio/scripts/math/index.js": _e283,
+  "skills/drawio/scripts/math/index.test.js": _e284,
+  "skills/drawio/scripts/package.json": _e285,
+  "skills/drawio/scripts/postprocess/artifacts.js": _e286,
+  "skills/drawio/scripts/postprocess/artifacts.test.js": _e287,
+  "skills/drawio/scripts/postprocess/cli.js": _e288,
+  "skills/drawio/scripts/postprocess/cli.test.js": _e289,
+  "skills/drawio/scripts/postprocess/fixtures/bundle.yaml": _e290,
+  "skills/drawio/scripts/postprocess/fixtures/legacy.yaml": _e291,
+  "skills/drawio/scripts/postprocess/html.js": _e292,
+  "skills/drawio/scripts/postprocess/html.test.js": _e293,
+  "skills/drawio/scripts/postprocess/index.js": _e294,
+  "skills/drawio/scripts/postprocess/input.js": _e295,
+  "skills/drawio/scripts/postprocess/input.test.js": _e296,
+  "skills/drawio/scripts/postprocess/mutate.js": _e297,
+  "skills/drawio/scripts/postprocess/mutate.test.js": _e298,
+  "skills/drawio/scripts/postprocess/projection.js": _e299,
+  "skills/drawio/scripts/postprocess/projection.test.js": _e300,
+  "skills/drawio/scripts/runtime/artifacts.js": _e301,
+  "skills/drawio/scripts/runtime/desktop.js": _e302,
+  "skills/drawio/scripts/runtime/desktop.test.js": _e303,
+  "skills/drawio/scripts/runtime/diagrams-net-url.js": _e304,
+  "skills/drawio/scripts/runtime/export-stability.js": _e305,
+  "skills/drawio/scripts/runtime/export-stability.test.js": _e306,
+  "skills/drawio/scripts/runtime/png-inspection.js": _e307,
+  "skills/drawio/scripts/runtime/png-inspection.test.js": _e308,
+  "skills/drawio/scripts/runtime/vision-preview.js": _e309,
+  "skills/drawio/scripts/runtime/vision-preview.test.js": _e310,
+  "skills/drawio/scripts/shared/ai-icon-contract.js": _e311,
+  "skills/drawio/scripts/shared/xml-utils.js": _e312,
+  "skills/drawio/scripts/svg/drawio-to-svg.js": _e313,
+  "skills/drawio/scripts/svg/drawio-to-svg.test.js": _e314,
+  "skills/drawio/scripts/tools/build-ai-icon-catalog.js": _e315,
+  "skills/drawio/scripts/tools/build-ai-icon-catalog.test.js": _e316,
+  "skills/drawio/scripts/tools/build-shape-catalog.js": _e317,
+  "skills/drawio/scripts/tools/build-shape-catalog.test.js": _e318,
+  "skills/drawio/scripts/tools/fixtures/ai-icons-package/icons/alpha-color.svg": _e319,
+  "skills/drawio/scripts/tools/fixtures/ai-icons-package/icons/alpha.svg": _e320,
+  "skills/drawio/scripts/tools/fixtures/ai-icons-package/icons/beta-brand-color.svg": _e321,
+  "skills/drawio/scripts/tools/fixtures/ai-icons-package/icons/beta.svg": _e322,
+  "skills/drawio/scripts/tools/fixtures/ai-icons-package/icons/civitai-text-color.svg": _e323,
+  "skills/drawio/scripts/tools/fixtures/ai-icons-package/icons/civitai.svg": _e324,
+  "skills/drawio/scripts/tools/fixtures/ai-icons-package/package.json": _e325,
+  "skills/drawio/scripts/vendor/elkjs/LICENSE.md": _e326,
+  "skills/drawio/scripts/vendor/elkjs/README.md": _e327,
+  "skills/drawio/scripts/vendor/elkjs/elk.bundled.cjs": _e328,
+  "skills/drawio/scripts/vendor/js-yaml/LICENSE.md": _e329,
+  "skills/drawio/scripts/vendor/js-yaml/README.md": _e330,
+  "skills/drawio/scripts/vendor/js-yaml/js-yaml.mjs": _e331,
+  "skills/drawio/styles/built-in/corporate.json": _e332,
+  "skills/drawio/styles/built-in/default.json": _e333,
+  "skills/drawio/styles/built-in/handdrawn.json": _e334,
+  "skills/drawio/styles/schema.json": _e335,
+  "skills/experiment/SKILL.md": _e336,
+  "skills/find-skills/SKILL.md": _e337,
+  "skills/latex-pdf/SKILL.md": _e338,
+  "skills/paper-search/SKILL.md": _e339,
+  "skills/paper-search/scripts/fetch_papers.py": _e340,
+  "skills/pdf-to-markdown/SKILL.md": _e341,
+  "skills/playwright-cli/SKILL.md": _e342,
+  "skills/playwright-cli/references/element-attributes.md": _e343,
+  "skills/playwright-cli/references/playwright-tests.md": _e344,
+  "skills/playwright-cli/references/request-mocking.md": _e345,
+  "skills/playwright-cli/references/running-code.md": _e346,
+  "skills/playwright-cli/references/session-management.md": _e347,
+  "skills/playwright-cli/references/storage-state.md": _e348,
+  "skills/playwright-cli/references/test-generation.md": _e349,
+  "skills/playwright-cli/references/tracing.md": _e350,
+  "skills/playwright-cli/references/video-recording.md": _e351,
+  "skills/research-paper-writing/SKILL.md": _e352,
+  "skills/research-paper-writing/references/autoreason-methodology.md": _e353,
+  "skills/research-paper-writing/references/checklists.md": _e354,
+  "skills/research-paper-writing/references/citation-workflow.md": _e355,
+  "skills/research-paper-writing/references/experiment-patterns.md": _e356,
+  "skills/research-paper-writing/references/human-evaluation.md": _e357,
+  "skills/research-paper-writing/references/manuscript-revision-audit.md": _e358,
+  "skills/research-paper-writing/references/paper-types.md": _e359,
+  "skills/research-paper-writing/references/reviewer-guidelines.md": _e360,
+  "skills/research-paper-writing/references/sources.md": _e361,
+  "skills/research-paper-writing/references/writing-guide.md": _e362,
+  "skills/research-paper-writing/templates/README.md": _e363,
+  "skills/research-paper-writing/templates/aaai2026/README.md": _e364,
+  "skills/research-paper-writing/templates/aaai2026/aaai2026-unified-supp.tex": _e365,
+  "skills/research-paper-writing/templates/aaai2026/aaai2026-unified-template.tex": _e366,
+  "skills/research-paper-writing/templates/aaai2026/aaai2026.bib": _e367,
+  "skills/research-paper-writing/templates/aaai2026/aaai2026.bst": _e368,
+  "skills/research-paper-writing/templates/aaai2026/aaai2026.sty": _e369,
+  "skills/research-paper-writing/templates/acl/README.md": _e370,
+  "skills/research-paper-writing/templates/acl/acl.sty": _e371,
+  "skills/research-paper-writing/templates/acl/acl_latex.tex": _e372,
+  "skills/research-paper-writing/templates/acl/acl_lualatex.tex": _e373,
+  "skills/research-paper-writing/templates/acl/acl_natbib.bst": _e374,
+  "skills/research-paper-writing/templates/acl/anthology.bib.txt": _e375,
+  "skills/research-paper-writing/templates/acl/custom.bib": _e376,
+  "skills/research-paper-writing/templates/acl/formatting.md": _e377,
+  "skills/research-paper-writing/templates/colm2025/README.md": _e378,
+  "skills/research-paper-writing/templates/colm2025/colm2025_conference.bib": _e379,
+  "skills/research-paper-writing/templates/colm2025/colm2025_conference.bst": _e380,
+  "skills/research-paper-writing/templates/colm2025/colm2025_conference.pdf": _e381,
+  "skills/research-paper-writing/templates/colm2025/colm2025_conference.sty": _e382,
+  "skills/research-paper-writing/templates/colm2025/colm2025_conference.tex": _e383,
+  "skills/research-paper-writing/templates/colm2025/fancyhdr.sty": _e384,
+  "skills/research-paper-writing/templates/colm2025/math_commands.tex": _e385,
+  "skills/research-paper-writing/templates/colm2025/natbib.sty": _e386,
+  "skills/research-paper-writing/templates/iclr2026/fancyhdr.sty": _e387,
+  "skills/research-paper-writing/templates/iclr2026/iclr2026_conference.bib": _e388,
+  "skills/research-paper-writing/templates/iclr2026/iclr2026_conference.bst": _e389,
+  "skills/research-paper-writing/templates/iclr2026/iclr2026_conference.pdf": _e390,
+  "skills/research-paper-writing/templates/iclr2026/iclr2026_conference.sty": _e391,
+  "skills/research-paper-writing/templates/iclr2026/iclr2026_conference.tex": _e392,
+  "skills/research-paper-writing/templates/iclr2026/math_commands.tex": _e393,
+  "skills/research-paper-writing/templates/iclr2026/natbib.sty": _e394,
+  "skills/research-paper-writing/templates/icml2026/algorithm.sty": _e395,
+  "skills/research-paper-writing/templates/icml2026/algorithmic.sty": _e396,
+  "skills/research-paper-writing/templates/icml2026/example_paper.bib": _e397,
+  "skills/research-paper-writing/templates/icml2026/example_paper.pdf": _e398,
+  "skills/research-paper-writing/templates/icml2026/example_paper.tex": _e399,
+  "skills/research-paper-writing/templates/icml2026/fancyhdr.sty": _e400,
+  "skills/research-paper-writing/templates/icml2026/icml2026.bst": _e401,
+  "skills/research-paper-writing/templates/icml2026/icml2026.sty": _e402,
+  "skills/research-paper-writing/templates/icml2026/icml_numpapers.pdf": _e403,
+  "skills/research-paper-writing/templates/neurips2025/Makefile": _e404,
+  "skills/research-paper-writing/templates/neurips2025/extra_pkgs.tex": _e405,
+  "skills/research-paper-writing/templates/neurips2025/main.tex": _e406,
+  "skills/research-paper-writing/templates/neurips2025/neurips.sty": _e407,
+  "skills/research-project-workflow/SKILL.md": _e408,
+  "skills/skill-creator/LICENSE.txt": _e409,
+  "skills/skill-creator/SKILL.md": _e410,
+  "skills/skill-creator/agents/analyzer.md": _e411,
+  "skills/skill-creator/agents/comparator.md": _e412,
+  "skills/skill-creator/agents/grader.md": _e413,
+  "skills/skill-creator/assets/eval_review.html": _e414,
+  "skills/skill-creator/eval-viewer/generate_review.py": _e415,
+  "skills/skill-creator/eval-viewer/viewer.html": _e416,
+  "skills/skill-creator/references/schemas.md": _e417,
+  "skills/skill-creator/scripts/__init__.py": _e418,
+  "skills/skill-creator/scripts/aggregate_benchmark.py": _e419,
+  "skills/skill-creator/scripts/generate_report.py": _e420,
+  "skills/skill-creator/scripts/improve_description.py": _e421,
+  "skills/skill-creator/scripts/package_skill.py": _e422,
+  "skills/skill-creator/scripts/quick_validate.py": _e423,
+  "skills/skill-creator/scripts/run_eval.py": _e424,
+  "skills/skill-creator/scripts/run_loop.py": _e425,
+  "skills/skill-creator/scripts/utils.py": _e426,
+  "skills/ssh-experiment/SKILL.md": _e427,
+  "skills/ssh-experiment/scripts/rssh": _e428,
+  "skills/ssh-experiment/scripts/rssh-tmux": _e429,
+  "pi/package.json": _e430,
+  "pi/README.md": _e431,
+  "pi/theme/dark.json": _e432,
+  "pi/theme/light.json": _e433,
+  "pi/theme/theme-schema.json": _e434,
 };
 
 export const embeddedVersion = "0.0.1";

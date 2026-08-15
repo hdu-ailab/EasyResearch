@@ -49,8 +49,14 @@ function collectFiles(root: string, prefix: string): string[] {
   const visit = (dir: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const abs = join(dir, entry.name);
-      if (entry.isDirectory()) visit(abs);
-      else if (entry.isFile()) files.push(prefix + abs.slice(root.length + 1));
+      if (entry.isDirectory()) {
+        if (entry.name === "__pycache__" || entry.name === ".venv") continue;
+        visit(abs);
+      } else if (entry.isFile()) {
+        const rel = prefix + abs.slice(root.length + 1);
+        if (rel.endsWith(".pyc")) continue;
+        files.push(rel);
+      }
     }
   };
   if (existsSync(root)) visit(root);
