@@ -144,8 +144,12 @@ async function main(): Promise<void> {
   }
 
   if (!flags.skipBuild) {
-    console.log(`[release] building ${missing.length} target(s) for easyresearch@${version}`);
-    await buildTargets(flags.only, missing.map((t) => t.name));
+    if (missing.length > 0) {
+      console.log(`[release] building ${missing.length} target(s) for easyresearch@${version}`);
+      await buildTargets(flags.only, missing.map((t) => t.name));
+    } else {
+      console.log("[release] no platform packages to build");
+    }
   } else {
     for (const t of targets) {
       if (!existsSync(join(platformPackageDir(t.name), "bin", platformBinaryName(t)))) {
