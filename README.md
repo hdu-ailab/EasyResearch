@@ -18,6 +18,20 @@ bun run build:web     # build the Web frontend (served by the background server)
 bun link              # exposes the `easyresearch` command on PATH
 ```
 
+### Install from npm
+
+```bash
+npm install -g easyresearch
+easyresearch
+```
+
+Self-contained binary per platform — no Bun/Node needed. The first run
+creates the skill Python venv (watch the terminal for progress) and
+extracts bundled agents/skills. Requires Python 3 on PATH for PDF
+conversion and arXiv features; without it those features degrade.
+
+Set `EASYRESEARCH_SKIP_SETUP=1` to skip first-run setup.
+
 ## Start
 
 ```bash
