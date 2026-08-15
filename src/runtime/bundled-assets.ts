@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { embeddedFiles, embeddedVersion } from "../generated/embedded-assets";
+import { embeddedFiles, embeddedVersion } from "@easyresearch/embedded-assets";
 
 export const EMBEDDED_VERSION = "0.0.0-dev";
 
@@ -11,7 +11,7 @@ export function isEmbeddedBuild(): boolean {
 }
 
 export function embeddedPackageVersion(): string {
-  return embeddedVersion !== EMBEDDED_VERSION ? embeddedVersion : readDevPackageVersion();
+  return (embeddedVersion as string) !== EMBEDDED_VERSION ? embeddedVersion : readDevPackageVersion();
 }
 
 function readDevPackageVersion(): string {
