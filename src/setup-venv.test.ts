@@ -1,8 +1,8 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { detectPython, setupSkillVenv, venvPythonPath, type RunFn } from "./setup-venv";
+import { detectPython, ensureSkillVenv, setupSkillVenv, venvPythonPath, type RunFn } from "./setup-venv";
 
 const ok = (stdout = "") => ({ status: 0, stdout, stderr: "" });
 const fail = (stderr = "not found") => ({ status: 1, stdout: "", stderr });
@@ -80,5 +80,74 @@ describe("setupSkillVenv", () => {
     const result = setupSkillVenv({ venvDir, run, log: () => {} });
     expect(result.success).toBe(true);
     expect(calls.some((c) => c[1] === "-m" && c[2] === "venv")).toBe(false);
+  });
+});
+
+describe("ensureSkillVenv", () => {
+  function tempAgentDir(): string {
+    const root = mkdtempSync(join(tmpdir(), "ensure-venv-"));
+    tempRoots.push(root);
+    return root;
+  }
+
+  function fakeRun(script: (command: string, args: string[]) => number) {
+    return (command: string, args: string[]): { status: number; stdout: string; stderr: string } => ({
+      status: script(command, args),
+      stdout: "",
+      stderr: "",
+    });
+  }
+
+  it("reuses an existing healthy venv without reinstalling", () => {
+    const agentDir = tempAgentDir();
+    const python = venvPythonPath(join(agentDir, "venv"));
+    mkdirSync(dirname(python), { recursive: true });
+    writeFileSync(python, "fake", "utf8");
+    let pipCalls = 0;
+    const run = fakeRun((command, args) => {
+      if (args.join(" ") === "-c import markitdown, arxiv") return 0;
+      pipCalls += 1;
+      return 0;
+    });
+    const result = ensureSkillVenv(agentDir, { run, log: () => {} });
+    expect(result.success).toBe(true);
+    expect(pipCalls).toBe(0);
+  });
+
+  it("reinstalls packages when the venv exists but imports fail", () => {
+    const agentDir = tempAgentDir();
+    const python = venvPythonPath(join(agentDir, "venv"));
+    mkdirSync(dirname(python), { recursive: true });
+    writeFileSync(python, "fake", "utf8");
+    let pipCalls = 0;
+    const run = fakeRun((command, args) => {
+      if (args.join(" ") === "-c import markitdown, arxiv") return 1;
+      pipCalls += 1;
+      return 0;
+    });
+    const result = ensureSkillVenv(agentDir, { run, log: () => {} });
+    expect(result.success).toBe(true);
+    expect(pipCalls).toBeGreaterThan(0);
+  });
+
+  it("creates a fresh venv when missing", () => {
+    const agentDir = tempAgentDir();
+    const run = fakeRun((command, args) => {
+      if (command === "python3") return 0;
+      if (args.join(" ") === "-m venv " + join(agentDir, "venv")) return 0;
+      if (args.join(" ").includes("-m pip install")) return 0;
+      return 1;
+    });
+    const result = ensureSkillVenv(agentDir, { run, log: () => {} });
+    expect(result.success).toBe(true);
+    expect(result.venvDir).toBe(join(agentDir, "venv"));
+  });
+
+  it("never throws on failure, returns success false", () => {
+    const agentDir = tempAgentDir();
+    const run = fakeRun(() => 1);
+    const result = ensureSkillVenv(agentDir, { run, log: () => {} });
+    expect(result.success).toBe(false);
+    expect(result.reason).toBeDefined();
   });
 });
