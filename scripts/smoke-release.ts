@@ -86,17 +86,16 @@ function run(args: string[]): { stdout: string; stderr: string } {
   try {
     if (process.platform === "win32") {
       // Bun 1.3.14 spawnSync silently fails to start compiled executables on
-      // Windows while still reporting status 0 with empty output, and the
-      // compiled CLI hangs on exit while flushing stdout to a redirected file.
-      // Drive the binary through Windows PowerShell with stdout/stderr on the
-      // NUL device so the CLI really runs and exits promptly.
+      // Windows, and PowerShell's Start-Process -Wait waits on the whole
+      // process tree (the live daemon) and never returns. Launch the CLI
+      // without waiting; readiness is polled by the smoke script instead.
       const nul = openSync("NUL", "w");
       try {
         const script = [
           "$ErrorActionPreference = 'Stop'",
           "try {",
-          `  $p = Start-Process -FilePath '${binary}' -ArgumentList @(${args.map((arg) => `'${arg}'`).join(", ")}) -Wait -PassThru -WindowStyle Hidden`,
-          "  exit $p.ExitCode",
+          `  Start-Process -FilePath '${binary}' -ArgumentList @(${args.map((arg) => `'${arg}'`).join(", ")}) -WindowStyle Hidden`,
+          "  exit 0",
           "} catch {",
           `  $_ | Out-File -FilePath '${join(root, "ps-error.txt")}' -Encoding utf8`,
           "  exit 99",
@@ -254,7 +253,22 @@ try {
   const daemonBinary = join(agentDir, "bin", target.os[0] === "win32" ? "easyresearch-daemon.exe" : "easyresearch-daemon");
   if (!existsSync(daemonBinary)) throw new Error(`daemon binary copy missing: ${daemonBinary}`);
   const base = `http://127.0.0.1:${port}`;
-  await requireOk(await fetch(`${base}/api/status`), "status probe");
+  let status: Response | undefined;
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    try {
+      const probe = await fetch(`${base}/api/status`, { signal: AbortSignal.timeout(3_000) });
+      if (probe.ok) {
+        status = probe;
+        break;
+      }
+    } catch {
+      // daemon still starting
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  if (!status) throw new Error(`daemon did not become ready at ${base}`);
+  await requireOk(status, "status probe");
   const auth = await requireOk(await fetch(`${base}/api/auth/providers`), "OAuth provider probe");
   if (!Array.isArray(auth.providers) || !auth.providers.some(
     (provider: { authMethods?: string[] }) => provider.authMethods?.includes("oauth"),
@@ -297,9 +311,9 @@ try {
   });
   const sessionPath = history.getSessionFile();
   if (!sessionPath) throw new Error("failed to persist smoke history");
-  const status = await requireOk(await fetch(`${base}/api/status`), "history status probe");
-  if (status.agentDir !== agentDir || !status.sessions.some((session: { path: string }) => session.path === sessionPath)) {
-    throw new Error(`persisted smoke history was not discovered: ${JSON.stringify({ agentDir, sessionPath, status })}`);
+  const historyStatus = await requireOk(await fetch(`${base}/api/status`), "history status probe");
+  if (historyStatus.agentDir !== agentDir || !historyStatus.sessions.some((session: { path: string }) => session.path === sessionPath)) {
+    throw new Error(`persisted smoke history was not discovered: ${JSON.stringify({ agentDir, sessionPath, historyStatus })}`);
   }
   await requireOk(await fetch(`${base}/api/sessions/open`, {
     method: "POST",
