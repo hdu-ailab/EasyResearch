@@ -106,6 +106,21 @@ easyresearch --version
 \`\`\`
 
 Skip first-run setup with \`EASYRESEARCH_SKIP_SETUP=1\`.
+
+## Supported platforms
+
+linux-x64, darwin-arm64, windows-x64. On other platforms the install fails
+with a clear message — build from source instead:
+
+\`\`\`sh
+git clone https://github.com/hdu-ailab/EasyResearch.git
+cd EasyResearch
+bun install
+bun run build:release -- --only <target>   # e.g. linux-arm64
+# binary at release/easyresearch-<target>/bin/easyresearch
+\`\`\`
+
+See \`scripts/build.ts\` \`TARGETS\` for valid <target> names.
 `;
 
 const BIN_STUB = `#!/bin/sh

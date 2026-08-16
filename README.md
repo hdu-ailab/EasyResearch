@@ -44,6 +44,20 @@ conversion and arXiv features; without it those features degrade.
 
 Set `EASYRESEARCH_SKIP_SETUP=1` to skip first-run setup.
 
+**Supported platforms**: linux-x64, darwin-arm64, windows-x64. On other
+platforms (e.g. linux-arm64, darwin-x64) `npm install` fails with a clear
+message — build it yourself instead:
+
+```bash
+git clone https://github.com/hdu-ailab/EasyResearch.git
+cd EasyResearch
+bun install
+bun run build:release -- --only <target>   # e.g. linux-arm64
+# binary at release/easyresearch-<target>/bin/easyresearch
+```
+
+See `scripts/build.ts` `TARGETS` for valid `<target>` names.
+
 ### Install from source (development)
 
 ```bash
