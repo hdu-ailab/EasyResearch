@@ -272,17 +272,7 @@ export async function runCli(
     }
 
     const url = `http://${host}:${port}`;
-    try {
-      writeFileSync(join(agentDir, "url-marker-before.txt"), "1");
-    } catch {
-      // diagnostics only
-    }
     console.log(`EasyResearch: ${url}`);
-    try {
-      writeFileSync(join(agentDir, "url-marker-after.txt"), "1");
-    } catch {
-      // diagnostics only
-    }
     if (!isLoopbackHost(host)) {
       console.warn(`Warning: EasyResearch is listening on ${host}. Web config editing trusts the local OS user. Make sure the network is trusted before exposing it.`);
     }
@@ -332,6 +322,17 @@ async function runRuntimeEntry(args: string[]): Promise<void> {
       const stderrPath = join(agentDir, "logs", "daemon-stderr.log");
       mkdirSync(dirname(stderrPath), { recursive: true });
       const stderrFd = openSync(stderrPath, "a");
+      if (isEmbeddedBuild() && process.platform === "win32") {
+        // Bun's Windows `unref()` does not release the child handle, so the
+        // CLI would never exit while the daemon lives. Detach the daemon from
+        // the process tree via `cmd /c start` instead.
+        spawn("cmd.exe", ["/d", "/s", "/c", "start", "", `"${daemon}" --serve ${host} ${port}`], {
+          detached: true,
+          stdio: "ignore",
+          env: process.env,
+        });
+        return;
+      }
       const options: Parameters<typeof spawn>[2] = {
         detached: true,
         stdio: ["ignore", "ignore", stderrFd],
