@@ -19,32 +19,18 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Probe H - shebang, import.meta.main, top-level await
-        shell: pwsh
-        run: |
-          @'
-          #!/usr/bin/env bun
-          if (import.meta.main) {
-            await Bun.sleep(1);
-            console.log("H-main-await");
-          }
-          '@ | Out-File -Encoding utf8 probe-h.ts
-          bun build probe-h.ts --compile --minify --outfile probe-h.exe
-          $out = .\probe-h.exe 2>&1
-          "H-exit=$LASTEXITCODE capture=[$($out -join "`n")]"
-
       - name: Probe I - real entry with stub assets
         shell: pwsh
         run: |
           @'
-          import { Bun } from "bun";
           const result = await Bun.build({
             entrypoints: ["src/cli/index.ts"],
             compile: { target: "bun-windows-x64", outfile: "probe-i.exe" },
             minify: true,
             alias: { "@easyresearch/embedded-assets": "./src/generated/embedded-assets.test-stub.ts" },
           });
-          console.log("build:", result.success, result.logs);
+          console.log("build-success:", result.success);
+          console.log("build-logs:", JSON.stringify(result.logs));
           '@ | Out-File -Encoding utf8 probe-i-build.ts
           bun run probe-i-build.ts
           New-Item -ItemType Directory -Force smokehome3 | Out-Null
@@ -55,3 +41,38 @@ jobs:
           "I-exit=$($p.ExitCode)"
           "I-files=$((Get-ChildItem -Recurse smokehome3 -File | Measure-Object).Count)"
           Get-ChildItem -Recurse smokehome3 -File | Select-Object -First 10 -ExpandProperty FullName
+
+      - name: Probe J - real entry with small asset set
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force probe-assets | Out-Null
+          "one" | Out-File -Encoding utf8 probe-assets/one.md
+          "two" | Out-File -Encoding utf8 probe-assets/two.md
+          @'
+          import _a from "./probe-assets/one.md" with { type: "file" };
+          import _b from "./probe-assets/two.md" with { type: "file" };
+          export const embeddedFiles: Record<string, string> = {
+            "probe-assets/one.md": _a,
+            "probe-assets/two.md": _b,
+          };
+          export const embeddedVersion = "0.0.0";
+          '@ | Out-File -Encoding utf8 probe-assets/stub-small.ts
+          @'
+          const result = await Bun.build({
+            entrypoints: ["src/cli/index.ts"],
+            compile: { target: "bun-windows-x64", outfile: "probe-j.exe" },
+            minify: true,
+            alias: { "@easyresearch/embedded-assets": "./probe-assets/stub-small.ts" },
+          });
+          console.log("build-success:", result.success);
+          console.log("build-logs:", JSON.stringify(result.logs));
+          '@ | Out-File -Encoding utf8 probe-j-build.ts
+          bun run probe-j-build.ts
+          New-Item -ItemType Directory -Force smokehome4 | Out-Null
+          $env:HOME = "$pwd\smokehome4"
+          $env:USERPROFILE = "$pwd\smokehome4"
+          $env:LOCALAPPDATA = "$pwd\smokehome4\la"
+          $p = Start-Process -FilePath ".\probe-j.exe" -ArgumentList @('--no-open','--port','32126') -Wait -PassThru
+          "J-exit=$($p.ExitCode)"
+          "J-files=$((Get-ChildItem -Recurse smokehome4 -File | Measure-Object).Count)"
+          Get-ChildItem -Recurse smokehome4 -File | Select-Object -First 15 -ExpandProperty FullName
