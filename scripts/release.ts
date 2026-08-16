@@ -100,6 +100,7 @@ export function platformPackageManifest(target: (typeof TARGETS)[number], versio
     version,
     description: `EasyResearch CLI binary for ${target.name} (installed automatically by the easyresearch meta package)`,
     license: "MIT",
+    repository: { type: "git", url: "https://github.com/hdu-ailab/EasyResearch.git" },
     preferUnplugged: true,
     os: target.os,
     cpu: target.cpu,
