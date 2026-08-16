@@ -261,6 +261,11 @@ try {
   const bundledDir = join(agentDir, "bundled");
   if (!existsSync(bundledDir)) throw new Error("CLI did not materialize bundled resources (did the CLI actually run?)");
   const daemonBinary = join(agentDir, "bin", target.os[0] === "win32" ? "easyresearch-daemon.exe" : "easyresearch-daemon");
+  const daemonDeadline = Date.now() + 30_000;
+  while (Date.now() < daemonDeadline) {
+    if (existsSync(daemonBinary)) break;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
   if (!existsSync(daemonBinary)) throw new Error(`daemon binary copy missing: ${daemonBinary}`);
   const base = `http://127.0.0.1:${port}`;
   let status: Response | undefined;
