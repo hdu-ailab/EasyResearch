@@ -14,17 +14,15 @@ export interface PlatformTarget {
   cpu: string[];
 }
 
+/**
+ * Shipped platform targets (ADR-070 amended): the common desktop/server
+ * platforms only — linux x64, windows x64, darwin arm64. Other targets can
+ * be re-added to this list and rebuilt at any time.
+ */
 export const TARGETS: PlatformTarget[] = [
   { name: "linux-x64", target: "bun-linux-x64", os: ["linux"], cpu: ["x64"] },
-  { name: "linux-x64-baseline", target: "bun-linux-x64-baseline", os: ["linux"], cpu: ["x64"] },
-  { name: "linux-x64-musl", target: "bun-linux-x64-musl", os: ["linux"], cpu: ["x64"] },
-  { name: "linux-arm64", target: "bun-linux-arm64", os: ["linux"], cpu: ["arm64"] },
-  { name: "darwin-x64", target: "bun-darwin-x64", os: ["darwin"], cpu: ["x64"] },
-  { name: "darwin-x64-baseline", target: "bun-darwin-x64-baseline", os: ["darwin"], cpu: ["x64"] },
   { name: "darwin-arm64", target: "bun-darwin-arm64", os: ["darwin"], cpu: ["arm64"] },
   { name: "windows-x64", target: "bun-windows-x64", os: ["win32"], cpu: ["x64"] },
-  { name: "windows-x64-baseline", target: "bun-windows-x64-baseline", os: ["win32"], cpu: ["x64"] },
-  { name: "windows-arm64", target: "bun-windows-arm64", os: ["win32"], cpu: ["arm64"] },
 ];
 
 export function releaseDir(): string {

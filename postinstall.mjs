@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // postinstall for the `easyresearch` meta package.
-// Resolves the platform-specific binary package (easyresearch-<os>-<arch>,
-// including x64 baseline/musl variants), copies the executable into
-// ./bin/easyresearch.exe, and verifies it with `--version`.
+// Resolves the platform-specific binary package (easyresearch-<os>-<arch>),
+// copies the executable into ./bin/easyresearch.exe, and verifies it with
+// `--version`.
 //
 // Adapted from opencode-ai (https://github.com/sst/opencode, MIT licensed)
 // which ships a platform meta package in the same way.
@@ -26,7 +26,6 @@ const platformMap = {
 const archMap = {
   x64: "x64",
   arm64: "arm64",
-  arm: "arm",
 };
 
 const platform = platformMap[os.platform()] ?? os.platform();
@@ -35,87 +34,10 @@ const base = `easyresearch-${platform}-${arch}`;
 const sourceBinary = platform === "windows" ? "easyresearch.exe" : "easyresearch";
 const targetBinary = path.join(__dirname, "bin", "easyresearch.exe");
 
-function supportsAvx2() {
-  if (arch !== "x64") return false;
-
-  if (platform === "linux") {
-    try {
-      return /(^|\s)avx2(\s|$)/i.test(fs.readFileSync("/proc/cpuinfo", "utf8"));
-    } catch {
-      return false;
-    }
-  }
-
-  if (platform === "darwin") {
-    try {
-      const result = childProcess.spawnSync("sysctl", ["-n", "hw.optional.avx2_0"], {
-        encoding: "utf8",
-        timeout: 1500,
-      });
-      if (result.status !== 0) return false;
-      return (result.stdout || "").trim() === "1";
-    } catch {
-      return false;
-    }
-  }
-
-  if (platform === "windows") {
-    const command =
-      '(Add-Type -MemberDefinition "[DllImport(""kernel32.dll"")] public static extern bool IsProcessorFeaturePresent(int ProcessorFeature);" -Name Kernel32 -Namespace Win32 -PassThru)::IsProcessorFeaturePresent(40)';
-    for (const executable of ["powershell.exe", "pwsh.exe", "pwsh", "powershell"]) {
-      try {
-        const result = childProcess.spawnSync(executable, ["-NoProfile", "-NonInteractive", "-Command", command], {
-          encoding: "utf8",
-          timeout: 3000,
-          windowsHide: true,
-        });
-        if (result.status !== 0) continue;
-        const output = (result.stdout || "").trim().toLowerCase();
-        if (output === "true" || output === "1") return true;
-        if (output === "false" || output === "0") return false;
-      } catch {
-        continue;
-      }
-    }
-  }
-
-  return false;
-}
-
-function isMusl() {
-  if (platform !== "linux") return false;
-  try {
-    if (fs.existsSync("/etc/alpine-release")) return true;
-  } catch {
-    // ignore
-  }
-  try {
-    const result = childProcess.spawnSync("ldd", ["--version"], { encoding: "utf8" });
-    return `${result.stdout || ""}${result.stderr || ""}`.toLowerCase().includes("musl");
-  } catch {
-    return false;
-  }
-}
-
-function packageNames() {
-  // Shipped variants (see scripts/build.ts TARGETS):
-  //   linux-x64, linux-x64-baseline, linux-x64-musl, linux-arm64
-  //   darwin-x64, darwin-x64-baseline, darwin-arm64
-  //   windows-x64, windows-x64-baseline, windows-arm64
-  const baseline = arch === "x64" && !supportsAvx2();
-
-  if (platform === "linux") {
-    if (isMusl()) {
-      if (arch === "x64") return [`${base}-musl`, `${base}-baseline`, base];
-      return [base];
-    }
-    if (arch === "x64")
-      return baseline ? [`${base}-baseline`, base, `${base}-musl`] : [base, `${base}-baseline`, `${base}-musl`];
-    return [base];
-  }
-
-  if (arch === "x64") return baseline ? [`${base}-baseline`, base] : [base, `${base}-baseline`];
-  return [base];
+function packageName() {
+  // Shipped platforms (see scripts/build.ts TARGETS):
+  //   linux-x64, darwin-arm64, windows-x64
+  return base;
 }
 
 function resolveBinary(name) {
@@ -167,19 +89,23 @@ function verifyBinary() {
 }
 
 function main() {
-  for (const name of packageNames()) {
-    try {
-      copyBinary(resolveBinary(name), targetBinary);
-      if (verifyBinary()) return;
-    } catch {
-      if (installPackage(name) && verifyBinary()) return;
-    }
+  const name = packageName();
+  if (!packageJson.optionalDependencies?.[name]) {
+    throw new Error(
+      `easyresearch does not ship a binary for ${platform}-${arch}. Supported platforms: linux-x64, darwin-arm64, windows-x64.`,
+    );
+  }
+  try {
+    copyBinary(resolveBinary(name), targetBinary);
+    if (verifyBinary()) return;
+  } catch {
+    if (installPackage(name) && verifyBinary()) return;
   }
 
   throw new Error(
-    `It seems your package manager failed to install the right easyresearch binary package. Try manually installing ${packageNames()
-      .map((name) => JSON.stringify(name))
-      .join(" or ")}.`,
+    `It seems your package manager failed to install the right easyresearch binary package. Try manually installing ${JSON.stringify(
+      name,
+    )}.`,
   );
 }
 
