@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir } from "../runtime/pi-import";
 import { injectSkillVenvEnv } from "../runtime/venv-env";
@@ -309,17 +309,26 @@ async function runRuntimeEntry(args: string[]): Promise<void> {
     openBrowser,
     waitForReady,
     spawnBackground: (host, port) => {
+      const agentDir = defaultAgentDir();
+      const daemon = daemonBinaryPath(agentDir);
+      const stderrPath = join(agentDir, "logs", "daemon-stderr.log");
+      mkdirSync(dirname(stderrPath), { recursive: true });
+      const stderrFd = openSync(stderrPath, "a");
+      const options: Parameters<typeof spawn>[2] = {
+        detached: true,
+        stdio: ["ignore", "ignore", stderrFd],
+        env: process.env,
+      };
       const child = isEmbeddedBuild()
-        ? spawn(daemonBinaryPath(defaultAgentDir()), ["--serve", host, String(port)], {
-            detached: true,
-            stdio: "ignore",
-            env: process.env,
-          })
-        : spawn(process.execPath, [fileURLToPath(import.meta.url), "--serve", host, String(port)], {
-            detached: true,
-            stdio: "ignore",
-            env: process.env,
-          });
+        ? spawn(daemon, ["--serve", host, String(port)], options)
+        : spawn(process.execPath, [fileURLToPath(import.meta.url), "--serve", host, String(port)], options);
+      child.on("error", (error) => {
+        try {
+          writeFileSync(stderrPath, `[daemon spawn error] ${error.message}\n`, { flag: "a" });
+        } catch {
+          // Best-effort diagnostics only.
+        }
+      });
       child.unref();
     },
   }));
