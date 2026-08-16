@@ -7,7 +7,7 @@ on:
 
 jobs:
   repro:
-    name: Plain entry compile probe
+    name: Build API vs CLI probe
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -19,30 +19,38 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Probe R - plain original entry via CLI
+      - name: Probe U - Bun.build API without alias
         shell: pwsh
         run: |
-          bun build src/cli/index.ts --compile --minify --outfile probe-r.exe
-          New-Item -ItemType Directory -Force smokehome6 | Out-Null
-          $env:HOME = "$pwd\smokehome6"
-          $env:USERPROFILE = "$pwd\smokehome6"
-          $env:LOCALAPPDATA = "$pwd\smokehome6\la"
-          $env:EASYRESEARCH_CODING_AGENT_DIR = "$pwd\smokehome6\agent"
-          $out = .\probe-r.exe --no-open --port 32129 2>&1
-          "R-exit=$LASTEXITCODE"
-          $out | Select-Object -First 10 | ForEach-Object { "R-capture: $_" }
-          "R-files=$((Get-ChildItem -Recurse smokehome6 -File | Measure-Object).Count)"
+          @'
+          const result = await Bun.build({
+            entrypoints: ["src/cli/index.ts"],
+            compile: { target: "bun-windows-x64", outfile: "probe-u.exe" },
+            minify: true,
+          });
+          console.log("build-success:", result.success);
+          '@ | Out-File -Encoding utf8 probe-u-build.ts
+          bun run probe-u-build.ts
+          New-Item -ItemType Directory -Force smokehome8 | Out-Null
+          $env:HOME = "$pwd\smokehome8"
+          $env:USERPROFILE = "$pwd\smokehome8"
+          $env:LOCALAPPDATA = "$pwd\smokehome8\la"
+          $env:EASYRESEARCH_CODING_AGENT_DIR = "$pwd\smokehome8\agent"
+          $out = .\probe-u.exe --no-open --port 32131 2>&1
+          "U-exit=$LASTEXITCODE"
+          $out | Select-Object -First 5 | ForEach-Object { "U-capture: $_" }
+          "U-files=$((Get-ChildItem -Recurse smokehome8 -File | Measure-Object).Count)"
 
-      - name: Probe S - plain original entry without minify
+      - name: Probe V - Bun.build API with full asset module
         shell: pwsh
         run: |
-          bun build src/cli/index.ts --compile --outfile probe-s.exe
-          New-Item -ItemType Directory -Force smokehome7 | Out-Null
-          $env:HOME = "$pwd\smokehome7"
-          $env:USERPROFILE = "$pwd\smokehome7"
-          $env:LOCALAPPDATA = "$pwd\smokehome7\la"
-          $env:EASYRESEARCH_CODING_AGENT_DIR = "$pwd\smokehome7\agent"
-          $out = .\probe-s.exe --no-open --port 32130 2>&1
-          "S-exit=$LASTEXITCODE"
-          $out | Select-Object -First 10 | ForEach-Object { "S-capture: $_" }
-          "S-files=$((Get-ChildItem -Recurse smokehome7 -File | Measure-Object).Count)"
+          bun scripts/build.ts --only windows-x64
+          New-Item -ItemType Directory -Force smokehome9 | Out-Null
+          $env:HOME = "$pwd\smokehome9"
+          $env:USERPROFILE = "$pwd\smokehome9"
+          $env:LOCALAPPDATA = "$pwd\smokehome9\la"
+          $env:EASYRESEARCH_CODING_AGENT_DIR = "$pwd\smokehome9\agent"
+          $out = .\release\easyresearch-windows-x64\bin\easyresearch.exe --no-open --port 32132 2>&1
+          "V-exit=$LASTEXITCODE"
+          $out | Select-Object -First 5 | ForEach-Object { "V-capture: $_" }
+          "V-files=$((Get-ChildItem -Recurse smokehome9 -File | Measure-Object).Count)"
