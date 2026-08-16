@@ -83,7 +83,19 @@ function run(args: string[]): { stdout: string; stderr: string } {
   const stderrFd = openSync(stderrPath, "w");
   let result: ReturnType<typeof spawnSync>;
   try {
-    result = spawnSync(binary, args, { env, stdio: ["ignore", stdoutFd, stderrFd], timeout: 180_000 });
+    if (process.platform === "win32") {
+      // Bun 1.3.14 spawnSync silently fails to start compiled executables on
+      // Windows while still reporting status 0 with empty output. Drive the
+      // binary through Windows PowerShell instead so the CLI really runs.
+      const script = `& '${binary}' ${args.map((arg) => `'${arg}'`).join(" ")}; exit $LASTEXITCODE`;
+      result = spawnSync(
+        "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        ["-NoProfile", "-NonInteractive", "-Command", script],
+        { env, stdio: ["ignore", stdoutFd, stderrFd], timeout: 180_000 },
+      );
+    } else {
+      result = spawnSync(binary, args, { env, stdio: ["ignore", stdoutFd, stderrFd], timeout: 180_000 });
+    }
   } finally {
     closeSync(stdoutFd);
     closeSync(stderrFd);
