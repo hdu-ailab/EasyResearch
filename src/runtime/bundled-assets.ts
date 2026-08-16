@@ -186,13 +186,14 @@ function assertSafeBundledPath(rel: string): void {
 }
 
 function syncFile(path: string): void {
+  if (process.platform === "win32") return; // fsync is prohibitively slow per file on Windows
   const fd = openSync(path, "r");
   try {
     try {
       fsyncSync(fd);
     } catch {
-      // fsync is best-effort durability and is not supported on every
-      // Windows handle; staged bytes stay durable via normal close semantics.
+      // fsync is best-effort durability; staged bytes stay durable via normal
+      // close semantics.
     }
   } finally {
     closeSync(fd);
