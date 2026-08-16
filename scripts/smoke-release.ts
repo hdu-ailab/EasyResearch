@@ -341,5 +341,13 @@ try {
     // The primary smoke failure is more useful than shutdown cleanup output.
   }
   modelServer.stop(true);
-  rmSync(root, { recursive: true, force: true });
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      rmSync(root, { recursive: true, force: true });
+      break;
+    } catch {
+      // The Windows daemon may still hold files after the async exit command.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
 }
