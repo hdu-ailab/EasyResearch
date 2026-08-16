@@ -265,17 +265,7 @@ export async function runCli(
     if (existing !== undefined) removeServerPid(agentDir);
 
     deps.spawnBackground(host, port);
-    try {
-      writeFileSync(join(agentDir, "wait-marker-before.txt"), "1");
-    } catch {
-      // diagnostics only
-    }
     const ready = await deps.waitForReady(host, port);
-    try {
-      writeFileSync(join(agentDir, "wait-marker-after.txt"), "1");
-    } catch {
-      // diagnostics only
-    }
     if (!ready) {
       console.error(`EasyResearch failed to start within ${READY_TIMEOUT_MS}ms. See ${serverLogFile(agentDir)}.`);
       return 1;
@@ -316,11 +306,13 @@ async function runRuntimeEntry(args: string[]): Promise<void> {
     const port = parsePort(args[2] as string);
     if (port === undefined) {
       console.error("Usage: easyresearch [-p <port>] [--host <host>] [--no-open] [exit]");
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
-    process.exit(await runServe(host, port));
+    process.exitCode = await runServe(host, port);
+    return;
   }
-  process.exit(await runCli(args, {
+  process.exitCode = await runCli(args, {
     serve: runServe,
     openBrowser,
     waitForReady,
@@ -347,7 +339,7 @@ async function runRuntimeEntry(args: string[]): Promise<void> {
       });
       child.unref();
     },
-  }));
+  });
 }
 
 if (import.meta.main) {

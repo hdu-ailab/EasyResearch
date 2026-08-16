@@ -14,7 +14,7 @@ export async function runServe(host = DEFAULT_HOST, port = 3000): Promise<number
       await server.stop();
       const { removeServerPid } = await import("../server-process");
       removeServerPid(agentDir);
-      process.exit(0);
+      process.exitCode = 0;
     };
     process.on("SIGTERM", shutdown);
     process.on("SIGINT", shutdown);
