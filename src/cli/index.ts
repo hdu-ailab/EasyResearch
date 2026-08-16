@@ -324,13 +324,14 @@ async function runRuntimeEntry(args: string[]): Promise<void> {
       const stderrFd = openSync(stderrPath, "a");
       if (isEmbeddedBuild() && process.platform === "win32") {
         // Bun's Windows `unref()` does not release the child handle, so the
-        // CLI would never exit while the daemon lives. Detach the daemon from
-        // the process tree via `cmd /c start` instead.
-        spawn("cmd.exe", ["/d", "/s", "/c", "start", "", `"${daemon}" --serve ${host} ${port}`], {
-          detached: true,
-          stdio: "ignore",
-          env: process.env,
-        });
+        // CLI would never exit while the daemon lives. Launch the daemon via
+        // PowerShell Start-Process so it lives independently of the CLI.
+        spawn(
+          "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+          ["-NoProfile", "-NonInteractive", "-Command",
+            `Start-Process -FilePath '${daemon}' -ArgumentList @('--serve', '${host}', '${port}') -WindowStyle Hidden`],
+          { detached: true, stdio: "ignore", env: process.env },
+        );
         return;
       }
       const options: Parameters<typeof spawn>[2] = {
