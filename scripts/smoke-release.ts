@@ -166,6 +166,10 @@ function dumpServerLogs(): void {
     console.log(`[smoke] --- ${capture} (${content.length} bytes) ---`);
     console.log(content.slice(-4000));
   }
+  console.log(`[smoke] agentDir exists: ${existsSync(agentDir)}`);
+  const agentFiles = treeFiles(agentDir);
+  console.log(`[smoke] agentDir files: ${agentFiles.length}`);
+  for (const file of agentFiles.slice(0, 40)) console.log(`[smoke]   /agent${file}`);
   try {
     const logsDir = join(agentDir, "logs");
     if (!existsSync(logsDir)) {
