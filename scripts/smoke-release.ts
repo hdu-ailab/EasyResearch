@@ -199,6 +199,14 @@ try {
   const version = repoPackageVersion();
   if (!versionVerifiedByRunner) validateNativeVersionOutput(0, runVersion(), version, target.name);
   run(["--no-open", "--port", String(port)]);
+  const bundledCandidates = [
+    join(agentDir, "bundled"),
+    join(home, ".easyresearch", "agent", "bundled"),
+    join(process.env.APPDATA ?? "", ".easyresearch", "agent", "bundled"),
+  ];
+  for (const candidate of bundledCandidates) {
+    console.log(`[smoke] bundled candidate: ${candidate} -> ${existsSync(candidate)}`);
+  }
   const bundledDir = join(agentDir, "bundled");
   if (!existsSync(bundledDir)) throw new Error("CLI did not materialize bundled resources (did the CLI actually run?)");
   const daemonBinary = join(agentDir, "bin", target.os[0] === "win32" ? "easyresearch-daemon.exe" : "easyresearch-daemon");
