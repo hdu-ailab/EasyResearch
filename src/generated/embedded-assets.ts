@@ -875,4 +875,4 @@ export const embeddedFiles: Record<string, string> = {
   "pi/theme/theme-schema.json": _e434,
 };
 
-export const embeddedVersion = "0.0.1";
+export const embeddedVersion = "0.0.2";

@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { chmodSync, cpSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import {
@@ -123,16 +123,10 @@ bun run build:release -- --only <target>   # e.g. linux-arm64
 See \`scripts/build.ts\` \`TARGETS\` for valid <target> names.
 `;
 
-const BIN_STUB = `#!/bin/sh
-# Placeholder replaced by postinstall.mjs with the platform binary.
-echo "easyresearch: platform binary not installed. Run: npm rebuild easyresearch" >&2
-exit 1
-`;
-
 function assembleMainPackage(version: string, targets: string[]): void {
   const pkgDir = join(releaseDir(), MAIN_PACKAGE);
-  const binDir = join(pkgDir, "bin");
-  mkdirSync(binDir, { recursive: true });
+  rmSync(pkgDir, { recursive: true, force: true });
+  mkdirSync(pkgDir, { recursive: true });
   writeJson(join(pkgDir, "package.json"), {
     name: MAIN_PACKAGE,
     version,
@@ -140,15 +134,11 @@ function assembleMainPackage(version: string, targets: string[]): void {
     license: "MIT",
     repository: { type: "git", url: "https://github.com/hdu-ailab/EasyResearch.git" },
     keywords: ["research", "paper-writing", "cli", "ai", "latex"],
-    bin: { easyresearch: "./bin/easyresearch.exe" },
-    scripts: { postinstall: "node ./postinstall.mjs" },
+    bin: { easyresearch: "./launcher.mjs" },
     optionalDependencies: Object.fromEntries(targets.map((name) => [`easyresearch-${name}`, version])),
   });
-  cpSync(join(ROOT, "postinstall.mjs"), join(pkgDir, "postinstall.mjs"));
+  cpSync(join(ROOT, "launcher.mjs"), join(pkgDir, "launcher.mjs"));
   cpSync(join(ROOT, "LICENSE"), join(pkgDir, "LICENSE"));
-  const stubPath = join(binDir, "easyresearch.exe");
-  writeFileSync(stubPath, BIN_STUB);
-  chmodSync(stubPath, 0o755);
   writeFileSync(join(pkgDir, "README.md"), NPM_README);
 }
 
