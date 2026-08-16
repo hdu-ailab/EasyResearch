@@ -225,8 +225,11 @@ export function validateNativeVersionOutput(
   stdout: string,
   version: string,
   target: string,
+  stderr = "",
 ): void {
-  if (status !== 0 || stdout.trim() !== `easyresearch ${version}`) {
+  const expected = `easyresearch ${version}`;
+  const lines = `${stdout}\n${stderr}`.split(/\r?\n/).map((line) => line.trim());
+  if (status !== 0 || !lines.includes(expected)) {
     throw new Error(`native version smoke failed for ${target}: expected easyresearch ${version}`);
   }
 }

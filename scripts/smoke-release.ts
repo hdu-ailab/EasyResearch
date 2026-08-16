@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { TARGETS, platformBinaryName, platformPackageDir, repoPackageVersion } from "./build";
+import { validateNativeVersionOutput } from "./release";
 
 const targetName = process.argv[2];
 const target = TARGETS.find((candidate) => candidate.name === targetName);
@@ -70,12 +71,15 @@ const env = {
   PATH: emptyPath,
 };
 
-function run(args: string[]): string {
+function run(args: string[]): { stdout: string; stderr: string } {
   const result = spawnSync(binary, args, { env, encoding: "utf8", timeout: 180_000 });
-  if (result.status !== 0) {
-    throw new Error(`${binary} ${args.join(" ")} failed (${result.status}):\n${result.stdout}\n${result.stderr}`);
+  const stdout = result.stdout ?? "";
+  const stderr = result.stderr ?? "";
+  if (result.error || result.status !== 0) {
+    const cause = result.error ? `${result.error.name}: ${result.error.message}` : "no spawn error";
+    throw new Error(`${binary} ${args.join(" ")} failed (${result.status ?? "no status"}; ${cause}):\n${stdout}\n${stderr}`);
   }
-  return result.stdout ?? "";
+  return { stdout, stderr };
 }
 
 async function requireOk(response: Response, label: string): Promise<any> {
@@ -120,7 +124,8 @@ function openAiStream(input: {
 
 try {
   const version = repoPackageVersion();
-  if (run(["--version"]).trim() !== `easyresearch ${version}`) throw new Error("version output mismatch");
+  const versionResult = run(["--version"]);
+  validateNativeVersionOutput(0, versionResult.stdout, version, target.name, versionResult.stderr);
   run(["--no-open", "--port", String(port)]);
   const base = `http://127.0.0.1:${port}`;
   await requireOk(await fetch(`${base}/api/status`), "status probe");

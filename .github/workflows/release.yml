@@ -89,6 +89,10 @@ jobs:
           name: easyresearch-release
           path: release
 
+      - name: Restore native executable permission
+        if: runner.os != 'Windows'
+        run: chmod +x release/easyresearch-${{ matrix.target }}/bin/easyresearch
+
       - name: Run native binary smoke
         run: bun scripts/smoke-release.ts ${{ matrix.target }}
 
