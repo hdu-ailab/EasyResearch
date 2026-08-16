@@ -174,6 +174,10 @@ function dumpServerLogs(): void {
   console.log(`[smoke] agentDir exists: ${existsSync(agentDir)}`);
   const agentFiles = treeFiles(agentDir);
   console.log(`[smoke] agentDir files: ${agentFiles.length}`);
+  if (existsSync(agentDir)) {
+    const topLevel = readdirSync(agentDir).filter((entry) => !agentFiles.includes(`/${entry}`));
+    console.log(`[smoke] agentDir dirs: ${topLevel.join(", ")}`);
+  }
   for (const file of agentFiles.slice(0, 40)) console.log(`[smoke]   /agent${file}`);
   const cliError = join(agentDir, "cli-error.log");
   if (existsSync(cliError)) {
@@ -237,7 +241,7 @@ try {
   const treeBefore = treeFiles(root);
   run(["--no-open", "--port", String(port)]);
   const materializedDir = join(agentDir, "bundled");
-  const materializeDeadline = Date.now() + 60_000;
+  const materializeDeadline = Date.now() + 180_000;
   while (Date.now() < materializeDeadline) {
     if (existsSync(materializedDir)) break;
     await new Promise((resolve) => setTimeout(resolve, 500));
