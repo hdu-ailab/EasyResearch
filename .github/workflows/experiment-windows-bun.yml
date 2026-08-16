@@ -7,7 +7,7 @@ on:
 
 jobs:
   repro:
-    name: Entry top-level await probes
+    name: Instrumented real entry probe
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -19,42 +19,21 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Probe N - pi-ai dynamic imports
+      - name: Probe P - instrumented entry
         shell: pwsh
         run: |
-          @'
-          console.log("N-start");
-          const { registerBunOAuthFlows } = await import("@earendil-works/pi-ai/bun-oauth");
-          console.log("N-oauth-ok");
-          registerBunOAuthFlows();
-          console.log("N-registered");
-          const { bedrockProviderModule } = await import("@earendil-works/pi-ai/bedrock-provider");
-          console.log("N-bedrock-ok");
-          const { setBedrockProviderModule } = await import("@earendil-works/pi-ai/compat");
-          setBedrockProviderModule(bedrockProviderModule);
-          console.log("N-done");
-          '@ | Out-File -Encoding utf8 probe-n.ts
-          bun build probe-n.ts --compile --minify --outfile probe-n.exe
-          $out = .\probe-n.exe 2>&1
-          "N-exit=$LASTEXITCODE capture=[$($out -join "`n")]"
-
-      - name: Probe O - exact entry top-level await copy
-        shell: pwsh
-        run: |
-          @'
-          const args = ["--no-open", "--port", "32127"];
-          if (args[0] === "--version" || args[0] === "-v") {
-            console.log("O-version");
-          } else {
-            console.log("O-runtime-start");
-            const { registerBunOAuthFlows } = await import("@earendil-works/pi-ai/bun-oauth");
-            registerBunOAuthFlows();
-            const { bedrockProviderModule } = await import("@earendil-works/pi-ai/bedrock-provider");
-            const { setBedrockProviderModule } = await import("@earendil-works/pi-ai/compat");
-            setBedrockProviderModule(bedrockProviderModule);
-            console.log("O-registered");
-          }
-          '@ | Out-File -Encoding utf8 probe-o.ts
-          bun build probe-o.ts --compile --minify --outfile probe-o.exe
-          $out = .\probe-o.exe 2>&1
-          "O-exit=$LASTEXITCODE capture=[$($out -join "`n")]"
+          $entry = Get-Content src/cli/index.ts -Raw
+          $entry = $entry.Replace("async function runRuntimeEntry(args: string[]): Promise<void> {", "async function runRuntimeEntry(args: string[]): Promise<void> {`n  console.log('P-runtime-entry');")
+          $entry = $entry.Replace("if (import.meta.main) {", "if (import.meta.main) {`n  console.log('P-main-true');")
+          $entry = $entry.Replace("await runRuntimeEntry(args);", "console.log('P-before-run');`n  await runRuntimeEntry(args);`n  console.log('P-after-run');")
+          $entry | Out-File -Encoding utf8 probe-p.ts
+          bun build probe-p.ts --compile --minify --outfile probe-p.exe
+          New-Item -ItemType Directory -Force smokehome5 | Out-Null
+          $env:HOME = "$pwd\smokehome5"
+          $env:USERPROFILE = "$pwd\smokehome5"
+          $env:LOCALAPPDATA = "$pwd\smokehome5\la"
+          $env:EASYRESEARCH_CODING_AGENT_DIR = "$pwd\smokehome5\agent"
+          $out = .\probe-p.exe --no-open --port 32128 2>&1
+          "P-exit=$LASTEXITCODE"
+          $out | ForEach-Object { "P-capture: $_" }
+          "P-files=$((Get-ChildItem -Recurse smokehome5 -File | Measure-Object).Count)"
