@@ -86,24 +86,30 @@ function run(args: string[]): { stdout: string; stderr: string } {
   try {
     if (process.platform === "win32") {
       // Bun 1.3.14 spawnSync silently fails to start compiled executables on
-      // Windows while still reporting status 0 with empty output. Drive the
-      // binary through Windows PowerShell instead so the CLI really runs and
-      // its real exit code is observable.
-      const script = [
-        "$ErrorActionPreference = 'Stop'",
-        "try {",
-        `  $p = Start-Process -FilePath '${binary}' -ArgumentList @(${args.map((arg) => `'${arg}'`).join(", ")}) -Wait -PassThru -WindowStyle Hidden`,
-        "  exit $p.ExitCode",
-        "} catch {",
-        `  $_ | Out-File -FilePath '${join(root, "ps-error.txt")}' -Encoding utf8`,
-        "  exit 99",
-        "}",
-      ].join("; ");
-      result = spawnSync(
-        "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
-        ["-NoProfile", "-NonInteractive", "-Command", script],
-        { env, stdio: ["ignore", stdoutFd, stderrFd], timeout: 180_000 },
-      );
+      // Windows while still reporting status 0 with empty output, and the
+      // compiled CLI hangs on exit while flushing stdout to a redirected file.
+      // Drive the binary through Windows PowerShell with stdout/stderr on the
+      // NUL device so the CLI really runs and exits promptly.
+      const nul = openSync("NUL", "w");
+      try {
+        const script = [
+          "$ErrorActionPreference = 'Stop'",
+          "try {",
+          `  $p = Start-Process -FilePath '${binary}' -ArgumentList @(${args.map((arg) => `'${arg}'`).join(", ")}) -Wait -PassThru -WindowStyle Hidden`,
+          "  exit $p.ExitCode",
+          "} catch {",
+          `  $_ | Out-File -FilePath '${join(root, "ps-error.txt")}' -Encoding utf8`,
+          "  exit 99",
+          "}",
+        ].join("; ");
+        result = spawnSync(
+          "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+          ["-NoProfile", "-NonInteractive", "-Command", script],
+          { env, stdio: ["ignore", nul, nul], timeout: 180_000 },
+        );
+      } finally {
+        closeSync(nul);
+      }
     } else {
       result = spawnSync(binary, args, { env, stdio: ["ignore", stdoutFd, stderrFd], timeout: 180_000 });
     }
