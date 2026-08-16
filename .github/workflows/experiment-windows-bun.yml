@@ -7,7 +7,7 @@ on:
 
 jobs:
   repro:
-    name: Minimal compiled exe probe
+    name: Compiled exe feature probes
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -16,21 +16,37 @@ jobs:
         with:
           bun-version: "1.3.14"
 
-      - name: Minimal console.log exe
+      - name: Probe A - with-file import
         shell: pwsh
         run: |
-          "console.log('hello-from-bun')" | Out-File -Encoding utf8 hello.ts
-          bun build hello.ts --compile --outfile hello.exe
-          Write-Host "--- direct ---"
-          .\hello.exe
-          Write-Host "direct-exit=$LASTEXITCODE"
-          Write-Host "--- capture ---"
-          $out = .\hello.exe 2>&1
-          Write-Host "capture=[$($out -join "`n")] exit=$LASTEXITCODE"
-          Write-Host "--- cmd redirect ---"
-          cmd /c ".\hello.exe > out.txt 2>&1"
-          Write-Host "cmd-exit=$LASTEXITCODE"
-          if (Test-Path out.txt) { Write-Host "out=[$(Get-Content out.txt -Raw)]" }
-          Write-Host "--- process ---"
-          $p = Start-Process -FilePath ".\hello.exe" -Wait -PassThru -WindowStyle Hidden
-          Write-Host "process-exit=$($p.ExitCode)"
+          "hello content" | Out-File -Encoding utf8 hello.txt
+          "import x from './hello.txt' with { type: 'file' }; console.log('A-withfile:', x)" | Out-File -Encoding utf8 probe-a.ts
+          bun build probe-a.ts --compile --outfile probe-a.exe
+          $out = .\probe-a.exe 2>&1
+          "A-exit=$LASTEXITCODE capture=[$($out -join "`n")]"
+
+      - name: Probe B - top-level await
+        shell: pwsh
+        run: |
+          "await Bun.sleep(1); console.log('B-topawait')" | Out-File -Encoding utf8 probe-b.ts
+          bun build probe-b.ts --compile --outfile probe-b.exe
+          $out = .\probe-b.exe 2>&1
+          "B-exit=$LASTEXITCODE capture=[$($out -join "`n")]"
+
+      - name: Probe C - with-file plus top-level await
+        shell: pwsh
+        run: |
+          "hello content" | Out-File -Encoding utf8 hello2.txt
+          "import x from './hello2.txt' with { type: 'file' }; await Bun.sleep(1); console.log('C-both:', x)" | Out-File -Encoding utf8 probe-c.ts
+          bun build probe-c.ts --compile --outfile probe-c.exe
+          $out = .\probe-c.exe 2>&1
+          "C-exit=$LASTEXITCODE capture=[$($out -join "`n")]"
+
+      - name: Probe D - dynamic import await
+        shell: pwsh
+        run: |
+          "export default 'dyn';\n" | Out-File -Encoding utf8 dyn.ts
+          "const m = await import('./dyn.ts'); console.log('D-dynimport:', m.default)" | Out-File -Encoding utf8 probe-d.ts
+          bun build probe-d.ts --compile --outfile probe-d.exe
+          $out = .\probe-d.exe 2>&1
+          "D-exit=$LASTEXITCODE capture=[$($out -join "`n")]"
