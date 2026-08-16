@@ -71,6 +71,12 @@ async function publishPackage(dir: string, name: string, version: string, dryRun
     if (result.status === 0) return;
     const stderr = (result.stderr ?? "").toLowerCase();
     const rateLimited = stderr.includes("e429") || stderr.includes("rate limit");
+    if (result.error) {
+      console.error(`[release] npm spawn failed: ${result.error.message}`);
+    }
+    if (!rateLimited) {
+      console.error(`[release] npm publish stderr:\n${result.stderr ?? ""}`);
+    }
     if (!rateLimited || attempt === 6) process.exit(result.status ?? 1);
     const waitSec = 60 * attempt;
     console.log(`[release] npm rate limited; retrying ${name} in ${waitSec}s…`);
