@@ -69,13 +69,14 @@ jobs:
           $binary = "release/easyresearch-windows-x64/bin/easyresearch.exe"
           $direct = & $binary --version 2>&1
           $exitCode = $LASTEXITCODE
-          $captureFile = Join-Path $env:RUNNER_TEMP "easyresearch-version.txt"
+          $captureFile = Join-Path $env:GITHUB_WORKSPACE "version-capture.txt"
           cmd /c "`"$binary`" --version > `"$captureFile`" 2>&1"
           $fileExit = $LASTEXITCODE
-          $fileOut = if (Test-Path $captureFile) { (Get-Content $captureFile -Raw).Trim() } else { "<no file>" }
-          Write-Host "direct-capture=[$($direct -join "`n")]"
-          Write-Host "file-capture=[$fileOut]"
-          Write-Host "direct-exit=$exitCode file-exit=$fileExit"
+          $fileOut = "<no file>"
+          if (Test-Path $captureFile) { $fileOut = (Get-Content $captureFile -Raw).Trim() }
+          "direct-capture=[$($direct -join "`n")]"
+          "file-capture=[$fileOut]"
+          "direct-exit=$exitCode file-exit=$fileExit"
           if ($exitCode -ne 0 -or ($direct -join "`n").Trim() -ne $expected) {
             throw "Windows native version mismatch: expected '$expected', direct '$($direct -join "`n")', file '$fileOut', exit $exitCode"
           }
