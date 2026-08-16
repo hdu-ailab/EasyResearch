@@ -265,7 +265,17 @@ export async function runCli(
     if (existing !== undefined) removeServerPid(agentDir);
 
     deps.spawnBackground(host, port);
+    try {
+      writeFileSync(join(agentDir, "wait-marker-before.txt"), "1");
+    } catch {
+      // diagnostics only
+    }
     const ready = await deps.waitForReady(host, port);
+    try {
+      writeFileSync(join(agentDir, "wait-marker-after.txt"), "1");
+    } catch {
+      // diagnostics only
+    }
     if (!ready) {
       console.error(`EasyResearch failed to start within ${READY_TIMEOUT_MS}ms. See ${serverLogFile(agentDir)}.`);
       return 1;
