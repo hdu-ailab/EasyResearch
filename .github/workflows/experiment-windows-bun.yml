@@ -7,7 +7,7 @@ on:
 
 jobs:
   repro:
-    name: Instrumented real entry probe
+    name: Plain entry compile probe
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -19,21 +19,30 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Probe P - instrumented entry
+      - name: Probe R - plain original entry via CLI
         shell: pwsh
         run: |
-          $entry = Get-Content src/cli/index.ts -Raw
-          $entry = $entry.Replace("async function runRuntimeEntry(args: string[]): Promise<void> {", "async function runRuntimeEntry(args: string[]): Promise<void> {`n  console.log('P-runtime-entry');")
-          $entry = $entry.Replace("if (import.meta.main) {", "if (import.meta.main) {`n  console.log('P-main-true');")
-          $entry = $entry.Replace("await runRuntimeEntry(args);", "console.log('P-before-run');`n  await runRuntimeEntry(args);`n  console.log('P-after-run');")
-          $entry | Out-File -Encoding utf8 src/cli/probe-p.ts
-          bun build src/cli/probe-p.ts --compile --minify --outfile probe-p.exe
-          New-Item -ItemType Directory -Force smokehome5 | Out-Null
-          $env:HOME = "$pwd\smokehome5"
-          $env:USERPROFILE = "$pwd\smokehome5"
-          $env:LOCALAPPDATA = "$pwd\smokehome5\la"
-          $env:EASYRESEARCH_CODING_AGENT_DIR = "$pwd\smokehome5\agent"
-          $out = .\probe-p.exe --no-open --port 32128 2>&1
-          "P-exit=$LASTEXITCODE"
-          $out | ForEach-Object { "P-capture: $_" }
-          "P-files=$((Get-ChildItem -Recurse smokehome5 -File | Measure-Object).Count)"
+          bun build src/cli/index.ts --compile --minify --outfile probe-r.exe
+          New-Item -ItemType Directory -Force smokehome6 | Out-Null
+          $env:HOME = "$pwd\smokehome6"
+          $env:USERPROFILE = "$pwd\smokehome6"
+          $env:LOCALAPPDATA = "$pwd\smokehome6\la"
+          $env:EASYRESEARCH_CODING_AGENT_DIR = "$pwd\smokehome6\agent"
+          $out = .\probe-r.exe --no-open --port 32129 2>&1
+          "R-exit=$LASTEXITCODE"
+          $out | Select-Object -First 10 | ForEach-Object { "R-capture: $_" }
+          "R-files=$((Get-ChildItem -Recurse smokehome6 -File | Measure-Object).Count)"
+
+      - name: Probe S - plain original entry without minify
+        shell: pwsh
+        run: |
+          bun build src/cli/index.ts --compile --outfile probe-s.exe
+          New-Item -ItemType Directory -Force smokehome7 | Out-Null
+          $env:HOME = "$pwd\smokehome7"
+          $env:USERPROFILE = "$pwd\smokehome7"
+          $env:LOCALAPPDATA = "$pwd\smokehome7\la"
+          $env:EASYRESEARCH_CODING_AGENT_DIR = "$pwd\smokehome7\agent"
+          $out = .\probe-s.exe --no-open --port 32130 2>&1
+          "S-exit=$LASTEXITCODE"
+          $out | Select-Object -First 10 | ForEach-Object { "S-capture: $_" }
+          "S-files=$((Get-ChildItem -Recurse smokehome7 -File | Measure-Object).Count)"
