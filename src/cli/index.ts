@@ -285,6 +285,11 @@ export async function runCli(
 }
 
 if (import.meta.main) {
+  const args = process.argv.slice(2);
+  if (args[0] === "--version" || args[0] === "-v") {
+    writeVersionOutput(embeddedPackageVersion());
+    process.exit(0);
+  }
   // Standalone binaries must statically register pi's lazy-loaded modules:
   // their variable-specifier dynamic imports cannot resolve inside $bunfs.
   // pi's own compiled entry (pi-coding-agent dist/bun/cli.js) does the same
@@ -295,11 +300,6 @@ if (import.meta.main) {
   const { bedrockProviderModule } = await import("@earendil-works/pi-ai/bedrock-provider");
   const { setBedrockProviderModule } = await import("@earendil-works/pi-ai/compat");
   setBedrockProviderModule(bedrockProviderModule);
-  const args = process.argv.slice(2);
-  if (args[0] === "--version" || args[0] === "-v") {
-    writeVersionOutput(embeddedPackageVersion());
-    process.exit(0);
-  }
   if (args.length === 3 && args[0] === "--serve") {
     const host = args[1] as string;
     const port = parsePort(args[2] as string);
