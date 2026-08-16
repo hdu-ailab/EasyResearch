@@ -198,13 +198,26 @@ export async function compileTarget(target: PlatformTarget): Promise<string> {
   const binDir = join(pkgDir, "bin");
   mkdirSync(binDir, { recursive: true });
   const outfile = join(binDir, platformBinaryName(target));
-  const result = await Bun.build({
-    entrypoints: [join(ROOT, "src", "cli", "index.ts")],
-    compile: { target: target.target as Bun.Build.CompileTarget, outfile },
-    minify: true,
+  // Bun 1.3.14's `Bun.build({ compile })` API emits Windows executables that
+  // exit 0 without executing any code on startup; the `bun build --compile`
+  // CLI produces working binaries for the same entry. Compile through the CLI.
+  const result = Bun.spawnSync({
+    cmd: [
+      "bun",
+      "build",
+      join(ROOT, "src", "cli", "index.ts"),
+      "--compile",
+      "--target",
+      target.target,
+      "--outfile",
+      outfile,
+      "--minify",
+    ],
+    stdout: "inherit",
+    stderr: "inherit",
   });
-  if (!result.success) {
-    throw new Error(`compile failed for ${target.name}: ${JSON.stringify(result.logs)}`);
+  if (result.exitCode !== 0) {
+    throw new Error(`compile failed for ${target.name} (exit ${result.exitCode})`);
   }
   return outfile;
 }
