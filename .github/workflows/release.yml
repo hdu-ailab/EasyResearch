@@ -66,11 +66,18 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           $expected = "easyresearch $($env:GITHUB_REF_NAME.Substring(1))"
-          $output = & "release/easyresearch-windows-x64/bin/easyresearch.exe" --version 2>&1
+          $binary = "release/easyresearch-windows-x64/bin/easyresearch.exe"
+          $direct = & $binary --version 2>&1
           $exitCode = $LASTEXITCODE
-          $received = ($output -join "`n").Trim()
-          if ($exitCode -ne 0 -or $received -ne $expected) {
-            throw "Windows native version mismatch: expected '$expected', received '$received', exit code $exitCode"
+          $captureFile = Join-Path $env:RUNNER_TEMP "easyresearch-version.txt"
+          cmd /c "`"$binary`" --version > `"$captureFile`" 2>&1"
+          $fileExit = $LASTEXITCODE
+          $fileOut = if (Test-Path $captureFile) { (Get-Content $captureFile -Raw).Trim() } else { "<no file>" }
+          Write-Host "direct-capture=[$($direct -join "`n")]"
+          Write-Host "file-capture=[$fileOut]"
+          Write-Host "direct-exit=$exitCode file-exit=$fileExit"
+          if ($exitCode -ne 0 -or ($direct -join "`n").Trim() -ne $expected) {
+            throw "Windows native version mismatch: expected '$expected', direct '$($direct -join "`n")', file '$fileOut', exit $exitCode"
           }
 
       - name: Run native binary smoke
