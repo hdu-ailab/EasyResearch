@@ -67,9 +67,10 @@ jobs:
         run: |
           $expected = "easyresearch $($env:GITHUB_REF_NAME.Substring(1))"
           $output = & "release/easyresearch-windows-x64/bin/easyresearch.exe" --version 2>&1
+          $exitCode = $LASTEXITCODE
           $received = ($output -join "`n").Trim()
-          if ($LASTEXITCODE -ne 0 -or $received -ne $expected) {
-            throw "Windows native version mismatch: expected '$expected', received '$received'"
+          if ($exitCode -ne 0 -or $received -ne $expected) {
+            throw "Windows native version mismatch: expected '$expected', received '$received', exit code $exitCode"
           }
 
       - name: Run native binary smoke

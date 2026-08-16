@@ -284,12 +284,7 @@ export async function runCli(
   }
 }
 
-if (import.meta.main) {
-  const args = process.argv.slice(2);
-  if (args[0] === "--version" || args[0] === "-v") {
-    writeVersionOutput(embeddedPackageVersion());
-    process.exit(0);
-  }
+async function runRuntimeEntry(args: string[]): Promise<void> {
   // Standalone binaries must statically register pi's lazy-loaded modules:
   // their variable-specifier dynamic imports cannot resolve inside $bunfs.
   // pi's own compiled entry (pi-coding-agent dist/bun/cli.js) does the same
@@ -328,4 +323,13 @@ if (import.meta.main) {
       child.unref();
     },
   }));
+}
+
+if (import.meta.main) {
+  const args = process.argv.slice(2);
+  if (args[0] === "--version" || args[0] === "-v") {
+    writeVersionOutput(embeddedPackageVersion());
+  } else {
+    await runRuntimeEntry(args);
+  }
 }
