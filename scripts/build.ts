@@ -45,8 +45,8 @@ export function releaseDir(): string {
   return join(ROOT, "release");
 }
 
-export function buildManifestPath(): string {
-  return join(releaseDir(), "build-manifest.json");
+export function buildManifestPath(targetName?: string): string {
+  return join(releaseDir(), targetName ? `build-manifest-${targetName}.json` : "build-manifest.json");
 }
 
 export function platformPackageDir(targetName: string): string {
@@ -213,6 +213,7 @@ export async function buildTargets(only?: string, prefer?: string[]): Promise<Pl
   const targets = selectBuildTargets(only, prefer);
   const developmentStub = readFileSync(GENERATED_MODULE, "utf8");
   rmSync(buildManifestPath(), { force: true });
+  if (only) rmSync(buildManifestPath(only), { force: true });
   await buildWebUi();
   try {
     await generateEmbeddedAssetsModule(true);
@@ -232,7 +233,10 @@ export async function buildTargets(only?: string, prefer?: string[]): Promise<Pl
       console.log(`[build] ${target.name} -> ${outfile} (${(size / 1024 / 1024).toFixed(1)} MiB)`);
     }
     mkdirSync(releaseDir(), { recursive: true });
-    writeFileSync(buildManifestPath(), `${JSON.stringify({ version: repoPackageVersion(), artifacts }, null, 2)}\n`);
+    writeFileSync(
+      buildManifestPath(only),
+      `${JSON.stringify({ version: repoPackageVersion(), artifacts }, null, 2)}\n`,
+    );
     return targets;
   } finally {
     writeFileSync(GENERATED_MODULE, developmentStub);

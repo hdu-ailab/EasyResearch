@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { TARGETS } from "../../scripts/build";
+import { TARGETS, type BuildManifest } from "../../scripts/build";
 import * as release from "../../scripts/release";
 
 const tempDirs: string[] = [];
@@ -51,6 +51,32 @@ describe("package manifests", () => {
 });
 
 describe("build artifact integrity", () => {
+  it("combines one exact artifact from every requested native manifest fragment", () => {
+    const combineBuildManifests = (release as typeof release & {
+      combineBuildManifests(
+        manifests: readonly BuildManifest[],
+        targets: typeof TARGETS,
+      ): BuildManifest;
+    }).combineBuildManifests;
+    const fragments = TARGETS.map((target): BuildManifest => ({
+      version: "1.2.3",
+      artifacts: [{
+        version: "1.2.3",
+        target: target.name,
+        binaryName: target.os[0] === "win32" ? "easyresearch.exe" : "easyresearch",
+        size: 1,
+        sha256: `${target.name}-hash`,
+        builtAt: "2026-08-17T00:00:00.000Z",
+      }],
+    }));
+
+    const combined = combineBuildManifests(fragments, TARGETS);
+
+    expect(combined.version).toBe("1.2.3");
+    expect(combined.artifacts.map((artifact) => artifact.target)).toEqual(TARGETS.map((target) => target.name));
+    expect(() => combineBuildManifests(fragments.slice(1), TARGETS)).toThrow("missing manifest artifact");
+  });
+
   it("rejects a binary whose bytes no longer match its manifest", () => {
     const validateBuildArtifact = (release as typeof release & {
       validateBuildArtifact(record: Record<string, unknown>, target: (typeof TARGETS)[number], version: string, binary: string): void;

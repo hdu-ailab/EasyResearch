@@ -193,10 +193,31 @@ export function validateBuildArtifact(
   if (record.sha256 !== actualHash) throw new Error(`build manifest SHA-256 mismatch for ${target.name}`);
 }
 
+export function combineBuildManifests(
+  manifests: readonly BuildManifest[],
+  targets: readonly (typeof TARGETS)[number][],
+): BuildManifest {
+  const versions = new Set(manifests.map((manifest) => manifest.version));
+  if (versions.size !== 1) throw new Error("build manifest fragments do not share one version");
+  const allArtifacts = manifests.flatMap((manifest) => manifest.artifacts);
+  const artifacts = targets.map((target) => {
+    const matches = allArtifacts.filter((artifact) => artifact.target === target.name);
+    if (matches.length === 0) throw new Error(`missing manifest artifact for ${target.name}`);
+    if (matches.length > 1) throw new Error(`duplicate manifest artifact for ${target.name}`);
+    return matches[0]!;
+  });
+  return { version: [...versions][0]!, artifacts };
+}
+
 export function validateBuildArtifacts(targets: readonly (typeof TARGETS)[number][], version: string): void {
   let manifest: BuildManifest;
   try {
-    manifest = JSON.parse(readFileSync(buildManifestPath(), "utf8")) as BuildManifest;
+    const manifests = existsSync(buildManifestPath())
+      ? [JSON.parse(readFileSync(buildManifestPath(), "utf8")) as BuildManifest]
+      : targets.map((target) => (
+        JSON.parse(readFileSync(buildManifestPath(target.name), "utf8")) as BuildManifest
+      ));
+    manifest = combineBuildManifests(manifests, targets);
   } catch {
     throw new Error("missing or invalid build manifest; drop --skip-build and rebuild");
   }

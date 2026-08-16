@@ -36,33 +36,8 @@ jobs:
         run: bun run check:web
 
   build:
-    name: Cross-build release artifacts
+    name: Native build and smoke (${{ matrix.target }})
     needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        with:
-          bun-version: "1.3.14"
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Build all platform binaries
-        run: bun run build:release
-
-      - name: Upload release artifact
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: easyresearch-release
-          path: release/
-          retention-days: 7
-
-  smoke:
-    name: Native smoke (${{ matrix.target }})
-    needs: build
     strategy:
       fail-fast: false
       matrix:
@@ -84,14 +59,8 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: easyresearch-release
-          path: release
-
-      - name: Restore native executable permission
-        if: runner.os != 'Windows'
-        run: chmod +x release/easyresearch-${{ matrix.target }}/bin/easyresearch
+      - name: Build native platform binary
+        run: bun scripts/build.ts --only ${{ matrix.target }}
 
       - name: Verify Windows native version
         if: runner.os == 'Windows'
@@ -106,9 +75,18 @@ jobs:
       - name: Run native binary smoke
         run: bun scripts/smoke-release.ts ${{ matrix.target }} ${{ runner.os == 'Windows' && '--version-verified-by-runner' || '' }}
 
+      - name: Upload verified native artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: easyresearch-release-${{ matrix.target }}
+          path: |
+            release/easyresearch-${{ matrix.target }}/
+            release/build-manifest-${{ matrix.target }}.json
+          retention-days: 7
+
   publish:
     name: Publish to npm
-    needs: smoke
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -127,8 +105,12 @@ jobs:
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: easyresearch-release
+          pattern: easyresearch-release-*
           path: release
+          merge-multiple: true
+
+      - name: Restore packaged executable permissions
+        run: chmod +x release/easyresearch-linux-x64/bin/easyresearch release/easyresearch-darwin-arm64/bin/easyresearch
 
       - name: Configure npm registry
         run: npm config set //registry.npmjs.org/:_authToken "$NODE_AUTH_TOKEN"
