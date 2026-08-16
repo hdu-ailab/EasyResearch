@@ -236,6 +236,12 @@ try {
   if (!versionVerifiedByRunner) validateNativeVersionOutput(0, runVersion(), version, target.name);
   const treeBefore = treeFiles(root);
   run(["--no-open", "--port", String(port)]);
+  const materializedDir = join(agentDir, "bundled");
+  const materializeDeadline = Date.now() + 60_000;
+  while (Date.now() < materializeDeadline) {
+    if (existsSync(materializedDir)) break;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
   const createdFiles = treeFiles(root).filter((file) => !treeBefore.includes(file));
   console.log(`[smoke] files created by CLI run: ${createdFiles.length}`);
   for (const file of createdFiles.slice(0, 60)) console.log(`[smoke]   ${file}`);
