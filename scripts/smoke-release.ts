@@ -187,6 +187,10 @@ try {
   const version = repoPackageVersion();
   if (!versionVerifiedByRunner) validateNativeVersionOutput(0, runVersion(), version, target.name);
   run(["--no-open", "--port", String(port)]);
+  const bundledDir = join(agentDir, "bundled");
+  if (!existsSync(bundledDir)) throw new Error("CLI did not materialize bundled resources (did the CLI actually run?)");
+  const daemonBinary = join(agentDir, "bin", target.os[0] === "win32" ? "easyresearch-daemon.exe" : "easyresearch-daemon");
+  if (!existsSync(daemonBinary)) throw new Error(`daemon binary copy missing: ${daemonBinary}`);
   const base = `http://127.0.0.1:${port}`;
   await requireOk(await fetch(`${base}/api/status`), "status probe");
   const auth = await requireOk(await fetch(`${base}/api/auth/providers`), "OAuth provider probe");
