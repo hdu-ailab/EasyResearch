@@ -150,15 +150,3 @@ bun run lint:web      # biome
 
 全局状态位于 `~/.easyresearch/agent`（settings、models、auth、sessions、
 agents）；项目级覆盖位于 `<exact-cwd>/.easyresearch`。
-
-## 发布
-
-推送版本 tag 即触发发布流水线（ADR-072）：`check:web` 测试门禁通过后，
-交叉编译各平台二进制并自动发布到 npm——无需手动步骤：
-
-```bash
-git tag v0.0.1
-git push origin v0.0.1
-```
-
-tag 必须与 `package.json` 中的 `version` 一致。
