@@ -125,6 +125,13 @@ async function requireOk(response: Response, label: string): Promise<any> {
 }
 
 function dumpServerLogs(): void {
+  for (const capture of ["run-stdout.txt", "run-stderr.txt"]) {
+    const path = join(root, capture);
+    if (!existsSync(path)) continue;
+    const content = readFileSync(path, "utf8");
+    console.log(`[smoke] --- ${capture} (${content.length} bytes) ---`);
+    console.log(content.slice(-4000));
+  }
   try {
     const logsDir = join(agentDir, "logs");
     if (!existsSync(logsDir)) {
