@@ -230,7 +230,9 @@ export function validateNativeVersionOutput(
   const expected = `easyresearch ${version}`;
   const lines = `${stdout}\n${stderr}`.split(/\r?\n/).map((line) => line.trim());
   if (status !== 0 || !lines.includes(expected)) {
-    throw new Error(`native version smoke failed for ${target}: expected easyresearch ${version}`);
+    throw new Error(
+      `native version smoke failed for ${target}: expected ${expected}; stdout=${JSON.stringify(stdout)}; stderr=${JSON.stringify(stderr)}`,
+    );
   }
 }
 

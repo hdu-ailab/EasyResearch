@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -82,6 +82,27 @@ function run(args: string[]): { stdout: string; stderr: string } {
   return { stdout, stderr };
 }
 
+function runVersion(): string {
+  const outputPath = join(root, "version-output.txt");
+  const outputFd = openSync(outputPath, "w");
+  let result: ReturnType<typeof spawnSync>;
+  try {
+    result = spawnSync(binary, ["--version"], {
+      env,
+      stdio: ["ignore", outputFd, outputFd],
+      timeout: 180_000,
+    });
+  } finally {
+    closeSync(outputFd);
+  }
+  const output = readFileSync(outputPath, "utf8");
+  if (result.error || result.status !== 0) {
+    const cause = result.error ? `${result.error.name}: ${result.error.message}` : "no spawn error";
+    throw new Error(`${binary} --version failed (${result.status ?? "no status"}; ${cause}):\n${output}`);
+  }
+  return output;
+}
+
 async function requireOk(response: Response, label: string): Promise<any> {
   const text = await response.text();
   if (!response.ok) throw new Error(`${label} failed (${response.status}): ${text}`);
@@ -124,8 +145,7 @@ function openAiStream(input: {
 
 try {
   const version = repoPackageVersion();
-  const versionResult = run(["--version"]);
-  validateNativeVersionOutput(0, versionResult.stdout, version, target.name, versionResult.stderr);
+  validateNativeVersionOutput(0, runVersion(), version, target.name);
   run(["--no-open", "--port", String(port)]);
   const base = `http://127.0.0.1:${port}`;
   await requireOk(await fetch(`${base}/api/status`), "status probe");

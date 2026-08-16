@@ -74,8 +74,13 @@ describe("build artifact integrity", () => {
     const validateNativeVersionOutput = (release as typeof release & {
       validateNativeVersionOutput(status: number | null, stdout: string, version: string, target: string): void;
     }).validateNativeVersionOutput;
-    expect(() => validateNativeVersionOutput(0, "easyresearch 1.2.2\n", "1.2.3", "linux-x64"))
-      .toThrow("version smoke failed");
+    expect(() => validateNativeVersionOutput(
+      0,
+      "easyresearch 1.2.2\n",
+      "1.2.3",
+      "linux-x64",
+      "runtime notice\n",
+    )).toThrow(/version smoke failed.*easyresearch 1\.2\.2.*runtime notice/s);
   });
 
   it("accepts the exact native version line from stderr", () => {
