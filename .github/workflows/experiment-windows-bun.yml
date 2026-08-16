@@ -26,8 +26,8 @@ jobs:
           $entry = $entry.Replace("async function runRuntimeEntry(args: string[]): Promise<void> {", "async function runRuntimeEntry(args: string[]): Promise<void> {`n  console.log('P-runtime-entry');")
           $entry = $entry.Replace("if (import.meta.main) {", "if (import.meta.main) {`n  console.log('P-main-true');")
           $entry = $entry.Replace("await runRuntimeEntry(args);", "console.log('P-before-run');`n  await runRuntimeEntry(args);`n  console.log('P-after-run');")
-          $entry | Out-File -Encoding utf8 probe-p.ts
-          bun build probe-p.ts --compile --minify --outfile probe-p.exe
+          $entry | Out-File -Encoding utf8 src/cli/probe-p.ts
+          bun build src/cli/probe-p.ts --compile --minify --outfile probe-p.exe
           New-Item -ItemType Directory -Force smokehome5 | Out-Null
           $env:HOME = "$pwd\smokehome5"
           $env:USERPROFILE = "$pwd\smokehome5"
