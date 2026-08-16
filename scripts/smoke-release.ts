@@ -72,6 +72,7 @@ const env = {
   ...process.env,
   HOME: home,
   USERPROFILE: home,
+  LOCALAPPDATA: join(root, "localappdata"),
   EASYRESEARCH_CODING_AGENT_DIR: agentDir,
   PATH: emptyPath,
 };
@@ -213,6 +214,7 @@ try {
     join(agentDir, "bundled"),
     join(home, ".easyresearch", "agent", "bundled"),
     join(process.env.APPDATA ?? "", ".easyresearch", "agent", "bundled"),
+    join(process.env.LOCALAPPDATA ?? "", ".easyresearch", "agent", "bundled"),
   ];
   for (const candidate of bundledCandidates) {
     console.log(`[smoke] bundled candidate: ${candidate} -> ${existsSync(candidate)}`);
