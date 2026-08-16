@@ -77,9 +77,19 @@ const env = {
 };
 
 function run(args: string[]): { stdout: string; stderr: string } {
-  const result = spawnSync(binary, args, { env, encoding: "utf8", timeout: 180_000 });
-  const stdout = result.stdout ?? "";
-  const stderr = result.stderr ?? "";
+  const stdoutPath = join(root, "run-stdout.txt");
+  const stderrPath = join(root, "run-stderr.txt");
+  const stdoutFd = openSync(stdoutPath, "w");
+  const stderrFd = openSync(stderrPath, "w");
+  let result: ReturnType<typeof spawnSync>;
+  try {
+    result = spawnSync(binary, args, { env, stdio: ["ignore", stdoutFd, stderrFd], timeout: 180_000 });
+  } finally {
+    closeSync(stdoutFd);
+    closeSync(stderrFd);
+  }
+  const stdout = readFileSync(stdoutPath, "utf8");
+  const stderr = readFileSync(stderrPath, "utf8");
   if (result.error || result.status !== 0) {
     const cause = result.error ? `${result.error.name}: ${result.error.message}` : "no spawn error";
     throw new Error(`${binary} ${args.join(" ")} failed (${result.status ?? "no status"}; ${cause}):\n${stdout}\n${stderr}`);
