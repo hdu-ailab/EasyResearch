@@ -202,15 +202,15 @@ describe("browser opener", () => {
 });
 
 describe("version output", () => {
-  it("writes the exact version line synchronously", () => {
+  it("writes the exact version line through the runtime console", () => {
     const writeVersionOutput = (cliModule as typeof cliModule & {
-      writeVersionOutput(version: string, write: (fd: number, output: string) => unknown): void;
+      writeVersionOutput(version: string, write: (output: string) => unknown): void;
     }).writeVersionOutput;
     const write = vi.fn();
 
     writeVersionOutput("1.2.3", write);
 
-    expect(write).toHaveBeenCalledWith(1, "easyresearch 1.2.3\n");
+    expect(write).toHaveBeenCalledWith("easyresearch 1.2.3");
   });
 });
 

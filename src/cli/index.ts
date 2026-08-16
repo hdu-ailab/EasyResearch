@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -46,9 +46,9 @@ export const READY_TIMEOUT_MS = 10_000;
 
 export function writeVersionOutput(
   version: string,
-  write: (fd: number, output: string) => unknown = (fd, output) => writeSync(fd, output),
+  write: (output: string) => unknown = (output) => console.log(output),
 ): void {
-  write(1, `easyresearch ${version}\n`);
+  write(`easyresearch ${version}`);
 }
 
 export function isSkipSetupEnabled(): boolean {
