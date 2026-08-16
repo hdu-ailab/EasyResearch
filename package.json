@@ -1,6 +1,6 @@
 {
   "name": "easyresearch",
-  "version": "0.0.13",
+  "version": "0.0.14",
   "description": "Automated academic paper writing CLI built on the Pi agent harness",
   "type": "module",
   "private": true,
