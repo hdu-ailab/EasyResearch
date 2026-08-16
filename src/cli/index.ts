@@ -272,7 +272,17 @@ export async function runCli(
     }
 
     const url = `http://${host}:${port}`;
+    try {
+      writeFileSync(join(agentDir, "url-marker-before.txt"), "1");
+    } catch {
+      // diagnostics only
+    }
     console.log(`EasyResearch: ${url}`);
+    try {
+      writeFileSync(join(agentDir, "url-marker-after.txt"), "1");
+    } catch {
+      // diagnostics only
+    }
     if (!isLoopbackHost(host)) {
       console.warn(`Warning: EasyResearch is listening on ${host}. Web config editing trusts the local OS user. Make sure the network is trusted before exposing it.`);
     }
