@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { createRouteHandler, type RouteServices } from "./routes";
 import { ActiveSessionRegistry } from "./active-sessions";
-import { PiRpcSessionFactory } from "./rpc-session";
+import { PiSessionFactory } from "./session-adapter";
 import { DirectoryService } from "./directories";
 import { ConfigFileService } from "./config-files";
 import { readWebSessionIdleTimeout } from "./session-settings";
@@ -105,8 +105,8 @@ export function toUserSessionSummaries(sessions: readonly SessionInfoLike[]): Se
 
 /**
  * Start the Web panel backend. Defaults to 127.0.0.1:3000; both are overridable.
- * The server owns the active session registry and stops every Pi RPC child on
- * shutdown.
+ * The server owns the active session registry and disposes every Pi
+ * AgentSession on shutdown.
  */
 export async function startServer(options: StartServerOptions = {}): Promise<Server> {
   const host = options.host ?? "127.0.0.1";
@@ -121,7 +121,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
   const config = new ConfigFileService(agentDir);
   const idleTimeoutMs = await readWebSessionIdleTimeout(config);
   const registry = new ActiveSessionRegistry(
-    await PiRpcSessionFactory.resolve(),
+    await PiSessionFactory.resolve(),
     logger,
     {
       idleTimeoutMs,

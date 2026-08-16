@@ -2,11 +2,11 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionTreeNode } from "@earendil-works/pi-coding-agent";
 import type { ActiveSessionDto } from "./contracts";
 import type {
-  RpcSessionAdapter,
-  RpcSessionFactory,
-  StartRpcSessionOptions,
+  SessionAdapter,
+  SessionFactory,
+  StartSessionOptions,
   WebSlashCommand,
-} from "./rpc-session";
+} from "./session-adapter";
 import { createLogger } from "../runtime/logger";
 import { attachEventLogger } from "./event-logger";
 import type { Logger } from "../runtime/logger";
@@ -20,7 +20,7 @@ interface ActiveRecord {
   dto: ActiveSessionDto;
   cwd: string;
   sessionPath?: string;
-  client: RpcSessionAdapter;
+  client: SessionAdapter;
   fileWatcher: FileWatcher;
   listeners: Set<(event: unknown) => void>;
   dispose: () => void;
@@ -44,10 +44,9 @@ export interface ActiveSessionRegistryOptions {
 }
 
 /**
- * In-memory registry owning one Pi RPC child per active Web session. Browser
- * disconnects only unsubscribe listeners; the child survives. Explicit stop,
- * restart, or registry shutdown stops children but preserves session paths
- * for later resume.
+ * In-memory registry owning one Pi AgentSession adapter per connected Web
+ * session. Browser disconnects only unsubscribe listeners; explicit stop,
+ * restart, or registry shutdown disposes adapters but preserves session paths.
  */
 export class ActiveSessionRegistry {
   private readonly records = new Map<string, ActiveRecord>();
@@ -55,7 +54,7 @@ export class ActiveSessionRegistry {
   private readonly resolveLaunchThinking?: (cwd: string) => Promise<string | undefined>;
 
   constructor(
-    private readonly factory: RpcSessionFactory,
+    private readonly factory: SessionFactory,
     private readonly logger?: Logger,
     options: ActiveSessionRegistryOptions = {},
     private readonly fileWatcherFactory: FileWatcherFactory = createNoopFileWatcherFactory(),
@@ -268,7 +267,7 @@ export class ActiveSessionRegistry {
   }
 
   private async launch(
-    options: StartRpcSessionOptions & { adoptListeners?: Set<(event: unknown) => void> },
+    options: StartSessionOptions & { adoptListeners?: Set<(event: unknown) => void> },
   ): Promise<ActiveSessionDto> {
     const { assertSafeExtensionSources } = await import("../runtime/extensions-guard");
     assertSafeExtensionSources({ cwd: options.cwd });
@@ -329,23 +328,15 @@ export class ActiveSessionRegistry {
         this.syncDtoFromEvent(record, event);
       });
       const eventLogCancel = attachEventLogger(dto.id, record.cwd, client.onEvent.bind(client), this.logger ?? logger);
-      const exitCancel = client.onExit((error) => {
-        this.clearIdleTimer(record);
-        (this.logger ?? logger).error("rpc child exited", { sessionId: record.dto.id, error: error.message });
-        record.dto.isStreaming = false;
-        record.dto.status = "error";
-        record.dto.error = error.message;
-      });
       record.dispose = () => {
         eventCancel();
         eventLogCancel();
-        exitCancel();
       };
 
       this.records.set(dto.id, record);
       this.scheduleIdleStop(record);
     } catch (error) {
-      (this.logger ?? logger).error("rpc child launch failed", {
+      (this.logger ?? logger).error("session runtime launch failed", {
         cwd: options.cwd,
         sessionPath: options.sessionPath ?? "",
         error: error instanceof Error ? error.message : String(error),

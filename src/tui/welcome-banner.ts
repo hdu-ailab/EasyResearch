@@ -8,7 +8,7 @@ import { truncateToWidth } from "@earendil-works/pi-tui";
  * Pi's built-in startup header (logo line, keybinding hints, onboarding text)
  * via `ctx.ui.setHeader`. The banner is the persistent header for the session
  * and shows regardless of whether the global agent directory exists — the
- * extension is always mounted inline and reads no config. Web RPC children are
+ * extension is always mounted inline and reads no config. Headless Web sessions are
  * skipped via the `ctx.mode === "tui"` guard.
  */
 
@@ -50,7 +50,7 @@ export function welcomeBannerLines(theme: WelcomeTheme, width: number): string[]
 /**
  * Mount the welcome banner on the Paper Assistant extension.
  * TUI-only: `setHeader` component factories are terminal-only features, and the
- * same extension file runs in Web RPC children where they would be inert.
+ * same extension file runs in headless Web sessions where they are inert.
  */
 export function mountWelcomeBanner(pi: ExtensionAPI): void {
   const tuiOnly = (_event: unknown, ctx: { mode?: string; hasUI?: boolean }): boolean =>

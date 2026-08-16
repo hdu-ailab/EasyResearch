@@ -155,6 +155,21 @@ describe("session reducer", () => {
     expect(updated.activeMessageKey).toBe(updated.messages[0]!.key);
   });
 
+  it("keeps user and assistant rows distinct when Pi assigns the same timestamp", () => {
+    const state = fromSnapshot({
+      session: { id: "child", cwd: "/p", isStreaming: false, status: "ready", sessionName: "easyresearch:search" },
+      subagents: [],
+      messages: [
+        { role: "user", timestamp: 1000, content: [{ type: "text", text: "delegated task" }] },
+        { role: "assistant", timestamp: 1000, content: [{ type: "text", text: "search progress" }] },
+      ] as never,
+    });
+
+    expect(state.messages.map((message) => message.text)).toEqual(["delegated task", "search progress"]);
+    expect(new Set(state.messages.map((message) => message.key)).size).toBe(2);
+    expect(new Set(state.messages.map((message) => message.identity)).size).toBe(2);
+  });
+
   it("reconciles a missing assistant row from the authoritative message_end", () => {
     const hydrated = fromSnapshot({
       session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },

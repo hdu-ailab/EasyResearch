@@ -1,10 +1,11 @@
 import { createServer } from "node:http";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { dayStamp } from "../runtime/logger";
 import { runCli, waitForReady, type CliDependencies, type CliOptions } from "./index";
+import * as cliModule from "./index";
 import { readServerPid, serverPidPath, writeServerPid } from "./server-process";
 
 let root: string;
@@ -188,6 +189,18 @@ describe("waitForReady", () => {
   });
 });
 
+describe("browser opener", () => {
+  it("uses cmd.exe for the Windows start shell builtin", () => {
+    const browserOpenCommand = (cliModule as typeof cliModule & {
+      browserOpenCommand(platform: NodeJS.Platform, url: string): { command: string; args: string[] };
+    }).browserOpenCommand;
+    expect(browserOpenCommand("win32", "http://127.0.0.1:3000")).toEqual({
+      command: "cmd.exe",
+      args: ["/d", "/s", "/c", "start", "", "http://127.0.0.1:3000"],
+    });
+  });
+});
+
 describe("first-run setup", () => {
   it("runs injected setup on normal start", async () => {
     const setup = vi.fn();
@@ -209,12 +222,84 @@ describe("first-run setup", () => {
     process.env.EASYRESEARCH_SKIP_SETUP = "1";
     try {
       const setup = vi.fn();
+      const useExistingSetup = vi.fn();
       const deps = makeDeps();
-      await runCli([], deps, { agentDir: root, setup });
+      await runCli([], deps, { agentDir: root, setup, useExistingSetup } as CliOptions);
       expect(setup).not.toHaveBeenCalled();
+      expect(useExistingSetup).toHaveBeenCalledWith(root);
     } finally {
       if (previous === undefined) delete process.env.EASYRESEARCH_SKIP_SETUP;
       else process.env.EASYRESEARCH_SKIP_SETUP = previous;
+    }
+  });
+
+  it("stops with a useful error when skipped compiled setup is unavailable", async () => {
+    const previous = process.env.EASYRESEARCH_SKIP_SETUP;
+    process.env.EASYRESEARCH_SKIP_SETUP = "1";
+    const messages: string[] = [];
+    const errorSpy = vi.spyOn(console, "error").mockImplementation((message) => messages.push(String(message)));
+    try {
+      const deps = makeDeps();
+      const result = await runCli([], deps, {
+        agentDir: root,
+        setup: vi.fn(),
+        useExistingSetup: () => { throw new Error("Setup required: run EasyResearch without EASYRESEARCH_SKIP_SETUP"); },
+      } as CliOptions);
+      expect(result).toBe(1);
+      expect(deps.spawnBackground).not.toHaveBeenCalled();
+      expect(messages.join("\n")).toContain("Setup required");
+    } finally {
+      errorSpy.mockRestore();
+      if (previous === undefined) delete process.env.EASYRESEARCH_SKIP_SETUP;
+      else process.env.EASYRESEARCH_SKIP_SETUP = previous;
+    }
+  });
+});
+
+describe("resource retirement version gate", () => {
+  it("retires same-name resources only once per version", () => {
+    const retireBundledResourcesOnce = (cliModule as typeof cliModule & {
+      retireBundledResourcesOnce(agentDir: string, version: string, retire: () => void): boolean;
+    }).retireBundledResourcesOnce;
+    const retire = vi.fn();
+
+    expect(retireBundledResourcesOnce(root, "1.0.0", retire)).toBe(true);
+    expect(retireBundledResourcesOnce(root, "1.0.0", retire)).toBe(false);
+    expect(retire).toHaveBeenCalledTimes(1);
+    expect(retireBundledResourcesOnce(root, "2.0.0", retire)).toBe(true);
+    expect(retire).toHaveBeenCalledTimes(2);
+  });
+
+  it("copies materialized Pi assets beside the daemon executable", () => {
+    const copyPiRuntimeAssets = (cliModule as typeof cliModule & {
+      copyPiRuntimeAssets(agentDir: string, source: string): void;
+    }).copyPiRuntimeAssets;
+    const source = join(root, "bundled", "pi");
+    mkdirSync(join(source, "theme"), { recursive: true });
+    writeFileSync(join(source, "package.json"), "{\"piConfig\":{\"configDir\":\".easyresearch\"}}");
+    writeFileSync(join(source, "theme", "dark.json"), "{}");
+    writeFileSync(join(source, "photon_rs_bg.wasm"), Buffer.from([0, 255, 1]));
+
+    copyPiRuntimeAssets(root, source);
+
+    expect(readFileSync(join(root, "bin", "theme", "dark.json"), "utf8")).toBe("{}");
+    expect(readFileSync(join(root, "bin", "photon_rs_bg.wasm"))).toEqual(Buffer.from([0, 255, 1]));
+  });
+
+  it("fails explicitly when the compiled daemon copy cannot be prepared", () => {
+    const previous = process.env.EASYRESEARCH_BUNDLED_ROOT;
+    const bundledRoot = join(root, "bundled");
+    mkdirSync(join(bundledRoot, "pi"), { recursive: true });
+    writeFileSync(join(bundledRoot, "pi", "package.json"), "{}");
+    process.env.EASYRESEARCH_BUNDLED_ROOT = bundledRoot;
+    const target = join(root, "bin", process.platform === "win32" ? "easyresearch-daemon.exe" : "easyresearch-daemon");
+    mkdirSync(target, { recursive: true });
+
+    try {
+      expect(() => cliModule.daemonBinaryPath(root)).toThrow("Unable to prepare the daemon executable");
+    } finally {
+      if (previous === undefined) delete process.env.EASYRESEARCH_BUNDLED_ROOT;
+      else process.env.EASYRESEARCH_BUNDLED_ROOT = previous;
     }
   });
 });

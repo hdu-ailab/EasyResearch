@@ -132,8 +132,8 @@ function splitContent(message: UnknownMessage): { text: string; reasoning: strin
   return { text: "", reasoning: "" };
 }
 
-function keyFor(message: { id?: unknown; timestamp?: unknown }, fallback: number): string {
-  return String(message.id ?? message.timestamp ?? fallback);
+function keyFor(message: { role?: unknown; id?: unknown; timestamp?: unknown }, fallback: number): string {
+  return identityFor(message) ?? String(fallback);
 }
 
 const SKILL_INVOCATION_PATTERN = /^<skill name="([^"]+)"[^>]*>[\s\S]*?<\/skill>(?:\s+([\s\S]*))?$/;
@@ -148,9 +148,11 @@ export function parseSkillInvocation(text: string): { name: string; args?: strin
   return { name, ...(args ? { args } : {}) };
 }
 
-function identityFor(message: { id?: unknown; timestamp?: unknown }): string | undefined {
-  const identity = message.id ?? message.timestamp;
-  return identity === undefined || identity === null ? undefined : String(identity);
+function identityFor(message: { role?: unknown; id?: unknown; timestamp?: unknown }): string | undefined {
+  if (message.id !== undefined && message.id !== null) return String(message.id);
+  if (message.timestamp === undefined || message.timestamp === null) return undefined;
+  const role = typeof message.role === "string" && message.role ? message.role : "message";
+  return `${role}:${String(message.timestamp)}`;
 }
 
 function assistantUpdateOf(

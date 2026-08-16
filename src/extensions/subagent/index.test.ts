@@ -1,5 +1,5 @@
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createSubagentExtension } from "./index";
 
 vi.mock("../../runtime/logger", () => ({
@@ -10,43 +10,34 @@ vi.mock("../../runtime/pi-event-logger", () => ({
   mountPiEventLogger: vi.fn(),
 }));
 
-afterEach(() => {
-  delete process.env.EASYRESEARCH_AGENT_TOOLS;
-});
-
-async function loadExtension(toolMode: string | undefined) {
-  if (toolMode === undefined) delete process.env.EASYRESEARCH_AGENT_TOOLS;
-  else process.env.EASYRESEARCH_AGENT_TOOLS = toolMode;
-
-  const handlers = new Map<string, (...args: never[]) => unknown>();
-  const setActiveTools = vi.fn();
-  const allTools = ["read", "bash", "custom-tool", "subagent", "web-search"].map((name) => ({ name }));
+async function loadExtension(
+  options: Parameters<typeof createSubagentExtension>[0] = {},
+) {
   const api = {
     appendEntry: vi.fn(),
-    getAllTools: vi.fn(() => allTools),
-    on: vi.fn((event: string, handler: (...args: never[]) => unknown) => handlers.set(event, handler)),
+    on: vi.fn(),
     registerTool: vi.fn(),
-    setActiveTools,
   };
 
-  await (createSubagentExtension() as ExtensionFactory)(api as never);
-  return { handlers, setActiveTools };
+  await (createSubagentExtension(options) as ExtensionFactory)(api as never);
+  return { registerTool: api.registerTool };
 }
 
-describe("createSubagentExtension stage tool activation", () => {
-  it("activates every Pi-configured tool only in exact all mode", async () => {
-    const { handlers, setActiveTools } = await loadExtension("all");
+describe("createSubagentExtension nested dispatch", () => {
+  it("does not register subagent for an explicit leaf policy", async () => {
+    const { registerTool } = await loadExtension({
+      callerAgent: "search",
+      allowedSubagents: [],
+    });
 
-    await handlers.get("session_start")?.();
-
-    expect(setActiveTools).toHaveBeenCalledWith(["read", "bash", "custom-tool", "subagent", "web-search"]);
+    expect(registerTool).not.toHaveBeenCalled();
   });
 
-  it.each([undefined, "read,bash", "ALL", ""])("does not widen selection for mode %s", async (mode) => {
-    const { handlers, setActiveTools } = await loadExtension(mode);
-
-    await handlers.get("session_start")?.();
-
-    expect(setActiveTools).not.toHaveBeenCalled();
+  it("registers subagent when the caller can dispatch", async () => {
+    const { registerTool } = await loadExtension({
+      callerAgent: "writing",
+      allowedSubagents: ["search"],
+    });
+    expect(registerTool).toHaveBeenCalledTimes(1);
   });
 });

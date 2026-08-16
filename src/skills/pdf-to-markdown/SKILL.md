@@ -17,8 +17,8 @@ metadata:
 # PDF To Markdown
 
 ## Tool
-Use the MarkItDown CLI from the EasyResearch skill venv (created at install
-time by the postinstall script):
+Use the MarkItDown CLI from the EasyResearch skill venv (created by first-run
+setup, never by npm install):
 
 ```bash
 $EASYRESEARCH_VENV/bin/markitdown input.pdf -o output.md

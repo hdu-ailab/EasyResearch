@@ -406,6 +406,17 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       if (error instanceof AgentThinkingError) return errorResponse(error.status, error.message);
       if (error instanceof WebuiSettingsError) return errorResponse(error.status, error.message);
       if (error instanceof BodyError) return errorResponse(400, error.message);
+      if (error instanceof SessionStartError) {
+        const cause = error.originalError;
+        services.logger.error("session start failed", {
+          error: cause instanceof Error ? (cause.stack ?? cause.message) : String(cause),
+        });
+        return errorResponse(
+          500,
+          "Unable to start the session. Check the EasyResearch log and verify the project and model settings.",
+          { code: "SESSION_START_FAILED" },
+        );
+      }
       return errorResponse(500, "Internal server error");
     }
   };
@@ -416,7 +427,12 @@ async function createSession(
   body: { cwd: string },
 ): Promise<Response> {
   if (!body.cwd) throw new BodyError("cwd is required");
-  return jsonResponse(await services.registry.create({ cwd: body.cwd }));
+  try {
+    return jsonResponse(await services.registry.create({ cwd: body.cwd }));
+  } catch (error) {
+    if (error instanceof ExtensionGuardError) throw error;
+    throw new SessionStartError(error);
+  }
 }
 
 async function openSession(
@@ -427,11 +443,22 @@ async function openSession(
   const sessions = await services.listAllSessions();
   const session = sessions.find((s) => s.path === body.path);
   if (!session) throw new UnknownSessionError(`Unknown session path: ${body.path}`);
-  const dto: ActiveSessionDto = await services.registry.open({
-    cwd: session.cwd,
-    sessionPath: session.path,
-  });
-  return jsonResponse(dto);
+  try {
+    const dto: ActiveSessionDto = await services.registry.open({
+      cwd: session.cwd,
+      sessionPath: session.path,
+    });
+    return jsonResponse(dto);
+  } catch (error) {
+    if (error instanceof ExtensionGuardError) throw error;
+    throw new SessionStartError(error);
+  }
+}
+
+class SessionStartError extends Error {
+  constructor(readonly originalError: unknown) {
+    super("Session runtime construction failed");
+  }
 }
 
 /**

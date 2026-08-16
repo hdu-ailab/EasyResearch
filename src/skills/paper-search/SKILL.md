@@ -54,8 +54,8 @@ If the user gives no search direction, ask for it first; if no time range is
 given, default to `2026-01-01` through today.
 
 ## Commands
-Prefer the Python from the EasyResearch skill venv (auto-created by
-postinstall):
+Prefer the Python from the EasyResearch skill venv (auto-created by first-run
+setup, never by npm install):
 
 ```bash
 $EASYRESEARCH_VENV/bin/python \

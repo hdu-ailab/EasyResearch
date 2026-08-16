@@ -32,7 +32,6 @@ function writeAgent(directory: string, name: string, content: string): void {
 }
 
 afterEach(() => {
-  delete process.env.EASYRESEARCH_AGENTS_ALLOWLIST;
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -60,7 +59,6 @@ describe("createSubagentDispatchExtension allowlist agentProvider", () => {
     writeAgent(join(cwd, ".easyresearch", "agents"), "paper-assistant", definition("Project Paper Assistant", [
       "subagents: [search]",
     ]));
-    process.env.EASYRESEARCH_AGENTS_ALLOWLIST = "writing";
     const { registeredTools } = await loadExtension({ agentDir, bundledAgentsDir });
 
     const subagent = registeredTools.find((tool) => tool.name === "subagent");
@@ -74,7 +72,6 @@ describe("createSubagentDispatchExtension allowlist agentProvider", () => {
     expect(error).toBeInstanceOf(SubagentExecutionError);
     expect(error.message).toContain("search (bundled)");
     expect(error.message).not.toContain("writing (bundled)");
-    expect(process.env.EASYRESEARCH_AGENTS_ALLOWLIST).toBe("writing");
   });
 
   it("keeps a disabled Paper Assistant available without exposing it or disabled specialists for dispatch", async () => {

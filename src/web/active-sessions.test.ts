@@ -1,14 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { RpcEventListener, RpcSessionState, SessionTreeNode } from "@earendil-works/pi-coding-agent";
+import type { SessionTreeNode } from "@earendil-works/pi-coding-agent";
 import { ActiveSessionRegistry, UnknownSessionError } from "./active-sessions";
 import { assertSafeExtensionSources } from "../runtime/extensions-guard";
 import type {
-  RpcSessionAdapter,
-  RpcSessionFactory,
-  StartRpcSessionOptions,
+  SessionAdapter,
+  SessionFactory,
+  SessionState,
+  StartSessionOptions,
   WebSlashCommand,
-} from "./rpc-session";
+} from "./session-adapter";
 import type { Logger } from "../runtime/logger";
 import type { FileWatcherEvent, FileWatcherFactory } from "./file-watcher";
 
@@ -31,18 +32,14 @@ const sessionPath = "/agent/sessions/--test-project--/a.jsonl";
 
 const noopLogger: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} };
 
-const fakeState: RpcSessionState = {
+const fakeState: SessionState = {
   thinkingLevel: "medium",
   isStreaming: false,
   isCompacting: false,
-  steeringMode: "all",
-  followUpMode: "one-at-a-time",
   sessionFile: sessionPath,
   sessionId: "sess-1",
   sessionName: "My Session",
-  autoCompactionEnabled: true,
   messageCount: 3,
-  pendingMessageCount: 0,
 };
 
 interface FakeAdapterStats {
@@ -52,23 +49,21 @@ interface FakeAdapterStats {
   aborts: number;
   setModels: Array<{ provider: string; modelId: string }>;
   setThinkingLevels: string[];
-  exits: Array<{ listener: (error: Error) => void }>;
 }
 
-class FakeAdapter implements RpcSessionAdapter {
+class FakeAdapter implements SessionAdapter {
   static all: FakeAdapter[] = [];
   static nextId = 0;
-  events = new Set<RpcEventListener>();
-  onExitListeners = new Set<(error: Error) => void>();
-  stats: FakeAdapterStats = { started: 0, stopped: 0, prompts: [], aborts: 0, setModels: [], setThinkingLevels: [], exits: [] };
-  stateOverrides: Partial<RpcSessionState> = {};
+  events = new Set<(event: unknown) => void>();
+  stats: FakeAdapterStats = { started: 0, stopped: 0, prompts: [], aborts: 0, setModels: [], setThinkingLevels: [] };
+  stateOverrides: Partial<SessionState> = {};
   startError: Error | null = null;
   getStateError: Error | null = null;
   commandsResult: WebSlashCommand[] = [];
   treeResult: { tree: SessionTreeNode[]; leafId: string | null } = { tree: [], leafId: null };
   navigateCalls: string[] = [];
 
-  constructor(public options: StartRpcSessionOptions) {
+  constructor(public options: StartSessionOptions) {
     FakeAdapter.all.push(this);
   }
 
@@ -91,7 +86,7 @@ class FakeAdapter implements RpcSessionAdapter {
   async setThinkingLevel(level: string) {
     this.stats.setThinkingLevels.push(level);
   }
-  async getState(): Promise<RpcSessionState> {
+  async getState(): Promise<SessionState> {
     if (this.getStateError) throw this.getStateError;
     return { ...fakeState, ...this.stateOverrides, sessionId: `sess-${++FakeAdapter.nextId}`, sessionFile: this.options.sessionPath ?? sessionPath };
   }
@@ -107,21 +102,17 @@ class FakeAdapter implements RpcSessionAdapter {
   async navigateTree(entryId: string): Promise<void> {
     this.navigateCalls.push(entryId);
   }
-  onEvent(listener: RpcEventListener) {
+  onEvent(listener: (event: unknown) => void) {
     this.events.add(listener);
     return () => this.events.delete(listener);
   }
-  onExit(listener: (error: Error) => void) {
-    this.onExitListeners.add(listener);
-    return () => this.onExitListeners.delete(listener);
-  }
 }
 
-class FakeFactory implements RpcSessionFactory {
+class FakeFactory implements SessionFactory {
   created: FakeAdapter[] = [];
   startError: Error | null = null;
   getStateError: Error | null = null;
-  create(options: StartRpcSessionOptions): RpcSessionAdapter {
+  create(options: StartSessionOptions): SessionAdapter {
     const adapter = new FakeAdapter(options);
     adapter.startError = this.startError;
     adapter.getStateError = this.getStateError;
@@ -323,10 +314,11 @@ describe("ActiveSessionRegistry", () => {
     expect(factory.created[1]?.stats.started).toBe(1);
   });
 
-  it("re-launches an errored session on open instead of reusing the dead entry", async () => {
-    const created = await registry.create({ cwd });
+  it("re-launches an errored session on open instead of reusing the adapter", async () => {
+    const created = await registry.open({ cwd, sessionPath });
     const adapter = factory.created[0]!;
-    adapter.onExitListeners.forEach((listener) => listener(new Error("crash")));
+    adapter.getStateError = new Error("state unavailable");
+    await registry.snapshot(created.id);
     const reopened = await registry.open({ cwd, sessionPath });
     expect(reopened.status).toBe("ready");
     expect(factory.created).toHaveLength(2);
@@ -351,15 +343,15 @@ describe("ActiveSessionRegistry", () => {
     await expect(registry.snapshot(created.id)).rejects.toThrow(UnknownSessionError);
   });
 
-  it("snapshots an errored session without calling into the dead client", async () => {
+  it("snapshots an errored session without reading messages after state fails", async () => {
     const created = await registry.create({ cwd });
     const adapter = factory.created[0]!;
-    const broken = vi.spyOn(adapter, "getMessages").mockRejectedValue(new Error("Client not started"));
-    adapter.onExitListeners.forEach((listener) => listener(new Error("crash")));
+    const broken = vi.spyOn(adapter, "getMessages");
+    adapter.getStateError = new Error("state unavailable");
     const snapshot = await registry.snapshot(created.id);
     expect(broken).not.toHaveBeenCalled();
     expect(snapshot.session.status).toBe("error");
-    expect(snapshot.session.error).toBe("crash");
+    expect(snapshot.session.error).toBe("state unavailable");
     expect(snapshot.messages).toEqual([]);
   });
 
@@ -441,10 +433,11 @@ describe("ActiveSessionRegistry", () => {
     await vi.waitFor(() => expect(registry.list().find((s) => s.id === created.id)).toBeUndefined());
   });
 
-  it("lists connected records but excludes unexpected errors", async () => {
+  it("lists connected records but excludes adapters with unreadable state", async () => {
     const ready = await registry.create({ cwd });
     const errored = await registry.create({ cwd: "/other/project" });
-    factory.created[1]?.onExitListeners.forEach((listener) => listener(new Error("crash")));
+    factory.created[1]!.getStateError = new Error("state unavailable");
+    await registry.snapshot(errored.id);
     expect(registry.listActive().map((session) => session.id)).toEqual([ready.id]);
     expect(registry.list().find((session) => session.id === errored.id)?.status).toBe("error");
   });
@@ -458,15 +451,16 @@ describe("ActiveSessionRegistry", () => {
     expect(registry.list().find((s) => s.id === created.id)?.status).toBe("running");
   });
 
-  it("surfaces an unexpected process error as status error", async () => {
+  it("surfaces an adapter state error as status error", async () => {
     const created = await registry.create({ cwd });
     const adapter = factory.created[0]!;
-    adapter.onExitListeners.forEach((listener) => listener(new Error("crash")));
+    adapter.getStateError = new Error("state unavailable");
+    await registry.snapshot(created.id);
     expect(registry.list().find((s) => s.id === created.id)?.status).toBe("error");
-    expect(registry.list().find((s) => s.id === created.id)?.error).toBe("crash");
+    expect(registry.list().find((s) => s.id === created.id)?.error).toBe("state unavailable");
   });
 
-  it("logs and propagates unchanged when the rpc child fails to launch", async () => {
+  it("logs and propagates unchanged when the session runtime fails to launch", async () => {
     loggerMock.error.mockClear();
     const launchError = new Error("boom");
     factory.startError = launchError;
@@ -474,12 +468,12 @@ describe("ActiveSessionRegistry", () => {
     await expect(registryWithMock.create({ cwd })).rejects.toBe(launchError);
     expect(factory.created[0]?.stats.stopped).toBe(1);
     expect(loggerMock.error).toHaveBeenCalledWith(
-      "rpc child launch failed",
+      "session runtime launch failed",
       expect.objectContaining({ cwd, sessionPath: "", error: "boom" }),
     );
   });
 
-  it("stops the orphan rpc child and logs when getState fails during launch", async () => {
+  it("stops the incomplete adapter and logs when getState fails during launch", async () => {
     loggerMock.error.mockClear();
     const getStateError = new Error("state boom");
     factory.getStateError = getStateError;
@@ -488,7 +482,7 @@ describe("ActiveSessionRegistry", () => {
     expect(registryWithMock.list()).toEqual([]);
     expect(factory.created[0]?.stats.stopped).toBe(1);
     expect(loggerMock.error).toHaveBeenCalledWith(
-      "rpc child launch failed",
+      "session runtime launch failed",
       expect.objectContaining({ cwd, sessionPath: "", error: "state boom" }),
     );
   });

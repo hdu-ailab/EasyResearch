@@ -1,6 +1,18 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { embeddedFiles, embeddedVersion } from "@easyresearch/embedded-assets";
 
@@ -105,26 +117,81 @@ function listFilesRecursive(root: string, prefix: string): string[] {
 }
 
 /**
- * Write bundled assets (map of repo-relative path to file content) into
- * `root` with a version marker. Idempotent: same version leaves the tree as-is.
+ * Write bundled assets into a sibling staging tree, then replace `root` with
+ * rollback protection. A matching marker is accepted only when every expected
+ * file exists, so interrupted or manually damaged extractions are repaired.
  */
 export function writeBundledFiles(
   root: string,
-  files: Record<string, string>,
+  files: Record<string, string | Uint8Array>,
   version: string,
   log: (msg: string) => void,
 ): void {
-  const marker = bundledVersionMarker(root);
-  if (existsSync(marker) && readFileSync(marker, "utf8") === version) return;
+  const expectedFiles = Object.keys(files).sort();
+  for (const rel of expectedFiles) assertSafeBundledPath(rel);
+  if (isCompleteBundledRoot(root, version, expectedFiles)) return;
   log(`Extracting bundled agents, skills, and assets to ${root}`);
-  rmSync(root, { recursive: true, force: true });
-  mkdirSync(root, { recursive: true });
-  for (const rel of Object.keys(files)) {
-    const target = join(root, rel);
-    mkdirSync(dirname(target), { recursive: true });
-    writeFileSync(target, files[rel]!);
+  const suffix = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const staging = `${root}.staging-${suffix}`;
+  const backup = `${root}.backup-${suffix}`;
+  mkdirSync(dirname(root), { recursive: true });
+  mkdirSync(staging, { recursive: true });
+  let oldMoved = false;
+  let promoted = false;
+  try {
+    for (const rel of expectedFiles) {
+      const target = join(staging, rel);
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, files[rel]!);
+      syncFile(target);
+    }
+    writeFileSync(bundledVersionMarker(staging), version);
+    syncFile(bundledVersionMarker(staging));
+    if (!isCompleteBundledRoot(staging, version, expectedFiles)) {
+      throw new Error("Bundled resource staging validation failed");
+    }
+    if (existsSync(root)) {
+      renameSync(root, backup);
+      oldMoved = true;
+    }
+    renameSync(staging, root);
+    promoted = true;
+    rmSync(backup, { recursive: true, force: true });
+  } catch (error) {
+    if (oldMoved && !promoted && !existsSync(root) && existsSync(backup)) renameSync(backup, root);
+    throw error;
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+    if (promoted) rmSync(backup, { recursive: true, force: true });
   }
-  writeFileSync(marker, version);
+}
+
+export function isCompleteBundledRoot(root: string, version: string, expectedFiles: readonly string[]): boolean {
+  try {
+    if (readFileSync(bundledVersionMarker(root), "utf8") !== version) return false;
+    return expectedFiles.every((rel) => {
+      assertSafeBundledPath(rel);
+      return statSync(join(root, rel)).isFile();
+    });
+  } catch {
+    return false;
+  }
+}
+
+function assertSafeBundledPath(rel: string): void {
+  const parts = rel.replaceAll("\\", "/").split("/");
+  if (!rel || isAbsolute(rel) || parts.some((part) => !part || part === "." || part === "..")) {
+    throw new Error(`Invalid bundled asset path: ${rel}`);
+  }
+}
+
+function syncFile(path: string): void {
+  const fd = openSync(path, "r");
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /**
@@ -140,16 +207,29 @@ export function materializeBundledIfNeeded(
 ): void {
   if (!isEmbeddedBuild()) return;
   const root = bundledMaterializeRoot(agentDir);
-  const marker = bundledVersionMarker(root);
-  if (existsSync(marker) && readFileSync(marker, "utf8") === version) {
+  const assetKeys = Object.keys(embeddedFiles).filter((rel) => !rel.startsWith("webui/"));
+  if (isCompleteBundledRoot(root, version, assetKeys)) {
     if (!process.env.EASYRESEARCH_BUNDLED_ROOT) process.env.EASYRESEARCH_BUNDLED_ROOT = root;
     return;
   }
-  const content: Record<string, string> = {};
-  for (const rel of Object.keys(embeddedFiles)) {
-    if (rel.startsWith("webui/")) continue;
-    content[rel] = readFileSync(embeddedFiles[rel]!, "utf8");
+  const content: Record<string, Uint8Array> = {};
+  for (const rel of assetKeys) {
+    content[rel] = readFileSync(embeddedFiles[rel]!);
   }
   writeBundledFiles(root, content, version, log);
+  process.env.EASYRESEARCH_BUNDLED_ROOT = root;
+}
+
+/**
+ * Resolve an already materialized compiled bundle without mutating disk. This
+ * is the only resource action allowed when EASYRESEARCH_SKIP_SETUP is set.
+ */
+export function useExistingMaterializedBundle(agentDir: string, version: string): void {
+  if (!isEmbeddedBuild()) return;
+  const root = bundledMaterializeRoot(agentDir);
+  const assetKeys = Object.keys(embeddedFiles).filter((rel) => !rel.startsWith("webui/"));
+  if (!isCompleteBundledRoot(root, version, assetKeys)) {
+    throw new Error("Setup required: run EasyResearch once without EASYRESEARCH_SKIP_SETUP");
+  }
   process.env.EASYRESEARCH_BUNDLED_ROOT = root;
 }

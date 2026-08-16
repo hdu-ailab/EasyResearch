@@ -14,6 +14,9 @@ export default defineConfig({
   test: {
     // @testing-library/react auto-cleanup relies on global afterEach.
     globals: true,
+    // Parallel cold-loading the complete pinned Pi module can exceed Vitest's
+    // 5s default while Vite transforms the shared dependency graph.
+    testTimeout: 10_000,
     setupFiles: ["./vitest.setup.ts"],
     projects: [
       {

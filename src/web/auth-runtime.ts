@@ -62,7 +62,7 @@ async function readAuthFlowTimeout(config: ConfigFileService): Promise<number> {
  * `getAgentDir()` (never the foreign `~/.pi`), builds a `ModelRuntime`
  * dedicated to auth operations, and wraps it in `createAuthGateway`.
  *
- * The Web server keeps one shared instance for its lifetime; RPC children
+ * The Web server keeps one shared instance for its lifetime; AgentSessions
  * keep their own runtime reading the same `auth.json`. Tests inject a fake
  * gateway via `RouteServices.auth` directly and never call this.
  */

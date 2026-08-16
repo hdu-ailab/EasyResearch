@@ -348,10 +348,8 @@ events, commands). They run with full system permissions — review before use.
 - `DEBUG_AGENT_DISCOVERY=1`: log agent parse/discovery errors to stdout.
 - `PI_SKIP_VERSION_CHECK=1`: disable Pi update check (EasyResearch sets this).
 - `PI_OFFLINE=1`: disable all startup network operations.
-- `EASYRESEARCH_AGENTS_ALLOWLIST`, `EASYRESEARCH_AGENT_TOOLS`: subagent
-  dispatch env plumbing (set by the runtime; do not set manually).
-- `EASYRESEARCH_CODING_AGENT_DIR`, `EASYRESEARCH_RPC_CHILD`: internal runtime
-  identity/bootstrap switches (do not set manually).
+- `EASYRESEARCH_CODING_AGENT_DIR`: internal runtime identity override (do not
+  set manually outside isolated development or test environments).
 
 ## When proposing edits
 

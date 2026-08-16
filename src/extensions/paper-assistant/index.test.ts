@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { createPaperAssistantExtension } from "./index";
 
@@ -30,13 +30,7 @@ function writeAgent(directory: string, name: string, content: string): void {
   writeFileSync(join(directory, `${name}.md`), content, "utf8");
 }
 
-beforeEach(() => {
-  process.env.EASYRESEARCH_RPC_CHILD = "1";
-});
-
 afterEach(() => {
-  delete process.env.EASYRESEARCH_RPC_CHILD;
-  delete process.env.EASYRESEARCH_AGENTS_ALLOWLIST;
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 

@@ -6,7 +6,7 @@ export interface LoggedEvent {
 
 // Channel split: session_start, model_select, tool_result are delivered only
 // via the extension channel (pi.on -> pi-event-logger, TUI/stage runtimes);
-// the Web RPC wire (session.subscribe) never delivers them, so the Web
+// the direct Web session subscription never delivers them, so the Web
 // event-logger sees only the agent/turn/tool-execution/message/retry/
 // compaction events. Shared by both.
 const INFO_TYPES = new Set([

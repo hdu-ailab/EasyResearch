@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,6 +11,7 @@ import {
   embeddedPackageVersion,
   isEmbeddedBuild,
   materializeBundledIfNeeded,
+  useExistingMaterializedBundle,
 } from "../runtime/bundled-assets";
 import { ensureSkillVenv } from "../setup-venv";
 import { renameSameNameToBak } from "../setup-resources";
@@ -35,6 +36,8 @@ export interface CliOptions {
   agentDir?: string;
   /** First-run bootstrap, injectable for tests. Defaults to ensureFirstRunSetup. */
   setup?: (agentDir: string, log: (msg: string) => void) => void;
+  /** Non-mutating skipped-setup lookup, injectable for tests. */
+  useExistingSetup?: (agentDir: string) => void;
 }
 
 export const DEFAULT_HOST = "127.0.0.1";
@@ -57,51 +60,103 @@ export function daemonBinaryPath(agentDir: string): string {
   const source = process.execPath;
   const binDir = join(agentDir, "bin");
   mkdirSync(binDir, { recursive: true });
+  copyPiRuntimeAssets(agentDir);
   const target = join(binDir, process.platform === "win32" ? "easyresearch-daemon.exe" : "easyresearch-daemon");
   const stampPath = join(binDir, ".daemon-source-stamp");
   try {
     const srcStat = statSync(source);
     const stamp = existsSync(stampPath) ? readFileSync(stampPath, "utf8") : "";
     if (stamp === `${srcStat.size}:${srcStat.mtimeMs}` && existsSync(target)) return target;
-    copyFileSync(source, target);
+    try {
+      copyFileSync(source, target);
+    } catch {
+      // A running daemon copy may hold the target inode, making an in-place
+      // overwrite fail. Replace it by inode: unlink (legal on POSIX even for
+      // running executables) then copy fresh.
+      rmSync(target, { force: true });
+      copyFileSync(source, target);
+    }
     chmodSync(target, 0o755);
     writeFileSync(stampPath, `${srcStat.size}:${srcStat.mtimeMs}`);
-  } catch {
-    // Fall back to the original executable when the copy fails.
-    return source;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Unable to prepare the daemon executable at ${target}: ${message}`);
   }
   return target;
+}
+
+/** Pi's compiled asset getters resolve beside process.execPath. */
+export function copyPiRuntimeAssets(agentDir: string, source = join(bundledSourceRoot(), "pi")): void {
+  const binDir = join(agentDir, "bin");
+  mkdirSync(binDir, { recursive: true });
+  for (const entry of readdirSync(source, { withFileTypes: true })) {
+    cpSync(join(source, entry.name), join(binDir, entry.name), {
+      recursive: entry.isDirectory(),
+      force: true,
+    });
+  }
 }
 
 /**
  * First-run bootstrap: materialize embedded bundled assets (compiled builds
  * only), create the skill Python venv with live progress, and retire
- * same-name user agents/skills so bundled versions take effect. Idempotent;
- * failures never abort startup.
+ * same-name user agents/skills so bundled versions take effect. Resource
+ * extraction is required; optional setup phases report failures independently.
  */
 export function ensureFirstRunSetup(agentDir: string, log: (msg: string) => void): void {
-  materializeBundledIfNeeded(agentDir, embeddedPackageVersion(), log);
-  ensureSkillVenv(agentDir, { stream: true, log });
-  const bundledRoot = bundledSourceRoot();
-  const retired = renameSameNameToBak({
-    agentDir,
-    bundledAgentsDir: join(bundledRoot, "agents"),
-    bundledSkillsDir: join(bundledRoot, "skills"),
-    log,
-  });
-  const count = retired.entries.filter((entry) => entry.renamed).length;
-  if (count > 0) log(`Retired ${count} same-name user agent/skill copies to .bak`);
+  const version = embeddedPackageVersion();
+  materializeBundledIfNeeded(agentDir, version, log);
+  try {
+    ensureSkillVenv(agentDir, { stream: true, log });
+  } catch (error) {
+    log(`Skill environment setup failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  try {
+    retireBundledResourcesOnce(agentDir, version, () => {
+      const bundledRoot = bundledSourceRoot();
+      const retired = renameSameNameToBak({
+        agentDir,
+        bundledAgentsDir: join(bundledRoot, "agents"),
+        bundledSkillsDir: join(bundledRoot, "skills"),
+        log,
+      });
+      const count = retired.entries.filter((entry) => entry.renamed).length;
+      if (count > 0) log(`Retired ${count} same-name user agent/skill copies to .bak`);
+    });
+  } catch (error) {
+    log(`Bundled resource retirement failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+export function retireBundledResourcesOnce(agentDir: string, version: string, retire: () => void): boolean {
+  const marker = join(agentDir, ".easyresearch-resource-retirement-version");
+  try {
+    if (readFileSync(marker, "utf8") === version) return false;
+  } catch {
+    // Missing/unreadable marker means this version has not completed retirement.
+  }
+  retire();
+  mkdirSync(agentDir, { recursive: true });
+  const temporary = `${marker}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(temporary, version);
+  renameSync(temporary, marker);
+  return true;
 }
 
 export function isLoopbackHost(host: string): boolean {
   return host === "127.0.0.1" || host === "localhost" || host === "::1";
 }
 
+export function browserOpenCommand(platform: NodeJS.Platform, url: string): { command: string; args: string[] } {
+  if (platform === "darwin") return { command: "open", args: [url] };
+  if (platform === "win32") return { command: "cmd.exe", args: ["/d", "/s", "/c", "start", "", url] };
+  return { command: "xdg-open", args: [url] };
+}
+
 export async function openBrowser(url: string): Promise<boolean> {
-  const command =
-    process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
+  const { command, args } = browserOpenCommand(process.platform, url);
   return new Promise((resolve) => {
-    const child = spawn(command, [url], { detached: true, stdio: "ignore" });
+    const child = spawn(command, args, { detached: true, stdio: "ignore" });
     child.on("error", () => resolve(false));
     child.on("spawn", () => {
       child.unref();
@@ -149,7 +204,13 @@ export async function runCli(
     }
 
     const setup = options.setup ?? ensureFirstRunSetup;
-    if (!isSkipSetupEnabled()) setup(agentDir, (msg) => console.log(`[easyresearch] ${msg}`));
+    if (isSkipSetupEnabled()) {
+      const useExistingSetup = options.useExistingSetup
+        ?? ((root: string) => useExistingMaterializedBundle(root, embeddedPackageVersion()));
+      useExistingSetup(agentDir);
+    } else {
+      setup(agentDir, (msg) => console.log(`[easyresearch] ${msg}`));
+    }
     injectSkillVenvEnv();
 
     let host = DEFAULT_HOST;
@@ -217,6 +278,16 @@ export async function runCli(
 }
 
 if (import.meta.main) {
+  // Standalone binaries must statically register pi's lazy-loaded modules:
+  // their variable-specifier dynamic imports cannot resolve inside $bunfs.
+  // pi's own compiled entry (pi-coding-agent dist/bun/cli.js) does the same
+  // two registrations; without them provider auth flows and the bedrock
+  // implementation fail at runtime in compiled builds.
+  const { registerBunOAuthFlows } = await import("@earendil-works/pi-ai/bun-oauth");
+  registerBunOAuthFlows();
+  const { bedrockProviderModule } = await import("@earendil-works/pi-ai/bedrock-provider");
+  const { setBedrockProviderModule } = await import("@earendil-works/pi-ai/compat");
+  setBedrockProviderModule(bedrockProviderModule);
   const args = process.argv.slice(2);
   if (args[0] === "--version" || args[0] === "-v") {
     console.log(`easyresearch ${embeddedPackageVersion()}`);

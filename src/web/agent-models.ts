@@ -34,7 +34,7 @@ export function readOverrideForAgent(rows: EntryRow[], agentName: string): strin
 /**
  * Split a `"provider/id"` model string on the first slash. Anything without a
  * non-empty provider and model id is a client error, not something to forward
- * to the RPC child.
+ * to the in-process session runtime.
  */
 export function splitModelRef(model: string): { provider: string; modelId: string } {
   const index = model.indexOf("/");

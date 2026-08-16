@@ -4,7 +4,7 @@ import { mapEventToLog } from "../runtime/event-log-map";
 export type EventListener = (event: unknown) => void;
 
 /**
- * Forward one Pi RPC child's event stream into the process logger (ADR-039).
+ * Forward one in-process Pi session's event stream into the process logger.
  * Every mapped event gains the sessionId/cwd context; unmapped events are
  * skipped. Returns the unsubscribe function.
  */

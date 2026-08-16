@@ -76,7 +76,7 @@ describe("mountWelcomeBanner (ADR-023)", () => {
     expect(lines.at(-1)).toContain(BANNER_TAGLINE);
   });
 
-  it("does nothing outside the native TUI (e.g. Web RPC children)", async () => {
+  it("does nothing outside the native TUI (e.g. headless Web sessions)", async () => {
     const { handlers } = mount();
     for (const mode of ["rpc", "json", "print"]) {
       const { ctx, ui } = fakeCtx({ mode, hasUI: true });

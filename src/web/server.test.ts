@@ -3,10 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { RpcEventListener, RpcSessionState, SessionTreeNode } from "@earendil-works/pi-coding-agent";
+import type { SessionTreeNode } from "@earendil-works/pi-coding-agent";
 import type { RouteServices } from "./routes";
 import { createRouteHandler } from "./routes";
-import type { RpcSessionAdapter, RpcSessionFactory, StartRpcSessionOptions, WebSlashCommand } from "./rpc-session";
+import type { SessionAdapter, SessionFactory, SessionState, StartSessionOptions, WebSlashCommand } from "./session-adapter";
 import { ActiveSessionRegistry, UnknownSessionError } from "./active-sessions";
 import { DirectoryService } from "./directories";
 import { ConfigFileService } from "./config-files";
@@ -66,11 +66,10 @@ function assistant(text: string): AgentMessage {
   };
 }
 
-class FakeAdapter implements RpcSessionAdapter {
+class FakeAdapter implements SessionAdapter {
   static all: FakeAdapter[] = [];
   static nextId = 0;
-  events = new Set<RpcEventListener>();
-  exitListeners = new Set<(error: Error) => void>();
+  events = new Set<(event: unknown) => void>();
   prompts: string[] = [];
   aborts = 0;
   stopped = 0;
@@ -78,7 +77,7 @@ class FakeAdapter implements RpcSessionAdapter {
   setThinkingLevels: string[] = [];
   messages: AgentMessage[] = [];
   getMessagesPromise: Promise<AgentMessage[]> | null = null;
-  constructor(public options: StartRpcSessionOptions) {
+  constructor(public options: StartSessionOptions) {
     FakeAdapter.all.push(this);
   }
   async start() {}
@@ -97,18 +96,14 @@ class FakeAdapter implements RpcSessionAdapter {
   async setThinkingLevel(level: string) {
     this.setThinkingLevels.push(level);
   }
-  async getState(): Promise<RpcSessionState> {
+  async getState(): Promise<SessionState> {
     return {
       thinkingLevel: "medium",
       isStreaming: false,
       isCompacting: false,
-      steeringMode: "all",
-      followUpMode: "one-at-a-time",
       sessionFile: this.options.sessionPath ?? "/agent/sessions/default.jsonl",
       sessionId: `sess-${++FakeAdapter.nextId}`,
-      autoCompactionEnabled: false,
       messageCount: 0,
-      pendingMessageCount: 0,
     };
   }
   async getMessages(): Promise<AgentMessage[]> {
@@ -126,13 +121,9 @@ class FakeAdapter implements RpcSessionAdapter {
   async navigateTree(entryId: string): Promise<void> {
     this.navigateCalls.push(entryId);
   }
-  onEvent(listener: RpcEventListener) {
+  onEvent(listener: (event: unknown) => void) {
     this.events.add(listener);
     return () => this.events.delete(listener);
-  }
-  onExit(listener: (error: Error) => void) {
-    this.exitListeners.add(listener);
-    return () => this.exitListeners.delete(listener);
   }
 }
 
@@ -146,9 +137,9 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-class FakeFactory implements RpcSessionFactory {
+class FakeFactory implements SessionFactory {
   created: FakeAdapter[] = [];
-  create(options: StartRpcSessionOptions): RpcSessionAdapter {
+  create(options: StartSessionOptions): SessionAdapter {
     const adapter = new FakeAdapter(options);
     this.created.push(adapter);
     return adapter;
@@ -420,6 +411,27 @@ describe("web routes", () => {
     expect(factory.created[0]?.options.cwd).toBe(projectDir);
   });
 
+  it("returns a typed safe error and logs the cause when session construction fails", async () => {
+    const cause = new Error("secret provider detail");
+    const logger = fakeLogger();
+    registry = new ActiveSessionRegistry({ create: () => { throw cause; } }, logger, { idleTimeoutMs: -1 }, watcherFactory);
+    setup({ logger });
+
+    const res = await handler(new Request("http://localhost/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cwd: projectDir }),
+    }));
+
+    expect(res.status).toBe(500);
+    const body = await res.json() as { error: string; code: string };
+    expect(body.code).toBe("SESSION_START_FAILED");
+    expect(body.error).not.toContain("secret provider detail");
+    expect(logger.calls.some(([level, message, fields]) => level === "error"
+      && message === "session start failed"
+      && String(fields?.error).includes("secret provider detail"))).toBe(true);
+  });
+
   it("opens a historical session using its recorded cwd", async () => {
     const sessionPath = "/agent/sessions/--p--/a.jsonl";
     historySessions = [
@@ -478,7 +490,10 @@ describe("web routes", () => {
     expect(touch.status).toBe(200);
     expect(await touch.json()).toEqual({ ok: true });
 
-    factory.created[0]?.exitListeners.forEach((listener) => listener(new Error("crash")));
+    const stopped = await handler(
+      new Request(`http://localhost/api/sessions/${created.id}/stop`, { method: "POST" }),
+    );
+    expect(stopped.status).toBe(200);
     const active = await handler(new Request("http://localhost/api/active-sessions"));
     expect((await active.json() as { sessions: unknown[] }).sessions).toEqual([]);
 

@@ -1,87 +1,25 @@
-import { spawn } from "node:child_process";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
-import { fileURLToPath } from "node:url";
 import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext, JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { Message } from "@earendil-works/pi-ai";
-import { defineTool, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { getInternalPiInvocation } from "../runtime/internal-invocation";
-import { createLogger, type Logger } from "../runtime/logger";
+import { createLogger } from "../runtime/logger";
 import { getAgentDir, importPi } from "../runtime/pi-import";
 import { discoverAgents, PAPER_ASSISTANT_AGENT, type AgentConfig } from "./agents";
 import { resolveModelForSpawn } from "./model-resolution";
 import { resolveThinkingForSpawn } from "./thinking-resolution";
-import { readSubagentSessionLinks, sessionNameFor, type SubagentSessionLink } from "./session-links";
-import { buildDefaultSkillArgs, readGlobalDotAgentsSkillSetting, resolveSkillDirectories } from "./skill-resolution";
-import { releaseSubagentLock, tryAcquireSubagentLock } from "./serial";
+import { readSubagentSessionLinks, type SubagentSessionLink } from "./session-links";
+import {
+  runStageSession,
+  type StageRunResult,
+  type StageSessionRunner,
+  type StageUsageStats,
+} from "./stage-session";
 
-/**
- * ADR-022: stage-agent runtimes mount the subagent-only extension so nested
- * dispatch (experiment/writing/figures → search) works. The path lives here
- * rather than the bundled-extension registry because only this module spawns
- * stage children, and importing the aggregator would create a static import
- * cycle through the Paper Assistant extension.
- */
-const STAGE_EXTENSION_PATH = fileURLToPath(new URL("../extensions/subagent/index.ts", import.meta.url));
+const subagentLogger = createLogger("subagent");
 
-/** Stage-agent runtime extension path, exported for registry invariants. */
-export const stageExtensionPath: string = STAGE_EXTENSION_PATH;
+type UsageStats = StageUsageStats;
 
-/**
- * ADR-068: every shared tool extension a stage agent may use is mounted here
- * (`subagent` + the web tools `web-search`, `webfetch`), mirroring the ADR-062
- * template step 3. Availability is still gated per agent by the frontmatter
- * `tools:` allowlist — registration ≠ availability.
- */
-const STAGE_EXTENSION_PATHS: string[] = [
-  STAGE_EXTENSION_PATH,
-  fileURLToPath(new URL("../extensions/web-search/index.ts", import.meta.url)),
-  fileURLToPath(new URL("../extensions/webfetch/index.ts", import.meta.url)),
-];
-
-/** Stage-agent runtime extension paths, exported for registry invariants. */
-export const stageExtensionPaths: string[] = STAGE_EXTENSION_PATHS;
-
-/**
- * Pre-flight ruling (2026-08-08): `execute` runs inside the Web RPC child in
- * Web mode, so the module-scope logger is only created outside RPC children
- * (Constraint 4: RPC children never run their own logger).
- */
-const subagentLogger: Logger | null =
-  process.env.EASYRESEARCH_RPC_CHILD === "1" ? null : createLogger("subagent");
-
-/** Environment variable carrying the caller's subagent allowlist (ADR-022). */
-export const ALLOWLIST_ENV = "EASYRESEARCH_AGENTS_ALLOWLIST";
-export const CALLER_AGENT_ENV = "EASYRESEARCH_CALLER_AGENT";
-
-interface UsageStats {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-  cost: number;
-  contextTokens: number;
-  turns: number;
-}
-
-export interface SingleResult {
-  agent: string;
-  agentSource: string;
-  task: string;
-  exitCode: number;
-  messages: Message[];
-  stderr: string;
-  usage: UsageStats;
-  model?: string;
-  stopReason?: string;
-  errorMessage?: string;
-  step?: number;
-  sessionId?: string;
-  sessionPath?: string;
-  wasAborted?: boolean;
-}
+export interface SingleResult extends StageRunResult {}
 
 export interface SubagentDetails {
   mode: "single" | "chain";
@@ -111,15 +49,6 @@ export interface SubagentStreamUpdate {
   event?: JsonAgentSessionEvent;
 }
 
-/** Per-child-line dispatch targets used by {@link handleChildLine}. */
-export interface ChildLineHandlers {
-  onSessionHeader?: (header: { id: string; cwd: string }) => void;
-  onEvent?: (event: JsonAgentSessionEvent) => void;
-  onMessageEnd: (message: Message) => void;
-  onToolResultEnd: (message: Message) => void;
-  onProgress?: (progress: SubagentStreamUpdate) => void;
-}
-
 const CHILD_LIFECYCLE_EVENTS = new Set([
   "agent_start",
   "agent_end",
@@ -134,50 +63,6 @@ const CHILD_LIFECYCLE_EVENTS = new Set([
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-/**
- * ADR-040: parse one child stdout JSONL line and dispatch. Completed assistant
- * `message_end` lines emit their complete text as live progress when an
- * `onProgress` handler is wired; malformed lines are ignored. Pure and
- * DI-friendly so the update-callback contract is testable without spawning a
- * child process.
- */
-export function handleChildLine(
-  line: string,
-  agentName: string,
-  step: number | undefined,
-  handlers: ChildLineHandlers,
-): void {
-  if (!line.trim()) return;
-  let event: unknown;
-  try {
-    event = JSON.parse(line);
-  } catch {
-    return;
-  }
-  if (!isObject(event)) return;
-  if (event.type === "session") {
-    if (typeof event.id === "string" && event.id.trim() && typeof event.cwd === "string" && event.cwd.trim()) {
-      handlers.onSessionHeader?.({ id: event.id, cwd: event.cwd });
-    }
-    return;
-  }
-  if (typeof event.type === "string" && CHILD_LIFECYCLE_EVENTS.has(event.type)) {
-    handlers.onEvent?.(event as unknown as JsonAgentSessionEvent);
-  }
-  if (!isObject(event.message)) return;
-  if (event.type === "message_end") {
-    const msg = event.message as unknown as Message;
-    handlers.onMessageEnd(msg);
-    if (handlers.onProgress) {
-      const progress = progressFromMessage(agentName, step, msg);
-      if (progress) handlers.onProgress(progress);
-    }
-  }
-  if (event.type === "tool_result_end") {
-    handlers.onToolResultEnd(event.message as unknown as Message);
-  }
 }
 
 export function progressFromMessage(
@@ -226,25 +111,13 @@ function getResultOutput(result: SingleResult): string {
   return getFinalOutput(result.messages) || "(no output)";
 }
 
-function makeDetails(mode: "single" | "chain", agents: AgentConfig[]): SubagentDetails {
+function makeDetails(mode: "single" | "chain", _agents: AgentConfig[]): SubagentDetails {
   return { mode, projectAgentsDir: getAgentDir(), results: [] };
 }
 
-async function writePromptToTempFile(agentName: string, prompt: string): Promise<string> {
-  const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "easyresearch-subagent-"));
-  const safeName = agentName.replace(/[^\w.-]+/g, "_");
-  const filePath = path.join(tmpDir, `prompt-${safeName}.md`);
-  await withFileMutationQueue(filePath, async () => {
-    await fs.promises.writeFile(filePath, prompt, { encoding: "utf-8", mode: 0o600 });
-  });
-  return filePath;
-}
-
 /**
- * ADR-022: filter agents by the caller's allowlist. The Paper Assistant runtime
- * has no allowlist env and sees all enabled specialists; stage runtimes
- * receive their allowlist from `subagents:` frontmatter via the spawn
- * environment. The main Assistant is never a recursive dispatch target.
+ * ADR-022: filter enabled specialists by a caller and optional allowlist. The
+ * main Assistant is never a recursive dispatch target.
  */
 export function filterAgentsByAllowlist(
   agents: AgentConfig[],
@@ -284,32 +157,6 @@ export async function resolveSessionPath(
   return sessions.find((session) => session.id === sessionId)?.path;
 }
 
-export function buildPiArgs(
-  agent: AgentConfig,
-  model: string | undefined,
-  task: string,
-  sessionPath?: string,
-  skillDeps?: { cwd: string; agentDir: string; homeDir?: string; enableDotAgentsSkill?: boolean },
-  thinking?: string,
-): string[] {
-  const args: string[] = ["--mode", "json", "-p"];
-  if (model) args.push("--model", model);
-  if (thinking) args.push("--thinking", thinking);
-  if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
-  if (agent.skills && agent.skills.length > 0 && skillDeps) {
-    args.push("--no-skills");
-    for (const dir of resolveSkillDirectories(agent.skills, skillDeps) ?? []) args.push("--skill", dir);
-  } else if (skillDeps) {
-    args.push(...buildDefaultSkillArgs(skillDeps));
-  }
-  // ADR-022/ADR-068: nested dispatch and shared web tools need their
-  // extensions mounted inside stage runtimes.
-  for (const extensionPath of STAGE_EXTENSION_PATHS) args.push("--extension", extensionPath);
-  args.push("--name", sessionNameFor(agent.name));
-  if (sessionPath) args.push("--session", sessionPath);
-  return args;
-}
-
 export interface RunSingleOptions {
   defaultCwd: string;
   agents: AgentConfig[];
@@ -326,6 +173,7 @@ export interface RunSingleOptions {
   /** Complete latest-message callback (ADR-040): invoked on each child message_end. */
   onUpdate?: AgentToolUpdateCallback<SubagentDetails>;
   onSessionHeader?: (header: { id: string; cwd: string }) => void;
+  stageSessionRunner?: StageSessionRunner;
 }
 
 async function runSingleAgent(opts: RunSingleOptions): Promise<SingleResult> {
@@ -349,159 +197,59 @@ async function runSingleAgent(opts: RunSingleOptions): Promise<SingleResult> {
     };
   }
 
-  const result: SingleResult = {
-    agent: agentName,
-    agentSource: agent.source,
+  const runner = opts.stageSessionRunner ?? runStageSession;
+  let liveSessionId: string | undefined;
+  const result = await runner({
+    agent,
     task,
-    exitCode: 0,
-    messages: [],
-    stderr: "",
-    usage: emptyUsage,
+    cwd: cwd ?? defaultCwd,
     model,
-    step,
+    thinking,
     sessionPath,
-  };
-
-  let tmpPromptPath: string | null = null;
-  try {
-    const enableDotAgentsSkill = await readGlobalDotAgentsSkillSetting(cwd ?? defaultCwd, getAgentDir());
-    const args = buildPiArgs(agent, model, task, sessionPath, {
-      cwd: cwd ?? defaultCwd,
-      agentDir: getAgentDir(),
-      enableDotAgentsSkill,
-    }, thinking);
-    if (agent.systemPrompt.trim()) {
-      tmpPromptPath = await writePromptToTempFile(agent.name, agent.systemPrompt);
-      args.push("--append-system-prompt", tmpPromptPath);
-    }
-    args.push(`Task: ${task}`);
-
-    let wasAborted = false;
-    const exitCode = await new Promise<number>((resolve) => {
-      const invocation = getPiInvocation();
-      const {
-        EASYRESEARCH_AGENT_TOOLS: _parentTools,
-        [ALLOWLIST_ENV]: _parentAllowlist,
-        [CALLER_AGENT_ENV]: _parentCaller,
-        ...baseEnv
-      } = process.env;
-      const proc = spawn(invocation.command, [...invocation.args, ...args], {
-        cwd: cwd ?? defaultCwd,
-        shell: false,
-        stdio: ["ignore", "pipe", "pipe"],
-        env: {
-          ...baseEnv,
-          ...(agent.tools === undefined ? { EASYRESEARCH_AGENT_TOOLS: "all" } : {}),
-          ...(agent.subagents ? { [ALLOWLIST_ENV]: agent.subagents.join(",") } : {}),
-          [CALLER_AGENT_ENV]: agent.name,
+    signal,
+    step,
+    onSessionHeader: (header) => {
+      liveSessionId = header.id;
+      onSessionHeader?.(header);
+      onUpdate?.({
+        content: [],
+        details: {
+          ...detailsBase,
+          subagent: { agent: agentName, step, status: "running", sessionId: header.id },
         },
       });
-      let buffer = "";
-      let exited = false;
-      let abortListener: (() => void) | undefined;
-
-      const processLine = (line: string) => {
-        handleChildLine(line, agentName, step, {
-          onSessionHeader: (header) => {
-            result.sessionId = header.id;
-            onSessionHeader?.(header);
-            onUpdate?.({
-              content: [],
-              details: {
-                ...detailsBase,
-                subagent: { agent: agentName, step, status: "running", sessionId: header.id },
-              },
-            });
-          },
-          onEvent: (event) => {
-            const progress: SubagentStreamUpdate = {
-              agent: agentName,
-              step,
-              status: "running",
-              ...(result.sessionId ? { sessionId: result.sessionId } : {}),
-              event,
-            };
-            if (event.type === "message_end") {
-              const completed = progressFromMessage(agentName, step, event.message as unknown as Message);
-              if (completed?.latestMessage) progress.latestMessage = completed.latestMessage;
-            }
-            onUpdate?.({ content: [], details: { ...detailsBase, subagent: progress } });
-          },
-          onMessageEnd: (msg) => {
-            result.messages.push(msg);
-            if (msg.role === "assistant") {
-              result.usage.turns++;
-              const usage = msg.usage;
-              if (usage) {
-                result.usage.input += usage.input || 0;
-                result.usage.output += usage.output || 0;
-                result.usage.cacheRead += usage.cacheRead || 0;
-                result.usage.cacheWrite += usage.cacheWrite || 0;
-                result.usage.cost += usage.cost?.total || 0;
-                result.usage.contextTokens = usage.totalTokens || 0;
-              }
-              if (!result.model && msg.model) result.model = msg.model;
-              if (msg.stopReason) result.stopReason = msg.stopReason;
-              if (msg.errorMessage) result.errorMessage = msg.errorMessage;
-            }
-          },
-          onToolResultEnd: (msg) => {
-            result.messages.push(msg);
-          },
-        });
+    },
+    onEvent: (event) => {
+      if (!isObject(event) || typeof event.type !== "string" || !CHILD_LIFECYCLE_EVENTS.has(event.type)) return;
+      const jsonEvent = event as unknown as JsonAgentSessionEvent;
+      const progress: SubagentStreamUpdate = {
+        agent: agentName,
+        step,
+        status: "running",
+        ...(liveSessionId ? { sessionId: liveSessionId } : {}),
+        event: jsonEvent,
       };
-
-      proc.stdout.on("data", (data) => {
-        buffer += data.toString();
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-        for (const line of lines) processLine(line);
-      });
-      proc.stderr.on("data", (data) => {
-        result.stderr += data.toString();
-      });
-      proc.on("close", (code) => {
-        exited = true;
-        if (signal && abortListener) signal.removeEventListener("abort", abortListener);
-        if (buffer.trim()) processLine(buffer);
-        resolve(code ?? 0);
-      });
-      proc.on("error", () => resolve(1));
-
-      if (signal) {
-        const killProc = () => {
-          wasAborted = true;
-          proc.kill("SIGTERM");
-          setTimeout(() => {
-            if (!exited) proc.kill("SIGKILL");
-          }, 5000);
-        };
-        abortListener = killProc;
-        if (signal.aborted) killProc();
-        else signal.addEventListener("abort", killProc, { once: true });
+      if (jsonEvent.type === "message_end") {
+        const completed = progressFromMessage(agentName, step, jsonEvent.message as unknown as Message);
+        if (completed?.latestMessage) progress.latestMessage = completed.latestMessage;
       }
-    });
-
-    result.exitCode = exitCode;
-    result.wasAborted = wasAborted;
-    if (!result.sessionPath && result.sessionId) {
+      onUpdate?.({ content: [], details: { ...detailsBase, subagent: progress } });
+    },
+  });
+  if (sessionPath) {
+    result.sessionPath = sessionPath;
+  } else {
+    const sessionId = result.sessionId;
+    result.sessionPath = undefined;
+    if (sessionId) {
       try {
-        result.sessionPath = await resolveSessionPath(cwd ?? defaultCwd, result.sessionId);
+        result.sessionPath = await resolveSessionPath(cwd ?? defaultCwd, sessionId);
       } catch {
-        // Session-history metadata must not replace the child outcome.
-      }
-    }
-    return result;
-  } finally {
-    if (tmpPromptPath) {
-      try {
-        fs.unlinkSync(tmpPromptPath);
-        fs.rmdirSync(path.dirname(tmpPromptPath));
-      } catch {
-        /* ignore */
+        // Session-history metadata must not replace the stage outcome.
       }
     }
   }
+  return result;
 }
 
 function formatSessionHistory(results: readonly SingleResult[], mode: "single" | "chain"): string {
@@ -550,12 +298,6 @@ function formatChainFailure(result: SingleResult, results: readonly SingleResult
   );
 }
 
-function getPiInvocation(): { command: string; args: string[] } {
-  // Subagents always enter Pi through the private bootstrap entry, which
-  // applies the temporary PI_PACKAGE_DIR initialization before main() runs.
-  return getInternalPiInvocation();
-}
-
 const SessionMode = Type.Union([Type.Literal("inherit"), Type.Literal("new")], {
   description: "inherit resumes this parent session's mapped child; new starts a fresh one (default: new)",
 });
@@ -563,14 +305,14 @@ const SessionMode = Type.Union([Type.Literal("inherit"), Type.Literal("new")], {
 const SingleParams = Type.Object({
   agent: Type.Optional(Type.String({ description: "Name of the agent to invoke" })),
   task: Type.Optional(Type.String({ description: "Task to delegate" })),
-  cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
+  cwd: Type.Optional(Type.String({ description: "Working directory for the agent runtime" })),
   session: Type.Optional(SessionMode),
 });
 
 const ChainItem = Type.Object({
   agent: Type.String({ description: "Name of the agent to invoke" }),
   task: Type.String({ description: "Task with optional {previous} placeholder for prior output" }),
-  cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
+  cwd: Type.Optional(Type.String({ description: "Working directory for the agent runtime" })),
   session: Type.Optional(SessionMode),
 });
 
@@ -578,14 +320,16 @@ const SubagentParams = Type.Object({
   agent: Type.Optional(Type.String({ description: "Name of the agent to invoke (single mode)" })),
   task: Type.Optional(Type.String({ description: "Task to delegate (single mode)" })),
   chain: Type.Optional(Type.Array(ChainItem, { description: "Array of {agent, task} for sequential execution" })),
-  cwd: Type.Optional(Type.String({ description: "Working directory for the agent process (single mode)" })),
+  cwd: Type.Optional(Type.String({ description: "Working directory for the agent runtime (single mode)" })),
   session: Type.Optional(SessionMode),
 });
 
 export function createSubagentTool(options: {
   persistSessionLink?: (link: SubagentSessionLink) => void;
   agentProvider?: (cwd: string) => Promise<AgentConfig[]>;
+  stageSessionRunner?: StageSessionRunner;
 } = {}) {
+  let active = false;
   return defineTool({
     name: "subagent",
   label: "Subagent",
@@ -599,12 +343,13 @@ export function createSubagentTool(options: {
   parameters: SubagentParams,
 
   async execute(toolCallId, params, signal, onUpdate, ctx: ExtensionContext) {
-    if (!tryAcquireSubagentLock()) {
+    if (active) {
       throw new SubagentExecutionError(
         "Another subagent is still running. Subagent invocations are strictly serial; wait for it to complete and call this tool again.",
         { mode: "single", projectAgentsDir: getAgentDir(), results: [] },
       );
     }
+    active = true;
     try {
       const persistedSessionLinks = new Set<string>();
       const persistSessionLink = (agent: string, step: number | undefined, childSessionId: string) => {
@@ -621,11 +366,7 @@ export function createSubagentTool(options: {
         const discovered = options.agentProvider
           ? await options.agentProvider(cwd)
           : (await discoverAgents({ cwd })).agents;
-        return filterAgentsByAllowlist(
-          discovered,
-          options.agentProvider ? undefined : process.env[ALLOWLIST_ENV],
-          options.agentProvider ? undefined : process.env[CALLER_AGENT_ENV],
-        );
+        return filterAgentsByAllowlist(discovered);
       };
       const detailsBase = (mode: "single" | "chain", agents: AgentConfig[]) => makeDetails(mode, agents);
 
@@ -687,6 +428,7 @@ export function createSubagentTool(options: {
             step: i + 1,
             onUpdate,
             onSessionHeader: (header) => persistSessionLink(step.agent, i + 1, header.id),
+            stageSessionRunner: options.stageSessionRunner,
           });
           results.push(result);
           if (isFailedResult(result)) {
@@ -739,6 +481,7 @@ export function createSubagentTool(options: {
           signal,
           onUpdate,
           onSessionHeader: (header) => persistSessionLink(params.agent!, undefined, header.id),
+          stageSessionRunner: options.stageSessionRunner,
         });
         if (isFailedResult(result)) {
           throw new SubagentExecutionError(
@@ -759,7 +502,7 @@ export function createSubagentTool(options: {
         { ...detailsBase("single", agents), results: [] },
       );
     } finally {
-      releaseSubagentLock();
+      active = false;
     }
   },
   });
