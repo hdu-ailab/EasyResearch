@@ -170,6 +170,11 @@ function dumpServerLogs(): void {
   const agentFiles = treeFiles(agentDir);
   console.log(`[smoke] agentDir files: ${agentFiles.length}`);
   for (const file of agentFiles.slice(0, 40)) console.log(`[smoke]   /agent${file}`);
+  const cliError = join(agentDir, "cli-error.log");
+  if (existsSync(cliError)) {
+    console.log(`[smoke] --- cli-error.log ---`);
+    console.log(readFileSync(cliError, "utf8").slice(-4000));
+  }
   try {
     const logsDir = join(agentDir, "logs");
     if (!existsSync(logsDir)) {
