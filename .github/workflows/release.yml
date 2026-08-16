@@ -93,8 +93,18 @@ jobs:
         if: runner.os != 'Windows'
         run: chmod +x release/easyresearch-${{ matrix.target }}/bin/easyresearch
 
+      - name: Verify Windows native version
+        if: runner.os == 'Windows'
+        run: |
+          $expected = "easyresearch $($env:GITHUB_REF_NAME.Substring(1))"
+          $output = & "release/easyresearch-windows-x64/bin/easyresearch.exe" --version 2>&1
+          $received = ($output -join "`n").Trim()
+          if ($LASTEXITCODE -ne 0 -or $received -ne $expected) {
+            throw "Windows native version mismatch: expected '$expected', received '$received'"
+          }
+
       - name: Run native binary smoke
-        run: bun scripts/smoke-release.ts ${{ matrix.target }}
+        run: bun scripts/smoke-release.ts ${{ matrix.target }} ${{ runner.os == 'Windows' && '--version-verified-by-runner' || '' }}
 
   publish:
     name: Publish to npm

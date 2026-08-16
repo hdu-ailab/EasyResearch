@@ -9,6 +9,11 @@ import { validateNativeVersionOutput } from "./release";
 const targetName = process.argv[2];
 const target = TARGETS.find((candidate) => candidate.name === targetName);
 if (!target) throw new Error(`unknown smoke target: ${targetName}`);
+const versionVerifiedByRunner = process.argv[3] === "--version-verified-by-runner";
+if (process.argv.length > (versionVerifiedByRunner ? 4 : 3)) throw new Error("unexpected native smoke arguments");
+if (versionVerifiedByRunner && target.name !== "windows-x64") {
+  throw new Error("runner-verified version is reserved for Windows native smoke");
+}
 
 const binary = resolve(platformPackageDir(target.name), "bin", platformBinaryName(target));
 const root = mkdtempSync(join(tmpdir(), "easyresearch-native-smoke-"));
@@ -145,7 +150,7 @@ function openAiStream(input: {
 
 try {
   const version = repoPackageVersion();
-  validateNativeVersionOutput(0, runVersion(), version, target.name);
+  if (!versionVerifiedByRunner) validateNativeVersionOutput(0, runVersion(), version, target.name);
   run(["--no-open", "--port", String(port)]);
   const base = `http://127.0.0.1:${port}`;
   await requireOk(await fetch(`${base}/api/status`), "status probe");
