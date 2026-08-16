@@ -279,7 +279,13 @@ export async function runCli(
     if (open && isLoopbackHost(host)) await deps.openBrowser(url);
     return 0;
   } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(message);
+    try {
+      writeFileSync(join(agentDir, "cli-error.log"), `${message}\n${(error as Error).stack ?? ""}\n`);
+    } catch {
+      // Best-effort diagnostics only.
+    }
     return 1;
   }
 }
