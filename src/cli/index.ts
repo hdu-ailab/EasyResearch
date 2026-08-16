@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,6 +43,13 @@ export interface CliOptions {
 export const DEFAULT_HOST = "127.0.0.1";
 export const DEFAULT_PORT = 3000;
 export const READY_TIMEOUT_MS = 10_000;
+
+export function writeVersionOutput(
+  version: string,
+  write: (fd: number, output: string) => unknown = (fd, output) => writeSync(fd, output),
+): void {
+  write(1, `easyresearch ${version}\n`);
+}
 
 export function isSkipSetupEnabled(): boolean {
   const value = process.env.EASYRESEARCH_SKIP_SETUP;
@@ -290,7 +297,7 @@ if (import.meta.main) {
   setBedrockProviderModule(bedrockProviderModule);
   const args = process.argv.slice(2);
   if (args[0] === "--version" || args[0] === "-v") {
-    console.log(`easyresearch ${embeddedPackageVersion()}`);
+    writeVersionOutput(embeddedPackageVersion());
     process.exit(0);
   }
   if (args.length === 3 && args[0] === "--serve") {

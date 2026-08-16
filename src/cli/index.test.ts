@@ -201,6 +201,19 @@ describe("browser opener", () => {
   });
 });
 
+describe("version output", () => {
+  it("writes the exact version line synchronously", () => {
+    const writeVersionOutput = (cliModule as typeof cliModule & {
+      writeVersionOutput(version: string, write: (fd: number, output: string) => unknown): void;
+    }).writeVersionOutput;
+    const write = vi.fn();
+
+    writeVersionOutput("1.2.3", write);
+
+    expect(write).toHaveBeenCalledWith(1, "easyresearch 1.2.3\n");
+  });
+});
+
 describe("first-run setup", () => {
   it("runs injected setup on normal start", async () => {
     const setup = vi.fn();
