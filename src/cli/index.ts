@@ -181,7 +181,9 @@ export async function waitForReady(
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(`http://${probeHost}:${port}/api/status`);
+      const response = await fetch(`http://${probeHost}:${port}/api/status`, {
+        signal: AbortSignal.timeout(2_000),
+      });
       if (response.ok) return true;
     } catch {
       // not ready yet
@@ -265,7 +267,17 @@ export async function runCli(
     if (existing !== undefined) removeServerPid(agentDir);
 
     deps.spawnBackground(host, port);
+    try {
+      writeFileSync(join(agentDir, "ready-marker-before.txt"), "1");
+    } catch {
+      // diagnostics only
+    }
     const ready = await deps.waitForReady(host, port);
+    try {
+      writeFileSync(join(agentDir, "ready-marker-after.txt"), "1");
+    } catch {
+      // diagnostics only
+    }
     if (!ready) {
       console.error(`EasyResearch failed to start within ${READY_TIMEOUT_MS}ms. See ${serverLogFile(agentDir)}.`);
       return 1;
