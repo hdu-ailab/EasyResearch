@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -114,6 +114,24 @@ async function requireOk(response: Response, label: string): Promise<any> {
   return text ? JSON.parse(text) : undefined;
 }
 
+function dumpServerLogs(): void {
+  try {
+    const logsDir = join(agentDir, "logs");
+    if (!existsSync(logsDir)) {
+      console.log("[smoke] no server logs directory");
+      return;
+    }
+    for (const entry of readdirSync(logsDir)) {
+      const path = join(logsDir, entry);
+      const content = readFileSync(path, "utf8");
+      console.log(`[smoke] --- ${entry} (${content.length} bytes) ---`);
+      console.log(content.slice(-4000));
+    }
+  } catch (error) {
+    console.log(`[smoke] failed to dump server logs: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 function openAiStream(input: {
   text?: string;
   toolCall?: { id: string; name: string; arguments: string };
@@ -206,6 +224,9 @@ try {
     body: JSON.stringify({ path: sessionPath }),
   }), "session resume");
   console.log(`[smoke] ${target.name} passed`);
+} catch (error) {
+  dumpServerLogs();
+  throw error;
 } finally {
   try {
     run(["exit"]);
