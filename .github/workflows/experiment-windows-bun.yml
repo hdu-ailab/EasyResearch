@@ -7,7 +7,7 @@ on:
 
 jobs:
   repro:
-    name: Compiled exe feature probes
+    name: Full entry compiled exe probe
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -16,37 +16,37 @@ jobs:
         with:
           bun-version: "1.3.14"
 
-      - name: Probe A - with-file import
-        shell: pwsh
-        run: |
-          "hello content" | Out-File -Encoding utf8 hello.txt
-          "import x from './hello.txt' with { type: 'file' }; console.log('A-withfile:', x)" | Out-File -Encoding utf8 probe-a.ts
-          bun build probe-a.ts --compile --outfile probe-a.exe
-          $out = .\probe-a.exe 2>&1
-          "A-exit=$LASTEXITCODE capture=[$($out -join "`n")]"
+      - name: Build real windows exe
+        run: bun install --frozen-lockfile && bun scripts/build.ts --only windows-x64
 
-      - name: Probe B - top-level await
+      - name: Probe E - minify with-file
         shell: pwsh
         run: |
-          "await Bun.sleep(1); console.log('B-topawait')" | Out-File -Encoding utf8 probe-b.ts
-          bun build probe-b.ts --compile --outfile probe-b.exe
-          $out = .\probe-b.exe 2>&1
-          "B-exit=$LASTEXITCODE capture=[$($out -join "`n")]"
+          "hello content" | Out-File -Encoding utf8 hello3.txt
+          "import x from './hello3.txt' with { type: 'file' }; console.log('E-minify:', x)" | Out-File -Encoding utf8 probe-e.ts
+          bun build probe-e.ts --compile --minify --outfile probe-e.exe
+          $out = .\probe-e.exe 2>&1
+          "E-exit=$LASTEXITCODE capture=[$($out -join "`n")]"
 
-      - name: Probe C - with-file plus top-level await
+      - name: Probe F - real exe, normal PATH
         shell: pwsh
         run: |
-          "hello content" | Out-File -Encoding utf8 hello2.txt
-          "import x from './hello2.txt' with { type: 'file' }; await Bun.sleep(1); console.log('C-both:', x)" | Out-File -Encoding utf8 probe-c.ts
-          bun build probe-c.ts --compile --outfile probe-c.exe
-          $out = .\probe-c.exe 2>&1
-          "C-exit=$LASTEXITCODE capture=[$($out -join "`n")]"
+          New-Item -ItemType Directory -Force smokehome | Out-Null
+          $env:HOME = "$pwd\smokehome"
+          $env:USERPROFILE = "$pwd\smokehome"
+          $env:LOCALAPPDATA = "$pwd\smokehome\la"
+          $p = Start-Process -FilePath ".\release\easyresearch-windows-x64\bin\easyresearch.exe" -ArgumentList @('--no-open','--port','32123') -Wait -PassThru
+          "F-exit=$($p.ExitCode)"
+          "F-files=$((Get-ChildItem -Recurse smokehome -File | Measure-Object).Count)"
 
-      - name: Probe D - dynamic import await
+      - name: Probe G - real exe, empty PATH
         shell: pwsh
         run: |
-          "export default 'dyn';\n" | Out-File -Encoding utf8 dyn.ts
-          "const m = await import('./dyn.ts'); console.log('D-dynimport:', m.default)" | Out-File -Encoding utf8 probe-d.ts
-          bun build probe-d.ts --compile --outfile probe-d.exe
-          $out = .\probe-d.exe 2>&1
-          "D-exit=$LASTEXITCODE capture=[$($out -join "`n")]"
+          New-Item -ItemType Directory -Force smokehome2 | Out-Null
+          $env:HOME = "$pwd\smokehome2"
+          $env:USERPROFILE = "$pwd\smokehome2"
+          $env:LOCALAPPDATA = "$pwd\smokehome2\la"
+          $env:PATH = ""
+          $p = Start-Process -FilePath ".\release\easyresearch-windows-x64\bin\easyresearch.exe" -ArgumentList @('--no-open','--port','32124') -Wait -PassThru
+          "G-exit=$($p.ExitCode)"
+          "G-files=$((Get-ChildItem -Recurse smokehome2 -File | Measure-Object).Count)"
