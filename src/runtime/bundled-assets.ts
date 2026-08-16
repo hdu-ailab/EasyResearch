@@ -188,7 +188,12 @@ function assertSafeBundledPath(rel: string): void {
 function syncFile(path: string): void {
   const fd = openSync(path, "r");
   try {
-    fsyncSync(fd);
+    try {
+      fsyncSync(fd);
+    } catch {
+      // fsync is best-effort durability and is not supported on every
+      // Windows handle; staged bytes stay durable via normal close semantics.
+    }
   } finally {
     closeSync(fd);
   }
