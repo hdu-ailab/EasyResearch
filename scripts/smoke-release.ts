@@ -141,6 +141,17 @@ function runVersion(): string {
   return output;
 }
 
+function treeFiles(dir: string, prefix = ""): string[] {
+  if (!existsSync(dir)) return [];
+  const entries: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const rel = `${prefix}/${entry.name}`;
+    if (entry.isDirectory()) entries.push(...treeFiles(join(dir, entry.name), rel));
+    else entries.push(rel);
+  }
+  return entries.sort();
+}
+
 async function requireOk(response: Response, label: string): Promise<any> {
   const text = await response.text();
   if (!response.ok) throw new Error(`${label} failed (${response.status}): ${text}`);
@@ -209,7 +220,11 @@ function openAiStream(input: {
 try {
   const version = repoPackageVersion();
   if (!versionVerifiedByRunner) validateNativeVersionOutput(0, runVersion(), version, target.name);
+  const treeBefore = treeFiles(root);
   run(["--no-open", "--port", String(port)]);
+  const createdFiles = treeFiles(root).filter((file) => !treeBefore.includes(file));
+  console.log(`[smoke] files created by CLI run: ${createdFiles.length}`);
+  for (const file of createdFiles.slice(0, 60)) console.log(`[smoke]   ${file}`);
   const bundledCandidates = [
     join(agentDir, "bundled"),
     join(home, ".easyresearch", "agent", "bundled"),
