@@ -323,16 +323,16 @@ async function runRuntimeEntry(args: string[]): Promise<void> {
       mkdirSync(dirname(stderrPath), { recursive: true });
       const stderrFd = openSync(stderrPath, "a");
       if (isEmbeddedBuild() && process.platform === "win32") {
-        // Bun's Windows `unref()` does not release the child handle, so the
-        // CLI would never exit while the daemon lives. The daemon is spawned
-        // fully detached with every stdio handle closed so nothing keeps the
-        // CLI's exit blocked.
-        const child = spawn(daemon, ["--serve", host, String(port)], {
+        // Bun's Windows `child_process.spawn` does not release the child
+        // handle on unref, so the CLI would never exit while the daemon lives.
+        // Bun's native spawn detaches the daemon correctly.
+        Bun.spawn([daemon, "--serve", host, String(port)], {
           detached: true,
-          stdio: "ignore",
+          stdin: "ignore",
+          stdout: "ignore",
+          stderr: "ignore",
           env: process.env,
-        });
-        child.unref();
+        }).unref();
         return;
       }
       const options: Parameters<typeof spawn>[2] = {
