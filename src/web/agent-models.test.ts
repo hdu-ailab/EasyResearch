@@ -220,6 +220,49 @@ describe("resolveAgentModelsService.effective", () => {
     const effective = await service.effective("s1");
     expect(effective).toEqual(roster().map((a) => ({ name: a.name, model: null, source: "inherit" })));
   });
+
+  it("resolves the Paper Assistant from global defaults while follow-global is flagged", async () => {
+    const service = resolveAgentModelsService({
+      listAgents: async () => roster(),
+      getSessionPath: async () => "/sessions/o.jsonl",
+      readEntries: async () => [
+        { type: "custom", customType: "easyresearch:follow_global_settings", data: { follow: true } },
+        { type: "custom", customType: AGENT_MODEL_ENTRY, data: { agent: "search", model: "s/9" } },
+      ],
+      projectAgentModels: async () => ({ figures: "p/2" }),
+      globalAgentModels: async () => ({ "paper-assistant": "g/pa", writing: "g/2" }),
+      paperAssistantModel: async () => "o/7",
+      getCwd: async () => "/tmp/proj",
+    });
+    await expect(service.effective("s1")).resolves.toEqual([
+      { name: "paper-assistant", model: "g/pa", source: "global" },
+      { name: "search", model: "s/9", source: "override" },
+      { name: "experiment", model: "o/7", source: "inherit" },
+      { name: "writing", model: "g/2", source: "global" },
+      { name: "figures", model: "p/2", source: "project" },
+    ]);
+  });
+
+  it("prefers the project default for the Paper Assistant while follow-global is flagged", async () => {
+    const service = resolveAgentModelsService({
+      listAgents: async () => roster(),
+      getSessionPath: async () => "/sessions/o.jsonl",
+      readEntries: async () => [
+        { type: "custom", customType: "easyresearch:follow_global_settings", data: { follow: true } },
+      ],
+      projectAgentModels: async () => ({ "paper-assistant": "p/pa" }),
+      globalAgentModels: async () => ({ "paper-assistant": "g/pa" }),
+      paperAssistantModel: async () => "o/7",
+      getCwd: async () => "/tmp/proj",
+    });
+    await expect(service.effective("s1")).resolves.toEqual([
+      { name: "paper-assistant", model: "p/pa", source: "project" },
+      { name: "search", model: "o/7", source: "inherit" },
+      { name: "experiment", model: "o/7", source: "inherit" },
+      { name: "writing", model: "o/7", source: "inherit" },
+      { name: "figures", model: "o/7", source: "inherit" },
+    ]);
+  });
 });
 
 describe("routeSetAgentModel", () => {

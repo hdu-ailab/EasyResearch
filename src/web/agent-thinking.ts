@@ -3,6 +3,7 @@ import { importPi } from "../runtime/pi-import";
 import type { AgentEffectiveThinkingDto, ConfigScope } from "./contracts";
 import type { ConfigFileService } from "./config-files";
 import { PAPER_ASSISTANT_AGENT } from "../subagent/agents";
+import { readFollowGlobalFlag } from "./agent-follow-global";
 import { readSessionOverrides, type EntryRow } from "./agent-models";
 
 export type { EntryRow } from "./agent-models";
@@ -101,7 +102,17 @@ export function resolveAgentThinkingService(deps: {
       const global = await deps.globalAgentThinking();
       const paperAssistantThinking = await deps.paperAssistantThinking(id);
       const out: AgentEffectiveThinkingDto[] = [];
+      const followGlobal = readFollowGlobalFlag(rows);
       for (const agent of agents) {
+        if (agent.name === PAPER_ASSISTANT_AGENT && followGlobal) {
+          const paDefault = project?.[PAPER_ASSISTANT_AGENT] ?? global?.[PAPER_ASSISTANT_AGENT];
+          if (paDefault !== undefined) {
+            out.push({ name: agent.name, thinking: paDefault, source: "default" });
+            continue;
+          }
+          out.push({ name: agent.name, thinking: paperAssistantThinking ?? null, source: "inherit" });
+          continue;
+        }
         // The Paper Assistant's live session level is its own session override.
         const override =
           agent.name === PAPER_ASSISTANT_AGENT ? paperAssistantThinking : readThinkingOverrideForAgent(rows, agent.name);

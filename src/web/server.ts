@@ -10,6 +10,7 @@ import type { AgentDto, SessionSummaryDto } from "./contracts";
 import type { AgentConfig } from "../subagent/agents";
 import { readEffectiveWebuiSettings, updateWebuiSettings } from "./webui-settings";
 import { discoverAgents, discoverGlobalAgents, PAPER_ASSISTANT_AGENT } from "../subagent/agents";
+import { clearFollowGlobalFlag, readFollowGlobalFlag, setFollowGlobalFlag } from "./agent-follow-global";
 import {
   readAgentModels,
   readPaperAssistantDefaults,
@@ -130,6 +131,29 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
     },
     createFileWatcherFactory(logger),
   );
+  const prompt = registry.prompt.bind(registry);
+  registry.prompt = async (id: string, message: string) => {
+    const sessionPath = await registry.getSessionPath(id);
+    const rows = sessionPath ? await readSessionOverrides(sessionPath) : [];
+    if (readFollowGlobalFlag(rows)) {
+      const cwd = await registry.getCwd(id);
+      const defaults = await readPaperAssistantDefaults(config, cwd);
+      if (defaults) {
+        const current = await registry.getPaperAssistantModel(id);
+        if (current !== `${defaults.provider}/${defaults.modelId}`) {
+          await registry.setModel(id, defaults.provider, defaults.modelId);
+        }
+      }
+      const thinkingDefault = await readPaperAssistantThinkingDefault(config, cwd);
+      if (thinkingDefault) {
+        const current = await registry.getPaperAssistantThinking(id);
+        if (current !== thinkingDefault) {
+          await registry.setThinkingLevel(id, thinkingDefault);
+        }
+      }
+    }
+    await prompt(id, message);
+  };
   const subagentSessions = new SubagentSessionService({
     open: (path) => SessionManager.open(path),
     listAll: async () => {
@@ -173,8 +197,9 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
       }));
     },
     effectiveModels: (sessionId) => agentModels.effective(sessionId),
-    setAgentModel: (sessionId, agentName, model) =>
-      routeSetAgentModel(
+    setAgentModel: async (sessionId, agentName, model) => {
+      await clearFollowGlobalFlag(await registry.getSessionPath(sessionId));
+      await routeSetAgentModel(
         {
           isPaperAssistant: (name) => name === PAPER_ASSISTANT_AGENT,
           isKnownAgent: async (name) =>
@@ -185,7 +210,8 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
         },
         agentName,
         model,
-      ),
+      );
+    },
     effectiveThinking: (sessionId) => agentThinking.effective(sessionId),
     clearAgentOverrides: async (sessionId) => {
       const cwd = await registry.getCwd(sessionId);
@@ -195,17 +221,11 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
         await agentModels.set(sessionId, agent.name, null);
         await agentThinking.set(sessionId, agent.name, null);
       }
-      const paperAssistantDefaults = await readPaperAssistantDefaults(config, cwd);
-      if (paperAssistantDefaults) {
-        await registry.setModel(sessionId, paperAssistantDefaults.provider, paperAssistantDefaults.modelId);
-      }
-      const paperAssistantThinkingDefault = await readPaperAssistantThinkingDefault(config, cwd);
-      if (paperAssistantThinkingDefault) {
-        await registry.setThinkingLevel(sessionId, paperAssistantThinkingDefault);
-      }
+      await setFollowGlobalFlag(await registry.getSessionPath(sessionId));
     },
-    setAgentThinking: (sessionId, agentName, thinking) =>
-      routeSetAgentThinking(
+    setAgentThinking: async (sessionId, agentName, thinking) => {
+      await clearFollowGlobalFlag(await registry.getSessionPath(sessionId));
+      await routeSetAgentThinking(
         {
           isPaperAssistant: (name) => name === PAPER_ASSISTANT_AGENT,
           isKnownAgent: async (name) =>
@@ -216,7 +236,8 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
         },
         agentName,
         thinking,
-      ),
+      );
+    },
     listConfigProjects: async () => {
       const sessions = await SessionManager.listAll(undefined);
       const cwds = [...new Set(sessions.map((s) => s.cwd).filter(Boolean))];

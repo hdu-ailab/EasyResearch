@@ -197,6 +197,43 @@ describe("resolveAgentThinkingService.effective", () => {
     const effective = await service.effective("s1");
     expect(effective).toEqual(roster().map((a) => ({ name: a.name, thinking: null, source: "inherit" })));
   });
+
+  it("resolves the Paper Assistant from the global default while follow-global is flagged", async () => {
+    const service = resolveAgentThinkingService({
+      listAgents: async () => roster(),
+      getSessionPath: async () => "/sessions/o.jsonl",
+      readEntries: async () => [
+        { type: "custom", customType: "easyresearch:follow_global_settings", data: { follow: true } },
+      ],
+      projectAgentThinking: async () => ({ "paper-assistant": "high" }),
+      globalAgentThinking: async () => ({ "paper-assistant": "low", writing: "off" }),
+      paperAssistantThinking: async () => "medium",
+      getCwd: async () => "/tmp/proj",
+    });
+    await expect(service.effective("s1")).resolves.toEqual([
+      { name: "paper-assistant", thinking: "high", source: "default" },
+      { name: "search", thinking: "medium", source: "inherit" },
+      { name: "experiment", thinking: "medium", source: "inherit" },
+      { name: "writing", thinking: "off", source: "default" },
+      { name: "figures", thinking: "medium", source: "inherit" },
+    ]);
+  });
+
+  it("falls back to the live session level when follow-global has no default thinking", async () => {
+    const service = resolveAgentThinkingService({
+      listAgents: async () => roster(),
+      getSessionPath: async () => "/sessions/o.jsonl",
+      readEntries: async () => [
+        { type: "custom", customType: "easyresearch:follow_global_settings", data: { follow: true } },
+      ],
+      projectAgentThinking: async () => undefined,
+      globalAgentThinking: async () => undefined,
+      paperAssistantThinking: async () => "medium",
+      getCwd: async () => "/tmp/proj",
+    });
+    const effective = await service.effective("s1");
+    expect(effective[0]).toEqual({ name: "paper-assistant", thinking: "medium", source: "inherit" });
+  });
 });
 
 describe("routeSetAgentThinking", () => {

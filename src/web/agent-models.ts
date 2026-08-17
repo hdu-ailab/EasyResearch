@@ -4,6 +4,7 @@ import type { AgentEffectiveModelDto, ConfigScope } from "./contracts";
 import type { ConfigFileService } from "./config-files";
 import { ConfigPathError, ConfigServiceError } from "./config-files";
 import { PAPER_ASSISTANT_AGENT } from "../subagent/agents";
+import { readFollowGlobalFlag } from "./agent-follow-global";
 
 export interface EntryRow {
   type: string;
@@ -158,7 +159,22 @@ export function resolveAgentModelsService(deps: {
       const global = await deps.globalAgentModels();
       const paperAssistantModel = await deps.paperAssistantModel(id);
       const out: AgentEffectiveModelDto[] = [];
+      const followGlobal = readFollowGlobalFlag(rows);
       for (const agent of agents) {
+        if (agent.name === PAPER_ASSISTANT_AGENT && followGlobal) {
+          const paProject = project?.[PAPER_ASSISTANT_AGENT];
+          const paGlobal = global?.[PAPER_ASSISTANT_AGENT];
+          if (paProject !== undefined || paGlobal !== undefined) {
+            out.push({
+              name: agent.name,
+              model: paProject ?? paGlobal!,
+              source: paProject !== undefined ? "project" : "global",
+            });
+            continue;
+          }
+          out.push({ name: agent.name, model: paperAssistantModel ?? null, source: "inherit" });
+          continue;
+        }
         const override = readOverrideForAgent(rows, agent.name);
         const resolved = resolveEffectiveModel(override, project, global, paperAssistantModel, agent.name);
         out.push(
