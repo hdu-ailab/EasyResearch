@@ -25,14 +25,20 @@ function tempDir(): string {
   return dir;
 }
 
-function validationFixture(): { python: string; script: string; prefix: string; root: string } {
-  const which = (name: string): string | undefined => {
+function findPythonOnPath(): string | undefined {
+  for (const name of ["python3", "python"]) {
     const executable = process.platform === "win32" ? `${name}.exe` : name;
-    return process.env.PATH?.split(delimiter)
+    const found = process.env.PATH?.split(delimiter)
       .map((dir) => join(dir, executable))
       .find(existsSync);
-  };
-  const python = resolveSmokePython({ which, exists: existsSync });
+    if (found) return found;
+  }
+  return undefined;
+}
+
+const systemPython = findPythonOnPath();
+
+function validationFixture(python: string): { python: string; script: string; prefix: string; root: string } {
   const root = tempDir();
   for (const module of ["arxiv", "ddgr", "markitdown"]) writeFileSync(join(root, `${module}.py`), "");
   const script = join(root, "validate.py");
@@ -160,39 +166,51 @@ describe("runVenvValidation", () => {
       spawn: () => ({ status: 0, stdout: "unexpected", stderr: "validation warning" }),
     })).toThrow(/\/agent\/venv\/bin\/python.*validation warning/s);
   });
-});
 
-describe("writeVenvValidationScript", () => {
-  it("imports the skill packages and emits the sentinel for the expected prefix", () => {
-    const fixture = validationFixture();
-    const result = spawnSync(fixture.python, [fixture.script], {
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        EASYRESEARCH_VENV: fixture.prefix,
-        PYTHONPATH: fixture.root,
-      },
-    });
-
-    expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain("easyresearch-venv-ok");
-  });
-
-  it("rejects a Python process outside EASYRESEARCH_VENV", () => {
-    const fixture = validationFixture();
-    const result = spawnSync(fixture.python, [fixture.script], {
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        EASYRESEARCH_VENV: join(fixture.root, "another-venv"),
-        PYTHONPATH: fixture.root,
-      },
-    });
-
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("wrong venv prefix");
+  it("rejects a near-match sentinel line", () => {
+    expect(() => runVenvValidation({
+      python: "/agent/venv/bin/python",
+      script: "/tmp/validate.py",
+      exists: () => true,
+      spawn: () => ({ status: 0, stdout: "easyresearch-venv-ok-invalid\n", stderr: "near match" }),
+    })).toThrow(/\/agent\/venv\/bin\/python.*near match/s);
   });
 });
+
+describe.skipIf(systemPython === undefined)(
+  "writeVenvValidationScript (skipped: no Python interpreter on PATH)",
+  () => {
+    it("imports the skill packages and emits the sentinel for the expected prefix", () => {
+      const fixture = validationFixture(systemPython!);
+      const result = spawnSync(fixture.python, [fixture.script], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          EASYRESEARCH_VENV: fixture.prefix,
+          PYTHONPATH: fixture.root,
+        },
+      });
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain("easyresearch-venv-ok");
+    });
+
+    it("rejects a Python process outside EASYRESEARCH_VENV", () => {
+      const fixture = validationFixture(systemPython!);
+      const result = spawnSync(fixture.python, [fixture.script], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          EASYRESEARCH_VENV: join(fixture.root, "another-venv"),
+          PYTHONPATH: fixture.root,
+        },
+      });
+
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("wrong venv prefix");
+    });
+  },
+);
 
 describe("venvToolCommand", () => {
   it("uses the runtime POSIX venv interpreter", () => {
@@ -212,6 +230,7 @@ describe("venvToolCommand", () => {
 
 describe("selectSmokeModelAction", () => {
   const tool = (name: string) => ({ function: { name } });
+  const completedStage = "complete\nArtifacts: none\nGaps: none\nNext action: none";
 
   it("dispatches the search subagent from the parent", () => {
     const action = selectSmokeModelAction({ tools: [tool("subagent")], messages: [] }, "validate-command");
@@ -251,12 +270,33 @@ describe("selectSmokeModelAction", () => {
     }, "validate-command")).toThrow("easyresearch-venv-ok");
   });
 
+  it("hard-fails the search stage for a near-match sentinel line", () => {
+    expect(() => selectSmokeModelAction({
+      tools: [tool("bash")],
+      messages: [{ role: "tool", content: "easyresearch-venv-ok-invalid" }],
+    }, "validate-command")).toThrow("easyresearch-venv-ok");
+  });
+
   it("completes the parent after the subagent result", () => {
     const action = selectSmokeModelAction({
       tools: [tool("subagent")],
-      messages: [{ role: "tool", content: "complete" }],
+      messages: [{
+        role: "tool",
+        content: `${completedStage}\n\nSession history JSONL: /sessions/search.jsonl`,
+      }],
     }, "validate-command");
 
     expect(action).toEqual({ kind: "text", text: "Parent smoke run complete." });
+  });
+
+  it.each([
+    "blocked\nArtifacts: none\nGaps: validation failed\nNext action: retry",
+    "Agent error: search stage failed",
+    "complete-invalid\nArtifacts: none\nGaps: none\nNext action: none",
+  ])("fails closed for an unsuccessful subagent result: %s", (content) => {
+    expect(() => selectSmokeModelAction({
+      tools: [tool("subagent")],
+      messages: [{ role: "tool", content }],
+    }, "validate-command")).toThrow("successful deterministic handoff");
   });
 });

@@ -78,6 +78,19 @@ interface ValidationSpawnResult {
   error?: Error;
 }
 
+const VENV_SENTINEL = "easyresearch-venv-ok";
+const STAGE_COMPLETION = "complete\nArtifacts: none\nGaps: none\nNext action: none";
+
+function hasExactLine(text: string, expected: string): boolean {
+  return text.split(/\r?\n/).some((line) => line.trim() === expected);
+}
+
+function isSuccessfulStageHandoff(text: string): boolean {
+  const normalized = text.replaceAll("\r\n", "\n").trim();
+  return normalized === STAGE_COMPLETION
+    || normalized.startsWith(`${STAGE_COMPLETION}\n\nSession history JSONL:`);
+}
+
 export function runVenvValidation(options: {
   python: string;
   script: string;
@@ -102,7 +115,7 @@ export function runVenvValidation(options: {
   const stderr = result.stderr?.toString() ?? "";
   if (result.error) failure(`spawn failed: ${result.error.message}`, stdout, stderr);
   if (result.status !== 0) failure(`failed with status ${result.status ?? "unknown"}`, stdout, stderr);
-  if (!stdout.includes("easyresearch-venv-ok")) failure("did not emit easyresearch-venv-ok", stdout, stderr);
+  if (!hasExactLine(stdout, VENV_SENTINEL)) failure(`did not emit ${VENV_SENTINEL}`, stdout, stderr);
   return { stdout, stderr };
 }
 
@@ -138,7 +151,13 @@ export function selectSmokeModelAction(
   const toolResult = request.messages?.findLast((message) => message.role === "tool");
 
   if (toolNames.has("subagent")) {
-    if (toolResult) return { kind: "text", text: "Parent smoke run complete." };
+    if (toolResult) {
+      const content = messageContentText(toolResult.content);
+      if (!isSuccessfulStageHandoff(content)) {
+        throw new Error(`subagent tool result did not contain a successful deterministic handoff: ${content}`);
+      }
+      return { kind: "text", text: "Parent smoke run complete." };
+    }
     return {
       kind: "tool",
       id: "call_native_stage",
@@ -160,10 +179,10 @@ export function selectSmokeModelAction(
       };
     }
     const content = messageContentText(toolResult.content);
-    if (!content.includes("easyresearch-venv-ok")) {
-      throw new Error(`bash tool result did not contain easyresearch-venv-ok: ${content}`);
+    if (!hasExactLine(content, VENV_SENTINEL)) {
+      throw new Error(`bash tool result did not contain an exact ${VENV_SENTINEL} line: ${content}`);
     }
-    return { kind: "text", text: "complete\nArtifacts: none\nGaps: none\nNext action: none" };
+    return { kind: "text", text: STAGE_COMPLETION };
   }
 
   throw new Error("native smoke request did not expose subagent or bash");
