@@ -11,6 +11,7 @@ import {
   resolveSmokePython,
   runVenvValidation,
   selectSmokeModelAction,
+  type SmokeModelState,
   settleProcess,
   skillVenvPython,
   venvToolCommand,
@@ -451,72 +452,173 @@ describe("venvToolCommand", () => {
 describe("selectSmokeModelAction", () => {
   const tool = (name: string) => ({ function: { name } });
   const completedStage = "complete\nArtifacts: none\nGaps: none\nNext action: none";
-
-  it("dispatches the search subagent from the parent", () => {
-    const action = selectSmokeModelAction({ tools: [tool("subagent")], messages: [] }, "validate-command");
-
-    expect(action.kind).toBe("tool");
-    if (action.kind !== "tool") throw new Error("expected a tool action");
-    expect(action.name).toBe("subagent");
-    expect(JSON.parse(action.arguments)).toMatchObject({ agent: "search" });
+  const state = (phase: SmokeModelState["phase"], completedRequests: number): SmokeModelState => ({
+    phase,
+    completedRequests,
+  });
+  const toolResult = (toolCallId: string | undefined, content: unknown) => ({
+    role: "tool" as const,
+    ...(toolCallId === undefined ? {} : { tool_call_id: toolCallId }),
+    content,
   });
 
-  it("invokes bash with the supplied command from the search stage", () => {
-    const action = selectSmokeModelAction({ tools: [tool("bash")], messages: [] }, "validate-command");
+  it("uses the explicit phase when subagent and bash are both advertised", () => {
+    const parent = selectSmokeModelAction({
+      tools: [tool("bash"), tool("subagent")],
+      messages: [toolResult("historical", "old result")],
+    }, "validate-command", state("awaiting-parent-subagent-call", 0));
+    expect(parent.action).toMatchObject({ kind: "tool", id: "call_native_stage", name: "subagent" });
 
-    expect(action).toEqual({
+    const stage = selectSmokeModelAction({
+      tools: [tool("subagent"), tool("bash")],
+      messages: [toolResult("historical", completedStage)],
+    }, "validate-command", parent.state);
+    expect(stage.action).toEqual({
       kind: "tool",
       id: "call_native_venv",
       name: "bash",
       arguments: JSON.stringify({ command: "validate-command", timeout: 60 }),
     });
+    expect(stage.state).toEqual({ phase: "awaiting-venv-tool-result", completedRequests: 2 });
   });
 
-  it("completes the search stage after bash returns the sentinel", () => {
-    const action = selectSmokeModelAction({
-      tools: [tool("bash")],
-      messages: [{ role: "tool", content: "easyresearch-venv-ok\n" }],
-    }, "validate-command");
+  it("matches the expected bash call instead of the last unrelated tool row", () => {
+    const transition = selectSmokeModelAction({
+      tools: [tool("subagent"), tool("bash")],
+      messages: [
+        toolResult("old-call", "easyresearch-venv-ok"),
+        toolResult("call_native_venv", "validation log\n easyresearch-venv-ok  \n"),
+        toolResult("unrelated-later-call", "wrong interpreter"),
+      ],
+    }, "validate-command", state("awaiting-venv-tool-result", 2));
 
-    expect(action.kind).toBe("text");
-    if (action.kind !== "text") throw new Error("expected a text action");
-    expect(action.text).toContain("complete");
+    expect(transition.action).toEqual({ kind: "text", text: completedStage });
+    expect(transition.state).toEqual({ phase: "awaiting-subagent-tool-result", completedRequests: 3 });
+    expect(transition.validatedVenvResult).toBe(true);
   });
 
-  it("hard-fails the search stage when bash omits the sentinel", () => {
+  it("matches the expected subagent call instead of unrelated history", () => {
+    const transition = selectSmokeModelAction({
+      tools: [tool("bash"), tool("subagent")],
+      messages: [
+        toolResult("call_native_venv", "easyresearch-venv-ok"),
+        toolResult("unrelated", "Agent error: old failure"),
+        toolResult("call_native_stage", `${completedStage}\n\nSession history JSONL: /sessions/search.jsonl`),
+      ],
+    }, "validate-command", state("awaiting-subagent-tool-result", 3));
+
+    expect(transition).toEqual({
+      action: { kind: "text", text: "Parent smoke run complete." },
+      state: { phase: "complete", completedRequests: 4 },
+      validatedVenvResult: false,
+    });
+  });
+
+  it.each([
+    ["awaiting-venv-tool-result", 2, "call_native_venv", undefined],
+    ["awaiting-venv-tool-result", 2, "call_native_venv", "wrong-call"],
+    ["awaiting-subagent-tool-result", 3, "call_native_stage", undefined],
+    ["awaiting-subagent-tool-result", 3, "call_native_stage", "wrong-call"],
+  ] as const)("rejects a %s request at step %s without the expected %s result", (phase, completedRequests, expectedId, actualId) => {
+    const content = expectedId === "call_native_venv" ? "easyresearch-venv-ok" : completedStage;
+    expect(() => selectSmokeModelAction({
+      tools: [tool("subagent"), tool("bash")],
+      messages: [toolResult(actualId, content)],
+    }, "validate-command", state(phase, completedRequests))).toThrow(expectedId);
+  });
+
+  it("rejects duplicate rows for the expected tool call", () => {
     expect(() => selectSmokeModelAction({
       tools: [tool("bash")],
-      messages: [{ role: "tool", content: "wrong interpreter" }],
-    }, "validate-command")).toThrow("easyresearch-venv-ok");
+      messages: [
+        toolResult("call_native_venv", "easyresearch-venv-ok"),
+        toolResult("call_native_venv", "easyresearch-venv-ok"),
+      ],
+    }, "validate-command", state("awaiting-venv-tool-result", 2))).toThrow("exactly one");
   });
 
-  it("hard-fails the search stage for a near-match sentinel line", () => {
+  it.each([
+    "wrong interpreter",
+    "easyresearch-venv-ok-invalid",
+    "prefix easyresearch-venv-ok suffix",
+  ])("rejects a failed or inexact bash result: %s", (content) => {
     expect(() => selectSmokeModelAction({
       tools: [tool("bash")],
-      messages: [{ role: "tool", content: "easyresearch-venv-ok-invalid" }],
-    }, "validate-command")).toThrow("easyresearch-venv-ok");
-  });
-
-  it("completes the parent after the subagent result", () => {
-    const action = selectSmokeModelAction({
-      tools: [tool("subagent")],
-      messages: [{
-        role: "tool",
-        content: `${completedStage}\n\nSession history JSONL: /sessions/search.jsonl`,
-      }],
-    }, "validate-command");
-
-    expect(action).toEqual({ kind: "text", text: "Parent smoke run complete." });
+      messages: [toolResult("call_native_venv", content)],
+    }, "validate-command", state("awaiting-venv-tool-result", 2))).toThrow("easyresearch-venv-ok");
   });
 
   it.each([
     "blocked\nArtifacts: none\nGaps: validation failed\nNext action: retry",
     "Agent error: search stage failed",
     "complete-invalid\nArtifacts: none\nGaps: none\nNext action: none",
-  ])("fails closed for an unsuccessful subagent result: %s", (content) => {
+  ])("fails closed for an unsuccessful correlated subagent result: %s", (content) => {
     expect(() => selectSmokeModelAction({
       tools: [tool("subagent")],
-      messages: [{ role: "tool", content }],
-    }, "validate-command")).toThrow("successful deterministic handoff");
+      messages: [toolResult("call_native_stage", content)],
+    }, "validate-command", state("awaiting-subagent-tool-result", 3))).toThrow("successful deterministic handoff");
+  });
+
+  it("completes the exact four-request sequence and validates the venv result once", () => {
+    let current = state("awaiting-parent-subagent-call", 0);
+    let validatedVenvResults = 0;
+
+    const parentCall = selectSmokeModelAction({
+      tools: [tool("bash"), tool("subagent")],
+      messages: [toolResult("historical", "ignored")],
+    }, "validate-command", current);
+    current = parentCall.state;
+    validatedVenvResults += Number(parentCall.validatedVenvResult);
+
+    const bashCall = selectSmokeModelAction({
+      tools: [tool("subagent"), tool("bash")],
+      messages: [toolResult("historical", completedStage)],
+    }, "validate-command", current);
+    current = bashCall.state;
+    validatedVenvResults += Number(bashCall.validatedVenvResult);
+
+    const bashResult = selectSmokeModelAction({
+      tools: [tool("subagent"), tool("bash")],
+      messages: [toolResult("call_native_venv", "easyresearch-venv-ok\n")],
+    }, "validate-command", current);
+    current = bashResult.state;
+    validatedVenvResults += Number(bashResult.validatedVenvResult);
+
+    const parentResult = selectSmokeModelAction({
+      tools: [tool("bash"), tool("subagent")],
+      messages: [
+        toolResult("call_native_venv", "easyresearch-venv-ok\n"),
+        toolResult("call_native_stage", completedStage),
+      ],
+    }, "validate-command", current);
+    current = parentResult.state;
+    validatedVenvResults += Number(parentResult.validatedVenvResult);
+
+    expect(parentCall.action).toMatchObject({ kind: "tool", id: "call_native_stage", name: "subagent" });
+    expect(bashCall.action).toMatchObject({ kind: "tool", id: "call_native_venv", name: "bash" });
+    expect(bashResult.action).toEqual({ kind: "text", text: completedStage });
+    expect(parentResult.action).toEqual({ kind: "text", text: "Parent smoke run complete." });
+    expect(current).toEqual({ phase: "complete", completedRequests: 4 });
+    expect(validatedVenvResults).toBe(1);
+  });
+
+  it("does not accept the same venv result again after advancing the phase", () => {
+    const first = selectSmokeModelAction({
+      tools: [tool("bash")],
+      messages: [toolResult("call_native_venv", "easyresearch-venv-ok")],
+    }, "validate-command", state("awaiting-venv-tool-result", 2));
+    expect(first.validatedVenvResult).toBe(true);
+
+    expect(() => selectSmokeModelAction({
+      tools: [tool("bash")],
+      messages: [toolResult("call_native_venv", "easyresearch-venv-ok")],
+    }, "validate-command", first.state)).toThrow("call_native_stage");
+  });
+
+  it("rejects requests after the four phases complete", () => {
+    expect(() => selectSmokeModelAction({
+      tools: [tool("subagent"), tool("bash")],
+      messages: [],
+    }, "validate-command", state("complete", 4))).toThrow("already complete");
   });
 });

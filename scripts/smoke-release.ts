@@ -13,6 +13,7 @@ import {
   resolveSmokePython,
   runVenvValidation,
   selectSmokeModelAction,
+  type SmokeModelState,
   skillVenvPython,
   settleProcess,
   venvToolCommand,
@@ -51,23 +52,27 @@ let firstRunLaunchAttempted = false;
 let firstRunDeadline = 0;
 let modelRequests = 0;
 let venvToolResults = 0;
+let smokeModelState: SmokeModelState = {
+  phase: "awaiting-parent-subagent-call",
+  completedRequests: 0,
+};
 const modelServer = Bun.serve({
   port: 0,
   async fetch(request) {
     const body = await request.json() as {
       model?: string;
-      messages?: Array<{ role?: string; content?: unknown }>;
+      messages?: Array<{ role?: string; content?: unknown; tool_call_id?: string }>;
       tools?: Array<{ function?: { name?: string } }>;
     };
     modelRequests += 1;
-    const action = selectSmokeModelAction(body, venvToolCommand(process.platform, validationScript));
-    if (body.messages?.some(
-      (message) => message.role === "tool"
-        && typeof message.content === "string"
-        && message.content.includes("easyresearch-venv-ok"),
-    )) {
-      venvToolResults += 1;
-    }
+    const transition = selectSmokeModelAction(
+      body,
+      venvToolCommand(process.platform, validationScript),
+      smokeModelState,
+    );
+    smokeModelState = transition.state;
+    if (transition.validatedVenvResult) venvToolResults += 1;
+    const action = transition.action;
     return action.kind === "tool"
       ? openAiStream({ toolCall: { id: action.id, name: action.name, arguments: action.arguments } })
       : openAiStream({ text: action.text });
@@ -478,7 +483,11 @@ try {
       message: "Dispatch search and require it to execute only the deterministic bash venv-validation tool call. Do not use network tools.",
     }),
   }), "stage dispatch");
-  if (modelRequests < 4) throw new Error(`stage tool loop incomplete (${modelRequests} requests)`);
+  if (modelRequests !== 4 || smokeModelState.phase !== "complete" || smokeModelState.completedRequests !== 4) {
+    throw new Error(
+      `stage tool sequence incomplete (${modelRequests} requests; ${smokeModelState.completedRequests} accepted; phase ${smokeModelState.phase})`,
+    );
+  }
   if (venvToolResults !== 1) throw new Error(`venv tool sentinel count was ${venvToolResults}`);
 
   process.env.EASYRESEARCH_CODING_AGENT_DIR = agentDir;

@@ -217,6 +217,24 @@ export type SmokeModelAction =
   | { kind: "tool"; id: string; name: "subagent" | "bash"; arguments: string }
   | { kind: "text"; text: string };
 
+export type SmokeModelPhase =
+  | "awaiting-parent-subagent-call"
+  | "awaiting-stage-bash-call"
+  | "awaiting-venv-tool-result"
+  | "awaiting-subagent-tool-result"
+  | "complete";
+
+export interface SmokeModelState {
+  phase: SmokeModelPhase;
+  completedRequests: number;
+}
+
+export interface SmokeModelTransition {
+  action: SmokeModelAction;
+  state: SmokeModelState;
+  validatedVenvResult: boolean;
+}
+
 function messageContentText(content: unknown): string {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) return content.map(messageContentText).join("\n");
@@ -229,47 +247,86 @@ function messageContentText(content: unknown): string {
 export function selectSmokeModelAction(
   request: {
     tools?: Array<{ function?: { name?: string } }>;
-    messages?: Array<{ role?: string; content?: unknown }>;
+    messages?: Array<{ role?: string; content?: unknown; tool_call_id?: string }>;
   },
   toolCommand: string,
-): SmokeModelAction {
+  state: SmokeModelState,
+): SmokeModelTransition {
   const toolNames = new Set(request.tools?.map((tool) => tool.function?.name));
-  const toolResult = request.messages?.findLast((message) => message.role === "tool");
-
-  if (toolNames.has("subagent")) {
-    if (toolResult) {
-      const content = messageContentText(toolResult.content);
-      if (!isSuccessfulStageHandoff(content)) {
-        throw new Error(`subagent tool result did not contain a successful deterministic handoff: ${content}`);
-      }
-      return { kind: "text", text: "Parent smoke run complete." };
-    }
-    return {
-      kind: "tool",
-      id: "call_native_stage",
-      name: "subagent",
-      arguments: JSON.stringify({
-        agent: "search",
-        task: "Run the native venv validation command with the bash tool and return a complete handoff.",
-      }),
-    };
+  const expectedCompletedRequests: Record<SmokeModelPhase, number> = {
+    "awaiting-parent-subagent-call": 0,
+    "awaiting-stage-bash-call": 1,
+    "awaiting-venv-tool-result": 2,
+    "awaiting-subagent-tool-result": 3,
+    complete: 4,
+  };
+  if (state.completedRequests !== expectedCompletedRequests[state.phase]) {
+    throw new Error(`native smoke model state is inconsistent: ${state.phase} after ${state.completedRequests} requests`);
   }
 
-  if (toolNames.has("bash")) {
-    if (!toolResult) {
-      return {
+  const transition = (
+    action: SmokeModelAction,
+    phase: SmokeModelPhase,
+    validatedVenvResult = false,
+  ): SmokeModelTransition => ({
+    action,
+    state: { phase, completedRequests: state.completedRequests + 1 },
+    validatedVenvResult,
+  });
+  const expectedToolResult = (toolCallId: string): string => {
+    const matches = request.messages?.filter(
+      (message) => message.role === "tool" && message.tool_call_id === toolCallId,
+    ) ?? [];
+    if (matches.length !== 1) {
+      throw new Error(`native smoke expected exactly one tool result for ${toolCallId}, received ${matches.length}`);
+    }
+    return messageContentText(matches[0]?.content);
+  };
+
+  switch (state.phase) {
+    case "awaiting-parent-subagent-call": {
+      if (!toolNames.has("subagent")) {
+        throw new Error("native smoke parent request did not expose subagent");
+      }
+      return transition({
+        kind: "tool",
+        id: "call_native_stage",
+        name: "subagent",
+        arguments: JSON.stringify({
+          agent: "search",
+          task: "Run the native venv validation command with the bash tool and return a complete handoff.",
+        }),
+      }, "awaiting-stage-bash-call");
+    }
+    case "awaiting-stage-bash-call": {
+      if (!toolNames.has("bash")) {
+        throw new Error("native smoke stage request did not expose bash");
+      }
+      return transition({
         kind: "tool",
         id: "call_native_venv",
         name: "bash",
         arguments: JSON.stringify({ command: toolCommand, timeout: 60 }),
-      };
+      }, "awaiting-venv-tool-result");
     }
-    const content = messageContentText(toolResult.content);
-    if (!hasExactLine(content, VENV_SENTINEL)) {
-      throw new Error(`bash tool result did not contain an exact ${VENV_SENTINEL} line: ${content}`);
+    case "awaiting-venv-tool-result": {
+      const content = expectedToolResult("call_native_venv");
+      if (!hasExactLine(content, VENV_SENTINEL)) {
+        throw new Error(`bash tool result did not contain an exact ${VENV_SENTINEL} line: ${content}`);
+      }
+      return transition({ kind: "text", text: STAGE_COMPLETION }, "awaiting-subagent-tool-result", true);
     }
-    return { kind: "text", text: STAGE_COMPLETION };
+    case "awaiting-subagent-tool-result": {
+      const content = expectedToolResult("call_native_stage");
+      if (!isSuccessfulStageHandoff(content)) {
+        throw new Error(`subagent tool result did not contain a successful deterministic handoff: ${content}`);
+      }
+      return transition({ kind: "text", text: "Parent smoke run complete." }, "complete");
+    }
+    case "complete":
+      throw new Error("native smoke model sequence is already complete");
+    default:
+      state.phase satisfies never;
+      throw new Error("unknown native smoke model phase");
   }
-
-  throw new Error("native smoke request did not expose subagent or bash");
 }
