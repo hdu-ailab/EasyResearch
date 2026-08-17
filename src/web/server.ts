@@ -189,7 +189,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
       const sessions = await SessionManager.listAll(undefined);
       return toUserSessionSummaries(sessions);
     },
-    openSessionManager: (path) => SessionManager.open(path),
+    openSessionManager: async (path) => SessionManager.open(path),
   });
   const services: RouteServices = {
     webuiDist: WEBUI_DIST,

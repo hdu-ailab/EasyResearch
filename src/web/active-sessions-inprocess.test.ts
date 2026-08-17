@@ -22,6 +22,7 @@ class DirectAdapter implements SessionAdapter {
   async abort(): Promise<void> {}
   async setModel(): Promise<void> {}
   async setThinkingLevel(): Promise<void> {}
+  async setSessionName(): Promise<void> {}
   async getState(): Promise<SessionState> {
     return {
       sessionId: "direct-1",

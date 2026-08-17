@@ -132,6 +132,10 @@ export function clearAgentOverrides(sessionId: string): Promise<void> {
   return requestVoid(routes.clearAgentOverrides(sessionId), { method: "POST" });
 }
 
+export function renameSession(id: string, name: string): Promise<void> {
+  return requestVoid(routes.sessionName(id), json("PUT", { name }));
+}
+
 export function listDirectories(path: string): Promise<DirectoryEntryDto[]> {
   return requestJson(routes.directories(path), parseDirectories);
 }
