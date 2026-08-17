@@ -99,15 +99,16 @@ describe("createCompiledChildEnv", () => {
     expect(env.SECRET).toBe("kept");
   });
 
-  it("keeps the effective mixed-case path key consistent with PATH", () => {
+  it("emits one canonical PATH key for case-insensitive Windows environments", () => {
     const env = createCompiledChildEnv({
-      base: { Path: "/node:/bun" },
+      base: { Path: "/node", PATH: "/bun" },
       python: "/toolcache/python/bin/python",
       overrides: { SMOKE_OVERRIDE: "kept" },
     });
 
-    expect(env.Path).toBe("/toolcache/python/bin");
-    expect(env.PATH).toBe(env.Path);
+    const pathKeys = Object.keys(env).filter((key) => key.toUpperCase() === "PATH");
+    expect(pathKeys).toEqual(["PATH"]);
+    expect(env.PATH).toBe("/toolcache/python/bin");
     expect(env.SMOKE_OVERRIDE).toBe("kept");
   });
 

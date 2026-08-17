@@ -39,8 +39,7 @@ export function createCompiledChildEnv(options: {
   const pythonDir = dirname(options.python);
   for (const key of Object.keys(env)) {
     const normalized = key.toUpperCase();
-    if (normalized === "PATH") env[key] = pythonDir;
-    else if (PYTHON_CONTAMINATION_KEYS.has(normalized)) delete env[key];
+    if (normalized === "PATH" || PYTHON_CONTAMINATION_KEYS.has(normalized)) delete env[key];
   }
   env.PATH = pythonDir;
   env.PIP_RETRIES = "3";
