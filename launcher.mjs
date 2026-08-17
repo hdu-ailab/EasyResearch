@@ -7,7 +7,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
@@ -71,6 +71,16 @@ export function runLauncher(argv = process.argv.slice(2)) {
   return result.status ?? 1;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+function invokedAsMain() {
+  if (!process.argv[1]) return false;
+  const self = fileURLToPath(import.meta.url);
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(self);
+  } catch {
+    return resolve(process.argv[1]) === self;
+  }
+}
+
+if (invokedAsMain()) {
   process.exit(runLauncher());
 }
