@@ -6,10 +6,13 @@ import { spawnSync } from "node:child_process";
 import { TARGETS, platformBinaryName, platformPackageDir, repoPackageVersion } from "./build";
 import { validateNativeVersionOutput } from "./release";
 import {
+  FIRST_RUN_CEILING_MS,
   createCompiledChildEnv,
+  readTextFileWithRetry,
   resolveSmokePython,
   runVenvValidation,
   skillVenvPython,
+  settleProcess,
   writeVenvValidationScript,
 } from "./smoke-release-support";
 
@@ -35,10 +38,14 @@ const venvPython = skillVenvPython(agentDir, process.platform);
 const validationScript = join(root, "validate-easyresearch-venv.py");
 const firstRunStdoutPath = join(root, "first-run-stdout.txt");
 const firstRunStderrPath = join(root, "first-run-stderr.txt");
+const firstRunPidPath = join(root, "first-run-client.pid");
 writeVenvValidationScript(validationScript);
 let systemPythonVersionOutput = "not checked";
 let validationStdout = "not run";
 let validationStderr = "not run";
+let firstRunClientPid: number | undefined;
+let firstRunLaunchAttempted = false;
+let firstRunDeadline = 0;
 let modelRequests = 0;
 const modelServer = Bun.serve({
   port: 0,
@@ -106,10 +113,21 @@ function powershellQuote(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
 
-function run(args: string[], captureName: "first-run" | "shutdown"): { stdout: string; stderr: string } {
+function recordedFirstRunPid(): number | undefined {
+  if (!existsSync(firstRunPidPath)) return undefined;
+  try {
+    const pid = Number.parseInt(readFileSync(firstRunPidPath, "utf8").trim(), 10);
+    return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function run(args: string[], captureName: "first-run" | "shutdown"): { stdout: string; stderr: string; pid?: number } {
   const stdoutPath = captureName === "first-run" ? firstRunStdoutPath : join(root, `${captureName}-stdout.txt`);
   const stderrPath = captureName === "first-run" ? firstRunStderrPath : join(root, `${captureName}-stderr.txt`);
   const powershellErrorPath = join(root, `${captureName}-powershell-error.txt`);
+  const timeout = captureName === "first-run" ? FIRST_RUN_CEILING_MS : 180_000;
   let result: ReturnType<typeof spawnSync>;
   if (process.platform === "win32") {
     // Bun 1.3.14 spawnSync silently fails to start compiled executables on
@@ -119,12 +137,20 @@ function run(args: string[], captureName: "first-run" | "shutdown"): { stdout: s
     // Start-Process owns these capture paths so Node must not open them first.
     const nul = openSync("NUL", "w");
     try {
+      const taskkill = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe");
       const script = [
         "$ErrorActionPreference = 'Stop'",
+        "$process = $null",
         "try {",
-        `  Start-Process -FilePath ${powershellQuote(binary)} -ArgumentList @(${args.map(powershellQuote).join(", ")}) -WindowStyle Hidden -RedirectStandardOutput ${powershellQuote(stdoutPath)} -RedirectStandardError ${powershellQuote(stderrPath)}`,
+        `  $process = Start-Process -FilePath ${powershellQuote(binary)} -ArgumentList @(${args.map(powershellQuote).join(", ")}) -WindowStyle Hidden -RedirectStandardOutput ${powershellQuote(stdoutPath)} -RedirectStandardError ${powershellQuote(stderrPath)} -PassThru`,
+        ...(captureName === "first-run"
+          ? [`  Set-Content -LiteralPath ${powershellQuote(firstRunPidPath)} -Value $process.Id -Encoding ascii`]
+          : []),
         "  exit 0",
         "} catch {",
+        "  if ($null -ne $process) {",
+        `    & ${powershellQuote(taskkill)} /PID $($process.Id) /T /F | Out-Null`,
+        "  }",
         `  $_ | Out-File -FilePath ${powershellQuote(powershellErrorPath)} -Encoding utf8`,
         "  exit 99",
         "}",
@@ -132,7 +158,7 @@ function run(args: string[], captureName: "first-run" | "shutdown"): { stdout: s
       result = spawnSync(
         "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
         ["-NoProfile", "-NonInteractive", "-Command", script],
-        { env, stdio: ["ignore", nul, nul], timeout: 180_000 },
+        { env, stdio: ["ignore", nul, nul], timeout },
       );
     } finally {
       closeSync(nul);
@@ -141,7 +167,7 @@ function run(args: string[], captureName: "first-run" | "shutdown"): { stdout: s
     const stdoutFd = openSync(stdoutPath, "w");
     const stderrFd = openSync(stderrPath, "w");
     try {
-      result = spawnSync(binary, args, { env, stdio: ["ignore", stdoutFd, stderrFd], timeout: 180_000 });
+      result = spawnSync(binary, args, { env, stdio: ["ignore", stdoutFd, stderrFd], timeout });
     } finally {
       closeSync(stdoutFd);
       closeSync(stderrFd);
@@ -154,7 +180,47 @@ function run(args: string[], captureName: "first-run" | "shutdown"): { stdout: s
     const powershellError = process.platform === "win32" ? `\n${safeReadText(powershellErrorPath)}` : "";
     throw new Error(`${binary} ${args.join(" ")} failed (${result.status ?? "no status"}; ${cause}):\n${stdout}\n${stderr}${powershellError}`);
   }
-  return { stdout, stderr };
+  const pid = process.platform === "win32" && captureName === "first-run" ? recordedFirstRunPid() : undefined;
+  if (process.platform === "win32" && captureName === "first-run" && pid === undefined) {
+    throw new Error(`Windows first-run client did not record a valid PID at ${firstRunPidPath}`);
+  }
+  return { stdout, stderr, pid };
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function terminateWindowsProcessTree(pid: number): void {
+  const taskkill = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe");
+  const result = spawnSync(taskkill, ["/PID", String(pid), "/T", "/F"], {
+    env,
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  if (result.error || (result.status !== 0 && isProcessAlive(pid))) {
+    const cause = result.error ? `${result.error.name}: ${result.error.message}` : `status ${result.status ?? "unknown"}`;
+    throw new Error(`failed to terminate Windows first-run process tree ${pid} (${cause}):\n${result.stdout ?? ""}\n${result.stderr ?? ""}`);
+  }
+}
+
+async function settleWindowsFirstRun(terminateImmediately: boolean): Promise<void> {
+  if (process.platform !== "win32") return;
+  const pid = firstRunClientPid ?? recordedFirstRunPid();
+  if (pid === undefined) return;
+  firstRunClientPid = pid;
+  await settleProcess({
+    pid,
+    deadline: firstRunDeadline,
+    terminateImmediately,
+    isAlive: isProcessAlive,
+    terminateTree: terminateWindowsProcessTree,
+  });
 }
 
 function requireCommandUnavailable(command: "node" | "bun"): void {
@@ -217,7 +283,7 @@ async function requireOk(response: Response, label: string): Promise<any> {
   return text ? JSON.parse(text) : undefined;
 }
 
-function dumpServerLogs(): void {
+async function dumpServerLogs(): Promise<void> {
   console.log(`[smoke] system Python: ${systemPython}`);
   console.log(`[smoke] system Python --version: ${systemPythonVersionOutput}`);
   console.log(`[smoke] expected venv Python: ${venvPython}`);
@@ -227,7 +293,10 @@ function dumpServerLogs(): void {
   console.log(`[smoke] --- venv validation stderr (${validationStderr.length} bytes) ---`);
   console.log(validationStderr.slice(-4000));
   for (const capture of ["first-run-stdout.txt", "first-run-stderr.txt"]) {
-    const content = safeReadText(join(root, capture));
+    const content = await readTextFileWithRetry({
+      path: join(root, capture),
+      attempts: firstRunLaunchAttempted ? 10 : 1,
+    });
     console.log(`[smoke] --- ${capture} (${content.length} bytes) ---`);
     console.log(content.slice(-4000));
   }
@@ -252,8 +321,12 @@ function dumpServerLogs(): void {
   }
   console.log(`[smoke] agentDir files: ${agentFiles.length}`);
   if (existsSync(agentDir)) {
-    const topLevel = readdirSync(agentDir).filter((entry) => !agentFiles.includes(`/${entry}`));
-    console.log(`[smoke] agentDir dirs: ${topLevel.join(", ")}`);
+    try {
+      const topLevel = readdirSync(agentDir).filter((entry) => !agentFiles.includes(`/${entry}`));
+      console.log(`[smoke] agentDir dirs: ${topLevel.join(", ")}`);
+    } catch (error) {
+      console.log(`[smoke] failed to inspect agentDir top level: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
   for (const file of agentFiles.slice(0, 40)) console.log(`[smoke]   /agent${file}`);
   const cliError = join(agentDir, "cli-error.log");
@@ -319,9 +392,10 @@ try {
   const version = repoPackageVersion();
   if (!versionVerifiedByRunner) validateNativeVersionOutput(0, runVersion(), version, target.name);
   const treeBefore = treeFiles(root);
-  run(["--no-open", "--port", String(port)], "first-run");
+  firstRunDeadline = Date.now() + FIRST_RUN_CEILING_MS;
+  firstRunLaunchAttempted = true;
+  firstRunClientPid = run(["--no-open", "--port", String(port)], "first-run").pid;
   const materializedDir = join(agentDir, "bundled");
-  const firstRunDeadline = Date.now() + 180_000;
   while (Date.now() < firstRunDeadline) {
     if (existsSync(materializedDir)) break;
     await new Promise((resolve) => setTimeout(resolve, 500));
@@ -338,16 +412,14 @@ try {
   const bundledDir = join(agentDir, "bundled");
   if (!existsSync(bundledDir)) throw new Error("CLI did not materialize bundled resources (did the CLI actually run?)");
   const daemonBinary = join(agentDir, "bin", target.os[0] === "win32" ? "easyresearch-daemon.exe" : "easyresearch-daemon");
-  const daemonDeadline = Date.now() + 180_000;
-  while (Date.now() < daemonDeadline) {
+  while (Date.now() < firstRunDeadline) {
     if (existsSync(daemonBinary)) break;
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   if (!existsSync(daemonBinary)) throw new Error(`daemon binary copy missing: ${daemonBinary}`);
   const base = `http://127.0.0.1:${port}`;
   let status: Response | undefined;
-  const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
+  while (Date.now() < firstRunDeadline) {
     try {
       const probe = await fetch(`${base}/api/status`, { signal: AbortSignal.timeout(3_000) });
       if (probe.ok) {
@@ -361,6 +433,7 @@ try {
   }
   if (!status) throw new Error(`daemon did not become ready at ${base}`);
   await requireOk(status, "status probe");
+  await settleWindowsFirstRun(false);
   if (!existsSync(venvPython)) {
     throw new Error(`first-run skill venv missing interpreter: ${venvPython}`);
   }
@@ -433,7 +506,16 @@ try {
   }), "session resume");
   console.log(`[smoke] ${target.name} passed`);
 } catch (error) {
-  dumpServerLogs();
+  try {
+    await settleWindowsFirstRun(true);
+  } catch (settlementError) {
+    console.log(`[smoke] failed to settle Windows first-run client: ${settlementError instanceof Error ? settlementError.message : String(settlementError)}`);
+  }
+  try {
+    await dumpServerLogs();
+  } catch (dumpError) {
+    console.log(`[smoke] failed to dump smoke diagnostics: ${dumpError instanceof Error ? dumpError.message : String(dumpError)}`);
+  }
   throw error;
 } finally {
   try {

@@ -1,6 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, win32 } from "node:path";
+
+export const FIRST_RUN_CEILING_MS = 720_000;
+
+const PYTHON_CONTAMINATION_KEYS = new Set(["PYTHONPATH", "PYTHONHOME", "PYTHONUSERBASE"]);
 
 export interface ResolveSmokePythonOptions {
   explicit?: string;
@@ -33,7 +37,9 @@ export function createCompiledChildEnv(options: {
   const env = { ...options.base, ...options.overrides };
   const pythonDir = dirname(options.python);
   for (const key of Object.keys(env)) {
-    if (key.toLowerCase() === "path") env[key] = pythonDir;
+    const normalized = key.toUpperCase();
+    if (normalized === "PATH") env[key] = pythonDir;
+    else if (PYTHON_CONTAMINATION_KEYS.has(normalized)) delete env[key];
   }
   env.PATH = pythonDir;
   env.PIP_RETRIES = "3";
@@ -107,7 +113,7 @@ export function runVenvValidation(options: {
   const exists = options.exists ?? (options.spawn ? undefined : existsSync);
   if (exists && !exists(options.python)) failure("interpreter is missing");
 
-  const result = (options.spawn ?? spawnSync)(options.python, [options.script], {
+  const result = (options.spawn ?? spawnSync)(options.python, ["-I", options.script], {
     encoding: "utf8",
     timeout: 60_000,
   });
@@ -117,6 +123,73 @@ export function runVenvValidation(options: {
   if (result.status !== 0) failure(`failed with status ${result.status ?? "unknown"}`, stdout, stderr);
   if (!hasExactLine(stdout, VENV_SENTINEL)) failure(`did not emit ${VENV_SENTINEL}`, stdout, stderr);
   return { stdout, stderr };
+}
+
+/** Ensures the first-run writer exits before returning or reporting its deadline failure. */
+export async function settleProcess(options: {
+  pid: number;
+  deadline: number;
+  terminateImmediately?: boolean;
+  terminationGraceMs?: number;
+  pollIntervalMs?: number;
+  now?: () => number;
+  isAlive: (pid: number) => boolean;
+  terminateTree: (pid: number) => void;
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<"exited" | "terminated"> {
+  const now = options.now ?? Date.now;
+  const sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const pollIntervalMs = options.pollIntervalMs ?? 200;
+  const terminationGraceMs = options.terminationGraceMs ?? 30_000;
+  if (!options.isAlive(options.pid)) return "exited";
+
+  let terminated = false;
+  let exceededDeadline = false;
+  let terminationDeadline = 0;
+  const terminate = () => {
+    options.terminateTree(options.pid);
+    terminated = true;
+    terminationDeadline = now() + terminationGraceMs;
+  };
+
+  if (options.terminateImmediately) terminate();
+  while (options.isAlive(options.pid)) {
+    const current = now();
+    if (!terminated && current >= options.deadline) {
+      exceededDeadline = true;
+      terminate();
+    } else if (terminated && current >= terminationDeadline) {
+      throw new Error(`process ${options.pid} did not exit after tree termination`);
+    }
+    await sleep(pollIntervalMs);
+  }
+
+  if (exceededDeadline) {
+    throw new Error(`process ${options.pid} exceeded first-run deadline and was terminated`);
+  }
+  return terminated ? "terminated" : "exited";
+}
+
+export async function readTextFileWithRetry(options: {
+  path: string;
+  attempts?: number;
+  delayMs?: number;
+  read?: (path: string) => string;
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<string> {
+  const attempts = Math.max(1, options.attempts ?? 10);
+  const read = options.read ?? ((path) => readFileSync(path, "utf8"));
+  const sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  let cause = "unknown read failure";
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return read(options.path);
+    } catch (error) {
+      cause = error instanceof Error ? error.message : String(error);
+      if (attempt < attempts) await sleep(options.delayMs ?? 200);
+    }
+  }
+  return `[capture unavailable: ${cause}]`;
 }
 
 export function venvToolCommand(platform: NodeJS.Platform, scriptPath: string): string {
