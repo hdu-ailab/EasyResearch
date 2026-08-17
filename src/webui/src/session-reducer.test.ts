@@ -1506,6 +1506,30 @@ describe("session reducer", () => {
     } as AgentSessionEvent;
   }
 
+  it("keeps the session name from a snapshot and updates it on session_info_changed", () => {
+    const base = fromSnapshot({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready", sessionName: "Old name" },
+      messages: [],
+      subagents: [],
+    } as never);
+    expect(base.sessionName).toBe("Old name");
+
+    const named = reduceSessionEvent(base, { type: "session_info_changed", name: "New name" } as never);
+    expect(named.sessionName).toBe("New name");
+
+    const cleared = reduceSessionEvent(named, { type: "session_info_changed", name: undefined } as never);
+    expect(cleared.sessionName).toBeUndefined();
+  });
+
+  it("leaves the session name unset for unnamed snapshots", () => {
+    const state = fromSnapshot({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      messages: [],
+      subagents: [],
+    } as never);
+    expect(state.sessionName).toBeUndefined();
+  });
+
   it("sets retry state on auto_retry_start", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));

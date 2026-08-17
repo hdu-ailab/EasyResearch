@@ -74,6 +74,8 @@ export interface SessionViewState {
   retry: RetryView | null;
   /** Agent name when this session line is a `easyresearch:` subagent line. */
   subagentName?: string;
+  /** Pi session display name; unset falls back to the first-message title. */
+  sessionName?: string;
   /** Next value of the shared message/tool stream counter. */
   nextOrder: number;
   /** Key of the assistant message currently streaming; set at message_start,
@@ -309,6 +311,10 @@ function isToolResultMessage(message: UnknownMessage): boolean {
 
 export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
   const subagentName = subagentNameOf(snapshot);
+  const sessionName =
+    snapshot.session.sessionName !== undefined && snapshot.session.sessionName !== null
+      ? snapshot.session.sessionName
+      : undefined;
   const isStreaming = snapshot.session.isStreaming || snapshot.session.status === "running";
   const state: SessionViewState = {
     messages: [],
@@ -317,6 +323,7 @@ export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
     error: null,
     retry: null,
     subagentName,
+    ...(sessionName !== undefined ? { sessionName } : {}),
     nextOrder: 0,
   };
   const next = () => state.nextOrder++;
@@ -773,6 +780,10 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
         nextOrder: nextMessages.length > state.messages.length ? state.nextOrder + 1 : state.nextOrder,
         activeMessageKey: undefined,
       };
+    }
+    case "session_info_changed": {
+      const name = (event as { name?: unknown }).name;
+      return { ...state, sessionName: typeof name === "string" ? name : undefined };
     }
     case "auto_retry_start": {
       const { attempt, maxAttempts, delayMs, errorMessage } = event;
