@@ -5,6 +5,7 @@ import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   FIRST_RUN_CEILING_MS,
+  collectLaunchOutput,
   createCompiledChildEnv,
   readTextFileWithRetry,
   resolveSmokePython,
@@ -392,6 +393,42 @@ describe("readTextFileWithRetry", () => {
     expect(content).toContain("capture unavailable");
     expect(content).toContain("still locked");
     expect(reads).toBe(2);
+  });
+});
+
+describe("collectLaunchOutput", () => {
+  it("does not read captures for an asynchronous launch", () => {
+    const reads: string[] = [];
+
+    const output = collectLaunchOutput({
+      asynchronous: true,
+      stdoutPath: "/tmp/first-run-stdout.txt",
+      stderrPath: "/tmp/first-run-stderr.txt",
+      read: (path) => {
+        reads.push(path);
+        throw new Error("async capture is still owned by the client");
+      },
+    });
+
+    expect(output).toEqual({ stdout: "", stderr: "" });
+    expect(reads).toEqual([]);
+  });
+
+  it("reads both captures after a synchronous launch", () => {
+    const reads: string[] = [];
+
+    const output = collectLaunchOutput({
+      asynchronous: false,
+      stdoutPath: "/tmp/first-run-stdout.txt",
+      stderrPath: "/tmp/first-run-stderr.txt",
+      read: (path) => {
+        reads.push(path);
+        return path.endsWith("stdout.txt") ? "setup stdout" : "setup stderr";
+      },
+    });
+
+    expect(output).toEqual({ stdout: "setup stdout", stderr: "setup stderr" });
+    expect(reads).toEqual(["/tmp/first-run-stdout.txt", "/tmp/first-run-stderr.txt"]);
   });
 });
 

@@ -192,6 +192,19 @@ export async function readTextFileWithRetry(options: {
   return `[capture unavailable: ${cause}]`;
 }
 
+export function collectLaunchOutput(options: {
+  asynchronous: boolean;
+  stdoutPath: string;
+  stderrPath: string;
+  read: (path: string) => string;
+}): { stdout: string; stderr: string } {
+  if (options.asynchronous) return { stdout: "", stderr: "" };
+  return {
+    stdout: options.read(options.stdoutPath),
+    stderr: options.read(options.stderrPath),
+  };
+}
+
 export function venvToolCommand(platform: NodeJS.Platform, scriptPath: string): string {
   if (platform === "win32") {
     return `"%EASYRESEARCH_VENV%\\Scripts\\python.exe" "${scriptPath.replaceAll('"', '""')}"`;

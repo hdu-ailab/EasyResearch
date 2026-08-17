@@ -7,6 +7,7 @@ import { TARGETS, platformBinaryName, platformPackageDir, repoPackageVersion } f
 import { validateNativeVersionOutput } from "./release";
 import {
   FIRST_RUN_CEILING_MS,
+  collectLaunchOutput,
   createCompiledChildEnv,
   readTextFileWithRetry,
   resolveSmokePython,
@@ -173,8 +174,12 @@ function run(args: string[], captureName: "first-run" | "shutdown"): { stdout: s
       closeSync(stderrFd);
     }
   }
-  const stdout = safeReadText(stdoutPath);
-  const stderr = safeReadText(stderrPath);
+  const { stdout, stderr } = collectLaunchOutput({
+    asynchronous: process.platform === "win32",
+    stdoutPath,
+    stderrPath,
+    read: safeReadText,
+  });
   if (result.error || result.status !== 0) {
     const cause = result.error ? `${result.error.name}: ${result.error.message}` : "no spawn error";
     const powershellError = process.platform === "win32" ? `\n${safeReadText(powershellErrorPath)}` : "";
