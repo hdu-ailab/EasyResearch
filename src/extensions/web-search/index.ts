@@ -16,6 +16,9 @@ import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { createLogger } from "../../runtime/logger";
+
+const logger = createLogger("web-search");
 
 /**
  * ADR-031 (amended by ADR-038): the bundled web-search tool (registered as
@@ -376,6 +379,7 @@ export const webSearchTool = defineTool({
       );
 
       if (!results) {
+        logger.info("no results found", { query: params.query, site: params.site, time: params.time });
         return {
           content: [{ type: "text", text: "No results found. Try a shorter query or remove the site/time filter." }],
           details: { results: [], count: 0 },
@@ -390,6 +394,7 @@ export const webSearchTool = defineTool({
     } catch (error) {
       if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) throw abortError();
       const message = error instanceof Error ? error.message : String(error);
+      logger.error("search failed", { query: params.query, error: message });
       return {
         content: [
           {
