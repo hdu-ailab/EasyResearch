@@ -13,8 +13,8 @@ import {
 import type { ModelOption } from "../api/parsers";
 import { agentDescription, agentDisplayName, type Translate } from "../i18n/agents";
 import { useI18n } from "../i18n/useI18n";
-import { ThinkingLevelSelect, thinkingLevelsForModel } from "./ThinkingLevelSelect";
 import { SearchableSelect } from "./SearchableSelect";
+import { ThinkingLevelSelect, thinkingLevelsForModel } from "./ThinkingLevelSelect";
 
 export type AgentStatus = "idle" | "working" | "error";
 

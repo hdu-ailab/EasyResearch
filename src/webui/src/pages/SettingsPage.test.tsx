@@ -314,7 +314,9 @@ describe("SettingsPage", () => {
     );
     await user.click(screen.getByRole("button", { name: "Close editor" }));
     await openAgentConfig(user, "Paper Assistant");
-    expect(screen.getByRole("combobox", { name: "Select model for Paper Assistant" })).toHaveTextContent("openai/gpt-4o");
+    expect(screen.getByRole("combobox", { name: "Select model for Paper Assistant" })).toHaveTextContent(
+      "openai/gpt-4o",
+    );
     expect(screen.queryByRole("switch", { name: "Enable Paper Assistant" })).toBeNull();
   });
 

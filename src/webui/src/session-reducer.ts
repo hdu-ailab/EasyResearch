@@ -843,7 +843,15 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
         toolCallId: string;
         partialResult?: {
           content?: unknown;
-          details?: { subagent?: { agent?: unknown; step?: unknown; sessionId?: unknown; latestMessage?: unknown } };
+          details?: {
+            subagent?: {
+              agent?: unknown;
+              step?: unknown;
+              sessionId?: unknown;
+              latestMessage?: unknown;
+              event?: unknown;
+            };
+          };
         };
       };
       const subagent = partialResult?.details?.subagent;
@@ -871,7 +879,6 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
         const activity = subagent?.event
           ? applySubagentEventActivity(subagent.event as AgentSessionEvent, tool.latestActivity)
           : undefined;
-        const activityChanged = activity !== undefined || stepChanged;
         const effectiveAgent = agentName ?? tool.agentName;
         const effectiveSessionId = sessionId ?? (stepChanged ? undefined : tool.sessionId);
         const effectiveLatestMessage = latestMessage ?? (stepChanged ? undefined : tool.latestMessage);

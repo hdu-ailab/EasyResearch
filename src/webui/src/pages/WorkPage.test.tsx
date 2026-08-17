@@ -1797,7 +1797,7 @@ describe("WorkPage", () => {
     await screen.findByText("starting research");
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
-    const searchCombo = within(region).getAllByRole("combobox")[2];
+    const searchCombo = within(region).getAllByRole("combobox")[2]!;
     await user.click(searchCombo);
     await user.click(screen.getByRole("option", { name: "Default model" }));
     await waitFor(() => expect(api.setAgentModel).toHaveBeenCalledWith("s1", "search", null));
@@ -1809,7 +1809,7 @@ describe("WorkPage", () => {
     await screen.findByText("starting research");
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
-    const searchCombo = within(region).getAllByRole("combobox")[2];
+    const searchCombo = within(region).getAllByRole("combobox")[2]!;
     await user.click(searchCombo);
     await user.click(screen.getByRole("option", { name: "openai/gpt-4o" }));
     await waitFor(() => expect(api.setAgentModel).toHaveBeenCalledWith("s1", "search", "openai/gpt-4o"));

@@ -92,7 +92,12 @@ export function SearchableSelect({
 
   const openPanel = () => {
     setQuery("");
-    setActiveIndex(Math.max(0, options.findIndex((option) => option.value === value)));
+    setActiveIndex(
+      Math.max(
+        0,
+        options.findIndex((option) => option.value === value),
+      ),
+    );
     setOpen(true);
   };
 
@@ -147,8 +152,9 @@ export function SearchableSelect({
             <Search size={12} className="pointer-events-none absolute left-2 text-v2-icon-icon-muted" aria-hidden />
             <input
               ref={inputRef}
-              role="searchbox"
+              type="search"
               aria-label="Search"
+              placeholder={searchPlaceholder}
               value={query}
               onChange={(event) => {
                 setQuery(event.target.value);
@@ -165,7 +171,8 @@ export function SearchableSelect({
                   });
                 } else if (event.key === "Enter") {
                   event.preventDefault();
-                  if (shown.length > 0) choose(shown[Math.min(activeIndex, shown.length - 1)]);
+                  const target = shown[Math.min(activeIndex, shown.length - 1)];
+                  if (target !== undefined) choose(target);
                 } else if (event.key === "Escape") {
                   event.preventDefault();
                   setOpen(false);
@@ -177,26 +184,24 @@ export function SearchableSelect({
           {shown.length === 0 ? (
             <p className="px-2 py-1 text-[12px] text-v2-text-text-faint">{emptyMessage ?? "No matches"}</p>
           ) : (
-            <ul>
-              {shown.map((option, index) => (
-                <li
-                  key={option.value}
-                  id={panelId !== undefined ? `${panelId}-${option.value}` : undefined}
-                  role="option"
-                  aria-selected={activeIndex === index}
-                  className={`cursor-pointer rounded-md px-2 py-1 text-[12px] text-v2-text-text-base ${
-                    activeIndex === index ? "bg-v2-blue-100" : ""
-                  }`}
-                  onMouseEnter={() => setActiveIndex(index)}
-                  onMouseDown={(event) => {
-                    event.preventDefault();
-                    choose(option);
-                  }}
-                >
-                  {option.label}
-                </li>
-              ))}
-            </ul>
+            shown.map((option, index) => (
+              <div
+                key={option.value}
+                role="option"
+                tabIndex={-1}
+                aria-selected={activeIndex === index}
+                className={`cursor-pointer rounded-md px-2 py-1 text-[12px] text-v2-text-text-base ${
+                  activeIndex === index ? "bg-v2-blue-100" : ""
+                }`}
+                onMouseEnter={() => setActiveIndex(index)}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  choose(option);
+                }}
+              >
+                {option.label}
+              </div>
+            ))
           )}
         </div>
       ) : null}

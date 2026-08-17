@@ -317,7 +317,7 @@ export const zhCN: Record<MessageKey, string> = {
   "settings.agents.saveSkill": "保存技能",
   "settings.agents.skillsTitle": "技能",
   "settings.agents.editSkill": "编辑技能 {name}",
-"settings.agents.inherit": "继承（论文助手模型）",
+  "settings.agents.inherit": "继承（论文助手模型）",
   "settings.agents.selectModelFor": "选择模型：",
   "settings.agents.model": "模型",
   "settings.agents.selectThinkingFor": "选择思考强度：",
