@@ -32,11 +32,13 @@ export interface SetupResult {
   reason?: string;
 }
 
+export const VENV_PACKAGES = ["pip", "markitdown", "arxiv", "ddgr"];
+
 export function setupSkillVenv(deps: SetupDeps): SetupResult {
   const { venvDir, run, log, platform } = deps;
   const python = venvPythonPath(venvDir, platform);
   if (existsSync(python)) {
-    const result = run(python, ["-m", "pip", "install", "--upgrade", "pip", "markitdown", "arxiv"]);
+    const result = run(python, ["-m", "pip", "install", "--upgrade", ...VENV_PACKAGES]);
     if (result.status !== 0) return { venvDir, success: false, reason: `pip install failed: ${result.stderr}` };
     return { venvDir, success: true };
   }
@@ -46,7 +48,7 @@ export function setupSkillVenv(deps: SetupDeps): SetupResult {
   }
   const create = run(pythonCmd, ["-m", "venv", venvDir]);
   if (create.status !== 0) return { venvDir, success: false, reason: `venv creation failed: ${create.stderr}` };
-  const install = run(python, ["-m", "pip", "install", "--upgrade", "pip", "markitdown", "arxiv"]);
+  const install = run(python, ["-m", "pip", "install", "--upgrade", ...VENV_PACKAGES]);
   if (install.status !== 0) return { venvDir, success: false, reason: `pip install failed: ${install.stderr}` };
   log(`Skill venv ready at ${venvDir}`);
   return { venvDir, success: true };
@@ -83,12 +85,12 @@ export function ensureSkillVenv(agentDir: string, options: EnsureVenvOptions = {
   const python = venvPythonPath(venvDir);
 
   if (existsSync(python)) {
-    const check = run(python, ["-c", "import markitdown, arxiv"]);
+    const check = run(python, ["-c", "import markitdown, arxiv, ddgr"]);
     if (check.status === 0) {
       log(`Skill venv already ready: ${venvDir}`);
       return { venvDir, success: true };
     }
-    log("Skill venv missing packages — reinstalling markitdown + arxiv…");
+    log("Skill venv missing packages — reinstalling markitdown + arxiv + ddgr…");
   } else {
     log(`First run: creating skill Python venv at ${venvDir}`);
   }
@@ -96,7 +98,7 @@ export function ensureSkillVenv(agentDir: string, options: EnsureVenvOptions = {
   const result = setupSkillVenv({ venvDir, run, log });
   if (!result.success) {
     log(
-      `Skill venv setup skipped: ${result.reason}. PDF conversion and arXiv SDK features will fall back to system tools. Fix with: python3 -m venv "${venvDir}" && "${python}" -m pip install markitdown arxiv`,
+      `Skill venv setup skipped: ${result.reason}. PDF conversion, arXiv SDK, and web-search (ddgr) features will fall back to system tools. Fix with: python3 -m venv "${venvDir}" && "${python}" -m pip install markitdown arxiv ddgr`,
     );
   }
   return result;

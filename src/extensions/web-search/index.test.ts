@@ -7,18 +7,22 @@ vi.mock("../../runtime/logger", () => ({
 
 import {
   COLLAPSED_LINE_MAX_CHARS,
+  DDGR_INSTALL_HINT,
+  buildDdgrArgs,
   compactLine,
-  decodeResultUrl,
   formatResults,
-  looksBlocked,
-  parseResults,
+  parseDdgrJson,
+  requestSearch,
+  resolveDdgrCommand,
   serialize,
   textContent,
   truncateOutput,
   webSearchTool,
+  type SearchResult,
+  type SpawnFn,
 } from "./index";
 
-describe("search tool definition (ADR-031 as amended by ADR-038)", () => {
+describe("search tool definition (ADR-031 as amended by ADR-038/079)", () => {
   it("is named web-search", () => {
     expect(webSearchTool.name).toBe("web-search");
   });
@@ -39,64 +43,144 @@ describe("search tool definition (ADR-031 as amended by ADR-038)", () => {
   });
 });
 
-describe("parseResults", () => {
-  it("extracts titles, decoded URLs and abstracts from DuckDuckGo HTML", () => {
-    const html = `
-      <html><body>
-        <div class="links_main">
-          <h2 class="result__title"><a href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fa&rut=x">Example &amp; Title</a></h2>
-          <a class="result__snippet">Some  <b>abstract</b>   text</a>
-        </div>
-        <div class="links_main">
-          <h2 class="result__title"><a href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fb&rut=y">Second result</a></h2>
-          <a class="result__snippet">Second abstract</a>
-        </div>
-        <div class="links_main">
-          <h2 class="result__title"><a href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fc&rut=z">Third result</a></h2>
-          <a class="result__snippet">Third abstract</a>
-        </div>
-      </body></html>`;
-
-    const results = parseResults(html, 2);
-    expect(results).toHaveLength(2);
-    expect(results[0]).toEqual({
-      title: "Example & Title",
-      url: "https://example.com/a",
-      abstract: "Some abstract text",
-    });
-    expect(results[1]!.url).toBe("https://example.com/b");
+describe("buildDdgrArgs", () => {
+  it("uses --json with num and no --noua when masked", () => {
+    expect(buildDdgrArgs({ query: "hello world", num: 5 }, true)).toEqual(["--json", "-n", "5", "hello world"]);
   });
 
-  it("returns an empty array for HTML without results", () => {
-    expect(parseResults("<html><body>nothing here</body></html>", 5)).toEqual([]);
+  it("adds --noua for the unmasked run", () => {
+    const argv = buildDdgrArgs({ query: "hi", num: 5 }, false);
+    expect(argv).toContain("--noua");
+    expect(argv).not.toContain("-w");
+  });
+
+  it("maps site and time filters, normalizing the site to a bare domain", () => {
+    const argv = buildDdgrArgs(
+      { query: "q", num: 3, site: "https://github.com/foo/bar", time: "m" },
+      false,
+    );
+    expect(argv).toContain("-w");
+    expect(argv).toContain("github.com");
+    expect(argv).toContain("-t");
+    expect(argv).toContain("m");
+  });
+
+  it("keeps the query intact when no filters are present", () => {
+    expect(buildDdgrArgs({ query: "a b c", num: 10 }, true)).toEqual(["--json", "-n", "10", "a b c"]);
   });
 });
 
-describe("decodeResultUrl", () => {
-  it("unwraps the uddg parameter", () => {
-    expect(decodeResultUrl("//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com&rut=1")).toBe(
-      "https://example.com",
+describe("parseDdgrJson", () => {
+  it("parses ddgr JSON results", () => {
+    const expected: SearchResult[] = [{ title: "T", url: "https://u", abstract: "A" }];
+    expect(parseDdgrJson(JSON.stringify(expected))).toEqual(expected);
+  });
+
+  it("returns an empty array for an empty result set", () => {
+    expect(parseDdgrJson("[]")).toEqual([]);
+  });
+
+  it("returns undefined for unparseable or malformed output", () => {
+    expect(parseDdgrJson("not json")).toBeUndefined();
+    expect(parseDdgrJson('{"a":1}')).toBeUndefined();
+    expect(parseDdgrJson('[{"title":1,"url":"u","abstract":"a"}]')).toBeUndefined();
+  });
+});
+
+describe("resolveDdgrCommand", () => {
+  it("prefers the venv binary on posix", () => {
+    const exists = (path: string) => path === "/agent/venv/bin/ddgr";
+    expect(resolveDdgrCommand("/agent", "linux", exists)).toBe("/agent/venv/bin/ddgr");
+  });
+
+  it("uses the Scripts layout on win32", () => {
+    const exists = (path: string) => path.endsWith("ddgr.exe");
+    expect(resolveDdgrCommand("C:\\agent", "win32", exists)!.replace(/\\/g, "/")).toBe(
+      "C:/agent/venv/Scripts/ddgr.exe",
     );
   });
 
-  it("keeps non-uddg URLs as-is", () => {
-    expect(decodeResultUrl("https://example.com/direct")).toBe("https://example.com/direct");
+  it("returns undefined when the venv binary is missing", () => {
+    expect(resolveDdgrCommand("/agent", "linux", () => false)).toBeUndefined();
   });
 });
 
-describe("looksBlocked", () => {
-  it("flags HTTP 202", () => {
-    expect(looksBlocked(202, "anything")).toBe(true);
+describe("requestSearch", () => {
+  function jsonResults(results: SearchResult[]): string {
+    return JSON.stringify(results);
+  }
+
+  it("returns results from the first unmasked run", async () => {
+    const calls: Array<{ args: string[]; command: string }> = [];
+    const spawnFn: SpawnFn = async (command, args) => {
+      calls.push({ command, args });
+      return {
+        status: 0,
+        stdout: jsonResults([{ title: "T", url: "https://u", abstract: "A" }]),
+        stderr: "",
+      };
+    };
+    const results = await requestSearch("ddgr", { query: "q", num: 5 }, undefined, undefined, spawnFn);
+    expect(results).toEqual([{ title: "T", url: "https://u", abstract: "A" }]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.args).toContain("--noua");
   });
 
-  it("flags challenge/captcha markers", () => {
-    expect(looksBlocked(200, "Please verify you are human")).toBe(true);
-    expect(looksBlocked(200, "unusual traffic detected")).toBe(true);
+  it("falls back to the masked browser-UA run when the plain run fails", async () => {
+    const calls: string[][] = [];
+    const spawnFn: SpawnFn = async (_command, args) => {
+      calls.push(args);
+      if (calls.length === 1) return { status: 1, stdout: "", stderr: "DuckDuckGo is blocking us" };
+      return { status: 0, stdout: jsonResults([{ title: "T", url: "https://u", abstract: "A" }]), stderr: "" };
+    };
+    const results = await requestSearch("ddgr", { query: "q", num: 5 }, undefined, undefined, spawnFn);
+    expect(results).toHaveLength(1);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toContain("--noua");
+    expect(calls[1]).not.toContain("--noua");
   });
 
-  it("passes normal responses", () => {
-    expect(looksBlocked(200, "<div class='links_main'>ok</div>")).toBe(false);
-    expect(looksBlocked(503, "down")).toBe(false);
+  it("treats an empty JSON result set as no results after one run", async () => {
+    const spawnFn: SpawnFn = async () => ({ status: 0, stdout: "[]", stderr: "" });
+    const results = await requestSearch("ddgr", { query: "q", num: 5 }, undefined, undefined, spawnFn);
+    expect(results).toBeNull();
+  });
+
+  it("counts one failure per attempt when both UA modes fail and throws after three attempts", async () => {
+    const calls: string[][] = [];
+    const spawnFn: SpawnFn = async (_command, args) => {
+      calls.push(args);
+      return { status: 1, stdout: "", stderr: "blocked" };
+    };
+    await expect(
+      requestSearch("ddgr", { query: "q", num: 5 }, undefined, undefined, spawnFn, [0, 0, 0]),
+    ).rejects.toThrow(/3 serial attempts failed/);
+    expect(calls).toHaveLength(6);
+    expect(calls.filter((args) => args.includes("--noua"))).toHaveLength(3);
+    expect(calls.filter((args) => !args.includes("--noua"))).toHaveLength(3);
+  });
+
+  it("retries the masked run when the plain run produces unparseable output", async () => {
+    const calls: string[][] = [];
+    const spawnFn: SpawnFn = async (_command, args) => {
+      calls.push(args);
+      if (calls.length === 1) return { status: 0, stdout: "garbage", stderr: "" };
+      return { status: 0, stdout: jsonResults([{ title: "T", url: "https://u", abstract: "A" }]), stderr: "" };
+    };
+    const results = await requestSearch("ddgr", { query: "q", num: 5 }, undefined, undefined, spawnFn);
+    expect(results).toHaveLength(1);
+    expect(calls).toHaveLength(2);
+  });
+
+  it("bails out with an install hint when ddgr is missing (ENOENT)", async () => {
+    const spawnFn: SpawnFn = async () => {
+      const error = new Error("spawn ddgr ENOENT") as NodeJS.ErrnoException;
+      error.code = "ENOENT";
+      throw error;
+    };
+    await expect(requestSearch("ddgr", { query: "q", num: 5 }, undefined, undefined, spawnFn)).rejects.toThrow(
+      DDGR_INSTALL_HINT,
+    );
   });
 });
 

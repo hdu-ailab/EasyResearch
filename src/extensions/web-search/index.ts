@@ -8,29 +8,37 @@ import {
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { load } from "cheerio";
+import { Text } from "@earendil-works/pi-tui";
+import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdtemp, writeFile } from "node:fs/promises";
-import https from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gunzipSync } from "node:zlib";
-import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { createLogger } from "../../runtime/logger";
+import { getAgentDir } from "../../runtime/pi-import";
 
 const logger = createLogger("web-search");
 
 /**
- * ADR-031 (amended by ADR-038): the bundled web-search tool (registered as
- * `web-search`), ported verbatim from the upstream Pi duckduckgo-search
- * extension (the user's `~/.pi` copy is the sole source). Registration happens
- * in the two bundled extension surfaces (assistant + subagent); pure
- * helpers are exported for tests.
+ * ADR-079: the bundled web-search tool (registered as `web-search`) wraps the
+ * Python `ddgr` CLI installed in the first-run skill venv (`<agentDir>/venv`,
+ * see `src/setup-venv.ts`, ADR-071). Each attempt first runs ddgr with
+ * `--noua` (no User-Agent); when that fails it retries the same attempt with
+ * ddgr's default browser User-Agent; only when both fail is the attempt
+ * counted and the 0/5s/5s retry loop continues. The agent-facing contract
+ * (tool name, parameters, result text format, details) is unchanged from
+ * ADR-031/038; the upstream `~/.pi` duckduckgo-search extension is not
+ * synced. Registration happens in the two bundled extension surfaces
+ * (assistant + subagent); pure helpers are exported for tests.
  */
 export const DEFAULT_RESULT_COUNT = 5;
 export const COLLAPSED_LINE_MAX_CHARS = 200;
 export const RETRY_DELAYS_MS = [0, 5_000, 5_000] as const;
 export const REQUEST_TIMEOUT_MS = 30_000;
+
+export const DDGR_INSTALL_HINT =
+  "web-search requires the ddgr CLI, which was not found. Initialize the EasyResearch skill venv by running easyresearch once, or install ddgr manually and add it to PATH (pip install ddgr, see https://github.com/jarun/ddgr).";
 
 let searchQueue: Promise<void> = Promise.resolve();
 
@@ -115,147 +123,159 @@ export async function serialize<T>(operation: () => Promise<T>, signal?: AbortSi
   }
 }
 
-export function decodeResultUrl(rawUrl: string): string {
+/**
+ * Locate ddgr inside the skill venv (`<agentDir>/venv`, ADR-071/079). Falls
+ * back to a bare `ddgr` on PATH when the venv binary is absent, so the tool
+ * works as soon as ddgr is installable anywhere.
+ */
+export function resolveDdgrCommand(
+  agentDir: string,
+  platform: NodeJS.Platform = process.platform,
+  exists: (path: string) => boolean = existsSync,
+): string | undefined {
+  const bin =
+    platform === "win32"
+      ? join(agentDir, "venv", "Scripts", "ddgr.exe")
+      : join(agentDir, "venv", "bin", "ddgr");
+  return exists(bin) ? bin : undefined;
+}
+
+/**
+ * Build the ddgr argv. `masked` false adds `--noua` (no User-Agent); `masked`
+ * true lets ddgr send its default browser User-Agent. `--json` implies `--np`
+ * (non-interactive) and prints the results JSON to stdout.
+ */
+export function buildDdgrArgs(args: SearchArgs, masked: boolean): string[] {
+  const argv = ["--json", "-n", String(args.num)];
+  if (!masked) argv.push("--noua");
+  if (args.site) argv.push("-w", args.site.replace(/^https?:\/\//, "").replace(/\/.*$/, ""));
+  if (args.time) argv.push("-t", args.time);
+  argv.push(args.query);
+  return argv;
+}
+
+/** Parse ddgr `--json` output (`[{title,url,abstract}, …]`); undefined on unparseable or malformed output. */
+export function parseDdgrJson(stdout: string): SearchResult[] | undefined {
   try {
-    const url = new URL(rawUrl, "https://duckduckgo.com");
-    return url.searchParams.get("uddg") || url.href;
+    const parsed: unknown = JSON.parse(stdout);
+    if (!Array.isArray(parsed)) return undefined;
+    const results: SearchResult[] = [];
+    for (const raw of parsed) {
+      if (typeof raw !== "object" || raw === null) return undefined;
+      const item = raw as Record<string, unknown>;
+      if (typeof item.title !== "string" || typeof item.url !== "string" || typeof item.abstract !== "string") {
+        return undefined;
+      }
+      results.push({ title: item.title, url: item.url, abstract: item.abstract });
+    }
+    return results;
   } catch {
-    return rawUrl;
+    return undefined;
   }
 }
 
-export function parseResults(html: string, limit: number): SearchResult[] {
-  const $ = load(html);
-  const results: SearchResult[] = [];
+export type SpawnResult = { status: number; stdout: string; stderr: string };
+export type SpawnFn = (
+  command: string,
+  args: string[],
+  options: { timeoutMs: number; signal?: AbortSignal },
+) => Promise<SpawnResult>;
 
-  $(".links_main").each((_, element) => {
-    if (results.length >= limit) return false;
-
-    const link = $(element).find("h2.result__title a").first();
-    const rawUrl = link.attr("href");
-    if (!rawUrl) return;
-
-    results.push({
-      title: link.text().replace(/\s+/g, " ").trim(),
-      url: decodeResultUrl(rawUrl),
-      abstract: $(element)
-        .find("a.result__snippet")
-        .first()
-        .text()
-        .replace(/\s+/g, " ")
-        .trim(),
-    });
-  });
-
-  return results;
-}
-
-export function looksBlocked(status: number, html: string): boolean {
-  return (
-    status === 202 ||
-    /captcha|anomaly-modal|challenge-form|unusual (?:activity|traffic)|verify (?:you are|that you are) human/i.test(
-      html,
-    )
-  );
-}
-
-export function fetchHtml(
-  form: URLSearchParams,
-  signal?: AbortSignal,
-): Promise<{ status: number; html: string }> {
-  throwIfAborted(signal);
-  const body = form.toString();
-
+/** Spawn ddgr with a utf-8 stdout (ddgr refuses non-utf-8 encodings), 30s timeout and abort support. */
+export function realSpawn(
+  command: string,
+  args: string[],
+  options: { timeoutMs: number; signal?: AbortSignal },
+): Promise<SpawnResult> {
   return new Promise((resolve, reject) => {
-    const request = https.request(
-      {
-        hostname: "html.duckduckgo.com",
-        port: 443,
-        path: "/html",
-        method: "POST",
-        agent: false,
-        signal,
-        headers: {
-          "Accept-Encoding": "gzip",
-          "User-Agent": "",
-          DNT: "1",
-          "Content-Type": "application/x-www-form-urlencoded",
-          "Content-Length": Buffer.byteLength(body),
-        },
-      },
-      (response) => {
-        const chunks: Buffer[] = [];
-        response.on("data", (chunk: Buffer) => chunks.push(chunk));
-        response.on("error", reject);
-        response.on("end", () => {
-          try {
-            let content = Buffer.concat(chunks);
-            if (response.headers["content-encoding"] === "gzip") content = gunzipSync(content);
-            resolve({ status: response.statusCode || 0, html: content.toString("utf8") });
-          } catch (error) {
-            reject(error);
-          }
-        });
-      },
-    );
-
-    request.setTimeout(REQUEST_TIMEOUT_MS, () => {
-      request.destroy(new Error(`request timed out after ${REQUEST_TIMEOUT_MS / 1000} seconds`));
+    const child = spawn(command, args, { env: { ...process.env, PYTHONIOENCODING: "utf-8" } });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      stdout += chunk;
     });
-    request.on("error", reject);
-    request.end(body);
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+
+    const onAbort = () => {
+      child.kill();
+      reject(abortError());
+    };
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error(`ddgr timed out after ${options.timeoutMs / 1000} seconds`));
+    }, options.timeoutMs);
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      options.signal?.removeEventListener("abort", onAbort);
+    };
+
+    child.on("error", (error) => {
+      cleanup();
+      reject(error);
+    });
+    child.on("close", (code) => {
+      cleanup();
+      resolve({ status: code ?? 1, stdout, stderr });
+    });
   });
 }
 
 export async function requestSearch(
+  command: string,
   args: SearchArgs,
   signal?: AbortSignal,
   onAttempt?: (attempt: number) => void,
+  spawnFn: SpawnFn = realSpawn,
+  delays: readonly number[] = RETRY_DELAYS_MS,
 ): Promise<SearchResult[] | null> {
-  const query = args.site
-    ? `${args.query} site:${args.site.replace(/^https?:\/\//, "").replace(/\/.*$/, "")}`
-    : args.query;
-  const form = new URLSearchParams({
-    q: query,
-    b: "",
-    df: args.time || "",
-    kf: "-1",
-    kh: "1",
-    kl: "us-en",
-    kp: "1",
-    k1: "-1",
-  });
-
   let lastError = "DuckDuckGo returned no usable results";
-  for (let attempt = 0; attempt < RETRY_DELAYS_MS.length; attempt++) {
-    await sleep(RETRY_DELAYS_MS[attempt]!, signal);
+  let failedAttempts = 0;
+  for (let attempt = 0; attempt < delays.length; attempt++) {
+    await sleep(delays[attempt]!, signal);
     throwIfAborted(signal);
     onAttempt?.(attempt + 1);
 
-    try {
-      const response = await fetchHtml(form, signal);
-
-      if (looksBlocked(response.status, response.html)) {
-        lastError = `DuckDuckGo blocked attempt ${attempt + 1} with HTTP ${response.status}`;
-        continue;
+    // Plain (no User-Agent) first; masked (browser User-Agent) only when the
+    // plain run failed. Only when both fail is the attempt counted as failed.
+    for (let masked = 0; masked <= 1; masked++) {
+      const ua = masked ? "browser UA" : "plain UA";
+      try {
+        const response = await spawnFn(command, buildDdgrArgs(args, masked === 1), {
+          timeoutMs: REQUEST_TIMEOUT_MS,
+          signal,
+        });
+        if (response.status !== 0) {
+          lastError = `DuckDuckGo request failed (attempt ${attempt + 1}, ${ua}): ddgr exited with ${response.status}${response.stderr.trim() ? `: ${compactLine(response.stderr.trim())}` : ""}`;
+          continue;
+        }
+        const results = parseDdgrJson(response.stdout);
+        if (results === undefined) {
+          lastError = `DuckDuckGo returned an unrecognized response (attempt ${attempt + 1}, ${ua})`;
+          continue;
+        }
+        if (results.length > 0) return results;
+        return null;
+      } catch (error) {
+        if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) throw abortError();
+        if (error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+          throw new Error(DDGR_INSTALL_HINT);
+        }
+        lastError = `DuckDuckGo request failed (attempt ${attempt + 1}, ${ua}): ${error instanceof Error ? error.message : String(error)}`;
       }
-      if (response.status < 200 || response.status >= 300) {
-        lastError = `DuckDuckGo returned HTTP ${response.status}`;
-        continue;
-      }
-
-      const results = parseResults(response.html, args.num);
-      if (results.length > 0) return results;
-      if (/No results\./i.test(response.html)) return null;
-
-      lastError = `DuckDuckGo returned an empty or unrecognized response on attempt ${attempt + 1}`;
-    } catch (error) {
-      if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) throw abortError();
-      lastError = `DuckDuckGo request failed: ${error instanceof Error ? error.message : String(error)}`;
     }
+    failedAttempts += 1;
   }
 
-  throw new Error(`${lastError}. Three serial attempts failed.`);
+  throw new Error(
+    `${lastError}. ${failedAttempts} serial attempt${failedAttempts === 1 ? "" : "s"} failed.`,
+  );
 }
 
 export function formatResults(results: SearchResult[]): string {
@@ -358,9 +378,11 @@ export const webSearchTool = defineTool({
   },
   async execute(_toolCallId, params, signal, onUpdate) {
     try {
+      const command = resolveDdgrCommand(getAgentDir()) ?? "ddgr";
       const results = await serialize(
         () =>
           requestSearch(
+            command,
             {
               query: params.query,
               num: params.num ?? DEFAULT_RESULT_COUNT,
@@ -395,13 +417,12 @@ export const webSearchTool = defineTool({
       if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) throw abortError();
       const message = error instanceof Error ? error.message : String(error);
       logger.error("search failed", { query: params.query, error: message });
+      const text =
+        message === DDGR_INSTALL_HINT
+          ? DDGR_INSTALL_HINT
+          : `Search failed: ${message}\nDuckDuckGo is temporarily unavailable; use another search method if one is available.`;
       return {
-        content: [
-          {
-            type: "text",
-            text: `Search failed: ${message}\nDuckDuckGo is temporarily unavailable; use another search method if one is available.`,
-          },
-        ],
+        content: [{ type: "text", text }],
         details: { error: message },
       };
     }

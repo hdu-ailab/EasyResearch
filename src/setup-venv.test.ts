@@ -49,7 +49,7 @@ describe("setupSkillVenv", () => {
     expect(result.reason).toMatch(/python/i);
   });
 
-  it("creates venv then installs markitdown and arxiv on success", () => {
+  it("creates venv then installs venv packages on success", () => {
     const venvDir = tempVenvDir();
     const python = venvPythonPath(venvDir, "linux");
     const calls: string[][] = [];
@@ -63,7 +63,7 @@ describe("setupSkillVenv", () => {
     const result = setupSkillVenv({ venvDir, run, log: () => {} });
     expect(result.success).toBe(true);
     expect(calls).toContainEqual(["python3", "--version"]);
-    expect(calls).toContainEqual([python, "-m", "pip", "install", "--upgrade", "pip", "markitdown", "arxiv"]);
+    expect(calls).toContainEqual([python, "-m", "pip", "install", "--upgrade", "pip", "markitdown", "arxiv", "ddgr"]);
   });
 
   it("skips venv creation when venv python already exists", () => {
@@ -105,7 +105,7 @@ describe("ensureSkillVenv", () => {
     writeFileSync(python, "fake", "utf8");
     let pipCalls = 0;
     const run = fakeRun((command, args) => {
-      if (args.join(" ") === "-c import markitdown, arxiv") return 0;
+      if (args.join(" ") === "-c import markitdown, arxiv, ddgr") return 0;
       pipCalls += 1;
       return 0;
     });
@@ -121,7 +121,7 @@ describe("ensureSkillVenv", () => {
     writeFileSync(python, "fake", "utf8");
     let pipCalls = 0;
     const run = fakeRun((command, args) => {
-      if (args.join(" ") === "-c import markitdown, arxiv") return 1;
+      if (args.join(" ") === "-c import markitdown, arxiv, ddgr") return 1;
       pipCalls += 1;
       return 0;
     });
