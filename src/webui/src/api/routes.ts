@@ -22,6 +22,7 @@ export const routes = {
   effectiveThinking: (sessionId: string) => `${session(sessionId)}/agents/effective-thinking`,
   agentThinking: (sessionId: string, agentName: string) =>
     `${session(sessionId)}/agents/${encodeURIComponent(agentName)}/thinking`,
+  clearAgentOverrides: (sessionId: string) => `${session(sessionId)}/agent-overrides/clear`,
   directories: (path: string) => `${API_ROOT}/directories?${new URLSearchParams({ path }).toString()}`,
   createDirectory: () => `${API_ROOT}/directories`,
   entries: (path: string) => `${API_ROOT}/entries?${new URLSearchParams({ path }).toString()}`,

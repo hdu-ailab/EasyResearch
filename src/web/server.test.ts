@@ -196,6 +196,7 @@ describe("web routes", () => {
       listModels: async () => [],
       effectiveModels: async () => [],
       setAgentModel: async () => {},
+      clearAgentOverrides: async () => {},
       effectiveThinking: async () => [],
       setAgentThinking: async () => {},
       listConfigProjects: async () => ({ home: agentDir, projects: [] }),
@@ -1533,6 +1534,15 @@ describe("web routes", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
     expect(setAgentModel).toHaveBeenCalledWith("s1", "search", "x/y");
+  });
+
+  it("clears every session agent override via POST and returns ok", async () => {
+    const clearAgentOverrides = vi.fn(async () => {});
+    setup({ clearAgentOverrides });
+    const res = await handler(new Request("http://localhost/api/sessions/s1/agent-overrides/clear", { method: "POST" }));
+    expect(res.status).toBe(200);
+    expect(clearAgentOverrides).toHaveBeenCalledWith("s1");
+    expect(await res.json()).toEqual({ ok: true });
   });
 
   it("sets a null model (reset) via PUT", async () => {

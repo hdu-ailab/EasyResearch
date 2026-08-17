@@ -24,6 +24,7 @@ import {
   routeSetAgentThinking,
 } from "./agent-thinking";
 import { createLogger } from "../runtime/logger";
+import { DEFAULT_THINKING_LEVEL } from "../subagent/thinking-resolution";
 import { SubagentSessionService } from "./subagent-sessions";
 import { isSubagentSessionName } from "../subagent/session-links";
 import { createFileWatcherFactory } from "./file-watcher";
@@ -187,6 +188,21 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
         model,
       ),
     effectiveThinking: (sessionId) => agentThinking.effective(sessionId),
+    clearAgentOverrides: async (sessionId) => {
+      const cwd = await registry.getCwd(sessionId);
+      const agents = (await discoverAgents({ cwd })).agents;
+      for (const agent of agents) {
+        if (agent.name === PAPER_ASSISTANT_AGENT) continue;
+        await agentModels.set(sessionId, agent.name, null);
+        await agentThinking.set(sessionId, agent.name, null);
+      }
+      const paperAssistantDefaults = await readPaperAssistantDefaults(config, cwd);
+      if (paperAssistantDefaults) {
+        await registry.setModel(sessionId, paperAssistantDefaults.provider, paperAssistantDefaults.modelId);
+      }
+      const paperAssistantThinking = await readPaperAssistantThinkingDefault(config, cwd);
+      await registry.setThinkingLevel(sessionId, paperAssistantThinking ?? DEFAULT_THINKING_LEVEL);
+    },
     setAgentThinking: (sessionId, agentName, thinking) =>
       routeSetAgentThinking(
         {

@@ -5,6 +5,7 @@ import * as api from "../api";
 import { AgentList } from "./AgentList";
 
 vi.mock("../api", () => ({
+  clearAgentOverrides: vi.fn(),
   getEffectiveModels: vi.fn(),
   getEffectiveThinking: vi.fn(),
   listAgents: vi.fn(),
@@ -14,6 +15,7 @@ vi.mock("../api", () => ({
 }));
 
 beforeEach(() => {
+  vi.mocked(api.clearAgentOverrides).mockReset();
   vi.mocked(api.listAgents).mockReset();
   vi.mocked(api.listModels).mockReset();
   vi.mocked(api.getEffectiveModels).mockReset();
@@ -57,9 +59,22 @@ beforeEach(() => {
   ]);
   vi.mocked(api.setAgentModel).mockResolvedValue(undefined);
   vi.mocked(api.setAgentThinking).mockResolvedValue(undefined);
+  vi.mocked(api.clearAgentOverrides).mockResolvedValue(undefined);
 });
 
 describe("AgentList", () => {
+  it("clears every session agent override and refreshes effective models on follow global settings", async () => {
+    const user = userEvent.setup();
+    render(<AgentList cwd="/p" statusByAgent={{ "paper-assistant": "idle", search: "idle" }} sessionId="s1" />);
+    await screen.findByText("Paper Assistant");
+
+    await user.click(screen.getByRole("button", { name: "Follow global settings" }));
+
+    await waitFor(() => expect(api.clearAgentOverrides).toHaveBeenCalledWith("s1"));
+    expect(api.getEffectiveModels).toHaveBeenCalledWith("s1");
+    expect(api.getEffectiveThinking).toHaveBeenCalledWith("s1");
+  });
+
   it("loads the effective roster for the exact session cwd", async () => {
     vi.mocked(api.listAgents).mockImplementation(async (cwd) =>
       cwd === "/papers/project"

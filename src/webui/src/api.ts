@@ -128,6 +128,10 @@ export function setAgentThinking(sessionId: string, agentName: string, thinking:
   return requestVoid(routes.agentThinking(sessionId, agentName), json("PUT", { thinking }));
 }
 
+export function clearAgentOverrides(sessionId: string): Promise<void> {
+  return requestVoid(routes.clearAgentOverrides(sessionId), { method: "POST" });
+}
+
 export function listDirectories(path: string): Promise<DirectoryEntryDto[]> {
   return requestJson(routes.directories(path), parseDirectories);
 }

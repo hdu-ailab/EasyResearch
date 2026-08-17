@@ -41,6 +41,7 @@ export interface RouteServices {
   listModels: () => Promise<ModelOptionDto[]>;
   effectiveModels: (sessionId: string) => Promise<AgentEffectiveModelDto[]>;
   setAgentModel: (sessionId: string, agentName: string, model: string | null) => Promise<void>;
+  clearAgentOverrides: (sessionId: string) => Promise<void>;
   effectiveThinking: (sessionId: string) => Promise<AgentEffectiveThinkingDto[]>;
   setAgentThinking: (sessionId: string, agentName: string, thinking: string | null) => Promise<void>;
   listConfigProjects: () => Promise<{ home: string; projects: Array<{ cwd: string }> }>;
@@ -251,6 +252,12 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
           return errorResponse(400, "thinking must be a string or null");
         }
         await services.setAgentThinking(agentThinkingMatch[1]!, agentThinkingMatch[2]!, body.thinking as string | null);
+        return jsonResponse({ ok: true });
+      }
+
+      const clearOverridesMatch = path.match(/^\/api\/sessions\/([^/]+)\/agent-overrides\/clear$/);
+      if (req.method === "POST" && clearOverridesMatch) {
+        await services.clearAgentOverrides(clearOverridesMatch[1]!);
         return jsonResponse({ ok: true });
       }
 

@@ -1,8 +1,9 @@
-import { Bot } from "lucide-react";
+import { Bot, RotateCcw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentDto, AgentEffectiveModelDto, AgentEffectiveThinkingDto } from "../../../web/contracts";
 import { PAPER_ASSISTANT_AGENT } from "../agent-identity";
 import {
+  clearAgentOverrides,
   getEffectiveModels,
   getEffectiveThinking,
   listAgents,
@@ -110,6 +111,24 @@ export function AgentList({ cwd, statusByAgent, sessionId }: AgentListProps) {
     [sessionId],
   );
 
+  const followGlobalSettings = useCallback(async () => {
+    const ownedSession = sessionId;
+    const generation = ++requestGeneration.current;
+    setBusy(true);
+    try {
+      await clearAgentOverrides(ownedSession);
+      const [next, thin] = await Promise.all([getEffectiveModels(ownedSession), getEffectiveThinking(ownedSession)]);
+      if (generation === requestGeneration.current) {
+        setEffective(next);
+        setThinking(thin);
+      }
+    } catch {
+      // Keep the last known models; the next interaction can retry.
+    } finally {
+      if (generation === requestGeneration.current) setBusy(false);
+    }
+  }, [sessionId]);
+
   const agents = roster ?? [];
   const paperAssistant = agents.find((agent) => agent.name === PAPER_ASSISTANT_AGENT);
   const subagents = agents
@@ -125,6 +144,16 @@ export function AgentList({ cwd, statusByAgent, sessionId }: AgentListProps) {
       <div className="flex shrink-0 items-center gap-2 border-b border-v2-grey-200 px-3 py-2">
         <Bot size={14} className="text-v2-icon-icon-muted" />
         <span className="text-[13px] font-semibold text-v2-text-text-base">{t("work.agentsTab")}</span>
+        <button
+          type="button"
+          aria-label={t("work.followGlobalSettings")}
+          disabled={busy}
+          onClick={() => void followGlobalSettings()}
+          className="ml-auto flex h-7 items-center gap-1 rounded-md border border-v2-grey-200 px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100 disabled:opacity-50"
+        >
+          <RotateCcw size={12} aria-hidden />
+          {t("work.followGlobalSettings")}
+        </button>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         <AgentCard
