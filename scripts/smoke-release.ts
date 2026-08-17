@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -9,16 +10,22 @@ import {
   FIRST_RUN_CEILING_MS,
   collectLaunchOutput,
   createCompiledChildEnv,
+  finishSmokeCleanup,
   readTextFileWithRetry,
+  requireZeroProcessStatus,
   resolveSmokePython,
-  runVenvValidation,
   selectSmokeModelAction,
   type SmokeModelState,
   skillVenvPython,
   settleProcess,
+  validateFirstRunVenv,
   venvToolCommand,
   writeVenvValidationScript,
 } from "./smoke-release-support";
+import {
+  SMOKE_SETUP_RESULT_PATH_ENV,
+  SMOKE_SETUP_RUN_ID_ENV,
+} from "../src/runtime/first-run-setup-evidence";
 
 const targetName = process.argv[2];
 const target = TARGETS.find((candidate) => candidate.name === targetName);
@@ -40,9 +47,14 @@ mkdirSync(project, { recursive: true });
 mkdirSync(agentDir, { recursive: true });
 const venvPython = skillVenvPython(agentDir, process.platform);
 const validationScript = join(root, "validate-easyresearch-venv.py");
+const setupRunId = randomUUID();
+const setupResultPath = join(root, "first-run-setup-result.json");
 const firstRunStdoutPath = join(root, "first-run-stdout.txt");
 const firstRunStderrPath = join(root, "first-run-stderr.txt");
 const firstRunPidPath = join(root, "first-run-client.pid");
+const shutdownPidPath = join(root, "shutdown-client.pid");
+const shutdownStatusPath = join(root, "shutdown-status.txt");
+const daemonPidPath = join(agentDir, "server.pid");
 writeVenvValidationScript(validationScript);
 let systemPythonVersionOutput = "not checked";
 let validationStdout = "not run";
@@ -50,6 +62,7 @@ let validationStderr = "not run";
 let firstRunClientPid: number | undefined;
 let firstRunLaunchAttempted = false;
 let firstRunDeadline = 0;
+let daemonPid: number | undefined;
 let modelRequests = 0;
 let venvToolResults = 0;
 let smokeModelState: SmokeModelState = {
@@ -105,6 +118,8 @@ const env = createCompiledChildEnv({
     USERPROFILE: home,
     LOCALAPPDATA: join(root, "localappdata"),
     EASYRESEARCH_CODING_AGENT_DIR: agentDir,
+    [SMOKE_SETUP_RESULT_PATH_ENV]: setupResultPath,
+    [SMOKE_SETUP_RUN_ID_ENV]: setupRunId,
   },
 });
 
@@ -121,10 +136,10 @@ function powershellQuote(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
 
-function recordedFirstRunPid(): number | undefined {
-  if (!existsSync(firstRunPidPath)) return undefined;
+function recordedPid(path: string): number | undefined {
+  if (!existsSync(path)) return undefined;
   try {
-    const pid = Number.parseInt(readFileSync(firstRunPidPath, "utf8").trim(), 10);
+    const pid = Number.parseInt(readFileSync(path, "utf8").trim(), 10);
     return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
   } catch {
     return undefined;
@@ -136,6 +151,7 @@ function run(args: string[], captureName: "first-run" | "shutdown"): { stdout: s
   const stderrPath = captureName === "first-run" ? firstRunStderrPath : join(root, `${captureName}-stderr.txt`);
   const powershellErrorPath = join(root, `${captureName}-powershell-error.txt`);
   const timeout = captureName === "first-run" ? FIRST_RUN_CEILING_MS : 180_000;
+  const asynchronous = process.platform === "win32" && captureName === "first-run";
   let result: ReturnType<typeof spawnSync>;
   if (process.platform === "win32") {
     // Bun 1.3.14 spawnSync silently fails to start compiled executables on
@@ -151,9 +167,19 @@ function run(args: string[], captureName: "first-run" | "shutdown"): { stdout: s
         "$process = $null",
         "try {",
         `  $process = Start-Process -FilePath ${powershellQuote(binary)} -ArgumentList @(${args.map(powershellQuote).join(", ")}) -WindowStyle Hidden -RedirectStandardOutput ${powershellQuote(stdoutPath)} -RedirectStandardError ${powershellQuote(stderrPath)} -PassThru`,
-        ...(captureName === "first-run"
+        ...(asynchronous
           ? [`  Set-Content -LiteralPath ${powershellQuote(firstRunPidPath)} -Value $process.Id -Encoding ascii`]
-          : []),
+          : [
+              `  Set-Content -LiteralPath ${powershellQuote(shutdownPidPath)} -Value $process.Id -Encoding ascii`,
+              "  if (-not $process.WaitForExit(30000)) {",
+              `    Set-Content -LiteralPath ${powershellQuote(shutdownStatusPath)} -Value 'timeout' -Encoding ascii`,
+              `    & ${powershellQuote(taskkill)} /PID $($process.Id) /T /F | Out-Null`,
+              "    throw 'Windows shutdown client timed out after 30000ms'",
+              "  }",
+              "  $process.WaitForExit()",
+              `  Set-Content -LiteralPath ${powershellQuote(shutdownStatusPath)} -Value $process.ExitCode -Encoding ascii`,
+              "  if ($process.ExitCode -ne 0) { throw \"Windows shutdown client exited with status $($process.ExitCode)\" }",
+            ]),
         "  exit 0",
         "} catch {",
         "  if ($null -ne $process) {",
@@ -182,7 +208,7 @@ function run(args: string[], captureName: "first-run" | "shutdown"): { stdout: s
     }
   }
   const { stdout, stderr } = collectLaunchOutput({
-    asynchronous: process.platform === "win32",
+    asynchronous,
     stdoutPath,
     stderrPath,
     read: safeReadText,
@@ -190,9 +216,20 @@ function run(args: string[], captureName: "first-run" | "shutdown"): { stdout: s
   if (result.error || result.status !== 0) {
     const cause = result.error ? `${result.error.name}: ${result.error.message}` : "no spawn error";
     const powershellError = process.platform === "win32" ? `\n${safeReadText(powershellErrorPath)}` : "";
-    throw new Error(`${binary} ${args.join(" ")} failed (${result.status ?? "no status"}; ${cause}):\n${stdout}\n${stderr}${powershellError}`);
+    const childStatus = process.platform === "win32" && captureName === "shutdown"
+      ? `\nshutdown client status: ${safeReadText(shutdownStatusPath)}`
+      : "";
+    throw new Error(`${binary} ${args.join(" ")} failed (${result.status ?? "no status"}; ${cause}):\n${stdout}\n${stderr}${powershellError}${childStatus}`);
   }
-  const pid = process.platform === "win32" && captureName === "first-run" ? recordedFirstRunPid() : undefined;
+  if (process.platform === "win32" && captureName === "shutdown") {
+    requireZeroProcessStatus({
+      label: "Windows shutdown client",
+      statusText: safeReadText(shutdownStatusPath),
+      stdout,
+      stderr,
+    });
+  }
+  const pid = asynchronous ? recordedPid(firstRunPidPath) : undefined;
   if (process.platform === "win32" && captureName === "first-run" && pid === undefined) {
     throw new Error(`Windows first-run client did not record a valid PID at ${firstRunPidPath}`);
   }
@@ -217,13 +254,25 @@ function terminateWindowsProcessTree(pid: number): void {
   });
   if (result.error || (result.status !== 0 && isProcessAlive(pid))) {
     const cause = result.error ? `${result.error.name}: ${result.error.message}` : `status ${result.status ?? "unknown"}`;
-    throw new Error(`failed to terminate Windows first-run process tree ${pid} (${cause}):\n${result.stdout ?? ""}\n${result.stderr ?? ""}`);
+    throw new Error(`failed to terminate Windows process tree ${pid} (${cause}):\n${result.stdout ?? ""}\n${result.stderr ?? ""}`);
+  }
+}
+
+function terminateProcessTree(pid: number): void {
+  if (process.platform === "win32") {
+    terminateWindowsProcessTree(pid);
+    return;
+  }
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
   }
 }
 
 async function settleWindowsFirstRun(terminateImmediately: boolean): Promise<void> {
   if (process.platform !== "win32") return;
-  const pid = firstRunClientPid ?? recordedFirstRunPid();
+  const pid = firstRunClientPid ?? recordedPid(firstRunPidPath);
   if (pid === undefined) return;
   firstRunClientPid = pid;
   await settleProcess({
@@ -233,6 +282,34 @@ async function settleWindowsFirstRun(terminateImmediately: boolean): Promise<voi
     isAlive: isProcessAlive,
     terminateTree: terminateWindowsProcessTree,
   });
+}
+
+async function verifyDaemonStopped(pid: number | undefined): Promise<void> {
+  if (pid === undefined) return;
+  try {
+    await settleProcess({
+      pid,
+      deadline: Date.now() + 30_000,
+      isAlive: isProcessAlive,
+      terminateTree: terminateProcessTree,
+    });
+  } catch (error) {
+    throw new Error(`daemon process ${pid} did not terminate cleanly: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function removeSmokeRoot(): Promise<void> {
+  let cause = "root still exists";
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      rmSync(root, { recursive: true, force: true });
+      if (!existsSync(root)) return;
+    } catch (error) {
+      cause = error instanceof Error ? error.message : String(error);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error(`failed to remove smoke root ${root}: ${cause}`);
 }
 
 function requireCommandUnavailable(command: "node" | "bun"): void {
@@ -300,6 +377,7 @@ async function dumpServerLogs(): Promise<void> {
   console.log(`[smoke] system Python --version: ${systemPythonVersionOutput}`);
   console.log(`[smoke] expected venv Python: ${venvPython}`);
   console.log(`[smoke] expected venv Python exists: ${existsSync(venvPython)}`);
+  console.log(`[smoke] first-run setup result: ${safeReadText(setupResultPath)}`);
   console.log(`[smoke] --- venv validation stdout (${validationStdout.length} bytes) ---`);
   console.log(validationStdout.slice(-4000));
   console.log(`[smoke] --- venv validation stderr (${validationStderr.length} bytes) ---`);
@@ -316,6 +394,8 @@ async function dumpServerLogs(): Promise<void> {
     "first-run-powershell-error.txt",
     "shutdown-stdout.txt",
     "shutdown-stderr.txt",
+    "shutdown-status.txt",
+    "shutdown-client.pid",
     "shutdown-powershell-error.txt",
   ]) {
     const path = join(root, capture);
@@ -397,6 +477,7 @@ function openAiStream(input: {
   });
 }
 
+let primaryError: Error | undefined;
 try {
   inspectSystemPython();
   requireCommandUnavailable("node");
@@ -445,11 +526,15 @@ try {
   }
   if (!status) throw new Error(`daemon did not become ready at ${base}`);
   await requireOk(status, "status probe");
+  daemonPid = recordedPid(daemonPidPath);
+  if (daemonPid === undefined) throw new Error(`daemon did not record a valid PID at ${daemonPidPath}`);
   await settleWindowsFirstRun(false);
   if (!existsSync(venvPython)) {
     throw new Error(`first-run skill venv missing interpreter: ${venvPython}`);
   }
-  runVenvValidation({
+  validateFirstRunVenv({
+    setupResultPath,
+    setupRunId,
     python: venvPython,
     script: validationScript,
     spawn: (command, args, options) => {
@@ -523,8 +608,8 @@ try {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path: sessionPath }),
   }), "session resume");
-  console.log(`[smoke] ${target.name} passed`);
 } catch (error) {
+  primaryError = error instanceof Error ? error : new Error(String(error));
   try {
     await settleWindowsFirstRun(true);
   } catch (settlementError) {
@@ -535,21 +620,14 @@ try {
   } catch (dumpError) {
     console.log(`[smoke] failed to dump smoke diagnostics: ${dumpError instanceof Error ? dumpError.message : String(dumpError)}`);
   }
-  throw error;
-} finally {
-  try {
-    run(["exit"], "shutdown");
-  } catch {
-    // The primary smoke failure is more useful than shutdown cleanup output.
-  }
-  modelServer.stop(true);
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    try {
-      rmSync(root, { recursive: true, force: true });
-      break;
-    } catch {
-      // The Windows daemon may still hold files after the async exit command.
-      await new Promise((resolve) => setTimeout(resolve, 500));
-    }
-  }
 }
+
+const cleanupDaemonPid = daemonPid ?? recordedPid(daemonPidPath);
+await finishSmokeCleanup({
+  primaryError,
+  shutdown: () => { run(["exit"], "shutdown"); },
+  stopAuxiliary: () => { modelServer.stop(true); },
+  verifyDaemonStopped: () => verifyDaemonStopped(cleanupDaemonPid),
+  removeRoot: removeSmokeRoot,
+});
+console.log(`[smoke] ${target.name} passed`);

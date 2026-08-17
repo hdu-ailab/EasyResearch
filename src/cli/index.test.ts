@@ -286,6 +286,34 @@ describe("first-run setup", () => {
     expect(setup).toHaveBeenCalledWith(root, expect.any(Function));
   });
 
+  it("atomically reports this invocation's setup result without exposing its reason", async () => {
+    const resultPath = join(root, "setup-result.json");
+    const previousPath = process.env.EASYRESEARCH_SMOKE_SETUP_RESULT_PATH;
+    const previousRunId = process.env.EASYRESEARCH_SMOKE_SETUP_RUN_ID;
+    process.env.EASYRESEARCH_SMOKE_SETUP_RESULT_PATH = resultPath;
+    process.env.EASYRESEARCH_SMOKE_SETUP_RUN_ID = "current-run";
+    try {
+      const setup = vi.fn(() => ({
+        venvDir: join(root, "venv"),
+        success: false,
+        reason: "credential-shaped diagnostic must stay out of evidence",
+      }));
+      const deps = makeDeps();
+
+      expect(await runCli([], deps, { agentDir: root, setup })).toBe(0);
+      expect(JSON.parse(readFileSync(resultPath, "utf8"))).toEqual({
+        runId: "current-run",
+        success: false,
+      });
+      expect(readFileSync(resultPath, "utf8")).not.toContain("credential-shaped");
+    } finally {
+      if (previousPath === undefined) delete process.env.EASYRESEARCH_SMOKE_SETUP_RESULT_PATH;
+      else process.env.EASYRESEARCH_SMOKE_SETUP_RESULT_PATH = previousPath;
+      if (previousRunId === undefined) delete process.env.EASYRESEARCH_SMOKE_SETUP_RUN_ID;
+      else process.env.EASYRESEARCH_SMOKE_SETUP_RUN_ID = previousRunId;
+    }
+  });
+
   it("skips setup for the exit command", async () => {
     const setup = vi.fn();
     const deps = makeDeps();

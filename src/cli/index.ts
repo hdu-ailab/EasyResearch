@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir } from "../runtime/pi-import";
+import { writeFirstRunSetupEvidence } from "../runtime/first-run-setup-evidence";
 import { injectSkillVenvEnv } from "../runtime/venv-env";
 import {
   bundledSourceRoot,
@@ -13,7 +14,7 @@ import {
   materializeBundledIfNeeded,
   useExistingMaterializedBundle,
 } from "../runtime/bundled-assets";
-import { ensureSkillVenv } from "../setup-venv";
+import { ensureSkillVenv, type SetupResult } from "../setup-venv";
 import { renameSameNameToBak } from "../setup-resources";
 import {
   isProcessAlive,
@@ -35,7 +36,7 @@ export interface CliDependencies {
 export interface CliOptions {
   agentDir?: string;
   /** First-run bootstrap, injectable for tests. Defaults to ensureFirstRunSetup. */
-  setup?: (agentDir: string, log: (msg: string) => void) => void;
+  setup?: (agentDir: string, log: (msg: string) => void) => SetupResult | void;
   /** Non-mutating skipped-setup lookup, injectable for tests. */
   useExistingSetup?: (agentDir: string) => void;
 }
@@ -131,13 +132,16 @@ export function copyPiRuntimeAssets(agentDir: string, source = join(bundledSourc
  * same-name user agents/skills so bundled versions take effect. Resource
  * extraction is required; optional setup phases report failures independently.
  */
-export function ensureFirstRunSetup(agentDir: string, log: (msg: string) => void): void {
+export function ensureFirstRunSetup(agentDir: string, log: (msg: string) => void): SetupResult {
   const version = embeddedPackageVersion();
   materializeBundledIfNeeded(agentDir, version, log);
+  let skillVenvResult: SetupResult;
   try {
-    ensureSkillVenv(agentDir, { stream: true, log });
+    skillVenvResult = ensureSkillVenv(agentDir, { stream: true, log });
   } catch (error) {
-    log(`Skill environment setup failed: ${error instanceof Error ? error.message : String(error)}`);
+    const reason = error instanceof Error ? error.message : String(error);
+    log(`Skill environment setup failed: ${reason}`);
+    skillVenvResult = { venvDir: join(agentDir, "venv"), success: false, reason };
   }
   try {
     retireBundledResourcesOnce(agentDir, version, () => {
@@ -154,6 +158,7 @@ export function ensureFirstRunSetup(agentDir: string, log: (msg: string) => void
   } catch (error) {
     log(`Bundled resource retirement failed: ${error instanceof Error ? error.message : String(error)}`);
   }
+  return skillVenvResult;
 }
 
 export function retireBundledResourcesOnce(agentDir: string, version: string, retire: () => void): boolean {
@@ -243,7 +248,15 @@ export async function runCli(
         ?? ((root: string) => useExistingMaterializedBundle(root, embeddedPackageVersion()));
       useExistingSetup(agentDir);
     } else {
-      setup(agentDir, (msg) => console.log(`[easyresearch] ${msg}`));
+      const log = (msg: string) => console.log(`[easyresearch] ${msg}`);
+      const setupResult = setup(agentDir, log);
+      if (setupResult !== undefined) {
+        try {
+          writeFirstRunSetupEvidence(setupResult);
+        } catch (error) {
+          log(`First-run setup evidence could not be written: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
     }
     injectSkillVenvEnv();
 

@@ -2,18 +2,21 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   FIRST_RUN_CEILING_MS,
   collectLaunchOutput,
   createCompiledChildEnv,
+  finishSmokeCleanup,
   readTextFileWithRetry,
+  requireZeroProcessStatus,
   resolveSmokePython,
   runVenvValidation,
   selectSmokeModelAction,
   type SmokeModelState,
   settleProcess,
   skillVenvPython,
+  validateFirstRunVenv,
   venvToolCommand,
   writeVenvValidationScript,
 } from "../../scripts/smoke-release-support";
@@ -210,6 +213,57 @@ describe("runVenvValidation", () => {
       exists: () => true,
       spawn: () => ({ status: 0, stdout: "easyresearch-venv-ok-invalid\n", stderr: "near match" }),
     })).toThrow(/\/agent\/venv\/bin\/python.*near match/s);
+  });
+});
+
+describe("validateFirstRunVenv", () => {
+  function passingValidationSpawn() {
+    return vi.fn(() => ({ status: 0, stdout: "easyresearch-venv-ok\n", stderr: "" }));
+  }
+
+  it("rejects success:false setup evidence even when import validation would pass", () => {
+    const resultPath = join(tempDir(), "setup-result.json");
+    writeFileSync(resultPath, JSON.stringify({ runId: "current-run", success: false }));
+    const spawn = passingValidationSpawn();
+
+    expect(() => validateFirstRunVenv({
+      setupResultPath: resultPath,
+      setupRunId: "current-run",
+      python: "/agent/venv/bin/python",
+      script: "/tmp/validate.py",
+      spawn,
+    })).toThrow("success:false");
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("rejects stale success evidence from a different first-run invocation", () => {
+    const resultPath = join(tempDir(), "setup-result.json");
+    writeFileSync(resultPath, JSON.stringify({ runId: "old-run", success: true }));
+    const spawn = passingValidationSpawn();
+
+    expect(() => validateFirstRunVenv({
+      setupResultPath: resultPath,
+      setupRunId: "new-run",
+      python: "/agent/venv/bin/python",
+      script: "/tmp/validate.py",
+      spawn,
+    })).toThrow("does not match the current run");
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("accepts matching success evidence before validating imports", () => {
+    const resultPath = join(tempDir(), "setup-result.json");
+    writeFileSync(resultPath, JSON.stringify({ runId: "current-run", success: true }));
+    const spawn = passingValidationSpawn();
+
+    expect(validateFirstRunVenv({
+      setupResultPath: resultPath,
+      setupRunId: "current-run",
+      python: "/agent/venv/bin/python",
+      script: "/tmp/validate.py",
+      spawn,
+    }).stdout).toContain("easyresearch-venv-ok");
+    expect(spawn).toHaveBeenCalledOnce();
   });
 });
 
@@ -433,6 +487,97 @@ describe("collectLaunchOutput", () => {
   });
 });
 
+describe("requireZeroProcessStatus", () => {
+  it("accepts a durable zero exit status", () => {
+    expect(() => requireZeroProcessStatus({
+      label: "Windows shutdown client",
+      statusText: "0\r\n",
+      stdout: "service stopped",
+      stderr: "",
+    })).not.toThrow();
+  });
+
+  it("reports a nonzero exit status with captured diagnostics", () => {
+    expect(() => requireZeroProcessStatus({
+      label: "Windows shutdown client",
+      statusText: "7",
+      stdout: "partial output",
+      stderr: "shutdown failed",
+    })).toThrow(/Windows shutdown client.*status 7.*partial output.*shutdown failed/s);
+  });
+
+  it("rejects a missing timeout/status result", () => {
+    expect(() => requireZeroProcessStatus({
+      label: "Windows shutdown client",
+      statusText: "timeout",
+      stdout: "",
+      stderr: "",
+    })).toThrow(/valid exit status/);
+  });
+});
+
+describe("finishSmokeCleanup", () => {
+  function successfulCleanup(overrides: Partial<Parameters<typeof finishSmokeCleanup>[0]> = {}) {
+    return {
+      shutdown: vi.fn(),
+      stopAuxiliary: vi.fn(),
+      verifyDaemonStopped: vi.fn(),
+      removeRoot: vi.fn(),
+      ...overrides,
+    };
+  }
+
+  it("waits for shutdown and daemon verification before deleting the root", async () => {
+    const order: string[] = [];
+    await finishSmokeCleanup(successfulCleanup({
+      shutdown: () => { order.push("shutdown"); },
+      stopAuxiliary: () => { order.push("auxiliary"); },
+      verifyDaemonStopped: () => { order.push("daemon-stopped"); },
+      removeRoot: () => { order.push("root-removed"); },
+    }));
+
+    expect(order).toEqual(["shutdown", "auxiliary", "daemon-stopped", "root-removed"]);
+  });
+
+  it("does not silently accept a cleanup failure", async () => {
+    await expect(finishSmokeCleanup(successfulCleanup({
+      removeRoot: () => { throw new Error("root is still locked"); },
+    }))).rejects.toThrow(/temporary root removal.*root is still locked/);
+  });
+
+  it("preserves the primary failure and attaches cleanup diagnostics", async () => {
+    const primary = new Error("stage dispatch failed");
+    let thrown: unknown;
+    try {
+      await finishSmokeCleanup(successfulCleanup({
+        primaryError: primary,
+        shutdown: () => { throw new Error("exit client timed out"); },
+      }));
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBe(primary);
+    expect(primary.message).toMatch(/^stage dispatch failed/);
+    expect(primary.message).toContain("shutdown: exit client timed out");
+    expect(primary.stack).toContain("Cleanup diagnostics");
+  });
+
+  it("rethrows the primary failure after otherwise successful cleanup", async () => {
+    const primary = new Error("model request failed");
+    await expect(finishSmokeCleanup(successfulCleanup({ primaryError: primary }))).rejects.toBe(primary);
+  });
+
+  it("does not delete the root when daemon termination was not verified", async () => {
+    const removeRoot = vi.fn();
+    await expect(finishSmokeCleanup(successfulCleanup({
+      verifyDaemonStopped: () => { throw new Error("daemon 42 is still alive"); },
+      removeRoot,
+    }))).rejects.toThrow("daemon 42 is still alive");
+    expect(removeRoot).not.toHaveBeenCalled();
+  });
+});
+
 describe("venvToolCommand", () => {
   it("uses the runtime POSIX venv interpreter", () => {
     const command = venvToolCommand("linux", "/tmp/native validate.py");
@@ -443,8 +588,9 @@ describe("venvToolCommand", () => {
 
   it("uses the runtime Windows venv interpreter", () => {
     const command = venvToolCommand("win32", "C:\\temp\\native validate.py");
-    expect(command).toContain("%EASYRESEARCH_VENV%\\Scripts\\python.exe");
-    expect(command).toContain('"C:\\temp\\native validate.py"');
+    expect(command).toContain("${EASYRESEARCH_VENV}/Scripts/python.exe");
+    expect(command).toContain('"C:\\\\temp\\\\native validate.py"');
+    expect(command).not.toContain("%EASYRESEARCH_VENV%");
     expect(command).not.toContain("C:\\agent\\venv");
   });
 });

@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, win32 } from "node:path";
+import { readFirstRunSetupEvidence } from "../src/runtime/first-run-setup-evidence";
 
 export const FIRST_RUN_CEILING_MS = 720_000;
 
@@ -125,6 +126,30 @@ export function runVenvValidation(options: {
   return { stdout, stderr };
 }
 
+export function validateFirstRunVenv(options: {
+  setupResultPath: string;
+  setupRunId: string;
+  python: string;
+  script: string;
+  readSetupResult?: (path: string) => string;
+  exists?: (path: string) => boolean;
+  spawn?: (
+    command: string,
+    args: readonly string[],
+    options: { encoding: "utf8"; timeout: number },
+  ) => ValidationSpawnResult;
+}): VenvValidationResult {
+  const evidence = readFirstRunSetupEvidence({
+    path: options.setupResultPath,
+    runId: options.setupRunId,
+    read: options.readSetupResult,
+  });
+  if (!evidence.success) {
+    throw new Error(`first-run skill venv setup returned success:false for run ${options.setupRunId}`);
+  }
+  return runVenvValidation(options);
+}
+
 /** Ensures the first-run writer exits before returning or reporting its deadline failure. */
 export async function settleProcess(options: {
   pid: number;
@@ -205,12 +230,80 @@ export function collectLaunchOutput(options: {
   };
 }
 
-export function venvToolCommand(platform: NodeJS.Platform, scriptPath: string): string {
-  if (platform === "win32") {
-    return `"%EASYRESEARCH_VENV%\\Scripts\\python.exe" "${scriptPath.replaceAll('"', '""')}"`;
+export function requireZeroProcessStatus(options: {
+  label: string;
+  statusText: string;
+  stdout: string;
+  stderr: string;
+}): void {
+  const text = options.statusText.trim();
+  if (!/^-?\d+$/.test(text)) {
+    throw new Error(`${options.label} did not record a valid exit status: ${text || "missing"}`);
   }
+  const status = Number(text);
+  if (!Number.isSafeInteger(status)) {
+    throw new Error(`${options.label} did not record a valid exit status: ${text}`);
+  }
+  if (status !== 0) {
+    throw new Error(
+      `${options.label} failed with status ${status}\nstdout:\n${options.stdout}\nstderr:\n${options.stderr}`,
+    );
+  }
+}
+
+type CleanupStep = () => void | Promise<void>;
+
+export async function finishSmokeCleanup(options: {
+  primaryError?: Error;
+  shutdown: CleanupStep;
+  stopAuxiliary: CleanupStep;
+  verifyDaemonStopped: CleanupStep;
+  removeRoot: CleanupStep;
+}): Promise<void> {
+  const failures: Array<{ label: string; error: Error }> = [];
+  const attempt = async (label: string, step: CleanupStep): Promise<boolean> => {
+    try {
+      await step();
+      return true;
+    } catch (error) {
+      failures.push({ label, error: error instanceof Error ? error : new Error(String(error)) });
+      return false;
+    }
+  };
+
+  await attempt("shutdown", options.shutdown);
+  await attempt("auxiliary shutdown", options.stopAuxiliary);
+  const daemonStopped = await attempt("daemon termination verification", options.verifyDaemonStopped);
+  if (daemonStopped) {
+    await attempt("temporary root removal", options.removeRoot);
+  }
+
+  if (failures.length === 0) {
+    if (options.primaryError) throw options.primaryError;
+    return;
+  }
+  const diagnostics = failures.map(({ label, error }) => `${label}: ${error.message}`).join("\n");
+  if (options.primaryError) {
+    options.primaryError.message = `${options.primaryError.message}\n\nCleanup diagnostics:\n${diagnostics}`;
+    Object.defineProperty(options.primaryError, "cleanupErrors", {
+      configurable: true,
+      enumerable: false,
+      value: failures.map(({ error }) => error),
+    });
+    throw options.primaryError;
+  }
+  throw new AggregateError(
+    failures.map(({ error }) => error),
+    `native smoke cleanup failed:\n${diagnostics}`,
+  );
+}
+
+export function venvToolCommand(platform: NodeJS.Platform, scriptPath: string): string {
   const quotedScript = scriptPath.replace(/["\\`$]/g, "\\$&");
-  return `"$EASYRESEARCH_VENV/bin/python" "${quotedScript}"`;
+  const python = platform === "win32"
+    ? "${EASYRESEARCH_VENV}/Scripts/python.exe"
+    : "$EASYRESEARCH_VENV/bin/python";
+  return `"${python}" "${quotedScript}"`;
 }
 
 export type SmokeModelAction =
