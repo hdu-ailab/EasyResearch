@@ -215,11 +215,7 @@ async function resolveDefaultStageSessionRunner(): Promise<StageSessionRunner> {
   const { createSubagentExtension } = await import("../extensions/subagent");
   const { default: webSearchExtension } = await import("../extensions/web-search");
   const { default: webFetchExtension } = await import("../extensions/webfetch");
-  const {
-    defaultSkillDirectories,
-    isDotAgentsSkillEnabled,
-    resolveSkillDirectories,
-  } = await import("./skill-resolution");
+  const { isDotAgentsSkillEnabled, resolveAgentSkillDirectories } = await import("./skill-resolution");
   const agentDir = getAgentDir();
   return createStageSessionRunner({
     agentDir,
@@ -253,9 +249,7 @@ async function resolveDefaultStageSessionRunner(): Promise<StageSessionRunner> {
           pi.SettingsManager.create(cwd, root).getGlobalSettings(),
         ),
       };
-      return agent.skills && agent.skills.length > 0
-        ? (resolveSkillDirectories(agent.skills, deps) ?? [])
-        : defaultSkillDirectories(deps);
+      return resolveAgentSkillDirectories(agent, deps);
     },
   });
 }

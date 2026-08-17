@@ -149,3 +149,17 @@ export function resolveSkillDirectories(skills: string[] | undefined, deps: Skil
     return resolved ? [resolved] : [];
   });
 }
+
+/**
+ * Skill paths for an agent session: an explicit allowlist resolves against the
+ * skill sites, an omitted allowlist loads every available site.
+ */
+export function resolveAgentSkillDirectories(
+  agent: { skills?: string[] } | undefined,
+  deps: SkillResolverDeps,
+): string[] {
+  if (!agent) return [];
+  return agent.skills && agent.skills.length > 0
+    ? (resolveSkillDirectories(agent.skills, deps) ?? [])
+    : defaultSkillDirectories(deps);
+}

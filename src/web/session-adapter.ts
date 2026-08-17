@@ -88,9 +88,11 @@ export interface PiRuntimeDependencies {
     settingsManager: unknown;
     extensionFactories: unknown[];
     noSkills: boolean;
+    additionalSkillPaths: string[];
   }): ResourceLoaderLike;
   createAgentSession(options: Record<string, unknown>): Promise<{ session: BindableAgentSession }>;
   resolveModel(cwd: string, modelRuntime: unknown): Promise<Model<any> | undefined>;
+  resolveSkillPaths(cwd: string, agentDir: string): Promise<string[]>;
 }
 
 export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentSessionCreator {
@@ -100,12 +102,14 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
       : deps.createSessionManager(options.cwd);
     const settingsManager = deps.createSettingsManager(options.cwd, deps.agentDir);
     const modelRuntime = await deps.createModelRuntime(deps.agentDir);
+    const skillPaths = await deps.resolveSkillPaths(options.cwd, deps.agentDir);
     const resourceLoader = deps.createResourceLoader({
       cwd: options.cwd,
       agentDir: deps.agentDir,
       settingsManager,
       extensionFactories: deps.extensionFactories,
       noSkills: true,
+      additionalSkillPaths: skillPaths,
     });
     await resourceLoader.reload({ resolveProjectTrust: async () => true });
     const model = await deps.resolveModel(options.cwd, modelRuntime);
@@ -202,6 +206,18 @@ export class PiSessionFactory implements SessionFactory {
           provider,
           modelId,
         );
+      },
+      resolveSkillPaths: async (cwd) => {
+        const { resolveAgentSkillDirectories, isDotAgentsSkillEnabled } = await import("../subagent/skill-resolution");
+        const settingsManager = pi.SettingsManager.create(cwd, agentDir);
+        const assistant = (await discoverAgents({ cwd, agentDir })).agents.find(
+          (agent) => agent.name === PAPER_ASSISTANT_AGENT,
+        );
+        return resolveAgentSkillDirectories(assistant, {
+          cwd,
+          agentDir,
+          enableDotAgentsSkill: isDotAgentsSkillEnabled(settingsManager.getGlobalSettings()),
+        });
       },
     });
     return new PiSessionFactory(creator);

@@ -264,6 +264,7 @@ describe("createPiAgentSessionCreator", () => {
         return { session };
       },
       resolveModel: async () => model,
+      resolveSkillPaths: async () => [],
     });
 
     await creator({ cwd: "/project", thinking: "high" });
@@ -311,11 +312,50 @@ describe("createPiAgentSessionCreator", () => {
         return { session };
       },
       resolveModel: async () => undefined,
+      resolveSkillPaths: async () => [],
     });
 
     await creator({ cwd: "/project", sessionPath: "/sessions/old.jsonl", thinking: "high" });
 
     expect(calls[0]).toMatchObject({ sessionManager: { kind: "open", path: "/sessions/old.jsonl" } });
     expect(calls[0]).not.toHaveProperty("thinkingLevel");
+  });
+
+  it("loads the resolved skill paths into the session resource loader", async () => {
+    const calls: Array<{ name: string; value?: unknown }> = [];
+    const session = new FakeAgentSession() as FakeAgentSession & {
+      bindExtensions(): Promise<void>;
+      waitForIdle(): Promise<void>;
+      reload(): Promise<void>;
+    };
+    session.bindExtensions = async () => {};
+    session.waitForIdle = async () => {};
+    session.reload = async () => {};
+    const creator = createPiAgentSessionCreator({
+      agentDir: "/agent",
+      extensionFactories: [],
+      createSessionManager: () => ({ kind: "new" }),
+      openSessionManager: () => ({ kind: "open" }),
+      createSettingsManager: () => ({}),
+      createModelRuntime: async () => session.modelRuntime,
+      createResourceLoader: (options) => {
+        calls.push({ name: "loader", value: options });
+        return { reload: async () => {} };
+      },
+      createAgentSession: async () => ({ session }),
+      resolveModel: async () => undefined,
+      resolveSkillPaths: async (cwd, agentDir) => {
+        calls.push({ name: "skills", value: { cwd, agentDir } });
+        return ["/skills/research-project-workflow", "/skills/find-skills"];
+      },
+    });
+
+    await creator({ cwd: "/project" });
+
+    expect(calls.find((call) => call.name === "skills")?.value).toEqual({ cwd: "/project", agentDir: "/agent" });
+    expect(calls.find((call) => call.name === "loader")?.value).toMatchObject({
+      noSkills: true,
+      additionalSkillPaths: ["/skills/research-project-workflow", "/skills/find-skills"],
+    });
   });
 });

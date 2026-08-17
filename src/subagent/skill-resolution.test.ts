@@ -3,8 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  defaultSkillDirectories,
   isDotAgentsSkillEnabled,
   readGlobalDotAgentsSkillSetting,
+  resolveAgentSkillDirectories,
   resolveSkillSelection,
   resolveSkillDirectories,
   type SkillResolverDeps,
@@ -151,6 +153,24 @@ describe("resolveSkillSelection", () => {
       effectiveSkills: ["available-skill"],
       missingSkills: ["missing-skill"],
     });
+  });
+});
+
+describe("resolveAgentSkillDirectories", () => {
+  it("returns no paths without an agent", () => {
+    expect(resolveAgentSkillDirectories(undefined, deps)).toEqual([]);
+  });
+
+  it("resolves the agent allowlist against the skill sites", () => {
+    withSkill(bundledSkillsDir, "paper-search");
+    expect(resolveAgentSkillDirectories({ skills: ["paper-search"] }, deps)).toEqual([
+      join(bundledSkillsDir, "paper-search"),
+    ]);
+    expect(resolveAgentSkillDirectories({ skills: ["no-such-skill"] }, deps)).toEqual([]);
+  });
+
+  it("falls back to the default skill directories when the allowlist is omitted", () => {
+    expect(resolveAgentSkillDirectories({ skills: undefined }, deps)).toEqual(defaultSkillDirectories(deps));
   });
 });
 
