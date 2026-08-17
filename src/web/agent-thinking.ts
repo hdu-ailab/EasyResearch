@@ -105,29 +105,18 @@ export function resolveAgentThinkingService(deps: {
       const followGlobal = readFollowGlobalFlag(rows);
       const paProject = project?.[PAPER_ASSISTANT_AGENT];
       const paGlobal = global?.[PAPER_ASSISTANT_AGENT];
-      const inheritedPaperAssistantThinking =
-        followGlobal && (paProject !== undefined || paGlobal !== undefined)
-          ? (paProject ?? paGlobal!)
-          : paperAssistantThinking;
+      const inheritedPaperAssistantThinking = followGlobal
+        ? (paProject ?? paGlobal ?? DEFAULT_THINKING_LEVEL)
+        : paperAssistantThinking;
       for (const agent of agents) {
         if (agent.name === PAPER_ASSISTANT_AGENT && followGlobal) {
-          if (paProject !== undefined || paGlobal !== undefined) {
-            out.push({ name: agent.name, thinking: inheritedPaperAssistantThinking ?? null, source: "default" });
-            continue;
-          }
-          out.push({ name: agent.name, thinking: paperAssistantThinking ?? null, source: "inherit" });
+          out.push({ name: agent.name, thinking: inheritedPaperAssistantThinking ?? null, source: "default" });
           continue;
         }
         // The Paper Assistant's live session level is its own session override.
         const override =
           agent.name === PAPER_ASSISTANT_AGENT ? paperAssistantThinking : readThinkingOverrideForAgent(rows, agent.name);
-        const resolved = resolveEffectiveThinking(
-          override,
-          project,
-          global,
-          inheritedPaperAssistantThinking,
-          agent.name,
-        );
+        const resolved = resolveEffectiveThinking(override, project, global, inheritedPaperAssistantThinking, agent.name);
         out.push(
           resolved
             ? { name: agent.name, thinking: resolved.thinking, source: resolved.source }

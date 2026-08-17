@@ -142,7 +142,7 @@ async function openAgentConfig(user: ReturnType<typeof userEvent.setup>, name: s
 async function selectModelOption(user: ReturnType<typeof userEvent.setup>, agentName: string, optionName: string) {
   const trigger = screen.getByRole("combobox", { name: `Select model for ${agentName}` });
   await user.click(trigger);
-  await user.click(screen.getByRole("option", { name: optionName }));
+  await user.click(within(screen.getByRole("listbox")).getByRole("option", { name: optionName }));
 }
 
 function deferred<T>() {
@@ -465,7 +465,7 @@ describe("SettingsPage", () => {
     await waitFor(() => expect(api.updateWebuiSettings).toHaveBeenCalledWith({ agentThinking: {} }));
   });
 
-  it("labels the subagent thinking empty option as follow Paper Assistant and keeps default (off) for the Paper Assistant", async () => {
+  it("labels the subagent thinking empty option as inherit Paper Assistant's model and keeps default (off) for the Paper Assistant", async () => {
     const user = userEvent.setup();
     vi.mocked(api.getWebuiSettings).mockResolvedValue({
       agentModels: {},
@@ -476,12 +476,12 @@ describe("SettingsPage", () => {
     renderSettings();
     await openAgentConfig(user, "Search");
     const searchThinking = screen.getByRole("combobox", { name: "Select thinking for Search" });
-    expect(within(searchThinking).getByText("follow Paper Assistant")).toBeTruthy();
+    expect(within(searchThinking).getByText("inherit (Paper Assistant's model)")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Close editor" }));
     await openAgentConfig(user, "Paper Assistant");
     const assistantThinking = screen.getByRole("combobox", { name: "Select thinking for Paper Assistant" });
     expect(within(assistantThinking).getByText("default (off)")).toBeTruthy();
-    expect(within(assistantThinking).queryByText("follow Paper Assistant")).toBeNull();
+    expect(within(assistantThinking).queryByText("inherit (Paper Assistant's model)")).toBeNull();
   });
 
   it("surfaces an agentModels update failure", async () => {

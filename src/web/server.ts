@@ -25,6 +25,7 @@ import {
   routeSetAgentThinking,
 } from "./agent-thinking";
 import { createLogger } from "../runtime/logger";
+import { DEFAULT_THINKING_LEVEL } from "../subagent/thinking-resolution";
 import { SubagentSessionService } from "./subagent-sessions";
 import { isSubagentSessionName } from "../subagent/session-links";
 import { createFileWatcherFactory } from "./file-watcher";
@@ -145,10 +146,11 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
         }
       }
       const thinkingDefault = await readPaperAssistantThinkingDefault(config, cwd);
-      if (thinkingDefault) {
+      const targetThinking = thinkingDefault ?? DEFAULT_THINKING_LEVEL;
+      if (targetThinking) {
         const current = await registry.getPaperAssistantThinking(id);
-        if (current !== thinkingDefault) {
-          await registry.setThinkingLevel(id, thinkingDefault);
+        if (current !== targetThinking) {
+          await registry.setThinkingLevel(id, targetThinking);
         }
       }
     }

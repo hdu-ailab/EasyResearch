@@ -219,7 +219,7 @@ describe("resolveAgentThinkingService.effective", () => {
     ]);
   });
 
-  it("falls back to the live session level when follow-global has no default thinking", async () => {
+  it("falls back to off when follow-global has no default thinking", async () => {
     const service = resolveAgentThinkingService({
       listAgents: async () => roster(),
       getSessionPath: async () => "/sessions/o.jsonl",
@@ -232,7 +232,13 @@ describe("resolveAgentThinkingService.effective", () => {
       getCwd: async () => "/tmp/proj",
     });
     const effective = await service.effective("s1");
-    expect(effective[0]).toEqual({ name: "paper-assistant", thinking: "medium", source: "inherit" });
+    expect(effective).toEqual([
+      { name: "paper-assistant", thinking: "off", source: "default" },
+      { name: "search", thinking: "off", source: "inherit" },
+      { name: "experiment", thinking: "off", source: "inherit" },
+      { name: "writing", thinking: "off", source: "inherit" },
+      { name: "figures", thinking: "off", source: "inherit" },
+    ]);
   });
 });
 
