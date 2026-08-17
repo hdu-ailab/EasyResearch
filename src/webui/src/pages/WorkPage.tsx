@@ -1,4 +1,4 @@
-import { Bot, FileSearch } from "lucide-react";
+import { Bot, FileSearch, Settings } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FileWatcherEvent, SessionTreeDto, SkillCommandDto } from "../../../web/contracts";
 import { PAPER_ASSISTANT_AGENT } from "../agent-identity";
@@ -30,6 +30,7 @@ export interface WorkPageProps {
   id: string;
   cwd: string;
   onBack: () => void;
+  onOpenSettings: () => void;
 }
 
 type Panel = "files" | "agents" | null;
@@ -89,7 +90,7 @@ function defaultPanel(): Panel {
   return typeof window !== "undefined" && window.innerWidth >= CONVERSATION_FIRST_BREAKPOINT ? "files" : null;
 }
 
-export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
+export function WorkPage({ id, cwd, onBack, onOpenSettings }: WorkPageProps) {
   const { t } = useI18n();
   const [fileEvent, setFileEvent] = useState<FileWatcherEvent | null>(null);
   const [panel, setPanel] = useState<Panel>(defaultPanel);
@@ -575,6 +576,9 @@ export function WorkPage({ id, cwd, onBack }: WorkPageProps) {
                 </TopbarIconButton>
               </>
             )}
+            <TopbarIconButton label={t("home.settings")} title={t("home.settingsTitle")} onClick={onOpenSettings}>
+              <Settings size={15} />
+            </TopbarIconButton>
           </>
         }
       />

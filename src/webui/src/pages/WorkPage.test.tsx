@@ -216,7 +216,7 @@ describe("WorkPage", () => {
   it("keeps Home first and places the workspace 4px below the topbar", async () => {
     const onBack = vi.fn();
     const user = userEvent.setup();
-    render(<WorkPage id="s1" cwd="/p" onBack={onBack} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={onBack} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
 
     const home = screen.getByRole("button", { name: /back to home/i });
@@ -228,8 +228,18 @@ describe("WorkPage", () => {
     expect(conversation.parentElement).not.toHaveClass("p-2");
   });
 
+  it("opens settings from the topbar settings button", async () => {
+    const onOpenSettings = vi.fn();
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={onOpenSettings} />);
+    await screen.findByText("starting research");
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    expect(onOpenSettings).toHaveBeenCalledOnce();
+  });
+
   it("renders snapshot messages before live events", async () => {
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     expect(await screen.findByText("write a paper")).toBeTruthy();
     expect(screen.getByText("starting research")).toBeTruthy();
   });
@@ -256,7 +266,7 @@ describe("WorkPage", () => {
       ],
     } as never);
 
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
 
     const conversation = await screen.findByLabelText("Conversation");
     const reasoningButtons = within(conversation).getAllByRole("button", { name: /show details/i });
@@ -269,7 +279,7 @@ describe("WorkPage", () => {
   it("sends nonblank text via sendPrompt and keeps the user message visible", async () => {
     const user = userEvent.setup();
     stubEvents();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     await user.type(screen.getByRole("textbox", { name: /message/i }), "continue please");
     await user.click(screen.getByRole("button", { name: /send/i }));
@@ -283,7 +293,7 @@ describe("WorkPage", () => {
 
   it("does not send blank input", async () => {
     const user = userEvent.setup();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     await user.type(screen.getByRole("textbox", { name: /message/i }), "   ");
     await user.click(screen.getByRole("button", { name: /send/i }));
@@ -293,7 +303,7 @@ describe("WorkPage", () => {
   it("renders a working agent row on send and replaces it with the first real output", async () => {
     const user = userEvent.setup();
     stubEvents();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     await user.type(screen.getByRole("textbox", { name: /message/i }), "continue please");
     await user.click(screen.getByRole("button", { name: /send/i }));
@@ -314,7 +324,7 @@ describe("WorkPage", () => {
   it("replaces the working agent row when the first real output is a tool call", async () => {
     const user = userEvent.setup();
     stubEvents();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     await user.type(screen.getByRole("textbox", { name: /message/i }), "inspect files");
     await user.click(screen.getByRole("button", { name: /send/i }));
@@ -340,7 +350,7 @@ describe("WorkPage", () => {
       return 1;
     });
     vi.stubGlobal("cancelAnimationFrame", () => {});
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     const el = screen.getByLabelText("Conversation") as HTMLDivElement;
     Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => 400 });
@@ -368,7 +378,7 @@ describe("WorkPage", () => {
       flushFrame = undefined;
       callback?.(0);
     };
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     const el = screen.getByLabelText("Conversation") as HTMLDivElement;
     Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => 400 });
@@ -408,7 +418,7 @@ describe("WorkPage", () => {
         { role: "assistant", content: [{ type: "text", text: "child answer" }] },
       ],
     } as never);
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     const el = screen.getByLabelText("Conversation") as HTMLDivElement;
     Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => 400 });
@@ -458,7 +468,7 @@ describe("WorkPage", () => {
         { role: "assistant", timestamp: 1001, content: [{ type: "text", text: "child answer loaded" }] },
       ],
     } as never);
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     expect(await screen.findByText("parent answer")).toBeTruthy();
     const el = screen.getByLabelText("Conversation") as HTMLDivElement;
     Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => 400 });
@@ -493,7 +503,7 @@ describe("WorkPage", () => {
     const user = userEvent.setup();
     stubEvents();
     vi.mocked(api.sendPrompt).mockRejectedValue(new Error("boom"));
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     await user.type(screen.getByRole("textbox", { name: /message/i }), "continue please");
     await user.click(screen.getByRole("button", { name: /send/i }));
@@ -503,7 +513,7 @@ describe("WorkPage", () => {
 
   it("streams message_update deltas into a single assistant row", async () => {
     stubEvents();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     emit({
       type: "message_start",
@@ -524,7 +534,7 @@ describe("WorkPage", () => {
 
   it("surfaces model/auth failure after prompt in the transcript", async () => {
     stubEvents();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     emit({
       type: "message_start",
@@ -535,7 +545,7 @@ describe("WorkPage", () => {
   });
 
   it("unmount only closes EventSource, never stops the session", async () => {
-    const { unmount } = render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    const { unmount } = render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     unmount();
     expect(unsubscribeFn).toHaveBeenCalled();
@@ -543,7 +553,7 @@ describe("WorkPage", () => {
   });
 
   it("does not reconnect the session stream when browser preferences change", async () => {
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     expect(api.connectSessionEvents).toHaveBeenCalledTimes(1);
 
@@ -555,7 +565,7 @@ describe("WorkPage", () => {
   });
 
   it("composer Stop while streaming aborts instead of stopping the session", async () => {
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     expect(screen.queryByRole("button", { name: /stop/i })).toBeNull();
     emitInAct({ type: "agent_start" });
@@ -567,7 +577,7 @@ describe("WorkPage", () => {
 
   it("shows a bounded latest-message preview and auto-collapses an untouched temporary tab", async () => {
     const latestMessage = "scanning arxiv for recent fault-diagnosis papers";
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     const assistantTab = screen.getByRole("button", { name: /agent paper assistant/i });
     expect(assistantTab.getAttribute("aria-pressed")).toBe("true");
@@ -605,7 +615,7 @@ describe("WorkPage", () => {
 
   it("retains a selected temporary tab and promotes it to an exact UUID tab", async () => {
     const user = userEvent.setup();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     emitInAct({
       type: "tool_execution_start",
@@ -631,7 +641,7 @@ describe("WorkPage", () => {
 
   it("keeps a selected pre-header tab focused when its first header adds step and UUID", async () => {
     const user = userEvent.setup();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     emitInAct({
       type: "tool_execution_start",
@@ -656,7 +666,7 @@ describe("WorkPage", () => {
       session: { id: "child-delayed", cwd: "/p", sessionName: "easyresearch:search" },
       messages: [{ role: "user", content: [{ type: "text", text: "inherited before this dispatch" }] }],
     } as never);
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     emitInAct({
       type: "tool_execution_start",
@@ -701,7 +711,7 @@ describe("WorkPage", () => {
         { role: "assistant", content: [{ type: "text", text: "complete child answer" }] },
       ],
     } as never);
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await user.click(await screen.findByRole("button", { name: "View details" }));
 
     expect(api.getChildSnapshot).toHaveBeenCalledWith("s1", "child-history");
@@ -732,7 +742,7 @@ describe("WorkPage", () => {
         resolveChild = resolve;
       }),
     );
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await user.click(await screen.findByRole("button", { name: "View details" }));
     emitChildHeader("sub-live", "search", "child-live");
     emitRawChildEvent("sub-live", "search", {
@@ -799,7 +809,7 @@ describe("WorkPage", () => {
       ],
     } as never);
     vi.mocked(api.getChildSnapshot).mockRejectedValue(new api.ApiError(404, { error: "missing" }));
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     const details = await screen.findAllByRole("button", { name: "View details" });
     await user.click(details[0]!);
     await user.click(screen.getByRole("button", { name: /agent paper assistant/i }));
@@ -835,7 +845,7 @@ describe("WorkPage", () => {
           { id: "child-message", role: "assistant", content: [{ type: "text", text: "recovered from JSONL" }] },
         ],
       } as never);
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await user.click(await screen.findByRole("button", { name: "View details" }));
     expect(await screen.findByText("before reconnect")).toBeVisible();
 
@@ -881,7 +891,7 @@ describe("WorkPage", () => {
           { id: "child-message", role: "assistant", content: [{ type: "text", text: "recovered after overlap" }] },
         ],
       } as never);
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await user.click(await screen.findByRole("button", { name: "View details" }));
     expect(api.getChildSnapshot).toHaveBeenCalledTimes(1);
 
@@ -933,7 +943,7 @@ describe("WorkPage", () => {
             resolveRefresh = resolve;
           }),
       );
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await user.click(await screen.findByRole("button", { name: "View details" }));
     await waitFor(() => expect(api.getChildSnapshot).toHaveBeenCalledTimes(1));
 
@@ -1012,10 +1022,12 @@ describe("WorkPage", () => {
         session: { id: "shared-child", cwd: "/p", sessionName: "easyresearch:writing" },
         messages: [{ role: "assistant", content: [{ type: "text", text: "new parent child" }] }],
       } as never);
-    const { rerender, container } = render(<WorkPage key="s1" id="s1" cwd="/p" onBack={() => {}} />);
+    const { rerender, container } = render(
+      <WorkPage key="s1" id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />,
+    );
     await user.click(await screen.findByRole("button", { name: "View details" }));
 
-    rerender(<WorkPage key="s2" id="s2" cwd="/p" onBack={() => {}} />);
+    rerender(<WorkPage key="s2" id="s2" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     hydrateTranscript(container);
     await user.click(await screen.findByRole("button", { name: "View details" }));
     expect(await screen.findByText("new parent child")).toBeVisible();
@@ -1055,7 +1067,7 @@ describe("WorkPage", () => {
         session: { id: "child-retry", cwd: "/p", sessionName: "easyresearch:search" },
         messages: [{ role: "assistant", content: [{ type: "text", text: "retry recovered" }] }],
       } as never);
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     const details = await screen.findByRole("button", { name: "View details" });
     act(() => {
       details.click();
@@ -1073,7 +1085,7 @@ describe("WorkPage", () => {
 
   it("keeps subagent selection and stop as siblings, then collapses the stopped temporary tab", async () => {
     const user = userEvent.setup();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     emitInAct({
       type: "tool_execution_start",
@@ -1096,7 +1108,7 @@ describe("WorkPage", () => {
 
   it("keeps a retained chain UUID active while creating and promoting the next step tab", async () => {
     const user = userEvent.setup();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     emitInAct({
       type: "tool_execution_start",
@@ -1171,7 +1183,7 @@ describe("WorkPage", () => {
           messages: [{ role: "assistant", content: [{ type: "text", text: `history for ${childId}` }] }],
         }) as never,
     );
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
 
     await user.click(await screen.findByRole("button", { name: "View details: Step 1" }));
     expect(await screen.findByText("history for child-history-search")).toBeVisible();
@@ -1195,7 +1207,7 @@ describe("WorkPage", () => {
         { role: "toolResult", toolCallId: "old-unmapped", toolName: "subagent", content: [], isError: false },
       ],
     } as never);
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
 
     expect(await screen.findByText("No progress was saved before this run ended.")).toBeVisible();
     expect(screen.queryByRole("button", { name: "View details" })).toBeNull();
@@ -1204,7 +1216,7 @@ describe("WorkPage", () => {
 
   it("maps the running chain status to the currently displayed agent name", async () => {
     const user = userEvent.setup();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     emitInAct({
       type: "tool_execution_start",
@@ -1240,7 +1252,7 @@ describe("WorkPage", () => {
       session: { id: "s3", cwd: "/p", isStreaming: false, status: "ready", sessionName: "easyresearch:search" },
       messages: [{ role: "user", content: [{ type: "text", text: "Task: search" }] }],
     } as never);
-    render(<WorkPage id="s3" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s3" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("Task: search");
     expect(screen.getByText(/history only/i)).toBeTruthy();
     expect(screen.getByRole("textbox", { name: /message/i })).toBeDisabled();
@@ -1248,7 +1260,7 @@ describe("WorkPage", () => {
 
   it("preserves chat state when toggling side panels and back", async () => {
     const user = userEvent.setup();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     await user.type(screen.getByRole("textbox", { name: /message/i }), "keep this");
     await user.click(screen.getByRole("button", { name: /send/i }));
@@ -1271,7 +1283,7 @@ describe("WorkPage", () => {
       if (p === "/p") return [{ kind: "directory", name: "folder", path: "/p/folder" }];
       return pending;
     });
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     expect(await screen.findByText("folder")).toBeVisible();
     expect(screen.queryByLabelText("Loading folder")).toBeNull();
@@ -1283,7 +1295,7 @@ describe("WorkPage", () => {
   it("files panel shows a loading message instead of empty content while the root is pending", async () => {
     const pending: Promise<FileEntryDto[]> = new Promise(() => {});
     vi.mocked(api.listEntries).mockImplementation(async () => pending);
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     expect(await screen.findByText("Loading…")).toBeTruthy();
     expect(screen.queryByText("No files.")).toBeNull();
@@ -1292,7 +1304,7 @@ describe("WorkPage", () => {
   it("routes valid file watcher events to the file browser and ignores out-of-root events", async () => {
     let entries: FileEntryDto[] = [{ kind: "file", name: "notes.md", path: "/p/notes.md" }];
     vi.mocked(api.listEntries).mockImplementation(async () => entries);
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     await screen.findByText("notes.md");
 
@@ -1319,7 +1331,7 @@ describe("WorkPage", () => {
       byteCount: 15,
       truncated: false,
     } as never);
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     await user.click(await screen.findByText("notes.md"));
     expect(api.readFileContent).toHaveBeenCalledWith("/p/notes.md");
@@ -1336,7 +1348,7 @@ describe("WorkPage", () => {
       byteCount: 4,
       truncated: false,
     } as never);
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     await user.click(await screen.findByText("notes.md"));
     expect(await screen.findByText("body")).toBeTruthy();
@@ -1347,7 +1359,7 @@ describe("WorkPage", () => {
 
   it("rehydrates from a snapshot event on reconnect", async () => {
     stubEvents();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     emitInAct({
       type: "snapshot",
@@ -1360,7 +1372,7 @@ describe("WorkPage", () => {
 
   it("rehydrates a running subagent tab and card, then updates both in place", async () => {
     const latestMessage = "verifying metadata for the selected papers";
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     emitInAct({
       type: "snapshot",
@@ -1401,7 +1413,7 @@ describe("WorkPage", () => {
   });
 
   it("keeps usable live chain progress when reconnect completes with whitespace-only failure output", async () => {
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     emitInAct({
       type: "tool_execution_start",
@@ -1461,7 +1473,7 @@ describe("WorkPage", () => {
 
   it("shows tool blocks from live events with running and done states", async () => {
     stubEvents();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     emit({ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: {} });
     expect(await screen.findByText(/Running tool: bash/)).toBeTruthy();
@@ -1471,7 +1483,7 @@ describe("WorkPage", () => {
 
   it("does not render a live toolResult message_start as a system bubble", async () => {
     stubEvents();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     emit({
       type: "message_start",
@@ -1492,7 +1504,7 @@ describe("WorkPage", () => {
 
   it("collapses reasoning by default and expands on demand", async () => {
     stubEvents();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     emit({
       type: "snapshot",
@@ -1517,7 +1529,7 @@ describe("WorkPage", () => {
 
   it("shows tool arguments and expands tool output on demand", async () => {
     stubEvents();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     emit({ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: { command: "ls -la" } });
     expect(await screen.findByText(/Running tool: bash/)).toBeTruthy();
@@ -1535,7 +1547,7 @@ describe("WorkPage", () => {
   });
 
   it("chat column is the flex-1 remainder and the panel carries the explicit width", async () => {
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     const chat = screen.getByText("starting research").closest("section");
     const panel = screen.getByRole("region", { name: /file browser/i });
@@ -1546,7 +1558,7 @@ describe("WorkPage", () => {
   });
 
   it("resizes the panel within min/max while dragging", async () => {
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     const observer = panelObserver();
     expect(observer).toBeTruthy();
@@ -1576,7 +1588,7 @@ describe("WorkPage", () => {
   });
 
   it("remembers the dragged width for the session after the first drag", async () => {
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     const observer = panelObserver();
     observer!.__fire(1200);
@@ -1606,7 +1618,7 @@ describe("WorkPage", () => {
   });
 
   it("never lets the drag shrink the panel below one third of the screen", async () => {
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     const observer = panelObserver();
     observer!.__fire(1200);
@@ -1635,7 +1647,7 @@ describe("WorkPage", () => {
 
   it("shows Chat by default below 820px and exposes persistent view tabs", async () => {
     vi.stubGlobal("innerWidth", 390);
-    render(<WorkPage id="s1" cwd="/papers/fault-diagnosis" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/papers/fault-diagnosis" onBack={() => {}} onOpenSettings={() => {}} />);
     expect(await screen.findByRole("tab", { name: /chat/i })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tabpanel", { name: /chat/i })).toBeVisible();
     expect(screen.getByTitle("/papers/fault-diagnosis")).toHaveTextContent("fault-diagnosis");
@@ -1644,7 +1656,7 @@ describe("WorkPage", () => {
   it("preserves file browser state while switching mobile views", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("innerWidth", 390);
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await user.click(await screen.findByRole("tab", { name: /files/i }));
     const filter = screen.getByRole("textbox", { name: /filter files/i });
     await user.type(filter, "notes");
@@ -1655,7 +1667,7 @@ describe("WorkPage", () => {
 
   it("resets to Chat and closes the desktop panel when the viewport narrows below 820px", async () => {
     vi.stubGlobal("innerWidth", 900);
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await userEvent.setup().click(await screen.findByRole("button", { name: /agent list/i }));
     expect(screen.getByRole("region", { name: /agent list/i })).toBeTruthy();
     vi.stubGlobal("innerWidth", 800);
@@ -1667,7 +1679,7 @@ describe("WorkPage", () => {
   it("keeps the current mobile view across in-mobile resizes without resetting to Chat", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("innerWidth", 800);
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await user.click(await screen.findByRole("tab", { name: /files/i }));
     expect(screen.getByRole("tab", { name: /files/i })).toHaveAttribute("aria-selected", "true");
     vi.stubGlobal("innerWidth", 700);
@@ -1679,7 +1691,7 @@ describe("WorkPage", () => {
   it("mounts FileBrowser and AgentList once while switching mobile views", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("innerWidth", 390);
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     await user.click(screen.getByRole("tab", { name: /files/i }));
     await user.click(screen.getByRole("tab", { name: /agents/i }));
@@ -1692,7 +1704,7 @@ describe("WorkPage", () => {
 
   it("marks the panel invisible after the close transition ends", async () => {
     const user = userEvent.setup();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
@@ -1706,7 +1718,7 @@ describe("WorkPage", () => {
   });
 
   it("disables panel transitions while drag-resizing", async () => {
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     const handle = screen.getByRole("button", { name: /resize panel/i });
     fireEvent.pointerDown(handle, { clientX: 880, clientY: 100, pointerId: 1 });
@@ -1717,7 +1729,7 @@ describe("WorkPage", () => {
   });
 
   it("keeps the resize handle reachable while clipping panel content internally", async () => {
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     const region = screen.getByRole("region", { name: /file browser/i });
     expect(region.className).not.toContain("overflow-hidden");
@@ -1730,7 +1742,7 @@ describe("WorkPage", () => {
 
   it("fades the content wrapper when switching between panel views", async () => {
     const user = userEvent.setup();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     const filesRegion = screen.getByRole("region", { name: /file browser/i });
     const filesWrapper = filesRegion.querySelector(".animate-v2-fade-in");
@@ -1744,7 +1756,7 @@ describe("WorkPage", () => {
 
   it("renders the full five-agent roster in the agents view", async () => {
     const user = userEvent.setup();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
@@ -1757,7 +1769,7 @@ describe("WorkPage", () => {
 
   it("agent cards show localized descriptions and no Subagents rows", async () => {
     const user = userEvent.setup();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
@@ -1770,7 +1782,7 @@ describe("WorkPage", () => {
   it("keeps the Paper Assistant card when the agents endpoint fails", async () => {
     const user = userEvent.setup();
     vi.mocked(api.listAgents).mockRejectedValue(new Error("boom"));
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
@@ -1779,7 +1791,7 @@ describe("WorkPage", () => {
 
   it("shows each agent's effective model in its model dropdown", async () => {
     const user = userEvent.setup();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
@@ -1793,7 +1805,7 @@ describe("WorkPage", () => {
 
   it("selecting the default option on an overridden agent clears its model", async () => {
     const user = userEvent.setup();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
@@ -1805,7 +1817,7 @@ describe("WorkPage", () => {
 
   it("applying a model to an agent writes it immediately, with no Set button", async () => {
     const user = userEvent.setup();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
@@ -1818,7 +1830,7 @@ describe("WorkPage", () => {
 
   it("keeps the transcript without a session-ended notice on session_deactivated", async () => {
     stubEvents();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     emitInAct({ type: "session_deactivated", sessionId: "s1" });
     expect(screen.queryByText(/session ended/i)).toBeNull();
@@ -1845,7 +1857,7 @@ describe("WorkPage", () => {
         session: { id: "s2", cwd: "/p", isStreaming: false, status: "ready" },
         messages: [{ role: "user", content: [{ type: "text", text: "continue please" }] }],
       } as never);
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     await user.type(screen.getByRole("textbox", { name: /message/i }), "continue please");
     await user.click(screen.getByRole("button", { name: /send/i }));
@@ -1903,7 +1915,7 @@ describe("WorkPage", () => {
         subagents: [],
       } as never);
 
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     await user.type(screen.getByRole("textbox", { name: /message/i }), "continue please");
     await user.click(screen.getByRole("button", { name: /send/i }));
@@ -1932,7 +1944,7 @@ describe("WorkPage", () => {
         session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
         messages: [{ role: "user", content: [{ type: "text", text: "continue please" }] }],
       } as never);
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     await user.type(screen.getByRole("textbox", { name: /message/i }), "continue please");
     await user.click(screen.getByRole("button", { name: /send/i }));
@@ -1959,7 +1971,7 @@ describe("WorkPage", () => {
     const user = userEvent.setup();
     stubEvents();
     vi.mocked(api.sendPrompt).mockRejectedValue(new api.ApiError(500, { error: "server exploded" }));
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     await user.type(screen.getByRole("textbox", { name: /message/i }), "continue please");
     await user.click(screen.getByRole("button", { name: /send/i }));
@@ -1973,7 +1985,7 @@ describe("WorkPage", () => {
     stubEvents();
     vi.mocked(api.sendPrompt).mockRejectedValueOnce(new api.ApiError(404, { error: "Unknown session: s1" }));
     vi.mocked(api.openSession).mockRejectedValueOnce(new Error("Session file can no longer be reopened"));
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
 
     await user.type(screen.getByRole("textbox", { name: /message/i }), "continue please");
@@ -1985,7 +1997,7 @@ describe("WorkPage", () => {
 
   it("shows the retry banner while an API call is being retried and hides it on completion", async () => {
     stubEvents();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     emitInAct({
       type: "auto_retry_start",
       attempt: 1,
@@ -2012,7 +2024,7 @@ describe("WorkPage", () => {
     it("opens the skill popover and sends the inserted /skill: command", async () => {
       const user = userEvent.setup();
       vi.mocked(api.getSessionCommands).mockResolvedValue([{ name: "arxiv", description: "arXiv metadata" }]);
-      render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+      render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
       await screen.findByText("starting research");
 
       const input = screen.getByRole("textbox", { name: /message/i });
@@ -2026,7 +2038,7 @@ describe("WorkPage", () => {
 
     it("loads session tree metadata and offers the version switcher", async () => {
       vi.mocked(api.getSessionTree).mockResolvedValue(branchingTree as never);
-      render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+      render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
       await screen.findByText("starting research");
       expect(await screen.findByText("2/2")).toBeTruthy();
     });
@@ -2034,7 +2046,7 @@ describe("WorkPage", () => {
     it("edits a historical message: navigate in place, then send the new text", async () => {
       const user = userEvent.setup();
       vi.mocked(api.getSessionTree).mockResolvedValue(branchingTree as never);
-      render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+      render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
       await screen.findByText("starting research");
       await screen.findByText("2/2");
 
@@ -2052,7 +2064,7 @@ describe("WorkPage", () => {
     it("switches versions by navigating to the neighbor's subtree leaf", async () => {
       const user = userEvent.setup();
       vi.mocked(api.getSessionTree).mockResolvedValue(branchingTree as never);
-      render(<WorkPage id="s1" cwd="/p" onBack={() => {}} />);
+      render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
       await screen.findByText("starting research");
       await screen.findByText("2/2");
 
