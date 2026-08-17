@@ -51,6 +51,27 @@ export function writeVersionOutput(
   write(`easyresearch ${version}`);
 }
 
+export function writeHelpOutput(
+  write: (output: string) => unknown = (output) => console.log(output),
+): void {
+  write(`easyresearch - Automated academic paper writing
+
+Usage:
+  easyresearch                start the Web service and open the browser
+  easyresearch exit           stop the background service
+
+Options:
+  -p, --port <port>    port for the Web service (default 3000)
+      --host <host>    host to bind (default 127.0.0.1)
+      --no-open        do not open the browser
+  -h, --help           show this help
+  -v, --version        print the version`);
+}
+
+export function hasHelpFlag(argv: string[]): boolean {
+  return argv.some((arg) => arg === "-h" || arg === "--help");
+}
+
 export function isSkipSetupEnabled(): boolean {
   const value = process.env.EASYRESEARCH_SKIP_SETUP;
   return value === "1" || value === "true" || value === "yes";
@@ -206,6 +227,10 @@ export async function runCli(
   const agentDir = options.agentDir ?? getAgentDir();
 
   try {
+    if (hasHelpFlag(argv)) {
+      writeHelpOutput();
+      return 0;
+    }
     if (argv.length === 1 && argv[0] === "exit") {
       const stopped = await stopServerProcess(agentDir);
       console.log(stopped ? "EasyResearch service stopped." : "EasyResearch service is not running.");
@@ -231,15 +256,15 @@ export async function runCli(
         const value = argv[i + 1];
         const parsed = value === undefined ? undefined : parsePort(value);
         if (parsed === undefined) {
-          console.error("Usage: easyresearch [-p <port>] [--host <host>] [--no-open] [exit]");
+          console.error("Usage: easyresearch [-p <port>] [--host <host>] [--no-open] [exit]\nRun 'easyresearch --help' for details.");
           return 1;
         }
         port = parsed;
         i += 1;
-      } else if (arg === "--host" || arg === "-h") {
+      } else if (arg === "--host") {
         const value = argv[i + 1];
         if (value === undefined) {
-          console.error("Usage: easyresearch [-p <port>] [--host <host>] [--no-open] [exit]");
+          console.error("Usage: easyresearch [-p <port>] [--host <host>] [--no-open] [exit]\nRun 'easyresearch --help' for details.");
           return 1;
         }
         host = value;
@@ -247,7 +272,7 @@ export async function runCli(
       } else if (arg === "--no-open") {
         open = false;
       } else {
-        console.error("Usage: easyresearch [-p <port>] [--host <host>] [--no-open] [exit]");
+        console.error("Usage: easyresearch [-p <port>] [--host <host>] [--no-open] [exit]\nRun 'easyresearch --help' for details.");
         return 1;
       }
     }
@@ -317,7 +342,7 @@ async function runRuntimeEntry(args: string[]): Promise<void> {
     const host = args[1] as string;
     const port = parsePort(args[2] as string);
     if (port === undefined) {
-      console.error("Usage: easyresearch [-p <port>] [--host <host>] [--no-open] [exit]");
+      console.error("Usage: easyresearch [-p <port>] [--host <host>] [--no-open] [exit]\nRun 'easyresearch --help' for details.");
       process.exitCode = 1;
       return;
     }
@@ -369,7 +394,9 @@ async function runRuntimeEntry(args: string[]): Promise<void> {
 
 if (import.meta.main) {
   const args = process.argv.slice(2);
-  if (args[0] === "--version" || args[0] === "-v") {
+  if (hasHelpFlag(args)) {
+    writeHelpOutput();
+  } else if (args[0] === "--version" || args[0] === "-v") {
     writeVersionOutput(embeddedPackageVersion());
   } else {
     await runRuntimeEntry(args);

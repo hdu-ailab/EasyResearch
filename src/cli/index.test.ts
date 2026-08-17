@@ -214,6 +214,69 @@ describe("version output", () => {
   });
 });
 
+describe("help output", () => {
+  it("writes the full flag reference through the injected writer", () => {
+    const writeHelpOutput = (cliModule as typeof cliModule & {
+      writeHelpOutput(write: (output: string) => unknown): void;
+    }).writeHelpOutput;
+    const write = vi.fn();
+
+    writeHelpOutput(write);
+
+    const text = String(write.mock.calls[0]?.[0]);
+    expect(text).toContain("easyresearch - Automated academic paper writing");
+    expect(text).toContain("easyresearch exit");
+    expect(text).toContain("-p, --port <port>");
+    expect(text).toContain("--host <host>");
+    expect(text).toContain("--no-open");
+    expect(text).toContain("-h, --help");
+    expect(text).toContain("-v, --version");
+  });
+
+  it("prints help and exits 0 for -h or --help without setup, daemon, or serve", async () => {
+    for (const flag of ["-h", "--help"]) {
+      const writes: string[] = [];
+      const logSpy = vi.spyOn(console, "log").mockImplementation((msg: unknown) => {
+        writes.push(String(msg));
+      });
+      try {
+        const deps = makeDeps();
+        const setup = vi.fn();
+        expect(await runCli([flag], deps, { agentDir: root, setup })).toBe(0);
+        expect(deps.spawnBackground).not.toHaveBeenCalled();
+        expect(deps.serve).not.toHaveBeenCalled();
+        expect(setup).not.toHaveBeenCalled();
+      } finally {
+        logSpy.mockRestore();
+      }
+      expect(writes.join("\n")).toContain("easyresearch - Automated academic paper writing");
+    }
+  });
+
+  it("prints help from any argument position and never starts a daemon", async () => {
+    const deps = makeDeps();
+    const writes: string[] = [];
+    const logSpy = vi.spyOn(console, "log").mockImplementation((msg: unknown) => {
+      writes.push(String(msg));
+    });
+    try {
+      expect(await runCli(["-p", "4000", "--help"], deps, { agentDir: root })).toBe(0);
+    } finally {
+      logSpy.mockRestore();
+    }
+    expect(writes.join("\n")).toContain("--host <host>");
+    expect(deps.spawnBackground).not.toHaveBeenCalled();
+    expect(deps.serve).not.toHaveBeenCalled();
+  });
+
+  it("no longer treats -h as a --host alias", async () => {
+    const deps = makeDeps();
+    expect(await runCli(["-h"], deps, { agentDir: root })).toBe(0);
+    expect(deps.spawnBackground).not.toHaveBeenCalled();
+    expect(deps.openBrowser).not.toHaveBeenCalled();
+  });
+});
+
 describe("first-run setup", () => {
   it("runs injected setup on normal start", async () => {
     const setup = vi.fn();
