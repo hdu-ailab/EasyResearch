@@ -51,7 +51,13 @@ export function SubagentToolCard({
   const setOpen = isControlled ? (onToggle ?? (() => {})) : setInternalOpen;
   const reducedMotion = usePrefersReducedMotion();
   const { mounted, phase } = useExpandable(isOpen);
-  const message = tool.latestMessage ?? tool.output ?? "";
+  const activity = tool.latestActivity;
+  const isToolActivity = activity?.kind === "tool";
+  const message = activity
+    ? activity.kind === "tool"
+      ? `${activity.name}${activity.args ? ` ${activity.args}` : ""}`
+      : activity.text
+    : (tool.latestMessage ?? tool.output ?? "");
   const agentName = agentDisplayName(t, tool.agentName ?? "subagent");
   const running = tool.running && !tool.done;
   const emptyMessage = running ? t("transcript.waitingForProgress") : t("transcript.noSavedProgress");
@@ -118,11 +124,21 @@ export function SubagentToolCard({
 
           {mounted ? (
             <div
-              className={`v2-md mt-1.5 text-[length:var(--v2-chat-font-size)] text-v2-text-text-base ${
-                phase === "enter" ? "animate-v2-expand-down" : "animate-v2-collapse-up"
-              } motion-reduce:animate-none`}
+              className={`mt-1.5 text-[length:var(--v2-chat-font-size)] text-v2-text-text-base ${
+                isToolActivity
+                  ? "whitespace-pre-wrap break-words font-mono text-[12px] text-v2-text-text-muted"
+                  : "v2-md"
+              } ${phase === "enter" ? "animate-v2-expand-down" : "animate-v2-collapse-up"} motion-reduce:animate-none`}
             >
-              {message ? <MarkdownBlock text={message} /> : <p className="text-v2-text-text-faint">{emptyMessage}</p>}
+              {message ? (
+                isToolActivity ? (
+                  message
+                ) : (
+                  <MarkdownBlock text={message} />
+                )
+              ) : (
+                <p className="text-v2-text-text-faint">{emptyMessage}</p>
+              )}
             </div>
           ) : null}
           {canViewDetails && mappedLinks.length > 1 ? (

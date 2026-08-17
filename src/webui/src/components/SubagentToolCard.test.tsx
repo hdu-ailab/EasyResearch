@@ -270,4 +270,49 @@ describe("SubagentToolCard", () => {
     expect(screen.getByText("No progress was saved before this run ended.")).toBeVisible();
     expect(screen.queryByText(/waiting/i)).toBeNull();
   });
+
+  it("shows a bounded preview of a tool activity and the full call when expanded", async () => {
+    const user = userEvent.setup();
+    const longArgs = `--input "${"abcdef ".repeat(40)}"`;
+    render(
+      <SubagentToolCard
+        tool={subagentTool({ latestActivity: { kind: "tool", name: "bash", args: longArgs, state: "running" } })}
+        initialOpen={false}
+      />,
+    );
+
+    expect(screen.getByText("Search")).toBeVisible();
+    const preview = screen.getByText(/^bash --input .*…$/);
+    expect(preview).toHaveClass("line-clamp-3");
+    expect(preview).not.toHaveTextContent(longArgs);
+
+    await user.click(screen.getByRole("button", { name: /show.*search.*running.*step 2/i }));
+    expect(screen.getByText(new RegExp(`^bash --input "${"abcdef ".repeat(40)}"`))).toBeVisible();
+  });
+
+  it("prefers the latest tool activity over an older assistant message", () => {
+    render(
+      <SubagentToolCard
+        tool={subagentTool({
+          latestMessage: "final summary",
+          latestActivity: { kind: "tool", name: "webfetch", args: "https://example.com", state: "done" },
+        })}
+        initialOpen={false}
+      />,
+    );
+
+    expect(screen.getByText(/^webfetch https:\/\/example.com$/)).toBeVisible();
+    expect(screen.queryByText("final summary")).toBeNull();
+  });
+
+  it("renders a text activity like the assistant message preview", () => {
+    render(
+      <SubagentToolCard
+        tool={subagentTool({ latestActivity: { kind: "text", text: "Searching repositories…" } })}
+        initialOpen={false}
+      />,
+    );
+
+    expect(screen.getByText("Searching repositories…")).toBeVisible();
+  });
 });
