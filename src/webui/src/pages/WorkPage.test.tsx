@@ -230,30 +230,17 @@ describe("WorkPage", () => {
     expect(conversation.parentElement).not.toHaveClass("p-2");
   });
 
-  it("intercepts /rename and never sends it to the agent", async () => {
+  it("sends /name messages verbatim to the agent and never intercepts them", async () => {
     stubEvents();
     const user = userEvent.setup();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
 
     const input = screen.getByRole("textbox", { name: /message/i });
-    await user.type(input, "/rename Paper v2{Enter}");
+    await user.type(input, "/name Paper v2{Enter}");
 
-    await waitFor(() => expect(api.renameSession).toHaveBeenCalledWith("s1", "Paper v2"));
-    expect(api.sendPrompt).not.toHaveBeenCalled();
-  });
-
-  it("clears the session name with a bare /rename", async () => {
-    stubEvents();
-    const user = userEvent.setup();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
-    await screen.findByText("starting research");
-
-    const input = screen.getByRole("textbox", { name: /message/i });
-    await user.type(input, "/rename{Enter}");
-
-    await waitFor(() => expect(api.renameSession).toHaveBeenCalledWith("s1", ""));
-    expect(api.sendPrompt).not.toHaveBeenCalled();
+    await waitFor(() => expect(api.sendPrompt).toHaveBeenCalledWith("s1", "/name Paper v2"));
+    expect(api.renameSession).not.toHaveBeenCalled();
   });
 
   it("shows the session name in the topbar and updates it live on session_info_changed", async () => {
@@ -2063,7 +2050,9 @@ describe("WorkPage", () => {
 
     it("opens the skill popover and sends the inserted /skill: command", async () => {
       const user = userEvent.setup();
-      vi.mocked(api.getSessionCommands).mockResolvedValue([{ name: "arxiv", description: "arXiv metadata" }]);
+      vi.mocked(api.getSessionCommands).mockResolvedValue([
+        { name: "arxiv", description: "arXiv metadata", source: "skill" },
+      ]);
       render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
       await screen.findByText("starting research");
 

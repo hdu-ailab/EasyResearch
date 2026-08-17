@@ -203,12 +203,11 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       if (req.method === "GET" && commandsMatch) {
         const commands = await services.registry.getCommands(commandsMatch[1]!);
         return jsonResponse({
-          commands: commands
-            .filter((command) => command.source === "skill")
-            .map((command) => ({
-              name: command.name.startsWith("skill:") ? command.name.slice("skill:".length) : command.name,
-              ...(command.description !== undefined ? { description: command.description } : {}),
-            })),
+          commands: commands.map((command) => ({
+            name: command.name.startsWith("skill:") ? command.name.slice("skill:".length) : command.name,
+            source: command.source,
+            ...(command.description !== undefined ? { description: command.description } : {}),
+          })),
         });
       }
 

@@ -17,9 +17,10 @@ const SLASH_PREFIX = /^(\s*)\/(\S*)$/;
 /**
  * Chat composer. The Send button turns into Stop while the agent is
  * streaming (opencode prompt-input behavior); multiline input preserved.
- * A leading `/` opens a skill command popover (ADR-066): selecting a command
- * inserts `/skill:<name> `, which pi expands server-side; the transcript
- * renders the expansion as a compact card.
+ * A leading `/` opens a command popover (ADR-066/078): selecting a skill
+ * command inserts `/skill:<name> `, which pi expands server-side; selecting
+ * an extension command (e.g. `name`) inserts `/name `, executed by pi's
+ * `_tryExecuteExtensionCommand`; neither reaches the transcript.
  */
 export function ChatComposer({ disabled, streaming, onSend, onAbort, commands = [] }: ChatComposerProps) {
   const { t } = useI18n();
@@ -47,7 +48,8 @@ export function ChatComposer({ disabled, streaming, onSend, onAbort, commands = 
     if (slash === undefined) return;
     const before = text.slice(0, selectionStart - slash.prefixLength);
     const after = text.slice(selectionStart);
-    const next = `${before}/skill:${command.name} ${after}`;
+    const invocation = command.source === "skill" ? `/skill:${command.name}` : `/${command.name}`;
+    const next = `${before}${invocation} ${after}`;
     setText(next);
     setSelectionStart(next.length);
     requestAnimationFrame(() => textareaRef.current?.focus());

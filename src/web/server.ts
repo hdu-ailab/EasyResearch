@@ -184,7 +184,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
   });
   const renameSessions = resolveRenameSessionService({
     isConnected: (id) => Promise.resolve(registry.has(id)),
-    setConnectedName: (id, name) => registry.setSessionName(id, name),
+    setConnectedName: (id, name) => registry.prompt(id, `/name ${name}`),
     listAll: async () => {
       const sessions = await SessionManager.listAll(undefined);
       return toUserSessionSummaries(sessions);

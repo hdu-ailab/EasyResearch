@@ -159,19 +159,6 @@ export class ActiveSessionRegistry {
     return this.withRecord(id, (record) => record.client.setThinkingLevel(level));
   }
 
-  /**
-   * Rename the connected session through its live AgentSession. Pi persists
-   * the `session_info` entry and emits `session_info_changed`; the DTO is
-   * mirrored here so callers do not depend on the event round trip. An
-   * empty name clears the display name (Pi semantics).
-   */
-  async setSessionName(id: string, name: string): Promise<void> {
-    return this.withRecord(id, async (record) => {
-      await record.client.setSessionName(name);
-      record.dto.sessionName = name === "" ? undefined : name;
-    });
-  }
-
   /** True when a live registry record exists for the id (i.e. the session is connected). */
   has(id: string): boolean {
     return this.records.has(id);

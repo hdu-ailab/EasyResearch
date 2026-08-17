@@ -49,14 +49,13 @@ interface FakeAdapterStats {
   aborts: number;
   setModels: Array<{ provider: string; modelId: string }>;
   setThinkingLevels: string[];
-  setSessionNames: string[];
 }
 
 class FakeAdapter implements SessionAdapter {
   static all: FakeAdapter[] = [];
   static nextId = 0;
   events = new Set<(event: unknown) => void>();
-  stats: FakeAdapterStats = { started: 0, stopped: 0, prompts: [], aborts: 0, setModels: [], setThinkingLevels: [], setSessionNames: [] };
+  stats: FakeAdapterStats = { started: 0, stopped: 0, prompts: [], aborts: 0, setModels: [], setThinkingLevels: [] };
   stateOverrides: Partial<SessionState> = {};
   startError: Error | null = null;
   getStateError: Error | null = null;
@@ -86,9 +85,6 @@ class FakeAdapter implements SessionAdapter {
   }
   async setThinkingLevel(level: string) {
     this.stats.setThinkingLevels.push(level);
-  }
-  async setSessionName(name: string) {
-    this.stats.setSessionNames.push(name);
   }
   async getState(): Promise<SessionState> {
     if (this.getStateError) throw this.getStateError;
@@ -265,26 +261,6 @@ describe("ActiveSessionRegistry", () => {
     const created = await registry.create({ cwd });
     factory.created[0]!.stateOverrides = { thinkingLevel: "high" };
     await expect(registry.getPaperAssistantThinking(created.id)).resolves.toBe("high");
-  });
-
-  it("renames a connected session through its adapter and mirrors the DTO", async () => {
-    const created = await registry.create({ cwd });
-    const adapter = FakeAdapter.all.at(-1)!;
-    expect(adapter).toBeDefined();
-
-    await registry.setSessionName(created.id, "Paper v2");
-
-    expect(adapter.stats.setSessionNames).toEqual(["Paper v2"]);
-    expect(registry.list()[0]?.sessionName).toBe("Paper v2");
-  });
-
-  it("clears the DTO name when the session is renamed to an empty string", async () => {
-    const created = await registry.create({ cwd });
-    FakeAdapter.all.at(-1)!.stateOverrides = { sessionName: "Paper" };
-
-    await registry.setSessionName(created.id, "");
-
-    expect(registry.list()[0]?.sessionName).toBeUndefined();
   });
 
   it("follows session_info_changed events emitted by the runtime", async () => {

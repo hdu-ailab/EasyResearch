@@ -38,6 +38,7 @@ export interface SessionSnapshotDto {
 export interface SkillCommandDto {
   name: string;
   description?: string;
+  source: "extension" | "prompt" | "skill";
 }
 
 export interface WebTreeEntryDto {

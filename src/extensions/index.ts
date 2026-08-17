@@ -7,6 +7,7 @@ import { createProjectTrustExtension } from "./project-trust";
 import duckDuckGoSearchExtension from "./web-search";
 import webFetchExtension from "./webfetch";
 import { createWebTreeExtension } from "./web-tree";
+import { createSessionNameExtension } from "./session-name";
 
 /**
  * Bundled extensions mounted as named inline factories in Paper Assistant
@@ -60,5 +61,9 @@ export const assistantExtensions: BundledExtension[] = [
   {
     name: "web-tree",
     factory: createWebTreeExtension(),
+  },
+  {
+    name: "session-name",
+    factory: createSessionNameExtension(),
   },
 ];

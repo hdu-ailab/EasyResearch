@@ -547,7 +547,12 @@ export function parseSkillCommands(value: unknown): SkillCommandDto[] {
     const entry = record(item, "command");
     if (typeof entry.name !== "string" || !entry.name) continue;
     const description = optionalString(entry, "description");
-    out.push({ name: entry.name, ...(description !== undefined ? { description } : {}) });
+    const source = entry.source;
+    out.push({
+      name: entry.name,
+      source: source === "extension" || source === "prompt" || source === "skill" ? source : "skill",
+      ...(description !== undefined ? { description } : {}),
+    });
   }
   return out;
 }

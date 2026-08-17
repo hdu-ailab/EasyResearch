@@ -154,11 +154,19 @@ describe("API response parsers", () => {
     expect(() => parseConfigEntries([{ name: "x", path: "x", type: "socket" }])).toThrow();
   });
 
-  it("parseSkillCommands extracts name and optional description", () => {
-    expect(parseSkillCommands({ commands: [{ name: "arxiv", description: "arXiv" }, { name: "drawio" }] })).toEqual([
-      { name: "arxiv", description: "arXiv" },
-      { name: "drawio" },
+  it("parseSkillCommands extracts name, source and optional description", () => {
+    expect(
+      parseSkillCommands({
+        commands: [
+          { name: "arxiv", description: "arXiv", source: "skill" },
+          { name: "name", source: "extension" },
+        ],
+      }),
+    ).toEqual([
+      { name: "arxiv", description: "arXiv", source: "skill" },
+      { name: "name", source: "extension" },
     ]);
+    expect(parseSkillCommands({ commands: [{ name: "legacy" }] })).toEqual([{ name: "legacy", source: "skill" }]);
     expect(parseSkillCommands({ commands: "nope" })).toEqual([]);
     expect(parseSkillCommands({ commands: [{ description: 3 }] })).toEqual([]);
     expect(() => parseSkillCommands(null)).toThrow();

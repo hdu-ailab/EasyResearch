@@ -28,7 +28,6 @@ class FakeAgentSession implements InProcessAgentSession {
   disposeCalls = 0;
   thinkingCalls: string[] = [];
   modelCalls: unknown[] = [];
-  nameCalls: string[] = [];
   listeners = new Set<(event: unknown) => void>();
 
   modelRuntime = {
@@ -81,7 +80,6 @@ class FakeAgentSession implements InProcessAgentSession {
   }
 
   setSessionName(name: string): void {
-    this.nameCalls.push(name);
     this.sessionName = name;
   }
 
@@ -203,18 +201,6 @@ describe("PiSessionFactory", () => {
 
     await expect(adapter.setModel("missing", "model")).rejects.toThrow("Unknown model");
     await expect(adapter.setThinkingLevel("extreme")).rejects.toThrow("Invalid thinking level");
-  });
-
-  it("forwards session name changes to the live session", async () => {
-    const session = new FakeAgentSession();
-    const factory = new PiSessionFactory(async () => session);
-    const adapter = factory.create({ cwd: "/project" });
-    await adapter.start();
-
-    await adapter.setSessionName("Refactor auth");
-
-    expect(session.nameCalls).toEqual(["Refactor auth"]);
-    await expect(adapter.getState()).resolves.toMatchObject({ sessionName: "Refactor auth" });
   });
 });
 

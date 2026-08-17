@@ -6,8 +6,9 @@ import { PreferencesProvider } from "../preferences/PreferencesProvider";
 import { ChatComposer } from "./ChatComposer";
 
 const commands = [
-  { name: "arxiv", description: "arXiv metadata" },
-  { name: "drawio", description: "Diagrams" },
+  { name: "arxiv", description: "arXiv metadata", source: "skill" as const },
+  { name: "drawio", description: "Diagrams", source: "skill" as const },
+  { name: "name", description: "Set the session display name", source: "extension" as const },
 ];
 
 async function renderComposer(props: Partial<React.ComponentProps<typeof ChatComposer>> = {}) {
@@ -64,6 +65,15 @@ describe("ChatComposer slash popover", () => {
     await user.keyboard("{Enter}");
     expect(input.value).toBe("/skill:arxiv ");
     expect(screen.queryByText("/arxiv")).toBeNull();
+  });
+
+  it("inserts /name for extension commands on Enter", async () => {
+    const { user } = await renderComposer();
+    const input = screen.getByLabelText(/message/i) as HTMLTextAreaElement;
+    await user.click(input);
+    await user.keyboard("/nam");
+    await user.keyboard("{Enter}");
+    expect(input.value).toBe("/name ");
   });
 
   it("navigates with ArrowDown and escapes", async () => {

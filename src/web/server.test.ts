@@ -75,7 +75,6 @@ class FakeAdapter implements SessionAdapter {
   stopped = 0;
   setModels: Array<{ provider: string; modelId: string }> = [];
   setThinkingLevels: string[] = [];
-  setSessionNames: string[] = [];
   messages: AgentMessage[] = [];
   getMessagesPromise: Promise<AgentMessage[]> | null = null;
   constructor(public options: StartSessionOptions) {
@@ -96,9 +95,6 @@ class FakeAdapter implements SessionAdapter {
   }
   async setThinkingLevel(level: string) {
     this.setThinkingLevels.push(level);
-  }
-  async setSessionName(name: string) {
-    this.setSessionNames.push(name);
   }
   async getState(): Promise<SessionState> {
     return {
@@ -525,7 +521,7 @@ describe("web routes", () => {
     expect(body.messages).toEqual([]);
   });
 
-  it("GET /api/sessions/:id/commands lists only skill commands without the skill: prefix", async () => {
+  it("GET /api/sessions/:id/commands lists commands with their source", async () => {
     setup();
     const created = await registry.create({ cwd: projectDir });
     const adapter = FakeAdapter.all.at(-1)!;
@@ -533,14 +529,17 @@ describe("web routes", () => {
       { name: "skill:arxiv", description: "arXiv", source: "skill" },
       { name: "skill:drawio", source: "skill" },
       { name: "clear", source: "extension" },
+      { name: "name", description: "Set the session display name", source: "extension" },
     ];
 
     const res = await handler(new Request(`http://localhost/api/sessions/${created.id}/commands`));
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       commands: [
-        { name: "arxiv", description: "arXiv" },
-        { name: "drawio" },
+        { name: "arxiv", description: "arXiv", source: "skill" },
+        { name: "drawio", source: "skill" },
+        { name: "clear", source: "extension" },
+        { name: "name", description: "Set the session display name", source: "extension" },
       ],
     });
   });
@@ -1510,8 +1509,8 @@ describe("web routes", () => {
     expect(setAgentThinking).not.toHaveBeenCalled();
   });
 
-  it("renames a connected session through the registry adapter", async () => {
-    setup({ renameSession: async (id, name) => void registry.setSessionName(id, name) });
+  it("renames a connected session by dispatching the /name command", async () => {
+    setup({ renameSession: async (id, name) => void registry.prompt(id, `/name ${name}`) });
     const created = await registry.create({ cwd: projectDir });
     const adapter = FakeAdapter.all.at(-1)!;
 
@@ -1525,7 +1524,7 @@ describe("web routes", () => {
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
-    expect(adapter.setSessionNames).toEqual(["Paper v2"]);
+    expect(adapter.prompts).toEqual(["/name Paper v2"]);
   });
 
   it("renames a historical session through the rename service", async () => {

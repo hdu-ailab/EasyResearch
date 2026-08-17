@@ -8,7 +8,6 @@ import {
   isUnknownSession,
   navigateSessionTree,
   openSession,
-  renameSession,
   sendPrompt,
 } from "../api";
 import { useI18n } from "../i18n/useI18n";
@@ -65,8 +64,6 @@ interface ConnectionTarget {
 }
 
 const OPERATION_CANCELLED = new Error("Session operation cancelled");
-
-const RENAME_COMMAND = /^\/rename(?:\s+([\s\S]*))?$/;
 
 type SnapshotEvent = Omit<SessionSnapshotDto, "subagents"> & {
   type: "snapshot";
@@ -284,16 +281,6 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
 
   const send = useCallback(
     async (text: string) => {
-      const renameMatch = RENAME_COMMAND.exec(text);
-      if (renameMatch) {
-        try {
-          await renameSession(sessionId, (renameMatch[1] ?? "").trim());
-        } catch (error) {
-          if (!mountedRef.current) return;
-          setNotice(error instanceof Error ? error.message : String(error));
-        }
-        return;
-      }
       cancelOperation(sendOperationRef.current);
       runGenerationRef.current += 1;
       const operation: GenerationToken = { generation: nextGeneration(), active: true };

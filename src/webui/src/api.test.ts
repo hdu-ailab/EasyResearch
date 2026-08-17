@@ -221,11 +221,22 @@ describe("api transport", () => {
 
   it("getSessionCommands GETs the session commands endpoint", async () => {
     fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ commands: [{ name: "arxiv", description: "arXiv" }] }), { status: 200 }),
+      new Response(
+        JSON.stringify({
+          commands: [
+            { name: "arxiv", description: "arXiv", source: "skill" },
+            { name: "name", source: "extension" },
+          ],
+        }),
+        { status: 200 },
+      ),
     );
     const commands = await getSessionCommands("s1");
     expect(fetchMock).toHaveBeenCalledWith("/api/sessions/s1/commands", expect.objectContaining({ method: "GET" }));
-    expect(commands).toEqual([{ name: "arxiv", description: "arXiv" }]);
+    expect(commands).toEqual([
+      { name: "arxiv", description: "arXiv", source: "skill" },
+      { name: "name", source: "extension" },
+    ]);
   });
 
   it("getSessionTree GETs the session tree endpoint", async () => {
