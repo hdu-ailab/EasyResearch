@@ -131,7 +131,7 @@ export function AgentConfigModal({
               ariaLabel={`${t("settings.agents.selectThinkingFor")} ${name}`}
               value={thinkingValue}
               levels={thinkingLevels}
-              emptyLabel={t("settings.agents.defaultThinking")}
+              emptyLabel={isPaperAssistant ? t("settings.agents.defaultThinking") : t("settings.agents.inheritThinking")}
               disabled={busy}
               onChange={onThinkingChange}
               className="h-8 w-full rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600 disabled:opacity-50"

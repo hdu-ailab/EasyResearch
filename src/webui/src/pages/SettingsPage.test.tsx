@@ -463,6 +463,25 @@ describe("SettingsPage", () => {
     await waitFor(() => expect(api.updateWebuiSettings).toHaveBeenCalledWith({ agentThinking: {} }));
   });
 
+  it("labels the subagent thinking empty option as follow Paper Assistant and keeps default (off) for the Paper Assistant", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getWebuiSettings).mockResolvedValue({
+      agentModels: {},
+      agentThinking: {},
+      paperAssistantThinking: null,
+      effectivePaperAssistantModel: "openai/gpt-4o",
+    } as never);
+    renderSettings();
+    await openAgentConfig(user, "Search");
+    const searchThinking = screen.getByRole("combobox", { name: "Select thinking for Search" });
+    expect(within(searchThinking).getByText("follow Paper Assistant")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Close editor" }));
+    await openAgentConfig(user, "Paper Assistant");
+    const assistantThinking = screen.getByRole("combobox", { name: "Select thinking for Paper Assistant" });
+    expect(within(assistantThinking).getByText("default (off)")).toBeTruthy();
+    expect(within(assistantThinking).queryByText("follow Paper Assistant")).toBeNull();
+  });
+
   it("surfaces an agentModels update failure", async () => {
     const user = userEvent.setup();
     vi.mocked(api.updateWebuiSettings).mockRejectedValueOnce(new Error("boom"));
