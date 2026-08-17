@@ -1785,9 +1785,8 @@ describe("WorkPage", () => {
     const region = screen.getByRole("region", { name: /agent list/i });
     const combos = within(region).getAllByRole("combobox");
     expect(combos.length).toBe(10);
-    expect(combos[0]!).toHaveValue("openai/gpt-4o");
-    expect(combos[2]!).toHaveValue("anthropic/claude");
-    expect(combos[4]!).toHaveValue("");
+    expect(combos[0]!).toHaveTextContent("openai/gpt-4o");
+    expect(combos[2]!).toHaveTextContent("anthropic/claude");
     expect(within(combos[4]!).getByText("Default model")).toBeTruthy();
     expect(within(region).queryByText(/inherits session/)).toBeNull();
   });
@@ -1798,8 +1797,9 @@ describe("WorkPage", () => {
     await screen.findByText("starting research");
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
-    const searchCombo = within(region).getAllByRole("combobox")[2] as HTMLSelectElement;
-    await user.selectOptions(searchCombo, "");
+    const searchCombo = within(region).getAllByRole("combobox")[2];
+    await user.click(searchCombo);
+    await user.click(screen.getByRole("option", { name: "Default model" }));
     await waitFor(() => expect(api.setAgentModel).toHaveBeenCalledWith("s1", "search", null));
   });
 
@@ -1809,8 +1809,9 @@ describe("WorkPage", () => {
     await screen.findByText("starting research");
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
-    const searchCombo = within(region).getAllByRole("combobox")[2] as HTMLSelectElement;
-    await user.selectOptions(searchCombo, "openai/gpt-4o");
+    const searchCombo = within(region).getAllByRole("combobox")[2];
+    await user.click(searchCombo);
+    await user.click(screen.getByRole("option", { name: "openai/gpt-4o" }));
     await waitFor(() => expect(api.setAgentModel).toHaveBeenCalledWith("s1", "search", "openai/gpt-4o"));
     expect(within(region).queryByRole("button", { name: /^set$/i })).toBeNull();
   });

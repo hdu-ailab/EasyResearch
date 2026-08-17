@@ -91,7 +91,6 @@ describe("AgentList", () => {
     expect(await screen.findByText("Paper Assistant")).toBeVisible();
     expect(api.listAgents).toHaveBeenCalledWith("/p");
     expect(screen.queryByRole("switch")).toBeNull();
-    expect(screen.getAllByRole("combobox")[2]).toHaveDisplayValue("custom/model");
     expect(screen.getAllByRole("combobox")[2]).toHaveTextContent("custom/model");
   });
 
@@ -110,8 +109,10 @@ describe("AgentList", () => {
     const user = userEvent.setup();
     render(<AgentList cwd="/p" statusByAgent={{ "paper-assistant": "idle", search: "idle" }} sessionId="s1" />);
 
-    const searchSelect = await screen.findByDisplayValue("custom/model");
-    await user.selectOptions(searchSelect, "");
+    const searchCard = (await screen.findByText("Search")).closest<HTMLElement>("div.mt-3")!;
+    const searchModel = within(searchCard).getByRole("combobox", { name: "Select model" });
+    await user.click(searchModel);
+    await user.click(screen.getByRole("option", { name: "Default model" }));
 
     await waitFor(() => expect(api.setAgentModel).toHaveBeenCalledWith("s1", "search", null));
   });
@@ -171,14 +172,20 @@ describe("AgentList", () => {
       <AgentList cwd="/p" statusByAgent={{ "paper-assistant": "idle", search: "idle" }} sessionId="s1" />,
     );
     rerender(<AgentList cwd="/p" statusByAgent={{ "paper-assistant": "idle", search: "idle" }} sessionId="s2" />);
-    expect(await screen.findAllByDisplayValue("openai/current")).toHaveLength(2);
+    await waitFor(() => {
+      const current = screen.getAllByRole("combobox").filter((el) => el.textContent?.includes("openai/current"));
+      expect(current).toHaveLength(2);
+    });
 
     oldModels.resolve([
       { name: "paper-assistant", model: "openai/old", source: "override" },
       { name: "search", model: "openai/old", source: "override" },
     ]);
 
-    await waitFor(() => expect(screen.queryByDisplayValue("openai/old")).toBeNull());
+    await waitFor(() => {
+      const stale = screen.getAllByRole("combobox").filter((el) => el.textContent?.includes("openai/old"));
+      expect(stale).toHaveLength(0);
+    });
   });
 
   it("does not leave the previous session roster interactive when the current load fails", async () => {

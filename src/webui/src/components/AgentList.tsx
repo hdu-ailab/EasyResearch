@@ -14,6 +14,7 @@ import type { ModelOption } from "../api/parsers";
 import { agentDescription, agentDisplayName, type Translate } from "../i18n/agents";
 import { useI18n } from "../i18n/useI18n";
 import { ThinkingLevelSelect, thinkingLevelsForModel } from "./ThinkingLevelSelect";
+import { SearchableSelect } from "./SearchableSelect";
 
 export type AgentStatus = "idle" | "working" | "error";
 
@@ -243,23 +244,21 @@ function ModelRow({ entry, thinkingEntry, models, disabled, onApply, onApplyThin
 
   return (
     <div className="mt-2 flex items-center gap-1.5">
-      <select
-        aria-label={t("work.selectModel")}
+      <SearchableSelect
+        ariaLabel={t("work.selectModel")}
         value={current}
-        onChange={(event) => onApply(event.target.value === "" ? null : event.target.value)}
+        options={[
+          { value: "", label: t("work.models") },
+          ...options.map((model) => {
+            const key = `${model.provider}/${model.id}`;
+            return { value: key, label: key };
+          }),
+        ]}
+        placeholder={t("work.models")}
         disabled={disabled}
-        className="h-6 min-w-0 flex-1 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-1 text-[11px] text-v2-text-text-base outline-none focus:border-v2-blue-600"
-      >
-        <option value="">{t("work.models")}</option>
-        {options.map((model) => {
-          const key = `${model.provider}/${model.id}`;
-          return (
-            <option key={key} value={key}>
-              {key}
-            </option>
-          );
-        })}
-      </select>
+        onSelect={(value) => onApply(value === "" ? null : value)}
+        className="flex-1"
+      />
       <ThinkingLevelSelect
         ariaLabel={t("work.selectThinking")}
         value={thinking}
