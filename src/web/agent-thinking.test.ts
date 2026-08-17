@@ -212,10 +212,10 @@ describe("resolveAgentThinkingService.effective", () => {
     });
     await expect(service.effective("s1")).resolves.toEqual([
       { name: "paper-assistant", thinking: "high", source: "default" },
-      { name: "search", thinking: "medium", source: "inherit" },
-      { name: "experiment", thinking: "medium", source: "inherit" },
+      { name: "search", thinking: "high", source: "inherit" },
+      { name: "experiment", thinking: "high", source: "inherit" },
       { name: "writing", thinking: "off", source: "default" },
-      { name: "figures", thinking: "medium", source: "inherit" },
+      { name: "figures", thinking: "high", source: "inherit" },
     ]);
   });
 

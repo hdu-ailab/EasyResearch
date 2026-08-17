@@ -237,7 +237,7 @@ describe("resolveAgentModelsService.effective", () => {
     await expect(service.effective("s1")).resolves.toEqual([
       { name: "paper-assistant", model: "g/pa", source: "global" },
       { name: "search", model: "s/9", source: "override" },
-      { name: "experiment", model: "o/7", source: "inherit" },
+      { name: "experiment", model: "g/pa", source: "inherit" },
       { name: "writing", model: "g/2", source: "global" },
       { name: "figures", model: "p/2", source: "project" },
     ]);
@@ -257,10 +257,10 @@ describe("resolveAgentModelsService.effective", () => {
     });
     await expect(service.effective("s1")).resolves.toEqual([
       { name: "paper-assistant", model: "p/pa", source: "project" },
-      { name: "search", model: "o/7", source: "inherit" },
-      { name: "experiment", model: "o/7", source: "inherit" },
-      { name: "writing", model: "o/7", source: "inherit" },
-      { name: "figures", model: "o/7", source: "inherit" },
+      { name: "search", model: "p/pa", source: "inherit" },
+      { name: "experiment", model: "p/pa", source: "inherit" },
+      { name: "writing", model: "p/pa", source: "inherit" },
+      { name: "figures", model: "p/pa", source: "inherit" },
     ]);
   });
 });

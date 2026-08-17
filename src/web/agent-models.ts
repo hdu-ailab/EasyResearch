@@ -160,14 +160,18 @@ export function resolveAgentModelsService(deps: {
       const paperAssistantModel = await deps.paperAssistantModel(id);
       const out: AgentEffectiveModelDto[] = [];
       const followGlobal = readFollowGlobalFlag(rows);
+      const paProject = project?.[PAPER_ASSISTANT_AGENT];
+      const paGlobal = global?.[PAPER_ASSISTANT_AGENT];
+      const inheritedPaperAssistantModel =
+        followGlobal && (paProject !== undefined || paGlobal !== undefined)
+          ? (paProject ?? paGlobal!)
+          : paperAssistantModel;
       for (const agent of agents) {
         if (agent.name === PAPER_ASSISTANT_AGENT && followGlobal) {
-          const paProject = project?.[PAPER_ASSISTANT_AGENT];
-          const paGlobal = global?.[PAPER_ASSISTANT_AGENT];
           if (paProject !== undefined || paGlobal !== undefined) {
             out.push({
               name: agent.name,
-              model: paProject ?? paGlobal!,
+              model: inheritedPaperAssistantModel ?? null,
               source: paProject !== undefined ? "project" : "global",
             });
             continue;
@@ -176,7 +180,7 @@ export function resolveAgentModelsService(deps: {
           continue;
         }
         const override = readOverrideForAgent(rows, agent.name);
-        const resolved = resolveEffectiveModel(override, project, global, paperAssistantModel, agent.name);
+        const resolved = resolveEffectiveModel(override, project, global, inheritedPaperAssistantModel, agent.name);
         out.push(
           resolved
             ? { name: agent.name, model: resolved.model, source: resolved.source }
