@@ -15,6 +15,7 @@ vi.mock("../api", async (importOriginal) => {
     restartSession: vi.fn(),
     touchSession: vi.fn(),
     stopSession: vi.fn(),
+    renameSession: vi.fn(),
   };
 });
 
@@ -94,6 +95,7 @@ describe("HomePage", () => {
     vi.mocked(api.restartSession).mockReset();
     vi.mocked(api.touchSession).mockReset();
     vi.mocked(api.stopSession).mockReset();
+    vi.mocked(api.renameSession).mockReset();
     vi.mocked(api.listStatus).mockResolvedValue({
       agentDir: "/agent",
       homeDir: "/home/user",
@@ -126,7 +128,7 @@ describe("HomePage", () => {
         settingsButton={<button type="button">Settings</button>}
       />,
     );
-    expect(await screen.findByText("write a paper")).toBeTruthy();
+    expect(await screen.findByText("Fault diagnosis")).toBeTruthy();
     expect(screen.getAllByText("/proj").length).toBeGreaterThan(0);
     expect(screen.getAllByText("12").length).toBeGreaterThan(0);
   });
@@ -134,15 +136,15 @@ describe("HomePage", () => {
   it("starts in All projects and filters both active and history by exact cwd", async () => {
     const user = userEvent.setup();
     renderHomeWithTwoProjects();
-    expect(await screen.findByText("write a paper")).toBeVisible();
-    expect(screen.getByText("compare another method")).toBeVisible();
-    expect(screen.getByText("a1")).toBeVisible();
-    expect(screen.getByText("a2")).toBeVisible();
+    expect(await screen.findByText("Fault diagnosis")).toBeVisible();
+    expect(screen.getByText("Other paper")).toBeVisible();
+    expect(screen.getByText("Project experiment")).toBeVisible();
+    expect(screen.getByText("Other experiment")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "/other" }));
-    expect(screen.queryByText("write a paper")).toBeNull();
-    expect(screen.queryByText("a1")).toBeNull();
-    expect(screen.getByText("compare another method")).toBeVisible();
-    expect(screen.getByText("a2")).toBeVisible();
+    expect(screen.queryByText("Fault diagnosis")).toBeNull();
+    expect(screen.queryByText("Project experiment")).toBeNull();
+    expect(screen.getByText("Other paper")).toBeVisible();
+    expect(screen.getByText("Other experiment")).toBeVisible();
   });
 
   it("keeps mobile interaction and landmark order aligned with the visual workspace order", async () => {
@@ -181,9 +183,9 @@ describe("HomePage", () => {
     } as never);
     renderHome();
     expect(await screen.findByText(/^2 active$/i)).toBeVisible();
-    expect(screen.getByText("running-")).toBeVisible();
-    expect(screen.getByText("ready-se")).toBeVisible();
-    expect(screen.queryByText("error-se")).toBeNull();
+    expect(screen.getByText("Running paper")).toBeVisible();
+    expect(screen.getByText("Ready paper")).toBeVisible();
+    expect(screen.queryByText("Error paper")).toBeNull();
   });
 
   it("renders ready sessions in the active list", async () => {
@@ -197,18 +199,18 @@ describe("HomePage", () => {
     } as never);
     renderHome();
     expect(await screen.findByRole("heading", { name: /active sessions/i })).toBeInTheDocument();
-    expect(screen.getByText("a1")).toBeInTheDocument();
-    expect(screen.getByText("idle-ses")).toBeInTheDocument();
+    expect(screen.getByTitle("Running")).toBeInTheDocument();
+    expect(screen.getByTitle("Idle")).toBeInTheDocument();
   });
 
   it("searches active and historical session titles without hiding project selection", async () => {
     const user = userEvent.setup();
     renderHomeWithTwoProjects();
     await user.type(await screen.findByRole("searchbox", { name: /search sessions/i }), "other");
-    expect(screen.queryByText("write a paper")).toBeNull();
-    expect(screen.queryByText("a1")).toBeNull();
-    expect(screen.getByText("compare another method")).toBeVisible();
-    expect(screen.getByText("a2")).toBeVisible();
+    expect(screen.queryByText("Fault diagnosis")).toBeNull();
+    expect(screen.queryByText("Project experiment")).toBeNull();
+    expect(screen.getByText("Other paper")).toBeVisible();
+    expect(screen.getByText("Other experiment")).toBeVisible();
     expect(screen.getByRole("button", { name: "/proj" })).toBeVisible();
   });
 
@@ -238,12 +240,12 @@ describe("HomePage", () => {
 
     expect(screen.getByRole("button", { name: /all projects/i })).toHaveAttribute("aria-current", "true");
     expect(screen.queryByRole("button", { name: "/other" })).toBeNull();
-    expect(screen.getByText("write a paper")).toBeVisible();
+    expect(screen.getByText("Fault diagnosis")).toBeVisible();
   });
 
   it("renders Settings once", async () => {
     renderHome();
-    await screen.findByText("write a paper");
+    await screen.findByText("Fault diagnosis");
     expect(screen.getAllByRole("button", { name: /settings/i })).toHaveLength(1);
   });
 
@@ -298,10 +300,27 @@ describe("HomePage", () => {
         settingsButton={<button type="button">Settings</button>}
       />,
     );
-    await user.click(await screen.findByText("write a paper"));
+    await user.click(await screen.findByText("Fault diagnosis"));
     await waitFor(() => expect(api.openSession).toHaveBeenCalledWith("/agent/sessions/--p--/a.jsonl"));
     expect(api.createSession).not.toHaveBeenCalled();
     await waitFor(() => expect(onOpen).toHaveBeenCalledWith({ id: "h1", cwd: "/proj" }));
+  });
+
+  it("renames a session from the row button and refreshes the status", async () => {
+    vi.mocked(api.renameSession).mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    renderHome();
+
+    await screen.findByText("Fault diagnosis");
+    const rename = screen.getByRole("button", { name: /rename session: fault diagnosis/i });
+    await user.click(rename);
+    const input = screen.getByRole("textbox", { name: /session name/i });
+    await user.clear(input);
+    await user.type(input, "Renamed paper");
+    await user.click(screen.getByRole("button", { name: /save/i }));
+
+    await waitFor(() => expect(api.renameSession).toHaveBeenCalledWith("h1", "Renamed paper"));
+    expect(api.listStatus).toHaveBeenCalled();
   });
 
   it("keeps controls usable while loading", () => {
@@ -346,7 +365,7 @@ describe("HomePage", () => {
         settingsButton={<button type="button">Settings</button>}
       />,
     );
-    await user.click(await screen.findByText("a1"));
+    await user.click(await screen.findByText("Running proj"));
     await waitFor(() => expect(api.restartSession).not.toHaveBeenCalled());
     await waitFor(() => expect(api.touchSession).toHaveBeenCalledWith("a1"));
     await waitFor(() => expect(onOpen).toHaveBeenCalledWith({ id: "a1", cwd: "/proj" }));

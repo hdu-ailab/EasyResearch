@@ -94,6 +94,18 @@ it("titles sessions from the trimmed first message or the first eight id charact
   expect(sessionTitle({ id: "0123456789abcdef", firstMessage: "write a paper" })).toBe("write a paper");
 });
 
+it("prefers the session name over the first message for active rows", () => {
+  expect(sessionTitle({ id: "abc12345", firstMessage: "write a paper", sessionName: "My Paper" })).toBe("My Paper");
+});
+
+it("prefers the session name over the first message for history rows", () => {
+  expect(sessionTitle({ id: "abc12345", firstMessage: "write a paper", name: "My Paper" })).toBe("My Paper");
+});
+
+it("falls back to the first message without a name", () => {
+  expect(sessionTitle({ id: "abc12345", firstMessage: "write a paper" })).toBe("write a paper");
+});
+
 it("copies the exact-file history firstMessage onto the running active view model", () => {
   const groups = buildHomeProjectGroups(
     [

@@ -8,7 +8,14 @@ export interface HomeProjectGroup {
   active: HomeActiveSession[];
 }
 
-export function sessionTitle(session: { id: string; firstMessage?: string }): string {
+export function sessionTitle(session: {
+  id: string;
+  firstMessage?: string;
+  name?: string;
+  sessionName?: string;
+}): string {
+  const name = session.sessionName ?? session.name;
+  if (name?.trim()) return name;
   const firstMessage = session.firstMessage?.trim();
   return firstMessage ? firstMessage : session.id.slice(0, 8);
 }

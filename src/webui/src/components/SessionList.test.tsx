@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import type { SessionSummaryDto } from "../../../web/contracts";
 import { SessionList } from "./SessionList";
@@ -17,24 +17,32 @@ function history(patch: Partial<SessionSummaryDto> = {}): SessionSummaryDto {
   };
 }
 
-function renderList(history: SessionSummaryDto[]) {
-  return render(<SessionList history={history} onOpenHistory={vi.fn()} />);
+function renderList(history: SessionSummaryDto[], onRenameSession: (session: SessionSummaryDto) => void = vi.fn()) {
+  return render(<SessionList history={history} onOpenHistory={vi.fn()} onRenameSession={onRenameSession} />);
 }
 
-it("shows the literal first prompt as the recent title even when a session name is set", () => {
+it("shows the session name as the recent title when set", () => {
   renderList([history()]);
-  expect(screen.getByText("write a paper")).toBeVisible();
-  expect(screen.queryByText("Fault diagnosis")).toBeNull();
+  expect(screen.getByText("Fault diagnosis")).toBeVisible();
+  expect(screen.queryByText("write a paper")).toBeNull();
 });
 
 it("renders the full first prompt as the recent title tooltip on a single truncating line", () => {
-  renderList([history({ firstMessage: "write a very long first prompt" })]);
+  renderList([history({ name: undefined, firstMessage: "write a very long first prompt" })]);
   const title = screen.getByTitle("write a very long first prompt");
   expect(title).toHaveTextContent("write a very long first prompt");
   expect(title).toHaveClass("truncate");
 });
 
-it("falls back to the first eight id characters when the first message is blank", () => {
-  renderList([history({ firstMessage: "   " })]);
+it("falls back to the first eight id characters when no name or first message is set", () => {
+  renderList([history({ name: undefined, firstMessage: "   " })]);
   expect(screen.getByText("01234567")).toBeVisible();
+});
+
+it("exposes a rename control per recent row", () => {
+  const onRenameSession = vi.fn();
+  renderList([history({ id: "h1" })], onRenameSession);
+  const rename = screen.getByRole("button", { name: /rename session/i });
+  fireEvent.click(rename);
+  expect(onRenameSession).toHaveBeenCalledWith(expect.objectContaining({ id: "h1" }));
 });

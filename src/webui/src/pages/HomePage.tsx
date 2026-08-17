@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ActiveSessionDto, SessionSummaryDto } from "../../../web/contracts";
-import { createSession, listStatus, openSession, stopSession, touchSession } from "../api";
+import { createSession, listStatus, openSession, renameSession, stopSession, touchSession } from "../api";
 import { DirectoryDialog } from "../components/DirectoryDialog";
 import { HomeWorkspace } from "../components/HomeWorkspace";
+import { RenameSessionDialog } from "../components/RenameSessionDialog";
 import { ProductMark, Topbar } from "../components/Topbar";
 import { useI18n } from "../i18n/useI18n";
 import { buildHomeProjectGroups } from "./home-view-model";
@@ -27,6 +28,7 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
   const [disconnectingSessionId, setDisconnectingSessionId] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [selectedCwd, setSelectedCwd] = useState<string | null>(null);
+  const [renamingSession, setRenamingSession] = useState<ActiveSessionDto | SessionSummaryDto | null>(null);
 
   const refresh = useCallback(() => {
     setError(null);
@@ -136,6 +138,8 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
             onOpenActive={(session) => void openActive(session)}
             onDisconnectActive={(session) => void disconnectActive(session)}
             onOpenHistory={(session) => void openHistory(session)}
+            onRenameSession={(session: ActiveSessionDto | SessionSummaryDto) => setRenamingSession(session)}
+            onRenameHistory={(session) => setRenamingSession(session)}
             disconnectingSessionId={disconnectingSessionId}
           />
         </div>
@@ -147,6 +151,22 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
           onSelect={(path) => {
             setDialogOpen(false);
             void startSession(path);
+          }}
+        />
+      )}
+      {renamingSession && (
+        <RenameSessionDialog
+          currentName={
+            "isStreaming" in renamingSession ? (renamingSession.sessionName ?? "") : (renamingSession.name ?? "")
+          }
+          onClose={() => setRenamingSession(null)}
+          onSave={(name) => {
+            const session = renamingSession;
+            setRenamingSession(null);
+            setError(null);
+            renameSession(session.id, name)
+              .then(refresh)
+              .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
           }}
         />
       )}

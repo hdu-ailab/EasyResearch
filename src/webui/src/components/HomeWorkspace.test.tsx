@@ -30,7 +30,14 @@ function active(patch: Partial<ActiveSessionDto> = {}): ActiveSessionDto {
   };
 }
 
-function renderWorkspace(history: SessionSummaryDto[], active: ActiveSessionDto[]) {
+function renderWorkspace(
+  history: SessionSummaryDto[],
+  active: ActiveSessionDto[],
+  handlers: {
+    onRenameActive?: (session: ActiveSessionDto | SessionSummaryDto) => void;
+    onRenameHistory?: (session: SessionSummaryDto) => void;
+  } = {},
+) {
   return render(
     <HomeWorkspace
       groups={buildHomeProjectGroups(history, active)}
@@ -43,42 +50,60 @@ function renderWorkspace(history: SessionSummaryDto[], active: ActiveSessionDto[
       onOpenActive={vi.fn()}
       onDisconnectActive={vi.fn()}
       onOpenHistory={vi.fn()}
+      onRenameSession={handlers.onRenameActive ?? vi.fn()}
+      onRenameHistory={handlers.onRenameHistory ?? vi.fn()}
     />,
   );
 }
 
-it("shows the literal first prompt for a running active session matched by exact session file", () => {
+it("shows the active session name when set", () => {
   renderWorkspace(
     [{ ...history({ id: "h1", path: "/agent/sessions/a1.jsonl" }) }],
     [active({ sessionFile: "/agent/sessions/a1.jsonl" })],
   );
-  expect(screen.getByText("write a fault diagnosis paper")).toBeVisible();
-  expect(screen.queryByText("Custom active name")).toBeNull();
+  expect(screen.getByText("Custom active name")).toBeVisible();
+  expect(screen.queryByText("write a fault diagnosis paper")).toBeNull();
 });
 
 it("renders the full first prompt as the active session title tooltip on a single truncating line", () => {
   renderWorkspace(
-    [{ ...history({ id: "h1", path: "/agent/sessions/a1.jsonl", firstMessage: "write a very long first prompt" }) }],
-    [active({ sessionFile: "/agent/sessions/a1.jsonl" })],
+    [
+      {
+        ...history({
+          id: "h1",
+          path: "/agent/sessions/a1.jsonl",
+          name: undefined,
+          firstMessage: "write a very long first prompt",
+        }),
+      },
+    ],
+    [active({ sessionFile: "/agent/sessions/a1.jsonl", sessionName: undefined })],
   );
   const title = screen.getByTitle("write a very long first prompt");
   expect(title).toHaveTextContent("write a very long first prompt");
   expect(title).toHaveClass("truncate");
 });
 
-it("falls back to the first eight real id characters for an active session without a matched history row", () => {
-  renderWorkspace([], [active()]);
+it("falls back to the first eight real id characters for an active session without a name or matched history row", () => {
+  renderWorkspace([], [active({ sessionName: undefined })]);
   expect(screen.getByText("01234567")).toBeVisible();
   expect(screen.queryByText("Custom active name")).toBeNull();
 });
 
 it("renders a ready session in the active list with the idle status", () => {
   renderWorkspace([], [active({ id: "idle-session", status: "ready", sessionName: "Idle session" })]);
-  expect(screen.getByText("idle-ses")).toBeVisible();
+  expect(screen.getByText("Idle session")).toBeVisible();
   expect(screen.getByText("Idle")).toBeVisible();
 });
 
 it("renders a separate disconnect control for an active session", () => {
   renderWorkspace([], [active({ sessionName: "Disconnectable" })]);
-  expect(screen.getByRole("button", { name: /disconnect/i })).toBeVisible();
+  expect(screen.getByRole("button", { name: /^disconnect session/i })).toBeVisible();
+});
+
+it("renders a rename control per active row and per history row", () => {
+  const onRenameActive = vi.fn();
+  const onRenameHistory = vi.fn();
+  renderWorkspace([history({ id: "h1" })], [active({ id: "a1" })], { onRenameActive, onRenameHistory });
+  expect(screen.getAllByRole("button", { name: /rename session/i })).toHaveLength(2);
 });

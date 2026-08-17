@@ -1,4 +1,4 @@
-import { Activity, Folder, FolderOpen, Plus, Power, Search } from "lucide-react";
+import { Activity, Folder, FolderOpen, Pencil, Plus, Power, Search } from "lucide-react";
 import { useState } from "react";
 import type { ActiveSessionDto, SessionSummaryDto } from "../../../web/contracts";
 import { useI18n } from "../i18n/useI18n";
@@ -23,6 +23,8 @@ export interface HomeWorkspaceProps {
   onOpenActive: (session: ActiveSessionDto) => void;
   onDisconnectActive: (session: ActiveSessionDto) => void;
   onOpenHistory: (session: SessionSummaryDto) => void;
+  onRenameSession: (session: ActiveSessionDto | SessionSummaryDto) => void;
+  onRenameHistory: (session: SessionSummaryDto) => void;
   disconnectingSessionId?: string | null;
 }
 
@@ -45,6 +47,8 @@ export function HomeWorkspace({
   onOpenActive,
   onDisconnectActive,
   onOpenHistory,
+  onRenameSession,
+  onRenameHistory,
   disconnectingSessionId = null,
 }: HomeWorkspaceProps) {
   const { t } = useI18n();
@@ -86,6 +90,15 @@ export function HomeWorkspace({
             <span className="max-w-[220px] truncate font-mono text-[12px] text-v2-text-text-faint">{session.cwd}</span>
           )}
           <span className="shrink-0 text-[12px] text-v2-text-text-muted">{statusLabel}</span>
+        </button>
+        <button
+          type="button"
+          aria-label={`${t("home.rename")}: ${sessionTitle(session)}`}
+          title={t("home.renameTitle")}
+          className="flex size-8 shrink-0 items-center justify-center rounded-md text-v2-text-text-faint transition-colors hover:bg-v2-grey-200 hover:text-v2-text-text-base"
+          onClick={() => onRenameSession(session)}
+        >
+          <Pencil size={13} aria-hidden />
         </button>
         <button
           type="button"
@@ -213,7 +226,12 @@ export function HomeWorkspace({
         ) : visibleHistory.length === 0 ? (
           <p className="px-2 py-2 text-[13px] text-v2-text-text-muted">{emptyHistory}</p>
         ) : (
-          <SessionList history={visibleHistory} showCwd={selectedCwd === null} onOpenHistory={onOpenHistory} />
+          <SessionList
+            history={visibleHistory}
+            showCwd={selectedCwd === null}
+            onOpenHistory={onOpenHistory}
+            onRenameSession={onRenameHistory}
+          />
         )}
       </section>
     </section>
