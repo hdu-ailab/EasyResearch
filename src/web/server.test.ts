@@ -75,6 +75,7 @@ class FakeAdapter implements SessionAdapter {
   stopped = 0;
   setModels: Array<{ provider: string; modelId: string }> = [];
   setThinkingLevels: string[] = [];
+  setSessionNames: string[] = [];
   messages: AgentMessage[] = [];
   getMessagesPromise: Promise<AgentMessage[]> | null = null;
   constructor(public options: StartSessionOptions) {
@@ -95,6 +96,9 @@ class FakeAdapter implements SessionAdapter {
   }
   async setThinkingLevel(level: string) {
     this.setThinkingLevels.push(level);
+  }
+  async setSessionName(name: string) {
+    this.setSessionNames.push(name);
   }
   async getState(): Promise<SessionState> {
     return {

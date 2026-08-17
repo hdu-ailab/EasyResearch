@@ -58,6 +58,7 @@ export interface InProcessAgentSession {
   abort(): Promise<void>;
   setModel(model: Model<any>): Promise<void>;
   setThinkingLevel(level: ThinkingLevel): void;
+  setSessionName(name: string): void;
   navigateTree(entryId: string, options?: Record<string, unknown>): Promise<{ cancelled: boolean }>;
   dispose(): void;
 }
@@ -141,6 +142,7 @@ export interface SessionAdapter {
   abort(): Promise<void>;
   setModel(provider: string, modelId: string): Promise<void>;
   setThinkingLevel(level: string): Promise<void>;
+  setSessionName(name: string): Promise<void>;
   getState(): Promise<SessionState>;
   getMessages(): Promise<AgentMessage[]>;
   getCommands(): Promise<WebSlashCommand[]>;
@@ -260,6 +262,10 @@ class DirectSessionAdapter implements SessionAdapter {
   async setThinkingLevel(level: string): Promise<void> {
     if (!THINKING_LEVELS.has(level as ThinkingLevel)) throw new Error(`Invalid thinking level: ${level}`);
     this.requiredSession().setThinkingLevel(level as ThinkingLevel);
+  }
+
+  async setSessionName(name: string): Promise<void> {
+    this.requiredSession().setSessionName(name);
   }
 
   async getState(): Promise<SessionState> {

@@ -49,13 +49,14 @@ interface FakeAdapterStats {
   aborts: number;
   setModels: Array<{ provider: string; modelId: string }>;
   setThinkingLevels: string[];
+  setSessionNames: string[];
 }
 
 class FakeAdapter implements SessionAdapter {
   static all: FakeAdapter[] = [];
   static nextId = 0;
   events = new Set<(event: unknown) => void>();
-  stats: FakeAdapterStats = { started: 0, stopped: 0, prompts: [], aborts: 0, setModels: [], setThinkingLevels: [] };
+  stats: FakeAdapterStats = { started: 0, stopped: 0, prompts: [], aborts: 0, setModels: [], setThinkingLevels: [], setSessionNames: [] };
   stateOverrides: Partial<SessionState> = {};
   startError: Error | null = null;
   getStateError: Error | null = null;
@@ -85,6 +86,9 @@ class FakeAdapter implements SessionAdapter {
   }
   async setThinkingLevel(level: string) {
     this.stats.setThinkingLevels.push(level);
+  }
+  async setSessionName(name: string) {
+    this.stats.setSessionNames.push(name);
   }
   async getState(): Promise<SessionState> {
     if (this.getStateError) throw this.getStateError;
