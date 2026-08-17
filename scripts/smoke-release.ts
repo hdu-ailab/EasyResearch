@@ -5,6 +5,13 @@ import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { TARGETS, platformBinaryName, platformPackageDir, repoPackageVersion } from "./build";
 import { validateNativeVersionOutput } from "./release";
+import {
+  createCompiledChildEnv,
+  resolveSmokePython,
+  runVenvValidation,
+  skillVenvPython,
+  writeVenvValidationScript,
+} from "./smoke-release-support";
 
 const targetName = process.argv[2];
 const target = TARGETS.find((candidate) => candidate.name === targetName);
@@ -16,15 +23,22 @@ if (versionVerifiedByRunner && target.name !== "windows-x64") {
 }
 
 const binary = resolve(platformPackageDir(target.name), "bin", platformBinaryName(target));
+const systemPython = resolveSmokePython({ explicit: process.env.EASYRESEARCH_SMOKE_PYTHON });
 const root = mkdtempSync(join(tmpdir(), "easyresearch-native-smoke-"));
 const home = join(root, "home");
 const agentDir = join(root, "agent");
 const project = join(root, "project");
-const emptyPath = join(root, "empty-path");
 mkdirSync(home, { recursive: true });
 mkdirSync(project, { recursive: true });
-mkdirSync(emptyPath, { recursive: true });
 mkdirSync(agentDir, { recursive: true });
+const venvPython = skillVenvPython(agentDir, process.platform);
+const validationScript = join(root, "validate-easyresearch-venv.py");
+const firstRunStdoutPath = join(root, "first-run-stdout.txt");
+const firstRunStderrPath = join(root, "first-run-stderr.txt");
+writeVenvValidationScript(validationScript);
+let systemPythonVersionOutput = "not checked";
+let validationStdout = "not run";
+let validationStderr = "not run";
 let modelRequests = 0;
 const modelServer = Bun.serve({
   port: 0,
@@ -68,61 +82,101 @@ const portProbe = Bun.serve({ port: 0, fetch: () => new Response("reserved") });
 const port = portProbe.port;
 portProbe.stop(true);
 
-const env = {
-  ...process.env,
-  HOME: home,
-  USERPROFILE: home,
-  LOCALAPPDATA: join(root, "localappdata"),
-  EASYRESEARCH_CODING_AGENT_DIR: agentDir,
-  PATH: emptyPath,
-};
+const env = createCompiledChildEnv({
+  base: process.env,
+  python: systemPython,
+  overrides: {
+    HOME: home,
+    USERPROFILE: home,
+    LOCALAPPDATA: join(root, "localappdata"),
+    EASYRESEARCH_CODING_AGENT_DIR: agentDir,
+  },
+});
 
-function run(args: string[]): { stdout: string; stderr: string } {
-  const stdoutPath = join(root, "run-stdout.txt");
-  const stderrPath = join(root, "run-stderr.txt");
-  const stdoutFd = openSync(stdoutPath, "w");
-  const stderrFd = openSync(stderrPath, "w");
-  let result: ReturnType<typeof spawnSync>;
+function safeReadText(path: string): string {
   try {
-    if (process.platform === "win32") {
-      // Bun 1.3.14 spawnSync silently fails to start compiled executables on
-      // Windows, and PowerShell's Start-Process -Wait waits on the whole
-      // process tree (the live daemon) and never returns. Launch the CLI
-      // without waiting; readiness is polled by the smoke script instead.
-      const nul = openSync("NUL", "w");
-      try {
-        const script = [
-          "$ErrorActionPreference = 'Stop'",
-          "try {",
-          `  Start-Process -FilePath '${binary}' -ArgumentList @(${args.map((arg) => `'${arg}'`).join(", ")}) -WindowStyle Hidden`,
-          "  exit 0",
-          "} catch {",
-          `  $_ | Out-File -FilePath '${join(root, "ps-error.txt")}' -Encoding utf8`,
-          "  exit 99",
-          "}",
-        ].join("; ");
-        result = spawnSync(
-          "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
-          ["-NoProfile", "-NonInteractive", "-Command", script],
-          { env, stdio: ["ignore", nul, nul], timeout: 180_000 },
-        );
-      } finally {
-        closeSync(nul);
-      }
-    } else {
-      result = spawnSync(binary, args, { env, stdio: ["ignore", stdoutFd, stderrFd], timeout: 180_000 });
-    }
-  } finally {
-    closeSync(stdoutFd);
-    closeSync(stderrFd);
+    return readFileSync(path, "utf8");
+  } catch (error) {
+    const cause = error instanceof Error ? error.message : String(error);
+    return `[capture unavailable: ${cause}]`;
   }
-  const stdout = readFileSync(stdoutPath, "utf8");
-  const stderr = readFileSync(stderrPath, "utf8");
+}
+
+function powershellQuote(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+function run(args: string[], captureName: "first-run" | "shutdown"): { stdout: string; stderr: string } {
+  const stdoutPath = captureName === "first-run" ? firstRunStdoutPath : join(root, `${captureName}-stdout.txt`);
+  const stderrPath = captureName === "first-run" ? firstRunStderrPath : join(root, `${captureName}-stderr.txt`);
+  const powershellErrorPath = join(root, `${captureName}-powershell-error.txt`);
+  let result: ReturnType<typeof spawnSync>;
+  if (process.platform === "win32") {
+    // Bun 1.3.14 spawnSync silently fails to start compiled executables on
+    // Windows, and PowerShell's Start-Process -Wait waits on the whole
+    // process tree (the live daemon) and never returns. Launch the CLI
+    // without waiting; readiness is polled by the smoke script instead.
+    // Start-Process owns these capture paths so Node must not open them first.
+    const nul = openSync("NUL", "w");
+    try {
+      const script = [
+        "$ErrorActionPreference = 'Stop'",
+        "try {",
+        `  Start-Process -FilePath ${powershellQuote(binary)} -ArgumentList @(${args.map(powershellQuote).join(", ")}) -WindowStyle Hidden -RedirectStandardOutput ${powershellQuote(stdoutPath)} -RedirectStandardError ${powershellQuote(stderrPath)}`,
+        "  exit 0",
+        "} catch {",
+        `  $_ | Out-File -FilePath ${powershellQuote(powershellErrorPath)} -Encoding utf8`,
+        "  exit 99",
+        "}",
+      ].join("; ");
+      result = spawnSync(
+        "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        ["-NoProfile", "-NonInteractive", "-Command", script],
+        { env, stdio: ["ignore", nul, nul], timeout: 180_000 },
+      );
+    } finally {
+      closeSync(nul);
+    }
+  } else {
+    const stdoutFd = openSync(stdoutPath, "w");
+    const stderrFd = openSync(stderrPath, "w");
+    try {
+      result = spawnSync(binary, args, { env, stdio: ["ignore", stdoutFd, stderrFd], timeout: 180_000 });
+    } finally {
+      closeSync(stdoutFd);
+      closeSync(stderrFd);
+    }
+  }
+  const stdout = safeReadText(stdoutPath);
+  const stderr = safeReadText(stderrPath);
   if (result.error || result.status !== 0) {
     const cause = result.error ? `${result.error.name}: ${result.error.message}` : "no spawn error";
-    throw new Error(`${binary} ${args.join(" ")} failed (${result.status ?? "no status"}; ${cause}):\n${stdout}\n${stderr}`);
+    const powershellError = process.platform === "win32" ? `\n${safeReadText(powershellErrorPath)}` : "";
+    throw new Error(`${binary} ${args.join(" ")} failed (${result.status ?? "no status"}; ${cause}):\n${stdout}\n${stderr}${powershellError}`);
   }
   return { stdout, stderr };
+}
+
+function requireCommandUnavailable(command: "node" | "bun"): void {
+  const result = spawnSync(command, ["--version"], { env, encoding: "utf8", timeout: 30_000 });
+  if ((result.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+    console.log(`[smoke] child ${command}: unavailable (expected)`);
+    return;
+  }
+  const cause = result.error ? `${result.error.name}: ${result.error.message}` : `status ${result.status ?? "unknown"}`;
+  throw new Error(`child environment unexpectedly resolved ${command} (${cause}):\n${result.stdout ?? ""}\n${result.stderr ?? ""}`);
+}
+
+function inspectSystemPython(): void {
+  const result = spawnSync(systemPython, ["--version"], { env, encoding: "utf8", timeout: 30_000 });
+  const output = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
+  systemPythonVersionOutput = output || "no version output";
+  console.log(`[smoke] system Python: ${systemPython}`);
+  console.log(`[smoke] system Python --version: ${systemPythonVersionOutput}`);
+  if (result.error || result.status !== 0) {
+    const cause = result.error ? `${result.error.name}: ${result.error.message}` : `status ${result.status ?? "unknown"}`;
+    throw new Error(`system Python version probe failed (${cause}): ${systemPythonVersionOutput}`);
+  }
 }
 
 function runVersion(): string {
@@ -164,15 +218,38 @@ async function requireOk(response: Response, label: string): Promise<any> {
 }
 
 function dumpServerLogs(): void {
-  for (const capture of ["run-stdout.txt", "run-stderr.txt", "ps-error.txt"]) {
+  console.log(`[smoke] system Python: ${systemPython}`);
+  console.log(`[smoke] system Python --version: ${systemPythonVersionOutput}`);
+  console.log(`[smoke] expected venv Python: ${venvPython}`);
+  console.log(`[smoke] expected venv Python exists: ${existsSync(venvPython)}`);
+  console.log(`[smoke] --- venv validation stdout (${validationStdout.length} bytes) ---`);
+  console.log(validationStdout.slice(-4000));
+  console.log(`[smoke] --- venv validation stderr (${validationStderr.length} bytes) ---`);
+  console.log(validationStderr.slice(-4000));
+  for (const capture of ["first-run-stdout.txt", "first-run-stderr.txt"]) {
+    const content = safeReadText(join(root, capture));
+    console.log(`[smoke] --- ${capture} (${content.length} bytes) ---`);
+    console.log(content.slice(-4000));
+  }
+  for (const capture of [
+    "first-run-powershell-error.txt",
+    "shutdown-stdout.txt",
+    "shutdown-stderr.txt",
+    "shutdown-powershell-error.txt",
+  ]) {
     const path = join(root, capture);
     if (!existsSync(path)) continue;
-    const content = readFileSync(path, "utf8");
+    const content = safeReadText(path);
     console.log(`[smoke] --- ${capture} (${content.length} bytes) ---`);
     console.log(content.slice(-4000));
   }
   console.log(`[smoke] agentDir exists: ${existsSync(agentDir)}`);
-  const agentFiles = treeFiles(agentDir);
+  let agentFiles: string[] = [];
+  try {
+    agentFiles = treeFiles(agentDir);
+  } catch (error) {
+    console.log(`[smoke] failed to inspect agentDir: ${error instanceof Error ? error.message : String(error)}`);
+  }
   console.log(`[smoke] agentDir files: ${agentFiles.length}`);
   if (existsSync(agentDir)) {
     const topLevel = readdirSync(agentDir).filter((entry) => !agentFiles.includes(`/${entry}`));
@@ -182,7 +259,7 @@ function dumpServerLogs(): void {
   const cliError = join(agentDir, "cli-error.log");
   if (existsSync(cliError)) {
     console.log(`[smoke] --- cli-error.log ---`);
-    console.log(readFileSync(cliError, "utf8").slice(-4000));
+    console.log(safeReadText(cliError).slice(-4000));
   }
   try {
     const logsDir = join(agentDir, "logs");
@@ -192,7 +269,7 @@ function dumpServerLogs(): void {
     }
     for (const entry of readdirSync(logsDir)) {
       const path = join(logsDir, entry);
-      const content = readFileSync(path, "utf8");
+      const content = safeReadText(path);
       console.log(`[smoke] --- ${entry} (${content.length} bytes) ---`);
       console.log(content.slice(-4000));
     }
@@ -236,19 +313,19 @@ function openAiStream(input: {
 }
 
 try {
+  inspectSystemPython();
+  requireCommandUnavailable("node");
+  requireCommandUnavailable("bun");
   const version = repoPackageVersion();
   if (!versionVerifiedByRunner) validateNativeVersionOutput(0, runVersion(), version, target.name);
   const treeBefore = treeFiles(root);
-  run(["--no-open", "--port", String(port)]);
+  run(["--no-open", "--port", String(port)], "first-run");
   const materializedDir = join(agentDir, "bundled");
-  const materializeDeadline = Date.now() + 180_000;
-  while (Date.now() < materializeDeadline) {
+  const firstRunDeadline = Date.now() + 180_000;
+  while (Date.now() < firstRunDeadline) {
     if (existsSync(materializedDir)) break;
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  const createdFiles = treeFiles(root).filter((file) => !treeBefore.includes(file));
-  console.log(`[smoke] files created by CLI run: ${createdFiles.length}`);
-  for (const file of createdFiles.slice(0, 60)) console.log(`[smoke]   ${file}`);
   const bundledCandidates = [
     join(agentDir, "bundled"),
     join(home, ".easyresearch", "agent", "bundled"),
@@ -261,7 +338,7 @@ try {
   const bundledDir = join(agentDir, "bundled");
   if (!existsSync(bundledDir)) throw new Error("CLI did not materialize bundled resources (did the CLI actually run?)");
   const daemonBinary = join(agentDir, "bin", target.os[0] === "win32" ? "easyresearch-daemon.exe" : "easyresearch-daemon");
-  const daemonDeadline = Date.now() + 30_000;
+  const daemonDeadline = Date.now() + 180_000;
   while (Date.now() < daemonDeadline) {
     if (existsSync(daemonBinary)) break;
     await new Promise((resolve) => setTimeout(resolve, 500));
@@ -284,6 +361,25 @@ try {
   }
   if (!status) throw new Error(`daemon did not become ready at ${base}`);
   await requireOk(status, "status probe");
+  if (!existsSync(venvPython)) {
+    throw new Error(`first-run skill venv missing interpreter: ${venvPython}`);
+  }
+  runVenvValidation({
+    python: venvPython,
+    script: validationScript,
+    spawn: (command, args, options) => {
+      const result = spawnSync(command, [...args], {
+        ...options,
+        env: { ...env, EASYRESEARCH_VENV: join(agentDir, "venv") },
+      });
+      validationStdout = result.stdout?.toString() ?? "";
+      validationStderr = result.stderr?.toString() ?? "";
+      return result;
+    },
+  });
+  const createdFiles = treeFiles(root).filter((file) => !treeBefore.includes(file));
+  console.log(`[smoke] files created by CLI run: ${createdFiles.length}`);
+  for (const file of createdFiles.slice(0, 60)) console.log(`[smoke]   ${file}`);
   const auth = await requireOk(await fetch(`${base}/api/auth/providers`), "OAuth provider probe");
   if (!Array.isArray(auth.providers) || !auth.providers.some(
     (provider: { authMethods?: string[] }) => provider.authMethods?.includes("oauth"),
@@ -341,7 +437,7 @@ try {
   throw error;
 } finally {
   try {
-    run(["exit"]);
+    run(["exit"], "shutdown");
   } catch {
     // The primary smoke failure is more useful than shutdown cleanup output.
   }
