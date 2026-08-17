@@ -184,11 +184,15 @@ describe("createSubagentTool in-process dispatch", () => {
       agentProvider: async () => [agent("search")],
       stageSessionRunner: async (options) => {
         calls.push(options);
-        return result(options);
+        return {
+          ...result(options),
+          sessionId: "owned-child",
+          sessionPath: "/sessions/runner-fresh.jsonl",
+        };
       },
     });
 
-    await tool.execute(
+    const output = await tool.execute(
       "call-2",
       { agent: "search", task: "continue", session: "inherit" },
       undefined,
@@ -201,30 +205,70 @@ describe("createSubagentTool in-process dispatch", () => {
     );
 
     expect(calls[0]?.sessionPath).toBe("/sessions/owned.jsonl");
+    expect(output.content[0]).toMatchObject({ text: expect.stringContaining("/sessions/owned.jsonl") });
+    expect(output.content[0]).toMatchObject({ text: expect.not.stringContaining("/sessions/runner-fresh.jsonl") });
+    expect(output.details).toMatchObject({
+      results: [{ sessionPath: "/sessions/owned.jsonl" }],
+    });
   });
 
-  it("exposes only a post-settlement confirmed path for a fresh child", async () => {
+  it("discloses the authoritative in-process session file path for a fresh child", async () => {
+    const list = vi.fn(async (_cwd: string, _sessionDir?: string) => [
+      { id: "child-1", path: "/sessions/list-confirmed.jsonl" },
+    ]);
     importPiMock.mockResolvedValue({
-      SessionManager: { list: async () => [{ id: "child-1", path: "/sessions/confirmed.jsonl" }] },
+      SessionManager: { list },
     });
     const tool = createSubagentTool({
       agentProvider: async () => [agent("search")],
       stageSessionRunner: async (options) => ({
         ...result(options),
-        sessionPath: "/sessions/unconfirmed.jsonl",
+        sessionPath: "/sessions/authoritative.jsonl",
       }),
     });
 
     const output = await tool.execute(
-      "call-confirmed",
+      "call-fresh",
       { agent: "search", task: "find" },
       undefined,
       undefined,
       context(),
     );
 
-    expect(output.content[0]).toMatchObject({ text: expect.stringContaining("/sessions/confirmed.jsonl") });
-    expect(output.content[0]).toMatchObject({ text: expect.not.stringContaining("/sessions/unconfirmed.jsonl") });
+    expect(output.content[0]).toMatchObject({ text: expect.stringContaining("/sessions/authoritative.jsonl") });
+    expect(output.content[0]).toMatchObject({ text: expect.not.stringContaining("/sessions/list-confirmed.jsonl") });
+    expect(list).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the list-confirmed path when the stage result has no session file", async () => {
+    const list = vi.fn(async (_cwd: string, _sessionDir?: string) => [
+      { id: "unrelated", path: "/sessions/unrelated.jsonl" },
+      { id: "child-1", path: "/sessions/list-confirmed.jsonl" },
+    ]);
+    importPiMock.mockResolvedValue({
+      SessionManager: { list },
+    });
+    const tool = createSubagentTool({
+      agentProvider: async () => [agent("search")],
+      stageSessionRunner: async (options) => ({ ...result(options), sessionPath: undefined }),
+    });
+
+    const output = await tool.execute(
+      "call-fallback",
+      { agent: "search", task: "find" },
+      undefined,
+      undefined,
+      context(),
+    );
+
+    expect(output.content[0]).toMatchObject({ text: expect.stringContaining("/sessions/list-confirmed.jsonl") });
+    expect(output.content[0]).toMatchObject({ text: expect.not.stringContaining("/sessions/unrelated.jsonl") });
+    expect(output.details).toMatchObject({
+      results: [{ sessionPath: "/sessions/list-confirmed.jsonl" }],
+    });
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(list.mock.calls[0]?.[0]).toBe("/paper");
+    expect(list.mock.calls[0]?.[1]).toBeUndefined();
   });
 
   it("turns a failed stage result into a Pi tool error", async () => {
@@ -248,6 +292,82 @@ describe("createSubagentTool in-process dispatch", () => {
       name: "SubagentExecutionError",
       message: expect.stringContaining("provider failed"),
     });
+  });
+
+  it("discloses the session file path in the failure error message", async () => {
+    const tool = createSubagentTool({
+      agentProvider: async () => [agent("search")],
+      stageSessionRunner: async (options) => ({
+        ...result(options),
+        exitCode: 1,
+        stopReason: "error",
+        errorMessage: "provider failed",
+        sessionPath: "/sessions/failed-run.jsonl",
+      }),
+    });
+
+    await expect(tool.execute(
+      "call-failed-with-path",
+      { agent: "search", task: "find" },
+      undefined,
+      undefined,
+      context(),
+    )).rejects.toMatchObject({
+      name: "SubagentExecutionError",
+      message: expect.stringContaining("/sessions/failed-run.jsonl"),
+    });
+  });
+
+  it("retains every authoritative path when a later chain step fails", async () => {
+    const tool = createSubagentTool({
+      agentProvider: async () => [agent("search"), agent("writing")],
+      stageSessionRunner: async (options) => {
+        if (options.step === 1) {
+          return {
+            ...result(options, "papers found"),
+            sessionPath: "/sessions/first-authoritative.jsonl",
+          };
+        }
+        return {
+          ...result(options),
+          exitCode: 1,
+          stopReason: "error",
+          errorMessage: "later provider failed",
+          sessionPath: "/sessions/later-authoritative.jsonl",
+        };
+      },
+    });
+
+    const thrown = await tool.execute(
+      "chain-failed",
+      { chain: [
+        { agent: "search", task: "find" },
+        { agent: "writing", task: "draft from {previous}" },
+      ] },
+      undefined,
+      undefined,
+      context(),
+    ).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    expect(thrown).toBeInstanceOf(SubagentExecutionError);
+    const failure = thrown as SubagentExecutionError;
+    expect(failure.details.results).toMatchObject([
+      { step: 1, exitCode: 0, sessionPath: "/sessions/first-authoritative.jsonl" },
+      {
+        step: 2,
+        exitCode: 1,
+        errorMessage: "later provider failed",
+        sessionPath: "/sessions/later-authoritative.jsonl",
+      },
+    ]);
+    expect(failure.message).toContain("later provider failed");
+    const firstPathIndex = failure.message.indexOf("/sessions/first-authoritative.jsonl");
+    const laterPathIndex = failure.message.indexOf("/sessions/later-authoritative.jsonl");
+    expect(firstPathIndex).toBeGreaterThanOrEqual(0);
+    expect(laterPathIndex).toBeGreaterThan(firstPathIndex);
   });
 
   it("serializes one runtime without blocking another runtime", async () => {

@@ -157,6 +157,9 @@ export function createStageSessionRunner(deps: StageSessionDependencies): StageS
         ...(options.agent.tools && options.agent.tools.length > 0 ? { tools: options.agent.tools } : {}),
       });
       session = created.session;
+      result.sessionId = session.sessionId;
+      result.sessionPath = session.sessionFile;
+      options.onSessionHeader?.({ id: session.sessionId, cwd: options.cwd });
       unsubscribe = session.subscribe((event) => {
         if (result.wasAborted && (event as { type?: unknown }).type === "agent_start") abortSession();
         options.onEvent?.(toJsonSessionEvent(event as AgentSessionEvent));
@@ -167,9 +170,6 @@ export function createStageSessionRunner(deps: StageSessionDependencies): StageS
         session.setActiveToolsByName(session.getAllTools().map(({ name }) => name));
       }
       session.setSessionName(sessionNameFor(options.agent.name));
-      result.sessionId = session.sessionId;
-      result.sessionPath = session.sessionFile;
-      options.onSessionHeader?.({ id: session.sessionId, cwd: options.cwd });
 
       abortListener = () => {
         result.wasAborted = true;

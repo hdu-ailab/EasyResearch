@@ -179,6 +179,63 @@ describe("createStageSessionRunner", () => {
     expect(session.disposeCalls).toBe(1);
   });
 
+  it("preserves session metadata when setup fails after session creation", async () => {
+    const calls: Array<{ name: string; value?: unknown }> = [];
+    const session = new FakeStageSession();
+    const headers: unknown[] = [];
+    session.bindExtensions = async () => {
+      throw new Error("extension setup failed");
+    };
+    const run = createStageSessionRunner(dependencies(session, calls));
+
+    const result = await run({
+      agent,
+      task: "find papers",
+      cwd: "/project",
+      onSessionHeader: (header) => headers.push(header),
+    });
+
+    expect(result).toMatchObject({
+      exitCode: 1,
+      errorMessage: "extension setup failed",
+      sessionId: "child-1",
+      sessionPath: "/sessions/child-1.jsonl",
+    });
+    expect(headers).toEqual([{ id: "child-1", cwd: "/project" }]);
+    expect(session.disposeCalls).toBe(1);
+  });
+
+  it("preserves fresh child identity when already aborted before assistant output", async () => {
+    const calls: Array<{ name: string; value?: unknown }> = [];
+    const session = new FakeStageSession();
+    const headers: unknown[] = [];
+    const controller = new AbortController();
+    controller.abort();
+    const run = createStageSessionRunner(dependencies(session, calls));
+
+    const result = await run({
+      agent,
+      task: "cancel before output",
+      cwd: "/project",
+      signal: controller.signal,
+      onSessionHeader: (header) => headers.push(header),
+    });
+
+    expect(calls.find((call) => call.name === "createManager")?.value).toBe("/project");
+    expect(calls.some((call) => call.name === "openManager")).toBe(false);
+    expect(session.promptCalls).toEqual([]);
+    expect(session.abortCalls).toBe(1);
+    expect(headers).toEqual([{ id: "child-1", cwd: "/project" }]);
+    expect(result).toMatchObject({
+      exitCode: 1,
+      wasAborted: true,
+      messages: [],
+      sessionId: "child-1",
+      sessionPath: "/sessions/child-1.jsonl",
+    });
+    expect(session.disposeCalls).toBe(1);
+  });
+
   it("opens only the supplied inherited session and aborts through the signal", async () => {
     const calls: Array<{ name: string; value?: unknown }> = [];
     const session = new FakeStageSession();

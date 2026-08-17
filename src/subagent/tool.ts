@@ -238,15 +238,11 @@ async function runSingleAgent(opts: RunSingleOptions): Promise<SingleResult> {
   });
   if (sessionPath) {
     result.sessionPath = sessionPath;
-  } else {
-    const sessionId = result.sessionId;
-    result.sessionPath = undefined;
-    if (sessionId) {
-      try {
-        result.sessionPath = await resolveSessionPath(cwd ?? defaultCwd, sessionId);
-      } catch {
-        // Session-history metadata must not replace the stage outcome.
-      }
+  } else if (!result.sessionPath && result.sessionId) {
+    try {
+      result.sessionPath = await resolveSessionPath(cwd ?? defaultCwd, result.sessionId);
+    } catch {
+      // Session-history metadata must not replace the stage outcome.
     }
   }
   return result;
