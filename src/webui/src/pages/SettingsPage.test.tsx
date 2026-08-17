@@ -139,6 +139,12 @@ async function openAgentConfig(user: ReturnType<typeof userEvent.setup>, name: s
   return screen.getByRole("dialog", { name: "Agents" });
 }
 
+async function selectModelOption(user: ReturnType<typeof userEvent.setup>, agentName: string, optionName: string) {
+  const trigger = screen.getByRole("combobox", { name: `Select model for ${agentName}` });
+  await user.click(trigger);
+  await user.click(screen.getByRole("option", { name: optionName }));
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason: unknown) => void;
@@ -299,14 +305,16 @@ describe("SettingsPage", () => {
     const user = userEvent.setup();
     renderSettings();
     await openAgentConfig(user, "Search");
-    expect(screen.getByRole("combobox", { name: "Select model for Search" })).toHaveValue("openai/gpt-4o");
+    expect(screen.getByRole("combobox", { name: "Select model for Search" })).toHaveTextContent("openai/gpt-4o");
     expect(screen.getByRole("switch", { name: "Enable Search" })).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Close editor" }));
     await openAgentConfig(user, "Writing");
-    expect(screen.getByRole("combobox", { name: "Select model for Writing" })).toHaveValue("");
+    expect(screen.getByRole("combobox", { name: "Select model for Writing" })).toHaveTextContent(
+      "inherit (Paper Assistant's model)",
+    );
     await user.click(screen.getByRole("button", { name: "Close editor" }));
     await openAgentConfig(user, "Paper Assistant");
-    expect(screen.getByRole("combobox", { name: "Select model for Paper Assistant" })).toHaveValue("openai/gpt-4o");
+    expect(screen.getByRole("combobox", { name: "Select model for Paper Assistant" })).toHaveTextContent("openai/gpt-4o");
     expect(screen.queryByRole("switch", { name: "Enable Paper Assistant" })).toBeNull();
   });
 
@@ -321,8 +329,9 @@ describe("SettingsPage", () => {
 
     await openAgentConfig(user, "Search");
     const searchModel = screen.getByRole("combobox", { name: "Select model for Search" });
-    expect(searchModel).toHaveValue("custom/missing-model");
-    expect(within(searchModel).getByRole("option", { name: "custom/missing-model" })).toBeTruthy();
+    expect(searchModel).toHaveTextContent("custom/missing-model");
+    await user.click(searchModel);
+    expect(screen.getByRole("option", { name: "custom/missing-model" })).toBeTruthy();
   });
 
   it("localizes model select labels with localized agent names", async () => {
@@ -362,8 +371,9 @@ describe("SettingsPage", () => {
     renderSettings();
     await openAgentConfig(user, "Paper Assistant");
     const combobox = screen.getByRole("combobox", { name: "Select model for Paper Assistant" });
-    expect(combobox).toHaveValue("openai/gpt-4o");
-    expect(within(combobox).queryAllByRole("option", { name: /inherit/i })).toHaveLength(0);
+    expect(combobox).toHaveTextContent("openai/gpt-4o");
+    await user.click(combobox);
+    expect(screen.queryAllByRole("option", { name: /inherit/i })).toHaveLength(0);
   });
 
   it("auto-selects the effective Pi model when no Paper Assistant default is configured", async () => {
@@ -376,9 +386,10 @@ describe("SettingsPage", () => {
     renderSettings();
     await openAgentConfig(user, "Paper Assistant");
     const combobox = screen.getByRole("combobox", { name: "Select model for Paper Assistant" });
-    expect(combobox).toHaveValue("anthropic/claude-opus-4-8");
-    expect(within(combobox).getAllByRole("option", { name: "anthropic/claude-opus-4-8" })).toHaveLength(1);
-    expect(within(combobox).queryAllByRole("option", { name: /inherit/i })).toHaveLength(0);
+    expect(combobox).toHaveTextContent("anthropic/claude-opus-4-8");
+    await user.click(combobox);
+    expect(screen.getAllByRole("option", { name: "anthropic/claude-opus-4-8" })).toHaveLength(1);
+    expect(screen.queryAllByRole("option", { name: /inherit/i })).toHaveLength(0);
   });
 
   it("auto-selects a default already in the catalog without duplicating it", async () => {
@@ -391,8 +402,9 @@ describe("SettingsPage", () => {
     renderSettings();
     await openAgentConfig(user, "Paper Assistant");
     const combobox = screen.getByRole("combobox", { name: "Select model for Paper Assistant" });
-    expect(combobox).toHaveValue("openai/gpt-4o");
-    expect(within(combobox).queryAllByRole("option", { name: "openai/gpt-4o" })).toHaveLength(1);
+    expect(combobox).toHaveTextContent("openai/gpt-4o");
+    await user.click(combobox);
+    expect(screen.queryAllByRole("option", { name: "openai/gpt-4o" })).toHaveLength(1);
   });
 
   it("sets the Paper Assistant default via a paperAssistantModel patch", async () => {
@@ -404,14 +416,11 @@ describe("SettingsPage", () => {
     } as never);
     renderSettings();
     await openAgentConfig(user, "Paper Assistant");
-    await user.selectOptions(
-      screen.getByRole("combobox", { name: "Select model for Paper Assistant" }),
-      "anthropic/claude-sonnet-4",
-    );
+    await selectModelOption(user, "Paper Assistant", "anthropic/claude-sonnet-4");
     await waitFor(() =>
       expect(api.updateWebuiSettings).toHaveBeenCalledWith({ paperAssistantModel: "anthropic/claude-sonnet-4" }),
     );
-    expect(screen.getByRole("combobox", { name: "Select model for Paper Assistant" })).toHaveValue(
+    expect(screen.getByRole("combobox", { name: "Select model for Paper Assistant" })).toHaveTextContent(
       "anthropic/claude-sonnet-4",
     );
   });
@@ -423,10 +432,7 @@ describe("SettingsPage", () => {
     } as never);
     renderSettings();
     await openAgentConfig(user, "Writing");
-    await user.selectOptions(
-      screen.getByRole("combobox", { name: "Select model for Writing" }),
-      "anthropic/claude-sonnet-4",
-    );
+    await selectModelOption(user, "Writing", "anthropic/claude-sonnet-4");
     await waitFor(() =>
       expect(api.updateWebuiSettings).toHaveBeenCalledWith({
         agentModels: { search: "openai/gpt-4o", writing: "anthropic/claude-sonnet-4" },
@@ -462,7 +468,7 @@ describe("SettingsPage", () => {
     vi.mocked(api.updateWebuiSettings).mockRejectedValueOnce(new Error("boom"));
     renderSettings();
     await openAgentConfig(user, "Search");
-    await user.selectOptions(screen.getByRole("combobox", { name: "Select model for Search" }), "");
+    await selectModelOption(user, "Search", "inherit (Paper Assistant's model)");
     expect(await screen.findByText(/boom/)).toBeTruthy();
   });
 

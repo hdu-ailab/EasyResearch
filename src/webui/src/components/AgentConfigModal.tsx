@@ -4,6 +4,7 @@ import { useModalLayer } from "../hooks/useModalLayer";
 import { agentDisplayName } from "../i18n/agents";
 import { useI18n } from "../i18n/useI18n";
 import { AgentMarkdownEditor } from "./AgentMarkdownEditor";
+import { SearchableSelect } from "./SearchableSelect";
 import { ThinkingLevelSelect } from "./ThinkingLevelSelect";
 
 export interface AgentConfigModalProps {
@@ -106,21 +107,19 @@ export function AgentConfigModal({
             <label className="text-[12px] font-medium text-v2-text-text-base" htmlFor={`model-${agent.name}`}>
               {t("settings.agents.model")}
             </label>
-            <select
+            <SearchableSelect
               id={`model-${agent.name}`}
-              className="h-8 w-full rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600 disabled:opacity-50"
-              aria-label={`${t("settings.agents.selectModelFor")} ${name}`}
+              ariaLabel={`${t("settings.agents.selectModelFor")} ${name}`}
               value={modelValue}
-              onChange={(e) => onModelChange(e.target.value)}
+              options={[
+                ...(isPaperAssistant ? [] : [{ value: "", label: t("settings.agents.inherit") }]),
+                ...modelOptions.map((m) => ({ value: `${m.provider}/${m.id}`, label: `${m.provider}/${m.id}` })),
+              ]}
+              placeholder={isPaperAssistant ? undefined : t("settings.agents.inherit")}
               disabled={busy}
-            >
-              {!isPaperAssistant && <option value="">{t("settings.agents.inherit")}</option>}
-              {modelOptions.map((m) => (
-                <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
-                  {m.provider}/{m.id}
-                </option>
-              ))}
-            </select>
+              onSelect={onModelChange}
+              className="h-8 w-full text-[13px]"
+            />
           </div>
 
           <div className="flex flex-col gap-2">
