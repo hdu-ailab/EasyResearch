@@ -2,6 +2,12 @@ import type { AgentSessionEvent, MessageUpdateEvent } from "@earendil-works/pi-c
 import type { SessionSnapshotDto, SubagentSessionSummaryDto } from "../../web/contracts";
 import { PAPER_ASSISTANT_AGENT } from "./agent-identity";
 
+/** Latest live activity of a running subagent: a text turn or a tool call
+ * (ADR-040 child event payload). */
+export type SubagentActivity =
+  | { kind: "text"; text: string }
+  | { kind: "tool"; name: string; args?: string; state: "running" | "done" | "error" };
+
 export interface ToolView {
   key: string;
   /** Stable Pi tool-call identity. Fallback render keys do not populate this. */
@@ -16,6 +22,9 @@ export interface ToolView {
   output?: string;
   /** Complete latest assistant message from a `subagent` tool. */
   latestMessage?: string;
+  /** Latest live activity from the running subagent: the most recent tool
+   * call or text turn, streamed via the child event payload (ADR-040). */
+  latestActivity?: SubagentActivity;
   /** Current chain step from a `subagent` tool update. */
   step?: number;
   /** Agent name for `subagent` tool rows (ADR-037/ADR-040: tab derivation). */
@@ -466,6 +475,60 @@ export function nestedSubagentEvent(event: AgentSessionEvent):
   };
 }
 
+function childMessageText(message: unknown): string {
+  const content = (message as { content?: unknown }).content;
+  const parts: unknown[] = typeof content === "string" ? [content] : Array.isArray(content) ? content : [];
+  return parts
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if (part === null || typeof part !== "object" || !("type" in part) || part.type !== "text") return "";
+      const text = (part as { text?: unknown }).text;
+      return typeof text === "string" ? text : "";
+    })
+    .filter((text) => text.trim().length > 0)
+    .join("\n\n");
+}
+
+function applySubagentEventActivity(
+  event: AgentSessionEvent,
+  current: SubagentActivity | undefined,
+): SubagentActivity | undefined {
+  switch (event.type) {
+    case "tool_execution_start": {
+      const start = event as unknown as { toolName?: unknown; args?: unknown };
+      const args = compactArgs(start.args);
+      return {
+        kind: "tool",
+        name: typeof start.toolName === "string" && start.toolName ? start.toolName : "tool",
+        ...(args !== undefined ? { args } : {}),
+        state: "running",
+      };
+    }
+    case "tool_execution_end": {
+      const end = event as unknown as { toolName?: unknown; isError?: unknown };
+      const name =
+        typeof end.toolName === "string" && end.toolName
+          ? end.toolName
+          : current?.kind === "tool"
+            ? current.name
+            : "tool";
+      return {
+        kind: "tool",
+        name,
+        ...(current?.kind === "tool" && current.args !== undefined ? { args: current.args } : {}),
+        state: end.isError ? "error" : "done",
+      };
+    }
+    case "message_start":
+    case "message_end": {
+      const text = childMessageText((event as { message?: unknown }).message);
+      return text ? { kind: "text", text } : current;
+    }
+    default:
+      return current;
+  }
+}
+
 /** Rehydrate authoritative snapshot state while retaining subagent metadata
  * that is keyed by the persisted tool invocation. */
 export function mergeSnapshot(state: SessionViewState, snapshot: SessionSnapshotDto): SessionViewState {
@@ -805,6 +868,10 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
         if (agentName === undefined && step === undefined && sessionId === undefined && latestMessage === undefined)
           return tool;
         const stepChanged = step !== undefined && step !== tool.step;
+        const activity = subagent?.event
+          ? applySubagentEventActivity(subagent.event as AgentSessionEvent, tool.latestActivity)
+          : undefined;
+        const activityChanged = activity !== undefined || stepChanged;
         const effectiveAgent = agentName ?? tool.agentName;
         const effectiveSessionId = sessionId ?? (stepChanged ? undefined : tool.sessionId);
         const effectiveLatestMessage = latestMessage ?? (stepChanged ? undefined : tool.latestMessage);
@@ -826,6 +893,11 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
           ...tool,
           ...(agentName !== undefined ? { agentName } : {}),
           ...(step !== undefined ? { step } : {}),
+          ...(stepChanged && activity === undefined
+            ? { latestActivity: undefined }
+            : activity !== undefined
+              ? { latestActivity: activity }
+              : {}),
           sessionId: effectiveSessionId,
           latestMessage: effectiveLatestMessage,
           ...(sessionLinks !== undefined ? { sessionLinks } : {}),

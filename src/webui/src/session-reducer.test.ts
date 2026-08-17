@@ -7,6 +7,7 @@ import {
   parseSkillInvocation,
   reduceSessionEvent,
   type SessionViewState,
+  type ToolView,
   terminateSessionRun,
 } from "./session-reducer";
 
@@ -1611,5 +1612,101 @@ describe("session reducer", () => {
       messages: [userMessage("plain text")],
     });
     expect(state.messages[0]?.skillInvocation).toBeUndefined();
+  });
+});
+
+describe("subagent live activity from tool_execution_update", () => {
+  function subagentState(patch: Partial<ToolView> = {}): SessionViewState {
+    return {
+      messages: [],
+      tools: [
+        {
+          key: "sub-1",
+          name: "subagent",
+          running: true,
+          done: false,
+          error: false,
+          agentName: "search",
+          step: 1,
+          order: 1,
+          sessionId: "child-1",
+          ...patch,
+        },
+      ],
+      isStreaming: true,
+      error: null,
+      retry: null,
+      nextOrder: 2,
+    };
+  }
+
+  function toolUpdateWithChildEvent(event?: AgentSessionEvent, step = 1): AgentSessionEvent {
+    return {
+      type: "tool_execution_update",
+      toolCallId: "sub-1",
+      partialResult: {
+        content: [],
+        details: {
+          subagent: {
+            agent: "search",
+            step,
+            sessionId: "child-1",
+            ...(event !== undefined ? { event } : {}),
+          },
+        },
+      },
+    } as AgentSessionEvent;
+  }
+
+  const childMessage = (type: "message_start" | "message_end", text: string): AgentSessionEvent =>
+    ({
+      type,
+      message: { role: "assistant", content: [{ type: "text", text }] },
+    }) as AgentSessionEvent;
+
+  const childToolStart: AgentSessionEvent = {
+    type: "tool_execution_start",
+    toolCallId: "t-1",
+    toolName: "bash",
+    args: { command: "ls -la" },
+  } as AgentSessionEvent;
+
+  const childToolEnd = (isError = false): AgentSessionEvent =>
+    ({ type: "tool_execution_end", toolCallId: "t-1", toolName: "bash", isError }) as AgentSessionEvent;
+
+  it("builds a text activity from a child message_start and finalizes it at message_end", () => {
+    let state = subagentState();
+    state = reduceSessionEvent(state, toolUpdateWithChildEvent(childMessage("message_start", "Starting")));
+    expect(state.tools[0]!.latestActivity).toEqual({ kind: "text", text: "Starting" });
+    state = reduceSessionEvent(state, toolUpdateWithChildEvent(childMessage("message_end", "The finished phrase")));
+    expect(state.tools[0]!.latestActivity).toEqual({ kind: "text", text: "The finished phrase" });
+  });
+
+  it("builds a running tool activity and finalizes success and error states", () => {
+    let state = subagentState();
+    state = reduceSessionEvent(state, toolUpdateWithChildEvent(childToolStart));
+    expect(state.tools[0]!.latestActivity).toEqual({ kind: "tool", name: "bash", args: "ls -la", state: "running" });
+
+    state = reduceSessionEvent(state, toolUpdateWithChildEvent(childToolEnd(false)));
+    expect(state.tools[0]!.latestActivity).toEqual({ kind: "tool", name: "bash", args: "ls -la", state: "done" });
+
+    const failed = subagentState();
+    const afterStart = reduceSessionEvent(failed, toolUpdateWithChildEvent(childToolStart));
+    const afterEnd = reduceSessionEvent(afterStart, toolUpdateWithChildEvent(childToolEnd(true)));
+    expect(afterEnd.tools[0]!.latestActivity).toEqual({ kind: "tool", name: "bash", args: "ls -la", state: "error" });
+  });
+
+  it("keeps prior latestMessage when no child event is carried", () => {
+    const state = reduceSessionEvent(subagentState({ latestMessage: "old" }), toolUpdateWithChildEvent(undefined));
+    expect(state.tools[0]!.latestActivity).toBeUndefined();
+    expect(state.tools[0]!.latestMessage).toBe("old");
+  });
+
+  it("resets the activity when the chain step changes", () => {
+    const state = reduceSessionEvent(
+      subagentState({ latestActivity: { kind: "text", text: "step one" }, step: 1 }),
+      toolUpdateWithChildEvent(childMessage("message_end", "step two"), 2),
+    );
+    expect(state.tools[0]!.latestActivity).toEqual({ kind: "text", text: "step two" });
   });
 });
