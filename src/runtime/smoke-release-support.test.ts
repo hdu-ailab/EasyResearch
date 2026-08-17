@@ -5,6 +5,8 @@ import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   FIRST_RUN_CEILING_MS,
+  buildWindowsShutdownLauncherScript,
+  buildWindowsShutdownScript,
   collectLaunchOutput,
   createCompiledChildEnv,
   finishSmokeCleanup,
@@ -485,6 +487,76 @@ describe("collectLaunchOutput", () => {
 
     expect(output).toEqual({ stdout: "setup stdout", stderr: "setup stderr" });
     expect(reads).toEqual(["/tmp/first-run-stdout.txt", "/tmp/first-run-stderr.txt"]);
+  });
+});
+
+describe("buildWindowsShutdownScript", () => {
+  const options = {
+    binary: "C:\\release\\O'Brien\\easyresearch.exe",
+    args: ["ex'it", "--reason=can't stop"],
+    stdoutPath: "C:\\smoke\\O'Brien\\shutdown-stdout.txt",
+    stderrPath: "C:\\smoke\\O'Brien\\shutdown-stderr.txt",
+    statusPath: "C:\\smoke\\O'Brien\\shutdown-status.txt",
+    powershellErrorPath: "C:\\smoke\\O'Brien\\shutdown-powershell-error.txt",
+  };
+  const invocation = "  & 'C:\\release\\O''Brien\\easyresearch.exe' 'ex''it' '--reason=can''t stop' 1> 'C:\\smoke\\O''Brien\\shutdown-stdout.txt' 2> 'C:\\smoke\\O''Brien\\shutdown-stderr.txt'";
+
+  it("directly invokes the shutdown binary with PowerShell-escaped paths and arguments", () => {
+    const script = buildWindowsShutdownScript(options);
+
+    expect(script).toContain(invocation);
+    expect(script).toContain("'C:\\smoke\\O''Brien\\shutdown-powershell-error.txt'");
+    expect(script).not.toContain("Start-Process");
+  });
+
+  it("captures the native exit status immediately and fails without Process.ExitCode", () => {
+    const script = buildWindowsShutdownScript(options);
+    const statusFlow = [
+      invocation,
+      "  $status = $LASTEXITCODE",
+      "  Set-Content -LiteralPath 'C:\\smoke\\O''Brien\\shutdown-status.txt' -Value ([string]$status) -Encoding ascii",
+      "  if ($status -ne 0) { throw \"Windows shutdown client exited with status $status\" }",
+    ].join("; ");
+
+    expect(script).toContain(statusFlow);
+    expect(script).not.toContain(".ExitCode");
+    expect(script).not.toContain("WaitForExit");
+  });
+});
+
+describe("buildWindowsShutdownLauncherScript", () => {
+  const options = {
+    powershell: "C:\\Windows\\O'Brien\\powershell.exe",
+    wrapperPath: "C:\\smoke root\\O'Brien\\shutdown-wrapper.ps1",
+    pidPath: "C:\\smoke root\\O'Brien\\shutdown-wrapper.pid",
+    taskkill: "C:\\Windows\\O'Brien\\taskkill.exe",
+    powershellErrorPath: "C:\\smoke root\\O'Brien\\shutdown-powershell-error.txt",
+  };
+
+  it("starts only the inner wrapper through the absolute PowerShell executable", () => {
+    const script = buildWindowsShutdownLauncherScript(options);
+    const invocation = "  $process = Start-Process -FilePath 'C:\\Windows\\O''Brien\\powershell.exe' -ArgumentList @('-NoProfile', '-NonInteractive', '-File', '\"C:\\smoke root\\O''Brien\\shutdown-wrapper.ps1\"') -WindowStyle Hidden -PassThru";
+
+    expect(script).toContain(invocation);
+    expect(script.match(/Start-Process/g)).toHaveLength(1);
+    expect(script).toContain("  Set-Content -LiteralPath 'C:\\smoke root\\O''Brien\\shutdown-wrapper.pid' -Value $process.Id -Encoding ascii");
+    expect(script).toContain("'C:\\smoke root\\O''Brien\\shutdown-powershell-error.txt'");
+    expect(script).not.toContain("easyresearch.exe");
+    expect(script).not.toContain(".ExitCode");
+  });
+
+  it("waits 30000ms then kills the wrapper process tree without reading ExitCode", () => {
+    const script = buildWindowsShutdownLauncherScript(options);
+    const timeoutFlow = [
+      "  if (-not $process.WaitForExit(30000)) {",
+      "    & 'C:\\Windows\\O''Brien\\taskkill.exe' /PID $($process.Id) /T /F | Out-Null",
+      "    throw 'Windows shutdown wrapper timed out after 30000ms'",
+      "  }",
+    ].join("; ");
+
+    expect(script).toContain(timeoutFlow);
+    expect(script).not.toContain("WaitForExit()");
+    expect(script).not.toContain(".ExitCode");
   });
 });
 

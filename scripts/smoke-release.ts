@@ -8,6 +8,8 @@ import { TARGETS, platformBinaryName, platformPackageDir, repoPackageVersion } f
 import { validateNativeVersionOutput } from "./release";
 import {
   FIRST_RUN_CEILING_MS,
+  buildWindowsShutdownLauncherScript,
+  buildWindowsShutdownScript,
   collectLaunchOutput,
   createCompiledChildEnv,
   finishSmokeCleanup,
@@ -52,7 +54,8 @@ const setupResultPath = join(root, "first-run-setup-result.json");
 const firstRunStdoutPath = join(root, "first-run-stdout.txt");
 const firstRunStderrPath = join(root, "first-run-stderr.txt");
 const firstRunPidPath = join(root, "first-run-client.pid");
-const shutdownPidPath = join(root, "shutdown-client.pid");
+const shutdownWrapperPath = join(root, "shutdown-wrapper.ps1");
+const shutdownWrapperPidPath = join(root, "shutdown-wrapper.pid");
 const shutdownStatusPath = join(root, "shutdown-status.txt");
 const daemonPidPath = join(agentDir, "server.pid");
 writeVenvValidationScript(validationScript);
@@ -155,42 +158,49 @@ function run(args: string[], captureName: "first-run" | "shutdown"): { stdout: s
   let result: ReturnType<typeof spawnSync>;
   if (process.platform === "win32") {
     // Bun 1.3.14 spawnSync silently fails to start compiled executables on
-    // Windows, and PowerShell's Start-Process -Wait waits on the whole
-    // process tree (the live daemon) and never returns. Launch the CLI
-    // without waiting; readiness is polled by the smoke script instead.
-    // Start-Process owns these capture paths so Node must not open them first.
+    // Windows. Launch first run without waiting because Start-Process -Wait
+    // waits on the live daemon; readiness is polled by the smoke script.
+    // Start-Process owns those capture paths so Node must not open them first.
     const nul = openSync("NUL", "w");
     try {
+      const powershell = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
       const taskkill = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe");
-      const script = [
-        "$ErrorActionPreference = 'Stop'",
-        "$process = $null",
-        "try {",
-        `  $process = Start-Process -FilePath ${powershellQuote(binary)} -ArgumentList @(${args.map(powershellQuote).join(", ")}) -WindowStyle Hidden -RedirectStandardOutput ${powershellQuote(stdoutPath)} -RedirectStandardError ${powershellQuote(stderrPath)} -PassThru`,
-        ...(asynchronous
-          ? [`  Set-Content -LiteralPath ${powershellQuote(firstRunPidPath)} -Value $process.Id -Encoding ascii`]
-          : [
-              `  Set-Content -LiteralPath ${powershellQuote(shutdownPidPath)} -Value $process.Id -Encoding ascii`,
-              "  if (-not $process.WaitForExit(30000)) {",
-              `    Set-Content -LiteralPath ${powershellQuote(shutdownStatusPath)} -Value 'timeout' -Encoding ascii`,
-              `    & ${powershellQuote(taskkill)} /PID $($process.Id) /T /F | Out-Null`,
-              "    throw 'Windows shutdown client timed out after 30000ms'",
-              "  }",
-              "  $process.WaitForExit()",
-              `  Set-Content -LiteralPath ${powershellQuote(shutdownStatusPath)} -Value $process.ExitCode -Encoding ascii`,
-              "  if ($process.ExitCode -ne 0) { throw \"Windows shutdown client exited with status $($process.ExitCode)\" }",
-            ]),
-        "  exit 0",
-        "} catch {",
-        "  if ($null -ne $process) {",
-        `    & ${powershellQuote(taskkill)} /PID $($process.Id) /T /F | Out-Null`,
-        "  }",
-        `  $_ | Out-File -FilePath ${powershellQuote(powershellErrorPath)} -Encoding utf8`,
-        "  exit 99",
-        "}",
-      ].join("; ");
+      let script: string;
+      if (asynchronous) {
+        script = [
+          "$ErrorActionPreference = 'Stop'",
+          "$process = $null",
+          "try {",
+          `  $process = Start-Process -FilePath ${powershellQuote(binary)} -ArgumentList @(${args.map(powershellQuote).join(", ")}) -WindowStyle Hidden -RedirectStandardOutput ${powershellQuote(stdoutPath)} -RedirectStandardError ${powershellQuote(stderrPath)} -PassThru`,
+          `  Set-Content -LiteralPath ${powershellQuote(firstRunPidPath)} -Value $process.Id -Encoding ascii`,
+          "  exit 0",
+          "} catch {",
+          "  if ($null -ne $process) {",
+          `    & ${powershellQuote(taskkill)} /PID $($process.Id) /T /F | Out-Null`,
+          "  }",
+          `  $_ | Out-File -FilePath ${powershellQuote(powershellErrorPath)} -Encoding utf8`,
+          "  exit 99",
+          "}",
+        ].join("; ");
+      } else {
+        writeFileSync(shutdownWrapperPath, buildWindowsShutdownScript({
+          binary,
+          args,
+          stdoutPath,
+          stderrPath,
+          statusPath: shutdownStatusPath,
+          powershellErrorPath,
+        }));
+        script = buildWindowsShutdownLauncherScript({
+          powershell,
+          wrapperPath: shutdownWrapperPath,
+          pidPath: shutdownWrapperPidPath,
+          taskkill,
+          powershellErrorPath,
+        });
+      }
       result = spawnSync(
-        "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        powershell,
         ["-NoProfile", "-NonInteractive", "-Command", script],
         { env, stdio: ["ignore", nul, nul], timeout },
       );
@@ -395,7 +405,7 @@ async function dumpServerLogs(): Promise<void> {
     "shutdown-stdout.txt",
     "shutdown-stderr.txt",
     "shutdown-status.txt",
-    "shutdown-client.pid",
+    "shutdown-wrapper.pid",
     "shutdown-powershell-error.txt",
   ]) {
     const path = join(root, capture);

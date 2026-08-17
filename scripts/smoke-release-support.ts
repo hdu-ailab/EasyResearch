@@ -229,6 +229,66 @@ export function collectLaunchOutput(options: {
   };
 }
 
+function powershellQuote(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+export function buildWindowsShutdownScript(options: {
+  binary: string;
+  args: readonly string[];
+  stdoutPath: string;
+  stderrPath: string;
+  statusPath: string;
+  powershellErrorPath: string;
+}): string {
+  const command = [options.binary, ...options.args].map(powershellQuote).join(" ");
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    "try {",
+    `  & ${command} 1> ${powershellQuote(options.stdoutPath)} 2> ${powershellQuote(options.stderrPath)}`,
+    "  $status = $LASTEXITCODE",
+    `  Set-Content -LiteralPath ${powershellQuote(options.statusPath)} -Value ([string]$status) -Encoding ascii`,
+    "  if ($status -ne 0) { throw \"Windows shutdown client exited with status $status\" }",
+    "  exit 0",
+    "} catch {",
+    `  $_ | Out-File -FilePath ${powershellQuote(options.powershellErrorPath)} -Encoding utf8`,
+    "  exit 99",
+    "}",
+  ].join("; ");
+}
+
+export function buildWindowsShutdownLauncherScript(options: {
+  powershell: string;
+  wrapperPath: string;
+  pidPath: string;
+  taskkill: string;
+  powershellErrorPath: string;
+}): string {
+  const wrapperArgument = `"${options.wrapperPath}"`;
+  const argumentList = ["-NoProfile", "-NonInteractive", "-File", wrapperArgument]
+    .map(powershellQuote)
+    .join(", ");
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    "$process = $null",
+    "try {",
+    `  $process = Start-Process -FilePath ${powershellQuote(options.powershell)} -ArgumentList @(${argumentList}) -WindowStyle Hidden -PassThru`,
+    `  Set-Content -LiteralPath ${powershellQuote(options.pidPath)} -Value $process.Id -Encoding ascii`,
+    "  if (-not $process.WaitForExit(30000)) {",
+    `    & ${powershellQuote(options.taskkill)} /PID $($process.Id) /T /F | Out-Null`,
+    "    throw 'Windows shutdown wrapper timed out after 30000ms'",
+    "  }",
+    "  exit 0",
+    "} catch {",
+    "  if ($null -ne $process) {",
+    `    & ${powershellQuote(options.taskkill)} /PID $($process.Id) /T /F | Out-Null`,
+    "  }",
+    `  $_ | Out-File -FilePath ${powershellQuote(options.powershellErrorPath)} -Encoding utf8`,
+    "  exit 99",
+    "}",
+  ].join("; ");
+}
+
 export function requireZeroProcessStatus(options: {
   label: string;
   statusText: string;
