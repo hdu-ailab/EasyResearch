@@ -267,6 +267,45 @@ describe("ActiveSessionRegistry", () => {
     await expect(registry.getPaperAssistantThinking(created.id)).resolves.toBe("high");
   });
 
+  it("renames a connected session through its adapter and mirrors the DTO", async () => {
+    const created = await registry.create({ cwd });
+    const adapter = FakeAdapter.all.at(-1)!;
+    expect(adapter).toBeDefined();
+
+    await registry.setSessionName(created.id, "Paper v2");
+
+    expect(adapter.stats.setSessionNames).toEqual(["Paper v2"]);
+    expect(registry.list()[0]?.sessionName).toBe("Paper v2");
+  });
+
+  it("clears the DTO name when the session is renamed to an empty string", async () => {
+    const created = await registry.create({ cwd });
+    FakeAdapter.all.at(-1)!.stateOverrides = { sessionName: "Paper" };
+
+    await registry.setSessionName(created.id, "");
+
+    expect(registry.list()[0]?.sessionName).toBeUndefined();
+  });
+
+  it("follows session_info_changed events emitted by the runtime", async () => {
+    const created = await registry.create({ cwd });
+    const adapter = FakeAdapter.all.at(-1)!;
+
+    adapter.events.forEach((listener) => listener({ type: "session_info_changed", name: "From Event" }));
+    expect(registry.list()[0]?.sessionName).toBe("From Event");
+
+    adapter.events.forEach((listener) => listener({ type: "session_info_changed", name: undefined }));
+    expect(registry.list()[0]?.sessionName).toBeUndefined();
+  });
+
+  it("exposes has() only for connected records", async () => {
+    expect(registry.has("missing")).toBe(false);
+    const created = await registry.create({ cwd });
+    expect(registry.has(created.id)).toBe(true);
+    await registry.stop(created.id);
+    expect(registry.has(created.id)).toBe(false);
+  });
+
   it("launches a fresh session with the resolved thinking level", async () => {
     const resolving = new ActiveSessionRegistry(
       factory,
