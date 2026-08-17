@@ -12,8 +12,10 @@ import {
   readTextFileWithRetry,
   resolveSmokePython,
   runVenvValidation,
+  selectSmokeModelAction,
   skillVenvPython,
   settleProcess,
+  venvToolCommand,
   writeVenvValidationScript,
 } from "./smoke-release-support";
 
@@ -48,27 +50,27 @@ let firstRunClientPid: number | undefined;
 let firstRunLaunchAttempted = false;
 let firstRunDeadline = 0;
 let modelRequests = 0;
+let venvToolResults = 0;
 const modelServer = Bun.serve({
   port: 0,
   async fetch(request) {
     const body = await request.json() as {
       model?: string;
-      messages?: Array<{ role?: string }>;
+      messages?: Array<{ role?: string; content?: unknown }>;
       tools?: Array<{ function?: { name?: string } }>;
     };
     modelRequests += 1;
-    const hasSubagent = body.tools?.some((tool) => tool.function?.name === "subagent") ?? false;
-    const hasToolResult = body.messages?.some((message) => message.role === "tool") ?? false;
-    if (hasSubagent && !hasToolResult) {
-      return openAiStream({
-        toolCall: {
-          id: "call_native_stage",
-          name: "subagent",
-          arguments: JSON.stringify({ agent: "search", task: "Return a complete smoke-test handoff without using tools." }),
-        },
-      });
+    const action = selectSmokeModelAction(body, venvToolCommand(process.platform, validationScript));
+    if (body.messages?.some(
+      (message) => message.role === "tool"
+        && typeof message.content === "string"
+        && message.content.includes("easyresearch-venv-ok"),
+    )) {
+      venvToolResults += 1;
     }
-    return openAiStream({ text: hasSubagent ? "Parent smoke run complete." : "complete\nArtifacts: none\nGaps: none\nNext action: none" });
+    return action.kind === "tool"
+      ? openAiStream({ toolCall: { id: action.id, name: action.name, arguments: action.arguments } })
+      : openAiStream({ text: action.text });
   },
 });
 writeFileSync(join(agentDir, "models.json"), JSON.stringify({
@@ -472,9 +474,12 @@ try {
   await requireOk(await fetch(`${base}/api/sessions/${created.id}/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message: "Run the deterministic native subagent smoke test." }),
+    body: JSON.stringify({
+      message: "Dispatch search and require it to execute only the deterministic bash venv-validation tool call. Do not use network tools.",
+    }),
   }), "stage dispatch");
-  if (modelRequests < 3) throw new Error(`stage dispatch did not complete the parent/stage loop (${modelRequests} requests)`);
+  if (modelRequests < 4) throw new Error(`stage tool loop incomplete (${modelRequests} requests)`);
+  if (venvToolResults !== 1) throw new Error(`venv tool sentinel count was ${venvToolResults}`);
 
   process.env.EASYRESEARCH_CODING_AGENT_DIR = agentDir;
   const { importPi } = await import("../src/runtime/pi-import");
