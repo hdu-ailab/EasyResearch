@@ -44,6 +44,7 @@ export interface RouteServices {
   clearAgentOverrides: (sessionId: string) => Promise<void>;
   effectiveThinking: (sessionId: string) => Promise<AgentEffectiveThinkingDto[]>;
   setAgentThinking: (sessionId: string, agentName: string, thinking: string | null) => Promise<void>;
+  renameSession: (sessionId: string, name: string) => Promise<void>;
   listConfigProjects: () => Promise<{ home: string; projects: Array<{ cwd: string }> }>;
   getWebuiSettings: () => Promise<WebuiSettingsDto>;
   updateWebuiSettings: (patch: WebuiSettingsUpdate) => Promise<WebuiSettingsDto>;
@@ -258,6 +259,14 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       const clearOverridesMatch = path.match(/^\/api\/sessions\/([^/]+)\/agent-overrides\/clear$/);
       if (req.method === "POST" && clearOverridesMatch) {
         await services.clearAgentOverrides(clearOverridesMatch[1]!);
+        return jsonResponse({ ok: true });
+      }
+
+      const sessionNameMatch = path.match(/^\/api\/sessions\/([^/]+)\/name$/);
+      if (req.method === "PUT" && sessionNameMatch) {
+        const body = await jsonBody<{ name: unknown }>(req);
+        if (typeof body.name !== "string") return errorResponse(400, "name (string) is required");
+        await services.renameSession(sessionNameMatch[1]!, body.name);
         return jsonResponse({ ok: true });
       }
 

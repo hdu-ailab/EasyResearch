@@ -30,6 +30,7 @@ import { SubagentSessionService } from "./subagent-sessions";
 import { isSubagentSessionName } from "../subagent/session-links";
 import { createFileWatcherFactory } from "./file-watcher";
 import { getAuthGateway } from "./auth-runtime";
+import { resolveRenameSessionService } from "./session-rename";
 
 export interface Server {
   port: number;
@@ -181,6 +182,15 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
     paperAssistantThinking: (id) => registry.getPaperAssistantThinking(id),
     getCwd: (id) => registry.getCwd(id),
   });
+  const renameSessions = resolveRenameSessionService({
+    isConnected: (id) => Promise.resolve(registry.has(id)),
+    setConnectedName: (id, name) => registry.setSessionName(id, name),
+    listAll: async () => {
+      const sessions = await SessionManager.listAll(undefined);
+      return toUserSessionSummaries(sessions);
+    },
+    openSessionManager: (path) => SessionManager.open(path),
+  });
   const services: RouteServices = {
     webuiDist: WEBUI_DIST,
     listAllSessions: async () => {
@@ -240,6 +250,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
         thinking,
       );
     },
+    renameSession: (sessionId, name) => renameSessions.rename(sessionId, name),
     listConfigProjects: async () => {
       const sessions = await SessionManager.listAll(undefined);
       const cwds = [...new Set(sessions.map((s) => s.cwd).filter(Boolean))];

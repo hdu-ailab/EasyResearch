@@ -203,6 +203,7 @@ describe("web routes", () => {
       clearAgentOverrides: async () => {},
       effectiveThinking: async () => [],
       setAgentThinking: async () => {},
+      renameSession: async () => {},
       listConfigProjects: async () => ({ home: agentDir, projects: [] }),
       directories: directoryService,
       registry,
@@ -1507,6 +1508,91 @@ describe("web routes", () => {
     );
     expect(res.status).toBe(400);
     expect(setAgentThinking).not.toHaveBeenCalled();
+  });
+
+  it("renames a connected session through the registry adapter", async () => {
+    setup({ renameSession: async (id, name) => void registry.setSessionName(id, name) });
+    const created = await registry.create({ cwd: projectDir });
+    const adapter = FakeAdapter.all.at(-1)!;
+
+    const res = await handler(
+      new Request(`http://localhost/api/sessions/${created.id}/name`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Paper v2" }),
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(adapter.setSessionNames).toEqual(["Paper v2"]);
+  });
+
+  it("renames a historical session through the rename service", async () => {
+    const renameSession = vi.fn(async () => {});
+    setup({ renameSession });
+    historySessions = [
+      {
+        id: "h1",
+        path: "/agent/sessions/--p--/a.jsonl",
+        cwd: projectDir,
+        created: "2026-08-01T00:00:00.000Z",
+        modified: "2026-08-01T00:00:00.000Z",
+        messageCount: 1,
+        firstMessage: "hello",
+      },
+    ];
+
+    const res = await handler(
+      new Request(`http://localhost/api/sessions/h1/name`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Renamed" }),
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(renameSession).toHaveBeenCalledWith("h1", "Renamed");
+  });
+
+  it("clears the name with an empty string body value", async () => {
+    const renameSession = vi.fn(async () => {});
+    setup({ renameSession });
+
+    const res = await handler(
+      new Request(`http://localhost/api/sessions/h1/name`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "" }),
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(renameSession).toHaveBeenCalledWith("h1", "");
+  });
+
+  it("rejects non-string session names with 400", async () => {
+    setup();
+    const res = await handler(
+      new Request(`http://localhost/api/sessions/h1/name`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: 42 }),
+      }),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 404 for an unknown session id", async () => {
+    setup({ renameSession: async () => { throw new UnknownSessionError("Unknown session: nope"); } });
+    const res = await handler(
+      new Request(`http://localhost/api/sessions/nope/name`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "x" }),
+      }),
+    );
+    expect(res.status).toBe(404);
   });
 
   it("surfaces AgentThinkingError statuses from setAgentThinking (404 unknown agent)", async () => {
