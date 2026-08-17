@@ -1,4 +1,4 @@
-import { House } from "lucide-react";
+import { House, Lightbulb } from "lucide-react";
 import type { ReactNode } from "react";
 import { useI18n } from "../i18n/useI18n";
 
@@ -76,7 +76,7 @@ export function TopbarIconButton({
 export function ProductMark() {
   return (
     <div className="flex items-center gap-2">
-      <span className="size-[16px] rounded-[4px] bg-v2-blue-600" aria-hidden />
+      <Lightbulb size={16} className="text-v2-blue-600" aria-hidden />
       <span className="text-[13px] font-semibold tracking-tight text-v2-text-text-base">EasyResearch</span>
     </div>
   );
