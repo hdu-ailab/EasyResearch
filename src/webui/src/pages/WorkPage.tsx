@@ -545,8 +545,18 @@ export function WorkPage({ id, cwd, onBack, onOpenSettings }: WorkPageProps) {
         home={{ active: false, onClick: onBack }}
         leading={!isMobile && <ProductMark />}
         center={
-          <span className="max-w-full truncate font-mono text-[12px] text-v2-text-text-muted" title={cwd}>
-            {isMobile ? projectName : cwd}
+          <span className="flex min-w-0 items-center gap-1.5">
+            {sessionView.sessionName ? (
+              <span
+                className="max-w-[40%] truncate text-[13px] font-medium text-v2-text-text-base"
+                title={sessionView.sessionName}
+              >
+                {sessionView.sessionName}
+              </span>
+            ) : null}
+            <span className="max-w-full truncate font-mono text-[12px] text-v2-text-text-muted" title={cwd}>
+              {isMobile ? projectName : cwd}
+            </span>
           </span>
         }
         actions={

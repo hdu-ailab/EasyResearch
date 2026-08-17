@@ -36,6 +36,7 @@ vi.mock("../api", async (importOriginal) => {
     getSessionCommands: vi.fn().mockResolvedValue([]),
     getSessionTree: vi.fn().mockResolvedValue({ tree: [], leafId: null }),
     navigateSessionTree: vi.fn().mockResolvedValue(undefined),
+    renameSession: vi.fn(),
   };
 });
 
@@ -204,6 +205,7 @@ describe("WorkPage", () => {
       { name: "figures", thinking: null, source: "inherit" },
     ]);
     vi.mocked(api.setAgentThinking).mockResolvedValue(undefined);
+    vi.mocked(api.renameSession).mockReset();
     vi.mocked(api.getSnapshot).mockResolvedValue(snapshot);
     vi.mocked(api.getChildSnapshot).mockResolvedValue({
       session: { id: "child-default", cwd: "/p", sessionName: "easyresearch:search" },
@@ -226,6 +228,44 @@ describe("WorkPage", () => {
     const conversation = screen.getByRole("tabpanel", { name: /^chat$/i });
     expect(conversation.parentElement).toHaveClass("px-2", "pb-2", "pt-[4px]");
     expect(conversation.parentElement).not.toHaveClass("p-2");
+  });
+
+  it("intercepts /rename and never sends it to the agent", async () => {
+    stubEvents();
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+
+    const input = screen.getByRole("textbox", { name: /message/i });
+    await user.type(input, "/rename Paper v2{Enter}");
+
+    await waitFor(() => expect(api.renameSession).toHaveBeenCalledWith("s1", "Paper v2"));
+    expect(api.sendPrompt).not.toHaveBeenCalled();
+  });
+
+  it("clears the session name with a bare /rename", async () => {
+    stubEvents();
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+
+    const input = screen.getByRole("textbox", { name: /message/i });
+    await user.type(input, "/rename{Enter}");
+
+    await waitFor(() => expect(api.renameSession).toHaveBeenCalledWith("s1", ""));
+    expect(api.sendPrompt).not.toHaveBeenCalled();
+  });
+
+  it("shows the session name in the topbar and updates it live on session_info_changed", async () => {
+    stubEvents();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+
+    emitInAct({ type: "session_info_changed", name: "My Paper" });
+    expect(screen.getByTitle("My Paper")).toBeTruthy();
+
+    emitInAct({ type: "session_info_changed", name: undefined });
+    expect(screen.queryByTitle("My Paper")).toBeNull();
   });
 
   it("opens settings from the topbar settings button", async () => {
