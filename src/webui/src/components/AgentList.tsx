@@ -269,6 +269,9 @@ function ModelRow({ entry, thinkingEntry, models, disabled, onApply, onApplyThin
       : models;
   const effectiveModel = models.find((model) => `${model.provider}/${model.id}` === current);
   const thinking = thinkingEntry?.thinking ?? "";
+  const thinkingIsDefault =
+    thinkingEntry !== undefined && (thinkingEntry.source === "default" || thinkingEntry.source === "inherit");
+  const thinkingValue = thinkingIsDefault ? "" : thinking;
   const levels = thinkingLevelsForModel(effectiveModel, thinking || undefined);
 
   return (
@@ -290,7 +293,7 @@ function ModelRow({ entry, thinkingEntry, models, disabled, onApply, onApplyThin
       />
       <ThinkingLevelSelect
         ariaLabel={t("work.selectThinking")}
-        value={thinking}
+        value={thinkingValue}
         levels={levels}
         emptyLabel={thinkingDefaultLabel(t, thinkingEntry)}
         disabled={disabled}

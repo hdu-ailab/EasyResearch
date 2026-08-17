@@ -136,14 +136,18 @@ describe("AgentList", () => {
     render(<AgentList cwd="/p" statusByAgent={{ "paper-assistant": "idle", search: "idle" }} sessionId="s1" />);
 
     expect(await screen.findByDisplayValue("high")).toBeVisible();
-    expect(screen.getByDisplayValue("low")).toBeVisible();
+    const searchCard = (await screen.findByText("Search")).closest<HTMLElement>("div.mt-3")!;
+    const searchThinking = within(searchCard).getByRole("combobox", { name: /select thinking/i }) as HTMLSelectElement;
+    expect(searchThinking.value).toBe("");
+    expect(within(searchThinking).getByText("Default (low)")).toBeTruthy();
     expect(api.getEffectiveThinking).toHaveBeenCalledWith("s1");
   });
 
   it("shades the default value on the empty thinking option when the value is the default", async () => {
     render(<AgentList cwd="/p" statusByAgent={{ "paper-assistant": "idle", search: "idle" }} sessionId="s1" />);
 
-    const thinking = await screen.findByDisplayValue("low");
+    const searchCard = (await screen.findByText("Search")).closest<HTMLElement>("div.mt-3")!;
+    const thinking = within(searchCard).getByRole("combobox", { name: /select thinking/i });
     const options = Array.from(thinking.querySelectorAll("option"));
     expect(options.some((option) => option.value === "" && option.textContent === "Default (low)")).toBe(true);
   });
@@ -152,7 +156,8 @@ describe("AgentList", () => {
     const user = userEvent.setup();
     render(<AgentList cwd="/p" statusByAgent={{ "paper-assistant": "idle", search: "idle" }} sessionId="s1" />);
 
-    const thinking = await screen.findByDisplayValue("low");
+    const searchCard = (await screen.findByText("Search")).closest<HTMLElement>("div.mt-3")!;
+    const thinking = within(searchCard).getByRole("combobox", { name: /select thinking/i });
     await user.selectOptions(thinking, "off");
 
     await waitFor(() => expect(api.setAgentThinking).toHaveBeenCalledWith("s1", "search", "off"));
