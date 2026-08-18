@@ -2,7 +2,14 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { detectPython, ensureSkillVenv, setupSkillVenv, venvPythonPath, type RunFn } from "./setup-venv";
+import {
+  detectPython,
+  ensureSkillVenv,
+  setupSkillVenv,
+  SKILL_VENV_PACKAGES,
+  venvPythonPath,
+  type RunFn,
+} from "./setup-venv";
 
 const ok = (stdout = "") => ({ status: 0, stdout, stderr: "" });
 const fail = (stderr = "not found") => ({ status: 1, stdout: "", stderr });
@@ -63,7 +70,15 @@ describe("setupSkillVenv", () => {
     const result = setupSkillVenv({ venvDir, run, log: () => {} });
     expect(result.success).toBe(true);
     expect(calls).toContainEqual(["python3", "--version"]);
-    expect(calls).toContainEqual([python, "-m", "pip", "install", "--upgrade", "pip", "markitdown", "arxiv", "ddgr"]);
+    expect(calls).toContainEqual([
+      python,
+      "-m",
+      "pip",
+      "install",
+      "--upgrade",
+      "pip",
+      ...SKILL_VENV_PACKAGES.map((pkg) => pkg.distribution),
+    ]);
   });
 
   it("skips venv creation when venv python already exists", () => {
@@ -105,8 +120,8 @@ describe("ensureSkillVenv", () => {
     writeFileSync(python, "fake", "utf8");
     let pipCalls = 0;
     const run = fakeRun((command, args) => {
-      if (args.join(" ") === "-c import markitdown, arxiv, ddgr") return 0;
-      pipCalls += 1;
+      if (args[0] === "-c") return 0;
+      if (args[0] === "-m" && args[1] === "pip") pipCalls += 1;
       return 0;
     });
     const result = ensureSkillVenv(agentDir, { run, log: () => {} });
@@ -121,13 +136,71 @@ describe("ensureSkillVenv", () => {
     writeFileSync(python, "fake", "utf8");
     let pipCalls = 0;
     const run = fakeRun((command, args) => {
-      if (args.join(" ") === "-c import markitdown, arxiv, ddgr") return 1;
-      pipCalls += 1;
+      if (args[0] === "-c") return 1;
+      if (args[0] === "-m" && args[1] === "pip") pipCalls += 1;
       return 0;
     });
     const result = ensureSkillVenv(agentDir, { run, log: () => {} });
     expect(result.success).toBe(true);
     expect(pipCalls).toBeGreaterThan(0);
+  });
+
+  it("uses one dependency declaration for health checks and installation", () => {
+    const agentDir = tempAgentDir();
+    const python = venvPythonPath(join(agentDir, "venv"));
+    mkdirSync(dirname(python), { recursive: true });
+    writeFileSync(python, "fake", "utf8");
+    const calls: string[][] = [];
+    const logs: string[] = [];
+    const run: RunFn = (command, args) => {
+      calls.push([command, ...args]);
+      if (args[0] === "-c") return fail("missing future_module");
+      return ok();
+    };
+
+    const result = ensureSkillVenv(agentDir, {
+      run,
+      log: (message) => logs.push(message),
+      packages: [
+        { distribution: "future-dist", imports: ["future_module", "future_support"] },
+        { distribution: "other-dist", imports: ["other_module"] },
+      ],
+    });
+
+    expect(result.success).toBe(true);
+    expect(calls).toContainEqual([
+      python,
+      "-c",
+      "import future_module, future_support, other_module",
+    ]);
+    expect(calls).toContainEqual([
+      python,
+      "-m",
+      "pip",
+      "install",
+      "--upgrade",
+      "pip",
+      "future-dist",
+      "other-dist",
+    ]);
+    expect(logs.join("\n")).toContain("reinstalling future-dist + other-dist");
+  });
+
+  it("reports a recovery command for every declared dependency", () => {
+    const agentDir = tempAgentDir();
+    const logs: string[] = [];
+
+    const result = ensureSkillVenv(agentDir, {
+      run: () => fail("python unavailable"),
+      log: (message) => logs.push(message),
+      packages: [
+        { distribution: "future-dist", imports: ["future_module"] },
+        { distribution: "other-dist", imports: ["other_module"] },
+      ],
+    });
+
+    expect(result.success).toBe(false);
+    expect(logs.join("\n")).toContain("pip install future-dist other-dist");
   });
 
   it("creates a fresh venv when missing", () => {

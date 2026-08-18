@@ -24,6 +24,8 @@ export interface SetupDeps {
   run: RunFn;
   log: (msg: string) => void;
   platform?: NodeJS.Platform;
+  /** Test-only: inject a package manifest. */
+  packages?: readonly SkillVenvPackage[];
 }
 
 export interface SetupResult {
@@ -32,13 +34,23 @@ export interface SetupResult {
   reason?: string;
 }
 
-export const VENV_PACKAGES = ["pip", "markitdown", "arxiv", "ddgr"];
+export interface SkillVenvPackage {
+  distribution: string;
+  imports: readonly [string, ...string[]];
+}
+
+export const SKILL_VENV_PACKAGES = [
+  { distribution: "markitdown", imports: ["markitdown"] },
+  { distribution: "arxiv", imports: ["arxiv"] },
+  { distribution: "ddgr", imports: ["ddgr"] },
+] as const satisfies readonly SkillVenvPackage[];
 
 export function setupSkillVenv(deps: SetupDeps): SetupResult {
-  const { venvDir, run, log, platform } = deps;
+  const { venvDir, run, log, platform, packages = SKILL_VENV_PACKAGES } = deps;
   const python = venvPythonPath(venvDir, platform);
+  const installArgs = ["-m", "pip", "install", "--upgrade", "pip", ...packages.map((pkg) => pkg.distribution)];
   if (existsSync(python)) {
-    const result = run(python, ["-m", "pip", "install", "--upgrade", ...VENV_PACKAGES]);
+    const result = run(python, installArgs);
     if (result.status !== 0) return { venvDir, success: false, reason: `pip install failed: ${result.stderr}` };
     return { venvDir, success: true };
   }
@@ -48,7 +60,7 @@ export function setupSkillVenv(deps: SetupDeps): SetupResult {
   }
   const create = run(pythonCmd, ["-m", "venv", venvDir]);
   if (create.status !== 0) return { venvDir, success: false, reason: `venv creation failed: ${create.stderr}` };
-  const install = run(python, ["-m", "pip", "install", "--upgrade", ...VENV_PACKAGES]);
+  const install = run(python, installArgs);
   if (install.status !== 0) return { venvDir, success: false, reason: `pip install failed: ${install.stderr}` };
   log(`Skill venv ready at ${venvDir}`);
   return { venvDir, success: true };
@@ -70,6 +82,8 @@ export interface EnsureVenvOptions {
   log?: (msg: string) => void;
   /** Test-only: inject a run function. */
   run?: RunFn;
+  /** Test-only: inject a package manifest. */
+  packages?: readonly SkillVenvPackage[];
 }
 
 /**
@@ -81,24 +95,27 @@ export interface EnsureVenvOptions {
 export function ensureSkillVenv(agentDir: string, options: EnsureVenvOptions = {}): SetupResult {
   const run = options.run ?? (options.stream ? streamingRun : realRun);
   const log = options.log ?? (() => {});
+  const packages = options.packages ?? SKILL_VENV_PACKAGES;
+  const distributions = packages.map((pkg) => pkg.distribution);
   const venvDir = join(agentDir, "venv");
   const python = venvPythonPath(venvDir);
 
   if (existsSync(python)) {
-    const check = run(python, ["-c", "import markitdown, arxiv, ddgr"]);
+    const imports = packages.flatMap((pkg) => pkg.imports);
+    const check = run(python, ["-c", `import ${imports.join(", ")}`]);
     if (check.status === 0) {
       log(`Skill venv already ready: ${venvDir}`);
       return { venvDir, success: true };
     }
-    log("Skill venv missing packages — reinstalling markitdown + arxiv + ddgr…");
+    log(`Skill venv missing packages — reinstalling ${distributions.join(" + ")}…`);
   } else {
     log(`First run: creating skill Python venv at ${venvDir}`);
   }
 
-  const result = setupSkillVenv({ venvDir, run, log });
+  const result = setupSkillVenv({ venvDir, run, log, packages });
   if (!result.success) {
     log(
-      `Skill venv setup skipped: ${result.reason}. PDF conversion, arXiv SDK, and web-search (ddgr) features will fall back to system tools. Fix with: python3 -m venv "${venvDir}" && "${python}" -m pip install markitdown arxiv ddgr`,
+      `Skill venv setup skipped: ${result.reason}. PDF conversion, arXiv SDK, and web-search (ddgr) features will fall back to system tools. Fix with: python3 -m venv "${venvDir}" && "${python}" -m pip install ${distributions.join(" ")}`,
     );
   }
   return result;
