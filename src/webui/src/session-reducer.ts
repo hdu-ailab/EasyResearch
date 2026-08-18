@@ -110,6 +110,7 @@ type UnknownMessage = {
   content?: unknown;
   errorMessage?: unknown;
   agentId?: unknown;
+  customType?: unknown;
 };
 
 /**
@@ -309,6 +310,14 @@ function isToolResultMessage(message: UnknownMessage): boolean {
   return message.role === "toolResult";
 }
 
+const AGENT_STATUS_CUSTOM_TYPE = "easyresearch:agent_status";
+
+/** Hidden Paper Assistant context status entries (ADR-082): strictly
+ * model-visible, never rendered in the transcript. */
+function isAgentStatusMessage(message: UnknownMessage): boolean {
+  return message.role === "custom" && message.customType === AGENT_STATUS_CUSTOM_TYPE;
+}
+
 export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
   const subagentName = subagentNameOf(snapshot);
   const sessionName =
@@ -331,6 +340,7 @@ export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
   snapshot.messages.forEach((message, index) => {
     cursorCandidate = undefined;
     if (isDirectBashExecution(message as UnknownMessage)) return;
+    if (isAgentStatusMessage(message as UnknownMessage)) return;
     if (message.role === "toolResult") {
       const toolMessage = message as unknown as { toolCallId?: unknown; toolName?: unknown; isError?: unknown };
       const tool = state.tools.find((t) => t.key === String(toolMessage.toolCallId));
@@ -593,7 +603,7 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
       return { ...state, isStreaming: true };
     case "message_start": {
       const message = event.message as UnknownMessage;
-      if (isDirectBashExecution(message) || isToolResultMessage(message)) return state;
+      if (isDirectBashExecution(message) || isToolResultMessage(message) || isAgentStatusMessage(message)) return state;
       const identity = identityFor(message);
       if (identity !== undefined && state.messages.some((candidate) => candidate.identity === identity)) return state;
       const role = message.role === "user" || message.role === "assistant" ? message.role : "system";

@@ -50,6 +50,28 @@ function toolEvent(
 }
 
 describe("session reducer", () => {
+  it("never renders persisted agent-status custom messages (event and snapshot paths)", () => {
+    const hidden = {
+      role: "custom",
+      customType: "easyresearch:agent_status",
+      content: "<agent_status>\nCurrent time: t\n</agent_status>",
+      display: false,
+    } as never;
+
+    const byEvent = reduceSessionEvent(emptyState, {
+      type: "message_start",
+      message: hidden,
+    } as never);
+    expect(byEvent.messages).toHaveLength(0);
+
+    const bySnapshot = fromSnapshot({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "idle" },
+      subagents: [],
+      messages: [hidden],
+    } as never);
+    expect(bySnapshot.messages).toHaveLength(0);
+  });
+
   it("hydrates from a snapshot", () => {
     const state = fromSnapshot({
       session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" } as never,
