@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createAgentStatusExtension } from "./index";
 import { SUBAGENT_SESSION_LINK_ENTRY } from "../../subagent/session-links";
-import { AGENT_STATUS_TYPE, SUBAGENT_COMPLETED_TYPE } from "./status";
+import { AGENT_STATUS_TYPE, SUBAGENT_COMPLETED_TYPE, SUBAGENT_ERRORED_TYPE } from "./status";
 
 const [importPiMock] = vi.hoisted(() => [vi.fn()]);
 vi.mock("../../runtime/pi-import", () => ({ importPi: importPiMock }));
@@ -38,13 +38,21 @@ describe("createAgentStatusExtension", () => {
     expect(pi.handlers.has("before_agent_start")).toBe(true);
   });
 
-  it("persists a completion marker when the subagent tool finishes", async () => {
+  it("persists a completion marker when the subagent tool finishes cleanly", async () => {
     const pi = fakePi();
     await factory(pi as never);
     const handler = pi.handlers.get("tool_execution_end")![0]!;
-    await handler({ toolName: "subagent", toolCallId: "call-9" }, {});
-    await handler({ toolName: "read", toolCallId: "call-10" }, {});
+    await handler({ toolName: "subagent", toolCallId: "call-9", isError: false }, {});
+    await handler({ toolName: "read", toolCallId: "call-10", isError: false }, {});
     expect(pi.appended).toEqual([{ type: SUBAGENT_COMPLETED_TYPE, data: { toolCallId: "call-9" } }]);
+  });
+
+  it("persists an error marker when the subagent tool fails or aborts", async () => {
+    const pi = fakePi();
+    await factory(pi as never);
+    const handler = pi.handlers.get("tool_execution_end")![0]!;
+    await handler({ toolName: "subagent", toolCallId: "call-9", isError: true }, {});
+    expect(pi.appended).toEqual([{ type: SUBAGENT_ERRORED_TYPE, data: { toolCallId: "call-9" } }]);
   });
 
   it("injects a status message with working children and hides it from users", async () => {
