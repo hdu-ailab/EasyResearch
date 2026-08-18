@@ -1,5 +1,7 @@
 import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext, JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { Message } from "@earendil-works/pi-ai";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { createLogger } from "../runtime/logger";
@@ -7,7 +9,7 @@ import { getAgentDir, importPi } from "../runtime/pi-import";
 import { discoverAgents, PAPER_ASSISTANT_AGENT, type AgentConfig } from "./agents";
 import { resolveModelForSpawn } from "./model-resolution";
 import { resolveThinkingForSpawn } from "./thinking-resolution";
-import { readSubagentSessionLinks, type SubagentSessionLink } from "./session-links";
+import type { SubagentSessionLink } from "./session-links";
 import {
   runStageSession,
   type StageRunResult,
@@ -130,21 +132,34 @@ export function filterAgentsByAllowlist(
   return agents.filter((a) => allowed.has(a.name));
 }
 
+export interface ResolveSessionArgResult {
+  ok: boolean;
+  path?: string;
+  reason?: string;
+}
+
 /**
- * ADR-044: resolve an explicitly requested inherited child from the current
- * parent's persisted UUID links. A repeatable child display name is not enough
- * to establish ownership because multiple parent sessions share a cwd.
+ * ADR-082: a non-empty `session` value is an explicit transcript JSONL path
+ * (absolute or exact-cwd relative) that resumes an existing child session.
+ * Empty/whitespace means "start a fresh child". The coordinator's own session
+ * file is refused to prevent resuming the parent as a subagent.
  */
-export async function resolveInheritedSession(
+export function resolveSessionArg(
   cwd: string,
-  agentName: string,
-  sessionDir?: string,
-  parentEntries: readonly unknown[] = [],
-): Promise<string | undefined> {
-  const links = readSubagentSessionLinks(parentEntries).filter((link) => link.agent === agentName);
-  const link = links[links.length - 1];
-  if (!link) return undefined;
-  return resolveSessionPath(cwd, link.childSessionId, sessionDir);
+  raw: string,
+  parentSessionFile?: string,
+  exists: (path: string) => boolean = existsSync,
+): ResolveSessionArgResult {
+  const trimmed = raw.trim();
+  if (!trimmed) return { ok: true };
+  const resolved = resolve(cwd, trimmed);
+  if (!exists(resolved)) {
+    return { ok: false, reason: `Session file does not exist: ${resolved}` };
+  }
+  if (parentSessionFile && resolved === resolve(cwd, parentSessionFile)) {
+    return { ok: false, reason: "Refusing to resume the coordinator's own session file" };
+  }
+  return { ok: true, path: resolved };
 }
 
 export async function resolveSessionPath(
@@ -256,8 +271,8 @@ function formatSessionHistory(results: readonly SingleResult[], mode: "single" |
     : persisted.map((result) =>
       `Session history JSONL (step ${result.step}, ${result.agent}): ${result.sessionPath}`);
   const instruction = persisted.length === 1
-    ? 'Inspect this file from the bottom for the latest saved progress. To continue this agent in the current parent session, call subagent with session: "inherit".'
-    : 'Inspect these files from the bottom for the latest saved progress. To continue an agent in the current parent session, call subagent with that agent and session: "inherit".';
+    ? 'Inspect this file from the bottom for the latest saved progress. To continue this agent, pass that child\'s transcript JSONL path in session.'
+    : 'Inspect these files from the bottom for the latest saved progress. To continue an agent, pass that child\'s transcript JSONL path in session.';
   return [...paths, instruction].join("\n");
 }
 
@@ -294,22 +309,24 @@ function formatChainFailure(result: SingleResult, results: readonly SingleResult
   );
 }
 
-const SessionMode = Type.Union([Type.Literal("inherit"), Type.Literal("new")], {
-  description: "inherit resumes this parent session's mapped child; new starts a fresh one (default: new)",
-});
+const SessionPath = Type.Optional(
+  Type.String({
+    description: "Transcript JSONL path to resume (absolute or exact-cwd relative); empty/omitted starts a fresh child session.",
+  }),
+);
 
 const SingleParams = Type.Object({
   agent: Type.Optional(Type.String({ description: "Name of the agent to invoke" })),
   task: Type.Optional(Type.String({ description: "Task to delegate" })),
   cwd: Type.Optional(Type.String({ description: "Working directory for the agent runtime" })),
-  session: Type.Optional(SessionMode),
+  session: SessionPath,
 });
 
 const ChainItem = Type.Object({
   agent: Type.String({ description: "Name of the agent to invoke" }),
   task: Type.String({ description: "Task with optional {previous} placeholder for prior output" }),
   cwd: Type.Optional(Type.String({ description: "Working directory for the agent runtime" })),
-  session: Type.Optional(SessionMode),
+  session: SessionPath,
 });
 
 const SubagentParams = Type.Object({
@@ -317,7 +334,7 @@ const SubagentParams = Type.Object({
   task: Type.Optional(Type.String({ description: "Task to delegate (single mode)" })),
   chain: Type.Optional(Type.Array(ChainItem, { description: "Array of {agent, task} for sequential execution" })),
   cwd: Type.Optional(Type.String({ description: "Working directory for the agent runtime (single mode)" })),
-  session: Type.Optional(SessionMode),
+  session: SessionPath,
 });
 
 export function createSubagentTool(options: {
@@ -333,7 +350,7 @@ export function createSubagentTool(options: {
     "Delegate tasks to specialized subagents with isolated context.",
     "Modes: single (agent + task) or chain (sequential with {previous} placeholder).",
     "Invocations are strictly serial: while one subagent runs, further calls return an error.",
-    "session defaults to new: each call gets a fresh child; use session=inherit only to resume this parent session's mapped child.",
+    "session is a transcript JSONL path to resume (omitted/empty starts a fresh child).",
     "Available agents are defined in the config root agents dir.",
   ].join(" "),
   parameters: SubagentParams,
@@ -394,10 +411,16 @@ export function createSubagentTool(options: {
               { ...detailsBase("chain", agents), results },
             );
           }
-          const sessionPath =
-            step.session === "inherit"
-              ? await resolveInheritedSession(effectiveCwd, step.agent, undefined, ctx.sessionManager.getEntries())
-              : undefined;
+          const sessionArg = step.session !== undefined
+            ? resolveSessionArg(effectiveCwd, step.session, ctx.sessionManager.getSessionFile?.())
+            : { ok: true };
+          if (!sessionArg.ok) {
+            throw new SubagentExecutionError(
+              sessionArg.reason!,
+              { ...detailsBase("chain", agents), results },
+            );
+          }
+          const sessionPath = sessionArg.path;
           const taskWithContext = step.task.replace(/\{previous\}/g, previousOutput);
           const model = await resolveModelForSpawn(
             { cwd: effectiveCwd, sessionManager: ctx.sessionManager },
@@ -450,9 +473,16 @@ export function createSubagentTool(options: {
             { ...detailsBase("single", agents), results: [] },
           );
         }
-        const sessionPath = params.session === "inherit"
-          ? await resolveInheritedSession(effectiveCwd, params.agent, undefined, ctx.sessionManager.getEntries())
-          : undefined;
+        const sessionArg = params.session !== undefined
+          ? resolveSessionArg(effectiveCwd, params.session, ctx.sessionManager.getSessionFile?.())
+          : { ok: true };
+        if (!sessionArg.ok) {
+          throw new SubagentExecutionError(
+            sessionArg.reason!,
+            { ...detailsBase("single", agents), results: [] },
+          );
+        }
+        const sessionPath = sessionArg.path;
         const model = await resolveModelForSpawn(
           { cwd: effectiveCwd, sessionManager: ctx.sessionManager },
           params.agent,

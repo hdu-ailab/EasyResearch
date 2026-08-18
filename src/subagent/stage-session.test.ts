@@ -236,7 +236,7 @@ describe("createStageSessionRunner", () => {
     expect(session.disposeCalls).toBe(1);
   });
 
-  it("opens only the supplied inherited session and aborts through the signal", async () => {
+  it("opens the supplied existing session path and aborts through the signal", async () => {
     const calls: Array<{ name: string; value?: unknown }> = [];
     const session = new FakeStageSession();
     session.prompt = async () => {

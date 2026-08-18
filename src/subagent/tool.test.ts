@@ -1,3 +1,4 @@
+import { writeFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentConfig } from "./agents";
 import type { StageRunOptions, StageRunResult, StageSessionRunner } from "./stage-session";
@@ -7,10 +8,9 @@ import {
   describeThinking,
   filterAgentsByAllowlist,
   progressFromMessage,
-  resolveInheritedSession,
+  resolveSessionArg,
   SubagentExecutionError,
 } from "./tool";
-import { SUBAGENT_SESSION_LINK_ENTRY } from "./session-links";
 
 const [resolveModelMock, resolveThinkingMock, importPiMock, getAgentDirMock] = vi.hoisted(() => [
   vi.fn(),
@@ -82,7 +82,10 @@ function context(entries: unknown[] = []) {
     cwd: "/paper",
     model: { provider: "openai", id: "gpt-test" },
     thinkingLevel: "medium",
-    sessionManager: { getEntries: () => entries },
+    sessionManager: {
+      getEntries: () => entries,
+      getSessionFile: () => "/sessions/parent.jsonl",
+    },
   } as never;
 }
 
@@ -175,41 +178,29 @@ describe("createSubagentTool in-process dispatch", () => {
     expect(output.content[0]).toMatchObject({ text: expect.stringContaining("/sessions/child-2.jsonl") });
   });
 
-  it("opens only the current parent's mapped child for explicit inheritance", async () => {
-    importPiMock.mockResolvedValue({
-      SessionManager: { list: async () => [{ id: "owned-child", path: "/sessions/owned.jsonl" }] },
-    });
+  it("resumes the child whose transcript path is passed in session", async () => {
+    const suppliedPath = "/tmp/supplied-child.jsonl";
+    writeFileSync(suppliedPath, "header\n");
     const calls: StageRunOptions[] = [];
     const tool = createSubagentTool({
       agentProvider: async () => [agent("search")],
       stageSessionRunner: async (options) => {
         calls.push(options);
-        return {
-          ...result(options),
-          sessionId: "owned-child",
-          sessionPath: "/sessions/runner-fresh.jsonl",
-        };
+        return { ...result(options), sessionPath: suppliedPath };
       },
     });
 
     const output = await tool.execute(
-      "call-2",
-      { agent: "search", task: "continue", session: "inherit" },
+      "call-3",
+      { agent: "search", task: "continue", session: suppliedPath },
       undefined,
       undefined,
-      context([{
-        type: "custom",
-        customType: SUBAGENT_SESSION_LINK_ENTRY,
-        data: { toolCallId: "prior", childSessionId: "owned-child", agent: "search" },
-      }]),
+      context(),
     );
 
-    expect(calls[0]?.sessionPath).toBe("/sessions/owned.jsonl");
-    expect(output.content[0]).toMatchObject({ text: expect.stringContaining("/sessions/owned.jsonl") });
-    expect(output.content[0]).toMatchObject({ text: expect.not.stringContaining("/sessions/runner-fresh.jsonl") });
-    expect(output.details).toMatchObject({
-      results: [{ sessionPath: "/sessions/owned.jsonl" }],
-    });
+    expect(calls[0]?.sessionPath).toBe(suppliedPath);
+    expect(output.content[0]).toMatchObject({ text: expect.stringContaining(suppliedPath) });
+    expect(output.details).toMatchObject({ results: [{ sessionPath: suppliedPath }] });
   });
 
   it("discloses the authoritative in-process session file path for a fresh child", async () => {
@@ -438,14 +429,40 @@ describe("subagent helpers", () => {
     ], "search,disabled", "writing").map(({ name }) => name)).toEqual(["search"]);
   });
 
-  it("resolves inheritance only through the latest parent mapping", async () => {
-    importPiMock.mockResolvedValue({
-      SessionManager: { list: async () => [{ id: "latest", path: "/sessions/latest.jsonl" }] },
+  it("resolves a session path against the exact cwd", () => {
+    expect(resolveSessionArg("/paper", "sessions/mine.jsonl", undefined, (p) => p.endsWith("mine.jsonl")))
+      .toEqual({ ok: true, path: "/paper/sessions/mine.jsonl" });
+    expect(resolveSessionArg("/paper", "/abs/path.jsonl", undefined, (p) => p === "/abs/path.jsonl"))
+      .toEqual({ ok: true, path: "/abs/path.jsonl" });
+  });
+
+  it("returns ok for empty/whitespace session (fresh child)", () => {
+    expect(resolveSessionArg("/paper", "", "/sessions/parent.jsonl")).toEqual({ ok: true });
+    expect(resolveSessionArg("/paper", "   ")).toEqual({ ok: true });
+  });
+
+  it("refuses missing files and the coordinator's own session file", () => {
+    const exists = (p: string) => p === "/paper/real.jsonl" || p === "/sessions/parent.jsonl";
+    expect(resolveSessionArg("/paper", "real.jsonl", "/sessions/parent.jsonl", exists))
+      .toEqual({ ok: true, path: "/paper/real.jsonl" });
+    expect(resolveSessionArg("/paper", "nope.jsonl", "/sessions/parent.jsonl", exists)).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("Session file does not exist"),
     });
-    await expect(resolveInheritedSession("/paper", "search", undefined, [
-      { type: "custom", customType: SUBAGENT_SESSION_LINK_ENTRY, data: { toolCallId: "old-call", childSessionId: "old", agent: "search" } },
-      { type: "custom", customType: SUBAGENT_SESSION_LINK_ENTRY, data: { toolCallId: "new-call", childSessionId: "latest", agent: "search" } },
-    ])).resolves.toBe("/sessions/latest.jsonl");
+    expect(resolveSessionArg("/paper", "/sessions/parent.jsonl", "/sessions/parent.jsonl", exists)).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("coordinator's own session file"),
+    });
+  });
+
+  it("rejects a missing session path through the subagent tool", async () => {
+    const tool = createSubagentTool({
+      agentProvider: async () => [agent("search")],
+      stageSessionRunner: async (options) => result(options),
+    });
+    await expect(
+      tool.execute("call-4", { agent: "search", task: "x", session: "/missing.jsonl" }, undefined, undefined, context()),
+    ).rejects.toMatchObject({ message: expect.stringContaining("Session file does not exist") });
   });
 
   it("extracts complete assistant progress text", () => {
