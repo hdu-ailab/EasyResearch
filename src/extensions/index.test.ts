@@ -9,4 +9,8 @@ describe("bundled extension registry invariants", () => {
       expect(typeof extension.factory).toBe("function");
     }
   });
+
+  it("mounts the agent-status extension in the assistant runtime", () => {
+    expect(assistantExtensions.map((entry) => entry.name)).toContain("agent-status");
+  });
 });

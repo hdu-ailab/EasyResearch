@@ -8,6 +8,7 @@ import duckDuckGoSearchExtension from "./web-search";
 import webFetchExtension from "./webfetch";
 import { createWebTreeExtension } from "./web-tree";
 import { createSessionNameExtension } from "./session-name";
+import { createAgentStatusExtension } from "./agent-status";
 
 /**
  * Bundled extensions mounted as named inline factories in Paper Assistant
@@ -18,7 +19,8 @@ import { createSessionNameExtension } from "./session-name";
  *
  * ADR-063: the former monolithic paper-assistant extension is atomized — each
  * entry below owns exactly one responsibility (definition application, subagent
- * dispatch, welcome banner, event logger, project trust, web search).
+ * dispatch, welcome banner, event logger, project trust, web search, agent
+ * status per ADR-082).
  *
  * Stage factories are assembled lazily by `subagent/stage-session.ts` to avoid
  * a static cycle through the dispatch tool.
@@ -65,5 +67,9 @@ export const assistantExtensions: BundledExtension[] = [
   {
     name: "session-name",
     factory: createSessionNameExtension(),
+  },
+  {
+    name: "agent-status",
+    factory: createAgentStatusExtension(),
   },
 ];
