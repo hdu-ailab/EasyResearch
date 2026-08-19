@@ -623,8 +623,10 @@ describe("WorkPage", () => {
       args: { agent: "search" },
       partialResult: { details: { subagent: { agent: "search", step: 1, status: "running", latestMessage } } },
     });
-    const preview = within(searchTab).getByTitle(latestMessage);
-    expect(preview).toHaveClass("max-w-64", "truncate");
+    // The tab bar shows only the agent id (no running preview), while the
+    // transcript card still surfaces the latest message.
+    const preview = within(searchTab).queryByTitle(latestMessage);
+    expect(preview).toBeNull();
     const cardMessage = within(screen.getByLabelText(/conversation/i)).getByText(latestMessage);
     expect(cardMessage.closest("article")).not.toBeNull();
     emitInAct({
@@ -1174,7 +1176,7 @@ describe("WorkPage", () => {
     expect(writingTab).not.toBe(searchTab);
     expect(writingTab).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByRole("button", { name: /agent search/i })).toHaveAttribute("aria-pressed", "true");
-    expect(within(writingTab).getByTitle("drafting method")).toBeVisible();
+    expect(within(writingTab).queryByTitle("drafting method")).toBeNull();
     expect(within(conversation).queryByText("drafting method")).toBeNull();
 
     await user.click(writingTab);
@@ -1434,7 +1436,7 @@ describe("WorkPage", () => {
     });
 
     expect(screen.getByRole("button", { name: /agent search/i })).toBe(select);
-    expect(within(select).getByTitle(latestMessage)).toBeTruthy();
+    expect(within(select).queryByTitle(latestMessage)).toBeNull();
     const cardMessage = within(conversation).getByText(latestMessage);
     expect(cardMessage.closest("article")).toBe(card);
   });

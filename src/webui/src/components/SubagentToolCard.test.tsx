@@ -264,6 +264,19 @@ describe("SubagentToolCard", () => {
     ]);
   });
 
+  it("renders the agent id badge from mapped sessions (ADR-084)", () => {
+    render(
+      <SubagentToolCard
+        tool={subagentTool({
+          sessionLinks: [{ toolCallId: "sub-1", childSessionId: "child-search", agent: "search", id: "search_0" }],
+        })}
+        initialOpen={false}
+      />,
+    );
+
+    expect(screen.getByText("search_0")).toBeVisible();
+  });
+
   it("describes missing settled progress without claiming it is waiting", () => {
     render(<SubagentToolCard tool={subagentTool({ running: false, done: true })} initialOpen={false} />);
 

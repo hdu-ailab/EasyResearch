@@ -7,9 +7,15 @@ export interface SubagentTabState {
   agent: string;
   step?: number;
   sessionId?: string;
+  /** Agent id (`<agent>_<seq>`, ADR-084) of the child within its main session. */
+  id?: string;
   retained: boolean;
   running: boolean;
   latestMessage?: string;
+}
+
+function agentIdOf(sessionLinks: ToolView["sessionLinks"]): string | undefined {
+  return sessionLinks?.find((link) => link.id !== undefined)?.id;
 }
 
 export interface SubagentTabsState {
@@ -69,6 +75,7 @@ export function syncRunningSubagentTabs(state: SubagentTabsState, tools: ToolVie
           ...tab,
           key: tab.sessionId || migratedFirstStep ? tab.key : temporarySubagentTabKey(tool.key, tool.step),
           agent: tool.agentName ?? tab.agent,
+          ...(agentIdOf(tool.sessionLinks) !== undefined ? { id: agentIdOf(tool.sessionLinks) } : {}),
           running: true,
           ...(tool.latestMessage !== undefined ? { latestMessage: tool.latestMessage } : {}),
         },
@@ -85,6 +92,7 @@ export function syncRunningSubagentTabs(state: SubagentTabsState, tools: ToolVie
       key: temporarySubagentTabKey(tool.key, tool.step),
       toolCallId: tool.key,
       agent: tool.agentName ?? "subagent",
+      ...(agentIdOf(tool.sessionLinks) !== undefined ? { id: agentIdOf(tool.sessionLinks) } : {}),
       ...(tool.step !== undefined ? { step: tool.step } : {}),
       retained: false,
       running: true,
@@ -119,6 +127,7 @@ export function promoteSubagentTab(state: SubagentTabsState, link: SubagentSessi
               ...existingUuid,
               toolCallId: link.toolCallId,
               agent: link.agent,
+              ...(link.id !== undefined ? { id: link.id } : {}),
               retained: true,
               running: matched?.running ?? existingUuid.running,
               latestMessage: link.latestMessage ?? matched?.latestMessage ?? existingUuid.latestMessage,
@@ -140,6 +149,7 @@ export function promoteSubagentTab(state: SubagentTabsState, link: SubagentSessi
               key: `session:${link.childSessionId}`,
               sessionId: link.childSessionId,
               agent: link.agent,
+              ...(link.id !== undefined ? { id: link.id } : {}),
             },
             link.step,
           )
@@ -160,6 +170,7 @@ export function closeSubagentTab(state: SubagentTabsState, key: string): Subagen
 }
 
 export function childTabLabel(tab: SubagentTabState, allTabs: SubagentTabState[]): string {
+  if (tab.id !== undefined) return tab.id;
   const duplicateAgent =
     tab.sessionId !== undefined &&
     allTabs.some((other) => other !== tab && other.sessionId !== undefined && other.agent === tab.agent);

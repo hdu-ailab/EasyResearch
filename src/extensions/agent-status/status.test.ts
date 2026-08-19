@@ -19,25 +19,22 @@ const dispatched: SubagentDispatched[] = [
   { toolCallId: "d1", agent: "search", childSessionId: "s1" },
 ];
 
-const paths: Record<string, string> = { s0: "/sessions/0.jsonl", s1: "/sessions/1.jsonl" };
-const resolvePath = (id: string) => Promise.resolve(paths[id]);
+const idsBySession: Record<string, string> = { s0: "search_0", s1: "search_1" };
+const resolveId = (childSessionId: string) => idsBySession[childSessionId];
 
 function outcomes(pairs: Array<[string, SubagentOutcome]>): ReadonlyMap<string, SubagentOutcome> {
   return new Map(pairs);
 }
 
 describe("buildAgentStatus", () => {
-  it("lists every dispatched child as working when no outcome is recorded", async () => {
+  it("lists every dispatched child as working with its agent id when no outcome is recorded", async () => {
     const snapshot = await buildAgentStatus({
       now: "2026-08-18 10:00:00",
       dispatched,
       outcomes: outcomes([]),
-      resolvePath,
+      resolveId,
     });
-    expect(snapshot.working).toEqual([
-      { name: "search_0", sessionPath: "/sessions/0.jsonl" },
-      { name: "search_1", sessionPath: "/sessions/1.jsonl" },
-    ]);
+    expect(snapshot.working).toEqual([{ name: "search_0" }, { name: "search_1" }]);
     expect(snapshot.complete).toEqual([]);
     expect(snapshot.error).toEqual([]);
   });
@@ -47,10 +44,10 @@ describe("buildAgentStatus", () => {
       now: "t1",
       dispatched,
       outcomes: outcomes([["d1", "complete"]]),
-      resolvePath,
+      resolveId,
     });
-    expect(first.working).toEqual([{ name: "search_0", sessionPath: "/sessions/0.jsonl" }]);
-    expect(first.complete).toEqual([{ name: "search_1", sessionPath: "/sessions/1.jsonl" }]);
+    expect(first.working).toEqual([{ name: "search_0" }]);
+    expect(first.complete).toEqual([{ name: "search_1" }]);
     expect(first.error).toEqual([]);
 
     const second = await buildAgentStatus({
@@ -58,9 +55,9 @@ describe("buildAgentStatus", () => {
       dispatched,
       outcomes: outcomes([["d1", "complete"]]),
       previous: first,
-      resolvePath,
+      resolveId,
     });
-    expect(second.working).toEqual([{ name: "search_0", sessionPath: "/sessions/0.jsonl" }]);
+    expect(second.working).toEqual([{ name: "search_0" }]);
     expect(second.complete).toEqual([]);
   });
 
@@ -69,20 +66,20 @@ describe("buildAgentStatus", () => {
       now: "t1",
       dispatched,
       outcomes: outcomes([["d1", "error"]]),
-      resolvePath,
+      resolveId,
     });
-    expect(first.working).toEqual([{ name: "search_0", sessionPath: "/sessions/0.jsonl" }]);
+    expect(first.working).toEqual([{ name: "search_0" }]);
     expect(first.complete).toEqual([]);
-    expect(first.error).toEqual([{ name: "search_1", sessionPath: "/sessions/1.jsonl" }]);
+    expect(first.error).toEqual([{ name: "search_1" }]);
 
     const second = await buildAgentStatus({
       now: "t2",
       dispatched,
       outcomes: outcomes([["d1", "error"]]),
       previous: first,
-      resolvePath,
+      resolveId,
     });
-    expect(second.working).toEqual([{ name: "search_0", sessionPath: "/sessions/0.jsonl" }]);
+    expect(second.working).toEqual([{ name: "search_0" }]);
     expect(second.error).toEqual([]);
   });
 
@@ -91,21 +88,21 @@ describe("buildAgentStatus", () => {
       now: "t",
       dispatched,
       outcomes: outcomes([["d0", "complete"], ["d1", "error"]]),
-      resolvePath,
+      resolveId,
     });
     expect(snapshot.working).toEqual([]);
-    expect(snapshot.complete).toEqual([{ name: "search_0", sessionPath: "/sessions/0.jsonl" }]);
-    expect(snapshot.error).toEqual([{ name: "search_1", sessionPath: "/sessions/1.jsonl" }]);
+    expect(snapshot.complete).toEqual([{ name: "search_0" }]);
+    expect(snapshot.error).toEqual([{ name: "search_1" }]);
   });
 
-  it("skips items whose session path cannot be resolved", async () => {
+  it("falls back to index-based naming when no alias id is resolvable", async () => {
     const snapshot = await buildAgentStatus({
       now: "t",
       dispatched: [{ toolCallId: "d0", agent: "search", childSessionId: "missing" }],
       outcomes: outcomes([]),
-      resolvePath: () => Promise.resolve(undefined),
+      resolveId: () => undefined,
     });
-    expect(snapshot.working).toEqual([]);
+    expect(snapshot.working).toEqual([{ name: "search_0" }]);
   });
 });
 
@@ -114,7 +111,7 @@ describe("formatAgentStatus / parseAgentStatus", () => {
     const snapshot: AgentStatusSnapshot = {
       time: "2026-08-18 10:00:00",
       working: [],
-      complete: [{ name: "search_1", sessionPath: "/sessions/1.jsonl" }],
+      complete: [{ name: "search_1" }],
       error: [],
     };
     const text = formatAgentStatus(snapshot);
@@ -122,25 +119,33 @@ describe("formatAgentStatus / parseAgentStatus", () => {
     expect(text).toContain("Current time: 2026-08-18 10:00:00");
     expect(text).not.toContain("Working subagent:");
     expect(text).not.toContain("Error subagent:");
-    expect(text).toContain("Complete subagent:{\"name\":\"search_1\",\"session_path\":\"/sessions/1.jsonl\"}");
+    expect(text).toContain("Complete subagent:search_1");
     expect(parseAgentStatus(text)).toEqual(snapshot);
   });
 
   it("renders all three lists and round-trips a full block", () => {
     const snapshot: AgentStatusSnapshot = {
       time: "t",
-      working: [
-        { name: "search_0", sessionPath: "/sessions/0.jsonl" },
-        { name: "search_1", sessionPath: "/sessions/1.jsonl" },
-      ],
-      complete: [{ name: "search_1", sessionPath: "/sessions/1.jsonl" }],
-      error: [{ name: "search_2", sessionPath: "/sessions/2.jsonl" }],
+      working: [{ name: "search_0" }, { name: "search_1" }],
+      complete: [{ name: "search_1" }],
+      error: [{ name: "search_2" }],
     };
     const text = formatAgentStatus(snapshot);
-    expect(text).toContain('Working subagent:{"name":"search_0","session_path":"/sessions/0.jsonl"},{"name":"search_1","session_path":"/sessions/1.jsonl"}');
-    expect(text).toContain("Complete subagent:{\"name\":\"search_1\",\"session_path\":\"/sessions/1.jsonl\"}");
-    expect(text).toContain("Error subagent:{\"name\":\"search_2\",\"session_path\":\"/sessions/2.jsonl\"}");
+    expect(text).toContain("Working subagent:search_0,search_1");
+    expect(text).toContain("Complete subagent:search_1");
+    expect(text).toContain("Error subagent:search_2");
     expect(parseAgentStatus(text)).toEqual(snapshot);
+  });
+
+  it("parses legacy items that still carry session_path (extracts the id)", () => {
+    const legacy =
+      '<agent_status>\nCurrent time: 2026-08-18 10:00:00\n' +
+      'Working subagent:{"name":"search_0","session_path":"/sessions/0.jsonl"}\n' +
+      'Complete subagent:{"name":"search_1","session_path":"/sessions/1.jsonl"}\n' +
+      '</agent_status>';
+    const parsed = parseAgentStatus(legacy);
+    expect(parsed?.working).toEqual([{ name: "search_0" }]);
+    expect(parsed?.complete).toEqual([{ name: "search_1" }]);
   });
 
   it("returns undefined for non-status text", () => {
@@ -211,9 +216,9 @@ describe("readSubagentOutcomes", () => {
       now: "t",
       dispatched: [{ toolCallId: "d0", agent: "search", childSessionId: "s0" }],
       outcomes: out,
-      resolvePath,
+      resolveId,
     });
-    expect(snapshot.complete).toEqual([{ name: "search_0", sessionPath: "/sessions/0.jsonl" }]);
+    expect(snapshot.complete).toEqual([{ name: "search_0" }]);
     expect(snapshot.error).toEqual([]);
   });
 });

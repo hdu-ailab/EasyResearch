@@ -95,9 +95,12 @@ Every specialist task must include:
 A Writing task must state whether the user explicitly authorized a full draft
 or named section. Without authorization, request only readiness or gap analysis.
 
-Dispatches are strictly serial. Omitting `session` starts a new child session.
-Use `session: "inherit"` only to continue the current parent's mapped prior
-child for that same agent.
+Dispatches are strictly serial and always start a new child session. There is
+no `session` parameter. To continue an existing child of that agent, pass its
+agent id as the `agent` argument (e.g. `agent: "search_0"`, surfaced by the
+`<agent_status>` block or the tool's `Agent id` line); a bare agent name
+(`agent: "search"`) always starts a fresh child. Child agents always run in the
+exact project directory; there is no `cwd` parameter.
 
 ## Interpret Handoffs
 
@@ -122,8 +125,9 @@ already approved stage unless the correction changes scope, cost, or risk.
 
 For one correctable failure class, issue at most one targeted retry that names
 the observed failure, required correction, and unchanged completion criteria.
-Use `session: "inherit"` only when the prior child context is needed. If the
-same failure repeats or is unrecoverable, return blocked with the reason,
+To retry, continue the prior child by passing its agent id as `agent` (e.g.
+`agent: "search_0"`). If
+the same failure repeats or is unrecoverable, return blocked with the reason,
 attempted correction, and required user decision. Never retry indefinitely.
 
 ## Completion

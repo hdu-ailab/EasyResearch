@@ -38,7 +38,6 @@ describe("AgentTabBar", () => {
     const stop = screen.getByRole("button", { name: "Stop agent" });
     expect(select.contains(stop)).toBe(false);
     expect(select.parentElement).toBe(stop.parentElement);
-    expect(withinText(select)).toContain("finding papers");
     await userEvent.setup().click(stop);
     expect(onStop).toHaveBeenCalledWith("call-1");
     expect(onSelect).not.toHaveBeenCalled();
@@ -84,8 +83,45 @@ describe("AgentTabBar", () => {
     expect(screen.getByRole("button", { name: "Close agent tab: Search · 11111111" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Close agent tab: Search · 22222222" })).toBeVisible();
   });
-});
 
-function withinText(element: HTMLElement): string {
-  return element.textContent ?? "";
-}
+  it("shows only the localized agent id on the subagent tab and drops the running preview (ADR-086)", () => {
+    render(
+      <AgentTabBar
+        tabs={[
+          tab({
+            key: "session:child-uuid",
+            sessionId: "child-uuid",
+            id: "search_0",
+            latestMessage: "finding papers",
+            retained: true,
+          }),
+        ]}
+        activeKey="session:child-uuid"
+        paperAssistantStatus="working"
+        onSelect={vi.fn()}
+        onClose={vi.fn()}
+        onStop={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Agent search_0: Search_0" })).toBeVisible();
+    expect(screen.queryByText("finding papers")).toBeNull();
+  });
+
+  it("shows the raw id alone for custom agents without a translation", () => {
+    render(
+      <AgentTabBar
+        tabs={[
+          tab({ key: "session:child-uuid", sessionId: "child-uuid", agent: "custom", id: "custom_0", retained: true }),
+        ]}
+        activeKey="paper-assistant"
+        paperAssistantStatus="idle"
+        onSelect={vi.fn()}
+        onClose={vi.fn()}
+        onStop={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Agent custom_0" })).toBeVisible();
+  });
+});

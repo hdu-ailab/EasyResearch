@@ -1,14 +1,15 @@
-import { writeFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentConfig } from "./agents";
+import { AGENT_ALIAS_ENTRY } from "./agent-alias";
 import type { StageRunOptions, StageRunResult, StageSessionRunner } from "./stage-session";
 import {
   createSubagentTool,
   describeModel,
   describeThinking,
   filterAgentsByAllowlist,
+  formatSubagentDescription,
   progressFromMessage,
-  resolveSessionArg,
+  resolveAgentTarget,
   SubagentExecutionError,
 } from "./tool";
 
@@ -85,6 +86,10 @@ function context(entries: unknown[] = []) {
     sessionManager: {
       getEntries: () => entries,
       getSessionFile: () => "/sessions/parent.jsonl",
+      appendCustomEntry: (type: string, data?: unknown) => {
+        entries.push({ type: "custom", customType: type, data });
+        return "entry-1";
+      },
     },
   } as never;
 }
@@ -147,60 +152,6 @@ describe("createSubagentTool in-process dispatch", () => {
     }));
     expect(output.content[0]).toMatchObject({ text: expect.stringContaining("status: complete") });
     expect(output.content[0]).toMatchObject({ text: expect.stringContaining("/sessions/child-1.jsonl") });
-  });
-
-  it("runs chains sequentially and substitutes the previous output", async () => {
-    const calls: StageRunOptions[] = [];
-    const runner: StageSessionRunner = async (options) => {
-      calls.push(options);
-      return result(options, options.step === 1 ? "papers found" : "draft complete");
-    };
-    const tool = createSubagentTool({
-      agentProvider: async () => [agent("search"), agent("writing")],
-      stageSessionRunner: runner,
-    });
-
-    const output = await tool.execute(
-      "chain-1",
-      { chain: [
-        { agent: "search", task: "find" },
-        { agent: "writing", task: "use {previous}" },
-      ] },
-      undefined,
-      undefined,
-      context(),
-    );
-
-    expect(calls.map((call) => call.task)).toEqual(["find", "use papers found"]);
-    expect(calls.map((call) => call.step)).toEqual([1, 2]);
-    expect(output.content[0]).toMatchObject({ text: expect.stringContaining("draft complete") });
-    expect(output.content[0]).toMatchObject({ text: expect.stringContaining("/sessions/child-1.jsonl") });
-    expect(output.content[0]).toMatchObject({ text: expect.stringContaining("/sessions/child-2.jsonl") });
-  });
-
-  it("resumes the child whose transcript path is passed in session", async () => {
-    const suppliedPath = "/tmp/supplied-child.jsonl";
-    writeFileSync(suppliedPath, "header\n");
-    const calls: StageRunOptions[] = [];
-    const tool = createSubagentTool({
-      agentProvider: async () => [agent("search")],
-      stageSessionRunner: async (options) => {
-        calls.push(options);
-        return { ...result(options), sessionPath: suppliedPath };
-      },
-    });
-
-    const output = await tool.execute(
-      "call-3",
-      { agent: "search", task: "continue", session: suppliedPath },
-      undefined,
-      undefined,
-      context(),
-    );
-
-    expect(calls[0]?.sessionPath).toBe(suppliedPath);
-    expect(output.content[0]).toMatchObject({ text: expect.stringContaining(suppliedPath) });
-    expect(output.details).toMatchObject({ results: [{ sessionPath: suppliedPath }] });
   });
 
   it("discloses the authoritative in-process session file path for a fresh child", async () => {
@@ -309,58 +260,6 @@ describe("createSubagentTool in-process dispatch", () => {
     });
   });
 
-  it("retains every authoritative path when a later chain step fails", async () => {
-    const tool = createSubagentTool({
-      agentProvider: async () => [agent("search"), agent("writing")],
-      stageSessionRunner: async (options) => {
-        if (options.step === 1) {
-          return {
-            ...result(options, "papers found"),
-            sessionPath: "/sessions/first-authoritative.jsonl",
-          };
-        }
-        return {
-          ...result(options),
-          exitCode: 1,
-          stopReason: "error",
-          errorMessage: "later provider failed",
-          sessionPath: "/sessions/later-authoritative.jsonl",
-        };
-      },
-    });
-
-    const thrown = await tool.execute(
-      "chain-failed",
-      { chain: [
-        { agent: "search", task: "find" },
-        { agent: "writing", task: "draft from {previous}" },
-      ] },
-      undefined,
-      undefined,
-      context(),
-    ).then(
-      () => undefined,
-      (error: unknown) => error,
-    );
-
-    expect(thrown).toBeInstanceOf(SubagentExecutionError);
-    const failure = thrown as SubagentExecutionError;
-    expect(failure.details.results).toMatchObject([
-      { step: 1, exitCode: 0, sessionPath: "/sessions/first-authoritative.jsonl" },
-      {
-        step: 2,
-        exitCode: 1,
-        errorMessage: "later provider failed",
-        sessionPath: "/sessions/later-authoritative.jsonl",
-      },
-    ]);
-    expect(failure.message).toContain("later provider failed");
-    const firstPathIndex = failure.message.indexOf("/sessions/first-authoritative.jsonl");
-    const laterPathIndex = failure.message.indexOf("/sessions/later-authoritative.jsonl");
-    expect(firstPathIndex).toBeGreaterThanOrEqual(0);
-    expect(laterPathIndex).toBeGreaterThan(firstPathIndex);
-  });
-
   it("serializes one runtime without blocking another runtime", async () => {
     let finishFirst: (() => void) | undefined;
     const firstDone = new Promise<void>((resolve) => {
@@ -420,6 +319,17 @@ describe("createSubagentTool in-process dispatch", () => {
 });
 
 describe("subagent helpers", () => {
+  it("formats the three-line description with the caller's available subagents (ADR-084)", () => {
+    expect(formatSubagentDescription(["search", "experiment"])).toBe(
+      [
+        "Delegate tasks to specialized subagents with isolated context.",
+        "Sub agents run in the exact project directory.",
+        "Available subagents: search, experiment.",
+      ].join("\n"),
+    );
+    expect(formatSubagentDescription([])).toContain("Available subagents: none.");
+  });
+
   it("filters disabled, Paper Assistant, caller, and non-allowlisted agents", () => {
     expect(filterAgentsByAllowlist([
       agent("paper-assistant"),
@@ -429,40 +339,136 @@ describe("subagent helpers", () => {
     ], "search,disabled", "writing").map(({ name }) => name)).toEqual(["search"]);
   });
 
-  it("resolves a session path against the exact cwd", () => {
-    expect(resolveSessionArg("/paper", "sessions/mine.jsonl", undefined, (p) => p.endsWith("mine.jsonl")))
-      .toEqual({ ok: true, path: "/paper/sessions/mine.jsonl" });
-    expect(resolveSessionArg("/paper", "/abs/path.jsonl", undefined, (p) => p === "/abs/path.jsonl"))
-      .toEqual({ ok: true, path: "/abs/path.jsonl" });
-  });
+  describe("subagent agent-id aliases (ADR-084/086)", () => {
+    function aliasEntries(records: Array<{ id: string; agent: string; sessionId: string; sessionPath: string }>): unknown[] {
+      return records.map((data) => ({ type: "custom", customType: AGENT_ALIAS_ENTRY, data }));
+    }
 
-  it("returns ok for empty/whitespace session (fresh child)", () => {
-    expect(resolveSessionArg("/paper", "", "/sessions/parent.jsonl")).toEqual({ ok: true });
-    expect(resolveSessionArg("/paper", "   ")).toEqual({ ok: true });
-  });
+    const sessionManager = (entries: unknown[] = []) =>
+      (context(entries) as unknown as { sessionManager: never }).sessionManager;
 
-  it("refuses missing files and the coordinator's own session file", () => {
-    const exists = (p: string) => p === "/paper/real.jsonl" || p === "/sessions/parent.jsonl";
-    expect(resolveSessionArg("/paper", "real.jsonl", "/sessions/parent.jsonl", exists))
-      .toEqual({ ok: true, path: "/paper/real.jsonl" });
-    expect(resolveSessionArg("/paper", "nope.jsonl", "/sessions/parent.jsonl", exists)).toMatchObject({
-      ok: false,
-      reason: expect.stringContaining("Session file does not exist"),
+    it("resolves an agent id to its mapped session path and agent", () => {
+      const entries = aliasEntries([
+        { id: "search_1", agent: "search", sessionId: "child-2", sessionPath: "/sessions/child-2.jsonl" },
+      ]);
+      const target = resolveAgentTarget("search_1", sessionManager(entries));
+      expect(target).toEqual({
+        ok: true,
+        target: { name: "search", path: "/sessions/child-2.jsonl", activeId: "search_1" },
+      });
     });
-    expect(resolveSessionArg("/paper", "/sessions/parent.jsonl", "/sessions/parent.jsonl", exists)).toMatchObject({
-      ok: false,
-      reason: expect.stringContaining("coordinator's own session file"),
-    });
-  });
 
-  it("rejects a missing session path through the subagent tool", async () => {
-    const tool = createSubagentTool({
-      agentProvider: async () => [agent("search")],
-      stageSessionRunner: async (options) => result(options),
+    it("treats a bare agent name as a fresh dispatch", () => {
+      expect(resolveAgentTarget("search", sessionManager())).toEqual({ ok: true, target: { name: "search" } });
     });
-    await expect(
-      tool.execute("call-4", { agent: "search", task: "x", session: "/missing.jsonl" }, undefined, undefined, context()),
-    ).rejects.toMatchObject({ message: expect.stringContaining("Session file does not exist") });
+
+    it("errors on an unknown agent id and lists the known ids", () => {
+      const entries = aliasEntries([
+        { id: "search_0", agent: "search", sessionId: "child-1", sessionPath: "/sessions/child-1.jsonl" },
+      ]);
+      const target = resolveAgentTarget("search_9", sessionManager(entries));
+      expect(target).toMatchObject({
+        ok: false,
+        reason: expect.stringContaining('Unknown agent id "search_9"'),
+      });
+      expect(target.ok === false && target.reason).toContain("search_0");
+    });
+
+    it("allocates the next agent id for a fresh dispatch and binds the alias at session creation", async () => {
+      const entries: unknown[] = [];
+      const runner: StageSessionRunner = async (options) => {
+        options.onSessionHeader?.({ id: "child-1", cwd: options.cwd, sessionPath: "/sessions/child-1.jsonl" });
+        return result(options);
+      };
+      const tool = createSubagentTool({
+        agentProvider: async () => [agent("search")],
+        stageSessionRunner: runner,
+      });
+
+      const output = await tool.execute("call-1", { agent: "search", task: "find papers" }, undefined, undefined, context(entries));
+
+      const text = (output.content as unknown as Array<{ text?: string }>)[0]?.text ?? "";
+      expect(text).toContain("Agent id: search_0");
+      expect(entries).toContainEqual({
+        type: "custom",
+        customType: AGENT_ALIAS_ENTRY,
+        data: { id: "search_0", agent: "search", sessionId: "child-1", sessionPath: "/sessions/child-1.jsonl" },
+      });
+    });
+
+    it("increments the id for a second dispatch of the same agent", async () => {
+      const entries: unknown[] = [];
+      const runner: StageSessionRunner = async (options) => {
+        options.onSessionHeader?.({ id: `child-${entries.length + 1}`, cwd: options.cwd, sessionPath: `/sessions/child-${entries.length + 1}.jsonl` });
+        return result(options);
+      };
+      const tool = createSubagentTool({
+        agentProvider: async () => [agent("search")],
+        stageSessionRunner: runner,
+      });
+
+      await tool.execute("call-1", { agent: "search", task: "one" }, undefined, undefined, context(entries));
+      const second = await tool.execute("call-2", { agent: "search", task: "two" }, undefined, undefined, context(entries));
+
+      const text = (second.content as unknown as Array<{ text?: string }>)[0]?.text ?? "";
+      expect(text).toContain("Agent id: search_1");
+    });
+
+    it("resumes an id-referenced child by its mapped path and echoes the id", async () => {
+      const entries = aliasEntries([
+        { id: "search_0", agent: "search", sessionId: "child-1", sessionPath: "/sessions/child-1.jsonl" },
+      ]);
+      const seenPaths: Array<string | undefined> = [];
+      const runner: StageSessionRunner = async (options) => {
+        seenPaths.push(options.sessionPath);
+        options.onSessionHeader?.({ id: "child-1", cwd: options.cwd, sessionPath: "/sessions/child-1.jsonl" });
+        return result(options);
+      };
+      const tool = createSubagentTool({
+        agentProvider: async () => [agent("search")],
+        stageSessionRunner: runner,
+      });
+
+      const output = await tool.execute(
+        "call-2",
+        { agent: "search_0", task: "continue" },
+        undefined,
+        undefined,
+        context(entries),
+      );
+
+      expect(seenPaths).toEqual(["/sessions/child-1.jsonl"]);
+      const text = (output.content as unknown as Array<{ text?: string }>)[0]?.text ?? "";
+      expect(text).toContain("Agent id: search_0");
+    });
+
+    it("rejects an unknown id through the tool", async () => {
+      const tool = createSubagentTool({
+        agentProvider: async () => [agent("search")],
+        stageSessionRunner: async (options) => result(options),
+      });
+      await expect(
+        tool.execute("call-3", { agent: "nope_5", task: "x" }, undefined, undefined, context()),
+      ).rejects.toMatchObject({ message: expect.stringContaining("Unknown agent id") });
+    });
+
+    it("threads the coordinator session manager into nested runners (ADR-084)", async () => {
+      const entries: unknown[] = [];
+      const runners: Array<unknown> = [];
+      const runner: StageSessionRunner = async (options) => {
+        runners.push(options.ownerSessionManager);
+        return result(options);
+      };
+      const ctx = context(entries);
+      const tool = createSubagentTool({
+        agentProvider: async () => [agent("search")],
+        stageSessionRunner: runner,
+      });
+
+      await tool.execute("call-1", { agent: "search", task: "x" }, undefined, undefined, ctx);
+
+      expect(runners[0]).toBe((ctx as unknown as { sessionManager: unknown }).sessionManager);
+    });
   });
 
   it("extracts complete assistant progress text", () => {

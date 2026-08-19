@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, expectTypeOf, it } from "vitest";
 import type { Message } from "@earendil-works/pi-ai";
 import { importPi } from "../runtime/pi-import";
+import { AGENT_ALIAS_ENTRY } from "../subagent/agent-alias";
 import { SUBAGENT_SESSION_LINK_ENTRY } from "../subagent/session-links";
 import type { SessionSnapshotDto, SubagentSessionSummaryDto } from "./contracts";
 import { SubagentSessionNotFoundError, SubagentSessionService } from "./subagent-sessions";
@@ -87,6 +88,30 @@ describe("SubagentSessionService", () => {
 
   it("returns no summaries while a newly active parent is not yet in the persistent session listing", async () => {
     await expect(service(async () => []).summaries("new-parent-uuid")).resolves.toEqual([]);
+  });
+
+  it("attaches the agent id from coordinator alias entries to summaries (ADR-084)", async () => {
+    const parent = createSession();
+    const child = createSession();
+    appendParentMessage(parent);
+    child.appendSessionInfo("easyresearch:search");
+    child.appendMessage(user("find papers"));
+    child.appendMessage(assistant("final child reply"));
+    link(parent, child);
+    parent.appendCustomEntry(AGENT_ALIAS_ENTRY, {
+      id: "search_0",
+      agent: "search",
+      sessionId: child.getSessionId(),
+      sessionPath: child.getSessionFile(),
+    });
+
+    expect(await service().summaries(parent.getSessionId())).toEqual([{
+      toolCallId: "tool-1",
+      childSessionId: child.getSessionId(),
+      agent: "search",
+      id: "search_0",
+      latestMessage: "final child reply",
+    }]);
   });
 
   it("returns mapped child summaries and complete branch snapshots by exact UUID", async () => {

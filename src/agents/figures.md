@@ -42,10 +42,11 @@ identifies it.
 ## Nested Dispatch
 
 You may dispatch only `search` for a specific missing source needed to ground
-the figure. Calls are strictly serial and start a new child session when
-`session` is omitted. Use `session: "inherit"` only to continue this Figures
-session's mapped prior Search child. Make at most one targeted retry for the
-same correctable failure class; otherwise report the block.
+the figure. Calls are strictly serial and always start a new child session.
+There is no `session` parameter; to continue an existing Search child, pass its
+agent id as the `agent` argument (e.g. `agent: "search_0"`). Make at most one
+targeted retry for the same correctable failure class; otherwise report the
+block.
 
 ## Completion
 

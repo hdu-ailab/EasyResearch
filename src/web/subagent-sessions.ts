@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { readAgentAliases } from "../subagent/agent-alias";
 import { readSubagentSessionLinks } from "../subagent/session-links";
 import type { ChildSessionSnapshotDto, SubagentSessionSummaryDto } from "./contracts";
 
@@ -30,16 +31,26 @@ export class SubagentSessionService {
     }
     const { parent, sessions } = resolved;
     const summaries: SubagentSessionSummaryDto[] = [];
+    const idBySession = new Map<string, string>();
+    for (const alias of readAgentAliases(parent.manager.getEntries())) {
+      idBySession.set(alias.sessionId, alias.id);
+    }
 
     for (const link of readSubagentSessionLinks(parent.manager.getEntries())) {
       try {
         const child = this.child(sessions, link.childSessionId, parent.cwd);
         const messages = branchMessages(child);
         const latestMessage = latestAssistantText(messages);
-        summaries.push(latestMessage ? { ...link, latestMessage } : link);
+        const id = idBySession.get(link.childSessionId);
+        summaries.push({
+          ...link,
+          ...(id !== undefined ? { id } : {}),
+          ...(latestMessage !== undefined ? { latestMessage } : {}),
+        });
       } catch (error) {
         if (!(error instanceof SubagentSessionNotFoundError)) throw error;
-        summaries.push(link);
+        const id = idBySession.get(link.childSessionId);
+        summaries.push(id !== undefined ? { ...link, id } : link);
       }
     }
 

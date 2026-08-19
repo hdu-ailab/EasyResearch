@@ -59,6 +59,7 @@ export function SubagentToolCard({
       : activity.text
     : (tool.latestMessage ?? tool.output ?? "");
   const agentName = agentDisplayName(t, tool.agentName ?? "subagent");
+  const agentId = tool.sessionLinks?.find((link) => link.id !== undefined)?.id;
   const running = tool.running && !tool.done;
   const emptyMessage = running ? t("transcript.waitingForProgress") : t("transcript.noSavedProgress");
   const state = tool.error
@@ -107,6 +108,11 @@ export function SubagentToolCard({
             ) : null}
             {tool.error ? <AlertTriangle className="shrink-0 text-v2-status-error" size={14} aria-hidden /> : null}
             <span className="min-w-0 flex-1 truncate font-medium text-v2-text-text-base">{agentName}</span>
+            {agentId ? (
+              <span className="shrink-0 rounded bg-v2-grey-100 px-1.5 py-0.5 font-mono text-[10.5px] text-v2-text-text-muted">
+                {agentId}
+              </span>
+            ) : null}
             <span className={tool.error ? "text-v2-status-error" : "text-v2-text-text-faint"}>{state}</span>
             {step ? <span className="text-v2-text-text-faint">{step}</span> : null}
             {isOpen ? (

@@ -436,6 +436,7 @@ export function WorkPage({ id, cwd, onBack, onOpenSettings }: WorkPageProps) {
               toolCallId: tab.toolCallId,
               childSessionId: childId,
               agent: link?.agent ?? tool?.agentName ?? tab.agent,
+              ...(link?.id !== undefined ? { id: link.id } : {}),
               ...(tab.step !== undefined ? { step: tab.step } : {}),
               ...((link?.latestMessage ?? tool?.latestMessage)
                 ? { latestMessage: link?.latestMessage ?? tool?.latestMessage }

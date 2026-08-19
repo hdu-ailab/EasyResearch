@@ -143,12 +143,14 @@ function parseSubagentSummary(value: unknown): SubagentSessionSummaryDto {
   const source = record(value, "subagent summary");
   const step = optionalNumber(source, "step");
   const latestMessage = optionalString(source, "latestMessage");
+  const id = optionalString(source, "id");
   return {
     toolCallId: requiredString(source, "toolCallId"),
     childSessionId: requiredString(source, "childSessionId"),
     agent: requiredString(source, "agent"),
     ...(step !== undefined ? { step } : {}),
     ...(latestMessage !== undefined ? { latestMessage } : {}),
+    ...(id !== undefined ? { id } : {}),
   };
 }
 

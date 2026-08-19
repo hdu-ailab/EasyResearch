@@ -1,5 +1,5 @@
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
-import { importPi } from "../../runtime/pi-import";
+import { readAgentAliases } from "../../subagent/agent-alias";
 import { readSubagentSessionLinks } from "../../subagent/session-links";
 import {
   AGENT_STATUS_TYPE,
@@ -21,7 +21,8 @@ import {
  * cache-friendly snapshot that is strictly model-visible. Outcome classification
  * also falls back to the persisted `subagent` `toolResult` transcript row so
  * children whose parent run aborted at the loop level (no `tool_execution_end`)
- * still leave Working.
+ * still leave Working. ADR-084: items carry agent ids only (`{"name":"search_0"}`),
+ * resolved from the coordinator session's alias entries, never session paths.
  */
 export function createAgentStatusExtension(options: { now?: () => string } = {}): InlineExtension {
   const now = options.now ?? (() => new Date().toLocaleString());
@@ -38,21 +39,16 @@ export function createAgentStatusExtension(options: { now?: () => string } = {})
       const dispatched = readSubagentSessionLinks(entries);
       const outcomes = readSubagentOutcomes(entries);
       const previousText = lastAgentStatusText(entries);
-      const { SessionManager } = await importPi();
-      const resolvePath = async (childSessionId: string) => {
-        try {
-          const sessions = await SessionManager.list(ctx.cwd);
-          return sessions.find((session) => session.id === childSessionId)?.path;
-        } catch {
-          return undefined;
-        }
-      };
+      const aliases = readAgentAliases(entries);
+      const idBySession = new Map<string, string>();
+      for (const alias of aliases) idBySession.set(alias.sessionId, alias.id);
+      const resolveId = (childSessionId: string) => idBySession.get(childSessionId);
       const snapshot = await buildAgentStatus({
         now: now(),
         dispatched,
         outcomes,
         previous: previousText ? parseAgentStatus(previousText) : undefined,
-        resolvePath,
+        resolveId,
       });
       const content = formatAgentStatus(snapshot);
       if (previousText === content) return {};

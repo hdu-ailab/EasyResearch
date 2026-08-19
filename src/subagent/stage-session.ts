@@ -29,6 +29,8 @@ export interface StageRunResult {
   step?: number;
   sessionId?: string;
   sessionPath?: string;
+  /** Agent id bound to this child (ADR-084); echoed in the tool output. */
+  agentId?: string;
   wasAborted?: boolean;
 }
 
@@ -39,9 +41,12 @@ export interface StageRunOptions {
   model?: string;
   thinking?: string;
   sessionPath?: string;
+  /** Coordinator (main session) SessionManager for nested agent-id aliases
+   * (ADR-084); threaded down so nested dispatch shares the main counters. */
+  ownerSessionManager?: unknown;
   signal?: AbortSignal;
   step?: number;
-  onSessionHeader?: (header: { id: string; cwd: string }) => void;
+  onSessionHeader?: (header: { id: string; cwd: string; sessionPath?: string }) => void;
   onEvent?: (event: unknown) => void;
 }
 
@@ -85,7 +90,7 @@ export interface StageSessionDependencies {
     appendSystemPrompt: string[];
   }): StageResourceLoader;
   createAgentSession(options: Record<string, unknown>): Promise<{ session: StageAgentSession }>;
-  createExtensionFactories(agent: AgentConfig): unknown[];
+  createExtensionFactories(agent: AgentConfig, ownerSessionManager?: unknown): unknown[];
   resolveSkillPaths(agent: AgentConfig, cwd: string, agentDir: string): string[];
 }
 
@@ -139,7 +144,7 @@ export function createStageSessionRunner(deps: StageSessionDependencies): StageS
         cwd: options.cwd,
         agentDir: deps.agentDir,
         settingsManager,
-        extensionFactories: deps.createExtensionFactories(options.agent),
+        extensionFactories: deps.createExtensionFactories(options.agent, options.ownerSessionManager),
         noSkills: true,
         additionalSkillPaths: deps.resolveSkillPaths(options.agent, options.cwd, deps.agentDir),
         appendSystemPrompt: options.agent.systemPrompt.trim() ? [options.agent.systemPrompt] : [],
@@ -159,7 +164,11 @@ export function createStageSessionRunner(deps: StageSessionDependencies): StageS
       session = created.session;
       result.sessionId = session.sessionId;
       result.sessionPath = session.sessionFile;
-      options.onSessionHeader?.({ id: session.sessionId, cwd: options.cwd });
+      options.onSessionHeader?.({
+        id: session.sessionId,
+        cwd: options.cwd,
+        sessionPath: session.sessionFile ?? result.sessionPath,
+      });
       unsubscribe = session.subscribe((event) => {
         if (result.wasAborted && (event as { type?: unknown }).type === "agent_start") abortSession();
         options.onEvent?.(toJsonSessionEvent(event as AgentSessionEvent));
@@ -230,12 +239,13 @@ async function resolveDefaultStageSessionRunner(): Promise<StageSessionRunner> {
       const created = await pi.createAgentSession(options as Parameters<typeof pi.createAgentSession>[0]);
       return { session: created.session as unknown as StageAgentSession };
     },
-    createExtensionFactories: (agent) => [
+    createExtensionFactories: (agent, ownerSessionManager) => [
       {
         name: "subagent",
         factory: createSubagentExtension({
           callerAgent: agent.name,
           allowedSubagents: agent.subagents,
+          ownerSessionManager,
         }),
       },
       { name: "web-search", factory: webSearchExtension },

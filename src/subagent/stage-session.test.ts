@@ -158,7 +158,7 @@ describe("createStageSessionRunner", () => {
       model: { provider: "openai", id: "gpt-test" },
       sessionManager: { kind: "new" },
     });
-    expect(headers).toEqual([{ id: "child-1", cwd: "/project" }]);
+    expect(headers).toEqual([{ id: "child-1", cwd: "/project", sessionPath: "/sessions/child-1.jsonl" }]);
     expect(session.names).toEqual(["easyresearch:search"]);
     expect(session.promptCalls).toEqual(["Task: find papers"]);
     expect(updates).toEqual([
@@ -201,7 +201,7 @@ describe("createStageSessionRunner", () => {
       sessionId: "child-1",
       sessionPath: "/sessions/child-1.jsonl",
     });
-    expect(headers).toEqual([{ id: "child-1", cwd: "/project" }]);
+    expect(headers).toEqual([{ id: "child-1", cwd: "/project", sessionPath: "/sessions/child-1.jsonl" }]);
     expect(session.disposeCalls).toBe(1);
   });
 
@@ -225,7 +225,7 @@ describe("createStageSessionRunner", () => {
     expect(calls.some((call) => call.name === "openManager")).toBe(false);
     expect(session.promptCalls).toEqual([]);
     expect(session.abortCalls).toBe(1);
-    expect(headers).toEqual([{ id: "child-1", cwd: "/project" }]);
+    expect(headers).toEqual([{ id: "child-1", cwd: "/project", sessionPath: "/sessions/child-1.jsonl" }]);
     expect(result).toMatchObject({
       exitCode: 1,
       wasAborted: true,

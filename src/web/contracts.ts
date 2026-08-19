@@ -61,6 +61,8 @@ export interface SessionTreeDto {
 
 export interface SubagentSessionSummaryDto extends SubagentSessionLink {
   latestMessage?: string;
+  /** Agent id (`<agent>_<seq>`, ADR-084) of the child within its main session. */
+  id?: string;
 }
 
 export interface ChildSessionSnapshotDto {

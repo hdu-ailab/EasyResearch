@@ -3,8 +3,8 @@ export const SUBAGENT_COMPLETED_TYPE = "easyresearch:subagent_completed";
 export const SUBAGENT_ERRORED_TYPE = "easyresearch:subagent_errored";
 
 export interface SubagentStatusItem {
+  /** Agent id (`<agent>_<seq>`, ADR-084) of the child. */
   name: string;
-  sessionPath: string;
 }
 
 export interface AgentStatusSnapshot {
@@ -36,7 +36,7 @@ export interface AgentStatusContext {
   dispatched: SubagentDispatched[];
   outcomes: ReadonlyMap<string, SubagentOutcome>;
   previous?: AgentStatusSnapshot;
-  resolvePath: (childSessionId: string) => Promise<string | undefined>;
+  resolveId: (childSessionId: string) => string | undefined;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -48,45 +48,47 @@ function statusName(agent: string, index: number): string {
 }
 
 export async function buildAgentStatus(params: AgentStatusContext): Promise<AgentStatusSnapshot> {
-  const previousCompletePaths = new Set((params.previous?.complete ?? []).map((item) => item.sessionPath));
-  const previousErrorPaths = new Set((params.previous?.error ?? []).map((item) => item.sessionPath));
+  const previousCompleteNames = new Set((params.previous?.complete ?? []).map((item) => item.name));
+  const previousErrorNames = new Set((params.previous?.error ?? []).map((item) => item.name));
   const perAgent = new Map<string, number>();
   const working: SubagentStatusItem[] = [];
   const complete: SubagentStatusItem[] = [];
   const error: SubagentStatusItem[] = [];
 
+  const nextName = (agent: string, childSessionId: string): string => {
+    const id = params.resolveId(childSessionId);
+    if (id !== undefined) return id;
+    const index = perAgent.get(agent) ?? 0;
+    perAgent.set(agent, index + 1);
+    return statusName(agent, index);
+  };
+
   for (const dispatch of params.dispatched) {
     const outcome = params.outcomes.get(dispatch.toolCallId);
     if (outcome !== undefined) continue;
-    const sessionPath = await params.resolvePath(dispatch.childSessionId);
-    if (sessionPath === undefined) continue;
-    const index = perAgent.get(dispatch.agent) ?? 0;
-    perAgent.set(dispatch.agent, index + 1);
-    working.push({ name: statusName(dispatch.agent, index), sessionPath });
+    working.push({ name: nextName(dispatch.agent, dispatch.childSessionId) });
   }
 
   for (const dispatch of params.dispatched) {
     if (params.outcomes.get(dispatch.toolCallId) !== "complete") continue;
-    const sessionPath = await params.resolvePath(dispatch.childSessionId);
-    if (sessionPath === undefined || previousCompletePaths.has(sessionPath)) continue;
-    const index = perAgent.get(dispatch.agent) ?? 0;
-    perAgent.set(dispatch.agent, index + 1);
-    complete.push({ name: statusName(dispatch.agent, index), sessionPath });
+    const name = nextName(dispatch.agent, dispatch.childSessionId);
+    if (previousCompleteNames.has(name)) continue;
+    complete.push({ name });
   }
 
   for (const dispatch of params.dispatched) {
     if (params.outcomes.get(dispatch.toolCallId) !== "error") continue;
-    const sessionPath = await params.resolvePath(dispatch.childSessionId);
-    if (sessionPath === undefined || previousErrorPaths.has(sessionPath)) continue;
-    const index = perAgent.get(dispatch.agent) ?? 0;
-    perAgent.set(dispatch.agent, index + 1);
-    error.push({ name: statusName(dispatch.agent, index), sessionPath });
+    const name = nextName(dispatch.agent, dispatch.childSessionId);
+    if (previousErrorNames.has(name)) continue;
+    error.push({ name });
   }
 
   return { time: params.now, working, complete, error };
 }
 
-const ITEM_PATTERN = /\{"name":"([^"]*)","session_path":"([^"]*)"\}/g;
+/** Matches both the legacy `{"name":"...","session_path":"..."}` item and the
+ * current plain agent-id list (`search_0,search_1`) shapes (ADR-084). */
+const ITEM_PATTERN = /\{"name":"([^"]*)"(?:,"session_path":"[^"]*")?\}|([A-Za-z0-9_-]+\d+)/g;
 
 function parseItems(line: string | undefined): SubagentStatusItem[] {
   if (!line) return [];
@@ -94,7 +96,8 @@ function parseItems(line: string | undefined): SubagentStatusItem[] {
   let match: RegExpExecArray | null;
   ITEM_PATTERN.lastIndex = 0;
   while ((match = ITEM_PATTERN.exec(line))) {
-    items.push({ name: match[1]!, sessionPath: match[2]! });
+    const name = match[1] ?? match[2];
+    if (name) items.push({ name });
   }
   return items;
 }
@@ -110,23 +113,15 @@ export function parseAgentStatus(text: string): AgentStatusSnapshot | undefined 
   };
 }
 
-function formatItem(item: SubagentStatusItem): string {
-  return JSON.stringify({ name: item.name, session_path: item.sessionPath });
-}
-
 export function formatAgentStatus(snapshot: AgentStatusSnapshot): string {
-  const lines = ["<agent_status>", `Current time: ${snapshot.time}`];
-  if (snapshot.working.length > 0) {
-    lines.push(`Working subagent:${snapshot.working.map(formatItem).join(",")}`);
-  }
-  if (snapshot.complete.length > 0) {
-    lines.push(`Complete subagent:${snapshot.complete.map(formatItem).join(",")}`);
-  }
-  if (snapshot.error.length > 0) {
-    lines.push(`Error subagent:${snapshot.error.map(formatItem).join(",")}`);
-  }
+  const lines: Array<string | null> = ["<agent_status>", `Current time: ${snapshot.time}`];
+  const formatLine = (label: string, items: SubagentStatusItem[]) =>
+    items.length > 0 ? `${label}:${items.map((item) => item.name).join(",")}` : null;
+  lines.push(formatLine("Working subagent", snapshot.working));
+  lines.push(formatLine("Complete subagent", snapshot.complete));
+  lines.push(formatLine("Error subagent", snapshot.error));
   lines.push("</agent_status>");
-  return lines.join("\n");
+  return lines.filter((line): line is string => line !== null).join("\n");
 }
 
 export function readCompletedMarkers(entries: readonly unknown[]): SubagentCompleted[] {

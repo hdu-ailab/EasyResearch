@@ -25,6 +25,14 @@ function tabClass(focused: boolean): string {
     : "border-v2-grey-200 text-v2-text-text-muted hover:bg-v2-grey-100";
 }
 
+/** `search_0` → `search_0: 检索_0` (raw id, then the id with its agent-name
+ * part localized); custom agents without a translation show the id alone. */
+function localizedSubagentId(id: string, localizedAgent: string, agent: string): string {
+  const seq = id.slice(agent.length);
+  const localizedId = `${localizedAgent}${seq}`;
+  return localizedId === id ? id : `${id}: ${localizedId}`;
+}
+
 export function AgentTabBar({ tabs, activeKey, paperAssistantStatus, onSelect, onClose, onStop }: AgentTabBarProps) {
   const { t } = useI18n();
   const paperAssistantFocused = activeKey === PAPER_ASSISTANT_AGENT;
@@ -45,7 +53,12 @@ export function AgentTabBar({ tabs, activeKey, paperAssistantStatus, onSelect, o
         const focused = activeKey === tab.key;
         const rawLabel = childTabLabel(tab, tabs);
         const localizedAgent = agentDisplayName(t, tab.agent);
-        const label = rawLabel === tab.agent ? localizedAgent : `${localizedAgent}${rawLabel.slice(tab.agent.length)}`;
+        const label =
+          tab.id !== undefined
+            ? localizedSubagentId(tab.id, localizedAgent, tab.agent)
+            : rawLabel === tab.agent
+              ? localizedAgent
+              : `${localizedAgent}${rawLabel.slice(tab.agent.length)}`;
         const closeLabel = `${t("work.closeAgentTab")}: ${label}`;
         return (
           <div
@@ -64,13 +77,6 @@ export function AgentTabBar({ tabs, activeKey, paperAssistantStatus, onSelect, o
                 aria-hidden
               />
               <span className="truncate">{label}</span>
-              {tab.latestMessage ? (
-                <span className="max-w-64 truncate text-v2-text-text-faint" title={tab.latestMessage}>
-                  {tab.latestMessage}
-                </span>
-              ) : tab.running ? (
-                <span className="v2-spinner size-3" aria-hidden />
-              ) : null}
             </button>
             {tab.sessionId ? (
               <button

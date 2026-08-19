@@ -1,11 +1,17 @@
 import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext, JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { Message } from "@earendil-works/pi-ai";
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { createLogger } from "../runtime/logger";
 import { getAgentDir, importPi } from "../runtime/pi-import";
+import {
+  AGENT_ALIAS_ENTRY,
+  formatAgentId,
+  isAgentId,
+  nextAgentIndex,
+  readAgentAliases,
+  resolveAgentAlias,
+} from "./agent-alias";
 import { discoverAgents, PAPER_ASSISTANT_AGENT, type AgentConfig } from "./agents";
 import { resolveModelForSpawn } from "./model-resolution";
 import { resolveThinkingForSpawn } from "./thinking-resolution";
@@ -24,7 +30,7 @@ type UsageStats = StageUsageStats;
 export interface SingleResult extends StageRunResult {}
 
 export interface SubagentDetails {
-  mode: "single" | "chain";
+  mode: "single";
   projectAgentsDir: string | null;
   results: SingleResult[];
   /** Live progress from the running subagent child (ADR-040). */
@@ -113,8 +119,8 @@ function getResultOutput(result: SingleResult): string {
   return getFinalOutput(result.messages) || "(no output)";
 }
 
-function makeDetails(mode: "single" | "chain", _agents: AgentConfig[]): SubagentDetails {
-  return { mode, projectAgentsDir: getAgentDir(), results: [] };
+function makeDetails(_agents: AgentConfig[]): SubagentDetails {
+  return { mode: "single", projectAgentsDir: getAgentDir(), results: [] };
 }
 
 /**
@@ -132,34 +138,11 @@ export function filterAgentsByAllowlist(
   return agents.filter((a) => allowed.has(a.name));
 }
 
-export interface ResolveSessionArgResult {
-  ok: boolean;
-  path?: string;
-  reason?: string;
-}
-
-/**
- * ADR-082: a non-empty `session` value is an explicit transcript JSONL path
- * (absolute or exact-cwd relative) that resumes an existing child session.
- * Empty/whitespace means "start a fresh child". The coordinator's own session
- * file is refused to prevent resuming the parent as a subagent.
- */
-export function resolveSessionArg(
-  cwd: string,
-  raw: string,
-  parentSessionFile?: string,
-  exists: (path: string) => boolean = existsSync,
-): ResolveSessionArgResult {
-  const trimmed = raw.trim();
-  if (!trimmed) return { ok: true };
-  const resolved = resolve(cwd, trimmed);
-  if (!exists(resolved)) {
-    return { ok: false, reason: `Session file does not exist: ${resolved}` };
-  }
-  if (parentSessionFile && resolved === resolve(cwd, parentSessionFile)) {
-    return { ok: false, reason: "Refusing to resume the coordinator's own session file" };
-  }
-  return { ok: true, path: resolved };
+/** Minimal duck-typed coordinator (main session) SessionManager surface used
+ * for reading and appending agent-id aliases (ADR-084). */
+export interface AliasSessionManager {
+  getEntries(): unknown[];
+  appendCustomEntry(customType: string, data?: unknown): string;
 }
 
 export async function resolveSessionPath(
@@ -170,6 +153,43 @@ export async function resolveSessionPath(
   const { SessionManager } = await importPi();
   const sessions = await SessionManager.list(cwd, sessionDir);
   return sessions.find((session) => session.id === sessionId)?.path;
+}
+
+export interface ResolvedAgentTarget {
+  /** Agent name to dispatch: the alias owner for an id-resume, else the bare name. */
+  name: string;
+  /** Child session file to resume (undefined = fresh child). */
+  path?: string;
+  /** Agent id of the resumed child, echoed in the output (ADR-084). */
+  activeId?: string;
+}
+
+export type ResolveAgentTargetResult =
+  | { ok: true; target: ResolvedAgentTarget }
+  | { ok: false; reason: string };
+
+/** ADR-086: the `subagent` tool has no `session` parameter. Continuation uses
+ * the agent-id mechanism: an `agent` value that is an agent id (`<agent>_<seq>`
+ * known to this main session) continues that mapped child; a bare agent name
+ * starts a fresh dispatch. */
+export function resolveAgentTarget(
+  raw: string,
+  coordinator: AliasSessionManager,
+): ResolveAgentTargetResult {
+  const trimmed = raw.trim();
+  if (isAgentId(trimmed)) {
+    const aliases = readAgentAliases(coordinator.getEntries());
+    const alias = resolveAgentAlias(aliases, trimmed);
+    if (!alias) {
+      const known = aliases.map((candidate) => candidate.id).join(", ") || "none";
+      return {
+        ok: false,
+        reason: `Unknown agent id "${trimmed}". Known agent ids in this session: ${known}.`,
+      };
+    }
+    return { ok: true, target: { name: alias.agent, path: alias.sessionPath, activeId: alias.id } };
+  }
+  return { ok: true, target: { name: trimmed } };
 }
 
 export interface RunSingleOptions {
@@ -183,6 +203,10 @@ export interface RunSingleOptions {
   /** Effective thinking level to spawn the agent with. */
   thinking?: string;
   sessionPath?: string;
+  /** Agent id to echo and bind to the child session (ADR-084): the active id
+   * for an id-resumed child, or the reserved id for a fresh child. */
+  agentId?: string;
+  coordinator?: AliasSessionManager;
   signal?: AbortSignal;
   step?: number;
   /** Complete latest-message callback (ADR-040): invoked on each child message_end. */
@@ -192,7 +216,7 @@ export interface RunSingleOptions {
 }
 
 async function runSingleAgent(opts: RunSingleOptions): Promise<SingleResult> {
-  const { defaultCwd, agents, agentName, task, cwd, model, thinking, sessionPath, signal, step, onUpdate, onSessionHeader } = opts;
+  const { defaultCwd, agents, agentName, task, cwd, model, thinking, sessionPath, agentId, coordinator, signal, step, onUpdate, onSessionHeader } = opts;
   const agent = agents.find((a) => a.name === agentName);
   const detailsBase = { mode: "single" as const, projectAgentsDir: getAgentDir(), results: [] };
 
@@ -214,6 +238,21 @@ async function runSingleAgent(opts: RunSingleOptions): Promise<SingleResult> {
 
   const runner = opts.stageSessionRunner ?? runStageSession;
   let liveSessionId: string | undefined;
+  const bindAlias = (header: { id: string; cwd: string; sessionPath?: string }) => {
+    // ADR-084: persist the fresh child's agent id -> session file mapping on the
+    // coordinator session immediately (before the child runs), so the next
+    // agent_status snapshot and any resume-by-id resolve it. Resumed children
+    // keep their existing alias entry.
+    if (agentId && coordinator && !sessionPath && header.sessionPath) {
+      coordinator.appendCustomEntry(AGENT_ALIAS_ENTRY, {
+        id: agentId,
+        agent: agentName,
+        sessionId: header.id,
+        sessionPath: header.sessionPath,
+      });
+    }
+    onSessionHeader?.(header);
+  };
   const result = await runner({
     agent,
     task,
@@ -221,11 +260,12 @@ async function runSingleAgent(opts: RunSingleOptions): Promise<SingleResult> {
     model,
     thinking,
     sessionPath,
+    ownerSessionManager: coordinator,
     signal,
     step,
     onSessionHeader: (header) => {
       liveSessionId = header.id;
-      onSessionHeader?.(header);
+      bindAlias(header);
       onUpdate?.({
         content: [],
         details: {
@@ -251,6 +291,7 @@ async function runSingleAgent(opts: RunSingleOptions): Promise<SingleResult> {
       onUpdate?.({ content: [], details: { ...detailsBase, subagent: progress } });
     },
   });
+  result.agentId = agentId;
   if (sessionPath) {
     result.sessionPath = sessionPath;
   } else if (!result.sessionPath && result.sessionId) {
@@ -263,96 +304,66 @@ async function runSingleAgent(opts: RunSingleOptions): Promise<SingleResult> {
   return result;
 }
 
-function formatSessionHistory(results: readonly SingleResult[], mode: "single" | "chain"): string {
+function formatSessionHistory(results: readonly SingleResult[]): string {
   const persisted = results.filter((result) => result.sessionPath);
   if (persisted.length === 0) return "";
-  const paths = mode === "single"
-    ? [`Session history JSONL: ${persisted[0]!.sessionPath}`]
-    : persisted.map((result) =>
-      `Session history JSONL (step ${result.step}, ${result.agent}): ${result.sessionPath}`);
-  const instruction = persisted.length === 1
-    ? 'Inspect this file from the bottom for the latest saved progress. To continue this agent, pass that child\'s transcript JSONL path in session.'
-    : 'Inspect these files from the bottom for the latest saved progress. To continue an agent, pass that child\'s transcript JSONL path in session.';
-  return [...paths, instruction].join("\n");
+  const entries = persisted.map((result) =>
+    [result.agentId === undefined ? "" : `Agent id: ${result.agentId}`, `Session history JSONL: ${result.sessionPath}`]
+      .filter(Boolean)
+      .join("\n"),
+  );
+  const instruction = 'Inspect this file from the bottom for the latest saved progress. To continue this agent, pass its agent id as the agent parameter (e.g. agent: "search_0").';
+  return [...entries, instruction].join("\n");
 }
 
-function appendSessionHistory(output: string, results: readonly SingleResult[], mode: "single" | "chain"): string {
-  const history = formatSessionHistory(results, mode);
+function appendSessionHistory(output: string, results: readonly SingleResult[]): string {
+  const history = formatSessionHistory(results);
   return history ? `${output}\n\n${history}` : output;
 }
 
 function formatSingleSuccess(result: SingleResult): string {
-  return appendSessionHistory(getFinalOutput(result.messages) || "(no output)", [result], "single");
-}
-
-function formatChainSuccess(results: readonly SingleResult[]): string {
-  return appendSessionHistory(
-    getFinalOutput(results[results.length - 1]!.messages) || "(no output)",
-    results,
-    "chain",
-  );
+  return appendSessionHistory(getFinalOutput(result.messages) || "(no output)", [result]);
 }
 
 function formatSingleFailure(result: SingleResult): string {
-  return appendSessionHistory(
-    `Agent ${result.stopReason || "failed"}: ${getResultOutput(result)}`,
-    [result],
-    "single",
-  );
+  return appendSessionHistory(`Agent ${result.stopReason || "failed"}: ${getResultOutput(result)}`, [result]);
 }
 
-function formatChainFailure(result: SingleResult, results: readonly SingleResult[]): string {
-  return appendSessionHistory(
-    `Chain stopped at step ${result.step} (${result.agent}): ${getResultOutput(result)}`,
-    results,
-    "chain",
-  );
+/** ADR-084: the subagent tool's description lists only the caller's available
+ * subagents; the list is resolved per session from the caller's allowlist. */
+export function formatSubagentDescription(available: readonly string[]): string {
+  const names = available.length > 0 ? available.join(", ") : "none";
+  return [
+    "Delegate tasks to specialized subagents with isolated context.",
+    "Sub agents run in the exact project directory.",
+    `Available subagents: ${names}.`,
+  ].join("\n");
 }
-
-const SessionPath = Type.Optional(
-  Type.String({
-    description: "Transcript JSONL path to resume (absolute or exact-cwd relative); empty/omitted starts a fresh child session.",
-  }),
-);
-
-const SingleParams = Type.Object({
-  agent: Type.Optional(Type.String({ description: "Name of the agent to invoke" })),
-  task: Type.Optional(Type.String({ description: "Task to delegate" })),
-  cwd: Type.Optional(Type.String({ description: "Working directory for the agent runtime" })),
-  session: SessionPath,
-});
-
-const ChainItem = Type.Object({
-  agent: Type.String({ description: "Name of the agent to invoke" }),
-  task: Type.String({ description: "Task with optional {previous} placeholder for prior output" }),
-  cwd: Type.Optional(Type.String({ description: "Working directory for the agent runtime" })),
-  session: SessionPath,
-});
 
 const SubagentParams = Type.Object({
-  agent: Type.Optional(Type.String({ description: "Name of the agent to invoke (single mode)" })),
-  task: Type.Optional(Type.String({ description: "Task to delegate (single mode)" })),
-  chain: Type.Optional(Type.Array(ChainItem, { description: "Array of {agent, task} for sequential execution" })),
-  cwd: Type.Optional(Type.String({ description: "Working directory for the agent runtime (single mode)" })),
-  session: SessionPath,
+  agent: Type.Optional(Type.String({
+    description: "Name of the agent to invoke, or its agent id (e.g. 'search_0') to continue that child of this session",
+  })),
+  task: Type.Optional(Type.String({ description: "Task to delegate" })),
 });
 
 export function createSubagentTool(options: {
   persistSessionLink?: (link: SubagentSessionLink) => void;
   agentProvider?: (cwd: string) => Promise<AgentConfig[]>;
   stageSessionRunner?: StageSessionRunner;
+  /** Coordinator (main session) SessionManager for agent-id aliases; defaults
+   * to the executing session's own manager (ADR-084). */
+  coordinator?: unknown;
+  /** Three-line tool description; the third line lists the caller's available
+   * subagents (ADR-084). Pass `formatSubagentDescription(names)` from the
+   * caller's allowlist; defaults to an empty list. */
+  description?: string;
 } = {}) {
   let active = false;
   return defineTool({
     name: "subagent",
   label: "Subagent",
-  description: [
-    "Delegate tasks to specialized subagents with isolated context.",
-    "Modes: single (agent + task) or chain (sequential with {previous} placeholder).",
-    "Invocations are strictly serial: while one subagent runs, further calls return an error.",
-    "session is a transcript JSONL path to resume (omitted/empty starts a fresh child).",
-    "Available agents are defined in the config root agents dir.",
-  ].join(" "),
+  description: options.description ?? formatSubagentDescription([]),
   parameters: SubagentParams,
 
   async execute(toolCallId, params, signal, onUpdate, ctx: ExtensionContext) {
@@ -364,6 +375,7 @@ export function createSubagentTool(options: {
     }
     active = true;
     try {
+      const coordinator = (options.coordinator ?? ctx.sessionManager) as AliasSessionManager;
       const persistedSessionLinks = new Set<string>();
       const persistSessionLink = (agent: string, step: number | undefined, childSessionId: string) => {
         const key = JSON.stringify([toolCallId, step ?? null, childSessionId]);
@@ -381,143 +393,74 @@ export function createSubagentTool(options: {
           : (await discoverAgents({ cwd })).agents;
         return filterAgentsByAllowlist(discovered);
       };
-      const detailsBase = (mode: "single" | "chain", agents: AgentConfig[]) => makeDetails(mode, agents);
 
-      const hasChain = (params.chain?.length ?? 0) > 0;
-      const hasSingle = Boolean(params.agent && params.task);
-      const modeCount = Number(hasChain) + Number(hasSingle);
-
-      if (modeCount !== 1) {
+      if (!(params.agent && params.task)) {
         const agents = await agentsForCwd(ctx.cwd);
         const available = agents.map((a) => `${a.name} (${a.source})`).join(", ") || "none";
         throw new SubagentExecutionError(
-          `Invalid parameters. Provide exactly one mode.\nAvailable agents: ${available}`,
-          { ...detailsBase("single", agents), results: [] },
+          `Invalid parameters. Provide agent and task.\nAvailable agents: ${available}`,
+          { ...makeDetails(agents), results: [] },
         );
       }
 
-      if (params.chain && params.chain.length > 0) {
-        const results: SingleResult[] = [];
-        let previousOutput = "";
-        let lastAgents: AgentConfig[] = [];
-        for (let i = 0; i < params.chain.length; i++) {
-          const step = params.chain[i]!;
-          const effectiveCwd = step.cwd ?? ctx.cwd;
-          const agents = await agentsForCwd(effectiveCwd);
-          lastAgents = agents;
-          if (agents.length === 0) {
-            throw new SubagentExecutionError(
-              "No agents are available in this runtime.",
-              { ...detailsBase("chain", agents), results },
-            );
-          }
-          const sessionArg = step.session !== undefined
-            ? resolveSessionArg(effectiveCwd, step.session, ctx.sessionManager.getSessionFile?.())
-            : { ok: true };
-          if (!sessionArg.ok) {
-            throw new SubagentExecutionError(
-              sessionArg.reason!,
-              { ...detailsBase("chain", agents), results },
-            );
-          }
-          const sessionPath = sessionArg.path;
-          const taskWithContext = step.task.replace(/\{previous\}/g, previousOutput);
-          const model = await resolveModelForSpawn(
-            { cwd: effectiveCwd, sessionManager: ctx.sessionManager },
-            step.agent,
-            fallbackModel,
-          );
-          subagentLogger?.debug("subagent model resolved", { agent: step.agent, model: model ?? "" });
-          const thinking = await resolveThinkingForSpawn(
-            { cwd: effectiveCwd, sessionManager: ctx.sessionManager },
-            step.agent,
-            fallbackThinking,
-          );
-          subagentLogger?.debug("subagent thinking resolved", { agent: step.agent, thinking });
-          const result = await runSingleAgent({
-            defaultCwd: ctx.cwd,
-            agents,
-            agentName: step.agent,
-            task: taskWithContext,
-            cwd: step.cwd,
-            model,
-            thinking,
-            sessionPath,
-            signal,
-            step: i + 1,
-            onUpdate,
-            onSessionHeader: (header) => persistSessionLink(step.agent, i + 1, header.id),
-            stageSessionRunner: options.stageSessionRunner,
-          });
-          results.push(result);
-          if (isFailedResult(result)) {
-            throw new SubagentExecutionError(
-              formatChainFailure(result, results),
-              { ...detailsBase("chain", agents), results },
-            );
-          }
-          previousOutput = getFinalOutput(result.messages);
-        }
-        return {
-          content: [{ type: "text", text: formatChainSuccess(results) }],
-          details: { ...detailsBase("chain", lastAgents), results },
-        };
-      }
-
       if (params.agent && params.task) {
-        const effectiveCwd = params.cwd ?? ctx.cwd;
+        const effectiveCwd = ctx.cwd;
+        const agentTarget = resolveAgentTarget(params.agent, coordinator);
+        if (!agentTarget.ok) {
+          throw new SubagentExecutionError(
+            agentTarget.reason!,
+            { ...makeDetails([]), results: [] },
+          );
+        }
+        const dispatchAgent = agentTarget.target.name;
         const agents = await agentsForCwd(effectiveCwd);
         if (agents.length === 0) {
           throw new SubagentExecutionError(
             "No agents are available in this runtime.",
-            { ...detailsBase("single", agents), results: [] },
+            { ...makeDetails(agents), results: [] },
           );
         }
-        const sessionArg = params.session !== undefined
-          ? resolveSessionArg(effectiveCwd, params.session, ctx.sessionManager.getSessionFile?.())
-          : { ok: true };
-        if (!sessionArg.ok) {
-          throw new SubagentExecutionError(
-            sessionArg.reason!,
-            { ...detailsBase("single", agents), results: [] },
-          );
-        }
-        const sessionPath = sessionArg.path;
+        const sessionPath = agentTarget.target.path;
+        const agentId = sessionPath !== undefined
+          ? agentTarget.target.activeId
+          : formatAgentId(dispatchAgent, nextAgentIndex(readAgentAliases(coordinator.getEntries()), dispatchAgent));
         const model = await resolveModelForSpawn(
           { cwd: effectiveCwd, sessionManager: ctx.sessionManager },
-          params.agent,
+          dispatchAgent,
           fallbackModel,
         );
-        subagentLogger?.debug("subagent model resolved", { agent: params.agent, model: model ?? "" });
+        subagentLogger?.debug("subagent model resolved", { agent: dispatchAgent, model: model ?? "" });
         const thinking = await resolveThinkingForSpawn(
           { cwd: effectiveCwd, sessionManager: ctx.sessionManager },
-          params.agent,
+          dispatchAgent,
           fallbackThinking,
         );
-        subagentLogger?.debug("subagent thinking resolved", { agent: params.agent, thinking });
+        subagentLogger?.debug("subagent thinking resolved", { agent: dispatchAgent, thinking });
         const result = await runSingleAgent({
           defaultCwd: ctx.cwd,
           agents,
-          agentName: params.agent,
+          agentName: dispatchAgent,
           task: params.task,
-          cwd: params.cwd,
+          cwd: effectiveCwd,
           model,
           thinking,
           sessionPath,
+          agentId,
+          coordinator,
           signal,
           onUpdate,
-          onSessionHeader: (header) => persistSessionLink(params.agent!, undefined, header.id),
+          onSessionHeader: (header) => persistSessionLink(dispatchAgent, undefined, header.id),
           stageSessionRunner: options.stageSessionRunner,
         });
         if (isFailedResult(result)) {
           throw new SubagentExecutionError(
             formatSingleFailure(result),
-            { ...detailsBase("single", agents), results: [result] },
+            { ...makeDetails(agents), results: [result] },
           );
         }
         return {
           content: [{ type: "text", text: formatSingleSuccess(result) }],
-          details: { ...detailsBase("single", agents), results: [result] },
+          details: { ...makeDetails(agents), results: [result] },
         };
       }
 
@@ -525,7 +468,7 @@ export function createSubagentTool(options: {
       const available = agents.map((a) => `${a.name} (${a.source})`).join(", ") || "none";
       throw new SubagentExecutionError(
         `Invalid parameters. Available agents: ${available}`,
-        { ...detailsBase("single", agents), results: [] },
+        { ...makeDetails(agents), results: [] },
       );
     } finally {
       active = false;

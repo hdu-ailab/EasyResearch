@@ -117,6 +117,15 @@ describe("subagent tab state", () => {
     ]);
   });
 
+  it("labels tabs by the agent id and carries it from the summary (ADR-084)", () => {
+    let state = retainSubagentTab(syncRunningSubagentTabs(empty, [runningTool("one")]), "one");
+    state = promoteSubagentTab(state, { ...summary("one", "11111111-aaaa"), id: "search_0" });
+    const running = syncRunningSubagentTabs(state, [runningTool("one")]);
+
+    expect(running.tabs[0]?.id).toBe("search_0");
+    expect(childTabLabel(running.tabs[0]!, running.tabs)).toBe("search_0");
+  });
+
   it("merges an unretained reused invocation into its existing UUID tab without leaving a temporary", () => {
     let state = retainSubagentTab(syncRunningSubagentTabs(empty, [runningTool("call-old")]), "call-old");
     state = promoteSubagentTab(state, summary("call-old", "shared-uuid"));

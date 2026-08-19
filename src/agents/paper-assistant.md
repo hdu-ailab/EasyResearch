@@ -46,10 +46,13 @@ a stage is ready from conversation alone.
 ## Nested Dispatch
 
 Dispatch enabled specialists permitted by the effective definition. Calls are
-strictly serial and start a new child session when `session` is omitted. Use
-`session: "inherit"` only to continue this Paper Assistant session's mapped prior
-child for the same agent, including a targeted correction that needs its
-context.
+strictly serial and always start a new child session. There is no `session`
+parameter. To continue an existing child of that agent — including a targeted
+correction that needs its prior child's context — pass the child's agent id as
+the `agent` argument (e.g. `agent: "search_0"`, surfaced by the
+`<agent_status>` block or the tool's `Agent id` line); a bare agent name always
+starts a fresh child. Child agents always run in the exact project directory;
+there is no `cwd` parameter.
 
 Every task must state the requested outcome, exact-cwd artifact inputs,
 constraints, expected outputs, and completion criteria. A Writing task must

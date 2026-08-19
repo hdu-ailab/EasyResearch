@@ -46,11 +46,11 @@ identifies it.
 ## Nested Dispatch
 
 Dispatch only `search` for a specific source or citation gap and `figures` for
-an evidence-grounded publication figure. Calls are strictly serial and start a
-new child session when `session` is omitted. Use `session: "inherit"` only to
-continue this Writing session's mapped prior child for that agent. Make at most
-one targeted retry for the same correctable failure class; otherwise preserve
-usable work and report the block.
+an evidence-grounded publication figure. Calls are strictly serial and always
+start a new child session. There is no `session` parameter; to continue an
+existing child of that agent, pass its agent id as the `agent` argument (e.g.
+`agent: "search_0"`). Make at most one targeted retry for the same correctable
+failure class; otherwise preserve usable work and report the block.
 
 ## Completion
 
