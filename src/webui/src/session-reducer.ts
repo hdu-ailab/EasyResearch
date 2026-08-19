@@ -598,7 +598,7 @@ export function reduceSubagentSupervisorEvent(
   const tools = state.tools.map((tool) => {
     if (
       tool.name !== "subagent" ||
-      tool.ownerSessionId !== event.ownerSessionId ||
+      (tool.ownerSessionId !== undefined && tool.ownerSessionId !== event.ownerSessionId) ||
       tool.toolCallId !== event.toolCallId
     ) {
       return tool;
@@ -1009,6 +1009,7 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
           if (tool.key !== toolCallId) return tool;
           const launch = tool.name === "subagent" && !isError ? subagentLaunchIdentity(result, toolCallId) : undefined;
           if (launch) {
+            if (tool.supervised && tool.done) return tool;
             return {
               ...tool,
               ownerSessionId: launch.ownerSessionId,

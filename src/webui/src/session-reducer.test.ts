@@ -690,6 +690,34 @@ describe("session reducer", () => {
       });
     });
 
+    it("absorbs a launch acknowledgement that arrives after the terminal supervisor frame", () => {
+      const started = reduceSessionEvent(emptyState, {
+        type: "tool_execution_start",
+        toolCallId: "t1",
+        toolName: "subagent",
+        args: { agent: "search", task: "collect" },
+      } as never);
+      const completed = reduceSubagentSupervisorEvent(
+        started,
+        supervisorEvent({ status: "complete", latestMessage: "fast result" }),
+      );
+
+      expect(completed.tools[0]).toMatchObject({
+        supervised: true,
+        running: false,
+        done: true,
+        latestMessage: "fast result",
+      });
+
+      const acknowledged = reduceSessionEvent(completed, launchToolEnd());
+      expect(acknowledged.tools[0]).toMatchObject({
+        supervised: true,
+        running: false,
+        done: true,
+        latestMessage: "fast result",
+      });
+    });
+
     it("marks Error terminal and prefers terminal text over stale activity", () => {
       const launched = launchedState();
       const withActivity: SessionViewState = {
