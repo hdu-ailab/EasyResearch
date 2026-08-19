@@ -73,16 +73,7 @@ export class SubagentCoordinator {
 
     this.refresh();
     const persistedAliases = readAgentAliases(this.rootSessionManager.getEntries());
-    const aliases = persistedAliases.filter((candidate) => {
-      const matchingJobs = [...this.state.jobs.values()].filter((job) =>
-        job.agentId === candidate.id
-        && job.agent === candidate.agent
-        && job.childSessionId === candidate.sessionId
-        && job.sessionPath === candidate.sessionPath);
-      return matchingJobs.length === 0
-        || matchingJobs.some((job) => RESUMABLE_ALIAS_STATUSES.has(job.status));
-    });
-    const alias = resolveAgentAlias(aliases, input.requested);
+    const alias = resolveAgentAlias(persistedAliases, input.requested);
     const exactAgent = input.catalog.all.find((candidate) => candidate.name === input.requested);
     if (alias && exactAgent) {
       throw new Error(`Ambiguous subagent target "${input.requested}": it is both an Agent name and a saved agent id.`);
@@ -90,6 +81,17 @@ export class SubagentCoordinator {
 
     let reservation: ReservedDispatch;
     if (alias) {
+      const matchingJobs = [...this.state.jobs.values()].filter((job) =>
+        job.agentId === alias.id
+        && job.agent === alias.agent
+        && job.childSessionId === alias.sessionId
+        && job.sessionPath === alias.sessionPath);
+      if (
+        matchingJobs.length > 0
+        && !matchingJobs.some((job) => RESUMABLE_ALIAS_STATUSES.has(job.status))
+      ) {
+        throw new Error(`Agent id "${alias.id}" cannot be continued after failing before materialization.`);
+      }
       if (!input.catalog.available.some((candidate) => candidate.name === alias.agent)) {
         throw new Error(`Agent "${alias.agent}" for saved id "${alias.id}" is disabled or no longer available.`);
       }

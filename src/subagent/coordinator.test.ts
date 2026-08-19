@@ -62,6 +62,18 @@ function materialize(
   return coordinator.recordMaterialized(reservation, child);
 }
 
+function failedMaterializedAlias(coordinator: SubagentCoordinator) {
+  const reservation = coordinator.reserveDispatch({
+    ownerSessionId: "root",
+    toolCallId: "failed-tool",
+    requested: "search",
+    catalog: catalogOf("search"),
+  });
+  materialize(coordinator, reservation, "failed-child", "/sessions/failed-child.jsonl");
+  coordinator.recordPreMaterializationFailure(reservation, new Error("session link persistence failed"));
+  return reservation;
+}
+
 describe("SubagentCoordinator", () => {
   it("reserves distinct same-role ids before either launch starts", () => {
     const { coordinator } = harness();
@@ -88,6 +100,46 @@ describe("SubagentCoordinator", () => {
 
     expect(() => coordinator.reserveDispatch({ ownerSessionId: "root", toolCallId: "t1", requested: "review_0", catalog: catalogOf("review", "review_0") }))
       .toThrow(/ambiguous/i);
+  });
+
+  it("rejects ambiguity against a non-resumable persisted alias before validation", () => {
+    const { coordinator } = harness();
+    const failed = failedMaterializedAlias(coordinator);
+
+    expect(() => coordinator.reserveDispatch({
+      ownerSessionId: "root",
+      toolCallId: "t1",
+      requested: failed.agentId,
+      catalog: catalogOf("search", "search_0"),
+    })).toThrow(/ambiguous/i);
+  });
+
+  it("rejects a non-resumable alias-only request without creating a fresh launch", () => {
+    const { coordinator } = harness();
+    const failed = failedMaterializedAlias(coordinator);
+    const before = [...coordinator.journal().jobs.values()];
+
+    expect(() => coordinator.reserveDispatch({
+      ownerSessionId: "root",
+      toolCallId: "t1",
+      requested: failed.agentId,
+      catalog: catalogOf("search"),
+    })).toThrow(/cannot be continued|not resumable|pre-materialization/i);
+    expect([...coordinator.journal().jobs.values()]).toEqual(before);
+  });
+
+  it("keeps a non-resumable persisted alias consumed during fresh allocation", () => {
+    const { coordinator } = harness();
+    const failed = failedMaterializedAlias(coordinator);
+
+    const next = coordinator.reserveDispatch({
+      ownerSessionId: "root",
+      toolCallId: "t1",
+      requested: "search",
+      catalog: catalogOf("search"),
+    });
+
+    expect([failed.agentId, next.agentId]).toEqual(["search_0", "search_1"]);
   });
 
   it("skips a fresh id that is an actual Agent name", () => {
