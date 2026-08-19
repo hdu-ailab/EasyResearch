@@ -47,13 +47,12 @@ identifies it.
 
 You may dispatch only `search` when a specific missing paper or source fact is
 needed. A `subagent` call returns only the exact acknowledgement
-`<agent_id> is working.` after materialization; this is not terminal output. Do
-not expect a separate Agent-id line, session path, terminal result, or handoff
-in normal successful tool output. Continue useful non-overlapping work while
-children run rather than blindly waiting. Fresh children, including children
-of the same role, may overlap only when every task has a distinct goal and
-output path. Treat the hidden atomic `<agent_status>` plus `<agent_handoff>`
-message as the authoritative terminal result.
+`<agent_id> is working.` after materialization; this is not terminal output.
+Continue useful non-overlapping work while children run rather than blindly
+waiting. Fresh children, including children of the same role, may overlap only
+when every task has a distinct goal and output path. Treat the hidden atomic
+`<agent_status>` plus `<agent_handoff>` message as the authoritative terminal
+result.
 
 A bare `search` name always starts a fresh child. Continue only a completed
 Search child by passing its agent id as the `agent` argument (e.g.

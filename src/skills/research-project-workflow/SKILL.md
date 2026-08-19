@@ -96,13 +96,12 @@ A Writing task must state whether the user explicitly authorized a full draft
 or named section. Without authorization, request only readiness or gap analysis.
 
 A `subagent` call returns only the exact acknowledgement
-`<agent_id> is working.` after materialization; this is not terminal output. Do
-not expect a separate Agent-id line, session path, terminal result, or handoff
-in normal successful tool output. Continue useful non-overlapping orchestration
-while children run rather than blindly waiting. Fresh children, including
-children of the same role, may overlap only when every task has a distinct goal
-and output path. Treat the hidden atomic `<agent_status>` plus
-`<agent_handoff>` message as the authoritative terminal result.
+`<agent_id> is working.` after materialization; this is not terminal output.
+Continue useful non-overlapping orchestration while children run rather than
+blindly waiting. Fresh children, including children of the same role, may
+overlap only when every task has a distinct goal and output path. Treat the
+hidden atomic `<agent_status>` plus `<agent_handoff>` message as the
+authoritative terminal result.
 
 A bare agent name (for example, `agent: "search"`) always starts a fresh child.
 Continue only a completed child by passing its agent id as `agent` (for example,
