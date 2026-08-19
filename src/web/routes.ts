@@ -542,15 +542,17 @@ function sessionEvents(services: RouteServices, id: string): Response {
   try {
     unsubscribe = registry.subscribe(id, (event) => {
       if (cancelled) return;
+      const publicEvent = publicSessionEvent(event);
+      if (publicEvent === undefined) return;
       if (!initialized) {
         if (snapshotAcquired) {
-          postBarrierEvents.push(event);
-        } else if (isPreBarrierSupplement(event)) {
-          preBarrierSupplements.push(event);
+          postBarrierEvents.push(publicEvent);
+        } else if (isPreBarrierSupplement(publicEvent)) {
+          preBarrierSupplements.push(publicEvent);
         }
         return;
       }
-      if (controllerRef) send(controllerRef, event);
+      if (controllerRef) send(controllerRef, publicEvent);
     });
   } catch {
     throw new UnknownSessionError(`Unknown session: ${id}`);
@@ -636,11 +638,7 @@ function authFlowSse(services: RouteServices, flowId: string): Response {
 
 function isPreBarrierSupplement(event: unknown): boolean {
   if (!event || typeof event !== "object") return false;
-  const value = event as {
-    type?: unknown;
-    toolCallId?: unknown;
-    partialResult?: { details?: { subagent?: { agent?: unknown; sessionId?: unknown } } };
-  };
+  const value = event as { type?: unknown };
   if (
     value.type === "file.watcher.updated" ||
     value.type === "agent_start" ||
@@ -650,14 +648,44 @@ function isPreBarrierSupplement(event: unknown): boolean {
   ) {
     return true;
   }
-  if (value.type !== "tool_execution_update" || typeof value.toolCallId !== "string" || !value.toolCallId.trim()) {
-    return false;
+  return isSubagentSupervisorEvent(event);
+}
+
+function publicSessionEvent(event: unknown): unknown | undefined {
+  if (!event || typeof event !== "object" || (event as { type?: unknown }).type !== "subagent_supervisor") {
+    return event;
   }
-  const subagent = value.partialResult?.details?.subagent;
-  return Boolean(
-    (typeof subagent?.agent === "string" && subagent.agent.trim()) ||
-      (typeof subagent?.sessionId === "string" && subagent.sessionId.trim()),
-  );
+  if (!isSubagentSupervisorEvent(event)) return undefined;
+  const value = event as Record<string, unknown>;
+  return {
+    type: "subagent_supervisor",
+    launchId: value.launchId,
+    ownerSessionId: value.ownerSessionId,
+    toolCallId: value.toolCallId,
+    agent: value.agent,
+    agentId: value.agentId,
+    childSessionId: value.childSessionId,
+    status: value.status,
+    ...(typeof value.latestMessage === "string" ? { latestMessage: value.latestMessage } : {}),
+    ...(isObject(value.event) ? { event: value.event } : {}),
+  };
+}
+
+function isSubagentSupervisorEvent(event: unknown): boolean {
+  if (!isObject(event) || event.type !== "subagent_supervisor") return false;
+  if (event.status !== "working" && event.status !== "complete" && event.status !== "error") return false;
+  return [
+    event.launchId,
+    event.ownerSessionId,
+    event.toolCallId,
+    event.agent,
+    event.agentId,
+    event.childSessionId,
+  ].every((value) => typeof value === "string" && value.trim().length > 0);
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function configFileParams(url: URL): { scope: ConfigScope; cwd?: string; path?: string } {

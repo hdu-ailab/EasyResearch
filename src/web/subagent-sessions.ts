@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { readAgentAliases } from "../subagent/agent-alias";
+import { readSubagentJournal } from "../subagent/job-journal";
+import { AGENT_STATUS_TYPE } from "../subagent/notifications";
 import type { RecoverySessionStore } from "../subagent/recovery";
 import { readSubagentSessionLinks } from "../subagent/session-links";
 import type { ChildSessionSnapshotDto, SubagentSessionSummaryDto } from "./contracts";
@@ -8,13 +10,13 @@ import type { ChildSessionSnapshotDto, SubagentSessionSummaryDto } from "./contr
 interface ReadonlySubagentSession {
   getEntries(): unknown[];
   getSessionId(): string;
+  getSessionFile(): string | undefined;
   getCwd(): string;
   getSessionName(): string | undefined;
   getBranch(): Array<{ type: string; message?: AgentMessage }>;
 }
 
 interface RecoverySessionManager extends ReadonlySubagentSession {
-  getSessionFile(): string | undefined;
   appendCustomMessageEntry(
     customType: string,
     content: string,
@@ -130,48 +132,22 @@ export class SubagentSessionService {
   constructor(private readonly store: SubagentSessionStore) {}
 
   async summaries(parentSessionId: string): Promise<SubagentSessionSummaryDto[]> {
-    let resolved: Awaited<ReturnType<SubagentSessionService["parent"]>>;
+    let parent: Awaited<ReturnType<SubagentSessionService["parent"]>>;
     try {
-      resolved = await this.parent(parentSessionId);
+      parent = await this.parent(parentSessionId);
     } catch (error) {
       if (error instanceof SubagentSessionNotFoundError) return [];
       throw error;
     }
-    const { parent, sessions } = resolved;
-    const summaries: SubagentSessionSummaryDto[] = [];
-    const idBySession = new Map<string, string>();
-    for (const alias of readAgentAliases(parent.manager.getEntries())) {
-      idBySession.set(alias.sessionId, alias.id);
-    }
-
-    for (const link of readSubagentSessionLinks(parent.manager.getEntries())) {
-      try {
-        const child = this.child(sessions, link.childSessionId, parent.cwd);
-        const messages = branchMessages(child);
-        const latestMessage = latestAssistantText(messages);
-        const id = idBySession.get(link.childSessionId);
-        summaries.push({
-          ...link,
-          ...(id !== undefined ? { id } : {}),
-          ...(latestMessage !== undefined ? { latestMessage } : {}),
-        });
-      } catch (error) {
-        if (!(error instanceof SubagentSessionNotFoundError)) throw error;
-        const id = idBySession.get(link.childSessionId);
-        summaries.push(id !== undefined ? { ...link, id } : link);
-      }
-    }
-
-    return summaries;
+    return this.fold(parent).summaries;
   }
 
   async snapshot(parentSessionId: string, childSessionId: string): Promise<ChildSessionSnapshotDto> {
-    const { parent, sessions } = await this.parent(parentSessionId);
-    const mapped = readSubagentSessionLinks(parent.manager.getEntries())
-      .some((link) => link.childSessionId === childSessionId);
-    if (!mapped) throw notFound(childSessionId);
-
-    const child = this.child(sessions, childSessionId, parent.cwd);
+    const parent = await this.parent(parentSessionId);
+    const folded = this.fold(parent);
+    const paths = folded.pathsBySession.get(childSessionId);
+    if (!paths || paths.size !== 1) throw notFound(childSessionId);
+    const child = this.open([...paths][0]!, childSessionId, parent.cwd);
     const sessionName = child.getSessionName();
     return {
       session: {
@@ -180,11 +156,14 @@ export class SubagentSessionService {
         ...(sessionName === undefined ? {} : { sessionName }),
       },
       messages: branchMessages(child),
+      subagents: folded.summaries.filter((summary) => summary.ownerSessionId === childSessionId),
     };
   }
 
   private async parent(parentSessionId: string): Promise<{
-    parent: { cwd: string; manager: ReadonlySubagentSession };
+    id: string;
+    cwd: string;
+    manager: ReadonlySubagentSession;
     sessions: Array<{ id: string; path: string; cwd: string }>;
   }> {
     const sessions = await this.store.listAll();
@@ -192,23 +171,98 @@ export class SubagentSessionService {
     if (!info) throw notFound(parentSessionId);
 
     const manager = this.open(info.path, parentSessionId, info.cwd);
-    return { parent: { cwd: info.cwd, manager }, sessions };
+    return { id: parentSessionId, cwd: info.cwd, manager, sessions };
   }
 
-  private child(
-    sessions: Array<{ id: string; path: string; cwd: string }>,
-    childSessionId: string,
-    parentCwd: string,
-  ): ReadonlySubagentSession {
-    const info = sessions.find((session) => session.id === childSessionId);
-    if (!info || info.cwd !== parentCwd) throw notFound(childSessionId);
-    return this.open(info.path, childSessionId, parentCwd);
+  private fold(parent: {
+    id: string;
+    cwd: string;
+    manager: ReadonlySubagentSession;
+    sessions: Array<{ id: string; path: string; cwd: string }>;
+  }): {
+    summaries: SubagentSessionSummaryDto[];
+    pathsBySession: Map<string, Set<string>>;
+  } {
+    const entries = parent.manager.getEntries();
+    const state = readSubagentJournal(entries);
+    const aliases = readAgentAliases(entries);
+    const links = readSubagentSessionLinks(entries);
+    const summaries: SubagentSessionSummaryDto[] = [];
+    const pathsBySession = new Map<string, Set<string>>();
+    const journalLaunchIds = new Set(state.jobs.keys());
+
+    const rememberPath = (childSessionId: string, sessionPath: string): void => {
+      const paths = pathsBySession.get(childSessionId) ?? new Set<string>();
+      paths.add(sessionPath);
+      pathsBySession.set(childSessionId, paths);
+    };
+    const latestAt = (childSessionId: string, sessionPath: string): string | undefined => {
+      try {
+        return latestAssistantText(branchMessages(this.open(sessionPath, childSessionId, parent.cwd)));
+      } catch (error) {
+        if (error instanceof SubagentSessionNotFoundError) return undefined;
+        throw error;
+      }
+    };
+
+    for (const job of state.jobs.values()) {
+      if (
+        job.terminalSuppressed
+        || !job.childSessionId
+        || !job.sessionPath
+        || (job.status !== "working" && job.status !== "complete" && job.status !== "error")
+      ) continue;
+      rememberPath(job.childSessionId, job.sessionPath);
+      const latestMessage = job.latestAssistantText?.trim()
+        ? job.latestAssistantText
+        : latestAt(job.childSessionId, job.sessionPath);
+      summaries.push({
+        launchId: job.launchId,
+        ownerSessionId: job.ownerSessionId,
+        toolCallId: job.toolCallId,
+        agent: job.agent,
+        agentId: job.agentId,
+        childSessionId: job.childSessionId,
+        status: job.status,
+        ...(latestMessage === undefined ? {} : { latestMessage }),
+      });
+    }
+
+    for (const link of links) {
+      if (link.launchId !== undefined && journalLaunchIds.has(link.launchId)) continue;
+      const alias = [...aliases].reverse().find((candidate) =>
+        candidate.sessionId === link.childSessionId && candidate.agent === link.agent);
+      const legacyInfo = parent.sessions.find((candidate) =>
+        candidate.id === link.childSessionId && candidate.cwd === parent.cwd);
+      const sessionPath = alias?.sessionPath ?? legacyInfo?.path;
+      if (sessionPath) rememberPath(link.childSessionId, sessionPath);
+      const latestMessage = sessionPath
+        ? latestAt(link.childSessionId, sessionPath)
+        : undefined;
+      summaries.push({
+        ownerSessionId: link.ownerSessionId ?? parent.id,
+        toolCallId: link.toolCallId,
+        agent: link.agent,
+        childSessionId: link.childSessionId,
+        status: "complete",
+        ...(link.launchId === undefined ? {} : { launchId: link.launchId }),
+        ...((link.agentId ?? alias?.id) === undefined ? {} : { agentId: link.agentId ?? alias?.id }),
+        ...(latestMessage === undefined ? {} : { latestMessage }),
+        ...(link.step === undefined ? {} : { step: link.step }),
+      });
+    }
+
+    return { summaries, pathsBySession };
   }
 
   private open(path: string, expectedId: string, expectedCwd: string): ReadonlySubagentSession {
     try {
       const manager = this.store.open(path);
-      if (manager.getSessionId() !== expectedId || manager.getCwd() !== expectedCwd) {
+      if (
+        manager.getSessionFile() !== path
+        || manager.getSessionId() !== expectedId
+        || manager.getCwd() !== expectedCwd
+      ) {
         throw notFound(expectedId);
       }
       return manager;
@@ -222,11 +276,19 @@ function branchMessages(session: ReadonlySubagentSession): AgentMessage[] {
   try {
     return session.getBranch()
       .filter((entry): entry is { type: "message"; message: AgentMessage } =>
-        entry.type === "message" && isAgentMessage(entry.message))
+        entry.type === "message"
+        && isAgentMessage(entry.message)
+        && !isHiddenStatusMessage(entry.message))
       .map((entry) => entry.message);
   } catch {
     throw notFound(session.getSessionId());
   }
+}
+
+function isHiddenStatusMessage(message: unknown): boolean {
+  return isObject(message)
+    && message.role === "custom"
+    && message.customType === AGENT_STATUS_TYPE;
 }
 
 function isAgentMessage(message: unknown): message is AgentMessage {

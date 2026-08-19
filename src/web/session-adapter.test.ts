@@ -332,17 +332,19 @@ describe("PiSessionFactory", () => {
   });
 
   it("forwards coordinator progress but filters hidden status after supervisor observation", async () => {
+    const hiddenContent = "<agent_status>Error subagent:{\"session_path\":\"/private/child.jsonl\"}</agent_status>\n<agent_handoff>secret handoff</agent_handoff>";
     const session = new FakeAgentSession();
     session.messages = [
       { role: "user", content: [{ type: "text", text: "hello" }], timestamp: 1 },
       {
         role: "custom",
         customType: "easyresearch:agent_status",
-        content: "<agent_status>saved hidden</agent_status>",
+        content: hiddenContent,
         display: false,
         timestamp: 2,
       } as never,
     ];
+    session.steeringMessages = [hiddenContent, "visible user steer"];
     const supervisorObserved: unknown[] = [];
     session.subscribe((event) => supervisorObserved.push(event));
     const runtime = managed(session);
@@ -368,11 +370,16 @@ describe("PiSessionFactory", () => {
       message: {
         role: "custom",
         customType: "easyresearch:agent_status",
-        content: "<agent_status>hidden</agent_status>",
+        content: hiddenContent,
         display: false,
       },
     };
     session.listeners.forEach((listener) => listener(hidden));
+    session.listeners.forEach((listener) => listener({
+      type: "queue_update",
+      steering: [hiddenContent, "visible user steer"],
+      followUp: [],
+    }));
     session.listeners.forEach((listener) => listener({
       type: "agent_end",
       messages: [
@@ -385,11 +392,19 @@ describe("PiSessionFactory", () => {
     expect(events).toEqual([
       progress,
       {
+        type: "queue_update",
+        steering: ["visible user steer"],
+        followUp: [],
+      },
+      {
         type: "agent_end",
         messages: [{ role: "assistant", content: [{ type: "text", text: "visible" }], timestamp: 3 }],
       },
     ]);
     await expect(adapter.getMessages()).resolves.toEqual([session.messages[0]]);
+    expect(adapter.getSteeringMessages()).toEqual(["visible user steer"]);
+    expect(JSON.stringify({ events, messages: await adapter.getMessages(), steering: adapter.getSteeringMessages() }))
+      .not.toContain("/private/child.jsonl");
   });
 
   it("performs public Stop in tree-wide durable order and keeps the root connected", async () => {

@@ -5,8 +5,13 @@ import { afterEach, beforeAll, beforeEach, describe, expect, expectTypeOf, it } 
 import type { Message } from "@earendil-works/pi-ai";
 import { importPi } from "../runtime/pi-import";
 import { AGENT_ALIAS_ENTRY } from "../subagent/agent-alias";
+import { SUBAGENT_JOB_ENTRY, type SubagentJobJournalRecord } from "../subagent/job-journal";
 import { SUBAGENT_SESSION_LINK_ENTRY } from "../subagent/session-links";
-import type { SessionSnapshotDto, SubagentSessionSummaryDto } from "./contracts";
+import type {
+  ChildSessionSnapshotDto,
+  SessionSnapshotDto,
+  SubagentSessionSummaryDto,
+} from "./contracts";
 import {
   createSubagentRecoverySessionStore,
   SubagentSessionNotFoundError,
@@ -44,6 +49,7 @@ function assistant(...texts: string[]): Message {
 
 it("requires parent snapshots to include subagent summaries", () => {
   expectTypeOf<SessionSnapshotDto["subagents"]>().toEqualTypeOf<SubagentSessionSummaryDto[]>();
+  expectTypeOf<ChildSessionSnapshotDto["subagents"]>().toEqualTypeOf<SubagentSessionSummaryDto[]>();
 });
 
 describe("SubagentSessionService", () => {
@@ -90,6 +96,71 @@ describe("SubagentSessionService", () => {
     });
   }
 
+  function journal(parent: SessionManagerInstance, record: SubagentJobJournalRecord): void {
+    parent.appendCustomEntry(SUBAGENT_JOB_ENTRY, record);
+  }
+
+  function journalJob(
+    parent: SessionManagerInstance,
+    child: SessionManagerInstance,
+    input: {
+      launchId: string;
+      ownerSessionId: string;
+      toolCallId: string;
+      agent: string;
+      agentId: string;
+      status: "working" | "complete" | "error";
+      latestAssistantText?: string;
+      errorMessage?: string;
+    },
+  ): void {
+    journal(parent, {
+      kind: "reserved",
+      launchId: input.launchId,
+      ownerSessionId: input.ownerSessionId,
+      toolCallId: input.toolCallId,
+      agent: input.agent,
+      agentId: input.agentId,
+      continuation: false,
+      createdAt: "2026-08-19T00:00:00.000Z",
+    });
+    journal(parent, {
+      kind: "created",
+      launchId: input.launchId,
+      childSessionId: child.getSessionId(),
+      sessionPath: child.getSessionFile()!,
+    });
+    journal(parent, { kind: "materialized", launchId: input.launchId });
+    parent.appendCustomEntry(SUBAGENT_SESSION_LINK_ENTRY, {
+      toolCallId: input.toolCallId,
+      childSessionId: child.getSessionId(),
+      agent: input.agent,
+      ownerSessionId: input.ownerSessionId,
+      launchId: input.launchId,
+      agentId: input.agentId,
+    });
+    parent.appendCustomEntry(AGENT_ALIAS_ENTRY, {
+      id: input.agentId,
+      agent: input.agent,
+      sessionId: child.getSessionId(),
+      sessionPath: child.getSessionFile(),
+    });
+    if (input.status === "working") return;
+    journal(parent, {
+      kind: "launch_acknowledged",
+      launchId: input.launchId,
+      acknowledgedAt: "2026-08-19T00:00:01.000Z",
+    });
+    journal(parent, {
+      kind: "terminal",
+      launchId: input.launchId,
+      status: input.status,
+      ...(input.latestAssistantText === undefined ? {} : { latestAssistantText: input.latestAssistantText }),
+      ...(input.errorMessage === undefined ? {} : { errorMessage: input.errorMessage }),
+      finishedAt: "2026-08-19T00:00:02.000Z",
+    });
+  }
+
   it("returns no summaries while a newly active parent is not yet in the persistent session listing", async () => {
     await expect(service(async () => []).summaries("new-parent-uuid")).resolves.toEqual([]);
   });
@@ -110,10 +181,12 @@ describe("SubagentSessionService", () => {
     });
 
     expect(await service().summaries(parent.getSessionId())).toEqual([{
+      ownerSessionId: parent.getSessionId(),
       toolCallId: "tool-1",
       childSessionId: child.getSessionId(),
       agent: "search",
-      id: "search_0",
+      agentId: "search_0",
+      status: "complete",
       latestMessage: "final child reply",
     }]);
   });
@@ -128,9 +201,11 @@ describe("SubagentSessionService", () => {
     link(parent, child);
 
     expect(await service().summaries(parent.getSessionId())).toEqual([{
+      ownerSessionId: parent.getSessionId(),
       toolCallId: "tool-1",
       childSessionId: child.getSessionId(),
       agent: "search",
+      status: "complete",
       latestMessage: "final child reply",
     }]);
     expect(await service().snapshot(parent.getSessionId(), child.getSessionId())).toMatchObject({
@@ -140,6 +215,186 @@ describe("SubagentSessionService", () => {
         sessionName: "easyresearch:search",
       },
       messages: [{ role: "user" }, { role: "assistant" }],
+      subagents: [],
+    });
+  });
+
+  it("folds every materialized descendant into path-free root summaries and scopes retained-child jobs", async () => {
+    const parent = createSession();
+    const owner = createSession();
+    const working = createSession();
+    const nestedError = createSession();
+    appendParentMessage(parent);
+    owner.appendSessionInfo("easyresearch:experiment");
+    owner.appendMessage(user("run experiment"));
+    owner.appendMessage(assistant("owner complete"));
+    owner.appendCustomMessageEntry(
+      "easyresearch:agent_status",
+      `<agent_status>Error subagent:{"session_path":"${nestedError.getSessionFile()}"}</agent_status>\n<agent_handoff>hidden</agent_handoff>`,
+      false,
+    );
+    working.appendSessionInfo("easyresearch:search");
+    working.appendMessage(user("keep searching"));
+    working.appendMessage(assistant("working full latest message"));
+    nestedError.appendSessionInfo("easyresearch:figures");
+    nestedError.appendMessage(user("draw figure"));
+    nestedError.appendMessage(assistant("nested partial result"));
+
+    journalJob(parent, owner, {
+      launchId: "launch-owner",
+      ownerSessionId: parent.getSessionId(),
+      toolCallId: "tool-owner",
+      agent: "experiment",
+      agentId: "experiment_0",
+      status: "complete",
+      latestAssistantText: "owner complete",
+    });
+    journalJob(parent, working, {
+      launchId: "launch-working",
+      ownerSessionId: parent.getSessionId(),
+      toolCallId: "tool-working",
+      agent: "search",
+      agentId: "search_0",
+      status: "working",
+    });
+    journalJob(parent, nestedError, {
+      launchId: "launch-nested",
+      ownerSessionId: owner.getSessionId(),
+      toolCallId: "tool-nested",
+      agent: "figures",
+      agentId: "figures_0",
+      status: "error",
+      latestAssistantText: "nested partial result",
+      errorMessage: `failed at ${nestedError.getSessionFile()}`,
+    });
+
+    const summaries = await service().summaries(parent.getSessionId());
+    expect(summaries).toEqual([
+      {
+        launchId: "launch-owner",
+        ownerSessionId: parent.getSessionId(),
+        toolCallId: "tool-owner",
+        agent: "experiment",
+        agentId: "experiment_0",
+        childSessionId: owner.getSessionId(),
+        status: "complete",
+        latestMessage: "owner complete",
+      },
+      {
+        launchId: "launch-working",
+        ownerSessionId: parent.getSessionId(),
+        toolCallId: "tool-working",
+        agent: "search",
+        agentId: "search_0",
+        childSessionId: working.getSessionId(),
+        status: "working",
+        latestMessage: "working full latest message",
+      },
+      {
+        launchId: "launch-nested",
+        ownerSessionId: owner.getSessionId(),
+        toolCallId: "tool-nested",
+        agent: "figures",
+        agentId: "figures_0",
+        childSessionId: nestedError.getSessionId(),
+        status: "error",
+        latestMessage: "nested partial result",
+      },
+    ]);
+    const retained = await service().snapshot(parent.getSessionId(), owner.getSessionId());
+    expect(retained.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+    expect(retained.subagents).toEqual([summaries[2]]);
+
+    const serialized = JSON.stringify({ summaries, retained });
+    expect(serialized).not.toContain("sessionPath");
+    expect(serialized).not.toContain("session_path");
+    expect(serialized).not.toContain(nestedError.getSessionFile()!);
+    expect(serialized).not.toContain("<agent_handoff>");
+  });
+
+  it("uses the exact root-journal path mapping instead of authorizing a same-cwd UUID from the global listing", async () => {
+    const parent = createSession();
+    const requested = createSession();
+    const replacement = createSession();
+    appendParentMessage(parent);
+    requested.appendMessage(user("requested"));
+    requested.appendMessage(assistant("requested reply"));
+    replacement.appendMessage(user("replacement"));
+    replacement.appendMessage(assistant("replacement reply"));
+    journal(parent, {
+      kind: "reserved",
+      launchId: "launch-tampered",
+      ownerSessionId: parent.getSessionId(),
+      toolCallId: "tool-tampered",
+      agent: "search",
+      agentId: "search_0",
+      continuation: false,
+      createdAt: "2026-08-19T00:00:00.000Z",
+    });
+    journal(parent, {
+      kind: "created",
+      launchId: "launch-tampered",
+      childSessionId: requested.getSessionId(),
+      sessionPath: replacement.getSessionFile()!,
+    });
+    journal(parent, { kind: "materialized", launchId: "launch-tampered" });
+
+    await expect(service().snapshot(parent.getSessionId(), requested.getSessionId()))
+      .rejects.toBeInstanceOf(SubagentSessionNotFoundError);
+  });
+
+  it("does not resurrect a suppressed journal launch through its persisted session link", async () => {
+    const parent = createSession();
+    const child = createSession();
+    appendParentMessage(parent);
+    child.appendMessage(user("stopped task"));
+    child.appendMessage(assistant("partial before stop"));
+    journalJob(parent, child, {
+      launchId: "launch-suppressed",
+      ownerSessionId: parent.getSessionId(),
+      toolCallId: "tool-suppressed",
+      agent: "search",
+      agentId: "search_0",
+      status: "working",
+    });
+    journal(parent, {
+      kind: "launch_suppressed",
+      launchId: "launch-suppressed",
+      suppressedAt: "2026-08-19T00:00:03.000Z",
+    });
+
+    await expect(service().summaries(parent.getSessionId())).resolves.toEqual([]);
+    await expect(service().snapshot(parent.getSessionId(), child.getSessionId()))
+      .rejects.toBeInstanceOf(SubagentSessionNotFoundError);
+  });
+
+  it("preserves a legacy direct link as a terminal summary and opens it only through its persisted alias path", async () => {
+    const parent = createSession();
+    const child = createSession();
+    appendParentMessage(parent);
+    child.appendMessage(user("legacy task"));
+    child.appendMessage(assistant("legacy final reply"));
+    link(parent, child, { toolCallId: "legacy-tool", step: 2 });
+    parent.appendCustomEntry(AGENT_ALIAS_ENTRY, {
+      id: "search_7",
+      agent: "search",
+      sessionId: child.getSessionId(),
+      sessionPath: child.getSessionFile(),
+    });
+
+    expect(await service().summaries(parent.getSessionId())).toEqual([{
+      ownerSessionId: parent.getSessionId(),
+      toolCallId: "legacy-tool",
+      agent: "search",
+      agentId: "search_7",
+      childSessionId: child.getSessionId(),
+      status: "complete",
+      latestMessage: "legacy final reply",
+      step: 2,
+    }]);
+    await expect(service().snapshot(parent.getSessionId(), child.getSessionId())).resolves.toMatchObject({
+      session: { id: child.getSessionId(), cwd },
+      subagents: [],
     });
   });
 
@@ -194,9 +449,11 @@ describe("SubagentSessionService", () => {
     unlinkSync(child.getSessionFile()!);
 
     expect(await service().summaries(parent.getSessionId())).toEqual([{
+      ownerSessionId: parent.getSessionId(),
       toolCallId: "tool-1",
       childSessionId: child.getSessionId(),
       agent: "search",
+      status: "complete",
     }]);
     await expect(service().snapshot(parent.getSessionId(), child.getSessionId()))
       .rejects.toBeInstanceOf(SubagentSessionNotFoundError);
@@ -213,9 +470,11 @@ describe("SubagentSessionService", () => {
       link(parent, child);
 
       expect(await service().summaries(parent.getSessionId())).toEqual([{
+        ownerSessionId: parent.getSessionId(),
         toolCallId: "tool-1",
         childSessionId: child.getSessionId(),
         agent: "search",
+        status: "complete",
       }]);
       await expect(service().snapshot(parent.getSessionId(), child.getSessionId()))
         .rejects.toBeInstanceOf(SubagentSessionNotFoundError);
@@ -236,9 +495,11 @@ describe("SubagentSessionService", () => {
     const staleList = async () => listed;
 
     expect(await service(staleList).summaries(parent.getSessionId())).toEqual([{
+      ownerSessionId: parent.getSessionId(),
       toolCallId: "tool-1",
       childSessionId: child.getSessionId(),
       agent: "search",
+      status: "complete",
     }]);
     await expect(service(staleList).snapshot(parent.getSessionId(), child.getSessionId()))
       .rejects.toBeInstanceOf(SubagentSessionNotFoundError);

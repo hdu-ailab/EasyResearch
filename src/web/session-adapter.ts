@@ -356,6 +356,8 @@ class DirectSessionAdapter implements SessionAdapter {
         const jsonEvent = toJsonSessionEvent(agentEvent);
         const publicEvent = jsonEvent.type === "agent_end"
           ? { ...jsonEvent, messages: jsonEvent.messages.filter((message) => !isHiddenStatusMessage(message)) }
+          : jsonEvent.type === "queue_update"
+            ? { ...jsonEvent, steering: jsonEvent.steering.filter((message) => !isHiddenStatusContent(message)) }
           : jsonEvent;
         for (const listener of this.listeners) listener(publicEvent);
       });
@@ -526,7 +528,7 @@ class DirectSessionAdapter implements SessionAdapter {
   }
 
   getSteeringMessages(): readonly string[] {
-    return this.requiredSession().getSteeringMessages();
+    return this.requiredSession().getSteeringMessages().filter((message) => !isHiddenStatusContent(message));
   }
 
   hasBackgroundWork(): boolean {
@@ -594,14 +596,30 @@ class DirectSessionAdapter implements SessionAdapter {
 function isHiddenStatusMessage(value: unknown): boolean {
   return value !== null
     && typeof value === "object"
+    && "role" in value
+    && value.role === "custom"
     && "customType" in value
     && value.customType === AGENT_STATUS_TYPE;
+}
+
+function isHiddenStatusEntry(value: unknown): boolean {
+  return value !== null
+    && typeof value === "object"
+    && "customType" in value
+    && value.customType === AGENT_STATUS_TYPE;
+}
+
+function isHiddenStatusContent(value: string): boolean {
+  return value.includes("<agent_status>")
+    && value.includes("</agent_status>")
+    && value.includes("<agent_handoff>")
+    && value.includes("</agent_handoff>");
 }
 
 function isHiddenStatusEvent(event: AgentSessionEvent): boolean {
   if (event.type === "message_start" || event.type === "message_end") {
     return isHiddenStatusMessage(event.message);
   }
-  if (event.type === "entry_appended") return isHiddenStatusMessage(event.entry);
+  if (event.type === "entry_appended") return isHiddenStatusEntry(event.entry);
   return false;
 }

@@ -1,5 +1,8 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { SubagentSessionLink } from "../subagent/session-links";
+import type {
+  SubagentJobStatus,
+  SubagentSupervisorEvent,
+} from "../subagent/contracts";
 
 export interface SessionSummaryDto {
   id: string;
@@ -59,11 +62,22 @@ export interface SessionTreeDto {
   leafId: string | null;
 }
 
-export interface SubagentSessionSummaryDto extends SubagentSessionLink {
+export interface SubagentSessionSummaryDto {
+  ownerSessionId: string;
+  toolCallId: string;
+  agent: string;
+  childSessionId: string;
+  status: SubagentJobStatus;
+  /** Absent only for persisted links created before ADR-087. */
+  launchId?: string;
+  /** Absent only when persisted legacy history has no alias. */
+  agentId?: string;
   latestMessage?: string;
-  /** Agent id (`<agent>_<seq>`, ADR-084) of the child within its main session. */
-  id?: string;
+  /** Persisted legacy chain display only; new jobs omit it. */
+  step?: number;
 }
+
+export type SubagentSupervisorEventDto = SubagentSupervisorEvent;
 
 export interface ChildSessionSnapshotDto {
   session: {
@@ -72,6 +86,7 @@ export interface ChildSessionSnapshotDto {
     sessionName?: string;
   };
   messages: AgentMessage[];
+  subagents: SubagentSessionSummaryDto[];
 }
 
 export interface DirectoryEntryDto {
