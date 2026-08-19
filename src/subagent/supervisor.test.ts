@@ -1168,6 +1168,54 @@ describe("SubagentSupervisor recursive abort", () => {
     },
   );
 
+  it("suppresses before a forced terminal append failure and still completes owned cleanup", async () => {
+    const stage = new FakeStage("search_0", "child-0", "/sessions/terminal-append-failure.jsonl");
+    const { manager, coordinator, supervisor } = makeHarness({
+      launchStage: async () => stage.handle,
+      schedule: () => {},
+    });
+    const reservation = reserve(coordinator, "tool-0");
+    const launching = supervisor.launch(reservation, options());
+    stage.materialization.resolve();
+    await launching;
+    stage.completion.resolve(result("finished before acknowledgement"));
+    await turn();
+    expect(coordinator.journal().jobs.get(reservation.launchId)?.terminalStatus).toBe("complete");
+
+    const terminalFailure = new Error("forced terminal append failed");
+    let failed = false;
+    manager.appendImpl = (_customType, data) => {
+      if (
+        !failed
+        && data !== null
+        && typeof data === "object"
+        && "kind" in data
+        && data.kind === "terminal"
+      ) {
+        failed = true;
+        throw terminalFailure;
+      }
+    };
+
+    let synchronousError: unknown;
+    let aborting: Promise<void> | undefined;
+    try {
+      aborting = supervisor.abortAll("closing");
+    } catch (error) {
+      synchronousError = error;
+    }
+    const crashState = coordinator.journal().jobs.get(reservation.launchId);
+    manager.appendImpl = undefined;
+
+    if (aborting) await expect(aborting).rejects.toBe(terminalFailure);
+    else await supervisor.abortAll("cleanup retry");
+
+    expect(synchronousError).toBeUndefined();
+    expect(crashState).toMatchObject({ terminalSuppressed: true });
+    expect(supervisor.hasRunningChildren()).toBe(false);
+    await supervisor.dispose();
+  });
+
   it("clears an abort failure that arrives after natural settlement releases the child", async () => {
     const stage = new FakeStage("search_0", "child-0", "/sessions/naturally-settled.jsonl");
     const abortFailure = new Error("abort lost the settlement race");

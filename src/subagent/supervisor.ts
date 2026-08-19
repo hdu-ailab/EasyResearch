@@ -395,15 +395,21 @@ export class SubagentSupervisor {
     if (this.abortPromise) return this.abortPromise;
     this.closing = true;
     const owned = [...this.children.values()];
-    const suppressionFailures: unknown[] = [];
+    const closingPreparationFailures: unknown[] = [];
     for (const child of owned) {
-      this.forceChildError(child, reason);
-      const job = this.coordinator.journal().jobs.get(child.reservation.launchId);
-      if (job?.launchAcknowledged || job?.terminalSuppressed) continue;
       try {
+        const job = this.coordinator.journal().jobs.get(child.reservation.launchId);
+        if (job?.launchAcknowledged || job?.terminalSuppressed) continue;
         this.coordinator.recordLaunchSuppressed(child.reservation.launchId);
       } catch (error) {
-        suppressionFailures.push(error);
+        closingPreparationFailures.push(error);
+      }
+    }
+    for (const child of owned) {
+      try {
+        this.forceChildError(child, reason);
+      } catch (error) {
+        closingPreparationFailures.push(error);
       }
     }
     this.stateChanged();
@@ -431,7 +437,7 @@ export class SubagentSupervisor {
       const childCleanupFailed = childResults.some(({ status }) => status === "rejected");
       let notificationFailed = false;
       await runCleanupSteps([
-        ...suppressionFailures.map((failure) => () => { throw failure; }),
+        ...closingPreparationFailures.map((failure) => () => { throw failure; }),
         ...childResults.map((result) => () => {
           if (result.status === "rejected") throw result.reason;
         }),
