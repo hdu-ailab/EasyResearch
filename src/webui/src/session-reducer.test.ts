@@ -1425,6 +1425,58 @@ describe("session reducer", () => {
     expect(mergeSnapshot(prior, snapshot).tools[0]).toMatchObject({ agentName: "writing", step: 2 });
   });
 
+  it("preserves live supervised progress when a reconnect snapshot has no supervisor summary", () => {
+    const prior: SessionViewState = {
+      ...emptyState,
+      tools: [
+        {
+          key: "sub-live",
+          toolCallId: "sub-live",
+          name: "subagent",
+          ownerSessionId: "parent",
+          launchId: "launch-live",
+          agentId: "writing_0",
+          supervised: true,
+          running: true,
+          done: false,
+          error: false,
+          agentName: "writing",
+          sessionId: "child-live",
+          latestMessage: "usable live progress",
+          latestActivity: { kind: "text", text: "newest child delta" },
+          order: 0,
+        },
+      ],
+      nextOrder: 1,
+    };
+    const snapshot = {
+      session: { id: "parent", cwd: "/p", isStreaming: false, status: "ready" },
+      subagents: [],
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "sub-live", name: "subagent", arguments: '{"agent":"writing"}' }],
+        },
+        {
+          role: "toolResult",
+          toolCallId: "sub-live",
+          toolName: "subagent",
+          content: [{ type: "text", text: " \n\t " }],
+          isError: true,
+        },
+      ],
+    } as never;
+
+    expect(mergeSnapshot(prior, snapshot).tools[0]).toMatchObject({
+      supervised: true,
+      running: true,
+      done: false,
+      error: false,
+      latestMessage: "usable live progress",
+      latestActivity: { kind: "text", text: "newest child delta" },
+    });
+  });
+
   it("does not enrich an id-less snapshot subagent tool from a colliding fallback key", () => {
     const prior: SessionViewState = {
       ...emptyState,

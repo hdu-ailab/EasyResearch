@@ -686,6 +686,7 @@ export function mergeSnapshot(state: SessionViewState, snapshot: SessionSnapshot
     const compatible =
       summary === undefined ||
       (summary.step === prior.step && (prior.sessionId === undefined || summary.childSessionId === prior.sessionId));
+    const preserveLiveSupervised = compatible && summary === undefined && prior.supervised && !prior.done;
     if (prior.supervised && prior.done && (!tool.done || tool.running)) {
       return {
         ...tool,
@@ -707,12 +708,12 @@ export function mergeSnapshot(state: SessionViewState, snapshot: SessionSnapshot
     return {
       ...tool,
       ...(compatible &&
-      !tool.done &&
+      (!tool.done || preserveLiveSupervised) &&
       usableText(tool.latestMessage) === undefined &&
       usableText(prior.latestMessage) !== undefined
         ? { latestMessage: prior.latestMessage }
         : {}),
-      ...(compatible && !tool.done && prior.latestActivity !== undefined
+      ...(compatible && (!tool.done || preserveLiveSupervised) && prior.latestActivity !== undefined
         ? { latestActivity: prior.latestActivity }
         : {}),
       ...(compatible && summary === undefined && prior.agentName !== undefined ? { agentName: prior.agentName } : {}),

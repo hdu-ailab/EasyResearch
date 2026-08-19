@@ -1007,6 +1007,62 @@ describe("WorkPage", () => {
     expect(within(rootCard as HTMLElement).queryByText("nested failed")).toBeNull();
   });
 
+  it("replays a nested terminal frame that arrives before its owner snapshot", async () => {
+    const user = userEvent.setup();
+    let resolveOwner!: (value: Awaited<ReturnType<typeof api.getChildSnapshot>>) => void;
+    vi.mocked(api.getSnapshot).mockResolvedValue({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      subagents: [subagentSummary("root-writing", "child-writing", "writing", { agentId: "writing_0" })],
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "root-writing", name: "subagent", arguments: '{"agent":"writing"}' }],
+        },
+      ],
+    } as never);
+    vi.mocked(api.getChildSnapshot).mockReturnValue(
+      new Promise((resolve) => {
+        resolveOwner = resolve;
+      }),
+    );
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await user.click(await screen.findByRole("button", { name: "View details" }));
+
+    emitSupervisor({
+      ownerSessionId: "child-writing",
+      toolCallId: "nested-search",
+      launchId: "launch-nested",
+      agent: "search",
+      agentId: "search_0",
+      childSessionId: "grandchild-search",
+      status: "error",
+      latestMessage: "failed before hydration",
+    });
+    act(() =>
+      resolveOwner({
+        session: { id: "child-writing", cwd: "/p", sessionName: "easyresearch:writing" },
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "toolCall", id: "nested-search", name: "subagent", arguments: '{"agent":"search"}' }],
+          },
+        ],
+        subagents: [
+          subagentSummary("nested-search", "grandchild-search", "search", {
+            ownerSessionId: "child-writing",
+            agentId: "search_0",
+            status: "working",
+            latestMessage: "stale persisted progress",
+          }),
+        ],
+      } as never),
+    );
+
+    const failedCard = (await screen.findByText("failed before hydration")).closest("article");
+    expect(failedCard).not.toBeNull();
+    expect(within(failedCard as HTMLElement).getByText("Failed")).toBeVisible();
+  });
+
   it("shows unique same-role Agent ids and keeps a child 404 inline without losing the parent transcript", async () => {
     const user = userEvent.setup();
     vi.mocked(api.getSnapshot).mockResolvedValue({
