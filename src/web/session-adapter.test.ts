@@ -4,6 +4,7 @@ import type { SessionTreeNode } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../subagent/agents";
 import {
   createPiAgentSessionCreator,
+  type ManagedAgentSession,
   PiSessionFactory,
   type InProcessAgentSession,
   type StartSessionOptions,
@@ -36,6 +37,7 @@ class FakeAgentSession implements InProcessAgentSession {
   unsubscribeCalls = 0;
   unsubscribeImpl: () => void = () => {};
   clearQueueCalls = 0;
+  clearQueueImpl: () => void = () => {};
   steeringMessages: string[] = [];
   thinkingCalls: string[] = [];
   modelCalls: unknown[] = [];
@@ -135,6 +137,7 @@ class FakeAgentSession implements InProcessAgentSession {
 
   clearQueue(): { steering: string[]; followUp: string[] } {
     this.clearQueueCalls += 1;
+    this.clearQueueImpl();
     this.steeringMessages = [];
     return { steering: [], followUp: [] };
   }
@@ -145,24 +148,104 @@ class FakeAgentSession implements InProcessAgentSession {
   }
 }
 
+interface ManagedHarness {
+  session: FakeAgentSession;
+  coordinator: {
+    label: string;
+    beginClosing(): void;
+    subscribe(listener: (event: unknown) => void): () => void;
+    emit(event: unknown): void;
+  };
+  supervisor: {
+    label: string;
+    abortAll(reason: string): Promise<void>;
+    flushNotifications(options?: { triggerTurn?: boolean }): Promise<void>;
+    waitForQuiescence(): Promise<void>;
+    isQuiescent(): boolean;
+    dispose(): Promise<void>;
+  };
+}
+
+interface ManagedOverrides {
+  coordinator?: {
+    beginClosing?: () => void;
+  };
+  supervisor?: {
+    abortAll?: (reason: string) => Promise<void>;
+    flushNotifications?: (options?: { triggerTurn?: boolean }) => Promise<void>;
+    waitForQuiescence?: () => Promise<void>;
+    isQuiescent?: () => boolean;
+    dispose?: () => Promise<void>;
+  };
+}
+
 function managed(
   session: FakeAgentSession,
   label = session.sessionId,
-  supervisorOverrides: { dispose?: () => Promise<void> } = {},
-) {
-  return {
+  overrides: ManagedOverrides = {},
+): ManagedHarness & ManagedAgentSession {
+  const coordinatorListeners = new Set<(event: unknown) => void>();
+  const harness: ManagedHarness = {
     session,
-    coordinator: { label },
+    coordinator: {
+      label,
+      beginClosing: overrides.coordinator?.beginClosing ?? (() => {}),
+      subscribe(listener) {
+        coordinatorListeners.add(listener);
+        return () => coordinatorListeners.delete(listener);
+      },
+      emit(event) {
+        for (const listener of coordinatorListeners) listener(event);
+      },
+    },
     supervisor: {
       label,
-      abortAll: async () => {},
-      dispose: async () => {},
-      ...supervisorOverrides,
+      abortAll: overrides.supervisor?.abortAll ?? (async () => {}),
+      flushNotifications: overrides.supervisor?.flushNotifications ?? (async () => {}),
+      waitForQuiescence: overrides.supervisor?.waitForQuiescence ?? (async () => {}),
+      isQuiescent: overrides.supervisor?.isQuiescent ?? (() => true),
+      dispose: overrides.supervisor?.dispose ?? (async () => {}),
     },
-  } as never;
+  };
+  return harness as unknown as ManagedHarness & ManagedAgentSession;
 }
 
 describe("PiSessionFactory", () => {
+  it("reports startup and recovery work until the managed runtime settles", async () => {
+    const session = new FakeAgentSession();
+    let releaseStart!: (runtime: ManagedHarness & ManagedAgentSession) => void;
+    const startGate = new Promise<ManagedHarness & ManagedAgentSession>((resolve) => {
+      releaseStart = resolve;
+    });
+    const factory = new PiSessionFactory(async () => startGate);
+    const adapter = factory.create({ cwd: "/project" });
+
+    expect(adapter.hasBackgroundWork()).toBe(false);
+    const starting = adapter.start();
+    expect(adapter.hasBackgroundWork()).toBe(true);
+    releaseStart(managed(session));
+    await starting;
+
+    expect(adapter.hasBackgroundWork()).toBe(false);
+  });
+
+  it("releases startup background ownership after creation fails", async () => {
+    const failure = new Error("recovery failed");
+    let rejectStart!: (error: Error) => void;
+    const startGate = new Promise<ManagedAgentSession>((_resolve, reject) => {
+      rejectStart = reject;
+    });
+    const factory = new PiSessionFactory(async () => startGate);
+    const adapter = factory.create({ cwd: "/project" });
+
+    const starting = adapter.start();
+    expect(adapter.hasBackgroundWork()).toBe(true);
+    rejectStart(failure);
+    await expect(starting).rejects.toBe(failure);
+
+    expect(adapter.hasBackgroundWork()).toBe(false);
+  });
+
   it("creates an in-process session with the exact launch options", async () => {
     const created: StartSessionOptions[] = [];
     const session = new FakeAgentSession();
@@ -248,24 +331,187 @@ describe("PiSessionFactory", () => {
     ]);
   });
 
-  it("aborts active work and disposes exactly once", async () => {
+  it("forwards coordinator progress but filters hidden status after supervisor observation", async () => {
     const session = new FakeAgentSession();
-    const supervisorDispose = vi.fn(async () => {});
+    session.messages = [
+      { role: "user", content: [{ type: "text", text: "hello" }], timestamp: 1 },
+      {
+        role: "custom",
+        customType: "easyresearch:agent_status",
+        content: "<agent_status>saved hidden</agent_status>",
+        display: false,
+        timestamp: 2,
+      } as never,
+    ];
+    const supervisorObserved: unknown[] = [];
+    session.subscribe((event) => supervisorObserved.push(event));
+    const runtime = managed(session);
+    const factory = new PiSessionFactory(async () => runtime);
+    const adapter = factory.create({ cwd: "/project" });
+    const events: unknown[] = [];
+    adapter.onEvent((event) => events.push(event));
+    await adapter.start();
+
+    const progress = {
+      type: "subagent_supervisor",
+      launchId: "launch-0",
+      ownerSessionId: "session-1",
+      toolCallId: "tool-0",
+      agent: "search",
+      agentId: "search_0",
+      childSessionId: "child-0",
+      status: "working",
+    };
+    runtime.coordinator.emit(progress);
+    const hidden = {
+      type: "message_end",
+      message: {
+        role: "custom",
+        customType: "easyresearch:agent_status",
+        content: "<agent_status>hidden</agent_status>",
+        display: false,
+      },
+    };
+    session.listeners.forEach((listener) => listener(hidden));
+
+    expect(supervisorObserved).toContain(hidden);
+    expect(events).toEqual([progress]);
+    await expect(adapter.getMessages()).resolves.toEqual([session.messages[0]]);
+  });
+
+  it("performs public Stop in tree-wide durable order and keeps the root connected", async () => {
+    const session = new FakeAgentSession();
     session.isStreaming = true;
-    const factory = new PiSessionFactory(async () => managed(session, session.sessionId, { dispose: supervisorDispose }));
+    session.steeringMessages = ["queued user steer"];
+    const order: string[] = [];
+    session.clearQueueImpl = () => order.push("session.clearQueue");
+    session.abortImpl = async () => {
+      order.push("session.abort");
+    };
+    const flushNotifications = vi.fn(async (options?: { triggerTurn?: boolean }) => {
+      order.push("supervisor.flushNoTrigger");
+      expect(options).toEqual({ triggerTurn: false });
+    });
+    const runtime = managed(session, session.sessionId, {
+      coordinator: { beginClosing: () => order.push("coordinator.beginClosing") },
+      supervisor: {
+        abortAll: async () => {
+          order.push("supervisor.abortAll");
+        },
+        flushNotifications,
+      },
+    });
+    const factory = new PiSessionFactory(async () => runtime);
+    const adapter = factory.create({ cwd: "/project" });
+    await adapter.start();
+
+    await adapter.abort();
+
+    expect(order).toEqual([
+      "coordinator.beginClosing",
+      "session.clearQueue",
+      "session.abort",
+      "supervisor.abortAll",
+      "supervisor.flushNoTrigger",
+    ]);
+    expect(session.steeringMessages).toEqual([]);
+    expect(session.abortCalls).toBe(1);
+    expect(session.disposeCalls).toBe(0);
+    expect(session.listeners.size).toBeGreaterThan(0);
+    await expect(adapter.getState()).resolves.toMatchObject({ sessionId: "session-1", isStreaming: false });
+  });
+
+  it("waits for descendants and pending-batch supersession before the no-trigger flush", async () => {
+    const session = new FakeAgentSession();
+    let releaseDescendants!: () => void;
+    const descendantsSettled = new Promise<void>((resolve) => {
+      releaseDescendants = resolve;
+    });
+    let pendingBatch = "natural-batch";
+    let stopResolved = false;
+    const flushNotifications = vi.fn(async () => {
+      expect(pendingBatch).toBe("closing-batch");
+    });
+    const runtime = managed(session, session.sessionId, {
+      supervisor: {
+        abortAll: async () => {
+          await descendantsSettled;
+          pendingBatch = "closing-batch";
+        },
+        flushNotifications,
+      },
+    });
+    const factory = new PiSessionFactory(async () => runtime);
+    const adapter = factory.create({ cwd: "/project" });
+    await adapter.start();
+
+    const stopping = adapter.abort().then(() => {
+      stopResolved = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(stopResolved).toBe(false);
+    expect(flushNotifications).not.toHaveBeenCalled();
+    releaseDescendants();
+    await stopping;
+    expect(flushNotifications).toHaveBeenCalledWith({ triggerTurn: false });
+  });
+
+  it("performs the same durable cleanup before stop unsubscribes and disposes", async () => {
+    const session = new FakeAgentSession();
+    const order: string[] = [];
+    session.clearQueueImpl = () => order.push("session.clearQueue");
+    session.abortImpl = async () => {
+      order.push("session.abort");
+    };
+    session.unsubscribeImpl = () => order.push("session.unsubscribe");
+    session.disposeImpl = () => order.push("session.dispose");
+    const runtime = managed(session, session.sessionId, {
+      coordinator: { beginClosing: () => order.push("coordinator.beginClosing") },
+      supervisor: {
+        abortAll: async () => {
+          order.push("supervisor.abortAll");
+        },
+        flushNotifications: async () => {
+          order.push("supervisor.flushNoTrigger");
+        },
+        dispose: async () => {
+          order.push("supervisor.dispose");
+        },
+      },
+    });
+    const factory = new PiSessionFactory(async () => runtime);
     const adapter = factory.create({ cwd: "/project" });
     await adapter.start();
 
     await adapter.stop();
     await adapter.stop();
 
-    expect(session.abortCalls).toBe(1);
-    expect(supervisorDispose).toHaveBeenCalledOnce();
-    expect(session.disposeCalls).toBe(1);
+    expect(order).toEqual([
+      "coordinator.beginClosing",
+      "session.clearQueue",
+      "session.abort",
+      "supervisor.abortAll",
+      "supervisor.flushNoTrigger",
+      "supervisor.dispose",
+      "session.unsubscribe",
+      "session.dispose",
+    ]);
     expect(session.listeners.size).toBe(0);
+    await expect(adapter.getState()).rejects.toThrow("not started");
   });
 
-  it.each(["session abort", "supervisor dispose", "listener removal", "session dispose"] as const)(
+  it.each([
+    "coordinator closing",
+    "queue clear",
+    "session abort",
+    "supervisor abort",
+    "notification flush",
+    "supervisor dispose",
+    "listener removal",
+    "session dispose",
+  ] as const)(
     "attempts every root cleanup and retries only failed %s ownership",
     async (failedStep) => {
       const session = new FakeAgentSession();
@@ -277,51 +523,80 @@ describe("PiSessionFactory", () => {
         fail = false;
         throw failure;
       };
+      const coordinatorClosing = vi.fn(() => {
+        if (failedStep === "coordinator closing") failOnce();
+      });
+      if (failedStep === "queue clear") session.clearQueueImpl = failOnce;
       if (failedStep === "session abort") session.abortImpl = async () => failOnce();
       if (failedStep === "listener removal") session.unsubscribeImpl = failOnce;
       if (failedStep === "session dispose") session.disposeImpl = failOnce;
+      const supervisorAbort = vi.fn(async () => {
+        if (failedStep === "supervisor abort") failOnce();
+      });
+      const notificationFlush = vi.fn(async () => {
+        if (failedStep === "notification flush") failOnce();
+      });
       const supervisorDispose = vi.fn(async () => {
         if (failedStep === "supervisor dispose") failOnce();
       });
       const factory = new PiSessionFactory(async () => managed(
         session,
         session.sessionId,
-        { dispose: supervisorDispose },
+        {
+          coordinator: { beginClosing: coordinatorClosing },
+          supervisor: {
+            abortAll: supervisorAbort,
+            flushNotifications: notificationFlush,
+            dispose: supervisorDispose,
+          },
+        },
       ));
       const adapter = factory.create({ cwd: "/project" });
       await adapter.start();
 
       await expect(adapter.stop()).rejects.toBe(failure);
-      expect({
+      const counts = () => ({
+        coordinator: coordinatorClosing.mock.calls.length,
+        clearQueue: session.clearQueueCalls,
         abort: session.abortCalls,
-        supervisor: supervisorDispose.mock.calls.length,
+        supervisorAbort: supervisorAbort.mock.calls.length,
+        notificationFlush: notificationFlush.mock.calls.length,
+        supervisorDispose: supervisorDispose.mock.calls.length,
         unsubscribe: session.unsubscribeCalls,
         dispose: session.disposeCalls,
-      }).toEqual({ abort: 1, supervisor: 1, unsubscribe: 1, dispose: 1 });
+      });
+      expect(counts()).toEqual({
+        coordinator: 1,
+        clearQueue: 1,
+        abort: 1,
+        supervisorAbort: 1,
+        notificationFlush: 1,
+        supervisorDispose: 1,
+        unsubscribe: 1,
+        dispose: 1,
+      });
 
       await adapter.stop();
       const expected = (step: typeof failedStep) => step === failedStep ? 2 : 1;
-      expect({
-        abort: session.abortCalls,
-        supervisor: supervisorDispose.mock.calls.length,
-        unsubscribe: session.unsubscribeCalls,
-        dispose: session.disposeCalls,
-      }).toEqual({
+      expect(counts()).toEqual({
+        coordinator: expected("coordinator closing"),
+        clearQueue: expected("queue clear"),
         abort: expected("session abort"),
-        supervisor: expected("supervisor dispose"),
+        supervisorAbort: expected("supervisor abort"),
+        notificationFlush: expected("notification flush"),
+        supervisorDispose: expected("supervisor dispose"),
         unsubscribe: expected("listener removal"),
         dispose: expected("session dispose"),
       });
 
       await adapter.stop();
-      expect({
-        abort: session.abortCalls,
-        supervisor: supervisorDispose.mock.calls.length,
-        unsubscribe: session.unsubscribeCalls,
-        dispose: session.disposeCalls,
-      }).toEqual({
+      expect(counts()).toEqual({
+        coordinator: expected("coordinator closing"),
+        clearQueue: expected("queue clear"),
         abort: expected("session abort"),
-        supervisor: expected("supervisor dispose"),
+        supervisorAbort: expected("supervisor abort"),
+        notificationFlush: expected("notification flush"),
+        supervisorDispose: expected("supervisor dispose"),
         unsubscribe: expected("listener removal"),
         dispose: expected("session dispose"),
       });
@@ -332,19 +607,34 @@ describe("PiSessionFactory", () => {
     const session = new FakeAgentSession();
     session.isStreaming = true;
     const failures = [
+      new Error("coordinator closing failed"),
+      new Error("queue clear failed"),
       new Error("session abort failed"),
+      new Error("supervisor abort failed"),
+      new Error("notification flush failed"),
       new Error("supervisor dispose failed"),
       new Error("listener removal failed"),
       new Error("session dispose failed"),
     ];
-    session.abortImpl = async () => { throw failures[0]; };
-    session.unsubscribeImpl = () => { throw failures[2]; };
-    session.disposeImpl = () => { throw failures[3]; };
-    const supervisorDispose = vi.fn(async () => { throw failures[1]; });
+    session.clearQueueImpl = () => { throw failures[1]; };
+    session.abortImpl = async () => { throw failures[2]; };
+    session.unsubscribeImpl = () => { throw failures[6]; };
+    session.disposeImpl = () => { throw failures[7]; };
+    const coordinatorClosing = vi.fn(() => { throw failures[0]; });
+    const supervisorAbort = vi.fn(async () => { throw failures[3]; });
+    const notificationFlush = vi.fn(async () => { throw failures[4]; });
+    const supervisorDispose = vi.fn(async () => { throw failures[5]; });
     const factory = new PiSessionFactory(async () => managed(
       session,
       session.sessionId,
-      { dispose: supervisorDispose },
+      {
+        coordinator: { beginClosing: coordinatorClosing },
+        supervisor: {
+          abortAll: supervisorAbort,
+          flushNotifications: notificationFlush,
+          dispose: supervisorDispose,
+        },
+      },
     ));
     const adapter = factory.create({ cwd: "/project" });
     await adapter.start();
@@ -357,11 +647,24 @@ describe("PiSessionFactory", () => {
     expect(cleanupError).toBeInstanceOf(AggregateError);
     expect(cleanupError?.errors).toEqual(failures);
     expect({
+      coordinator: coordinatorClosing.mock.calls.length,
+      clearQueue: session.clearQueueCalls,
       abort: session.abortCalls,
-      supervisor: supervisorDispose.mock.calls.length,
+      supervisorAbort: supervisorAbort.mock.calls.length,
+      notificationFlush: notificationFlush.mock.calls.length,
+      supervisorDispose: supervisorDispose.mock.calls.length,
       unsubscribe: session.unsubscribeCalls,
       dispose: session.disposeCalls,
-    }).toEqual({ abort: 1, supervisor: 1, unsubscribe: 1, dispose: 1 });
+    }).toEqual({
+      coordinator: 1,
+      clearQueue: 1,
+      abort: 1,
+      supervisorAbort: 1,
+      notificationFlush: 1,
+      supervisorDispose: 1,
+      unsubscribe: 1,
+      dispose: 1,
+    });
   });
 
   it("rejects unknown models and invalid thinking levels", async () => {
@@ -676,17 +979,32 @@ describe("DirectSessionAdapter steer lifecycle (ADR-083)", () => {
     expect(adapter.getSteeringMessages()).toEqual(["note one", "note two"]);
   });
 
-  it("clears the steer queue when the run settles", async () => {
+  it("leaves queued user and hidden supervisor steers intact when the run settles", async () => {
     const session = new FakeAgentSession();
     session.steeringMessages = ["undelivered note"];
-    const factory = new PiSessionFactory(async () => managed(session));
+    const runtime = managed(session, session.sessionId, {
+      supervisor: { isQuiescent: () => false },
+    });
+    const factory = new PiSessionFactory(async () => runtime);
     const adapter = factory.create({ cwd: "/project" });
+    const events: unknown[] = [];
+    adapter.onEvent((event) => events.push(event));
     await adapter.start();
 
+    runtime.coordinator.emit({
+      type: "subagent_supervisor",
+      agentId: "search_0",
+      status: "working",
+    });
     session.listeners.forEach((listener) => listener({ type: "agent_settled" }));
 
-    expect(session.clearQueueCalls).toBe(1);
-    expect(adapter.getSteeringMessages()).toEqual([]);
+    expect(session.clearQueueCalls).toBe(0);
+    expect(adapter.getSteeringMessages()).toEqual(["undelivered note"]);
+    expect(adapter.hasBackgroundWork()).toBe(true);
+    expect(events).toEqual([
+      { type: "subagent_supervisor", agentId: "search_0", status: "working" },
+      { type: "agent_settled" },
+    ]);
   });
 
   it("does not clear the queue for unrelated events", async () => {

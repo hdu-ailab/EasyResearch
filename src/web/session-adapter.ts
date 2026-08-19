@@ -6,6 +6,7 @@ import { runCleanupSteps } from "../runtime/cleanup";
 import { toJsonSessionEvent } from "../runtime/json-session-event";
 import type { AgentConfig } from "../subagent/agents";
 import type { CoordinatorSessionManager, SubagentCoordinator } from "../subagent/coordinator";
+import { AGENT_STATUS_TYPE } from "../subagent/notifications";
 import type { SubagentSupervisor, SupervisableAgentSession } from "../subagent/supervisor";
 
 export interface StartSessionOptions {
@@ -211,6 +212,7 @@ export interface SessionAdapter {
   getTree(): Promise<{ tree: SessionTreeNode[]; leafId: string | null }>;
   navigateTree(entryId: string): Promise<void>;
   getSteeringMessages(): readonly string[];
+  hasBackgroundWork(): boolean;
   onEvent(listener: (event: unknown) => void): () => void;
 }
 
@@ -314,12 +316,21 @@ class DirectSessionAdapter implements SessionAdapter {
   private managed: ManagedAgentSession | undefined;
   private session: InProcessAgentSession | undefined;
   private unsubscribe: (() => void) | undefined;
+  private coordinatorUnsubscribe: (() => void) | undefined;
+  private startPending = false;
+  private treeCleanupPending = false;
+  private stopPending = false;
+  private treeCleanupPromise: Promise<void> | undefined;
   private stopPromise: Promise<void> | undefined;
   private stopRequested = false;
   private stopped = false;
-  private sessionAbortRequired: boolean | undefined;
+  private coordinatorClosingComplete = false;
+  private queueClearComplete = false;
   private sessionAbortComplete = false;
+  private supervisorAbortComplete = false;
+  private notificationFlushComplete = false;
   private supervisorDisposeComplete = false;
+  private coordinatorUnsubscribeComplete = false;
   private unsubscribeComplete = false;
   private sessionDisposeComplete = false;
   private readonly listeners = new Set<(event: unknown) => void>();
@@ -332,17 +343,22 @@ class DirectSessionAdapter implements SessionAdapter {
   async start(): Promise<void> {
     if (this.session) throw new Error("Session already started");
     if (this.stopRequested) throw new Error("Session already stopped");
-    this.managed = await this.createAgentSession(this.options);
-    this.session = this.managed.session;
-    this.unsubscribe = this.session.subscribe((event) => {
-      const agentEvent = event as AgentSessionEvent;
-      const jsonEvent = toJsonSessionEvent(agentEvent);
-      for (const listener of this.listeners) listener(jsonEvent);
-      // Undelivered steers are dropped when the run ends (ADR-083); delivered
-      // steers were already removed from the queue at their `message_start`,
-      // and Pi emits a final `queue_update` with the emptied queue.
-      if (agentEvent.type === "agent_settled") this.session?.clearQueue();
-    });
+    this.startPending = true;
+    try {
+      this.managed = await this.createAgentSession(this.options);
+      this.session = this.managed.session;
+      this.coordinatorUnsubscribe = this.managed.coordinator.subscribe((event) => {
+        for (const listener of this.listeners) listener(event);
+      });
+      this.unsubscribe = this.session.subscribe((event) => {
+        const agentEvent = event as AgentSessionEvent;
+        if (isHiddenStatusEvent(agentEvent)) return;
+        const jsonEvent = toJsonSessionEvent(agentEvent);
+        for (const listener of this.listeners) listener(jsonEvent);
+      });
+    } finally {
+      this.startPending = false;
+    }
   }
 
   async stop(): Promise<void> {
@@ -354,19 +370,21 @@ class DirectSessionAdapter implements SessionAdapter {
       this.stopped = true;
       return;
     }
-    this.sessionAbortRequired ??= session.isStreaming;
     const supervisor = this.managed?.supervisor;
+    this.stopPending = true;
     let tracked!: Promise<void>;
     tracked = runCleanupSteps([
-      async () => {
-        if (!this.sessionAbortRequired || this.sessionAbortComplete) return;
-        await session.abort();
-        this.sessionAbortComplete = true;
-      },
+      () => this.cleanupTree("Paper Assistant session stopped."),
       async () => {
         if (!supervisor || this.supervisorDisposeComplete) return;
         await supervisor.dispose();
         this.supervisorDisposeComplete = true;
+      },
+      () => {
+        if (this.coordinatorUnsubscribeComplete) return;
+        this.coordinatorUnsubscribe?.();
+        this.coordinatorUnsubscribe = undefined;
+        this.coordinatorUnsubscribeComplete = true;
       },
       () => {
         if (this.unsubscribeComplete) return;
@@ -389,7 +407,9 @@ class DirectSessionAdapter implements SessionAdapter {
         if (this.stopPromise === tracked) this.stopPromise = undefined;
         throw error;
       },
-    );
+    ).finally(() => {
+      this.stopPending = false;
+    });
     this.stopPromise = tracked;
     return tracked;
   }
@@ -434,13 +454,8 @@ class DirectSessionAdapter implements SessionAdapter {
   }
 
   async abort(): Promise<void> {
-    // Stop cancels undelivered steers (ADR-083): clear the queue before
-    // unwinding the run so a not-yet-inserted steer never reaches context.
-    // The trailing queue_update(empty) also clears the Web footer; the
-    // agent_settled clearQueue remains as a backstop.
-    const session = this.requiredSession();
-    session.clearQueue();
-    await session.abort();
+    this.requiredSession();
+    await this.cleanupTree("Paper Assistant stopped.");
   }
 
   async setModel(provider: string, modelId: string): Promise<void> {
@@ -470,7 +485,7 @@ class DirectSessionAdapter implements SessionAdapter {
   }
 
   async getMessages(): Promise<AgentMessage[]> {
-    return [...this.requiredSession().messages];
+    return this.requiredSession().messages.filter((message) => !isHiddenStatusMessage(message));
   }
 
   async getCommands(): Promise<WebSlashCommand[]> {
@@ -511,9 +526,79 @@ class DirectSessionAdapter implements SessionAdapter {
     return this.requiredSession().getSteeringMessages();
   }
 
+  hasBackgroundWork(): boolean {
+    if (this.startPending || this.treeCleanupPending || this.stopPending) return true;
+    const supervisor = this.managed?.supervisor;
+    if (!supervisor) return false;
+    try {
+      return !supervisor.isQuiescent();
+    } catch {
+      return true;
+    }
+  }
+
   private requiredSession(): InProcessAgentSession {
     if (!this.session) throw new Error("Session has not started");
     if (this.stopRequested) throw new Error("Session has stopped");
     return this.session;
   }
+
+  private cleanupTree(reason: string): Promise<void> {
+    if (this.treeCleanupPromise) return this.treeCleanupPromise;
+    const session = this.session;
+    const managed = this.managed;
+    if (!session || !managed) return Promise.resolve();
+
+    this.treeCleanupPending = true;
+    let tracked!: Promise<void>;
+    tracked = runCleanupSteps([
+      () => {
+        if (this.coordinatorClosingComplete) return;
+        managed.coordinator.beginClosing();
+        this.coordinatorClosingComplete = true;
+      },
+      () => {
+        if (this.queueClearComplete) return;
+        session.clearQueue();
+        this.queueClearComplete = true;
+      },
+      async () => {
+        if (this.sessionAbortComplete) return;
+        await session.abort();
+        this.sessionAbortComplete = true;
+      },
+      async () => {
+        if (this.supervisorAbortComplete) return;
+        await managed.supervisor.abortAll(reason);
+        this.supervisorAbortComplete = true;
+      },
+      async () => {
+        if (this.notificationFlushComplete) return;
+        await managed.supervisor.flushNotifications({ triggerTurn: false });
+        this.notificationFlushComplete = true;
+      },
+    ], "Paper Assistant tree cleanup failed.").catch((error) => {
+      if (this.treeCleanupPromise === tracked) this.treeCleanupPromise = undefined;
+      throw error;
+    }).finally(() => {
+      this.treeCleanupPending = false;
+    });
+    this.treeCleanupPromise = tracked;
+    return tracked;
+  }
+}
+
+function isHiddenStatusMessage(value: unknown): boolean {
+  return value !== null
+    && typeof value === "object"
+    && "customType" in value
+    && value.customType === AGENT_STATUS_TYPE;
+}
+
+function isHiddenStatusEvent(event: AgentSessionEvent): boolean {
+  if (event.type === "message_start" || event.type === "message_end") {
+    return isHiddenStatusMessage(event.message);
+  }
+  if (event.type === "entry_appended") return isHiddenStatusMessage(event.entry);
+  return false;
 }

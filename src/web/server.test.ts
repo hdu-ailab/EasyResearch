@@ -113,6 +113,10 @@ class FakeAdapter implements SessionAdapter {
   getSteeringMessages(): readonly string[] {
     return this.steeringResult;
   }
+  backgroundWork = false;
+  hasBackgroundWork(): boolean {
+    return this.backgroundWork;
+  }
   commandsResult: WebSlashCommand[] = [];
   treeResult: { tree: SessionTreeNode[]; leafId: string | null } = { tree: [], leafId: null };
   navigateCalls: string[] = [];
