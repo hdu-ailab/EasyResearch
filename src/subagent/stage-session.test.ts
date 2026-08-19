@@ -109,6 +109,8 @@ class FakeStageSession implements StageAgentSession {
   bindError?: Error;
   abortImpl: () => Promise<void> = async () => {};
   promptStart?: () => void;
+  waitForIdleCalls = 0;
+  waitForIdleImpl: () => Promise<void> = async () => {};
   readonly listeners = new Set<(event: unknown) => void>();
 
   constructor(
@@ -146,6 +148,11 @@ class FakeStageSession implements StageAgentSession {
     this.promptCalls.push(message);
     this.promptStart?.();
     return this.promptPromise;
+  }
+
+  async waitForIdle(): Promise<void> {
+    this.waitForIdleCalls += 1;
+    await this.waitForIdleImpl();
   }
 
   async abort(): Promise<void> {
@@ -354,6 +361,34 @@ describe("createStageSessionLauncher", () => {
     await handle.dispose();
     expect(harness.supervisors[0]?.disposeCalls).toBe(1);
     expect(session.disposeCalls).toBe(1);
+  });
+
+  it("waits for a nested completion-triggered turn to become idle before stage completion", async () => {
+    const prompt = deferred<void>();
+    const nestedQuiescence = deferred<void>();
+    const resultingTurn = deferred<void>();
+    const session = new FakeStageSession("writing-child", join(root, "writing-child.jsonl"), prompt.promise);
+    session.waitForIdleImpl = () => resultingTurn.promise;
+    const harness = dependencyHarness(session);
+    const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
+    const handle = await createStageSessionLauncher(harness.dependencies)(stageOptions(coordinator));
+    harness.supervisors[0]!.waitForQuiescenceImpl = () => nestedQuiescence.promise;
+
+    session.emitAssistantEndAndPersist("initial writing turn settled");
+    await handle.materialized;
+    prompt.resolve();
+    expect(await isSettled(handle.completion)).toBe(false);
+
+    nestedQuiescence.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const waitForIdleCalls = session.waitForIdleCalls;
+    const completedBeforeResultingTurn = await isSettled(handle.completion);
+    resultingTurn.resolve();
+    await handle.completion;
+    await handle.dispose();
+
+    expect(waitForIdleCalls).toBe(1);
+    expect(completedBeforeResultingTurn).toBe(false);
   });
 
   it("publishes only delta-shaped child events", async () => {

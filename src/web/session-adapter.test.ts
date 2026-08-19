@@ -396,6 +396,7 @@ describe("createPiAgentSessionCreator", () => {
     const controls = {
       supervisorDispose: async (): Promise<void> => {},
       prepareSession: (_session: FakeAgentSession): void => {},
+      recover: async (): Promise<void> => {},
     };
     const assistant: AgentConfig = {
       name: "paper-assistant",
@@ -446,6 +447,10 @@ describe("createPiAgentSessionCreator", () => {
         coordinators.push(coordinator);
         calls.push({ name: "coordinator", value: coordinator });
         return coordinator;
+      },
+      recoverSubagentTree: async (options: { coordinator: unknown; expectedCwd: string }) => {
+        calls.push({ name: "recovery", value: options });
+        await controls.recover();
       },
       createDirectChildSupervisor: (coordinator: unknown) => {
         const supervisor = {
@@ -572,6 +577,30 @@ describe("createPiAgentSessionCreator", () => {
       sessionManager: { kind: "open", value: "/sessions/old.jsonl" },
     });
     expect(harness.createdOptions[0]).not.toHaveProperty("thinkingLevel");
+  });
+
+  it("finishes recovery before a resumed root constructs extensions or accepts work", async () => {
+    const harness = creatorHarness();
+    let releaseRecovery!: () => void;
+    const recoveryGate = new Promise<void>((resolve) => {
+      releaseRecovery = resolve;
+    });
+    harness.controls.recover = () => recoveryGate;
+    const creator = createPiAgentSessionCreator(harness.deps as never);
+
+    const creating = creator({ cwd: "/project", sessionPath: "/sessions/old.jsonl" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(harness.calls.map(({ name }) => name)).toEqual([
+      "session-manager",
+      "coordinator",
+      "recovery",
+    ]);
+    releaseRecovery();
+    await creating;
+    const order = harness.calls.map(({ name }) => name);
+    expect(order.indexOf("recovery")).toBeLessThan(order.indexOf("extensions"));
+    expect(order.indexOf("recovery")).toBeLessThan(order.indexOf("bind-extensions"));
   });
 
   it("never shares coordinator, supervisor, or extension state between root runtimes", async () => {

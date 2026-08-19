@@ -3,6 +3,7 @@ import type { AgentSessionEvent, JsonAgentSessionEvent } from "@earendil-works/p
 import { runCleanupSteps } from "../runtime/cleanup";
 import { type ReservedDispatch, SubagentCoordinator } from "./coordinator";
 import type { SubagentJobIdentity, SubagentLaunchDetails } from "./contracts";
+import type { NotificationBatchRecord } from "./job-journal";
 import {
   AGENT_STATUS_TYPE,
   formatTerminalNotification,
@@ -20,6 +21,7 @@ export interface SupervisableAgentSession {
   readonly sessionId: string;
   readonly sessionFile: string | undefined;
   readonly isStreaming: boolean;
+  readonly sessionManager: { getEntries(): unknown[] };
   subscribe(listener: (event: AgentSessionEvent) => void): () => void;
   sendCustomMessage(
     message: { customType: string; content: string; display: boolean; details?: unknown },
@@ -138,7 +140,7 @@ export class SubagentSupervisor {
   private readonly children = new Map<string, OwnedChild>();
   private readonly quiescenceWaiters = new Set<QuiescenceWaiter>();
   private readonly cleanupFailures = new Map<string, unknown>();
-  private readonly finalizedUnacknowledgedLaunchIds = new Set<string>();
+  private readonly pendingAcknowledgementChecks = new Set<string>();
   private parent?: SupervisableAgentSession;
   private parentSubscription?: () => void;
   private sendPromise?: Promise<void>;
@@ -181,7 +183,7 @@ export class SubagentSupervisor {
           job.ownerSessionId !== this.parent?.sessionId
           || job.toolCallId !== event.toolCallId
           || job.launchAcknowledged
-          || this.finalizedUnacknowledgedLaunchIds.has(job.launchId)
+          || job.terminalSuppressed
           || job.status === "pre_materialization_failed"
           || !job.childSessionId
         ) continue;
@@ -210,9 +212,9 @@ export class SubagentSupervisor {
       (batch) => batch.batchId === batchId && batch.ownerSessionId === this.parent!.sessionId,
     );
     if (!pending) return;
-    this.coordinator.acknowledgeNotification(batchId);
-    if (this.hasDeliverableOutcomes()) this.scheduleNotification();
-    this.stateChanged();
+    if (!this.acknowledgePersistedNotification(pending)) {
+      this.scheduleAcknowledgementCheck(batchId);
+    }
   }
 
   async launch(
@@ -347,6 +349,7 @@ export class SubagentSupervisor {
     );
     for (const job of state.jobs.values()) {
       if (job.ownerSessionId !== ownerSessionId || !job.terminalStatus) continue;
+      if (job.terminalSuppressed) continue;
       if (!job.launchAcknowledged) {
         if (!this.closing) return true;
         continue;
@@ -684,7 +687,7 @@ export class SubagentSupervisor {
       && child.terminalRecorded
       && !this.isLaunchAcknowledged(child)
     ) {
-      this.finalizedUnacknowledgedLaunchIds.add(child.reservation.launchId);
+      this.coordinator.recordLaunchSuppressed(child.reservation.launchId);
     }
     if (child.materialization === "failed" || child.terminalPublished || this.closing) this.removeChild(child);
   }
@@ -731,6 +734,7 @@ export class SubagentSupervisor {
         job.ownerSessionId !== ownerSessionId
         || !job.launchAcknowledged
         || !job.terminalStatus
+        || job.terminalSuppressed
         || !job.sessionPath
         || pendingLaunchIds.has(job.launchId)
         || state.acknowledgedNotificationLaunchIds.has(job.launchId)
@@ -762,7 +766,10 @@ export class SubagentSupervisor {
       if (outcomes.length === 0) return;
       const state = this.coordinator.journal();
       const workingAgentIds = [...state.jobs.values()]
-        .filter((job) => job.ownerSessionId === parent.sessionId && job.status === "working")
+        .filter((job) =>
+          job.ownerSessionId === parent.sessionId
+          && job.status === "working"
+          && !job.terminalSuppressed)
         .map((job) => job.agentId);
       const content = formatTerminalNotification({ time: this.now(), workingAgentIds, outcomes });
       const batchId = this.nextBatchId();
@@ -798,6 +805,43 @@ export class SubagentSupervisor {
       ) return batchId;
     }
     throw new Error("Could not allocate a unique subagent notification batch id.");
+  }
+
+  private acknowledgePersistedNotification(batch: NotificationBatchRecord): boolean {
+    const parent = this.parent;
+    if (!parent) return false;
+    let persisted = false;
+    try {
+      persisted = parent.sessionManager.getEntries().some((entry) => {
+        if (!isObject(entry) || notificationBatchId(entry) !== batch.batchId) return false;
+        return entry.content === batch.content && entry.display === false;
+      });
+    } catch {
+      return false;
+    }
+    if (!persisted) return false;
+    const stillPending = this.coordinator.journal().pendingBatches.some(
+      (candidate) => candidate.batchId === batch.batchId && candidate.ownerSessionId === batch.ownerSessionId,
+    );
+    if (!stillPending) return true;
+    this.coordinator.acknowledgeNotification(batch.batchId);
+    if (this.hasDeliverableOutcomes()) this.scheduleNotification();
+    this.stateChanged();
+    return true;
+  }
+
+  private scheduleAcknowledgementCheck(batchId: string): void {
+    if (this.pendingAcknowledgementChecks.has(batchId)) return;
+    this.pendingAcknowledgementChecks.add(batchId);
+    queueMicrotask(() => {
+      this.pendingAcknowledgementChecks.delete(batchId);
+      const ownerSessionId = this.parent?.sessionId;
+      if (!ownerSessionId) return;
+      const pending = this.coordinator.journal().pendingBatches.find(
+        (batch) => batch.batchId === batchId && batch.ownerSessionId === ownerSessionId,
+      );
+      if (pending) this.acknowledgePersistedNotification(pending);
+    });
   }
 
   private stateChanged(): void {

@@ -73,6 +73,7 @@ export interface StageAgentSession {
   getAllTools(): Array<{ name: string }>;
   setActiveToolsByName(names: string[]): void;
   prompt(message: string): Promise<void>;
+  waitForIdle(): Promise<void>;
   sendCustomMessage(
     message: { customType: string; content: string; display: boolean; details?: unknown },
     options: { deliverAs: "steer"; triggerTurn: boolean },
@@ -335,6 +336,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
               if (error !== undefined) throw error;
             },
             () => supervisor!.waitForQuiescence(),
+            () => session!.waitForIdle(),
           ], "Stage completion failed.");
         } catch (finishError) {
           completionFailed = true;

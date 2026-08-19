@@ -41,6 +41,14 @@ const searchAgent: AgentConfig = {
   subagents: [],
 };
 
+const figuresAgent: AgentConfig = {
+  ...searchAgent,
+  name: "figures",
+  description: "Figures",
+  filePath: "/agents/figures.md",
+  systemPrompt: "Create figures carefully.",
+};
+
 function assistant(text: string): Extract<AgentMessage, { role: "assistant" }> {
   return {
     role: "assistant",
@@ -110,16 +118,22 @@ interface SentMessage {
 }
 
 class FakeParentSession implements SupervisableAgentSession {
-  readonly sessionId = "parent";
-  readonly sessionFile = "/sessions/parent.jsonl";
+  readonly sessionFile: string;
   isStreaming = false;
   readonly sent: SentMessage[] = [];
+  readonly persistedEntries: unknown[] = [];
+  readonly sessionManager = { getEntries: () => this.persistedEntries };
   readonly listeners = new Set<(event: AgentSessionEvent) => void>();
   abortCalls = 0;
   disposeCalls = 0;
   sendImpl?: (sent: SentMessage, index: number) => Promise<void>;
 
-  constructor(private readonly autoAcknowledge = false) {}
+  constructor(
+    private readonly autoAcknowledge = false,
+    readonly sessionId = "parent",
+  ) {
+    this.sessionFile = `/sessions/${sessionId}.jsonl`;
+  }
 
   subscribe(listener: (event: AgentSessionEvent) => void): () => void {
     this.listeners.add(listener);
@@ -133,9 +147,7 @@ class FakeParentSession implements SupervisableAgentSession {
     const sent = { message, options };
     this.sent.push(sent);
     await this.sendImpl?.(sent, this.sent.length - 1);
-    if (this.autoAcknowledge) {
-      this.emit({ type: "message_end", message: { role: "custom", ...message, timestamp: 1 } } as AgentSessionEvent);
-    }
+    if (this.autoAcknowledge) this.acknowledgeLastMessage();
   }
 
   async abort(): Promise<void> {
@@ -157,7 +169,28 @@ class FakeParentSession implements SupervisableAgentSession {
   acknowledgeLastMessage(): void {
     const sent = this.sent.at(-1);
     if (!sent) throw new Error("No notification was sent.");
+    const entry = {
+      type: "custom_message",
+      id: `custom-${this.persistedEntries.length}`,
+      parentId: null,
+      timestamp: "2026-08-19T00:00:00.000Z",
+      ...sent.message,
+    };
+    this.persistedEntries.push(entry);
     this.emit({ type: "message_end", message: { role: "custom", ...sent.message, timestamp: 1 } } as AgentSessionEvent);
+  }
+
+  acknowledgeLastMessageBeforePersistence(): void {
+    const sent = this.sent.at(-1);
+    if (!sent) throw new Error("No notification was sent.");
+    this.emit({ type: "message_end", message: { role: "custom", ...sent.message, timestamp: 1 } } as AgentSessionEvent);
+    this.persistedEntries.push({
+      type: "custom_message",
+      id: `custom-${this.persistedEntries.length}`,
+      parentId: null,
+      timestamp: "2026-08-19T00:00:00.000Z",
+      ...sent.message,
+    });
   }
 }
 
@@ -223,12 +256,13 @@ function options(task = "find papers", cwd = "/exact/project") {
 function makeHarness(input: {
   launchStage: (reservation: ReservedDispatch) => Promise<StageLaunchHandle>;
   autoAcknowledge?: boolean;
+  parentSessionId?: string;
   schedule?: (run: () => void) => void;
   createId?: () => string;
 }) {
   const manager = new MemorySessionManager();
   const coordinator = new SubagentCoordinator(manager);
-  const parent = new FakeParentSession(input.autoAcknowledge);
+  const parent = new FakeParentSession(input.autoAcknowledge, input.parentSessionId);
   let batchSequence = 0;
   const supervisor = new SubagentSupervisor({
     coordinator,
@@ -656,6 +690,45 @@ describe("SubagentSupervisor ownership and launch ordering", () => {
     expect([first.disposeCalls, second.disposeCalls]).toEqual([1, 1]);
   });
 
+  it("routes a nested Figures terminal handoff to its immediate Writing owner", async () => {
+    const stage = new FakeStage("figures_0", "figures-child", "/sessions/figures-child.jsonl");
+    const root = new FakeParentSession(true, "root");
+    const { coordinator, parent: writing, supervisor } = makeHarness({
+      launchStage: async () => stage.handle,
+      autoAcknowledge: true,
+      parentSessionId: "writing-child",
+    });
+    const events: SubagentSupervisorEvent[] = [];
+    coordinator.subscribe((event) => events.push(event));
+    const reservation = coordinator.reserveDispatch({
+      ownerSessionId: "writing-child",
+      toolCallId: "nested-tool",
+      requested: "figures",
+      catalog: { all: [figuresAgent], available: [figuresAgent] },
+    });
+
+    const launching = supervisor.launch(reservation, {
+      ...options("prepare publication figure"),
+      agent: figuresAgent,
+    });
+    stage.materialization.resolve();
+    await launching;
+    writing.acknowledgeLaunch("nested-tool");
+    stage.completion.resolve(result("status: complete\nartifacts: figures/model.drawio", {
+      agent: "figures",
+      agentId: "figures_0",
+    }));
+    await supervisor.waitForQuiescence();
+
+    expect(events.at(-1)).toMatchObject({
+      ownerSessionId: "writing-child",
+      agentId: "figures_0",
+      status: "complete",
+    });
+    expect(writing.sent[0]?.message.content).toContain("Complete subagent:figures_0");
+    expect(root.sent).toEqual([]);
+  });
+
   it("uses the latest non-empty assistant text for the terminal handoff", async () => {
     const stage = new FakeStage("search_0", "child-0", "/sessions/child-0.jsonl");
     const { coordinator, parent, supervisor } = makeHarness({
@@ -865,6 +938,29 @@ describe("SubagentSupervisor notification acknowledgement", () => {
     await supervisor.waitForQuiescence();
   });
 
+  it("journals acknowledgement only after the matching live hidden batch is persisted", async () => {
+    const stage = new FakeStage("search_0", "child-0", "/sessions/child-0.jsonl");
+    const { coordinator, parent, supervisor } = makeHarness({
+      launchStage: async () => stage.handle,
+      schedule: () => {},
+    });
+    const reservation = reserve(coordinator, "tool-0");
+    const launching = supervisor.launch(reservation, options());
+    stage.materialization.resolve();
+    await launching;
+    parent.acknowledgeLaunch("tool-0");
+    stage.completion.resolve(result());
+    await turn();
+    await supervisor.flushNotifications();
+
+    parent.acknowledgeLastMessageBeforePersistence();
+    expect(coordinator.journal().pendingBatches).toHaveLength(1);
+    await turn();
+
+    expect(coordinator.journal().pendingBatches).toEqual([]);
+    await supervisor.waitForQuiescence();
+  });
+
   it("recognizes persisted custom-message acknowledgement", async () => {
     const stage = new FakeStage("search_0", "child-0", "/sessions/child-0.jsonl");
     const { coordinator, parent, supervisor } = makeHarness({
@@ -881,15 +977,17 @@ describe("SubagentSupervisor notification acknowledgement", () => {
     await supervisor.flushNotifications();
     const sent = parent.sent[0]!;
 
+    const persistedEntry = {
+      type: "custom_message" as const,
+      id: "custom-0",
+      parentId: null,
+      timestamp: "2026-08-19T00:00:00.000Z",
+      ...sent.message,
+    };
+    parent.persistedEntries.push(persistedEntry);
     parent.emit({
       type: "entry_appended",
-      entry: {
-        type: "custom_message",
-        id: "custom-0",
-        parentId: null,
-        timestamp: "2026-08-19T00:00:00.000Z",
-        ...sent.message,
-      },
+      entry: persistedEntry,
     } as AgentSessionEvent);
 
     expect(supervisor.hasPendingNotifications()).toBe(false);
@@ -1246,6 +1344,50 @@ describe("SubagentSupervisor recursive abort", () => {
     expect(parent.listeners.size).toBe(0);
   });
 
+  it("recovers durable Stop suppression before observing a delayed launch acknowledgement", async () => {
+    const stage = new FakeStage("search_0", "child-0", "/sessions/reopened-suppressed-child.jsonl");
+    stage.abortImpl = async () => {
+      stage.completion.resolve(result("suppressed partial", {
+        exitCode: 1,
+        wasAborted: true,
+        errorMessage: "stopped before acknowledgement",
+        stderr: "stopped before acknowledgement",
+      }));
+    };
+    const { manager, coordinator, supervisor } = makeHarness({
+      launchStage: async () => stage.handle,
+      schedule: () => {},
+    });
+    const reservation = reserve(coordinator, "tool-0");
+    const launching = supervisor.launch(reservation, options());
+    stage.materialization.resolve();
+    await launching;
+    await supervisor.abortAll("stop before launch acknowledgement");
+    await supervisor.dispose();
+
+    const reopenedCoordinator = new SubagentCoordinator(manager);
+    const reopenedParent = new FakeParentSession(false);
+    const reopenedSupervisor = new SubagentSupervisor({
+      coordinator: reopenedCoordinator,
+      launchStage: async () => { throw new Error("not used"); },
+      schedule: () => {},
+    });
+    reopenedSupervisor.attach(reopenedParent);
+    const entryCount = manager.entries.length;
+
+    reopenedParent.acknowledgeLaunch("tool-0");
+    await turn();
+
+    expect(manager.entries).toHaveLength(entryCount);
+    expect(reopenedCoordinator.journal().jobs.get(reservation.launchId)).toMatchObject({
+      launchAcknowledged: false,
+      terminalStatus: "error",
+      terminalSuppressed: true,
+    });
+    expect(reopenedParent.sent).toEqual([]);
+    await reopenedSupervisor.dispose();
+  });
+
   it("retries a failed closing dispose send without repeating child work or replacing the frozen batch", async () => {
     const stage = new FakeStage("search_0", "child-0", "/sessions/retry-child.jsonl");
     stage.abortImpl = async () => {
@@ -1442,10 +1584,7 @@ describe("SubagentSupervisor recursive abort", () => {
     expect.soft(stopped).toBe(false);
     expect.soft(coordinator.journal().pendingBatches.map(({ batchId }) => batchId)).toEqual([closingBatchId]);
 
-    parent.emit({
-      type: "message_end",
-      message: { role: "custom", ...closingMessage.message, timestamp: 2 },
-    } as AgentSessionEvent);
+    parent.acknowledgeLastMessage();
     await aborting;
     expect(stopped).toBe(true);
     expect(supervisor.isQuiescent()).toBe(true);

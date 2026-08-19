@@ -6,7 +6,8 @@ export type SubagentJobJournalRecord =
   | { kind: "materialized"; launchId: string }
   | { kind: "launch_acknowledged"; launchId: string; acknowledgedAt: string }
   | { kind: "pre_materialization_failed"; launchId: string; reason: string; failedAt: string }
-  | { kind: "terminal"; launchId: string; status: "complete" | "error"; latestAssistantText?: string; errorMessage?: string; finishedAt: string }
+  | { kind: "terminal"; launchId: string; status: "complete" | "error"; latestAssistantText?: string; errorMessage?: string; recovered?: boolean; finishedAt: string }
+  | { kind: "launch_suppressed"; launchId: string; suppressedAt: string }
   | { kind: "notification_batch"; batchId: string; ownerSessionId: string; launchIds: string[]; content: string; createdAt: string }
   | { kind: "notification_ack"; batchId: string; acknowledgedAt: string }
   | { kind: "notification_superseded"; batchId: string; supersededAt: string };
@@ -24,6 +25,8 @@ export interface InternalSubagentJob {
   sessionPath?: string;
   launchAcknowledged: boolean;
   terminalStatus?: "complete" | "error";
+  terminalRecovered?: boolean;
+  terminalSuppressed?: boolean;
   latestAssistantText?: string;
   errorMessage?: string;
 }
@@ -54,6 +57,10 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isOptionalString(value: unknown): value is string | undefined {
   return value === undefined || typeof value === "string";
+}
+
+function isOptionalBoolean(value: unknown): value is boolean | undefined {
+  return value === undefined || typeof value === "boolean";
 }
 
 function readRecord(entry: unknown): SubagentJobJournalRecord | undefined {
@@ -102,6 +109,7 @@ function readRecord(entry: unknown): SubagentJobJournalRecord | undefined {
         || (data.status !== "complete" && data.status !== "error")
         || !isOptionalString(data.latestAssistantText)
         || !isOptionalString(data.errorMessage)
+        || !isOptionalBoolean(data.recovered)
         || !isNonEmptyString(data.finishedAt)
       ) return undefined;
       return {
@@ -110,8 +118,12 @@ function readRecord(entry: unknown): SubagentJobJournalRecord | undefined {
         status: data.status,
         ...(data.latestAssistantText === undefined ? {} : { latestAssistantText: data.latestAssistantText }),
         ...(data.errorMessage === undefined ? {} : { errorMessage: data.errorMessage }),
+        ...(data.recovered === undefined ? {} : { recovered: data.recovered }),
         finishedAt: data.finishedAt,
       };
+    case "launch_suppressed":
+      if (!isNonEmptyString(data.launchId) || !isNonEmptyString(data.suppressedAt)) return undefined;
+      return { kind: data.kind, launchId: data.launchId, suppressedAt: data.suppressedAt };
     case "notification_batch":
       if (
         !isNonEmptyString(data.batchId)
@@ -210,6 +222,7 @@ export function readSubagentJournal(entries: readonly unknown[]): SubagentJourna
         jobs.set(record.launchId, { ...job, status: "working" });
         break;
       case "launch_acknowledged":
+        if (job.terminalSuppressed) break;
         jobs.set(record.launchId, {
           ...job,
           launchAcknowledged: true,
@@ -224,13 +237,18 @@ export function readSubagentJournal(entries: readonly unknown[]): SubagentJourna
         });
         break;
       case "terminal":
+        const recovered = record.recovered === true || job.terminalRecovered === true;
         jobs.set(record.launchId, {
           ...job,
-          status: job.launchAcknowledged ? record.status : job.status,
+          status: job.launchAcknowledged || recovered ? record.status : job.status,
           terminalStatus: record.status,
+          ...(recovered ? { terminalRecovered: true } : {}),
           latestAssistantText: record.latestAssistantText,
           errorMessage: record.errorMessage,
         });
+        break;
+      case "launch_suppressed":
+        jobs.set(record.launchId, { ...job, terminalSuppressed: true });
         break;
     }
   }

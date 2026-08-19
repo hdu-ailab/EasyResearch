@@ -7,7 +7,11 @@ import { importPi } from "../runtime/pi-import";
 import { AGENT_ALIAS_ENTRY } from "../subagent/agent-alias";
 import { SUBAGENT_SESSION_LINK_ENTRY } from "../subagent/session-links";
 import type { SessionSnapshotDto, SubagentSessionSummaryDto } from "./contracts";
-import { SubagentSessionNotFoundError, SubagentSessionService } from "./subagent-sessions";
+import {
+  createSubagentRecoverySessionStore,
+  SubagentSessionNotFoundError,
+  SubagentSessionService,
+} from "./subagent-sessions";
 
 type Pi = Awaited<ReturnType<typeof importPi>>;
 type SessionManagerInstance = ReturnType<Pi["SessionManager"]["create"]>;
@@ -259,5 +263,83 @@ describe("SubagentSessionService", () => {
       "assistant",
     ]);
     expect(snapshot.messages[0]).toMatchObject({ content: "before compaction" });
+  });
+
+  it("inspects only an exact readable Pi path and returns its UUID, cwd, and latest assistant text", async () => {
+    const rootSession = createSession();
+    appendParentMessage(rootSession);
+    const child = createSession();
+    child.appendMessage(user("nested task"));
+    child.appendMessage(assistant("recoverable partial"));
+    const store = createSubagentRecoverySessionStore({
+      rootSession,
+      open: (path) => SessionManager.open(path),
+    });
+
+    await expect(store.inspect(child.getSessionFile()!)).resolves.toEqual({
+      readable: true,
+      sessionId: child.getSessionId(),
+      cwd,
+      latestAssistantText: "recoverable partial",
+    });
+    await expect(store.inspect(join(sessionDir, "missing.jsonl"))).resolves.toEqual({ readable: false });
+  });
+
+  it("persists one exact hidden recovery batch and treats an already-readable insertion as acknowledged", async () => {
+    const rootSession = createSession();
+    appendParentMessage(rootSession);
+    const path = rootSession.getSessionFile()!;
+    const store = createSubagentRecoverySessionStore({
+      rootSession,
+      open: (candidate) => SessionManager.open(candidate),
+    });
+    const message = {
+      customType: "easyresearch:agent_status",
+      content: "hidden recovery handoff",
+      display: false as const,
+      details: { batchId: "recovery-batch" },
+    };
+
+    await store.appendHiddenMessage(path, message);
+    await store.appendHiddenMessage(path, message);
+
+    const reopened = SessionManager.open(path);
+    expect(reopened.getEntries().filter((entry) =>
+      entry.type === "custom_message"
+      && entry.customType === message.customType
+      && (entry.details as { batchId?: unknown } | undefined)?.batchId === message.details.batchId)).toHaveLength(1);
+  });
+
+  it("rejects a nested owner path whose UUID changes after recovery inspection", async () => {
+    const rootSession = createSession();
+    appendParentMessage(rootSession);
+    const owner = createSession();
+    owner.appendMessage(user("nested owner"));
+    owner.appendMessage(assistant("owner reply"));
+    const ownerPath = owner.getSessionFile()!;
+    const store = createSubagentRecoverySessionStore({
+      rootSession,
+      open: (path) => SessionManager.open(path),
+    });
+    await expect(store.inspect(ownerPath)).resolves.toMatchObject({
+      readable: true,
+      sessionId: owner.getSessionId(),
+      cwd,
+    });
+    writeFileSync(ownerPath, `${JSON.stringify({
+      type: "session",
+      version: 3,
+      id: "replacement-owner",
+      timestamp: "2026-08-19T00:00:00.000Z",
+      cwd,
+    })}\n`, "utf8");
+
+    await expect(store.appendHiddenMessage(ownerPath, {
+      customType: "easyresearch:agent_status",
+      content: "must not enter replacement",
+      display: false,
+      details: { batchId: "replacement-batch" },
+    })).rejects.toThrow(/UUID|identity|changed/i);
+    expect(SessionManager.open(ownerPath).getEntries()).toEqual([]);
   });
 });

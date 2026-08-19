@@ -140,6 +140,8 @@ class MemorySessionManager implements CoordinatorSessionManager {
 
 class FakeParentSession implements SupervisableAgentSession {
   readonly sessionFile: string;
+  readonly persistedEntries: unknown[] = [];
+  readonly sessionManager = { getEntries: () => this.persistedEntries };
   readonly listeners = new Set<(event: AgentSessionEvent) => void>();
   isStreaming = false;
 
@@ -156,6 +158,13 @@ class FakeParentSession implements SupervisableAgentSession {
     message: { customType: string; content: string; display: boolean; details?: unknown },
     _options: { deliverAs: "steer"; triggerTurn: boolean },
   ): Promise<void> {
+    this.persistedEntries.push({
+      type: "custom_message",
+      customType: message.customType,
+      content: message.content,
+      display: message.display,
+      details: message.details,
+    });
     this.emit({ type: "message_end", message: { role: "custom", ...message, timestamp: 1 } } as AgentSessionEvent);
   }
 

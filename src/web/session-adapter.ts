@@ -110,6 +110,7 @@ export interface PiRuntimeDependencies {
   createSessionManager(cwd: string): CoordinatorSessionManager;
   openSessionManager(path: string): CoordinatorSessionManager;
   createCoordinator(sessionManager: CoordinatorSessionManager): SubagentCoordinator;
+  recoverSubagentTree(options: { coordinator: SubagentCoordinator; expectedCwd: string }): Promise<void>;
   createDirectChildSupervisor(coordinator: SubagentCoordinator): SubagentSupervisor;
   createExtensionFactories(runtime: {
     coordinator: SubagentCoordinator;
@@ -138,6 +139,7 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
       ? deps.openSessionManager(options.sessionPath)
       : deps.createSessionManager(options.cwd);
     const coordinator = deps.createCoordinator(sessionManager);
+    await deps.recoverSubagentTree({ coordinator, expectedCwd: options.cwd });
     const supervisor = deps.createDirectChildSupervisor(coordinator);
     let session: BindableAgentSession | undefined;
     try {
@@ -238,8 +240,10 @@ export class PiSessionFactory implements SessionFactory {
     const { createAssistantExtensions } = await import("../extensions");
     const { discoverAgents, PAPER_ASSISTANT_AGENT } = await import("../subagent/agents");
     const { SubagentCoordinator } = await import("../subagent/coordinator");
+    const { recoverSubagentTree } = await import("../subagent/recovery");
     const { SubagentSupervisor } = await import("../subagent/supervisor");
     const { launchStageSession } = await import("../subagent/stage-session");
+    const { createSubagentRecoverySessionStore } = await import("./subagent-sessions");
     const { splitModelRef } = await import("./agent-models");
     const agentDir = getAgentDir();
     const creator = createPiAgentSessionCreator({
@@ -247,6 +251,16 @@ export class PiSessionFactory implements SessionFactory {
       createSessionManager: (cwd) => pi.SessionManager.create(cwd),
       openSessionManager: (path) => pi.SessionManager.open(path),
       createCoordinator: (sessionManager) => new SubagentCoordinator(sessionManager),
+      recoverSubagentTree: async ({ coordinator, expectedCwd }) => {
+        await recoverSubagentTree({
+          coordinator,
+          expectedCwd,
+          store: createSubagentRecoverySessionStore({
+            rootSession: coordinator.getRootSessionManager() as ReturnType<typeof pi.SessionManager.open>,
+            open: (path) => pi.SessionManager.open(path),
+          }),
+        });
+      },
       createDirectChildSupervisor: (coordinator) => new SubagentSupervisor({
         coordinator,
         launchStage: launchStageSession,

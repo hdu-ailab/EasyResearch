@@ -1,5 +1,7 @@
+import { readFileSync } from "node:fs";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { readAgentAliases } from "../subagent/agent-alias";
+import type { RecoverySessionStore } from "../subagent/recovery";
 import { readSubagentSessionLinks } from "../subagent/session-links";
 import type { ChildSessionSnapshotDto, SubagentSessionSummaryDto } from "./contracts";
 
@@ -9,6 +11,106 @@ interface ReadonlySubagentSession {
   getCwd(): string;
   getSessionName(): string | undefined;
   getBranch(): Array<{ type: string; message?: AgentMessage }>;
+}
+
+interface RecoverySessionManager extends ReadonlySubagentSession {
+  getSessionFile(): string | undefined;
+  appendCustomMessageEntry(
+    customType: string,
+    content: string,
+    display: boolean,
+    details?: unknown,
+  ): string;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function persistedBatch(
+  path: string,
+  expected: { customType: string; content: string; display: false; details: { batchId: string } },
+): "missing" | "matching" | "conflict" {
+  const text = readFileSync(path, "utf8");
+  let found = false;
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    const entry: unknown = JSON.parse(line);
+    if (!isObject(entry) || entry.type !== "custom_message" || !isObject(entry.details)) continue;
+    if (entry.details.batchId !== expected.details.batchId) continue;
+    found = true;
+    if (
+      entry.customType === expected.customType
+      && entry.content === expected.content
+      && entry.display === false
+    ) return "matching";
+  }
+  return found ? "conflict" : "missing";
+}
+
+export function createSubagentRecoverySessionStore(input: {
+  rootSession: RecoverySessionManager;
+  open(path: string): RecoverySessionManager;
+}): RecoverySessionStore {
+  const inspectedIdentities = new Map<string, { sessionId: string; cwd: string }>();
+  const rootPath = input.rootSession.getSessionFile();
+  if (rootPath) {
+    inspectedIdentities.set(rootPath, {
+      sessionId: input.rootSession.getSessionId(),
+      cwd: input.rootSession.getCwd(),
+    });
+  }
+  const openExact = (path: string): RecoverySessionManager => {
+    readFileSync(path);
+    const manager = rootPath === path ? input.rootSession : input.open(path);
+    if (manager.getSessionFile() !== path) {
+      throw new Error("SessionManager did not open the exact journaled path.");
+    }
+    return manager;
+  };
+
+  return {
+    async inspect(path) {
+      try {
+        const manager = openExact(path);
+        const latest = latestAssistantText(branchMessages(manager));
+        inspectedIdentities.set(path, {
+          sessionId: manager.getSessionId(),
+          cwd: manager.getCwd(),
+        });
+        return {
+          readable: true,
+          sessionId: manager.getSessionId(),
+          cwd: manager.getCwd(),
+          ...(latest === undefined ? {} : { latestAssistantText: latest }),
+        };
+      } catch {
+        return { readable: false };
+      }
+    },
+    async appendHiddenMessage(path, message) {
+      const expected = inspectedIdentities.get(path);
+      if (!expected) throw new Error("Recovery owner path was not inspected before insertion.");
+      const manager = openExact(path);
+      if (manager.getSessionId() !== expected.sessionId || manager.getCwd() !== expected.cwd) {
+        throw new Error("Recovery owner session UUID or cwd changed after inspection.");
+      }
+      const existing = persistedBatch(path, message);
+      if (existing === "matching") return;
+      if (existing === "conflict") {
+        throw new Error(`Recovery batch ${message.details.batchId} has conflicting persisted content.`);
+      }
+      manager.appendCustomMessageEntry(
+        message.customType,
+        message.content,
+        message.display,
+        message.details,
+      );
+      if (persistedBatch(path, message) !== "matching") {
+        throw new Error(`Recovery batch ${message.details.batchId} was not readable after insertion.`);
+      }
+    },
+  };
 }
 
 export interface SubagentSessionStore {

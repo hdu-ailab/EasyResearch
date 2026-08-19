@@ -192,7 +192,7 @@ export class SubagentCoordinator {
     this.append({ kind: "launch_acknowledged", launchId, acknowledgedAt: now() });
   }
 
-  recordPreMaterializationFailure(reservation: ReservedDispatch, error: unknown): void {
+  recordPreMaterializationFailure(reservation: Pick<ReservedDispatch, "launchId">, error: unknown): void {
     this.append({
       kind: "pre_materialization_failed",
       launchId: reservation.launchId,
@@ -201,15 +201,22 @@ export class SubagentCoordinator {
     });
   }
 
-  recordTerminal(input: { launchId: string; status: "complete" | "error"; latestAssistantText?: string; errorMessage?: string }): void {
+  recordTerminal(input: { launchId: string; status: "complete" | "error"; latestAssistantText?: string; errorMessage?: string; recovered?: boolean }): void {
     this.append({
       kind: "terminal",
       launchId: input.launchId,
       status: input.status,
       ...(input.latestAssistantText === undefined ? {} : { latestAssistantText: input.latestAssistantText }),
       ...(input.errorMessage === undefined ? {} : { errorMessage: input.errorMessage }),
+      ...(input.recovered === undefined ? {} : { recovered: input.recovered }),
       finishedAt: now(),
     });
+  }
+
+  recordLaunchSuppressed(launchId: string): void {
+    const job = this.journal().jobs.get(launchId);
+    if (!job || job.terminalSuppressed) return;
+    this.append({ kind: "launch_suppressed", launchId, suppressedAt: now() });
   }
 
   recordNotificationBatch(input: { batchId: string; ownerSessionId: string; launchIds: string[]; content: string }): void {
