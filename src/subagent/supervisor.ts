@@ -321,7 +321,10 @@ export class SubagentSupervisor {
     );
     for (const job of state.jobs.values()) {
       if (job.ownerSessionId !== ownerSessionId || !job.terminalStatus) continue;
-      if (!job.launchAcknowledged) return true;
+      if (!job.launchAcknowledged) {
+        if (!this.closing) return true;
+        continue;
+      }
       if (!pendingLaunchIds.has(job.launchId) && !state.acknowledgedNotificationLaunchIds.has(job.launchId)) return true;
     }
     return false;
@@ -358,7 +361,8 @@ export class SubagentSupervisor {
     }
     this.stateChanged();
 
-    this.abortPromise = (async () => {
+    let tracked!: Promise<void>;
+    tracked = (async () => {
       const owned = [...this.children.values()];
       await Promise.all(owned.map(async (child) => {
         try {
@@ -390,26 +394,39 @@ export class SubagentSupervisor {
       }
       const ownerSessionId = this.parent?.sessionId;
       if (!ownerSessionId) return;
-      for (const batch of this.coordinator.journal().pendingBatches) {
-        if (batch.ownerSessionId === ownerSessionId) this.coordinator.supersedeNotification(batch.batchId);
+      if (this.hasDeliverableOutcomes()) {
+        for (const batch of this.coordinator.journal().pendingBatches) {
+          if (batch.ownerSessionId === ownerSessionId) this.coordinator.supersedeNotification(batch.batchId);
+        }
       }
       await this.flushNotifications({ triggerTurn: false });
       await this.waitForQuiescence();
-    })().finally(() => this.stateChanged());
-    return this.abortPromise;
+    })()
+      .catch((error) => {
+        if (this.abortPromise === tracked) this.abortPromise = undefined;
+        throw error;
+      })
+      .finally(() => this.stateChanged());
+    this.abortPromise = tracked;
+    return tracked;
   }
 
   dispose(): Promise<void> {
     if (this.disposePromise) return this.disposePromise;
-    this.disposePromise = (async () => {
+    let tracked!: Promise<void>;
+    tracked = (async () => {
       if (!this.isQuiescent()) await this.abortAll("Subagent supervisor disposed.");
       this.parentSubscription?.();
       this.parentSubscription = undefined;
       this.parent = undefined;
       this.disposed = true;
       this.stateChanged();
-    })();
-    return this.disposePromise;
+    })().catch((error) => {
+      if (this.disposePromise === tracked) this.disposePromise = undefined;
+      throw error;
+    });
+    this.disposePromise = tracked;
+    return tracked;
   }
 
   private requireParent(): SupervisableAgentSession {

@@ -779,6 +779,102 @@ describe("SubagentSupervisor notification acknowledgement", () => {
 });
 
 describe("SubagentSupervisor recursive abort", () => {
+  it("settles a materialized but unacknowledged launch during closing without a terminal batch", async () => {
+    const stage = new FakeStage("search_0", "child-0", "/sessions/unacknowledged-child.jsonl");
+    stage.abortImpl = async () => {
+      stage.completion.resolve(result("unacknowledged partial", {
+        exitCode: 1,
+        wasAborted: true,
+        errorMessage: "stopped before acknowledgement",
+        stderr: "stopped before acknowledgement",
+      }));
+    };
+    const { coordinator, parent, supervisor } = makeHarness({
+      launchStage: async () => stage.handle,
+      schedule: () => {},
+    });
+    const events: SubagentSupervisorEvent[] = [];
+    coordinator.subscribe((event) => events.push(event));
+    const reservation = reserve(coordinator, "tool-0");
+    const launching = supervisor.launch(reservation, options());
+    stage.materialization.resolve();
+    await launching;
+
+    let stopped = false;
+    const aborting = supervisor.abortAll("stop before launch acknowledgement").then(() => {
+      stopped = true;
+    });
+    await turn();
+
+    expect(stopped).toBe(true);
+    await aborting;
+    expect(parent.sent).toEqual([]);
+    expect(events.some((event) => event.status === "complete" || event.status === "error")).toBe(false);
+    expect(supervisor.hasPendingNotifications()).toBe(false);
+    expect(supervisor.isQuiescent()).toBe(true);
+    expect(coordinator.journal().jobs.get(reservation.launchId)).toMatchObject({
+      status: "working",
+      terminalStatus: "error",
+      launchAcknowledged: false,
+    });
+    expect(() => reserve(coordinator, "tool-1", "search_0")).toThrow(/running/i);
+
+    await supervisor.dispose();
+    expect(parent.listeners.size).toBe(0);
+  });
+
+  it("retries a failed closing dispose send without repeating child work or replacing the frozen batch", async () => {
+    const stage = new FakeStage("search_0", "child-0", "/sessions/retry-child.jsonl");
+    stage.abortImpl = async () => {
+      stage.completion.resolve(result("retry partial", {
+        exitCode: 1,
+        wasAborted: true,
+        errorMessage: "disposed",
+        stderr: "disposed",
+      }));
+    };
+    const { coordinator, parent, supervisor } = makeHarness({
+      launchStage: async () => stage.handle,
+      autoAcknowledge: true,
+      schedule: () => {},
+    });
+    const events: SubagentSupervisorEvent[] = [];
+    coordinator.subscribe((event) => events.push(event));
+    parent.sendImpl = async (_sent, index) => {
+      if (index === 0) throw new Error("closing send failed");
+    };
+    const reservation = reserve(coordinator, "tool-0");
+    const launching = supervisor.launch(reservation, options());
+    stage.materialization.resolve();
+    await launching;
+    parent.acknowledgeLaunch("tool-0");
+
+    await expect(supervisor.dispose()).rejects.toThrow("closing send failed");
+    expect(parent.sent).toHaveLength(1);
+    expect(parent.sent[0]?.options).toEqual({ deliverAs: "steer", triggerTurn: false });
+    expect(coordinator.journal().pendingBatches).toEqual([
+      expect.objectContaining({ launchIds: [reservation.launchId] }),
+    ]);
+    expect(stage.abortCalls).toBe(1);
+    expect(stage.disposeCalls).toBe(1);
+    expect(events.filter((event) => event.status === "error")).toHaveLength(1);
+
+    await expect(supervisor.dispose()).resolves.toBeUndefined();
+    expect(parent.sent).toHaveLength(2);
+    expect(parent.sent[1]).toEqual(parent.sent[0]);
+    expect(stage.abortCalls).toBe(1);
+    expect(stage.disposeCalls).toBe(1);
+    expect(events.filter((event) => event.status === "error")).toHaveLength(1);
+    expect(coordinator.journal().pendingBatches).toEqual([]);
+    expect(coordinator.journal().acknowledgedNotificationLaunchIds).toContain(reservation.launchId);
+    expect(parent.listeners.size).toBe(0);
+
+    await supervisor.dispose();
+    expect(parent.sent).toHaveLength(2);
+    expect(stage.abortCalls).toBe(1);
+    expect(stage.disposeCalls).toBe(1);
+  });
+
   it("keeps parent acknowledgement observation until a closing batch is acknowledged", async () => {
     const stage = new FakeStage("search_0", "child-0", "/sessions/private-child.jsonl");
     stage.abortImpl = async () => {
