@@ -128,6 +128,7 @@ export class SubagentSupervisor {
   private readonly schedule: (run: () => void) => void;
   private readonly children = new Map<string, OwnedChild>();
   private readonly quiescenceWaiters = new Set<() => void>();
+  private readonly finalizedUnacknowledgedLaunchIds = new Set<string>();
   private parent?: SupervisableAgentSession;
   private parentSubscription?: () => void;
   private sendPromise?: Promise<void>;
@@ -136,6 +137,7 @@ export class SubagentSupervisor {
   private disposed = false;
   private abortPromise?: Promise<void>;
   private disposePromise?: Promise<void>;
+  private closingBatchId?: string;
 
   constructor(options: {
     coordinator: SubagentCoordinator;
@@ -169,6 +171,7 @@ export class SubagentSupervisor {
           job.ownerSessionId !== this.parent?.sessionId
           || job.toolCallId !== event.toolCallId
           || job.launchAcknowledged
+          || this.finalizedUnacknowledgedLaunchIds.has(job.launchId)
           || job.status === "pre_materialization_failed"
           || !job.childSessionId
         ) continue;
@@ -340,10 +343,18 @@ export class SubagentSupervisor {
   }
 
   flushNotifications(options: { triggerTurn?: boolean } = {}): Promise<void> {
+    return this.flushNotificationBatch(options.triggerTurn ?? !this.closing, false);
+  }
+
+  private flushClosingNotification(): Promise<void> {
+    return this.flushNotificationBatch(false, true);
+  }
+
+  private flushNotificationBatch(triggerTurn: boolean, closingBatch: boolean): Promise<void> {
     if (this.sendPromise) return this.sendPromise;
     let tracked!: Promise<void>;
     tracked = Promise.resolve()
-      .then(() => this.sendNextBatch(options.triggerTurn ?? !this.closing))
+      .then(() => this.sendNextBatch(triggerTurn, closingBatch))
       .finally(() => {
         if (this.sendPromise === tracked) this.sendPromise = undefined;
         this.stateChanged();
@@ -394,12 +405,12 @@ export class SubagentSupervisor {
       }
       const ownerSessionId = this.parent?.sessionId;
       if (!ownerSessionId) return;
-      if (this.hasDeliverableOutcomes()) {
-        for (const batch of this.coordinator.journal().pendingBatches) {
-          if (batch.ownerSessionId === ownerSessionId) this.coordinator.supersedeNotification(batch.batchId);
+      for (const batch of this.coordinator.journal().pendingBatches) {
+        if (batch.ownerSessionId === ownerSessionId && batch.batchId !== this.closingBatchId) {
+          this.coordinator.supersedeNotification(batch.batchId);
         }
       }
-      await this.flushNotifications({ triggerTurn: false });
+      await this.flushClosingNotification();
       await this.waitForQuiescence();
     })()
       .catch((error) => {
@@ -579,6 +590,14 @@ export class SubagentSupervisor {
 
   private removeChildIfFinished(child: OwnedChild): void {
     if (!child.resourcesDisposed) return;
+    if (
+      this.closing
+      && child.materialization === "materialized"
+      && child.terminalRecorded
+      && !this.isLaunchAcknowledged(child)
+    ) {
+      this.finalizedUnacknowledgedLaunchIds.add(child.reservation.launchId);
+    }
     if (child.materialization === "failed" || child.terminalPublished || this.closing) this.removeChild(child);
   }
 
@@ -637,11 +656,17 @@ export class SubagentSupervisor {
     return outcomes;
   }
 
-  private async sendNextBatch(triggerTurn: boolean): Promise<void> {
+  private async sendNextBatch(triggerTurn: boolean, closingBatch: boolean): Promise<void> {
     const parent = this.requireParent();
-    let batch = this.coordinator.journal().pendingBatches.find(
-      (candidate) => candidate.ownerSessionId === parent.sessionId,
-    );
+    let batch = closingBatch && this.closingBatchId
+      ? this.coordinator.journal().pendingBatches.find(
+        (candidate) => candidate.ownerSessionId === parent.sessionId && candidate.batchId === this.closingBatchId,
+      )
+      : closingBatch
+        ? undefined
+        : this.coordinator.journal().pendingBatches.find(
+          (candidate) => candidate.ownerSessionId === parent.sessionId,
+        );
     if (!batch) {
       const outcomes = this.collectDeliverableOutcomes();
       if (outcomes.length === 0) return;
@@ -659,6 +684,7 @@ export class SubagentSupervisor {
       });
       batch = { batchId, ownerSessionId: parent.sessionId, launchIds: outcomes.map(({ launchId }) => launchId), content, createdAt: this.now() };
     }
+    if (closingBatch) this.closingBatchId = batch.batchId;
 
     await parent.sendCustomMessage(
       {

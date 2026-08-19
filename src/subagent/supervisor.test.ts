@@ -823,6 +823,48 @@ describe("SubagentSupervisor recursive abort", () => {
     expect(parent.listeners.size).toBe(0);
   });
 
+  it("ignores a delayed launch acknowledgement after closing finalized an unacknowledged child", async () => {
+    const stage = new FakeStage("search_0", "child-0", "/sessions/delayed-ack-child.jsonl");
+    stage.abortImpl = async () => {
+      stage.completion.resolve(result("delayed acknowledgement partial", {
+        exitCode: 1,
+        wasAborted: true,
+        errorMessage: "stopped before acknowledgement",
+        stderr: "stopped before acknowledgement",
+      }));
+    };
+    const scheduled: Array<() => void> = [];
+    const { manager, coordinator, parent, supervisor } = makeHarness({
+      launchStage: async () => stage.handle,
+      schedule: (run) => scheduled.push(run),
+    });
+    const events: SubagentSupervisorEvent[] = [];
+    coordinator.subscribe((event) => events.push(event));
+    const reservation = reserve(coordinator, "tool-0");
+    const launching = supervisor.launch(reservation, options());
+    stage.materialization.resolve();
+    await launching;
+
+    await supervisor.abortAll("stop before launch acknowledgement");
+    const entryCount = manager.entries.length;
+    parent.acknowledgeLaunch("tool-0");
+    await turn();
+
+    expect(manager.entries).toHaveLength(entryCount);
+    expect(coordinator.journal().jobs.get(reservation.launchId)).toMatchObject({
+      status: "working",
+      terminalStatus: "error",
+      launchAcknowledged: false,
+    });
+    expect(events.some((event) => event.status === "complete" || event.status === "error")).toBe(false);
+    expect(scheduled).toEqual([]);
+    expect(parent.sent).toEqual([]);
+    expect(coordinator.journal().pendingBatches).toEqual([]);
+
+    await supervisor.dispose();
+    expect(parent.listeners.size).toBe(0);
+  });
+
   it("retries a failed closing dispose send without repeating child work or replacing the frozen batch", async () => {
     const stage = new FakeStage("search_0", "child-0", "/sessions/retry-child.jsonl");
     stage.abortImpl = async () => {
@@ -967,6 +1009,65 @@ describe("SubagentSupervisor recursive abort", () => {
     parent.acknowledgeLastMessage();
     await aborting;
     await supervisor.waitForQuiescence();
+  });
+
+  it("supersedes a delayed natural batch and waits for the distinct closing batch acknowledgement", async () => {
+    const stage = new FakeStage("search_0", "child-0", "/sessions/completed.jsonl");
+    const naturalSendGate = deferred<void>();
+    const { coordinator, parent, supervisor } = makeHarness({
+      launchStage: async () => stage.handle,
+      schedule: () => {},
+    });
+    parent.sendImpl = async (_sent, index) => {
+      if (index === 0) await naturalSendGate.promise;
+    };
+    const reservation = reserve(coordinator, "tool-0");
+    const launching = supervisor.launch(reservation, options());
+    stage.materialization.resolve();
+    await launching;
+    parent.acknowledgeLaunch("tool-0");
+    stage.completion.resolve(result("completed handoff"));
+    await turn();
+
+    const naturalSend = supervisor.flushNotifications();
+    await turn();
+    const naturalMessage = parent.sent[0]!;
+    const naturalBatchId = (naturalMessage.message.details as { batchId: string }).batchId;
+    expect(naturalMessage.options.triggerTurn).toBe(true);
+
+    let stopped = false;
+    const aborting = supervisor.abortAll("shutdown").then(() => {
+      stopped = true;
+    });
+    await turn();
+    expect(parent.sent).toHaveLength(1);
+
+    naturalSendGate.resolve();
+    await naturalSend;
+    await turn();
+
+    const closingMessage = parent.sent[1]!;
+    const closingBatchId = (closingMessage.message.details as { batchId: string }).batchId;
+    expect.soft(closingMessage.options).toEqual({ deliverAs: "steer", triggerTurn: false });
+    expect.soft(closingBatchId).not.toBe(naturalBatchId);
+    expect.soft(coordinator.journal().supersededBatchIds).toContain(naturalBatchId);
+    expect.soft(coordinator.journal().pendingBatches.map(({ batchId }) => batchId)).toEqual([closingBatchId]);
+
+    parent.emit({
+      type: "message_end",
+      message: { role: "custom", ...naturalMessage.message, timestamp: 1 },
+    } as AgentSessionEvent);
+    await turn();
+    expect.soft(stopped).toBe(false);
+    expect.soft(coordinator.journal().pendingBatches.map(({ batchId }) => batchId)).toEqual([closingBatchId]);
+
+    parent.emit({
+      type: "message_end",
+      message: { role: "custom", ...closingMessage.message, timestamp: 2 },
+    } as AgentSessionEvent);
+    await aborting;
+    expect(stopped).toBe(true);
+    expect(supervisor.isQuiescent()).toBe(true);
   });
 
   it("sets only local closing before awaiting startup and leaves other coordinator owners open", async () => {
