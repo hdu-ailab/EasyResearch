@@ -174,6 +174,7 @@ class FakeDirectChildSupervisor {
   readonly attached: StageAgentSession[] = [];
   abortReasons: string[] = [];
   abortImpl: () => Promise<void> = async () => {};
+  waitForQuiescenceImpl: () => Promise<void> = async () => {};
   disposeCalls = 0;
   disposeImpl: () => Promise<void> = async () => {};
 
@@ -190,7 +191,7 @@ class FakeDirectChildSupervisor {
   }
 
   waitForQuiescence(): Promise<void> {
-    return Promise.resolve();
+    return this.waitForQuiescenceImpl();
   }
 
   async abortAll(reason: string): Promise<void> {
@@ -658,6 +659,36 @@ describe("createStageSessionLauncher", () => {
     expect(session.listeners.size).toBe(0);
   });
 
+  it("preserves setup failure while attempting every setup cleanup step", async () => {
+    const prompt = deferred<void>();
+    const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
+    const failures = [
+      new Error("extension setup failed"),
+      new Error("listener removal failed"),
+      new Error("descendant dispose failed"),
+      new Error("session dispose failed"),
+    ];
+    session.bindError = failures[0];
+    session.unsubscribeImpl = () => { throw failures[1]; };
+    session.disposeImpl = () => { throw failures[3]; };
+    const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
+    const harness = dependencyHarness(session);
+    const launcher = createStageSessionLauncher(harness.dependencies);
+
+    const launching = launcher(stageOptions(coordinator));
+    harness.supervisors[0]!.disposeImpl = async () => { throw failures[2]; };
+    const error = await launching.then(
+      () => undefined,
+      (failure) => failure as AggregateError,
+    );
+
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(error?.errors).toEqual(failures);
+    expect(session.unsubscribeCalls).toBe(1);
+    expect(harness.supervisors[0]?.disposeCalls).toBe(1);
+    expect(session.disposeCalls).toBe(1);
+  });
+
   it("rejects materialization but resolves completion when the prompt fails before output", async () => {
     const prompt = deferred<void>();
     const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
@@ -692,6 +723,29 @@ describe("createStageSessionLauncher", () => {
       messages: [expect.objectContaining({ role: "assistant" })],
     });
     await handle.dispose();
+  });
+
+  it("reports nested cleanup failure through completion and keeps teardown retryable", async () => {
+    const prompt = deferred<void>();
+    const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
+    const harness = dependencyHarness(session);
+    const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
+    const handle = await createStageSessionLauncher(harness.dependencies)(stageOptions(coordinator));
+    const failure = new Error("nested child cleanup failed");
+    harness.supervisors[0]!.waitForQuiescenceImpl = async () => { throw failure; };
+
+    session.emitAssistantEndAndPersist("partial final text");
+    await handle.materialized;
+    prompt.resolve();
+
+    await expect(handle.completion).resolves.toMatchObject({
+      exitCode: 1,
+      errorMessage: failure.message,
+      stderr: failure.message,
+    });
+    await expect(handle.dispose()).resolves.toBeUndefined();
+    expect(harness.supervisors[0]?.disposeCalls).toBe(1);
+    expect(session.disposeCalls).toBe(1);
   });
 
   it("checks a continuation before opening it and validates its UUID and cwd", async () => {

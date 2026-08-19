@@ -559,6 +559,36 @@ describe("SubagentSupervisor ownership and launch ordering", () => {
     expect(parent.disposeCalls).toBe(0);
   });
 
+  it("rejects a pending quiescence wait when natural child disposal fails", async () => {
+    const stage = new FakeStage("search_0", "child-0", "/sessions/child-0.jsonl");
+    const failure = new Error("stage handle disposal failed");
+    let fail = true;
+    stage.disposeImpl = async () => {
+      if (!fail) return;
+      fail = false;
+      throw failure;
+    };
+    const { coordinator, parent, supervisor } = makeHarness({
+      launchStage: async () => stage.handle,
+      autoAcknowledge: true,
+    });
+    const reservation = reserve(coordinator, "tool-0");
+    const launching = supervisor.launch(reservation, options());
+    stage.materialization.resolve();
+    await launching;
+    parent.acknowledgeLaunch("tool-0");
+    const quiescence = supervisor.waitForQuiescence();
+
+    stage.completion.resolve(result());
+
+    await expect(quiescence).rejects.toBe(failure);
+    await expect(supervisor.waitForQuiescence()).rejects.toBe(failure);
+    expect(supervisor.hasRunningChildren()).toBe(true);
+    await supervisor.dispose();
+    expect(stage.disposeCalls).toBe(2);
+    expect(supervisor.hasRunningChildren()).toBe(false);
+  });
+
   it("retains and retries a child handle whose first disposal fails", async () => {
     const stage = new FakeStage("search_0", "child-0", "/sessions/child-0.jsonl");
     const failure = new Error("stage handle disposal failed");

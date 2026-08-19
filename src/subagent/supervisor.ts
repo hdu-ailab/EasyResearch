@@ -59,6 +59,11 @@ interface OwnedChild {
   resolveFinished: () => void;
 }
 
+interface QuiescenceWaiter {
+  resolve: () => void;
+  reject: (error: unknown) => void;
+}
+
 function describeError(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message;
   if (typeof error === "string" && error.trim()) return error;
@@ -130,7 +135,8 @@ export class SubagentSupervisor {
   private readonly createId: () => string;
   private readonly schedule: (run: () => void) => void;
   private readonly children = new Map<string, OwnedChild>();
-  private readonly quiescenceWaiters = new Set<() => void>();
+  private readonly quiescenceWaiters = new Set<QuiescenceWaiter>();
+  private readonly cleanupFailures = new Map<string, unknown>();
   private readonly finalizedUnacknowledgedLaunchIds = new Set<string>();
   private parent?: SupervisableAgentSession;
   private parentSubscription?: () => void;
@@ -347,8 +353,9 @@ export class SubagentSupervisor {
   }
 
   waitForQuiescence(): Promise<void> {
+    if (this.cleanupFailures.size > 0) return Promise.reject(this.quiescenceFailure());
     if (this.isQuiescent()) return Promise.resolve();
-    return new Promise((resolve) => this.quiescenceWaiters.add(resolve));
+    return new Promise((resolve, reject) => this.quiescenceWaiters.add({ resolve, reject }));
   }
 
   flushNotifications(options: { triggerTurn?: boolean } = {}): Promise<void> {
@@ -606,11 +613,13 @@ export class SubagentSupervisor {
       },
     ], "Subagent child cleanup failed.").then(
       () => {
+        this.cleanupFailures.delete(child.reservation.launchId);
         child.resourcesDisposed = true;
         this.stateChanged();
       },
       (error) => {
         if (child.disposePromise === tracked) child.disposePromise = undefined;
+        this.cleanupFailures.set(child.reservation.launchId, error);
         this.stateChanged();
         throw error;
       },
@@ -742,8 +751,21 @@ export class SubagentSupervisor {
   }
 
   private stateChanged(): void {
+    if (this.cleanupFailures.size > 0) {
+      const failure = this.quiescenceFailure();
+      for (const waiter of this.quiescenceWaiters) waiter.reject(failure);
+      this.quiescenceWaiters.clear();
+      return;
+    }
     if (!this.isQuiescent()) return;
-    for (const resolve of this.quiescenceWaiters) resolve();
+    for (const waiter of this.quiescenceWaiters) waiter.resolve();
     this.quiescenceWaiters.clear();
+  }
+
+  private quiescenceFailure(): unknown {
+    const failures = [...this.cleanupFailures.values()];
+    return failures.length === 1
+      ? failures[0]
+      : new AggregateError(failures, "Subagent cleanup failed before quiescence.");
   }
 }

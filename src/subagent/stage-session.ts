@@ -327,11 +327,23 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         barrier!.settlePrompt(error);
         const activeAbort = abortOperation;
         if (activeAbort) await activeAbort.catch(() => {});
-        await supervisor!.waitForQuiescence();
+        let completionFailed = false;
+        let completionFailure: unknown;
+        try {
+          await runCleanupSteps([
+            () => {
+              if (error !== undefined) throw error;
+            },
+            () => supervisor!.waitForQuiescence(),
+          ], "Stage completion failed.");
+        } catch (finishError) {
+          completionFailed = true;
+          completionFailure = finishError;
+        }
         result.sessionPath = session!.sessionFile;
-        if (error !== undefined) {
+        if (completionFailed) {
           result.exitCode = 1;
-          result.errorMessage = describeError(error);
+          result.errorMessage = describeError(completionFailure);
           result.stderr = result.errorMessage;
         }
         if (abortRequested) {
@@ -434,15 +446,18 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
       };
       return handle;
     } catch (error) {
-      barrier?.dispose();
-      if (signalListener) options.signal?.removeEventListener("abort", signalListener);
-      unsubscribe?.();
-      try {
-        await supervisor?.dispose();
-      } catch {
-        // Preserve the setup failure that triggered cleanup.
-      }
-      session?.dispose();
+      await runCleanupSteps([
+        () => {
+          throw error;
+        },
+        () => barrier?.dispose(),
+        () => {
+          if (signalListener) options.signal?.removeEventListener("abort", signalListener);
+        },
+        () => unsubscribe?.(),
+        () => supervisor?.dispose(),
+        () => session?.dispose(),
+      ], "Stage AgentSession setup cleanup failed.");
       throw error;
     }
   };
