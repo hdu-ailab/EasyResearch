@@ -23,6 +23,7 @@ export interface InternalSubagentJob {
   childSessionId?: string;
   sessionPath?: string;
   launchAcknowledged: boolean;
+  terminalStatus?: "complete" | "error";
   latestAssistantText?: string;
   errorMessage?: string;
 }
@@ -39,6 +40,7 @@ export interface SubagentJournalState {
   jobs: Map<string, InternalSubagentJob>;
   pendingBatches: NotificationBatchRecord[];
   acknowledgedBatchIds: Set<string>;
+  acknowledgedNotificationLaunchIds: Set<string>;
   supersededBatchIds: Set<string>;
 }
 
@@ -141,6 +143,7 @@ function readRecord(entry: unknown): SubagentJobJournalRecord | undefined {
 export function readSubagentJournal(entries: readonly unknown[]): SubagentJournalState {
   const jobs = new Map<string, InternalSubagentJob>();
   const pendingBatches = new Map<string, NotificationBatchRecord>();
+  const notificationBatches = new Map<string, NotificationBatchRecord>();
   const acknowledgedBatchIds = new Set<string>();
   const supersededBatchIds = new Set<string>();
 
@@ -168,13 +171,15 @@ export function readSubagentJournal(entries: readonly unknown[]): SubagentJourna
       acknowledgedBatchIds.delete(record.batchId);
       supersededBatchIds.delete(record.batchId);
       pendingBatches.delete(record.batchId);
-      pendingBatches.set(record.batchId, {
+      const batch = {
         batchId: record.batchId,
         ownerSessionId: record.ownerSessionId,
         launchIds: [...record.launchIds],
         content: record.content,
         createdAt: record.createdAt,
-      });
+      };
+      notificationBatches.set(record.batchId, batch);
+      pendingBatches.set(record.batchId, batch);
       continue;
     }
     if (record.kind === "notification_ack") {
@@ -205,7 +210,11 @@ export function readSubagentJournal(entries: readonly unknown[]): SubagentJourna
         jobs.set(record.launchId, { ...job, status: "working" });
         break;
       case "launch_acknowledged":
-        jobs.set(record.launchId, { ...job, launchAcknowledged: true });
+        jobs.set(record.launchId, {
+          ...job,
+          launchAcknowledged: true,
+          status: job.terminalStatus ?? job.status,
+        });
         break;
       case "pre_materialization_failed":
         jobs.set(record.launchId, {
@@ -217,7 +226,8 @@ export function readSubagentJournal(entries: readonly unknown[]): SubagentJourna
       case "terminal":
         jobs.set(record.launchId, {
           ...job,
-          status: record.status,
+          status: job.launchAcknowledged ? record.status : job.status,
+          terminalStatus: record.status,
           latestAssistantText: record.latestAssistantText,
           errorMessage: record.errorMessage,
         });
@@ -225,10 +235,18 @@ export function readSubagentJournal(entries: readonly unknown[]): SubagentJourna
     }
   }
 
+  const acknowledgedNotificationLaunchIds = new Set<string>();
+  for (const batchId of acknowledgedBatchIds) {
+    const batch = notificationBatches.get(batchId);
+    if (!batch) continue;
+    for (const launchId of batch.launchIds) acknowledgedNotificationLaunchIds.add(launchId);
+  }
+
   return {
     jobs,
     pendingBatches: [...pendingBatches.values()],
     acknowledgedBatchIds,
+    acknowledgedNotificationLaunchIds,
     supersededBatchIds,
   };
 }

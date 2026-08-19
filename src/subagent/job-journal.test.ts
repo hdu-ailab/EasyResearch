@@ -34,6 +34,7 @@ describe("subagent job journal", () => {
     });
     expect(state.pendingBatches).toEqual([]);
     expect([...state.acknowledgedBatchIds]).toEqual(["b0"]);
+    expect([...state.acknowledgedNotificationLaunchIds]).toEqual(["l0"]);
   });
 
   it("ignores malformed, foreign, and out-of-order records", () => {
@@ -80,6 +81,7 @@ describe("subagent job journal", () => {
       entry({ kind: "created", launchId: "l0", childSessionId: "child-old", sessionPath: "/sessions/old.jsonl" }),
       entry({ kind: "created", launchId: "l0", childSessionId: "child-new", sessionPath: "/sessions/new.jsonl" }),
       entry({ kind: "materialized", launchId: "l0" }),
+      entry({ kind: "launch_acknowledged", launchId: "l0", acknowledgedAt: "t0.5" }),
       entry({ kind: "terminal", launchId: "l0", status: "complete", latestAssistantText: "first", finishedAt: "t1" }),
       entry({ kind: "terminal", launchId: "l0", status: "error", latestAssistantText: "last", errorMessage: "failed", finishedAt: "t2" }),
     ]);
@@ -115,5 +117,31 @@ describe("subagent job journal", () => {
 
     expect(state.jobs.get("l0")).toMatchObject({ agentId: "search_0", status: "pre_materialization_failed" });
     expect(readAgentAliases(entries)).toEqual([]);
+  });
+
+  it("retains terminal data but exposes Working until launch acknowledgement", () => {
+    const stateBeforeAck = readSubagentJournal([
+      entry({ kind: "reserved", launchId: "l0", ownerSessionId: "root", toolCallId: "t0", agent: "search", agentId: "search_0", continuation: false, createdAt: "t0" }),
+      entry({ kind: "created", launchId: "l0", childSessionId: "child", sessionPath: "/sessions/child.jsonl" }),
+      entry({ kind: "materialized", launchId: "l0" }),
+      entry({ kind: "terminal", launchId: "l0", status: "complete", latestAssistantText: "done", finishedAt: "t1" }),
+    ]);
+    expect(stateBeforeAck.jobs.get("l0")).toMatchObject({
+      status: "working",
+      terminalStatus: "complete",
+      latestAssistantText: "done",
+      launchAcknowledged: false,
+    });
+
+    const stateAfterAck = readSubagentJournal([
+      ...[
+        entry({ kind: "reserved", launchId: "l0", ownerSessionId: "root", toolCallId: "t0", agent: "search", agentId: "search_0", continuation: false, createdAt: "t0" }),
+        entry({ kind: "created", launchId: "l0", childSessionId: "child", sessionPath: "/sessions/child.jsonl" }),
+        entry({ kind: "materialized", launchId: "l0" }),
+        entry({ kind: "terminal", launchId: "l0", status: "complete", latestAssistantText: "done", finishedAt: "t1" }),
+      ],
+      entry({ kind: "launch_acknowledged", launchId: "l0", acknowledgedAt: "t2" }),
+    ]);
+    expect(stateAfterAck.jobs.get("l0")).toMatchObject({ status: "complete", terminalStatus: "complete", launchAcknowledged: true });
   });
 });

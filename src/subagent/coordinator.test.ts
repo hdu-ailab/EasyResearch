@@ -83,6 +83,7 @@ describe("SubagentCoordinator", () => {
     const { coordinator } = harness();
     const first = coordinator.reserveDispatch({ ownerSessionId: "root", toolCallId: "t0", requested: "review", catalog: catalogOf("review") });
     materialize(coordinator, first, "review-child", "/sessions/review.jsonl");
+    coordinator.recordLaunchAcknowledged(first.launchId);
     coordinator.recordTerminal({ launchId: first.launchId, status: "complete" });
 
     expect(() => coordinator.reserveDispatch({ ownerSessionId: "root", toolCallId: "t1", requested: "review_0", catalog: catalogOf("review", "review_0") }))
@@ -136,6 +137,7 @@ describe("SubagentCoordinator", () => {
     const catalog = catalogOf("search");
     const completed = coordinator.reserveDispatch({ ownerSessionId: "root", toolCallId: "t0", requested: "search", catalog });
     materialize(coordinator, completed, "child-search", "/sessions/search.jsonl");
+    coordinator.recordLaunchAcknowledged(completed.launchId);
     coordinator.recordTerminal({ launchId: completed.launchId, status: "complete", latestAssistantText: "done" });
 
     const continuation = coordinator.reserveDispatch({ ownerSessionId: "root", toolCallId: "t1", requested: completed.agentId, catalog });
@@ -156,6 +158,7 @@ describe("SubagentCoordinator", () => {
     const catalog = catalogOf("search");
     const completed = coordinator.reserveDispatch({ ownerSessionId: "root", toolCallId: "t0", requested: "search", catalog });
     materialize(coordinator, completed);
+    coordinator.recordLaunchAcknowledged(completed.launchId);
     coordinator.recordTerminal({ launchId: completed.launchId, status: "complete" });
 
     expect(() => coordinator.reserveDispatch({
@@ -227,6 +230,20 @@ describe("SubagentCoordinator", () => {
     expect(coordinator.journal().pendingBatches.map(({ batchId }) => batchId)).toEqual(["b0"]);
     coordinator.acknowledgeNotification("b0");
     expect(coordinator.journal().pendingBatches).toEqual([]);
+  });
+
+  it("keeps a journaled terminal child Working until its launch result is acknowledged", () => {
+    const { coordinator } = harness();
+    const reserved = coordinator.reserveDispatch({ ownerSessionId: "root", toolCallId: "t0", requested: "search", catalog: catalogOf("search") });
+    materialize(coordinator, reserved);
+    coordinator.recordTerminal({ launchId: reserved.launchId, status: "complete", latestAssistantText: "done" });
+
+    expect(coordinator.isRunning("search_0")).toBe(true);
+    expect(coordinator.summaries()).toContainEqual(expect.objectContaining({ agentId: "search_0", status: "working" }));
+
+    coordinator.recordLaunchAcknowledged(reserved.launchId);
+    expect(coordinator.isRunning("search_0")).toBe(false);
+    expect(coordinator.summaries()).toContainEqual(expect.objectContaining({ agentId: "search_0", status: "complete" }));
   });
 
   it("publishes supervisor events until the listener unsubscribes", () => {
