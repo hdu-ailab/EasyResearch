@@ -43,6 +43,7 @@ export interface ReservedDispatch {
 }
 
 const RUNNING_STATUSES = new Set(["reserved", "created", "working"]);
+const RESUMABLE_ALIAS_STATUSES = new Set(["working", "complete", "error"]);
 
 function now(): string {
   return new Date().toISOString();
@@ -71,7 +72,16 @@ export class SubagentCoordinator {
     }
 
     this.refresh();
-    const aliases = readAgentAliases(this.rootSessionManager.getEntries());
+    const persistedAliases = readAgentAliases(this.rootSessionManager.getEntries());
+    const aliases = persistedAliases.filter((candidate) => {
+      const matchingJobs = [...this.state.jobs.values()].filter((job) =>
+        job.agentId === candidate.id
+        && job.agent === candidate.agent
+        && job.childSessionId === candidate.sessionId
+        && job.sessionPath === candidate.sessionPath);
+      return matchingJobs.length === 0
+        || matchingJobs.some((job) => RESUMABLE_ALIAS_STATUSES.has(job.status));
+    });
     const alias = resolveAgentAlias(aliases, input.requested);
     const exactAgent = input.catalog.all.find((candidate) => candidate.name === input.requested);
     if (alias && exactAgent) {
@@ -103,7 +113,7 @@ export class SubagentCoordinator {
       }
 
       const consumedIds = new Set([
-        ...aliases.map((candidate) => candidate.id),
+        ...persistedAliases.map((candidate) => candidate.id),
         ...[...this.state.jobs.values()].map((job) => job.agentId),
       ]);
       const actualNames = new Set(input.catalog.all.map((candidate) => candidate.name));

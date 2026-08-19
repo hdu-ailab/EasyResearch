@@ -2,11 +2,12 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
 import type { AgentSessionEvent, JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
-import { AGENT_ALIAS_ENTRY } from "./agent-alias";
+import { AGENT_ALIAS_ENTRY, readAgentAliases } from "./agent-alias";
 import type { AgentConfig } from "./agents";
 import { SubagentCoordinator, type CoordinatorSessionManager, type ReservedDispatch } from "./coordinator";
 import type { SubagentSupervisorEvent } from "./contracts";
 import { AGENT_STATUS_TYPE } from "./notifications";
+import { readSubagentSessionLinks, SUBAGENT_SESSION_LINK_ENTRY } from "./session-links";
 import type { StageLaunchHandle, StageRunResult } from "./stage-session";
 import { SubagentSupervisor, type SupervisableAgentSession } from "./supervisor";
 
@@ -464,6 +465,50 @@ describe("SubagentSupervisor ownership and launch ordering", () => {
       });
     },
   );
+
+  it("does not resume an alias left by partial materialization persistence", async () => {
+    const stage = new FakeStage("search_0", "child-0", "/sessions/partial-alias.jsonl");
+    stage.abortImpl = async () => {
+      stage.completion.resolve(result("", {
+        exitCode: 1,
+        wasAborted: true,
+        errorMessage: "materialization persistence failed",
+        stderr: "materialization persistence failed",
+      }));
+    };
+    const { manager, coordinator, supervisor } = makeHarness({ launchStage: async () => stage.handle });
+    const reservation = reserve(coordinator, "tool-0");
+    const persistenceFailure = new Error("session link persistence failed");
+    let failed = false;
+    manager.appendImpl = (customType) => {
+      if (!failed && customType === SUBAGENT_SESSION_LINK_ENTRY) {
+        failed = true;
+        throw persistenceFailure;
+      }
+    };
+
+    const launching = supervisor.launch(reservation, options());
+    stage.materialization.resolve();
+    await expect(launching).rejects.toBe(persistenceFailure);
+    manager.appendImpl = undefined;
+
+    expect(readAgentAliases(manager.entries)).toEqual([{
+      id: "search_0",
+      agent: "search",
+      sessionId: "child-0",
+      sessionPath: "/sessions/partial-alias.jsonl",
+    }]);
+    expect(readSubagentSessionLinks(manager.entries)).toEqual([]);
+    expect(coordinator.journal().jobs.get(reservation.launchId)).toMatchObject({
+      agentId: "search_0",
+      status: "pre_materialization_failed",
+    });
+    expect(coordinator.summaries()).toEqual([]);
+    expect(() => reserve(coordinator, "tool-1", "search_0")).toThrow(/unknown|resume|continu/i);
+
+    const next = reserve(coordinator, "tool-2");
+    expect(next.agentId).toBe("search_1");
+  });
 
   it("isolates throwing coordinator subscribers from launch and terminal delivery", async () => {
     const stage = new FakeStage("search_0", "child-0", "/sessions/child-0.jsonl");
@@ -934,6 +979,103 @@ describe("SubagentSupervisor notification acknowledgement", () => {
 });
 
 describe("SubagentSupervisor recursive abort", () => {
+  it("clears an abort failure that arrives after natural settlement releases the child", async () => {
+    const stage = new FakeStage("search_0", "child-0", "/sessions/naturally-settled.jsonl");
+    const abortFailure = new Error("abort lost the settlement race");
+    const allowAbortRejection = deferred<void>();
+    stage.abortImpl = async () => {
+      stage.completion.resolve(result("settled despite abort failure", {
+        exitCode: 1,
+        wasAborted: true,
+        errorMessage: "shutdown",
+        stderr: "shutdown",
+      }));
+      await allowAbortRejection.promise;
+      throw abortFailure;
+    };
+    const { coordinator, parent, supervisor } = makeHarness({
+      launchStage: async () => stage.handle,
+      autoAcknowledge: true,
+      schedule: () => {},
+    });
+    const reservation = reserve(coordinator, "tool-0");
+    const launching = supervisor.launch(reservation, options());
+    stage.materialization.resolve();
+    await launching;
+    parent.acknowledgeLaunch("tool-0");
+
+    const firstAbort = supervisor.abortAll("shutdown");
+    await vi.waitFor(() => expect(supervisor.hasRunningChildren()).toBe(false));
+    expect(stage.disposeCalls).toBe(1);
+    allowAbortRejection.resolve();
+
+    await expect(firstAbort).rejects.toBe(abortFailure);
+    await expect(supervisor.waitForQuiescence()).resolves.toBeUndefined();
+    await expect(supervisor.abortAll("shutdown retry")).resolves.toBeUndefined();
+    await expect(supervisor.waitForQuiescence()).resolves.toBeUndefined();
+    expect(stage.abortCalls).toBe(1);
+    expect(stage.disposeCalls).toBe(1);
+  });
+
+  it("starts sibling cleanup before awaiting a pending child startup", async () => {
+    const firstStartup = deferred<StageLaunchHandle>();
+    const first = new FakeStage("search_0", "child-0", "/sessions/pending-startup.jsonl");
+    const second = new FakeStage("search_1", "child-1", "/sessions/running-sibling.jsonl");
+    first.abortImpl = async () => {
+      first.completion.resolve(result("first stopped", {
+        agentId: "search_0",
+        exitCode: 1,
+        wasAborted: true,
+        errorMessage: "shutdown",
+        stderr: "shutdown",
+      }));
+      first.materialization.reject(new Error("shutdown before materialization"));
+    };
+    second.abortImpl = async () => {
+      second.completion.resolve(result("second stopped", {
+        agentId: "search_1",
+        exitCode: 1,
+        wasAborted: true,
+        errorMessage: "shutdown",
+        stderr: "shutdown",
+      }));
+    };
+    const { coordinator, parent, supervisor } = makeHarness({
+      launchStage: async (reservation) => reservation.agentId === "search_0"
+        ? firstStartup.promise
+        : second.handle,
+      autoAcknowledge: true,
+      schedule: () => {},
+    });
+    const firstReservation = reserve(coordinator, "tool-0");
+    const secondReservation = reserve(coordinator, "tool-1");
+    const firstLaunching = supervisor.launch(firstReservation, options("pending"));
+    const secondLaunching = supervisor.launch(secondReservation, options("running"));
+    second.materialization.resolve();
+    await secondLaunching;
+    parent.acknowledgeLaunch("tool-1");
+
+    let abortSettled = false;
+    const aborting = supervisor.abortAll("shutdown").finally(() => {
+      abortSettled = true;
+    });
+    await turn();
+
+    expect(second.abortCalls).toBe(1);
+    expect(second.disposeCalls).toBe(1);
+    expect(abortSettled).toBe(false);
+
+    firstStartup.resolve(first.handle);
+    await expect(firstLaunching).rejects.toThrow("shutdown before materialization");
+    await aborting;
+
+    expect(first.abortCalls).toBe(1);
+    expect(first.disposeCalls).toBe(1);
+    expect(second.abortCalls).toBe(1);
+    expect(second.disposeCalls).toBe(1);
+    expect(supervisor.isQuiescent()).toBe(true);
+  });
+
   it("reports a failed child abort without blocking siblings and retries only that ownership", async () => {
     const failed = new FakeStage("search_0", "child-0", "/sessions/failed-abort.jsonl");
     const sibling = new FakeStage("search_1", "child-1", "/sessions/sibling.jsonl");

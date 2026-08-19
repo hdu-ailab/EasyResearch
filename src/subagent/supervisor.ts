@@ -399,31 +399,29 @@ export class SubagentSupervisor {
     let tracked!: Promise<void>;
     tracked = (async () => {
       const owned = [...this.children.values()];
-      const failedChildren = new Set<OwnedChild>();
+      const childResults = await Promise.allSettled(owned.map(async (child) => {
+        try {
+          await child.startup;
+        } catch {
+          await child.finished;
+          return;
+        }
+        await this.abortChild(child, reason);
+        await child.settlement;
+        await this.disposeChildResources(child);
+        this.recordTerminalIfReady(child);
+        this.publishTerminalIfReady(child);
+        this.removeChildIfFinished(child);
+        if (!child.removed && !this.coordinator.journal().jobs.get(child.reservation.launchId)?.launchAcknowledged) {
+          this.removeChild(child);
+        }
+        await child.finished;
+      }));
+      const childCleanupFailed = childResults.some(({ status }) => status === "rejected");
       let notificationFailed = false;
       await runCleanupSteps([
-        ...owned.map((child) => async () => {
-          try {
-            try {
-              await child.startup;
-            } catch {
-              await child.finished;
-              return;
-            }
-            await this.abortChild(child, reason);
-            await child.settlement;
-            await this.disposeChildResources(child);
-            this.recordTerminalIfReady(child);
-            this.publishTerminalIfReady(child);
-            this.removeChildIfFinished(child);
-            if (!child.removed && !this.coordinator.journal().jobs.get(child.reservation.launchId)?.launchAcknowledged) {
-              this.removeChild(child);
-            }
-            await child.finished;
-          } catch (error) {
-            failedChildren.add(child);
-            throw error;
-          }
+        ...childResults.map((result) => () => {
+          if (result.status === "rejected") throw result.reason;
         }),
         async () => {
           try {
@@ -451,7 +449,7 @@ export class SubagentSupervisor {
         },
         async () => {
           if (
-            failedChildren.size > 0
+            childCleanupFailed
             || notificationFailed
             || this.cleanupFailures.size > 0
             || this.hasRunningChildren()
@@ -619,7 +617,8 @@ export class SubagentSupervisor {
         },
         (error) => {
           if (child.abortPromise === tracked) child.abortPromise = undefined;
-          this.cleanupFailures.set(failureKey, error);
+          if (child.removed) this.cleanupFailures.delete(failureKey);
+          else this.cleanupFailures.set(failureKey, error);
           this.stateChanged();
           throw error;
         },
@@ -694,6 +693,8 @@ export class SubagentSupervisor {
     if (child.removed) return;
     child.removed = true;
     this.children.delete(child.reservation.launchId);
+    this.cleanupFailures.delete(`abort:${child.reservation.launchId}`);
+    this.cleanupFailures.delete(`dispose:${child.reservation.launchId}`);
     child.resolveFinished();
     this.stateChanged();
   }
