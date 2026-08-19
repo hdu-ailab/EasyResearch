@@ -7,7 +7,7 @@ import {
 } from "./session-links";
 
 describe("subagent session links", () => {
-  it("keeps the latest valid link per tool-call step in final-entry order", () => {
+  it("keeps the latest valid link per identity in final-entry order", () => {
     expect(readSubagentSessionLinks([
       {
         type: "custom",
@@ -47,6 +47,7 @@ describe("subagent session links", () => {
         data: { toolCallId: "call-b", childSessionId: "child-b-new", agent: "writing", step: 1 },
       },
     ])).toEqual([
+      { toolCallId: "call-a", childSessionId: "child-a-old", agent: "search" },
       {
         toolCallId: "call-a",
         childSessionId: "child-a-new",
@@ -102,6 +103,50 @@ describe("subagent session links", () => {
         ownerSessionId: "experiment-child",
         launchId: "nested-launch",
         agentId: "search_1",
+      },
+    ]);
+  });
+
+  it("keeps legacy and launch-aware identities that share a tool-call step", () => {
+    expect(readSubagentSessionLinks([
+      {
+        type: "custom",
+        customType: SUBAGENT_SESSION_LINK_ENTRY,
+        data: {
+          toolCallId: "shared-call",
+          childSessionId: "legacy-child",
+          agent: "search",
+          step: 1,
+        },
+      },
+      {
+        type: "custom",
+        customType: SUBAGENT_SESSION_LINK_ENTRY,
+        data: {
+          toolCallId: "shared-call",
+          childSessionId: "nested-child",
+          agent: "search",
+          ownerSessionId: "experiment-child",
+          launchId: "nested-launch",
+          agentId: "search_1",
+          step: 1,
+        },
+      },
+    ])).toEqual([
+      {
+        toolCallId: "shared-call",
+        childSessionId: "legacy-child",
+        agent: "search",
+        step: 1,
+      },
+      {
+        toolCallId: "shared-call",
+        childSessionId: "nested-child",
+        agent: "search",
+        ownerSessionId: "experiment-child",
+        launchId: "nested-launch",
+        agentId: "search_1",
+        step: 1,
       },
     ]);
   });

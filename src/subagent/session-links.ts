@@ -43,7 +43,6 @@ export function readSubagentSessionLinks(entries: readonly unknown[]): SubagentS
     if (step !== undefined && (typeof step !== "number" || !Number.isFinite(step) || !Number.isInteger(step) || step <= 0)) continue;
 
     const legacyKey = `${toolCallId}:${step ?? "single"}`;
-    if (launchId !== undefined) links.delete(legacyKey);
     const key = launchId === undefined ? legacyKey : `launch:${launchId}`;
     links.delete(key);
     links.set(key, {
