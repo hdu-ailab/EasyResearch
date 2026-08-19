@@ -88,7 +88,7 @@ const VENV_SENTINEL = "easyresearch-venv-ok";
 const STAGE_COMPLETION = "complete\nArtifacts: none\nGaps: none\nNext action: none";
 
 function hasExactLine(text: string, expected: string): boolean {
-  return text.split(/\r?\n/).some((line) => line.trim() === expected);
+  return text.split(/\r?\n/).some((line) => line === expected);
 }
 
 export function runVenvValidation(options: {
@@ -500,7 +500,7 @@ export function selectSmokeModelAction(
     const content = expectedToolResult("call_native_venv");
     const sentinelLines = content
       .split(/\r?\n/u)
-      .filter((line) => line.trim() === VENV_SENTINEL);
+      .filter((line) => line === VENV_SENTINEL);
     if (sentinelLines.length !== 1) {
       throw new Error(`bash tool result did not contain exactly one ${VENV_SENTINEL} line: ${content}`);
     }

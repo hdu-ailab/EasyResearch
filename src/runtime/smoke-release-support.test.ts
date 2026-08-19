@@ -741,7 +741,7 @@ describe("selectSmokeModelAction", () => {
     });
 
     const bashResult = selectSmokeModelAction(
-      stageRequest(toolResult("call_native_venv", "validation log\n easyresearch-venv-ok  \n")),
+      stageRequest(toolResult("call_native_venv", "validation log\neasyresearch-venv-ok\n")),
       "validate-command",
       current,
     );
@@ -835,6 +835,7 @@ describe("selectSmokeModelAction", () => {
 
   it.each([
     "wrong interpreter",
+    " easyresearch-venv-ok  ",
     "easyresearch-venv-ok-invalid",
     "prefix easyresearch-venv-ok suffix",
     "easyresearch-venv-ok\neasyresearch-venv-ok",
