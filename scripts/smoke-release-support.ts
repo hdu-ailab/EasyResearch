@@ -93,8 +93,11 @@ function hasExactLine(text: string, expected: string): boolean {
 
 function isSuccessfulStageHandoff(text: string): boolean {
   const normalized = text.replaceAll("\r\n", "\n").trim();
-  return normalized === STAGE_COMPLETION
-    || normalized.startsWith(`${STAGE_COMPLETION}\n\nSession history JSONL:`);
+  if (normalized === STAGE_COMPLETION) return true;
+  const metadata = normalized.slice(`${STAGE_COMPLETION}\n\n`.length);
+  if (!normalized.startsWith(`${STAGE_COMPLETION}\n\n`)) return false;
+  return metadata.startsWith("Session history JSONL:")
+    || /^Agent id: [^\n]+\nSession history JSONL:/.test(metadata);
 }
 
 export function runVenvValidation(options: {

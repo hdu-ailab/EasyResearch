@@ -578,6 +578,10 @@ try {
       message: "Dispatch search and require it to execute only the deterministic bash venv-validation tool call. Do not use network tools.",
     }),
   }), "stage dispatch");
+  const stageDeadline = Math.min(firstRunDeadline, Date.now() + 180_000);
+  while (Date.now() < stageDeadline && smokeModelState.phase !== "complete") {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
   if (modelRequests !== 4 || smokeModelState.phase !== "complete" || smokeModelState.completedRequests !== 4) {
     throw new Error(
       `stage tool sequence incomplete (${modelRequests} requests; ${smokeModelState.completedRequests} accepted; phase ${smokeModelState.phase})`,

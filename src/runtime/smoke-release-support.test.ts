@@ -733,6 +733,20 @@ describe("selectSmokeModelAction", () => {
     });
   });
 
+  it("accepts the current agent-id metadata before the child session history", () => {
+    const transition = selectSmokeModelAction({
+      tools: [tool("subagent")],
+      messages: [
+        toolResult(
+          "call_native_stage",
+          `${completedStage}\n\nAgent id: search_0\nSession history JSONL: /sessions/search.jsonl\nInspect this file to continue.`,
+        ),
+      ],
+    }, "validate-command", state("awaiting-subagent-tool-result", 3));
+
+    expect(transition.state).toEqual({ phase: "complete", completedRequests: 4 });
+  });
+
   it.each([
     ["awaiting-venv-tool-result", 2, "call_native_venv", undefined],
     ["awaiting-venv-tool-result", 2, "call_native_venv", "wrong-call"],
