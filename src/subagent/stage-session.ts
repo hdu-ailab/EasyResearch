@@ -1,13 +1,12 @@
-import { randomUUID } from "node:crypto";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Message, Model } from "@earendil-works/pi-ai";
 import type { AgentSessionEvent, JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { toJsonSessionEvent } from "../runtime/json-session-event";
-import { readAgentAliases } from "./agent-alias";
 import type { AgentConfig } from "./agents";
-import { SubagentCoordinator, type CoordinatorSessionManager, type ReservedDispatch } from "./coordinator";
+import type { ReservedDispatch, SubagentCoordinator } from "./coordinator";
 import { createSessionMaterializationBarrier, type SessionMaterializationBarrier } from "./materialization";
 import { sessionNameFor } from "./session-links";
+import type { SubagentSupervisor, SupervisableAgentSession } from "./supervisor";
 
 export interface StageUsageStats {
   input: number;
@@ -73,6 +72,10 @@ export interface StageAgentSession {
   getAllTools(): Array<{ name: string }>;
   setActiveToolsByName(names: string[]): void;
   prompt(message: string): Promise<void>;
+  sendCustomMessage(
+    message: { customType: string; content: string; display: boolean; details?: unknown },
+    options: { deliverAs: "steer"; triggerTurn: boolean },
+  ): Promise<void>;
   abort(): Promise<void>;
   dispose(): void;
 }
@@ -105,7 +108,12 @@ export interface StageSessionDependencies {
     appendSystemPrompt: string[];
   }): StageResourceLoader;
   createAgentSession(options: Record<string, unknown>): Promise<{ session: StageAgentSession }>;
-  createExtensionFactories(agent: AgentConfig, coordinator: SubagentCoordinator): unknown[];
+  createDirectChildSupervisor(coordinator: SubagentCoordinator): SubagentSupervisor;
+  createExtensionFactories(
+    agent: AgentConfig,
+    coordinator: SubagentCoordinator,
+    supervisor: SubagentSupervisor,
+  ): unknown[];
   resolveSkillPaths(agent: AgentConfig, cwd: string, agentDir: string): string[];
 }
 
@@ -121,17 +129,6 @@ const emptyUsage = (): StageUsageStats => ({
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-class StageLaunchSetupError extends Error {
-  constructor(
-    cause: unknown,
-    readonly childSessionId: string,
-    readonly sessionPath: string,
-  ) {
-    super(describeError(cause), { cause });
-    this.name = "StageLaunchSetupError";
-  }
 }
 
 function validateContinuation(
@@ -165,6 +162,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
       agentId: options.reservation.agentId,
     };
     let session: StageAgentSession | undefined;
+    let supervisor: SubagentSupervisor | undefined;
     let barrier: SessionMaterializationBarrier | undefined;
     let unsubscribe: (() => void) | undefined;
     let signalListener: (() => void) | undefined;
@@ -185,6 +183,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
       } else {
         sessionManager = deps.createSessionManager(options.cwd);
       }
+      supervisor = deps.createDirectChildSupervisor(options.coordinator);
 
       const settingsManager = deps.createSettingsManager(options.cwd, deps.agentDir);
       const modelRuntime = await deps.createModelRuntime(deps.agentDir);
@@ -201,7 +200,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         cwd: options.cwd,
         agentDir: deps.agentDir,
         settingsManager,
-        extensionFactories: deps.createExtensionFactories(options.agent, options.coordinator),
+        extensionFactories: deps.createExtensionFactories(options.agent, options.coordinator, supervisor),
         noSkills: true,
         additionalSkillPaths: deps.resolveSkillPaths(options.agent, options.cwd, deps.agentDir),
         appendSystemPrompt: options.agent.systemPrompt.trim() ? [options.agent.systemPrompt] : [],
@@ -258,7 +257,17 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         abortReason = reason;
         result.wasAborted = true;
         result.exitCode = 1;
-        return invokeAbort();
+        const sessionAbort = invokeAbort();
+        let descendantAbort: Promise<void>;
+        try {
+          descendantAbort = Promise.resolve(
+            supervisor!.abortAll(reason ?? "Stage AgentSession aborted."),
+          ).catch(() => {});
+        } catch {
+          descendantAbort = Promise.resolve();
+        }
+        abortOperations = Promise.all([sessionAbort, descendantAbort]).then(() => {});
+        return abortOperations;
       };
       const deliver = (listener: (event: JsonAgentSessionEvent) => void, event: JsonAgentSessionEvent) => {
         try {
@@ -279,6 +288,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         if (!ownerSubscribed) pendingOwnerEvents.push(event);
         else for (const listener of listeners) deliver(listener, event);
       });
+      supervisor.attach(session as unknown as SupervisableAgentSession);
       await session.bindExtensions({ mode: "rpc" });
       if (!options.agent.tools || options.agent.tools.length === 0) {
         session.setActiveToolsByName(session.getAllTools().map(({ name }) => name));
@@ -288,6 +298,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
       const finish = async (error?: unknown): Promise<StageRunResult> => {
         barrier!.settlePrompt(error);
         await abortOperations;
+        await supervisor!.waitForQuiescence();
         result.sessionPath = session!.sessionFile;
         if (error !== undefined) {
           result.exitCode = 1;
@@ -344,6 +355,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
           disposePromise ??= (async () => {
             await completion;
             await abortOperations;
+            await supervisor!.dispose();
             if (signalListener) options.signal?.removeEventListener("abort", signalListener);
             unsubscribe?.();
             barrier!.dispose();
@@ -356,14 +368,16 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
       };
       return handle;
     } catch (error) {
-      const failure = session?.sessionFile
-        ? new StageLaunchSetupError(error, session.sessionId, session.sessionFile)
-        : error;
       barrier?.dispose();
       if (signalListener) options.signal?.removeEventListener("abort", signalListener);
       unsubscribe?.();
+      try {
+        await supervisor?.dispose();
+      } catch {
+        // Preserve the setup failure that triggered cleanup.
+      }
       session?.dispose();
-      throw failure;
+      throw error;
     }
   };
 }
@@ -381,6 +395,7 @@ async function resolveDefaultStageSessionLauncher(): Promise<StageSessionLaunche
   const { join } = await import("node:path");
   const { importPi, getAgentDir } = await import("../runtime/pi-import");
   const pi = await importPi();
+  const { SubagentSupervisor } = await import("./supervisor");
   const { createSubagentExtension } = await import("../extensions/subagent");
   const { default: webSearchExtension } = await import("../extensions/web-search");
   const { default: webFetchExtension } = await import("../extensions/webfetch");
@@ -399,13 +414,19 @@ async function resolveDefaultStageSessionLauncher(): Promise<StageSessionLaunche
       const created = await pi.createAgentSession(options as Parameters<typeof pi.createAgentSession>[0]);
       return { session: created.session as unknown as StageAgentSession };
     },
-    createExtensionFactories: (agent, coordinator) => [
+    createDirectChildSupervisor: (coordinator) => new SubagentSupervisor({
+      coordinator,
+      launchStage: launchStageSession,
+    }),
+    createExtensionFactories: (agent, coordinator, supervisor) => [
       {
         name: "subagent",
         factory: createSubagentExtension({
           callerAgent: agent.name,
           allowedSubagents: agent.subagents,
-          ownerSessionManager: coordinator.getRootSessionManager(),
+          coordinator,
+          supervisor,
+          agentDir,
         }),
       },
       { name: "web-search", factory: webSearchExtension },
@@ -440,132 +461,4 @@ function collectMessageEvent(result: StageRunResult, event: JsonAgentSessionEven
   result.model ??= message.model;
   result.stopReason = message.stopReason;
   result.errorMessage = message.errorMessage;
-}
-
-// Temporary adapter for the blocking tool path; supervisor wiring replaces this
-// consumer in the following slice. Session disposal still goes through the handle.
-export interface StageRunOptions {
-  agent: AgentConfig;
-  task: string;
-  cwd: string;
-  model?: string;
-  thinking?: string;
-  sessionPath?: string;
-  ownerSessionManager?: unknown;
-  signal?: AbortSignal;
-  step?: number;
-  agentId?: string;
-  onSessionHeader?: (header: { id: string; cwd: string; sessionPath?: string }) => void;
-  onEvent?: (event: unknown) => void;
-}
-
-export type StageSessionRunner = (options: StageRunOptions) => Promise<StageRunResult>;
-
-function asCoordinatorSessionManager(value: unknown): CoordinatorSessionManager {
-  const candidate = value as Partial<CoordinatorSessionManager> | undefined;
-  if (candidate?.getEntries && candidate.appendCustomEntry) {
-    return {
-      getSessionId: () => candidate.getSessionId?.() ?? "legacy-owner",
-      getSessionFile: () => candidate.getSessionFile?.(),
-      getEntries: () => candidate.getEntries!(),
-      appendCustomEntry: (customType, data) => candidate.appendCustomEntry!(customType, data),
-    };
-  }
-  const entries: unknown[] = [];
-  return {
-    getSessionId: () => "legacy-owner",
-    getSessionFile: () => undefined,
-    getEntries: () => entries,
-    appendCustomEntry: (customType, data) => {
-      entries.push({ type: "custom", customType, data });
-      return `legacy-${entries.length}`;
-    },
-  };
-}
-
-function createLegacyStageSessionRunner(launcher: StageSessionLauncher): StageSessionRunner {
-  return async (options) => {
-    const manager = asCoordinatorSessionManager(options.ownerSessionManager);
-    const coordinator = new SubagentCoordinator(manager);
-    const agentId = options.agentId ?? `${options.agent.name}_0`;
-    const alias = options.sessionPath
-      ? readAgentAliases(manager.getEntries()).find((entry) => entry.id === agentId && entry.sessionPath === options.sessionPath)
-      : undefined;
-    const reservation: ReservedDispatch = {
-      launchId: randomUUID(),
-      ownerSessionId: manager.getSessionId(),
-      toolCallId: `legacy-${randomUUID()}`,
-      agent: options.agent.name,
-      agentId,
-      continuation: options.sessionPath !== undefined,
-      ...(alias ? { childSessionId: alias.sessionId, sessionPath: alias.sessionPath } : {}),
-    };
-    let handle: StageLaunchHandle | undefined;
-    try {
-      handle = await launcher({
-        reservation,
-        agent: options.agent,
-        task: options.task,
-        cwd: options.cwd,
-        model: options.model,
-        thinking: options.thinking,
-        coordinator,
-        signal: options.signal,
-      });
-      options.onSessionHeader?.({ id: handle.childSessionId, cwd: options.cwd, sessionPath: handle.sessionPath });
-      const unsubscribe = options.onEvent ? handle.subscribe(options.onEvent) : undefined;
-      void handle.materialized.catch(() => {});
-      const result = await handle.completion;
-      result.step = options.step;
-      unsubscribe?.();
-      await handle.dispose();
-      return result;
-    } catch (error) {
-      if (handle) {
-        try {
-          await handle.abort();
-          await handle.dispose();
-        } catch {
-          // Preserve the operation failure that triggered cleanup.
-        }
-      }
-      const metadata = error instanceof StageLaunchSetupError ? error : undefined;
-      let failure = error;
-      if (metadata) {
-        try {
-          options.onSessionHeader?.({
-            id: metadata.childSessionId,
-            cwd: options.cwd,
-            sessionPath: metadata.sessionPath,
-          });
-        } catch (headerError) {
-          failure = headerError;
-        }
-      }
-      const message = describeError(failure);
-      return {
-        agent: options.agent.name,
-        agentSource: options.agent.source,
-        task: options.task,
-        exitCode: 1,
-        messages: [],
-        stderr: message,
-        usage: emptyUsage(),
-        model: options.model,
-        errorMessage: message,
-        step: options.step,
-        ...(metadata ? { sessionId: metadata.childSessionId } : {}),
-        sessionPath: metadata?.sessionPath ?? options.sessionPath,
-        agentId,
-      };
-    }
-  };
-}
-
-export function createStageSessionRunner(deps: StageSessionDependencies): StageSessionRunner {
-  return createLegacyStageSessionRunner(createStageSessionLauncher(deps));
-}
-
-export async function runStageSession(options: StageRunOptions): Promise<StageRunResult> {
-  return createLegacyStageSessionRunner(launchStageSession)(options);
 }

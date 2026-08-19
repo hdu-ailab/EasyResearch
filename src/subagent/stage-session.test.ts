@@ -8,12 +8,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AgentConfig } from "./agents";
 import { SubagentCoordinator, type CoordinatorSessionManager, type ReservedDispatch } from "./coordinator";
 import {
-  createStageSessionRunner,
   createStageSessionLauncher,
   type StageAgentSession,
   type StageLaunchOptions,
   type StageSessionDependencies,
 } from "./stage-session";
+import type { SubagentSupervisor } from "./supervisor";
 
 const agent: AgentConfig = {
   name: "search",
@@ -146,6 +146,8 @@ class FakeStageSession implements StageAgentSession {
     await this.abortImpl();
   }
 
+  async sendCustomMessage(): Promise<void> {}
+
   dispose(): void {
     this.disposeCalls += 1;
   }
@@ -160,9 +162,42 @@ class FakeStageSession implements StageAgentSession {
   }
 }
 
+class FakeDirectChildSupervisor {
+  readonly attached: StageAgentSession[] = [];
+  abortReasons: string[] = [];
+  disposeCalls = 0;
+
+  attach(session: StageAgentSession): void {
+    this.attached.push(session);
+  }
+
+  hasRunningChildren(): boolean {
+    return false;
+  }
+
+  hasPendingNotifications(): boolean {
+    return false;
+  }
+
+  waitForQuiescence(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  abortAll(reason: string): Promise<void> {
+    this.abortReasons.push(reason);
+    return Promise.resolve();
+  }
+
+  dispose(): Promise<void> {
+    this.disposeCalls += 1;
+    return Promise.resolve();
+  }
+}
+
 interface DependencyHarness {
   dependencies: StageSessionDependencies;
   calls: Array<{ name: string; value?: unknown }>;
+  supervisors: FakeDirectChildSupervisor[];
   openedManager: {
     getSessionId(): string;
     getCwd(): string;
@@ -172,6 +207,7 @@ interface DependencyHarness {
 
 function dependencyHarness(session: FakeStageSession): DependencyHarness {
   const calls: Array<{ name: string; value?: unknown }> = [];
+  const supervisors: FakeDirectChildSupervisor[] = [];
   const openedManager = {
     getSessionId: () => session.sessionId,
     getCwd: () => "/project",
@@ -179,6 +215,7 @@ function dependencyHarness(session: FakeStageSession): DependencyHarness {
   };
   return {
     calls,
+    supervisors,
     openedManager,
     dependencies: {
       agentDir: "/agent",
@@ -205,8 +242,14 @@ function dependencyHarness(session: FakeStageSession): DependencyHarness {
         calls.push({ name: "createSession", value: options });
         return { session };
       },
-      createExtensionFactories: (stageAgent, coordinator) => [
-        { name: "stage", caller: stageAgent.name, coordinator },
+      createDirectChildSupervisor: (coordinator) => {
+        const supervisor = new FakeDirectChildSupervisor();
+        supervisors.push(supervisor);
+        calls.push({ name: "supervisor", value: { coordinator, supervisor } });
+        return supervisor as unknown as SubagentSupervisor;
+      },
+      createExtensionFactories: (stageAgent, coordinator, supervisor) => [
+        { name: "stage", caller: stageAgent.name, coordinator, supervisor },
         { name: "web-search" },
       ],
       resolveSkillPaths: () => ["/skills/paper-search"],
@@ -280,7 +323,7 @@ describe("createStageSessionLauncher", () => {
       additionalSkillPaths: ["/skills/paper-search"],
       appendSystemPrompt: ["Search carefully."],
       extensionFactories: [
-        { name: "stage", caller: "search", coordinator },
+        { name: "stage", caller: "search", coordinator, supervisor: harness.supervisors[0] },
         { name: "web-search" },
       ],
     });
@@ -293,9 +336,12 @@ describe("createStageSessionLauncher", () => {
     });
     expect(session.names).toEqual(["easyresearch:search"]);
     expect(session.promptCalls).toEqual(["Task: find papers"]);
+    expect(harness.supervisors).toHaveLength(1);
+    expect(harness.supervisors[0]?.attached).toEqual([session]);
     expect(session.disposeCalls).toBe(0);
 
     await handle.dispose();
+    expect(harness.supervisors[0]?.disposeCalls).toBe(1);
     expect(session.disposeCalls).toBe(1);
   });
 
@@ -385,6 +431,23 @@ describe("createStageSessionLauncher", () => {
     await handle.dispose();
   });
 
+  it("propagates handle abort to the stage's direct-child supervisor", async () => {
+    const prompt = deferred<void>();
+    const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
+    session.abortImpl = async () => prompt.resolve();
+    const harness = dependencyHarness(session);
+    const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
+    const handle = await createStageSessionLauncher(harness.dependencies)(stageOptions(coordinator));
+    const materializationFailure = handle.materialized.catch((error) => error);
+
+    await handle.abort("stop the nested tree");
+    await handle.completion;
+
+    expect(harness.supervisors[0]?.abortReasons).toEqual(["stop the nested tree"]);
+    expect(await materializationFailure).toBeInstanceOf(Error);
+    await handle.dispose();
+  });
+
   it("makes abort and disposal idempotent", async () => {
     const prompt = deferred<void>();
     const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
@@ -403,30 +466,6 @@ describe("createStageSessionLauncher", () => {
     expect(session.listeners.size).toBe(0);
   });
 
-  it("aborts and disposes an active legacy handle when its header callback throws", async () => {
-    const prompt = deferred<void>();
-    const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
-    session.abortImpl = async () => prompt.resolve();
-    const coordinatorSessionManager = new MemoryCoordinatorSessionManager();
-    const runner = createStageSessionRunner(dependencyHarness(session).dependencies);
-
-    const result = await runner({
-      agent,
-      task: "find papers",
-      cwd: "/project",
-      agentId: "search_0",
-      ownerSessionManager: coordinatorSessionManager,
-      onSessionHeader: () => {
-        throw new Error("header callback failed");
-      },
-    });
-
-    expect(result).toMatchObject({ exitCode: 1, errorMessage: "header callback failed" });
-    expect(session.abortCalls).toBe(1);
-    expect(session.disposeCalls).toBe(1);
-    expect(session.listeners.size).toBe(0);
-  });
-
   it("rejects setup failure and disposes a session that has no launch handle", async () => {
     const prompt = deferred<void>();
     const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
@@ -438,37 +477,6 @@ describe("createStageSessionLauncher", () => {
     expect(session.promptCalls).toEqual([]);
     expect(session.disposeCalls).toBe(1);
     expect(session.listeners.size).toBe(0);
-  });
-
-  it("preserves created child metadata for a legacy setup failure", async () => {
-    const prompt = deferred<void>();
-    const session = new FakeStageSession("child-setup", join(root, "child-setup.jsonl"), prompt.promise);
-    session.bindError = new Error("extension setup failed");
-    const headers: Array<{ id: string; cwd: string; sessionPath?: string }> = [];
-    const runner = createStageSessionRunner(dependencyHarness(session).dependencies);
-
-    const result = await runner({
-      agent,
-      task: "find papers",
-      cwd: "/project",
-      agentId: "search_0",
-      ownerSessionManager: new MemoryCoordinatorSessionManager(),
-      onSessionHeader: (header) => headers.push(header),
-    });
-
-    expect(headers).toEqual([{
-      id: "child-setup",
-      cwd: "/project",
-      sessionPath: session.sessionFile,
-    }]);
-    expect(result).toMatchObject({
-      exitCode: 1,
-      errorMessage: "extension setup failed",
-      sessionId: "child-setup",
-      sessionPath: session.sessionFile,
-    });
-    expect(session.promptCalls).toEqual([]);
-    expect(session.disposeCalls).toBe(1);
   });
 
   it("rejects materialization but resolves completion when the prompt fails before output", async () => {

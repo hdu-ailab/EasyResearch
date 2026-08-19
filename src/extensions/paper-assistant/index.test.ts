@@ -68,23 +68,14 @@ describe("createPaperAssistantExtension definition application", () => {
     expect(setActiveTools).toHaveBeenCalledWith(["read", "subagent"]);
   });
 
-  it("appends the effective system prompt at before_agent_start", async () => {
+  it("does not mutate the base prompt again before an agent turn", async () => {
     const root = makeRoot();
-    const cwd = join(root, "project");
     const agentDir = join(root, "global");
     const bundledAgentsDir = join(root, "bundled");
     writeAgent(join(bundledAgentsDir, "agents"), "paper-assistant", definition("Bundled Paper Assistant"));
-    writeAgent(join(cwd, ".easyresearch", "agents"), "paper-assistant", definition("Project Paper Assistant", [
-      "tools: [read, subagent]",
-    ]));
     const { handlers } = await loadExtension({ agentDir, bundledAgentsDir });
 
-    const prompt = await handlers.get("before_agent_start")?.(
-      { systemPrompt: "Pi base" },
-      { cwd },
-    );
-    expect(prompt.systemPrompt).toContain("Pi base");
-    expect(prompt.systemPrompt).toContain("Project Paper Assistant");
+    expect(handlers.has("before_agent_start")).toBe(false);
   });
 
   it("resolves Skill roots from the effective definition's skills", async () => {

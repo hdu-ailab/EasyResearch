@@ -13,8 +13,8 @@ import {
 /**
  * ADR-063: the Paper Assistant extension now applies ONLY the effective
  * paper-assistant agent definition to the runtime — active tools
- * (`session_start`), the appended system prompt (`before_agent_start`), and
- * the resolved skill paths (`resources_discover`). The former sibling duties
+ * (`session_start`) and resolved skill paths (`resources_discover`). The base
+ * resource loader owns the effective Markdown body. The former sibling duties
  * moved to their own atomic extensions: subagent-dispatch (subagent tool),
  * welcome-banner (TUI banner), event-logger (TUI logs), project-trust
  * (project_trust → yes).
@@ -26,10 +26,6 @@ export function createPaperAssistantExtension(options: PaperAssistantConfigResol
     pi.on("session_start", async (_event, ctx) => {
       const config = await resolver.resolve(ctx.cwd, true);
       pi.setActiveTools(config.tools ?? pi.getAllTools().map(({ name }) => name));
-    });
-    pi.on("before_agent_start", async (event, ctx) => {
-      const config = await resolver.resolve(ctx.cwd);
-      return { systemPrompt: `${event.systemPrompt}\n\n${config.systemPrompt}` };
     });
     pi.on("resources_discover", async (event) => {
       const config = await resolver.resolve(event.cwd);

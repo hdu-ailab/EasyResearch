@@ -3,6 +3,9 @@ import type { Model } from "@earendil-works/pi-ai";
 import type { SessionTreeNode } from "@earendil-works/pi-coding-agent";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { toJsonSessionEvent } from "../runtime/json-session-event";
+import type { AgentConfig } from "../subagent/agents";
+import type { CoordinatorSessionManager, SubagentCoordinator } from "../subagent/coordinator";
+import type { SubagentSupervisor, SupervisableAgentSession } from "../subagent/supervisor";
 
 export interface StartSessionOptions {
   cwd: string;
@@ -66,6 +69,10 @@ export interface InProcessAgentSession {
   };
   subscribe(listener: (event: unknown) => void): () => void;
   prompt(message: string, options?: SteerPromptOptions): Promise<void>;
+  sendCustomMessage(
+    message: { customType: string; content: string; display: boolean; details?: unknown },
+    options: { deliverAs: "steer"; triggerTurn: boolean },
+  ): Promise<void>;
   abort(): Promise<void>;
   setModel(model: Model<any>): Promise<void>;
   setThinkingLevel(level: ThinkingLevel): void;
@@ -79,13 +86,19 @@ export interface InProcessAgentSession {
   dispose(): void;
 }
 
-export type AgentSessionCreator = (options: StartSessionOptions) => Promise<InProcessAgentSession>;
-
-interface BindableAgentSession extends InProcessAgentSession {
+export interface BindableAgentSession extends InProcessAgentSession {
   bindExtensions(bindings: unknown): Promise<void>;
   waitForIdle(): Promise<void>;
   reload(): Promise<void>;
 }
+
+export interface ManagedAgentSession {
+  session: BindableAgentSession;
+  coordinator: SubagentCoordinator;
+  supervisor: SubagentSupervisor;
+}
+
+export type AgentSessionCreator = (options: StartSessionOptions) => Promise<ManagedAgentSession>;
 
 interface ResourceLoaderLike {
   reload(options?: { resolveProjectTrust?: () => Promise<boolean> }): Promise<void>;
@@ -93,9 +106,14 @@ interface ResourceLoaderLike {
 
 export interface PiRuntimeDependencies {
   agentDir: string;
-  extensionFactories: unknown[];
-  createSessionManager(cwd: string): unknown;
-  openSessionManager(path: string): unknown;
+  createSessionManager(cwd: string): CoordinatorSessionManager;
+  openSessionManager(path: string): CoordinatorSessionManager;
+  createCoordinator(sessionManager: CoordinatorSessionManager): SubagentCoordinator;
+  createDirectChildSupervisor(coordinator: SubagentCoordinator): SubagentSupervisor;
+  createExtensionFactories(runtime: {
+    coordinator: SubagentCoordinator;
+    supervisor: SubagentSupervisor;
+  }): unknown[];
   createSettingsManager(cwd: string, agentDir: string): unknown;
   createModelRuntime(agentDir: string): Promise<unknown>;
   createResourceLoader(options: {
@@ -105,10 +123,12 @@ export interface PiRuntimeDependencies {
     extensionFactories: unknown[];
     noSkills: boolean;
     additionalSkillPaths: string[];
+    appendSystemPrompt: string[];
   }): ResourceLoaderLike;
   createAgentSession(options: Record<string, unknown>): Promise<{ session: BindableAgentSession }>;
-  resolveModel(cwd: string, modelRuntime: unknown): Promise<Model<any> | undefined>;
-  resolveSkillPaths(cwd: string, agentDir: string): Promise<string[]>;
+  resolveAssistant(cwd: string, agentDir: string): Promise<AgentConfig>;
+  resolveModel(assistant: AgentConfig, modelRuntime: unknown): Promise<Model<any> | undefined>;
+  resolveSkillPaths(assistant: AgentConfig, cwd: string, agentDir: string): Promise<string[]>;
 }
 
 export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentSessionCreator {
@@ -116,42 +136,63 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
     const sessionManager = options.sessionPath
       ? deps.openSessionManager(options.sessionPath)
       : deps.createSessionManager(options.cwd);
-    const settingsManager = deps.createSettingsManager(options.cwd, deps.agentDir);
-    const modelRuntime = await deps.createModelRuntime(deps.agentDir);
-    const skillPaths = await deps.resolveSkillPaths(options.cwd, deps.agentDir);
-    const resourceLoader = deps.createResourceLoader({
-      cwd: options.cwd,
-      agentDir: deps.agentDir,
-      settingsManager,
-      extensionFactories: deps.extensionFactories,
-      noSkills: true,
-      additionalSkillPaths: skillPaths,
-    });
-    await resourceLoader.reload({ resolveProjectTrust: async () => true });
-    const model = await deps.resolveModel(options.cwd, modelRuntime);
-    const createOptions: Record<string, unknown> = {
-      cwd: options.cwd,
-      agentDir: deps.agentDir,
-      sessionManager,
-      settingsManager,
-      modelRuntime,
-      resourceLoader,
-      ...(model ? { model } : {}),
-      ...(!options.sessionPath && options.thinking ? { thinkingLevel: options.thinking } : {}),
-    };
-    const { session } = await deps.createAgentSession(createOptions);
-    await session.bindExtensions({
-      mode: "rpc",
-      commandContextActions: {
-        waitForIdle: () => session.waitForIdle(),
-        navigateTree: async (targetId: string, navigationOptions?: Record<string, unknown>) => {
-          const result = await session.navigateTree(targetId, navigationOptions);
-          return { cancelled: result.cancelled };
+    const coordinator = deps.createCoordinator(sessionManager);
+    const supervisor = deps.createDirectChildSupervisor(coordinator);
+    let session: BindableAgentSession | undefined;
+    try {
+      const extensionFactories = deps.createExtensionFactories({ coordinator, supervisor });
+      const settingsManager = deps.createSettingsManager(options.cwd, deps.agentDir);
+      const modelRuntime = await deps.createModelRuntime(deps.agentDir);
+      const assistant = await deps.resolveAssistant(options.cwd, deps.agentDir);
+      const skillPaths = await deps.resolveSkillPaths(assistant, options.cwd, deps.agentDir);
+      const resourceLoader = deps.createResourceLoader({
+        cwd: options.cwd,
+        agentDir: deps.agentDir,
+        settingsManager,
+        extensionFactories,
+        noSkills: true,
+        additionalSkillPaths: skillPaths,
+        appendSystemPrompt: assistant.systemPrompt.trim() ? [assistant.systemPrompt] : [],
+      });
+      await resourceLoader.reload({ resolveProjectTrust: async () => true });
+      const model = await deps.resolveModel(assistant, modelRuntime);
+      const createOptions: Record<string, unknown> = {
+        cwd: options.cwd,
+        agentDir: deps.agentDir,
+        sessionManager,
+        settingsManager,
+        modelRuntime,
+        resourceLoader,
+        ...(model ? { model } : {}),
+        ...(!options.sessionPath && options.thinking ? { thinkingLevel: options.thinking } : {}),
+      };
+      ({ session } = await deps.createAgentSession(createOptions));
+      coordinator.bindPaperAssistantState({
+        model: () => session?.model ? `${session.model.provider}/${session.model.id}` : undefined,
+        thinking: () => session?.thinkingLevel,
+      });
+      supervisor.attach(session as unknown as SupervisableAgentSession);
+      await session.bindExtensions({
+        mode: "rpc",
+        commandContextActions: {
+          waitForIdle: () => session!.waitForIdle(),
+          navigateTree: async (targetId: string, navigationOptions?: Record<string, unknown>) => {
+            const result = await session!.navigateTree(targetId, navigationOptions);
+            return { cancelled: result.cancelled };
+          },
+          reload: () => session!.reload(),
         },
-        reload: () => session.reload(),
-      },
-    });
-    return session;
+      });
+      return { session, coordinator, supervisor };
+    } catch (error) {
+      try {
+        await supervisor.dispose();
+      } catch {
+        // Preserve the construction failure.
+      }
+      session?.dispose();
+      throw error;
+    }
   };
 }
 
@@ -194,15 +235,24 @@ export class PiSessionFactory implements SessionFactory {
     const { bootstrapBundledResources } = await import("../bootstrap/resources");
     await bootstrapBundledResources();
     const pi = await importPi();
-    const { assistantExtensions } = await import("../extensions");
+    const { createAssistantExtensions } = await import("../extensions");
     const { discoverAgents, PAPER_ASSISTANT_AGENT } = await import("../subagent/agents");
+    const { SubagentCoordinator } = await import("../subagent/coordinator");
+    const { SubagentSupervisor } = await import("../subagent/supervisor");
+    const { launchStageSession } = await import("../subagent/stage-session");
     const { splitModelRef } = await import("./agent-models");
     const agentDir = getAgentDir();
     const creator = createPiAgentSessionCreator({
       agentDir,
-      extensionFactories: assistantExtensions.map(({ name, factory }) => ({ name, factory })),
       createSessionManager: (cwd) => pi.SessionManager.create(cwd),
       openSessionManager: (path) => pi.SessionManager.open(path),
+      createCoordinator: (sessionManager) => new SubagentCoordinator(sessionManager),
+      createDirectChildSupervisor: (coordinator) => new SubagentSupervisor({
+        coordinator,
+        launchStage: launchStageSession,
+      }),
+      createExtensionFactories: (runtime) =>
+        createAssistantExtensions(runtime).map(({ name, factory }) => ({ name, factory })),
       createSettingsManager: (cwd, root) => pi.SettingsManager.create(cwd, root),
       createModelRuntime: (root) =>
         pi.ModelRuntime.create({ authPath: join(root, "auth.json"), modelsPath: join(root, "models.json") }),
@@ -212,10 +262,15 @@ export class PiSessionFactory implements SessionFactory {
         const result = await pi.createAgentSession(options as Parameters<typeof pi.createAgentSession>[0]);
         return { session: result.session as unknown as BindableAgentSession };
       },
-      resolveModel: async (cwd, runtime) => {
-        const configured = (await discoverAgents({ cwd, agentDir })).agents.find(
+      resolveAssistant: async (cwd) => {
+        const assistant = (await discoverAgents({ cwd, agentDir })).agents.find(
           (agent) => agent.name === PAPER_ASSISTANT_AGENT,
-        )?.model;
+        );
+        if (!assistant) throw new Error("Missing valid Paper Assistant definition");
+        return assistant;
+      },
+      resolveModel: async (assistant, runtime) => {
+        const configured = assistant.model;
         if (!configured) return undefined;
         const { provider, modelId } = splitModelRef(configured);
         return (runtime as { getModel(provider: string, modelId: string): Model<any> | undefined }).getModel(
@@ -223,12 +278,9 @@ export class PiSessionFactory implements SessionFactory {
           modelId,
         );
       },
-      resolveSkillPaths: async (cwd) => {
+      resolveSkillPaths: async (assistant, cwd) => {
         const { resolveAgentSkillDirectories, isDotAgentsSkillEnabled } = await import("../subagent/skill-resolution");
         const settingsManager = pi.SettingsManager.create(cwd, agentDir);
-        const assistant = (await discoverAgents({ cwd, agentDir })).agents.find(
-          (agent) => agent.name === PAPER_ASSISTANT_AGENT,
-        );
         return resolveAgentSkillDirectories(assistant, {
           cwd,
           agentDir,
@@ -245,6 +297,7 @@ export class PiSessionFactory implements SessionFactory {
 }
 
 class DirectSessionAdapter implements SessionAdapter {
+  private managed: ManagedAgentSession | undefined;
   private session: InProcessAgentSession | undefined;
   private unsubscribe: (() => void) | undefined;
   private stopped = false;
@@ -258,7 +311,8 @@ class DirectSessionAdapter implements SessionAdapter {
   async start(): Promise<void> {
     if (this.session) throw new Error("Session already started");
     if (this.stopped) throw new Error("Session already stopped");
-    this.session = await this.createAgentSession(this.options);
+    this.managed = await this.createAgentSession(this.options);
+    this.session = this.managed.session;
     this.unsubscribe = this.session.subscribe((event) => {
       const agentEvent = event as AgentSessionEvent;
       const jsonEvent = toJsonSessionEvent(agentEvent);
@@ -275,10 +329,15 @@ class DirectSessionAdapter implements SessionAdapter {
     this.stopped = true;
     const session = this.session;
     if (!session) return;
-    if (session.isStreaming) await session.abort();
-    this.unsubscribe?.();
-    this.unsubscribe = undefined;
-    session.dispose();
+    try {
+      if (session.isStreaming) await session.abort();
+      await this.managed?.supervisor.dispose();
+    } finally {
+      this.unsubscribe?.();
+      this.unsubscribe = undefined;
+      session.dispose();
+      this.managed = undefined;
+    }
   }
 
   async prompt(message: string, options?: SteerPromptOptions): Promise<void> {
