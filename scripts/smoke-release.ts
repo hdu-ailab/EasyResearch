@@ -69,9 +69,22 @@ let daemonPid: number | undefined;
 let modelRequests = 0;
 let venvToolResults = 0;
 let smokeModelState: SmokeModelState = {
-  phase: "awaiting-parent-subagent-call",
+  parentCallIssued: false,
+  parentWorkingObserved: false,
+  stageBashIssued: false,
+  venvValidated: false,
+  stageCompleted: false,
+  terminalHandoffObserved: false,
+  complete: false,
   completedRequests: 0,
 };
+let sessionSnapshotObserved = false;
+let observedSupervisorTerminal = false;
+let sessionEventError: Error | undefined;
+let sessionEventReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+let sessionEventTask: Promise<void> | undefined;
+let sessionEventsStopping = false;
+const recentSessionEvents: string[] = [];
 const modelServer = Bun.serve({
   port: 0,
   async fetch(request) {
@@ -382,6 +395,85 @@ async function requireOk(response: Response, label: string): Promise<any> {
   return text ? JSON.parse(text) : undefined;
 }
 
+function smokeProgressDiagnostics(): string {
+  return JSON.stringify({
+    modelRequests,
+    smokeModelState,
+    venvToolResults,
+    sessionSnapshotObserved,
+    observedSupervisorTerminal,
+    sessionEventError: sessionEventError?.message,
+    recentSessionEvents,
+  }, null, 2);
+}
+
+function observeSessionEvent(event: unknown): void {
+  const serialized = JSON.stringify(event);
+  if (serialized === undefined) throw new Error("session SSE emitted an unserializable empty frame");
+  if (serialized.includes("<agent_handoff>") || serialized.includes("session_path")) {
+    throw new Error(`session SSE exposed hidden handoff or session_path: ${serialized}`);
+  }
+  recentSessionEvents.push(serialized.slice(0, 1_000));
+  if (recentSessionEvents.length > 12) recentSessionEvents.shift();
+  if (!event || typeof event !== "object") return;
+  const value = event as { type?: unknown; agentId?: unknown; status?: unknown };
+  if (value.type === "snapshot") sessionSnapshotObserved = true;
+  if (value.type !== "subagent_supervisor" || value.agentId !== "search_0") return;
+  if (value.status === "error") throw new Error(`search_0 supervisor reported error: ${serialized}`);
+  if (value.status === "complete") observedSupervisorTerminal = true;
+}
+
+async function consumeSessionEvents(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> {
+  const decoder = new TextDecoder();
+  let buffered = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      if (!sessionEventsStopping) throw new Error("session SSE ended before native smoke completion");
+      return;
+    }
+    buffered += decoder.decode(value, { stream: true });
+    const frames = buffered.split(/\r?\n\r?\n/u);
+    buffered = frames.pop() ?? "";
+    for (const frame of frames) {
+      const data = frame
+        .split(/\r?\n/u)
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice("data:".length).trimStart())
+        .join("\n");
+      if (!data) continue;
+      try {
+        observeSessionEvent(JSON.parse(data));
+      } catch (error) {
+        const cause = error instanceof Error ? error.message : String(error);
+        throw new Error(`invalid or unsafe session SSE frame (${cause}): ${data}`);
+      }
+    }
+  }
+}
+
+async function waitForSmokeCondition(label: string, ready: () => boolean): Promise<void> {
+  while (Date.now() < firstRunDeadline) {
+    if (sessionEventError) {
+      throw new Error(`${label} failed while reading session SSE: ${sessionEventError.message}\n${smokeProgressDiagnostics()}`);
+    }
+    if (ready()) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`${label} did not finish before the native smoke deadline\n${smokeProgressDiagnostics()}`);
+}
+
+async function stopSessionEventStream(): Promise<void> {
+  sessionEventsStopping = true;
+  const reader = sessionEventReader;
+  sessionEventReader = undefined;
+  await reader?.cancel();
+  const task = sessionEventTask;
+  sessionEventTask = undefined;
+  await task;
+  if (sessionEventError) throw sessionEventError;
+}
+
 async function dumpServerLogs(): Promise<void> {
   console.log(`[smoke] system Python: ${systemPython}`);
   console.log(`[smoke] system Python --version: ${systemPythonVersionOutput}`);
@@ -571,6 +663,16 @@ try {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ cwd: project }),
   }), "session create");
+  const sessionEvents = await fetch(`${base}/api/sessions/${created.id}/events`);
+  if (!sessionEvents.ok) {
+    throw new Error(`session SSE failed (${sessionEvents.status}): ${await sessionEvents.text()}`);
+  }
+  if (!sessionEvents.body) throw new Error("session SSE response had no body");
+  sessionEventReader = sessionEvents.body.getReader();
+  sessionEventTask = consumeSessionEvents(sessionEventReader).catch((error) => {
+    sessionEventError = error instanceof Error ? error : new Error(String(error));
+  });
+  await waitForSmokeCondition("session SSE subscription", () => sessionSnapshotObserved);
   await requireOk(await fetch(`${base}/api/sessions/${created.id}/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -578,12 +680,13 @@ try {
       message: "Dispatch search and require it to execute only the deterministic bash venv-validation tool call. Do not use network tools.",
     }),
   }), "stage dispatch");
-  if (modelRequests !== 4 || smokeModelState.phase !== "complete" || smokeModelState.completedRequests !== 4) {
-    throw new Error(
-      `stage tool sequence incomplete (${modelRequests} requests; ${smokeModelState.completedRequests} accepted; phase ${smokeModelState.phase})`,
-    );
-  }
-  if (venvToolResults !== 1) throw new Error(`venv tool sentinel count was ${venvToolResults}`);
+  await waitForSmokeCondition(
+    "background stage completion",
+    () => smokeModelState.complete
+      && venvToolResults === 1
+      && observedSupervisorTerminal,
+  );
+  await stopSessionEventStream();
 
   process.env.EASYRESEARCH_CODING_AGENT_DIR = agentDir;
   const { importPi } = await import("../src/runtime/pi-import");
@@ -620,6 +723,13 @@ try {
   }), "session resume");
 } catch (error) {
   primaryError = error instanceof Error ? error : new Error(String(error));
+  if (sessionEventReader || sessionEventTask) {
+    try {
+      await stopSessionEventStream();
+    } catch (streamError) {
+      console.log(`[smoke] failed to stop session SSE: ${streamError instanceof Error ? streamError.message : String(streamError)}`);
+    }
+  }
   try {
     await settleWindowsFirstRun(true);
   } catch (settlementError) {
