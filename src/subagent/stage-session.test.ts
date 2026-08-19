@@ -103,6 +103,9 @@ class FakeStageSession implements StageAgentSession {
   names: string[] = [];
   abortCalls = 0;
   disposeCalls = 0;
+  disposeImpl: () => void = () => {};
+  unsubscribeCalls = 0;
+  unsubscribeImpl: () => void = () => {};
   bindError?: Error;
   abortImpl: () => Promise<void> = async () => {};
   promptStart?: () => void;
@@ -116,7 +119,11 @@ class FakeStageSession implements StageAgentSession {
 
   subscribe(listener: (event: unknown) => void): () => void {
     this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
+    return () => {
+      this.unsubscribeCalls += 1;
+      this.unsubscribeImpl();
+      this.listeners.delete(listener);
+    };
   }
 
   async bindExtensions(): Promise<void> {
@@ -150,6 +157,7 @@ class FakeStageSession implements StageAgentSession {
 
   dispose(): void {
     this.disposeCalls += 1;
+    this.disposeImpl();
   }
 
   emit(event: unknown): void {
@@ -165,7 +173,9 @@ class FakeStageSession implements StageAgentSession {
 class FakeDirectChildSupervisor {
   readonly attached: StageAgentSession[] = [];
   abortReasons: string[] = [];
+  abortImpl: () => Promise<void> = async () => {};
   disposeCalls = 0;
+  disposeImpl: () => Promise<void> = async () => {};
 
   attach(session: StageAgentSession): void {
     this.attached.push(session);
@@ -183,14 +193,14 @@ class FakeDirectChildSupervisor {
     return Promise.resolve();
   }
 
-  abortAll(reason: string): Promise<void> {
+  async abortAll(reason: string): Promise<void> {
     this.abortReasons.push(reason);
-    return Promise.resolve();
+    await this.abortImpl();
   }
 
-  dispose(): Promise<void> {
+  async dispose(): Promise<void> {
     this.disposeCalls += 1;
-    return Promise.resolve();
+    await this.disposeImpl();
   }
 }
 
@@ -464,6 +474,175 @@ describe("createStageSessionLauncher", () => {
     expect(session.abortCalls).toBe(1);
     expect(session.disposeCalls).toBe(1);
     expect(session.listeners.size).toBe(0);
+  });
+
+  it.each([
+    "session abort",
+    "descendant abort",
+    "descendant dispose",
+    "listener removal",
+    "session dispose",
+  ] as const)("attempts every stage cleanup and retries only failed %s ownership", async (failedStep) => {
+    const prompt = deferred<void>();
+    const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
+    const harness = dependencyHarness(session);
+    const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
+    const handle = await createStageSessionLauncher(harness.dependencies)(stageOptions(coordinator));
+    const supervisor = harness.supervisors[0]!;
+    const failure = new Error(`${failedStep} failed`);
+    let fail = true;
+    const failOnce = () => {
+      if (!fail) return;
+      fail = false;
+      throw failure;
+    };
+    const abortGate = failedStep === "session abort" || failedStep === "descendant abort"
+      ? deferred<void>()
+      : undefined;
+    if (failedStep === "session abort") {
+      session.abortImpl = async () => {
+        await abortGate!.promise;
+        failOnce();
+      };
+    }
+    if (failedStep === "descendant abort") {
+      supervisor.abortImpl = async () => {
+        await abortGate!.promise;
+        failOnce();
+      };
+    }
+    if (failedStep === "descendant dispose") supervisor.disposeImpl = async () => failOnce();
+    if (failedStep === "listener removal") session.unsubscribeImpl = failOnce;
+    if (failedStep === "session dispose") session.disposeImpl = failOnce;
+
+    session.emitAssistantEndAndPersist();
+    await handle.materialized;
+    const abortOutcome = handle.abort("stop stage").then(
+      () => undefined,
+      (error) => error,
+    );
+    prompt.resolve();
+    const firstDisposal = handle.dispose().then(
+      () => undefined,
+      (error) => error,
+    );
+    abortGate?.resolve();
+
+    const [abortError, disposalError] = await Promise.all([abortOutcome, firstDisposal]);
+    if (failedStep === "session abort" || failedStep === "descendant abort") {
+      expect(abortError).toBe(failure);
+    } else {
+      expect(abortError).toBeUndefined();
+    }
+    expect(disposalError).toBe(failure);
+    expect({
+      abort: session.abortCalls,
+      descendantAbort: supervisor.abortReasons.length,
+      descendantDispose: supervisor.disposeCalls,
+      unsubscribe: session.unsubscribeCalls,
+      dispose: session.disposeCalls,
+    }).toEqual({ abort: 1, descendantAbort: 1, descendantDispose: 1, unsubscribe: 1, dispose: 1 });
+
+    await handle.dispose();
+    const expected = (step: typeof failedStep) => step === failedStep ? 2 : 1;
+    expect({
+      abort: session.abortCalls,
+      descendantAbort: supervisor.abortReasons.length,
+      descendantDispose: supervisor.disposeCalls,
+      unsubscribe: session.unsubscribeCalls,
+      dispose: session.disposeCalls,
+    }).toEqual({
+      abort: expected("session abort"),
+      descendantAbort: expected("descendant abort"),
+      descendantDispose: expected("descendant dispose"),
+      unsubscribe: expected("listener removal"),
+      dispose: expected("session dispose"),
+    });
+
+    await handle.dispose();
+    expect({
+      abort: session.abortCalls,
+      descendantAbort: supervisor.abortReasons.length,
+      descendantDispose: supervisor.disposeCalls,
+      unsubscribe: session.unsubscribeCalls,
+      dispose: session.disposeCalls,
+    }).toEqual({
+      abort: expected("session abort"),
+      descendantAbort: expected("descendant abort"),
+      descendantDispose: expected("descendant dispose"),
+      unsubscribe: expected("listener removal"),
+      dispose: expected("session dispose"),
+    });
+  });
+
+  it("reports all stage cleanup failures after attempting every sibling", async () => {
+    const prompt = deferred<void>();
+    const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
+    const harness = dependencyHarness(session);
+    const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
+    const handle = await createStageSessionLauncher(harness.dependencies)(stageOptions(coordinator));
+    const supervisor = harness.supervisors[0]!;
+    const failures = [
+      new Error("session abort failed"),
+      new Error("descendant abort failed"),
+      new Error("descendant dispose failed"),
+      new Error("listener removal failed"),
+      new Error("session dispose failed"),
+    ];
+    session.abortImpl = async () => { throw failures[0]; };
+    supervisor.abortImpl = async () => { throw failures[1]; };
+    supervisor.disposeImpl = async () => { throw failures[2]; };
+    session.unsubscribeImpl = () => { throw failures[3]; };
+    session.disposeImpl = () => { throw failures[4]; };
+
+    session.emitAssistantEndAndPersist();
+    await handle.materialized;
+    const abortOutcome = handle.abort("stop stage").catch(() => {});
+    prompt.resolve();
+    const cleanupError = await handle.dispose().then(
+      () => undefined,
+      (error) => error as AggregateError,
+    );
+    await abortOutcome;
+
+    expect(cleanupError).toBeInstanceOf(AggregateError);
+    expect(cleanupError?.errors).toEqual(failures);
+    expect({
+      abort: session.abortCalls,
+      descendantAbort: supervisor.abortReasons.length,
+      descendantDispose: supervisor.disposeCalls,
+      unsubscribe: session.unsubscribeCalls,
+      dispose: session.disposeCalls,
+    }).toEqual({ abort: 1, descendantAbort: 1, descendantDispose: 1, unsubscribe: 1, dispose: 1 });
+  });
+
+  it("keeps a signal-triggered abort failure owned by retryable disposal", async () => {
+    const prompt = deferred<void>();
+    const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
+    const harness = dependencyHarness(session);
+    const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
+    const controller = new AbortController();
+    const failure = new Error("signal abort failed");
+    let fail = true;
+    session.abortImpl = async () => {
+      if (fail) throw failure;
+    };
+    const handle = await createStageSessionLauncher(harness.dependencies)({
+      ...stageOptions(coordinator),
+      signal: controller.signal,
+    });
+
+    session.emitAssistantEndAndPersist();
+    await handle.materialized;
+    controller.abort("stop stage");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    prompt.resolve();
+
+    await expect(handle.dispose()).rejects.toBe(failure);
+    fail = false;
+    await handle.dispose();
+    expect(session.abortCalls).toBe(3);
+    expect(session.disposeCalls).toBe(1);
   });
 
   it("rejects setup failure and disposes a session that has no launch handle", async () => {

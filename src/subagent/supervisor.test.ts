@@ -166,6 +166,7 @@ class FakeStage {
   disposeCalls = 0;
   unsubscribeCalls = 0;
   abortImpl: () => Promise<void> = async () => {};
+  disposeImpl: () => Promise<void> = async () => {};
   subscribeError?: Error;
   readonly handle: StageLaunchHandle;
 
@@ -193,6 +194,7 @@ class FakeStage {
       },
       dispose: async () => {
         this.disposeCalls += 1;
+        await this.disposeImpl();
       },
     };
   }
@@ -555,6 +557,36 @@ describe("SubagentSupervisor ownership and launch ordering", () => {
     expect(stage.unsubscribeCalls).toBe(1);
     expect(parent.listeners.size).toBe(0);
     expect(parent.disposeCalls).toBe(0);
+  });
+
+  it("retains and retries a child handle whose first disposal fails", async () => {
+    const stage = new FakeStage("search_0", "child-0", "/sessions/child-0.jsonl");
+    const failure = new Error("stage handle disposal failed");
+    let fail = true;
+    stage.disposeImpl = async () => {
+      if (!fail) return;
+      fail = false;
+      throw failure;
+    };
+    const { coordinator, parent, supervisor } = makeHarness({
+      launchStage: async () => stage.handle,
+      autoAcknowledge: true,
+    });
+    const reservation = reserve(coordinator, "tool-0");
+    const launching = supervisor.launch(reservation, options());
+    stage.materialization.resolve();
+    await launching;
+    parent.acknowledgeLaunch("tool-0");
+    stage.completion.resolve(result());
+    await turn();
+
+    expect(stage.disposeCalls).toBe(1);
+    expect(supervisor.hasRunningChildren()).toBe(true);
+
+    await supervisor.dispose();
+    expect(stage.disposeCalls).toBe(2);
+    expect(stage.unsubscribeCalls).toBe(1);
+    expect(supervisor.hasRunningChildren()).toBe(false);
   });
 });
 

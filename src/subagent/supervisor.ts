@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AgentSessionEvent, JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import { runCleanupSteps } from "../runtime/cleanup";
 import { type ReservedDispatch, SubagentCoordinator } from "./coordinator";
 import type { SubagentJobIdentity, SubagentLaunchDetails } from "./contracts";
 import {
@@ -49,6 +50,8 @@ interface OwnedChild {
   terminalRecorded: boolean;
   terminalPublished: boolean;
   completionSettled: boolean;
+  subscriptionDisposed: boolean;
+  handleDisposed: boolean;
   resourcesDisposed: boolean;
   forcedError?: string;
   removed: boolean;
@@ -230,6 +233,8 @@ export class SubagentSupervisor {
       terminalRecorded: false,
       terminalPublished: false,
       completionSettled: false,
+      subscriptionDisposed: false,
+      handleDisposed: false,
       resourcesDisposed: false,
       removed: false,
       finished,
@@ -295,7 +300,11 @@ export class SubagentSupervisor {
     this.publishAcknowledgedEvents(child);
     this.recordTerminalIfReady(child);
     this.publishTerminalIfReady(child);
-    if (child.completionSettled) void this.disposeChildResources(child).then(() => this.removeChildIfFinished(child));
+    if (child.completionSettled) {
+      void this.disposeChildResources(child)
+        .then(() => this.removeChildIfFinished(child))
+        .catch(() => {});
+    }
     this.stateChanged();
 
     return {
@@ -516,7 +525,13 @@ export class SubagentSupervisor {
     child.completionSettled = true;
     this.recordTerminalIfReady(child);
     this.publishTerminalIfReady(child);
-    if (child.materialization !== "pending") await this.disposeChildResources(child);
+    if (child.materialization !== "pending") {
+      try {
+        await this.disposeChildResources(child);
+      } catch {
+        // The supervisor retains the handle and retries during later teardown.
+      }
+    }
     this.removeChildIfFinished(child);
     this.stateChanged();
   }
@@ -575,17 +590,33 @@ export class SubagentSupervisor {
   private disposeChildResources(child: OwnedChild): Promise<void> {
     if (child.resourcesDisposed) return Promise.resolve();
     if (!child.dispose || !child.completionSettled) return Promise.resolve();
-    child.disposePromise ??= (async () => {
-      child.subscription?.();
-      child.subscription = undefined;
-      try {
+    if (child.disposePromise) return child.disposePromise;
+    let tracked!: Promise<void>;
+    tracked = runCleanupSteps([
+      () => {
+        if (child.subscriptionDisposed) return;
+        child.subscription?.();
+        child.subscription = undefined;
+        child.subscriptionDisposed = true;
+      },
+      async () => {
+        if (child.handleDisposed) return;
         await child.dispose!();
-      } finally {
+        child.handleDisposed = true;
+      },
+    ], "Subagent child cleanup failed.").then(
+      () => {
         child.resourcesDisposed = true;
         this.stateChanged();
-      }
-    })();
-    return child.disposePromise;
+      },
+      (error) => {
+        if (child.disposePromise === tracked) child.disposePromise = undefined;
+        this.stateChanged();
+        throw error;
+      },
+    );
+    child.disposePromise = tracked;
+    return tracked;
   }
 
   private removeChildIfFinished(child: OwnedChild): void {

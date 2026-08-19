@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
 import type { AgentSessionEvent, ExtensionContext, JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
@@ -6,6 +9,7 @@ import { AGENT_ALIAS_ENTRY, readAgentAliases } from "./agent-alias";
 import type { AgentConfig } from "./agents";
 import { type AgentCatalog, SubagentCoordinator, type CoordinatorSessionManager } from "./coordinator";
 import { AGENT_MODEL_ENTRY } from "./model-resolution";
+import { createSessionMaterializationBarrier } from "./materialization";
 import type { StageLaunchHandle, StageLaunchOptions, StageRunResult } from "./stage-session";
 import { SubagentSupervisor, type SupervisableAgentSession } from "./supervisor";
 import { AGENT_THINKING_ENTRY } from "./thinking-resolution";
@@ -473,6 +477,54 @@ describe("createSubagentTool asynchronous launch contract", () => {
     await expect(result).rejects.toThrow("provider failed before first output");
     expect(readAgentAliases(harness.rootManager.entries)).toEqual([]);
     expect(harness.coordinator.journal().jobs.values().next().value?.status).toBe("pre_materialization_failed");
+  });
+
+  it("keeps an exact-path materialization failure private at the public tool boundary", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "easyresearch-private-materialization-"));
+    const sessionPath = join(directory, "missing-child.jsonl");
+    try {
+      const barrier = createSessionMaterializationBarrier({ sessionPath, continuation: true });
+      const internalFailure = await barrier.materialized.then(
+        () => new Error("expected materialization to fail"),
+        (error) => error as Error,
+      );
+      expect(internalFailure.message).toContain(sessionPath);
+
+      const harness = toolHarness();
+      const result = harness.tool.execute(
+        "t0",
+        { agent: "search", task: "collect" },
+        undefined,
+        undefined,
+        harness.context,
+      );
+      harness.rejectMaterialization("search_0", internalFailure);
+      const publicFailure = await result.then(
+        () => undefined,
+        (error) => error as Error & { details?: unknown },
+      );
+
+      expect(publicFailure).toBeInstanceOf(Error);
+      expect(publicFailure?.name).toBe("SubagentLaunchError");
+      expect(publicFailure?.message).toMatch(/ENOENT.*stat/i);
+      expect(publicFailure?.message).not.toContain(sessionPath);
+      expect(publicFailure?.details).toMatchObject({
+        phase: "pre-materialization",
+        code: "ENOENT",
+        syscall: expect.stringMatching(/^stat/),
+      });
+      expect(JSON.stringify(publicFailure)).not.toContain(sessionPath);
+      expect(JSON.stringify({
+        message: publicFailure?.message,
+        details: publicFailure?.details,
+        error: publicFailure,
+      })).not.toContain(sessionPath);
+
+      const internalJob = [...harness.coordinator.journal().jobs.values()][0];
+      expect(internalJob?.errorMessage).toContain(sessionPath);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("consumes a reservation when root-scoped model resolution fails", async () => {

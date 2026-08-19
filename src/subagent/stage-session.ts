@@ -1,6 +1,7 @@
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Message, Model } from "@earendil-works/pi-ai";
 import type { AgentSessionEvent, JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import { runCleanupSteps } from "../runtime/cleanup";
 import { toJsonSessionEvent } from "../runtime/json-session-event";
 import type { AgentConfig } from "./agents";
 import type { ReservedDispatch, SubagentCoordinator } from "./coordinator";
@@ -237,37 +238,63 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
       let abortRequested = false;
       let abortReapplied = false;
       let abortReason: string | undefined;
-      let abortOperations = Promise.resolve();
+      let initialSessionAbortComplete = false;
+      let descendantAbortComplete = false;
+      let reappliedSessionAbortRequired = false;
+      let reappliedSessionAbortComplete = false;
+      let abortOperation: Promise<void> | undefined;
       let completion!: Promise<StageRunResult>;
       let disposePromise: Promise<void> | undefined;
+      let completionAwaited = false;
+      let supervisorDisposed = false;
+      let signalListenerRemoved = false;
+      let sessionUnsubscribed = false;
+      let barrierDisposed = false;
+      let eventBuffersCleared = false;
+      let sessionDisposed = false;
 
-      const invokeAbort = () => {
-        let operation: Promise<void>;
-        try {
-          operation = Promise.resolve(session!.abort()).catch(() => {});
-        } catch {
-          operation = Promise.resolve();
-        }
-        abortOperations = Promise.all([abortOperations, operation]).then(() => {});
-        return abortOperations;
+      const attemptAbort = () => {
+        if (abortOperation) return abortOperation;
+        let tracked!: Promise<void>;
+        tracked = runCleanupSteps([
+          async () => {
+            if (!abortRequested || initialSessionAbortComplete) return;
+            await session!.abort();
+            initialSessionAbortComplete = true;
+          },
+          async () => {
+            if (!abortRequested || descendantAbortComplete) return;
+            await supervisor!.abortAll(abortReason ?? "Stage AgentSession aborted.");
+            descendantAbortComplete = true;
+          },
+          async () => {
+            if (!reappliedSessionAbortRequired || reappliedSessionAbortComplete) return;
+            await session!.abort();
+            reappliedSessionAbortComplete = true;
+          },
+        ], "Stage abort cleanup failed.").then(
+          () => {
+            if (abortOperation === tracked) abortOperation = undefined;
+          },
+          (error) => {
+            if (abortOperation === tracked) abortOperation = undefined;
+            throw error;
+          },
+        );
+        abortOperation = tracked;
+        // Signal callbacks cannot await this promise; disposal still owns and
+        // reports the original rejection through the retained operation.
+        void tracked.catch(() => {});
+        return tracked;
       };
       const requestAbort = (reason?: string) => {
-        if (abortRequested) return abortOperations;
-        abortRequested = true;
-        abortReason = reason;
-        result.wasAborted = true;
-        result.exitCode = 1;
-        const sessionAbort = invokeAbort();
-        let descendantAbort: Promise<void>;
-        try {
-          descendantAbort = Promise.resolve(
-            supervisor!.abortAll(reason ?? "Stage AgentSession aborted."),
-          ).catch(() => {});
-        } catch {
-          descendantAbort = Promise.resolve();
+        if (!abortRequested) {
+          abortRequested = true;
+          abortReason = reason;
+          result.wasAborted = true;
+          result.exitCode = 1;
         }
-        abortOperations = Promise.all([sessionAbort, descendantAbort]).then(() => {});
-        return abortOperations;
+        return attemptAbort();
       };
       const deliver = (listener: (event: JsonAgentSessionEvent) => void, event: JsonAgentSessionEvent) => {
         try {
@@ -281,7 +308,8 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         const event = toJsonSessionEvent(rawEvent as AgentSessionEvent);
         if (abortRequested && !abortReapplied && event.type === "agent_start") {
           abortReapplied = true;
-          void invokeAbort();
+          reappliedSessionAbortRequired = true;
+          void attemptAbort().catch(() => {});
         }
         barrier!.observe(event);
         collectMessageEvent(result, event);
@@ -297,7 +325,8 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
 
       const finish = async (error?: unknown): Promise<StageRunResult> => {
         barrier!.settlePrompt(error);
-        await abortOperations;
+        const activeAbort = abortOperation;
+        if (activeAbort) await activeAbort.catch(() => {});
         await supervisor!.waitForQuiescence();
         result.sessionPath = session!.sessionFile;
         if (error !== undefined) {
@@ -352,17 +381,54 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
           return requestAbort(reason);
         },
         dispose() {
-          disposePromise ??= (async () => {
-            await completion;
-            await abortOperations;
-            await supervisor!.dispose();
-            if (signalListener) options.signal?.removeEventListener("abort", signalListener);
-            unsubscribe?.();
-            barrier!.dispose();
-            listeners.clear();
-            pendingOwnerEvents.length = 0;
-            session!.dispose();
-          })();
+          if (disposePromise) return disposePromise;
+          const ownedAbort = abortRequested ? (abortOperation ?? attemptAbort()) : Promise.resolve();
+          let tracked!: Promise<void>;
+          tracked = runCleanupSteps([
+            async () => {
+              if (completionAwaited) return;
+              await completion;
+              completionAwaited = true;
+            },
+            () => ownedAbort,
+            async () => {
+              if (supervisorDisposed) return;
+              await supervisor!.dispose();
+              supervisorDisposed = true;
+            },
+            () => {
+              if (signalListenerRemoved) return;
+              if (signalListener) options.signal?.removeEventListener("abort", signalListener);
+              signalListener = undefined;
+              signalListenerRemoved = true;
+            },
+            () => {
+              if (sessionUnsubscribed) return;
+              unsubscribe?.();
+              unsubscribe = undefined;
+              sessionUnsubscribed = true;
+            },
+            () => {
+              if (barrierDisposed) return;
+              barrier!.dispose();
+              barrierDisposed = true;
+            },
+            () => {
+              if (eventBuffersCleared) return;
+              listeners.clear();
+              pendingOwnerEvents.length = 0;
+              eventBuffersCleared = true;
+            },
+            () => {
+              if (sessionDisposed) return;
+              session!.dispose();
+              sessionDisposed = true;
+            },
+          ], "Stage AgentSession cleanup failed.").then(undefined, (error) => {
+            if (disposePromise === tracked) disposePromise = undefined;
+            throw error;
+          });
+          disposePromise = tracked;
           return disposePromise;
         },
       };

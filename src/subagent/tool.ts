@@ -10,6 +10,49 @@ import { resolveThinkingForSpawn } from "./thinking-resolution";
 
 const subagentLogger = createLogger("subagent");
 
+interface SubagentLaunchErrorDetails {
+  phase: "pre-materialization";
+  code?: string;
+  syscall?: string;
+}
+
+class SubagentLaunchError extends Error {
+  readonly details: SubagentLaunchErrorDetails;
+
+  constructor(message: string, details: SubagentLaunchErrorDetails) {
+    super(message);
+    this.name = "SubagentLaunchError";
+    this.details = details;
+  }
+}
+
+function errorField(error: unknown, key: string): string | undefined {
+  if (error === null || typeof error !== "object" || !(key in error)) return undefined;
+  const value = (error as Record<string, unknown>)[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function publicLaunchError(error: unknown, internalPaths: readonly (string | undefined)[]): unknown {
+  const paths = new Set(internalPaths.filter((path): path is string => typeof path === "string" && path.length > 0));
+  for (const key of ["path", "sessionPath", "session_path"]) {
+    const path = errorField(error, key);
+    if (path) paths.add(path);
+  }
+  if (paths.size === 0) return error;
+
+  let message = error instanceof Error ? error.message : String(error);
+  for (const path of [...paths].sort((left, right) => right.length - left.length)) {
+    message = message.replaceAll(path, "[session path]");
+  }
+  const code = errorField(error, "code");
+  const syscall = errorField(error, "syscall");
+  return new SubagentLaunchError(message, {
+    phase: "pre-materialization",
+    ...(code ? { code } : {}),
+    ...(syscall ? { syscall } : {}),
+  });
+}
+
 /** The exact three-line description lists only the caller's available Agents. */
 export function formatSubagentDescription(available: readonly string[]): string {
   const names = available.length > 0 ? available.join(", ") : "none";
@@ -99,10 +142,12 @@ export function createSubagentTool(options: {
           signal,
         });
       } catch (error) {
-        if (options.coordinator.journal().jobs.get(reservation.launchId)?.status === "reserved") {
+        let job = options.coordinator.journal().jobs.get(reservation.launchId);
+        if (job?.status === "reserved") {
           options.coordinator.recordPreMaterializationFailure(reservation, error);
+          job = options.coordinator.journal().jobs.get(reservation.launchId);
         }
-        throw error;
+        throw publicLaunchError(error, [reservation.sessionPath, job?.sessionPath]);
       }
       return {
         content: [{ type: "text", text: `${reservation.agentId} is working.` }],

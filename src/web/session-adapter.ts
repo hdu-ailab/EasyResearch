@@ -2,6 +2,7 @@ import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core"
 import type { Model } from "@earendil-works/pi-ai";
 import type { SessionTreeNode } from "@earendil-works/pi-coding-agent";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import { runCleanupSteps } from "../runtime/cleanup";
 import { toJsonSessionEvent } from "../runtime/json-session-event";
 import type { AgentConfig } from "../subagent/agents";
 import type { CoordinatorSessionManager, SubagentCoordinator } from "../subagent/coordinator";
@@ -300,7 +301,14 @@ class DirectSessionAdapter implements SessionAdapter {
   private managed: ManagedAgentSession | undefined;
   private session: InProcessAgentSession | undefined;
   private unsubscribe: (() => void) | undefined;
+  private stopPromise: Promise<void> | undefined;
+  private stopRequested = false;
   private stopped = false;
+  private sessionAbortRequired: boolean | undefined;
+  private sessionAbortComplete = false;
+  private supervisorDisposeComplete = false;
+  private unsubscribeComplete = false;
+  private sessionDisposeComplete = false;
   private readonly listeners = new Set<(event: unknown) => void>();
 
   constructor(
@@ -310,7 +318,7 @@ class DirectSessionAdapter implements SessionAdapter {
 
   async start(): Promise<void> {
     if (this.session) throw new Error("Session already started");
-    if (this.stopped) throw new Error("Session already stopped");
+    if (this.stopRequested) throw new Error("Session already stopped");
     this.managed = await this.createAgentSession(this.options);
     this.session = this.managed.session;
     this.unsubscribe = this.session.subscribe((event) => {
@@ -326,18 +334,51 @@ class DirectSessionAdapter implements SessionAdapter {
 
   async stop(): Promise<void> {
     if (this.stopped) return;
-    this.stopped = true;
+    if (this.stopPromise) return this.stopPromise;
+    this.stopRequested = true;
     const session = this.session;
-    if (!session) return;
-    try {
-      if (session.isStreaming) await session.abort();
-      await this.managed?.supervisor.dispose();
-    } finally {
-      this.unsubscribe?.();
-      this.unsubscribe = undefined;
-      session.dispose();
-      this.managed = undefined;
+    if (!session) {
+      this.stopped = true;
+      return;
     }
+    this.sessionAbortRequired ??= session.isStreaming;
+    const supervisor = this.managed?.supervisor;
+    let tracked!: Promise<void>;
+    tracked = runCleanupSteps([
+      async () => {
+        if (!this.sessionAbortRequired || this.sessionAbortComplete) return;
+        await session.abort();
+        this.sessionAbortComplete = true;
+      },
+      async () => {
+        if (!supervisor || this.supervisorDisposeComplete) return;
+        await supervisor.dispose();
+        this.supervisorDisposeComplete = true;
+      },
+      () => {
+        if (this.unsubscribeComplete) return;
+        this.unsubscribe?.();
+        this.unsubscribe = undefined;
+        this.unsubscribeComplete = true;
+      },
+      () => {
+        if (this.sessionDisposeComplete) return;
+        session.dispose();
+        this.sessionDisposeComplete = true;
+      },
+    ], "Paper Assistant runtime cleanup failed.").then(
+      () => {
+        this.stopped = true;
+        this.session = undefined;
+        this.managed = undefined;
+      },
+      (error) => {
+        if (this.stopPromise === tracked) this.stopPromise = undefined;
+        throw error;
+      },
+    );
+    this.stopPromise = tracked;
+    return tracked;
   }
 
   async prompt(message: string, options?: SteerPromptOptions): Promise<void> {
@@ -459,7 +500,7 @@ class DirectSessionAdapter implements SessionAdapter {
 
   private requiredSession(): InProcessAgentSession {
     if (!this.session) throw new Error("Session has not started");
-    if (this.stopped) throw new Error("Session has stopped");
+    if (this.stopRequested) throw new Error("Session has stopped");
     return this.session;
   }
 }

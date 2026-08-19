@@ -30,7 +30,11 @@ class FakeAgentSession implements InProcessAgentSession {
   /** Override for simulating a run that settles later than preflight. */
   promptImpl: ((message: string, options?: SteerPromptOptions) => Promise<void>) | null = null;
   abortCalls = 0;
+  abortImpl: () => Promise<void> = async () => {};
   disposeCalls = 0;
+  disposeImpl: () => void = () => {};
+  unsubscribeCalls = 0;
+  unsubscribeImpl: () => void = () => {};
   clearQueueCalls = 0;
   steeringMessages: string[] = [];
   thinkingCalls: string[] = [];
@@ -67,7 +71,11 @@ class FakeAgentSession implements InProcessAgentSession {
 
   subscribe(listener: (event: unknown) => void): () => void {
     this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
+    return () => {
+      this.unsubscribeCalls += 1;
+      this.unsubscribeImpl();
+      this.listeners.delete(listener);
+    };
   }
 
   async prompt(message: string, options?: SteerPromptOptions): Promise<void> {
@@ -84,6 +92,7 @@ class FakeAgentSession implements InProcessAgentSession {
 
   async abort(): Promise<void> {
     this.abortCalls += 1;
+    await this.abortImpl();
     this.isStreaming = false;
   }
 
@@ -132,6 +141,7 @@ class FakeAgentSession implements InProcessAgentSession {
 
   dispose(): void {
     this.disposeCalls += 1;
+    this.disposeImpl();
   }
 }
 
@@ -253,6 +263,105 @@ describe("PiSessionFactory", () => {
     expect(supervisorDispose).toHaveBeenCalledOnce();
     expect(session.disposeCalls).toBe(1);
     expect(session.listeners.size).toBe(0);
+  });
+
+  it.each(["session abort", "supervisor dispose", "listener removal", "session dispose"] as const)(
+    "attempts every root cleanup and retries only failed %s ownership",
+    async (failedStep) => {
+      const session = new FakeAgentSession();
+      session.isStreaming = true;
+      const failure = new Error(`${failedStep} failed`);
+      let fail = true;
+      const failOnce = () => {
+        if (!fail) return;
+        fail = false;
+        throw failure;
+      };
+      if (failedStep === "session abort") session.abortImpl = async () => failOnce();
+      if (failedStep === "listener removal") session.unsubscribeImpl = failOnce;
+      if (failedStep === "session dispose") session.disposeImpl = failOnce;
+      const supervisorDispose = vi.fn(async () => {
+        if (failedStep === "supervisor dispose") failOnce();
+      });
+      const factory = new PiSessionFactory(async () => managed(
+        session,
+        session.sessionId,
+        { dispose: supervisorDispose },
+      ));
+      const adapter = factory.create({ cwd: "/project" });
+      await adapter.start();
+
+      await expect(adapter.stop()).rejects.toBe(failure);
+      expect({
+        abort: session.abortCalls,
+        supervisor: supervisorDispose.mock.calls.length,
+        unsubscribe: session.unsubscribeCalls,
+        dispose: session.disposeCalls,
+      }).toEqual({ abort: 1, supervisor: 1, unsubscribe: 1, dispose: 1 });
+
+      await adapter.stop();
+      const expected = (step: typeof failedStep) => step === failedStep ? 2 : 1;
+      expect({
+        abort: session.abortCalls,
+        supervisor: supervisorDispose.mock.calls.length,
+        unsubscribe: session.unsubscribeCalls,
+        dispose: session.disposeCalls,
+      }).toEqual({
+        abort: expected("session abort"),
+        supervisor: expected("supervisor dispose"),
+        unsubscribe: expected("listener removal"),
+        dispose: expected("session dispose"),
+      });
+
+      await adapter.stop();
+      expect({
+        abort: session.abortCalls,
+        supervisor: supervisorDispose.mock.calls.length,
+        unsubscribe: session.unsubscribeCalls,
+        dispose: session.disposeCalls,
+      }).toEqual({
+        abort: expected("session abort"),
+        supervisor: expected("supervisor dispose"),
+        unsubscribe: expected("listener removal"),
+        dispose: expected("session dispose"),
+      });
+    },
+  );
+
+  it("reports all root cleanup failures after attempting every sibling", async () => {
+    const session = new FakeAgentSession();
+    session.isStreaming = true;
+    const failures = [
+      new Error("session abort failed"),
+      new Error("supervisor dispose failed"),
+      new Error("listener removal failed"),
+      new Error("session dispose failed"),
+    ];
+    session.abortImpl = async () => { throw failures[0]; };
+    session.unsubscribeImpl = () => { throw failures[2]; };
+    session.disposeImpl = () => { throw failures[3]; };
+    const supervisorDispose = vi.fn(async () => { throw failures[1]; });
+    const factory = new PiSessionFactory(async () => managed(
+      session,
+      session.sessionId,
+      { dispose: supervisorDispose },
+    ));
+    const adapter = factory.create({ cwd: "/project" });
+    await adapter.start();
+
+    const cleanupError = await adapter.stop().then(
+      () => undefined,
+      (error) => error as AggregateError,
+    );
+
+    expect(cleanupError).toBeInstanceOf(AggregateError);
+    expect(cleanupError?.errors).toEqual(failures);
+    expect({
+      abort: session.abortCalls,
+      supervisor: supervisorDispose.mock.calls.length,
+      unsubscribe: session.unsubscribeCalls,
+      dispose: session.disposeCalls,
+    }).toEqual({ abort: 1, supervisor: 1, unsubscribe: 1, dispose: 1 });
   });
 
   it("rejects unknown models and invalid thinking levels", async () => {
