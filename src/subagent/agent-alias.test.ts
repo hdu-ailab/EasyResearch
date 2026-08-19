@@ -2,8 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   AGENT_ALIAS_ENTRY,
   formatAgentId,
-  isAgentId,
-  nextAgentIndex,
   readAgentAliases,
   resolveAgentAlias,
   type SubagentAlias,
@@ -37,17 +35,16 @@ describe("agent-alias helpers (ADR-084)", () => {
     expect(resolveAgentAlias([search0], "search_2")).toBeUndefined();
   });
 
-  it("allocates ids per agent from the persisted count (shared counter)", () => {
-    expect(nextAgentIndex([search0, search1], "search")).toBe(2);
-    expect(nextAgentIndex([search0, search1], "writing")).toBe(0);
+  it("formats ids without constraining the Agent name", () => {
     expect(formatAgentId("search", 2)).toBe("search_2");
+    expect(formatAgentId("审稿人", 0)).toBe("审稿人_0");
+    expect(formatAgentId("review agent", 3)).toBe("review agent_3");
   });
 
-  it("matches id-shaped session values", () => {
-    expect(isAgentId("search_0")).toBe(true);
-    expect(isAgentId("experiment-writer_12")).toBe(true);
-    expect(isAgentId("")).toBe(false);
-    expect(isAgentId("search")).toBe(false);
-    expect(isAgentId("/sessions/x.jsonl")).toBe(false);
+  it("resolves aliases only by their exact persisted id", () => {
+    const custom = { ...search0, id: "review agent_0", agent: "review agent" };
+    expect(resolveAgentAlias([custom], "review agent_0")).toEqual(custom);
+    expect(resolveAgentAlias([custom], "review agent")).toBeUndefined();
+    expect(resolveAgentAlias([custom], "review agent_00")).toBeUndefined();
   });
 });

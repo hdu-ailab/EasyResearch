@@ -27,7 +27,14 @@ describe("subagent session links", () => {
       {
         type: "custom",
         customType: SUBAGENT_SESSION_LINK_ENTRY,
-        data: { toolCallId: "call-a", childSessionId: "child-a-new", agent: "search" },
+        data: {
+          toolCallId: "call-a",
+          childSessionId: "child-a-new",
+          agent: "search",
+          ownerSessionId: "root",
+          launchId: "launch-a",
+          agentId: "search_0",
+        },
       },
       {
         type: "custom",
@@ -40,7 +47,14 @@ describe("subagent session links", () => {
         data: { toolCallId: "call-b", childSessionId: "child-b-new", agent: "writing", step: 1 },
       },
     ])).toEqual([
-      { toolCallId: "call-a", childSessionId: "child-a-new", agent: "search" },
+      {
+        toolCallId: "call-a",
+        childSessionId: "child-a-new",
+        agent: "search",
+        ownerSessionId: "root",
+        launchId: "launch-a",
+        agentId: "search_0",
+      },
       { toolCallId: "call-c", childSessionId: "child-c", agent: "figures", step: 2 },
       { toolCallId: "call-b", childSessionId: "child-b-new", agent: "writing", step: 1 },
     ]);
@@ -61,6 +75,9 @@ describe("subagent session links", () => {
       { ...valid, data: { ...valid.data, step: 0 } },
       { ...valid, data: { ...valid.data, step: 1.5 } },
       { ...valid, data: { ...valid.data, step: Number.POSITIVE_INFINITY } },
+      { ...valid, data: { ...valid.data, ownerSessionId: "" } },
+      { ...valid, data: { ...valid.data, launchId: 3 } },
+      { ...valid, data: { ...valid.data, agentId: " " } },
       { type: "custom", customType: "other", data: valid.data },
     ])).toEqual([
       { toolCallId: "parent-call", childSessionId: "child-uuid", agent: "search", step: 1 },

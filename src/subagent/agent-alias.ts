@@ -16,14 +16,6 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-/** ADR-084: id-shaped `session` values (e.g. `search_0`) that alias a child
- * session within this main session. */
-export const AGENT_ID_PATTERN = /^[A-Za-z0-9_-]+\d+$/;
-
-export function isAgentId(value: string): boolean {
-  return AGENT_ID_PATTERN.test(value.trim());
-}
-
 export function formatAgentId(agent: string, index: number): string {
   return `${agent}_${index}`;
 }
@@ -47,10 +39,4 @@ export function readAgentAliases(entries: readonly unknown[]): SubagentAlias[] {
 
 export function resolveAgentAlias(aliases: readonly SubagentAlias[], id: string): SubagentAlias | undefined {
   return aliases.find((alias) => alias.id === id);
-}
-
-/** Sequence index for the next fresh dispatch of `agent` within this main
- * session; equal to the number of persisted aliases for that agent. */
-export function nextAgentIndex(aliases: readonly SubagentAlias[], agent: string): number {
-  return aliases.reduce((count, alias) => (alias.agent === agent ? count + 1 : count), 0);
 }

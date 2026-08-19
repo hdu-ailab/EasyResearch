@@ -7,8 +7,6 @@ import { getAgentDir, importPi } from "../runtime/pi-import";
 import {
   AGENT_ALIAS_ENTRY,
   formatAgentId,
-  isAgentId,
-  nextAgentIndex,
   readAgentAliases,
   resolveAgentAlias,
 } from "./agent-alias";
@@ -177,7 +175,7 @@ export function resolveAgentTarget(
   coordinator: AliasSessionManager,
 ): ResolveAgentTargetResult {
   const trimmed = raw.trim();
-  if (isAgentId(trimmed)) {
+  if (/^[A-Za-z0-9_-]+\d+$/.test(trimmed)) {
     const aliases = readAgentAliases(coordinator.getEntries());
     const alias = resolveAgentAlias(aliases, trimmed);
     if (!alias) {
@@ -423,7 +421,10 @@ export function createSubagentTool(options: {
         const sessionPath = agentTarget.target.path;
         const agentId = sessionPath !== undefined
           ? agentTarget.target.activeId
-          : formatAgentId(dispatchAgent, nextAgentIndex(readAgentAliases(coordinator.getEntries()), dispatchAgent));
+          : formatAgentId(
+            dispatchAgent,
+            readAgentAliases(coordinator.getEntries()).filter((alias) => alias.agent === dispatchAgent).length,
+          );
         const model = await resolveModelForSpawn(
           { cwd: effectiveCwd, sessionManager: ctx.sessionManager },
           dispatchAgent,
