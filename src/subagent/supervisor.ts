@@ -276,6 +276,9 @@ export class SubagentSupervisor {
       if (this.closing) void this.abortChild(child, child.forcedError).catch(() => {});
 
       await handle.materialized;
+      if (this.coordinator.journal().jobs.get(reservation.launchId)?.terminalSuppressed) {
+        throw new Error("Subagent launch was stopped before acknowledgement.");
+      }
 
       child.materialization = "materialized";
       child.identity = this.coordinator.recordMaterialized(reservation, {

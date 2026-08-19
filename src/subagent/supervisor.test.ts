@@ -1441,6 +1441,56 @@ describe("SubagentSupervisor recursive abort", () => {
     expect(parent.listeners.size).toBe(0);
   });
 
+  it("rejects a suppressed launch that materializes after closing starts without publishing it", async () => {
+    const startup = deferred<StageLaunchHandle>();
+    const stage = new FakeStage("search_0", "child-0", "/sessions/late-materialization.jsonl");
+    stage.abortImpl = async () => {
+      stage.completion.resolve(result("stopped before acknowledgement", {
+        exitCode: 1,
+        wasAborted: true,
+        errorMessage: "stopped before acknowledgement",
+        stderr: "stopped before acknowledgement",
+      }));
+    };
+    const { manager, coordinator, parent, supervisor } = makeHarness({
+      launchStage: async () => startup.promise,
+      schedule: () => {},
+    });
+    const events: SubagentSupervisorEvent[] = [];
+    coordinator.subscribe((event) => events.push(event));
+    const reservation = reserve(coordinator, "tool-0");
+    const launching = supervisor.launch(reservation, options()).then(
+      (details) => details,
+      (error: unknown) => error,
+    );
+    await turn();
+
+    const aborting = supervisor.abortAll("stop during startup");
+    expect(coordinator.journal().jobs.get(reservation.launchId)).toMatchObject({
+      terminalSuppressed: true,
+    });
+
+    startup.resolve(stage.handle);
+    stage.materialization.resolve();
+    const launchOutcome = await launching;
+    await aborting;
+
+    expect(launchOutcome).toBeInstanceOf(Error);
+    expect(String(launchOutcome)).toMatch(/stopped|suppressed|closing/i);
+    expect(readAgentAliases(manager.entries)).toEqual([]);
+    expect(readSubagentSessionLinks(manager.entries)).toEqual([]);
+    expect(events).toEqual([]);
+    expect(parent.sent).toEqual([]);
+    expect(coordinator.summaries()).toEqual([]);
+    expect(coordinator.journal().jobs.get(reservation.launchId)).toMatchObject({
+      status: "pre_materialization_failed",
+      terminalSuppressed: true,
+      launchAcknowledged: false,
+    });
+    expect(reserve(coordinator, "tool-1").agentId).toBe("search_1");
+    expect(supervisor.isQuiescent()).toBe(true);
+  });
+
   it("ignores a delayed launch acknowledgement after closing finalized an unacknowledged child", async () => {
     const stage = new FakeStage("search_0", "child-0", "/sessions/delayed-ack-child.jsonl");
     stage.abortImpl = async () => {
@@ -1835,23 +1885,26 @@ describe("SubagentSupervisor recursive abort", () => {
     const events: SubagentSupervisorEvent[] = [];
     coordinator.subscribe((event) => events.push(event));
     const reservation = reserve(coordinator, "tool-0");
-    const launching = supervisor.launch(reservation, options());
+    const launching = supervisor.launch(reservation, options()).then(
+      (details) => details,
+      (error: unknown) => error,
+    );
     stage.completion.resolve(result("short success"));
     await turn();
 
     const aborting = supervisor.abortAll("stop won the race");
     stage.materialization.resolve();
-    await launching;
+    const launchOutcome = await launching;
     parent.acknowledgeLaunch("tool-0");
     await turn();
 
     await aborting;
-    expect(events).not.toContainEqual(expect.objectContaining({ agentId: "search_0", status: "complete" }));
-    expect(events).not.toContainEqual(expect.objectContaining({ agentId: "search_0", status: "error" }));
+    expect(launchOutcome).toBeInstanceOf(Error);
+    expect(events).toEqual([]);
     expect(parent.sent).toEqual([]);
     expect(coordinator.journal().jobs.get(reservation.launchId)).toMatchObject({
+      status: "pre_materialization_failed",
       launchAcknowledged: false,
-      terminalStatus: "error",
       terminalSuppressed: true,
     });
     await supervisor.waitForQuiescence();
