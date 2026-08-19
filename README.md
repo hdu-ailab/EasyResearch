@@ -46,7 +46,8 @@ creates the skill Python venv (watch the terminal for progress) and extracts
 bundled agents/skills. Requires Python 3 on PATH for PDF conversion and arXiv
 features; without it those features degrade.
 
-Set `EASYRESEARCH_SKIP_SETUP=1` to skip first-run setup.
+Set `EASYRESEARCH_SKIP_SETUP=1` to skip setup only when a complete bundled
+installation already exists.
 
 **Supported platforms**: linux-x64, darwin-arm64, windows-x64. On other
 platforms, `npm install` fails with a clear message.

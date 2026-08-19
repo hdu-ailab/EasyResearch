@@ -36,7 +36,7 @@ easyresearch
 
 各平台为自包含二进制。npm 启动器使用 npm 自带的 Node 运行，但被选中的平台可执行文件本身不需要 Node 或 Bun。首次运行会创建 skill Python venv（留意终端进度）并解压内置 agents/skills。PDF 转换与 arXiv 功能需要 PATH 中有 Python 3；没有时这些功能自动降级。
 
-设置 `EASYRESEARCH_SKIP_SETUP=1` 可跳过首次运行引导。
+仅在已有完整内置资源安装时，才可设置 `EASYRESEARCH_SKIP_SETUP=1` 跳过引导。
 
 **支持平台**：linux-x64、darwin-arm64、windows-x64。其他平台上，`npm install` 会给出明确错误提示。
 
