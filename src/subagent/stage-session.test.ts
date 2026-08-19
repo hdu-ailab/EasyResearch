@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AgentConfig } from "./agents";
 import { SubagentCoordinator, type CoordinatorSessionManager, type ReservedDispatch } from "./coordinator";
 import {
+  createStageSessionRunner,
   createStageSessionLauncher,
   type StageAgentSession,
   type StageLaunchOptions,
@@ -104,6 +105,7 @@ class FakeStageSession implements StageAgentSession {
   disposeCalls = 0;
   bindError?: Error;
   abortImpl: () => Promise<void> = async () => {};
+  promptStart?: () => void;
   readonly listeners = new Set<(event: unknown) => void>();
 
   constructor(
@@ -135,6 +137,7 @@ class FakeStageSession implements StageAgentSession {
 
   prompt(message: string): Promise<void> {
     this.promptCalls.push(message);
+    this.promptStart?.();
     return this.promptPromise;
   }
 
@@ -326,6 +329,39 @@ describe("createStageSessionLauncher", () => {
     await handle.dispose();
   });
 
+  it("replays synchronous prompt-start events once to the first owner subscriber", async () => {
+    const prompt = deferred<void>();
+    const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
+    session.promptStart = () => session.emit({
+      type: "message_update",
+      assistantMessageEvent: {
+        type: "text_delta",
+        contentIndex: 0,
+        delta: "early token",
+        partial: { role: "assistant", content: [{ type: "text", text: "all early tokens" }] },
+      },
+    });
+    const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
+
+    const handle = await createStageSessionLauncher(dependencyHarness(session).dependencies)(stageOptions(coordinator));
+    const firstOwnerEvents: JsonAgentSessionEvent[] = [];
+    const laterSubscriberEvents: JsonAgentSessionEvent[] = [];
+    handle.subscribe((event) => firstOwnerEvents.push(event));
+    handle.subscribe((event) => laterSubscriberEvents.push(event));
+
+    expect(firstOwnerEvents).toEqual([{
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "early token" },
+    }]);
+    expect(laterSubscriberEvents).toEqual([]);
+
+    session.emitAssistantEndAndPersist();
+    await handle.materialized;
+    prompt.resolve();
+    await handle.completion;
+    await handle.dispose();
+  });
+
   it("remembers an early abort and reapplies it after agent_start", async () => {
     const prompt = deferred<void>();
     const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
@@ -367,6 +403,30 @@ describe("createStageSessionLauncher", () => {
     expect(session.listeners.size).toBe(0);
   });
 
+  it("aborts and disposes an active legacy handle when its header callback throws", async () => {
+    const prompt = deferred<void>();
+    const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
+    session.abortImpl = async () => prompt.resolve();
+    const coordinatorSessionManager = new MemoryCoordinatorSessionManager();
+    const runner = createStageSessionRunner(dependencyHarness(session).dependencies);
+
+    const result = await runner({
+      agent,
+      task: "find papers",
+      cwd: "/project",
+      agentId: "search_0",
+      ownerSessionManager: coordinatorSessionManager,
+      onSessionHeader: () => {
+        throw new Error("header callback failed");
+      },
+    });
+
+    expect(result).toMatchObject({ exitCode: 1, errorMessage: "header callback failed" });
+    expect(session.abortCalls).toBe(1);
+    expect(session.disposeCalls).toBe(1);
+    expect(session.listeners.size).toBe(0);
+  });
+
   it("rejects setup failure and disposes a session that has no launch handle", async () => {
     const prompt = deferred<void>();
     const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
@@ -378,6 +438,37 @@ describe("createStageSessionLauncher", () => {
     expect(session.promptCalls).toEqual([]);
     expect(session.disposeCalls).toBe(1);
     expect(session.listeners.size).toBe(0);
+  });
+
+  it("preserves created child metadata for a legacy setup failure", async () => {
+    const prompt = deferred<void>();
+    const session = new FakeStageSession("child-setup", join(root, "child-setup.jsonl"), prompt.promise);
+    session.bindError = new Error("extension setup failed");
+    const headers: Array<{ id: string; cwd: string; sessionPath?: string }> = [];
+    const runner = createStageSessionRunner(dependencyHarness(session).dependencies);
+
+    const result = await runner({
+      agent,
+      task: "find papers",
+      cwd: "/project",
+      agentId: "search_0",
+      ownerSessionManager: new MemoryCoordinatorSessionManager(),
+      onSessionHeader: (header) => headers.push(header),
+    });
+
+    expect(headers).toEqual([{
+      id: "child-setup",
+      cwd: "/project",
+      sessionPath: session.sessionFile,
+    }]);
+    expect(result).toMatchObject({
+      exitCode: 1,
+      errorMessage: "extension setup failed",
+      sessionId: "child-setup",
+      sessionPath: session.sessionFile,
+    });
+    expect(session.promptCalls).toEqual([]);
+    expect(session.disposeCalls).toBe(1);
   });
 
   it("rejects materialization but resolves completion when the prompt fails before output", async () => {
@@ -440,6 +531,10 @@ describe("createStageSessionLauncher", () => {
 
     harness.openedManager.getSessionId = () => "wrong-child";
     await expect(createStageSessionLauncher(harness.dependencies)(stageOptions(coordinator, reservation))).rejects.toThrow(/UUID|session id/i);
+
+    harness.openedManager.getSessionId = () => "continued-child";
+    harness.openedManager.getCwd = () => "/another-project";
+    await expect(createStageSessionLauncher(harness.dependencies)(stageOptions(coordinator, reservation))).rejects.toThrow(/cwd/i);
   });
 
   it("rejects an unreadable continuation before calling SessionManager.open", async () => {

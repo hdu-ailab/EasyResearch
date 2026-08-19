@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -200,7 +200,7 @@ describe("pinned Pi session persistence", () => {
 
       manager.appendMessage(assistantMessage());
 
-      await expect(access(sessionPath!)).resolves.toBeUndefined();
+      await expect(readFile(sessionPath!, "utf8")).resolves.toContain('"role":"assistant"');
       expect((await stat(sessionPath!)).isFile()).toBe(true);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;

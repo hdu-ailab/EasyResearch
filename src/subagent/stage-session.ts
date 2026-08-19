@@ -123,6 +123,17 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+class StageLaunchSetupError extends Error {
+  constructor(
+    cause: unknown,
+    readonly childSessionId: string,
+    readonly sessionPath: string,
+  ) {
+    super(describeError(cause), { cause });
+    this.name = "StageLaunchSetupError";
+  }
+}
+
 function validateContinuation(
   manager: OpenedStageSessionManager,
   reservation: ReservedDispatch,
@@ -222,6 +233,8 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
       result.sessionId = session.sessionId;
       result.sessionPath = sessionPath;
       const listeners = new Set<(event: JsonAgentSessionEvent) => void>();
+      const pendingOwnerEvents: JsonAgentSessionEvent[] = [];
+      let ownerSubscribed = false;
       let abortRequested = false;
       let abortReapplied = false;
       let abortReason: string | undefined;
@@ -247,6 +260,13 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         result.exitCode = 1;
         return invokeAbort();
       };
+      const deliver = (listener: (event: JsonAgentSessionEvent) => void, event: JsonAgentSessionEvent) => {
+        try {
+          listener(event);
+        } catch {
+          // A progress consumer must not delay Pi's post-callback persistence.
+        }
+      };
 
       unsubscribe = session.subscribe((rawEvent) => {
         const event = toJsonSessionEvent(rawEvent as AgentSessionEvent);
@@ -256,13 +276,8 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         }
         barrier!.observe(event);
         collectMessageEvent(result, event);
-        for (const listener of listeners) {
-          try {
-            listener(event);
-          } catch {
-            // A progress consumer must not delay Pi's post-callback persistence.
-          }
-        }
+        if (!ownerSubscribed) pendingOwnerEvents.push(event);
+        else for (const listener of listeners) deliver(listener, event);
       });
       await session.bindExtensions({ mode: "rpc" });
       if (!options.agent.tools || options.agent.tools.length === 0) {
@@ -316,6 +331,10 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         completion,
         subscribe(listener) {
           listeners.add(listener);
+          if (!ownerSubscribed) {
+            ownerSubscribed = true;
+            for (const event of pendingOwnerEvents.splice(0)) deliver(listener, event);
+          }
           return () => listeners.delete(listener);
         },
         abort(reason) {
@@ -329,6 +348,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
             unsubscribe?.();
             barrier!.dispose();
             listeners.clear();
+            pendingOwnerEvents.length = 0;
             session!.dispose();
           })();
           return disposePromise;
@@ -336,11 +356,14 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
       };
       return handle;
     } catch (error) {
+      const failure = session?.sessionFile
+        ? new StageLaunchSetupError(error, session.sessionId, session.sessionFile)
+        : error;
       barrier?.dispose();
       if (signalListener) options.signal?.removeEventListener("abort", signalListener);
       unsubscribe?.();
       session?.dispose();
-      throw error;
+      throw failure;
     }
   };
 }
@@ -477,8 +500,9 @@ function createLegacyStageSessionRunner(launcher: StageSessionLauncher): StageSe
       continuation: options.sessionPath !== undefined,
       ...(alias ? { childSessionId: alias.sessionId, sessionPath: alias.sessionPath } : {}),
     };
+    let handle: StageLaunchHandle | undefined;
     try {
-      const handle = await launcher({
+      handle = await launcher({
         reservation,
         agent: options.agent,
         task: options.task,
@@ -497,7 +521,28 @@ function createLegacyStageSessionRunner(launcher: StageSessionLauncher): StageSe
       await handle.dispose();
       return result;
     } catch (error) {
-      const message = describeError(error);
+      if (handle) {
+        try {
+          await handle.abort();
+          await handle.dispose();
+        } catch {
+          // Preserve the operation failure that triggered cleanup.
+        }
+      }
+      const metadata = error instanceof StageLaunchSetupError ? error : undefined;
+      let failure = error;
+      if (metadata) {
+        try {
+          options.onSessionHeader?.({
+            id: metadata.childSessionId,
+            cwd: options.cwd,
+            sessionPath: metadata.sessionPath,
+          });
+        } catch (headerError) {
+          failure = headerError;
+        }
+      }
+      const message = describeError(failure);
       return {
         agent: options.agent.name,
         agentSource: options.agent.source,
@@ -509,7 +554,8 @@ function createLegacyStageSessionRunner(launcher: StageSessionLauncher): StageSe
         model: options.model,
         errorMessage: message,
         step: options.step,
-        sessionPath: options.sessionPath,
+        ...(metadata ? { sessionId: metadata.childSessionId } : {}),
+        sessionPath: metadata?.sessionPath ?? options.sessionPath,
         agentId,
       };
     }
