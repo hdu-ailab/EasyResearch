@@ -6,6 +6,7 @@ import { AGENT_ALIAS_ENTRY } from "./agent-alias";
 import type { AgentConfig } from "./agents";
 import { SubagentCoordinator, type CoordinatorSessionManager, type ReservedDispatch } from "./coordinator";
 import type { SubagentSupervisorEvent } from "./contracts";
+import { AGENT_STATUS_TYPE } from "./notifications";
 import type { StageLaunchHandle, StageRunResult } from "./stage-session";
 import { SubagentSupervisor, type SupervisableAgentSession } from "./supervisor";
 
@@ -165,6 +166,7 @@ class FakeStage {
   disposeCalls = 0;
   unsubscribeCalls = 0;
   abortImpl: () => Promise<void> = async () => {};
+  subscribeError?: Error;
   readonly handle: StageLaunchHandle;
 
   constructor(
@@ -179,6 +181,7 @@ class FakeStage {
       materialized: this.materialization.promise,
       completion: this.completion.promise,
       subscribe: (listener) => {
+        if (this.subscribeError) throw this.subscribeError;
         this.listeners.add(listener);
         return () => {
           if (this.listeners.delete(listener)) this.unsubscribeCalls += 1;
@@ -290,6 +293,95 @@ describe("SubagentSupervisor ownership and launch ordering", () => {
     expect(events).toContainEqual(expect.objectContaining({ agentId: "search_0", status: "complete" }));
   });
 
+  it("holds raw terminal child events until launch acknowledgement while forwarding delta progress", async () => {
+    const nestedPath = "/sessions/private-nested-child.jsonl";
+    const stage = new FakeStage("search_0", "child-0", "/sessions/child-0.jsonl");
+    const { coordinator, parent, supervisor } = makeHarness({
+      launchStage: async () => stage.handle,
+      autoAcknowledge: true,
+    });
+    const events: SubagentSupervisorEvent[] = [];
+    coordinator.subscribe((event) => events.push(event));
+    const reservation = reserve(coordinator, "tool-0");
+    const launching = supervisor.launch(reservation, options());
+    stage.materialization.resolve();
+    await launching;
+
+    stage.emit({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "progress" },
+    } as JsonAgentSessionEvent);
+    stage.emit({
+      type: "agent_end",
+      messages: [
+        assistant("short result"),
+        {
+          role: "custom",
+          customType: AGENT_STATUS_TYPE,
+          content: `<agent_status>\nError subagent:{"name":"search_1","session_path":"${nestedPath}"}\n</agent_status>`,
+          display: false,
+          details: { batchId: "nested-terminal" },
+          timestamp: 1,
+        },
+      ],
+      willRetry: false,
+    } as JsonAgentSessionEvent);
+    stage.completion.resolve(result("short result"));
+    await turn();
+
+    expect(events).toContainEqual(expect.objectContaining({
+      event: { type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "progress" } },
+    }));
+    expect(events.some((event) => event.event?.type === "agent_end")).toBe(false);
+
+    parent.acknowledgeLaunch("tool-0");
+    await supervisor.waitForQuiescence();
+    expect(events.some((event) => event.event?.type === "agent_end")).toBe(true);
+    expect(JSON.stringify(events)).not.toContain(AGENT_STATUS_TYPE);
+    expect(JSON.stringify(events)).not.toContain(nestedPath);
+    expect(events.at(-1)).toMatchObject({ agentId: "search_0", status: "complete" });
+  });
+
+  it("never publishes nested hidden status events or their path-bearing content", async () => {
+    const leakedPath = "/sessions/private-nested-child.jsonl";
+    const stage = new FakeStage("search_0", "child-0", "/sessions/child-0.jsonl");
+    const { coordinator, parent, supervisor } = makeHarness({
+      launchStage: async () => stage.handle,
+      autoAcknowledge: true,
+    });
+    const events: SubagentSupervisorEvent[] = [];
+    coordinator.subscribe((event) => events.push(event));
+    const reservation = reserve(coordinator, "tool-0");
+    const launching = supervisor.launch(reservation, options());
+    stage.materialization.resolve();
+    await launching;
+    const content = `<agent_status>\nError subagent:{"name":"search_1","session_path":"${leakedPath}"}\n</agent_status>`;
+
+    stage.emit({
+      type: "message_end",
+      message: { role: "custom", customType: AGENT_STATUS_TYPE, content, display: false, details: { batchId: "nested-live" }, timestamp: 1 },
+    } as JsonAgentSessionEvent);
+    stage.emit({
+      type: "entry_appended",
+      entry: {
+        type: "custom_message",
+        id: "nested-entry",
+        parentId: null,
+        timestamp: "2026-08-19T00:00:00.000Z",
+        customType: AGENT_STATUS_TYPE,
+        content,
+        display: false,
+        details: { batchId: "nested-persisted" },
+      },
+    } as JsonAgentSessionEvent);
+
+    expect(JSON.stringify(events)).not.toContain(AGENT_STATUS_TYPE);
+    expect(JSON.stringify(events)).not.toContain(leakedPath);
+    parent.acknowledgeLaunch("tool-0");
+    stage.completion.resolve(result());
+    await supervisor.waitForQuiescence();
+  });
+
   it("cleans up a pre-materialization failure without publishing terminal state", async () => {
     const stage = new FakeStage("search_0", "child-0", "/sessions/private-child.jsonl");
     stage.abortImpl = async () => {
@@ -311,6 +403,53 @@ describe("SubagentSupervisor ownership and launch ordering", () => {
     expect(coordinator.journal().jobs.get(reservation.launchId)?.status).toBe("pre_materialization_failed");
     expect(events).toEqual([]);
     expect(parent.sent).toEqual([]);
+  });
+
+  it("settles and disposes a returned handle when identity validation fails", async () => {
+    const stage = new FakeStage("wrong-agent-id", "child-0", "/sessions/child-0.jsonl");
+    stage.abortImpl = async () => {
+      stage.completion.resolve(result("", {
+        exitCode: 1,
+        wasAborted: true,
+        errorMessage: "identity rejected",
+        stderr: "identity rejected",
+      }));
+    };
+    const { coordinator, supervisor } = makeHarness({ launchStage: async () => stage.handle });
+    const reservation = reserve(coordinator, "tool-0");
+
+    await expect(supervisor.launch(reservation, options())).rejects.toThrow(/identity/i);
+
+    expect(stage.abortCalls).toBe(1);
+    await expect(stage.completion.promise).resolves.toMatchObject({ wasAborted: true });
+    expect(stage.disposeCalls).toBe(1);
+    expect(stage.listeners.size).toBe(0);
+    expect(supervisor.hasRunningChildren()).toBe(false);
+    expect(coordinator.journal().jobs.get(reservation.launchId)?.status).toBe("pre_materialization_failed");
+  });
+
+  it("settles and disposes a returned handle when subscription setup fails", async () => {
+    const stage = new FakeStage("search_0", "child-0", "/sessions/child-0.jsonl");
+    stage.subscribeError = new Error("subscription setup failed");
+    stage.abortImpl = async () => {
+      stage.completion.resolve(result("", {
+        exitCode: 1,
+        wasAborted: true,
+        errorMessage: "subscription rejected",
+        stderr: "subscription rejected",
+      }));
+    };
+    const { coordinator, supervisor } = makeHarness({ launchStage: async () => stage.handle });
+    const reservation = reserve(coordinator, "tool-0");
+
+    await expect(supervisor.launch(reservation, options())).rejects.toThrow("subscription setup failed");
+
+    expect(stage.abortCalls).toBe(1);
+    await expect(stage.completion.promise).resolves.toMatchObject({ wasAborted: true });
+    expect(stage.disposeCalls).toBe(1);
+    expect(stage.listeners.size).toBe(0);
+    expect(supervisor.hasRunningChildren()).toBe(false);
+    expect(coordinator.journal().jobs.get(reservation.launchId)?.status).toBe("pre_materialization_failed");
   });
 
   it("passes continuation identity and the exact cwd to the launcher", async () => {
@@ -640,7 +779,101 @@ describe("SubagentSupervisor notification acknowledgement", () => {
 });
 
 describe("SubagentSupervisor recursive abort", () => {
-  it("sets closing before awaiting startup and cleans up an unacknowledged child without notification", async () => {
+  it("keeps parent acknowledgement observation until a closing batch is acknowledged", async () => {
+    const stage = new FakeStage("search_0", "child-0", "/sessions/private-child.jsonl");
+    stage.abortImpl = async () => {
+      stage.completion.resolve(result("partial handoff", {
+        exitCode: 1,
+        wasAborted: true,
+        errorMessage: "disposed",
+        stderr: "disposed",
+      }));
+    };
+    const { coordinator, parent, supervisor } = makeHarness({
+      launchStage: async () => stage.handle,
+      schedule: () => {},
+    });
+    const reservation = reserve(coordinator, "tool-0");
+    const launching = supervisor.launch(reservation, options());
+    stage.materialization.resolve();
+    await launching;
+    parent.acknowledgeLaunch("tool-0");
+
+    let disposed = false;
+    const disposing = supervisor.dispose().then(() => {
+      disposed = true;
+    });
+    await turn();
+
+    expect(parent.sent).toHaveLength(1);
+    expect(parent.sent[0]?.options).toEqual({ deliverAs: "steer", triggerTurn: false });
+    expect(supervisor.hasPendingNotifications()).toBe(true);
+    expect(supervisor.isQuiescent()).toBe(false);
+    expect(parent.listeners.size).toBe(1);
+    expect(disposed).toBe(false);
+
+    parent.acknowledgeLastMessage();
+    await disposing;
+    expect(disposed).toBe(true);
+    expect(parent.listeners.size).toBe(0);
+  });
+
+  it("settles an in-flight natural send before creating the merged no-trigger closing batch", async () => {
+    const completed = new FakeStage("search_0", "child-0", "/sessions/completed.jsonl");
+    const running = new FakeStage("search_1", "child-1", "/sessions/running.jsonl");
+    const naturalSendGate = deferred<void>();
+    running.abortImpl = async () => {
+      running.completion.resolve(result("running partial", {
+        agentId: "search_1",
+        exitCode: 1,
+        wasAborted: true,
+        errorMessage: "shutdown",
+        stderr: "shutdown",
+      }));
+    };
+    const stages = new Map([["search_0", completed], ["search_1", running]]);
+    const { coordinator, parent, supervisor } = makeHarness({
+      launchStage: async (reservation) => stages.get(reservation.agentId)!.handle,
+      schedule: () => {},
+    });
+    parent.sendImpl = async (_sent, index) => {
+      if (index === 0) await naturalSendGate.promise;
+    };
+    const reservation0 = reserve(coordinator, "tool-0");
+    const reservation1 = reserve(coordinator, "tool-1");
+    const launch0 = supervisor.launch(reservation0, options("completed"));
+    const launch1 = supervisor.launch(reservation1, options("running"));
+    completed.materialization.resolve();
+    running.materialization.resolve();
+    await Promise.all([launch0, launch1]);
+    parent.acknowledgeLaunch("tool-0");
+    parent.acknowledgeLaunch("tool-1");
+    completed.completion.resolve(result("completed handoff", { agentId: "search_0" }));
+    await turn();
+    const naturalSend = supervisor.flushNotifications();
+    await turn();
+    expect(parent.sent[0]?.options.triggerTurn).toBe(true);
+
+    const aborting = supervisor.abortAll("shutdown");
+    await turn();
+    expect(parent.sent).toHaveLength(1);
+    naturalSendGate.resolve();
+    await naturalSend;
+    await turn();
+
+    expect(parent.sent).toHaveLength(2);
+    expect(parent.sent[1]?.options).toEqual({ deliverAs: "steer", triggerTurn: false });
+    expect(parent.sent[1]?.message.content).toContain("Complete subagent:search_0");
+    expect(parent.sent[1]?.message.content).toContain(
+      'Error subagent:{"name":"search_1","session_path":"/sessions/running.jsonl"}',
+    );
+    expect(coordinator.journal().supersededBatchIds).toContain("batch-0");
+    parent.acknowledgeLastMessage();
+    await aborting;
+    await supervisor.waitForQuiescence();
+  });
+
+  it("sets only local closing before awaiting startup and leaves other coordinator owners open", async () => {
     const startup = deferred<StageLaunchHandle>();
     const stage = new FakeStage("search_0", "child-0", "/sessions/private-child.jsonl");
     stage.abortImpl = async () => {
@@ -660,7 +893,13 @@ describe("SubagentSupervisor recursive abort", () => {
     const launching = supervisor.launch(reservation, options());
 
     const aborting = supervisor.abortAll("shutdown");
-    expect(() => reserve(coordinator, "tool-1")).toThrow(/closing/i);
+    const otherOwner = coordinator.reserveDispatch({
+      ownerSessionId: "other-parent",
+      toolCallId: "tool-1",
+      requested: "search",
+      catalog: { all: [searchAgent], available: [searchAgent] },
+    });
+    expect(otherOwner).toMatchObject({ ownerSessionId: "other-parent", agentId: "search_1" });
     startup.resolve(stage.handle);
 
     await expect(launching).rejects.toThrow("shutdown before materialization");
@@ -709,7 +948,7 @@ describe("SubagentSupervisor recursive abort", () => {
     expect(order).toEqual(["abort"]);
     expect(parent.sent).toEqual([]);
     nestedSettled.resolve();
-    await aborting;
+    await turn();
 
     expect(order).toEqual(["abort", "descendants-settled", "published", "sent"]);
     expect(events.filter((event) => event.status === "error")).toHaveLength(1);
@@ -723,6 +962,7 @@ describe("SubagentSupervisor recursive abort", () => {
     expect(stage.disposeCalls).toBe(1);
 
     parent.acknowledgeLastMessage();
+    await aborting;
     await supervisor.waitForQuiescence();
     await supervisor.abortAll("duplicate stop");
     expect(stage.abortCalls).toBe(1);
@@ -746,7 +986,7 @@ describe("SubagentSupervisor recursive abort", () => {
     stage.materialization.resolve();
     await launching;
     parent.acknowledgeLaunch("tool-0");
-    await aborting;
+    await turn();
 
     expect(events).toContainEqual(expect.objectContaining({ agentId: "search_0", status: "error" }));
     expect(events).not.toContainEqual(expect.objectContaining({ agentId: "search_0", status: "complete" }));
@@ -755,6 +995,7 @@ describe("SubagentSupervisor recursive abort", () => {
       'Error subagent:{"name":"search_0","session_path":"/sessions/short-child.jsonl"}',
     );
     parent.acknowledgeLastMessage();
+    await aborting;
     await supervisor.waitForQuiescence();
   });
 
@@ -790,7 +1031,8 @@ describe("SubagentSupervisor recursive abort", () => {
     expect(parent.sent).toHaveLength(1);
     expect(parent.sent[0]?.options.triggerTurn).toBe(true);
 
-    await supervisor.abortAll("shutdown");
+    const aborting = supervisor.abortAll("shutdown");
+    await turn();
 
     expect(parent.sent).toHaveLength(2);
     expect(parent.sent[1]?.options).toEqual({ deliverAs: "steer", triggerTurn: false });
@@ -801,6 +1043,7 @@ describe("SubagentSupervisor recursive abort", () => {
     expect(coordinator.journal().supersededBatchIds).toContain("batch-0");
     expect(coordinator.journal().pendingBatches.map(({ batchId }) => batchId)).toEqual(["batch-1"]);
     parent.acknowledgeLastMessage();
+    await aborting;
     await supervisor.waitForQuiescence();
   });
 });

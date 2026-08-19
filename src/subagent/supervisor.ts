@@ -43,6 +43,7 @@ interface OwnedChild {
   materialization: "pending" | "materialized" | "failed";
   identity?: SubagentJobIdentity;
   queuedEvents: JsonAgentSessionEvent[];
+  acknowledgementEvents: JsonAgentSessionEvent[];
   latestAssistantText?: string;
   terminal?: TerminalNotificationOutcome & { errorMessage?: string };
   terminalRecorded: boolean;
@@ -91,6 +92,32 @@ function failedResult(result: StageRunResult): boolean {
     || result.exitCode !== 0
     || result.stopReason === "error"
     || result.stopReason === "aborted";
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isHiddenStatusMessage(value: unknown): boolean {
+  return isObject(value) && value.customType === AGENT_STATUS_TYPE;
+}
+
+function publicChildEvent(event: JsonAgentSessionEvent): JsonAgentSessionEvent | undefined {
+  const value = event.type === "message_start" || event.type === "message_end"
+    ? event.message
+    : event.type === "entry_appended"
+      ? event.entry
+      : undefined;
+  if (isHiddenStatusMessage(value)) return undefined;
+  if (event.type !== "agent_end") return event;
+  return {
+    ...event,
+    messages: event.messages.filter((message) => !isHiddenStatusMessage(message)),
+  };
+}
+
+function requiresLaunchAcknowledgement(event: JsonAgentSessionEvent): boolean {
+  return event.type === "agent_end" || event.type === "agent_settled";
 }
 
 export class SubagentSupervisor {
@@ -148,6 +175,7 @@ export class SubagentSupervisor {
         this.coordinator.recordLaunchAcknowledged(job.launchId);
         const child = this.children.get(job.launchId);
         if (child) {
+          this.publishAcknowledgedEvents(child);
           this.recordTerminalIfReady(child);
           this.publishTerminalIfReady(child);
           this.removeChildIfFinished(child);
@@ -195,6 +223,7 @@ export class SubagentSupervisor {
       startupPending: true,
       materialization: "pending",
       queuedEvents: [],
+      acknowledgementEvents: [],
       terminalRecorded: false,
       terminalPublished: false,
       completionSettled: false,
@@ -224,7 +253,13 @@ export class SubagentSupervisor {
     try {
       handle = await startup;
     } catch (error) {
+      child.materialization = "failed";
       this.coordinator.recordPreMaterializationFailure(reservation, error);
+      if (child.handle) {
+        await this.abortChild(child, describeError(error));
+        await child.settlement;
+        await this.disposeChildResources(child);
+      }
       this.removeChild(child);
       throw error;
     }
@@ -254,6 +289,7 @@ export class SubagentSupervisor {
     });
     this.coordinator.publish({ type: "subagent_supervisor", ...child.identity, status: "working" });
     for (const event of child.queuedEvents.splice(0)) this.publishProgress(child, event);
+    this.publishAcknowledgedEvents(child);
     this.recordTerminalIfReady(child);
     this.publishTerminalIfReady(child);
     if (child.completionSettled) void this.disposeChildResources(child).then(() => this.removeChildIfFinished(child));
@@ -317,7 +353,6 @@ export class SubagentSupervisor {
   abortAll(reason: string): Promise<void> {
     if (this.abortPromise) return this.abortPromise;
     this.closing = true;
-    this.coordinator.beginClosing();
     for (const child of this.children.values()) {
       this.forceChildError(child, reason);
     }
@@ -344,12 +379,22 @@ export class SubagentSupervisor {
         await child.finished;
       }));
 
+      while (this.sendPromise) {
+        const activeSend = this.sendPromise;
+        try {
+          await activeSend;
+        } catch {
+          // The persisted batch remains available for closing supersession.
+        }
+        if (this.sendPromise === activeSend) break;
+      }
       const ownerSessionId = this.parent?.sessionId;
       if (!ownerSessionId) return;
       for (const batch of this.coordinator.journal().pendingBatches) {
         if (batch.ownerSessionId === ownerSessionId) this.coordinator.supersedeNotification(batch.batchId);
       }
       await this.flushNotifications({ triggerTurn: false });
+      await this.waitForQuiescence();
     })().finally(() => this.stateChanged());
     return this.abortPromise;
   }
@@ -377,6 +422,10 @@ export class SubagentSupervisor {
     child.completion = handle.completion;
     child.abort = (reason) => handle.abort(reason);
     child.dispose = () => handle.dispose();
+    child.settlement = handle.completion.then(
+      (result) => this.settleChild(child, result),
+      (error) => this.settleChild(child, undefined, error),
+    );
     if (
       handle.agentId !== child.reservation.agentId
       || (child.reservation.continuation && child.reservation.childSessionId !== handle.childSessionId)
@@ -385,10 +434,6 @@ export class SubagentSupervisor {
       throw new Error("Stage launch handle identity does not match its reservation.");
     }
     child.subscription = handle.subscribe((event) => this.observeChildEvent(child, event));
-    child.settlement = handle.completion.then(
-      (result) => this.settleChild(child, result),
-      (error) => this.settleChild(child, undefined, error),
-    );
   }
 
   private observeChildEvent(child: OwnedChild, event: JsonAgentSessionEvent): void {
@@ -396,8 +441,14 @@ export class SubagentSupervisor {
       const text = messageText(event.message);
       if (text !== undefined) child.latestAssistantText = text;
     }
-    if (!child.identity) child.queuedEvents.push(event);
-    else this.publishProgress(child, event);
+    const publicEvent = publicChildEvent(event);
+    if (!publicEvent) return;
+    if (requiresLaunchAcknowledgement(publicEvent) && !this.isLaunchAcknowledged(child)) {
+      child.acknowledgementEvents.push(publicEvent);
+      return;
+    }
+    if (!child.identity) child.queuedEvents.push(publicEvent);
+    else this.publishProgress(child, publicEvent);
   }
 
   private publishProgress(child: OwnedChild, event: JsonAgentSessionEvent): void {
@@ -409,6 +460,15 @@ export class SubagentSupervisor {
       ...(child.latestAssistantText === undefined ? {} : { latestMessage: child.latestAssistantText }),
       event,
     });
+  }
+
+  private publishAcknowledgedEvents(child: OwnedChild): void {
+    if (!child.identity || !this.isLaunchAcknowledged(child)) return;
+    for (const event of child.acknowledgementEvents.splice(0)) this.publishProgress(child, event);
+  }
+
+  private isLaunchAcknowledged(child: OwnedChild): boolean {
+    return this.coordinator.journal().jobs.get(child.reservation.launchId)?.launchAcknowledged === true;
   }
 
   private async settleChild(child: OwnedChild, result?: StageRunResult, failure?: unknown): Promise<void> {
