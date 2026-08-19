@@ -64,6 +64,10 @@ class FakeAdapter implements SessionAdapter {
   treeResult: { tree: SessionTreeNode[]; leafId: string | null } = { tree: [], leafId: null };
   navigateCalls: string[] = [];
   steeringResult: string[] = [];
+  backgroundWork = false;
+  startImpl: () => Promise<void> = async () => {};
+  stopImpl: () => Promise<void> = async () => {};
+  onEventCalls = 0;
 
   constructor(public options: StartSessionOptions) {
     FakeAdapter.all.push(this);
@@ -72,9 +76,11 @@ class FakeAdapter implements SessionAdapter {
   async start() {
     if (this.startError) throw this.startError;
     this.stats.started++;
+    await this.startImpl();
   }
   async stop() {
     this.stats.stopped++;
+    await this.stopImpl();
   }
   async prompt(message: string, options?: SteerPromptOptions) {
     this.stats.prompts.push(`${message}${options?.streamingBehavior === "steer" ? " (steer)" : ""}`);
@@ -98,6 +104,9 @@ class FakeAdapter implements SessionAdapter {
   getSteeringMessages(): readonly string[] {
     return this.steeringResult;
   }
+  hasBackgroundWork(): boolean {
+    return this.backgroundWork;
+  }
   async getCommands(): Promise<WebSlashCommand[]> {
     return this.commandsResult;
   }
@@ -108,6 +117,7 @@ class FakeAdapter implements SessionAdapter {
     this.navigateCalls.push(entryId);
   }
   onEvent(listener: (event: unknown) => void) {
+    this.onEventCalls += 1;
     this.events.add(listener);
     return () => this.events.delete(listener);
   }
@@ -117,10 +127,16 @@ class FakeFactory implements SessionFactory {
   created: FakeAdapter[] = [];
   startError: Error | null = null;
   getStateError: Error | null = null;
+  backgroundWork = false;
+  startImpl: () => Promise<void> = async () => {};
+  stopImpl: () => Promise<void> = async () => {};
   create(options: StartSessionOptions): SessionAdapter {
     const adapter = new FakeAdapter(options);
     adapter.startError = this.startError;
     adapter.getStateError = this.getStateError;
+    adapter.backgroundWork = this.backgroundWork;
+    adapter.startImpl = this.startImpl;
+    adapter.stopImpl = this.stopImpl;
     this.created.push(adapter);
     return adapter;
   }
@@ -146,6 +162,8 @@ describe("ActiveSessionRegistry", () => {
   let watcherFactory: FakeWatcherFactory;
 
   beforeEach(() => {
+    FakeAdapter.all = [];
+    FakeAdapter.nextId = 0;
     factory = new FakeFactory();
     watcherFactory = new FakeWatcherFactory();
     registry = new ActiveSessionRegistry(factory, noopLogger, { idleTimeoutMs: -1 }, watcherFactory);
@@ -215,13 +233,62 @@ describe("ActiveSessionRegistry", () => {
     expect(registry.list().find((s) => s.id === created.id)).toBeUndefined();
   });
 
-  it("stop emits session_deactivated to subscribers", async () => {
+  it("emits session_deactivated only after durable cleanup succeeds", async () => {
     const created = await registry.create({ cwd });
+    let releaseStop!: () => void;
+    const stopGate = new Promise<void>((resolve) => {
+      releaseStop = resolve;
+    });
+    factory.created[0]!.stopImpl = () => stopGate;
     const listener = vi.fn();
     registry.subscribe(created.id, listener);
-    await registry.stop(created.id);
+    const stopping = registry.stop(created.id);
+    await Promise.resolve();
+
+    expect(listener).not.toHaveBeenCalled();
+    expect(registry.has(created.id)).toBe(true);
+    releaseStop();
+    await stopping;
+
     expect(listener).toHaveBeenCalledWith({ type: "session_deactivated", sessionId: created.id });
     expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains activation after failed cleanup and deactivates on retry", async () => {
+    const created = await registry.create({ cwd });
+    const failure = new Error("durable cleanup failed");
+    let fail = true;
+    factory.created[0]!.stopImpl = async () => {
+      if (!fail) return;
+      fail = false;
+      throw failure;
+    };
+    const listener = vi.fn();
+    registry.subscribe(created.id, listener);
+
+    await expect(registry.stop(created.id)).rejects.toBe(failure);
+    expect(listener).not.toHaveBeenCalledWith({ type: "session_deactivated", sessionId: created.id });
+    expect(registry.has(created.id)).toBe(true);
+
+    await registry.stop(created.id);
+    expect(listener).toHaveBeenCalledWith({ type: "session_deactivated", sessionId: created.id });
+    expect(registry.has(created.id)).toBe(false);
+    expect(factory.created[0]?.stats.stopped).toBe(2);
+  });
+
+  it("keeps abort connected and ready while explicit stop disposes the runtime", async () => {
+    const created = await registry.create({ cwd });
+    const adapter = factory.created[0]!;
+    adapter.events.forEach((listener) => listener({ type: "agent_start" }));
+
+    await registry.abort(created.id);
+
+    expect(registry.list()).toContainEqual(expect.objectContaining({ id: created.id, status: "ready" }));
+    expect(adapter.stats.stopped).toBe(0);
+
+    await registry.stop(created.id);
+    expect(registry.has(created.id)).toBe(false);
+    expect(adapter.stats.stopped).toBe(1);
   });
 
   it("forwards setModel to the adapter with provider and model id", async () => {
@@ -326,6 +393,71 @@ describe("ActiveSessionRegistry", () => {
     const again = await registry.open({ cwd, sessionPath });
     expect(again.id).toBe(opened.id);
     expect(factory.created).toHaveLength(1);
+  });
+
+  it("singleflights simultaneous opens of the same exact session and cwd", async () => {
+    let releaseStart!: () => void;
+    const startGate = new Promise<void>((resolve) => {
+      releaseStart = resolve;
+    });
+    factory.startImpl = () => startGate;
+
+    const first = registry.open({ cwd, sessionPath });
+    const second = registry.open({ cwd, sessionPath });
+    expect(first).toBe(second);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const createdBeforeRelease = factory.created.length;
+    releaseStart();
+    const [firstOpened, secondOpened] = await Promise.all([first, second]);
+
+    expect(createdBeforeRelease).toBe(1);
+    expect(factory.created).toHaveLength(1);
+    expect(firstOpened).toEqual(secondOpened);
+    expect(registry.list()).toEqual([firstOpened]);
+    expect(factory.created[0]?.onEventCalls).toBe(2);
+  });
+
+  it("does not merge opens from distinct exact cwd and session identities", async () => {
+    const first = await registry.open({ cwd, sessionPath });
+    const second = await registry.open({ cwd: "/other/project", sessionPath });
+    const third = await registry.open({ cwd, sessionPath: "/sessions/other.jsonl" });
+
+    expect(new Set([first.id, second.id, third.id]).size).toBe(3);
+    expect(factory.created.map(({ options }) => options)).toEqual([
+      { cwd, sessionPath },
+      { cwd: "/other/project", sessionPath },
+      { cwd, sessionPath: "/sessions/other.jsonl" },
+    ]);
+  });
+
+  it("shares concurrent open failure and permits one later retry", async () => {
+    const failure = new Error("recovery failed");
+    let rejectStart!: (error: Error) => void;
+    const startGate = new Promise<void>((_resolve, reject) => {
+      rejectStart = reject;
+    });
+    factory.startImpl = () => startGate;
+
+    const first = registry.open({ cwd, sessionPath });
+    const second = registry.open({ cwd, sessionPath });
+    const failed = Promise.allSettled([first, second]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const createdBeforeFailure = factory.created.length;
+    rejectStart(failure);
+    const results = await failed;
+
+    expect(createdBeforeFailure).toBe(1);
+    expect(results).toEqual([
+      { status: "rejected", reason: failure },
+      { status: "rejected", reason: failure },
+    ]);
+    expect(registry.list()).toEqual([]);
+    expect(factory.created).toHaveLength(1);
+
+    factory.startImpl = async () => {};
+    const retried = await registry.open({ cwd, sessionPath });
+    expect(retried.status).toBe("ready");
+    expect(factory.created).toHaveLength(2);
   });
 
   it("re-launches a stopped session on open instead of reusing the dead entry", async () => {
@@ -450,6 +582,86 @@ describe("ActiveSessionRegistry", () => {
     expect(factory.created[0]?.stats.stopped).toBe(1);
   });
 
+  it("holds the idle lease while a root-ready child is running", async () => {
+    vi.useFakeTimers();
+    factory.backgroundWork = true;
+    registry = new ActiveSessionRegistry(factory, noopLogger, { idleTimeoutMs: 1000 }, watcherFactory);
+    const created = await registry.create({ cwd });
+    const adapter = factory.created[0]!;
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(registry.has(created.id)).toBe(true);
+    expect(adapter.stats.stopped).toBe(0);
+
+    adapter.backgroundWork = false;
+    adapter.events.forEach((listener) => listener({ type: "subagent_supervisor", status: "complete" }));
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.waitFor(() => expect(registry.has(created.id)).toBe(false));
+  });
+
+  it("holds and then clears the idle lease for a pending terminal notification", async () => {
+    vi.useFakeTimers();
+    registry = new ActiveSessionRegistry(factory, noopLogger, { idleTimeoutMs: 1000 }, watcherFactory);
+    const created = await registry.create({ cwd });
+    const adapter = factory.created[0]!;
+    adapter.backgroundWork = true;
+    adapter.events.forEach((listener) => listener({ type: "subagent_supervisor", status: "complete" }));
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(registry.has(created.id)).toBe(true);
+    expect(adapter.stats.stopped).toBe(0);
+
+    adapter.backgroundWork = false;
+    adapter.events.forEach((listener) => listener({ type: "agent_settled" }));
+    await vi.advanceTimersByTimeAsync(999);
+    expect(registry.has(created.id)).toBe(true);
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.waitFor(() => expect(registry.has(created.id)).toBe(false));
+  });
+
+  it("rechecks background work inside an already-scheduled idle callback", async () => {
+    vi.useFakeTimers();
+    registry = new ActiveSessionRegistry(factory, noopLogger, { idleTimeoutMs: 1000 }, watcherFactory);
+    const created = await registry.create({ cwd });
+    const adapter = factory.created[0]!;
+
+    await vi.advanceTimersByTimeAsync(999);
+    adapter.backgroundWork = true;
+    await vi.advanceTimersByTimeAsync(1);
+    expect(registry.has(created.id)).toBe(true);
+    expect(adapter.stats.stopped).toBe(0);
+
+    adapter.backgroundWork = false;
+    adapter.events.forEach((listener) => listener({ type: "subagent_supervisor", status: "complete" }));
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.waitFor(() => expect(registry.has(created.id)).toBe(false));
+  });
+
+  it("retains the connected record when idle cleanup fails and permits retry", async () => {
+    vi.useFakeTimers();
+    registry = new ActiveSessionRegistry(factory, noopLogger, { idleTimeoutMs: 0 }, watcherFactory);
+    const created = await registry.create({ cwd });
+    const adapter = factory.created[0]!;
+    const failure = new Error("idle cleanup failed");
+    let fail = true;
+    adapter.stopImpl = async () => {
+      if (!fail) return;
+      fail = false;
+      throw failure;
+    };
+    const listener = vi.fn();
+    registry.subscribe(created.id, listener);
+
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+    expect(registry.has(created.id)).toBe(true);
+    expect(listener).not.toHaveBeenCalledWith({ type: "session_deactivated", sessionId: created.id });
+
+    await registry.stop(created.id);
+    expect(registry.has(created.id)).toBe(false);
+    expect(adapter.stats.stopped).toBe(2);
+  });
+
   it("resets an idle timeout when the active session is touched", async () => {
     vi.useFakeTimers();
     registry = new ActiveSessionRegistry(factory, noopLogger, { idleTimeoutMs: 1000 });
@@ -473,11 +685,32 @@ describe("ActiveSessionRegistry", () => {
 
   it("disconnects immediately when the timeout is zero", async () => {
     vi.useFakeTimers();
-    registry = new ActiveSessionRegistry(factory, noopLogger, { idleTimeoutMs: 0 });
+    factory.backgroundWork = true;
+    registry = new ActiveSessionRegistry(factory, noopLogger, { idleTimeoutMs: 0 }, watcherFactory);
     const created = await registry.create({ cwd });
+    await vi.advanceTimersByTimeAsync(0);
     expect(registry.list().find((s) => s.id === created.id)).toBeDefined();
+
+    const adapter = factory.created[0]!;
+    adapter.backgroundWork = false;
+    adapter.events.forEach((listener) => listener({ type: "agent_settled" }));
     await vi.advanceTimersByTimeAsync(0);
     await vi.waitFor(() => expect(registry.list().find((s) => s.id === created.id)).toBeUndefined());
+  });
+
+  it("restarts the idle deadline from a replacement runtime", async () => {
+    vi.useFakeTimers();
+    registry = new ActiveSessionRegistry(factory, noopLogger, { idleTimeoutMs: 1000 }, watcherFactory);
+    const created = await registry.open({ cwd, sessionPath });
+    await vi.advanceTimersByTimeAsync(900);
+
+    const restarted = await registry.restart(created.id);
+    expect(factory.created[0]?.stats.stopped).toBe(1);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(registry.has(restarted.id)).toBe(true);
+    expect(factory.created[1]?.stats.stopped).toBe(0);
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.waitFor(() => expect(registry.has(restarted.id)).toBe(false));
   });
 
   it("lists connected records but excludes adapters with unreadable state", async () => {
@@ -520,6 +753,26 @@ describe("ActiveSessionRegistry", () => {
     );
   });
 
+  it("releases startup ownership without leaving an idle timer after launch failure", async () => {
+    vi.useFakeTimers();
+    const launchError = new Error("startup failed");
+    factory.startError = launchError;
+    factory.backgroundWork = true;
+    const failing = new ActiveSessionRegistry(
+      factory,
+      noopLogger,
+      { idleTimeoutMs: 0 },
+      watcherFactory,
+    );
+
+    await expect(failing.open({ cwd, sessionPath })).rejects.toBe(launchError);
+    expect(failing.list()).toEqual([]);
+    expect(factory.created[0]?.stats.stopped).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(factory.created[0]?.stats.stopped).toBe(1);
+  });
+
   it("stops the incomplete adapter and logs when getState fails during launch", async () => {
     loggerMock.error.mockClear();
     const getStateError = new Error("state boom");
@@ -534,11 +787,35 @@ describe("ActiveSessionRegistry", () => {
     );
   });
 
-  it("shutdown stops all clients", async () => {
+  it("shutdown stops all clients even while their background leases are held", async () => {
+    factory.backgroundWork = true;
     await registry.create({ cwd });
     await registry.open({ cwd, sessionPath });
     await registry.shutdown();
     expect(factory.created.every((a) => a.stats.stopped >= 1)).toBe(true);
+  });
+
+  it("shutdown owns an in-flight open through startup and durable stop", async () => {
+    let releaseStart!: () => void;
+    const startGate = new Promise<void>((resolve) => {
+      releaseStart = resolve;
+    });
+    factory.startImpl = () => startGate;
+    const opening = registry.open({ cwd, sessionPath });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    let shutdownResolved = false;
+    const shuttingDown = registry.shutdown().then(() => {
+      shutdownResolved = true;
+    });
+    await Promise.resolve();
+    expect(shutdownResolved).toBe(false);
+
+    releaseStart();
+    await opening;
+    await shuttingDown;
+    expect(factory.created[0]?.stats.stopped).toBe(1);
+    expect(registry.list()).toEqual([]);
   });
 
   describe("tree and commands (ADR-066)", () => {

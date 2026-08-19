@@ -373,9 +373,22 @@ describe("PiSessionFactory", () => {
       },
     };
     session.listeners.forEach((listener) => listener(hidden));
+    session.listeners.forEach((listener) => listener({
+      type: "agent_end",
+      messages: [
+        hidden.message,
+        { role: "assistant", content: [{ type: "text", text: "visible" }], timestamp: 3 },
+      ],
+    }));
 
     expect(supervisorObserved).toContain(hidden);
-    expect(events).toEqual([progress]);
+    expect(events).toEqual([
+      progress,
+      {
+        type: "agent_end",
+        messages: [{ role: "assistant", content: [{ type: "text", text: "visible" }], timestamp: 3 }],
+      },
+    ]);
     await expect(adapter.getMessages()).resolves.toEqual([session.messages[0]]);
   });
 

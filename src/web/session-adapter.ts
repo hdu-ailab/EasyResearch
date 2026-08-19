@@ -354,7 +354,10 @@ class DirectSessionAdapter implements SessionAdapter {
         const agentEvent = event as AgentSessionEvent;
         if (isHiddenStatusEvent(agentEvent)) return;
         const jsonEvent = toJsonSessionEvent(agentEvent);
-        for (const listener of this.listeners) listener(jsonEvent);
+        const publicEvent = jsonEvent.type === "agent_end"
+          ? { ...jsonEvent, messages: jsonEvent.messages.filter((message) => !isHiddenStatusMessage(message)) }
+          : jsonEvent;
+        for (const listener of this.listeners) listener(publicEvent);
       });
     } finally {
       this.startPending = false;
