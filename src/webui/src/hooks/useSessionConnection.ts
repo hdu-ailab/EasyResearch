@@ -1,6 +1,6 @@
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { type Dispatch, type SetStateAction, useCallback, useEffect, useRef, useState } from "react";
-import type { ActiveSessionDto, SessionSnapshotDto } from "../../../web/contracts";
+import type { ActiveSessionDto, SessionSnapshotDto, SubagentSupervisorEventDto } from "../../../web/contracts";
 import {
   abortSession,
   connectSessionEvents,
@@ -10,12 +10,14 @@ import {
   openSession,
   sendPrompt,
 } from "../api";
+import { parseSubagentSupervisorEvent } from "../api/parsers";
 import { useI18n } from "../i18n/useI18n";
 import {
   emptyState,
   fromSnapshot,
   mergeSnapshot,
   reduceSessionEvent,
+  reduceSubagentSupervisorEvent,
   type SessionViewState,
   terminateSessionRun,
 } from "../session-reducer";
@@ -24,6 +26,7 @@ export interface UseSessionConnectionOptions {
   initialSessionId: string;
   cwd: string;
   onEvent?: (event: unknown) => boolean;
+  onSupervisorEvent?: (event: SubagentSupervisorEventDto) => void;
 }
 
 export interface SessionConnection {
@@ -110,12 +113,14 @@ function freshEmptyState(): SessionViewState {
 }
 
 export function useSessionConnection(options: UseSessionConnectionOptions): SessionConnection {
-  const { initialSessionId, onEvent } = options;
+  const { initialSessionId, onEvent, onSupervisorEvent } = options;
   const { t } = useI18n();
   const tRef = useRef(t);
   tRef.current = t;
   const onEventRef = useRef(onEvent);
   onEventRef.current = onEvent;
+  const onSupervisorEventRef = useRef(onSupervisorEvent);
+  onSupervisorEventRef.current = onSupervisorEvent;
   const [view, setView] = useState<SessionViewState>(freshEmptyState);
   const viewRef = useRef(view);
   viewRef.current = view;
@@ -221,6 +226,19 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
         if (!isCurrentConnection()) return;
         connectionToken.receivedStreamData = true;
         setNotice((current) => (current === tRef.current("work.connectionLost") ? null : current));
+        if (eventType(event) === "subagent_supervisor") {
+          let supervisorEvent: SubagentSupervisorEventDto;
+          try {
+            supervisorEvent = parseSubagentSupervisorEvent(event);
+          } catch {
+            return;
+          }
+          if (supervisorEvent.ownerSessionId === sessionId) {
+            setView((current) => reduceSubagentSupervisorEvent(current, supervisorEvent));
+          }
+          onSupervisorEventRef.current?.(supervisorEvent);
+          return;
+        }
         if (onEventRef.current?.(event)) return;
         if (isSnapshotEvent(event)) {
           const pending = pendingStreamReadyRef.current;

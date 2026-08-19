@@ -18,6 +18,7 @@ import type {
   SkillCommandDto,
   StatusDto,
   SubagentSessionSummaryDto,
+  SubagentSupervisorEventDto,
   WebTreeEntryDto,
   WebuiSettingsDto,
 } from "../../../web/contracts";
@@ -50,6 +51,26 @@ function optionalString(source: RecordValue, key: string): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "string") throw new Error(`Invalid API response: ${key} must be a string`);
   return value;
+}
+
+function requiredIdentityString(source: RecordValue, key: string): string {
+  const value = requiredString(source, key);
+  if (!value.trim()) throw new Error(`Invalid API response: ${key} must not be empty`);
+  return value;
+}
+
+function optionalIdentityString(source: RecordValue, key: string): string | undefined {
+  const value = optionalString(source, key);
+  if (value !== undefined && !value.trim()) {
+    throw new Error(`Invalid API response: ${key} must not be empty`);
+  }
+  return value;
+}
+
+function rejectSessionPath(source: RecordValue, label: string): void {
+  if ("sessionPath" in source || "session_path" in source) {
+    throw new Error(`Invalid API response: ${label} must not contain a session path`);
+  }
 }
 
 function requiredBoolean(source: RecordValue, key: string): boolean {
@@ -141,16 +162,61 @@ function parseFileEntry(value: unknown): FileEntryDto {
 
 function parseSubagentSummary(value: unknown): SubagentSessionSummaryDto {
   const source = record(value, "subagent summary");
+  rejectSessionPath(source, "subagent summary");
   const step = optionalNumber(source, "step");
   const latestMessage = optionalString(source, "latestMessage");
-  const id = optionalString(source, "id");
+  const launchId = optionalIdentityString(source, "launchId");
+  const agentId = optionalIdentityString(source, "agentId");
   return {
-    toolCallId: requiredString(source, "toolCallId"),
-    childSessionId: requiredString(source, "childSessionId"),
-    agent: requiredString(source, "agent"),
+    ownerSessionId: requiredIdentityString(source, "ownerSessionId"),
+    toolCallId: requiredIdentityString(source, "toolCallId"),
+    childSessionId: requiredIdentityString(source, "childSessionId"),
+    agent: requiredIdentityString(source, "agent"),
+    status: parseSubagentStatus(source.status),
+    ...(launchId !== undefined ? { launchId } : {}),
+    ...(agentId !== undefined ? { agentId } : {}),
     ...(step !== undefined ? { step } : {}),
     ...(latestMessage !== undefined ? { latestMessage } : {}),
-    ...(id !== undefined ? { id } : {}),
+  };
+}
+
+function parseSubagentStatus(value: unknown): SubagentSessionSummaryDto["status"] {
+  if (value === "working" || value === "complete" || value === "error") return value;
+  throw new Error("Invalid API response: subagent status is invalid");
+}
+
+function parseNestedSessionEvent(value: unknown): NonNullable<SubagentSupervisorEventDto["event"]> {
+  const source = record(value, "subagent event");
+  requiredIdentityString(source, "type");
+  if (source.type === "message_update") {
+    const update = record(source.assistantMessageEvent, "assistantMessageEvent");
+    requiredIdentityString(update, "type");
+    if ("partial" in update) {
+      throw new Error("Invalid API response: nested message updates must be delta-only");
+    }
+  }
+  return source as NonNullable<SubagentSupervisorEventDto["event"]>;
+}
+
+export function parseSubagentSupervisorEvent(value: unknown): SubagentSupervisorEventDto {
+  const source = record(value, "subagent supervisor event");
+  rejectSessionPath(source, "subagent supervisor event");
+  if (source.type !== "subagent_supervisor") {
+    throw new Error("Invalid API response: subagent supervisor event type is invalid");
+  }
+  const latestMessage = optionalString(source, "latestMessage");
+  const event = source.event === undefined ? undefined : parseNestedSessionEvent(source.event);
+  return {
+    type: "subagent_supervisor",
+    launchId: requiredIdentityString(source, "launchId"),
+    ownerSessionId: requiredIdentityString(source, "ownerSessionId"),
+    toolCallId: requiredIdentityString(source, "toolCallId"),
+    agent: requiredIdentityString(source, "agent"),
+    agentId: requiredIdentityString(source, "agentId"),
+    childSessionId: requiredIdentityString(source, "childSessionId"),
+    status: parseSubagentStatus(source.status),
+    ...(latestMessage !== undefined ? { latestMessage } : {}),
+    ...(event !== undefined ? { event } : {}),
   };
 }
 
@@ -370,6 +436,7 @@ export function parseChildSnapshot(value: unknown): ChildSessionSnapshotDto {
       ...(sessionName !== undefined ? { sessionName } : {}),
     },
     messages: parseMessages(source.messages),
+    subagents: arrayOf(source.subagents, "subagents", parseSubagentSummary),
   };
 }
 
