@@ -60,6 +60,52 @@ describe("subagent session links", () => {
     ]);
   });
 
+  it("keeps distinct launches when owners reuse the same tool-call id", () => {
+    expect(readSubagentSessionLinks([
+      {
+        type: "custom",
+        customType: SUBAGENT_SESSION_LINK_ENTRY,
+        data: {
+          toolCallId: "shared-call",
+          childSessionId: "root-child",
+          agent: "search",
+          ownerSessionId: "root",
+          launchId: "root-launch",
+          agentId: "search_0",
+        },
+      },
+      {
+        type: "custom",
+        customType: SUBAGENT_SESSION_LINK_ENTRY,
+        data: {
+          toolCallId: "shared-call",
+          childSessionId: "nested-child",
+          agent: "search",
+          ownerSessionId: "experiment-child",
+          launchId: "nested-launch",
+          agentId: "search_1",
+        },
+      },
+    ])).toEqual([
+      {
+        toolCallId: "shared-call",
+        childSessionId: "root-child",
+        agent: "search",
+        ownerSessionId: "root",
+        launchId: "root-launch",
+        agentId: "search_0",
+      },
+      {
+        toolCallId: "shared-call",
+        childSessionId: "nested-child",
+        agent: "search",
+        ownerSessionId: "experiment-child",
+        launchId: "nested-launch",
+        agentId: "search_1",
+      },
+    ]);
+  });
+
   it("strictly rejects malformed links without displacing an older valid link", () => {
     const valid = {
       type: "custom",

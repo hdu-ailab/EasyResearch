@@ -42,7 +42,9 @@ export function readSubagentSessionLinks(entries: readonly unknown[]): SubagentS
     if (agentId !== undefined && !isNonEmptyString(agentId)) continue;
     if (step !== undefined && (typeof step !== "number" || !Number.isFinite(step) || !Number.isInteger(step) || step <= 0)) continue;
 
-    const key = `${toolCallId}:${step ?? "single"}`;
+    const legacyKey = `${toolCallId}:${step ?? "single"}`;
+    if (launchId !== undefined) links.delete(legacyKey);
+    const key = launchId === undefined ? legacyKey : `launch:${launchId}`;
     links.delete(key);
     links.set(key, {
       toolCallId,
