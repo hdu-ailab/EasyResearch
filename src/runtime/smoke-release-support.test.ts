@@ -5,6 +5,7 @@ import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   FIRST_RUN_CEILING_MS,
+  assertPathFreeSessionEvent,
   buildWindowsShutdownLauncherScript,
   buildWindowsShutdownScript,
   collectLaunchOutput,
@@ -47,6 +48,28 @@ function findPythonOnPath(): string | undefined {
 }
 
 const systemPython = findPythonOnPath();
+
+describe("assertPathFreeSessionEvent", () => {
+  it.each(["sessionPath", "session_path"])("rejects a child %s leak", (field) => {
+    expect(() => assertPathFreeSessionEvent({
+      type: "subagent_supervisor",
+      [field]: "/private/child.jsonl",
+    })).toThrow("session path");
+  });
+
+  it("rejects a hidden handoff", () => {
+    expect(() => assertPathFreeSessionEvent({ content: "<agent_handoff>hidden</agent_handoff>" }))
+      .toThrow("hidden handoff");
+  });
+
+  it("preserves allowed root-session and public path fields", () => {
+    expect(assertPathFreeSessionEvent({
+      type: "snapshot",
+      session: { sessionFile: "/sessions/root.jsonl" },
+      path: "/project/paper.md",
+    })).toContain('"sessionFile":"/sessions/root.jsonl"');
+  });
+});
 
 function validationFixture(python: string): { python: string; script: string; prefix: string; root: string } {
   const root = tempDir();

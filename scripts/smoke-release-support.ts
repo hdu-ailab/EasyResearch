@@ -87,6 +87,18 @@ interface ValidationSpawnResult {
 const VENV_SENTINEL = "easyresearch-venv-ok";
 const STAGE_COMPLETION = "complete\nArtifacts: none\nGaps: none\nNext action: none";
 
+export function assertPathFreeSessionEvent(event: unknown): string {
+  const serialized = JSON.stringify(event);
+  if (serialized === undefined) throw new Error("session SSE emitted an unserializable empty frame");
+  if (serialized.includes("<agent_handoff>")) {
+    throw new Error(`session SSE exposed a hidden handoff: ${serialized}`);
+  }
+  if (/"(?:sessionPath|session_path)"\s*:/u.test(serialized)) {
+    throw new Error(`session SSE exposed a child session path: ${serialized}`);
+  }
+  return serialized;
+}
+
 function hasExactLine(text: string, expected: string): boolean {
   return text.split(/\r?\n/).some((line) => line === expected);
 }

@@ -8,6 +8,7 @@ import { TARGETS, platformBinaryName, platformPackageDir, repoPackageVersion } f
 import { validateNativeVersionOutput } from "./release";
 import {
   FIRST_RUN_CEILING_MS,
+  assertPathFreeSessionEvent,
   buildWindowsShutdownLauncherScript,
   buildWindowsShutdownScript,
   collectLaunchOutput,
@@ -408,11 +409,7 @@ function smokeProgressDiagnostics(): string {
 }
 
 function observeSessionEvent(event: unknown): void {
-  const serialized = JSON.stringify(event);
-  if (serialized === undefined) throw new Error("session SSE emitted an unserializable empty frame");
-  if (serialized.includes("<agent_handoff>") || serialized.includes("session_path")) {
-    throw new Error(`session SSE exposed hidden handoff or session_path: ${serialized}`);
-  }
+  const serialized = assertPathFreeSessionEvent(event);
   recentSessionEvents.push(serialized.slice(0, 1_000));
   if (recentSessionEvents.length > 12) recentSessionEvents.shift();
   if (!event || typeof event !== "object") return;
