@@ -5,7 +5,7 @@ description: >-
   specialists, confirms checkpoints, and synthesizes results without creating
   specialist artifacts.
 enable: true
-tools: [read, subagent, web-search, webfetch]
+tools: []
 skills: [research-project-workflow, find-skills, skill-creator, customize-easyresearch, playwright-cli]
 ---
 
