@@ -698,4 +698,30 @@ describe("ChatTranscript", () => {
       expect(screen.queryByRole("button", { name: /copy/i })).toBeNull();
     });
   });
+
+  describe("queued steer footer (ADR-083)", () => {
+    it("renders queued steers in order with the Queued tag", () => {
+      renderTranscript(
+        <ChatTranscript
+          messages={[msg({ key: "k1", role: "user", text: "hello", order: 0 })]}
+          tools={[]}
+          steers={[
+            { key: "s1", text: "note one" },
+            { key: "s2", text: "note two" },
+          ]}
+        />,
+      );
+      expect(screen.getByRole("status", { name: /queued messages/i })).toBeTruthy();
+      const bubbles = screen.getAllByText(/note (one|two)/);
+      expect(bubbles).toHaveLength(2);
+      expect(screen.getAllByText(/queued/i).length).toBeGreaterThanOrEqual(2);
+    });
+
+    it("renders no footer without steers", () => {
+      renderTranscript(
+        <ChatTranscript messages={[msg({ key: "k1", role: "user", text: "hello", order: 0 })]} tools={[]} />,
+      );
+      expect(screen.queryByRole("status", { name: /queued messages/i })).toBeNull();
+    });
+  });
 });

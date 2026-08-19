@@ -10,7 +10,7 @@ import type { MessageKey } from "../i18n/messages";
 import { useI18n } from "../i18n/useI18n";
 import type { SessionMessageMeta } from "../message-tree";
 import { usePreferences } from "../preferences/PreferencesProvider";
-import type { SessionMessageView, ToolView } from "../session-reducer";
+import type { SessionMessageView, SteerView, ToolView } from "../session-reducer";
 import { MarkdownBlock } from "./MarkdownBlock";
 import { SubagentToolCard } from "./SubagentToolCard";
 
@@ -27,6 +27,9 @@ export interface ChatTranscriptProps {
   onEditMessage?: (entryId: string, text: string) => void;
   /** Switch to the previous/next version of a user message. */
   onSwitchBranch?: (entryId: string, direction: -1 | 1) => void;
+  /** Steering messages queued for the active run (ADR-083); rendered below the
+   * transcript as a fixed footer, newest last. */
+  steers?: SteerView[];
 }
 
 export interface ChatTranscriptHandle {
@@ -367,7 +370,17 @@ function PendingRow() {
  * rows keep their open/closed state across unmount/remount.
  */
 export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptProps>(function ChatTranscript(
-  { messages, tools, emptyHint, pending = false, onViewDetails, messageMeta, onEditMessage, onSwitchBranch },
+  {
+    messages,
+    tools,
+    emptyHint,
+    pending = false,
+    onViewDetails,
+    messageMeta,
+    onEditMessage,
+    onSwitchBranch,
+    steers = [],
+  },
   ref,
 ) {
   const { t } = useI18n();
@@ -565,7 +578,7 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
   }, [entries.length, hasScrollGesture, shouldAnchorBottom, virtualizer]);
 
   return (
-    <div className="relative min-h-0 flex-1">
+    <div className="relative flex min-h-0 flex-1 flex-col">
       {scrollState.overflow && scrollState.jump ? (
         <button
           type="button"
@@ -588,7 +601,7 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
         ref={bindScrollRef}
         data-scrollable
         tabIndex={0}
-        className="min-h-0 h-full overflow-y-auto"
+        className="min-h-0 flex-1 overflow-y-auto"
         aria-label={t("transcript.conversation")}
         onScroll={handleScroll}
         onWheel={handleWheel}
@@ -669,6 +682,29 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
           })}
         </div>
       </section>
+      {steers.length > 0 ? (
+        <div
+          role="status"
+          aria-label={t("transcript.steerQueuedLabel")}
+          className="shrink-0 border-t border-v2-grey-200/70 bg-v2-background-bg-base/85 px-4 py-2 backdrop-blur"
+        >
+          <ul className="mx-auto flex w-full max-w-[1000px] flex-col items-end gap-1.5">
+            {steers.map((steer) => (
+              <li key={steer.key} className="v2-steer-queued flex flex-col items-end gap-1">
+                <span className="text-[11px] font-medium uppercase tracking-wide text-v2-text-text-faint">
+                  {t("transcript.you")}
+                </span>
+                <div className="v2-md flex max-w-full items-center gap-2 whitespace-pre-wrap break-words rounded-lg bg-v2-blue-100/60 px-3 py-2 text-[length:var(--v2-chat-font-size)] text-v2-text-text-base">
+                  <span>{steer.text}</span>
+                  <span className="shrink-0 rounded bg-v2-blue-200/60 px-1.5 py-0.5 text-[10px] font-medium text-v2-blue-700">
+                    {t("transcript.steerQueued")}
+                  </span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
     </div>
   );
 });

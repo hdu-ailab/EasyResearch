@@ -6,7 +6,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionTreeNode } from "@earendil-works/pi-coding-agent";
 import type { RouteServices } from "./routes";
 import { createRouteHandler } from "./routes";
-import type { SessionAdapter, SessionFactory, SessionState, StartSessionOptions, WebSlashCommand } from "./session-adapter";
+import type { SessionAdapter, SessionFactory, SessionState, StartSessionOptions, SteerPromptOptions, WebSlashCommand } from "./session-adapter";
 import { ActiveSessionRegistry, UnknownSessionError } from "./active-sessions";
 import { DirectoryService } from "./directories";
 import { ConfigFileService } from "./config-files";
@@ -84,8 +84,8 @@ class FakeAdapter implements SessionAdapter {
   async stop() {
     this.stopped++;
   }
-  async prompt(message: string) {
-    this.prompts.push(message);
+  async prompt(message: string, options?: SteerPromptOptions) {
+    this.prompts.push(`${message}${options?.streamingBehavior === "steer" ? " (steer)" : ""}`);
   }
   async abort() {
     this.aborts++;
@@ -108,6 +108,10 @@ class FakeAdapter implements SessionAdapter {
   }
   async getMessages(): Promise<AgentMessage[]> {
     return this.getMessagesPromise ?? this.messages;
+  }
+  steeringResult: string[] = [];
+  getSteeringMessages(): readonly string[] {
+    return this.steeringResult;
   }
   commandsResult: WebSlashCommand[] = [];
   treeResult: { tree: SessionTreeNode[]; leafId: string | null } = { tree: [], leafId: null };
@@ -519,6 +523,18 @@ describe("web routes", () => {
     const body = (await res.json()) as { session: { id: string }; messages: unknown[] };
     expect(body.session.id).toBe(created.id);
     expect(body.messages).toEqual([]);
+  });
+
+  it("includes pending steer texts in the HTTP snapshot (ADR-083)", async () => {
+    setup();
+    const created = await registry.create({ cwd: projectDir });
+    FakeAdapter.all.at(-1)!.steeringResult = ["note one"];
+
+    const res = await handler(new Request(`http://localhost/api/sessions/${created.id}/snapshot`));
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { steering?: string[] };
+    expect(body.steering).toEqual(["note one"]);
   });
 
   it("GET /api/sessions/:id/commands lists commands with their source", async () => {

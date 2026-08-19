@@ -1,5 +1,6 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../i18n/I18nProvider";
 import { PreferencesProvider } from "../preferences/PreferencesProvider";
@@ -102,5 +103,82 @@ describe("ChatComposer slash popover", () => {
     await user.keyboard("write a summary");
     await user.keyboard("{Enter}");
     expect(onSend).toHaveBeenCalledWith("write a summary");
+  });
+});
+
+describe("ChatComposer single running-state button (ADR-083)", () => {
+  it("sends while streaming whenever the input has content", async () => {
+    const onSend = vi.fn();
+    const onAbort = vi.fn();
+    const { user } = await renderComposer({ streaming: true, onSend, onAbort });
+    const input = screen.getByLabelText(/message/i) as HTMLTextAreaElement;
+    await user.click(input);
+    await user.keyboard("steer note");
+    expect(screen.getByLabelText(/send/i)).toBeTruthy();
+    await user.keyboard("{Enter}");
+    expect(onSend).toHaveBeenCalledWith("steer note");
+    expect(onAbort).not.toHaveBeenCalled();
+  });
+
+  it("stops the run while streaming when the input is empty", async () => {
+    const onSend = vi.fn();
+    const onAbort = vi.fn();
+    const { user } = await renderComposer({ streaming: true, onSend, onAbort });
+    const stop = screen.getByLabelText(/stop/i);
+    await user.click(stop);
+    expect(onAbort).toHaveBeenCalledTimes(1);
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("keeps focus in the textarea after sending", async () => {
+    const onSend = vi.fn();
+    const { user } = await renderComposer({ onSend });
+    const input = screen.getByLabelText(/message/i) as HTMLTextAreaElement;
+    await user.click(input);
+    await user.keyboard("hello");
+    await user.keyboard("{Enter}");
+    expect(onSend).toHaveBeenCalledWith("hello");
+    expect(input).toHaveFocus();
+  });
+
+  it("keeps focus in the textarea after stopping the run", async () => {
+    const { user } = await renderComposer({ streaming: true });
+    const input = screen.getByLabelText(/message/i) as HTMLTextAreaElement;
+    await user.click(input);
+    const stop = screen.getByLabelText(/stop/i);
+    await user.click(stop);
+    expect(input).toHaveFocus();
+  });
+
+  it("restores focus once the composer re-enables after a disabling send cycle", async () => {
+    const user = userEvent.setup();
+    function Harness() {
+      const [busy, setBusy] = useState(false);
+      return (
+        <ChatComposer
+          disabled={busy}
+          streaming={false}
+          commands={[]}
+          onAbort={() => {}}
+          onSend={() => {
+            setBusy(true);
+            setTimeout(() => setBusy(false), 0);
+          }}
+        />
+      );
+    }
+    render(
+      <PreferencesProvider>
+        <I18nProvider>
+          <Harness />
+        </I18nProvider>
+      </PreferencesProvider>,
+    );
+    const input = screen.getByLabelText(/message/i) as HTMLTextAreaElement;
+    await user.click(input);
+    await user.keyboard("hello");
+    await user.keyboard("{Enter}");
+
+    await waitFor(() => expect(input).toHaveFocus());
   });
 });

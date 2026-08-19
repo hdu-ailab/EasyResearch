@@ -1,5 +1,5 @@
 import { Square } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { SkillCommandDto } from "../../../web/contracts";
 import { useI18n } from "../i18n/useI18n";
 
@@ -27,7 +27,16 @@ export function ChatComposer({ disabled, streaming, onSend, onAbort, commands = 
   const [text, setText] = useState("");
   const [selectionStart, setSelectionStart] = useState(0);
   const [activeIndex, setActiveIndex] = useState(0);
+  /** Set on submit/stop; the effect below restores focus once the composer is
+   * (re)enabled, covering the disable-then-enable send cycle (ADR-083). */
+  const [pendingFocus, setPendingFocus] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (!pendingFocus || disabled) return;
+    setPendingFocus(false);
+    textareaRef.current?.focus();
+  }, [pendingFocus, disabled]);
 
   const slash = useMemo(() => {
     const prefix = text.slice(0, selectionStart);
@@ -60,8 +69,14 @@ export function ChatComposer({ disabled, streaming, onSend, onAbort, commands = 
     if (!trimmed || disabled) return;
     setText("");
     setSelectionStart(0);
+    setPendingFocus(true);
     onSend(trimmed);
   };
+
+  // Single primary button (ADR-083): while streaming, non-empty input sends a
+  // steer and empty input stops the run; when idle it is always Send.
+  const canSend = text.trim().length > 0;
+  const showStop = streaming && !canSend;
 
   return (
     <form
@@ -145,13 +160,16 @@ export function ChatComposer({ disabled, streaming, onSend, onAbort, commands = 
         />
       </div>
       <div className="flex shrink-0 items-center gap-1">
-        {streaming ? (
+        {showStop ? (
           <button
             type="button"
             className="flex size-8 items-center justify-center rounded-md bg-v2-grey-1100 text-v2-grey-50 transition-opacity hover:opacity-90"
             aria-label={t("composer.stop")}
             title={t("composer.stopTitle")}
-            onClick={onAbort}
+            onClick={() => {
+              setPendingFocus(true);
+              onAbort();
+            }}
           >
             <Square size={13} fill="currentColor" />
           </button>
@@ -160,7 +178,7 @@ export function ChatComposer({ disabled, streaming, onSend, onAbort, commands = 
             type="submit"
             className="flex size-8 items-center justify-center rounded-md bg-v2-grey-1100 text-v2-grey-50 transition-opacity hover:opacity-90 disabled:opacity-40 disabled:hover:opacity-40"
             aria-label={t("composer.send")}
-            disabled={disabled || !text.trim()}
+            disabled={disabled || !canSend}
           >
             <svg
               width="15"

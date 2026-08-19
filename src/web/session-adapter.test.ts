@@ -6,6 +6,7 @@ import {
   PiSessionFactory,
   type InProcessAgentSession,
   type StartSessionOptions,
+  type SteerPromptOptions,
 } from "./session-adapter";
 
 const model = {
@@ -24,8 +25,13 @@ class FakeAgentSession implements InProcessAgentSession {
   messages: AgentMessage[] = [];
   promptTemplates = [{ name: "review", description: "Review", source: "prompt" as const }];
   promptCalls: string[] = [];
+  promptError: Error | null = null;
+  /** Override for simulating a run that settles later than preflight. */
+  promptImpl: ((message: string, options?: SteerPromptOptions) => Promise<void>) | null = null;
   abortCalls = 0;
   disposeCalls = 0;
+  clearQueueCalls = 0;
+  steeringMessages: string[] = [];
   thinkingCalls: string[] = [];
   modelCalls: unknown[] = [];
   listeners = new Set<(event: unknown) => void>();
@@ -60,8 +66,16 @@ class FakeAgentSession implements InProcessAgentSession {
     return () => this.listeners.delete(listener);
   }
 
-  async prompt(message: string): Promise<void> {
-    this.promptCalls.push(message);
+  async prompt(message: string, options?: SteerPromptOptions): Promise<void> {
+    if (this.promptImpl) return this.promptImpl(message, options);
+    this.promptCalls.push(
+      options?.streamingBehavior === "steer" ? `${message} (steer)` : message,
+    );
+    if (this.promptError) {
+      options?.preflightResult?.(false);
+      throw this.promptError;
+    }
+    options?.preflightResult?.(true);
   }
 
   async abort(): Promise<void> {
@@ -85,6 +99,16 @@ class FakeAgentSession implements InProcessAgentSession {
 
   async navigateTree(): Promise<{ cancelled: boolean }> {
     return { cancelled: false };
+  }
+
+  getSteeringMessages(): readonly string[] {
+    return this.steeringMessages;
+  }
+
+  clearQueue(): { steering: string[]; followUp: string[] } {
+    this.clearQueueCalls += 1;
+    this.steeringMessages = [];
+    return { steering: [], followUp: [] };
   }
 
   dispose(): void {
@@ -138,7 +162,7 @@ describe("PiSessionFactory", () => {
     await adapter.setThinkingLevel("high");
     session.listeners.forEach((listener) => listener({ type: "agent_start" }));
 
-    expect(session.promptCalls).toEqual(["hello"]);
+    expect(session.promptCalls).toEqual(["hello (steer)"]);
     expect(session.modelCalls).toEqual([{ provider: "anthropic", id: "claude-test" }]);
     expect(session.thinkingCalls).toEqual(["high"]);
     expect(events).toEqual([{ type: "agent_start" }]);
@@ -343,5 +367,96 @@ describe("createPiAgentSessionCreator", () => {
       noSkills: true,
       additionalSkillPaths: ["/skills/research-project-workflow", "/skills/find-skills"],
     });
+  });
+});
+
+describe("DirectSessionAdapter steer lifecycle (ADR-083)", () => {
+  it("exposes pending steering messages from the Pi session", async () => {
+    const session = new FakeAgentSession();
+    session.steeringMessages = ["note one", "note two"];
+    const factory = new PiSessionFactory(async () => session);
+    const adapter = factory.create({ cwd: "/project" });
+    await adapter.start();
+
+    expect(adapter.getSteeringMessages()).toEqual(["note one", "note two"]);
+  });
+
+  it("clears the steer queue when the run settles", async () => {
+    const session = new FakeAgentSession();
+    session.steeringMessages = ["undelivered note"];
+    const factory = new PiSessionFactory(async () => session);
+    const adapter = factory.create({ cwd: "/project" });
+    await adapter.start();
+
+    session.listeners.forEach((listener) => listener({ type: "agent_settled" }));
+
+    expect(session.clearQueueCalls).toBe(1);
+    expect(adapter.getSteeringMessages()).toEqual([]);
+  });
+
+  it("does not clear the queue for unrelated events", async () => {
+    const session = new FakeAgentSession();
+    const factory = new PiSessionFactory(async () => session);
+    const adapter = factory.create({ cwd: "/project" });
+    await adapter.start();
+
+    session.listeners.forEach((listener) => listener({ type: "agent_start" }));
+
+    expect(session.clearQueueCalls).toBe(0);
+  });
+
+  it("resolves the Web prompt at preflight acceptance, not at run settlement (ADR-083)", async () => {
+    const session = new FakeAgentSession();
+    let runSettled = false;
+    let preflightAccepted = false;
+    const runGate = (() => {
+      let release!: () => void;
+      const promise = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return { promise, release };
+    })();
+    session.promptImpl = async (_message, options) => {
+      options?.preflightResult?.(true);
+      preflightAccepted = true;
+      await runGate.promise;
+      runSettled = true;
+    };
+    const factory = new PiSessionFactory(async () => session);
+    const adapter = factory.create({ cwd: "/project" });
+    await adapter.start();
+
+    const webPrompt = adapter.prompt("steer note");
+    // The Web request must resolve as soon as the prompt is accepted, before
+    // the underlying run settles (which would hold the composer disabled).
+    await webPrompt;
+
+    expect(preflightAccepted).toBe(true);
+    expect(runSettled).toBe(false);
+    runGate.release();
+  });
+
+  it("rejects the Web prompt when preflight fails (ADR-083)", async () => {
+    const session = new FakeAgentSession();
+    session.promptError = new Error("no model selected");
+    const factory = new PiSessionFactory(async () => session);
+    const adapter = factory.create({ cwd: "/project" });
+    await adapter.start();
+
+    await expect(adapter.prompt("hello")).rejects.toThrow("no model selected");
+  });
+
+  it("cancels undelivered steers when the run is aborted (ADR-083)", async () => {
+    const session = new FakeAgentSession();
+    session.steeringMessages = ["queued note"];
+    const factory = new PiSessionFactory(async () => session);
+    const adapter = factory.create({ cwd: "/project" });
+    await adapter.start();
+
+    await adapter.abort();
+
+    expect(session.clearQueueCalls).toBe(1);
+    expect(session.abortCalls).toBe(1);
+    expect(adapter.getSteeringMessages()).toEqual([]);
   });
 });

@@ -348,10 +348,12 @@ export function parseActiveSession(value: unknown): ActiveSessionDto {
 
 export function parseSessionSnapshot(value: unknown): SessionSnapshotDto {
   const source = record(value, "session snapshot");
+  const steering = source.steering;
   return {
     session: parseActiveSessionValue(source.session),
     messages: parseMessages(source.messages),
     subagents: arrayOf(source.subagents, "subagents", parseSubagentSummary),
+    ...(steering !== undefined ? { steering: stringArray(steering, "steering") } : {}),
   };
 }
 

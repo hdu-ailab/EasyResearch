@@ -152,6 +152,18 @@ body {
   }
 }
 
+/* Queued steer footer rows fade in on mount (ADR-083); the key-stable DOM
+   node prevents re-animation on subsequent queue_update replacements. */
+.v2-steer-queued {
+  animation: v2-fade-in 300ms var(--ease-v2-panel);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .v2-steer-queued {
+    animation: none;
+  }
+}
+
 .v2-subagent-card-running::before {
   content: "";
   position: absolute;

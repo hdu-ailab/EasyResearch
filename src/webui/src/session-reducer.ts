@@ -82,6 +82,15 @@ export interface SessionViewState {
    * cleared at message_end. message_update deltas key to this because the
    * 0.84 RPC wire no longer carries the cumulative `message` field. */
   activeMessageKey?: string;
+  /** Steer messages queued for the active run but not yet delivered into the
+   * agent context (ADR-083); replaced wholesale by `queue_update` and cleared
+   * when the run ends. */
+  steers: SteerView[];
+}
+
+export interface SteerView {
+  key: string;
+  text: string;
 }
 
 export interface RetryView {
@@ -101,6 +110,7 @@ const emptyState: SessionViewState = {
   error: null,
   retry: null,
   nextOrder: 0,
+  steers: [],
 };
 
 type UnknownMessage = {
@@ -334,6 +344,7 @@ export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
     subagentName,
     ...(sessionName !== undefined ? { sessionName } : {}),
     nextOrder: 0,
+    steers: (snapshot.steering ?? []).map((text, index) => ({ key: `steer:${index}:${text}`, text })),
   };
   const next = () => state.nextOrder++;
   let cursorCandidate: SessionMessageView | undefined;
@@ -546,6 +557,28 @@ function applySubagentEventActivity(
   }
 }
 
+/**
+ * Reconcile the current steer rows with a fresh `queue_update` list. Rows are
+ * matched in order by content so delivered steers (removed from the queue)
+ * keep stable React keys and never replay their mount animation; new texts get
+ * fresh keys.
+ */
+function syncSteers(current: SteerView[], texts: readonly string[]): SteerView[] {
+  const pool = current.slice();
+  const next: SteerView[] = [];
+  for (const text of texts) {
+    const index = pool.findIndex((steer) => steer.text === text);
+    const matched = pool[index];
+    if (matched !== undefined) {
+      next.push(matched);
+      pool.splice(index, 1);
+    } else {
+      next.push({ key: `steer:${Math.random().toString(36).slice(2)}`, text });
+    }
+  }
+  return next;
+}
+
 /** Rehydrate authoritative snapshot state while retaining subagent metadata
  * that is keyed by the persisted tool invocation. */
 export function mergeSnapshot(state: SessionViewState, snapshot: SessionSnapshotDto): SessionViewState {
@@ -589,6 +622,7 @@ export function terminateSessionRun(state: SessionViewState, clearError = false)
     activeMessageKey: undefined,
     messages: state.messages.map((message) => ({ ...message, isThinking: false, streaming: false })),
     tools: state.tools.map((tool) => ({ ...tool, running: false })),
+    steers: [],
   };
 }
 
@@ -935,6 +969,13 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
     }
     case "agent_settled": {
       return terminateSessionRun(state, true);
+    }
+    case "queue_update": {
+      const steering = (event as { steering?: unknown }).steering;
+      if (!Array.isArray(steering)) return state;
+      const texts = steering.filter((text): text is string => typeof text === "string");
+      if (texts.length === 0) return state.steers.length === 0 ? state : { ...state, steers: [] };
+      return { ...state, steers: syncSteers(state.steers, texts) };
     }
     default:
       return state;

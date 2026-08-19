@@ -8,6 +8,7 @@ import type {
   SessionFactory,
   SessionState,
   StartSessionOptions,
+  SteerPromptOptions,
   WebSlashCommand,
 } from "./session-adapter";
 import type { Logger } from "../runtime/logger";
@@ -62,6 +63,7 @@ class FakeAdapter implements SessionAdapter {
   commandsResult: WebSlashCommand[] = [];
   treeResult: { tree: SessionTreeNode[]; leafId: string | null } = { tree: [], leafId: null };
   navigateCalls: string[] = [];
+  steeringResult: string[] = [];
 
   constructor(public options: StartSessionOptions) {
     FakeAdapter.all.push(this);
@@ -74,8 +76,8 @@ class FakeAdapter implements SessionAdapter {
   async stop() {
     this.stats.stopped++;
   }
-  async prompt(message: string) {
-    this.stats.prompts.push(message);
+  async prompt(message: string, options?: SteerPromptOptions) {
+    this.stats.prompts.push(`${message}${options?.streamingBehavior === "steer" ? " (steer)" : ""}`);
   }
   async abort() {
     this.stats.aborts++;
@@ -92,6 +94,9 @@ class FakeAdapter implements SessionAdapter {
   }
   async getMessages(): Promise<AgentMessage[]> {
     return [];
+  }
+  getSteeringMessages(): readonly string[] {
+    return this.steeringResult;
   }
   async getCommands(): Promise<WebSlashCommand[]> {
     return this.commandsResult;
@@ -354,6 +359,29 @@ describe("ActiveSessionRegistry", () => {
     expect(reopened.id).toBe(created.id);
     expect(factory.created).toHaveLength(1);
     expect(factory.created[0]?.stats.stopped).toBe(0);
+  });
+
+  it("snapshot includes pending steering messages while live (ADR-083)", async () => {
+    const created = await registry.open({ cwd, sessionPath });
+    factory.created[0]!.steeringResult = ["note one", "note two"];
+
+    const snapshot = await registry.snapshot(created.id);
+
+    expect(snapshot.steering).toEqual(["note one", "note two"]);
+  });
+
+  it("snapshot omits steering for non-live sessions (ADR-083)", async () => {
+    const created = await registry.create({ cwd });
+    const adapter = factory.created[0]!;
+    adapter.steeringResult = ["should not leak"];
+    adapter.getStateError = new Error("state unavailable");
+    const spy = vi.spyOn(adapter, "getSteeringMessages");
+
+    const snapshot = await registry.snapshot(created.id);
+
+    expect(snapshot.session.status).toBe("error");
+    expect(snapshot.steering).toEqual([]);
+    expect(spy).not.toHaveBeenCalled();
   });
 
   it("snapshot rejects after deactivation", async () => {

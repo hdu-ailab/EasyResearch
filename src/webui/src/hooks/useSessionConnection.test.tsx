@@ -572,4 +572,36 @@ describe("useSessionConnection", () => {
     expect(api.navigateSessionTree).toHaveBeenCalledWith("s1", "entry-1");
     expect(result.current.view.messages[0]?.text).toBe("edited");
   });
+
+  it("queues a send as a steer while the run is active, without prompt lifecycle state (ADR-083)", async () => {
+    vi.mocked(api.getSnapshot).mockResolvedValueOnce({
+      session: { id: "s1", cwd: "/paper", isStreaming: true, status: "running" },
+      messages: [],
+      subagents: [],
+    } as never);
+    const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
+    await waitFor(() => expect(result.current.status).toBe("running"));
+
+    await act(async () => result.current.send("steer note"));
+
+    expect(api.sendPrompt).toHaveBeenCalledTimes(1);
+    expect(api.sendPrompt).toHaveBeenCalledWith("s1", "steer note");
+    expect(result.current.accepting).toBe(false);
+    expect(result.current.pendingOutput).toBe(false);
+  });
+
+  it("hydrates pending steers from a running snapshot and clears them at agent_settled (ADR-083)", async () => {
+    vi.mocked(api.getSnapshot).mockResolvedValueOnce({
+      session: { id: "s1", cwd: "/paper", isStreaming: true, status: "running" },
+      messages: [],
+      subagents: [],
+      steering: ["note one"],
+    } as never);
+    const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
+    await waitFor(() => expect(result.current.view.steers.map((steer) => steer.text)).toEqual(["note one"]));
+
+    emit({ type: "agent_settled" });
+
+    expect(result.current.view.steers).toEqual([]);
+  });
 });

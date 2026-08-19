@@ -18,6 +18,7 @@ const emptyState: SessionViewState = {
   error: null,
   retry: null,
   nextOrder: 0,
+  steers: [],
 };
 
 function userMessage(text: string) {
@@ -1661,6 +1662,71 @@ describe("session reducer", () => {
   });
 });
 
+describe("steer queue reducer (ADR-083)", () => {
+  it("hydrates pending steers from a running snapshot", () => {
+    const state = fromSnapshot({
+      session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
+      subagents: [],
+      messages: [],
+      steering: ["note one", "note two"],
+    });
+    expect(state.steers.map((steer) => steer.text)).toEqual(["note one", "note two"]);
+  });
+
+  it("treats an empty or missing steering array as no queued steers", () => {
+    expect(
+      fromSnapshot({
+        session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
+        subagents: [],
+        messages: [],
+        steering: [],
+      }).steers,
+    ).toEqual([]);
+    expect(
+      fromSnapshot({
+        session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
+        subagents: [],
+        messages: [],
+      }).steers,
+    ).toEqual([]);
+  });
+
+  it("replaces the steer rows on queue_update in queue order", () => {
+    const state = reduceSessionEvent(emptyState, {
+      type: "queue_update",
+      steering: ["first", "second"],
+      followUp: [],
+    } as never);
+    expect(state.steers.map((steer) => steer.text)).toEqual(["first", "second"]);
+  });
+
+  it("keeps stable keys for remaining steers after one is delivered", () => {
+    let state = reduceSessionEvent(emptyState, {
+      type: "queue_update",
+      steering: ["alpha", "beta"],
+      followUp: [],
+    } as never);
+    const betaKey = state.steers[1]!.key;
+    state = reduceSessionEvent(state, {
+      type: "queue_update",
+      steering: ["beta"],
+      followUp: [],
+    } as never);
+    expect(state.steers.map((steer) => steer.text)).toEqual(["beta"]);
+    expect(state.steers[0]!.key).toBe(betaKey);
+  });
+
+  it("clears steers when the run terminates", () => {
+    let state = reduceSessionEvent(emptyState, {
+      type: "queue_update",
+      steering: ["alpha"],
+      followUp: [],
+    } as never);
+    state = terminateSessionRun(state, true);
+    expect(state.steers).toEqual([]);
+  });
+});
+
 describe("subagent live activity from tool_execution_update", () => {
   function subagentState(patch: Partial<ToolView> = {}): SessionViewState {
     return {
@@ -1683,6 +1749,7 @@ describe("subagent live activity from tool_execution_update", () => {
       error: null,
       retry: null,
       nextOrder: 2,
+      steers: [],
     };
   }
 

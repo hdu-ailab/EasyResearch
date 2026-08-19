@@ -33,6 +33,9 @@ export interface SessionSnapshotDto {
   session: ActiveSessionDto;
   messages: AgentMessage[];
   subagents: SubagentSessionSummaryDto[];
+  /** Pending steer messages not yet delivered into the agent context
+   * (ADR-083); omitted or empty for historical/stopped sessions. */
+  steering?: string[];
 }
 
 export interface SkillCommandDto {

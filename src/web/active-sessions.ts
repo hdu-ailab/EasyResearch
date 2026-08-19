@@ -96,7 +96,7 @@ export class ActiveSessionRegistry {
   async snapshot(
     id: string,
     onMessagesAcquired?: () => void,
-  ): Promise<{ session: ActiveSessionDto; messages: AgentMessage[] }> {
+  ): Promise<{ session: ActiveSessionDto; messages: AgentMessage[]; steering: string[] }> {
     return this.withRecord(id, async (record) => {
       await this.refreshFromClient(record);
       const live =
@@ -105,7 +105,11 @@ export class ActiveSessionRegistry {
         record.dto.status === "running";
       const messages = live ? await record.client.getMessages() : [];
       onMessagesAcquired?.();
-      return { session: { ...record.dto }, messages };
+      return {
+        session: { ...record.dto },
+        messages,
+        steering: live ? [...record.client.getSteeringMessages()] : [],
+      };
     });
   }
 

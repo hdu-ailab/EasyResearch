@@ -16,6 +16,17 @@ export interface WebSlashCommand {
   source: "extension" | "prompt" | "skill";
 }
 
+/** Options accepted by the Web prompt path. Web sends always queue as steers
+ * while the agent is streaming (ADR-083); Pi ignores the option when idle. */
+export interface SteerPromptOptions {
+  streamingBehavior?: "steer" | "followUp";
+  /** Called with `true` as soon as the prompt is accepted (queued as steer,
+   * handled as an extension command, or about to start a run); called with
+   * `false` only on preflight failure, which also rejects the prompt promise
+   * (pi rpc-mode prompt contract, ADR-083). */
+  preflightResult?: (success: boolean) => void;
+}
+
 export interface SessionState {
   model?: Model<any>;
   thinkingLevel: ThinkingLevel;
@@ -54,12 +65,17 @@ export interface InProcessAgentSession {
     getLeafId(): string | null;
   };
   subscribe(listener: (event: unknown) => void): () => void;
-  prompt(message: string): Promise<void>;
+  prompt(message: string, options?: SteerPromptOptions): Promise<void>;
   abort(): Promise<void>;
   setModel(model: Model<any>): Promise<void>;
   setThinkingLevel(level: ThinkingLevel): void;
   setSessionName(name: string): void;
   navigateTree(entryId: string, options?: Record<string, unknown>): Promise<{ cancelled: boolean }>;
+  /** Read-only pending steer messages (ADR-083). */
+  getSteeringMessages(): readonly string[];
+  /** Drop undelivered queued messages (Pi's `clearQueue`), emitting a final
+   * `queue_update` (ADR-083). */
+  clearQueue(): { steering: string[]; followUp: string[] };
   dispose(): void;
 }
 
@@ -142,7 +158,7 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
 export interface SessionAdapter {
   start(): Promise<void>;
   stop(): Promise<void>;
-  prompt(message: string): Promise<void>;
+  prompt(message: string, options?: SteerPromptOptions): Promise<void>;
   abort(): Promise<void>;
   setModel(provider: string, modelId: string): Promise<void>;
   setThinkingLevel(level: string): Promise<void>;
@@ -151,6 +167,7 @@ export interface SessionAdapter {
   getCommands(): Promise<WebSlashCommand[]>;
   getTree(): Promise<{ tree: SessionTreeNode[]; leafId: string | null }>;
   navigateTree(entryId: string): Promise<void>;
+  getSteeringMessages(): readonly string[];
   onEvent(listener: (event: unknown) => void): () => void;
 }
 
@@ -243,8 +260,13 @@ class DirectSessionAdapter implements SessionAdapter {
     if (this.stopped) throw new Error("Session already stopped");
     this.session = await this.createAgentSession(this.options);
     this.unsubscribe = this.session.subscribe((event) => {
-      const jsonEvent = toJsonSessionEvent(event as AgentSessionEvent);
+      const agentEvent = event as AgentSessionEvent;
+      const jsonEvent = toJsonSessionEvent(agentEvent);
       for (const listener of this.listeners) listener(jsonEvent);
+      // Undelivered steers are dropped when the run ends (ADR-083); delivered
+      // steers were already removed from the queue at their `message_start`,
+      // and Pi emits a final `queue_update` with the emptied queue.
+      if (agentEvent.type === "agent_settled") this.session?.clearQueue();
     });
   }
 
@@ -259,12 +281,53 @@ class DirectSessionAdapter implements SessionAdapter {
     session.dispose();
   }
 
-  async prompt(message: string): Promise<void> {
-    await this.requiredSession().prompt(message);
+  async prompt(message: string, options?: SteerPromptOptions): Promise<void> {
+    // Mirror Pi's rpc-mode prompt contract (ADR-083): fire the prompt without
+    // awaiting the whole agent run and resolve as soon as it is accepted
+    // (queued steer, handled extension command, or preflight success). Pi's
+    // AgentSession.prompt otherwise blocks until agent_end, which would keep
+    // the Web POST pending for the run's entire duration and disable the
+    // composer. Preflight failures reject through the prompt promise.
+    const session = this.requiredSession();
+    let accepted = false;
+    await new Promise<void>((resolve, reject) => {
+      void session
+        .prompt(message, {
+          streamingBehavior: "steer",
+          ...options,
+          preflightResult: (didSucceed) => {
+            if (accepted) return;
+            if (didSucceed) {
+              accepted = true;
+              resolve();
+            }
+          },
+        })
+        .then(() => {
+          // Defensive: a prompt that settles without a preflight callback (e.g.
+          // the run ended before acceptance) is treated as accepted rather than
+          // leaving the HTTP request pending forever.
+          if (!accepted) {
+            accepted = true;
+            resolve();
+          }
+        })
+        .catch((error: unknown) => {
+          if (accepted) return;
+          accepted = true;
+          reject(error instanceof Error ? error : new Error(String(error)));
+        });
+    });
   }
 
   async abort(): Promise<void> {
-    await this.requiredSession().abort();
+    // Stop cancels undelivered steers (ADR-083): clear the queue before
+    // unwinding the run so a not-yet-inserted steer never reaches context.
+    // The trailing queue_update(empty) also clears the Web footer; the
+    // agent_settled clearQueue remains as a backstop.
+    const session = this.requiredSession();
+    session.clearQueue();
+    await session.abort();
   }
 
   async setModel(provider: string, modelId: string): Promise<void> {
@@ -329,6 +392,10 @@ class DirectSessionAdapter implements SessionAdapter {
   onEvent(listener: (event: unknown) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  getSteeringMessages(): readonly string[] {
+    return this.requiredSession().getSteeringMessages();
   }
 
   private requiredSession(): InProcessAgentSession {

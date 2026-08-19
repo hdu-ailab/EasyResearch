@@ -42,6 +42,7 @@ const emptyView: SessionViewState = {
   error: null,
   retry: null,
   nextOrder: 0,
+  steers: [],
 };
 
 function mergeChildView(snapshot: SessionViewState, live: SessionViewState): SessionViewState {
@@ -631,6 +632,7 @@ export function WorkPage({ id, cwd, onBack, onOpenSettings }: WorkPageProps) {
             messageMeta={activeTab === PAPER_ASSISTANT_AGENT ? messageMeta : undefined}
             onEditMessage={activeTab === PAPER_ASSISTANT_AGENT ? onEditMessage : undefined}
             onSwitchBranch={activeTab === PAPER_ASSISTANT_AGENT ? onSwitchBranch : undefined}
+            steers={activeTab === PAPER_ASSISTANT_AGENT ? sessionView.steers : []}
           />
           <footer className="shrink-0 border-t border-v2-grey-200 p-3">
             {activeTab !== PAPER_ASSISTANT_AGENT || sessionView.subagentName ? (

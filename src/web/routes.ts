@@ -565,9 +565,9 @@ function sessionEvents(services: RouteServices, id: string): Response {
         }),
         subagentSessions.summaries(id),
       ]).then(
-        ([{ session, messages }, subagents]) => {
+        ([{ session, messages, steering }, subagents]) => {
           if (cancelled) return;
-          send(controller, { type: "snapshot", session, messages, subagents });
+          send(controller, { type: "snapshot", session, messages, steering, subagents });
           for (const event of preBarrierSupplements) send(controller, event);
           for (const event of postBarrierEvents) send(controller, event);
           preBarrierSupplements.length = 0;

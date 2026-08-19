@@ -92,6 +92,7 @@ function isAgentSessionEvent(event: unknown): event is AgentSessionEvent {
     "tool_execution_update",
     "tool_execution_end",
     "agent_settled",
+    "queue_update",
     "auto_retry_start",
     "auto_retry_end",
     "session_info_changed",
@@ -119,6 +120,8 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
   const viewRef = useRef(view);
   viewRef.current = view;
   const [status, setStatus] = useState<ActiveSessionDto["status"]>("starting");
+  const statusRef = useRef<ActiveSessionDto["status"]>(status);
+  statusRef.current = status;
   const generationRef = useRef(1);
   const [connectionTarget, setConnectionTarget] = useState<ConnectionTarget>({
     sessionId: initialSessionId,
@@ -281,6 +284,18 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
 
   const send = useCallback(
     async (text: string) => {
+      // While a run is active, the message is queued as a steer (ADR-083):
+      // POST with no accepting/pendingOutput lifecycle, since the run owns
+      // the stream. When idle, run the full prompt lifecycle below.
+      if (statusRef.current === "running") {
+        try {
+          setNotice(null);
+          await sendPrompt(sessionId, text);
+        } catch (error: unknown) {
+          setNotice(error instanceof Error ? error.message : String(error));
+        }
+        return;
+      }
       cancelOperation(sendOperationRef.current);
       runGenerationRef.current += 1;
       const operation: GenerationToken = { generation: nextGeneration(), active: true };

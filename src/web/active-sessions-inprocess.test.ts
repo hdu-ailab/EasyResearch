@@ -7,6 +7,7 @@ import type {
   SessionFactory,
   SessionState,
   StartSessionOptions,
+  SteerPromptOptions,
   WebSlashCommand,
 } from "./session-adapter";
 
@@ -18,7 +19,7 @@ class DirectAdapter implements SessionAdapter {
   async stop(): Promise<void> {
     this.stopped += 1;
   }
-  async prompt(): Promise<void> {}
+  async prompt(message: string, options?: SteerPromptOptions): Promise<void> {}
   async abort(): Promise<void> {}
   async setModel(): Promise<void> {}
   async setThinkingLevel(): Promise<void> {}
@@ -33,6 +34,9 @@ class DirectAdapter implements SessionAdapter {
     };
   }
   async getMessages(): Promise<AgentMessage[]> {
+    return [];
+  }
+  getSteeringMessages(): readonly string[] {
     return [];
   }
   async getCommands(): Promise<WebSlashCommand[]> {
