@@ -69,6 +69,7 @@ class MemoryRecoveryStore implements RecoverySessionStore {
   readonly inspectCalls: string[] = [];
   readonly appendAttempts: Array<{ path: string; message: HiddenMessage }> = [];
   readonly hidden = new Map<string, HiddenMessage[]>();
+  appendError?: Error;
 
   constructor(readonly inspected = new Map<string, Inspection>()) {}
 
@@ -79,6 +80,7 @@ class MemoryRecoveryStore implements RecoverySessionStore {
 
   async appendHiddenMessage(path: string, message: HiddenMessage): Promise<void> {
     this.appendAttempts.push({ path, message });
+    if (this.appendError) throw this.appendError;
     const messages = this.hidden.get(path) ?? [];
     const existing = messages.find((candidate) => candidate.details.batchId === message.details.batchId);
     if (existing) {
@@ -209,6 +211,7 @@ describe("recoverSubagentTree", () => {
       ownerSessionId: "root",
       launchIds: [job.launchId],
       content: "already delivered",
+      triggerTurn: true,
     });
     coordinator.acknowledgeNotification("acknowledged-batch");
     const store = new MemoryRecoveryStore();
@@ -221,6 +224,95 @@ describe("recoverSubagentTree", () => {
     });
     expect(store.inspectCalls).toEqual([]);
     expect(store.appendAttempts).toEqual([]);
+  });
+
+  it("promotes a persisted Complete recorded before launch acknowledgement without interruption reclassification", async () => {
+    const manager = new MemoryCoordinatorSessionManager();
+    const coordinator = new SubagentCoordinator(manager);
+    const job = reserve(coordinator);
+    materialize(coordinator, job, "child", "/sessions/child.jsonl", false);
+    coordinator.recordTerminal({
+      launchId: job.launchId,
+      status: "complete",
+      latestAssistantText: "completed before acknowledgement",
+    });
+    const store = new MemoryRecoveryStore(new Map([
+      ["/sessions/root.jsonl", { readable: true, sessionId: "root", cwd: "/paper" }],
+    ]));
+
+    const first = await recover(coordinator, store);
+    const entriesAfterFirst = manager.entries.length;
+    const appendAttemptsAfterFirst = store.appendAttempts.length;
+    const second = await recover(coordinator, store);
+
+    expect(first.interruptedLaunchIds).toEqual([]);
+    expect(first.unmaterializedLaunchIds).toEqual([]);
+    expect(first.notifications).toEqual([expect.objectContaining({
+      ownerSessionId: "root",
+      triggerTurn: false,
+      content: expect.stringContaining("Complete subagent:search_0"),
+    })]);
+    expect(first.notifications[0]?.content).toContain(
+      "Agent: search_0\nResult: completed before acknowledgement",
+    );
+    expect(store.inspectCalls).toEqual(["/sessions/root.jsonl"]);
+    expect(coordinator.journal().jobs.get(job.launchId)).toMatchObject({
+      status: "complete",
+      terminalStatus: "complete",
+      terminalRecovered: true,
+      launchAcknowledged: false,
+    });
+    expect(manager.entries).toContainEqual(expect.objectContaining({
+      data: expect.objectContaining({
+        kind: "terminal",
+        launchId: job.launchId,
+        status: "complete",
+        recovered: true,
+      }),
+    }));
+    expect(second).toEqual({
+      interruptedLaunchIds: [],
+      unmaterializedLaunchIds: [],
+      acknowledgedBatchIds: [],
+      notifications: [],
+    });
+    expect(manager.entries).toHaveLength(entriesAfterFirst);
+    expect(store.appendAttempts).toHaveLength(appendAttemptsAfterFirst);
+  });
+
+  it("promotes a persisted Error recorded before launch acknowledgement without replacing its failure", async () => {
+    const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
+    const job = reserve(coordinator);
+    materialize(coordinator, job, "child", "/sessions/child.jsonl", false);
+    coordinator.recordTerminal({
+      launchId: job.launchId,
+      status: "error",
+      latestAssistantText: "partial evidence",
+      errorMessage: "provider failed",
+    });
+    const store = new MemoryRecoveryStore(new Map([
+      ["/sessions/root.jsonl", { readable: true, sessionId: "root", cwd: "/paper" }],
+    ]));
+
+    const report = await recover(coordinator, store);
+
+    expect(report.interruptedLaunchIds).toEqual([]);
+    expect(report.unmaterializedLaunchIds).toEqual([]);
+    expect(report.notifications).toEqual([expect.objectContaining({
+      triggerTurn: false,
+      content: expect.stringContaining(
+        'Error subagent:{"name":"search_0","session_path":"/sessions/child.jsonl"}',
+      ),
+    })]);
+    expect(store.inspectCalls).toEqual(["/sessions/root.jsonl"]);
+    expect(coordinator.journal().jobs.get(job.launchId)).toMatchObject({
+      status: "error",
+      terminalStatus: "error",
+      terminalRecovered: true,
+      launchAcknowledged: false,
+      latestAssistantText: "partial evidence",
+      errorMessage: "provider failed",
+    });
   });
 
   it("delivers an already terminal but unnotified outcome without duplicating its terminal record", async () => {
@@ -269,6 +361,7 @@ describe("recoverSubagentTree", () => {
       ownerSessionId: "root",
       launchIds: [job.launchId],
       content: "obsolete trigger-turn batch",
+      triggerTurn: true,
     });
     coordinator.supersedeNotification("superseded-batch");
     const store = new MemoryRecoveryStore(new Map([
@@ -295,6 +388,7 @@ describe("recoverSubagentTree", () => {
       ownerSessionId: "root",
       launchIds: [job.launchId],
       content: "persisted hidden handoff",
+      triggerTurn: true,
     });
     const store = new MemoryRecoveryStore(new Map([
       ["/sessions/root.jsonl", { readable: true, sessionId: "root", cwd: "/paper" }],
@@ -311,6 +405,27 @@ describe("recoverSubagentTree", () => {
     expect(report.acknowledgedBatchIds).toEqual(["persisted-batch"]);
     expect(store.hidden.get("/sessions/root.jsonl")).toHaveLength(1);
     expect(coordinator.journal().pendingBatches).toEqual([]);
+  });
+
+  it("leaves a failed recovery delivery pending with a durable no-trigger mode", async () => {
+    const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
+    const job = reserve(coordinator);
+    materialize(coordinator, job, "child", "/sessions/child.jsonl");
+    coordinator.recordTerminal({ launchId: job.launchId, status: "complete", latestAssistantText: "done" });
+    const store = new MemoryRecoveryStore(new Map([
+      ["/sessions/root.jsonl", { readable: true, sessionId: "root", cwd: "/paper" }],
+    ]));
+    store.appendError = new Error("owner unavailable during reopen");
+
+    await expect(recover(coordinator, store)).rejects.toThrow("owner unavailable during reopen");
+
+    expect(coordinator.journal().pendingBatches).toEqual([
+      expect.objectContaining({
+        ownerSessionId: "root",
+        launchIds: [job.launchId],
+        triggerTurn: false,
+      }),
+    ]);
   });
 
   it("writes a nested recovery handoff only to the exact immediate-owner session", async () => {

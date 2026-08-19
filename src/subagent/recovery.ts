@@ -125,7 +125,27 @@ export async function recoverSubagentTree(options: {
   }
 
   for (const initialJob of [...options.coordinator.journal().jobs.values()]) {
-    if (initialJob.terminalSuppressed || isTerminal(initialJob)) continue;
+    if (initialJob.terminalSuppressed) continue;
+    if (initialJob.terminalStatus) {
+      if (initialJob.status === initialJob.terminalStatus) continue;
+      options.coordinator.recordTerminal({
+        launchId: initialJob.launchId,
+        status: initialJob.terminalStatus,
+        recovered: true,
+        ...(initialJob.latestAssistantText === undefined
+          ? {}
+          : { latestAssistantText: initialJob.latestAssistantText }),
+        ...(initialJob.errorMessage === undefined ? {} : { errorMessage: initialJob.errorMessage }),
+      });
+      const promoted = options.coordinator.journal().jobs.get(initialJob.launchId);
+      if (
+        promoted
+        && !pendingLaunchIds.has(promoted.launchId)
+        && !options.coordinator.journal().acknowledgedNotificationLaunchIds.has(promoted.launchId)
+      ) addOutcome(promoted);
+      continue;
+    }
+    if (isTerminal(initialJob)) continue;
     const { childSessionId, sessionPath } = initialJob;
     if (!childSessionId || !sessionPath) {
       options.coordinator.recordPreMaterializationFailure(
@@ -192,6 +212,7 @@ export async function recoverSubagentTree(options: {
       ownerSessionId,
       launchIds: outcomes.map(({ launchId }) => launchId),
       content,
+      triggerTurn: false,
     });
     const batch = options.coordinator.journal().pendingBatches.find(
       (candidate) => candidate.batchId === batchId,

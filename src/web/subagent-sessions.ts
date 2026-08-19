@@ -62,7 +62,7 @@ export function createSubagentRecoverySessionStore(input: {
   }
   const openExact = (path: string): RecoverySessionManager => {
     readFileSync(path);
-    const manager = rootPath === path ? input.rootSession : input.open(path);
+    const manager = input.open(path);
     if (manager.getSessionFile() !== path) {
       throw new Error("SessionManager did not open the exact journaled path.");
     }
@@ -91,10 +91,16 @@ export function createSubagentRecoverySessionStore(input: {
     async appendHiddenMessage(path, message) {
       const expected = inspectedIdentities.get(path);
       if (!expected) throw new Error("Recovery owner path was not inspected before insertion.");
-      const manager = openExact(path);
-      if (manager.getSessionId() !== expected.sessionId || manager.getCwd() !== expected.cwd) {
+      const physical = openExact(path);
+      if (physical.getSessionId() !== expected.sessionId || physical.getCwd() !== expected.cwd) {
         throw new Error("Recovery owner session UUID or cwd changed after inspection.");
       }
+      const manager = rootPath === path ? input.rootSession : physical;
+      if (
+        manager.getSessionFile() !== path
+        || manager.getSessionId() !== expected.sessionId
+        || manager.getCwd() !== expected.cwd
+      ) throw new Error("Recovery root session identity changed after physical validation.");
       const existing = persistedBatch(path, message);
       if (existing === "matching") return;
       if (existing === "conflict") {

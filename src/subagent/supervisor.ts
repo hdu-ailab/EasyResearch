@@ -394,14 +394,22 @@ export class SubagentSupervisor {
   abortAll(reason: string): Promise<void> {
     if (this.abortPromise) return this.abortPromise;
     this.closing = true;
-    for (const child of this.children.values()) {
+    const owned = [...this.children.values()];
+    const suppressionFailures: unknown[] = [];
+    for (const child of owned) {
       this.forceChildError(child, reason);
+      const job = this.coordinator.journal().jobs.get(child.reservation.launchId);
+      if (job?.launchAcknowledged || job?.terminalSuppressed) continue;
+      try {
+        this.coordinator.recordLaunchSuppressed(child.reservation.launchId);
+      } catch (error) {
+        suppressionFailures.push(error);
+      }
     }
     this.stateChanged();
 
     let tracked!: Promise<void>;
     tracked = (async () => {
-      const owned = [...this.children.values()];
       const childResults = await Promise.allSettled(owned.map(async (child) => {
         try {
           await child.startup;
@@ -423,6 +431,7 @@ export class SubagentSupervisor {
       const childCleanupFailed = childResults.some(({ status }) => status === "rejected");
       let notificationFailed = false;
       await runCleanupSteps([
+        ...suppressionFailures.map((failure) => () => { throw failure; }),
         ...childResults.map((result) => () => {
           if (result.status === "rejected") throw result.reason;
         }),
@@ -778,8 +787,16 @@ export class SubagentSupervisor {
         ownerSessionId: parent.sessionId,
         launchIds: outcomes.map(({ launchId }) => launchId),
         content,
+        triggerTurn,
       });
-      batch = { batchId, ownerSessionId: parent.sessionId, launchIds: outcomes.map(({ launchId }) => launchId), content, createdAt: this.now() };
+      batch = {
+        batchId,
+        ownerSessionId: parent.sessionId,
+        launchIds: outcomes.map(({ launchId }) => launchId),
+        content,
+        triggerTurn,
+        createdAt: this.now(),
+      };
     }
     if (closingBatch) this.closingBatchId = batch.batchId;
 
@@ -790,7 +807,7 @@ export class SubagentSupervisor {
         display: false,
         details: { batchId: batch.batchId },
       },
-      { deliverAs: "steer", triggerTurn },
+      { deliverAs: "steer", triggerTurn: batch.triggerTurn },
     );
   }
 

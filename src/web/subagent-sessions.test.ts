@@ -342,4 +342,37 @@ describe("SubagentSessionService", () => {
     })).rejects.toThrow(/UUID|identity|changed/i);
     expect(SessionManager.open(ownerPath).getEntries()).toEqual([]);
   });
+
+  it("rejects a root owner whose physical UUID changes after recovery inspection", async () => {
+    const rootSession = createSession();
+    appendParentMessage(rootSession);
+    const rootPath = rootSession.getSessionFile()!;
+    const store = createSubagentRecoverySessionStore({
+      rootSession,
+      open: (path) => SessionManager.open(path),
+    });
+    await expect(store.inspect(rootPath)).resolves.toMatchObject({
+      readable: true,
+      sessionId: rootSession.getSessionId(),
+      cwd,
+    });
+    writeFileSync(rootPath, `${JSON.stringify({
+      type: "session",
+      version: 3,
+      id: "replacement-root",
+      timestamp: "2026-08-19T00:00:00.000Z",
+      cwd,
+    })}\n`, "utf8");
+
+    await expect(store.appendHiddenMessage(rootPath, {
+      customType: "easyresearch:agent_status",
+      content: "must not enter replacement root",
+      display: false,
+      details: { batchId: "replacement-root-batch" },
+    })).rejects.toThrow(/UUID|identity|changed/i);
+
+    const replacement = SessionManager.open(rootPath);
+    expect(replacement.getSessionId()).toBe("replacement-root");
+    expect(replacement.getEntries()).toEqual([]);
+  });
 });

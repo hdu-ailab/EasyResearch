@@ -832,6 +832,39 @@ describe("SubagentSupervisor ownership and launch ordering", () => {
 });
 
 describe("SubagentSupervisor notification acknowledgement", () => {
+  it("uses a pending recovery batch's persisted no-trigger mode when a supervisor later attaches", async () => {
+    const manager = new MemorySessionManager();
+    const coordinator = new SubagentCoordinator(manager);
+    coordinator.recordNotificationBatch({
+      batchId: "recovery-batch",
+      ownerSessionId: "parent",
+      launchIds: ["recovered-launch"],
+      content: "recovered hidden handoff",
+      triggerTurn: false,
+    });
+    const parent = new FakeParentSession(true);
+    const scheduled: Array<() => void> = [];
+    const supervisor = new SubagentSupervisor({
+      coordinator,
+      launchStage: async () => { throw new Error("not used"); },
+      schedule: (run) => scheduled.push(run),
+    });
+
+    supervisor.attach(parent);
+    expect(scheduled).toHaveLength(1);
+    scheduled.shift()!();
+    await turn();
+
+    expect(parent.sent).toEqual([
+      expect.objectContaining({
+        message: expect.objectContaining({ content: "recovered hidden handoff" }),
+        options: { deliverAs: "steer", triggerTurn: false },
+      }),
+    ]);
+    await supervisor.waitForQuiescence();
+    await supervisor.dispose();
+  });
+
   it("coalesces scheduled outcomes and captures the full Working state", async () => {
     const first = new FakeStage("search_0", "child-0", "/sessions/child-0.jsonl");
     const second = new FakeStage("search_1", "child-1", "/sessions/child-1.jsonl");
@@ -859,6 +892,9 @@ describe("SubagentSupervisor notification acknowledgement", () => {
     await turn();
     expect(parent.sent).toHaveLength(1);
     expect(parent.sent[0]?.options).toEqual({ deliverAs: "steer", triggerTurn: true });
+    expect(coordinator.journal().pendingBatches).toEqual([
+      expect.objectContaining({ triggerTurn: true }),
+    ]);
     expect(parent.sent[0]?.message.content).toContain("Working subagent:search_2");
     expect(parent.sent[0]?.message.content).toContain("Complete subagent:search_0\nComplete subagent:search_1");
 
@@ -1077,6 +1113,61 @@ describe("SubagentSupervisor notification acknowledgement", () => {
 });
 
 describe("SubagentSupervisor recursive abort", () => {
+  it.each(["reserved", "created", "materialized"] as const)(
+    "durably suppresses an unacknowledged %s launch before the first closing await",
+    async (launchState) => {
+      const startup = deferred<StageLaunchHandle>();
+      const stage = new FakeStage("search_0", "child-0", `/sessions/${launchState}.jsonl`);
+      stage.abortImpl = async () => {
+        if (launchState !== "materialized") {
+          stage.materialization.reject(new Error(`stopped while ${launchState}`));
+        }
+        stage.completion.resolve(result(`${launchState} partial`, {
+          exitCode: 1,
+          wasAborted: true,
+          errorMessage: "closing",
+          stderr: "closing",
+        }));
+      };
+      const { manager, coordinator, supervisor } = makeHarness({
+        launchStage: async () => startup.promise,
+        schedule: () => {},
+      });
+      const reservation = reserve(coordinator, "tool-0");
+      const launching = supervisor.launch(reservation, options());
+
+      if (launchState !== "reserved") {
+        startup.resolve(stage.handle);
+        await vi.waitFor(() => {
+          expect(coordinator.journal().jobs.get(reservation.launchId)?.status).toBe("created");
+        });
+      }
+      if (launchState === "materialized") {
+        stage.materialization.resolve();
+        await launching;
+      }
+
+      const aborting = supervisor.abortAll("closing");
+      const crashEntries = [...manager.entries];
+      const crashManager = new MemorySessionManager();
+      crashManager.entries.push(...crashEntries);
+      const crashState = new SubagentCoordinator(crashManager).journal().jobs.get(reservation.launchId);
+
+      if (launchState === "reserved") startup.resolve(stage.handle);
+      if (launchState === "materialized") {
+        await launching;
+      } else {
+        await expect(launching).rejects.toThrow(`stopped while ${launchState}`);
+      }
+      await aborting;
+
+      expect(crashState).toMatchObject({
+        launchAcknowledged: false,
+        terminalSuppressed: true,
+      });
+    },
+  );
+
   it("clears an abort failure that arrives after natural settlement releases the child", async () => {
     const stage = new FakeStage("search_0", "child-0", "/sessions/naturally-settled.jsonl");
     const abortFailure = new Error("abort lost the settlement race");
@@ -1296,7 +1387,7 @@ describe("SubagentSupervisor recursive abort", () => {
       terminalStatus: "error",
       launchAcknowledged: false,
     });
-    expect(() => reserve(coordinator, "tool-1", "search_0")).toThrow(/running/i);
+    expect(() => reserve(coordinator, "tool-1", "search_0")).toThrow(/suppressed|cannot be continued/i);
 
     await supervisor.dispose();
     expect(parent.listeners.size).toBe(0);
@@ -1418,13 +1509,13 @@ describe("SubagentSupervisor recursive abort", () => {
     expect(parent.sent).toHaveLength(1);
     expect(parent.sent[0]?.options).toEqual({ deliverAs: "steer", triggerTurn: false });
     expect(coordinator.journal().pendingBatches).toEqual([
-      expect.objectContaining({ launchIds: [reservation.launchId] }),
+      expect.objectContaining({ launchIds: [reservation.launchId], triggerTurn: false }),
     ]);
     expect(stage.abortCalls).toBe(1);
     expect(stage.disposeCalls).toBe(1);
     expect(events.filter((event) => event.status === "error")).toHaveLength(1);
 
-    await expect(supervisor.dispose()).resolves.toBeUndefined();
+    await expect(supervisor.flushNotifications({ triggerTurn: true })).resolves.toBeUndefined();
     expect(parent.sent).toHaveLength(2);
     expect(parent.sent[1]).toEqual(parent.sent[0]);
     expect(stage.abortCalls).toBe(1);
@@ -1432,9 +1523,10 @@ describe("SubagentSupervisor recursive abort", () => {
     expect(events.filter((event) => event.status === "error")).toHaveLength(1);
     expect(coordinator.journal().pendingBatches).toEqual([]);
     expect(coordinator.journal().acknowledgedNotificationLaunchIds).toContain(reservation.launchId);
-    expect(parent.listeners.size).toBe(0);
+    expect(parent.listeners.size).toBe(1);
 
     await supervisor.dispose();
+    expect(parent.listeners.size).toBe(0);
     expect(parent.sent).toHaveLength(2);
     expect(stage.abortCalls).toBe(1);
     expect(stage.disposeCalls).toBe(1);
@@ -1686,7 +1778,7 @@ describe("SubagentSupervisor recursive abort", () => {
     expect(parent.sent).toHaveLength(1);
   });
 
-  it("reclassifies a pre-materialization successful settlement when closing wins the launch race", async () => {
+  it("suppresses a pre-materialization successful settlement when closing wins the launch race", async () => {
     const stage = new FakeStage("search_0", "child-0", "/sessions/short-child.jsonl");
     const { coordinator, parent, supervisor } = makeHarness({
       launchStage: async () => stage.handle,
@@ -1705,14 +1797,15 @@ describe("SubagentSupervisor recursive abort", () => {
     parent.acknowledgeLaunch("tool-0");
     await turn();
 
-    expect(events).toContainEqual(expect.objectContaining({ agentId: "search_0", status: "error" }));
-    expect(events).not.toContainEqual(expect.objectContaining({ agentId: "search_0", status: "complete" }));
-    expect(parent.sent[0]?.options.triggerTurn).toBe(false);
-    expect(parent.sent[0]?.message.content).toContain(
-      'Error subagent:{"name":"search_0","session_path":"/sessions/short-child.jsonl"}',
-    );
-    parent.acknowledgeLastMessage();
     await aborting;
+    expect(events).not.toContainEqual(expect.objectContaining({ agentId: "search_0", status: "complete" }));
+    expect(events).not.toContainEqual(expect.objectContaining({ agentId: "search_0", status: "error" }));
+    expect(parent.sent).toEqual([]);
+    expect(coordinator.journal().jobs.get(reservation.launchId)).toMatchObject({
+      launchAcknowledged: false,
+      terminalStatus: "error",
+      terminalSuppressed: true,
+    });
     await supervisor.waitForQuiescence();
   });
 

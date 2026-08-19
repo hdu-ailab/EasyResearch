@@ -81,10 +81,13 @@ export class SubagentCoordinator {
 
     let reservation: ReservedDispatch;
     if (alias) {
-      const matchingJobs = [...this.state.jobs.values()].filter((job) =>
-        job.agentId === alias.id
-        && job.agent === alias.agent
-        && job.childSessionId === alias.sessionId
+      const aliasJobs = [...this.state.jobs.values()].filter((job) =>
+        job.agentId === alias.id && job.agent === alias.agent);
+      if (aliasJobs.some((job) => job.terminalSuppressed)) {
+        throw new Error(`Agent id "${alias.id}" cannot be continued after its launch was suppressed.`);
+      }
+      const matchingJobs = aliasJobs.filter((job) =>
+        job.childSessionId === alias.sessionId
         && job.sessionPath === alias.sessionPath);
       if (
         matchingJobs.length > 0
@@ -219,13 +222,14 @@ export class SubagentCoordinator {
     this.append({ kind: "launch_suppressed", launchId, suppressedAt: now() });
   }
 
-  recordNotificationBatch(input: { batchId: string; ownerSessionId: string; launchIds: string[]; content: string }): void {
+  recordNotificationBatch(input: { batchId: string; ownerSessionId: string; launchIds: string[]; content: string; triggerTurn: boolean }): void {
     this.append({
       kind: "notification_batch",
       batchId: input.batchId,
       ownerSessionId: input.ownerSessionId,
       launchIds: [...input.launchIds],
       content: input.content,
+      triggerTurn: input.triggerTurn,
       createdAt: now(),
     });
   }
@@ -245,14 +249,21 @@ export class SubagentCoordinator {
 
   isRunning(agentId: string): boolean {
     this.refresh();
-    return [...this.state.jobs.values()].some((job) => job.agentId === agentId && RUNNING_STATUSES.has(job.status));
+    return [...this.state.jobs.values()].some((job) =>
+      job.agentId === agentId
+      && !job.terminalSuppressed
+      && RUNNING_STATUSES.has(job.status));
   }
 
   summaries(): SubagentJobSummary[] {
     this.refresh();
     const summaries: SubagentJobSummary[] = [];
     for (const job of this.state.jobs.values()) {
-      if (!job.childSessionId || (job.status !== "working" && job.status !== "complete" && job.status !== "error")) continue;
+      if (
+        job.terminalSuppressed
+        || !job.childSessionId
+        || (job.status !== "working" && job.status !== "complete" && job.status !== "error")
+      ) continue;
       summaries.push({
         launchId: job.launchId,
         ownerSessionId: job.ownerSessionId,

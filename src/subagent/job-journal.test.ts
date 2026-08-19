@@ -103,9 +103,50 @@ describe("subagent job journal", () => {
     ]);
 
     expect(state.pendingBatches).toEqual([
-      { batchId: "b1", ownerSessionId: "root", launchIds: ["l1"], content: "second", createdAt: "t1" },
+      { batchId: "b1", ownerSessionId: "root", launchIds: ["l1"], content: "second", triggerTurn: true, createdAt: "t1" },
     ]);
     expect([...state.supersededBatchIds]).toEqual(["b0"]);
+  });
+
+  it("retains a persisted notification trigger mode and defaults legacy batches to natural delivery", () => {
+    const state = readSubagentJournal([
+      entry({
+        kind: "notification_batch",
+        batchId: "recovery",
+        ownerSessionId: "root",
+        launchIds: ["l0"],
+        content: "recovered",
+        triggerTurn: false,
+        createdAt: "t0",
+      }),
+      entry({
+        kind: "notification_batch",
+        batchId: "legacy",
+        ownerSessionId: "root",
+        launchIds: ["l1"],
+        content: "legacy natural",
+        createdAt: "t1",
+      }),
+    ]);
+
+    expect(state.pendingBatches).toEqual([
+      {
+        batchId: "recovery",
+        ownerSessionId: "root",
+        launchIds: ["l0"],
+        content: "recovered",
+        triggerTurn: false,
+        createdAt: "t0",
+      },
+      {
+        batchId: "legacy",
+        ownerSessionId: "root",
+        launchIds: ["l1"],
+        content: "legacy natural",
+        triggerTurn: true,
+        createdAt: "t1",
+      },
+    ]);
   });
 
   it("keeps pre-materialization failures consumed but not resumable", () => {

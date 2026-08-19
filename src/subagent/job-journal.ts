@@ -8,7 +8,7 @@ export type SubagentJobJournalRecord =
   | { kind: "pre_materialization_failed"; launchId: string; reason: string; failedAt: string }
   | { kind: "terminal"; launchId: string; status: "complete" | "error"; latestAssistantText?: string; errorMessage?: string; recovered?: boolean; finishedAt: string }
   | { kind: "launch_suppressed"; launchId: string; suppressedAt: string }
-  | { kind: "notification_batch"; batchId: string; ownerSessionId: string; launchIds: string[]; content: string; createdAt: string }
+  | { kind: "notification_batch"; batchId: string; ownerSessionId: string; launchIds: string[]; content: string; triggerTurn?: boolean; createdAt: string }
   | { kind: "notification_ack"; batchId: string; acknowledgedAt: string }
   | { kind: "notification_superseded"; batchId: string; supersededAt: string };
 
@@ -36,6 +36,7 @@ export interface NotificationBatchRecord {
   ownerSessionId: string;
   launchIds: string[];
   content: string;
+  triggerTurn: boolean;
   createdAt: string;
 }
 
@@ -131,6 +132,7 @@ function readRecord(entry: unknown): SubagentJobJournalRecord | undefined {
         || !Array.isArray(data.launchIds)
         || !data.launchIds.every(isNonEmptyString)
         || !isNonEmptyString(data.content)
+        || !isOptionalBoolean(data.triggerTurn)
         || !isNonEmptyString(data.createdAt)
       ) return undefined;
       return {
@@ -139,6 +141,7 @@ function readRecord(entry: unknown): SubagentJobJournalRecord | undefined {
         ownerSessionId: data.ownerSessionId,
         launchIds: [...data.launchIds],
         content: data.content,
+        ...(data.triggerTurn === undefined ? {} : { triggerTurn: data.triggerTurn }),
         createdAt: data.createdAt,
       };
     case "notification_ack":
@@ -188,6 +191,7 @@ export function readSubagentJournal(entries: readonly unknown[]): SubagentJourna
         ownerSessionId: record.ownerSessionId,
         launchIds: [...record.launchIds],
         content: record.content,
+        triggerTurn: record.triggerTurn ?? true,
         createdAt: record.createdAt,
       };
       notificationBatches.set(record.batchId, batch);

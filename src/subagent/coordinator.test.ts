@@ -267,7 +267,13 @@ describe("SubagentCoordinator", () => {
     materialize(coordinator, reserved);
     coordinator.recordLaunchAcknowledged(reserved.launchId);
     coordinator.recordTerminal({ launchId: reserved.launchId, status: "error", latestAssistantText: "partial result", errorMessage: "aborted" });
-    coordinator.recordNotificationBatch({ batchId: "b0", ownerSessionId: "root", launchIds: [reserved.launchId], content: "status" });
+    coordinator.recordNotificationBatch({
+      batchId: "b0",
+      ownerSessionId: "root",
+      launchIds: [reserved.launchId],
+      content: "status",
+      triggerTurn: true,
+    });
 
     expect(coordinator.summaries()).toEqual([{
       launchId: reserved.launchId,
@@ -296,6 +302,65 @@ describe("SubagentCoordinator", () => {
     coordinator.recordLaunchAcknowledged(reserved.launchId);
     expect(coordinator.isRunning("search_0")).toBe(false);
     expect(coordinator.summaries()).toContainEqual(expect.objectContaining({ agentId: "search_0", status: "complete" }));
+  });
+
+  it("keeps a suppressed launch consumed but excludes it from running, summaries, and continuation", () => {
+    const { coordinator } = harness();
+    const catalog = catalogOf("search");
+    const suppressed = coordinator.reserveDispatch({
+      ownerSessionId: "root",
+      toolCallId: "tool-0",
+      requested: "search",
+      catalog,
+    });
+    materialize(coordinator, suppressed);
+    coordinator.recordLaunchSuppressed(suppressed.launchId);
+
+    expect(coordinator.isRunning(suppressed.agentId)).toBe(false);
+    expect(coordinator.summaries()).toEqual([]);
+    expect(() => coordinator.reserveDispatch({
+      ownerSessionId: "root",
+      toolCallId: "tool-1",
+      requested: suppressed.agentId,
+      catalog,
+    })).toThrow(/suppressed|cannot be continued|non-resumable/i);
+
+    const next = coordinator.reserveDispatch({
+      ownerSessionId: "root",
+      toolCallId: "tool-2",
+      requested: "search",
+      catalog,
+    });
+    expect(next.agentId).toBe("search_1");
+  });
+
+  it("rejects an alias whose continuation was suppressed before child recreation", () => {
+    const { coordinator } = harness();
+    const catalog = catalogOf("search");
+    const completed = coordinator.reserveDispatch({
+      ownerSessionId: "root",
+      toolCallId: "tool-0",
+      requested: "search",
+      catalog,
+    });
+    materialize(coordinator, completed);
+    coordinator.recordLaunchAcknowledged(completed.launchId);
+    coordinator.recordTerminal({ launchId: completed.launchId, status: "complete" });
+    const continuation = coordinator.reserveDispatch({
+      ownerSessionId: "root",
+      toolCallId: "tool-1",
+      requested: completed.agentId,
+      catalog,
+    });
+    coordinator.recordLaunchSuppressed(continuation.launchId);
+
+    expect(coordinator.isRunning(completed.agentId)).toBe(false);
+    expect(() => coordinator.reserveDispatch({
+      ownerSessionId: "root",
+      toolCallId: "tool-2",
+      requested: completed.agentId,
+      catalog,
+    })).toThrow(/suppressed|cannot be continued|non-resumable/i);
   });
 
   it("publishes supervisor events until the listener unsubscribes", () => {
