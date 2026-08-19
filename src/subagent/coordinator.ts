@@ -261,7 +261,13 @@ export class SubagentCoordinator {
       ...(event.latestMessage === undefined ? {} : { latestMessage: event.latestMessage }),
       ...(event.event === undefined ? {} : { event: event.event }),
     };
-    for (const listener of this.listeners) listener(publicEvent);
+    for (const listener of this.listeners) {
+      try {
+        listener(publicEvent);
+      } catch {
+        // Supervisor listeners observe state; they never control job ownership.
+      }
+    }
   }
 
   subscribe(listener: (event: SubagentSupervisorEvent) => void): () => void {

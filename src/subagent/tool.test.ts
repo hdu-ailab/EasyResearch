@@ -111,6 +111,7 @@ function stageResult(options: StageLaunchOptions, overrides: Partial<StageRunRes
 class MemorySessionManager implements CoordinatorSessionManager {
   readonly entries: unknown[] = [];
   private sequence = 0;
+  getEntriesImpl?: () => void;
 
   constructor(
     private readonly id: string,
@@ -126,6 +127,7 @@ class MemorySessionManager implements CoordinatorSessionManager {
   }
 
   getEntries(): unknown[] {
+    this.getEntriesImpl?.();
     return this.entries;
   }
 
@@ -526,6 +528,103 @@ describe("createSubagentTool asynchronous launch contract", () => {
       rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  it("redacts nested session paths when reservation fails before a journal entry exists", async () => {
+    const harness = toolHarness();
+    const sessionPath = "/sessions/private reservation child.jsonl";
+    const pathFailure = Object.assign(new Error(`stat '${sessionPath}' failed`), {
+      code: "ENOENT",
+      syscall: "stat",
+    });
+    const wrapper = new Error("reservation lookup failed", { cause: pathFailure });
+    const internalFailure = new AggregateError(
+      [wrapper, { operation: "read alias", cause: pathFailure }],
+      `reservation failed for ${sessionPath}`,
+    );
+    harness.rootManager.getEntriesImpl = () => { throw internalFailure; };
+
+    const publicFailure = await harness.tool.execute(
+      "t0",
+      { agent: "search", task: "collect" },
+      undefined,
+      undefined,
+      harness.context,
+    ).then(
+      () => undefined,
+      (error) => error as Error & { details?: unknown; cause?: unknown; errors?: unknown },
+    );
+    harness.rootManager.getEntriesImpl = undefined;
+
+    expect(publicFailure).toBeInstanceOf(Error);
+    expect(publicFailure?.message).toContain("reservation failed");
+    expect(publicFailure?.details).toMatchObject({
+      phase: "pre-materialization",
+      code: "ENOENT",
+      syscall: "stat",
+    });
+    expect(publicFailure?.cause).toBeUndefined();
+    expect(publicFailure?.errors).toBeUndefined();
+    expect(JSON.stringify({
+      message: publicFailure?.message,
+      details: publicFailure?.details,
+      cause: publicFailure?.cause,
+      errors: publicFailure?.errors,
+      text: String(publicFailure),
+    })).not.toContain(sessionPath);
+    expect(harness.rootManager.entries).toEqual([]);
+  });
+
+  it.each(["model", "thinking"] as const)(
+    "redacts nested session paths from %s resolution while retaining the private journal reason",
+    async (resolution) => {
+      const harness = toolHarness();
+      const sessionPath = `/sessions/private-${resolution}-child.jsonl`;
+      const pathFailure = Object.assign(new Error(`open ${sessionPath} failed`), {
+        path: sessionPath,
+        code: "EACCES",
+        syscall: "open",
+      });
+      const wrapper = new Error(`${resolution} provider lookup failed`, { cause: pathFailure });
+      const internalFailure = new AggregateError(
+        [wrapper, { errors: [pathFailure] }],
+        `${resolution} resolution failed for ${sessionPath}`,
+      );
+      if (resolution === "model") resolveModelMock.mockRejectedValueOnce(internalFailure);
+      else resolveThinkingMock.mockRejectedValueOnce(internalFailure);
+
+      const publicFailure = await harness.tool.execute(
+        "t0",
+        { agent: "search", task: "collect" },
+        undefined,
+        undefined,
+        harness.context,
+      ).then(
+        () => undefined,
+        (error) => error as Error & { details?: unknown; cause?: unknown; errors?: unknown },
+      );
+
+      expect(publicFailure).toBeInstanceOf(Error);
+      expect(publicFailure?.message).toContain(`${resolution} resolution failed`);
+      expect(publicFailure?.details).toMatchObject({
+        phase: "pre-materialization",
+        code: "EACCES",
+        syscall: "open",
+      });
+      expect(publicFailure?.cause).toBeUndefined();
+      expect(publicFailure?.errors).toBeUndefined();
+      expect(JSON.stringify({
+        message: publicFailure?.message,
+        details: publicFailure?.details,
+        cause: publicFailure?.cause,
+        errors: publicFailure?.errors,
+        text: String(publicFailure),
+      })).not.toContain(sessionPath);
+
+      const internalJob = [...harness.coordinator.journal().jobs.values()][0];
+      expect(internalJob).toMatchObject({ status: "pre_materialization_failed" });
+      expect(internalJob?.errorMessage).toContain(sessionPath);
+    },
+  );
 
   it("consumes a reservation when root-scoped model resolution fails", async () => {
     const harness = toolHarness();

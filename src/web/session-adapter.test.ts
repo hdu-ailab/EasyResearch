@@ -393,6 +393,10 @@ describe("createPiAgentSessionCreator", () => {
       dispose(): Promise<void>;
     }> = [];
     let sessionSequence = 0;
+    const controls = {
+      supervisorDispose: async (): Promise<void> => {},
+      prepareSession: (_session: FakeAgentSession): void => {},
+    };
     const assistant: AgentConfig = {
       name: "paper-assistant",
       description: "Paper Assistant",
@@ -454,6 +458,7 @@ describe("createPiAgentSessionCreator", () => {
           },
           async dispose() {
             this.disposeCalls += 1;
+            await controls.supervisorDispose();
           },
         };
         supervisors.push(supervisor);
@@ -496,6 +501,7 @@ describe("createPiAgentSessionCreator", () => {
         const session = new FakeAgentSession();
         sessionSequence += 1;
         session.sessionId = `session-${sessionSequence}`;
+        controls.prepareSession(session);
         const loader = options.resourceLoader as { options?: { appendSystemPrompt?: string[] } };
         session.baseSystemPrompt = [...(loader.options?.appendSystemPrompt ?? [])];
         const originalBind = session.bindExtensions.bind(session);
@@ -507,7 +513,7 @@ describe("createPiAgentSessionCreator", () => {
         return { session };
       },
     };
-    return { deps, calls, createdOptions, extensionRuntimes, coordinators, supervisors, assistant };
+    return { deps, calls, createdOptions, extensionRuntimes, coordinators, supervisors, assistant, controls };
   }
 
   it("constructs one managed root in ownership-safe order with the effective body in the base prompt", async () => {
@@ -591,6 +597,41 @@ describe("createPiAgentSessionCreator", () => {
     const creator = createPiAgentSessionCreator(harness.deps as never);
 
     await expect(creator({ cwd: "/project" })).rejects.toThrow("extension construction failed");
+    expect(harness.supervisors[0]?.disposeCalls).toBe(1);
+  });
+
+  it("preserves construction and cleanup failures in deterministic cleanup order", async () => {
+    const harness = creatorHarness();
+    const failures = [
+      new Error("extension binding failed"),
+      new Error("supervisor disposal failed"),
+      new Error("session disposal failed"),
+    ];
+    const order: string[] = [];
+    harness.controls.supervisorDispose = async () => {
+      order.push("supervisor");
+      throw failures[1];
+    };
+    harness.controls.prepareSession = (session) => {
+      session.bindExtensions = async () => {
+        order.push("binding");
+        throw failures[0];
+      };
+      session.disposeImpl = () => {
+        order.push("session");
+        throw failures[2];
+      };
+    };
+    const creator = createPiAgentSessionCreator(harness.deps as never);
+
+    const error = await creator({ cwd: "/project" }).then(
+      () => undefined,
+      (failure) => failure as AggregateError,
+    );
+
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(error?.errors).toEqual(failures);
+    expect(order).toEqual(["binding", "supervisor", "session"]);
     expect(harness.supervisors[0]?.disposeCalls).toBe(1);
   });
 });

@@ -40,6 +40,7 @@ interface OwnedChild {
   abort?: (reason?: string) => Promise<void>;
   dispose?: () => Promise<void>;
   abortPromise?: Promise<void>;
+  abortComplete: boolean;
   disposePromise?: Promise<void>;
   materialization: "pending" | "materialized" | "failed";
   identity?: SubagentJobIdentity;
@@ -239,6 +240,7 @@ export class SubagentSupervisor {
       terminalRecorded: false,
       terminalPublished: false,
       completionSettled: false,
+      abortComplete: false,
       subscriptionDisposed: false,
       handleDisposed: false,
       resourcesDisposed: false,
@@ -263,61 +265,67 @@ export class SubagentSupervisor {
     child.startup = startup;
     this.stateChanged();
 
-    let handle: StageLaunchHandle;
     try {
-      handle = await startup;
-    } catch (error) {
-      child.materialization = "failed";
-      this.coordinator.recordPreMaterializationFailure(reservation, error);
-      if (child.handle) {
-        await this.abortChild(child, describeError(error));
-        await child.settlement;
-        await this.disposeChildResources(child);
-      }
-      this.removeChild(child);
-      throw error;
-    }
+      const handle = await startup;
+      this.coordinator.recordChildCreated(reservation, {
+        childSessionId: handle.childSessionId,
+        sessionPath: handle.sessionPath,
+      });
+      if (this.closing) void this.abortChild(child, child.forcedError).catch(() => {});
 
-    this.coordinator.recordChildCreated(reservation, {
-      childSessionId: handle.childSessionId,
-      sessionPath: handle.sessionPath,
-    });
-    if (this.closing) void this.abortChild(child, child.forcedError);
-
-    try {
       await handle.materialized;
+
+      child.materialization = "materialized";
+      child.identity = this.coordinator.recordMaterialized(reservation, {
+        childSessionId: handle.childSessionId,
+        sessionPath: handle.sessionPath,
+      });
+      this.coordinator.publish({ type: "subagent_supervisor", ...child.identity, status: "working" });
+      for (const event of child.queuedEvents.splice(0)) this.publishProgress(child, event);
+      this.publishAcknowledgedEvents(child);
+      this.recordTerminalIfReady(child);
+      this.publishTerminalIfReady(child);
+      if (child.completionSettled) {
+        void this.disposeChildResources(child)
+          .then(() => this.removeChildIfFinished(child))
+          .catch(() => {});
+      }
+      this.stateChanged();
+
+      return {
+        mode: "single",
+        background: true,
+        job: { ...child.identity, status: "working" },
+      };
     } catch (error) {
       child.materialization = "failed";
-      this.coordinator.recordPreMaterializationFailure(reservation, error);
-      await this.abortChild(child, describeError(error));
-      await child.settlement;
-      await this.disposeChildResources(child);
-      this.removeChild(child);
+      let abortFailed = false;
+      await runCleanupSteps([
+        () => { throw error; },
+        () => this.coordinator.recordPreMaterializationFailure(reservation, error),
+        async () => {
+          if (!child.handle) return;
+          try {
+            await this.abortChild(child, describeError(error));
+          } catch (abortError) {
+            abortFailed = true;
+            throw abortError;
+          }
+        },
+        async () => {
+          if (!child.handle || abortFailed) return;
+          await child.settlement;
+        },
+        async () => {
+          if (!child.handle || abortFailed) return;
+          await this.disposeChildResources(child);
+        },
+        () => {
+          if (!child.handle || child.resourcesDisposed) this.removeChild(child);
+        },
+      ], "Subagent launch cleanup failed.");
       throw error;
     }
-
-    child.materialization = "materialized";
-    child.identity = this.coordinator.recordMaterialized(reservation, {
-      childSessionId: handle.childSessionId,
-      sessionPath: handle.sessionPath,
-    });
-    this.coordinator.publish({ type: "subagent_supervisor", ...child.identity, status: "working" });
-    for (const event of child.queuedEvents.splice(0)) this.publishProgress(child, event);
-    this.publishAcknowledgedEvents(child);
-    this.recordTerminalIfReady(child);
-    this.publishTerminalIfReady(child);
-    if (child.completionSettled) {
-      void this.disposeChildResources(child)
-        .then(() => this.removeChildIfFinished(child))
-        .catch(() => {});
-    }
-    this.stateChanged();
-
-    return {
-      mode: "single",
-      background: true,
-      job: { ...child.identity, status: "working" },
-    };
   }
 
   hasRunningChildren(): boolean {
@@ -391,43 +399,66 @@ export class SubagentSupervisor {
     let tracked!: Promise<void>;
     tracked = (async () => {
       const owned = [...this.children.values()];
-      await Promise.all(owned.map(async (child) => {
-        try {
-          await child.startup;
-        } catch {
-          await child.finished;
-          return;
-        }
-        await this.abortChild(child, reason);
-        await child.settlement;
-        await this.disposeChildResources(child);
-        this.recordTerminalIfReady(child);
-        this.publishTerminalIfReady(child);
-        this.removeChildIfFinished(child);
-        if (!child.removed && !this.coordinator.journal().jobs.get(child.reservation.launchId)?.launchAcknowledged) {
-          this.removeChild(child);
-        }
-        await child.finished;
-      }));
-
-      while (this.sendPromise) {
-        const activeSend = this.sendPromise;
-        try {
-          await activeSend;
-        } catch {
-          // The persisted batch remains available for closing supersession.
-        }
-        if (this.sendPromise === activeSend) break;
-      }
-      const ownerSessionId = this.parent?.sessionId;
-      if (!ownerSessionId) return;
-      for (const batch of this.coordinator.journal().pendingBatches) {
-        if (batch.ownerSessionId === ownerSessionId && batch.batchId !== this.closingBatchId) {
-          this.coordinator.supersedeNotification(batch.batchId);
-        }
-      }
-      await this.flushClosingNotification();
-      await this.waitForQuiescence();
+      const failedChildren = new Set<OwnedChild>();
+      let notificationFailed = false;
+      await runCleanupSteps([
+        ...owned.map((child) => async () => {
+          try {
+            try {
+              await child.startup;
+            } catch {
+              await child.finished;
+              return;
+            }
+            await this.abortChild(child, reason);
+            await child.settlement;
+            await this.disposeChildResources(child);
+            this.recordTerminalIfReady(child);
+            this.publishTerminalIfReady(child);
+            this.removeChildIfFinished(child);
+            if (!child.removed && !this.coordinator.journal().jobs.get(child.reservation.launchId)?.launchAcknowledged) {
+              this.removeChild(child);
+            }
+            await child.finished;
+          } catch (error) {
+            failedChildren.add(child);
+            throw error;
+          }
+        }),
+        async () => {
+          try {
+            while (this.sendPromise) {
+              const activeSend = this.sendPromise;
+              try {
+                await activeSend;
+              } catch {
+                // The persisted batch remains available for closing supersession.
+              }
+              if (this.sendPromise === activeSend) break;
+            }
+            const ownerSessionId = this.parent?.sessionId;
+            if (!ownerSessionId) return;
+            for (const batch of this.coordinator.journal().pendingBatches) {
+              if (batch.ownerSessionId === ownerSessionId && batch.batchId !== this.closingBatchId) {
+                this.coordinator.supersedeNotification(batch.batchId);
+              }
+            }
+            await this.flushClosingNotification();
+          } catch (error) {
+            notificationFailed = true;
+            throw error;
+          }
+        },
+        async () => {
+          if (
+            failedChildren.size > 0
+            || notificationFailed
+            || this.cleanupFailures.size > 0
+            || this.hasRunningChildren()
+          ) return;
+          await this.waitForQuiescence();
+        },
+      ], "Subagent supervisor abort failed.");
     })()
       .catch((error) => {
         if (this.abortPromise === tracked) this.abortPromise = undefined;
@@ -573,11 +604,28 @@ export class SubagentSupervisor {
   }
 
   private abortChild(child: OwnedChild, reason?: string): Promise<void> {
-    if (!child.abort) return Promise.resolve();
-    child.abortPromise ??= Promise.resolve()
+    if (!child.abort || child.abortComplete) return Promise.resolve();
+    if (child.abortPromise) return child.abortPromise;
+    const failureKey = `abort:${child.reservation.launchId}`;
+    let tracked!: Promise<void>;
+    tracked = Promise.resolve()
       .then(() => child.abort!(reason))
-      .catch(() => {});
-    return child.abortPromise;
+      .then(
+        () => {
+          child.abortComplete = true;
+          this.cleanupFailures.delete(failureKey);
+          if (child.abortPromise === tracked) child.abortPromise = undefined;
+          this.stateChanged();
+        },
+        (error) => {
+          if (child.abortPromise === tracked) child.abortPromise = undefined;
+          this.cleanupFailures.set(failureKey, error);
+          this.stateChanged();
+          throw error;
+        },
+      );
+    child.abortPromise = tracked;
+    return tracked;
   }
 
   private forceChildError(child: OwnedChild, reason: string): void {
@@ -599,6 +647,7 @@ export class SubagentSupervisor {
     if (!child.dispose || !child.completionSettled) return Promise.resolve();
     if (child.disposePromise) return child.disposePromise;
     let tracked!: Promise<void>;
+    const failureKey = `dispose:${child.reservation.launchId}`;
     tracked = runCleanupSteps([
       () => {
         if (child.subscriptionDisposed) return;
@@ -613,13 +662,13 @@ export class SubagentSupervisor {
       },
     ], "Subagent child cleanup failed.").then(
       () => {
-        this.cleanupFailures.delete(child.reservation.launchId);
+        this.cleanupFailures.delete(failureKey);
         child.resourcesDisposed = true;
         this.stateChanged();
       },
       (error) => {
         if (child.disposePromise === tracked) child.disposePromise = undefined;
-        this.cleanupFailures.set(child.reservation.launchId, error);
+        this.cleanupFailures.set(failureKey, error);
         this.stateChanged();
         throw error;
       },

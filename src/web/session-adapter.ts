@@ -186,12 +186,11 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
       });
       return { session, coordinator, supervisor };
     } catch (error) {
-      try {
-        await supervisor.dispose();
-      } catch {
-        // Preserve the construction failure.
-      }
-      session?.dispose();
+      await runCleanupSteps([
+        () => { throw error; },
+        () => supervisor.dispose(),
+        () => session?.dispose(),
+      ], "Paper Assistant runtime setup cleanup failed.");
       throw error;
     }
   };

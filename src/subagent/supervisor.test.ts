@@ -81,6 +81,7 @@ function result(
 class MemorySessionManager implements CoordinatorSessionManager {
   readonly entries: unknown[] = [];
   private sequence = 0;
+  appendImpl?: (customType: string, data?: unknown) => void;
 
   getSessionId(): string {
     return "parent";
@@ -95,6 +96,7 @@ class MemorySessionManager implements CoordinatorSessionManager {
   }
 
   appendCustomEntry(customType: string, data?: unknown): string {
+    this.appendImpl?.(customType, data);
     const id = `entry-${this.sequence++}`;
     this.entries.push({ type: "custom", id, customType, data });
     return id;
@@ -405,6 +407,97 @@ describe("SubagentSupervisor ownership and launch ordering", () => {
     expect(coordinator.journal().jobs.get(reservation.launchId)?.status).toBe("pre_materialization_failed");
     expect(events).toEqual([]);
     expect(parent.sent).toEqual([]);
+  });
+
+  it.each(["created", "materialized"] as const)(
+    "cleans up a returned handle when the %s journal transition fails",
+    async (failedKind) => {
+      const stage = new FakeStage("search_0", "child-0", "/sessions/private-child.jsonl");
+      stage.abortImpl = async () => {
+        stage.completion.resolve(result("", {
+          exitCode: 1,
+          wasAborted: true,
+          errorMessage: "launch transition failed",
+          stderr: "launch transition failed",
+        }));
+      };
+      const { manager, coordinator, supervisor } = makeHarness({ launchStage: async () => stage.handle });
+      const reservation = reserve(coordinator, "tool-0");
+      const transitionFailure = new Error(`${failedKind} persistence failed`);
+      let failed = false;
+      manager.appendImpl = (_customType, data) => {
+        if (
+          !failed
+          && data !== null
+          && typeof data === "object"
+          && "kind" in data
+          && data.kind === failedKind
+        ) {
+          failed = true;
+          throw transitionFailure;
+        }
+      };
+
+      const launching = supervisor.launch(reservation, options());
+      if (failedKind === "materialized") stage.materialization.resolve();
+      const launchError = await launching.then(
+        () => undefined,
+        (error) => error,
+      );
+      const stateAfterRejection = {
+        abortCalls: stage.abortCalls,
+        disposeCalls: stage.disposeCalls,
+        unsubscribeCalls: stage.unsubscribeCalls,
+        hasRunningChildren: supervisor.hasRunningChildren(),
+        status: coordinator.journal().jobs.get(reservation.launchId)?.status,
+      };
+      manager.appendImpl = undefined;
+      if (stateAfterRejection.hasRunningChildren) await supervisor.dispose();
+
+      expect(launchError).toBe(transitionFailure);
+      expect(stateAfterRejection).toEqual({
+        abortCalls: 1,
+        disposeCalls: 1,
+        unsubscribeCalls: 1,
+        hasRunningChildren: false,
+        status: "pre_materialization_failed",
+      });
+    },
+  );
+
+  it("isolates throwing coordinator subscribers from launch and terminal delivery", async () => {
+    const stage = new FakeStage("search_0", "child-0", "/sessions/child-0.jsonl");
+    const { coordinator, parent, supervisor } = makeHarness({
+      launchStage: async () => stage.handle,
+      autoAcknowledge: true,
+    });
+    const observerFailure = new Error("observer failed");
+    const throwingObserver = vi.fn(() => { throw observerFailure; });
+    const observed: SubagentSupervisorEvent[] = [];
+    const unsubscribeThrowing = coordinator.subscribe(throwingObserver);
+    coordinator.subscribe((event) => observed.push(event));
+    const reservation = reserve(coordinator, "tool-0");
+
+    const launching = supervisor.launch(reservation, options());
+    stage.materialization.resolve();
+    const launchOutcome = await launching.then(
+      (details) => details,
+      (error) => error,
+    );
+    if (launchOutcome instanceof Error) unsubscribeThrowing();
+
+    expect(launchOutcome).toMatchObject({ job: { agentId: "search_0", status: "working" } });
+    expect(observed).toContainEqual(expect.objectContaining({ agentId: "search_0", status: "working" }));
+
+    parent.acknowledgeLaunch("tool-0");
+    stage.completion.resolve(result("terminal handoff"));
+    await supervisor.waitForQuiescence();
+
+    expect(throwingObserver).toHaveBeenCalledTimes(2);
+    expect(observed.map(({ status }) => status)).toEqual(["working", "complete"]);
+    expect(parent.sent).toHaveLength(1);
+    expect(parent.sent[0]?.message.content).toContain("Complete subagent:search_0");
+    unsubscribeThrowing();
   });
 
   it("settles and disposes a returned handle when identity validation fails", async () => {
@@ -841,6 +934,90 @@ describe("SubagentSupervisor notification acknowledgement", () => {
 });
 
 describe("SubagentSupervisor recursive abort", () => {
+  it("reports a failed child abort without blocking siblings and retries only that ownership", async () => {
+    const failed = new FakeStage("search_0", "child-0", "/sessions/failed-abort.jsonl");
+    const sibling = new FakeStage("search_1", "child-1", "/sessions/sibling.jsonl");
+    const abortFailure = new Error("child abort failed");
+    let failedAttempts = 0;
+    failed.abortImpl = async () => {
+      failedAttempts += 1;
+      if (failedAttempts === 1) throw abortFailure;
+      failed.completion.resolve(result("failed child stopped", {
+        agentId: "search_0",
+        exitCode: 1,
+        wasAborted: true,
+        errorMessage: "shutdown retry",
+        stderr: "shutdown retry",
+      }));
+    };
+    sibling.abortImpl = async () => {
+      sibling.completion.resolve(result("sibling stopped", {
+        agentId: "search_1",
+        exitCode: 1,
+        wasAborted: true,
+        errorMessage: "shutdown",
+        stderr: "shutdown",
+      }));
+    };
+    const stages = new Map([["search_0", failed], ["search_1", sibling]]);
+    const { coordinator, parent, supervisor } = makeHarness({
+      launchStage: async (reservation) => stages.get(reservation.agentId)!.handle,
+      autoAcknowledge: true,
+      schedule: () => {},
+    });
+    const terminalEvents: SubagentSupervisorEvent[] = [];
+    coordinator.subscribe((event) => {
+      if (event.status === "complete" || event.status === "error") terminalEvents.push(event);
+    });
+    const reservations = [reserve(coordinator, "tool-0"), reserve(coordinator, "tool-1")];
+    const launches = reservations.map((reservation) => supervisor.launch(reservation, options()));
+    failed.materialization.resolve();
+    sibling.materialization.resolve();
+    await Promise.all(launches);
+    reservations.forEach(({ toolCallId }) => parent.acknowledgeLaunch(toolCallId));
+
+    const firstAbort = supervisor.abortAll("shutdown").then(
+      () => undefined,
+      (error) => error,
+    );
+    const firstOutcome = await Promise.race([
+      firstAbort,
+      new Promise<"timed out">((resolve) => setTimeout(() => resolve("timed out"), 50)),
+    ]);
+    if (firstOutcome === "timed out") {
+      failed.completion.resolve(result("test cleanup", {
+        agentId: "search_0",
+        exitCode: 1,
+        wasAborted: true,
+      }));
+      await firstAbort;
+    }
+
+    expect(firstOutcome).toBe(abortFailure);
+    expect({
+      failedAbort: failed.abortCalls,
+      failedDispose: failed.disposeCalls,
+      siblingAbort: sibling.abortCalls,
+      siblingDispose: sibling.disposeCalls,
+    }).toEqual({ failedAbort: 1, failedDispose: 0, siblingAbort: 1, siblingDispose: 1 });
+    expect(supervisor.hasRunningChildren()).toBe(true);
+    expect(terminalEvents.filter(({ agentId }) => agentId === "search_1")).toHaveLength(1);
+    expect(terminalEvents.filter(({ agentId }) => agentId === "search_0")).toHaveLength(0);
+
+    await supervisor.abortAll("shutdown retry");
+
+    expect({
+      failedAbort: failed.abortCalls,
+      failedDispose: failed.disposeCalls,
+      siblingAbort: sibling.abortCalls,
+      siblingDispose: sibling.disposeCalls,
+    }).toEqual({ failedAbort: 2, failedDispose: 1, siblingAbort: 1, siblingDispose: 1 });
+    expect(terminalEvents.filter(({ agentId }) => agentId === "search_1")).toHaveLength(1);
+    expect(terminalEvents.filter(({ agentId }) => agentId === "search_0")).toHaveLength(1);
+    expect(supervisor.hasRunningChildren()).toBe(false);
+    expect(supervisor.isQuiescent()).toBe(true);
+  });
+
   it("settles a materialized but unacknowledged launch during closing without a terminal batch", async () => {
     const stage = new FakeStage("search_0", "child-0", "/sessions/unacknowledged-child.jsonl");
     stage.abortImpl = async () => {
