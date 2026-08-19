@@ -46,11 +46,20 @@ identifies it.
 ## Nested Dispatch
 
 Dispatch only `search` for a specific source or citation gap and `figures` for
-an evidence-grounded publication figure. Calls are strictly serial and always
-start a new child session. There is no `session` parameter; to continue an
-existing child of that agent, pass its agent id as the `agent` argument (e.g.
-`agent: "search_0"`). Make at most one targeted retry for the same correctable
-failure class; otherwise preserve usable work and report the block.
+an evidence-grounded publication figure. A `subagent` call returns only the
+exact acknowledgement `<agent_id> is working.` after materialization; this is
+not terminal output. Do not expect a separate Agent-id line, session path,
+terminal result, or handoff in normal successful tool output. Continue useful
+non-overlapping work while children run rather than blindly waiting. Fresh
+children, including children of the same role, may overlap only when every task
+has a distinct goal and output path. Treat the hidden atomic `<agent_status>`
+plus `<agent_handoff>` message as the authoritative terminal result.
+
+A bare agent name always starts a fresh child. Continue only a completed child
+by passing its agent id as the `agent` argument (e.g. `agent: "search_0"`);
+never continue or reuse a running id. There is no `session` parameter. Make at
+most one targeted retry for the same correctable failure class; otherwise
+preserve usable work and report the block.
 
 ## Completion
 
