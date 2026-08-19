@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, type ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -715,6 +715,37 @@ describe("ChatTranscript", () => {
       const bubbles = screen.getAllByText(/note (one|two)/);
       expect(bubbles).toHaveLength(2);
       expect(screen.getAllByText(/queued/i).length).toBeGreaterThanOrEqual(2);
+    });
+
+    it.each([
+      {
+        kind: "expanded",
+        text: '<skill name="paper-search" location="/private/SKILL.md">private expanded instructions</skill> query',
+      },
+      { kind: "literal", text: "/skill:paper-search query" },
+    ])("renders a queued $kind Skill as a compact invocation without mounting raw input", ({ text }) => {
+      renderTranscript(
+        <ChatTranscript
+          messages={[]}
+          tools={[]}
+          steers={[
+            {
+              key: `steer-${text}`,
+              text,
+              skillInvocation: { name: "paper-search", args: "query" },
+            },
+          ]}
+        />,
+      );
+
+      const footer = screen.getByRole("status", { name: /queued messages/i });
+      expect(within(footer).getByText("Skill")).toBeVisible();
+      expect(within(footer).getByText("paper-search")).toBeVisible();
+      expect(within(footer).getByText("query")).toBeVisible();
+      expect(within(footer).getByText("Queued")).toBeVisible();
+      expect(footer).not.toHaveTextContent("private expanded instructions");
+      expect(footer).not.toHaveTextContent("/skill:paper-search");
+      expect(footer).not.toHaveTextContent("<skill");
     });
 
     it("renders no footer without steers", () => {

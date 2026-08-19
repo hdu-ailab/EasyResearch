@@ -205,6 +205,20 @@ function EditMessageDraft({
   );
 }
 
+function SkillInvocationContent({ invocation }: { invocation: NonNullable<SteerView["skillInvocation"]> }) {
+  const { t } = useI18n();
+  return (
+    <>
+      <div className="flex items-center gap-1.5 rounded-md border border-v2-blue-200 bg-v2-blue-100/40 px-2 py-1 text-[12px]">
+        <Zap size={13} className="text-v2-blue-600" aria-hidden />
+        <span className="font-medium text-v2-text-text-base">{t("transcript.skillInvocation")}</span>
+        <span className="font-mono text-v2-blue-700">{invocation.name}</span>
+      </div>
+      {invocation.args ? <p className="mt-1 text-[12px] text-v2-text-text-muted">{invocation.args}</p> : null}
+    </>
+  );
+}
+
 /** A single message bubble. Human messages align right with the You label;
  * anything labeled otherwise (subagent-line dispatches, agent replies)
  * aligns left under its own label. User messages with tree metadata gain
@@ -264,16 +278,7 @@ function MessageRow({
           } ${message.error ? "text-v2-status-error" : ""}`}
         >
           {message.skillInvocation ? (
-            <>
-              <div className="flex items-center gap-1.5 rounded-md border border-v2-blue-200 bg-v2-blue-100/40 px-2 py-1 text-[12px]">
-                <Zap size={13} className="text-v2-blue-600" aria-hidden />
-                <span className="font-medium text-v2-text-text-base">{t("transcript.skillInvocation")}</span>
-                <span className="font-mono text-v2-blue-700">{message.skillInvocation.name}</span>
-              </div>
-              {message.skillInvocation.args ? (
-                <p className="mt-1 text-[12px] text-v2-text-text-muted">{message.skillInvocation.args}</p>
-              ) : null}
-            </>
+            <SkillInvocationContent invocation={message.skillInvocation} />
           ) : (
             <MarkdownBlock text={message.text} />
           )}
@@ -695,7 +700,13 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
                   {t("transcript.you")}
                 </span>
                 <div className="v2-md flex max-w-full items-center gap-2 whitespace-pre-wrap break-words rounded-lg bg-v2-blue-100/60 px-3 py-2 text-[length:var(--v2-chat-font-size)] text-v2-text-text-base">
-                  <span>{steer.text}</span>
+                  {steer.skillInvocation ? (
+                    <div className="min-w-0">
+                      <SkillInvocationContent invocation={steer.skillInvocation} />
+                    </div>
+                  ) : (
+                    <span>{steer.text}</span>
+                  )}
                   <span className="shrink-0 rounded bg-v2-blue-200/60 px-1.5 py-0.5 text-[10px] font-medium text-v2-blue-700">
                     {t("transcript.steerQueued")}
                   </span>

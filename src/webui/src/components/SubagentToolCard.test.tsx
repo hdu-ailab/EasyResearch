@@ -1,7 +1,7 @@
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { emptyState, reduceSessionEvent, type ToolView } from "../session-reducer";
+import { emptyState, reduceSessionEvent, reduceSubagentSupervisorEvent, type ToolView } from "../session-reducer";
 import { SubagentToolCard, subagentMessagePreview } from "./SubagentToolCard";
 
 vi.mock("mermaid", () => ({
@@ -13,10 +13,14 @@ vi.mock("mermaid", () => ({
 
 const subagentTool = (patch: Partial<ToolView> = {}): ToolView => ({
   key: "sub-1",
+  toolCallId: "sub-1",
   name: "subagent",
   running: true,
   done: false,
   error: false,
+  ownerSessionId: "root",
+  agentId: "search_0",
+  supervised: true,
   agentName: "search",
   step: 2,
   order: 1,
@@ -76,31 +80,80 @@ describe("subagentMessagePreview", () => {
 });
 
 describe("SubagentToolCard", () => {
-  it("renders retained progress from an aborted reducer transition", () => {
-    let state = reduceSessionEvent(emptyState, {
+  it("keeps a successful launch acknowledgement Working until a supervisor terminal", () => {
+    const started = reduceSessionEvent(emptyState, {
       type: "tool_execution_start",
-      toolCallId: "sub-abort",
+      toolCallId: "sub-launch",
       toolName: "subagent",
       args: { agent: "search" },
     } as never);
-    state = reduceSessionEvent(state, {
-      type: "tool_execution_update",
-      toolCallId: "sub-abort",
-      partialResult: { details: { subagent: { agent: "search", latestMessage: "complete progress before abort" } } },
-    } as never);
-    state = reduceSessionEvent(state, {
+    const acknowledged = reduceSessionEvent(started, {
       type: "tool_execution_end",
-      toolCallId: "sub-abort",
-      result: { content: [{ type: "text", text: "\n\t" }] },
-      isError: true,
+      toolCallId: "sub-launch",
+      toolName: "subagent",
+      isError: false,
+      result: {
+        content: [{ type: "text", text: "search_7 is working." }],
+        details: {
+          mode: "single",
+          background: true,
+          job: {
+            launchId: "launch-7",
+            ownerSessionId: "root",
+            toolCallId: "sub-launch",
+            agent: "search",
+            agentId: "search_7",
+            childSessionId: "child-7",
+            status: "working",
+          },
+        },
+      },
     } as never);
 
-    const failedTool = state.tools[0]!;
-    expect(failedTool).toMatchObject({ running: false, done: true, error: true });
-    render(<SubagentToolCard tool={failedTool} initialOpen />);
+    render(<SubagentToolCard tool={acknowledged.tools[0]!} initialOpen={false} />);
+
+    expect(screen.getByText("Running…")).toBeVisible();
+    expect(screen.getByText("search_7")).toBeVisible();
+    expect(screen.queryByText("Completed")).toBeNull();
+  });
+
+  it("becomes terminal only from supervisor status and prefers the full terminal message over stale activity", () => {
+    const running = subagentTool({
+      latestMessage: "older assistant progress",
+      latestActivity: { kind: "tool", name: "bash", args: "long-running.sh", state: "running" },
+    });
+    const state = reduceSubagentSupervisorEvent(
+      { ...emptyState, tools: [running], nextOrder: 1 },
+      {
+        type: "subagent_supervisor",
+        launchId: "launch-0",
+        ownerSessionId: "root",
+        toolCallId: "sub-1",
+        agent: "search",
+        agentId: "search_0",
+        childSessionId: "child-0",
+        status: "error",
+        latestMessage: "full terminal handoff",
+      },
+    );
+
+    render(<SubagentToolCard tool={state.tools[0]!} initialOpen />);
 
     expect(screen.getByText("Failed")).toBeVisible();
-    expect(screen.getByText("complete progress before abort")).toBeVisible();
+    expect(screen.getByText("full terminal handoff")).toBeVisible();
+    expect(screen.queryByText(/long-running\.sh/)).toBeNull();
+  });
+
+  it("never renders a child session path field", () => {
+    const pathBearing = {
+      ...subagentTool({ running: false, done: true, error: true, latestMessage: "launch failed" }),
+      sessionPath: "/private/agent/sessions/child.jsonl",
+    } as ToolView;
+
+    render(<SubagentToolCard tool={pathBearing} initialOpen />);
+
+    expect(screen.getByText("launch failed")).toBeVisible();
+    expect(screen.queryByText(/child\.jsonl/)).toBeNull();
   });
 
   it("uses the animated running edge when reduced motion is not requested", () => {
@@ -247,8 +300,24 @@ describe("SubagentToolCard", () => {
           running: false,
           done: true,
           sessionLinks: [
-            { toolCallId: "sub-1", childSessionId: "child-search", agent: "search", step: 1 },
-            { toolCallId: "sub-1", childSessionId: "child-writing", agent: "writing", step: 2 },
+            {
+              ownerSessionId: "root",
+              toolCallId: "sub-1",
+              childSessionId: "child-search",
+              agent: "search",
+              agentId: "search_0",
+              status: "complete",
+              step: 1,
+            },
+            {
+              ownerSessionId: "root",
+              toolCallId: "sub-1",
+              childSessionId: "child-writing",
+              agent: "writing",
+              agentId: "writing_0",
+              status: "complete",
+              step: 2,
+            },
           ],
         })}
         initialOpen={false}
@@ -264,17 +333,28 @@ describe("SubagentToolCard", () => {
     ]);
   });
 
-  it("renders the agent id badge from mapped sessions (ADR-084)", () => {
+  it("renders the opaque agent id directly from the supervised tool", () => {
     render(
       <SubagentToolCard
         tool={subagentTool({
-          sessionLinks: [{ toolCallId: "sub-1", childSessionId: "child-search", agent: "search", id: "search_0" }],
+          agentId: "review/run:alpha-7",
+          sessionLinks: [
+            {
+              ownerSessionId: "root",
+              toolCallId: "sub-1",
+              childSessionId: "child-search",
+              agent: "search",
+              agentId: "stale-id",
+              status: "working",
+            },
+          ],
         })}
         initialOpen={false}
       />,
     );
 
-    expect(screen.getByText("search_0")).toBeVisible();
+    expect(screen.getByText("review/run:alpha-7")).toBeVisible();
+    expect(screen.queryByText("stale-id")).toBeNull();
   });
 
   it("describes missing settled progress without claiming it is waiting", () => {

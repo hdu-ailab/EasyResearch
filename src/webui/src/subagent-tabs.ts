@@ -3,19 +3,17 @@ import type { ToolView } from "./session-reducer";
 
 export interface SubagentTabState {
   key: string;
+  ownerSessionId: string;
   toolCallId: string;
   agent: string;
   step?: number;
   sessionId?: string;
-  /** Agent id (`<agent>_<seq>`, ADR-084) of the child within its main session. */
-  id?: string;
+  /** Opaque, user-facing Agent invocation id supplied by the supervisor. */
+  agentId?: string;
   retained: boolean;
   running: boolean;
+  error: boolean;
   latestMessage?: string;
-}
-
-function agentIdOf(sessionLinks: ToolView["sessionLinks"]): string | undefined {
-  return sessionLinks?.find((link) => link.id !== undefined)?.id;
 }
 
 export interface SubagentTabsState {
@@ -23,24 +21,43 @@ export interface SubagentTabsState {
   hiddenRunningToolCalls: string[];
 }
 
-function invocationKey(toolCallId: string, step?: number): string {
-  return step === undefined ? toolCallId : `${toolCallId}:${step}`;
+function invocationKey(ownerSessionId: string, toolCallId: string, step?: number): string {
+  return JSON.stringify(step === undefined ? [ownerSessionId, toolCallId] : [ownerSessionId, toolCallId, step]);
 }
 
-export function temporarySubagentTabKey(toolCallId: string, step?: number): string {
-  return `tool:${invocationKey(toolCallId, step)}`;
+export function temporarySubagentTabKey(ownerSessionId: string, toolCallId: string, step?: number): string {
+  const owner = encodeURIComponent(ownerSessionId);
+  const tool = encodeURIComponent(toolCallId);
+  return step === undefined ? `tool:${owner}:${tool}` : `tool:${owner}:${tool}:${step}`;
 }
 
 function sameInvocation(
-  tab: Pick<SubagentTabState, "toolCallId" | "step">,
+  tab: Pick<SubagentTabState, "ownerSessionId" | "toolCallId" | "step">,
+  ownerSessionId: string,
   toolCallId: string,
   step?: number,
 ): boolean {
-  return tab.toolCallId === toolCallId && tab.step === step;
+  return tab.ownerSessionId === ownerSessionId && tab.toolCallId === toolCallId && tab.step === step;
 }
 
-function runningSubagents(tools: ToolView[]): ToolView[] {
-  return tools.filter((tool) => tool.name === "subagent" && tool.running && !tool.done);
+function toolCallIdOf(tool: ToolView): string {
+  return tool.toolCallId ?? tool.key;
+}
+
+function ownerSessionIdOf(tool: ToolView, fallbackOwnerSessionId: string): string {
+  return tool.ownerSessionId ?? fallbackOwnerSessionId;
+}
+
+function isWorking(tool: ToolView): boolean {
+  return tool.running && !tool.done;
+}
+
+function isSupervisorTerminal(tool: ToolView): boolean {
+  return tool.supervised === true && tool.done;
+}
+
+function isUnmappedLaunchFailure(tool: ToolView): boolean {
+  return tool.done && tool.error && tool.sessionId === undefined;
 }
 
 function withStep<T extends { step?: number }>(value: T, step?: number): T {
@@ -48,54 +65,98 @@ function withStep<T extends { step?: number }>(value: T, step?: number): T {
   return (step === undefined ? rest : { ...rest, step }) as T;
 }
 
-export function syncRunningSubagentTabs(state: SubagentTabsState, tools: ToolView[]): SubagentTabsState {
-  const running = runningSubagents(tools);
-  const byInvocation = new Map(running.map((tool) => [invocationKey(tool.key, tool.step), tool]));
-  const hiddenRunningToolCalls = state.hiddenRunningToolCalls.filter((key) => byInvocation.has(key));
+function updateTabFromTool(tab: SubagentTabState, tool: ToolView, step = tool.step): SubagentTabState {
+  return withStep(
+    {
+      ...tab,
+      agent: tool.agentName ?? tab.agent,
+      ...(tool.agentId !== undefined ? { agentId: tool.agentId } : {}),
+      ...(tool.latestMessage !== undefined ? { latestMessage: tool.latestMessage } : {}),
+    },
+    step,
+  );
+}
+
+export function syncRunningSubagentTabs(
+  state: SubagentTabsState,
+  tools: ToolView[],
+  fallbackOwnerSessionId: string,
+): SubagentTabsState {
+  const subagents = tools.filter((tool) => tool.name === "subagent");
+  const byInvocation = new Map(
+    subagents.map((tool) => [
+      invocationKey(ownerSessionIdOf(tool, fallbackOwnerSessionId), toolCallIdOf(tool), tool.step),
+      tool,
+    ]),
+  );
+  const hiddenRunningToolCalls = state.hiddenRunningToolCalls.filter((key) => {
+    const tool = byInvocation.get(key);
+    return !tool || (!isSupervisorTerminal(tool) && !isUnmappedLaunchFailure(tool));
+  });
   const hidden = new Set(hiddenRunningToolCalls);
 
   const tabs = state.tabs.flatMap((tab) => {
-    const key = invocationKey(tab.toolCallId, tab.step);
-    let tool = byInvocation.get(key);
+    let tool = byInvocation.get(invocationKey(tab.ownerSessionId, tab.toolCallId, tab.step));
     let migratedFirstStep = false;
     if (!tool && tab.step === undefined && !tab.sessionId) {
-      const sameTool = running.filter((candidate) => candidate.key === tab.toolCallId);
-      const onlyTool = sameTool.length === 1 ? sameTool[0] : undefined;
-      if (onlyTool) {
-        tool = onlyTool;
-        migratedFirstStep = onlyTool.step !== undefined;
+      const sameTool = subagents.filter(
+        (candidate) =>
+          ownerSessionIdOf(candidate, fallbackOwnerSessionId) === tab.ownerSessionId &&
+          toolCallIdOf(candidate) === tab.toolCallId,
+      );
+      if (sameTool.length === 1) {
+        tool = sameTool[0];
+        migratedFirstStep = tool?.step !== undefined;
       }
     }
-    if (!tool) return tab.sessionId || tab.retained ? [{ ...tab, running: false }] : [];
-    const nextKey = invocationKey(tool.key, tool.step);
-    if (hidden.has(nextKey)) return [];
-    return [
-      withStep(
+    if (!tool) return [tab];
+
+    const ownerSessionId = ownerSessionIdOf(tool, fallbackOwnerSessionId);
+    const toolCallId = toolCallIdOf(tool);
+    const key = invocationKey(ownerSessionId, toolCallId, tool.step);
+    if (isUnmappedLaunchFailure(tool)) return [];
+    if (isSupervisorTerminal(tool)) {
+      if (!tab.retained || (!tab.sessionId && !tool.sessionId)) return [];
+      return [
         {
-          ...tab,
-          key: tab.sessionId || migratedFirstStep ? tab.key : temporarySubagentTabKey(tool.key, tool.step),
-          agent: tool.agentName ?? tab.agent,
-          ...(agentIdOf(tool.sessionLinks) !== undefined ? { id: agentIdOf(tool.sessionLinks) } : {}),
-          running: true,
-          ...(tool.latestMessage !== undefined ? { latestMessage: tool.latestMessage } : {}),
+          ...updateTabFromTool(tab, tool),
+          running: false,
+          error: tool.error,
         },
-        tool.step,
-      ),
+      ];
+    }
+    if (!isWorking(tool)) return [updateTabFromTool(tab, tool)];
+    if (hidden.has(key)) return [];
+    return [
+      {
+        ...updateTabFromTool(tab, tool),
+        key:
+          tab.sessionId || migratedFirstStep ? tab.key : temporarySubagentTabKey(ownerSessionId, toolCallId, tool.step),
+        ownerSessionId,
+        toolCallId,
+        running: true,
+        error: false,
+      },
     ];
   });
 
-  const represented = new Set(tabs.map((tab) => invocationKey(tab.toolCallId, tab.step)));
-  for (const tool of running) {
-    const key = invocationKey(tool.key, tool.step);
+  const represented = new Set(tabs.map((tab) => invocationKey(tab.ownerSessionId, tab.toolCallId, tab.step)));
+  for (const tool of subagents) {
+    if (!isWorking(tool)) continue;
+    const ownerSessionId = ownerSessionIdOf(tool, fallbackOwnerSessionId);
+    const toolCallId = toolCallIdOf(tool);
+    const key = invocationKey(ownerSessionId, toolCallId, tool.step);
     if (represented.has(key) || hidden.has(key)) continue;
     tabs.push({
-      key: temporarySubagentTabKey(tool.key, tool.step),
-      toolCallId: tool.key,
+      key: temporarySubagentTabKey(ownerSessionId, toolCallId, tool.step),
+      ownerSessionId,
+      toolCallId,
       agent: tool.agentName ?? "subagent",
-      ...(agentIdOf(tool.sessionLinks) !== undefined ? { id: agentIdOf(tool.sessionLinks) } : {}),
+      ...(tool.agentId !== undefined ? { agentId: tool.agentId } : {}),
       ...(tool.step !== undefined ? { step: tool.step } : {}),
       retained: false,
       running: true,
+      error: false,
       ...(tool.latestMessage !== undefined ? { latestMessage: tool.latestMessage } : {}),
     });
   }
@@ -103,34 +164,43 @@ export function syncRunningSubagentTabs(state: SubagentTabsState, tools: ToolVie
   return { tabs, hiddenRunningToolCalls };
 }
 
-export function retainSubagentTab(state: SubagentTabsState, toolCallId: string, step?: number): SubagentTabsState {
-  const key = invocationKey(toolCallId, step);
+export function retainSubagentTab(
+  state: SubagentTabsState,
+  ownerSessionId: string,
+  toolCallId: string,
+  step?: number,
+): SubagentTabsState {
+  const key = invocationKey(ownerSessionId, toolCallId, step);
   return {
-    tabs: state.tabs.map((tab) => (sameInvocation(tab, toolCallId, step) ? { ...tab, retained: true } : tab)),
+    tabs: state.tabs.map((tab) =>
+      sameInvocation(tab, ownerSessionId, toolCallId, step) ? { ...tab, retained: true } : tab,
+    ),
     hiddenRunningToolCalls: state.hiddenRunningToolCalls.filter((id) => id !== key),
   };
 }
 
 export function promoteSubagentTab(state: SubagentTabsState, link: SubagentSessionSummaryDto): SubagentTabsState {
   const existingUuid = state.tabs.find((tab) => tab.sessionId === link.childSessionId);
-  const matched = state.tabs.find((tab) => sameInvocation(tab, link.toolCallId, link.step));
+  const matched = state.tabs.find((tab) => sameInvocation(tab, link.ownerSessionId, link.toolCallId, link.step));
   if (existingUuid) {
     if (!matched) return state;
     return {
       ...state,
       tabs: state.tabs.flatMap((tab) => {
-        if (matched && tab === matched && tab !== existingUuid) return [];
+        if (tab === matched && tab !== existingUuid) return [];
         if (tab !== existingUuid) return [tab];
         return [
           withStep(
             {
               ...existingUuid,
+              ownerSessionId: link.ownerSessionId,
               toolCallId: link.toolCallId,
               agent: link.agent,
-              ...(link.id !== undefined ? { id: link.id } : {}),
+              ...(link.agentId !== undefined ? { agentId: link.agentId } : {}),
               retained: true,
-              running: matched?.running ?? existingUuid.running,
-              latestMessage: link.latestMessage ?? matched?.latestMessage ?? existingUuid.latestMessage,
+              running: link.status === "working",
+              error: link.status === "error",
+              latestMessage: link.latestMessage ?? matched.latestMessage ?? existingUuid.latestMessage,
             },
             link.step,
           ),
@@ -148,8 +218,12 @@ export function promoteSubagentTab(state: SubagentTabsState, link: SubagentSessi
               ...tab,
               key: `session:${link.childSessionId}`,
               sessionId: link.childSessionId,
+              ownerSessionId: link.ownerSessionId,
               agent: link.agent,
-              ...(link.id !== undefined ? { id: link.id } : {}),
+              ...(link.agentId !== undefined ? { agentId: link.agentId } : {}),
+              running: link.status === "working",
+              error: link.status === "error",
+              ...(link.latestMessage !== undefined ? { latestMessage: link.latestMessage } : {}),
             },
             link.step,
           )
@@ -164,13 +238,18 @@ export function closeSubagentTab(state: SubagentTabsState, key: string): Subagen
   return {
     tabs: state.tabs.filter((tab) => tab.key !== key),
     hiddenRunningToolCalls: closed.running
-      ? [...new Set([...state.hiddenRunningToolCalls, invocationKey(closed.toolCallId, closed.step)])]
+      ? [
+          ...new Set([
+            ...state.hiddenRunningToolCalls,
+            invocationKey(closed.ownerSessionId, closed.toolCallId, closed.step),
+          ]),
+        ]
       : state.hiddenRunningToolCalls,
   };
 }
 
 export function childTabLabel(tab: SubagentTabState, allTabs: SubagentTabState[]): string {
-  if (tab.id !== undefined) return tab.id;
+  if (tab.agentId !== undefined) return tab.agentId;
   const duplicateAgent =
     tab.sessionId !== undefined &&
     allTabs.some((other) => other !== tab && other.sessionId !== undefined && other.agent === tab.agent);

@@ -1,6 +1,12 @@
 import { Bot, FileSearch, Settings } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { FileWatcherEvent, SessionTreeDto, SkillCommandDto } from "../../../web/contracts";
+import type {
+  FileWatcherEvent,
+  SessionTreeDto,
+  SkillCommandDto,
+  SubagentSessionSummaryDto,
+  SubagentSupervisorEventDto,
+} from "../../../web/contracts";
 import { PAPER_ASSISTANT_AGENT } from "../agent-identity";
 import { getChildSnapshot, getSessionCommands, getSessionTree } from "../api";
 import { AgentList, type AgentStatus } from "../components/AgentList";
@@ -16,7 +22,13 @@ import { usePanelTransition } from "../hooks/usePanelTransition";
 import { useSessionConnection } from "../hooks/useSessionConnection";
 import { useI18n } from "../i18n/useI18n";
 import { buildMessageTreeMeta, versionTarget } from "../message-tree";
-import { fromSnapshot, nestedSubagentEvent, reduceSessionEvent, type SessionViewState } from "../session-reducer";
+import {
+  fromSnapshot,
+  reduceSessionEvent,
+  reduceSubagentSupervisorEvent,
+  type SessionViewState,
+  type ToolView,
+} from "../session-reducer";
 import {
   closeSubagentTab,
   promoteSubagentTab,
@@ -44,6 +56,32 @@ const emptyView: SessionViewState = {
   nextOrder: 0,
   steers: [],
 };
+
+function subagentSummary(
+  tool: ToolView,
+  fallbackOwnerSessionId: string,
+  link?: SubagentSessionSummaryDto,
+  childSessionId = link?.childSessionId ?? tool.sessionId,
+): SubagentSessionSummaryDto | undefined {
+  if (!childSessionId) return undefined;
+  const status = tool.running ? "working" : tool.error ? "error" : "complete";
+  if (link && (link.childSessionId !== tool.sessionId || link.step !== tool.step)) {
+    return { ...link, childSessionId };
+  }
+  return {
+    ownerSessionId: tool.ownerSessionId ?? link?.ownerSessionId ?? fallbackOwnerSessionId,
+    toolCallId: tool.toolCallId ?? link?.toolCallId ?? tool.key,
+    childSessionId,
+    agent: tool.agentName ?? link?.agent ?? "subagent",
+    status,
+    ...((tool.launchId ?? link?.launchId) !== undefined ? { launchId: tool.launchId ?? link?.launchId } : {}),
+    ...((tool.agentId ?? link?.agentId) !== undefined ? { agentId: tool.agentId ?? link?.agentId } : {}),
+    ...((tool.latestMessage ?? link?.latestMessage) !== undefined
+      ? { latestMessage: tool.latestMessage ?? link?.latestMessage }
+      : {}),
+    ...((tool.step ?? link?.step) !== undefined ? { step: tool.step ?? link?.step } : {}),
+  };
+}
 
 function mergeChildView(snapshot: SessionViewState, live: SessionViewState): SessionViewState {
   const entries = [
@@ -113,7 +151,7 @@ export function WorkPage({ id, cwd, onBack, onOpenSettings }: WorkPageProps) {
   const [tree, setTree] = useState<SessionTreeDto | null>(null);
   const transcriptRef = useRef<ChatTranscriptHandle>(null);
   const tabsStateRef = useRef(tabsState);
-  const childSessionByTool = useRef(new Map<string, string>());
+  const childSessionByInvocation = useRef(new Map<string, string>());
   const childLoaded = useRef(new Set<string>());
   const childRequests = useRef(new Map<string, Promise<void>>());
   const childRefreshPending = useRef(new Set<string>());
@@ -136,29 +174,49 @@ export function WorkPage({ id, cwd, onBack, onOpenSettings }: WorkPageProps) {
         }
         return false;
       }
-      if (!event || typeof event !== "object" || (event as { type?: unknown }).type !== "tool_execution_update") {
-        return false;
-      }
-      const nested = nestedSubagentEvent(event as Parameters<typeof reduceSessionEvent>[1]);
-      if (nested?.sessionId) childSessionByTool.current.set(nested.toolCallId, nested.sessionId);
-      const nestedSessionId =
-        nested?.sessionId ?? (nested ? childSessionByTool.current.get(nested.toolCallId) : undefined);
-      const nestedEvent = nested?.event;
-      if (nestedSessionId && nestedEvent) {
-        childRevisions.current.set(nestedSessionId, (childRevisions.current.get(nestedSessionId) ?? 0) + 1);
-        setChildViews((current) => ({
-          ...current,
-          [nestedSessionId]: reduceSessionEvent(
-            current[nestedSessionId] ?? { ...emptyView, subagentName: nested.agent },
-            nestedEvent,
-          ),
-        }));
-      }
       return false;
     },
     [cwd],
   );
-  const connection = useSessionConnection({ initialSessionId: id, cwd, onEvent: handleWorkEvent });
+  const handleSupervisorEvent = useCallback((event: SubagentSupervisorEventDto) => {
+    const invocationKey = temporarySubagentTabKey(event.ownerSessionId, event.toolCallId);
+    childSessionByInvocation.current.set(invocationKey, event.childSessionId);
+    const childSessionId = childSessionByInvocation.current.get(invocationKey) ?? event.childSessionId;
+    const rootSessionId = parentOwner.current.id;
+
+    if (event.ownerSessionId !== rootSessionId) {
+      childRevisions.current.set(event.ownerSessionId, (childRevisions.current.get(event.ownerSessionId) ?? 0) + 1);
+    }
+    if (event.event) {
+      childRevisions.current.set(childSessionId, (childRevisions.current.get(childSessionId) ?? 0) + 1);
+    }
+
+    setChildViews((current) => {
+      let next = current;
+      if (event.ownerSessionId !== rootSessionId) {
+        next = {
+          ...next,
+          [event.ownerSessionId]: reduceSubagentSupervisorEvent(next[event.ownerSessionId] ?? { ...emptyView }, event),
+        };
+      }
+      if (event.event) {
+        next = {
+          ...next,
+          [childSessionId]: reduceSessionEvent(
+            next[childSessionId] ?? { ...emptyView, subagentName: event.agent },
+            event.event as Parameters<typeof reduceSessionEvent>[1],
+          ),
+        };
+      }
+      return next;
+    });
+  }, []);
+  const connection = useSessionConnection({
+    initialSessionId: id,
+    cwd,
+    onEvent: handleWorkEvent,
+    onSupervisorEvent: handleSupervisorEvent,
+  });
   const sessionView = connection.view;
   const sessionId = connection.sessionId;
   if (parentOwner.current.id !== sessionId) {
@@ -177,7 +235,7 @@ export function WorkPage({ id, cwd, onBack, onOpenSettings }: WorkPageProps) {
     if (parentOwner.current.id !== sessionId) return;
     setChildViews({});
     setChildErrors({});
-    childSessionByTool.current.clear();
+    childSessionByInvocation.current.clear();
     childLoaded.current.clear();
     childRequests.current.clear();
     childRefreshPending.current.clear();
@@ -234,20 +292,28 @@ export function WorkPage({ id, cwd, onBack, onOpenSettings }: WorkPageProps) {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  // Keep temporary tabs synchronized with the parent tool stream, then promote
+  // Keep temporary tabs synchronized across the supervised tree, then promote
   // retained invocations as soon as an exact child UUID is known.
   useEffect(() => {
+    const sources = [
+      { ownerSessionId: sessionId, tools: sessionView.tools },
+      ...Object.entries(childViews).map(([ownerSessionId, view]) => ({ ownerSessionId, tools: view.tools })),
+    ];
     setTabsState((current) => {
-      let next = syncRunningSubagentTabs(current, sessionView.tools);
-      for (const tool of sessionView.tools) {
-        if (tool.name !== "subagent" || !tool.sessionId) continue;
-        next = promoteSubagentTab(next, {
-          toolCallId: tool.key,
-          childSessionId: tool.sessionId,
-          agent: tool.agentName ?? "subagent",
-          ...(tool.step !== undefined ? { step: tool.step } : {}),
-          ...(tool.latestMessage !== undefined ? { latestMessage: tool.latestMessage } : {}),
-        });
+      let next = current;
+      for (const source of sources) {
+        next = syncRunningSubagentTabs(next, source.tools, source.ownerSessionId);
+        for (const tool of source.tools) {
+          if (tool.name !== "subagent" || !tool.sessionId) continue;
+          const link = tool.sessionLinks?.find(
+            (candidate) =>
+              candidate.ownerSessionId === (tool.ownerSessionId ?? source.ownerSessionId) &&
+              candidate.toolCallId === (tool.toolCallId ?? tool.key) &&
+              candidate.childSessionId === tool.sessionId,
+          );
+          const summary = subagentSummary(tool, source.ownerSessionId, link);
+          if (summary) next = promoteSubagentTab(next, summary);
+        }
       }
       return next;
     });
@@ -255,15 +321,27 @@ export function WorkPage({ id, cwd, onBack, onOpenSettings }: WorkPageProps) {
       if (!current.startsWith("tool:")) return current;
       const tab = tabsStateRef.current.tabs.find((candidate) => candidate.key === current);
       const tool = tab
-        ? sessionView.tools.find(
-            (candidate) =>
-              candidate.key === tab.toolCallId &&
-              (candidate.step === tab.step || (tab.step === undefined && tab.sessionId === undefined)),
-          )
-        : sessionView.tools.find((candidate) => temporarySubagentTabKey(candidate.key, candidate.step) === current);
+        ? sources
+            .find((source) => source.ownerSessionId === tab.ownerSessionId)
+            ?.tools.find(
+              (candidate) =>
+                (candidate.toolCallId ?? candidate.key) === tab.toolCallId &&
+                (candidate.ownerSessionId ?? tab.ownerSessionId) === tab.ownerSessionId &&
+                (candidate.step === tab.step || (tab.step === undefined && tab.sessionId === undefined)),
+            )
+        : sources
+            .flatMap((source) => source.tools.map((tool) => ({ source, tool })))
+            .find(
+              ({ source, tool }) =>
+                temporarySubagentTabKey(
+                  tool.ownerSessionId ?? source.ownerSessionId,
+                  tool.toolCallId ?? tool.key,
+                  tool.step,
+                ) === current,
+            )?.tool;
       return tool?.sessionId ? `session:${tool.sessionId}` : current;
     });
-  }, [sessionView.tools]);
+  }, [sessionView.tools, childViews, sessionId]);
 
   useEffect(() => {
     if (activeTab !== PAPER_ASSISTANT_AGENT && !tabsState.tabs.some((tab) => tab.key === activeTab)) {
@@ -287,12 +365,39 @@ export function WorkPage({ id, cwd, onBack, onOpenSettings }: WorkPageProps) {
   const activeChildId = activeTab.startsWith("session:") ? activeTab.slice(8) : undefined;
   const activeView = activeChildId ? childViews[activeChildId] : undefined;
   const activeMessages = activeTab === PAPER_ASSISTANT_AGENT ? sessionView.messages : (activeView?.messages ?? []);
+  const toolsWithRetainedProgress = (ownerSessionId: string, tools: ToolView[]) =>
+    tools.map((tool) => {
+      if (tool.name !== "subagent" || tool.latestMessage !== undefined || !tool.running) return tool;
+      const tab = tabsState.tabs.find(
+        (candidate) =>
+          candidate.ownerSessionId === (tool.ownerSessionId ?? ownerSessionId) &&
+          candidate.toolCallId === (tool.toolCallId ?? tool.key) &&
+          candidate.step === tool.step,
+      );
+      return tab?.latestMessage === undefined ? tool : { ...tool, latestMessage: tab.latestMessage };
+    });
   const activeTools =
-    activeTab === PAPER_ASSISTANT_AGENT ? sessionView.tools : activeChildId ? (activeView?.tools ?? []) : [];
-  const statusByAgent = Object.fromEntries([
-    [PAPER_ASSISTANT_AGENT, sessionView.error !== null ? "error" : sessionView.isStreaming ? "working" : "idle"],
-    ...tabsState.tabs.map((tab) => [tab.agent, tab.running ? "working" : "idle"]),
-  ]) as Record<string, AgentStatus>;
+    activeTab === PAPER_ASSISTANT_AGENT
+      ? toolsWithRetainedProgress(sessionId, sessionView.tools)
+      : activeChildId
+        ? toolsWithRetainedProgress(activeChildId, activeView?.tools ?? [])
+        : [];
+  const statusPriority: Record<AgentStatus, number> = { idle: 0, error: 1, working: 2 };
+  const supervisedTools = [sessionView, ...Object.values(childViews)].flatMap((view) =>
+    view.tools.filter((tool) => tool.name === "subagent"),
+  );
+  const statusByAgent = supervisedTools.reduce<Record<string, AgentStatus>>(
+    (byAgent, tool) => {
+      const agent = tool.agentName ?? "subagent";
+      const next: AgentStatus = tool.running ? "working" : tool.error ? "error" : "idle";
+      const current = byAgent[agent];
+      if (current === undefined || statusPriority[next] > statusPriority[current]) byAgent[agent] = next;
+      return byAgent;
+    },
+    {
+      [PAPER_ASSISTANT_AGENT]: sessionView.error !== null ? "error" : sessionView.isStreaming ? "working" : "idle",
+    },
+  );
   const projectName = cwd.split("/").filter(Boolean).at(-1) ?? cwd;
   const chatHidden = isMobile && mobileView !== "chat";
   const filesHidden = isMobile ? mobileView !== "files" : panel !== "files";
@@ -322,7 +427,7 @@ export function WorkPage({ id, cwd, onBack, onOpenSettings }: WorkPageProps) {
               status: "ready",
             },
             messages: snapshot.messages,
-            subagents: [],
+            subagents: snapshot.subagents,
           });
           childLoaded.current.add(requestKey);
           setChildErrors((current) => {
@@ -331,16 +436,16 @@ export function WorkPage({ id, cwd, onBack, onOpenSettings }: WorkPageProps) {
             delete next[childId];
             return next;
           });
-          setChildViews((current) => ({
-            ...current,
-            [childId]: current[childId]
+          setChildViews((current) => {
+            const merged = current[childId]
               ? refresh
                 ? (childRevisions.current.get(childId) ?? 0) > startRevision
                   ? mergeChildView(hydrated, current[childId])
                   : mergeChildView(current[childId], hydrated)
                 : mergeChildView(hydrated, current[childId])
-              : hydrated,
-          }));
+              : hydrated;
+            return { ...current, [childId]: merged };
+          });
         })
         .catch(() => {
           if (!ownsRequest()) return;
@@ -367,8 +472,13 @@ export function WorkPage({ id, cwd, onBack, onOpenSettings }: WorkPageProps) {
 
   const openSubagentTool = useCallback(
     (toolCallId: string, requestedStep?: number) => {
-      const tool = sessionView.tools.find((candidate) => candidate.name === "subagent" && candidate.key === toolCallId);
+      const sourceOwnerSessionId = activeChildId ?? sessionId;
+      const sourceTools = activeChildId ? (childViews[activeChildId]?.tools ?? []) : sessionView.tools;
+      const tool = sourceTools.find(
+        (candidate) => candidate.name === "subagent" && (candidate.toolCallId ?? candidate.key) === toolCallId,
+      );
       if (!tool) return;
+      const ownerSessionId = tool.ownerSessionId ?? sourceOwnerSessionId;
       const link =
         requestedStep === undefined
           ? tool.sessionLinks?.length === 1
@@ -376,45 +486,50 @@ export function WorkPage({ id, cwd, onBack, onOpenSettings }: WorkPageProps) {
             : tool.sessionLinks?.find((candidate) => candidate.step === tool.step)
           : tool.sessionLinks?.find((candidate) => candidate.step === requestedStep);
       const step = link?.step ?? requestedStep ?? tool.step;
-      const childId = link?.childSessionId ?? (step === tool.step ? tool.sessionId : undefined);
-      const existingTab = tabsState.tabs.find((tab) => tab.toolCallId === toolCallId && tab.step === step);
+      const childId =
+        link?.childSessionId ??
+        childSessionByInvocation.current.get(temporarySubagentTabKey(ownerSessionId, toolCallId)) ??
+        (step === tool.step ? tool.sessionId : undefined);
+      const existingTab = tabsState.tabs.find(
+        (tab) => tab.ownerSessionId === ownerSessionId && tab.toolCallId === toolCallId && tab.step === step,
+      );
       setTabsState((current) => {
         let next = current;
-        if (!next.tabs.some((tab) => tab.toolCallId === toolCallId && tab.step === step)) {
+        if (
+          !next.tabs.some(
+            (tab) => tab.ownerSessionId === ownerSessionId && tab.toolCallId === toolCallId && tab.step === step,
+          )
+        ) {
           next = {
             ...next,
             tabs: [
               ...next.tabs,
               {
-                key: temporarySubagentTabKey(toolCallId, step),
+                key: temporarySubagentTabKey(ownerSessionId, toolCallId, step),
+                ownerSessionId,
                 toolCallId,
                 agent: link?.agent ?? tool.agentName ?? "subagent",
+                ...((link?.agentId ?? tool.agentId) !== undefined ? { agentId: link?.agentId ?? tool.agentId } : {}),
                 ...(step !== undefined ? { step } : {}),
                 retained: false,
                 running: tool.running,
+                error: tool.error,
                 ...(tool.latestMessage !== undefined ? { latestMessage: tool.latestMessage } : {}),
               },
             ],
           };
         }
-        next = retainSubagentTab(next, toolCallId, step);
-        return childId
-          ? promoteSubagentTab(next, {
-              toolCallId,
-              childSessionId: childId,
-              agent: link?.agent ?? tool.agentName ?? "subagent",
-              ...(step !== undefined ? { step } : {}),
-              ...((link?.latestMessage ?? tool.latestMessage)
-                ? { latestMessage: link?.latestMessage ?? tool.latestMessage }
-                : {}),
-            })
-          : next;
+        next = retainSubagentTab(next, ownerSessionId, toolCallId, step);
+        const summary = subagentSummary(tool, sourceOwnerSessionId, link, childId);
+        return summary ? promoteSubagentTab(next, summary) : next;
       });
-      const key = childId ? `session:${childId}` : (existingTab?.key ?? temporarySubagentTabKey(toolCallId, step));
+      const key = childId
+        ? `session:${childId}`
+        : (existingTab?.key ?? temporarySubagentTabKey(ownerSessionId, toolCallId, step));
       setActiveTab(key);
       if (childId) void loadChild(childId);
     },
-    [sessionView.tools, tabsState.tabs, loadChild],
+    [activeChildId, childViews, sessionView.tools, tabsState.tabs, loadChild, sessionId],
   );
 
   const selectAgentTab = useCallback(
@@ -425,29 +540,32 @@ export function WorkPage({ id, cwd, onBack, onOpenSettings }: WorkPageProps) {
       }
       const tab = tabsState.tabs.find((candidate) => candidate.key === key);
       if (!tab) return;
-      const tool = sessionView.tools.find((candidate) => candidate.key === tab.toolCallId);
-      const link = tool?.sessionLinks?.find((candidate) => candidate.step === tab.step);
+      const ownerView = tab.ownerSessionId === sessionId ? sessionView : childViews[tab.ownerSessionId];
+      const tool = ownerView?.tools.find(
+        (candidate) =>
+          (candidate.toolCallId ?? candidate.key) === tab.toolCallId &&
+          (candidate.ownerSessionId ?? tab.ownerSessionId) === tab.ownerSessionId,
+      );
+      const link = tool?.sessionLinks?.find(
+        (candidate) =>
+          candidate.ownerSessionId === tab.ownerSessionId &&
+          candidate.toolCallId === tab.toolCallId &&
+          candidate.step === tab.step,
+      );
       const childId =
-        tab.sessionId ?? link?.childSessionId ?? (tool && tool.step === tab.step ? tool.sessionId : undefined);
+        tab.sessionId ??
+        link?.childSessionId ??
+        childSessionByInvocation.current.get(temporarySubagentTabKey(tab.ownerSessionId, tab.toolCallId)) ??
+        (tool && tool.step === tab.step ? tool.sessionId : undefined);
       setTabsState((current) => {
-        const retained = retainSubagentTab(current, tab.toolCallId, tab.step);
-        return childId
-          ? promoteSubagentTab(retained, {
-              toolCallId: tab.toolCallId,
-              childSessionId: childId,
-              agent: link?.agent ?? tool?.agentName ?? tab.agent,
-              ...(link?.id !== undefined ? { id: link.id } : {}),
-              ...(tab.step !== undefined ? { step: tab.step } : {}),
-              ...((link?.latestMessage ?? tool?.latestMessage)
-                ? { latestMessage: link?.latestMessage ?? tool?.latestMessage }
-                : {}),
-            })
-          : retained;
+        const retained = retainSubagentTab(current, tab.ownerSessionId, tab.toolCallId, tab.step);
+        const summary = tool ? subagentSummary(tool, tab.ownerSessionId, link, childId) : undefined;
+        return summary ? promoteSubagentTab(retained, summary) : retained;
       });
       setActiveTab(childId ? `session:${childId}` : key);
       if (childId) void loadChild(childId);
     },
-    [tabsState.tabs, sessionView.tools, loadChild],
+    [tabsState.tabs, sessionView, childViews, loadChild, sessionId],
   );
 
   const closeAgentTab = useCallback((key: string) => {
@@ -629,7 +747,7 @@ export function WorkPage({ id, cwd, onBack, onOpenSettings }: WorkPageProps) {
             tools={activeTools}
             emptyHint={activeTab === PAPER_ASSISTANT_AGENT ? undefined : t("work.noMessagesYet")}
             pending={pendingOutput && activeTab === PAPER_ASSISTANT_AGENT}
-            onViewDetails={activeTab === PAPER_ASSISTANT_AGENT ? openSubagentTool : undefined}
+            onViewDetails={openSubagentTool}
             messageMeta={activeTab === PAPER_ASSISTANT_AGENT ? messageMeta : undefined}
             onEditMessage={activeTab === PAPER_ASSISTANT_AGENT ? onEditMessage : undefined}
             onSwitchBranch={activeTab === PAPER_ASSISTANT_AGENT ? onSwitchBranch : undefined}

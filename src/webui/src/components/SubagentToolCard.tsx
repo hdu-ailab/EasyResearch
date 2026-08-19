@@ -51,16 +51,16 @@ export function SubagentToolCard({
   const setOpen = isControlled ? (onToggle ?? (() => {})) : setInternalOpen;
   const reducedMotion = usePrefersReducedMotion();
   const { mounted, phase } = useExpandable(isOpen);
-  const activity = tool.latestActivity;
+  const running = tool.running && !tool.done;
+  const activity = running ? tool.latestActivity : undefined;
   const isToolActivity = activity?.kind === "tool";
   const message = activity
     ? activity.kind === "tool"
       ? `${activity.name}${activity.args ? ` ${activity.args}` : ""}`
       : activity.text
-    : (tool.latestMessage ?? tool.output ?? "");
+    : (tool.latestMessage ?? "");
   const agentName = agentDisplayName(t, tool.agentName ?? "subagent");
-  const agentId = tool.sessionLinks?.find((link) => link.id !== undefined)?.id;
-  const running = tool.running && !tool.done;
+  const agentId = tool.agentId;
   const emptyMessage = running ? t("transcript.waitingForProgress") : t("transcript.noSavedProgress");
   const state = tool.error
     ? t("transcript.subagentFailed")

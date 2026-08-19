@@ -2,7 +2,7 @@ import { act, fireEvent, render as renderWithTestingLibrary, screen, waitFor, wi
 import userEvent from "@testing-library/user-event";
 import type { ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { FileEntryDto } from "../../../web/contracts";
+import type { FileEntryDto, SubagentSessionSummaryDto, SubagentSupervisorEventDto } from "../../../web/contracts";
 import * as api from "../api";
 import { I18nProvider } from "../i18n/I18nProvider";
 import { STORAGE_KEY } from "../preferences";
@@ -68,22 +68,51 @@ function emitInAct(event: unknown) {
   act(() => emit(event));
 }
 
-function emitChildHeader(toolCallId: string, agent: string, sessionId: string, step?: number) {
-  emitInAct({
-    type: "tool_execution_update",
-    toolCallId,
-    toolName: "subagent",
-    partialResult: { details: { subagent: { agent, sessionId, step, status: "running" } } },
-  });
+function supervisorEvent(
+  overrides: Partial<SubagentSupervisorEventDto> & Pick<SubagentSupervisorEventDto, "toolCallId">,
+): SubagentSupervisorEventDto {
+  const agent = overrides.agent ?? "search";
+  return {
+    type: "subagent_supervisor",
+    launchId: `launch-${overrides.toolCallId}`,
+    ownerSessionId: "s1",
+    agent,
+    agentId: `${agent}_${overrides.toolCallId}`,
+    childSessionId: `child-${overrides.toolCallId}`,
+    status: "working",
+    ...overrides,
+  };
 }
 
-function emitRawChildEvent(toolCallId: string, agent: string, event: unknown, step?: number) {
-  emitInAct({
-    type: "tool_execution_update",
+function emitSupervisor(
+  overrides: Partial<SubagentSupervisorEventDto> & Pick<SubagentSupervisorEventDto, "toolCallId">,
+) {
+  emitInAct(supervisorEvent(overrides));
+}
+
+function emitSupervisorChildEvent(
+  overrides: Partial<SubagentSupervisorEventDto> &
+    Pick<SubagentSupervisorEventDto, "toolCallId" | "childSessionId"> & { event: unknown },
+) {
+  emitSupervisor({ ...overrides, event: overrides.event as SubagentSupervisorEventDto["event"] });
+}
+
+function subagentSummary(
+  toolCallId: string,
+  childSessionId: string,
+  agent = "search",
+  overrides: Partial<SubagentSessionSummaryDto> = {},
+): SubagentSessionSummaryDto {
+  return {
+    ownerSessionId: "s1",
     toolCallId,
-    toolName: "subagent",
-    partialResult: { details: { subagent: { agent, step, status: "running", event } } },
-  });
+    childSessionId,
+    agent,
+    agentId: `${agent}_${toolCallId}`,
+    launchId: `launch-${toolCallId}`,
+    status: "complete" as const,
+    ...overrides,
+  };
 }
 
 function render(ui: ReactElement) {
@@ -210,6 +239,7 @@ describe("WorkPage", () => {
     vi.mocked(api.getChildSnapshot).mockResolvedValue({
       session: { id: "child-default", cwd: "/p", sessionName: "easyresearch:search" },
       messages: [],
+      subagents: [],
     });
     vi.mocked(api.listEntries).mockResolvedValue([{ kind: "file", name: "notes.md", path: "/p/notes.md" }]);
     stubEvents();
@@ -444,6 +474,7 @@ describe("WorkPage", () => {
         { role: "user", content: [{ type: "text", text: "child task" }] },
         { role: "assistant", content: [{ type: "text", text: "child answer" }] },
       ],
+      subagents: [],
     } as never);
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
@@ -459,7 +490,12 @@ describe("WorkPage", () => {
       toolName: "subagent",
       args: { agent: "search", task: "find" },
     });
-    emitChildHeader("sub-switch", "search", "child-switch");
+    emitSupervisor({
+      toolCallId: "sub-switch",
+      agent: "search",
+      agentId: "search_0",
+      childSessionId: "child-switch",
+    });
     await user.click(await screen.findByRole("button", { name: /agent search/i }));
     flushFrame?.(0);
 
@@ -494,6 +530,7 @@ describe("WorkPage", () => {
         { role: "user", timestamp: 1000, content: [{ type: "text", text: "child task" }] },
         { role: "assistant", timestamp: 1001, content: [{ type: "text", text: "child answer loaded" }] },
       ],
+      subagents: [],
     } as never);
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     expect(await screen.findByText("parent answer")).toBeTruthy();
@@ -508,7 +545,12 @@ describe("WorkPage", () => {
       toolName: "subagent",
       args: { agent: "search", task: "find" },
     });
-    emitChildHeader("sub-loaded", "search", "child-loaded");
+    emitSupervisor({
+      toolCallId: "sub-loaded",
+      agent: "search",
+      agentId: "search_0",
+      childSessionId: "child-loaded",
+    });
     await user.click(await screen.findByRole("button", { name: /agent search/i }));
     expect(await screen.findByText("child answer loaded")).toBeTruthy();
     flushCapturedFrame();
@@ -616,12 +658,12 @@ describe("WorkPage", () => {
     });
     const searchTab = await screen.findByRole("button", { name: /agent search/i });
     expect(searchTab.getAttribute("aria-pressed")).toBe("false");
-    emitInAct({
-      type: "tool_execution_update",
+    emitSupervisor({
       toolCallId: "sub-1",
-      toolName: "subagent",
-      args: { agent: "search" },
-      partialResult: { details: { subagent: { agent: "search", step: 1, status: "running", latestMessage } } },
+      agent: "search",
+      agentId: "search_0",
+      childSessionId: "child-sub-1",
+      latestMessage,
     });
     // The tab bar shows only the agent id (no running preview), while the
     // transcript card still surfaces the latest message.
@@ -629,12 +671,13 @@ describe("WorkPage", () => {
     expect(preview).toBeNull();
     const cardMessage = within(screen.getByLabelText(/conversation/i)).getByText(latestMessage);
     expect(cardMessage.closest("article")).not.toBeNull();
-    emitInAct({
-      type: "tool_execution_end",
+    emitSupervisor({
       toolCallId: "sub-1",
-      toolName: "subagent",
-      result: "done",
-      isError: false,
+      agent: "search",
+      agentId: "search_0",
+      childSessionId: "child-sub-1",
+      status: "complete",
+      latestMessage: "done",
     });
     await waitFor(() => expect(screen.queryByRole("button", { name: /agent search/i })).toBeNull());
     await waitFor(() =>
@@ -652,23 +695,29 @@ describe("WorkPage", () => {
       toolName: "subagent",
       args: { agent: "search", task: "find" },
     });
-    emitInAct({
-      type: "tool_execution_update",
+    emitSupervisor({
       toolCallId: "sub-promote",
-      toolName: "subagent",
-      partialResult: {
-        details: { subagent: { agent: "search", sessionId: "child-promoted", latestMessage: "linked" } },
-      },
+      agent: "search",
+      agentId: "search_0",
+      childSessionId: "child-promoted",
+      latestMessage: "linked",
     });
     await user.click(await screen.findByRole("button", { name: /agent search/i }));
     expect(await screen.findByRole("button", { name: /Close agent tab:/ })).toBeVisible();
-    emitInAct({ type: "tool_execution_end", toolCallId: "sub-promote", toolName: "subagent", result: "done" });
+    emitSupervisor({
+      toolCallId: "sub-promote",
+      agent: "search",
+      agentId: "search_0",
+      childSessionId: "child-promoted",
+      status: "complete",
+      latestMessage: "done",
+    });
 
     expect(await screen.findByRole("button", { name: /agent search/i })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /Close agent tab:/ })).toBeVisible();
   });
 
-  it("keeps a selected pre-header tab focused when its first header adds step and UUID", async () => {
+  it("keeps a selected temporary tab focused when its supervisor frame promotes the UUID", async () => {
     const user = userEvent.setup();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
@@ -681,11 +730,18 @@ describe("WorkPage", () => {
     const temporary = await screen.findByRole("button", { name: /agent search/i });
     await user.click(temporary);
     expect(temporary).toHaveAttribute("aria-pressed", "true");
+    expect(temporary).toHaveFocus();
 
-    emitChildHeader("sub-first-header", "search", "child-first-header", 1);
+    emitSupervisor({
+      toolCallId: "sub-first-header",
+      agent: "search",
+      agentId: "search_0",
+      childSessionId: "child-first-header",
+    });
 
     const promoted = await screen.findByRole("button", { name: /agent search/i });
     expect(promoted).toHaveAttribute("aria-pressed", "true");
+    expect(promoted).toHaveFocus();
     expect(screen.getByRole("button", { name: /Close agent tab:/ })).toBeVisible();
   });
 
@@ -694,6 +750,7 @@ describe("WorkPage", () => {
     vi.mocked(api.getChildSnapshot).mockResolvedValue({
       session: { id: "child-delayed", cwd: "/p", sessionName: "easyresearch:search" },
       messages: [{ role: "user", content: [{ type: "text", text: "inherited before this dispatch" }] }],
+      subagents: [],
     } as never);
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
@@ -706,11 +763,11 @@ describe("WorkPage", () => {
     await user.click((await screen.findAllByRole("button", { name: "View details" })).at(-1)!);
     expect(api.getChildSnapshot).not.toHaveBeenCalled();
 
-    emitInAct({
-      type: "tool_execution_update",
+    emitSupervisor({
       toolCallId: "sub-delayed",
-      toolName: "subagent",
-      partialResult: { details: { subagent: { agent: "search", sessionId: "child-delayed" } } },
+      agent: "search",
+      agentId: "search_0",
+      childSessionId: "child-delayed",
     });
 
     expect(await screen.findByText("inherited before this dispatch")).toBeVisible();
@@ -722,9 +779,7 @@ describe("WorkPage", () => {
     const user = userEvent.setup();
     vi.mocked(api.getSnapshot).mockResolvedValue({
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
-      subagents: [
-        { toolCallId: "sub-history", childSessionId: "child-history", agent: "search", latestMessage: "saved result" },
-      ],
+      subagents: [subagentSummary("sub-history", "child-history", "search", { latestMessage: "saved result" })],
       messages: [
         {
           role: "assistant",
@@ -739,6 +794,7 @@ describe("WorkPage", () => {
         { role: "user", content: [{ type: "text", text: "older inherited task" }] },
         { role: "assistant", content: [{ type: "text", text: "complete child answer" }] },
       ],
+      subagents: [],
     } as never);
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await user.click(await screen.findByRole("button", { name: "View details" }));
@@ -758,7 +814,17 @@ describe("WorkPage", () => {
     let resolveChild!: (value: Awaited<ReturnType<typeof api.getChildSnapshot>>) => void;
     vi.mocked(api.getSnapshot).mockResolvedValue({
       session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
-      subagents: [{ toolCallId: "sub-live", childSessionId: "child-live", agent: "search" }],
+      subagents: [
+        {
+          ownerSessionId: "s1",
+          toolCallId: "sub-live",
+          childSessionId: "child-live",
+          agent: "search",
+          agentId: "search_0",
+          launchId: "launch-live",
+          status: "working",
+        },
+      ],
       messages: [
         {
           role: "assistant",
@@ -773,36 +839,65 @@ describe("WorkPage", () => {
     );
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await user.click(await screen.findByRole("button", { name: "View details" }));
-    emitChildHeader("sub-live", "search", "child-live");
-    emitRawChildEvent("sub-live", "search", {
-      type: "message_start",
-      message: { id: "cm", role: "assistant", content: [] },
+    emitSupervisorChildEvent({
+      toolCallId: "sub-live",
+      agent: "search",
+      agentId: "search_0",
+      childSessionId: "child-live",
+      event: {
+        type: "message_start",
+        message: { role: "assistant", content: [], timestamp: 100 },
+      } as never,
     });
-    emitRawChildEvent("sub-live", "search", {
-      type: "message_update",
-      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "live " },
+    emitSupervisorChildEvent({
+      toolCallId: "sub-live",
+      agent: "search",
+      agentId: "search_0",
+      childSessionId: "child-live",
+      event: {
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "live " },
+      },
     });
-    emitRawChildEvent("sub-live", "search", {
-      type: "message_update",
-      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "tokens" },
+    emitSupervisorChildEvent({
+      toolCallId: "sub-live",
+      agent: "search",
+      agentId: "search_0",
+      childSessionId: "child-live",
+      event: {
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "tokens" },
+      },
     });
-    emitRawChildEvent("sub-live", "search", {
-      type: "tool_execution_start",
-      toolCallId: "ct",
-      toolName: "bash",
-      args: { command: "ls" },
+    emitSupervisorChildEvent({
+      toolCallId: "sub-live",
+      agent: "search",
+      agentId: "search_0",
+      childSessionId: "child-live",
+      event: { type: "tool_execution_start", toolCallId: "ct", toolName: "bash", args: { command: "ls" } },
     });
-    emitRawChildEvent("sub-live", "search", {
-      type: "tool_execution_end",
-      toolCallId: "ct",
-      toolName: "bash",
-      result: { output: "done" },
+    emitSupervisorChildEvent({
+      toolCallId: "sub-live",
+      agent: "search",
+      agentId: "search_0",
+      childSessionId: "child-live",
+      event: {
+        type: "tool_execution_end",
+        toolCallId: "ct",
+        toolName: "bash",
+        result: { output: "done" },
+        isError: false,
+      },
     });
     expect(await screen.findByText("live tokens")).toBeVisible();
-    resolveChild({
-      session: { id: "child-live", cwd: "/p", sessionName: "easyresearch:search" },
-      messages: [{ role: "user", content: [{ type: "text", text: "older task" }] }],
-    } as never);
+    act(() =>
+      resolveChild({
+        session: { id: "child-live", cwd: "/p", sessionName: "easyresearch:search" },
+        messages: [{ role: "user", content: [{ type: "text", text: "older task" }] }],
+        subagents: [],
+      } as never),
+    );
+    expect(screen.getByRole("button", { name: "Agent search_0" })).toHaveAttribute("aria-pressed", "true");
     expect(await screen.findByText("older task")).toBeVisible();
     expect(screen.getByText("live tokens")).toBeVisible();
     const rows = [...screen.getByLabelText("Conversation").querySelectorAll("li")].map((row) => row.textContent ?? "");
@@ -818,13 +913,113 @@ describe("WorkPage", () => {
     expect(api.getChildSnapshot).toHaveBeenCalledTimes(1);
   });
 
-  it("shows duplicate UUID labels and keeps a child 404 inline without losing the parent transcript", async () => {
+  it("hydrates direct child subagents and routes nested envelopes and Pi events to their exact views", async () => {
     const user = userEvent.setup();
     vi.mocked(api.getSnapshot).mockResolvedValue({
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
       subagents: [
-        { toolCallId: "sub-one", childSessionId: "11111111-aaaa", agent: "search", latestMessage: "first card" },
-        { toolCallId: "sub-two", childSessionId: "22222222-bbbb", agent: "search", latestMessage: "second card" },
+        subagentSummary("root-writing", "child-writing", "writing", {
+          agentId: "writing_0",
+          latestMessage: "writing complete",
+        }),
+      ],
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "root-writing", name: "subagent", arguments: '{"agent":"writing"}' }],
+        },
+      ],
+    } as never);
+    vi.mocked(api.getChildSnapshot).mockImplementation(async (_parentId, childId) => {
+      if (childId === "child-writing") {
+        return {
+          session: { id: childId, cwd: "/p", sessionName: "easyresearch:writing" },
+          messages: [
+            {
+              role: "assistant",
+              content: [{ type: "toolCall", id: "nested-shared", name: "subagent", arguments: '{"agent":"search"}' }],
+            },
+          ],
+          subagents: [
+            subagentSummary("nested-shared", "grandchild-search", "search", {
+              ownerSessionId: "child-writing",
+              agentId: "search_nested",
+              status: "working",
+              latestMessage: "nested working",
+            }),
+          ],
+        } as never;
+      }
+      return {
+        session: { id: childId, cwd: "/p", sessionName: "easyresearch:search" },
+        messages: [],
+        subagents: [],
+      } as never;
+    });
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+
+    await user.click(await screen.findByRole("button", { name: "View details" }));
+    const nestedCard = (await screen.findByText("nested working")).closest("article");
+    expect(nestedCard).not.toBeNull();
+    expect(within(nestedCard as HTMLElement).getByText("Running…")).toBeVisible();
+
+    await user.click(await screen.findByRole("button", { name: "Agent search_nested" }));
+    await waitFor(() => expect(api.getChildSnapshot).toHaveBeenCalledWith("s1", "grandchild-search"));
+    await user.click(screen.getByRole("button", { name: "Agent writing_0" }));
+
+    emitSupervisor({
+      ownerSessionId: "child-writing",
+      toolCallId: "nested-shared",
+      launchId: "launch-nested",
+      agent: "search",
+      agentId: "search_nested",
+      childSessionId: "grandchild-search",
+      status: "working",
+      latestMessage: "nested still working",
+      event: {
+        type: "message_start",
+        message: { role: "assistant", content: [{ type: "text", text: "grandchild live" }] },
+      } as never,
+    });
+
+    await user.click(screen.getByRole("button", { name: "Agent search_nested" }));
+    expect(await screen.findByText("grandchild live")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Agent writing_0" }));
+
+    emitSupervisor({
+      ownerSessionId: "child-writing",
+      toolCallId: "nested-shared",
+      launchId: "launch-nested",
+      agent: "search",
+      agentId: "search_nested",
+      childSessionId: "grandchild-search",
+      status: "error",
+      latestMessage: "nested failed",
+    });
+
+    const failedNestedCard = (await screen.findByText("nested failed")).closest("article");
+    expect(failedNestedCard).not.toBeNull();
+    expect(within(failedNestedCard as HTMLElement).getByText("Failed")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Agent search_nested" })).toHaveTextContent("Error");
+    await user.click(screen.getByRole("button", { name: /agent paper assistant/i }));
+    const rootCard = screen.getByText("writing complete").closest("article");
+    expect(within(rootCard as HTMLElement).getByText("Completed")).toBeVisible();
+    expect(within(rootCard as HTMLElement).queryByText("nested failed")).toBeNull();
+  });
+
+  it("shows unique same-role Agent ids and keeps a child 404 inline without losing the parent transcript", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getSnapshot).mockResolvedValue({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      subagents: [
+        subagentSummary("sub-one", "11111111-aaaa", "search", {
+          agentId: "search_0",
+          latestMessage: "first card",
+        }),
+        subagentSummary("sub-two", "22222222-bbbb", "search", {
+          agentId: "search_1",
+          latestMessage: "second card",
+        }),
       ],
       messages: [
         { role: "user", content: [{ type: "text", text: "parent remains" }] },
@@ -843,8 +1038,8 @@ describe("WorkPage", () => {
     await user.click(details[0]!);
     await user.click(screen.getByRole("button", { name: /agent paper assistant/i }));
     await user.click((await screen.findAllByRole("button", { name: "View details" }))[1]!);
-    expect(screen.getByRole("button", { name: /agent search · 11111111/i })).toBeVisible();
-    expect(screen.getByRole("button", { name: /agent search · 22222222/i })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Agent search_0" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Agent search_1" })).toBeVisible();
     expect(await screen.findByText("Child session unavailable.")).toBeVisible();
     expect(screen.getAllByRole("button", { name: /Close agent tab:/ })).toHaveLength(2);
     await user.click(screen.getByRole("button", { name: /agent paper assistant/i }));
@@ -855,7 +1050,7 @@ describe("WorkPage", () => {
     const user = userEvent.setup();
     vi.mocked(api.getSnapshot).mockResolvedValue({
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
-      subagents: [{ toolCallId: "sub-refresh", childSessionId: "child-refresh", agent: "search" }],
+      subagents: [subagentSummary("sub-refresh", "child-refresh")],
       messages: [
         {
           role: "assistant",
@@ -867,12 +1062,14 @@ describe("WorkPage", () => {
       .mockResolvedValueOnce({
         session: { id: "child-refresh", cwd: "/p", sessionName: "easyresearch:search" },
         messages: [{ id: "child-message", role: "assistant", content: [{ type: "text", text: "before reconnect" }] }],
+        subagents: [],
       } as never)
       .mockResolvedValueOnce({
         session: { id: "child-refresh", cwd: "/p", sessionName: "easyresearch:search" },
         messages: [
           { id: "child-message", role: "assistant", content: [{ type: "text", text: "recovered from JSONL" }] },
         ],
+        subagents: [],
       } as never);
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await user.click(await screen.findByRole("button", { name: "View details" }));
@@ -881,7 +1078,7 @@ describe("WorkPage", () => {
     emitInAct({
       type: "snapshot",
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
-      subagents: [{ toolCallId: "sub-refresh", childSessionId: "child-refresh", agent: "search" }],
+      subagents: [subagentSummary("sub-refresh", "child-refresh")],
       messages: [
         {
           role: "assistant",
@@ -899,7 +1096,7 @@ describe("WorkPage", () => {
     let resolveInitial!: (value: Awaited<ReturnType<typeof api.getChildSnapshot>>) => void;
     vi.mocked(api.getSnapshot).mockResolvedValue({
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
-      subagents: [{ toolCallId: "sub-overlap", childSessionId: "child-overlap", agent: "search" }],
+      subagents: [subagentSummary("sub-overlap", "child-overlap")],
       messages: [
         {
           role: "assistant",
@@ -919,6 +1116,7 @@ describe("WorkPage", () => {
         messages: [
           { id: "child-message", role: "assistant", content: [{ type: "text", text: "recovered after overlap" }] },
         ],
+        subagents: [],
       } as never);
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await user.click(await screen.findByRole("button", { name: "View details" }));
@@ -927,7 +1125,7 @@ describe("WorkPage", () => {
     emitInAct({
       type: "snapshot",
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
-      subagents: [{ toolCallId: "sub-overlap", childSessionId: "child-overlap", agent: "search" }],
+      subagents: [subagentSummary("sub-overlap", "child-overlap")],
       messages: [
         {
           role: "assistant",
@@ -941,6 +1139,7 @@ describe("WorkPage", () => {
         messages: [
           { id: "child-message", role: "assistant", content: [{ type: "text", text: "stale in-flight response" }] },
         ],
+        subagents: [],
       } as never),
     );
 
@@ -953,7 +1152,7 @@ describe("WorkPage", () => {
     let resolveRefresh!: (value: Awaited<ReturnType<typeof api.getChildSnapshot>>) => void;
     vi.mocked(api.getSnapshot).mockResolvedValue({
       session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
-      subagents: [{ toolCallId: "sub-race", childSessionId: "child-race", agent: "search" }],
+      subagents: [subagentSummary("sub-race", "child-race", "search", { status: "working" })],
       messages: [
         {
           role: "assistant",
@@ -965,6 +1164,7 @@ describe("WorkPage", () => {
       .mockResolvedValueOnce({
         session: { id: "child-race", cwd: "/p", sessionName: "easyresearch:search" },
         messages: [],
+        subagents: [],
       } as never)
       .mockImplementationOnce(
         () =>
@@ -979,7 +1179,7 @@ describe("WorkPage", () => {
     emitInAct({
       type: "snapshot",
       session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
-      subagents: [{ toolCallId: "sub-race", childSessionId: "child-race", agent: "search" }],
+      subagents: [subagentSummary("sub-race", "child-race", "search", { status: "working" })],
       messages: [
         {
           role: "assistant",
@@ -988,14 +1188,25 @@ describe("WorkPage", () => {
       ],
     });
     await waitFor(() => expect(api.getChildSnapshot).toHaveBeenCalledTimes(2));
-    emitChildHeader("sub-race", "search", "child-race");
-    emitRawChildEvent("sub-race", "search", {
-      type: "message_start",
-      message: { id: "race-message", role: "assistant", content: [] },
+    emitSupervisorChildEvent({
+      toolCallId: "sub-race",
+      agent: "search",
+      agentId: "search_0",
+      childSessionId: "child-race",
+      event: {
+        type: "message_start",
+        message: { role: "assistant", content: [], timestamp: 200 },
+      } as never,
     });
-    emitRawChildEvent("sub-race", "search", {
-      type: "message_update",
-      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "new nested output" },
+    emitSupervisorChildEvent({
+      toolCallId: "sub-race",
+      agent: "search",
+      agentId: "search_0",
+      childSessionId: "child-race",
+      event: {
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "new nested output" },
+      },
     });
     expect(await screen.findByText("new nested output")).toBeVisible();
 
@@ -1004,11 +1215,12 @@ describe("WorkPage", () => {
         session: { id: "child-race", cwd: "/p", sessionName: "easyresearch:search" },
         messages: [
           {
-            id: "race-message",
             role: "assistant",
+            timestamp: 200,
             content: [{ type: "text", text: "stale refresh output" }],
           },
         ],
+        subagents: [],
       } as never),
     );
 
@@ -1022,7 +1234,7 @@ describe("WorkPage", () => {
     vi.mocked(api.getSnapshot)
       .mockResolvedValueOnce({
         session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
-        subagents: [{ toolCallId: "old-tool", childSessionId: "shared-child", agent: "search" }],
+        subagents: [subagentSummary("old-tool", "shared-child")],
         messages: [
           {
             role: "assistant",
@@ -1032,7 +1244,12 @@ describe("WorkPage", () => {
       } as never)
       .mockResolvedValueOnce({
         session: { id: "s2", cwd: "/p", isStreaming: false, status: "ready" },
-        subagents: [{ toolCallId: "new-tool", childSessionId: "shared-child", agent: "writing" }],
+        subagents: [
+          subagentSummary("new-tool", "shared-child", "writing", {
+            ownerSessionId: "s2",
+            agentId: "writing_0",
+          }),
+        ],
         messages: [
           {
             role: "assistant",
@@ -1050,6 +1267,7 @@ describe("WorkPage", () => {
       .mockResolvedValueOnce({
         session: { id: "shared-child", cwd: "/p", sessionName: "easyresearch:writing" },
         messages: [{ role: "assistant", content: [{ type: "text", text: "new parent child" }] }],
+        subagents: [],
       } as never);
     const { rerender, container } = render(
       <WorkPage key="s1" id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />,
@@ -1064,6 +1282,7 @@ describe("WorkPage", () => {
       resolveOld({
         session: { id: "shared-child", cwd: "/p", sessionName: "easyresearch:search" },
         messages: [{ role: "assistant", content: [{ type: "text", text: "old parent child" }] }],
+        subagents: [],
       } as never),
     );
 
@@ -1077,7 +1296,7 @@ describe("WorkPage", () => {
     let rejectFirst!: (error: unknown) => void;
     vi.mocked(api.getSnapshot).mockResolvedValue({
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
-      subagents: [{ toolCallId: "sub-retry", childSessionId: "child-retry", agent: "search" }],
+      subagents: [subagentSummary("sub-retry", "child-retry")],
       messages: [
         {
           role: "assistant",
@@ -1095,6 +1314,7 @@ describe("WorkPage", () => {
       .mockResolvedValueOnce({
         session: { id: "child-retry", cwd: "/p", sessionName: "easyresearch:search" },
         messages: [{ role: "assistant", content: [{ type: "text", text: "retry recovered" }] }],
+        subagents: [],
       } as never);
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     const details = await screen.findByRole("button", { name: "View details" });
@@ -1112,7 +1332,7 @@ describe("WorkPage", () => {
     expect(api.getChildSnapshot).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps subagent selection and stop as siblings, then collapses the stopped temporary tab", async () => {
+  it("keeps cards and tabs Working after Stop until an Error supervisor frame arrives", async () => {
     const user = userEvent.setup();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
@@ -1122,8 +1342,15 @@ describe("WorkPage", () => {
       toolName: "subagent",
       args: { agent: "search", task: "find papers" },
     });
-    const select = await screen.findByRole("button", { name: /agent search/i });
-    const stop = await screen.findByRole("button", { name: /stop agent/i });
+    emitSupervisor({
+      toolCallId: "sub-2",
+      agent: "search",
+      agentId: "search_0",
+      childSessionId: "child-2",
+      latestMessage: "still collecting",
+    });
+    const select = await screen.findByRole("button", { name: "Agent search_0" });
+    const stop = await screen.findByRole("button", { name: "Stop agent: search_0" });
     const assistant = screen.getByRole("button", { name: /agent paper assistant/i });
     expect(select.contains(stop)).toBe(false);
     expect(select.parentElement).toBe(stop.parentElement);
@@ -1132,57 +1359,77 @@ describe("WorkPage", () => {
     await user.click(stop);
     await waitFor(() => expect(api.abortSession).toHaveBeenCalledWith("s1"));
     expect(assistant).toHaveAttribute("aria-pressed", "true");
-    await waitFor(() => expect(screen.queryByRole("button", { name: /agent search/i })).toBeNull());
+    expect(screen.getByRole("button", { name: "Agent search_0" })).toBeVisible();
+    expect(
+      within(screen.getByText("still collecting").closest("article") as HTMLElement).getByText("Running…"),
+    ).toBeVisible();
+
+    emitSupervisor({
+      toolCallId: "sub-2",
+      agent: "search",
+      agentId: "search_0",
+      childSessionId: "child-2",
+      status: "error",
+      latestMessage: "Stopped",
+    });
+
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Agent search_0" })).toBeNull());
+    expect(within(screen.getByText("Stopped").closest("article") as HTMLElement).getByText("Failed")).toBeVisible();
   });
 
-  it("keeps a retained chain UUID active while creating and promoting the next step tab", async () => {
-    const user = userEvent.setup();
+  it("keeps concurrent same-role jobs distinct and accepts out-of-order terminal frames", async () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     emitInAct({
       type: "tool_execution_start",
-      toolCallId: "chain-1",
+      toolCallId: "search-a",
       toolName: "subagent",
-      args: {
-        chain: [
-          { agent: "search", task: "find" },
-          { agent: "writing", task: "draft" },
-        ],
-      },
+      args: { agent: "search", task: "first corpus" },
     });
     emitInAct({
-      type: "tool_execution_update",
-      toolCallId: "chain-1",
+      type: "tool_execution_start",
+      toolCallId: "search-b",
       toolName: "subagent",
-      partialResult: { details: { subagent: { agent: "search", step: 1, latestMessage: "papers found" } } },
+      args: { agent: "search", task: "second corpus" },
+    });
+    emitSupervisor({
+      toolCallId: "search-a",
+      agent: "search",
+      agentId: "search_0",
+      childSessionId: "child-search-a",
+      latestMessage: "first running",
+    });
+    emitSupervisor({
+      toolCallId: "search-b",
+      agent: "search",
+      agentId: "search_1",
+      childSessionId: "child-search-b",
+      latestMessage: "second running",
     });
 
-    const searchTab = await screen.findByRole("button", { name: /agent search/i });
-    await user.click((await screen.findAllByRole("button", { name: "View details" })).at(-1)!);
-    expect(searchTab).toHaveAttribute("aria-pressed", "true");
-    const conversation = screen.getByLabelText(/conversation/i);
-    expect(within(conversation).queryByText("papers found")).toBeNull();
-    emitChildHeader("chain-1", "search", "child-search", 1);
-    expect(await screen.findByRole("button", { name: /agent search/i })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Agent search_0" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Agent search_1" })).toBeVisible();
+    expect(screen.getByText("first running").closest("article")).not.toBe(
+      screen.getByText("second running").closest("article"),
+    );
 
-    emitInAct({
-      type: "tool_execution_update",
-      toolCallId: "chain-1",
-      toolName: "subagent",
-      partialResult: { details: { subagent: { agent: "writing", step: 2, latestMessage: "drafting method" } } },
+    emitSupervisor({
+      toolCallId: "search-b",
+      agent: "search",
+      agentId: "search_1",
+      childSessionId: "child-search-b",
+      status: "complete",
+      latestMessage: "second finished first",
     });
 
-    const writingTab = await screen.findByRole("button", { name: /agent writing/i });
-    expect(writingTab).not.toBe(searchTab);
-    expect(writingTab).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByRole("button", { name: /agent search/i })).toHaveAttribute("aria-pressed", "true");
-    expect(within(writingTab).queryByTitle("drafting method")).toBeNull();
-    expect(within(conversation).queryByText("drafting method")).toBeNull();
-
-    await user.click(writingTab);
-    emitChildHeader("chain-1", "writing", "child-writing", 2);
-    expect(await screen.findByRole("button", { name: /agent writing/i })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: /agent search/i })).toBeVisible();
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Agent search_1" })).toBeNull());
+    expect(screen.getByRole("button", { name: "Agent search_0" })).toBeVisible();
+    expect(
+      within(screen.getByText("first running").closest("article") as HTMLElement).getByText("Running…"),
+    ).toBeVisible();
+    expect(
+      within(screen.getByText("second finished first").closest("article") as HTMLElement).getByText("Completed"),
+    ).toBeVisible();
   });
 
   it("opens every historical chain UUID through compact per-step details actions", async () => {
@@ -1190,8 +1437,11 @@ describe("WorkPage", () => {
     vi.mocked(api.getSnapshot).mockResolvedValue({
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
       subagents: [
-        { toolCallId: "chain-history", childSessionId: "child-history-search", agent: "search", step: 1 },
-        { toolCallId: "chain-history", childSessionId: "child-history-writing", agent: "writing", step: 2 },
+        subagentSummary("chain-history", "child-history-search", "search", { agentId: "search_0", step: 1 }),
+        subagentSummary("chain-history", "child-history-writing", "writing", {
+          agentId: "writing_0",
+          step: 2,
+        }),
       ],
       messages: [
         {
@@ -1210,6 +1460,7 @@ describe("WorkPage", () => {
             sessionName: childId.endsWith("search") ? "easyresearch:search" : "easyresearch:writing",
           },
           messages: [{ role: "assistant", content: [{ type: "text", text: `history for ${childId}` }] }],
+          subagents: [],
         }) as never,
     );
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
@@ -1243,43 +1494,63 @@ describe("WorkPage", () => {
     expect(screen.queryByRole("button", { name: /agent search/i })).toBeNull();
   });
 
-  it("maps the running chain status to the currently displayed agent name", async () => {
+  it("aggregates same-role status with Working above Error above Idle", async () => {
     const user = userEvent.setup();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     emitInAct({
       type: "tool_execution_start",
-      toolCallId: "chain-status",
+      toolCallId: "search-error",
       toolName: "subagent",
-      args: {
-        chain: [
-          { agent: "search", task: "find" },
-          { agent: "writing", task: "draft" },
-        ],
-      },
+      args: { agent: "search", task: "first" },
     });
     emitInAct({
-      type: "tool_execution_update",
-      toolCallId: "chain-status",
+      type: "tool_execution_start",
+      toolCallId: "search-working",
       toolName: "subagent",
-      partialResult: { details: { subagent: { agent: "writing", step: 2, latestMessage: "drafting" } } },
+      args: { agent: "search", task: "second" },
+    });
+    emitSupervisor({
+      toolCallId: "search-error",
+      agent: "search",
+      agentId: "search_0",
+      childSessionId: "child-error",
+      status: "error",
+      latestMessage: "failed search",
+    });
+    emitSupervisor({
+      toolCallId: "search-working",
+      agent: "search",
+      agentId: "search_1",
+      childSessionId: "child-working",
+      status: "working",
+      latestMessage: "active search",
     });
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
-    const writingCard = (await within(region).findByText(/^Writing agent\./)).closest(".rounded-md");
     const searchCard = within(region)
       .getByText(/^Web research agent\./)
       .closest(".rounded-md");
-    expect(writingCard).not.toBeNull();
     expect(searchCard).not.toBeNull();
-    expect(within(writingCard as HTMLElement).getByText(/working/i)).toBeTruthy();
-    expect(within(searchCard as HTMLElement).getByText(/^idle$/i)).toBeTruthy();
+    expect(within(searchCard as HTMLElement).getByText(/working/i)).toBeTruthy();
+
+    emitSupervisor({
+      toolCallId: "search-working",
+      agent: "search",
+      agentId: "search_1",
+      childSessionId: "child-working",
+      status: "complete",
+      latestMessage: "finished search",
+    });
+
+    await waitFor(() => expect(within(searchCard as HTMLElement).getByText(/^error$/i)).toBeTruthy());
   });
 
   it("disables the composer on a subagent session line (history browse only)", async () => {
     vi.mocked(api.getSnapshot).mockResolvedValue({
       session: { id: "s3", cwd: "/p", isStreaming: false, status: "ready", sessionName: "easyresearch:search" },
       messages: [{ role: "user", content: [{ type: "text", text: "Task: search" }] }],
+      subagents: [],
     } as never);
     render(<WorkPage id="s3" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("Task: search");
@@ -1399,13 +1670,20 @@ describe("WorkPage", () => {
     expect(screen.queryByText("starting research")).toBeNull();
   });
 
-  it("rehydrates a running subagent tab and card, then updates both in place", async () => {
+  it("rehydrates a Working card from a ready reconnect summary, then updates it in place", async () => {
     const latestMessage = "verifying metadata for the selected papers";
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     emitInAct({
       type: "snapshot",
-      session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      subagents: [
+        subagentSummary("sub-reconnect", "child-reconnect", "search", {
+          agentId: "search_0",
+          status: "working",
+          latestMessage: "restored background work",
+        }),
+      ],
       messages: [
         {
           role: "assistant",
@@ -1421,47 +1699,41 @@ describe("WorkPage", () => {
       ],
     });
 
-    const select = await screen.findByRole("button", { name: /agent search/i });
+    const select = await screen.findByRole("button", { name: "Agent search_0" });
     const conversation = screen.getByLabelText(/conversation/i);
-    const waiting = within(conversation).getByText(/waiting for the first progress message/i);
-    const card = waiting.closest("article");
+    const card = within(conversation).getByText("restored background work").closest("article");
     expect(card).not.toBeNull();
     expect(within(card as HTMLElement).getByText(/running/i)).toBeTruthy();
 
-    emitInAct({
-      type: "tool_execution_update",
+    emitSupervisor({
       toolCallId: "sub-reconnect",
-      toolName: "subagent",
-      partialResult: { details: { subagent: { agent: "search", step: 1, status: "running", latestMessage } } },
+      agent: "search",
+      agentId: "search_0",
+      childSessionId: "child-reconnect",
+      latestMessage,
     });
 
-    expect(screen.getByRole("button", { name: /agent search/i })).toBe(select);
+    expect(screen.getByRole("button", { name: "Agent search_0" })).toBe(select);
     expect(within(select).queryByTitle(latestMessage)).toBeNull();
     const cardMessage = within(conversation).getByText(latestMessage);
     expect(cardMessage.closest("article")).toBe(card);
   });
 
-  it("keeps usable live chain progress when reconnect completes with whitespace-only failure output", async () => {
+  it("does not treat a reconnect tool result as terminal without a supervisor status", async () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     emitInAct({
       type: "tool_execution_start",
       toolCallId: "sub-failed-reconnect",
       toolName: "subagent",
-      args: {
-        chain: [
-          { agent: "search", task: "find" },
-          { agent: "writing", task: "draft" },
-        ],
-      },
+      args: { agent: "writing", task: "draft" },
     });
-    emitInAct({
-      type: "tool_execution_update",
+    emitSupervisor({
       toolCallId: "sub-failed-reconnect",
-      toolName: "subagent",
-      partialResult: {
-        details: { subagent: { agent: "writing", step: 2, latestMessage: "usable live progress" } },
-      },
+      agent: "writing",
+      agentId: "writing_0",
+      childSessionId: "child-writing",
+      latestMessage: "usable live progress",
     });
     const liveCard = within(screen.getByLabelText(/conversation/i))
       .getByText("usable live progress")
@@ -1478,7 +1750,7 @@ describe("WorkPage", () => {
               type: "toolCall",
               id: "sub-failed-reconnect",
               name: "subagent",
-              arguments: '{"chain":[{"agent":"search","task":"find"},{"agent":"writing","task":"draft"}]}',
+              arguments: '{"agent":"writing","task":"draft"}',
             },
           ],
         },
@@ -1490,14 +1762,25 @@ describe("WorkPage", () => {
           isError: true,
         },
       ],
+      subagents: [],
     });
 
     const conversation = screen.getByLabelText(/conversation/i);
     const retained = await within(conversation).findByText("usable live progress");
     expect(retained.closest("article")).toBe(liveCard);
     expect(within(liveCard as HTMLElement).getByText("Writing")).toBeTruthy();
-    expect(within(liveCard as HTMLElement).getByText("Step 2")).toBeTruthy();
+    expect(within(liveCard as HTMLElement).getByText("Running…")).toBeTruthy();
+
+    emitSupervisor({
+      toolCallId: "sub-failed-reconnect",
+      agent: "writing",
+      agentId: "writing_0",
+      childSessionId: "child-writing",
+      status: "error",
+      latestMessage: "full terminal error",
+    });
     expect(within(liveCard as HTMLElement).getByText("Failed")).toBeTruthy();
+    expect(within(liveCard as HTMLElement).getByText("full terminal error")).toBeTruthy();
   });
 
   it("shows tool blocks from live events with running and done states", async () => {
