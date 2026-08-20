@@ -45,7 +45,7 @@ describe("listBundledSkills", () => {
 });
 
 describe("renameSameNameToBak", () => {
-  it("renames a same-name agent .md to .md.bak, keeping the content", () => {
+  it("backs up a same-name agent and refreshes its active file from the bundle", () => {
     const root = tempDir();
     const { agentsDir, skillsDir } = makeBundled(root);
     const userAgents = join(root, "agent", "agents");
@@ -66,8 +66,35 @@ describe("renameSameNameToBak", () => {
         newPath: join(userAgents, "search.md.bak"),
       },
     ]);
-    expect(existsSync(join(userAgents, "search.md"))).toBe(false);
+    expect(readFileSync(join(userAgents, "search.md"), "utf8")).toBe("search v2");
     expect(readFileSync(join(userAgents, "search.md.bak"), "utf8")).toBe("user v1");
+  });
+
+  it("carries the user's model and thinking into the refreshed bundled agent", () => {
+    const root = tempDir();
+    const { agentsDir, skillsDir } = makeBundled(root);
+    const userAgents = join(root, "agent", "agents");
+    mkdirSync(userAgents, { recursive: true });
+    writeFileSync(
+      join(agentsDir, "search.md"),
+      "---\nname: search\ndescription: bundled v2\ntools:\n  - read\n---\n\nLatest prompt.\n",
+    );
+    writeFileSync(
+      join(userAgents, "search.md"),
+      "---\nname: search\ndescription: customized\nmodel: anthropic/claude-sonnet-4\nthinking: high\ntools:\n  - bash\n---\n\nOld prompt.\n",
+    );
+
+    renameSameNameToBak({
+      agentDir: join(root, "agent"),
+      bundledAgentsDir: agentsDir,
+      bundledSkillsDir: skillsDir,
+      log: () => {},
+    });
+
+    expect(readFileSync(join(userAgents, "search.md"), "utf8")).toBe(
+      "---\nname: search\ndescription: bundled v2\ntools:\n  - read\nmodel: anthropic/claude-sonnet-4\nthinking: high\n---\n\nLatest prompt.\n",
+    );
+    expect(readFileSync(join(userAgents, "search.md.bak"), "utf8")).toContain("Old prompt.");
   });
 
   it("renames a same-name skill directory to .bak, keeping nested files", () => {

@@ -128,8 +128,8 @@ export function copyPiRuntimeAssets(agentDir: string, source = join(bundledSourc
 
 /**
  * First-run bootstrap: materialize embedded bundled assets (compiled builds
- * only), create the skill Python venv with live progress, and retire
- * same-name user agents/skills so bundled versions take effect. Resource
+ * only), create the skill Python venv with live progress, and migrate
+ * same-name user agents/skills to current bundled versions. Resource
  * extraction is required; optional setup phases report failures independently.
  */
 export function ensureFirstRunSetup(agentDir: string, log: (msg: string) => void): SetupResult {
@@ -153,7 +153,7 @@ export function ensureFirstRunSetup(agentDir: string, log: (msg: string) => void
         log,
       });
       const count = retired.entries.filter((entry) => entry.renamed).length;
-      if (count > 0) log(`Retired ${count} same-name user agent/skill copies to .bak`);
+      if (count > 0) log(`Migrated ${count} same-name user resources with .bak backups`);
     });
   } catch (error) {
     log(`Bundled resource retirement failed: ${error instanceof Error ? error.message : String(error)}`);
