@@ -448,4 +448,35 @@ describe("SubagentCoordinator", () => {
     expect(() => coordinator.reserveDispatch({ ownerSessionId: "root", toolCallId: "t0", requested: "search", catalog: catalogOf("search") }))
       .toThrow(/closing/i);
   });
+
+  it("blocks reservations during cancellation, reopens after success, and never reopens closing", () => {
+    const { coordinator } = harness();
+    const catalog = catalogOf("search");
+
+    coordinator.beginCancellation();
+    expect(() => coordinator.reserveDispatch({
+      ownerSessionId: "root",
+      toolCallId: "blocked",
+      requested: "search",
+      catalog,
+    })).toThrow(/cancelling/i);
+
+    coordinator.finishCancellation();
+    expect(coordinator.reserveDispatch({
+      ownerSessionId: "root",
+      toolCallId: "allowed",
+      requested: "search",
+      catalog,
+    }).agentId).toBe("search_0");
+
+    coordinator.beginCancellation();
+    coordinator.beginClosing();
+    coordinator.finishCancellation();
+    expect(() => coordinator.reserveDispatch({
+      ownerSessionId: "root",
+      toolCallId: "closed",
+      requested: "search",
+      catalog,
+    })).toThrow(/closing/i);
+  });
 });

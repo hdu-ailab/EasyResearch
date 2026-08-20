@@ -4,6 +4,7 @@ import type { SessionTreeNode } from "@earendil-works/pi-coding-agent";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { runCleanupSteps } from "../runtime/cleanup";
 import { toJsonSessionEvent } from "../runtime/json-session-event";
+import { configureBatchedSteering, type RuntimeSteeringSession } from "../runtime/steering-mode";
 import type { AgentConfig } from "../subagent/agents";
 import type { CoordinatorSessionManager, SubagentCoordinator } from "../subagent/coordinator";
 import { AGENT_STATUS_TYPE } from "../subagent/notifications";
@@ -43,7 +44,7 @@ export interface SessionState {
   messageCount: number;
 }
 
-export interface InProcessAgentSession {
+export interface InProcessAgentSession extends RuntimeSteeringSession {
   readonly sessionFile: string | undefined;
   readonly sessionId: string;
   readonly sessionName: string | undefined;
@@ -171,6 +172,7 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
         ...(!options.sessionPath && options.thinking ? { thinkingLevel: options.thinking } : {}),
       };
       ({ session } = await deps.createAgentSession(createOptions));
+      configureBatchedSteering(session);
       coordinator.bindPaperAssistantState({
         model: () => session?.model ? `${session.model.provider}/${session.model.id}` : undefined,
         thinking: () => session?.thinkingLevel,
@@ -184,7 +186,10 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
             const result = await session!.navigateTree(targetId, navigationOptions);
             return { cancelled: result.cancelled };
           },
-          reload: () => session!.reload(),
+          reload: async () => {
+            await session!.reload();
+            configureBatchedSteering(session!);
+          },
         },
       });
       return { session, coordinator, supervisor };
@@ -318,8 +323,10 @@ class DirectSessionAdapter implements SessionAdapter {
   private unsubscribe: (() => void) | undefined;
   private coordinatorUnsubscribe: (() => void) | undefined;
   private startPending = false;
+  private runCancellationPending = false;
   private treeCleanupPending = false;
   private stopPending = false;
+  private runCancellationPromise: Promise<void> | undefined;
   private treeCleanupPromise: Promise<void> | undefined;
   private stopPromise: Promise<void> | undefined;
   private stopRequested = false;
@@ -379,6 +386,15 @@ class DirectSessionAdapter implements SessionAdapter {
     this.stopPending = true;
     let tracked!: Promise<void>;
     tracked = runCleanupSteps([
+      async () => {
+        const activeCancellation = this.runCancellationPromise;
+        if (!activeCancellation) return;
+        try {
+          await activeCancellation;
+        } catch {
+          // Terminal teardown retries every ownership step below.
+        }
+      },
       () => this.cleanupTree("Paper Assistant session stopped."),
       async () => {
         if (!supervisor || this.supervisorDisposeComplete) return;
@@ -458,9 +474,27 @@ class DirectSessionAdapter implements SessionAdapter {
     });
   }
 
-  async abort(): Promise<void> {
-    this.requiredSession();
-    await this.cleanupTree("Paper Assistant stopped.");
+  abort(): Promise<void> {
+    const session = this.requiredSession();
+    const managed = this.managed;
+    if (!managed) return Promise.reject(new Error("Session has not started"));
+    if (this.runCancellationPromise) return this.runCancellationPromise;
+
+    this.runCancellationPending = true;
+    let tracked!: Promise<void>;
+    tracked = runCleanupSteps([
+      () => managed.coordinator.beginCancellation(),
+      () => session.clearQueue(),
+      () => session.abort(),
+      () => managed.supervisor.cancelAll("Paper Assistant stopped."),
+    ], "Paper Assistant run cancellation failed.")
+      .then(() => managed.coordinator.finishCancellation())
+      .finally(() => {
+        if (this.runCancellationPromise === tracked) this.runCancellationPromise = undefined;
+        this.runCancellationPending = false;
+      });
+    this.runCancellationPromise = tracked;
+    return tracked;
   }
 
   async setModel(provider: string, modelId: string): Promise<void> {
@@ -532,7 +566,7 @@ class DirectSessionAdapter implements SessionAdapter {
   }
 
   hasBackgroundWork(): boolean {
-    if (this.startPending || this.treeCleanupPending || this.stopPending) return true;
+    if (this.startPending || this.runCancellationPending || this.treeCleanupPending || this.stopPending) return true;
     const supervisor = this.managed?.supervisor;
     if (!supervisor) return false;
     try {

@@ -60,14 +60,16 @@ export class SubagentCoordinator {
   private state: SubagentJournalState;
   private readonly listeners = new Set<(event: SubagentSupervisorEvent) => void>();
   private paperAssistantState?: { model(): string | undefined; thinking(): string | undefined };
-  private closing = false;
+  private lifecycle: "open" | "cancelling" | "closing" = "open";
 
   constructor(private readonly rootSessionManager: CoordinatorSessionManager) {
     this.state = readSubagentJournal(rootSessionManager.getEntries());
   }
 
   reserveDispatch(input: { ownerSessionId: string; toolCallId: string; requested: string; catalog: AgentCatalog }): ReservedDispatch {
-    if (this.closing) throw new Error("Cannot reserve a subagent while the coordinator is closing.");
+    if (this.lifecycle !== "open") {
+      throw new Error(`Cannot reserve a subagent while the coordinator is ${this.lifecycle}.`);
+    }
     if (!input.ownerSessionId.trim() || !input.toolCallId.trim() || !input.requested.trim()) {
       throw new Error("Owner session id, tool call id, and Agent name are required.");
     }
@@ -308,8 +310,16 @@ export class SubagentCoordinator {
     return () => this.listeners.delete(listener);
   }
 
+  beginCancellation(): void {
+    if (this.lifecycle === "open") this.lifecycle = "cancelling";
+  }
+
+  finishCancellation(): void {
+    if (this.lifecycle === "cancelling") this.lifecycle = "open";
+  }
+
   beginClosing(): void {
-    this.closing = true;
+    this.lifecycle = "closing";
   }
 
   getRootSessionManager(): CoordinatorSessionManager {

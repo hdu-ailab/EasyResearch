@@ -1173,6 +1173,97 @@ describe("SubagentSupervisor notification acknowledgement", () => {
 });
 
 describe("SubagentSupervisor recursive abort", () => {
+  it("reopens after each reusable cancellation but stays closed after terminal abort", async () => {
+    const first = new FakeStage("search_0", "child-0", "/sessions/first.jsonl");
+    const second = new FakeStage("search_1", "child-1", "/sessions/second.jsonl");
+    const stages = new Map([["search_0", first], ["search_1", second]]);
+    for (const [index, stage] of [first, second].entries()) {
+      stage.abortImpl = async () => {
+        stage.completion.resolve(result(`${stage.agentId} stopped`, {
+          agentId: stage.agentId,
+          exitCode: 1,
+          wasAborted: true,
+          errorMessage: `stop ${index + 1}`,
+          stderr: `stop ${index + 1}`,
+        }));
+      };
+    }
+    const { coordinator, parent, supervisor } = makeHarness({
+      launchStage: async (reservation) => stages.get(reservation.agentId)!.handle,
+      autoAcknowledge: true,
+      schedule: () => {},
+    });
+
+    const firstReservation = reserve(coordinator, "tool-0");
+    const firstLaunch = supervisor.launch(firstReservation, options("first"));
+    first.materialization.resolve();
+    await firstLaunch;
+    parent.acknowledgeLaunch("tool-0");
+    await supervisor.cancelAll("stop 1");
+
+    const secondReservation = reserve(coordinator, "tool-1");
+    const secondLaunch = supervisor.launch(secondReservation, options("second"));
+    second.materialization.resolve();
+    await expect(secondLaunch).resolves.toMatchObject({ background: true });
+    parent.acknowledgeLaunch("tool-1");
+    await supervisor.cancelAll("stop 2");
+
+    expect(first.abortCalls).toBe(1);
+    expect(second.abortCalls).toBe(1);
+    await supervisor.abortAll("disconnected");
+    const closedReservation = reserve(coordinator, "tool-2");
+    await expect(supervisor.launch(closedReservation, options("closed"))).rejects.toThrow(/closing/i);
+  });
+
+  it("keeps a failed cancellation blocked and retries retained ownership before reopening", async () => {
+    const failed = new FakeStage("search_0", "child-0", "/sessions/retryable.jsonl");
+    const next = new FakeStage("search_1", "child-1", "/sessions/next.jsonl");
+    const failure = new Error("child cancellation failed");
+    let attempts = 0;
+    failed.abortImpl = async () => {
+      attempts += 1;
+      if (attempts === 1) throw failure;
+      failed.completion.resolve(result("stopped on retry", {
+        exitCode: 1,
+        wasAborted: true,
+        errorMessage: "stop retry",
+        stderr: "stop retry",
+      }));
+    };
+    next.abortImpl = async () => {
+      next.completion.resolve(result("next stopped", {
+        agentId: "search_1",
+        exitCode: 1,
+        wasAborted: true,
+        errorMessage: "cleanup",
+        stderr: "cleanup",
+      }));
+    };
+    const stages = new Map([["search_0", failed], ["search_1", next]]);
+    const { coordinator, parent, supervisor } = makeHarness({
+      launchStage: async (reservation) => stages.get(reservation.agentId)!.handle,
+      autoAcknowledge: true,
+      schedule: () => {},
+    });
+    const reservation = reserve(coordinator, "tool-0");
+    const launching = supervisor.launch(reservation, options());
+    failed.materialization.resolve();
+    await launching;
+    parent.acknowledgeLaunch("tool-0");
+
+    await expect(supervisor.cancelAll("stop")).rejects.toBe(failure);
+    await expect(supervisor.launch(reservation, options("blocked"))).rejects.toThrow(/stopping|closing/i);
+    await expect(supervisor.cancelAll("stop retry")).resolves.toBeUndefined();
+
+    const nextReservation = reserve(coordinator, "tool-1");
+    const nextLaunch = supervisor.launch(nextReservation, options("next"));
+    next.materialization.resolve();
+    await expect(nextLaunch).resolves.toMatchObject({ background: true });
+    parent.acknowledgeLaunch("tool-1");
+    await supervisor.abortAll("cleanup");
+    expect(failed.abortCalls).toBe(2);
+  });
+
   it.each(["reserved", "created", "materialized"] as const)(
     "durably suppresses an unacknowledged %s launch before the first closing await",
     async (launchState) => {

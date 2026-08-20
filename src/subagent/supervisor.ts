@@ -145,11 +145,12 @@ export class SubagentSupervisor {
   private parentSubscription?: () => void;
   private sendPromise?: Promise<void>;
   private notificationScheduled = false;
+  private stopping = false;
   private closing = false;
   private disposed = false;
-  private abortPromise?: Promise<void>;
+  private stopPromise?: Promise<void>;
   private disposePromise?: Promise<void>;
-  private closingBatchId?: string;
+  private stoppingBatchId?: string;
 
   constructor(options: {
     coordinator: SubagentCoordinator;
@@ -223,6 +224,7 @@ export class SubagentSupervisor {
   ): Promise<SubagentLaunchDetails> {
     const parent = this.requireParent();
     if (this.closing || this.disposed) throw new Error("Cannot launch a subagent while its supervisor is closing.");
+    if (this.stopping) throw new Error("Cannot launch a subagent while its supervisor is stopping.");
     if (reservation.ownerSessionId !== parent.sessionId) {
       throw new Error("Subagent reservation owner does not match the attached AgentSession.");
     }
@@ -273,7 +275,7 @@ export class SubagentSupervisor {
         childSessionId: handle.childSessionId,
         sessionPath: handle.sessionPath,
       });
-      if (this.closing) void this.abortChild(child, child.forcedError).catch(() => {});
+      if (this.isStopping()) void this.abortChild(child, child.forcedError).catch(() => {});
 
       await handle.materialized;
       if (this.coordinator.journal().jobs.get(reservation.launchId)?.terminalSuppressed) {
@@ -354,7 +356,7 @@ export class SubagentSupervisor {
       if (job.ownerSessionId !== ownerSessionId || !job.terminalStatus) continue;
       if (job.terminalSuppressed) continue;
       if (!job.launchAcknowledged) {
-        if (!this.closing) return true;
+        if (!this.isStopping()) return true;
         continue;
       }
       if (!pendingLaunchIds.has(job.launchId) && !state.acknowledgedNotificationLaunchIds.has(job.launchId)) return true;
@@ -373,10 +375,10 @@ export class SubagentSupervisor {
   }
 
   flushNotifications(options: { triggerTurn?: boolean } = {}): Promise<void> {
-    return this.flushNotificationBatch(options.triggerTurn ?? !this.closing, false);
+    return this.flushNotificationBatch(options.triggerTurn ?? !this.isStopping(), false);
   }
 
-  private flushClosingNotification(): Promise<void> {
+  private flushStoppingNotification(): Promise<void> {
     return this.flushNotificationBatch(false, true);
   }
 
@@ -394,25 +396,34 @@ export class SubagentSupervisor {
     return tracked;
   }
 
+  cancelAll(reason: string): Promise<void> {
+    return this.stopAll(reason, false);
+  }
+
   abortAll(reason: string): Promise<void> {
-    if (this.abortPromise) return this.abortPromise;
-    this.closing = true;
+    return this.stopAll(reason, true);
+  }
+
+  private stopAll(reason: string, terminal: boolean): Promise<void> {
+    if (terminal) this.closing = true;
+    if (this.stopPromise) return this.stopPromise;
+    this.stopping = true;
     const owned = [...this.children.values()];
-    const closingPreparationFailures: unknown[] = [];
+    const stoppingPreparationFailures: unknown[] = [];
     for (const child of owned) {
       try {
         const job = this.coordinator.journal().jobs.get(child.reservation.launchId);
         if (job?.launchAcknowledged || job?.terminalSuppressed) continue;
         this.coordinator.recordLaunchSuppressed(child.reservation.launchId);
       } catch (error) {
-        closingPreparationFailures.push(error);
+        stoppingPreparationFailures.push(error);
       }
     }
     for (const child of owned) {
       try {
         this.forceChildError(child, reason);
       } catch (error) {
-        closingPreparationFailures.push(error);
+        stoppingPreparationFailures.push(error);
       }
     }
     this.stateChanged();
@@ -440,7 +451,7 @@ export class SubagentSupervisor {
       const childCleanupFailed = childResults.some(({ status }) => status === "rejected");
       let notificationFailed = false;
       await runCleanupSteps([
-        ...closingPreparationFailures.map((failure) => () => { throw failure; }),
+        ...stoppingPreparationFailures.map((failure) => () => { throw failure; }),
         ...childResults.map((result) => () => {
           if (result.status === "rejected") throw result.reason;
         }),
@@ -458,11 +469,11 @@ export class SubagentSupervisor {
             const ownerSessionId = this.parent?.sessionId;
             if (!ownerSessionId) return;
             for (const batch of this.coordinator.journal().pendingBatches) {
-              if (batch.ownerSessionId === ownerSessionId && batch.batchId !== this.closingBatchId) {
+              if (batch.ownerSessionId === ownerSessionId && batch.batchId !== this.stoppingBatchId) {
                 this.coordinator.supersedeNotification(batch.batchId);
               }
             }
-            await this.flushClosingNotification();
+            await this.flushStoppingNotification();
           } catch (error) {
             notificationFailed = true;
             throw error;
@@ -479,12 +490,18 @@ export class SubagentSupervisor {
         },
       ], "Subagent supervisor abort failed.");
     })()
+      .then(() => {
+        if (this.closing) return;
+        this.stopping = false;
+        this.stoppingBatchId = undefined;
+        if (this.stopPromise === tracked) this.stopPromise = undefined;
+      })
       .catch((error) => {
-        if (this.abortPromise === tracked) this.abortPromise = undefined;
+        if (this.stopPromise === tracked) this.stopPromise = undefined;
         throw error;
       })
       .finally(() => this.stateChanged());
-    this.abortPromise = tracked;
+    this.stopPromise = tracked;
     return tracked;
   }
 
@@ -619,7 +636,7 @@ export class SubagentSupervisor {
       status: child.terminal.status,
       ...(child.terminal.latestAssistantText === undefined ? {} : { latestMessage: child.terminal.latestAssistantText }),
     });
-    if (!this.closing) this.scheduleNotification();
+    if (!this.isStopping()) this.scheduleNotification();
   }
 
   private abortChild(child: OwnedChild, reason?: string): Promise<void> {
@@ -700,14 +717,14 @@ export class SubagentSupervisor {
   private removeChildIfFinished(child: OwnedChild): void {
     if (!child.resourcesDisposed) return;
     if (
-      this.closing
+      this.isStopping()
       && child.materialization === "materialized"
       && child.terminalRecorded
       && !this.isLaunchAcknowledged(child)
     ) {
       this.coordinator.recordLaunchSuppressed(child.reservation.launchId);
     }
-    if (child.materialization === "failed" || child.terminalPublished || this.closing) this.removeChild(child);
+    if (child.materialization === "failed" || child.terminalPublished || this.isStopping()) this.removeChild(child);
   }
 
   private removeChild(child: OwnedChild): void {
@@ -726,7 +743,7 @@ export class SubagentSupervisor {
     try {
       this.schedule(() => {
         this.notificationScheduled = false;
-        void this.flushNotifications({ triggerTurn: !this.closing }).catch(() => {});
+        void this.flushNotifications({ triggerTurn: !this.isStopping() }).catch(() => {});
       });
     } catch {
       this.notificationScheduled = false;
@@ -771,9 +788,9 @@ export class SubagentSupervisor {
   private async sendNextBatch(triggerTurn: boolean, closingBatch: boolean): Promise<void> {
     const parent = this.requireParent();
     const outcomes = this.collectDeliverableOutcomes();
-    let batch = closingBatch && this.closingBatchId
+    let batch = closingBatch && this.stoppingBatchId
       ? this.coordinator.journal().pendingBatches.find(
-        (candidate) => candidate.ownerSessionId === parent.sessionId && candidate.batchId === this.closingBatchId,
+        (candidate) => candidate.ownerSessionId === parent.sessionId && candidate.batchId === this.stoppingBatchId,
       )
       : closingBatch
         ? undefined
@@ -810,7 +827,7 @@ export class SubagentSupervisor {
         createdAt: this.now(),
       };
     }
-    if (closingBatch) this.closingBatchId = batch.batchId;
+    if (closingBatch) this.stoppingBatchId = batch.batchId;
 
     await parent.sendCustomMessage(
       {
@@ -871,6 +888,10 @@ export class SubagentSupervisor {
       );
       if (pending) this.acknowledgePersistedNotification(pending);
     });
+  }
+
+  private isStopping(): boolean {
+    return this.stopping || this.closing;
   }
 
   private stateChanged(): void {

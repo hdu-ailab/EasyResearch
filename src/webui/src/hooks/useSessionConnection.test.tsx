@@ -648,6 +648,10 @@ describe("useSessionConnection", () => {
     expect(result.current.status).toBe("running");
     expect(result.current.view.isStreaming).toBe(true);
     expect(result.current.view.activeMessageKey).toBe("new-row");
+
+    await act(async () => result.current.abort());
+    expect(api.abortSession).toHaveBeenCalledTimes(2);
+    expect(result.current.status).toBe("ready");
   });
 
   it.each([

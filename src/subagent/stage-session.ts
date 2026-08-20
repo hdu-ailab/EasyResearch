@@ -3,6 +3,7 @@ import type { Message, Model } from "@earendil-works/pi-ai";
 import type { AgentSessionEvent, JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { runCleanupSteps } from "../runtime/cleanup";
 import { toJsonSessionEvent } from "../runtime/json-session-event";
+import { configureBatchedSteering, type RuntimeSteeringSession } from "../runtime/steering-mode";
 import type { AgentConfig } from "./agents";
 import type { ReservedDispatch, SubagentCoordinator } from "./coordinator";
 import { createSessionMaterializationBarrier, type SessionMaterializationBarrier } from "./materialization";
@@ -61,7 +62,7 @@ export interface StageLaunchHandle {
 
 export type StageSessionLauncher = (options: StageLaunchOptions) => Promise<StageLaunchHandle>;
 
-export interface StageAgentSession {
+export interface StageAgentSession extends RuntimeSteeringSession {
   readonly sessionId: string;
   readonly sessionFile: string | undefined;
   readonly thinkingLevel: ThinkingLevel;
@@ -220,6 +221,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         ...(options.agent.tools && options.agent.tools.length > 0 ? { tools: options.agent.tools } : {}),
       });
       session = created.session;
+      configureBatchedSteering(session);
       const sessionPath = session.sessionFile;
       if (!sessionPath) throw new Error("Stage AgentSession did not provide a persistent session path.");
       if (options.reservation.continuation) {

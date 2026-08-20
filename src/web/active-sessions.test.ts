@@ -67,6 +67,7 @@ class FakeAdapter implements SessionAdapter {
   backgroundWork = false;
   startImpl: () => Promise<void> = async () => {};
   stopImpl: () => Promise<void> = async () => {};
+  abortImpl: () => Promise<void> = async () => {};
   onEventCalls = 0;
 
   constructor(public options: StartSessionOptions) {
@@ -87,6 +88,7 @@ class FakeAdapter implements SessionAdapter {
   }
   async abort() {
     this.stats.aborts++;
+    await this.abortImpl();
   }
   async setModel(provider: string, modelId: string) {
     this.stats.setModels.push({ provider, modelId });
@@ -289,6 +291,30 @@ describe("ActiveSessionRegistry", () => {
     await registry.stop(created.id);
     expect(registry.has(created.id)).toBe(false);
     expect(adapter.stats.stopped).toBe(1);
+  });
+
+  it("reconciles abort completion with a newer active run instead of forcing ready", async () => {
+    const created = await registry.create({ cwd });
+    const adapter = factory.created[0]!;
+    let releaseAbort!: () => void;
+    adapter.abortImpl = () => new Promise<void>((resolve) => {
+      releaseAbort = resolve;
+    });
+    adapter.events.forEach((listener) => listener({ type: "agent_start" }));
+
+    const aborting = registry.abort(created.id);
+    await vi.waitFor(() => expect(adapter.stats.aborts).toBe(1));
+    adapter.events.forEach((listener) => listener({ type: "agent_settled" }));
+    adapter.events.forEach((listener) => listener({ type: "agent_start" }));
+    adapter.stateOverrides.isStreaming = true;
+    releaseAbort();
+    await aborting;
+
+    expect(registry.list()).toContainEqual(expect.objectContaining({
+      id: created.id,
+      status: "running",
+      isStreaming: true,
+    }));
   });
 
   it("forwards setModel to the adapter with provider and model id", async () => {

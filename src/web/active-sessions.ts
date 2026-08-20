@@ -148,11 +148,7 @@ export class ActiveSessionRegistry {
   async abort(id: string): Promise<void> {
     return this.withRecord(id, async (record) => {
       await record.client.abort();
-      record.dto.isStreaming = false;
-      if (record.dto.status !== "stopped" && record.dto.status !== "error") {
-        record.dto.status = "ready";
-        this.scheduleIdleStop(record);
-      }
+      await this.refreshFromClient(record);
     });
   }
 

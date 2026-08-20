@@ -17,6 +17,7 @@ const model = {
 } as InProcessAgentSession["model"];
 
 class FakeAgentSession implements InProcessAgentSession {
+  agent = { steeringMode: "one-at-a-time" as "all" | "one-at-a-time" };
   sessionFile = "/agent/sessions/--project--/session.jsonl";
   sessionId = "session-1";
   sessionName = "Paper";
@@ -152,12 +153,15 @@ interface ManagedHarness {
   session: FakeAgentSession;
   coordinator: {
     label: string;
+    beginCancellation(): void;
+    finishCancellation(): void;
     beginClosing(): void;
     subscribe(listener: (event: unknown) => void): () => void;
     emit(event: unknown): void;
   };
   supervisor: {
     label: string;
+    cancelAll(reason: string): Promise<void>;
     abortAll(reason: string): Promise<void>;
     flushNotifications(options?: { triggerTurn?: boolean }): Promise<void>;
     waitForQuiescence(): Promise<void>;
@@ -168,9 +172,12 @@ interface ManagedHarness {
 
 interface ManagedOverrides {
   coordinator?: {
+    beginCancellation?: () => void;
+    finishCancellation?: () => void;
     beginClosing?: () => void;
   };
   supervisor?: {
+    cancelAll?: (reason: string) => Promise<void>;
     abortAll?: (reason: string) => Promise<void>;
     flushNotifications?: (options?: { triggerTurn?: boolean }) => Promise<void>;
     waitForQuiescence?: () => Promise<void>;
@@ -189,6 +196,8 @@ function managed(
     session,
     coordinator: {
       label,
+      beginCancellation: overrides.coordinator?.beginCancellation ?? (() => {}),
+      finishCancellation: overrides.coordinator?.finishCancellation ?? (() => {}),
       beginClosing: overrides.coordinator?.beginClosing ?? (() => {}),
       subscribe(listener) {
         coordinatorListeners.add(listener);
@@ -200,6 +209,7 @@ function managed(
     },
     supervisor: {
       label,
+      cancelAll: overrides.supervisor?.cancelAll ?? (async () => {}),
       abortAll: overrides.supervisor?.abortAll ?? (async () => {}),
       flushNotifications: overrides.supervisor?.flushNotifications ?? (async () => {}),
       waitForQuiescence: overrides.supervisor?.waitForQuiescence ?? (async () => {}),
@@ -416,7 +426,7 @@ describe("PiSessionFactory", () => {
       .not.toContain("/private/child.jsonl");
   });
 
-  it("performs public Stop in tree-wide durable order and keeps the root connected", async () => {
+  it("performs each public Stop as reusable cancellation and reserves terminal teardown for stop", async () => {
     const session = new FakeAgentSession();
     session.isStreaming = true;
     session.steeringMessages = ["queued user steer"];
@@ -425,17 +435,30 @@ describe("PiSessionFactory", () => {
     session.abortImpl = async () => {
       order.push("session.abort");
     };
-    const flushNotifications = vi.fn(async (options?: { triggerTurn?: boolean }) => {
-      order.push("supervisor.flushNoTrigger");
-      expect(options).toEqual({ triggerTurn: false });
+    session.unsubscribeImpl = () => order.push("session.unsubscribe");
+    session.disposeImpl = () => order.push("session.dispose");
+    const beginClosing = vi.fn(() => order.push("coordinator.beginClosing"));
+    const abortAll = vi.fn(async () => {
+      order.push("supervisor.abortAll");
+    });
+    const dispose = vi.fn(async () => {
+      order.push("supervisor.dispose");
     });
     const runtime = managed(session, session.sessionId, {
-      coordinator: { beginClosing: () => order.push("coordinator.beginClosing") },
+      coordinator: {
+        beginCancellation: () => order.push("coordinator.beginCancellation"),
+        finishCancellation: () => order.push("coordinator.finishCancellation"),
+        beginClosing,
+      },
       supervisor: {
-        abortAll: async () => {
-          order.push("supervisor.abortAll");
+        cancelAll: async () => {
+          order.push("supervisor.cancelAll");
         },
-        flushNotifications,
+        abortAll,
+        flushNotifications: async () => {
+          order.push("supervisor.flushNoTrigger");
+        },
+        dispose,
       },
     });
     const factory = new PiSessionFactory(async () => runtime);
@@ -445,20 +468,48 @@ describe("PiSessionFactory", () => {
     await adapter.abort();
 
     expect(order).toEqual([
-      "coordinator.beginClosing",
+      "coordinator.beginCancellation",
       "session.clearQueue",
       "session.abort",
-      "supervisor.abortAll",
-      "supervisor.flushNoTrigger",
+      "supervisor.cancelAll",
+      "coordinator.finishCancellation",
     ]);
     expect(session.steeringMessages).toEqual([]);
     expect(session.abortCalls).toBe(1);
     expect(session.disposeCalls).toBe(0);
     expect(session.listeners.size).toBeGreaterThan(0);
     await expect(adapter.getState()).resolves.toMatchObject({ sessionId: "session-1", isStreaming: false });
+
+    await adapter.prompt("new run");
+    session.isStreaming = true;
+    await adapter.abort();
+    expect(order.slice(5)).toEqual([
+      "coordinator.beginCancellation",
+      "session.clearQueue",
+      "session.abort",
+      "supervisor.cancelAll",
+      "coordinator.finishCancellation",
+    ]);
+    expect(session.clearQueueCalls).toBe(2);
+    expect(session.abortCalls).toBe(2);
+    expect(beginClosing).not.toHaveBeenCalled();
+    expect(abortAll).not.toHaveBeenCalled();
+    expect(dispose).not.toHaveBeenCalled();
+
+    await adapter.stop();
+    expect(order.slice(10)).toEqual([
+      "coordinator.beginClosing",
+      "session.clearQueue",
+      "session.abort",
+      "supervisor.abortAll",
+      "supervisor.flushNoTrigger",
+      "supervisor.dispose",
+      "session.unsubscribe",
+      "session.dispose",
+    ]);
   });
 
-  it("waits for descendants and pending-batch supersession before the no-trigger flush", async () => {
+  it("waits for reusable descendant cancellation before resolving Stop", async () => {
     const session = new FakeAgentSession();
     let releaseDescendants!: () => void;
     const descendantsSettled = new Promise<void>((resolve) => {
@@ -466,16 +517,12 @@ describe("PiSessionFactory", () => {
     });
     let pendingBatch = "natural-batch";
     let stopResolved = false;
-    const flushNotifications = vi.fn(async () => {
-      expect(pendingBatch).toBe("closing-batch");
-    });
     const runtime = managed(session, session.sessionId, {
       supervisor: {
-        abortAll: async () => {
+        cancelAll: async () => {
           await descendantsSettled;
-          pendingBatch = "closing-batch";
+          pendingBatch = "cancelled-batch";
         },
-        flushNotifications,
       },
     });
     const factory = new PiSessionFactory(async () => runtime);
@@ -489,10 +536,96 @@ describe("PiSessionFactory", () => {
     await Promise.resolve();
 
     expect(stopResolved).toBe(false);
-    expect(flushNotifications).not.toHaveBeenCalled();
+    expect(pendingBatch).toBe("natural-batch");
     releaseDescendants();
     await stopping;
-    expect(flushNotifications).toHaveBeenCalledWith({ triggerTurn: false });
+    expect(pendingBatch).toBe("cancelled-batch");
+  });
+
+  it("shares concurrent cancellation and retries after a failed cancellation without reopening early", async () => {
+    const session = new FakeAgentSession();
+    let releaseCancellation!: () => void;
+    const cancellationGate = new Promise<void>((resolve) => {
+      releaseCancellation = resolve;
+    });
+    const failure = new Error("descendant cancellation failed");
+    let cancelAttempt = 0;
+    const beginCancellation = vi.fn();
+    const finishCancellation = vi.fn();
+    const cancelAll = vi.fn(async () => {
+      cancelAttempt += 1;
+      if (cancelAttempt === 1) {
+        await cancellationGate;
+        throw failure;
+      }
+    });
+    const adapter = new PiSessionFactory(async () => managed(session, session.sessionId, {
+      coordinator: { beginCancellation, finishCancellation },
+      supervisor: { cancelAll },
+    })).create({ cwd: "/project" });
+    await adapter.start();
+
+    const first = adapter.abort();
+    const concurrent = adapter.abort();
+    await vi.waitFor(() => expect(cancelAll).toHaveBeenCalledTimes(1));
+    expect(session.abortCalls).toBe(1);
+    releaseCancellation();
+    await expect(Promise.all([first, concurrent])).rejects.toBe(failure);
+    expect(finishCancellation).not.toHaveBeenCalled();
+
+    await expect(adapter.abort()).resolves.toBeUndefined();
+    expect(beginCancellation).toHaveBeenCalledTimes(2);
+    expect(session.clearQueueCalls).toBe(2);
+    expect(session.abortCalls).toBe(2);
+    expect(cancelAll).toHaveBeenCalledTimes(2);
+    expect(finishCancellation).toHaveBeenCalledTimes(1);
+  });
+
+  it("serializes terminal stop behind an active reusable cancellation", async () => {
+    const session = new FakeAgentSession();
+    let releaseSessionAbort!: () => void;
+    const sessionAbortGate = new Promise<void>((resolve) => {
+      releaseSessionAbort = resolve;
+    });
+    session.abortImpl = async () => {
+      if (session.abortCalls === 1) await sessionAbortGate;
+    };
+    const order: string[] = [];
+    const runtime = managed(session, session.sessionId, {
+      coordinator: {
+        beginCancellation: () => order.push("beginCancellation"),
+        finishCancellation: () => order.push("finishCancellation"),
+        beginClosing: () => order.push("beginClosing"),
+      },
+      supervisor: {
+        cancelAll: async () => {
+          order.push("cancelAll");
+        },
+        abortAll: async () => {
+          order.push("abortAll");
+        },
+      },
+    });
+    const adapter = new PiSessionFactory(async () => runtime).create({ cwd: "/project" });
+    await adapter.start();
+
+    const cancelling = adapter.abort();
+    await vi.waitFor(() => expect(session.abortCalls).toBe(1));
+    const stopping = adapter.stop();
+    await Promise.resolve();
+    expect(session.abortCalls).toBe(1);
+    expect(order).toEqual(["beginCancellation"]);
+
+    releaseSessionAbort();
+    await Promise.all([cancelling, stopping]);
+    expect(session.abortCalls).toBe(2);
+    expect(order).toEqual([
+      "beginCancellation",
+      "cancelAll",
+      "finishCancellation",
+      "beginClosing",
+      "abortAll",
+    ]);
   });
 
   it("performs the same durable cleanup before stop unsubscribes and disposes", async () => {
@@ -905,6 +1038,26 @@ describe("createPiAgentSessionCreator", () => {
       { deliverAs: "steer", triggerTurn: true },
     );
     expect((managedRoot.session as FakeAgentSession).wakeSystemPrompts).toEqual([["Project Paper Assistant body"]]);
+  });
+
+  it("uses batched Pi steering for the root runtime and restores it after reload", async () => {
+    const harness = creatorHarness();
+    harness.controls.prepareSession = (session) => {
+      session.reload = async () => {
+        session.agent.steeringMode = "one-at-a-time";
+      };
+    };
+    const creator = createPiAgentSessionCreator(harness.deps as never);
+
+    const managedRoot = await creator({ cwd: "/project" });
+    const session = managedRoot.session as FakeAgentSession;
+    const bindings = session.bindCalls[0] as {
+      commandContextActions: { reload(): Promise<void> };
+    };
+
+    expect(session.agent.steeringMode).toBe("all");
+    await bindings.commandContextActions.reload();
+    expect(session.agent.steeringMode).toBe("all");
   });
 
   it("opens a persisted root without replacing its thinking level", async () => {

@@ -633,7 +633,7 @@ describe("WorkPage", () => {
     await waitFor(() => expect(api.connectSessionEvents).toHaveBeenCalledTimes(1));
   });
 
-  it("composer Stop while streaming aborts instead of stopping the session", async () => {
+  it("composer Stop aborts each run without stopping the connected session", async () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     expect(screen.queryByRole("button", { name: /stop/i })).toBeNull();
@@ -641,6 +641,12 @@ describe("WorkPage", () => {
     await screen.findByRole("button", { name: /stop/i });
     await userEvent.setup().click(screen.getByRole("button", { name: /stop/i }));
     await waitFor(() => expect(api.abortSession).toHaveBeenCalledWith("s1"));
+    expect(api.stopSession).not.toHaveBeenCalled();
+
+    emitInAct({ type: "agent_settled" });
+    emitInAct({ type: "agent_start" });
+    await userEvent.setup().click(await screen.findByRole("button", { name: /stop/i }));
+    await waitFor(() => expect(api.abortSession).toHaveBeenCalledTimes(2));
     expect(api.stopSession).not.toHaveBeenCalled();
   });
 

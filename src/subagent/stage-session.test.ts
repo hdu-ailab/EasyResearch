@@ -95,6 +95,7 @@ class MemoryCoordinatorSessionManager implements CoordinatorSessionManager {
 }
 
 class FakeStageSession implements StageAgentSession {
+  agent = { steeringMode: "one-at-a-time" as "all" | "one-at-a-time" };
   readonly thinkingLevel: ThinkingLevel = "high";
   readonly model = { provider: "openai", id: "gpt-test" } as Model<any>;
   isStreaming = false;
@@ -353,6 +354,7 @@ describe("createStageSessionLauncher", () => {
       sessionManager: { kind: "new", cwd: "/project" },
     });
     expect(session.names).toEqual(["easyresearch:search"]);
+    expect(session.agent.steeringMode).toBe("all");
     expect(session.promptCalls).toEqual(["Task: find papers"]);
     expect(harness.supervisors).toHaveLength(1);
     expect(harness.supervisors[0]?.attached).toEqual([session]);
