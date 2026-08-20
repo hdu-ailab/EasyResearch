@@ -770,23 +770,26 @@ export class SubagentSupervisor {
 
   private async sendNextBatch(triggerTurn: boolean, closingBatch: boolean): Promise<void> {
     const parent = this.requireParent();
+    const outcomes = this.collectDeliverableOutcomes();
     let batch = closingBatch && this.closingBatchId
       ? this.coordinator.journal().pendingBatches.find(
         (candidate) => candidate.ownerSessionId === parent.sessionId && candidate.batchId === this.closingBatchId,
       )
       : closingBatch
         ? undefined
-        : this.coordinator.journal().pendingBatches.find(
-          (candidate) => candidate.ownerSessionId === parent.sessionId,
-        );
+        : outcomes.length === 0
+          ? this.coordinator.journal().pendingBatches.find(
+            (candidate) => candidate.ownerSessionId === parent.sessionId,
+          )
+          : undefined;
     if (!batch) {
-      const outcomes = this.collectDeliverableOutcomes();
       if (outcomes.length === 0) return;
       const state = this.coordinator.journal();
       const workingAgentIds = [...state.jobs.values()]
         .filter((job) =>
           job.ownerSessionId === parent.sessionId
           && job.status === "working"
+          && !job.terminalStatus
           && !job.terminalSuppressed)
         .map((job) => job.agentId);
       const content = formatTerminalNotification({ time: this.now(), workingAgentIds, outcomes });

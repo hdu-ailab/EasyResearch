@@ -92,6 +92,8 @@ export interface SessionViewState {
    * agent context (ADR-083); replaced wholesale by `queue_update` and cleared
    * when the run ends. */
   steers: SteerView[];
+  /** Persisted supervisor summaries from the latest snapshot, including nested owners. */
+  subagentSummaries?: SubagentSessionSummaryDto[];
 }
 
 export interface SteerView {
@@ -356,6 +358,7 @@ export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
     ...(sessionName !== undefined ? { sessionName } : {}),
     nextOrder: 0,
     steers: (snapshot.steering ?? []).map((text, index) => createSteerView(text, `steer:${index}`)),
+    subagentSummaries: snapshot.subagents ?? [],
   };
   const next = () => state.nextOrder++;
   let cursorCandidate: SessionMessageView | undefined;
@@ -498,6 +501,39 @@ export function applySubagentSummaries(
     };
   });
   return changed ? { ...state, tools } : state;
+}
+
+export function hydrateSubagentSummaryOwner(
+  state: SessionViewState,
+  summaries: SubagentSessionSummaryDto[],
+  ownerSessionId: string,
+): SessionViewState {
+  const owned = summaries.filter((summary) => summary.ownerSessionId === ownerSessionId);
+  if (owned.length === 0) return state;
+  const represented = new Set(
+    state.tools
+      .filter((tool) => tool.name === "subagent" && tool.toolCallId !== undefined)
+      .map((tool) => tool.toolCallId as string),
+  );
+  let nextOrder = state.nextOrder;
+  const placeholders: ToolView[] = [];
+  for (const summary of owned) {
+    if (represented.has(summary.toolCallId)) continue;
+    represented.add(summary.toolCallId);
+    placeholders.push({
+      key: summary.toolCallId,
+      toolCallId: summary.toolCallId,
+      name: "subagent",
+      running: false,
+      done: false,
+      error: false,
+      ownerSessionId,
+      order: nextOrder++,
+    });
+  }
+  const withPlaceholders =
+    placeholders.length === 0 ? state : { ...state, tools: [...state.tools, ...placeholders], nextOrder };
+  return applySubagentSummaries(withPlaceholders, owned, ownerSessionId);
 }
 
 interface SubagentLaunchIdentity {

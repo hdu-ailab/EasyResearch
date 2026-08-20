@@ -908,6 +908,33 @@ describe("SubagentSupervisor notification acknowledgement", () => {
     await supervisor.waitForQuiescence();
   });
 
+  it("excludes a settled launch awaiting acknowledgement from the Working snapshot", async () => {
+    const settled = new FakeStage("search_0", "child-0", "/sessions/child-0.jsonl");
+    const delivered = new FakeStage("search_1", "child-1", "/sessions/child-1.jsonl");
+    const stages = new Map([["search_0", settled], ["search_1", delivered]]);
+    const { coordinator, parent, supervisor } = makeHarness({
+      launchStage: async (reservation) => stages.get(reservation.agentId)!.handle,
+      schedule: () => {},
+    });
+    const reservation0 = reserve(coordinator, "tool-0");
+    const reservation1 = reserve(coordinator, "tool-1");
+    const launch0 = supervisor.launch(reservation0, options("settled"));
+    const launch1 = supervisor.launch(reservation1, options("delivered"));
+    settled.materialization.resolve();
+    delivered.materialization.resolve();
+    await Promise.all([launch0, launch1]);
+    parent.acknowledgeLaunch("tool-1");
+
+    settled.completion.resolve(result("settled", { agentId: "search_0" }));
+    delivered.completion.resolve(result("delivered", { agentId: "search_1" }));
+    await turn();
+    await supervisor.flushNotifications();
+
+    expect(parent.sent).toHaveLength(1);
+    expect(parent.sent[0]?.message.content).toContain("Complete subagent:search_1");
+    expect(parent.sent[0]?.message.content).not.toContain("Working subagent:search_0");
+  });
+
   it("freezes a batch at real send time and leaves later outcomes for the next batch", async () => {
     const first = new FakeStage("search_0", "child-0", "/sessions/child-0.jsonl");
     const second = new FakeStage("search_1", "child-1", "/sessions/child-1.jsonl");
@@ -950,6 +977,39 @@ describe("SubagentSupervisor notification acknowledgement", () => {
     expect(parent.sent[1]?.message.content).not.toContain("Complete subagent:search_0");
     parent.acknowledgeLastMessage();
     await supervisor.waitForQuiescence();
+  });
+
+  it("creates a new batch for later outcomes while an earlier sent batch awaits acknowledgement", async () => {
+    const first = new FakeStage("search_0", "child-0", "/sessions/child-0.jsonl");
+    const second = new FakeStage("search_1", "child-1", "/sessions/child-1.jsonl");
+    const stages = new Map([["search_0", first], ["search_1", second]]);
+    const { coordinator, parent, supervisor } = makeHarness({
+      launchStage: async (reservation) => stages.get(reservation.agentId)!.handle,
+      schedule: () => {},
+    });
+    const reservation0 = reserve(coordinator, "tool-0");
+    const reservation1 = reserve(coordinator, "tool-1");
+    const launch0 = supervisor.launch(reservation0, options("first"));
+    const launch1 = supervisor.launch(reservation1, options("second"));
+    first.materialization.resolve();
+    second.materialization.resolve();
+    await Promise.all([launch0, launch1]);
+    parent.acknowledgeLaunch("tool-0");
+    parent.acknowledgeLaunch("tool-1");
+
+    first.completion.resolve(result("first", { agentId: "search_0" }));
+    await turn();
+    await supervisor.flushNotifications();
+    expect(parent.sent).toHaveLength(1);
+
+    second.completion.resolve(result("second", { agentId: "search_1" }));
+    await turn();
+    await supervisor.flushNotifications();
+
+    expect(parent.sent).toHaveLength(2);
+    expect(parent.sent[1]?.message.content).toContain("Complete subagent:search_1");
+    expect(parent.sent[1]?.message.content).not.toContain("Complete subagent:search_0");
+    expect(coordinator.journal().pendingBatches).toHaveLength(2);
   });
 
   it("consumes a batch only after observing its live hidden custom message", async () => {

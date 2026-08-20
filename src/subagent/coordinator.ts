@@ -17,6 +17,7 @@ import {
   type SubagentJobJournalRecord,
   type SubagentJournalState,
 } from "./job-journal";
+import { privateSubagentEventDataReason } from "./notifications";
 import { SUBAGENT_SESSION_LINK_ENTRY } from "./session-links";
 
 export interface CoordinatorSessionManager {
@@ -289,7 +290,9 @@ export class SubagentCoordinator {
       childSessionId: event.childSessionId,
       status: event.status,
       ...(event.latestMessage === undefined ? {} : { latestMessage: event.latestMessage }),
-      ...(event.event === undefined ? {} : { event: event.event }),
+      ...(event.event === undefined || privateSubagentEventDataReason(event.event)
+        ? {}
+        : { event: event.event }),
     };
     for (const listener of this.listeners) {
       try {

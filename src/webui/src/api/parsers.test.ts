@@ -202,6 +202,38 @@ describe("API response parsers", () => {
       expect(() => parseSubagentSupervisorEvent({ ...liveEvent, [field]: "/private/child.jsonl" })).toThrow();
     });
 
+    it.each(["sessionPath", "session_path"])("rejects a nested child %s leak", (field) => {
+      expect(() =>
+        parseSubagentSupervisorEvent({
+          ...liveEvent,
+          event: {
+            type: "message_start",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "visible" }],
+              [field]: "/private/child.jsonl",
+            },
+          },
+        }),
+      ).toThrow("session path");
+    });
+
+    it("rejects a nested hidden supervisor custom message", () => {
+      expect(() =>
+        parseSubagentSupervisorEvent({
+          ...liveEvent,
+          event: {
+            type: "message_end",
+            message: {
+              role: "custom",
+              customType: "easyresearch:agent_status",
+              content: "private handoff",
+            },
+          },
+        }),
+      ).toThrow("hidden supervisor status");
+    });
+
     it("rejects cumulative assistant partials in nested child events", () => {
       expect(() =>
         parseSubagentSupervisorEvent({

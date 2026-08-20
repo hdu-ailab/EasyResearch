@@ -745,6 +745,40 @@ describe("WorkPage", () => {
     expect(screen.getByRole("button", { name: /Close agent tab:/ })).toBeVisible();
   });
 
+  it("renders mapped live child output in a retained temporary tab after its tool row disappears", async () => {
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+    emitInAct({
+      type: "tool_execution_start",
+      toolCallId: "sub-mapped-temp",
+      toolName: "subagent",
+      args: { agent: "search", task: "find" },
+    });
+    await user.click(await screen.findByRole("button", { name: /agent search/i }));
+
+    emitInAct({
+      type: "snapshot",
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      messages: [],
+      subagents: [],
+    });
+    expect(screen.getByRole("button", { name: /agent search/i })).toHaveAttribute("aria-pressed", "true");
+
+    emitSupervisorChildEvent({
+      toolCallId: "sub-mapped-temp",
+      agent: "search",
+      agentId: "search_0",
+      childSessionId: "child-mapped-temp",
+      event: {
+        type: "message_start",
+        message: { role: "assistant", content: [{ type: "text", text: "live output after reconnect" }] },
+      } as never,
+    });
+
+    expect(await screen.findByText("live output after reconnect")).toBeVisible();
+  });
+
   it("loads inherited history exactly once when a retained temporary tab receives a delayed UUID", async () => {
     const user = userEvent.setup();
     vi.mocked(api.getChildSnapshot).mockResolvedValue({
@@ -1726,6 +1760,38 @@ describe("WorkPage", () => {
     expect(screen.queryByText("starting research")).toBeNull();
   });
 
+  it("rehydrates nested running tabs from the root reconnect snapshot before child loading", async () => {
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+
+    emitInAct({
+      type: "snapshot",
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      subagents: [
+        subagentSummary("root-writing", "child-writing", "writing", {
+          agentId: "writing_0",
+          status: "working",
+        }),
+        subagentSummary("nested-search", "grandchild-search", "search", {
+          ownerSessionId: "child-writing",
+          agentId: "search_nested",
+          status: "working",
+          latestMessage: "nested reconnect work",
+        }),
+      ],
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "root-writing", name: "subagent", arguments: '{"agent":"writing"}' }],
+        },
+      ],
+    });
+
+    expect(await screen.findByRole("button", { name: "Agent writing_0" })).toBeVisible();
+    expect(await screen.findByRole("button", { name: "Agent search_nested" })).toBeVisible();
+    expect(api.getChildSnapshot).not.toHaveBeenCalled();
+  });
+
   it("rehydrates a Working card from a ready reconnect summary, then updates it in place", async () => {
     const latestMessage = "verifying metadata for the selected papers";
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
@@ -2244,6 +2310,67 @@ describe("WorkPage", () => {
     expect(api.sendPrompt).toHaveBeenLastCalledWith("s2", "continue please");
     expect(screen.queryByRole("alert")).toBeNull();
     expect(await screen.findByText("continue please")).toBeTruthy();
+  });
+
+  it("preserves retained child tabs when the same persisted session reopens under a new runtime id", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getSnapshot)
+      .mockResolvedValueOnce({
+        session: {
+          id: "s1",
+          cwd: "/p",
+          isStreaming: false,
+          status: "ready",
+          sessionFile: "/agent/sessions/--p--/a.jsonl",
+        },
+        subagents: [subagentSummary("retained-child", "child-retained", "search", { agentId: "search_0" })],
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "toolCall", id: "retained-child", name: "subagent", arguments: '{"agent":"search"}' }],
+          },
+        ],
+      } as never)
+      .mockResolvedValue({
+        session: { id: "s2", cwd: "/p", isStreaming: false, status: "ready" },
+        messages: [{ role: "user", content: [{ type: "text", text: "continue please" }] }],
+        subagents: [],
+      } as never);
+    vi.mocked(api.getChildSnapshot).mockResolvedValue({
+      session: { id: "child-retained", cwd: "/p", sessionName: "easyresearch:search" },
+      messages: [{ role: "assistant", content: [{ type: "text", text: "retained child history" }] }],
+      subagents: [],
+    } as never);
+    vi.mocked(api.sendPrompt)
+      .mockRejectedValueOnce(new api.ApiError(404, { error: "Unknown session: s1" }))
+      .mockResolvedValueOnce(undefined);
+    vi.mocked(api.openSession).mockResolvedValueOnce({
+      id: "s2",
+      cwd: "/p",
+      sessionFile: "/agent/sessions/--p--/a.jsonl",
+      isStreaming: false,
+      status: "ready",
+    } as never);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await user.click(await screen.findByRole("button", { name: "View details" }));
+    expect(await screen.findByText("retained child history")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Agent search_0" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: /agent paper assistant/i }));
+
+    emitInAct({ type: "session_deactivated", sessionId: "s1" });
+    await user.type(screen.getByRole("textbox", { name: /message/i }), "continue please");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+    await waitFor(() => expect(api.connectSessionEvents).toHaveBeenCalledTimes(2));
+    emitInAct({
+      type: "snapshot",
+      session: { id: "s2", cwd: "/p", isStreaming: false, status: "ready" },
+      messages: [{ role: "user", content: [{ type: "text", text: "continue please" }] }],
+      subagents: [],
+    });
+    await waitFor(() => expect(api.sendPrompt).toHaveBeenCalledTimes(2));
+
+    expect(screen.getByRole("button", { name: "Agent search_0" })).toBeVisible();
+    expect(screen.getByRole("button", { name: /Close agent tab:/ })).toBeVisible();
   });
 
   it("waits for the reopened SSE subscription before sending the prompt", async () => {

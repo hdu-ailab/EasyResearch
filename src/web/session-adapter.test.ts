@@ -332,7 +332,16 @@ describe("PiSessionFactory", () => {
   });
 
   it("forwards coordinator progress but filters hidden status after supervisor observation", async () => {
-    const hiddenContent = "<agent_status>Error subagent:{\"session_path\":\"/private/child.jsonl\"}</agent_status>\n<agent_handoff>secret handoff</agent_handoff>";
+    const hiddenContent = [
+      "<agent_status>",
+      "Current time: 2026-08-19T00:00:00.000Z",
+      'Error subagent:{"name":"search_0","session_path":"/private/child.jsonl"}',
+      "</agent_status>",
+      "<agent_handoff>",
+      "Agent: search_0",
+      "Result: secret handoff",
+      "</agent_handoff>",
+    ].join("\n");
     const session = new FakeAgentSession();
     session.messages = [
       { role: "user", content: [{ type: "text", text: "hello" }], timestamp: 1 },
@@ -1005,6 +1014,26 @@ describe("DirectSessionAdapter steer lifecycle (ADR-083)", () => {
     await adapter.start();
 
     expect(adapter.getSteeringMessages()).toEqual(["note one", "note two"]);
+  });
+
+  it("keeps a user steer containing literal supervisor tag names visible", async () => {
+    const literal = "Please preserve <agent_status>status</agent_status> and <agent_handoff>handoff</agent_handoff>.";
+    const session = new FakeAgentSession();
+    session.steeringMessages = [literal];
+    const factory = new PiSessionFactory(async () => managed(session));
+    const adapter = factory.create({ cwd: "/project" });
+    const events: unknown[] = [];
+    adapter.onEvent((event) => events.push(event));
+    await adapter.start();
+
+    session.listeners.forEach((listener) => listener({
+      type: "queue_update",
+      steering: [literal],
+      followUp: [],
+    }));
+
+    expect(adapter.getSteeringMessages()).toEqual([literal]);
+    expect(events).toContainEqual({ type: "queue_update", steering: [literal], followUp: [] });
   });
 
   it("leaves queued user and hidden supervisor steers intact when the run settles", async () => {

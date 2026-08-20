@@ -99,6 +99,28 @@ export function assertPathFreeSessionEvent(event: unknown): string {
   return serialized;
 }
 
+export async function fetchSessionEventsBeforeDeadline(options: {
+  url: string;
+  deadline: number;
+  fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+  now?: () => number;
+}): Promise<Response> {
+  const remaining = options.deadline - (options.now ?? Date.now)();
+  const timeoutMessage = "session SSE subscription did not finish before the native smoke deadline";
+  if (remaining <= 0) throw new Error(timeoutMessage);
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), remaining);
+  try {
+    return await (options.fetch ?? globalThis.fetch)(options.url, { signal: controller.signal });
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error(timeoutMessage, { cause: error });
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function hasExactLine(text: string, expected: string): boolean {
   return text.split(/\r?\n/).some((line) => line === expected);
 }

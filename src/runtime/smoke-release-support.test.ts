@@ -10,6 +10,7 @@ import {
   buildWindowsShutdownScript,
   collectLaunchOutput,
   createCompiledChildEnv,
+  fetchSessionEventsBeforeDeadline,
   finishSmokeCleanup,
   readTextFileWithRetry,
   requireZeroProcessStatus,
@@ -68,6 +69,25 @@ describe("assertPathFreeSessionEvent", () => {
       session: { sessionFile: "/sessions/root.jsonl" },
       path: "/project/paper.md",
     })).toContain('"sessionFile":"/sessions/root.jsonl"');
+  });
+});
+
+describe("fetchSessionEventsBeforeDeadline", () => {
+  it("aborts an SSE fetch that has not produced a response before the smoke deadline", async () => {
+    let observedSignal: AbortSignal | undefined;
+    const pending = fetchSessionEventsBeforeDeadline({
+      url: "http://127.0.0.1:3000/api/sessions/session-1/events",
+      deadline: Date.now() + 20,
+      fetch: async (_input, init) => {
+        observedSignal = init?.signal instanceof AbortSignal ? init.signal : undefined;
+        return await new Promise<Response>((_resolve, reject) => {
+          observedSignal?.addEventListener("abort", () => reject(observedSignal?.reason), { once: true });
+        });
+      },
+    });
+
+    await expect(pending).rejects.toThrow("session SSE subscription did not finish before the native smoke deadline");
+    expect(observedSignal?.aborted).toBe(true);
   });
 });
 

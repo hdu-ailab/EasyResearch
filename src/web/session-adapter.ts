@@ -610,10 +610,10 @@ function isHiddenStatusEntry(value: unknown): boolean {
 }
 
 function isHiddenStatusContent(value: string): boolean {
-  return value.includes("<agent_status>")
-    && value.includes("</agent_status>")
-    && value.includes("<agent_handoff>")
-    && value.includes("</agent_handoff>");
+  const content = value.trim();
+  return content.startsWith("<agent_status>\n")
+    && content.includes("\n</agent_status>\n<agent_handoff>\n")
+    && content.endsWith("\n</agent_handoff>");
 }
 
 function isHiddenStatusEvent(event: AgentSessionEvent): boolean {

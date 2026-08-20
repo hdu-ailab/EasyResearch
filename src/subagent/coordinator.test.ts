@@ -385,6 +385,51 @@ describe("SubagentCoordinator", () => {
     expect(listener).toHaveBeenCalledWith(event);
   });
 
+  it.each([
+    {
+      label: "child session path",
+      nested: {
+        type: "message_start",
+        message: { role: "assistant", content: [], sessionPath: "/private/child.jsonl" },
+      },
+    },
+    {
+      label: "hidden supervisor status",
+      nested: {
+        type: "message_end",
+        message: { role: "custom", customType: "easyresearch:agent_status", content: "private handoff" },
+      },
+    },
+  ])("drops an unsafe nested $label before publishing", ({ nested }) => {
+    const { coordinator } = harness();
+    const listener = vi.fn();
+    coordinator.subscribe(listener);
+    const event: SubagentSupervisorEvent = {
+      type: "subagent_supervisor",
+      launchId: "l0",
+      ownerSessionId: "root",
+      toolCallId: "t0",
+      agent: "search",
+      agentId: "search_0",
+      childSessionId: "child",
+      status: "working",
+      event: nested as never,
+    };
+
+    coordinator.publish(event);
+
+    expect(listener).toHaveBeenCalledWith({
+      type: "subagent_supervisor",
+      launchId: "l0",
+      ownerSessionId: "root",
+      toolCallId: "t0",
+      agent: "search",
+      agentId: "search_0",
+      childSessionId: "child",
+      status: "working",
+    });
+  });
+
   it("reads bound Paper Assistant state and refuses reservations while closing", () => {
     const { coordinator, manager } = harness();
     let model: string | undefined = "provider/model-a";

@@ -13,6 +13,7 @@ import {
   buildWindowsShutdownScript,
   collectLaunchOutput,
   createCompiledChildEnv,
+  fetchSessionEventsBeforeDeadline,
   finishSmokeCleanup,
   readTextFileWithRetry,
   requireZeroProcessStatus,
@@ -660,7 +661,10 @@ try {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ cwd: project }),
   }), "session create");
-  const sessionEvents = await fetch(`${base}/api/sessions/${created.id}/events`);
+  const sessionEvents = await fetchSessionEventsBeforeDeadline({
+    url: `${base}/api/sessions/${created.id}/events`,
+    deadline: firstRunDeadline,
+  });
   if (!sessionEvents.ok) {
     throw new Error(`session SSE failed (${sessionEvents.status}): ${await sessionEvents.text()}`);
   }

@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { privateSubagentEventDataReason } from "../../../subagent/notifications";
 import type {
   ActiveSessionDto,
   AgentDto,
@@ -187,6 +188,8 @@ function parseSubagentStatus(value: unknown): SubagentSessionSummaryDto["status"
 
 function parseNestedSessionEvent(value: unknown): NonNullable<SubagentSupervisorEventDto["event"]> {
   const source = record(value, "subagent event");
+  const privateData = privateSubagentEventDataReason(source);
+  if (privateData) throw new Error(`Invalid API response: nested subagent event must not contain a ${privateData}`);
   requiredIdentityString(source, "type");
   if (source.type === "message_update") {
     const update = record(source.assistantMessageEvent, "assistantMessageEvent");

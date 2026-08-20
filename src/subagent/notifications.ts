@@ -35,6 +35,29 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+export function privateSubagentEventDataReason(
+  value: unknown,
+  seen = new Set<object>(),
+): "session path" | "hidden supervisor status" | undefined {
+  if (value === null || typeof value !== "object" || seen.has(value)) return undefined;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const reason = privateSubagentEventDataReason(item, seen);
+      if (reason) return reason;
+    }
+    return undefined;
+  }
+  const source = value as Record<string, unknown>;
+  if ("sessionPath" in source || "session_path" in source) return "session path";
+  if (source.customType === AGENT_STATUS_TYPE) return "hidden supervisor status";
+  for (const item of Object.values(source)) {
+    const reason = privateSubagentEventDataReason(item, seen);
+    if (reason) return reason;
+  }
+  return undefined;
+}
+
 export function notificationBatchId(message: unknown): string | undefined {
   if (!isObject(message) || message.customType !== AGENT_STATUS_TYPE) return undefined;
   if (message.role !== "custom" && message.type !== "custom_message") return undefined;

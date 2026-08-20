@@ -24,6 +24,7 @@ import { useI18n } from "../i18n/useI18n";
 import { buildMessageTreeMeta, versionTarget } from "../message-tree";
 import {
   fromSnapshot,
+  hydrateSubagentSummaryOwner,
   reduceSessionEvent,
   reduceSubagentSupervisorEvent,
   type SessionViewState,
@@ -236,6 +237,7 @@ export function WorkPage({ id, cwd, onBack, onOpenSettings }: WorkPageProps) {
   });
   const sessionView = connection.view;
   const sessionId = connection.sessionId;
+  const childCacheSessionId = useRef(sessionId);
   if (parentOwner.current.id !== sessionId) {
     parentOwner.current = { id: sessionId, generation: parentOwner.current.generation + 1 };
   }
@@ -249,12 +251,27 @@ export function WorkPage({ id, cwd, onBack, onOpenSettings }: WorkPageProps) {
   }, [tabsState]);
 
   useEffect(() => {
-    if (parentOwner.current.id !== sessionId) return;
-    setTabsState({ tabs: [], hiddenRunningToolCalls: [] });
-    setActiveTab(PAPER_ASSISTANT_AGENT);
-    setChildViews({});
-    setChildErrors({});
-    childSessionByInvocation.current.clear();
+    const summaries = sessionView.subagentSummaries ?? [];
+    const nestedOwners = new Set(
+      summaries.map((summary) => summary.ownerSessionId).filter((ownerSessionId) => ownerSessionId !== sessionId),
+    );
+    if (nestedOwners.size === 0) return;
+    setChildViews((current) => {
+      let next = current;
+      for (const ownerSessionId of nestedOwners) {
+        const existing = next[ownerSessionId] ?? { ...emptyView };
+        const hydrated = hydrateSubagentSummaryOwner(existing, summaries, ownerSessionId);
+        if (hydrated === existing) continue;
+        if (next === current) next = { ...current };
+        next[ownerSessionId] = hydrated;
+      }
+      return next;
+    });
+  }, [sessionId, sessionView.subagentSummaries]);
+
+  useEffect(() => {
+    if (childCacheSessionId.current === sessionId) return;
+    childCacheSessionId.current = sessionId;
     childLoaded.current.clear();
     childRequests.current.clear();
     childRefreshPending.current.clear();
@@ -382,7 +399,17 @@ export function WorkPage({ id, cwd, onBack, onOpenSettings }: WorkPageProps) {
       : panelWidthTouched
         ? Math.min(panelWidth, panelMax)
         : Math.min(defaultPanelWidth, panelMax);
-  const activeChildId = activeTab.startsWith("session:") ? activeTab.slice(8) : undefined;
+  const activeTemporaryTab = activeTab.startsWith("tool:")
+    ? tabsState.tabs.find((tab) => tab.key === activeTab)
+    : undefined;
+  const activeChildId = activeTab.startsWith("session:")
+    ? activeTab.slice(8)
+    : (activeTemporaryTab?.sessionId ??
+      (activeTemporaryTab
+        ? childSessionByInvocation.current.get(
+            temporarySubagentTabKey(activeTemporaryTab.ownerSessionId, activeTemporaryTab.toolCallId),
+          )
+        : undefined));
   const activeView = activeChildId ? childViews[activeChildId] : undefined;
   const activeMessages = activeTab === PAPER_ASSISTANT_AGENT ? sessionView.messages : (activeView?.messages ?? []);
   const activeTools =
@@ -479,8 +506,8 @@ export function WorkPage({ id, cwd, onBack, onOpenSettings }: WorkPageProps) {
   loadChildRef.current = loadChild;
 
   useEffect(() => {
-    if (activeTab.startsWith("session:")) loadChild(activeTab.slice(8));
-  }, [activeTab, loadChild]);
+    if (activeChildId) loadChild(activeChildId);
+  }, [activeChildId, loadChild]);
 
   const openSubagentTool = useCallback(
     (toolCallId: string, requestedStep?: number) => {
