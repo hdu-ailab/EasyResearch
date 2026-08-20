@@ -34,7 +34,7 @@ export async function loadPaperAssistantPrompt(options: LoadPaperAssistantPrompt
 
 /** Effective discovery directories a resolver instance is bound to. */
 export interface PaperAssistantConfigResolver {
-  resolve(cwd: string, refresh?: boolean): Promise<AgentConfig>;
+  resolve(cwd: string): Promise<AgentConfig>;
   agentDir: string;
   bundledAgentsDir?: string;
   bundledSkillsDir: string;
@@ -42,34 +42,28 @@ export interface PaperAssistantConfigResolver {
 }
 
 /**
- * Cached resolver for the effective Paper Assistant definition. ADR-063: shared
- * by the definition-application extension and the subagent-dispatch extension;
- * each holder creates its own resolver instance so per-cwd cache state stays
- * independent, mirroring the pre-split single-extension behavior.
+ * Legacy dispatch resolver retained until Task 6 moves dispatch to the shared
+ * live catalog. It deliberately does not cache Agent Markdown.
  */
 export function createPaperAssistantConfigResolver(
   options: PaperAssistantConfigResolverOptions = {},
 ): PaperAssistantConfigResolver {
   const agentDir = options.agentDir ?? getAgentDir();
   const effectiveBundledSkillsDir = options.bundledSkillsDir ?? bundledSkillsDir();
-  let current: { cwd: string; config: AgentConfig } | undefined;
 
   return {
     agentDir,
     bundledAgentsDir: options.bundledAgentsDir,
     bundledSkillsDir: effectiveBundledSkillsDir,
     homeDir: options.homeDir,
-    async resolve(cwd: string, refresh = false): Promise<AgentConfig> {
-      if (!refresh && current?.cwd === cwd) return current.config;
-      const config = await loadPaperAssistantPrompt({
+    resolve(cwd: string): Promise<AgentConfig> {
+      return loadPaperAssistantPrompt({
         cwd,
         agentDir,
         bundledAgentsDir: options.bundledAgentsDir,
         bundledSkillsDir: effectiveBundledSkillsDir,
         homeDir: options.homeDir,
       });
-      current = { cwd, config };
-      return config;
     },
   };
 }

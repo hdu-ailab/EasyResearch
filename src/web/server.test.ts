@@ -1,4 +1,4 @@
-import { closeSync, mkdirSync, mkdtempSync, openSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,19 +6,35 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionTreeNode } from "@earendil-works/pi-coding-agent";
 import type { RouteServices } from "./routes";
 import { createRouteHandler } from "./routes";
-import type { SessionAdapter, SessionFactory, SessionState, StartSessionOptions, SteerPromptOptions, WebSlashCommand } from "./session-adapter";
+import { PiSessionFactory, type SessionAdapter, type SessionFactory, type SessionState, type StartSessionOptions, type SteerPromptOptions, type WebSlashCommand } from "./session-adapter";
 import { ActiveSessionRegistry, UnknownSessionError } from "./active-sessions";
 import { DirectoryService } from "./directories";
 import { ConfigFileService } from "./config-files";
-import type { SessionSummaryDto, SubagentSessionSummaryDto, ModelOptionDto } from "./contracts";
-import { AgentModelError } from "./agent-models";
-import { AgentThinkingError } from "./agent-thinking";
-import { WebuiSettingsError, readEffectiveWebuiSettings, updateWebuiSettings } from "./webui-settings";
-import { discoverAgents } from "../subagent/agents";
-import { agentToDto, discoverAgentsForWeb, isKnownAgentName, toUserSessionSummaries } from "./server";
+import type {
+  ConfigurationEvent,
+  ModelOptionDto,
+  SessionSummaryDto,
+  SubagentSessionSummaryDto,
+} from "./contracts";
+import {
+  agentToDto,
+  discoverAgentsForWeb,
+  startServer,
+  toUserSessionSummaries,
+} from "./server";
 import type { Logger } from "../runtime/logger";
+import type { AuthModelRuntime } from "./auth-gateway";
+import type { DaemonAuthRuntime, DaemonAuthRuntimeOptions } from "./auth-runtime";
 import { SubagentSessionNotFoundError } from "./subagent-sessions";
 import type { FileWatcherEvent, FileWatcherFactory } from "./file-watcher";
+import { createAgentPatchService, patchGlobalAgent } from "./agent-configuration";
+import * as piImportModule from "../runtime/pi-import";
+import {
+  ConfigurationUnavailableError,
+  createLiveConfiguration,
+  type LiveConfiguration,
+} from "../runtime/live-configuration";
+import * as liveConfigurationModule from "../runtime/live-configuration";
 
 const [loggerMock, createLoggerMock] = vi.hoisted(() => {
   const mockLogger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
@@ -32,6 +48,31 @@ vi.mock("../runtime/logger", () => ({
 vi.mock("../runtime/extensions-guard", () => ({
   assertSafeExtensionSources: vi.fn(),
   ExtensionGuardError: class ExtensionGuardError extends Error {},
+}));
+
+const [authGatewayMock, createDaemonAuthRuntimeMock, modelValidatorMock, disposeModelsMock] = vi.hoisted(() => {
+  const gateway = { listModels: vi.fn(async () => [] as any[]), shutdown: vi.fn() };
+  const modelValidator = {
+    prepareModelCatalog: vi.fn(async () => ({ models: [], commit() {}, rollback() {} })),
+  };
+  const disposeModels = vi.fn(async () => {});
+  const createDaemon = vi.fn<
+    (options: DaemonAuthRuntimeOptions<AuthModelRuntime>) => Promise<DaemonAuthRuntime>
+  >(async () => ({
+    auth: gateway,
+    modelValidator,
+    dispose: disposeModels,
+  } as unknown as DaemonAuthRuntime));
+  return [
+    gateway,
+    createDaemon,
+    modelValidator,
+    disposeModels,
+  ] as const;
+});
+
+vi.mock("./auth-runtime", () => ({
+  createDaemonAuthRuntime: createDaemonAuthRuntimeMock,
 }));
 
 const noopLogger: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} };
@@ -145,6 +186,71 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+function fakeConfiguration(
+  initial: { generation: number; error: string | null } = { generation: 1, error: null },
+) {
+  let generation = initial.generation;
+  let error = initial.error;
+  const listeners = new Set<(event: ConfigurationEvent) => void>();
+  const accessOrder: string[] = [];
+  const notifications: Array<{ agentsChanged?: boolean; modelsChanged?: boolean; force?: boolean }> = [];
+  const live: LiveConfiguration = {
+    get generation() {
+      accessOrder.push("generation");
+      return generation;
+    },
+    get error() {
+      accessOrder.push("error");
+      return error;
+    },
+    start: async () => {},
+    synchronize: async () => {},
+    isCurrent: (candidate) => error === null && candidate === generation,
+    notify: async (change) => {
+      notifications.push(change);
+    },
+    resolveAgents: async () => [],
+    subscribe(listener) {
+      accessOrder.push("subscribe");
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    close: async () => {
+      listeners.clear();
+    },
+  };
+  return {
+    live,
+    accessOrder,
+    notifications,
+    activeSubscribers: () => listeners.size,
+    emit(event: ConfigurationEvent) {
+      generation = event.generation;
+      error = event.type === "config.error" ? event.message : null;
+      for (const listener of [...listeners]) listener(event);
+    },
+  };
+}
+
+async function readSseEvent(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): Promise<Record<string, unknown>> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const result = await Promise.race([
+    reader.read(),
+    new Promise<never>((_resolve, reject) => {
+      timeout = setTimeout(() => reject(new Error("Timed out waiting for SSE event")), 5_000);
+    }),
+  ]).finally(() => {
+    if (timeout !== undefined) clearTimeout(timeout);
+  });
+  if (result.done || !result.value) throw new Error("SSE stream ended before the next event");
+  const frame = new TextDecoder().decode(result.value);
+  expect(frame.endsWith("\n\n")).toBe(true);
+  expect(frame.startsWith("data: ")).toBe(true);
+  return JSON.parse(frame.slice("data: ".length, -2)) as Record<string, unknown>;
+}
+
 class FakeFactory implements SessionFactory {
   created: FakeAdapter[] = [];
   create(options: StartSessionOptions): SessionAdapter {
@@ -195,27 +301,32 @@ describe("web routes", () => {
     directoryService = new DirectoryService(homeDir);
     configService = new ConfigFileService(agentDir);
     historySessions = [];
+    authGatewayMock.listModels.mockReset().mockResolvedValue([]);
+    authGatewayMock.shutdown.mockReset();
+    modelValidatorMock.prepareModelCatalog.mockClear();
+    disposeModelsMock.mockReset();
+    createDaemonAuthRuntimeMock.mockReset().mockResolvedValue({
+      auth: authGatewayMock,
+      modelValidator: modelValidatorMock,
+      dispose: disposeModelsMock,
+    } as unknown as DaemonAuthRuntime);
   });
 
   function setup(overrides: Partial<RouteServices> = {}): void {
+    const configuration = fakeConfiguration().live;
     const services: RouteServices = {
       webuiDist,
       listAllSessions: async () => historySessions,
       listModels: async () => [],
-      effectiveModels: async () => [],
-      setAgentModel: async () => {},
-      clearAgentOverrides: async () => {},
-      effectiveThinking: async () => [],
-      setAgentThinking: async () => {},
       renameSession: async () => {},
       listConfigProjects: async () => ({ home: agentDir, projects: [] }),
       directories: directoryService,
       registry,
       config: configService,
       logger: noopLogger,
+      configuration,
       listAgents: async () => [],
-      getWebuiSettings: vi.fn(async () => ({ agentModels: {}, paperAssistantModel: null, effectivePaperAssistantModel: null, agentThinking: {}, paperAssistantThinking: null })),
-      updateWebuiSettings: vi.fn(async (patch) => ({ agentModels: {}, paperAssistantModel: null, effectivePaperAssistantModel: null, agentThinking: {}, paperAssistantThinking: null, ...patch })),
+      patchAgent: async (name, patch) => patchGlobalAgent(configService, name, patch, () => true),
       subagentSessions: {
         summaries: async () => [],
         snapshot: async (_parentSessionId: string, childSessionId: string) => {
@@ -226,6 +337,28 @@ describe("web routes", () => {
     };
     handler = createRouteHandler(services);
   }
+
+  it.each([
+    ["GET", "/api/webui-settings", undefined],
+    ["PUT", "/api/webui-settings", { agentModels: {} }],
+    ["GET", "/api/sessions/s1/agents/effective-models", undefined],
+    ["GET", "/api/sessions/s1/agents/effective-thinking", undefined],
+    ["PUT", "/api/sessions/s1/agents/search/model", { model: "openai/gpt-4o" }],
+    ["PUT", "/api/sessions/s1/agents/search/thinking", { thinking: "high" }],
+    ["POST", "/api/sessions/s1/agent-overrides/clear", undefined],
+  ])("removes the legacy %s %s Agent configuration route", async (method, path, body) => {
+    setup();
+    const response = await handler(
+      new Request(`http://localhost${path}`, {
+        method,
+        ...(body === undefined
+          ? {}
+          : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+      }),
+    );
+
+    expect(response.status).toBe(404);
+  });
 
   it("returns status with history and active sessions", async () => {
     historySessions = [
@@ -733,7 +866,490 @@ describe("web routes", () => {
     reader.cancel();
   });
 
-  it("frames the snapshot before stable supervisor supplements across every acquisition phase", async () => {
+  it("streams one current configuration event before ordered daemon-wide updates", async () => {
+    const configuration = fakeConfiguration({ generation: 1, error: null });
+    setup({ configuration: configuration.live } as Partial<RouteServices>);
+
+    const response = await handler(new Request("http://localhost/api/config/events"));
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    const reader = response.body!.getReader();
+    try {
+      expect(await readSseEvent(reader)).toEqual({
+        type: "config.updated",
+        generation: 1,
+        agentsChanged: true,
+        modelsChanged: true,
+      });
+      expect(configuration.accessOrder[0]).toBe("subscribe");
+
+      configuration.emit({
+        type: "config.updated",
+        generation: 2,
+        agentsChanged: true,
+        modelsChanged: false,
+      });
+      configuration.emit({
+        type: "config.updated",
+        generation: 3,
+        agentsChanged: false,
+        modelsChanged: true,
+      });
+      expect(await readSseEvent(reader)).toEqual({
+        type: "config.updated",
+        generation: 2,
+        agentsChanged: true,
+        modelsChanged: false,
+      });
+      expect(await readSseEvent(reader)).toEqual({
+        type: "config.updated",
+        generation: 3,
+        agentsChanged: false,
+        modelsChanged: true,
+      });
+    } finally {
+      await reader.cancel();
+    }
+    expect(configuration.activeSubscribers()).toBe(0);
+  });
+
+  it("keeps configuration SSE open across a redacted generation-zero error and recovery", async () => {
+    const safeError = "Configuration validation failed. Fix the global Agent or model configuration and retry.";
+    const configuration = fakeConfiguration({ generation: 0, error: safeError });
+    setup({ configuration: configuration.live } as Partial<RouteServices>);
+
+    const response = await handler(new Request("http://localhost/api/config/events"));
+    const reader = response.body!.getReader();
+    try {
+      const initial = await readSseEvent(reader);
+      expect(initial).toEqual({ type: "config.error", generation: 0, message: safeError });
+      expect(initial).not.toHaveProperty("messages");
+      expect(initial).not.toHaveProperty("session");
+      expect(JSON.stringify(initial)).not.toContain("/private/");
+
+      configuration.emit({
+        type: "config.updated",
+        generation: 1,
+        agentsChanged: true,
+        modelsChanged: true,
+      });
+      expect(await readSseEvent(reader)).toEqual({
+        type: "config.updated",
+        generation: 1,
+        agentsChanged: true,
+        modelsChanged: true,
+      });
+    } finally {
+      await reader.cancel();
+    }
+  });
+
+  it("notifies every successful authoritative route write and no failed or irrelevant write", async () => {
+    const configuration = fakeConfiguration();
+    configService = new ConfigFileService(agentDir, {
+      onAuthoritativeWrite: (change) => configuration.live.notify(change),
+    });
+    mkdirSync(join(agentDir, "agents"), { recursive: true });
+    writeFileSync(
+      join(agentDir, "agents", "search.md"),
+      "---\nname: search\ndescription: Search\n---\nSearch prompt\n",
+    );
+    setup({ configuration: configuration.live } as Partial<RouteServices>);
+
+    const send = (path: string, method: string, body: unknown) =>
+      handler(new Request(`http://localhost${path}`, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }));
+
+    expect((await send("/api/agents/search", "PATCH", { thinking: "high" })).status).toBe(200);
+    expect(configuration.notifications.at(-1)).toEqual({ agentsChanged: true });
+
+    expect((await send("/api/agent-resources/search", "PUT", {
+      content: "---\nname: search\ndescription: Saved\n---\nSaved prompt\n",
+    })).status).toBe(200);
+    expect(configuration.notifications.at(-1)).toEqual({ agentsChanged: true });
+
+    expect((await send("/api/agent-resources", "POST", { name: "reviewer" })).status).toBe(200);
+    expect(configuration.notifications.at(-1)).toEqual({ agentsChanged: true });
+
+    expect((await send("/api/config/file", "PUT", {
+      scope: "global",
+      path: "agents/external.md",
+      content: "---\nname: external\ndescription: External\n---\nPrompt\n",
+    })).status).toBe(200);
+    expect(configuration.notifications.at(-1)).toEqual({ agentsChanged: true });
+
+    expect((await send("/api/config/file", "PUT", {
+      scope: "global",
+      path: "models.json",
+      content: '{"providers":{}}',
+    })).status).toBe(200);
+    expect(configuration.notifications.at(-1)).toEqual({ modelsChanged: true });
+    expect((await send("/api/config/file", "PUT", {
+      scope: "global",
+      path: "settings.json",
+      content: "{}",
+    })).status).toBe(200);
+    expect(configuration.notifications.at(-1)).toEqual({ agentsChanged: true });
+    const afterSettingsCount = configuration.notifications.length;
+    expect((await send("/api/config/file", "PUT", {
+      scope: "project",
+      cwd: projectDir,
+      path: "agents/project.md",
+      content: "project",
+    })).status).toBe(200);
+    expect((await send("/api/config/file", "PUT", {
+      scope: "global",
+      path: "models.json",
+      content: "{",
+    })).status).toBe(400);
+    expect(configuration.notifications).toHaveLength(afterSettingsCount);
+  });
+
+  it("recovers generation-zero startup through config write and observes a later external Agent edit", async () => {
+    const modelsPath = join(agentDir, "models.json");
+    writeFileSync(modelsPath, "{ malformed models");
+    const live = createLiveConfiguration({
+      agentDir,
+      modelValidator: {
+        async prepareModelCatalog() {
+          const parsed = JSON.parse(readFileSync(modelsPath, "utf8")) as { providers?: unknown };
+          if (!parsed.providers || typeof parsed.providers !== "object" || Array.isArray(parsed.providers)) {
+            throw new Error("private semantic detail");
+          }
+          return { models: [], commit() {}, rollback() {} };
+        },
+      },
+    });
+    await live.start();
+    expect(live.generation).toBe(0);
+    configService = new ConfigFileService(agentDir, {
+      onAuthoritativeWrite: (change) => live.notify(change),
+    });
+    const configurationFactory: SessionFactory = {
+      create(options) {
+        const adapter = new FakeAdapter(options);
+        adapter.start = async () => {
+          await live.resolveAgents(options.cwd);
+        };
+        adapter.prompt = async () => {
+          await live.synchronize();
+          if (!live.isCurrent(live.generation)) throw new ConfigurationUnavailableError();
+        };
+        return adapter;
+      },
+    };
+    registry = new ActiveSessionRegistry(configurationFactory, noopLogger, { idleTimeoutMs: -1 });
+    setup({ configuration: live } as Partial<RouteServices>);
+
+    const events = await handler(new Request("http://localhost/api/config/events"));
+    const reader = events.body!.getReader();
+    try {
+      expect((await handler(new Request("http://localhost/api/status"))).status).toBe(200);
+      expect((await handler(new Request("http://localhost/api/config?scope=global"))).status).toBe(200);
+      const startupEvent = await readSseEvent(reader);
+      expect(startupEvent).toMatchObject({ type: "config.error", generation: 0 });
+      expect(JSON.stringify(startupEvent)).not.toContain("private semantic detail");
+      expect(JSON.stringify(startupEvent)).not.toContain(agentDir);
+
+      const blocked = await handler(new Request("http://localhost/api/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cwd: projectDir }),
+      }));
+      expect(blocked.status).toBe(503);
+      expect(await blocked.json()).toEqual({
+        error: "No valid configuration is available. Fix the global Agent or model configuration and retry.",
+        code: "CONFIGURATION_UNAVAILABLE",
+      });
+
+      const repaired = await handler(new Request("http://localhost/api/config/file", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope: "global", path: "models.json", content: '{"providers":{}}' }),
+      }));
+      expect(repaired.status).toBe(200);
+      expect(await readSseEvent(reader)).toEqual({
+        type: "config.updated",
+        generation: 1,
+        agentsChanged: true,
+        modelsChanged: true,
+      });
+
+      const created = await handler(new Request("http://localhost/api/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cwd: projectDir }),
+      }));
+      expect(created.status).toBe(200);
+      const { id } = await created.json() as { id: string };
+      expect((await handler(new Request(`http://localhost/api/sessions/${id}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "continue" }),
+      }))).status).toBe(200);
+
+      mkdirSync(join(agentDir, "agents"), { recursive: true });
+      writeFileSync(
+        join(agentDir, "agents", "reviewer.md"),
+        "---\nname: reviewer\ndescription: Reviewer\n---\nReview prompt\n",
+      );
+      expect(await readSseEvent(reader)).toMatchObject({
+        type: "config.updated",
+        generation: 2,
+        agentsChanged: true,
+        modelsChanged: false,
+      });
+    } finally {
+      await reader.cancel();
+      await registry.shutdown();
+      await live.close();
+    }
+  });
+
+  it("recovers generation zero through real daemon auth and preserves accepted models across a rejected revision", async () => {
+    const modelsPath = join(agentDir, "models.json");
+    mkdirSync(join(agentDir, "agents"), { recursive: true });
+    writeFileSync(modelsPath, "{ malformed models");
+    writeFileSync(
+      join(agentDir, "agents", "guard.md"),
+      "---\nname: guard\ndescription: Guard\nmodel: accepted-provider/accepted-model\n---\nGuard prompt\n",
+    );
+    writeFileSync(
+      join(agentDir, "settings.json"),
+      JSON.stringify({
+        easyresearch: {
+          agentDefaults: { guard: { model: "accepted-provider/accepted-model" } },
+        },
+      }),
+    );
+    writeFileSync(
+      join(agentDir, "agents", "search.md"),
+      "---\nname: search\ndescription: Search\n---\nSearch prompt\n",
+    );
+    const createdRuntimes: Array<AuthModelRuntime & { dispose: ReturnType<typeof vi.fn> }> = [];
+    const createModelRuntime = vi.fn(async () => {
+      let providers: Array<{ id: string; name: string; auth: Record<string, never> }> = [];
+      let models: Array<{ provider: string; id: string; reasoning: boolean }> = [];
+      const runtime = {
+        dispose: vi.fn(async () => {}),
+        async refresh() {
+          try {
+            const root = JSON.parse(readFileSync(modelsPath, "utf8")) as {
+              providers?: Record<string, { models?: Array<{ id: string; reasoning?: boolean }> }>;
+            };
+            if (!root.providers || Array.isArray(root.providers)) throw new Error("invalid providers");
+            providers = Object.keys(root.providers).map((id) => ({ id, name: id, auth: {} }));
+            models = Object.entries(root.providers).flatMap(([provider, config]) =>
+              (config.models ?? []).map((model) => ({
+                provider,
+                id: model.id,
+                reasoning: model.reasoning ?? false,
+              }))
+            );
+            return { aborted: false, errors: new Map<string, Error>() };
+          } catch (error) {
+            return { aborted: false, errors: new Map([["models", error as Error]]) };
+          }
+        },
+        getError: () => undefined,
+        getAvailableSnapshot: () => models,
+        getProviders: () => providers,
+        getProvider: (providerId: string) => providers.find((provider) => provider.id === providerId),
+        getProviderAuthStatus: () => ({ configured: false }),
+        checkAuth: async () => undefined,
+        login: async () => ({ type: "api_key" as const, key: "unused" }),
+        logout: async () => {},
+      } satisfies AuthModelRuntime & { dispose: ReturnType<typeof vi.fn> };
+      createdRuntimes.push(runtime);
+      return runtime;
+    });
+    const actualAuthRuntime = await vi.importActual<typeof import("./auth-runtime")>("./auth-runtime");
+    createDaemonAuthRuntimeMock.mockImplementation((options) =>
+      actualAuthRuntime.createDaemonAuthRuntime(options)
+    );
+    const pi = await piImportModule.importPi();
+    const importPi = vi.spyOn(piImportModule, "importPi").mockResolvedValue({
+      ...pi,
+      getAgentDir: () => agentDir,
+      ModelRuntime: { create: createModelRuntime },
+      SessionManager: {
+        listAll: async () => [{
+          id: "fixture-history",
+          path: "/agent/sessions/fixture.jsonl",
+          cwd: projectDir,
+          created: new Date(0),
+          modified: new Date(0),
+          messageCount: 0,
+          firstMessage: "",
+        }],
+        open: vi.fn(() => ({ getEntries: () => [] })),
+      },
+    } as never);
+    let live!: LiveConfiguration;
+    let permitGenerationZeroFixture = false;
+    const productionFactory: SessionFactory = {
+      create(options) {
+        const adapter = new FakeAdapter(options);
+        adapter.getState = async () => ({
+          thinkingLevel: "off",
+          isStreaming: false,
+          isCompacting: false,
+          sessionFile: options.sessionPath,
+          sessionId: `production-${++FakeAdapter.nextId}`,
+          messageCount: 0,
+        });
+        adapter.start = async () => {
+          if (!permitGenerationZeroFixture) await live.resolveAgents(options.cwd);
+        };
+        adapter.prompt = async (message) => {
+          await live.synchronize();
+          await live.resolveAgents(options.cwd);
+          adapter.prompts.push(message);
+        };
+        return adapter;
+      },
+    };
+    const resolveFactory = vi.spyOn(PiSessionFactory, "resolve").mockImplementation(async (configuration) => {
+      live = configuration!;
+      return productionFactory as never;
+    });
+    const originalBun = (globalThis as { Bun?: unknown }).Bun;
+    let productionHandler: ((request: Request) => Promise<Response>) | undefined;
+    (globalThis as { Bun?: unknown }).Bun = {
+      serve: ({ fetch }: { fetch: (request: Request) => Promise<Response> }) => {
+        productionHandler = fetch;
+        return { port: 43215, stop: vi.fn() };
+      },
+    };
+    let server: Awaited<ReturnType<typeof startServer>> | undefined;
+
+    try {
+      server = await startServer({ host: "127.0.0.1", port: 0 });
+      const request = (path: string, init?: RequestInit) =>
+        productionHandler!(new Request(`http://127.0.0.1:${server!.port}${path}`, init));
+      const json = (method: string, body: unknown): RequestInit => ({
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const events = await request("/api/config/events");
+      const reader = events.body!.getReader();
+      try {
+        expect((await request("/api/status")).status).toBe(200);
+        expect((await request("/api/config?scope=global")).status).toBe(200);
+        expect(await readSseEvent(reader)).toMatchObject({ type: "config.error", generation: 0 });
+
+        const blockedCreate = await request("/api/sessions", json("POST", { cwd: projectDir }));
+        expect(blockedCreate.status).toBe(503);
+
+        permitGenerationZeroFixture = true;
+        const fixtureSession = await request(
+          "/api/sessions/open",
+          json("POST", { path: "/agent/sessions/fixture.jsonl" }),
+        );
+        expect(fixtureSession.status).toBe(200);
+        const fixtureId = (await fixtureSession.json() as { id: string }).id;
+        permitGenerationZeroFixture = false;
+        const blockedPrompt = await request(
+          `/api/sessions/${fixtureId}/messages`,
+          json("POST", { message: "blocked" }),
+        );
+        expect(blockedPrompt.status).toBe(503);
+
+        const acceptedModels = {
+          providers: {
+            "accepted-provider": { models: [{ id: "accepted-model", reasoning: false }] },
+          },
+        };
+        expect((await request("/api/config/file", json("PUT", {
+          scope: "global",
+          path: "models.json",
+          content: JSON.stringify(acceptedModels),
+        }))).status).toBe(200);
+        expect(await readSseEvent(reader)).toEqual({
+          type: "config.updated",
+          generation: 1,
+          agentsChanged: true,
+          modelsChanged: true,
+        });
+        expect(await (await request("/api/models")).json()).toEqual({
+          models: [{
+            provider: "accepted-provider",
+            id: "accepted-model",
+            reasoning: false,
+          }],
+        });
+        const created = await request("/api/sessions", json("POST", { cwd: projectDir }));
+        expect(created.status).toBe(200);
+
+        const rejectedModels = {
+          providers: {
+            "rejected-provider": { models: [{ id: "rejected-model", reasoning: true }] },
+          },
+        };
+        writeFileSync(modelsPath, JSON.stringify(rejectedModels));
+        expect(await (await request("/api/models")).json()).toEqual({
+          models: [{
+            provider: "accepted-provider",
+            id: "accepted-model",
+            reasoning: false,
+          }],
+        });
+        expect(await readSseEvent(reader)).toMatchObject({ type: "config.error", generation: 1 });
+        const providers = await (await request("/api/auth/providers")).json() as {
+          providers: Array<{ id: string; modelsJson: boolean }>;
+        };
+        expect(providers.providers).toMatchObject([
+          { id: "accepted-provider", modelsJson: true },
+        ]);
+        expect((await request("/api/agents/search", json("PATCH", {
+          model: "accepted-provider/accepted-model",
+        }))).status).toBe(200);
+
+        expect((await request("/api/config/file", json("PUT", {
+          scope: "global",
+          path: "settings.json",
+          content: JSON.stringify({
+            easyresearch: {
+              agentDefaults: {
+                guard: { model: "rejected-provider/rejected-model" },
+                search: { model: "rejected-provider/rejected-model" },
+              },
+            },
+          }),
+        }))).status).toBe(200);
+        expect(await readSseEvent(reader)).toEqual({
+          type: "config.updated",
+          generation: 2,
+          agentsChanged: true,
+          modelsChanged: true,
+        });
+        expect(await (await request("/api/models")).json()).toMatchObject({
+          models: [{ provider: "rejected-provider", id: "rejected-model" }],
+        });
+        const recoveredProviders = await (await request("/api/auth/providers")).json() as {
+          providers: Array<{ id: string; modelsJson: boolean }>;
+        };
+        expect(recoveredProviders.providers).toMatchObject([
+          { id: "rejected-provider", modelsJson: true },
+        ]);
+      } finally {
+        await reader.cancel();
+      }
+      expect(createdRuntimes.filter((runtime) => runtime.dispose.mock.calls.length === 0)).toHaveLength(1);
+    } finally {
+      await server?.stop().catch(() => {});
+      resolveFactory.mockRestore();
+      importPi.mockRestore();
+      if (originalBun === undefined) delete (globalThis as { Bun?: unknown }).Bun;
+      else (globalThis as { Bun?: unknown }).Bun = originalBun;
+    }
+  });
+
+  it("applies the acquisition barrier before enrichment and preserves only stable pre-barrier supplements", async () => {
     const messages = deferred<AgentMessage[]>();
     const messagesRequested = deferred<void>();
     const summaries = deferred<SubagentSessionSummaryDto[]>();
@@ -1111,6 +1727,24 @@ describe("web routes", () => {
     expect(factory.created[0]?.prompts).toEqual(["Write a paper"]);
   });
 
+  it("returns the fixed safe configuration error when prompt preflight is unavailable", async () => {
+    setup();
+    const created = await registry.create({ cwd: projectDir });
+    vi.spyOn(registry, "prompt").mockRejectedValue(new ConfigurationUnavailableError());
+
+    const response = await handler(new Request(`http://localhost/api/sessions/${created.id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "continue" }),
+    }));
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      error: "No valid configuration is available. Fix the global Agent or model configuration and retry.",
+      code: "CONFIGURATION_UNAVAILABLE",
+    });
+  });
+
   it("aborts, stops, and 404s restarting a stopped session", async () => {
     setup();
     const created = (await (
@@ -1247,7 +1881,7 @@ describe("web routes", () => {
 
   it("lists the agent roster for the exact cwd with missing-skill diagnostics", async () => {
     const listAgents = vi.fn(async () => [
-      { name: "paper-assistant", description: "Runs the pipeline", enabled: true, builtin: true, source: "bundled" as const, filePath: "paper-assistant.md", tools: ["subagent"], effectiveTools: ["subagent"], skills: ["research-project-workflow", "missing-skill"], effectiveSkills: ["research-project-workflow"], missingSkills: ["missing-skill"] },
+      { name: "paper-assistant", description: "Runs the pipeline", enabled: true, builtin: true, source: "bundled" as const, filePath: "paper-assistant.md", thinking: "high" as const, tools: ["subagent"], effectiveTools: ["subagent"], skills: ["research-project-workflow", "missing-skill"], effectiveSkills: ["research-project-workflow"], missingSkills: ["missing-skill"] },
       { name: "search", description: "Finds papers", enabled: true, builtin: true, source: "bundled" as const, filePath: "search.md", effectiveTools: [], subagents: [], skills: [], effectiveSkills: [], missingSkills: [] },
     ]);
     setup({
@@ -1265,6 +1899,7 @@ describe("web routes", () => {
       missingSkills: string[];
       systemPrompt?: string;
       model?: string;
+      thinking?: string;
     }>;
     expect(listAgents).toHaveBeenCalledWith("/exact/project");
     expect(body.map((a) => a.name)).toEqual(["paper-assistant", "search"]);
@@ -1275,6 +1910,85 @@ describe("web routes", () => {
     expect(body[1]?.skills).toEqual([]);
     expect(body[0]?.systemPrompt).toBeUndefined();
     expect(body[0]?.model).toBeUndefined();
+    expect(body[0]?.thinking).toBe("high");
+  });
+
+  it("PATCH /api/agents/:name persists one global Agent configuration", async () => {
+    mkdirSync(join(agentDir, "agents"), { recursive: true });
+    const target = join(agentDir, "agents", "search.md");
+    writeFileSync(target, "---\nname: search\ndescription: Search\n---\nSearch prompt\n");
+    const listModels = vi.fn(async () => [
+      { provider: "openai", id: "gpt-4o", reasoning: false },
+    ]);
+    setup({
+      listModels,
+      patchAgent: createAgentPatchService(configService, listModels),
+    });
+
+    const response = await handler(
+      new Request("http://localhost/api/agents/search", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "openai/gpt-4o", thinking: "high" }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ name: "search", model: "openai/gpt-4o", thinking: "high" });
+    expect(readFileSync(target, "utf8")).toBe(
+      "---\nname: search\ndescription: Search\n---\nSearch prompt\n",
+    );
+    expect(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"))).toEqual({
+      easyresearch: {
+        agentDefaults: { search: { model: "openai/gpt-4o", thinking: "high" } },
+      },
+    });
+    expect(listModels).toHaveBeenCalledTimes(1);
+  });
+
+  it("PATCH /api/agents/:name rejects a model missing from the injected current catalog", async () => {
+    mkdirSync(join(agentDir, "agents"), { recursive: true });
+    const target = join(agentDir, "agents", "search.md");
+    writeFileSync(target, "---\nname: search\ndescription: Search\n---\nSearch prompt\n");
+    const before = readFileSync(target);
+    const listModels = vi.fn(async () => [
+      { provider: "anthropic", id: "claude", reasoning: true },
+    ]);
+    setup({
+      listModels,
+      patchAgent: createAgentPatchService(configService, listModels),
+    });
+
+    const response = await handler(
+      new Request("http://localhost/api/agents/search", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "openai/gpt-4o" }),
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(readFileSync(target)).toEqual(before);
+    expect(listModels).toHaveBeenCalledTimes(1);
+  });
+
+  it("PATCH /api/agents/:name rejects unknown keys without changing persisted bytes", async () => {
+    mkdirSync(join(agentDir, "agents"), { recursive: true });
+    const target = join(agentDir, "agents", "search.md");
+    writeFileSync(target, "---\nname: search\ndescription: Search\n---\nSearch prompt\n");
+    const before = readFileSync(target);
+    setup();
+
+    const response = await handler(
+      new Request("http://localhost/api/agents/search", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "openai/gpt-4o", unexpected: true }),
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(readFileSync(target)).toEqual(before);
   });
 
   it("maps a discovered AgentConfig into the roster DTO without private fields", () => {
@@ -1291,6 +2005,7 @@ describe("web routes", () => {
         effectiveSkills: ["paper-search"],
         missingSkills: ["missing-skill"],
         model: "deepseek/ds-v3",
+        thinking: "medium",
         systemPrompt: "SECRET PROMPT",
         source: "global",
         filePath: "/agent/agents/search.md",
@@ -1303,6 +2018,7 @@ describe("web routes", () => {
       source: "global",
       filePath: "/agent/agents/search.md",
       model: "deepseek/ds-v3",
+      thinking: "medium",
       tools: ["bash"],
       effectiveTools: ["bash"],
       subagents: ["experiment"],
@@ -1364,12 +2080,20 @@ describe("web routes", () => {
     }
   });
 
-  it("keeps the Global diagnostic roster project-free when Web starts inside a project cwd", async () => {
+  it("uses the optional Web cwd only for Skill resolution, not Agent discovery", async () => {
     const originalCwd = process.cwd();
     mkdirSync(join(projectDir, ".easyresearch", "agents"), { recursive: true });
+    mkdirSync(join(projectDir, ".easyresearch", "skills", "project-only"), { recursive: true });
     writeFileSync(
       join(projectDir, ".easyresearch", "agents", "project-custom.md"),
       "---\nname: project-custom\ndescription: Project only\n---\nProject prompt\n",
+      "utf-8",
+    );
+    writeFileSync(join(projectDir, ".easyresearch", "skills", "project-only", "SKILL.md"), "# Project only\n", "utf-8");
+    mkdirSync(join(agentDir, "agents"), { recursive: true });
+    writeFileSync(
+      join(agentDir, "agents", "diagnostic.md"),
+      "---\nname: diagnostic\ndescription: Global diagnostic\nskills: [project-only]\n---\nGlobal prompt\n",
       "utf-8",
     );
 
@@ -1378,20 +2102,18 @@ describe("web routes", () => {
       const global = await discoverAgentsForWeb(undefined, agentDir);
       const project = await discoverAgentsForWeb(projectDir, agentDir);
       expect(global.map((agent) => agent.name)).not.toContain("project-custom");
-      expect(project.map((agent) => agent.name)).toContain("project-custom");
+      expect(project.map((agent) => agent.name)).not.toContain("project-custom");
+      expect(global.find((agent) => agent.name === "diagnostic")).toMatchObject({
+        effectiveSkills: [],
+        missingSkills: ["project-only"],
+      });
+      expect(project.find((agent) => agent.name === "diagnostic")).toMatchObject({
+        effectiveSkills: ["project-only"],
+        missingSkills: [],
+      });
     } finally {
       process.chdir(originalCwd);
     }
-  });
-
-  it("recognizes discovered agent names via isKnownAgentName", async () => {
-    mkdirSync(join(agentDir, "agents"), { recursive: true });
-    writeFileSync(join(agentDir, "agents", "search.md"), "---\nname: search\ndescription: finds papers\n---\nbody", "utf-8");
-    const { agents } = await discoverAgents({
-      agentDir,
-    });
-    expect(isKnownAgentName(agents, "search")).toBe(true);
-    expect(isKnownAgentName(agents, "writing")).toBe(true);
   });
 
   it("lists available models with reasoning and thinking map metadata", async () => {
@@ -1413,184 +2135,496 @@ describe("web routes", () => {
     ]);
   });
 
-  it("GET /api/webui-settings returns the settings object", async () => {
-    const res = await handler(new Request("http://localhost/api/webui-settings"));
-    expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ agentModels: {} });
-  });
-
-  it("PUT /api/webui-settings forwards the partial patch and returns the updated object", async () => {
-    const res = await handler(
-      new Request("http://localhost/api/webui-settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agentModels: { search: "openai/gpt-4o" } }),
-      }),
-    );
-    expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ agentModels: { search: "openai/gpt-4o" } });
-  });
-
-  it("PUT /api/webui-settings maps WebuiSettingsError to its status", async () => {
-    const updateWebuiSettings = vi.fn(async () => {
-      throw new WebuiSettingsError(400, "agentModels must be an object");
-    });
-    setup({ updateWebuiSettings });
-    const res = await handler(
-      new Request("http://localhost/api/webui-settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agentModels: 42 }),
-      }),
-    );
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toContain("agentModels");
-  });
-
-  it("round-trips the Paper Assistant default model through the real settings store", async () => {
-    const TEST_AVAILABLE = [{ provider: "oc", id: "deepseek-v4-flash-free" }];
-    setup({
-      getWebuiSettings: () => readEffectiveWebuiSettings(configService, TEST_AVAILABLE),
-      updateWebuiSettings: async (patch) => {
-        await updateWebuiSettings(configService, patch);
-        return readEffectiveWebuiSettings(configService, TEST_AVAILABLE);
-      },
-    });
-    const put = await handler(
-      new Request("http://localhost/api/webui-settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ paperAssistantModel: "openai/gpt-4o" }),
-      }),
-    );
-    expect(put.status).toBe(200);
-    const putBody = (await put.json()) as { paperAssistantModel: string | null; effectivePaperAssistantModel: string | null };
-    expect(putBody.paperAssistantModel).toBe("openai/gpt-4o");
-    expect(putBody.effectivePaperAssistantModel).toBe("openai/gpt-4o");
-
-    const get = await handler(new Request("http://localhost/api/webui-settings"));
-    expect((await get.json()).paperAssistantModel).toBe("openai/gpt-4o");
-
-    const clear = await handler(
-      new Request("http://localhost/api/webui-settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ paperAssistantModel: null }),
-      }),
-    );
-    expect(clear.status).toBe(200);
-    expect((await clear.json()).paperAssistantModel).toBeNull();
-  });
-
-  it("GET reports the Pi fallback model when no Paper Assistant default is configured", async () => {
-    setup({
-      getWebuiSettings: () => readEffectiveWebuiSettings(configService, [{ provider: "oc", id: "deepseek-v4-flash-free" }]),
-    });
-    const res = await handler(new Request("http://localhost/api/webui-settings"));
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.paperAssistantModel).toBeNull();
-    expect(body.effectivePaperAssistantModel).toBe("oc/deepseek-v4-flash-free");
-  });
-
-  it("forwards a null paperAssistantModel patch to the settings store", async () => {
-    const updateWebuiSettingsMock = vi.fn(async (patch) => ({
-      agentModels: {},
-      paperAssistantModel: null,
-      effectivePaperAssistantModel: null,
-      ...patch,
+  it("composes GET models and Agent PATCH over the shared auth gateway catalog", async () => {
+    mkdirSync(join(agentDir, "agents"), { recursive: true });
+    const target = join(agentDir, "agents", "search.md");
+    writeFileSync(target, "---\nname: search\ndescription: Search\n---\nSearch prompt\n", "utf8");
+    const pi = await piImportModule.importPi();
+    let gatewayModels = [{ provider: "openai", id: "gpt-4o", reasoning: false }];
+    authGatewayMock.listModels.mockImplementation(async () => gatewayModels);
+    const createRuntime = vi.fn(async () => ({
+      getAvailable: async () => [{ provider: "decoy", id: "separate-runtime", reasoning: false }],
     }));
-    setup({ updateWebuiSettings: updateWebuiSettingsMock });
-    const res = await handler(
-      new Request("http://localhost/api/webui-settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ paperAssistantModel: null }),
-      }),
-    );
-    expect(res.status).toBe(200);
-    expect(updateWebuiSettingsMock).toHaveBeenCalledWith({ paperAssistantModel: null });
-  });
-
-  it("returns the effective models for a session", async () => {
-    const effectiveModels = vi.fn(async () => [{ name: "search", model: "a/1", source: "override" as const }]);
-    setup({ effectiveModels });
-    const res = await handler(new Request("http://localhost/api/sessions/s1/agents/effective-models"));
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual([{ name: "search", model: "a/1", source: "override" }]);
-    expect(effectiveModels).toHaveBeenCalledWith("s1");
-  });
-
-  it("returns 404 for effective models of an unknown session", async () => {
-    setup({
-      effectiveModels: async () => {
-        throw new UnknownSessionError("Unknown session: nope");
+    const importPi = vi.spyOn(piImportModule, "importPi").mockResolvedValue({
+      ...pi,
+      getAgentDir: () => agentDir,
+      ModelRuntime: { create: createRuntime },
+      SessionManager: { listAll: async () => [], open: vi.fn() },
+    } as never);
+    const resolveFactory = vi.spyOn(PiSessionFactory, "resolve").mockResolvedValue(new FakeFactory() as never);
+    const originalBun = (globalThis as { Bun?: unknown }).Bun;
+    let productionHandler: ((request: Request) => Promise<Response>) | undefined;
+    (globalThis as { Bun?: unknown }).Bun = {
+      serve: ({ fetch }: { fetch: (request: Request) => Promise<Response> }) => {
+        productionHandler = fetch;
+        return { port: 43210, stop: vi.fn() };
       },
+    };
+    let server: Awaited<ReturnType<typeof startServer>> | undefined;
+
+    try {
+      server = await startServer({ host: "127.0.0.1", port: 0 });
+      const request = (path: string, init?: RequestInit) =>
+        productionHandler!(new Request(`http://127.0.0.1:${server!.port}${path}`, init));
+      const firstModels = await request("/api/models");
+      expect(firstModels.status).toBe(200);
+      expect(await firstModels.json()).toEqual({
+        models: [{ provider: "openai", id: "gpt-4o", reasoning: false }],
+      });
+      const firstPatch = await request("/api/agents/search", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "openai/gpt-4o" }),
+      });
+      expect(firstPatch.status).toBe(200);
+
+      gatewayModels = [{ provider: "anthropic", id: "claude", reasoning: true }];
+      const changedModels = await request("/api/models");
+      expect(changedModels.status).toBe(200);
+      expect(await changedModels.json()).toEqual({
+        models: [{ provider: "anthropic", id: "claude", reasoning: true }],
+      });
+      const changedPatch = await request("/api/agents/search", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "anthropic/claude" }),
+      });
+      expect(changedPatch.status).toBe(200);
+      expect(readFileSync(target, "utf8")).not.toContain("model:");
+      expect(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"))).toMatchObject({
+        easyresearch: { agentDefaults: { search: { model: "anthropic/claude" } } },
+      });
+    } finally {
+      await server?.stop();
+      resolveFactory.mockRestore();
+      importPi.mockRestore();
+      if (originalBun === undefined) delete (globalThis as { Bun?: unknown }).Bun;
+      else (globalThis as { Bun?: unknown }).Bun = originalBun;
+      authGatewayMock.shutdown.mockClear();
+    }
+  });
+
+  it("constructs one daemon LiveConfiguration and injects it into every session factory", async () => {
+    const pi = await piImportModule.importPi();
+    const createModelRuntime = vi.fn(async () => ({}));
+    const importPi = vi.spyOn(piImportModule, "importPi").mockResolvedValue({
+      ...pi,
+      getAgentDir: () => agentDir,
+      ModelRuntime: { create: createModelRuntime },
+      SessionManager: { listAll: async () => [], open: vi.fn() },
+    } as never);
+    let injected: LiveConfiguration | undefined;
+    const resolveFactory = vi.spyOn(PiSessionFactory, "resolve").mockImplementation(async (live) => {
+      injected = live;
+      return new FakeFactory() as never;
     });
-    const res = await handler(new Request("http://localhost/api/sessions/nope/agents/effective-models"));
-    expect(res.status).toBe(404);
+    const originalBun = (globalThis as { Bun?: unknown }).Bun;
+    const bunStop = vi.fn();
+    (globalThis as { Bun?: unknown }).Bun = {
+      serve: () => ({ port: 43211, stop: bunStop }),
+    };
+    let server: Awaited<ReturnType<typeof startServer>> | undefined;
+
+    try {
+      server = await startServer({ host: "127.0.0.1", port: 0 });
+      expect(createDaemonAuthRuntimeMock).toHaveBeenCalledTimes(1);
+      expect(injected).toBeDefined();
+      expect(injected?.generation).toBe(1);
+      expect(resolveFactory).toHaveBeenCalledWith(injected);
+      const daemonOptions = createDaemonAuthRuntimeMock.mock.calls[0]![0];
+      await daemonOptions.createModelRuntime();
+      expect(createModelRuntime).toHaveBeenCalledWith({
+        authPath: join(agentDir, "auth.json"),
+        modelsPath: join(agentDir, "models.json"),
+        refreshOnCreate: false,
+      });
+
+      const events: ConfigurationEvent[] = [];
+      const unsubscribe = injected!.subscribe((event) => events.push(event));
+      await daemonOptions.onModelsChanged();
+      unsubscribe();
+      expect(events.at(-1)).toMatchObject({
+        type: "config.updated",
+        generation: 2,
+        modelsChanged: true,
+      });
+    } finally {
+      await server?.stop();
+      resolveFactory.mockRestore();
+      importPi.mockRestore();
+      if (originalBun === undefined) delete (globalThis as { Bun?: unknown }).Bun;
+      else (globalThis as { Bun?: unknown }).Bun = originalBun;
+    }
   });
 
-  it("returns the effective thinking levels for a session", async () => {
-    const effectiveThinking = vi.fn(async () => [{ name: "search", thinking: "high", source: "override" as const }]);
-    setup({ effectiveThinking });
-    const res = await handler(new Request("http://localhost/api/sessions/s1/agents/effective-thinking"));
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual([{ name: "search", thinking: "high", source: "override" }]);
-    expect(effectiveThinking).toHaveBeenCalledWith("s1");
+  it("shuts down sessions, configuration, auth, models, and server in dependency order", async () => {
+    const order: string[] = [];
+    let releaseAuth!: () => void;
+    const authCleanup = new Promise<void>((resolve) => {
+      releaseAuth = resolve;
+    });
+    const configuration = fakeConfiguration().live;
+    configuration.start = vi.fn(async () => {});
+    configuration.close = vi.fn(async () => {
+      order.push("configuration");
+    });
+    const createLive = vi.spyOn(liveConfigurationModule, "createLiveConfiguration").mockReturnValue(configuration);
+    authGatewayMock.shutdown.mockImplementation(async () => {
+      order.push("auth-start");
+      await authCleanup;
+      order.push("auth-done");
+    });
+    disposeModelsMock.mockImplementation(async () => {
+      order.push("models");
+    });
+    const shutdown = vi.spyOn(ActiveSessionRegistry.prototype, "shutdown").mockImplementation(async () => {
+      order.push("sessions");
+    });
+    const pi = await piImportModule.importPi();
+    const importPi = vi.spyOn(piImportModule, "importPi").mockResolvedValue({
+      ...pi,
+      getAgentDir: () => agentDir,
+      SessionManager: { listAll: async () => [], open: vi.fn() },
+    } as never);
+    const resolveFactory = vi.spyOn(PiSessionFactory, "resolve").mockResolvedValue(new FakeFactory() as never);
+    const originalBun = (globalThis as { Bun?: unknown }).Bun;
+    (globalThis as { Bun?: unknown }).Bun = {
+      serve: () => ({
+        port: 43212,
+        stop: () => {
+          order.push("server");
+        },
+      }),
+    };
+    let server: Awaited<ReturnType<typeof startServer>> | undefined;
+
+    try {
+      server = await startServer({ host: "127.0.0.1", port: 0 });
+      const stopping = server.stop();
+      await vi.waitFor(() => {
+        expect(order).toEqual(["sessions", "configuration", "auth-start"]);
+      });
+      releaseAuth();
+      await stopping;
+      expect(order).toEqual(["sessions", "configuration", "auth-start", "auth-done", "models", "server"]);
+    } finally {
+      createLive.mockRestore();
+      shutdown.mockRestore();
+      resolveFactory.mockRestore();
+      importPi.mockRestore();
+      if (originalBun === undefined) delete (globalThis as { Bun?: unknown }).Bun;
+      else (globalThis as { Bun?: unknown }).Bun = originalBun;
+    }
   });
 
-  it("returns 404 for effective thinking of an unknown session", async () => {
-    setup({
-      effectiveThinking: async () => {
-        throw new UnknownSessionError("Unknown session: nope");
+  it("releases auth and model ownership when LiveConfiguration construction fails", async () => {
+    const constructionError = new Error("configuration constructor failed");
+    const createLive = vi.spyOn(liveConfigurationModule, "createLiveConfiguration")
+      .mockImplementation(() => {
+        throw constructionError;
+      });
+    const pi = await piImportModule.importPi();
+    const importPi = vi.spyOn(piImportModule, "importPi").mockResolvedValue({
+      ...pi,
+      getAgentDir: () => agentDir,
+      SessionManager: { listAll: async () => [], open: vi.fn() },
+    } as never);
+
+    try {
+      await expect(startServer({ host: "127.0.0.1", port: 0 })).rejects.toBe(constructionError);
+      expect(authGatewayMock.shutdown).toHaveBeenCalledTimes(1);
+      expect(disposeModelsMock).toHaveBeenCalledTimes(1);
+    } finally {
+      createLive.mockRestore();
+      importPi.mockRestore();
+    }
+  });
+
+  it("retries failed session shutdown before releasing dependent daemon resources", async () => {
+    const order: string[] = [];
+    const configuration = fakeConfiguration().live;
+    configuration.start = vi.fn(async () => {});
+    configuration.close = vi.fn(async () => {
+      order.push("configuration");
+    });
+    const createLive = vi.spyOn(liveConfigurationModule, "createLiveConfiguration").mockReturnValue(configuration);
+    authGatewayMock.shutdown.mockImplementation(() => {
+      order.push("auth");
+    });
+    disposeModelsMock.mockImplementation(async () => {
+      order.push("models");
+    });
+    const shutdown = vi.spyOn(ActiveSessionRegistry.prototype, "shutdown")
+      .mockImplementationOnce(async () => {
+        order.push("sessions-failed");
+        throw new Error("session cleanup failed");
+      })
+      .mockImplementationOnce(async () => {
+        order.push("sessions-retried");
+      });
+    const pi = await piImportModule.importPi();
+    const importPi = vi.spyOn(piImportModule, "importPi").mockResolvedValue({
+      ...pi,
+      getAgentDir: () => agentDir,
+      SessionManager: { listAll: async () => [], open: vi.fn() },
+    } as never);
+    const resolveFactory = vi.spyOn(PiSessionFactory, "resolve").mockResolvedValue(new FakeFactory() as never);
+    const originalBun = (globalThis as { Bun?: unknown }).Bun;
+    (globalThis as { Bun?: unknown }).Bun = {
+      serve: () => ({
+        port: 43213,
+        stop: () => {
+          order.push("server");
+        },
+      }),
+    };
+    let server: Awaited<ReturnType<typeof startServer>> | undefined;
+
+    try {
+      server = await startServer({ host: "127.0.0.1", port: 0 });
+      await expect(server.stop()).rejects.toThrow("session cleanup failed");
+      expect(order).toEqual(["sessions-failed"]);
+      await server.stop();
+      expect(order).toEqual([
+        "sessions-failed",
+        "sessions-retried",
+        "configuration",
+        "auth",
+        "models",
+        "server",
+      ]);
+    } finally {
+      createLive.mockRestore();
+      shutdown.mockRestore();
+      resolveFactory.mockRestore();
+      importPi.mockRestore();
+      if (originalBun === undefined) delete (globalThis as { Bun?: unknown }).Bun;
+      else (globalThis as { Bun?: unknown }).Bun = originalBun;
+    }
+  });
+
+  it("retries failed configuration close before releasing auth, models, and the Bun server", async () => {
+    const order: string[] = [];
+    const configuration = fakeConfiguration().live;
+    configuration.start = vi.fn(async () => {});
+    configuration.close = vi.fn()
+      .mockImplementationOnce(async () => {
+        order.push("configuration-failed");
+        throw new Error("configuration close failed");
+      })
+      .mockImplementationOnce(async () => {
+        order.push("configuration-retried");
+      });
+    const createLive = vi.spyOn(liveConfigurationModule, "createLiveConfiguration").mockReturnValue(configuration);
+    authGatewayMock.shutdown.mockImplementation(async () => {
+      order.push("auth");
+    });
+    disposeModelsMock.mockImplementation(async () => {
+      order.push("models");
+    });
+    const pi = await piImportModule.importPi();
+    const importPi = vi.spyOn(piImportModule, "importPi").mockResolvedValue({
+      ...pi,
+      getAgentDir: () => agentDir,
+      SessionManager: { listAll: async () => [], open: vi.fn() },
+    } as never);
+    const resolveFactory = vi.spyOn(PiSessionFactory, "resolve").mockResolvedValue(new FakeFactory() as never);
+    const originalBun = (globalThis as { Bun?: unknown }).Bun;
+    (globalThis as { Bun?: unknown }).Bun = {
+      serve: () => ({
+        port: 43214,
+        stop: () => {
+          order.push("server");
+        },
+      }),
+    };
+    let server: Awaited<ReturnType<typeof startServer>> | undefined;
+
+    try {
+      server = await startServer({ host: "127.0.0.1", port: 0 });
+      await expect(server.stop()).rejects.toThrow("configuration close failed");
+      expect(order).toEqual(["configuration-failed"]);
+
+      await server.stop();
+      expect(order).toEqual([
+        "configuration-failed",
+        "configuration-retried",
+        "auth",
+        "models",
+        "server",
+      ]);
+    } finally {
+      createLive.mockRestore();
+      resolveFactory.mockRestore();
+      importPi.mockRestore();
+      if (originalBun === undefined) delete (globalThis as { Bun?: unknown }).Bun;
+      else (globalThis as { Bun?: unknown }).Bun = originalBun;
+    }
+  });
+
+  it("retries transient configuration cleanup during failed startup before releasing dependencies", async () => {
+    const startupError = new Error("configuration startup failed");
+    const configuration = fakeConfiguration().live;
+    configuration.start = vi.fn(async () => {
+      throw startupError;
+    });
+    configuration.close = vi.fn()
+      .mockRejectedValueOnce(new Error("configuration close failed"))
+      .mockResolvedValueOnce(undefined);
+    const createLive = vi.spyOn(liveConfigurationModule, "createLiveConfiguration").mockReturnValue(configuration);
+    const pi = await piImportModule.importPi();
+    const importPi = vi.spyOn(piImportModule, "importPi").mockResolvedValue({
+      ...pi,
+      getAgentDir: () => agentDir,
+      SessionManager: { listAll: async () => [], open: vi.fn() },
+    } as never);
+
+    try {
+      await expect(startServer({ host: "127.0.0.1", port: 0 })).rejects.toBe(startupError);
+      expect(configuration.close).toHaveBeenCalledTimes(2);
+      expect(authGatewayMock.shutdown).toHaveBeenCalledTimes(1);
+      expect(disposeModelsMock).toHaveBeenCalledTimes(1);
+    } finally {
+      createLive.mockRestore();
+      importPi.mockRestore();
+    }
+  });
+
+  it("waits for a production pending launch and retries real configuration close before daemon teardown", async () => {
+    writeFileSync(join(agentDir, "models.json"), '{"providers":{}}');
+    const order: string[] = [];
+    const startGate = deferred<void>();
+    const watcherCallbacks = new Map<string, Array<(...args: unknown[]) => void>>();
+    const watcherClose = vi.fn()
+      .mockImplementationOnce(async () => {
+        order.push("configuration-failed");
+        throw new Error("watcher close failed");
+      })
+      .mockImplementationOnce(async () => {
+        order.push("configuration-retried");
+      });
+    const watch = () => {
+      const watcher = {
+        on(event: string, listener: (...args: unknown[]) => void) {
+          const listeners = watcherCallbacks.get(event) ?? [];
+          listeners.push(listener);
+          watcherCallbacks.set(event, listeners);
+          return watcher;
+        },
+        close: watcherClose,
+      };
+      queueMicrotask(() => {
+        for (const listener of watcherCallbacks.get("ready") ?? []) listener();
+      });
+      return watcher;
+    };
+    const actualCreateLive = liveConfigurationModule.createLiveConfiguration;
+    const createLive = vi.spyOn(liveConfigurationModule, "createLiveConfiguration")
+      .mockImplementation((options) => actualCreateLive({ ...options, watch: watch as never }));
+    const runtimeDispose = vi.fn(async () => {});
+    const createModelRuntime = vi.fn(async () => ({
+      dispose: runtimeDispose,
+      refresh: async () => ({ aborted: false, errors: new Map<string, Error>() }),
+      getError: () => undefined,
+      getAvailableSnapshot: () => [],
+      getProviders: () => [],
+      getProvider: () => undefined,
+      getProviderAuthStatus: () => ({ configured: false }),
+      checkAuth: async () => undefined,
+      login: async () => ({ type: "api_key" as const, key: "unused" }),
+      logout: async () => {},
+    }));
+    const actualAuthRuntime = await vi.importActual<typeof import("./auth-runtime")>("./auth-runtime");
+    createDaemonAuthRuntimeMock.mockImplementation(async (options) => {
+      const daemon = await actualAuthRuntime.createDaemonAuthRuntime(options);
+      return {
+        auth: {
+          ...daemon.auth,
+          shutdown: async () => {
+            await daemon.auth.shutdown();
+            order.push("auth");
+          },
+        },
+        modelValidator: daemon.modelValidator,
+        dispose: async () => {
+          order.push("models");
+          await daemon.dispose();
+        },
+      };
+    });
+    const pi = await piImportModule.importPi();
+    const importPi = vi.spyOn(piImportModule, "importPi").mockResolvedValue({
+      ...pi,
+      getAgentDir: () => agentDir,
+      ModelRuntime: { create: createModelRuntime },
+      SessionManager: { listAll: async () => [], open: vi.fn() },
+    } as never);
+    const pendingFactory: SessionFactory = {
+      create(options) {
+        const adapter = new FakeAdapter(options);
+        adapter.start = async () => {
+          await startGate.promise;
+        };
+        adapter.stop = async () => {
+          adapter.stopped++;
+          order.push("sessions");
+        };
+        return adapter;
       },
-    });
-    const res = await handler(new Request("http://localhost/api/sessions/nope/agents/effective-thinking"));
-    expect(res.status).toBe(404);
-  });
+    };
+    const resolveFactory = vi.spyOn(PiSessionFactory, "resolve").mockResolvedValue(pendingFactory as never);
+    const originalBun = (globalThis as { Bun?: unknown }).Bun;
+    let productionHandler: ((request: Request) => Promise<Response>) | undefined;
+    (globalThis as { Bun?: unknown }).Bun = {
+      serve: ({ fetch }: { fetch: (request: Request) => Promise<Response> }) => {
+        productionHandler = fetch;
+        return {
+          port: 43216,
+          stop: () => {
+            order.push("server");
+          },
+        };
+      },
+    };
+    let server: Awaited<ReturnType<typeof startServer>> | undefined;
 
-  it("sets an agent thinking level via PUT", async () => {
-    const setAgentThinking = vi.fn(async () => {});
-    setup({ setAgentThinking });
-    const res = await handler(
-      new Request("http://localhost/api/sessions/s1/agents/search/thinking", {
-        method: "PUT",
+    try {
+      server = await startServer({ host: "127.0.0.1", port: 0 });
+      const launch = productionHandler!(new Request(`http://127.0.0.1:${server.port}/api/sessions`, {
+        method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ thinking: "high" }),
-      }),
-    );
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
-    expect(setAgentThinking).toHaveBeenCalledWith("s1", "search", "high");
-  });
+        body: JSON.stringify({ cwd: projectDir }),
+      }));
+      await vi.waitFor(() => expect(FakeAdapter.all.at(-1)).toBeDefined());
 
-  it("sets a null thinking level (reset) via PUT", async () => {
-    const setAgentThinking = vi.fn(async () => {});
-    setup({ setAgentThinking });
-    const res = await handler(
-      new Request("http://localhost/api/sessions/s1/agents/figures/thinking", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ thinking: null }),
-      }),
-    );
-    expect(res.status).toBe(200);
-    expect(setAgentThinking).toHaveBeenCalledWith("s1", "figures", null);
-  });
+      const firstStop = server.stop();
+      await Promise.resolve();
+      const closeCallsBeforeLaunchSettled = watcherClose.mock.calls.length;
+      startGate.resolve();
 
-  it("rejects a non-string thinking body with 400", async () => {
-    const setAgentThinking = vi.fn(async () => {});
-    setup({ setAgentThinking });
-    const res = await handler(
-      new Request("http://localhost/api/sessions/s1/agents/search/thinking", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ thinking: 42 }),
-      }),
-    );
-    expect(res.status).toBe(400);
-    expect(setAgentThinking).not.toHaveBeenCalled();
+      expect((await launch).status).toBe(500);
+      await expect(firstStop).rejects.toThrow("Configuration monitoring could not close safely.");
+      expect(closeCallsBeforeLaunchSettled).toBe(0);
+      expect(order).toEqual(["sessions", "configuration-failed"]);
+
+      await server.stop();
+      expect(order).toEqual([
+        "sessions",
+        "configuration-failed",
+        "configuration-retried",
+        "auth",
+        "models",
+        "server",
+      ]);
+      expect(runtimeDispose).toHaveBeenCalledTimes(1);
+    } finally {
+      await server?.stop().catch(() => {});
+      createLive.mockRestore();
+      resolveFactory.mockRestore();
+      importPi.mockRestore();
+      if (originalBun === undefined) delete (globalThis as { Bun?: unknown }).Bun;
+      else (globalThis as { Bun?: unknown }).Bun = originalBun;
+    }
   });
 
   it("renames a connected session by dispatching the /name command", async () => {
@@ -1676,90 +2710,6 @@ describe("web routes", () => {
       }),
     );
     expect(res.status).toBe(404);
-  });
-
-  it("surfaces AgentThinkingError statuses from setAgentThinking (404 unknown agent)", async () => {
-    setup({
-      setAgentThinking: async () => {
-        throw new AgentThinkingError(404, "Unknown agent: ghost");
-      },
-    });
-    const res = await handler(
-      new Request("http://localhost/api/sessions/s1/agents/ghost/thinking", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ thinking: "high" }),
-      }),
-    );
-    expect(res.status).toBe(404);
-  });
-
-  it("sets a stage agent model via PUT and returns ok", async () => {
-    const setAgentModel = vi.fn(async () => {});
-    setup({ setAgentModel });
-    const res = await handler(
-      new Request("http://localhost/api/sessions/s1/agents/search/model", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "x/y" }),
-      }),
-    );
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
-    expect(setAgentModel).toHaveBeenCalledWith("s1", "search", "x/y");
-  });
-
-  it("clears every session agent override via POST and returns ok", async () => {
-    const clearAgentOverrides = vi.fn(async () => {});
-    setup({ clearAgentOverrides });
-    const res = await handler(new Request("http://localhost/api/sessions/s1/agent-overrides/clear", { method: "POST" }));
-    expect(res.status).toBe(200);
-    expect(clearAgentOverrides).toHaveBeenCalledWith("s1");
-    expect(await res.json()).toEqual({ ok: true });
-  });
-
-  it("sets a null model (reset) via PUT", async () => {
-    const setAgentModel = vi.fn(async () => {});
-    setup({ setAgentModel });
-    const res = await handler(
-      new Request("http://localhost/api/sessions/s1/agents/figures/model", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: null }),
-      }),
-    );
-    expect(res.status).toBe(200);
-    expect(setAgentModel).toHaveBeenCalledWith("s1", "figures", null);
-  });
-
-  it("rejects a non-string model body with 400", async () => {
-    const setAgentModel = vi.fn(async () => {});
-    setup({ setAgentModel });
-    const res = await handler(
-      new Request("http://localhost/api/sessions/s1/agents/search/model", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: 42 }),
-      }),
-    );
-    expect(res.status).toBe(400);
-    expect(setAgentModel).not.toHaveBeenCalled();
-  });
-
-  it("surfaces AgentModelError statuses from setAgentModel (409 reset without default)", async () => {
-    setup({
-      setAgentModel: async () => {
-        throw new AgentModelError(409, "No default model configured");
-      },
-    });
-    const res = await handler(
-      new Request("http://localhost/api/sessions/s1/agents/paper-assistant/model", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: null }),
-      }),
-    );
-    expect(res.status).toBe(409);
   });
 
   it("lists config projects from session cwds", async () => {

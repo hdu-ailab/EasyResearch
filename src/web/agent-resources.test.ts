@@ -1,9 +1,16 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConfigFileService } from "./config-files";
-import { listGlobalSkills, readGlobalAgent, readGlobalSkill, writeGlobalAgent, writeGlobalSkill } from "./agent-resources";
+import {
+  createGlobalAgent,
+  listGlobalSkills,
+  readGlobalAgent,
+  readGlobalSkill,
+  writeGlobalAgent,
+  writeGlobalSkill,
+} from "./agent-resources";
 
 const tempDirs: string[] = [];
 const originalHome = process.env.HOME;
@@ -67,6 +74,43 @@ describe("copy-on-save agent resources (ADR-058)", () => {
     expect(onDisk).toContain("description: edited");
   });
 
+  it("notifies only after validated full Agent saves and creates", async () => {
+    const agentDir = mkdtempSync(join("/dev/shm", "easyresearch-agent-res-"));
+    tempDirs.push(agentDir);
+    const onAuthoritativeWrite = vi.fn(async (_change: { agentsChanged?: true; modelsChanged?: true }) => {});
+    const config = new ConfigFileService(agentDir, { onAuthoritativeWrite });
+
+    await writeGlobalAgent(
+      config,
+      "search",
+      "---\nname: search\ndescription: edited\n---\nEdited prompt\n",
+    );
+    await createGlobalAgent(config, "reviewer");
+    await expect(
+      writeGlobalAgent(config, "search", "invalid without frontmatter"),
+    ).rejects.toMatchObject({ status: 400 });
+
+    expect(onAuthoritativeWrite.mock.calls.map(([change]) => change)).toEqual([
+      { agentsChanged: true },
+      { agentsChanged: true },
+    ]);
+  });
+
+  it("rejects malformed bundled Agent Markdown without materializing a global copy", async () => {
+    const { agentDir, config } = tempConfig();
+    mkdirSync(join(agentDir, "agents"), { recursive: true });
+    const unrelatedPath = join(agentDir, "agents", "reviewer.md");
+    writeFileSync(unrelatedPath, "---\nname: reviewer\ndescription: reviewer\n---\nPrompt\n");
+    const unrelatedBefore = readFileSync(unrelatedPath);
+
+    await expect(writeGlobalAgent(config, "search", "Search prompt without frontmatter\n")).rejects.toMatchObject({
+      status: 400,
+    });
+
+    expect(existsSync(join(agentDir, "agents", "search.md"))).toBe(false);
+    expect(readFileSync(unrelatedPath)).toEqual(unrelatedBefore);
+  });
+
   it("reading a global agent returns the global content and does not overwrite it", async () => {
     const { agentDir, config } = tempConfig();
     mkdirSync(join(agentDir, "agents"), { recursive: true });
@@ -75,6 +119,98 @@ describe("copy-on-save agent resources (ADR-058)", () => {
     expect(read.source).toBe("global");
     expect(read.content).toContain("description: custom");
     expect(readFileSync(join(agentDir, "agents", "search.md"), "utf8")).toContain("description: custom");
+  });
+
+  it("rejects frontmatter whose name does not match the target filename", async () => {
+    const { agentDir, config } = tempConfig();
+    mkdirSync(join(agentDir, "agents"), { recursive: true });
+    const target = join(agentDir, "agents", "search.md");
+    writeFileSync(target, "---\nname: search\ndescription: original\n---\nOriginal prompt\n");
+    const before = readFileSync(target);
+
+    await expect(
+      writeGlobalAgent(config, "search", "---\nname: writing\ndescription: wrong identity\n---\nChanged prompt\n"),
+    ).rejects.toMatchObject({ status: 400 });
+
+    expect(readFileSync(target)).toEqual(before);
+  });
+
+  it.each([
+    { field: "enable", value: "enable: yes" },
+    { field: "description", value: "description: 42" },
+    { field: "tools", value: "tools: read" },
+    { field: "skills", value: "skills: paper-search" },
+    { field: "subagents", value: "subagents: search" },
+  ])("rejects malformed known $field frontmatter without changing Agent bytes", async ({ field, value }) => {
+    const { agentDir, config } = tempConfig();
+    mkdirSync(join(agentDir, "agents"), { recursive: true });
+    const target = join(agentDir, "agents", "search.md");
+    const unrelated = join(agentDir, "agents", "writing.md");
+    writeFileSync(target, "---\nname: search\ndescription: original\n---\nOriginal prompt\n");
+    writeFileSync(unrelated, "---\nname: writing\ndescription: writing\n---\nWriting prompt\n");
+    const targetBefore = readFileSync(target);
+    const unrelatedBefore = readFileSync(unrelated);
+    const description = field === "description" ? "" : "description: candidate\n";
+    const candidate = `---\nname: search\n${description}${value}\n---\nChanged prompt\n`;
+
+    await expect(writeGlobalAgent(config, "search", candidate)).rejects.toMatchObject({ status: 400 });
+
+    expect(readFileSync(target)).toEqual(targetBefore);
+    expect(readFileSync(unrelated)).toEqual(unrelatedBefore);
+  });
+
+  it.each(["model: openai", "model: openai//gpt", "thinking: ultra"])(
+    "accepts but ignores residual runtime frontmatter %j",
+    async (value) => {
+      const { agentDir, config } = tempConfig();
+      mkdirSync(join(agentDir, "agents"), { recursive: true });
+      const candidate = `---\nname: search\ndescription: candidate\n${value}\n---\nChanged prompt\n`;
+
+      const saved = await writeGlobalAgent(config, "search", candidate);
+
+      expect(saved).toMatchObject({ model: undefined, thinking: undefined });
+      expect(readFileSync(join(agentDir, "agents", "search.md"), "utf8")).toBe(candidate);
+    },
+  );
+
+  it("accepts missing and empty tool and Skill configuration", async () => {
+    const { config } = tempConfig();
+    const content = [
+      "---",
+      "name: search",
+      "description: empty capabilities",
+      "enable: false",
+      "tools:",
+      "skills: []",
+      "subagents: []",
+      "---",
+      "Empty capability prompt",
+      "",
+    ].join("\n");
+
+    const saved = await writeGlobalAgent(config, "search", content);
+
+    expect(saved).toMatchObject({
+      enabled: false,
+      tools: undefined,
+      skills: undefined,
+      subagents: [],
+    });
+    expect(saved.effectiveTools).toContain("subagent");
+  });
+
+  it("validates a global Paper Assistant alias against its actual filename", async () => {
+    const { agentDir, config } = tempConfig();
+    mkdirSync(join(agentDir, "agents"), { recursive: true });
+    const aliasPath = join(agentDir, "agents", "Paper Assistant.md");
+    const edited = "---\nname: Paper Assistant\ndescription: edited alias\n---\nAlias prompt\n";
+    writeFileSync(aliasPath, "---\nname: Paper Assistant\ndescription: alias\n---\nAlias prompt\n");
+
+    const saved = await writeGlobalAgent(config, "paper-assistant", edited);
+
+    expect(saved.name).toBe("paper-assistant");
+    expect(readFileSync(aliasPath, "utf8")).toBe(edited);
+    expect(existsSync(join(agentDir, "agents", "paper-assistant.md"))).toBe(false);
   });
 
   it("reading an unknown agent raises 404", async () => {

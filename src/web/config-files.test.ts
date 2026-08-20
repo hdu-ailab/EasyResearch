@@ -129,6 +129,74 @@ describe("ConfigFileService", () => {
     expect(readFileSync(modelsPath, "utf8")).toBe(original);
   });
 
+  it("notifies after atomic direct global Agent, Agent-default, and models.json writes", async () => {
+    const observations: Array<{ change: unknown; bytes: string }> = [];
+    const notifying = new ConfigFileService(agentDir, {
+      onAuthoritativeWrite: async (change) => {
+        const path = change.modelsChanged
+          ? join(agentDir, "models.json")
+          : fs.existsSync(join(agentDir, "settings.json"))
+            ? join(agentDir, "settings.json")
+            : join(agentDir, "agents", "search.md");
+        observations.push({ change, bytes: readFileSync(path, "utf8") });
+      },
+    });
+
+    await notifying.write({
+      scope: "global",
+      path: "agents/search.md",
+      content: "---\nname: search\n---\nPrompt\n",
+    });
+    await notifying.write({
+      scope: "global",
+      path: "settings.json",
+      content: '{"easyresearch":{"agentDefaults":{"search":{"thinking":"high"}}}}',
+    });
+    await notifying.write({
+      scope: "global",
+      path: "models.json",
+      content: '{"providers":{}}',
+    });
+
+    expect(observations).toEqual([
+      { change: { agentsChanged: true }, bytes: "---\nname: search\n---\nPrompt\n" },
+      {
+        change: { agentsChanged: true },
+        bytes: '{"easyresearch":{"agentDefaults":{"search":{"thinking":"high"}}}}',
+      },
+      { change: { modelsChanged: true }, bytes: '{"providers":{}}' },
+    ]);
+  });
+
+  it("does not notify for project, unrelated global, or nested Agent writes", async () => {
+    const onAuthoritativeWrite = vi.fn(async () => {});
+    const notifying = new ConfigFileService(agentDir, { onAuthoritativeWrite });
+
+    await notifying.write({ scope: "global", path: "notes.json", content: "{}" });
+    await notifying.write({ scope: "global", path: "agents/nested/search.md", content: "nested" });
+    await notifying.write({ scope: "global", path: "agents/search.txt", content: "text" });
+    await notifying.write({ scope: "project", cwd, path: "agents/search.md", content: "project" });
+
+    expect(onAuthoritativeWrite).not.toHaveBeenCalled();
+  });
+
+  it("does not notify when validation or the atomic rename fails", async () => {
+    const onAuthoritativeWrite = vi.fn(async () => {});
+    const notifying = new ConfigFileService(agentDir, { onAuthoritativeWrite });
+
+    await expect(
+      notifying.write({ scope: "global", path: "models.json", content: "{" }),
+    ).rejects.toThrow(/Invalid JSON/);
+    renameSyncMock.mockImplementation(() => {
+      throw new Error("disk full");
+    });
+    await expect(
+      notifying.write({ scope: "global", path: "agents/search.md", content: "candidate" }),
+    ).rejects.toThrow("disk full");
+
+    expect(onAuthoritativeWrite).not.toHaveBeenCalled();
+  });
+
   it("writes via a same-directory temporary file and atomic rename", async () => {
     await service.write({ scope: "global", path: "settings.json", content: '{"defaultModel":"a"}' });
     expect(renameSyncMock).toHaveBeenCalledTimes(1);

@@ -1,10 +1,23 @@
-import { describe, expect, it } from "vitest";
+import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import { describe, expect, it, vi } from "vitest";
+import type { AgentRuntimeBinding } from "../runtime/agent-runtime-binding";
+import type { LiveConfiguration } from "../runtime/live-configuration";
 import type { SubagentCoordinator } from "../subagent/coordinator";
 import type { SubagentSupervisor } from "../subagent/supervisor";
-import { createAssistantExtensions } from "./index";
+import { createAssistantExtensions, type AssistantExtensionRuntime } from "./index";
 
-function runtime(label: string) {
+function binding(tools: string[]): AgentRuntimeBinding {
   return {
+    current: () => ({ tools }),
+    skillPaths: () => [],
+    ensureCurrent: vi.fn(async () => {}),
+  } as unknown as AgentRuntimeBinding;
+}
+
+function runtime(label: string, tools = ["read"]): AssistantExtensionRuntime {
+  return {
+    binding: binding(tools),
+    liveConfiguration: {} as LiveConfiguration,
     coordinator: { label } as unknown as SubagentCoordinator,
     supervisor: { label } as unknown as SubagentSupervisor,
   };
@@ -22,13 +35,29 @@ describe("bundled extension runtime builder", () => {
     }
   });
 
-  it("builds fresh runtime-bound extension instances for separate roots", () => {
+  it("builds fresh runtime-bound dispatch factories for separate roots", () => {
     const first = createAssistantExtensions(runtime("root-a"));
     const second = createAssistantExtensions(runtime("root-b"));
-    const firstDispatch = first.find(({ name }) => name === "subagent-dispatch");
-    const secondDispatch = second.find(({ name }) => name === "subagent-dispatch");
 
     expect(first).not.toBe(second);
-    expect(firstDispatch?.factory).not.toBe(secondDispatch?.factory);
+    expect(first.find(({ name }) => name === "subagent-dispatch")?.factory)
+      .not.toBe(second.find(({ name }) => name === "subagent-dispatch")?.factory);
+  });
+
+  it("applies the binding supplied to that registry instance", async () => {
+    const extensions = createAssistantExtensions(runtime("root-a", ["read", "subagent"]));
+    const definition = extensions.find((entry) => entry.name === "paper-assistant");
+    const handlers = new Map<string, (...args: any[]) => any>();
+    const setActiveTools = vi.fn();
+    const api = {
+      getAllTools: vi.fn(() => ["read", "bash", "subagent"].map((name) => ({ name }))),
+      on: vi.fn((event: string, handler: (...args: any[]) => any) => handlers.set(event, handler)),
+      setActiveTools,
+    };
+    await (definition!.factory as ExtensionFactory)(api as never);
+
+    await handlers.get("session_start")?.({ reason: "startup" }, { cwd: "/paper" });
+
+    expect(setActiveTools).toHaveBeenCalledWith(["read", "subagent"]);
   });
 });

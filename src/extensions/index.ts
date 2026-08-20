@@ -1,4 +1,6 @@
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
+import type { AgentRuntimeBinding } from "../runtime/agent-runtime-binding";
+import type { LiveConfiguration } from "../runtime/live-configuration";
 import { createPaperAssistantExtension } from "./paper-assistant";
 import { createSubagentDispatchExtension } from "./subagent-dispatch";
 import { createWelcomeBannerExtension } from "./welcome-banner";
@@ -32,18 +34,25 @@ export interface BundledExtension {
   factory: InlineExtension;
 }
 
-export function createAssistantExtensions(runtime: {
+export interface AssistantExtensionRuntime {
+  binding: AgentRuntimeBinding;
+  liveConfiguration: Pick<
+    LiveConfiguration,
+    "generation" | "synchronize" | "isCurrent" | "resolveAgents" | "subscribe"
+  >;
   coordinator: SubagentCoordinator;
   supervisor: SubagentSupervisor;
-}): BundledExtension[] {
+}
+
+export function createAssistantExtensions(runtime: AssistantExtensionRuntime): BundledExtension[] {
   return [
+    {
+      name: "paper-assistant",
+      factory: createPaperAssistantExtension(runtime.binding),
+    },
     {
       name: "subagent-dispatch",
       factory: createSubagentDispatchExtension(runtime),
-    },
-    {
-      name: "paper-assistant",
-      factory: createPaperAssistantExtension(),
     },
     {
       name: "welcome-banner",

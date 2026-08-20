@@ -1,7 +1,7 @@
-import { closeSync, mkdirSync, openSync, realpathSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, realpathSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DirectoryService, DirectoryServiceError, FILE_PREVIEW_LIMIT } from "./directories";
 
 let fakeHome: string;
@@ -12,6 +12,10 @@ beforeEach(() => {
   mkdirSync(join(fakeHome, "project", "z-dir"), { recursive: true });
   mkdirSync(join(fakeHome, "empty"), { recursive: true });
   writeFileSync(join(fakeHome, "project", "file.txt"), "x");
+});
+
+afterEach(() => {
+  rmSync(fakeHome, { recursive: true, force: true });
 });
 
 describe("DirectoryService", () => {

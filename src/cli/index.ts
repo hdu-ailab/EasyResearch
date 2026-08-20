@@ -153,7 +153,7 @@ export function ensureFirstRunSetup(agentDir: string, log: (msg: string) => void
         log,
       });
       const count = retired.entries.filter((entry) => entry.renamed).length;
-      if (count > 0) log(`Migrated ${count} same-name user resources with .bak backups`);
+      if (count > 0) log(`Retired ${count} same-name user resources to .bak backups`);
     });
   } catch (error) {
     log(`Bundled resource retirement failed: ${error instanceof Error ? error.message : String(error)}`);

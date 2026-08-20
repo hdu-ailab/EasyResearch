@@ -1,13 +1,13 @@
 import type {
   ActiveSessionDto,
+  AgentConfigurationPatch,
   AgentDto,
-  AgentEffectiveModelDto,
-  AgentEffectiveThinkingDto,
   AgentResourceDto,
   AuthProviderInfoDto,
   ChildSessionSnapshotDto,
   ConfigEntryDto,
   ConfigScope,
+  ConfigurationEvent,
   DirectoryEntryDto,
   FileContentDto,
   FileEntryDto,
@@ -15,8 +15,6 @@ import type {
   SessionTreeDto,
   SkillCommandDto,
   StatusDto,
-  WebuiSettingsDto,
-  WebuiSettingsUpdate,
 } from "../../web/contracts";
 import {
   type ModelOption,
@@ -30,9 +28,8 @@ import {
   parseConfigEntries,
   parseConfigFile,
   parseConfigProjects,
+  parseConfigurationEvent,
   parseDirectories,
-  parseEffectiveModels,
-  parseEffectiveThinking,
   parseEntries,
   parseFileContent,
   parseModels,
@@ -42,7 +39,6 @@ import {
   parseSkillResource,
   parseSkillResources,
   parseStatus,
-  parseWebuiSettings,
 } from "./api/parsers";
 import { routes } from "./api/routes";
 import {
@@ -62,7 +58,7 @@ export function isUnknownSession(error: unknown): boolean {
   return error instanceof ApiError && error.status === 404;
 }
 
-function json(method: "POST" | "PUT", body: unknown): RequestInit {
+function json(method: "POST" | "PUT" | "PATCH", body: unknown): RequestInit {
   return {
     method,
     headers: { "Content-Type": "application/json" },
@@ -76,6 +72,10 @@ export function listStatus(): Promise<StatusDto> {
 
 export function listAgents(cwd?: string): Promise<AgentDto[]> {
   return requestJson(routes.agents(cwd), parseAgents);
+}
+
+export function patchAgent(name: string, patch: AgentConfigurationPatch): Promise<AgentDto> {
+  return requestJson(routes.agentConfiguration(name), parseAgentResource, json("PATCH", patch));
 }
 
 export function listAgentResources(): Promise<AgentResourceDto[]> {
@@ -102,34 +102,6 @@ export function writeSkillResource(name: string, content: string) {
 
 export function listModels(): Promise<ModelOption[]> {
   return requestJson(routes.models(), parseModels);
-}
-
-export function getWebuiSettings(): Promise<WebuiSettingsDto> {
-  return requestJson(routes.webuiSettings(), parseWebuiSettings);
-}
-
-export function updateWebuiSettings(patch: WebuiSettingsUpdate): Promise<WebuiSettingsDto> {
-  return requestJson(routes.webuiSettings(), parseWebuiSettings, json("PUT", patch));
-}
-
-export function getEffectiveModels(sessionId: string): Promise<AgentEffectiveModelDto[]> {
-  return requestJson(routes.effectiveModels(sessionId), parseEffectiveModels);
-}
-
-export function setAgentModel(sessionId: string, agentName: string, model: string | null): Promise<void> {
-  return requestVoid(routes.agentModel(sessionId, agentName), json("PUT", { model }));
-}
-
-export function getEffectiveThinking(sessionId: string): Promise<AgentEffectiveThinkingDto[]> {
-  return requestJson(routes.effectiveThinking(sessionId), parseEffectiveThinking);
-}
-
-export function setAgentThinking(sessionId: string, agentName: string, thinking: string | null): Promise<void> {
-  return requestVoid(routes.agentThinking(sessionId, agentName), json("PUT", { thinking }));
-}
-
-export function clearAgentOverrides(sessionId: string): Promise<void> {
-  return requestVoid(routes.clearAgentOverrides(sessionId), { method: "POST" });
 }
 
 export function renameSession(id: string, name: string): Promise<void> {
@@ -241,6 +213,24 @@ export function createConfigDirectory(scope: ConfigScope, cwd: string | undefine
 
 export function connectSessionEvents(id: string, handlers: SessionEventHandlers): () => void {
   return connectEventStream(routes.events(id), handlers);
+}
+
+export interface ConfigurationEventHandlers {
+  onEvent: (event: ConfigurationEvent) => void;
+  onError: () => void;
+}
+
+export function connectConfigurationEvents(handlers: ConfigurationEventHandlers): () => void {
+  return connectEventStream(routes.configurationEvents(), {
+    onEvent: (value) => {
+      try {
+        handlers.onEvent(parseConfigurationEvent(value));
+      } catch {
+        handlers.onError();
+      }
+    },
+    onError: handlers.onError,
+  });
 }
 
 // ---- Provider auth (ADR-065) ---------------------------------------------

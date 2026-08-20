@@ -4,19 +4,18 @@ import { join } from "node:path";
 import { bundledFilePath } from "../runtime/bundled-assets";
 import type {
   ActiveSessionDto,
+  AgentConfigurationPatch,
   AgentDto,
-  AgentEffectiveModelDto,
-  AgentEffectiveThinkingDto,
+  AgentResourceDto,
   AuthFlowEventDto,
   AuthLoginRequestDto,
   AuthLogoutRequestDto,
   AuthProvidersResponseDto,
   AuthRespondRequestDto,
+  ConfigurationEvent,
   ConfigScope,
   ModelOptionDto,
   SessionSummaryDto,
-  WebuiSettingsDto,
-  WebuiSettingsUpdate,
 } from "./contracts";
 import { createGlobalAgent, listGlobalAgents, readGlobalAgent, writeGlobalAgent, listGlobalSkills, readGlobalSkill, writeGlobalSkill } from "./agent-resources";
 import type { DirectoryService } from "./directories";
@@ -27,32 +26,28 @@ import { flattenMessageTree } from "./session-tree";
 import { ExtensionGuardError } from "../runtime/extensions-guard";
 import type { ConfigFileService } from "./config-files";
 import { ConfigPathError, ConfigServiceError } from "./config-files";
-import { AgentModelError } from "./agent-models";
-import { AgentThinkingError } from "./agent-thinking";
-import { WebuiSettingsError, readWebuiSettings, updateWebuiSettings } from "./webui-settings";
 import type { Logger } from "../runtime/logger";
 import { SubagentSessionNotFoundError, type SubagentSessionService } from "./subagent-sessions";
 import { AuthGatewayError, type AuthGateway } from "./auth-gateway";
+import {
+  ConfigurationUnavailableError,
+  type LiveConfiguration,
+} from "../runtime/live-configuration";
 
 export interface RouteServices {
   webuiDist: string;
   listAllSessions: () => Promise<SessionSummaryDto[]>;
   listAgents: (cwd?: string) => Promise<AgentDto[]>;
+  patchAgent: (name: string, patch: AgentConfigurationPatch) => Promise<AgentResourceDto>;
   listModels: () => Promise<ModelOptionDto[]>;
-  effectiveModels: (sessionId: string) => Promise<AgentEffectiveModelDto[]>;
-  setAgentModel: (sessionId: string, agentName: string, model: string | null) => Promise<void>;
-  clearAgentOverrides: (sessionId: string) => Promise<void>;
-  effectiveThinking: (sessionId: string) => Promise<AgentEffectiveThinkingDto[]>;
-  setAgentThinking: (sessionId: string, agentName: string, thinking: string | null) => Promise<void>;
   renameSession: (sessionId: string, name: string) => Promise<void>;
   listConfigProjects: () => Promise<{ home: string; projects: Array<{ cwd: string }> }>;
-  getWebuiSettings: () => Promise<WebuiSettingsDto>;
-  updateWebuiSettings: (patch: WebuiSettingsUpdate) => Promise<WebuiSettingsDto>;
   directories: DirectoryService;
   registry: ActiveSessionRegistry;
   config: ConfigFileService;
   subagentSessions: Pick<SubagentSessionService, "summaries" | "snapshot">;
   auth?: AuthGateway;
+  configuration: Pick<LiveConfiguration, "generation" | "error" | "subscribe">;
   logger: Logger;
 }
 
@@ -87,6 +82,12 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
         return jsonResponse(await services.listAgents(url.searchParams.get("cwd") ?? undefined));
       }
 
+      const agentConfigMatch = path.match(/^\/api\/agents\/([^/]+)$/);
+      if (req.method === "PATCH" && agentConfigMatch) {
+        const patch = await jsonBody<AgentConfigurationPatch>(req);
+        return jsonResponse(await services.patchAgent(decodeURIComponent(agentConfigMatch[1]!), patch));
+      }
+
       if (req.method === "GET" && path === "/api/agent-resources") {
         return jsonResponse(await listGlobalAgents(services.config));
       }
@@ -119,15 +120,6 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
 
       if (req.method === "GET" && path === "/api/models") {
         return jsonResponse({ models: await services.listModels() });
-      }
-
-      if (req.method === "GET" && path === "/api/webui-settings") {
-        return jsonResponse(await services.getWebuiSettings());
-      }
-
-      if (req.method === "PUT" && path === "/api/webui-settings") {
-        const body = await jsonBody<WebuiSettingsUpdate>(req);
-        return jsonResponse(await services.updateWebuiSettings(body));
       }
 
       if (req.method === "GET" && path === "/api/directories") {
@@ -225,42 +217,6 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
         return jsonResponse({ ok: true });
       }
 
-            const effectiveModelsMatch = path.match(/^\/api\/sessions\/([^/]+)\/agents\/effective-models$/);
-      if (req.method === "GET" && effectiveModelsMatch) {
-        return jsonResponse(await services.effectiveModels(effectiveModelsMatch[1]!));
-      }
-
-      const effectiveThinkingMatch = path.match(/^\/api\/sessions\/([^/]+)\/agents\/effective-thinking$/);
-      if (req.method === "GET" && effectiveThinkingMatch) {
-        return jsonResponse(await services.effectiveThinking(effectiveThinkingMatch[1]!));
-      }
-
-      const agentModelMatch = path.match(/^\/api\/sessions\/([^/]+)\/agents\/([^/]+)\/model$/);
-      if (req.method === "PUT" && agentModelMatch) {
-        const body = await jsonBody<{ model: unknown }>(req);
-        if (body.model !== null && typeof body.model !== "string") {
-          return errorResponse(400, "model must be a string or null");
-        }
-        await services.setAgentModel(agentModelMatch[1]!, agentModelMatch[2]!, body.model as string | null);
-        return jsonResponse({ ok: true });
-      }
-
-      const agentThinkingMatch = path.match(/^\/api\/sessions\/([^/]+)\/agents\/([^/]+)\/thinking$/);
-      if (req.method === "PUT" && agentThinkingMatch) {
-        const body = await jsonBody<{ thinking: unknown }>(req);
-        if (body.thinking !== null && typeof body.thinking !== "string") {
-          return errorResponse(400, "thinking must be a string or null");
-        }
-        await services.setAgentThinking(agentThinkingMatch[1]!, agentThinkingMatch[2]!, body.thinking as string | null);
-        return jsonResponse({ ok: true });
-      }
-
-      const clearOverridesMatch = path.match(/^\/api\/sessions\/([^/]+)\/agent-overrides\/clear$/);
-      if (req.method === "POST" && clearOverridesMatch) {
-        await services.clearAgentOverrides(clearOverridesMatch[1]!);
-        return jsonResponse({ ok: true });
-      }
-
       const sessionNameMatch = path.match(/^\/api\/sessions\/([^/]+)\/name$/);
       if (req.method === "PUT" && sessionNameMatch) {
         const body = await jsonBody<{ name: unknown }>(req);
@@ -287,6 +243,10 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
         return jsonResponse(
           await services.config.list(configFileParams(url)),
         );
+      }
+
+      if (path === "/api/config/events" && req.method === "GET") {
+        return configurationEvents(services.configuration);
       }
 
       if (path === "/api/config/file" && req.method === "GET") {
@@ -327,8 +287,9 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
           ) {
             return errorResponse(400, "providerId and type (api_key|oauth) are required");
           }
+          const flowId = randomUUID();
           try {
-            services.auth.preflight({ providerId: body.providerId, type: body.type });
+            await services.auth.preflight({ flowId, providerId: body.providerId, type: body.type });
           } catch (err) {
             if (err instanceof AuthGatewayError) {
               if (err.status === 409) {
@@ -338,7 +299,6 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
             }
             throw err;
           }
-          const flowId = randomUUID();
           void services.auth
             .runFlow({ flowId, providerId: body.providerId, type: body.type })
             .catch((err) => {
@@ -417,16 +377,18 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       if (error instanceof ExtensionGuardError) return errorResponse(400, error.message);
       if (error instanceof UnknownSessionError) return errorResponse(404, error.message);
       if (error instanceof SubagentSessionNotFoundError) return errorResponse(404, error.message);
-      if (error instanceof AgentModelError) return errorResponse(error.status, error.message);
-      if (error instanceof AgentThinkingError) return errorResponse(error.status, error.message);
-      if (error instanceof WebuiSettingsError) return errorResponse(error.status, error.message);
       if (error instanceof BodyError) return errorResponse(400, error.message);
+      if (error instanceof ConfigurationUnavailableError) {
+        return configurationUnavailableResponse(error);
+      }
       if (error instanceof SessionStartError) {
         const cause = error.originalError;
         services.logger.error("session start failed", {
           error: cause instanceof Error ? (cause.stack ?? cause.message) : String(cause),
         });
-        return errorResponse(
+        return cause instanceof ConfigurationUnavailableError
+          ? configurationUnavailableResponse(cause)
+          : errorResponse(
           500,
           "Unable to start the session. Check the EasyResearch log and verify the project and model settings.",
           { code: "SESSION_START_FAILED" },
@@ -636,6 +598,53 @@ function authFlowSse(services: RouteServices, flowId: string): Response {
   return new Response(stream, { headers: SSE_HEADERS });
 }
 
+function configurationEvents(
+  configuration: Pick<LiveConfiguration, "generation" | "error" | "subscribe">,
+): Response {
+  const encoder = new TextEncoder();
+  let unsubscribe: (() => void) | null = null;
+  let initialized = false;
+  let cancelled = false;
+  const send = (
+    controller: ReadableStreamDefaultController<Uint8Array>,
+    event: ConfigurationEvent,
+  ): void => {
+    controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+  };
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      unsubscribe = configuration.subscribe((event) => {
+        if (cancelled || !initialized) return;
+        send(controller, event);
+      });
+      const error = configuration.error;
+      if (error !== null) {
+        send(controller, {
+          type: "config.error",
+          generation: configuration.generation,
+          message: error,
+        });
+      } else {
+        send(controller, {
+          type: "config.updated",
+          generation: configuration.generation,
+          agentsChanged: true,
+          modelsChanged: true,
+        });
+      }
+      initialized = true;
+    },
+    cancel() {
+      if (cancelled) return;
+      cancelled = true;
+      const stop = unsubscribe;
+      unsubscribe = null;
+      stop?.();
+    },
+  });
+  return new Response(stream, { headers: SSE_HEADERS });
+}
+
 function isPreBarrierSupplement(event: unknown): boolean {
   if (!event || typeof event !== "object") return false;
   const value = event as { type?: unknown };
@@ -726,6 +735,10 @@ function errorResponse(status: number, message: string, extra: Record<string, un
     status,
     headers: { "Content-Type": "application/json; charset=utf-8" },
   });
+}
+
+function configurationUnavailableResponse(error: ConfigurationUnavailableError): Response {
+  return errorResponse(503, error.message, { code: "CONFIGURATION_UNAVAILABLE" });
 }
 
 function contentType(file: string): string {

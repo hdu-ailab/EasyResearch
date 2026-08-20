@@ -20,11 +20,12 @@ The agents cooperate through the complete paper workflow — initial research, p
 
 ## Highly customizable agents
 
-The agent team is fully customizable. Each agent is defined in a plain Markdown
-file (role, tools, skills, model) and skills are just `SKILL.md` documents —
-you can quickly create your own specialist agents to plug into the pipeline.
-No code needed: just ask the Paper Assistant to load the `customize-easyresearch`
-skill, and it will create, edit, or mount your custom agents and skills for you.
+The agent team is fully customizable. Each agent's role and capabilities are
+defined in a plain Markdown file, model/thinking defaults live in global
+settings, and skills are just `SKILL.md` documents. You can quickly create your
+own specialist agents to plug into the pipeline. No code needed: just ask the
+Paper Assistant to load the `customize-easyresearch` skill, and it will create,
+edit, or mount your custom agents and skills for you.
 
 ## Requirements
 
@@ -113,7 +114,7 @@ Three layers — pick per scenario:
 ### 1. Web UI (recommended)
 
 - **Settings page**: set each agent's global `model` and `thinking` in
-  `~/.easyresearch/agent/agents/<name>.md`.
+  `~/.easyresearch/agent/settings.json` under `easyresearch.agentDefaults`.
 - **Work page → Agent panel**: edits those same global fields. There are no
   per-session model or thinking overrides.
 
@@ -157,20 +158,37 @@ Credentials — use any one of:
 export OPENAI_API_KEY=sk-...
 ```
 
-### 3. Agent Markdown frontmatter
+### 3. Global Agent defaults
 
-```markdown
----
-model: my-openai/gpt-4o
-thinking: medium
----
+```json
+{
+  "easyresearch": {
+    "agentDefaults": {
+      "paper-assistant": {
+        "model": "my-openai/gpt-4o",
+        "thinking": "medium"
+      }
+    }
+  }
+}
 ```
 
-Set it in `~/.easyresearch/agent/agents/paper-assistant.md` or another global
-agent Markdown file. Agent definitions are global-over-bundled only:
+Set it only in global `~/.easyresearch/agent/settings.json`. Agent definitions
+remain global-over-bundled Markdown resources:
 `<cwd>/.easyresearch/agents/` is inert and does not affect runtime discovery,
-the Work page, or the Settings page. Stage agents inherit the Paper
-Assistant's current global model when they have no `model` of their own.
+the Work page, or the Settings page. Residual Markdown `model`/`thinking`
+fields are ignored. Stage agents inherit the Paper Assistant's current global
+model and thinking when they have no values of their own.
+
+Settings and Work edit these same global settings entries. An empty Paper
+Assistant model is shown as **Automatic (Pi default)** and is never replaced by
+a guessed provider/model; empty thinking uses the model's highest supported
+level. There are no per-session Agent overrides or Follow global mode. Valid
+Agent Markdown, Agent-default, and `models.json` changes refresh open
+Settings/Work surfaces automatically. A
+running Agent completes its current response and tool batch, then applies the
+new prompt, tools, Skills, subagent policy, model, and thinking before its next
+LLM request.
 
 Global state lives under `~/.easyresearch/agent` (settings, models, auth,
 sessions, agents); project overrides live at `<exact-cwd>/.easyresearch`

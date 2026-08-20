@@ -16,6 +16,13 @@ const logger = createLogger("web-registry");
 
 export class UnknownSessionError extends Error {}
 
+export class SessionRegistryShuttingDownError extends Error {
+  constructor() {
+    super("Session registry is shutting down.");
+    this.name = "SessionRegistryShuttingDownError";
+  }
+}
+
 interface ActiveRecord {
   dto: ActiveSessionDto;
   cwd: string;
@@ -25,7 +32,24 @@ interface ActiveRecord {
   listeners: Set<(event: unknown) => void>;
   dispose: () => void;
   stopPromise: Promise<void> | null;
+  stopNotified: boolean;
+  fileWatcherClosed: boolean;
   idleTimer: ReturnType<typeof setTimeout> | null;
+}
+
+type LaunchOptions = StartSessionOptions & { adoptListeners?: Set<(event: unknown) => void> };
+
+interface PendingLaunch {
+  options: LaunchOptions;
+  cancelled: boolean;
+  initialSettled: boolean;
+  settlement: Promise<void>;
+  resolveSettlement: () => void;
+  rejectSettlement: (error: unknown) => void;
+  record?: ActiveRecord;
+  clientStopped: boolean;
+  listenersDisposed: boolean;
+  cleanupPromise?: Promise<void>;
 }
 
 export interface CreateSessionInput {
@@ -51,8 +75,10 @@ export interface ActiveSessionRegistryOptions {
 export class ActiveSessionRegistry {
   private readonly records = new Map<string, ActiveRecord>();
   private readonly opening = new Map<string, Promise<ActiveSessionDto>>();
+  private readonly pendingLaunches = new Set<PendingLaunch>();
   private readonly idleTimeoutMs: number;
   private readonly resolveLaunchThinking?: (cwd: string) => Promise<string | undefined>;
+  private shuttingDown = false;
 
   constructor(
     private readonly factory: SessionFactory,
@@ -65,7 +91,7 @@ export class ActiveSessionRegistry {
   }
 
   async create(input: CreateSessionInput): Promise<ActiveSessionDto> {
-    return this.launch({ cwd: input.cwd });
+    return this.launch(this.reserveLaunch({ cwd: input.cwd }));
   }
 
   open(input: OpenSessionInput): Promise<ActiveSessionDto> {
@@ -84,12 +110,16 @@ export class ActiveSessionRegistry {
     if (pending) return pending;
 
     let tracked!: Promise<ActiveSessionDto>;
-    tracked = this.launch({
-      cwd: input.cwd,
-      sessionPath: input.sessionPath,
-    }).finally(() => {
-      if (this.opening.get(key) === tracked) this.opening.delete(key);
-    });
+    try {
+      tracked = this.launch(this.reserveLaunch({
+        cwd: input.cwd,
+        sessionPath: input.sessionPath,
+      })).finally(() => {
+        if (this.opening.get(key) === tracked) this.opening.delete(key);
+      });
+    } catch (error) {
+      return Promise.reject(error);
+    }
     this.opening.set(key, tracked);
     return tracked;
   }
@@ -236,19 +266,25 @@ export class ActiveSessionRegistry {
     if (!record.stopPromise) {
       let tracked!: Promise<void>;
       tracked = (async () => {
-        await record.fileWatcher.close().catch((error: unknown) => {
-          (this.logger ?? logger).warn("file watcher close failed", {
-            sessionId: record.dto.id,
-            error: error instanceof Error ? error.message : String(error),
+        if (!record.fileWatcherClosed) {
+          record.fileWatcherClosed = true;
+          await record.fileWatcher.close().catch((error: unknown) => {
+            (this.logger ?? logger).warn("file watcher close failed", {
+              sessionId: record.dto.id,
+              error: error instanceof Error ? error.message : String(error),
+            });
           });
-        });
+        }
         await record.client.stop();
+        if (!record.stopNotified) {
+          record.stopNotified = true;
+          for (const listener of record.listeners) {
+            listener({ type: "session_deactivated", sessionId: record.dto.id });
+          }
+        }
         record.dto.isStreaming = false;
         record.dto.status = "stopped";
         record.dto.error = undefined;
-        for (const listener of record.listeners) {
-          listener({ type: "session_deactivated", sessionId: record.dto.id });
-        }
         record.dispose();
         (this.logger ?? logger).info("session deactivated", { sessionId: record.dto.id });
         if (this.records.get(id) === record) this.records.delete(id);
@@ -266,14 +302,21 @@ export class ActiveSessionRegistry {
     if (!record) {
       throw new UnknownSessionError(`Unknown session: ${id}`);
     }
-    await this.stop(id);
     const oldListeners = record.listeners;
-    const replacement = await this.launch({
+    const pending = this.reserveLaunch({
       cwd: record.cwd,
       sessionPath: record.sessionPath,
       adoptListeners: oldListeners,
     });
-    return replacement;
+    let launchStarted = false;
+    try {
+      await this.stop(id);
+      launchStarted = true;
+      return await this.launch(pending);
+    } catch (error) {
+      if (!launchStarted) this.releasePendingReservation(pending);
+      throw error;
+    }
   }
 
   subscribe(id: string, listener: (event: unknown) => void): () => void {
@@ -284,18 +327,58 @@ export class ActiveSessionRegistry {
   }
 
   async shutdown(): Promise<void> {
-    while (this.opening.size > 0) {
-      await Promise.allSettled([...this.opening.values()]);
-    }
-    await Promise.all([...this.records.values()].map((r) => this.stop(r.dto.id)));
+    this.shuttingDown = true;
+    const pending = [...this.pendingLaunches];
+    for (const launch of pending) launch.cancelled = true;
+    const outcomes = await Promise.allSettled(
+      [
+        ...[...this.records.values()].map((record) => this.stop(record.dto.id)),
+        ...pending.map((launch) => this.settlePendingForShutdown(launch)),
+      ],
+    );
+    const failures = outcomes.flatMap((outcome) =>
+      outcome.status === "rejected" ? [outcome.reason] : [],
+    );
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Active session shutdown failed");
   }
 
-  private async launch(
-    options: StartSessionOptions & { adoptListeners?: Set<(event: unknown) => void> },
-  ): Promise<ActiveSessionDto> {
-    const { assertSafeExtensionSources } = await import("../runtime/extensions-guard");
-    assertSafeExtensionSources({ cwd: options.cwd });
-    const listeners = options.adoptListeners ?? new Set<(event: unknown) => void>();
+  private reserveLaunch(options: LaunchOptions): PendingLaunch {
+    if (this.shuttingDown) throw new SessionRegistryShuttingDownError();
+    let resolveSettlement!: () => void;
+    let rejectSettlement!: (error: unknown) => void;
+    const settlement = new Promise<void>((resolve, reject) => {
+      resolveSettlement = resolve;
+      rejectSettlement = reject;
+    });
+    void settlement.catch(() => {});
+    const pending: PendingLaunch = {
+      options,
+      cancelled: false,
+      initialSettled: false,
+      settlement,
+      resolveSettlement,
+      rejectSettlement,
+      clientStopped: false,
+      listenersDisposed: false,
+    };
+    this.pendingLaunches.add(pending);
+    return pending;
+  }
+
+  private releasePendingReservation(pending: PendingLaunch): void {
+    if (pending.initialSettled) return;
+    pending.initialSettled = true;
+    this.pendingLaunches.delete(pending);
+    pending.resolveSettlement();
+  }
+
+  private throwIfLaunchCancelled(pending: PendingLaunch): void {
+    if (pending.cancelled || this.shuttingDown) throw new SessionRegistryShuttingDownError();
+  }
+
+  private async launch(pending: PendingLaunch): Promise<ActiveSessionDto> {
+    const { options } = pending;
     const dto: ActiveSessionDto = {
       id: "",
       cwd: options.cwd,
@@ -303,25 +386,37 @@ export class ActiveSessionRegistry {
       isStreaming: false,
       status: "starting",
     };
-    // Fresh sessions apply the Paper Assistant Markdown thinking default via
-    // `--thinking`; resumed sessions keep their persisted JSONL level.
-    const launchThinking = !options.sessionPath ? await this.resolveLaunchThinking?.(options.cwd) : undefined;
-    const client = this.factory.create(launchThinking === undefined ? options : { ...options, thinking: launchThinking });
-    const record: ActiveRecord = {
-      dto,
-      cwd: options.cwd,
-      sessionPath: options.sessionPath,
-      client,
-      fileWatcher: createNoopFileWatcherFactory().create({ cwd: options.cwd, onEvent: () => {} }),
-      listeners,
-      dispose: () => {},
-      stopPromise: null,
-      idleTimer: null,
-    };
-    (this.logger ?? logger).info("session launch", { cwd: options.cwd, sessionPath: options.sessionPath ?? "" });
     try {
+      this.throwIfLaunchCancelled(pending);
+      const { assertSafeExtensionSources } = await import("../runtime/extensions-guard");
+      this.throwIfLaunchCancelled(pending);
+      assertSafeExtensionSources({ cwd: options.cwd });
+      this.throwIfLaunchCancelled(pending);
+      const listeners = options.adoptListeners ?? new Set<(event: unknown) => void>();
+      // Fresh launch metadata reflects the global Paper Assistant default;
+      // the in-process runtime binding remains authoritative.
+      const launchThinking = !options.sessionPath ? await this.resolveLaunchThinking?.(options.cwd) : undefined;
+      this.throwIfLaunchCancelled(pending);
+      const client = this.factory.create(launchThinking === undefined ? options : { ...options, thinking: launchThinking });
+      const record: ActiveRecord = {
+        dto,
+        cwd: options.cwd,
+        sessionPath: options.sessionPath,
+        client,
+        fileWatcher: createNoopFileWatcherFactory().create({ cwd: options.cwd, onEvent: () => {} }),
+        listeners,
+        dispose: () => {},
+        stopPromise: null,
+        stopNotified: false,
+        fileWatcherClosed: false,
+        idleTimer: null,
+      };
+      pending.record = record;
+      (this.logger ?? logger).info("session launch", { cwd: options.cwd, sessionPath: options.sessionPath ?? "" });
       await client.start();
+      this.throwIfLaunchCancelled(pending);
       const state = await client.getState();
+      this.throwIfLaunchCancelled(pending);
       dto.id = state.sessionId;
       if (state.sessionFile) {
         dto.sessionFile = state.sessionFile;
@@ -357,7 +452,9 @@ export class ActiveSessionRegistry {
         eventLogCancel();
       };
 
+      this.throwIfLaunchCancelled(pending);
       this.records.set(dto.id, record);
+      this.releasePendingReservation(pending);
       this.scheduleIdleStop(record);
     } catch (error) {
       (this.logger ?? logger).error("session runtime launch failed", {
@@ -365,11 +462,75 @@ export class ActiveSessionRegistry {
         sessionPath: options.sessionPath ?? "",
         error: error instanceof Error ? error.message : String(error),
       });
-      await record.fileWatcher.close().catch(() => {});
-      await client.stop().catch(() => {});
+      let cleanupError: unknown;
+      try {
+        await this.cleanupPendingLaunch(pending);
+      } catch (failure) {
+        cleanupError = failure;
+      }
+      if (!pending.initialSettled) {
+        pending.initialSettled = true;
+        if (cleanupError === undefined) pending.resolveSettlement();
+        else pending.rejectSettlement(cleanupError);
+      }
+      if (pending.cancelled || this.shuttingDown) throw new SessionRegistryShuttingDownError();
       throw error;
     }
     return { ...dto };
+  }
+
+  private settlePendingForShutdown(pending: PendingLaunch): Promise<void> {
+    if (!pending.initialSettled) return pending.settlement;
+    return this.cleanupPendingLaunch(pending);
+  }
+
+  private cleanupPendingLaunch(pending: PendingLaunch): Promise<void> {
+    if (pending.cleanupPromise) return pending.cleanupPromise;
+    const attempt = (async () => {
+      const record = pending.record;
+      if (!record) {
+        this.pendingLaunches.delete(pending);
+        return;
+      }
+      const failures: unknown[] = [];
+      if (!record.fileWatcherClosed) {
+        try {
+          await record.fileWatcher.close();
+          record.fileWatcherClosed = true;
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      if (!pending.clientStopped) {
+        try {
+          await record.client.stop();
+          pending.clientStopped = true;
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      if (!pending.listenersDisposed) {
+        try {
+          record.dispose();
+          pending.listenersDisposed = true;
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) throw new AggregateError(failures, "Pending session launch cleanup failed");
+      this.pendingLaunches.delete(pending);
+    })();
+    pending.cleanupPromise = attempt;
+    void attempt.then(
+      () => {
+        if (pending.cleanupPromise === attempt) pending.cleanupPromise = undefined;
+      },
+      () => {
+        if (pending.cleanupPromise === attempt) pending.cleanupPromise = undefined;
+      },
+    );
+    return attempt;
   }
 
   /**

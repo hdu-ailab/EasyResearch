@@ -2,11 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   abortSession,
+  connectConfigurationEvents,
   connectSessionEvents,
   createConfigDirectory,
   createSession,
-  getEffectiveModels,
-  getEffectiveThinking,
   getSessionCommands,
   getSessionTree,
   getSnapshot,
@@ -18,11 +17,10 @@ import {
   listStatus,
   navigateSessionTree,
   openSession,
+  patchAgent,
   readConfigFile,
   restartSession,
   sendPrompt,
-  setAgentModel,
-  setAgentThinking,
   stopSession,
   touchSession,
   writeConfigFile,
@@ -69,45 +67,30 @@ describe("api transport", () => {
     expect(models[0]?.thinkingLevelMap).toEqual({ xhigh: null, max: null });
   });
 
-  it("getEffectiveModels GETs the session endpoint", async () => {
+  it("patchAgent PATCHes one encoded global Agent and returns the authoritative row", async () => {
     fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify([{ name: "search", model: "a/1", source: "override" }]), { status: 200 }),
+      new Response(
+        JSON.stringify({
+          name: "reviewer/strict",
+          description: "Reviews strictly",
+          enabled: true,
+          builtin: false,
+          source: "global",
+          filePath: "/agent/agents/reviewer-strict.md",
+          model: "openai/gpt-4o",
+          effectiveTools: [],
+          effectiveSkills: [],
+          missingSkills: [],
+        }),
+        { status: 200 },
+      ),
     );
-    const list = await getEffectiveModels("s1");
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/sessions/s1/agents/effective-models",
-      expect.objectContaining({ method: "GET" }),
-    );
-    expect(list[0]?.source).toBe("override");
-  });
-
-  it("setAgentModel PUTs the agent model", async () => {
-    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
-    await setAgentModel("s1", "search", "openai/gpt-4o");
+    const agent = await patchAgent("reviewer/strict", { model: "openai/gpt-4o", thinking: null });
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("/api/sessions/s1/agents/search/model");
-    expect(init.method).toBe("PUT");
-  });
-
-  it("getEffectiveThinking GETs the session effective-thinking endpoint", async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify([{ name: "search", thinking: "high", source: "default" }]), { status: 200 }),
-    );
-    const list = await getEffectiveThinking("s1");
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/sessions/s1/agents/effective-thinking",
-      expect.objectContaining({ method: "GET" }),
-    );
-    expect(list[0]?.thinking).toBe("high");
-    expect(list[0]?.source).toBe("default");
-  });
-
-  it("setAgentThinking PUTs the agent thinking", async () => {
-    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
-    await setAgentThinking("s1", "search", "high");
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("/api/sessions/s1/agents/search/thinking");
-    expect(init.method).toBe("PUT");
+    expect(url).toBe("/api/agents/reviewer%2Fstrict");
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(init.body as string)).toEqual({ model: "openai/gpt-4o", thinking: null });
+    expect(agent).toMatchObject({ name: "reviewer/strict", source: "global", model: "openai/gpt-4o" });
   });
 
   it("listDirectories GETs /api/directories with path", async () => {
@@ -127,8 +110,8 @@ describe("api transport", () => {
             description: "Finds papers",
             enabled: true,
             builtin: true,
-            source: "project",
-            filePath: "/exact/project/.easyresearch/agents/search.md",
+            source: "global",
+            filePath: "/agent/agents/search.md",
             tools: ["web-search"],
             effectiveTools: ["web-search"],
             subagents: [],
@@ -390,5 +373,58 @@ describe("connectSessionEvents", () => {
     instance.onmessage?.({ data: "{not json" } as MessageEvent);
     expect(handlers.onEvent).not.toHaveBeenCalled();
     expect(handlers.onError).toHaveBeenCalled();
+  });
+});
+
+describe("connectConfigurationEvents", () => {
+  let instances: {
+    url: string;
+    onmessage: ((e: MessageEvent) => void) | null;
+    onerror: (() => void) | null;
+    close: () => void;
+  }[];
+
+  beforeEach(() => {
+    instances = [];
+    class ES {
+      onmessage: ((e: MessageEvent) => void) | null = null;
+      onerror: (() => void) | null = null;
+      constructor(public url: string) {
+        instances.push(this);
+      }
+      close() {}
+    }
+    vi.stubGlobal("EventSource", ES);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("validates configuration events and leaves native reconnect ownership open", () => {
+    const handlers = { onEvent: vi.fn(), onError: vi.fn() };
+    const disconnect = connectConfigurationEvents(handlers);
+    const source = instances[0]!;
+    expect(source.url).toBe("/api/config/events");
+
+    source.onmessage?.({
+      data: JSON.stringify({ type: "config.updated", generation: 2, agentsChanged: true, modelsChanged: false }),
+    } as MessageEvent);
+    expect(handlers.onEvent).toHaveBeenCalledWith({
+      type: "config.updated",
+      generation: 2,
+      agentsChanged: true,
+      modelsChanged: false,
+    });
+
+    source.onmessage?.({ data: JSON.stringify({ type: "config.updated", generation: "2" }) } as MessageEvent);
+    expect(handlers.onEvent).toHaveBeenCalledTimes(1);
+    expect(handlers.onError).toHaveBeenCalledTimes(1);
+
+    source.onerror?.();
+    expect(handlers.onError).toHaveBeenCalledTimes(2);
+    const close = vi.spyOn(source, "close");
+    disconnect();
+    expect(close).toHaveBeenCalledOnce();
   });
 });

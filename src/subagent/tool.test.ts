@@ -4,27 +4,15 @@ import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
 import type { AgentSessionEvent, ExtensionContext, JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AGENT_ALIAS_ENTRY, readAgentAliases } from "./agent-alias";
 import type { AgentConfig } from "./agents";
 import { type AgentCatalog, SubagentCoordinator, type CoordinatorSessionManager } from "./coordinator";
-import { AGENT_MODEL_ENTRY } from "./model-resolution";
 import { createSessionMaterializationBarrier } from "./materialization";
 import type { StageLaunchHandle, StageLaunchOptions, StageRunResult } from "./stage-session";
 import { SubagentSupervisor, type SupervisableAgentSession } from "./supervisor";
-import { AGENT_THINKING_ENTRY } from "./thinking-resolution";
 import { createSubagentTool, formatSubagentDescription } from "./tool";
 
-const [resolveModelMock, resolveThinkingMock] = vi.hoisted(() => [vi.fn(), vi.fn()]);
-
-vi.mock("./model-resolution", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./model-resolution")>()),
-  resolveModelForSpawn: resolveModelMock,
-}));
-vi.mock("./thinking-resolution", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./thinking-resolution")>()),
-  resolveThinkingForSpawn: resolveThinkingMock,
-}));
 vi.mock("../runtime/logger", () => ({
   createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
 }));
@@ -61,7 +49,7 @@ function agent(name: string, overrides: Partial<AgentConfig> = {}): AgentConfig 
     description: name,
     enabled: true,
     builtin: false,
-    source: "project",
+    source: "bundled",
     filePath: `/agents/${name}.md`,
     systemPrompt: `${name} prompt`,
     tools: ["read"],
@@ -233,6 +221,10 @@ function toolHarness(options: ToolHarnessOptions = {}) {
     all,
     available: all.filter(({ name }) => availableNames.has(name)),
   };
+  const live = new FakeLiveConfiguration([
+    assistantWithPolicy([...availableNames], "openai/paper"),
+    ...all,
+  ]);
   const stages: FakeStage[] = [];
   const pendingMaterializations = new Set<string>();
   const pendingMaterializationErrors = new Map<string, Error>();
@@ -257,7 +249,12 @@ function toolHarness(options: ToolHarnessOptions = {}) {
     },
   });
   supervisor.attach(parent);
-  const tool = createSubagentTool({ coordinator, supervisor, catalog });
+  const tool = createSubagentTool({
+    coordinator,
+    supervisor,
+    liveConfiguration: live,
+    callerAgent: "paper-assistant",
+  });
   const cwd = options.cwd ?? "/exact/project";
   const context = {
     cwd,
@@ -269,6 +266,7 @@ function toolHarness(options: ToolHarnessOptions = {}) {
   return {
     tool,
     catalog,
+    live,
     coordinator,
     supervisor,
     rootManager,
@@ -296,30 +294,52 @@ function toolHarness(options: ToolHarnessOptions = {}) {
   };
 }
 
-function latestOverride(
-  manager: { getEntries(): unknown[] },
-  customType: string,
-  field: "model" | "thinking",
-  agentName: string,
-): string | undefined {
-  let result: string | undefined;
-  for (const entry of manager.getEntries()) {
-    if (!entry || typeof entry !== "object" || !("customType" in entry) || entry.customType !== customType) continue;
-    const data = "data" in entry ? entry.data : undefined;
-    if (!data || typeof data !== "object" || !("agent" in data) || data.agent !== agentName) continue;
-    const record = data as Record<string, unknown>;
-    const value = field in record ? record[field] : undefined;
-    if (typeof value === "string") result = value;
+class FakeLiveConfiguration {
+  generation = 1;
+  authoritative = true;
+  onResolve: (() => void) | undefined;
+  onCurrentCheck: (() => void) | undefined;
+  private agents: AgentConfig[];
+
+  constructor(agents: AgentConfig[]) {
+    this.agents = agents;
   }
-  return result;
+
+  async synchronize(): Promise<void> {}
+
+  isCurrent(generation: number): boolean {
+    const current = this.authoritative && generation === this.generation;
+    this.onCurrentCheck?.();
+    return current;
+  }
+
+  async resolveAgents(): Promise<AgentConfig[]> {
+    const resolved = this.agents.map((entry) => ({
+      ...entry,
+      tools: entry.tools ? [...entry.tools] : undefined,
+      effectiveTools: [...entry.effectiveTools],
+      subagents: entry.subagents ? [...entry.subagents] : entry.subagents,
+      skills: entry.skills ? [...entry.skills] : undefined,
+      effectiveSkills: [...entry.effectiveSkills],
+      missingSkills: [...entry.missingSkills],
+    }));
+    this.onResolve?.();
+    return resolved;
+  }
+
+  publish(agents: AgentConfig[]): void {
+    this.agents = agents;
+    this.generation += 1;
+  }
+
+  subscribe(): () => void {
+    return () => {};
+  }
 }
 
-beforeEach(() => {
-  resolveModelMock.mockReset().mockImplementation(async (ctx, agentName, fallback) =>
-    latestOverride(ctx.sessionManager, AGENT_MODEL_ENTRY, "model", agentName) ?? fallback);
-  resolveThinkingMock.mockReset().mockImplementation(async (ctx, agentName, fallback) =>
-    latestOverride(ctx.sessionManager, AGENT_THINKING_ENTRY, "thinking", agentName) ?? fallback ?? "off");
-});
+function assistantWithPolicy(subagents: string[] | undefined, model = "openai/paper"): AgentConfig {
+  return agent("paper-assistant", { model, subagents });
+}
 
 describe("createSubagentTool asynchronous launch contract", () => {
   it("returns only the exact Working acknowledgement after materialization", async () => {
@@ -459,6 +479,10 @@ describe("createSubagentTool asynchronous launch contract", () => {
     const collidingAgent = agent("search_0");
     (harness.catalog.all as AgentConfig[]).push(collidingAgent);
     (harness.catalog.available as AgentConfig[]).push(collidingAgent);
+    harness.live.publish([
+      assistantWithPolicy(["search", "search_0"]),
+      ...(harness.catalog.all as AgentConfig[]),
+    ]);
 
     await expect(harness.tool.execute(
       "t1",
@@ -583,75 +607,94 @@ describe("createSubagentTool asynchronous launch contract", () => {
     expect(harness.rootManager.entries).toEqual([]);
   });
 
-  it.each(["model", "thinking"] as const)(
-    "redacts nested session paths from %s resolution while retaining the private journal reason",
-    async (resolution) => {
-      const harness = toolHarness();
-      const sessionPath = `/sessions/private-${resolution}-child.jsonl`;
-      const pathFailure = Object.assign(new Error(`open ${sessionPath} failed`), {
-        path: sessionPath,
-        code: "EACCES",
-        syscall: "open",
-      });
-      const wrapper = new Error(`${resolution} provider lookup failed`, { cause: pathFailure });
-      const internalFailure = new AggregateError(
-        [wrapper, { errors: [pathFailure] }],
-        `${resolution} resolution failed for ${sessionPath}`,
-      );
-      if (resolution === "model") resolveModelMock.mockRejectedValueOnce(internalFailure);
-      else resolveThinkingMock.mockRejectedValueOnce(internalFailure);
-
-      const publicFailure = await harness.tool.execute(
-        "t0",
-        { agent: "search", task: "collect" },
-        undefined,
-        undefined,
-        harness.context,
-      ).then(
-        () => undefined,
-        (error) => error as Error & { details?: unknown; cause?: unknown; errors?: unknown },
-      );
-
-      expect(publicFailure).toBeInstanceOf(Error);
-      expect(publicFailure?.message).toContain(`${resolution} resolution failed`);
-      expect(publicFailure?.details).toMatchObject({
-        phase: "pre-materialization",
-        code: "EACCES",
-        syscall: "open",
-      });
-      expect(publicFailure?.cause).toBeUndefined();
-      expect(publicFailure?.errors).toBeUndefined();
-      expect(JSON.stringify({
-        message: publicFailure?.message,
-        details: publicFailure?.details,
-        cause: publicFailure?.cause,
-        errors: publicFailure?.errors,
-        text: String(publicFailure),
-      })).not.toContain(sessionPath);
-
-      const internalJob = [...harness.coordinator.journal().jobs.values()][0];
-      expect(internalJob).toMatchObject({ status: "pre_materialization_failed" });
-      expect(internalJob?.errorMessage).toContain(sessionPath);
-    },
-  );
-
-  it("consumes a reservation when root-scoped model resolution fails", async () => {
+  it("bounds generation churn before reservation and remains usable afterward", async () => {
     const harness = toolHarness();
-    resolveModelMock.mockRejectedValueOnce(new Error("model unavailable"));
+    const rows = [assistantWithPolicy(["search"]), agent("search")];
+    let resolutions = 0;
+    harness.live.onResolve = () => {
+      resolutions += 1;
+      harness.live.publish(rows);
+    };
 
     await expect(harness.tool.execute(
       "t0",
-      { agent: "search", task: "first" },
+      { agent: "search", task: "churn" },
       undefined,
       undefined,
       harness.context,
-    )).rejects.toThrow("model unavailable");
-    expect(readAgentAliases(harness.rootManager.entries)).toEqual([]);
+    )).rejects.toThrow(/configuration changed/i);
+    expect(resolutions).toBe(2);
+    expect(harness.stages).toEqual([]);
+    expect(harness.rootManager.entries).toEqual([]);
 
-    const second = harness.tool.execute("t1", { agent: "search", task: "second" }, undefined, undefined, harness.context);
+    harness.live.onResolve = undefined;
+    const second = harness.tool.execute("t1", { agent: "search", task: "retry" }, undefined, undefined, harness.context);
     harness.materializeAll();
-    await expect(second).resolves.toMatchObject({ content: [{ text: "search_1 is working." }] });
-    expect(readAgentAliases(harness.rootManager.entries).map(({ id }) => id)).toEqual(["search_1"]);
+    await expect(second).resolves.toMatchObject({ content: [{ text: "search_0 is working." }] });
+  });
+
+  it("observes cancellation between bounded generation retries before reservation", async () => {
+    const harness = toolHarness();
+    const rows = [assistantWithPolicy(["search"]), agent("search")];
+    const controller = new AbortController();
+    harness.live.onResolve = () => {
+      harness.live.onResolve = undefined;
+      harness.live.publish(rows);
+      controller.abort();
+    };
+
+    await expect(harness.tool.execute(
+      "t0",
+      { agent: "search", task: "cancel" },
+      controller.signal,
+      undefined,
+      harness.context,
+    )).rejects.toThrow("Agent authorization was cancelled.");
+    expect(harness.stages).toEqual([]);
+    expect(harness.rootManager.entries).toEqual([]);
+  });
+
+  it("resolves a newly allowed custom target and global model policy at execution", async () => {
+    const harness = toolHarness({ names: ["search", "reviewer"], availableNames: ["search"] });
+    const search = agent("search");
+    const reviewer = agent("reviewer", { source: "global", thinking: "high" });
+    harness.live.publish([
+      assistantWithPolicy(["reviewer"], "openai/paper-v2"),
+      search,
+      reviewer,
+    ]);
+
+    const dispatched = harness.tool.execute(
+      "t0", { agent: "reviewer", task: "review" }, undefined, undefined, harness.context,
+    );
+    harness.materializeAll();
+    await expect(dispatched).resolves.toMatchObject({ content: [{ text: "reviewer_0 is working." }] });
+    expect(harness.stages[0]?.options).toMatchObject({
+      agent: { name: "reviewer", source: "global" },
+      callerAgent: "paper-assistant",
+      model: "openai/paper-v2",
+      thinking: "high",
+      liveConfiguration: harness.live,
+    });
+    await expect(harness.tool.execute(
+      "t1", { agent: "search", task: "no longer allowed" }, undefined, undefined, harness.context,
+    )).rejects.toThrow(/disabled|unavailable/i);
+  });
+
+  it("rejects a continued child removed from the latest policy", async () => {
+    const harness = toolHarness();
+    const first = harness.tool.execute("t0", { agent: "search", task: "collect" }, undefined, undefined, harness.context);
+    harness.materializeAll();
+    await first;
+    harness.parent.acknowledgeLaunch("t0");
+    harness.stages[0]!.completion.resolve(stageResult(harness.stages[0]!.options));
+    await vi.waitFor(() => expect(harness.coordinator.summaries()[0]?.status).toBe("complete"));
+    harness.live.publish([assistantWithPolicy([]), agent("search")]);
+
+    await expect(harness.tool.execute(
+      "t1", { agent: "search_0", task: "continue" }, undefined, undefined, harness.context,
+    )).rejects.toThrow(/disabled|available/i);
+    expect(harness.stages).toHaveLength(1);
   });
 
   it("consumes a reservation when stage setup fails", async () => {
@@ -697,34 +740,20 @@ describe("createSubagentTool asynchronous launch contract", () => {
     expect(next.agentId).toBe("search_1");
   });
 
-  it("resolves nested overrides from the root coordinator session", async () => {
+  it("uses each accepted generation's Agent model and thinking without session overrides", async () => {
     const harness = toolHarness({ ownerSessionId: "nested-stage" });
-    harness.rootManager.appendCustomEntry(AGENT_MODEL_ENTRY, { agent: "search", model: "root/model" });
-    harness.rootManager.appendCustomEntry(AGENT_THINKING_ENTRY, { agent: "search", thinking: "high" });
-    harness.ownerManager.appendCustomEntry(AGENT_MODEL_ENTRY, { agent: "search", model: "stage/model" });
-    harness.ownerManager.appendCustomEntry(AGENT_THINKING_ENTRY, { agent: "search", thinking: "low" });
-
-    const result = harness.tool.execute("t0", { agent: "search", task: "nested" }, undefined, undefined, harness.context);
-    harness.materializeAll();
-    await result;
-
-    expect(harness.stages[0]?.options).toMatchObject({ model: "root/model", thinking: "high" });
-  });
-
-  it("inherits the live Paper Assistant model and thinking instead of immediate stage defaults", async () => {
-    const harness = toolHarness({ ownerSessionId: "nested-stage" });
-    let paperAssistantModel = "paper/model-a";
-    let paperAssistantThinking = "high";
-    harness.coordinator.bindPaperAssistantState({
-      model: () => paperAssistantModel,
-      thinking: () => paperAssistantThinking,
-    });
+    harness.live.publish([
+      assistantWithPolicy(["search"], "paper/model-a"),
+      agent("search", { thinking: "high" }),
+    ]);
 
     const first = harness.tool.execute("t0", { agent: "search", task: "one" }, undefined, undefined, harness.context);
     harness.materializeAll();
     await first;
-    paperAssistantModel = "paper/model-b";
-    paperAssistantThinking = "xhigh";
+    harness.live.publish([
+      assistantWithPolicy(["search"], "paper/model-b"),
+      agent("search", { thinking: "xhigh" }),
+    ]);
     const second = harness.tool.execute("t1", { agent: "search", task: "two" }, undefined, undefined, harness.context);
     await second;
 

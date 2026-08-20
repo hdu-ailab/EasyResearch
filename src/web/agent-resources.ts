@@ -1,25 +1,68 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { importPi } from "../runtime/pi-import";
 import { discoverGlobalAgents, type AgentConfig } from "../subagent/agents";
 import type { AgentResourceDto, SkillResourceDto } from "./contracts";
 import type { ConfigFileService } from "./config-files";
 import { ConfigServiceError } from "./config-files";
 import { starterAgentMarkdown } from "./agent-markdown";
 import { isDotAgentsSkillEnabled } from "../subagent/skill-resolution";
+import { isThinkingLevel } from "../thinking-levels";
 
 /**
- * Resolve the writable user-layer agent file. A bundled agent is materialized
- * into the global agents directory before returning the target — this copy is
- * committed only on Save (ADR-058); read paths must not call it.
+ * Resolve the writable user-layer Agent file. Bundled content is written
+ * directly to this target by ConfigFileService's atomic replacement.
  */
 function globalAgentPath(config: ConfigFileService, agent: Pick<AgentConfig, "name" | "source" | "filePath">): string {
   const target = join(config.globalRoot, "agents", `${agent.name}.md`);
   if (agent.source === "global") return agent.filePath;
-  mkdirSync(join(config.globalRoot, "agents"), { recursive: true });
-  if (!existsSync(target)) cpSync(agent.filePath, target);
   return target;
+}
+
+function invalidFrontmatter(field: string): never {
+  throw new ConfigServiceError(400, `Invalid Agent Markdown ${field} frontmatter`);
+}
+
+function validateNameList(field: string, value: unknown, allowEmptyValue: boolean): void {
+  if (value === undefined || (allowEmptyValue && value === null)) return;
+  if (
+    !Array.isArray(value) ||
+    value.some((item) => typeof item !== "string" || item.trim().length === 0)
+  ) {
+    invalidFrontmatter(field);
+  }
+}
+
+function validateKnownFrontmatter(frontmatter: Record<string, unknown>, filenameIdentity: string): void {
+  if (frontmatter.name !== filenameIdentity) {
+    throw new ConfigServiceError(400, "Agent frontmatter name must match its filename");
+  }
+  if (frontmatter.description !== undefined && typeof frontmatter.description !== "string") {
+    invalidFrontmatter("description");
+  }
+  if (frontmatter.enable !== undefined && typeof frontmatter.enable !== "boolean") {
+    invalidFrontmatter("enable");
+  }
+  validateNameList("tools", frontmatter.tools, true);
+  validateNameList("skills", frontmatter.skills, true);
+  validateNameList("subagents", frontmatter.subagents, false);
+}
+
+export async function validateAgentMarkdown(
+  filenameIdentity: string,
+  content: string,
+): Promise<Record<string, unknown>> {
+  let frontmatter: Record<string, unknown>;
+  try {
+    const { parseFrontmatter } = await importPi();
+    frontmatter = parseFrontmatter<Record<string, unknown>>(content).frontmatter ?? {};
+  } catch {
+    throw new ConfigServiceError(400, "Invalid Agent Markdown frontmatter");
+  }
+  validateKnownFrontmatter(frontmatter, filenameIdentity);
+  return frontmatter;
 }
 
 export async function listGlobalAgents(config: ConfigFileService): Promise<AgentResourceDto[]> {
@@ -32,6 +75,7 @@ export async function listGlobalAgents(config: ConfigFileService): Promise<Agent
     source: agent.source,
     filePath: agent.filePath,
     model: agent.model,
+    thinking: isThinkingLevel(agent.thinking) ? agent.thinking : undefined,
     tools: agent.tools,
     effectiveTools: agent.effectiveTools,
     subagents: agent.subagents,
@@ -60,6 +104,7 @@ export async function writeGlobalAgent(config: ConfigFileService, name: string, 
   const agent = (await listGlobalAgents(config)).find((item) => item.name === name);
   if (!agent) throw new ConfigServiceError(404, `unknown agent: ${name}`);
   const path = globalAgentPath(config, agent);
+  await validateAgentMarkdown(basename(path, ".md"), content);
   await config.write({ scope: "global", path: path.slice(config.globalRoot.length + 1), content });
   return readGlobalAgent(config, name);
 }
@@ -71,7 +116,9 @@ export async function createGlobalAgent(config: ConfigFileService, name: string)
   }
   const path = join(config.globalRoot, "agents", `${trimmed}.md`);
   if (existsSync(path)) throw new ConfigServiceError(409, `agent already exists: ${trimmed}`);
-  await config.write({ scope: "global", path: `agents/${trimmed}.md`, content: starterAgentMarkdown(trimmed) });
+  const content = starterAgentMarkdown(trimmed);
+  await validateAgentMarkdown(trimmed, content);
+  await config.write({ scope: "global", path: `agents/${trimmed}.md`, content });
   return readGlobalAgent(config, trimmed);
 }
 

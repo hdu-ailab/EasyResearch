@@ -9,7 +9,7 @@ import {
   type CredentialSummary,
 } from "./auth-gateway-logic";
 import { createAuthFlowStore, type AuthFlowStore } from "./auth-flow-store";
-import type { AuthFlowEventDto } from "./contracts";
+import type { AuthFlowEventDto, ModelOptionDto } from "./contracts";
 import type { Logger } from "../runtime/logger";
 
 // Type-only imports of Pi SDK types (erased at compile time; safe before
@@ -35,24 +35,44 @@ export interface AuthStatusLike {
 export type AuthFlowId = string;
 export type AuthType = "api_key" | "oauth";
 
+const SAFE_LOGOUT_SYNCHRONIZATION_ERROR =
+  "Credential removal was saved, but local model state could not be synchronized.";
+
 export interface AuthGatewaySettings {
   /** Flow timeout in ms. `0` disables it; `-1` never expires. Default 10 min. */
   timeoutMs: number;
   /** Optional info/warn logger (ADR-039). Secrets are never logged. */
   logger?: Pick<Logger, "info" | "warn">;
   /** Provider ids declared in `models.json` (custom providers), for pinning. */
-  modelsJsonProviderIds?: ReadonlySet<string>;
+  modelsJsonProviderIds?: () => Promise<ReadonlySet<string>>;
+  /** Provider ids captured by the same transaction as the accepted runtime. */
+  acceptedModelsJsonProviderIds?: () => ReadonlySet<string>;
+  /**
+   * Daemon-owned accepted-catalog synchronization. When present, routine
+   * readers must not refresh the accepted runtime in place.
+   */
+  synchronizeCatalog?: () => Promise<void>;
+  /** Force a daemon model generation after credentials change. */
+  onModelsChanged?: () => Promise<void>;
 }
 
 /** Minimal view of `ModelRuntime` this gateway relies on. */
 export interface AuthModelRuntime {
   getProviders(): readonly { id: string; name: string; auth?: any }[];
   getProvider(providerId: string): { id: string; name: string; auth?: any } | undefined;
+  getAvailableSnapshot(): readonly {
+    provider: string;
+    id: string;
+    reasoning: boolean;
+    thinkingLevelMap?: Record<string, string | null>;
+  }[];
+  getError(): string | undefined;
   getProviderAuthStatus(providerId: string): AuthStatusLike;
   checkAuth(providerId: string): Promise<AuthCheck | undefined>;
   login(providerId: string, type: AuthType, interaction: AuthInteraction): Promise<Credential>;
   logout(providerId: string): Promise<void>;
-  refresh?(options: {
+  refresh(options: {
+    allowNetwork?: boolean;
     providers?: readonly string[];
     signal?: AbortSignal;
   }): Promise<{ aborted: boolean; errors: ReadonlyMap<string, Error> }>;
@@ -66,17 +86,18 @@ export class AuthGatewayError extends Error {
 }
 
 export interface PreflightRequest {
+  flowId: AuthFlowId;
   providerId: string;
   type: AuthType;
 }
 
-export interface RunFlowRequest extends PreflightRequest {
-  flowId: AuthFlowId;
-}
+export type RunFlowRequest = PreflightRequest;
 
 export interface AuthGateway {
+  refreshCatalog(): Promise<void>;
+  listModels(): Promise<ModelOptionDto[]>;
   listProviders(): Promise<AuthProviderInfoDto[]>;
-  preflight(req: PreflightRequest): void;
+  preflight(req: PreflightRequest): Promise<void>;
   runFlow(req: RunFlowRequest): Promise<void>;
   logout(providerId: string): Promise<void>;
   activeFlow(): AuthFlowId | null;
@@ -86,7 +107,7 @@ export interface AuthGateway {
    * flowId. Production paths use `preflight`/`runFlow` only.
    */
   markExternalControl(flowId: AuthFlowId, ctrl: AbortController): void;
-  shutdown(): void;
+  shutdown(): Promise<void>;
 }
 
 export function createAuthGateway(
@@ -97,8 +118,60 @@ export function createAuthGateway(
   const guard = singleFlightGuard();
   const externalAbortMap = new Map<AuthFlowId, AbortController>();
   const { logger } = settings;
+  let refreshPromise: Promise<void> | undefined;
+  let modelsJsonProviderIds: ReadonlySet<string> = new Set();
+  const activeOperations = new Set<Promise<unknown>>();
+  let shuttingDown = false;
+  let shutdownPromise: Promise<void> | undefined;
 
-  const preflight = (req: PreflightRequest): void => {
+  const shutdownError = (): AuthGatewayError =>
+    new AuthGatewayError(503, "provider authentication is shutting down");
+
+  const trackOperation = <T>(operation: Promise<T>): Promise<T> => {
+    activeOperations.add(operation);
+    void operation.then(
+      () => activeOperations.delete(operation),
+      () => activeOperations.delete(operation),
+    );
+    return operation;
+  };
+
+  const ownOperation = <T>(start: () => Promise<T>): Promise<T> => {
+    if (shuttingDown) return Promise.reject(shutdownError());
+    return trackOperation(start());
+  };
+
+  const assertRuntimeHealthy = (): void => {
+    const semanticError = runtime.getError();
+    if (semanticError) {
+      throw new Error("Model catalog refresh failed", { cause: semanticError });
+    }
+  };
+
+  const refreshLocal = (): Promise<void> =>
+    refreshPromise ??= (async () => {
+      let synchronizedProviderIds: ReadonlySet<string>;
+      if (settings.synchronizeCatalog) {
+        await settings.synchronizeCatalog();
+        assertRuntimeHealthy();
+        synchronizedProviderIds = settings.acceptedModelsJsonProviderIds?.() ?? new Set();
+      } else {
+        const result = await runtime.refresh({ allowNetwork: false });
+        if (result.aborted || result.errors.size > 0) throw firstRefreshError(result);
+        assertRuntimeHealthy();
+        synchronizedProviderIds = settings.modelsJsonProviderIds
+          ? await settings.modelsJsonProviderIds()
+          : new Set();
+      }
+      modelsJsonProviderIds = synchronizedProviderIds;
+    })()
+      .finally(() => {
+        refreshPromise = undefined;
+      });
+
+  const preflight = async (req: PreflightRequest): Promise<void> => {
+    await refreshLocal();
+    if (shuttingDown) throw shutdownError();
     const provider = runtime.getProvider(req.providerId);
     if (!provider) throw new AuthGatewayError(404, `unknown provider: ${req.providerId}`);
     const auth = provider.auth ?? {};
@@ -107,19 +180,25 @@ export function createAuthGateway(
     if (!hasMethod) {
       throw new AuthGatewayError(400, `provider ${req.providerId} has no ${req.type} auth method`);
     }
-    if (guard.active()) throw new AuthGatewayError(409, "another auth flow is active");
-  };
-
-  const runFlow = async (req: RunFlowRequest): Promise<void> => {
-    // Re-validate preflight in case the request was reconstructed elsewhere.
-    preflight(req);
-    if (!guard.tryAcquire(req.flowId)) {
-      throw new AuthGatewayError(409, "another auth flow is active");
-    }
-    logger?.info("auth login start", { provider: req.providerId, type: req.type, flowId: req.flowId });
+    if (!guard.tryAcquire(req.flowId)) throw new AuthGatewayError(409, "another auth flow is active");
     const shutdownCtrl = new AbortController();
     externalAbortMap.set(req.flowId, shutdownCtrl);
-    const rec = store.create(req.flowId, shutdownCtrl.signal);
+    try {
+      store.create(req.flowId, shutdownCtrl.signal);
+    } catch (error) {
+      externalAbortMap.delete(req.flowId);
+      guard.release(req.flowId);
+      throw error;
+    }
+  };
+
+  const executeFlow = async (req: RunFlowRequest): Promise<void> => {
+    if (guard.active() !== req.flowId) {
+      throw new AuthGatewayError(409, "auth flow was not reserved");
+    }
+    const rec = store.get(req.flowId);
+    if (!rec) throw new AuthGatewayError(409, "auth flow was not registered");
+    logger?.info("auth login start", { provider: req.providerId, type: req.type, flowId: req.flowId });
 
     let timedOut = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -147,14 +226,17 @@ export function createAuthGateway(
     try {
       const credential = await runtime.login(req.providerId, req.type, interaction);
       let warning: string | undefined;
-      if (typeof runtime.refresh === "function") {
-        try {
-          const res = await runtime.refresh({ providers: [req.providerId], signal: AbortSignal.timeout(15_000) });
-          if (res.aborted) warning = "Catalog refresh timed out; models may not refresh until restart.";
-          else if (res.errors.size > 0) warning = "Credential saved; models may not refresh until restart.";
-        } catch {
-          warning = "Credential saved; models may not refresh until restart.";
-        }
+      try {
+        const res = await runtime.refresh({ providers: [req.providerId], signal: AbortSignal.timeout(15_000) });
+        if (res.aborted) warning = "Catalog refresh timed out; models may not refresh until restart.";
+        else if (res.errors.size > 0) warning = "Credential saved; models may not refresh until restart.";
+      } catch {
+        warning = "Credential saved; models may not refresh until restart.";
+      }
+      try {
+        await settings.onModelsChanged?.();
+      } catch {
+        warning ??= "Credential saved; models may not refresh until restart.";
       }
       const summary = summarizeCredential(credential as never) as never as CredentialSummary;
       store.terminate(req.flowId, {
@@ -168,13 +250,18 @@ export function createAuthGateway(
         outcome: warning ? "sync-error" : "ok",
       });
     } catch (err) {
-      if (isCredentialSynchronizationError(err)) {
+      if (isCredentialSynchronizationError(err, "login")) {
         // Credential committed, local snapshot sync failed (ADR-065). Success
         // with a warning, never an error.
         const committed = (err as { credential?: Credential }).credential;
         const summary = (committed
           ? summarizeCredential(committed as never)
           : { type: "api_key" }) as never as CredentialSummary;
+        try {
+          await settings.onModelsChanged?.();
+        } catch {
+          // The credential is already committed; retain warning-only semantics.
+        }
         store.terminate(req.flowId, {
           type: "done",
           credential: summary,
@@ -200,8 +287,37 @@ export function createAuthGateway(
     }
   };
 
+  const runFlow = (req: RunFlowRequest): Promise<void> => {
+    if (shuttingDown) {
+      const rec = store.get(req.flowId);
+      rec?.abortController.abort();
+      if (rec && !rec.terminated) {
+        store.terminate(req.flowId, {
+          type: "error",
+          message: "Authentication was cancelled.",
+          reason: "aborted",
+        });
+      }
+      guard.release(req.flowId);
+      externalAbortMap.delete(req.flowId);
+      return Promise.resolve();
+    }
+    return trackOperation(executeFlow(req));
+  };
+
   return {
-    async listProviders() {
+    refreshCatalog: () => ownOperation(refreshLocal),
+    listModels: () => ownOperation(async () => {
+      await refreshLocal();
+      return runtime.getAvailableSnapshot().map((model) => ({
+        provider: model.provider,
+        id: model.id,
+        reasoning: model.reasoning,
+        thinkingLevelMap: model.thinkingLevelMap ? { ...model.thinkingLevelMap } : undefined,
+      }));
+    }),
+    listProviders: () => ownOperation(async () => {
+      await refreshLocal();
       const providers = runtime.getProviders();
       const out: AuthProviderInfoDto[] = [];
       for (const p of providers) {
@@ -217,21 +333,37 @@ export function createAuthGateway(
             p as never,
             { configured: status?.configured ?? false, source: status?.source },
             authCheck as never,
-            settings.modelsJsonProviderIds,
+            modelsJsonProviderIds,
           ),
         );
       }
       return out;
-    },
-    preflight,
+    }),
+    preflight: (req) => ownOperation(() => preflight(req)),
     runFlow,
-    async logout(providerId) {
+    logout: (providerId) => ownOperation(async () => {
+      await refreshLocal();
       if (!runtime.getProvider(providerId)) {
         throw new AuthGatewayError(404, `unknown provider: ${providerId}`);
       }
-      await runtime.logout(providerId);
+      try {
+        await runtime.logout(providerId);
+      } catch (error) {
+        if (!isCredentialSynchronizationError(error, "logout")) throw error;
+        try {
+          await settings.onModelsChanged?.();
+        } catch {
+          // Credential removal already committed; preserve the fixed safe error.
+        }
+        throw new AuthGatewayError(500, SAFE_LOGOUT_SYNCHRONIZATION_ERROR);
+      }
+      try {
+        await settings.onModelsChanged?.();
+      } catch {
+        throw new AuthGatewayError(500, SAFE_LOGOUT_SYNCHRONIZATION_ERROR);
+      }
       logger?.info("auth logout", { provider: providerId, outcome: "ok" });
-    },
+    }),
     activeFlow: () => guard.active(),
     store: () => store,
     markExternalControl(flowId, ctrl) {
@@ -239,8 +371,13 @@ export function createAuthGateway(
       guard.tryAcquire(flowId);
     },
     shutdown() {
+      if (shutdownPromise) return shutdownPromise;
+      shuttingDown = true;
       for (const [, ctrl] of externalAbortMap) ctrl.abort();
-      externalAbortMap.clear();
+      shutdownPromise = Promise.allSettled([...activeOperations]).then(() => {
+        externalAbortMap.clear();
+      });
+      return shutdownPromise;
     },
   };
 }
@@ -253,11 +390,29 @@ export type { SingleFlightGuard, CredentialSummary };
 /**
  * Detect Pi's `CredentialSynchronizationError` by name and committed-credential
  * shape, avoiding a value import of `@earendil-works/pi-coding-agent` (which
- * would violate the bootstrap boundary). When true, the credential was already
- * committed to `auth.json` but the local model/auth snapshot failed to sync.
+ * would violate the bootstrap boundary). Login carries its committed
+ * credential; logout deliberately carries `undefined` after removal commits.
  */
-function isCredentialSynchronizationError(err: unknown): boolean {
+function isCredentialSynchronizationError(err: unknown, operation: "login" | "logout"): boolean {
   if (!err || typeof err !== "object") return false;
-  const e = err as { name?: unknown; credential?: unknown };
-  return e.name === "CredentialSynchronizationError" && typeof e.credential === "object";
+  const e = err as {
+    name?: unknown;
+    providerId?: unknown;
+    operation?: unknown;
+    credential?: unknown;
+  };
+  return (
+    e.name === "CredentialSynchronizationError" &&
+    typeof e.providerId === "string" &&
+    e.operation === operation &&
+    (operation === "logout" ? e.credential === undefined : typeof e.credential === "object")
+  );
+}
+
+function firstRefreshError(result: {
+  aborted: boolean;
+  errors: ReadonlyMap<string, Error>;
+}): Error {
+  const error = result.errors.values().next().value;
+  return error ?? new Error("Model catalog refresh aborted");
 }

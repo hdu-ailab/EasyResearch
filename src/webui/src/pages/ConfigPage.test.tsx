@@ -76,6 +76,49 @@ describe("ConfigPage", () => {
     );
   });
 
+  it.each(["agents/search.md", "models.json"])("marks global %s saves as live", async (path) => {
+    const user = userEvent.setup();
+    vi.mocked(api.listConfig).mockResolvedValueOnce([{ name: path.split("/").at(-1)!, path, type: "file" }]);
+    vi.mocked(api.readConfigFile).mockResolvedValueOnce({
+      path,
+      content: path.endsWith(".json") ? "{}\n" : "# Agent\n",
+    });
+    render(<ConfigPage onBack={() => {}} />);
+    await user.click(await screen.findByRole("button", { name: /Global/ }));
+    await user.click(screen.getByRole("button", { name: path.split("/").at(-1)! }));
+    await user.click(screen.getByRole("button", { name: /save/i }));
+
+    expect(await screen.findByText(/appl.*automatically/i)).toBeVisible();
+    expect(screen.queryByText(/restart/i)).toBeNull();
+  });
+
+  it("does not claim that a project Agent save is live or restart-bound", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listConfig).mockResolvedValueOnce([{ name: "search.md", path: "agents/search.md", type: "file" }]);
+    vi.mocked(api.readConfigFile).mockResolvedValueOnce({
+      path: "agents/search.md",
+      content: "# Inert project file\n",
+    });
+    render(<ConfigPage onBack={() => {}} />);
+    await user.click(await screen.findByRole("button", { name: /\/home\/u\/proj/ }));
+    await user.click(screen.getByRole("button", { name: "search.md" }));
+    await user.click(screen.getByRole("button", { name: /save/i }));
+
+    expect(await screen.findByText(/^Saved\.$/)).toBeVisible();
+    expect(screen.queryByText(/restart|automatically/i)).toBeNull();
+  });
+
+  it("keeps restart guidance for ordinary configuration saves", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.readConfigFile).mockResolvedValueOnce({ path: "settings.json", content: "{}\n" });
+    render(<ConfigPage onBack={() => {}} />);
+    await user.click(await screen.findByRole("button", { name: /Global/ }));
+    await user.click(screen.getByRole("button", { name: "settings.json" }));
+    await user.click(screen.getByRole("button", { name: /save/i }));
+
+    expect(await screen.findByText(/restart/i)).toBeVisible();
+  });
+
   it("rejects malformed JSON while allowing other text", async () => {
     const user = userEvent.setup();
     vi.mocked(api.readConfigFile).mockResolvedValue({ path: "settings.json", content: "{\n" });

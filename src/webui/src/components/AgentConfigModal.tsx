@@ -112,10 +112,13 @@ export function AgentConfigModal({
               ariaLabel={`${t("settings.agents.selectModelFor")} ${name}`}
               value={modelValue}
               options={[
-                ...(isPaperAssistant ? [] : [{ value: "", label: t("settings.agents.inherit") }]),
+                {
+                  value: "",
+                  label: isPaperAssistant ? t("settings.agents.automaticModel") : t("settings.agents.inherit"),
+                },
                 ...modelOptions.map((m) => ({ value: `${m.provider}/${m.id}`, label: `${m.provider}/${m.id}` })),
               ]}
-              placeholder={isPaperAssistant ? undefined : t("settings.agents.inherit")}
+              placeholder={isPaperAssistant ? t("settings.agents.automaticModel") : t("settings.agents.inherit")}
               disabled={busy}
               onSelect={onModelChange}
               className="h-8 w-full text-[13px]"
@@ -131,7 +134,9 @@ export function AgentConfigModal({
               ariaLabel={`${t("settings.agents.selectThinkingFor")} ${name}`}
               value={thinkingValue}
               levels={thinkingLevels}
-              emptyLabel={isPaperAssistant ? t("settings.agents.defaultThinking") : t("settings.agents.inherit")}
+              emptyLabel={
+                isPaperAssistant ? t("settings.agents.automaticThinking") : t("settings.agents.inheritThinking")
+              }
               disabled={busy}
               onChange={onThinkingChange}
               className="h-8 w-full rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600 disabled:opacity-50"

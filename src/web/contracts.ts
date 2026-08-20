@@ -1,4 +1,4 @@
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type {
   SubagentJobStatus,
   SubagentSupervisorEvent,
@@ -105,6 +105,21 @@ export interface FileWatcherEvent {
   properties: { file: string; event: FileWatcherEventKind };
 }
 
+export interface ConfigurationUpdatedEvent {
+  type: "config.updated";
+  generation: number;
+  agentsChanged: boolean;
+  modelsChanged: boolean;
+}
+
+export interface ConfigurationErrorEvent {
+  type: "config.error";
+  generation: number;
+  message: string;
+}
+
+export type ConfigurationEvent = ConfigurationUpdatedEvent | ConfigurationErrorEvent;
+
 export interface FileContentDto {
   path: string;
   content: string;
@@ -119,9 +134,10 @@ export interface AgentDto {
   description: string;
   enabled: boolean;
   builtin: boolean;
-  source: "bundled" | "global" | "project";
+  source: "global" | "bundled";
   filePath: string;
   model?: string;
+  thinking?: ThinkingLevel;
   tools?: string[];
   effectiveTools: string[];
   subagents?: string[];
@@ -133,6 +149,11 @@ export interface AgentDto {
 export interface AgentResourceDto extends AgentDto {
   content?: string;
 }
+
+export type AgentConfigurationPatch = {
+  model?: string | null;
+  thinking?: ThinkingLevel | null;
+};
 
 export interface SkillResourceDto {
   name: string;
@@ -155,33 +176,6 @@ export interface ModelOptionDto {
   id: string;
   reasoning: boolean;
   thinkingLevelMap?: Record<string, string | null>;
-}
-
-export interface AgentEffectiveModelDto {
-  name: string;
-  model: string | null;
-  source: "override" | "project" | "global" | "inherit";
-}
-
-export interface AgentEffectiveThinkingDto {
-  name: string;
-  thinking: string | null;
-  source: "override" | "default" | "inherit";
-}
-
-export interface WebuiSettingsDto {
-  agentModels: Record<string, string>;
-  paperAssistantModel: string | null;
-  effectivePaperAssistantModel: string | null;
-  agentThinking: Record<string, string>;
-  paperAssistantThinking: string | null;
-}
-
-export interface WebuiSettingsUpdate {
-  agentModels?: Record<string, string>;
-  paperAssistantModel?: string | null;
-  agentThinking?: Record<string, string>;
-  paperAssistantThinking?: string | null;
 }
 
 // ---- Provider auth gateway (ADR-065) --------------------------------------

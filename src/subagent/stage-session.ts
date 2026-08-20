@@ -1,15 +1,36 @@
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Message, Model } from "@earendil-works/pi-ai";
-import type { AgentSessionEvent, JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import type {
+  AgentSessionEvent,
+  JsonAgentSessionEvent,
+  ModelRuntime,
+  SettingsManager,
+} from "@earendil-works/pi-coding-agent";
+import {
+  createAgentRuntimeBinding,
+  type AgentRuntimeBinding,
+  type AgentRuntimeModelRuntime,
+} from "../runtime/agent-runtime-binding";
 import { runCleanupSteps } from "../runtime/cleanup";
 import { toJsonSessionEvent } from "../runtime/json-session-event";
+import type { LiveConfiguration } from "../runtime/live-configuration";
+import { createSessionSettingsFacade } from "../runtime/session-settings-facade";
 import { applyRuntimeSettingsDefaults } from "../runtime/settings-defaults";
 import { configureBatchedSteering, type RuntimeSteeringSession } from "../runtime/steering-mode";
 import type { AgentConfig } from "./agents";
+import {
+  AgentConfigurationChangedError,
+  availableSubagentsForCaller,
+  throwIfAuthorizationAborted,
+  withCurrentAgentCatalog,
+} from "./dispatch-authorization";
 import type { ReservedDispatch, SubagentCoordinator } from "./coordinator";
 import { createSessionMaterializationBarrier, type SessionMaterializationBarrier } from "./materialization";
 import { sessionNameFor } from "./session-links";
 import type { SubagentSupervisor, SupervisableAgentSession } from "./supervisor";
+
+const SAFE_STAGE_AUTHORIZATION_ERROR =
+  "The selected Agent is not available to this caller in the current valid configuration.";
 
 export interface StageUsageStats {
   input: number;
@@ -42,11 +63,16 @@ export interface StageRunResult {
 export interface StageLaunchOptions {
   reservation: ReservedDispatch;
   agent: AgentConfig;
+  callerAgent: string;
   task: string;
   cwd: string;
   model?: string;
   thinking?: string;
   coordinator: SubagentCoordinator;
+  liveConfiguration: Pick<
+    LiveConfiguration,
+    "generation" | "synchronize" | "isCurrent" | "resolveAgents" | "subscribe"
+  >;
   signal?: AbortSignal;
 }
 
@@ -69,13 +95,18 @@ export interface StageAgentSession extends RuntimeSteeringSession {
   readonly thinkingLevel: ThinkingLevel;
   readonly model: Model<any> | undefined;
   readonly isStreaming: boolean;
+  readonly isIdle: boolean;
   subscribe(listener: (event: unknown) => void): () => void;
   bindExtensions(bindings: unknown): Promise<void>;
   setSessionName(name: string): void;
   getAllTools(): Array<{ name: string }>;
   setActiveToolsByName(names: string[]): void;
-  prompt(message: string): Promise<void>;
+  reload(): Promise<void>;
+  setModel(model: Model<any>): Promise<void>;
+  setThinkingLevel(level: ThinkingLevel): void;
   waitForIdle(): Promise<void>;
+  navigateTree(targetId: string, options?: Record<string, unknown>): Promise<{ cancelled: boolean }>;
+  prompt(message: string): Promise<void>;
   sendCustomMessage(
     message: { customType: string; content: string; display: boolean; details?: unknown },
     options: { deliverAs: "steer"; triggerTurn: boolean },
@@ -94,14 +125,22 @@ interface OpenedStageSessionManager {
   getSessionFile(): string | undefined;
 }
 
+export interface StageExtensionRuntime {
+  binding: AgentRuntimeBinding;
+  liveConfiguration: Pick<
+    LiveConfiguration,
+    "generation" | "synchronize" | "isCurrent" | "resolveAgents" | "subscribe"
+  >;
+  coordinator: SubagentCoordinator;
+  supervisor: SubagentSupervisor;
+}
+
 export interface StageSessionDependencies {
   agentDir: string;
   createSessionManager(cwd: string): unknown;
   openSessionManager(path: string): OpenedStageSessionManager;
   createSettingsManager(cwd: string, agentDir: string): unknown;
-  createModelRuntime(agentDir: string): Promise<{
-    getModel(provider: string, modelId: string): Model<any> | undefined;
-  }>;
+  createModelRuntime(agentDir: string): Promise<AgentRuntimeModelRuntime>;
   createResourceLoader(options: {
     cwd: string;
     agentDir: string;
@@ -109,16 +148,18 @@ export interface StageSessionDependencies {
     extensionFactories: unknown[];
     noSkills: boolean;
     additionalSkillPaths: string[];
-    appendSystemPrompt: string[];
+    appendSystemPromptOverride(base: string[]): string[];
   }): StageResourceLoader;
   createAgentSession(options: Record<string, unknown>): Promise<{ session: StageAgentSession }>;
   createDirectChildSupervisor(coordinator: SubagentCoordinator): SubagentSupervisor;
-  createExtensionFactories(
-    agent: AgentConfig,
-    coordinator: SubagentCoordinator,
-    supervisor: SubagentSupervisor,
-  ): unknown[];
-  resolveSkillPaths(agent: AgentConfig, cwd: string, agentDir: string): string[];
+  createExtensionFactories(runtime: StageExtensionRuntime): unknown[];
+  resolveAutomaticModel(options: {
+    cwd: string;
+    agentDir: string;
+    modelRuntime: AgentRuntimeModelRuntime;
+    settingsManager: unknown;
+  }): Promise<Model<any> | undefined>;
+  resolveSkillPaths(agent: AgentConfig, cwd: string, agentDir: string, settingsManager: unknown): string[];
 }
 
 const emptyUsage = (): StageUsageStats => ({
@@ -165,11 +206,14 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
       model: options.model,
       agentId: options.reservation.agentId,
     };
+    let binding: AgentRuntimeBinding | undefined;
     let session: StageAgentSession | undefined;
     let supervisor: SubagentSupervisor | undefined;
     let barrier: SessionMaterializationBarrier | undefined;
     let unsubscribe: (() => void) | undefined;
     let signalListener: (() => void) | undefined;
+    let pendingAbortOperation: Promise<void> | undefined;
+    let setupSessionDisposed = false;
 
     try {
       let sessionManager: unknown;
@@ -187,29 +231,52 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
       } else {
         sessionManager = deps.createSessionManager(options.cwd);
       }
-      supervisor = deps.createDirectChildSupervisor(options.coordinator);
 
-      const settingsManager = deps.createSettingsManager(options.cwd, deps.agentDir);
-      const modelRuntime = await deps.createModelRuntime(deps.agentDir);
-      let model: Model<any> | undefined;
-      if (options.model) {
-        const separator = options.model.indexOf("/");
-        if (separator <= 0 || separator === options.model.length - 1) {
-          throw new Error(`Invalid model: ${options.model}`);
-        }
-        model = modelRuntime.getModel(options.model.slice(0, separator), options.model.slice(separator + 1));
-        if (!model) throw new Error(`Unknown model: ${options.model}`);
+      const settingsManager = createSessionSettingsFacade(
+        deps.createSettingsManager(options.cwd, deps.agentDir) as object,
+      );
+      binding = createAgentRuntimeBinding({
+        live: options.liveConfiguration,
+        agentName: options.agent.name,
+        cwd: options.cwd,
+        createModelRuntime: () => deps.createModelRuntime(deps.agentDir),
+        resolveAutomaticModel: (modelRuntime) => deps.resolveAutomaticModel({
+          cwd: options.cwd,
+          agentDir: deps.agentDir,
+          modelRuntime,
+          settingsManager,
+        }),
+        resolveSkillPaths: (stageAgent) => deps.resolveSkillPaths(
+          stageAgent,
+          options.cwd,
+          deps.agentDir,
+          settingsManager,
+        ),
+      });
+      await binding.ensureCurrent();
+      const currentAgent = binding.current();
+      if (!currentAgent.enabled) {
+        throw new Error("The selected Agent is not enabled in the current valid configuration.");
       }
+      result.agentSource = currentAgent.source;
+      const modelRuntime = binding.modelRuntime();
+      supervisor = deps.createDirectChildSupervisor(options.coordinator);
       const resourceLoader = deps.createResourceLoader({
         cwd: options.cwd,
         agentDir: deps.agentDir,
         settingsManager,
-        extensionFactories: deps.createExtensionFactories(options.agent, options.coordinator, supervisor),
+        extensionFactories: deps.createExtensionFactories({
+          binding,
+          liveConfiguration: options.liveConfiguration,
+          coordinator: options.coordinator,
+          supervisor,
+        }),
         noSkills: true,
-        additionalSkillPaths: deps.resolveSkillPaths(options.agent, options.cwd, deps.agentDir),
-        appendSystemPrompt: options.agent.systemPrompt.trim() ? [options.agent.systemPrompt] : [],
+        additionalSkillPaths: [],
+        appendSystemPromptOverride: (base) => binding!.appendSystemPrompt(base),
       });
       await resourceLoader.reload({ resolveProjectTrust: async () => true });
+      const model = binding.model();
       const created = await deps.createAgentSession({
         cwd: options.cwd,
         agentDir: deps.agentDir,
@@ -218,10 +285,10 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         modelRuntime,
         resourceLoader,
         ...(model ? { model } : {}),
-        ...(options.thinking ? { thinkingLevel: options.thinking } : {}),
-        ...(options.agent.tools && options.agent.tools.length > 0 ? { tools: options.agent.tools } : {}),
+        thinkingLevel: binding.thinking(),
       });
       session = created.session;
+      result.model = model ? `${model.provider}/${model.id}` : result.model;
       configureBatchedSteering(session);
       const sessionPath = session.sessionFile;
       if (!sessionPath) throw new Error("Stage AgentSession did not provide a persistent session path.");
@@ -256,6 +323,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
       let barrierDisposed = false;
       let eventBuffersCleared = false;
       let sessionDisposed = false;
+      let bindingDisposed = false;
 
       const attemptAbort = () => {
         if (abortOperation) return abortOperation;
@@ -286,8 +354,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
           },
         );
         abortOperation = tracked;
-        // Signal callbacks cannot await this promise; disposal still owns and
-        // reports the original rejection through the retained operation.
+        pendingAbortOperation = tracked;
         void tracked.catch(() => {});
         return tracked;
       };
@@ -304,7 +371,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         try {
           listener(event);
         } catch {
-          // A progress consumer must not delay Pi's post-callback persistence.
+          // Progress observers never control Pi persistence or stage ownership.
         }
       };
 
@@ -321,17 +388,79 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         else for (const listener of listeners) deliver(listener, event);
       });
       supervisor.attach(session as unknown as SupervisableAgentSession);
-      await session.bindExtensions({ mode: "rpc" });
-      if (!options.agent.tools || options.agent.tools.length === 0) {
-        session.setActiveToolsByName(session.getAllTools().map(({ name }) => name));
-      }
-      session.setSessionName(sessionNameFor(options.agent.name));
+      await session.bindExtensions({
+        mode: "rpc",
+        commandContextActions: {
+          waitForIdle: () => session!.waitForIdle(),
+          navigateTree: async (targetId: string, navigationOptions?: Record<string, unknown>) => {
+            const navigated = await session!.navigateTree(targetId, navigationOptions);
+            return { cancelled: navigated.cancelled };
+          },
+          reload: async () => {
+            await session!.reload();
+            configureBatchedSteering(session!);
+          },
+        },
+      });
+      await binding.attach(session);
+      session.setSessionName(sessionNameFor(currentAgent.name));
+
+      signalListener = () => {
+        const signalReason = options.signal?.reason;
+        void requestAbort(typeof signalReason === "string" ? signalReason : undefined);
+      };
+      if (options.signal?.aborted) signalListener();
+      else options.signal?.addEventListener("abort", signalListener, { once: true });
+
+      const authorizePrompt = async (): Promise<{ prompt: Promise<void> }> => {
+        let bindingMismatchRetries = 0;
+        for (;;) {
+          await binding!.ensureCurrent();
+          let bindingMismatch = false;
+          const authorized = await withCurrentAgentCatalog(
+            options.liveConfiguration,
+            options.cwd,
+            ({ generation, agents }) => {
+              const authorizedTarget = availableSubagentsForCaller(agents, options.callerAgent)
+                .find((candidate) => candidate.name === options.agent.name);
+              if (!authorizedTarget) throw new Error(SAFE_STAGE_AUTHORIZATION_ERROR);
+              if (binding!.generation() !== generation) {
+                bindingMismatch = true;
+                return undefined;
+              }
+              const boundAgent = binding!.current();
+              if (!boundAgent.enabled || boundAgent.name !== authorizedTarget.name) {
+                throw new Error(SAFE_STAGE_AUTHORIZATION_ERROR);
+              }
+              throwIfAuthorizationAborted(options.signal);
+              if (
+                binding!.generation() !== generation
+                || options.liveConfiguration.generation !== generation
+              ) {
+                bindingMismatch = true;
+                return undefined;
+              }
+              result.agentSource = boundAgent.source;
+              const currentModel = binding!.model();
+              if (currentModel) result.model = `${currentModel.provider}/${currentModel.id}`;
+              throwIfAuthorizationAborted(options.signal);
+              return { prompt: session!.prompt(`Task: ${options.task}`) };
+            },
+            { signal: options.signal, maxGenerationRetries: 1 },
+          );
+          if (!bindingMismatch && authorized) return authorized;
+          throwIfAuthorizationAborted(options.signal);
+          if (bindingMismatchRetries >= 1) throw new AgentConfigurationChangedError();
+          bindingMismatchRetries += 1;
+        }
+      };
+
+      const { prompt } = await authorizePrompt();
 
       const finish = async (error?: unknown): Promise<StageRunResult> => {
         barrier!.settlePrompt(error);
         const activeAbort = abortOperation;
         if (activeAbort) await activeAbort.catch(() => {});
-        let completionFailed = false;
         let completionFailure: unknown;
         try {
           await runCleanupSteps([
@@ -342,11 +471,10 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
             () => session!.waitForIdle(),
           ], "Stage completion failed.");
         } catch (finishError) {
-          completionFailed = true;
           completionFailure = finishError;
         }
         result.sessionPath = session!.sessionFile;
-        if (completionFailed) {
+        if (completionFailure !== undefined) {
           result.exitCode = 1;
           result.errorMessage = describeError(completionFailure);
           result.stderr = result.errorMessage;
@@ -361,30 +489,17 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         }
         return result;
       };
-
-      let prompt: Promise<void>;
-      try {
-        prompt = session.prompt(`Task: ${options.task}`);
-      } catch (error) {
-        prompt = Promise.reject(error);
-      }
       completion = prompt.then(
         () => finish(),
         (error) => finish(error),
       );
 
-      signalListener = () => {
-        const signalReason = options.signal?.reason;
-        void requestAbort(typeof signalReason === "string" ? signalReason : undefined);
-      };
-      if (options.signal?.aborted) signalListener();
-      else options.signal?.addEventListener("abort", signalListener, { once: true });
-
+      if (!barrier) throw new Error("Stage materialization barrier was not created.");
       const handle: StageLaunchHandle = {
         agentId: options.reservation.agentId,
         childSessionId: session.sessionId,
         sessionPath,
-        materialized: barrier!.materialized,
+        materialized: barrier.materialized,
         completion,
         subscribe(listener) {
           listeners.add(listener);
@@ -441,6 +556,11 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
               session!.dispose();
               sessionDisposed = true;
             },
+            async () => {
+              if (bindingDisposed || !sessionDisposed) return;
+              await binding!.dispose();
+              bindingDisposed = true;
+            },
           ], "Stage AgentSession cleanup failed.").then(undefined, (error) => {
             if (disposePromise === tracked) disposePromise = undefined;
             throw error;
@@ -459,9 +579,20 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         () => {
           if (signalListener) options.signal?.removeEventListener("abort", signalListener);
         },
+        () => pendingAbortOperation,
         () => unsubscribe?.(),
         () => supervisor?.dispose(),
-        () => session?.dispose(),
+        () => {
+          if (!session) {
+            setupSessionDisposed = true;
+            return;
+          }
+          session.dispose();
+          setupSessionDisposed = true;
+        },
+        () => {
+          if (setupSessionDisposed) return binding?.dispose();
+        },
       ], "Stage AgentSession setup cleanup failed.");
       throw error;
     }
@@ -481,10 +612,11 @@ async function resolveDefaultStageSessionLauncher(): Promise<StageSessionLaunche
   const { join } = await import("node:path");
   const { importPi, getAgentDir } = await import("../runtime/pi-import");
   const pi = await importPi();
-  const { SubagentSupervisor } = await import("./supervisor");
+  const { createAgentDefinitionExtension } = await import("../extensions/agent-definition");
   const { createSubagentExtension } = await import("../extensions/subagent");
   const { default: webSearchExtension } = await import("../extensions/web-search");
   const { default: webFetchExtension } = await import("../extensions/webfetch");
+  const { SubagentSupervisor } = await import("./supervisor");
   const { isDotAgentsSkillEnabled, resolveAgentSkillDirectories } = await import("./skill-resolution");
   const agentDir = getAgentDir();
   return createStageSessionLauncher({
@@ -493,7 +625,11 @@ async function resolveDefaultStageSessionLauncher(): Promise<StageSessionLaunche
     openSessionManager: (path) => pi.SessionManager.open(path),
     createSettingsManager: (cwd, root) => applyRuntimeSettingsDefaults(pi.SettingsManager.create(cwd, root)),
     createModelRuntime: (root) =>
-      pi.ModelRuntime.create({ authPath: join(root, "auth.json"), modelsPath: join(root, "models.json") }),
+      pi.ModelRuntime.create({
+        authPath: join(root, "auth.json"),
+        modelsPath: join(root, "models.json"),
+        refreshOnCreate: false,
+      }),
     createResourceLoader: (options) =>
       new pi.DefaultResourceLoader(options as ConstructorParameters<typeof pi.DefaultResourceLoader>[0]),
     createAgentSession: async (options) => {
@@ -504,26 +640,56 @@ async function resolveDefaultStageSessionLauncher(): Promise<StageSessionLaunche
       coordinator,
       launchStage: launchStageSession,
     }),
-    createExtensionFactories: (agent, coordinator, supervisor) => [
+    createExtensionFactories: ({ binding, liveConfiguration, coordinator, supervisor }) => [
+      {
+        name: "agent-definition",
+        factory: createAgentDefinitionExtension(binding),
+      },
       {
         name: "subagent",
         factory: createSubagentExtension({
-          callerAgent: agent.name,
-          allowedSubagents: agent.subagents,
+          binding,
+          liveConfiguration,
           coordinator,
           supervisor,
-          agentDir,
         }),
       },
       { name: "web-search", factory: webSearchExtension },
       { name: "webfetch", factory: webFetchExtension },
     ],
-    resolveSkillPaths: (agent, cwd, root) => {
+    resolveAutomaticModel: async ({ cwd, modelRuntime, settingsManager }) => {
+      const probeLoader = new pi.DefaultResourceLoader({
+        cwd,
+        agentDir,
+        settingsManager: settingsManager as SettingsManager,
+        noExtensions: true,
+        noSkills: true,
+        noPromptTemplates: true,
+        noThemes: true,
+        noContextFiles: true,
+      });
+      await probeLoader.reload({ resolveProjectTrust: async () => true });
+      const { session: probe } = await pi.createAgentSession({
+        cwd,
+        agentDir,
+        sessionManager: pi.SessionManager.inMemory(cwd),
+        settingsManager: settingsManager as SettingsManager,
+        modelRuntime: modelRuntime as ModelRuntime,
+        resourceLoader: probeLoader,
+        noTools: "all",
+      });
+      try {
+        return probe.model;
+      } finally {
+        probe.dispose();
+      }
+    },
+    resolveSkillPaths: (agent, cwd, root, settingsManager) => {
       const deps = {
         cwd,
         agentDir: root,
         enableDotAgentsSkill: isDotAgentsSkillEnabled(
-          pi.SettingsManager.create(cwd, root).getGlobalSettings(),
+          (settingsManager as SettingsManager).getGlobalSettings(),
         ),
       };
       return resolveAgentSkillDirectories(agent, deps);

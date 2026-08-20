@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { loadPaperAssistantPrompt } from "./pa-config";
+import { createPaperAssistantConfigResolver, loadPaperAssistantPrompt } from "./pa-config";
 
 const tempDirs: string[] = [];
 
@@ -34,7 +34,7 @@ afterEach(() => {
 });
 
 describe("loadPaperAssistantPrompt", () => {
-  it("returns the effective project AgentConfig over global, alias, and bundled definitions", async () => {
+  it("ignores project Agent files and returns the global definition over bundled", async () => {
     const root = makeRoot();
     const cwd = join(root, "project");
     const agentDir = join(root, "global");
@@ -50,10 +50,10 @@ describe("loadPaperAssistantPrompt", () => {
 
     expect(config).toMatchObject({
       name: "paper-assistant",
-      source: "project",
-      tools: ["read", "subagent"],
-      skills: ["research-project-workflow"],
-      systemPrompt: "Project Paper Assistant",
+      source: "global",
+      tools: ["bash"],
+      skills: undefined,
+      systemPrompt: "Global alias Paper Assistant",
     });
   });
 
@@ -94,5 +94,27 @@ describe("loadPaperAssistantPrompt", () => {
       agentDir: join(root, "global"),
       bundledAgentsDir: join(root, "bundled"),
     })).rejects.toThrow(/Missing valid Paper Assistant definition/);
+  });
+
+  it("does not retain a stale cached definition between resolutions", async () => {
+    const root = makeRoot();
+    const cwd = join(root, "project");
+    const agentDir = join(root, "global");
+    const bundledAgentsDir = join(root, "bundled");
+    const globalAgents = join(agentDir, "agents");
+    writeAgent(join(bundledAgentsDir, "agents"), "paper-assistant", definition("Bundled Paper Assistant"));
+    writeAgent(globalAgents, "paper-assistant", definition("Global v1", ["tools: [read]"]));
+    const resolver = createPaperAssistantConfigResolver({ agentDir, bundledAgentsDir });
+
+    await expect(resolver.resolve(cwd)).resolves.toMatchObject({
+      systemPrompt: "Global v1",
+      tools: ["read"],
+    });
+    writeAgent(globalAgents, "paper-assistant", definition("Global v2", ["tools: [bash]"]));
+
+    await expect(resolver.resolve(cwd)).resolves.toMatchObject({
+      systemPrompt: "Global v2",
+      tools: ["bash"],
+    });
   });
 });

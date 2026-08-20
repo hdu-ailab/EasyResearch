@@ -20,7 +20,7 @@ function agent(name: string): AgentConfig {
     effectiveSkills: [],
     missingSkills: [],
     systemPrompt: "",
-    source: "project",
+    source: "global",
     filePath: `/${name}.md`,
   };
 }

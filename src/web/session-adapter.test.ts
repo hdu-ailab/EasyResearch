@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionTreeNode } from "@earendil-works/pi-coding-agent";
+import type { AgentRuntimeBinding } from "../runtime/agent-runtime-binding";
 import type { AgentConfig } from "../subagent/agents";
+import {
+  ConfigurationUnavailableError,
+  type LiveConfiguration,
+} from "../runtime/live-configuration";
 import {
   createPiAgentSessionCreator,
   type ManagedAgentSession,
@@ -14,6 +19,7 @@ import {
 const model = {
   provider: "openai",
   id: "gpt-test",
+  reasoning: true,
 } as InProcessAgentSession["model"];
 
 class FakeAgentSession implements InProcessAgentSession {
@@ -22,6 +28,7 @@ class FakeAgentSession implements InProcessAgentSession {
   sessionId = "session-1";
   sessionName = "Paper";
   isStreaming = false;
+  isIdle = true;
   isCompacting = false;
   thinkingLevel: InProcessAgentSession["thinkingLevel"] = "medium";
   model = model;
@@ -37,6 +44,7 @@ class FakeAgentSession implements InProcessAgentSession {
   disposeImpl: () => void = () => {};
   unsubscribeCalls = 0;
   unsubscribeImpl: () => void = () => {};
+  subscribeError: Error | null = null;
   clearQueueCalls = 0;
   clearQueueImpl: () => void = () => {};
   steeringMessages: string[] = [];
@@ -73,6 +81,7 @@ class FakeAgentSession implements InProcessAgentSession {
   };
 
   subscribe(listener: (event: unknown) => void): () => void {
+    if (this.subscribeError) throw this.subscribeError;
     this.listeners.add(listener);
     return () => {
       this.unsubscribeCalls += 1;
@@ -151,6 +160,7 @@ class FakeAgentSession implements InProcessAgentSession {
 
 interface ManagedHarness {
   session: FakeAgentSession;
+  binding: AgentRuntimeBinding;
   coordinator: {
     label: string;
     beginCancellation(): void;
@@ -190,6 +200,7 @@ function managed(
   session: FakeAgentSession,
   label = session.sessionId,
   overrides: ManagedOverrides = {},
+  binding = new FakeRuntimeBinding(),
 ): ManagedHarness & ManagedAgentSession {
   const coordinatorListeners = new Set<(event: unknown) => void>();
   const harness: ManagedHarness = {
@@ -216,8 +227,30 @@ function managed(
       isQuiescent: overrides.supervisor?.isQuiescent ?? (() => true),
       dispose: overrides.supervisor?.dispose ?? (async () => {}),
     },
+    binding: binding as unknown as AgentRuntimeBinding,
   };
   return harness as unknown as ManagedHarness & ManagedAgentSession;
+}
+
+class FakeRuntimeBinding {
+  ensureCalls = 0;
+  disposeCalls = 0;
+  ensureImpl: (() => Promise<void>) | undefined;
+  disposeImpl: (() => Promise<void>) | undefined;
+
+  async ensureCurrent(): Promise<void> {
+    this.ensureCalls += 1;
+    await this.ensureImpl?.();
+  }
+
+  async dispose(): Promise<void> {
+    this.disposeCalls += 1;
+    await this.disposeImpl?.();
+  }
+}
+
+function created(session: InProcessAgentSession, binding = new FakeRuntimeBinding()) {
+  return managed(session as FakeAgentSession, session.sessionId, {}, binding);
 }
 
 describe("PiSessionFactory", () => {
@@ -290,7 +323,7 @@ describe("PiSessionFactory", () => {
 
   it("uses direct AgentSession methods and event subscription", async () => {
     const session = new FakeAgentSession();
-    const factory = new PiSessionFactory(async () => managed(session));
+    const factory = new PiSessionFactory(async () => created(session));
     const adapter = factory.create({ cwd: "/project" });
     const events: unknown[] = [];
     adapter.onEvent((event) => events.push(event));
@@ -313,9 +346,227 @@ describe("PiSessionFactory", () => {
     ]);
   });
 
+  it("ensures the binding is current before prompting and disposes its ownership", async () => {
+    const order: string[] = [];
+    const session = new FakeAgentSession();
+    const binding = new FakeRuntimeBinding();
+    binding.ensureImpl = async () => {
+      order.push("ensure");
+    };
+    session.promptImpl = async (_message, options) => {
+      order.push("prompt");
+      options?.preflightResult?.(true);
+    };
+    const factory = new PiSessionFactory(async () => created(session, binding));
+    const adapter = factory.create({ cwd: "/project" });
+    await adapter.start();
+
+    await adapter.prompt("hello");
+    await adapter.stop();
+
+    expect(order).toEqual(["ensure", "prompt"]);
+    expect(binding.ensureCalls).toBe(1);
+    expect(binding.disposeCalls).toBe(1);
+    expect(session.disposeCalls).toBe(1);
+  });
+
+  it("disposes the session before the binding runtime on normal stop", async () => {
+    const order: string[] = [];
+    const session = new FakeAgentSession();
+    const binding = new FakeRuntimeBinding();
+    session.dispose = () => {
+      order.push("session");
+      session.disposeCalls += 1;
+    };
+    binding.disposeImpl = async () => {
+      order.push("binding");
+    };
+    const adapter = new PiSessionFactory(async () => created(session, binding)).create({ cwd: "/project" });
+    await adapter.start();
+
+    await adapter.stop();
+
+    expect(order).toEqual(["session", "binding"]);
+  });
+
+  it("stops a prompt waiting on configuration before it reaches Pi and waits before disposal", async () => {
+    let releaseEnsure!: () => void;
+    const ensureGate = new Promise<void>((resolve) => {
+      releaseEnsure = resolve;
+    });
+    const session = new FakeAgentSession();
+    const binding = new FakeRuntimeBinding();
+    binding.ensureImpl = async () => ensureGate;
+    const adapter = new PiSessionFactory(async () => created(session, binding)).create({ cwd: "/project" });
+    await adapter.start();
+
+    const promptOutcome = adapter.prompt("hello").then(
+      () => ({ status: "resolved" as const }),
+      (error: unknown) => ({ status: "rejected" as const, error }),
+    );
+    await vi.waitFor(() => expect(binding.ensureCalls).toBe(1));
+    let stopSettled = false;
+    const stopping = adapter.stop().then(() => {
+      stopSettled = true;
+    });
+    await Promise.resolve();
+
+    expect(stopSettled).toBe(false);
+    expect(session.disposeCalls).toBe(0);
+    releaseEnsure();
+    await stopping;
+
+    expect(await promptOutcome).toMatchObject({
+      status: "rejected",
+      error: expect.objectContaining({ message: "Session has stopped" }),
+    });
+    expect(session.promptCalls).toEqual([]);
+    expect(session.disposeCalls).toBe(1);
+  });
+
+  it("reapplies stop after agent start when preflight accepted before Pi became active", async () => {
+    let releaseAgentStart!: () => void;
+    const agentStartGate = new Promise<void>((resolve) => {
+      releaseAgentStart = resolve;
+    });
+    let releaseRun!: () => void;
+    const runGate = new Promise<void>((resolve) => {
+      releaseRun = resolve;
+    });
+    const session = new FakeAgentSession();
+    session.promptImpl = async (_message, options) => {
+      options?.preflightResult?.(true);
+      await agentStartGate;
+      session.isStreaming = true;
+      session.listeners.forEach((listener) => listener({ type: "agent_start" }));
+      await runGate;
+      session.isStreaming = false;
+      session.listeners.forEach((listener) => listener({ type: "agent_settled" }));
+    };
+    session.abort = async () => {
+      session.abortCalls += 1;
+      if (session.isStreaming) releaseRun();
+    };
+    const adapter = new PiSessionFactory(async () => created(session)).create({ cwd: "/project" });
+    await adapter.start();
+    await adapter.prompt("hello");
+
+    let stopSettled = false;
+    const stopping = adapter.stop().then(() => {
+      stopSettled = true;
+    });
+    await vi.waitFor(() => expect(session.abortCalls).toBe(1));
+
+    expect(stopSettled).toBe(false);
+    expect(session.disposeCalls).toBe(0);
+
+    releaseAgentStart();
+    await vi.waitFor(() => expect(session.abortCalls).toBe(2));
+    await stopping;
+
+    expect(session.disposeCalls).toBe(1);
+  });
+
+  it("releases the creator handoff when event subscription fails", async () => {
+    const order: string[] = [];
+    const session = new FakeAgentSession();
+    session.subscribeError = new Error("subscription failed");
+    const binding = new FakeRuntimeBinding();
+    session.dispose = () => {
+      order.push("session");
+      session.disposeCalls += 1;
+    };
+    binding.disposeImpl = async () => {
+      order.push("binding");
+    };
+    const adapter = new PiSessionFactory(async () => created(session, binding)).create({ cwd: "/project" });
+
+    await expect(adapter.start()).rejects.toThrow("subscription failed");
+
+    expect(binding.disposeCalls).toBe(1);
+    expect(session.disposeCalls).toBe(1);
+    expect(order).toEqual(["session", "binding"]);
+  });
+
+  it("drains retained start cleanup before owning a second failed creation", async () => {
+    const firstDispose = vi.fn()
+      .mockRejectedValueOnce(new Error("first cleanup failed"))
+      .mockResolvedValueOnce(undefined);
+    const secondDispose = vi.fn()
+      .mockRejectedValueOnce(new Error("second cleanup failed"))
+      .mockResolvedValueOnce(undefined);
+    const state = retryableStartHarness([firstDispose, secondDispose], new Set([1, 2]));
+    const adapter = new PiSessionFactory(state.creator).create({ cwd: "/project" });
+
+    await expect(adapter.start()).rejects.toThrow("resource reload 1 failed");
+    await expect(adapter.start()).rejects.toThrow("resource reload 2 failed");
+    await adapter.stop();
+
+    expect(state.runtimeAttempts()).toBe(2);
+    expect(firstDispose).toHaveBeenCalledTimes(2);
+    expect(secondDispose).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not create or overwrite another start owner while retained cleanup still fails", async () => {
+    const firstDispose = vi.fn()
+      .mockRejectedValueOnce(new Error("first cleanup failed"))
+      .mockRejectedValueOnce(new Error("first cleanup still failed"))
+      .mockResolvedValueOnce(undefined);
+    const secondDispose = vi.fn();
+    const state = retryableStartHarness([firstDispose, secondDispose], new Set([1]));
+    const adapter = new PiSessionFactory(state.creator).create({ cwd: "/project" });
+
+    await expect(adapter.start()).rejects.toThrow("resource reload 1 failed");
+    await expect(adapter.start()).rejects.toThrow("first cleanup still failed");
+    expect(state.runtimeAttempts()).toBe(1);
+
+    await adapter.start();
+
+    expect(state.runtimeAttempts()).toBe(2);
+    expect(firstDispose).toHaveBeenCalledTimes(3);
+    await adapter.stop();
+    expect(secondDispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries binding disposal after a failed stop while keeping successful cleanup one-shot", async () => {
+    const session = new FakeAgentSession();
+    const binding = new FakeRuntimeBinding();
+    binding.disposeImpl = vi.fn()
+      .mockRejectedValueOnce(new Error("binding disposal failed"))
+      .mockResolvedValueOnce(undefined);
+    const adapter = new PiSessionFactory(async () => created(session, binding)).create({ cwd: "/project" });
+    await adapter.start();
+
+    await expect(adapter.stop()).rejects.toThrow("binding disposal failed");
+    await adapter.stop();
+
+    expect(binding.disposeCalls).toBe(2);
+    expect(session.disposeCalls).toBe(1);
+    expect(session.listeners.size).toBe(0);
+  });
+
+  it("retries adapter unsubscription without repeating session or binding disposal", async () => {
+    const session = new FakeAgentSession();
+    const binding = new FakeRuntimeBinding();
+    let unsubscribeCalls = 0;
+    session.subscribe = () => () => {
+      unsubscribeCalls += 1;
+      if (unsubscribeCalls === 1) throw new Error("event unsubscribe failed");
+    };
+    const adapter = new PiSessionFactory(async () => created(session, binding)).create({ cwd: "/project" });
+    await adapter.start();
+
+    await expect(adapter.stop()).rejects.toThrow("event unsubscribe failed");
+    await adapter.stop();
+
+    expect(unsubscribeCalls).toBe(2);
+    expect(session.disposeCalls).toBe(1);
+    expect(binding.disposeCalls).toBe(1);
+  });
+
   it("forwards delta-only message updates to Web listeners", async () => {
     const session = new FakeAgentSession();
-    const factory = new PiSessionFactory(async () => managed(session));
+    const factory = new PiSessionFactory(async () => created(session));
     const adapter = factory.create({ cwd: "/project" });
     const events: unknown[] = [];
     adapter.onEvent((event) => events.push(event));
@@ -724,7 +975,11 @@ describe("PiSessionFactory", () => {
       const adapter = factory.create({ cwd: "/project" });
       await adapter.start();
 
-      await expect(adapter.stop()).rejects.toBe(failure);
+      if (failedStep === "session abort") {
+        await expect(adapter.stop()).rejects.toThrow("Session stop could not abort active work");
+      } else {
+        await expect(adapter.stop()).rejects.toBe(failure);
+      }
       const counts = () => ({
         coordinator: coordinatorClosing.mock.calls.length,
         clearQueue: session.clearQueueCalls,
@@ -815,7 +1070,12 @@ describe("PiSessionFactory", () => {
     );
 
     expect(cleanupError).toBeInstanceOf(AggregateError);
-    expect(cleanupError?.errors).toEqual(failures);
+    expect(cleanupError?.errors).toEqual([
+      failures[0],
+      failures[1],
+      expect.objectContaining({ message: "Session stop could not abort active work. Retry stop." }),
+      ...failures.slice(3),
+    ]);
     expect({
       coordinator: coordinatorClosing.mock.calls.length,
       clearQueue: session.clearQueueCalls,
@@ -837,9 +1097,79 @@ describe("PiSessionFactory", () => {
     });
   });
 
+  it("returns a safe abort failure without waiting forever, then retries the live prompt", async () => {
+    let releaseRun!: () => void;
+    const runGate = new Promise<void>((resolve) => {
+      releaseRun = resolve;
+    });
+    const session = new FakeAgentSession();
+    const binding = new FakeRuntimeBinding();
+    session.promptImpl = async (_message, options) => {
+      options?.preflightResult?.(true);
+      session.isStreaming = true;
+      session.isIdle = false;
+      await runGate;
+      session.isStreaming = false;
+      session.isIdle = true;
+      session.listeners.forEach((listener) => listener({ type: "agent_settled" }));
+    };
+    session.abort = vi.fn()
+      .mockRejectedValueOnce(new Error("SECRET abort failure at /private/session.jsonl"))
+      .mockImplementationOnce(async () => {
+        releaseRun();
+      });
+    const adapter = new PiSessionFactory(async () => created(session, binding)).create({ cwd: "/project" });
+    await adapter.start();
+    await adapter.prompt("hello");
+
+    let firstStopOutcome: { error?: unknown } | undefined;
+    void adapter.stop().then(
+      () => {
+        firstStopOutcome = {};
+      },
+      (error: unknown) => {
+        firstStopOutcome = { error };
+      },
+    );
+    await vi.waitFor(() => expect(firstStopOutcome).toBeDefined());
+
+    expect(firstStopOutcome?.error).toBeInstanceOf(Error);
+    expect((firstStopOutcome?.error as Error).message).toMatch(/stop|abort/i);
+    expect((firstStopOutcome?.error as Error).message).not.toContain("SECRET");
+    expect((firstStopOutcome?.error as Error).message).not.toContain("/private/session.jsonl");
+    expect(session.disposeCalls).toBe(1);
+    expect(binding.disposeCalls).toBe(1);
+
+    await adapter.stop();
+
+    expect(session.abort).toHaveBeenCalledTimes(2);
+    expect(session.disposeCalls).toBe(1);
+    expect(binding.disposeCalls).toBe(1);
+  });
+
+  it("retries a failed stop abort before one-shot session disposal", async () => {
+    const session = new FakeAgentSession();
+    session.isStreaming = true;
+    session.abort = vi.fn()
+      .mockRejectedValueOnce(new Error("abort failed"))
+      .mockImplementationOnce(async () => {
+        session.isStreaming = false;
+      });
+    const adapter = new PiSessionFactory(async () => created(session)).create({ cwd: "/project" });
+    await adapter.start();
+
+    await expect(adapter.stop()).rejects.toThrow(/stop|abort/i);
+    expect(session.disposeCalls).toBe(1);
+
+    await adapter.stop();
+
+    expect(session.abort).toHaveBeenCalledTimes(2);
+    expect(session.disposeCalls).toBe(1);
+  });
+
   it("rejects unknown models and invalid thinking levels", async () => {
     const session = new FakeAgentSession();
-    const factory = new PiSessionFactory(async () => managed(session));
+    const factory = new PiSessionFactory(async () => created(session));
     const adapter = factory.create({ cwd: "/project" });
     await adapter.start();
 
@@ -848,11 +1178,123 @@ describe("PiSessionFactory", () => {
   });
 });
 
+function paperAssistant(overrides: Partial<AgentConfig> = {}): AgentConfig {
+  return {
+    name: "paper-assistant",
+    description: "Paper Assistant",
+    enabled: true,
+    builtin: true,
+    tools: ["read", "subagent"],
+    effectiveTools: ["read", "subagent"],
+    subagents: ["search"],
+    skills: ["research-project-workflow"],
+    effectiveSkills: ["research-project-workflow"],
+    missingSkills: [],
+    model: "openai/gpt-test",
+    thinking: "high",
+    systemPrompt: "Current Paper Assistant body",
+    source: "global",
+    filePath: "/private/paper-assistant.md",
+    ...overrides,
+  };
+}
+
+function liveConfiguration(agent: AgentConfig = paperAssistant()): LiveConfiguration {
+  return {
+    generation: 1,
+    error: null,
+    start: async () => {},
+    synchronize: async () => {},
+    isCurrent: (generation) => generation === 1,
+    notify: async () => {},
+    resolveAgents: async () => [agent],
+    subscribe: () => () => {},
+    close: async () => {},
+  };
+}
+
+function bindableSession(calls: Array<{ name: string; value?: unknown }>) {
+  const session = new FakeAgentSession();
+  session.bindExtensions = async (bindings) => {
+    session.bindCalls.push(bindings);
+    calls.push({ name: "bind-extensions", value: bindings });
+  };
+  session.reload = async () => {
+    calls.push({ name: "sessionReload" });
+  };
+  return session;
+}
+
+function runtimeOwnerDeps() {
+  const listeners = new Set<(event: unknown) => void>();
+  return {
+    createCoordinator: () => ({
+      bindPaperAssistantState: () => {},
+      beginCancellation: () => {},
+      finishCancellation: () => {},
+      beginClosing: () => {},
+      subscribe(listener: (event: unknown) => void) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    } as never),
+    recoverSubagentTree: async () => {},
+    createDirectChildSupervisor: () => ({
+      attach: () => {},
+      cancelAll: async () => {},
+      abortAll: async () => {},
+      flushNotifications: async () => {},
+      isQuiescent: () => true,
+      dispose: async () => {},
+    } as never),
+  };
+}
+
+function retryableStartHarness(
+  disposals: Array<ReturnType<typeof vi.fn>>,
+  failingResourceAttempts: ReadonlySet<number>,
+) {
+  let runtimeAttempts = 0;
+  const session = bindableSession([]);
+  const creator = createPiAgentSessionCreator({
+    agentDir: "/agent",
+    liveConfiguration: liveConfiguration(),
+    ...runtimeOwnerDeps(),
+    createExtensionFactories: () => [],
+    createSessionManager: () => ({} as never),
+    openSessionManager: () => ({} as never),
+    createSettingsManager: () => ({}),
+    createModelRuntime: async () => {
+      const attempt = ++runtimeAttempts;
+      return {
+        refresh: async () => {},
+        getModel: () => model,
+        getError: () => undefined,
+        dispose: disposals[attempt - 1],
+      };
+    },
+    createResourceLoader: () => {
+      const attempt = runtimeAttempts;
+      return {
+        reload: async () => {
+          if (failingResourceAttempts.has(attempt)) {
+            throw new Error(`resource reload ${attempt} failed`);
+          }
+        },
+      };
+    },
+    createAgentSession: async () => ({ session }),
+    resolveAutomaticModel: async () => undefined,
+    resolveSkillPaths: () => [],
+  } as never);
+  return { creator, runtimeAttempts: () => runtimeAttempts };
+}
+
 describe("createPiAgentSessionCreator", () => {
   function creatorHarness() {
     const calls: Array<{ name: string; value?: unknown }> = [];
     const createdOptions: Record<string, unknown>[] = [];
-    const extensionRuntimes: Array<{ coordinator: unknown; supervisor: unknown }> = [];
+    const extensionRuntimes: Array<{ coordinator: unknown; supervisor: unknown; binding: AgentRuntimeBinding }> = [];
     const coordinators: Array<{
       manager: unknown;
       bindPaperAssistantState: ReturnType<typeof vi.fn>;
@@ -871,19 +1313,16 @@ describe("createPiAgentSessionCreator", () => {
       prepareSession: (_session: FakeAgentSession): void => {},
       recover: async (): Promise<void> => {},
     };
-    const assistant: AgentConfig = {
-      name: "paper-assistant",
-      description: "Paper Assistant",
-      enabled: true,
-      builtin: true,
-      source: "project",
-      filePath: "/project/.easyresearch/agents/paper-assistant.md",
-      systemPrompt: "Project Paper Assistant body",
-      tools: [],
-      effectiveTools: ["read", "subagent"],
-      skills: ["research-project-workflow"],
-      effectiveSkills: ["research-project-workflow"],
-      missingSkills: [],
+    const assistant = paperAssistant({ systemPrompt: "Project Paper Assistant body" });
+    const live = liveConfiguration(assistant);
+    const rawSettings = { kind: "settings" };
+    const modelRuntime = {
+      refresh: async (options: unknown) => calls.push({ name: "model-refresh", value: options }),
+      getModel: (provider: string, id: string) => provider === "openai" && id === "gpt-test" ? model : undefined,
+      getError: () => undefined,
+      dispose: async () => {
+        calls.push({ name: "model-dispose" });
+      },
     };
     const manager = (kind: "new" | "open", value: string) => ({
       kind,
@@ -901,6 +1340,7 @@ describe("createPiAgentSessionCreator", () => {
     });
     const deps = {
       agentDir: "/agent",
+      liveConfiguration: live,
       createSessionManager: (cwd: string) => {
         calls.push({ name: "session-manager", value: cwd });
         return manager("new", cwd);
@@ -943,27 +1383,30 @@ describe("createPiAgentSessionCreator", () => {
         calls.push({ name: "supervisor", value: supervisor });
         return supervisor;
       },
-      createExtensionFactories: (runtime: { coordinator: unknown; supervisor: unknown }) => {
+      createExtensionFactories: (runtime: {
+        coordinator: unknown;
+        supervisor: unknown;
+        binding: AgentRuntimeBinding;
+      }) => {
         extensionRuntimes.push(runtime);
         calls.push({ name: "extensions", value: runtime });
         return [{ name: "paper-assistant", runtime }];
       },
       createSettingsManager: (cwd: string, agentDir: string) => {
         calls.push({ name: "settings", value: { cwd, agentDir } });
-        return { kind: "settings" };
+        return rawSettings;
       },
       createModelRuntime: async (agentDir: string) => {
         calls.push({ name: "models", value: agentDir });
-        return { getModel: () => model };
+        return modelRuntime;
       },
-      resolveAssistant: async (cwd: string) => {
-        calls.push({ name: "assistant", value: cwd });
-        return assistant;
+      resolveAutomaticModel: async () => undefined,
+      resolveSkillPaths: (agent: AgentConfig, cwd: string, agentDir: string) => {
+        calls.push({ name: "skills", value: { agent: agent.name, cwd, agentDir } });
+        return ["/skills/research-project-workflow"];
       },
-      resolveModel: async () => model,
-      resolveSkillPaths: async () => ["/skills/research-project-workflow"],
       createResourceLoader: (options: {
-        appendSystemPrompt?: string[];
+        appendSystemPromptOverride?: (base: string[]) => string[];
         [key: string]: unknown;
       }) => {
         calls.push({ name: "loader", value: options });
@@ -979,9 +1422,12 @@ describe("createPiAgentSessionCreator", () => {
         const session = new FakeAgentSession();
         sessionSequence += 1;
         session.sessionId = `session-${sessionSequence}`;
+        session.thinkingLevel = options.thinkingLevel as InProcessAgentSession["thinkingLevel"];
         controls.prepareSession(session);
-        const loader = options.resourceLoader as { options?: { appendSystemPrompt?: string[] } };
-        session.baseSystemPrompt = [...(loader.options?.appendSystemPrompt ?? [])];
+        const loader = options.resourceLoader as {
+          options?: { appendSystemPromptOverride?: (base: string[]) => string[] };
+        };
+        session.baseSystemPrompt = loader.options?.appendSystemPromptOverride?.([]) ?? [];
         const originalBind = session.bindExtensions.bind(session);
         session.bindExtensions = async (bindings) => {
           calls.push({ name: "bind-extensions", value: bindings });
@@ -991,7 +1437,17 @@ describe("createPiAgentSessionCreator", () => {
         return { session };
       },
     };
-    return { deps, calls, createdOptions, extensionRuntimes, coordinators, supervisors, assistant, controls };
+    return {
+      deps,
+      calls,
+      createdOptions,
+      extensionRuntimes,
+      coordinators,
+      supervisors,
+      assistant,
+      controls,
+      rawSettings,
+    };
   }
 
   it("constructs one managed root in ownership-safe order with the effective body in the base prompt", async () => {
@@ -1004,20 +1460,35 @@ describe("createPiAgentSessionCreator", () => {
       session: { sessionId: "session-1" },
       coordinator: harness.coordinators[0],
       supervisor: harness.supervisors[0],
+      binding: expect.any(Object),
     });
-    expect(harness.calls.find(({ name }) => name === "assistant")?.value).toBe("/project");
-    expect(harness.calls.filter(({ name }) => name === "assistant")).toHaveLength(1);
-    expect(harness.calls.find(({ name }) => name === "loader")?.value).toMatchObject({
+    const loaderOptions = harness.calls.find(({ name }) => name === "loader")?.value as {
+      appendSystemPromptOverride(base: string[]): string[];
+      additionalSkillPaths: string[];
+      extensionFactories: Array<{ name: string }>;
+    };
+    expect(loaderOptions).toMatchObject({
       cwd: "/project",
       agentDir: "/agent",
       noSkills: true,
-      additionalSkillPaths: ["/skills/research-project-workflow"],
-      appendSystemPrompt: ["Project Paper Assistant body"],
-      extensionFactories: [{ name: "paper-assistant" }],
+      additionalSkillPaths: [],
     });
+    expect(loaderOptions.appendSystemPromptOverride(["Pi base"])).toEqual([
+      "Pi base",
+      "Project Paper Assistant body",
+    ]);
+    expect(loaderOptions.extensionFactories).toEqual([expect.objectContaining({ name: "paper-assistant" })]);
+    expect(harness.calls.find(({ name }) => name === "model-refresh")?.value).toEqual({ allowNetwork: false });
+    expect(harness.calls.find(({ name }) => name === "skills")?.value).toEqual({
+      agent: "paper-assistant",
+      cwd: "/project",
+      agentDir: "/agent",
+    });
+    expect(harness.createdOptions[0]?.settingsManager).not.toBe(harness.rawSettings);
     const order = harness.calls.map(({ name }) => name);
     expect(order.indexOf("session-manager")).toBeLessThan(order.indexOf("coordinator"));
-    expect(order.indexOf("coordinator")).toBeLessThan(order.indexOf("supervisor"));
+    expect(order.indexOf("coordinator")).toBeLessThan(order.indexOf("recovery"));
+    expect(order.indexOf("recovery")).toBeLessThan(order.indexOf("supervisor"));
     expect(order.indexOf("supervisor")).toBeLessThan(order.indexOf("extensions"));
     expect(order.indexOf("extensions")).toBeLessThan(order.indexOf("pi-session"));
     expect(order.indexOf("pi-session")).toBeLessThan(order.indexOf("bind-live"));
@@ -1026,7 +1497,7 @@ describe("createPiAgentSessionCreator", () => {
 
     const live = harness.coordinators[0]!.live!;
     expect(live.model()).toBe("openai/gpt-test");
-    expect(live.thinking()).toBe("medium");
+    expect(live.thinking()).toBe("high");
     const liveSession = managedRoot.session as FakeAgentSession;
     liveSession.model = { provider: "anthropic", id: "claude-live" } as InProcessAgentSession["model"];
     liveSession.thinkingLevel = "xhigh";
@@ -1060,16 +1531,17 @@ describe("createPiAgentSessionCreator", () => {
     expect(session.agent.steeringMode).toBe("all");
   });
 
-  it("opens a persisted root without replacing its thinking level", async () => {
+  it("opens a persisted root with the current Agent thinking level", async () => {
     const harness = creatorHarness();
     const creator = createPiAgentSessionCreator(harness.deps as never);
 
-    await creator({ cwd: "/project", sessionPath: "/sessions/old.jsonl", thinking: "high" });
+    const result = await creator({ cwd: "/project", sessionPath: "/sessions/old.jsonl", thinking: "max" });
 
     expect(harness.createdOptions[0]).toMatchObject({
       sessionManager: { kind: "open", value: "/sessions/old.jsonl" },
+      thinkingLevel: "high",
     });
-    expect(harness.createdOptions[0]).not.toHaveProperty("thinkingLevel");
+    expect(result.binding).toBeDefined();
   });
 
   it("finishes recovery before a resumed root constructs extensions or accepts work", async () => {
@@ -1084,11 +1556,9 @@ describe("createPiAgentSessionCreator", () => {
     const creating = creator({ cwd: "/project", sessionPath: "/sessions/old.jsonl" });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(harness.calls.map(({ name }) => name)).toEqual([
-      "session-manager",
-      "coordinator",
-      "recovery",
-    ]);
+    expect(harness.calls.at(-1)?.name).toBe("recovery");
+    expect(harness.calls.map(({ name }) => name)).not.toContain("supervisor");
+    expect(harness.calls.map(({ name }) => name)).not.toContain("extensions");
     releaseRecovery();
     await creating;
     const order = harness.calls.map(({ name }) => name);
@@ -1106,8 +1576,8 @@ describe("createPiAgentSessionCreator", () => {
     expect(first.coordinator).not.toBe(second.coordinator);
     expect(first.supervisor).not.toBe(second.supervisor);
     expect(harness.extensionRuntimes).toEqual([
-      { coordinator: first.coordinator, supervisor: first.supervisor },
-      { coordinator: second.coordinator, supervisor: second.supervisor },
+      { coordinator: first.coordinator, supervisor: first.supervisor, binding: first.binding },
+      { coordinator: second.coordinator, supervisor: second.supervisor, binding: second.binding },
     ]);
   });
 
@@ -1146,7 +1616,8 @@ describe("createPiAgentSessionCreator", () => {
     };
     const creator = createPiAgentSessionCreator(harness.deps as never);
 
-    const error = await creator({ cwd: "/project" }).then(
+    const adapter = new PiSessionFactory(creator).create({ cwd: "/project" });
+    const error = await adapter.start().then(
       () => undefined,
       (failure) => failure as AggregateError,
     );
@@ -1156,13 +1627,240 @@ describe("createPiAgentSessionCreator", () => {
     expect(order).toEqual(["binding", "supervisor", "session"]);
     expect(harness.supervisors[0]?.disposeCalls).toBe(1);
   });
+
+  it("rejects generation zero before creating resources or a malformed AgentSession", async () => {
+    const createResourceLoader = vi.fn(() => ({ reload: async () => {} }));
+    const createAgentSession = vi.fn(async () => ({ session: bindableSession([]) }));
+    const unavailable: LiveConfiguration = {
+      ...liveConfiguration(),
+      generation: 0,
+      error: "safe configuration error",
+      isCurrent: () => false,
+      resolveAgents: async () => {
+        throw new ConfigurationUnavailableError();
+      },
+    };
+    const creator = createPiAgentSessionCreator({
+      agentDir: "/agent",
+      liveConfiguration: unavailable,
+      ...runtimeOwnerDeps(),
+      createExtensionFactories: () => [],
+      createSessionManager: () => ({} as never),
+      openSessionManager: () => ({} as never),
+      createSettingsManager: () => ({}),
+      createModelRuntime: async () => ({
+        refresh: async () => {},
+        getModel: () => undefined,
+        getError: () => undefined,
+      }),
+      createResourceLoader,
+      createAgentSession,
+      resolveAutomaticModel: async () => undefined,
+      resolveSkillPaths: () => [],
+    });
+
+    await expect(creator({ cwd: "/project" })).rejects.toThrow(/No valid configuration/i);
+    expect(createResourceLoader).not.toHaveBeenCalled();
+    expect(createAgentSession).not.toHaveBeenCalled();
+  });
+
+  it("disposes binding ownership when resource loading fails before session creation", async () => {
+    const disposeRuntime = vi.fn();
+    const createAgentSession = vi.fn(async () => ({ session: bindableSession([]) }));
+    const creator = createPiAgentSessionCreator({
+      agentDir: "/agent",
+      liveConfiguration: liveConfiguration(),
+      ...runtimeOwnerDeps(),
+      createExtensionFactories: () => [],
+      createSessionManager: () => ({} as never),
+      openSessionManager: () => ({} as never),
+      createSettingsManager: () => ({}),
+      createModelRuntime: async () => ({
+        refresh: async () => {},
+        getModel: () => model,
+        getError: () => undefined,
+        dispose: disposeRuntime,
+      }),
+      createResourceLoader: () => ({
+        reload: async () => {
+          throw new Error("resource reload failed");
+        },
+      }),
+      createAgentSession,
+      resolveAutomaticModel: async () => undefined,
+      resolveSkillPaths: () => [],
+    });
+
+    await expect(creator({ cwd: "/project" })).rejects.toThrow("resource reload failed");
+
+    expect(disposeRuntime).toHaveBeenCalledTimes(1);
+    expect(createAgentSession).not.toHaveBeenCalled();
+  });
+
+  it("disposes the Pi session even when binding cleanup also fails after attach rejection", async () => {
+    let generation = 1;
+    let currentAgent = paperAssistant({ systemPrompt: "v1" });
+    const live: LiveConfiguration = {
+      get generation() {
+        return generation;
+      },
+      error: null,
+      start: async () => {},
+      synchronize: async () => {},
+      notify: async () => {},
+      isCurrent: (candidate) => candidate === generation,
+      resolveAgents: async () => [currentAgent],
+      subscribe: () => () => {
+        throw new Error("unsubscribe failed");
+      },
+      close: async () => {},
+    };
+    const calls: Array<{ name: string; value?: unknown }> = [];
+    const session = bindableSession(calls);
+    session.bindExtensions = async () => {
+      currentAgent = paperAssistant({ systemPrompt: "v2" });
+      generation = 2;
+    };
+    session.reload = async () => {
+      throw new Error("reload failed");
+    };
+    const creator = createPiAgentSessionCreator({
+      agentDir: "/agent",
+      liveConfiguration: live,
+      ...runtimeOwnerDeps(),
+      createExtensionFactories: () => [],
+      createSessionManager: () => ({} as never),
+      openSessionManager: () => ({} as never),
+      createSettingsManager: () => ({}),
+      createModelRuntime: async () => ({
+        refresh: async () => {},
+        getModel: () => model,
+        getError: () => undefined,
+      }),
+      createResourceLoader: () => ({ reload: async () => {} }),
+      createAgentSession: async () => ({ session }),
+      resolveAutomaticModel: async () => undefined,
+      resolveSkillPaths: () => [],
+    });
+
+    await expect(creator({ cwd: "/project" })).rejects.toThrow();
+
+    expect(session.disposeCalls).toBe(1);
+  });
+
+  it("disposes a partially constructed creator session before its stable runtime binding", async () => {
+    const order: string[] = [];
+    const live: LiveConfiguration = {
+      ...liveConfiguration(),
+      subscribe: () => {
+        throw new Error("attach failed");
+      },
+    };
+    const session = bindableSession([]);
+    session.dispose = () => {
+      order.push("session");
+    };
+    const creator = createPiAgentSessionCreator({
+      agentDir: "/agent",
+      liveConfiguration: live,
+      ...runtimeOwnerDeps(),
+      createExtensionFactories: () => [],
+      createSessionManager: () => ({} as never),
+      openSessionManager: () => ({} as never),
+      createSettingsManager: () => ({}),
+      createModelRuntime: async () => ({
+        refresh: async () => {},
+        getModel: () => model,
+        getError: () => undefined,
+        dispose: () => {
+          order.push("binding");
+        },
+      }),
+      createResourceLoader: () => ({ reload: async () => {} }),
+      createAgentSession: async () => ({ session }),
+      resolveAutomaticModel: async () => undefined,
+      resolveSkillPaths: () => [],
+    });
+
+    await expect(creator({ cwd: "/project" })).rejects.toThrow("attach failed");
+
+    expect(order).toEqual(["session", "binding"]);
+  });
+
+  it("hands failed creator cleanup to the adapter for deterministic retry", async () => {
+    let generation = 1;
+    let currentAgent = paperAssistant({ systemPrompt: "v1" });
+    let unsubscribeCalls = 0;
+    const live: LiveConfiguration = {
+      get generation() {
+        return generation;
+      },
+      error: null,
+      start: async () => {},
+      synchronize: async () => {},
+      notify: async () => {},
+      isCurrent: (candidate) => candidate === generation,
+      resolveAgents: async () => [currentAgent],
+      subscribe: () => () => {
+        unsubscribeCalls += 1;
+        if (unsubscribeCalls === 1) throw new Error("unsubscribe failed");
+      },
+      close: async () => {},
+    };
+    const session = bindableSession([]);
+    session.bindExtensions = async () => {
+      currentAgent = paperAssistant({ systemPrompt: "v2" });
+      generation = 2;
+    };
+    session.reload = async () => {
+      throw new Error("reload failed");
+    };
+    session.dispose = vi.fn()
+      .mockImplementationOnce(() => {
+        throw new Error("session disposal failed");
+      })
+      .mockImplementationOnce(() => {});
+    const creator = createPiAgentSessionCreator({
+      agentDir: "/agent",
+      liveConfiguration: live,
+      ...runtimeOwnerDeps(),
+      createExtensionFactories: () => [],
+      createSessionManager: () => ({} as never),
+      openSessionManager: () => ({} as never),
+      createSettingsManager: () => ({}),
+      createModelRuntime: async () => ({
+        refresh: async () => {},
+        getModel: () => model,
+        getError: () => undefined,
+      }),
+      createResourceLoader: () => ({ reload: async () => {} }),
+      createAgentSession: async () => ({ session }),
+      resolveAutomaticModel: async () => undefined,
+      resolveSkillPaths: () => [],
+    });
+    const adapter = new PiSessionFactory(creator).create({ cwd: "/project" });
+
+    await expect(adapter.start()).rejects.toThrow();
+    expect(unsubscribeCalls).toBe(0);
+    expect(session.dispose).toHaveBeenCalledTimes(1);
+
+    await expect(adapter.stop()).rejects.toThrow("unsubscribe failed");
+
+    expect(unsubscribeCalls).toBe(1);
+    expect(session.dispose).toHaveBeenCalledTimes(2);
+
+    await adapter.stop();
+
+    expect(unsubscribeCalls).toBe(2);
+    expect(session.dispose).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("DirectSessionAdapter steer lifecycle (ADR-083)", () => {
   it("exposes pending steering messages from the Pi session", async () => {
     const session = new FakeAgentSession();
     session.steeringMessages = ["note one", "note two"];
-    const factory = new PiSessionFactory(async () => managed(session));
+    const factory = new PiSessionFactory(async () => created(session));
     const adapter = factory.create({ cwd: "/project" });
     await adapter.start();
 
@@ -1173,7 +1871,7 @@ describe("DirectSessionAdapter steer lifecycle (ADR-083)", () => {
     const literal = "Please preserve <agent_status>status</agent_status> and <agent_handoff>handoff</agent_handoff>.";
     const session = new FakeAgentSession();
     session.steeringMessages = [literal];
-    const factory = new PiSessionFactory(async () => managed(session));
+    const factory = new PiSessionFactory(async () => created(session));
     const adapter = factory.create({ cwd: "/project" });
     const events: unknown[] = [];
     adapter.onEvent((event) => events.push(event));
@@ -1219,7 +1917,7 @@ describe("DirectSessionAdapter steer lifecycle (ADR-083)", () => {
 
   it("does not clear the queue for unrelated events", async () => {
     const session = new FakeAgentSession();
-    const factory = new PiSessionFactory(async () => managed(session));
+    const factory = new PiSessionFactory(async () => created(session));
     const adapter = factory.create({ cwd: "/project" });
     await adapter.start();
 
@@ -1245,7 +1943,7 @@ describe("DirectSessionAdapter steer lifecycle (ADR-083)", () => {
       await runGate.promise;
       runSettled = true;
     };
-    const factory = new PiSessionFactory(async () => managed(session));
+    const factory = new PiSessionFactory(async () => created(session));
     const adapter = factory.create({ cwd: "/project" });
     await adapter.start();
 
@@ -1262,7 +1960,7 @@ describe("DirectSessionAdapter steer lifecycle (ADR-083)", () => {
   it("rejects the Web prompt when preflight fails (ADR-083)", async () => {
     const session = new FakeAgentSession();
     session.promptError = new Error("no model selected");
-    const factory = new PiSessionFactory(async () => managed(session));
+    const factory = new PiSessionFactory(async () => created(session));
     const adapter = factory.create({ cwd: "/project" });
     await adapter.start();
 
@@ -1272,7 +1970,7 @@ describe("DirectSessionAdapter steer lifecycle (ADR-083)", () => {
   it("cancels undelivered steers when the run is aborted (ADR-083)", async () => {
     const session = new FakeAgentSession();
     session.steeringMessages = ["queued note"];
-    const factory = new PiSessionFactory(async () => managed(session));
+    const factory = new PiSessionFactory(async () => created(session));
     const adapter = factory.create({ cwd: "/project" });
     await adapter.start();
 

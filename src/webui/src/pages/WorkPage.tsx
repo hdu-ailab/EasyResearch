@@ -44,6 +44,8 @@ export interface WorkPageProps {
   cwd: string;
   onBack: () => void;
   onOpenSettings: () => void;
+  configurationGeneration?: number;
+  configurationError?: string | null;
 }
 
 type Panel = "files" | "agents" | null;
@@ -130,7 +132,14 @@ function defaultPanel(): Panel {
   return typeof window !== "undefined" && window.innerWidth >= CONVERSATION_FIRST_BREAKPOINT ? "files" : null;
 }
 
-export function WorkPage({ id, cwd, onBack, onOpenSettings }: WorkPageProps) {
+export function WorkPage({
+  id,
+  cwd,
+  onBack,
+  onOpenSettings,
+  configurationGeneration = 0,
+  configurationError = null,
+}: WorkPageProps) {
   const { t } = useI18n();
   const [fileEvent, setFileEvent] = useState<FileWatcherEvent | null>(null);
   const [panel, setPanel] = useState<Panel>(defaultPanel);
@@ -843,7 +852,12 @@ export function WorkPage({ id, cwd, onBack, onOpenSettings }: WorkPageProps) {
             hidden={agentsHidden}
             className={`h-full min-h-0 overflow-hidden min-[820px]:rounded-[10px] ${!agentsHidden ? "animate-v2-fade-in motion-reduce:animate-none" : ""}`}
           >
-            <AgentList cwd={cwd} statusByAgent={statusByAgent} sessionId={sessionId} />
+            <AgentList
+              cwd={cwd}
+              statusByAgent={statusByAgent}
+              configurationGeneration={configurationGeneration}
+              configurationError={configurationError}
+            />
           </div>
         </section>
       </div>

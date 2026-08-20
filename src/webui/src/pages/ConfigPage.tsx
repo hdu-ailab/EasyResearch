@@ -17,6 +17,13 @@ function rootScope(root: Root): { scope: ConfigScope; cwd?: string } {
   return root.kind === "home" ? { scope: "global" } : { scope: "project", cwd: root.cwd };
 }
 
+function savedMessage(root: Root, path: string): "config.saved" | "config.savedLive" | "config.savedRestart" {
+  const agentMarkdown = /^agents\/[^/]+\.md$/.test(path);
+  if (root.kind === "home" && (path === "models.json" || agentMarkdown)) return "config.savedLive";
+  if (root.kind === "project" && agentMarkdown) return "config.saved";
+  return "config.savedRestart";
+}
+
 export function ConfigPage({ onBack }: ConfigPageProps) {
   const { t } = useI18n();
   const [data, setData] = useState<ConfigProjectsDto | null>(null);
@@ -245,7 +252,11 @@ export function ConfigPage({ onBack }: ConfigPageProps) {
                         <Save size={13} />
                         {t("config.save")}
                       </button>
-                      {saved && <span className="text-[12px] text-v2-text-text-muted">{t("config.saved")}</span>}
+                      {saved && (
+                        <span className="text-[12px] text-v2-text-text-muted">
+                          {t(savedMessage(selectedRoot, selectedFile))}
+                        </span>
+                      )}
                     </div>
                   </>
                 ) : (

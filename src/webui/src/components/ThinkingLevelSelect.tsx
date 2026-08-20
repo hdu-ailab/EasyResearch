@@ -1,8 +1,12 @@
-import { getSupportedThinkingLevels } from "../../../thinking-levels";
+import { EXTENDED_THINKING_LEVELS, getSupportedThinkingLevels } from "../../../thinking-levels";
 import type { ModelOption } from "../api/parsers";
 
-export function thinkingLevelsForModel(model: ModelOption | undefined, current?: string): readonly string[] {
-  const levels = [...getSupportedThinkingLevels(model)];
+export function thinkingLevelsForModel(
+  model: ModelOption | undefined,
+  current?: string,
+  automaticModel = false,
+): readonly string[] {
+  const levels = model || !automaticModel ? [...getSupportedThinkingLevels(model)] : [...EXTENDED_THINKING_LEVELS];
   if (current && !levels.includes(current)) levels.unshift(current);
   return levels;
 }

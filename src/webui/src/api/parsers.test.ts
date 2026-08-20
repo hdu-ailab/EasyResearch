@@ -6,8 +6,8 @@ import {
   parseConfigEntries,
   parseConfigFile,
   parseConfigProjects,
+  parseConfigurationEvent,
   parseDirectories,
-  parseEffectiveModels,
   parseEntries,
   parseFileContent,
   parseModels,
@@ -16,7 +16,6 @@ import {
   parseSkillCommands,
   parseStatus,
   parseSubagentSupervisorEvent,
-  parseWebuiSettings,
 } from "./parsers";
 
 describe("API response parsers", () => {
@@ -41,6 +40,12 @@ describe("API response parsers", () => {
         {
           name: "search",
           description: "Finds papers",
+          enabled: true,
+          builtin: true,
+          source: "global",
+          filePath: "/agent/agents/search.md",
+          model: "openai/gpt-4o",
+          thinking: "high",
           tools: ["web"],
           subagents: [],
           skills: ["arxiv"],
@@ -55,9 +60,11 @@ describe("API response parsers", () => {
         subagents: [],
         skills: ["arxiv"],
         enabled: true,
-        builtin: false,
+        builtin: true,
         source: "global",
-        filePath: "",
+        filePath: "/agent/agents/search.md",
+        model: "openai/gpt-4o",
+        thinking: "high",
         effectiveTools: ["web"],
         effectiveSkills: ["arxiv"],
         missingSkills: [],
@@ -68,40 +75,38 @@ describe("API response parsers", () => {
     ).toEqual([{ provider: "openai", id: "gpt-4o", reasoning: true, thinkingLevelMap: {} }]);
   });
 
-  it("rejects malformed model, agent, and effective-model payloads", () => {
+  it("rejects malformed model rows and project Agent sources", () => {
     expect(() => parseModels({ models: [{ provider: "openai" }] })).toThrow();
     expect(() => parseModels({ models: [{ provider: "openai", id: "gpt-4o", reasoning: "yes" }] })).toThrow();
     expect(() => parseAgents([{ name: "search", description: 42 }])).toThrow();
-    expect(() => parseEffectiveModels([{ name: "search", model: null, source: "unknown" }])).toThrow();
+    expect(() =>
+      parseAgents([
+        {
+          name: "search",
+          description: "Finds papers",
+          enabled: true,
+          builtin: true,
+          source: "project",
+          filePath: "/project/.easyresearch/agents/search.md",
+          effectiveTools: [],
+          effectiveSkills: [],
+          missingSkills: [],
+        },
+      ]),
+    ).toThrow();
   });
 
-  it("parses settings and preserves null effective model values", () => {
+  it("parses both configuration event variants and rejects incomplete payloads", () => {
     expect(
-      parseWebuiSettings({
-        agentModels: { search: "openai/gpt-4o" },
-        paperAssistantModel: null,
-        effectivePaperAssistantModel: "openai/gpt-4o",
-        agentThinking: { search: "high" },
-        paperAssistantThinking: null,
-      }),
-    ).toEqual({
-      agentModels: { search: "openai/gpt-4o" },
-      paperAssistantModel: null,
-      effectivePaperAssistantModel: "openai/gpt-4o",
-      agentThinking: { search: "high" },
-      paperAssistantThinking: null,
+      parseConfigurationEvent({ type: "config.updated", generation: 3, agentsChanged: true, modelsChanged: false }),
+    ).toEqual({ type: "config.updated", generation: 3, agentsChanged: true, modelsChanged: false });
+    expect(parseConfigurationEvent({ type: "config.error", generation: 3, message: "Invalid configuration" })).toEqual({
+      type: "config.error",
+      generation: 3,
+      message: "Invalid configuration",
     });
-    expect(() =>
-      parseWebuiSettings({ agentModels: {}, paperAssistantModel: 42, effectivePaperAssistantModel: null }),
-    ).toThrow();
-    expect(() =>
-      parseWebuiSettings({
-        agentModels: {},
-        agentThinking: { search: 42 },
-        paperAssistantModel: null,
-        effectivePaperAssistantModel: null,
-      }),
-    ).toThrow();
+    expect(() => parseConfigurationEvent({ type: "config.updated", generation: 3, agentsChanged: true })).toThrow();
+    expect(() => parseConfigurationEvent({ type: "config.error", generation: -1, message: "bad" })).toThrow();
   });
 
   it("parses directory, file, and text-content responses", () => {
