@@ -2,6 +2,7 @@ import { Settings } from "lucide-react";
 import { useEffect, useState } from "react";
 import { listStatus, openSession } from "./api";
 import { TopbarIconButton } from "./components/Topbar";
+import { useConfigurationEvents } from "./hooks/useConfigurationEvents";
 import { useHashRoute } from "./hooks/useHashRoute";
 import { useI18n } from "./i18n/useI18n";
 import { ConfigPage } from "./pages/ConfigPage";
@@ -20,6 +21,7 @@ import { resolveWorkSession, type WorkSession } from "./router";
  */
 export function App() {
   const { t } = useI18n();
+  const configuration = useConfigurationEvents();
   const { route, navigate } = useHashRoute();
   const [workResolved, setWorkResolved] = useState<WorkSession | null>(null);
   const [workRevision, setWorkRevision] = useState(0);
@@ -55,6 +57,8 @@ export function App() {
           key={`${session.id}:${workRevision}`}
           id={session.id}
           cwd={session.cwd}
+          configurationGeneration={configuration.generation}
+          configurationError={configuration.error}
           onBack={() => navigate({ page: "home" })}
           onOpenSettings={() => navigate({ page: "settings" })}
         />
@@ -69,7 +73,12 @@ export function App() {
 
   if (route.page === "settings") {
     return (
-      <SettingsPage onBack={() => navigate({ page: "home" })} onOpenConfigPage={() => navigate({ page: "config" })} />
+      <SettingsPage
+        onBack={() => navigate({ page: "home" })}
+        onOpenConfigPage={() => navigate({ page: "config" })}
+        configurationGeneration={configuration.generation}
+        configurationError={configuration.error}
+      />
     );
   }
 

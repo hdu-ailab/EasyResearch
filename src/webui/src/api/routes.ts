@@ -10,19 +10,13 @@ export const routes = {
     const query = cwd ? `?cwd=${encodeURIComponent(cwd)}` : "";
     return `${API_ROOT}/agents${query}`;
   },
+  agentConfiguration: (name: string) => `${API_ROOT}/agents/${encodeURIComponent(name)}`,
   agentResources: () => `${API_ROOT}/agent-resources`,
   agentResource: (name: string) => `${API_ROOT}/agent-resources/${encodeURIComponent(name)}`,
   skillResources: () => `${API_ROOT}/skill-resources`,
   skillResource: (name: string) => `${API_ROOT}/skill-resources/${encodeURIComponent(name)}`,
   models: () => `${API_ROOT}/models`,
-  webuiSettings: () => `${API_ROOT}/webui-settings`,
-  effectiveModels: (sessionId: string) => `${session(sessionId)}/agents/effective-models`,
-  agentModel: (sessionId: string, agentName: string) =>
-    `${session(sessionId)}/agents/${encodeURIComponent(agentName)}/model`,
-  effectiveThinking: (sessionId: string) => `${session(sessionId)}/agents/effective-thinking`,
-  agentThinking: (sessionId: string, agentName: string) =>
-    `${session(sessionId)}/agents/${encodeURIComponent(agentName)}/thinking`,
-  clearAgentOverrides: (sessionId: string) => `${session(sessionId)}/agent-overrides/clear`,
+  configurationEvents: () => `${API_ROOT}/config/events`,
   sessionName: (id: string) => `${session(id)}/name`,
   directories: (path: string) => `${API_ROOT}/directories?${new URLSearchParams({ path }).toString()}`,
   createDirectory: () => `${API_ROOT}/directories`,

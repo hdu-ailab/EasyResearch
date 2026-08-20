@@ -3,10 +3,126 @@ import { readFile } from "node:fs/promises";
 import { createAuthGateway, type AuthGateway } from "./auth-gateway";
 import { ConfigFileService } from "./config-files";
 import type { Logger } from "../runtime/logger";
+import { createModelRuntimeTransaction } from "../runtime/model-runtime-transaction";
+import type {
+  ModelCatalogValidator,
+  ModelCatalogEntry,
+  PreparedModelCatalog,
+} from "../runtime/live-configuration";
+import type { AuthModelRuntime } from "./auth-gateway";
 
 const DEFAULT_AUTH_FLOW_TIMEOUT_MS = 600_000;
 
-let cached: AuthGateway | null = null;
+const SAFE_MODEL_CATALOG_ERROR = "Model catalog validation failed.";
+
+export interface AcceptedModelRuntime<T extends AuthModelRuntime = AuthModelRuntime>
+  extends ModelCatalogValidator {
+  /** Stable proxy delegated only to the last committed candidate runtime. */
+  readonly runtime: T;
+  getModelsJsonProviderIds(): ReadonlySet<string>;
+  dispose(): Promise<void>;
+}
+
+export interface DaemonAuthRuntime {
+  readonly auth: AuthGateway;
+  readonly modelValidator: ModelCatalogValidator;
+  dispose(): Promise<void>;
+}
+
+export interface DaemonAuthRuntimeOptions<T extends AuthModelRuntime> {
+  config: ConfigFileService;
+  logger: Logger;
+  createModelRuntime: () => Promise<T>;
+  synchronizeCatalog: () => Promise<void>;
+  onModelsChanged: () => Promise<void>;
+}
+
+/**
+ * Build the daemon's transactional accepted model authority. Preparation owns
+ * a fresh runtime and never changes the stable proxy. LiveConfiguration invokes
+ * the synchronous commit only after Agent/model/fingerprint validation.
+ */
+export function createAcceptedModelRuntime<T extends AuthModelRuntime>(
+  createRuntime: () => Promise<T>,
+  readProviderIds: () => Promise<ReadonlySet<string>> = async () => new Set(),
+): AcceptedModelRuntime<T> {
+  const transaction = createModelRuntimeTransaction(createRuntime);
+  let acceptedProviderIds: ReadonlySet<string> = new Set();
+
+  return {
+    runtime: transaction.runtime,
+    async prepareModelCatalog(): Promise<PreparedModelCatalog> {
+      const candidate = await transaction.prepare();
+      let owned = true;
+      try {
+        const result = await candidate.runtime.refresh({ allowNetwork: false });
+        if (result.aborted || result.errors.size > 0) {
+          throw result.errors.values().next().value ?? new Error("Model catalog refresh aborted");
+        }
+        const semanticError = candidate.runtime.getError();
+        if (semanticError) throw new Error("Model catalog refresh failed", { cause: semanticError });
+        const models = Object.freeze(
+          candidate.runtime.getAvailableSnapshot().map(
+            (model): ModelCatalogEntry => Object.freeze({ provider: model.provider, id: model.id }),
+          ),
+        );
+        const providerIds = new Set(await readProviderIds());
+
+        return {
+          models,
+          commit() {
+            if (!owned) throw new Error("Model catalog candidate is already settled.");
+            candidate.activate();
+            acceptedProviderIds = providerIds;
+            owned = false;
+            void candidate.commit().catch(() => {
+              // Retired runtime cleanup remains owned by the transaction.
+            });
+          },
+          async rollback() {
+            if (!owned) return;
+            owned = false;
+            await candidate.dispose();
+          },
+        };
+      } catch (cause) {
+        if (owned) {
+          owned = false;
+          try {
+            await candidate.dispose();
+          } catch {
+            // Candidate cleanup cannot alter the accepted delegate.
+          }
+        }
+        throw new Error(SAFE_MODEL_CATALOG_ERROR, { cause });
+      }
+    },
+    getModelsJsonProviderIds: () => new Set(acceptedProviderIds),
+    dispose: () => transaction.dispose(),
+  };
+}
+
+export async function createDaemonAuthRuntime<T extends AuthModelRuntime>(
+  options: DaemonAuthRuntimeOptions<T>,
+): Promise<DaemonAuthRuntime> {
+  const modelsPath = join(options.config.globalRoot, "models.json");
+  const accepted = createAcceptedModelRuntime(
+    options.createModelRuntime,
+    () => readModelsJsonProviderIds(modelsPath),
+  );
+  const auth = createAuthGateway(accepted.runtime, undefined, {
+    timeoutMs: await readAuthFlowTimeout(options.config),
+    logger: options.logger,
+    acceptedModelsJsonProviderIds: () => accepted.getModelsJsonProviderIds(),
+    synchronizeCatalog: options.synchronizeCatalog,
+    onModelsChanged: options.onModelsChanged,
+  });
+  return {
+    auth,
+    modelValidator: accepted,
+    dispose: () => accepted.dispose(),
+  };
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -14,19 +130,35 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * Extract provider ids declared in `models.json` (custom providers the user
- * added by hand). Never throws: unreadable/invalid files yield an empty set,
- * which only disables pinning of custom providers, never the auth flows.
+ * added by hand). A missing file is the valid empty configuration; actual
+ * read, parse, and root-shape errors reject the catalog refresh.
  */
 export async function readModelsJsonProviderIds(modelsPath: string): Promise<ReadonlySet<string>> {
+  let content: string;
   try {
-    const content = await readFile(modelsPath, "utf8");
-    const root = JSON.parse(content) as unknown;
-    const providers = isRecord(root) ? root.providers : undefined;
-    if (!isRecord(providers)) return new Set();
-    return new Set(Object.keys(providers));
-  } catch {
-    return new Set();
+    content = await readFile(modelsPath, "utf8");
+  } catch (cause) {
+    if (isRecord(cause) && cause.code === "ENOENT") return new Set();
+    throw new Error("Unable to read models.json", { cause });
   }
+
+  let root: unknown;
+  try {
+    root = JSON.parse(stripPiJsonComments(content)) as unknown;
+  } catch (cause) {
+    throw new Error("Unable to parse models.json", { cause });
+  }
+
+  const providers = isRecord(root) ? root.providers : undefined;
+  if (!isRecord(providers)) throw new Error('Invalid models.json: "providers" must be an object');
+  return new Set(Object.keys(providers));
+}
+
+/** Match pinned Pi's accepted JSON syntax without importing Pi before bootstrap. */
+function stripPiJsonComments(input: string): string {
+  return input
+    .replace(/"(?:\\.|[^"\\])*"|\/\/[^\n]*/g, (match) => (match[0] === '"' ? match : ""))
+    .replace(/"(?:\\.|[^"\\])*"|,(\s*[}\]])/g, (match, tail) => tail ?? (match[0] === '"' ? match : ""));
 }
 
 /**
@@ -52,45 +184,4 @@ async function readAuthFlowTimeout(config: ConfigFileService): Promise<number> {
   } catch {
     return DEFAULT_AUTH_FLOW_TIMEOUT_MS;
   }
-}
-
-/**
- * Lazily construct the shared `AuthGateway` for the Web server process.
- *
- * Bootstraps the easyresearch identity (`importPi()`) before any Pi import,
- * resolves `agentDir`/`authPath`/`modelsPath` from the initialized
- * `getAgentDir()` (never the foreign `~/.pi`), builds a `ModelRuntime`
- * dedicated to auth operations, and wraps it in `createAuthGateway`.
- *
- * The Web server keeps one shared instance for its lifetime; AgentSessions
- * keep their own runtime reading the same `auth.json`. Tests inject a fake
- * gateway via `RouteServices.auth` directly and never call this.
- */
-export async function getAuthGateway(logger: Logger): Promise<AuthGateway> {
-  if (cached) return cached;
-  const { importPi, getAgentDir } = await import("../runtime/pi-import");
-  const { ModelRuntime } = await importPi();
-  const agentDir = getAgentDir();
-  const config = new ConfigFileService(agentDir);
-  const timeoutMs = await readAuthFlowTimeout(config);
-  const modelRuntime = await ModelRuntime.create({
-    authPath: join(agentDir, "auth.json"),
-    modelsPath: join(agentDir, "models.json"),
-    refreshOnCreate: false,
-  });
-  const modelsJsonProviderIds = await readModelsJsonProviderIds(join(agentDir, "models.json"));
-  cached = createAuthGateway(modelRuntime as never, undefined, {
-    timeoutMs,
-    logger,
-    modelsJsonProviderIds,
-  });
-  return cached;
-}
-
-/**
- * Reset the cached gateway. Tests redirected to a temp HOME/agent dir call
- * this between cases to force a fresh `ModelRuntime` against the temp paths.
- */
-export function resetAuthGatewayCacheForTests(): void {
-  cached = null;
 }

@@ -1,31 +1,45 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { getAgentDir } from "../runtime/pi-import";
-import { importPi } from "../runtime/pi-import";
+import { join } from "node:path";
 import { bundledSourceRoot } from "../runtime/bundled-assets";
-import { isThinkingLevel } from "../thinking-levels";
+import { getAgentDir, importPi } from "../runtime/pi-import";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { readGlobalAgentDefaults, type AgentRuntimeDefaults } from "./agent-defaults";
 import { isDotAgentsSkillEnabled, resolveSkillSelection } from "./skill-resolution";
 
-export type AgentSource = "bundled" | "global" | "project";
+export type AgentSource = "global" | "bundled";
 
-export interface AgentConfig {
+export interface AgentDefinition {
   name: string;
   description: string;
   enabled: boolean;
   builtin: boolean;
   tools?: string[];
-  effectiveTools: string[];
   subagents?: string[];
   skills?: string[];
-  effectiveSkills: string[];
-  missingSkills: string[];
-  model?: string;
-  thinking?: string;
   systemPrompt: string;
   source: AgentSource;
   filePath: string;
+}
+
+export interface AgentDiagnostic {
+  agent: string;
+  source: AgentSource;
+  message: string;
+}
+
+export interface AgentCatalogSnapshot {
+  definitions: readonly AgentDefinition[];
+  diagnostics: readonly AgentDiagnostic[];
+  defaults?: Readonly<AgentRuntimeDefaults>;
+}
+
+export interface AgentConfig extends AgentDefinition {
+  model?: string;
+  thinking?: ThinkingLevel;
+  effectiveTools: string[];
+  effectiveSkills: string[];
+  missingSkills: string[];
 }
 
 export interface AgentDiscoveryResult {
@@ -54,11 +68,7 @@ export interface DiscoveryOptions {
   bundledAgentsDir?: string;
   bundledSkillsDir?: string;
   homeDir?: string;
-  includeProject?: boolean;
-  includeGlobal?: boolean;
-  includeBundled?: boolean;
   enableDotAgentsSkill?: boolean;
-  projectFree?: boolean;
 }
 
 function bundledAgentsDir(): string {
@@ -67,29 +77,14 @@ function bundledAgentsDir(): string {
 
 function sourceDirectory(options: DiscoveryOptions, source: AgentSource): string {
   if (source === "bundled") return options.bundledAgentsDir ? join(options.bundledAgentsDir, "agents") : bundledAgentsDir();
-  if (source === "global") return join(options.agentDir ?? getAgentDir(), "agents");
-  return join(options.cwd ?? process.cwd(), ".easyresearch", "agents");
-}
-
-function discoveryCwd(options: DiscoveryOptions): string {
-  return options.projectFree ? options.agentDir ?? getAgentDir() : options.cwd ?? process.cwd();
+  return join(options.agentDir ?? getAgentDir(), "agents");
 }
 
 function sourcePriority(options: DiscoveryOptions): Array<{ source: AgentSource; directory: string }> {
   return [
-    ...(options.includeProject === false ? [] : [{ source: "project" as const, directory: sourceDirectory(options, "project") }]),
-    ...(options.includeGlobal === false ? [] : [{ source: "global" as const, directory: sourceDirectory(options, "global") }]),
-    ...(options.includeBundled === false ? [] : [{ source: "bundled" as const, directory: sourceDirectory(options, "bundled") }]),
+    { source: "global", directory: sourceDirectory(options, "global") },
+    { source: "bundled", directory: sourceDirectory(options, "bundled") },
   ];
-}
-
-function readMd(path: string): string | undefined {
-  try {
-    return readFileSync(path, "utf8");
-  } catch (error) {
-    if (process.env.DEBUG_AGENT_DISCOVERY === "1") console.log("parse error", error);
-    return undefined;
-  }
 }
 
 type FrontmatterParser = <T extends Record<string, unknown>>(content: string) => { frontmatter: T; body: string };
@@ -99,49 +94,38 @@ function parseAgentFile(
   name: string,
   builtin: boolean,
   source: AgentSource,
-  options: DiscoveryOptions,
   parseFrontmatter: FrontmatterParser,
-  enableDotAgentsSkill: boolean,
-): AgentConfig | undefined {
-  const content = readMd(filePath);
-  if (content === undefined) return undefined;
+): { definition?: AgentDefinition; diagnostic?: AgentDiagnostic } {
   try {
+    const content = readFileSync(filePath, "utf8");
     const parsed = parseFrontmatter<Record<string, unknown>>(content);
     const frontmatter = parsed.frontmatter ?? {};
-    if (typeof frontmatter.name !== "string" || !frontmatter.name.trim()) return undefined;
+    if (typeof frontmatter.name !== "string" || !frontmatter.name.trim()) {
+      return { diagnostic: invalidDefinitionDiagnostic(name, source) };
+    }
     const tools = configuredCapabilityList(frontmatter.tools);
     const skills = configuredCapabilityList(frontmatter.skills);
-    const effectiveTools = tools ?? [...CONTROLLED_TOOL_INVENTORY];
-    const { effectiveSkills, missingSkills } = resolveSkillSelection(skills, {
-      cwd: discoveryCwd(options),
-      agentDir: options.agentDir ?? getAgentDir(),
-      homeDir: options.homeDir ?? homedir(),
-      bundledSkillsDir: options.bundledSkillsDir,
-      enableDotAgentsSkill,
-      includeProject: options.projectFree !== true,
-    });
     return {
-      name,
-      description: typeof frontmatter.description === "string" && frontmatter.description.trim() ? frontmatter.description : name,
-      enabled: builtin && name === PAPER_ASSISTANT_AGENT ? true : frontmatter.enable !== false,
-      builtin,
-      tools,
-      effectiveTools,
-      skills,
-      effectiveSkills,
-      missingSkills,
-      subagents: stringArray(frontmatter.subagents),
-      model: typeof frontmatter.model === "string" && frontmatter.model ? frontmatter.model : undefined,
-      thinking:
-        typeof frontmatter.thinking === "string" && isThinkingLevel(frontmatter.thinking) ? frontmatter.thinking : undefined,
-      systemPrompt: parsed.body.trim(),
-      source,
-      filePath,
+      definition: {
+        name,
+        description: typeof frontmatter.description === "string" && frontmatter.description.trim() ? frontmatter.description : name,
+        enabled: builtin && name === PAPER_ASSISTANT_AGENT ? true : frontmatter.enable !== false,
+        builtin,
+        tools,
+        subagents: stringArray(frontmatter.subagents),
+        skills,
+        systemPrompt: parsed.body.trim(),
+        source,
+        filePath,
+      },
     };
-  } catch (error) {
-    if (process.env.DEBUG_AGENT_DISCOVERY === "1") console.log("agent parse error", error);
-    return undefined;
+  } catch {
+    return { diagnostic: invalidDefinitionDiagnostic(name, source) };
   }
+}
+
+function invalidDefinitionDiagnostic(agent: string, source: AgentSource): AgentDiagnostic {
+  return { agent, source, message: "Invalid Agent definition." };
 }
 
 export function configuredCapabilityList(value: unknown): string[] | undefined {
@@ -180,13 +164,14 @@ function loadBuiltin(
   options: DiscoveryOptions,
   name: string,
   parseFrontmatter: FrontmatterParser,
-  enableDotAgentsSkill: boolean,
-): AgentConfig | undefined {
+  diagnostics: AgentDiagnostic[],
+): AgentDefinition | undefined {
   for (const { source, directory } of sourcePriority(options)) {
     const path = pathForBuiltin(directory, name);
     if (!path) continue;
-    const parsed = parseAgentFile(path, name, true, source, options, parseFrontmatter, enableDotAgentsSkill);
-    if (parsed) return parsed;
+    const parsed = parseAgentFile(path, name, true, source, parseFrontmatter);
+    if (parsed.definition) return parsed.definition;
+    if (parsed.diagnostic) diagnostics.push(parsed.diagnostic);
   }
   return undefined;
 }
@@ -195,45 +180,96 @@ function loadCustom(
   options: DiscoveryOptions,
   name: string,
   parseFrontmatter: FrontmatterParser,
-  enableDotAgentsSkill: boolean,
-): AgentConfig | undefined {
-  for (const { source, directory } of sourcePriority(options).slice(0, 2)) {
+  diagnostics: AgentDiagnostic[],
+): AgentDefinition | undefined {
+  for (const { source, directory } of sourcePriority(options)) {
     const path = pathForCustom(directory, name);
     if (!existsSync(path)) continue;
-    const parsed = parseAgentFile(path, name, false, source, options, parseFrontmatter, enableDotAgentsSkill);
-    if (parsed) return parsed;
+    const parsed = parseAgentFile(path, name, false, source, parseFrontmatter);
+    if (parsed.definition) return parsed.definition;
+    if (parsed.diagnostic) diagnostics.push(parsed.diagnostic);
   }
   return undefined;
 }
 
-export async function discoverAgents(options: DiscoveryOptions = {}): Promise<AgentDiscoveryResult> {
-  const pi = await importPi();
-  const settings = pi.SettingsManager
-    ? pi.SettingsManager.create(discoveryCwd(options), options.agentDir ?? getAgentDir()).getGlobalSettings()
-    : undefined;
-  const enableDotAgentsSkill = options.enableDotAgentsSkill ?? isDotAgentsSkillEnabled(settings);
-  const agents: AgentConfig[] = [];
+export async function loadAgentCatalog(options: DiscoveryOptions = {}): Promise<AgentCatalogSnapshot> {
+  const { parseFrontmatter } = await importPi();
+  const definitions: AgentDefinition[] = [];
+  const diagnostics: AgentDiagnostic[] = [];
   for (const name of BUILTIN_ORDER) {
-    const agent = loadBuiltin(options, name, pi.parseFrontmatter, enableDotAgentsSkill);
-    if (agent) agents.push(agent);
+    const definition = loadBuiltin(options, name, parseFrontmatter, diagnostics);
+    if (definition) definitions.push(definition);
   }
   const builtinNames = new Set(BUILTIN_ORDER);
   const customNames = new Set<string>();
-  for (const directory of sourcePriority(options).slice(0, 2).map(({ directory }) => directory)) {
+  for (const directory of sourcePriority(options).map(({ directory }) => directory)) {
     for (const file of mdNames(directory)) {
       const stem = file.slice(0, -3);
       if (!builtinNames.has(stem) && !Object.values(BUILTIN_ALIASES).includes(stem)) customNames.add(stem);
     }
   }
   for (const name of [...customNames].sort((a, b) => a.localeCompare(b))) {
-    const agent = loadCustom(options, name, pi.parseFrontmatter, enableDotAgentsSkill);
-    if (agent) agents.push(agent);
+    const definition = loadCustom(options, name, parseFrontmatter, diagnostics);
+    if (definition) definitions.push(definition);
   }
+  const defaults = await readGlobalAgentDefaults(options.agentDir ?? getAgentDir());
+  return { definitions, diagnostics, defaults };
+}
+
+export function resolveAgentCatalog(
+  snapshot: AgentCatalogSnapshot,
+  options: DiscoveryOptions = {},
+): AgentDiscoveryResult {
+  const agentDir = options.agentDir ?? getAgentDir();
+  const includeProject = options.cwd !== undefined;
+  const cwd = options.cwd ?? agentDir;
+  const agents = snapshot.definitions.map((definition): AgentConfig => {
+    const runtimeDefault = snapshot.defaults?.[definition.name];
+    const tools = definition.tools ? [...definition.tools] : undefined;
+    const skills = definition.skills ? [...definition.skills] : undefined;
+    const { effectiveSkills, missingSkills } = resolveSkillSelection(skills, {
+      cwd,
+      agentDir,
+      homeDir: options.homeDir ?? homedir(),
+      bundledSkillsDir: options.bundledSkillsDir,
+      enableDotAgentsSkill: options.enableDotAgentsSkill,
+      includeProject,
+    });
+    return {
+      ...definition,
+      model: runtimeDefault?.model,
+      thinking: runtimeDefault?.thinking,
+      tools,
+      effectiveTools: tools ?? [...CONTROLLED_TOOL_INVENTORY],
+      subagents: definition.subagents ? [...definition.subagents] : definition.subagents,
+      skills,
+      effectiveSkills,
+      missingSkills,
+    };
+  });
   return { agents };
 }
 
-export function discoverGlobalAgents(options: DiscoveryOptions = {}): Promise<AgentDiscoveryResult> {
-  return discoverAgents({ ...options, includeProject: false, projectFree: true });
+async function resolveDotAgentsSkillSetting(options: DiscoveryOptions): Promise<boolean> {
+  if (options.enableDotAgentsSkill !== undefined) return options.enableDotAgentsSkill;
+  const { SettingsManager } = await importPi();
+  if (!SettingsManager) return false;
+  const agentDir = options.agentDir ?? getAgentDir();
+  const settings = SettingsManager.create(options.cwd ?? agentDir, agentDir).getGlobalSettings();
+  return isDotAgentsSkillEnabled(settings);
+}
+
+export async function discoverAgents(options: DiscoveryOptions = {}): Promise<AgentDiscoveryResult> {
+  const snapshot = await loadAgentCatalog(options);
+  const enableDotAgentsSkill = await resolveDotAgentsSkillSetting(options);
+  return resolveAgentCatalog(snapshot, { ...options, enableDotAgentsSkill });
+}
+
+export async function discoverGlobalAgents(options: DiscoveryOptions = {}): Promise<AgentDiscoveryResult> {
+  const globalOptions = { ...options, cwd: undefined };
+  const snapshot = await loadAgentCatalog(globalOptions);
+  const enableDotAgentsSkill = await resolveDotAgentsSkillSetting(globalOptions);
+  return resolveAgentCatalog(snapshot, { ...globalOptions, enableDotAgentsSkill });
 }
 
 export function filterEnabledAgents(agents: AgentConfig[]): AgentConfig[] {

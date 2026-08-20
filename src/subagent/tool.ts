@@ -2,11 +2,18 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { createLogger } from "../runtime/logger";
+import type { LiveConfiguration } from "../runtime/live-configuration";
 import type { SubagentLaunchDetails } from "./contracts";
 import type { AgentCatalog, ReservedDispatch, SubagentCoordinator } from "./coordinator";
-import { resolveModelForSpawn } from "./model-resolution";
+import {
+  availableSubagentsForCaller,
+  withCurrentAgentCatalog,
+} from "./dispatch-authorization";
+import { PAPER_ASSISTANT_AGENT } from "./agents";
+import { resolveConfiguredModel } from "./model-resolution";
 import type { SubagentSupervisor } from "./supervisor";
-import { resolveThinkingForSpawn } from "./thinking-resolution";
+import { resolveConfiguredThinking } from "./thinking-resolution";
+import { isThinkingLevel } from "../thinking-levels";
 
 const subagentLogger = createLogger("subagent");
 
@@ -108,12 +115,18 @@ const SubagentParams = Type.Object({
   task: Type.String({ description: "Task to delegate" }),
 });
 
-export function createSubagentTool(options: {
+export interface CreateSubagentToolOptions {
   coordinator: SubagentCoordinator;
   supervisor: SubagentSupervisor;
-  catalog: AgentCatalog;
+  liveConfiguration: Pick<
+    LiveConfiguration,
+    "generation" | "synchronize" | "isCurrent" | "resolveAgents" | "subscribe"
+  >;
+  callerAgent: string;
   description?: string;
-}) {
+}
+
+export function createSubagentTool(options: CreateSubagentToolOptions) {
   return defineTool({
     name: "subagent",
     label: "Subagent",
@@ -128,72 +141,69 @@ export function createSubagentTool(options: {
           throw new Error("Agent and task are required.");
         }
 
-        // This happens before the first await so parallel sibling calls cannot
-        // observe the same id candidate.
-        const reserved = options.coordinator.reserveDispatch({
-          ownerSessionId: ctx.sessionManager.getSessionId(),
-          toolCallId,
-          requested: params.agent,
-          catalog: options.catalog,
-        });
-        reservation = reserved;
+        const authorized = await withCurrentAgentCatalog(
+          options.liveConfiguration,
+          ctx.cwd,
+          ({ agents }) => {
+            const available = availableSubagentsForCaller(agents, options.callerAgent);
+            const catalog: AgentCatalog = { all: agents, available };
 
-        const agent = options.catalog.available.find((candidate) => candidate.name === reserved.agent);
-        if (!agent) {
-          const error = new Error(`Agent "${reserved.agent}" is no longer available.`);
-          options.coordinator.recordPreMaterializationFailure(reserved, error);
-          throw error;
-        }
-
-        let model: string | undefined;
-        let thinking: string;
-        try {
-          const sessionManager = options.coordinator.getRootSessionManager() as Parameters<
-            typeof resolveModelForSpawn
-          >[0]["sessionManager"];
-          model = await resolveModelForSpawn(
-            { cwd: ctx.cwd, sessionManager },
-            reserved.agent,
-            options.coordinator.getPaperAssistantModel(),
-          );
-          thinking = await resolveThinkingForSpawn(
-            { cwd: ctx.cwd, sessionManager },
-            reserved.agent,
-            options.coordinator.getPaperAssistantThinking(),
-          );
-        } catch (error) {
-          options.coordinator.recordPreMaterializationFailure(reserved, error);
-          throw error;
-        }
+            // Reserve inside the final generation check, before any await, so
+            // sibling parallel calls cannot observe the same id candidate.
+            const reserved = options.coordinator.reserveDispatch({
+              ownerSessionId: ctx.sessionManager.getSessionId(),
+              toolCallId,
+              requested: params.agent,
+              catalog,
+            });
+            const agent = available.find((candidate) => candidate.name === reserved.agent);
+            if (!agent) throw new Error(`Agent "${reserved.agent}" is disabled or unavailable.`);
+            const paperAssistant = agents.find((candidate) => candidate.name === PAPER_ASSISTANT_AGENT);
+            const paperAssistantThinking = options.coordinator.getPaperAssistantThinking();
+            return {
+              reservation: reserved,
+              agent,
+              model: resolveConfiguredModel(agent, paperAssistant?.model),
+              thinking: resolveConfiguredThinking(
+                agent,
+                isThinkingLevel(paperAssistantThinking) ? paperAssistantThinking : undefined,
+              ),
+            };
+          },
+          { signal, maxGenerationRetries: 1 },
+        );
+        reservation = authorized.reservation;
 
         subagentLogger?.debug("subagent launch resolved", {
-          agent: reserved.agent,
-          agentId: reserved.agentId,
-          model: model ?? "",
-          thinking,
+          agent: reservation.agent,
+          agentId: reservation.agentId,
+          model: authorized.model ?? "",
+          thinking: authorized.thinking,
         });
 
         let details: SubagentLaunchDetails;
         try {
-          details = await options.supervisor.launch(reserved, {
-            agent,
+          details = await options.supervisor.launch(reservation, {
+            agent: authorized.agent,
+            callerAgent: options.callerAgent,
             task: params.task,
             cwd: ctx.cwd,
-            model,
-            thinking,
+            model: authorized.model,
+            thinking: authorized.thinking,
+            liveConfiguration: options.liveConfiguration,
             signal,
           });
         } catch (error) {
-          let job = options.coordinator.journal().jobs.get(reserved.launchId);
+          let job = options.coordinator.journal().jobs.get(reservation.launchId);
           if (job?.status === "reserved") {
-            options.coordinator.recordPreMaterializationFailure(reserved, error);
-            job = options.coordinator.journal().jobs.get(reserved.launchId);
+            options.coordinator.recordPreMaterializationFailure(reservation, error);
+            job = options.coordinator.journal().jobs.get(reservation.launchId);
           }
           journalSessionPath = job?.sessionPath;
           throw error;
         }
         return {
-          content: [{ type: "text", text: `${reserved.agentId} is working.` }],
+          content: [{ type: "text", text: `${reservation.agentId} is working.` }],
           details,
         };
       } catch (error) {

@@ -34,6 +34,15 @@ export interface ConfigListInput {
   path?: string;
 }
 
+export interface AuthoritativeConfigChange {
+  agentsChanged?: true;
+  modelsChanged?: true;
+}
+
+export interface ConfigFileServiceOptions {
+  onAuthoritativeWrite?: (change: AuthoritativeConfigChange) => void | Promise<void>;
+}
+
 /**
  * Resolve a user-supplied relative path against an allowed root, returning the
  * canonical target. Every segment is checked: no empty path, no absolute path,
@@ -90,7 +99,10 @@ function canonicalizeNearestAncestor(target: string): string {
  * File contents are never logged or embedded in errors.
  */
 export class ConfigFileService {
-  constructor(private readonly agentDir: string = getAgentDir()) {}
+  constructor(
+    private readonly agentDir: string = getAgentDir(),
+    private readonly options: ConfigFileServiceOptions = {},
+  ) {}
 
   get globalRoot(): string {
     return this.agentDir;
@@ -155,6 +167,8 @@ export class ConfigFileService {
     try {
       fs.writeFileSync(tempPath, input.content, { mode: 0o600 });
       fs.renameSync(tempPath, target);
+      const change = authoritativeChange(input);
+      if (change) await this.options.onAuthoritativeWrite?.(change);
     } catch (error) {
       throw error;
     } finally {
@@ -186,4 +200,15 @@ export class ConfigFileService {
     if (!stat.isDirectory()) throw new ConfigServiceError(400, `not a directory: ${cwd}`);
     return join(fs.realpathSync(cwd), ".easyresearch");
   }
+}
+
+function authoritativeChange(input: ConfigWriteInput): AuthoritativeConfigChange | undefined {
+  if (input.scope !== "global") return undefined;
+  const path = normalize(input.path);
+  if (path === "models.json") return { modelsChanged: true };
+  if (path === "settings.json") return { agentsChanged: true };
+  if (dirname(path) === "agents" && basename(path).endsWith(".md")) {
+    return { agentsChanged: true };
+  }
+  return undefined;
 }

@@ -1,16 +1,9 @@
-import { Bot, RotateCcw } from "lucide-react";
+import { Bot, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AgentDto, AgentEffectiveModelDto, AgentEffectiveThinkingDto } from "../../../web/contracts";
+import { isThinkingLevel } from "../../../thinking-levels";
+import type { AgentConfigurationPatch, AgentDto } from "../../../web/contracts";
 import { PAPER_ASSISTANT_AGENT } from "../agent-identity";
-import {
-  clearAgentOverrides,
-  getEffectiveModels,
-  getEffectiveThinking,
-  listAgents,
-  listModels,
-  setAgentModel,
-  setAgentThinking,
-} from "../api";
+import { listAgents, listModels, patchAgent } from "../api";
 import type { ModelOption } from "../api/parsers";
 import { agentDescription, agentDisplayName, type Translate } from "../i18n/agents";
 import { useI18n } from "../i18n/useI18n";
@@ -24,113 +17,64 @@ const BUILTIN_ORDER = [PAPER_ASSISTANT_AGENT, "search", "experiment", "writing",
 export interface AgentListProps {
   cwd: string;
   statusByAgent: Record<string, AgentStatus>;
-  sessionId: string;
+  configurationGeneration: number;
+  configurationError: string | null;
 }
 
 function dotClass(status: AgentStatus): string {
   return status === "working" ? "bg-v2-status-success" : status === "error" ? "bg-v2-status-warning" : "bg-v2-grey-400";
 }
 
-export function AgentList({ cwd, statusByAgent, sessionId }: AgentListProps) {
+export function AgentList({ cwd, statusByAgent, configurationGeneration, configurationError }: AgentListProps) {
   const { t } = useI18n();
   const [roster, setRoster] = useState<AgentDto[] | null>(null);
   const [models, setModels] = useState<ModelOption[]>([]);
-  const [effective, setEffective] = useState<AgentEffectiveModelDto[] | null>(null);
-  const [thinking, setThinking] = useState<AgentEffectiveThinkingDto[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const requestGeneration = useRef(0);
+  const request = useRef(0);
 
-  useEffect(() => {
-    const generation = ++requestGeneration.current;
-    setRoster(null);
-    setModels([]);
-    setEffective(null);
-    setThinking(null);
-    setBusy(true);
-    Promise.all([listAgents(cwd), listModels(), getEffectiveModels(sessionId), getEffectiveThinking(sessionId)])
-      .then(([agents, catalog, eff, thin]) => {
-        if (generation !== requestGeneration.current) return;
-        setRoster(agents);
-        setModels(catalog);
-        setEffective(eff);
-        setThinking(thin);
-        setBusy(false);
-      })
-      .catch(() => {
-        if (generation !== requestGeneration.current) return;
-        setRoster([]);
-        setModels([]);
-        setEffective(null);
-        setThinking(null);
-        setBusy(false);
-      });
-    return () => {
-      if (generation === requestGeneration.current) requestGeneration.current += 1;
-    };
-  }, [cwd, sessionId]);
-
-  const applyModel = useCallback(
-    async (agentName: string, model: string | null) => {
-      const ownedSession = sessionId;
-      const generation = ++requestGeneration.current;
-      setBusy(true);
-      try {
-        await setAgentModel(ownedSession, agentName, model);
-        const [next, thin] = await Promise.all([getEffectiveModels(ownedSession), getEffectiveThinking(ownedSession)]);
-        if (generation === requestGeneration.current) {
-          setEffective(next);
-          setThinking(thin);
-        }
-      } catch {
-        // Keep the last known models; the next interaction can retry.
-      } finally {
-        if (generation === requestGeneration.current) setBusy(false);
-      }
-    },
-    [sessionId],
-  );
-
-  const applyThinking = useCallback(
-    async (agentName: string, thinking: string | null) => {
-      const ownedSession = sessionId;
-      const generation = ++requestGeneration.current;
-      setBusy(true);
-      try {
-        await setAgentThinking(ownedSession, agentName, thinking);
-        const [next, thin] = await Promise.all([getEffectiveThinking(ownedSession), getEffectiveModels(ownedSession)]);
-        if (generation === requestGeneration.current) {
-          setThinking(next);
-          setEffective(thin);
-        }
-      } catch {
-        // Keep the last known levels; the next interaction can retry.
-      } finally {
-        if (generation === requestGeneration.current) setBusy(false);
-      }
-    },
-    [sessionId],
-  );
-
-  const followGlobalSettings = useCallback(async () => {
-    const ownedSession = sessionId;
-    const generation = ++requestGeneration.current;
+  const refresh = useCallback(async () => {
+    const owner = ++request.current;
     setBusy(true);
     try {
-      await clearAgentOverrides(ownedSession);
-      const [next, thin] = await Promise.all([getEffectiveModels(ownedSession), getEffectiveThinking(ownedSession)]);
-      if (generation === requestGeneration.current) {
-        setEffective(next);
-        setThinking(thin);
-      }
-    } catch {
-      // Keep the last known models; the next interaction can retry.
+      const [agents, catalog] = await Promise.all([listAgents(cwd), listModels()]);
+      if (owner !== request.current) return;
+      setRoster(agents);
+      setModels(catalog);
+      setLoadError(null);
+    } catch (error) {
+      if (owner !== request.current) return;
+      setLoadError(error instanceof Error ? error.message : String(error));
     } finally {
-      if (generation === requestGeneration.current) setBusy(false);
+      if (owner === request.current) setBusy(false);
     }
-  }, [sessionId]);
+  }, [cwd]);
+
+  useEffect(() => {
+    // The revision triggers a refetch; the APIs remain the data authority.
+    void configurationGeneration;
+    void refresh();
+    return () => {
+      request.current += 1;
+    };
+  }, [configurationGeneration, refresh]);
+
+  const applyPatch = async (name: string, patch: AgentConfigurationPatch) => {
+    setBusy(true);
+    try {
+      const saved = await patchAgent(name, patch);
+      setRoster((current) => current?.map((agent) => (agent.name === saved.name ? saved : agent)) ?? [saved]);
+      setLoadError(null);
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const agents = roster ?? [];
   const paperAssistant = agents.find((agent) => agent.name === PAPER_ASSISTANT_AGENT);
+  const paperAssistantModel = paperAssistant?.model;
   const subagents = agents
     .filter((agent) => agent.name !== PAPER_ASSISTANT_AGENT)
     .sort((a, b) => {
@@ -138,6 +82,7 @@ export function AgentList({ cwd, statusByAgent, sessionId }: AgentListProps) {
       if (a.builtin) return BUILTIN_ORDER.indexOf(a.name) - BUILTIN_ORDER.indexOf(b.name);
       return a.name.localeCompare(b.name);
     });
+  const visibleError = configurationError ?? loadError;
 
   return (
     <div className="flex h-full flex-col">
@@ -146,41 +91,42 @@ export function AgentList({ cwd, statusByAgent, sessionId }: AgentListProps) {
         <span className="text-[13px] font-semibold text-v2-text-text-base">{t("work.agentsTab")}</span>
         <button
           type="button"
-          aria-label={t("work.followGlobalSettings")}
+          aria-label={t("dialog.refresh")}
           disabled={busy}
-          onClick={() => void followGlobalSettings()}
+          onClick={() => void refresh()}
           className="ml-auto flex h-7 items-center gap-1 rounded-md border border-v2-grey-200 px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100 disabled:opacity-50"
         >
-          <RotateCcw size={12} aria-hidden />
-          {t("work.followGlobalSettings")}
+          <RefreshCw size={12} aria-hidden />
+          {t("dialog.refresh")}
         </button>
       </div>
+      {visibleError && (
+        <p role="alert" className="shrink-0 border-b border-v2-grey-200 px-3 py-2 text-[12px] text-v2-status-error">
+          {visibleError}
+        </p>
+      )}
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         <AgentCard
           agent={paperAssistant}
           fallbackName={PAPER_ASSISTANT_AGENT}
           fallbackDescription={t("work.paperAssistantFallback")}
           status={statusByAgent[PAPER_ASSISTANT_AGENT] ?? "idle"}
-          entry={effective?.find((item) => item.name === PAPER_ASSISTANT_AGENT)}
-          thinkingEntry={thinking?.find((item) => item.name === PAPER_ASSISTANT_AGENT)}
           models={models}
+          paperAssistantModel={paperAssistantModel}
           disabled={false}
-          busy={busy || effective === null}
-          onApply={(model) => applyModel(PAPER_ASSISTANT_AGENT, model)}
-          onApplyThinking={(level) => applyThinking(PAPER_ASSISTANT_AGENT, level)}
+          busy={busy || roster === null}
+          onPatch={(patch) => void applyPatch(PAPER_ASSISTANT_AGENT, patch)}
         />
         {subagents.map((agent) => (
           <AgentCard
             key={agent.name}
             agent={agent}
             status={statusByAgent[agent.name] ?? "idle"}
-            entry={effective?.find((item) => item.name === agent.name)}
-            thinkingEntry={thinking?.find((item) => item.name === agent.name)}
             models={models}
+            paperAssistantModel={paperAssistantModel}
             disabled={!agent.enabled}
-            busy={busy || effective === null}
-            onApply={(model) => applyModel(agent.name, model)}
-            onApplyThinking={(level) => applyThinking(agent.name, level)}
+            busy={busy}
+            onPatch={(patch) => void applyPatch(agent.name, patch)}
           />
         ))}
       </div>
@@ -193,13 +139,11 @@ interface AgentCardProps {
   fallbackName?: string;
   fallbackDescription?: string;
   status: AgentStatus;
-  entry: AgentEffectiveModelDto | undefined;
-  thinkingEntry: AgentEffectiveThinkingDto | undefined;
   models: ModelOption[];
+  paperAssistantModel: string | undefined;
   disabled: boolean;
   busy: boolean;
-  onApply: (model: string | null) => void;
-  onApplyThinking: (thinking: string | null) => void;
+  onPatch: (patch: AgentConfigurationPatch) => void;
 }
 
 function AgentCard({
@@ -207,13 +151,11 @@ function AgentCard({
   fallbackName,
   fallbackDescription,
   status,
-  entry,
-  thinkingEntry,
   models,
+  paperAssistantModel,
   disabled,
   busy,
-  onApply,
-  onApplyThinking,
+  onPatch,
 }: AgentCardProps) {
   const { t } = useI18n();
   const name = agent?.name ?? fallbackName ?? "agent";
@@ -235,12 +177,13 @@ function AgentCard({
         </p>
       )}
       <ModelRow
-        entry={entry}
-        thinkingEntry={thinkingEntry}
+        name={name}
+        model={agent?.model}
+        thinking={agent?.thinking}
+        paperAssistantModel={paperAssistantModel}
         models={models}
         disabled={disabled || busy}
-        onApply={onApply}
-        onApplyThinking={onApplyThinking}
+        onPatch={onPatch}
       />
     </div>
   );
@@ -251,28 +194,27 @@ function statusLabel(t: Translate, status: AgentStatus): string {
 }
 
 interface ModelRowProps {
-  entry: AgentEffectiveModelDto | undefined;
-  thinkingEntry: AgentEffectiveThinkingDto | undefined;
+  name: string;
+  model: string | undefined;
+  thinking: string | undefined;
+  paperAssistantModel: string | undefined;
   models: ModelOption[];
   disabled: boolean;
-  onApply: (model: string | null) => void;
-  onApplyThinking: (thinking: string | null) => void;
+  onPatch: (patch: AgentConfigurationPatch) => void;
 }
 
-function ModelRow({ entry, thinkingEntry, models, disabled, onApply, onApplyThinking }: ModelRowProps) {
+function ModelRow({ name, model, thinking, paperAssistantModel, models, disabled, onPatch }: ModelRowProps) {
   const { t } = useI18n();
-  const current = entry?.model ?? "";
+  const current = model ?? "";
   const slash = current.indexOf("/");
-  const options: ModelOption[] =
-    current !== "" && slash > 0 && !models.some((model) => `${model.provider}/${model.id}` === current)
+  const options =
+    current !== "" && slash > 0 && !models.some((item) => `${item.provider}/${item.id}` === current)
       ? [{ provider: current.slice(0, slash), id: current.slice(slash + 1), reasoning: false }, ...models]
       : models;
-  const effectiveModel = models.find((model) => `${model.provider}/${model.id}` === current);
-  const thinking = thinkingEntry?.thinking ?? "";
-  const thinkingIsDefault =
-    thinkingEntry !== undefined && (thinkingEntry.source === "default" || thinkingEntry.source === "inherit");
-  const thinkingValue = thinkingIsDefault ? "" : thinking;
-  const levels = thinkingLevelsForModel(effectiveModel, thinking || undefined);
+  const effectiveModelRef = current || (name === PAPER_ASSISTANT_AGENT ? undefined : paperAssistantModel);
+  const effectiveModel = models.find((item) => `${item.provider}/${item.id}` === effectiveModelRef);
+  const levels = thinkingLevelsForModel(effectiveModel, thinking, effectiveModelRef === undefined);
+  const emptyModelLabel = name === PAPER_ASSISTANT_AGENT ? t("work.automaticModel") : t("settings.agents.inherit");
 
   return (
     <div className="mt-2 flex items-center gap-1.5">
@@ -280,30 +222,27 @@ function ModelRow({ entry, thinkingEntry, models, disabled, onApply, onApplyThin
         ariaLabel={t("work.selectModel")}
         value={current}
         options={[
-          { value: "", label: t("work.models") },
-          ...options.map((model) => {
-            const key = `${model.provider}/${model.id}`;
+          { value: "", label: emptyModelLabel },
+          ...options.map((item) => {
+            const key = `${item.provider}/${item.id}`;
             return { value: key, label: key };
           }),
         ]}
-        placeholder={t("work.models")}
+        placeholder={emptyModelLabel}
         disabled={disabled}
-        onSelect={(value) => onApply(value === "" ? null : value)}
+        onSelect={(value) => onPatch({ model: value === "" ? null : value })}
         className="flex-1"
       />
       <ThinkingLevelSelect
         ariaLabel={t("work.selectThinking")}
-        value={thinkingValue}
+        value={thinking ?? ""}
         levels={levels}
-        emptyLabel={thinkingDefaultLabel(t, thinkingEntry)}
+        emptyLabel={
+          name === PAPER_ASSISTANT_AGENT ? t("settings.agents.automaticThinking") : t("settings.agents.inheritThinking")
+        }
         disabled={disabled}
-        onChange={(level) => onApplyThinking(level === "" ? null : level)}
+        onChange={(level) => onPatch({ thinking: level === "" ? null : isThinkingLevel(level) ? level : null })}
       />
     </div>
   );
-}
-
-function thinkingDefaultLabel(t: Translate, entry: AgentEffectiveThinkingDto | undefined): string {
-  if (!entry || entry.source === "override") return `${t("work.defaultThinking")}`;
-  return `${t("work.defaultThinking")} (${entry.thinking ?? "off"})`;
 }

@@ -45,7 +45,7 @@ describe("listBundledSkills", () => {
 });
 
 describe("renameSameNameToBak", () => {
-  it("backs up a same-name agent and refreshes its active file from the bundle", () => {
+  it("retires a same-name Agent without materializing a replacement", () => {
     const root = tempDir();
     const { agentsDir, skillsDir } = makeBundled(root);
     const userAgents = join(root, "agent", "agents");
@@ -66,11 +66,11 @@ describe("renameSameNameToBak", () => {
         newPath: join(userAgents, "search.md.bak"),
       },
     ]);
-    expect(readFileSync(join(userAgents, "search.md"), "utf8")).toBe("search v2");
+    expect(existsSync(join(userAgents, "search.md"))).toBe(false);
     expect(readFileSync(join(userAgents, "search.md.bak"), "utf8")).toBe("user v1");
   });
 
-  it("carries the user's model and thinking into the refreshed bundled agent", () => {
+  it("does not migrate legacy model and thinking frontmatter", () => {
     const root = tempDir();
     const { agentsDir, skillsDir } = makeBundled(root);
     const userAgents = join(root, "agent", "agents");
@@ -91,9 +91,7 @@ describe("renameSameNameToBak", () => {
       log: () => {},
     });
 
-    expect(readFileSync(join(userAgents, "search.md"), "utf8")).toBe(
-      "---\nname: search\ndescription: bundled v2\ntools:\n  - read\nmodel: anthropic/claude-sonnet-4\nthinking: high\n---\n\nLatest prompt.\n",
-    );
+    expect(existsSync(join(userAgents, "search.md"))).toBe(false);
     expect(readFileSync(join(userAgents, "search.md.bak"), "utf8")).toContain("Old prompt.");
   });
 

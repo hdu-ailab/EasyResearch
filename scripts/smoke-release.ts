@@ -19,6 +19,7 @@ import {
   requireZeroProcessStatus,
   resolveSmokePython,
   selectSmokeModelAction,
+  type SmokeModelScenario,
   type SmokeModelState,
   skillVenvPython,
   settleProcess,
@@ -61,6 +62,32 @@ const shutdownWrapperPidPath = join(root, "shutdown-wrapper.pid");
 const shutdownStatusPath = join(root, "shutdown-status.txt");
 const daemonPidPath = join(agentDir, "server.pid");
 writeVenvValidationScript(validationScript);
+const smokeAgentName = "smoke-reviewer";
+const smokeAgentPromptMarker = "NATIVE_SMOKE_CUSTOM_REVIEWER_PROMPT";
+const smokeAgentPath = join(agentDir, "agents", `${smokeAgentName}.md`);
+const smokeAgentContent = [
+  "---",
+  `name: ${smokeAgentName}`,
+  "description: Native smoke custom reviewer",
+  "enable: true",
+  "tools:",
+  "  - bash",
+  "skills:",
+  "  - native-smoke-no-skill",
+  "subagents: []",
+  "---",
+  "",
+  smokeAgentPromptMarker,
+  "Run only the requested venv validation command, then return a complete handoff.",
+  "",
+].join("\n");
+const smokeModelScenario: SmokeModelScenario = {
+  toolCommand: venvToolCommand(process.platform, validationScript),
+  agentName: smokeAgentName,
+  agentPath: smokeAgentPath,
+  agentContent: smokeAgentContent,
+  agentPromptMarker: smokeAgentPromptMarker,
+};
 let systemPythonVersionOutput = "not checked";
 let validationStdout = "not run";
 let validationStderr = "not run";
@@ -71,7 +98,9 @@ let daemonPid: number | undefined;
 let modelRequests = 0;
 let venvToolResults = 0;
 let smokeModelState: SmokeModelState = {
-  parentCallIssued: false,
+  agentWriteIssued: false,
+  agentWriteObserved: false,
+  customDispatchIssued: false,
   parentWorkingObserved: false,
   stageBashIssued: false,
   venvValidated: false,
@@ -87,18 +116,25 @@ let sessionEventReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 let sessionEventTask: Promise<void> | undefined;
 let sessionEventsStopping = false;
 const recentSessionEvents: string[] = [];
+let initialConfigurationGeneration: number | undefined;
+let advancedConfigurationGeneration: number | undefined;
+let configurationEventError: Error | undefined;
+let configurationEventReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+let configurationEventTask: Promise<void> | undefined;
+let configurationEventsStopping = false;
+const recentConfigurationEvents: string[] = [];
 const modelServer = Bun.serve({
   port: 0,
   async fetch(request) {
     const body = await request.json() as {
       model?: string;
       messages?: Array<{ role?: string; content?: unknown; tool_call_id?: string }>;
-      tools?: Array<{ function?: { name?: string } }>;
+      tools?: Array<{ function?: { name?: string; description?: string } }>;
     };
     modelRequests += 1;
     const transition = selectSmokeModelAction(
       body,
-      venvToolCommand(process.platform, validationScript),
+      smokeModelScenario,
       smokeModelState,
     );
     smokeModelState = transition.state;
@@ -123,6 +159,11 @@ writeFileSync(join(agentDir, "models.json"), JSON.stringify({
 writeFileSync(join(agentDir, "settings.json"), JSON.stringify({
   defaultProvider: "smoke",
   defaultModel: "smoke-model",
+  easyresearch: {
+    agentDefaults: {
+      [smokeAgentName]: { model: "smoke/smoke-model", thinking: "off" },
+    },
+  },
 }));
 const portProbe = Bun.serve({ port: 0, fetch: () => new Response("reserved") });
 const port = portProbe.port;
@@ -402,6 +443,12 @@ function smokeProgressDiagnostics(): string {
     modelRequests,
     smokeModelState,
     venvToolResults,
+    smokeAgentPath,
+    smokeAgentExists: existsSync(smokeAgentPath),
+    initialConfigurationGeneration,
+    advancedConfigurationGeneration,
+    configurationEventError: configurationEventError?.message,
+    recentConfigurationEvents,
     sessionSnapshotObserved,
     observedSupervisorTerminal,
     sessionEventError: sessionEventError?.message,
@@ -416,18 +463,63 @@ function observeSessionEvent(event: unknown): void {
   if (!event || typeof event !== "object") return;
   const value = event as { type?: unknown; agentId?: unknown; status?: unknown };
   if (value.type === "snapshot") sessionSnapshotObserved = true;
-  if (value.type !== "subagent_supervisor" || value.agentId !== "search_0") return;
-  if (value.status === "error") throw new Error(`search_0 supervisor reported error: ${serialized}`);
+  if (value.type !== "subagent_supervisor" || value.agentId !== `${smokeAgentName}_0`) return;
+  if (value.status === "error") throw new Error(`${smokeAgentName}_0 supervisor reported error: ${serialized}`);
   if (value.status === "complete") observedSupervisorTerminal = true;
 }
 
-async function consumeSessionEvents(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> {
+function observeConfigurationEvent(event: unknown): void {
+  const serialized = JSON.stringify(event) ?? "undefined";
+  recentConfigurationEvents.push(serialized.slice(0, 1_000));
+  if (recentConfigurationEvents.length > 12) recentConfigurationEvents.shift();
+  if (!event || typeof event !== "object") {
+    throw new Error(`configuration SSE emitted a non-object event: ${serialized}`);
+  }
+  const value = event as {
+    type?: unknown;
+    generation?: unknown;
+    agentsChanged?: unknown;
+    message?: unknown;
+  };
+  if (value.type === "config.error") {
+    throw new Error(`configuration SSE reported an error: ${String(value.message)}`);
+  }
+  if (
+    value.type !== "config.updated"
+    || typeof value.generation !== "number"
+    || !Number.isSafeInteger(value.generation)
+    || value.generation < 1
+  ) {
+    throw new Error(`configuration SSE emitted a malformed update: ${serialized}`);
+  }
+  const generation = value.generation;
+  if (initialConfigurationGeneration === undefined) {
+    initialConfigurationGeneration = generation;
+    return;
+  }
+  if (
+    generation > initialConfigurationGeneration
+    && value.agentsChanged === true
+    && smokeModelState.agentWriteIssued
+    && existsSync(smokeAgentPath)
+    && readFileSync(smokeAgentPath, "utf8") === smokeAgentContent
+  ) {
+    advancedConfigurationGeneration = Math.max(advancedConfigurationGeneration ?? 0, generation);
+  }
+}
+
+async function consumeEventStream(options: {
+  reader: ReadableStreamDefaultReader<Uint8Array>;
+  label: string;
+  stopping: () => boolean;
+  observe: (event: unknown) => void;
+}): Promise<void> {
   const decoder = new TextDecoder();
   let buffered = "";
   while (true) {
-    const { done, value } = await reader.read();
+    const { done, value } = await options.reader.read();
     if (done) {
-      if (!sessionEventsStopping) throw new Error("session SSE ended before native smoke completion");
+      if (!options.stopping()) throw new Error(`${options.label} ended before native smoke completion`);
       return;
     }
     buffered += decoder.decode(value, { stream: true });
@@ -441,10 +533,10 @@ async function consumeSessionEvents(reader: ReadableStreamDefaultReader<Uint8Arr
         .join("\n");
       if (!data) continue;
       try {
-        observeSessionEvent(JSON.parse(data));
+        options.observe(JSON.parse(data));
       } catch (error) {
         const cause = error instanceof Error ? error.message : String(error);
-        throw new Error(`invalid or unsafe session SSE frame (${cause}): ${data}`);
+        throw new Error(`invalid ${options.label} frame (${cause}): ${data}`);
       }
     }
   }
@@ -452,6 +544,9 @@ async function consumeSessionEvents(reader: ReadableStreamDefaultReader<Uint8Arr
 
 async function waitForSmokeCondition(label: string, ready: () => boolean): Promise<void> {
   while (Date.now() < firstRunDeadline) {
+    if (configurationEventError) {
+      throw new Error(`${label} failed while reading configuration SSE: ${configurationEventError.message}\n${smokeProgressDiagnostics()}`);
+    }
     if (sessionEventError) {
       throw new Error(`${label} failed while reading session SSE: ${sessionEventError.message}\n${smokeProgressDiagnostics()}`);
     }
@@ -470,6 +565,17 @@ async function stopSessionEventStream(): Promise<void> {
   sessionEventTask = undefined;
   await task;
   if (sessionEventError) throw sessionEventError;
+}
+
+async function stopConfigurationEventStream(): Promise<void> {
+  configurationEventsStopping = true;
+  const reader = configurationEventReader;
+  configurationEventReader = undefined;
+  await reader?.cancel();
+  const task = configurationEventTask;
+  configurationEventTask = undefined;
+  await task;
+  if (configurationEventError) throw configurationEventError;
 }
 
 async function dumpServerLogs(): Promise<void> {
@@ -656,6 +762,27 @@ try {
   )) {
     throw new Error("compiled OAuth providers were not registered");
   }
+  const configurationEvents = await fetchSessionEventsBeforeDeadline({
+    url: `${base}/api/config/events`,
+    deadline: firstRunDeadline,
+  });
+  if (!configurationEvents.ok) {
+    throw new Error(`configuration SSE failed (${configurationEvents.status}): ${await configurationEvents.text()}`);
+  }
+  if (!configurationEvents.body) throw new Error("configuration SSE response had no body");
+  configurationEventReader = configurationEvents.body.getReader();
+  configurationEventTask = consumeEventStream({
+    reader: configurationEventReader,
+    label: "configuration SSE",
+    stopping: () => configurationEventsStopping,
+    observe: observeConfigurationEvent,
+  }).catch((error) => {
+    configurationEventError = error instanceof Error ? error : new Error(String(error));
+  });
+  await waitForSmokeCondition(
+    "initial configuration generation",
+    () => initialConfigurationGeneration !== undefined,
+  );
   const created = await requireOk(await fetch(`${base}/api/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -670,7 +797,12 @@ try {
   }
   if (!sessionEvents.body) throw new Error("session SSE response had no body");
   sessionEventReader = sessionEvents.body.getReader();
-  sessionEventTask = consumeSessionEvents(sessionEventReader).catch((error) => {
+  sessionEventTask = consumeEventStream({
+    reader: sessionEventReader,
+    label: "session SSE",
+    stopping: () => sessionEventsStopping,
+    observe: observeSessionEvent,
+  }).catch((error) => {
     sessionEventError = error instanceof Error ? error : new Error(String(error));
   });
   await waitForSmokeCondition("session SSE subscription", () => sessionSnapshotObserved);
@@ -678,16 +810,49 @@ try {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      message: "Dispatch search and require it to execute only the deterministic bash venv-validation tool call. Do not use network tools.",
+      message: "Write the supplied global custom reviewer, dispatch it after configuration reload, and require only its deterministic bash venv-validation tool call.",
     }),
-  }), "stage dispatch");
+  }), "custom Agent write and dispatch");
   await waitForSmokeCondition(
-    "background stage completion",
+    "background custom-stage completion",
     () => smokeModelState.complete
+      && smokeModelState.agentWriteObserved
+      && smokeModelState.customDispatchIssued
       && venvToolResults === 1
       && observedSupervisorTerminal,
   );
+  await waitForSmokeCondition(
+    "configuration generation after custom Agent write",
+    () => advancedConfigurationGeneration !== undefined,
+  );
+  if (!existsSync(smokeAgentPath) || readFileSync(smokeAgentPath, "utf8") !== smokeAgentContent) {
+    throw new Error(`global custom Agent was not written exactly at ${smokeAgentPath}`);
+  }
+  const agents = await requireOk(
+    await fetch(`${base}/api/agents?cwd=${encodeURIComponent(project)}`),
+    "custom Agent catalog probe",
+  );
+  const customAgent = Array.isArray(agents)
+    ? agents.find((agent: { name?: unknown }) => agent.name === smokeAgentName)
+    : undefined;
+  if (
+    !customAgent
+    || customAgent.source !== "global"
+    || customAgent.filePath !== smokeAgentPath
+    || customAgent.model !== "smoke/smoke-model"
+    || JSON.stringify(customAgent.effectiveTools) !== JSON.stringify(["bash"])
+    || JSON.stringify(customAgent.subagents) !== JSON.stringify([])
+  ) {
+    throw new Error(`custom Agent catalog row was not authoritative: ${JSON.stringify(customAgent)}`);
+  }
+  if (
+    smokeModelState.completedRequests !== modelRequests
+    || (modelRequests !== 5 && modelRequests !== 6)
+  ) {
+    throw new Error(`native smoke completed an unexpected model-request sequence: ${smokeProgressDiagnostics()}`);
+  }
   await stopSessionEventStream();
+  await stopConfigurationEventStream();
 
   process.env.EASYRESEARCH_CODING_AGENT_DIR = agentDir;
   const { importPi } = await import("../src/runtime/pi-import");
@@ -729,6 +894,13 @@ try {
       await stopSessionEventStream();
     } catch (streamError) {
       console.log(`[smoke] failed to stop session SSE: ${streamError instanceof Error ? streamError.message : String(streamError)}`);
+    }
+  }
+  if (configurationEventReader || configurationEventTask) {
+    try {
+      await stopConfigurationEventStream();
+    } catch (streamError) {
+      console.log(`[smoke] failed to stop configuration SSE: ${streamError instanceof Error ? streamError.message : String(streamError)}`);
     }
   }
   try {

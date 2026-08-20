@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { discoverAgents, type AgentConfig } from "../subagent/agents";
+import { loadAgentCatalog, resolveAgentCatalog, type AgentConfig } from "../subagent/agents";
 
 let root: string;
 
@@ -14,12 +14,13 @@ afterEach(() => rmSync(root, { recursive: true, force: true }));
 
 describe("bundled agent definitions", () => {
   it("loads the role-specific capability and dispatch boundaries", async () => {
-    const { agents } = await discoverAgents({
+    const catalog = await loadAgentCatalog({
+      agentDir: join(root, "agent"),
+    });
+    const { agents } = resolveAgentCatalog(catalog, {
       agentDir: join(root, "agent"),
       cwd: join(root, "project"),
       homeDir: join(root, "home"),
-      includeProject: false,
-      includeGlobal: false,
     });
     const byName = Object.fromEntries(agents.map((agent) => [agent.name, agent])) as Record<string, AgentConfig>;
 
@@ -33,12 +34,13 @@ describe("bundled agent definitions", () => {
   });
 
   it("gives every bundled agent web tools and the playwright-cli skill, and never grep/find/ls (ADR-068)", async () => {
-    const { agents } = await discoverAgents({
+    const catalog = await loadAgentCatalog({
+      agentDir: join(root, "agent"),
+    });
+    const { agents } = resolveAgentCatalog(catalog, {
       agentDir: join(root, "agent"),
       cwd: join(root, "project"),
       homeDir: join(root, "home"),
-      includeProject: false,
-      includeGlobal: false,
     });
     expect(agents.length).toBeGreaterThan(0);
     for (const agent of agents) {

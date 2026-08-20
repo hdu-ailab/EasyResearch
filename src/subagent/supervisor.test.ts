@@ -249,8 +249,22 @@ function reserve(coordinator: SubagentCoordinator, toolCallId: string, requested
   });
 }
 
+const liveConfiguration = {
+  generation: 1,
+  synchronize: async () => {},
+  isCurrent: (generation: number) => generation === 1,
+  resolveAgents: async () => [searchAgent, figuresAgent],
+  subscribe: () => () => {},
+};
+
 function options(task = "find papers", cwd = "/exact/project") {
-  return { agent: searchAgent, task, cwd };
+  return {
+    agent: searchAgent,
+    callerAgent: "paper-assistant",
+    task,
+    cwd,
+    liveConfiguration,
+  };
 }
 
 function makeHarness(input: {
@@ -650,8 +664,10 @@ describe("SubagentSupervisor ownership and launch ordering", () => {
       reservation,
       coordinator,
       agent: searchAgent,
+      callerAgent: "paper-assistant",
       task: "continue search",
       cwd: "/exact/project",
+      liveConfiguration,
     });
     parent.acknowledgeLaunch("tool-1");
     stage.completion.resolve(result("continued", { sessionId: "saved-child", sessionPath: stage.sessionPath }));

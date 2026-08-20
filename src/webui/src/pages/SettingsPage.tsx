@@ -1,19 +1,29 @@
-import { Activity, FileJson, KeyRound, Languages, MessageSquare, Minus, Plus, Settings2, UserPlus } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import {
+  Activity,
+  FileJson,
+  KeyRound,
+  Languages,
+  MessageSquare,
+  Minus,
+  Plus,
+  RefreshCw,
+  Settings2,
+  UserPlus,
+} from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentDto, AgentResourceDto, SkillResourceDto } from "../../../web/contracts";
 import { PAPER_ASSISTANT_AGENT } from "../agent-identity";
 import {
   createAgentResource,
-  getWebuiSettings,
   listAgentResources,
   listAgents,
   listAuthProviders,
   listConfigProjects,
   listModels,
   listSkillResources,
+  patchAgent,
   readAgentResource,
   readSkillResource,
-  updateWebuiSettings,
   writeAgentResource,
   writeSkillResource,
 } from "../api";
@@ -35,6 +45,8 @@ import { usePreferences } from "../preferences/PreferencesProvider";
 export interface SettingsPageProps {
   onBack: () => void;
   onOpenConfigPage: () => void;
+  configurationGeneration: number;
+  configurationError: string | null;
 }
 
 const sectionClass =
@@ -156,16 +168,16 @@ function setEnableFrontmatter(content: string, enabled: boolean): string {
   return `---\n${next}\n---${content.slice(end + 4)}`;
 }
 
-export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
+export function SettingsPage({
+  onBack,
+  onOpenConfigPage,
+  configurationGeneration,
+  configurationError,
+}: SettingsPageProps) {
   const { t, language, setLanguage } = useI18n();
   const { preferences: prefs, updatePreferences } = usePreferences();
   const [agents, setAgents] = useState<AgentDto[]>([]);
   const [models, setModels] = useState<ModelOption[]>([]);
-  const [agentModels, setAgentModels] = useState<Record<string, string>>({});
-  const [paperAssistantModel, setPaperAssistantModelState] = useState<string | null>(null);
-  const [effectivePaperAssistantModel, setEffectivePaperAssistantModel] = useState<string | null>(null);
-  const [agentThinking, setAgentThinking] = useState<Record<string, string>>({});
-  const [paperAssistantThinking, setPaperAssistantThinkingState] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [resourceAgents, setResourceAgents] = useState<AgentResourceDto[]>([]);
@@ -178,26 +190,50 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
   const [providerConnectedCount, setProviderConnectedCount] = useState<number | null>(null);
   const [agentModal, setAgentModal] = useState<AgentDto | null>(null);
   const diagnosticRequest = useRef(0);
+  const configurationRequest = useRef(0);
   const [agentEditor, setAgentEditor] = useState<AgentResourceDto | null>(null);
   const [skillEditor, setSkillEditor] = useState<SkillResourceDto | null>(null);
   const [detailsAgent, setDetailsAgent] = useState<AgentDto | null>(null);
   const [addAgentOpen, setAddAgentOpen] = useState(false);
   const [newAgentName, setNewAgentName] = useState("");
 
+  const refreshConfiguration = useCallback(async () => {
+    const request = ++configurationRequest.current;
+    try {
+      const [globalAgents, fallbackAgents, nextModels] = await Promise.all([
+        listAgentResources(),
+        listAgents(),
+        listModels(),
+      ]);
+      if (request !== configurationRequest.current) return;
+      const nextAgents = globalAgents.length > 0 ? globalAgents : fallbackAgents;
+      setResourceAgents(globalAgents);
+      setAgents(nextAgents);
+      setModels(nextModels);
+      setAgentModal((current) => (current ? (nextAgents.find((agent) => agent.name === current.name) ?? null) : null));
+      setDetailsAgent((current) =>
+        current ? (nextAgents.find((agent) => agent.name === current.name) ?? null) : null,
+      );
+      if (diagnosticRequest.current === 0) setDiagnosticAgents(fallbackAgents);
+    } catch (cause) {
+      if (request === configurationRequest.current) {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      }
+    }
+  }, []);
+
   useEffect(() => {
-    Promise.all([getWebuiSettings(), listAgentResources(), listAgents(), listModels(), listSkillResources()])
-      .then(([s, globalAgents, fallbackAgents, m, skillRows]) => {
-        setAgentModels(s.agentModels);
-        setPaperAssistantModelState(s.paperAssistantModel);
-        setEffectivePaperAssistantModel(s.effectivePaperAssistantModel);
-        setAgentThinking(s.agentThinking ?? {});
-        setPaperAssistantThinkingState(s.paperAssistantThinking ?? null);
-        setResourceAgents(globalAgents);
-        setAgents(globalAgents.length > 0 ? globalAgents : fallbackAgents);
-        if (diagnosticRequest.current === 0) setDiagnosticAgents(fallbackAgents);
-        setModels(m);
-        setSkills(skillRows);
-      })
+    // The revision triggers a refetch; the APIs remain the data authority.
+    void configurationGeneration;
+    void refreshConfiguration();
+    return () => {
+      configurationRequest.current += 1;
+    };
+  }, [configurationGeneration, refreshConfiguration]);
+
+  useEffect(() => {
+    listSkillResources()
+      .then(setSkills)
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
     listConfigProjects()
       .then((configProjects) => setProjects(configProjects.projects))
@@ -209,8 +245,10 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
 
   const refreshAgents = async () => {
     const next = await listAgentResources();
+    if (next.length === 0) return;
     setResourceAgents(next);
     setAgents(next);
+    setAgentModal((current) => (current ? (next.find((agent) => agent.name === current.name) ?? null) : null));
   };
 
   const refreshDiagnostics = async (scope = diagnosticScope) => {
@@ -311,63 +349,26 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
     await refreshDiagnostics(scope);
   };
 
-  const setAgentModel = (name: string, value: string) => {
-    const next = { ...agentModels };
-    if (value === "") delete next[name];
-    else next[name] = value;
+  const patchAgentConfiguration = async (
+    name: string,
+    patch: { model?: string | null; thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null },
+  ) => {
     setBusy(true);
     setError(null);
-    updateWebuiSettings({ agentModels: next })
-      .then((s) => setAgentModels(s.agentModels))
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
-      .finally(() => setBusy(false));
+    try {
+      const saved = await patchAgent(name, patch);
+      const replace = <T extends AgentDto>(rows: T[]): T[] =>
+        rows.map((agent) => (agent.name === saved.name ? ({ ...agent, ...saved } as T) : agent));
+      setAgents(replace);
+      setResourceAgents(replace);
+      setAgentModal((current) => (current?.name === saved.name ? saved : current));
+      setDetailsAgent((current) => (current?.name === saved.name ? saved : current));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+    }
   };
-
-  const setPaperAssistantModel = (value: string) => {
-    setBusy(true);
-    setError(null);
-    updateWebuiSettings({ paperAssistantModel: value === "" ? null : value })
-      .then((s) => {
-        setPaperAssistantModelState(s.paperAssistantModel);
-        setEffectivePaperAssistantModel(s.effectivePaperAssistantModel);
-      })
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
-      .finally(() => setBusy(false));
-  };
-
-  const setAgentThinkingValue = (name: string, value: string) => {
-    const next = { ...agentThinking };
-    if (value === "") delete next[name];
-    else next[name] = value;
-    setBusy(true);
-    setError(null);
-    updateWebuiSettings({ agentThinking: next })
-      .then((s) => setAgentThinking(s.agentThinking))
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
-      .finally(() => setBusy(false));
-  };
-
-  const setPaperAssistantThinkingValue = (value: string) => {
-    setBusy(true);
-    setError(null);
-    updateWebuiSettings({ paperAssistantThinking: value === "" ? null : value })
-      .then((s) => setPaperAssistantThinkingState(s.paperAssistantThinking))
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
-      .finally(() => setBusy(false));
-  };
-
-  const paperAssistantValue = paperAssistantModel ?? effectivePaperAssistantModel ?? "";
-  const paperAssistantOptions =
-    effectivePaperAssistantModel !== null &&
-    !models.some((m) => `${m.provider}/${m.id}` === effectivePaperAssistantModel)
-      ? [
-          ...models,
-          {
-            provider: effectivePaperAssistantModel.slice(0, effectivePaperAssistantModel.indexOf("/")),
-            id: effectivePaperAssistantModel.slice(effectivePaperAssistantModel.indexOf("/") + 1),
-          },
-        ]
-      : models;
 
   /** Pin the assistant to the first row, keeping the rest in API order. */
   const roster = [...(resourceAgents.length > 0 ? resourceAgents : agents)].sort((a, b) => {
@@ -376,6 +377,7 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
     if (b.name === PAPER_ASSISTANT_AGENT) return 1;
     return a.name.localeCompare(b.name);
   });
+  const paperAssistantModel = roster.find((agent) => agent.name === PAPER_ASSISTANT_AGENT)?.model;
   const toolInventory = [...new Set(roster.flatMap((agent) => agent.effectiveTools ?? agent.tools ?? []))].sort(
     (a, b) => a.localeCompare(b),
   );
@@ -510,8 +512,18 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
               <h2 className="text-[13px] font-semibold text-v2-text-text-base">{t("settings.agents.title")}</h2>
               <button
                 type="button"
+                aria-label={t("dialog.refresh")}
+                className="ml-auto flex h-7 items-center gap-1 rounded-md border border-v2-grey-200 px-2 text-[12px] hover:bg-v2-grey-100 disabled:opacity-40"
+                disabled={busy}
+                onClick={() => void refreshConfiguration()}
+              >
+                <RefreshCw size={13} aria-hidden />
+                {t("dialog.refresh")}
+              </button>
+              <button
+                type="button"
                 aria-label={t("settings.agents.add")}
-                className="ml-auto flex h-7 items-center gap-1 rounded-md border border-v2-grey-200 px-2 text-[12px] hover:bg-v2-grey-100"
+                className="flex h-7 items-center gap-1 rounded-md border border-v2-grey-200 px-2 text-[12px] hover:bg-v2-grey-100"
                 onClick={() => setAddAgentOpen(true)}
               >
                 <UserPlus size={13} aria-hidden />
@@ -649,12 +661,12 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
             </button>
           </section>
 
-          {error && (
+          {(configurationError ?? error) && (
             <p
               className="rounded-md border border-v2-status-error/30 bg-v2-status-error/5 px-3 py-2 text-[13px] text-v2-status-error"
               role="alert"
             >
-              {error}
+              {configurationError ?? error}
             </p>
           )}
         </div>
@@ -689,43 +701,30 @@ export function SettingsPage({ onBack, onOpenConfigPage }: SettingsPageProps) {
           agent={agentModal}
           busy={busy}
           isPaperAssistant={agentModal.name === PAPER_ASSISTANT_AGENT}
-          modelOptions={
-            agentModal.name === PAPER_ASSISTANT_AGENT
-              ? paperAssistantOptions
-              : withConfiguredModel(models, agentModels[agentModal.name])
-          }
-          modelValue={
-            agentModal.name === PAPER_ASSISTANT_AGENT ? paperAssistantValue : (agentModels[agentModal.name] ?? "")
-          }
-          thinkingValue={
-            agentModal.name === PAPER_ASSISTANT_AGENT
-              ? (paperAssistantThinking ?? "")
-              : (agentThinking[agentModal.name] ?? "")
-          }
+          modelOptions={withConfiguredModel(models, agentModal.model)}
+          modelValue={agentModal.model ?? ""}
+          thinkingValue={agentModal.thinking ?? ""}
           thinkingLevels={thinkingLevelsForModel(
             models.find(
               (m) =>
                 `${m.provider}/${m.id}` ===
-                (agentModal.name === PAPER_ASSISTANT_AGENT
-                  ? paperAssistantValue
-                  : (agentModels[agentModal.name] ?? paperAssistantValue)),
+                (agentModal.model ?? (agentModal.name === PAPER_ASSISTANT_AGENT ? undefined : paperAssistantModel)),
             ),
-            agentModal.name === PAPER_ASSISTANT_AGENT
-              ? (paperAssistantThinking ?? undefined)
-              : agentThinking[agentModal.name],
+            agentModal.thinking,
+            agentModal.model === undefined &&
+              (agentModal.name === PAPER_ASSISTANT_AGENT || paperAssistantModel === undefined),
           )}
           editorResource={agentEditor?.name === agentModal.name ? agentEditor : null}
           onClose={() => setAgentModal(null)}
           onToggle={() => void toggleAgent(agentModal)}
           onModelChange={(value) =>
-            agentModal.name === PAPER_ASSISTANT_AGENT
-              ? setPaperAssistantModel(value)
-              : setAgentModel(agentModal.name, value)
+            void patchAgentConfiguration(agentModal.name, { model: value === "" ? null : value })
           }
           onThinkingChange={(value) =>
-            agentModal.name === PAPER_ASSISTANT_AGENT
-              ? setPaperAssistantThinkingValue(value)
-              : setAgentThinkingValue(agentModal.name, value)
+            void patchAgentConfiguration(agentModal.name, {
+              thinking:
+                value === "" ? null : (value as "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"),
+            })
           }
           onEditMarkdown={() => void openAgentEditor(agentModal.name)}
           onSaveMarkdown={(content) => void saveAgent(content)}

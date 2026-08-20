@@ -11,8 +11,7 @@ vi.mock("../api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api")>();
   return {
     ...actual,
-    getWebuiSettings: vi.fn(),
-    updateWebuiSettings: vi.fn(),
+    patchAgent: vi.fn(),
     listAgents: vi.fn(),
     listModels: vi.fn(),
     listAgentResources: vi.fn(),
@@ -29,8 +28,7 @@ vi.mock("../api", async (importOriginal) => {
 
 beforeEach(() => {
   window.localStorage.clear();
-  vi.mocked(api.getWebuiSettings).mockReset();
-  vi.mocked(api.updateWebuiSettings).mockReset();
+  vi.mocked(api.patchAgent).mockReset();
   vi.mocked(api.listAgents).mockReset();
   vi.mocked(api.listModels).mockReset();
   vi.mocked(api.listAgentResources).mockReset();
@@ -42,22 +40,56 @@ beforeEach(() => {
   vi.mocked(api.readSkillResource).mockReset();
   vi.mocked(api.writeSkillResource).mockReset();
   vi.mocked(api.listAuthProviders).mockReset();
-  vi.mocked(api.getWebuiSettings).mockResolvedValue({
-    agentModels: { search: "openai/gpt-4o" },
-    paperAssistantModel: null,
-    effectivePaperAssistantModel: "openai/gpt-4o",
-    agentThinking: { search: "high" },
-    paperAssistantThinking: null,
-  } as never);
   vi.mocked(api.listAgents).mockResolvedValue([
-    { name: "paper-assistant", description: "Coordinates" },
-    { name: "search", description: "Searches" },
-    { name: "writing", description: "Writes" },
-  ] as never);
+    {
+      name: "paper-assistant",
+      description: "Coordinates",
+      enabled: true,
+      builtin: true,
+      source: "bundled",
+      filePath: "src/agents/paper-assistant.md",
+      effectiveTools: [],
+      effectiveSkills: [],
+      missingSkills: [],
+    },
+    {
+      name: "search",
+      description: "Searches",
+      enabled: true,
+      builtin: true,
+      source: "global",
+      filePath: "/agent/agents/search.md",
+      model: "openai/gpt-4o",
+      thinking: "high",
+      effectiveTools: ["read", "web-search"],
+      effectiveSkills: ["paper-search", "arxiv"],
+      missingSkills: [],
+    },
+    {
+      name: "writing",
+      description: "Writes",
+      enabled: true,
+      builtin: true,
+      source: "bundled",
+      filePath: "src/agents/writing.md",
+      effectiveTools: [],
+      effectiveSkills: [],
+      missingSkills: [],
+    },
+  ]);
   vi.mocked(api.listModels).mockResolvedValue([
     { provider: "openai", id: "gpt-4o", reasoning: true, thinkingLevelMap: {} },
     { provider: "anthropic", id: "claude-sonnet-4", reasoning: false, thinkingLevelMap: {} },
   ] as never);
+  vi.mocked(api.patchAgent).mockImplementation(async (name, patch) => {
+    const agent = (await api.listAgents()).find((item) => item.name === name)!;
+    const next = { ...agent };
+    if (patch.model === null) delete next.model;
+    else if (patch.model !== undefined) next.model = patch.model;
+    if (patch.thinking === null) delete next.thinking;
+    else if (patch.thinking !== undefined) next.thinking = patch.thinking;
+    return next;
+  });
   vi.mocked(api.listAgentResources).mockResolvedValue([] as never);
   vi.mocked(api.readAgentResource).mockResolvedValue({
     name: "search",
@@ -124,14 +156,28 @@ beforeEach(() => {
   ] as never);
 });
 
-function renderSettings(onOpenConfigPage: () => void = () => {}, onHome: () => void = () => {}) {
-  return render(
+function settingsElement(
+  onOpenConfigPage: () => void = () => {},
+  onHome: () => void = () => {},
+  configurationGeneration = 1,
+  configurationError: string | null = null,
+) {
+  return (
     <PreferencesProvider>
       <I18nProvider>
-        <SettingsPage onBack={onHome} onOpenConfigPage={onOpenConfigPage} />
+        <SettingsPage
+          onBack={onHome}
+          onOpenConfigPage={onOpenConfigPage}
+          configurationGeneration={configurationGeneration}
+          configurationError={configurationError}
+        />
       </I18nProvider>
-    </PreferencesProvider>,
+    </PreferencesProvider>
   );
+}
+
+function renderSettings(onOpenConfigPage: () => void = () => {}, onHome: () => void = () => {}) {
+  return render(settingsElement(onOpenConfigPage, onHome));
 }
 
 async function openAgentConfig(user: ReturnType<typeof userEvent.setup>, name: string) {
@@ -195,7 +241,7 @@ describe("SettingsPage", () => {
     expect(screen.getByText("14px")).toBeTruthy();
     expect(document.documentElement.style.getPropertyValue("--v2-chat-font-size")).toBe("14px");
     expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}")).toMatchObject({ chatFontSize: 14 });
-    expect(api.updateWebuiSettings).not.toHaveBeenCalled();
+    expect(api.patchAgent).not.toHaveBeenCalled();
   });
 
   it("persists each conversation expansion preference independently", async () => {
@@ -315,18 +361,27 @@ describe("SettingsPage", () => {
     await user.click(screen.getByRole("button", { name: "Close editor" }));
     await openAgentConfig(user, "Paper Assistant");
     expect(screen.getByRole("combobox", { name: "Select model for Paper Assistant" })).toHaveTextContent(
-      "openai/gpt-4o",
+      "Automatic (Pi default)",
     );
     expect(screen.queryByRole("switch", { name: "Enable Paper Assistant" })).toBeNull();
   });
 
   it("includes a configured stage model that is absent from the model catalog", async () => {
     const user = userEvent.setup();
-    vi.mocked(api.getWebuiSettings).mockResolvedValue({
-      agentModels: { search: "custom/missing-model" },
-      paperAssistantModel: null,
-      effectivePaperAssistantModel: "openai/gpt-4o",
-    } as never);
+    vi.mocked(api.listAgents).mockResolvedValueOnce([
+      {
+        name: "search",
+        description: "Searches",
+        enabled: true,
+        builtin: true,
+        source: "global",
+        filePath: "/agent/agents/search.md",
+        model: "custom/missing-model",
+        effectiveTools: [],
+        effectiveSkills: [],
+        missingSkills: [],
+      },
+    ]);
     renderSettings();
 
     await openAgentConfig(user, "Search");
@@ -365,11 +420,20 @@ describe("SettingsPage", () => {
 
   it("shows the configured Paper Assistant default without any inherit option", async () => {
     const user = userEvent.setup();
-    vi.mocked(api.getWebuiSettings).mockResolvedValue({
-      agentModels: { search: "openai/gpt-4o" },
-      paperAssistantModel: "openai/gpt-4o",
-      effectivePaperAssistantModel: "openai/gpt-4o",
-    } as never);
+    vi.mocked(api.listAgents).mockResolvedValueOnce([
+      {
+        name: "paper-assistant",
+        description: "Coordinates",
+        enabled: true,
+        builtin: true,
+        source: "global",
+        filePath: "/agent/agents/paper-assistant.md",
+        model: "openai/gpt-4o",
+        effectiveTools: [],
+        effectiveSkills: [],
+        missingSkills: [],
+      },
+    ]);
     renderSettings();
     await openAgentConfig(user, "Paper Assistant");
     const combobox = screen.getByRole("combobox", { name: "Select model for Paper Assistant" });
@@ -378,119 +442,133 @@ describe("SettingsPage", () => {
     expect(screen.queryAllByRole("option", { name: /inherit/i })).toHaveLength(0);
   });
 
-  it("auto-selects the effective Pi model when no Paper Assistant default is configured", async () => {
+  it("shows Automatic when no Paper Assistant model is configured", async () => {
     const user = userEvent.setup();
-    vi.mocked(api.getWebuiSettings).mockResolvedValue({
-      agentModels: {},
-      paperAssistantModel: null,
-      effectivePaperAssistantModel: "anthropic/claude-opus-4-8",
-    } as never);
+    vi.mocked(api.listModels).mockResolvedValueOnce([{ provider: "deepseek", id: "deepseek-v4-pro", reasoning: true }]);
     renderSettings();
     await openAgentConfig(user, "Paper Assistant");
     const combobox = screen.getByRole("combobox", { name: "Select model for Paper Assistant" });
-    expect(combobox).toHaveTextContent("anthropic/claude-opus-4-8");
+    expect(combobox).toHaveTextContent("Automatic (Pi default)");
+    expect(combobox).not.toHaveTextContent("deepseek/deepseek-v4-pro");
+    expect(screen.getByRole("option", { name: "max" })).toBeTruthy();
     await user.click(combobox);
-    expect(screen.getAllByRole("option", { name: "anthropic/claude-opus-4-8" })).toHaveLength(1);
+    expect(screen.getAllByRole("option", { name: "Automatic (Pi default)" })).toHaveLength(1);
     expect(screen.queryAllByRole("option", { name: /inherit/i })).toHaveLength(0);
   });
 
-  it("auto-selects a default already in the catalog without duplicating it", async () => {
+  it("does not duplicate the Automatic Paper Assistant option", async () => {
     const user = userEvent.setup();
-    vi.mocked(api.getWebuiSettings).mockResolvedValue({
-      agentModels: {},
-      paperAssistantModel: null,
-      effectivePaperAssistantModel: "openai/gpt-4o",
-    } as never);
     renderSettings();
     await openAgentConfig(user, "Paper Assistant");
     const combobox = screen.getByRole("combobox", { name: "Select model for Paper Assistant" });
-    expect(combobox).toHaveTextContent("openai/gpt-4o");
     await user.click(combobox);
-    expect(screen.queryAllByRole("option", { name: "openai/gpt-4o" })).toHaveLength(1);
+    expect(screen.queryAllByRole("option", { name: "Automatic (Pi default)" })).toHaveLength(1);
   });
 
-  it("sets the Paper Assistant default via a paperAssistantModel patch", async () => {
+  it("sets the Paper Assistant model through the global Agent patch", async () => {
     const user = userEvent.setup();
-    vi.mocked(api.updateWebuiSettings).mockResolvedValue({
-      agentModels: { search: "openai/gpt-4o" },
-      paperAssistantModel: "anthropic/claude-sonnet-4",
-      effectivePaperAssistantModel: "anthropic/claude-sonnet-4",
-    } as never);
+    vi.mocked(api.patchAgent).mockResolvedValueOnce({
+      ...(await api.listAgents())[0]!,
+      model: "anthropic/claude-sonnet-4",
+    });
     renderSettings();
     await openAgentConfig(user, "Paper Assistant");
     await selectModelOption(user, "Paper Assistant", "anthropic/claude-sonnet-4");
     await waitFor(() =>
-      expect(api.updateWebuiSettings).toHaveBeenCalledWith({ paperAssistantModel: "anthropic/claude-sonnet-4" }),
+      expect(api.patchAgent).toHaveBeenCalledWith("paper-assistant", { model: "anthropic/claude-sonnet-4" }),
     );
     expect(screen.getByRole("combobox", { name: "Select model for Paper Assistant" })).toHaveTextContent(
       "anthropic/claude-sonnet-4",
     );
   });
 
-  it("sets a stage agent model via agentModels patch", async () => {
+  it("sets a stage model through the same global Agent patch", async () => {
     const user = userEvent.setup();
-    vi.mocked(api.updateWebuiSettings).mockResolvedValue({
-      agentModels: { search: "openai/gpt-4o", writing: "anthropic/claude-sonnet-4" },
-    } as never);
+    vi.mocked(api.patchAgent).mockResolvedValueOnce({
+      ...(await api.listAgents())[2]!,
+      model: "anthropic/claude-sonnet-4",
+    });
     renderSettings();
     await openAgentConfig(user, "Writing");
     await selectModelOption(user, "Writing", "anthropic/claude-sonnet-4");
-    await waitFor(() =>
-      expect(api.updateWebuiSettings).toHaveBeenCalledWith({
-        agentModels: { search: "openai/gpt-4o", writing: "anthropic/claude-sonnet-4" },
-      }),
-    );
+    await waitFor(() => expect(api.patchAgent).toHaveBeenCalledWith("writing", { model: "anthropic/claude-sonnet-4" }));
   });
 
-  it("renders the per-agent thinking default and applies it via an agentThinking patch", async () => {
+  it("renders and patches the per-Agent thinking field", async () => {
     const user = userEvent.setup();
-    vi.mocked(api.updateWebuiSettings).mockResolvedValue({
-      agentThinking: { search: "low", writing: "medium", experiments: "low", figures: "off" },
-    } as never);
+    vi.mocked(api.patchAgent).mockResolvedValueOnce({ ...(await api.listAgents())[1]!, thinking: "low" });
     renderSettings();
     await openAgentConfig(user, "Search");
     const searchThinking = screen.getByRole("combobox", { name: "Select thinking for Search" });
     expect(searchThinking).toHaveValue("high");
     await user.selectOptions(searchThinking, "low");
-    await waitFor(() => expect(api.updateWebuiSettings).toHaveBeenCalledWith({ agentThinking: { search: "low" } }));
+    await waitFor(() => expect(api.patchAgent).toHaveBeenCalledWith("search", { thinking: "low" }));
   });
 
   it("clears a thinking default to the off fallback via the empty option", async () => {
     const user = userEvent.setup();
-    vi.mocked(api.updateWebuiSettings).mockResolvedValue({ agentThinking: {} } as never);
+    vi.mocked(api.patchAgent).mockResolvedValueOnce({ ...(await api.listAgents())[1]!, thinking: undefined });
     renderSettings();
     await openAgentConfig(user, "Search");
     const searchThinking = screen.getByRole("combobox", { name: "Select thinking for Search" });
     await user.selectOptions(searchThinking, "");
-    await waitFor(() => expect(api.updateWebuiSettings).toHaveBeenCalledWith({ agentThinking: {} }));
+    await waitFor(() => expect(api.patchAgent).toHaveBeenCalledWith("search", { thinking: null }));
   });
 
-  it("labels the subagent thinking empty option as inherit Paper Assistant's model and keeps default (off) for the Paper Assistant", async () => {
+  it("labels empty thinking as highest-supported for Paper Assistant and inherited for stages", async () => {
     const user = userEvent.setup();
-    vi.mocked(api.getWebuiSettings).mockResolvedValue({
-      agentModels: {},
-      agentThinking: {},
-      paperAssistantThinking: null,
-      effectivePaperAssistantModel: "openai/gpt-4o",
-    } as never);
     renderSettings();
     await openAgentConfig(user, "Search");
     const searchThinking = screen.getByRole("combobox", { name: "Select thinking for Search" });
-    expect(within(searchThinking).getByText("inherit (Paper Assistant's model)")).toBeTruthy();
+    expect(within(searchThinking).getByText("inherit (Paper Assistant's thinking)")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Close editor" }));
     await openAgentConfig(user, "Paper Assistant");
     const assistantThinking = screen.getByRole("combobox", { name: "Select thinking for Paper Assistant" });
-    expect(within(assistantThinking).getByText("default (off)")).toBeTruthy();
+    expect(within(assistantThinking).getByText("Automatic (highest supported)")).toBeTruthy();
+    expect(within(assistantThinking).getByRole("option", { name: "max" })).toBeTruthy();
     expect(within(assistantThinking).queryByText("inherit (Paper Assistant's model)")).toBeNull();
   });
 
-  it("surfaces an agentModels update failure", async () => {
+  it("surfaces a global Agent patch failure", async () => {
     const user = userEvent.setup();
-    vi.mocked(api.updateWebuiSettings).mockRejectedValueOnce(new Error("boom"));
+    vi.mocked(api.patchAgent).mockRejectedValueOnce(new Error("boom"));
     renderSettings();
     await openAgentConfig(user, "Search");
     await selectModelOption(user, "Search", "inherit (Paper Assistant's model)");
     expect(await screen.findByText(/boom/)).toBeTruthy();
+  });
+
+  it("refreshes the Settings roster on a newer configuration generation", async () => {
+    const reviewer = {
+      name: "reviewer",
+      description: "Reviews evidence",
+      enabled: true,
+      builtin: false,
+      source: "global" as const,
+      filePath: "/agent/agents/reviewer.md",
+      effectiveTools: [],
+      effectiveSkills: [],
+      missingSkills: [],
+    };
+    const view = renderSettings();
+    expect(await screen.findByRole("button", { name: "Configure Search" })).toBeVisible();
+    vi.mocked(api.listAgentResources).mockResolvedValueOnce([reviewer]);
+    vi.mocked(api.listAgents).mockResolvedValueOnce([reviewer]);
+
+    view.rerender(settingsElement(undefined, undefined, 2));
+
+    expect(await screen.findByRole("button", { name: "Configure reviewer" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Configure Search" })).toBeNull();
+  });
+
+  it("retains last-good Settings controls while configuration is malformed", async () => {
+    const view = renderSettings();
+    expect(await screen.findByRole("button", { name: "Configure Search" })).toBeVisible();
+
+    view.rerender(settingsElement(undefined, undefined, 1, "Invalid Agent configuration"));
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Invalid Agent configuration");
+    expect(screen.getByRole("button", { name: "Configure Search" })).toBeVisible();
   });
 
   it("opens the JSON config editor from its button", async () => {

@@ -18,7 +18,11 @@ EasyResearch 是一条分工明确的论文生产流水线，由多个 agent 专
 
 ## 高度可定制的 agent
 
-整个 agent 团队完全可定制。每个 agent 由一份 Markdown 文件定义（角色、工具、skills、模型），skills 就是 `SKILL.md` 文档——你可以快速创建自己的专家 agent 接入流水线，无需写代码：只需让 Paper Assistant 加载 `customize-easyresearch` skill，它就会为你创建、编辑或挂载自定义 agent 与 skills。
+整个 agent 团队完全可定制。每个 agent 的角色与能力由 Markdown 文件定义，
+model/thinking 默认值位于全局 settings 中，skills 则是 `SKILL.md` 文档。
+你可以快速创建自己的专家 agent 接入流水线，无需写代码：只需让 Paper
+Assistant 加载 `customize-easyresearch` skill，它就会为你创建、编辑或挂载
+自定义 agent 与 skills。
 
 ## 环境要求
 
@@ -98,7 +102,7 @@ easyresearch exit               # 停止后台服务
 ### 1. Web UI（推荐）
 
 - **设置页**：为每个 agent 设置全局 `model` 与 `thinking`，写入
-  `~/.easyresearch/agent/agents/<name>.md`。
+  `~/.easyresearch/agent/settings.json` 的 `easyresearch.agentDefaults`。
 - **工作页 → Agent 面板**：编辑的也是同一组全局字段。不存在按会话生效的
   model 或 thinking 覆盖。
 
@@ -142,18 +146,34 @@ easyresearch exit               # 停止后台服务
 export OPENAI_API_KEY=sk-...
 ```
 
-### 3. Agent Markdown frontmatter
+### 3. 全局 Agent 默认值
 
-```markdown
----
-model: my-openai/gpt-4o
-thinking: medium
----
+```json
+{
+  "easyresearch": {
+    "agentDefaults": {
+      "paper-assistant": {
+        "model": "my-openai/gpt-4o",
+        "thinking": "medium"
+      }
+    }
+  }
+}
 ```
 
-写入 `~/.easyresearch/agent/agents/paper-assistant.md` 或其他全局 agent
-Markdown 文件。Agent 定义只采用 global-over-bundled 规则：
-`<cwd>/.easyresearch/agents/` 是惰性的，不参与运行时发现，也不会影响工作页或设置页。阶段 agent 未设置自己的 `model` 时，会继承 Paper Assistant 当前的全局模型。
+只写入全局 `~/.easyresearch/agent/settings.json`。Agent 定义仍采用
+global-over-bundled Markdown 规则：`<cwd>/.easyresearch/agents/` 是惰性的，
+不参与运行时发现，也不会影响工作页或设置页。残留的 Markdown
+`model`/`thinking` 字段会被忽略。阶段 agent 未设置自己的值时，会继承
+Paper Assistant 当前的全局模型与思考强度。
+
+设置页和工作页编辑的是同一组全局 settings 条目。Paper Assistant 的模型
+留空时显示为 **自动（Pi 默认）**，不会再显示猜测出的 provider/model；
+thinking 留空时使用该模型支持的最高强度。不再存在会话级 Agent 覆盖或
+Follow global 模式。有效的 Agent Markdown、Agent 默认值与 `models.json` 更改会自动
+刷新已打开的设置页和工作页。运行中的 Agent 会先完成当前响应和工具批次，再在
+下一次 LLM 请求前应用新的 prompt、tools、Skills、subagent 策略、model 与
+thinking。
 
 全局状态位于 `~/.easyresearch/agent`（settings、models、auth、sessions、
 agents）；项目级覆盖位于 `<exact-cwd>/.easyresearch`（settings、skills、

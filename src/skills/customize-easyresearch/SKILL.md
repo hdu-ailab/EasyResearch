@@ -23,15 +23,21 @@ safely.
   global `~/.easyresearch/agent` or project `<exact-session-cwd>/.easyresearch`.
 - The exact session cwd is the project boundary. Never walk parent directories
   to find `.easyresearch`.
-- Config is loaded when a process starts. After editing global/project files,
-  tell the user to restart the TUI/Web server (or start a new session) — the
-  running session keeps the already-loaded config. `models.json` reloads each
-  time `/model` is opened, no restart needed.
-- Per-session model/thinking overrides in the Work Agents panel apply to the
-  next subagent spawn in the active session; they are not written to any file.
-- Web Settings edits write global Markdown only. Editing a bundled agent/skill
-  first copies it to `~/.easyresearch/agent/` (copy-on-edit); user resources
-  are never overwritten automatically.
+- Agent definitions live only in `~/.easyresearch/agent/agents/` over bundled
+  fallbacks. `<cwd>/.easyresearch/agents/` is ignored; do not create or edit it
+  as EasyResearch configuration.
+- Valid global Agent Markdown, `easyresearch.agentDefaults`, and `models.json`
+  edits automatically update open Settings/Work surfaces. Running Agents finish
+  the current response and tool batch, then use the new prompt, tools, Skills,
+  subagents, model, and thinking before their next LLM request.
+- Settings and Work edit the same global `easyresearch.agentDefaults` entries.
+  Project settings do not override them. There are no per-session Agent
+  overrides or Follow global mode.
+- General settings, Skills, extensions, prompts, and themes retain their
+  documented new/restarted-session behavior unless their own contract says
+  otherwise.
+- Editing a bundled Agent or Skill in Web Settings first copies it into the
+  corresponding global `agents/` or `skills/` root (copy-on-edit).
 - Prefer agent/skill Markdown over new code for behavior changes (lowest
   footprint). Only write extensions or runtime code when Markdown cannot
   express the change.
@@ -45,7 +51,6 @@ safely.
 | Global skills | `~/.easyresearch/agent/skills/<name>/SKILL.md` |
 | Global extensions | `~/.easyresearch/agent/extensions/*.ts` (or `*/index.ts`) |
 | Project config root | `<cwd>/.easyresearch/` |
-| Project agent definitions | `<cwd>/.easyresearch/agents/<name>.md` |
 | Project skills | `<cwd>/.easyresearch/skills/<name>/SKILL.md` |
 | Project extensions | `<cwd>/.easyresearch/extensions/*.ts` |
 | Bundled agents (fallback) | `src/agents/<name>.md` in the package |
@@ -57,16 +62,16 @@ Global files: `settings.json`, `models.json`, `models-store.json`, `auth.json`,
 `trust.json` (never read/written by EasyResearch), `sessions/`, `agents/`,
 `skills/`, `extensions/`, `prompts/`, `themes/`, `logs/`.
 
-Project files: `settings.json`, `agents/`, `skills/`, `extensions/`, `prompts/`,
-`themes/`.
+Project files: `settings.json`, `skills/`, `extensions/`, `prompts/`, `themes/`.
+An existing project `agents/` directory is an ordinary inert directory.
 
 ## Layering and precedence
 
-Agents resolve project → global → bundled. Same-name files completely replace
-lower layers; user-only files append. Built-in agents (`paper-assistant`,
-`search`, `experiment`, `writing`, `figures`) also have localized alias
-filenames (e.g. `Paper Assistant.md` for `paper-assistant`) — either filename overrides
-the same built-in and never creates a duplicate.
+Agents resolve global → bundled. Same-name files completely replace the bundled
+fallback; global-only files append. Project Agent files never participate.
+`Paper Assistant.md` is an alias for `paper-assistant.md`; either global filename
+overrides the same built-in and never creates a duplicate. Other built-ins use
+their primary filenames.
 
 Skills resolve in this order:
 
@@ -79,16 +84,14 @@ Same-name skills replace lower layers; different names append.
 
 ## Agent definitions (Markdown)
 
-Each agent is one complete Markdown file; frontmatter owns structured config
-and the body is the system prompt.
+Each agent is one complete Markdown file; frontmatter owns role/capability
+config and the body is the system prompt.
 
 ```md
 ---
 name: search
 description: Web research agent
 enable: true
-model: provider/id
-thinking: high
 tools:
   - bash
   - read
@@ -104,13 +107,11 @@ System prompt body.
 - `name` is required (lowercase, hyphen-separated, matches the filename stem).
 - `description` is effectively required — it drives agent selection.
 - `enable` defaults to true; only literal `enable: false` disables an agent.
-- `model`: `provider/model-id`. Resolution: session override → project Markdown
-  → global Markdown → inherit the Paper Assistant's current model.
-- `thinking`: `off|minimal|low|medium|high|xhigh|max` (agent default only;
-  missing/invalid behaves as `off`).
+- Residual `model` and `thinking` frontmatter is accepted but ignored. Never use
+  it to configure an Agent and never migrate it into settings.
 - `tools`: missing/YAML-empty/`[]` loads all controlled tools; non-empty is a
-  strict Pi-native allowlist (read, bash, edit, write, grep, find, ls,
-  subagent, web-search).
+  strict Pi-native allowlist (`read`, `bash`, `edit`, `write`, `subagent`,
+  `web-search`, `webfetch`).
 - `skills`: missing/YAML-empty/`[]` loads every skill in the controlled layers;
   non-empty is a strict resolved-name allowlist. Unresolved names are ignored
   at runtime and reported only in Web Settings.
@@ -120,8 +121,35 @@ System prompt body.
   (`complete | partial | blocked`).
 - Unknown frontmatter fields are silently routed into options.
 
-A project override controls TUI and Web Paper Assistant prompt, model, tools,
-skills, and subagent policy just as project definitions control stage agents.
+The Paper Assistant and every stage/custom runtime consume the same effective
+global-over-bundled definition. Exact cwd affects project Skills and other Pi
+resources, never Agent selection or Agent model/thinking.
+
+## Agent runtime defaults (global settings)
+
+The sole model/thinking source is the sparse global
+`~/.easyresearch/agent/settings.json` object:
+
+```json
+{
+  "easyresearch": {
+    "agentDefaults": {
+      "paper-assistant": { "model": "provider/model-id", "thinking": "high" },
+      "reviewer": { "thinking": "medium" }
+    }
+  }
+}
+```
+
+- Keys are built-in or custom Agent ids; a missing Agent id is inert and
+  preserved until a matching custom Agent exists.
+- A Paper Assistant without `model` uses Pi automatic resolution. Other Agents
+  without `model` inherit the Paper Assistant model.
+- A Paper Assistant without `thinking` uses its model's highest supported
+  strength. Other Agents without `thinking` inherit that effective strength;
+  every value is constrained to the effective model's supported levels.
+- Web controls should use `PATCH /api/agents/:name`; direct edits must preserve
+  unrelated Pi settings. `null` clears a property and restores fallback.
 
 ## Skills
 
@@ -297,8 +325,9 @@ provider; `null` marks the level unsupported and hidden from the UI; omitted
 keys mean standard levels through `high` use the provider's default mapping.
 Older `compat.reasoningEffortMap` configs should be migrated to
 model-level `thinkingLevelMap`. Show the user the resulting entry and confirm
-before saving, then remind them `models.json` reloads on `/model` — no restart
-needed.
+before saving. A valid `models.json` edit advances the daemon configuration
+generation automatically; open Web surfaces refresh and active Agents apply it
+before their next safe LLM request.
 
 Other model fields: `input` (`["text"]` / `["text","image"]`), `contextWindow`,
 `maxTokens`, `samplingParams`, `cost`, `compat`. For servers that do not
@@ -331,16 +360,18 @@ events, commands). They run with full system permissions — review before use.
 
 ## Web configuration surface
 
-- Settings page: edits global agent Markdown (model, thinking, enable, tools,
-  skills), and shows effective/missing skills per agent. Editing a bundled
-  agent/skill copies it to the global root first.
+- Settings page: edits global Agent defaults plus Agent Markdown (enable, tools,
+  skills), and shows effective/missing skills per Agent. Editing a bundled
+  Agent/Skill Markdown resource copies it to the global root first.
 - Config browser / homepage config page: reads and writes files below the
   global `~/.easyresearch/agent/` or a project `<cwd>/.easyresearch/` root
   (Global/Project switch).
 - JSON files are validated before saving; Markdown and other text are saved
   verbatim, all through atomic replacement. Canonicalize paths and reject
   traversal outside the allowed roots.
-- Changes apply only to new or restarted sessions.
+- Valid global Agent Markdown, `easyresearch.agentDefaults`, and `models.json`
+  changes apply automatically. Other configuration follows its documented
+  new/restarted-session behavior.
 
 ## Escape hatches
 
@@ -358,9 +389,10 @@ events, commands). They run with full system permissions — review before use.
   `.docs/pi/docs/` when unsure.
 - Preserve existing fields the user did not ask to change, including unknown
   Pi settings.
-- Prefer creating/editing files in the layered locations over inlining
-  everything in settings.json.
+- Prefer layered files for role/resources, but put Agent model/thinking only in
+  global `easyresearch.agentDefaults`.
 - Never write secrets into agent Markdown or settings.json — credentials go to
   `auth.json`, an env var, or the provider `apiKey` field.
-- After saving any config change, remind the user to restart EasyResearch —
-  running sessions keep using the already-loaded config.
+- State the correct application boundary after saving: global Agent Markdown,
+  `easyresearch.agentDefaults`, and `models.json` are live; recommend a
+  restart/new session only for resources whose contract requires it.

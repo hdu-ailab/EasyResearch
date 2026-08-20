@@ -1,15 +1,15 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { privateSubagentEventDataReason } from "../../../subagent/notifications";
+import { isThinkingLevel } from "../../../thinking-levels";
 import type {
   ActiveSessionDto,
   AgentDto,
-  AgentEffectiveModelDto,
-  AgentEffectiveThinkingDto,
   AgentResourceDto,
   AuthFlowEventDto,
   AuthProviderInfoDto,
   ChildSessionSnapshotDto,
   ConfigEntryDto,
+  ConfigurationEvent,
   DirectoryEntryDto,
   FileContentDto,
   FileEntryDto,
@@ -21,7 +21,6 @@ import type {
   SubagentSessionSummaryDto,
   SubagentSupervisorEventDto,
   WebTreeEntryDto,
-  WebuiSettingsDto,
 } from "../../../web/contracts";
 import type { ConfigFileDto, ConfigProjectsDto } from "../types";
 
@@ -230,8 +229,11 @@ function parseMessages(value: unknown): AgentMessage[] {
   return value as AgentMessage[];
 }
 
-function parseAgent(value: unknown): AgentDto {
+export function parseAgent(value: unknown): AgentDto {
   const source = record(value, "agent");
+  if (source.thinking !== undefined && !isThinkingLevel(source.thinking)) {
+    throw new Error("Invalid API response: agent thinking is invalid");
+  }
   const tools = source.tools === undefined ? undefined : stringArray(source.tools, "tools");
   const subagents = source.subagents === undefined ? undefined : stringArray(source.subagents, "subagents");
   const skills = source.skills === undefined ? undefined : stringArray(source.skills, "skills");
@@ -240,17 +242,18 @@ function parseAgent(value: unknown): AgentDto {
   const effectiveSkills =
     source.effectiveSkills === undefined ? (skills ?? []) : stringArray(source.effectiveSkills, "effectiveSkills");
   const missingSkills = stringArray(source.missingSkills, "missingSkills");
+  if (source.source !== "global" && source.source !== "bundled") {
+    throw new Error("Invalid API response: agent source is invalid");
+  }
   return {
     name: requiredString(source, "name"),
     description: requiredString(source, "description"),
     enabled: source.enabled !== false,
     builtin: source.builtin === true,
-    source:
-      source.source === "project" || source.source === "global" || source.source === "bundled"
-        ? source.source
-        : "global",
+    source: source.source,
     filePath: typeof source.filePath === "string" ? source.filePath : "",
     ...(typeof source.model === "string" ? { model: source.model } : {}),
+    ...(isThinkingLevel(source.thinking) ? { thinking: source.thinking } : {}),
     effectiveTools,
     effectiveSkills,
     missingSkills,
@@ -272,6 +275,26 @@ export function parseStatus(value: unknown): StatusDto {
 
 export function parseAgents(value: unknown): AgentDto[] {
   return arrayOf(value, "agents", parseAgent);
+}
+
+export function parseConfigurationEvent(value: unknown): ConfigurationEvent {
+  const source = record(value, "configuration event");
+  const generation = requiredNumber(source, "generation");
+  if (!Number.isSafeInteger(generation) || generation < 0) {
+    throw new Error("Invalid API response: generation must be a non-negative integer");
+  }
+  if (source.type === "config.updated") {
+    return {
+      type: "config.updated",
+      generation,
+      agentsChanged: requiredBoolean(source, "agentsChanged"),
+      modelsChanged: requiredBoolean(source, "modelsChanged"),
+    };
+  }
+  if (source.type === "config.error") {
+    return { type: "config.error", generation, message: requiredString(source, "message") };
+  }
+  throw new Error("Invalid API response: configuration event type is invalid");
 }
 
 export function parseAgentResource(value: unknown): AgentResourceDto {
@@ -324,72 +347,6 @@ function optionalThinkingLevelMap(value: unknown): Record<string, string | null>
     map[level] = mapped;
   }
   return map;
-}
-
-export function parseWebuiSettings(value: unknown): WebuiSettingsDto {
-  const source = record(value, "Web UI settings");
-  const models = record(source.agentModels, "agentModels");
-  const agentModels: Record<string, string> = {};
-  for (const [name, model] of Object.entries(models)) {
-    if (typeof model !== "string") throw new Error(`Invalid API response: agentModels.${name} must be a string`);
-    agentModels[name] = model;
-  }
-  const thinking = record(source.agentThinking, "agentThinking");
-  const agentThinking: Record<string, string> = {};
-  for (const [name, level] of Object.entries(thinking)) {
-    if (typeof level !== "string") throw new Error(`Invalid API response: agentThinking.${name} must be a string`);
-    agentThinking[name] = level;
-  }
-  const paperAssistantModel = source.paperAssistantModel;
-  const effectivePaperAssistantModel = source.effectivePaperAssistantModel;
-  const paperAssistantThinking = source.paperAssistantThinking;
-  if (paperAssistantModel !== null && typeof paperAssistantModel !== "string") {
-    throw new Error("Invalid API response: paperAssistantModel must be a string or null");
-  }
-  if (effectivePaperAssistantModel !== null && typeof effectivePaperAssistantModel !== "string") {
-    throw new Error("Invalid API response: effectivePaperAssistantModel must be a string or null");
-  }
-  if (paperAssistantThinking !== null && typeof paperAssistantThinking !== "string") {
-    throw new Error("Invalid API response: paperAssistantThinking must be a string or null");
-  }
-  return {
-    agentModels,
-    paperAssistantModel,
-    effectivePaperAssistantModel,
-    agentThinking,
-    paperAssistantThinking,
-  };
-}
-
-export function parseEffectiveModels(value: unknown): AgentEffectiveModelDto[] {
-  return arrayOf(value, "effective models", (item) => {
-    const source = record(item, "effective model");
-    const model = source.model;
-    if (model !== null && typeof model !== "string")
-      throw new Error("Invalid API response: model must be a string or null");
-    if (
-      source.source !== "override" &&
-      source.source !== "project" &&
-      source.source !== "global" &&
-      source.source !== "inherit"
-    ) {
-      throw new Error("Invalid API response: model source is invalid");
-    }
-    return { name: requiredString(source, "name"), model, source: source.source };
-  });
-}
-
-export function parseEffectiveThinking(value: unknown): AgentEffectiveThinkingDto[] {
-  return arrayOf(value, "effective thinking", (item) => {
-    const source = record(item, "effective thinking");
-    const thinking = source.thinking;
-    if (thinking !== null && typeof thinking !== "string")
-      throw new Error("Invalid API response: thinking must be a string or null");
-    if (source.source !== "override" && source.source !== "default" && source.source !== "inherit") {
-      throw new Error("Invalid API response: thinking source is invalid");
-    }
-    return { name: requiredString(source, "name"), thinking, source: source.source };
-  });
 }
 
 export function parseDirectories(value: unknown): DirectoryEntryDto[] {

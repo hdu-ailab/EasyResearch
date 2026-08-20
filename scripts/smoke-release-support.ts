@@ -394,11 +394,21 @@ export function venvToolCommand(platform: NodeJS.Platform, scriptPath: string): 
 }
 
 export type SmokeModelAction =
-  | { kind: "tool"; id: string; name: "subagent" | "bash"; arguments: string }
+  | { kind: "tool"; id: string; name: "write" | "subagent" | "bash"; arguments: string }
   | { kind: "text"; text: string };
 
+export interface SmokeModelScenario {
+  toolCommand: string;
+  agentName: string;
+  agentPath: string;
+  agentContent: string;
+  agentPromptMarker: string;
+}
+
 export interface SmokeModelState {
-  parentCallIssued: boolean;
+  agentWriteIssued: boolean;
+  agentWriteObserved: boolean;
+  customDispatchIssued: boolean;
   parentWorkingObserved: boolean;
   stageBashIssued: boolean;
   venvValidated: boolean;
@@ -425,6 +435,7 @@ function messageContentText(content: unknown): string {
 
 function hasSuccessfulTerminalHandoff(
   messages: Array<{ role?: string; content?: unknown }> | undefined,
+  agentId: string,
 ): boolean {
   const terminalMessages = messages
     ?.filter((message) => message.role === "user")
@@ -444,12 +455,12 @@ function hasSuccessfulTerminalHandoff(
   const handoff = match?.[2];
   const completeLines = status
     ?.split("\n")
-    .filter((line) => line.trim() === "Complete subagent:search_0")
+    .filter((line) => line.trim() === `Complete subagent:${agentId}`)
     ?? [];
   if (
     completeLines.length !== 1
     || status?.includes("session_path")
-    || handoff?.trim() !== `Agent: search_0\nResult: ${STAGE_COMPLETION}`
+    || handoff?.trim() !== `Agent: ${agentId}\nResult: ${STAGE_COMPLETION}`
   ) {
     throw new Error(`native smoke received a malformed atomic terminal notification: ${normalized}`);
   }
@@ -458,14 +469,22 @@ function hasSuccessfulTerminalHandoff(
 
 export function selectSmokeModelAction(
   request: {
-    tools?: Array<{ function?: { name?: string } }>;
+    tools?: Array<{ function?: { name?: string; description?: string } }>;
     messages?: Array<{ role?: string; content?: unknown; tool_call_id?: string }>;
   },
-  toolCommand: string,
+  scenario: SmokeModelScenario,
   state: SmokeModelState,
 ): SmokeModelTransition {
-  const toolNames = new Set(request.tools?.map((tool) => tool.function?.name));
+  if (!isAbsolute(scenario.agentPath)) {
+    throw new Error(`native smoke custom Agent path must be absolute: ${scenario.agentPath}`);
+  }
+  if (!scenario.agentContent.includes(scenario.agentPromptMarker)) {
+    throw new Error("native smoke custom Agent content is missing its role-prompt marker");
+  }
+  const tools = request.tools ?? [];
+  const toolNames = new Set(tools.map((tool) => tool.function?.name));
   if (state.complete) throw new Error("native smoke model sequence is already complete");
+  const agentId = `${scenario.agentName}_0`;
 
   const transition = (
     action: SmokeModelAction,
@@ -485,25 +504,72 @@ export function selectSmokeModelAction(
     }
     return messageContentText(matches[0]?.content);
   };
+  const subagentDescription = (): string => {
+    const matches = tools.filter((tool) => tool.function?.name === "subagent");
+    if (matches.length !== 1) {
+      throw new Error(`native smoke expected exactly one subagent tool, received ${matches.length}`);
+    }
+    const description = matches[0]?.function?.description;
+    if (typeof description !== "string") {
+      throw new Error("native smoke subagent tool had no description");
+    }
+    return description;
+  };
+  const descriptionListsAgent = (description: string): boolean => {
+    const prefix = "Available subagents: ";
+    const line = description.split(/\r?\n/u).find((candidate) => candidate.startsWith(prefix));
+    if (!line?.endsWith(".")) return false;
+    return line
+      .slice(prefix.length, -1)
+      .split(", ")
+      .includes(scenario.agentName);
+  };
 
-  if (toolNames.has("subagent")) {
-    if (!state.parentCallIssued) {
+  if (toolNames.has("write")) {
+    const description = subagentDescription();
+    if (!state.agentWriteIssued) {
+      if (descriptionListsAgent(description)) {
+        throw new Error(`native smoke custom Agent ${scenario.agentName} existed before its write tool call`);
+      }
       return transition({
         kind: "tool",
-        id: "call_native_stage",
-        name: "subagent",
-        arguments: JSON.stringify({
-          agent: "search",
-          task: "Run the native venv validation command with the bash tool and return a complete handoff.",
-        }),
-      }, { parentCallIssued: true });
+        id: "call_native_agent_write",
+        name: "write",
+        arguments: JSON.stringify({ path: scenario.agentPath, content: scenario.agentContent }),
+      }, { agentWriteIssued: true });
     }
 
-    const working = expectedToolResult("call_native_stage");
-    if (working !== "search_0 is working.") {
-      throw new Error(`subagent tool result was not exactly search_0 is working.: ${working}`);
+    if (!state.agentWriteObserved) {
+      const actualWriteResult = expectedToolResult("call_native_agent_write");
+      const expectedWriteResult = `Successfully wrote ${scenario.agentContent.length} bytes to ${scenario.agentPath}`;
+      if (actualWriteResult !== expectedWriteResult) {
+        throw new Error(`native smoke custom Agent write result was not exact: ${actualWriteResult}`);
+      }
+      if (!descriptionListsAgent(description)) {
+        throw new Error(`native smoke next parent request did not expose ${scenario.agentName} in the subagent schema`);
+      }
+      return transition({
+        kind: "tool",
+        id: "call_native_reviewer",
+        name: "subagent",
+        arguments: JSON.stringify({
+          agent: scenario.agentName,
+          task: "Run the native venv validation command with the bash tool and return a complete handoff.",
+        }),
+      }, { agentWriteObserved: true, customDispatchIssued: true });
     }
-    const terminalHandoffObserved = hasSuccessfulTerminalHandoff(request.messages);
+
+    if (!state.customDispatchIssued) {
+      throw new Error("native smoke parent observed the custom Agent write without issuing its dispatch");
+    }
+    if (!descriptionListsAgent(description)) {
+      throw new Error(`native smoke parent lost ${scenario.agentName} from the refreshed subagent schema`);
+    }
+    const working = expectedToolResult("call_native_reviewer");
+    if (working !== `${agentId} is working.`) {
+      throw new Error(`subagent tool result was not exactly ${agentId} is working.: ${working}`);
+    }
+    const terminalHandoffObserved = hasSuccessfulTerminalHandoff(request.messages, agentId);
     if (!terminalHandoffObserved) {
       return transition(
         { kind: "text", text: "Parent waiting for supervised completion." },
@@ -520,12 +586,27 @@ export function selectSmokeModelAction(
   }
 
   if (toolNames.has("bash")) {
+    if (!state.customDispatchIssued) {
+      throw new Error("native smoke custom child ran before the parent dispatch");
+    }
+    const configuredTools = tools.map((tool) => tool.function?.name);
+    if (configuredTools.length !== 1 || configuredTools[0] !== "bash") {
+      throw new Error(`native smoke custom child did not receive only its configured tools: ${configuredTools.join(", ")}`);
+    }
+    const systemPrompt = request.messages
+      ?.filter((message) => message.role === "system")
+      .map((message) => messageContentText(message.content))
+      .join("\n")
+      ?? "";
+    if (!systemPrompt.includes(scenario.agentPromptMarker)) {
+      throw new Error("native smoke custom child did not receive its current role prompt");
+    }
     if (!state.stageBashIssued) {
       return transition({
         kind: "tool",
         id: "call_native_venv",
         name: "bash",
-        arguments: JSON.stringify({ command: toolCommand, timeout: 60 }),
+        arguments: JSON.stringify({ command: scenario.toolCommand, timeout: 60 }),
       }, { stageBashIssued: true });
     }
     if (state.stageCompleted) {
@@ -545,5 +626,5 @@ export function selectSmokeModelAction(
     );
   }
 
-  throw new Error("native smoke model request exposed neither subagent nor bash");
+  throw new Error("native smoke model request exposed neither the parent write tool nor the custom child bash tool");
 }

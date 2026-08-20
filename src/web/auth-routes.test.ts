@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { createRouteHandler, type RouteServices } from "./routes";
-import { AuthGatewayError, type AuthGateway } from "./auth-gateway";
+import { AuthGatewayError, createAuthGateway, type AuthGateway } from "./auth-gateway";
 import { createAuthFlowStore, type AuthFlowStore, type AuthFlowRecord } from "./auth-flow-store";
 import type {
   AuthFlowEventDto,
@@ -31,15 +31,7 @@ function makeServices(auth: AuthGateway | undefined): RouteServices {
     listAllSessions: async () => [],
     listAgents: async () => [],
     listModels: async () => [],
-    effectiveModels: async () => [],
-    setAgentModel: async () => {},
-    effectiveThinking: async () => [],
-    setAgentThinking: async () => {},
     listConfigProjects: async () => ({ home: "", projects: [] }),
-    getWebuiSettings: async () =>
-      ({ agentModels: {}, paperAssistantModel: null, effectivePaperAssistantModel: null, agentThinking: {}, paperAssistantThinking: null }) as any,
-    updateWebuiSettings: async () =>
-      ({ agentModels: {}, paperAssistantModel: null, effectivePaperAssistantModel: null, agentThinking: {}, paperAssistantThinking: null }) as any,
     directories: { homeDir: "/", list: async () => [], read: async () => ({}) } as any,
     registry: { listActive: () => [], subscribe: () => () => {}, snapshot: async () => ({ session: {} as any, messages: [] }) } as any,
     config: {} as any,
@@ -98,7 +90,11 @@ describe("auth routes", () => {
     expect(res.status).toBe(202);
     const body = (await res.json()) as { flowId: string };
     expect(body.flowId).toBeTruthy();
-    expect((gw.preflight as any)).toHaveBeenCalledWith({ providerId: "anthropic", type: "api_key" });
+    expect((gw.preflight as any)).toHaveBeenCalledWith({
+      flowId: body.flowId,
+      providerId: "anthropic",
+      type: "api_key",
+    });
   });
 
   it("POST /api/auth/login runs the flow fire-and-forget after preflight", async () => {
@@ -120,10 +116,70 @@ describe("auth routes", () => {
     expect((gw.runFlow as any)).toHaveBeenCalled();
   });
 
+  it("accepts only one concurrent login and exposes a registered flow before 202", async () => {
+    const provider = {
+      id: "anthropic",
+      name: "Anthropic",
+      auth: { apiKey: { name: "Anthropic API key", login: vi.fn() } },
+    };
+    let resolveRefresh!: (result: { aborted: boolean; errors: Map<string, Error> }) => void;
+    const refresh = vi.fn(
+      () => new Promise<{ aborted: boolean; errors: Map<string, Error> }>((resolve) => {
+        resolveRefresh = resolve;
+      }),
+    );
+    const store = createAuthFlowStore();
+    const gateway = createAuthGateway(
+      {
+        getProviders: () => [provider],
+        getProvider: (id) => (id === provider.id ? provider : undefined),
+        getAvailableSnapshot: () => [],
+        getError: () => undefined,
+        getProviderAuthStatus: () => ({ configured: false }),
+        checkAuth: async () => undefined,
+        login: async (_providerId, _type, interaction) => {
+          await interaction.prompt({ type: "secret", message: "API key" });
+          return { type: "api_key", key: "sk" };
+        },
+        logout: async () => {},
+        refresh,
+      },
+      store,
+      { timeoutMs: 600_000 },
+    );
+    const handler = createRouteHandler(makeServices(gateway));
+    const login = () => handler(
+      new Request("http://l/api/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ providerId: "anthropic", type: "api_key" }),
+      }),
+    );
+
+    const requests = [login(), login()];
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+    resolveRefresh({ aborted: false, errors: new Map() });
+    const responses = await Promise.all(requests);
+    const statuses = responses.map((response) => response.status).sort();
+    expect(statuses).toEqual([202, 409]);
+
+    const payloads = await Promise.all(responses.map((response) => response.json()));
+    const accepted = payloads[responses.findIndex((response) => response.status === 202)] as { flowId: string };
+    const rejected = payloads[responses.findIndex((response) => response.status === 409)] as { activeFlowId: string };
+    expect(rejected.activeFlowId).toBe(accepted.flowId);
+    expect(store.get(accepted.flowId)).toBeDefined();
+
+    const events = await handler(new Request(`http://l/api/auth/flows/${accepted.flowId}/events`));
+    expect(events.status).toBe(200);
+    await events.body?.cancel();
+    await vi.waitFor(() => expect(store.pendingKind(accepted.flowId)).toBe("secret"));
+    store.cancel(accepted.flowId);
+    await vi.waitFor(() => expect(gateway.activeFlow()).toBeNull());
+  });
+
   it("POST /api/auth/login returns 409 with activeFlowId when a flow is active", async () => {
     const gw = {
       activeFlow: () => "f-active",
-      preflight: () => {
+      preflight: async () => {
         throw new AuthGatewayError(409, "another auth flow is active");
       },
       runFlow: vi.fn(),
@@ -144,7 +200,7 @@ describe("auth routes", () => {
   it("POST /api/auth/login returns 404 for unknown provider via preflight AuthGatewayError", async () => {
     const gw = {
       activeFlow: () => null,
-      preflight: () => {
+      preflight: async () => {
         throw new AuthGatewayError(404, "unknown provider: nope");
       },
       runFlow: vi.fn(),
@@ -256,6 +312,51 @@ describe("auth routes", () => {
       }),
     );
     expect(res.status).toBe(404);
+  });
+
+  it("POST /api/auth/logout reports a safe error after committed removal forces model synchronization", async () => {
+    const provider = { id: "anthropic", name: "Anthropic", auth: { apiKey: {} } };
+    const onModelsChanged = vi.fn(async () => {});
+    const committedError = Object.assign(
+      new Error("private synchronization detail at /home/private"),
+      {
+        name: "CredentialSynchronizationError",
+        providerId: "anthropic",
+        operation: "logout",
+        credential: undefined,
+      },
+    );
+    const gw = createAuthGateway(
+      {
+        getProviders: () => [provider],
+        getProvider: () => provider,
+        getAvailableSnapshot: () => [],
+        getError: () => undefined,
+        getProviderAuthStatus: () => ({ configured: true }),
+        checkAuth: async () => undefined,
+        login: async () => ({ type: "api_key", key: "unused" }),
+        logout: async () => {
+          throw committedError;
+        },
+        refresh: async () => ({ aborted: false, errors: new Map() }),
+      },
+      createAuthFlowStore(),
+      { timeoutMs: 600_000, onModelsChanged },
+    );
+    const handler = createRouteHandler(makeServices(gw));
+
+    const res = await handler(
+      new Request("http://l/api/auth/logout", {
+        method: "POST",
+        body: JSON.stringify({ providerId: "anthropic" }),
+      }),
+    );
+
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({
+      error: "Credential removal was saved, but local model state could not be synchronized.",
+    });
+    expect(onModelsChanged).toHaveBeenCalledTimes(1);
   });
 
   it("GET /api/auth/flows/:id/events returns 404 for unknown flow", async () => {

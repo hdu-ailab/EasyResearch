@@ -69,6 +69,8 @@ class FakeAdapter implements SessionAdapter {
   stopImpl: () => Promise<void> = async () => {};
   abortImpl: () => Promise<void> = async () => {};
   onEventCalls = 0;
+  getStateImpl: (() => Promise<SessionState>) | undefined;
+  onEventHook: (() => void) | undefined;
 
   constructor(public options: StartSessionOptions) {
     FakeAdapter.all.push(this);
@@ -98,6 +100,7 @@ class FakeAdapter implements SessionAdapter {
   }
   async getState(): Promise<SessionState> {
     if (this.getStateError) throw this.getStateError;
+    if (this.getStateImpl) return this.getStateImpl();
     return { ...fakeState, ...this.stateOverrides, sessionId: `sess-${++FakeAdapter.nextId}`, sessionFile: this.options.sessionPath ?? sessionPath };
   }
   async getMessages(): Promise<AgentMessage[]> {
@@ -120,6 +123,9 @@ class FakeAdapter implements SessionAdapter {
   }
   onEvent(listener: (event: unknown) => void) {
     this.onEventCalls += 1;
+    const hook = this.onEventHook;
+    this.onEventHook = undefined;
+    hook?.();
     this.events.add(listener);
     return () => this.events.delete(listener);
   }
@@ -132,6 +138,8 @@ class FakeFactory implements SessionFactory {
   backgroundWork = false;
   startImpl: () => Promise<void> = async () => {};
   stopImpl: () => Promise<void> = async () => {};
+  getStateImpl: (() => Promise<SessionState>) | undefined;
+  onEventHook: (() => void) | undefined;
   create(options: StartSessionOptions): SessionAdapter {
     const adapter = new FakeAdapter(options);
     adapter.startError = this.startError;
@@ -139,9 +147,21 @@ class FakeFactory implements SessionFactory {
     adapter.backgroundWork = this.backgroundWork;
     adapter.startImpl = this.startImpl;
     adapter.stopImpl = this.stopImpl;
+    adapter.getStateImpl = this.getStateImpl;
+    adapter.onEventHook = this.onEventHook;
     this.created.push(adapter);
     return adapter;
   }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 class FakeWatcherFactory implements FileWatcherFactory {
@@ -411,6 +431,46 @@ describe("ActiveSessionRegistry", () => {
     const created = await registry.create({ cwd });
     await Promise.all([registry.stop(created.id), registry.stop(created.id)]);
     expect(factory.created[0]?.stats.stopped).toBe(1);
+  });
+
+  it("shares one failed stop attempt, then retries retained abort ownership exactly once", async () => {
+    const created = await registry.create({ cwd });
+    const adapter = factory.created[0]!;
+    const listener = vi.fn();
+    registry.subscribe(created.id, listener);
+    let rejectFirst!: (error: Error) => void;
+    const firstAttempt = new Promise<void>((_resolve, reject) => {
+      rejectFirst = reject;
+    });
+    let resolveSecond!: () => void;
+    const secondAttempt = new Promise<void>((resolve) => {
+      resolveSecond = resolve;
+    });
+    adapter.stopImpl = vi.fn()
+      .mockImplementationOnce(() => firstAttempt)
+      .mockImplementationOnce(() => secondAttempt);
+
+    const firstStops = [registry.stop(created.id), registry.stop(created.id)];
+    const firstOutcomesPromise = Promise.allSettled(firstStops);
+    await vi.waitFor(() => expect(adapter.stats.stopped).toBe(1));
+    rejectFirst(new Error("Session stop could not abort active work. Retry stop."));
+    const firstOutcomes = await firstOutcomesPromise;
+
+    expect(firstOutcomes.map(({ status }) => status)).toEqual(["rejected", "rejected"]);
+    expect(registry.has(created.id)).toBe(true);
+    expect(listener).not.toHaveBeenCalled();
+
+    const retryStops = [registry.stop(created.id), registry.stop(created.id)];
+    const retryOutcomesPromise = Promise.allSettled(retryStops);
+    await vi.waitFor(() => expect(adapter.stats.stopped).toBe(2));
+    resolveSecond();
+    expect((await retryOutcomesPromise).map(({ status }) => status)).toEqual(["fulfilled", "fulfilled"]);
+
+    expect(registry.has(created.id)).toBe(false);
+    await registry.stop(created.id);
+    expect(adapter.stats.stopped).toBe(2);
+    expect(watcherFactory.created[0]?.close).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenCalledTimes(1);
   });
 
   it("opens a historical path and reuses the active entry on duplicate open", async () => {
@@ -838,12 +898,147 @@ describe("ActiveSessionRegistry", () => {
     expect(shutdownResolved).toBe(false);
 
     releaseStart();
-    await opening;
+    await expect(opening).rejects.toThrow(/shutting down/i);
     await shuttingDown;
     expect(factory.created[0]?.stats.stopped).toBe(1);
     expect(registry.list()).toEqual([]);
   });
 
+  it("settles every active stop before reporting shutdown failures and retries retained records", async () => {
+    const first = await registry.create({ cwd });
+    const second = await registry.create({ cwd: "/test/other" });
+    const firstAdapter = factory.created[0]!;
+    const secondAdapter = factory.created[1]!;
+    firstAdapter.stopImpl = async () => {
+      throw new Error("first stop failed");
+    };
+    let resolveSecond!: () => void;
+    secondAdapter.stopImpl = () => new Promise<void>((resolve) => {
+      resolveSecond = resolve;
+    });
+    let outcome = "pending";
+
+    const shutdown = registry.shutdown().then(
+      () => {
+        outcome = "fulfilled";
+      },
+      () => {
+        outcome = "rejected";
+      },
+    );
+    await vi.waitFor(() => expect(firstAdapter.stats.stopped).toBe(1));
+    await vi.waitFor(() => expect(secondAdapter.stats.stopped).toBe(1));
+    await Promise.resolve();
+    expect(outcome).toBe("pending");
+
+    resolveSecond();
+    await shutdown;
+    expect(outcome).toBe("rejected");
+    expect(registry.has(first.id)).toBe(true);
+    expect(registry.has(second.id)).toBe(false);
+
+    firstAdapter.stopImpl = async () => {};
+    await registry.shutdown();
+    expect(firstAdapter.stats.stopped).toBe(2);
+    expect(registry.list()).toEqual([]);
+  });
+
+  it.each(["client start", "state acquisition"] as const)(
+    "owns a create pending at %s until shutdown stops its client",
+    async (boundary) => {
+      const gate = deferred<void>();
+      if (boundary === "client start") {
+        factory.startImpl = () => gate.promise;
+      } else {
+        factory.getStateImpl = async () => {
+          await gate.promise;
+          return { ...fakeState, sessionId: "pending-state", sessionFile: sessionPath };
+        };
+      }
+      const launch = registry.create({ cwd });
+      await vi.waitFor(() => expect(factory.created).toHaveLength(1));
+      if (boundary === "state acquisition") {
+        await vi.waitFor(() => expect(factory.created[0]?.stats.started).toBe(1));
+      }
+      let shutdownSettled = false;
+      const shutdown = registry.shutdown().finally(() => {
+        shutdownSettled = true;
+      });
+
+      await Promise.resolve();
+      const settledBeforeBoundary = shutdownSettled;
+      gate.resolve();
+
+      await expect(launch).rejects.toThrow(/shutting down/i);
+      await shutdown;
+      expect(settledBeforeBoundary).toBe(false);
+      expect(factory.created[0]?.stats.stopped).toBe(1);
+      expect(registry.list()).toEqual([]);
+    },
+  );
+
+  it("owns watcher and listener setup when shutdown starts reentrantly", async () => {
+    let shutdown: Promise<void> | undefined;
+    factory.onEventHook = () => {
+      shutdown = registry.shutdown();
+    };
+
+    const launch = registry.create({ cwd });
+
+    await expect(launch).rejects.toThrow(/shutting down/i);
+    await shutdown;
+    expect(factory.created[0]?.events.size).toBe(0);
+    expect(factory.created[0]?.stats.stopped).toBe(1);
+    expect(watcherFactory.created[0]?.close).toHaveBeenCalledTimes(1);
+    expect(registry.list()).toEqual([]);
+  });
+
+  it("retains a cancelled pending client when its first stop fails and retries only that cleanup", async () => {
+    let shutdown: Promise<void> | undefined;
+    factory.onEventHook = () => {
+      shutdown = registry.shutdown();
+    };
+    factory.stopImpl = vi.fn()
+      .mockRejectedValueOnce(new Error("pending stop failed"))
+      .mockResolvedValueOnce(undefined);
+
+    const launch = registry.create({ cwd });
+
+    await expect(launch).rejects.toThrow(/shutting down/i);
+    await expect(shutdown).rejects.toThrow("pending stop failed");
+    expect(factory.created[0]?.stats.stopped).toBe(1);
+    expect(registry.list()).toEqual([]);
+
+    await registry.shutdown();
+    expect(factory.created[0]?.stats.stopped).toBe(2);
+    expect(watcherFactory.created[0]?.close).toHaveBeenCalledTimes(1);
+    await registry.shutdown();
+    expect(factory.created[0]?.stats.stopped).toBe(2);
+  });
+
+  it("reserves a restart before stopping the old client so shutdown cannot admit a replacement", async () => {
+    const created = await registry.create({ cwd });
+    const stopGate = deferred<void>();
+    factory.created[0]!.stopImpl = () => stopGate.promise;
+
+    const restarting = registry.restart(created.id);
+    await vi.waitFor(() => expect(factory.created[0]?.stats.stopped).toBe(1));
+    const shutdown = registry.shutdown();
+    stopGate.resolve();
+
+    await expect(restarting).rejects.toThrow(/shutting down/i);
+    await shutdown;
+    expect(factory.created).toHaveLength(1);
+    expect(registry.list()).toEqual([]);
+  });
+
+  it("rejects new create and open launches after shutdown begins", async () => {
+    await registry.shutdown();
+
+    await expect(registry.create({ cwd })).rejects.toThrow(/shutting down/i);
+    await expect(registry.open({ cwd, sessionPath })).rejects.toThrow(/shutting down/i);
+    expect(factory.created).toHaveLength(0);
+  });
   describe("tree and commands (ADR-066)", () => {
     it("delegates getCommands/getTree/navigateTree to the adapter", async () => {
       const created = await registry.create({ cwd });

@@ -1,4 +1,4 @@
-import { fireEvent, render as renderWithTestingLibrary, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render as renderWithTestingLibrary, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -32,8 +32,7 @@ vi.mock("./api", async (importOriginal) => {
     readConfigFile: vi.fn(),
     writeConfigFile: vi.fn(),
     createConfigDirectory: vi.fn(),
-    getWebuiSettings: vi.fn(),
-    updateWebuiSettings: vi.fn(),
+    connectConfigurationEvents: vi.fn(),
     listAgentResources: vi.fn().mockResolvedValue([]),
     listAgents: vi.fn().mockResolvedValue([]),
     listModels: vi.fn().mockResolvedValue([]),
@@ -73,6 +72,8 @@ const persisted = {
 };
 
 let unsubscribeFn: ReturnType<typeof vi.fn>;
+let disconnectConfiguration: () => void;
+let configurationHandlers: Parameters<typeof api.connectConfigurationEvents>[0];
 
 function stubEvents() {
   unsubscribeFn = vi.fn();
@@ -119,6 +120,7 @@ describe("App routing", () => {
     vi.mocked(api.openSession).mockReset();
     vi.mocked(api.getSnapshot).mockReset();
     vi.mocked(api.connectSessionEvents).mockReset();
+    vi.mocked(api.connectConfigurationEvents).mockReset();
     vi.mocked(api.listStatus).mockResolvedValue({
       agentDir: "/tmp/agent",
       homeDir: "/tmp",
@@ -133,12 +135,10 @@ describe("App routing", () => {
       sessionFile: "/store/s1.jsonl",
     });
     vi.mocked(api.getSnapshot).mockResolvedValue(workSnapshot);
-    vi.mocked(api.getWebuiSettings).mockResolvedValue({
-      agentModels: {},
-      paperAssistantModel: null,
-      effectivePaperAssistantModel: null,
-      agentThinking: {},
-      paperAssistantThinking: null,
+    disconnectConfiguration = vi.fn();
+    vi.mocked(api.connectConfigurationEvents).mockImplementation((handlers) => {
+      configurationHandlers = handlers;
+      return disconnectConfiguration;
     });
     stubEvents();
   });
@@ -161,6 +161,66 @@ describe("App routing", () => {
     await user.click(screen.getByRole("button", { name: "Settings" }));
     expect(window.location.hash).toBe("#/settings");
     expect(await screen.findByText(/chat font size/i)).toBeTruthy();
+  });
+
+  it("owns one configuration EventSource across page navigation and closes it on unmount", async () => {
+    const user = userEvent.setup();
+    const view = render(<App />);
+    await workspace();
+    expect(api.connectConfigurationEvents).toHaveBeenCalledOnce();
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await screen.findByText(/chat font size/i);
+    expect(api.connectConfigurationEvents).toHaveBeenCalledOnce();
+
+    view.unmount();
+    expect(disconnectConfiguration).toHaveBeenCalledOnce();
+  });
+
+  it("forwards accepted configuration generations to the mounted page", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listAgents).mockResolvedValue([
+      {
+        name: "search",
+        description: "Initial Agent",
+        enabled: true,
+        builtin: false,
+        source: "global",
+        filePath: "/agent/agents/search.md",
+        effectiveTools: [],
+        effectiveSkills: [],
+        missingSkills: [],
+      },
+    ]);
+    render(<App />);
+    await workspace();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    expect(await screen.findByRole("button", { name: "Configure Search" })).toBeVisible();
+    vi.mocked(api.listAgents).mockResolvedValue([
+      {
+        name: "reviewer",
+        description: "Updated Agent",
+        enabled: true,
+        builtin: false,
+        source: "global",
+        filePath: "/agent/agents/reviewer.md",
+        effectiveTools: [],
+        effectiveSkills: [],
+        missingSkills: [],
+      },
+    ]);
+
+    act(() =>
+      configurationHandlers.onEvent({
+        type: "config.updated",
+        generation: 2,
+        agentsChanged: true,
+        modelsChanged: false,
+      }),
+    );
+
+    expect(await screen.findByRole("button", { name: "Configure reviewer" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Configure Search" })).toBeNull();
   });
 
   it("restores a work route by opening the persisted session on refresh", async () => {

@@ -1,15 +1,32 @@
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
-import type { SessionTreeNode } from "@earendil-works/pi-coding-agent";
-import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import type {
+  AgentSessionEvent,
+  ModelRuntime,
+  SessionTreeNode,
+  SettingsManager,
+} from "@earendil-works/pi-coding-agent";
 import { runCleanupSteps } from "../runtime/cleanup";
 import { toJsonSessionEvent } from "../runtime/json-session-event";
 import { applyRuntimeSettingsDefaults } from "../runtime/settings-defaults";
 import { configureBatchedSteering, type RuntimeSteeringSession } from "../runtime/steering-mode";
+import {
+  createAgentRuntimeBinding,
+  type AgentRuntimeBinding,
+  type AgentRuntimeBindingSession,
+  type AgentRuntimeModelRuntime,
+} from "../runtime/agent-runtime-binding";
+import { createSessionSettingsFacade } from "../runtime/session-settings-facade";
+import {
+  ConfigurationUnavailableError,
+  type LiveConfiguration,
+} from "../runtime/live-configuration";
 import type { AgentConfig } from "../subagent/agents";
 import type { CoordinatorSessionManager, SubagentCoordinator } from "../subagent/coordinator";
 import { AGENT_STATUS_TYPE } from "../subagent/notifications";
 import type { SubagentSupervisor, SupervisableAgentSession } from "../subagent/supervisor";
+
+const SAFE_STOP_ABORT_ERROR = "Session stop could not abort active work. Retry stop.";
 
 export interface StartSessionOptions {
   cwd: string;
@@ -50,6 +67,7 @@ export interface InProcessAgentSession extends RuntimeSteeringSession {
   readonly sessionId: string;
   readonly sessionName: string | undefined;
   readonly isStreaming: boolean;
+  readonly isIdle: boolean;
   readonly isCompacting: boolean;
   readonly thinkingLevel: ThinkingLevel;
   readonly model: Model<any> | undefined;
@@ -96,13 +114,108 @@ export interface BindableAgentSession extends InProcessAgentSession {
   reload(): Promise<void>;
 }
 
+class RetryableAgentSessionCreationError extends Error {
+  constructor(
+    readonly originalError: unknown,
+    readonly retryCleanup: () => Promise<void>,
+    cleanupError: unknown,
+  ) {
+    super(
+      originalError instanceof Error ? originalError.message : "AgentSession creation failed",
+      { cause: cleanupError },
+    );
+    this.name = "RetryableAgentSessionCreationError";
+  }
+}
+
 export interface ManagedAgentSession {
   session: BindableAgentSession;
   coordinator: SubagentCoordinator;
   supervisor: SubagentSupervisor;
+  binding: AgentRuntimeBinding;
 }
 
 export type AgentSessionCreator = (options: StartSessionOptions) => Promise<ManagedAgentSession>;
+
+function createRuntimeSetupCleanup(
+  session: Pick<InProcessAgentSession, "dispose"> | undefined,
+  supervisor: Pick<SubagentSupervisor, "dispose"> | undefined,
+  binding: Pick<AgentRuntimeBinding, "dispose">,
+  coordinatorUnsubscribe?: () => void,
+  sessionUnsubscribe?: () => void,
+): () => Promise<void> {
+  let supervisorDisposed = supervisor === undefined;
+  let coordinatorUnsubscribed = coordinatorUnsubscribe === undefined;
+  let sessionUnsubscribed = sessionUnsubscribe === undefined;
+  let sessionDisposed = session === undefined;
+  let bindingDisposed = false;
+  return async () => {
+    await runCleanupSteps([
+      async () => {
+        if (supervisorDisposed) return;
+        await supervisor!.dispose();
+        supervisorDisposed = true;
+      },
+      () => {
+        if (coordinatorUnsubscribed) return;
+        coordinatorUnsubscribe!();
+        coordinatorUnsubscribed = true;
+      },
+      () => {
+        if (sessionUnsubscribed) return;
+        sessionUnsubscribe!();
+        sessionUnsubscribed = true;
+      },
+      () => {
+        if (sessionDisposed) return;
+        session!.dispose();
+        sessionDisposed = true;
+      },
+      async () => {
+        if (!sessionDisposed || bindingDisposed) return;
+        await binding.dispose();
+        bindingDisposed = true;
+      },
+    ], "Paper Assistant runtime setup cleanup failed.");
+  };
+}
+
+function combineSetupErrors(originalError: unknown, cleanupError: unknown): AggregateError {
+  const failures: unknown[] = [];
+  const append = (error: unknown): void => {
+    if (error instanceof AggregateError) {
+      for (const nested of error.errors) append(nested);
+      return;
+    }
+    if (!failures.some((failure) => Object.is(failure, error))) failures.push(error);
+  };
+  append(originalError);
+  append(cleanupError);
+  return new AggregateError(
+    failures,
+    `${originalError instanceof Error ? originalError.message : "AgentSession creation failed"}; runtime cleanup failed.`,
+  );
+}
+
+function createBindingSession(session: BindableAgentSession): AgentRuntimeBindingSession {
+  return {
+    get isIdle() {
+      return session.isIdle;
+    },
+    get model() {
+      return session.model;
+    },
+    get thinkingLevel() {
+      return session.thinkingLevel;
+    },
+    async reload() {
+      await session.reload();
+      configureBatchedSteering(session);
+    },
+    setModel: (model) => session.setModel(model),
+    setThinkingLevel: (level) => session.setThinkingLevel(level),
+  };
+}
 
 interface ResourceLoaderLike {
   reload(options?: { resolveProjectTrust?: () => Promise<boolean> }): Promise<void>;
@@ -110,6 +223,7 @@ interface ResourceLoaderLike {
 
 export interface PiRuntimeDependencies {
   agentDir: string;
+  liveConfiguration: LiveConfiguration;
   createSessionManager(cwd: string): CoordinatorSessionManager;
   openSessionManager(path: string): CoordinatorSessionManager;
   createCoordinator(sessionManager: CoordinatorSessionManager): SubagentCoordinator;
@@ -118,6 +232,7 @@ export interface PiRuntimeDependencies {
   createExtensionFactories(runtime: {
     coordinator: SubagentCoordinator;
     supervisor: SubagentSupervisor;
+    binding: AgentRuntimeBinding;
   }): unknown[];
   createSettingsManager(cwd: string, agentDir: string): unknown;
   createModelRuntime(agentDir: string): Promise<unknown>;
@@ -128,12 +243,16 @@ export interface PiRuntimeDependencies {
     extensionFactories: unknown[];
     noSkills: boolean;
     additionalSkillPaths: string[];
-    appendSystemPrompt: string[];
+    appendSystemPromptOverride(base: string[]): string[];
   }): ResourceLoaderLike;
   createAgentSession(options: Record<string, unknown>): Promise<{ session: BindableAgentSession }>;
-  resolveAssistant(cwd: string, agentDir: string): Promise<AgentConfig>;
-  resolveModel(assistant: AgentConfig, modelRuntime: unknown): Promise<Model<any> | undefined>;
-  resolveSkillPaths(assistant: AgentConfig, cwd: string, agentDir: string): Promise<string[]>;
+  resolveAutomaticModel(options: {
+    cwd: string;
+    agentDir: string;
+    modelRuntime: unknown;
+    settingsManager: unknown;
+  }): Promise<Model<any> | undefined>;
+  resolveSkillPaths(agent: AgentConfig, cwd: string, agentDir: string, settingsManager: unknown): string[];
 }
 
 export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentSessionCreator {
@@ -142,26 +261,47 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
       ? deps.openSessionManager(options.sessionPath)
       : deps.createSessionManager(options.cwd);
     const coordinator = deps.createCoordinator(sessionManager);
-    await deps.recoverSubagentTree({ coordinator, expectedCwd: options.cwd });
-    const supervisor = deps.createDirectChildSupervisor(coordinator);
+    const settingsManager = createSessionSettingsFacade(
+      deps.createSettingsManager(options.cwd, deps.agentDir) as object,
+    );
+    const binding = createAgentRuntimeBinding({
+      live: deps.liveConfiguration,
+      agentName: "paper-assistant",
+      cwd: options.cwd,
+      createModelRuntime: async () =>
+        await deps.createModelRuntime(deps.agentDir) as AgentRuntimeModelRuntime,
+      resolveAutomaticModel: (modelRuntime) => deps.resolveAutomaticModel({
+        cwd: options.cwd,
+        agentDir: deps.agentDir,
+        modelRuntime,
+        settingsManager,
+      }),
+      resolveSkillPaths: (agent) => deps.resolveSkillPaths(
+        agent,
+        options.cwd,
+        deps.agentDir,
+        settingsManager,
+      ),
+    });
+    let supervisor: SubagentSupervisor | undefined;
     let session: BindableAgentSession | undefined;
     try {
-      const extensionFactories = deps.createExtensionFactories({ coordinator, supervisor });
-      const settingsManager = deps.createSettingsManager(options.cwd, deps.agentDir);
-      const modelRuntime = await deps.createModelRuntime(deps.agentDir);
-      const assistant = await deps.resolveAssistant(options.cwd, deps.agentDir);
-      const skillPaths = await deps.resolveSkillPaths(assistant, options.cwd, deps.agentDir);
+      await binding.ensureCurrent();
+      await deps.recoverSubagentTree({ coordinator, expectedCwd: options.cwd });
+      supervisor = deps.createDirectChildSupervisor(coordinator);
+      const modelRuntime = binding.modelRuntime();
+      const extensionFactories = deps.createExtensionFactories({ coordinator, supervisor, binding });
       const resourceLoader = deps.createResourceLoader({
         cwd: options.cwd,
         agentDir: deps.agentDir,
         settingsManager,
         extensionFactories,
         noSkills: true,
-        additionalSkillPaths: skillPaths,
-        appendSystemPrompt: assistant.systemPrompt.trim() ? [assistant.systemPrompt] : [],
+        additionalSkillPaths: [],
+        appendSystemPromptOverride: (base) => binding.appendSystemPrompt(base),
       });
       await resourceLoader.reload({ resolveProjectTrust: async () => true });
-      const model = await deps.resolveModel(assistant, modelRuntime);
+      const model = binding.model();
       const createOptions: Record<string, unknown> = {
         cwd: options.cwd,
         agentDir: deps.agentDir,
@@ -170,7 +310,7 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
         modelRuntime,
         resourceLoader,
         ...(model ? { model } : {}),
-        ...(!options.sessionPath && options.thinking ? { thinkingLevel: options.thinking } : {}),
+        thinkingLevel: binding.thinking(),
       };
       ({ session } = await deps.createAgentSession(createOptions));
       configureBatchedSteering(session);
@@ -193,13 +333,19 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
           },
         },
       });
-      return { session, coordinator, supervisor };
+      await binding.attach(createBindingSession(session));
+      return { session, coordinator, supervisor, binding };
     } catch (error) {
-      await runCleanupSteps([
-        () => { throw error; },
-        () => supervisor.dispose(),
-        () => session?.dispose(),
-      ], "Paper Assistant runtime setup cleanup failed.");
+      const retryCleanup = createRuntimeSetupCleanup(session, supervisor, binding);
+      try {
+        await retryCleanup();
+      } catch (cleanupError) {
+        throw new RetryableAgentSessionCreationError(
+          combineSetupErrors(error, cleanupError),
+          retryCleanup,
+          cleanupError,
+        );
+      }
       throw error;
     }
   };
@@ -239,23 +385,28 @@ const THINKING_LEVELS = new Set<ThinkingLevel>([
 export class PiSessionFactory implements SessionFactory {
   constructor(private readonly createAgentSession: AgentSessionCreator) {}
 
-  static async resolve(): Promise<PiSessionFactory> {
+  static async resolve(liveConfiguration?: LiveConfiguration): Promise<PiSessionFactory> {
+    if (!liveConfiguration) {
+      return new PiSessionFactory(async () => {
+        throw new ConfigurationUnavailableError();
+      });
+    }
     const { join } = await import("node:path");
     const { importPi, getAgentDir } = await import("../runtime/pi-import");
     const { bootstrapBundledResources } = await import("../bootstrap/resources");
     await bootstrapBundledResources();
     const pi = await importPi();
     const { createAssistantExtensions } = await import("../extensions");
-    const { discoverAgents, PAPER_ASSISTANT_AGENT } = await import("../subagent/agents");
     const { SubagentCoordinator } = await import("../subagent/coordinator");
     const { recoverSubagentTree } = await import("../subagent/recovery");
     const { SubagentSupervisor } = await import("../subagent/supervisor");
     const { launchStageSession } = await import("../subagent/stage-session");
+    const { resolveAgentSkillDirectories, isDotAgentsSkillEnabled } = await import("../subagent/skill-resolution");
     const { createSubagentRecoverySessionStore } = await import("./subagent-sessions");
-    const { splitModelRef } = await import("./agent-models");
     const agentDir = getAgentDir();
     const creator = createPiAgentSessionCreator({
       agentDir,
+      liveConfiguration,
       createSessionManager: (cwd) => pi.SessionManager.create(cwd),
       openSessionManager: (path) => pi.SessionManager.open(path),
       createCoordinator: (sessionManager) => new SubagentCoordinator(sessionManager),
@@ -274,39 +425,55 @@ export class PiSessionFactory implements SessionFactory {
         launchStage: launchStageSession,
       }),
       createExtensionFactories: (runtime) =>
-        createAssistantExtensions(runtime).map(({ name, factory }) => ({ name, factory })),
+        createAssistantExtensions({ ...runtime, liveConfiguration })
+          .map(({ name, factory }) => ({ name, factory })),
       createSettingsManager: (cwd, root) => applyRuntimeSettingsDefaults(pi.SettingsManager.create(cwd, root)),
       createModelRuntime: (root) =>
-        pi.ModelRuntime.create({ authPath: join(root, "auth.json"), modelsPath: join(root, "models.json") }),
+        pi.ModelRuntime.create({
+          authPath: join(root, "auth.json"),
+          modelsPath: join(root, "models.json"),
+          refreshOnCreate: false,
+        }),
       createResourceLoader: (options) =>
         new pi.DefaultResourceLoader(options as ConstructorParameters<typeof pi.DefaultResourceLoader>[0]),
       createAgentSession: async (options) => {
         const result = await pi.createAgentSession(options as Parameters<typeof pi.createAgentSession>[0]);
         return { session: result.session as unknown as BindableAgentSession };
       },
-      resolveAssistant: async (cwd) => {
-        const assistant = (await discoverAgents({ cwd, agentDir })).agents.find(
-          (agent) => agent.name === PAPER_ASSISTANT_AGENT,
-        );
-        if (!assistant) throw new Error("Missing valid Paper Assistant definition");
-        return assistant;
-      },
-      resolveModel: async (assistant, runtime) => {
-        const configured = assistant.model;
-        if (!configured) return undefined;
-        const { provider, modelId } = splitModelRef(configured);
-        return (runtime as { getModel(provider: string, modelId: string): Model<any> | undefined }).getModel(
-          provider,
-          modelId,
-        );
-      },
-      resolveSkillPaths: async (assistant, cwd) => {
-        const { resolveAgentSkillDirectories, isDotAgentsSkillEnabled } = await import("../subagent/skill-resolution");
-        const settingsManager = pi.SettingsManager.create(cwd, agentDir);
-        return resolveAgentSkillDirectories(assistant, {
+      resolveAutomaticModel: async ({ cwd, modelRuntime, settingsManager }) => {
+        const probeLoader = new pi.DefaultResourceLoader({
           cwd,
           agentDir,
-          enableDotAgentsSkill: isDotAgentsSkillEnabled(settingsManager.getGlobalSettings()),
+          settingsManager: settingsManager as SettingsManager,
+          noExtensions: true,
+          noSkills: true,
+          noPromptTemplates: true,
+          noThemes: true,
+          noContextFiles: true,
+        });
+        await probeLoader.reload({ resolveProjectTrust: async () => true });
+        const { session: probe } = await pi.createAgentSession({
+          cwd,
+          agentDir,
+          sessionManager: pi.SessionManager.inMemory(cwd),
+          settingsManager: settingsManager as SettingsManager,
+          modelRuntime: modelRuntime as ModelRuntime,
+          resourceLoader: probeLoader,
+          noTools: "all",
+        });
+        try {
+          return probe.model;
+        } finally {
+          probe.dispose();
+        }
+      },
+      resolveSkillPaths: (agent, cwd, root, settingsManager) => {
+        return resolveAgentSkillDirectories(agent, {
+          cwd,
+          agentDir: root,
+          enableDotAgentsSkill: isDotAgentsSkillEnabled(
+            (settingsManager as SettingsManager).getGlobalSettings(),
+          ),
         });
       },
     });
@@ -321,6 +488,8 @@ export class PiSessionFactory implements SessionFactory {
 class DirectSessionAdapter implements SessionAdapter {
   private managed: ManagedAgentSession | undefined;
   private session: InProcessAgentSession | undefined;
+  private binding: AgentRuntimeBinding | undefined;
+  private startCleanup: (() => Promise<void>) | undefined;
   private unsubscribe: (() => void) | undefined;
   private coordinatorUnsubscribe: (() => void) | undefined;
   private startPending = false;
@@ -341,6 +510,14 @@ class DirectSessionAdapter implements SessionAdapter {
   private coordinatorUnsubscribeComplete = false;
   private unsubscribeComplete = false;
   private sessionDisposeComplete = false;
+  private bindingDisposeComplete = false;
+  private readonly promptOperations = new Set<Promise<void>>();
+  private readonly stopAbortOperations = new Set<Promise<void>>();
+  private readonly stopAbortErrors: unknown[] = [];
+  private readonly stopAbortProgressWaiters = new Set<() => void>();
+  private stopAbortSequence = 0;
+  private stopAbortSuccessSequence = 0;
+  private stopAbortFailureSequence = 0;
   private readonly listeners = new Set<(event: unknown) => void>();
 
   constructor(
@@ -351,24 +528,66 @@ class DirectSessionAdapter implements SessionAdapter {
   async start(): Promise<void> {
     if (this.session) throw new Error("Session already started");
     if (this.stopRequested) throw new Error("Session already stopped");
+    if (this.startCleanup) {
+      await this.startCleanup();
+      this.startCleanup = undefined;
+    }
     this.startPending = true;
     try {
-      this.managed = await this.createAgentSession(this.options);
-      this.session = this.managed.session;
-      this.coordinatorUnsubscribe = this.managed.coordinator.subscribe((event) => {
-        for (const listener of this.listeners) listener(event);
-      });
-      this.unsubscribe = this.session.subscribe((event) => {
-        const agentEvent = event as AgentSessionEvent;
-        if (isHiddenStatusEvent(agentEvent)) return;
-        const jsonEvent = toJsonSessionEvent(agentEvent);
-        const publicEvent = jsonEvent.type === "agent_end"
-          ? { ...jsonEvent, messages: jsonEvent.messages.filter((message) => !isHiddenStatusMessage(message)) }
-          : jsonEvent.type === "queue_update"
-            ? { ...jsonEvent, steering: jsonEvent.steering.filter((message) => !isHiddenStatusContent(message)) }
-          : jsonEvent;
-        for (const listener of this.listeners) listener(publicEvent);
-      });
+      let created: ManagedAgentSession;
+      try {
+        created = await this.createAgentSession(this.options);
+      } catch (error) {
+        if (error instanceof RetryableAgentSessionCreationError) {
+          this.startCleanup = error.retryCleanup;
+          throw error.originalError;
+        }
+        throw error;
+      }
+      this.managed = created;
+      this.session = created.session;
+      this.binding = created.binding;
+      let coordinatorUnsubscribe: (() => void) | undefined;
+      let sessionUnsubscribe: (() => void) | undefined;
+      try {
+        coordinatorUnsubscribe = created.coordinator.subscribe((event) => {
+          for (const listener of this.listeners) listener(event);
+        });
+        sessionUnsubscribe = created.session.subscribe((event) => {
+          const agentEvent = event as AgentSessionEvent;
+          if (agentEvent.type === "agent_start" && (this.runCancellationPending || this.stopRequested)) {
+            this.requestStopAbort(created.session);
+          }
+          if (isHiddenStatusEvent(agentEvent)) return;
+          const jsonEvent = toJsonSessionEvent(agentEvent);
+          const publicEvent = jsonEvent.type === "agent_end"
+            ? { ...jsonEvent, messages: jsonEvent.messages.filter((message) => !isHiddenStatusMessage(message)) }
+            : jsonEvent.type === "queue_update"
+              ? { ...jsonEvent, steering: jsonEvent.steering.filter((message) => !isHiddenStatusContent(message)) }
+              : jsonEvent;
+          for (const listener of this.listeners) listener(publicEvent);
+        });
+      } catch (error) {
+        const retryCleanup = createRuntimeSetupCleanup(
+          created.session,
+          created.supervisor,
+          created.binding,
+          coordinatorUnsubscribe,
+          sessionUnsubscribe,
+        );
+        this.managed = undefined;
+        this.session = undefined;
+        this.binding = undefined;
+        try {
+          await retryCleanup();
+        } catch (cleanupError) {
+          this.startCleanup = retryCleanup;
+          throw combineSetupErrors(error, cleanupError);
+        }
+        throw error;
+      }
+      this.coordinatorUnsubscribe = coordinatorUnsubscribe;
+      this.unsubscribe = sessionUnsubscribe;
     } finally {
       this.startPending = false;
     }
@@ -379,11 +598,12 @@ class DirectSessionAdapter implements SessionAdapter {
     if (this.stopPromise) return this.stopPromise;
     this.stopRequested = true;
     const session = this.session;
-    if (!session) {
+    const supervisor = this.managed?.supervisor;
+    const binding = this.binding;
+    if (!session && !binding && !this.startCleanup) {
       this.stopped = true;
       return;
     }
-    const supervisor = this.managed?.supervisor;
     this.stopPending = true;
     let tracked!: Promise<void>;
     tracked = runCleanupSteps([
@@ -396,7 +616,7 @@ class DirectSessionAdapter implements SessionAdapter {
           // Terminal teardown retries every ownership step below.
         }
       },
-      () => this.cleanupTree("Paper Assistant session stopped."),
+      () => session ? this.cleanupTree("Paper Assistant session stopped.") : undefined,
       async () => {
         if (!supervisor || this.supervisorDisposeComplete) return;
         await supervisor.dispose();
@@ -414,15 +634,31 @@ class DirectSessionAdapter implements SessionAdapter {
         this.unsubscribe = undefined;
         this.unsubscribeComplete = true;
       },
+      async () => {
+        if (!this.startCleanup) return;
+        await this.startCleanup();
+        this.startCleanup = undefined;
+      },
       () => {
-        if (this.sessionDisposeComplete) return;
+        if (!session || this.sessionDisposeComplete) return;
         session.dispose();
         this.sessionDisposeComplete = true;
+      },
+      async () => {
+        if (this.bindingDisposeComplete) return;
+        if (!binding) {
+          this.bindingDisposeComplete = true;
+          return;
+        }
+        if (session && !this.sessionDisposeComplete) return;
+        await binding.dispose();
+        this.bindingDisposeComplete = true;
       },
     ], "Paper Assistant runtime cleanup failed.").then(
       () => {
         this.stopped = true;
         this.session = undefined;
+        this.binding = undefined;
         this.managed = undefined;
       },
       (error) => {
@@ -444,35 +680,47 @@ class DirectSessionAdapter implements SessionAdapter {
     // the Web POST pending for the run's entire duration and disable the
     // composer. Preflight failures reject through the prompt promise.
     const session = this.requiredSession();
+    const binding = this.requiredBinding();
     let accepted = false;
-    await new Promise<void>((resolve, reject) => {
-      void session
-        .prompt(message, {
+    let resolveAccepted!: () => void;
+    let rejectAccepted!: (error: Error) => void;
+    const acceptedPromise = new Promise<void>((resolve, reject) => {
+      resolveAccepted = resolve;
+      rejectAccepted = reject;
+    });
+    const operation = (async () => {
+      try {
+        await binding.ensureCurrent();
+        if (this.stopRequested) throw new Error("Session has stopped");
+        await session.prompt(message, {
           streamingBehavior: "steer",
           ...options,
           preflightResult: (didSucceed) => {
-            if (accepted) return;
-            if (didSucceed) {
+            if (!accepted && didSucceed) {
               accepted = true;
-              resolve();
+              resolveAccepted();
             }
           },
-        })
-        .then(() => {
-          // Defensive: a prompt that settles without a preflight callback (e.g.
-          // the run ended before acceptance) is treated as accepted rather than
-          // leaving the HTTP request pending forever.
-          if (!accepted) {
-            accepted = true;
-            resolve();
-          }
-        })
-        .catch((error: unknown) => {
-          if (accepted) return;
-          accepted = true;
-          reject(error instanceof Error ? error : new Error(String(error)));
         });
+        // Defensive: a prompt that settles without a preflight callback (e.g.
+        // an extension command) is treated as accepted rather than leaving the
+        // HTTP request pending forever.
+        if (!accepted) {
+          accepted = true;
+          resolveAccepted();
+        }
+      } catch (error) {
+        if (!accepted) {
+          accepted = true;
+          rejectAccepted(error instanceof Error ? error : new Error(String(error)));
+        }
+      }
+    })();
+    this.promptOperations.add(operation);
+    void operation.finally(() => {
+      this.promptOperations.delete(operation);
     });
+    await acceptedPromise;
   }
 
   abort(): Promise<void> {
@@ -486,7 +734,7 @@ class DirectSessionAdapter implements SessionAdapter {
     tracked = runCleanupSteps([
       () => managed.coordinator.beginCancellation(),
       () => session.clearQueue(),
-      () => session.abort(),
+      () => this.abortSessionAndSettlePrompts(session),
       () => managed.supervisor.cancelAll("Paper Assistant stopped."),
     ], "Paper Assistant run cancellation failed.")
       .then(() => managed.coordinator.finishCancellation())
@@ -567,7 +815,14 @@ class DirectSessionAdapter implements SessionAdapter {
   }
 
   hasBackgroundWork(): boolean {
-    if (this.startPending || this.runCancellationPending || this.treeCleanupPending || this.stopPending) return true;
+    if (
+      this.startPending
+      || this.startCleanup !== undefined
+      || this.promptOperations.size > 0
+      || this.runCancellationPending
+      || this.treeCleanupPending
+      || this.stopPending
+    ) return true;
     const supervisor = this.managed?.supervisor;
     if (!supervisor) return false;
     try {
@@ -581,6 +836,12 @@ class DirectSessionAdapter implements SessionAdapter {
     if (!this.session) throw new Error("Session has not started");
     if (this.stopRequested) throw new Error("Session has stopped");
     return this.session;
+  }
+
+  private requiredBinding(): AgentRuntimeBinding {
+    if (!this.binding) throw new Error("Session has not started");
+    if (this.stopRequested) throw new Error("Session has stopped");
+    return this.binding;
   }
 
   private cleanupTree(reason: string): Promise<void> {
@@ -604,7 +865,7 @@ class DirectSessionAdapter implements SessionAdapter {
       },
       async () => {
         if (this.sessionAbortComplete) return;
-        await session.abort();
+        await this.abortSessionAndSettlePrompts(session);
         this.sessionAbortComplete = true;
       },
       async () => {
@@ -625,6 +886,72 @@ class DirectSessionAdapter implements SessionAdapter {
     });
     this.treeCleanupPromise = tracked;
     return tracked;
+  }
+
+  private async abortSessionAndSettlePrompts(session: InProcessAgentSession): Promise<void> {
+    this.requestStopAbort(session);
+    while (this.promptOperations.size > 0) {
+      while (this.stopAbortOperations.size > 0) {
+        await Promise.allSettled([...this.stopAbortOperations]);
+      }
+      this.throwIfStopAbortFailed();
+      if (this.promptOperations.size > 0) await this.waitForStopProgress();
+    }
+    while (this.stopAbortOperations.size > 0) {
+      await Promise.allSettled([...this.stopAbortOperations]);
+    }
+    this.throwIfStopAbortFailed();
+    this.stopAbortErrors.splice(0);
+  }
+
+  private requestStopAbort(session: InProcessAgentSession): void {
+    const sequence = ++this.stopAbortSequence;
+    let operation: Promise<void>;
+    try {
+      operation = session.abort();
+    } catch (error) {
+      this.stopAbortFailureSequence = Math.max(this.stopAbortFailureSequence, sequence);
+      this.stopAbortErrors.push(error);
+      for (const settle of [...this.stopAbortProgressWaiters]) settle();
+      return;
+    }
+    this.stopAbortOperations.add(operation);
+    void operation
+      .then(() => {
+        this.stopAbortSuccessSequence = Math.max(this.stopAbortSuccessSequence, sequence);
+      }, (error: unknown) => {
+        this.stopAbortFailureSequence = Math.max(this.stopAbortFailureSequence, sequence);
+        this.stopAbortErrors.push(error);
+      })
+      .finally(() => {
+        this.stopAbortOperations.delete(operation);
+        for (const settle of [...this.stopAbortProgressWaiters]) settle();
+      });
+  }
+
+  private throwIfStopAbortFailed(): void {
+    if (this.stopAbortFailureSequence <= this.stopAbortSuccessSequence) return;
+    const failureCount = Math.max(1, this.stopAbortErrors.splice(0).length);
+    if (failureCount === 1) throw new Error(SAFE_STOP_ABORT_ERROR);
+    throw new AggregateError(
+      Array.from({ length: failureCount }, () => new Error(SAFE_STOP_ABORT_ERROR)),
+      SAFE_STOP_ABORT_ERROR,
+    );
+  }
+
+  private waitForStopProgress(): Promise<void> {
+    const prompts = [...this.promptOperations];
+    return new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        this.stopAbortProgressWaiters.delete(finish);
+        resolve();
+      };
+      this.stopAbortProgressWaiters.add(finish);
+      void Promise.all(prompts).then(finish, finish);
+    });
   }
 }
 

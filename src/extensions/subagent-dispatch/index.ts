@@ -1,52 +1,71 @@
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
-import { createSubagentTool, formatSubagentDescription } from "../../subagent/tool";
-import { discoverAgents, PAPER_ASSISTANT_AGENT } from "../../subagent/agents";
-import type { AgentCatalog, SubagentCoordinator } from "../../subagent/coordinator";
-import type { SubagentSupervisor } from "../../subagent/supervisor";
+import type { AgentRuntimeBinding } from "../../runtime/agent-runtime-binding";
+import type { LiveConfiguration } from "../../runtime/live-configuration";
+import type { SubagentCoordinator } from "../../subagent/coordinator";
 import {
-  createPaperAssistantConfigResolver,
-  type PaperAssistantConfigResolverOptions,
-} from "../pa-config";
+  AgentConfigurationChangedError,
+  filterAgentsByAllowlist,
+  withCurrentAgentCatalog,
+} from "../../subagent/dispatch-authorization";
+import {
+  createSubagentTool,
+  formatSubagentDescription,
+} from "../../subagent/tool";
+import type { SubagentSupervisor } from "../../subagent/supervisor";
 
 /**
  * ADR-063: atomic extension registering the `subagent` dispatch tool for the
  * Paper Assistant runtime. Each extension instance closes over the coordinator
  * and direct-child supervisor owned by one root AgentSession.
  */
-export interface SubagentDispatchExtensionOptions extends PaperAssistantConfigResolverOptions {
+export interface SubagentDispatchExtensionOptions {
+  binding: AgentRuntimeBinding;
+  liveConfiguration: Pick<LiveConfiguration, "generation" | "synchronize" | "isCurrent" | "resolveAgents" | "subscribe">;
   coordinator: SubagentCoordinator;
   supervisor: SubagentSupervisor;
 }
 
+/** Paper Assistant dispatch follows the accepted caller row and target catalog. */
 export function createSubagentDispatchExtension(options: SubagentDispatchExtensionOptions): InlineExtension {
-  return async (pi) => {
-    const resolver = createPaperAssistantConfigResolver(options);
-    const resolveCatalog = async (cwd: string): Promise<{ catalog: AgentCatalog; leaf: boolean }> => {
-      const config = await resolver.resolve(cwd);
-      const { agents } = await discoverAgents({
-        cwd,
-        agentDir: resolver.agentDir,
-        bundledAgentsDir: resolver.bundledAgentsDir,
-        bundledSkillsDir: resolver.bundledSkillsDir,
-        homeDir: resolver.homeDir,
-      });
-      const all = agents;
-      const allowed = config.subagents === undefined ? undefined : new Set(config.subagents);
-      const available = all.filter((agent) =>
-        agent.enabled
-        && agent.name !== PAPER_ASSISTANT_AGENT
-        && (allowed === undefined || allowed.has(agent.name)));
-      return { catalog: { all, available }, leaf: config.subagents?.length === 0 };
+  return (pi) => {
+    const callerAgent = options.binding.current().name;
+    const makeTool = (available: readonly string[]) => createSubagentTool({
+      coordinator: options.coordinator,
+      supervisor: options.supervisor,
+      liveConfiguration: options.liveConfiguration,
+      callerAgent,
+      description: formatSubagentDescription(available),
+    });
+    const setDispatchActive = (enabled: boolean) => {
+      const active = pi.getActiveTools();
+      const next = enabled
+        ? [...new Set([...active, "subagent"])]
+        : active.filter((name) => name !== "subagent");
+      if (next.length !== active.length || next.some((name, index) => name !== active[index])) {
+        pi.setActiveTools(next);
+      }
     };
     pi.on("session_start", async (_event, ctx) => {
-      const { catalog, leaf } = await resolveCatalog(ctx.cwd);
-      if (leaf) return;
-      pi.registerTool(createSubagentTool({
-        coordinator: options.coordinator,
-        supervisor: options.supervisor,
-        catalog,
-        description: formatSubagentDescription(catalog.available.map((agent) => agent.name)),
-      }));
+      setDispatchActive(false);
+      try {
+        await withCurrentAgentCatalog(options.liveConfiguration, ctx.cwd, ({ generation, agents }) => {
+          if (options.binding.generation() !== generation) return;
+          const caller = options.binding.current();
+          const available = filterAgentsByAllowlist(agents, caller.subagents, callerAgent);
+          const canDispatch = caller.enabled && caller.subagents?.length !== 0;
+          if (
+            options.binding.generation() !== generation ||
+            options.liveConfiguration.generation !== generation
+          ) return;
+          if (canDispatch) pi.registerTool(makeTool(available.map((agent) => agent.name)));
+          setDispatchActive(canDispatch && (caller.tools === undefined || caller.tools.includes("subagent")));
+        }, { maxGenerationRetries: 0 });
+      } catch (error) {
+        if (error instanceof AgentConfigurationChangedError) return;
+        throw error;
+      }
     });
   };
 }
+
+export default createSubagentDispatchExtension;

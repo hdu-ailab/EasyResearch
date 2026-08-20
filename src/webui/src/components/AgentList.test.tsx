@@ -1,265 +1,204 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { AgentDto } from "../../../web/contracts";
 import * as api from "../api";
 import { AgentList } from "./AgentList";
 
 vi.mock("../api", () => ({
-  clearAgentOverrides: vi.fn(),
-  getEffectiveModels: vi.fn(),
-  getEffectiveThinking: vi.fn(),
   listAgents: vi.fn(),
   listModels: vi.fn(),
-  setAgentModel: vi.fn(),
-  setAgentThinking: vi.fn(),
+  patchAgent: vi.fn(),
 }));
 
+const baseAgents: AgentDto[] = [
+  {
+    name: "paper-assistant",
+    description: "Coordinates work",
+    enabled: true,
+    builtin: true,
+    source: "bundled",
+    filePath: "paper-assistant.md",
+    effectiveTools: [],
+    effectiveSkills: [],
+    missingSkills: [],
+  },
+  {
+    name: "search",
+    description: "Finds papers",
+    enabled: true,
+    builtin: true,
+    source: "global",
+    filePath: "/agent/agents/search.md",
+    model: "custom/model",
+    thinking: "low",
+    effectiveTools: ["web-search"],
+    effectiveSkills: ["paper-search"],
+    missingSkills: [],
+  },
+];
+
+const props = {
+  cwd: "/p",
+  statusByAgent: { "paper-assistant": "idle", search: "idle" } as const,
+  configurationGeneration: 1,
+  configurationError: null,
+};
+
 beforeEach(() => {
-  vi.mocked(api.clearAgentOverrides).mockReset();
-  vi.mocked(api.listAgents).mockReset();
-  vi.mocked(api.listModels).mockReset();
-  vi.mocked(api.getEffectiveModels).mockReset();
-  vi.mocked(api.getEffectiveThinking).mockReset();
-  vi.mocked(api.setAgentModel).mockReset();
-  vi.mocked(api.setAgentThinking).mockReset();
-  vi.mocked(api.listAgents).mockResolvedValue([
-    {
-      name: "paper-assistant",
-      description: "Coordinates work",
-      enabled: true,
-      builtin: true,
-      source: "bundled",
-      filePath: "paper-assistant.md",
-      effectiveTools: [],
-      effectiveSkills: [],
-      missingSkills: [],
-    },
-    {
-      name: "search",
-      description: "Finds papers",
-      enabled: true,
-      builtin: true,
-      source: "bundled",
-      filePath: "search.md",
-      effectiveTools: [],
-      effectiveSkills: [],
-      missingSkills: [],
-    },
-  ]);
-  vi.mocked(api.listModels).mockResolvedValue([
-    { provider: "openai", id: "gpt-4o", reasoning: true, thinkingLevelMap: { xhigh: null, max: null } },
-  ]);
-  vi.mocked(api.getEffectiveModels).mockResolvedValue([
-    { name: "paper-assistant", model: "openai/gpt-4o", source: "inherit" },
-    { name: "search", model: "custom/model", source: "override" },
-  ]);
-  vi.mocked(api.getEffectiveThinking).mockResolvedValue([
-    { name: "paper-assistant", thinking: "high", source: "override" },
-    { name: "search", thinking: "low", source: "default" },
-  ]);
-  vi.mocked(api.setAgentModel).mockResolvedValue(undefined);
-  vi.mocked(api.setAgentThinking).mockResolvedValue(undefined);
-  vi.mocked(api.clearAgentOverrides).mockResolvedValue(undefined);
+  vi.mocked(api.listAgents).mockReset().mockResolvedValue(baseAgents);
+  vi.mocked(api.listModels)
+    .mockReset()
+    .mockResolvedValue([
+      { provider: "openai", id: "gpt-4o", reasoning: true, thinkingLevelMap: { xhigh: null, max: null } },
+    ]);
+  vi.mocked(api.patchAgent)
+    .mockReset()
+    .mockImplementation(async (name, patch) => {
+      const current = baseAgents.find((agent) => agent.name === name)!;
+      const next = { ...current };
+      if (patch.model === null) delete next.model;
+      else if (patch.model !== undefined) next.model = patch.model;
+      if (patch.thinking === null) delete next.thinking;
+      else if (patch.thinking !== undefined) next.thinking = patch.thinking;
+      return next;
+    });
 });
 
 describe("AgentList", () => {
-  it("clears every session agent override and refreshes effective models on follow global settings", async () => {
-    const user = userEvent.setup();
-    render(<AgentList cwd="/p" statusByAgent={{ "paper-assistant": "idle", search: "idle" }} sessionId="s1" />);
-    await screen.findByText("Paper Assistant");
-
-    await user.click(screen.getByRole("button", { name: "Follow global settings" }));
-
-    await waitFor(() => expect(api.clearAgentOverrides).toHaveBeenCalledWith("s1"));
-    expect(api.getEffectiveModels).toHaveBeenCalledWith("s1");
-    expect(api.getEffectiveThinking).toHaveBeenCalledWith("s1");
-  });
-
-  it("loads the effective roster for the exact session cwd", async () => {
-    vi.mocked(api.listAgents).mockImplementation(async (cwd) =>
-      cwd === "/papers/project"
-        ? [
-            {
-              name: "project-reviewer",
-              description: "Project-only reviewer",
-              enabled: true,
-              builtin: false,
-              source: "project",
-              filePath: "/papers/project/.easyresearch/agents/project-reviewer.md",
-              effectiveTools: [],
-              effectiveSkills: [],
-              missingSkills: [],
-            },
-          ]
-        : [],
-    );
-
-    render(<AgentList cwd="/papers/project" statusByAgent={{ "project-reviewer": "idle" }} sessionId="s1" />);
-
-    expect(await screen.findByText("project-reviewer")).toBeVisible();
-    expect(screen.getByText("Project-only reviewer")).toBeVisible();
-  });
-
-  it("renders the Paper Assistant card and preserves an effective model absent from the catalog", async () => {
-    render(<AgentList cwd="/p" statusByAgent={{ "paper-assistant": "idle", search: "working" }} sessionId="s1" />);
+  it("renders global Agent fields for the exact cwd and has no session override action", async () => {
+    render(<AgentList {...props} />);
 
     expect(await screen.findByText("Paper Assistant")).toBeVisible();
     expect(api.listAgents).toHaveBeenCalledWith("/p");
-    expect(screen.queryByRole("switch")).toBeNull();
-    expect(screen.getAllByRole("combobox")[2]).toHaveTextContent("custom/model");
+    expect(screen.queryByRole("button", { name: /follow global/i })).toBeNull();
+    const search = screen.getByText("Search").closest<HTMLElement>("div.mt-3")!;
+    expect(within(search).getByRole("combobox", { name: "Select model" })).toHaveTextContent("custom/model");
+    expect(within(search).getByRole("combobox", { name: /select thinking/i })).toHaveValue("low");
   });
 
-  it("reloads the effective roster when the project cwd changes", async () => {
-    const { rerender } = render(
-      <AgentList cwd="/p" statusByAgent={{ "paper-assistant": "idle", search: "idle" }} sessionId="s1" />,
-    );
-    await screen.findByText("Paper Assistant");
-
-    rerender(<AgentList cwd="/other" statusByAgent={{ "paper-assistant": "idle", search: "idle" }} sessionId="s1" />);
-
-    await waitFor(() => expect(api.listAgents).toHaveBeenCalledWith("/other"));
-  });
-
-  it("sends null when a stage agent is reset to the default model", async () => {
+  it("patches the same global Agent model without a session id", async () => {
     const user = userEvent.setup();
-    render(<AgentList cwd="/p" statusByAgent={{ "paper-assistant": "idle", search: "idle" }} sessionId="s1" />);
+    render(<AgentList {...props} />);
+    const search = (await screen.findByText("Search")).closest<HTMLElement>("div.mt-3")!;
+    const model = within(search).getByRole("combobox", { name: "Select model" });
 
-    const searchCard = (await screen.findByText("Search")).closest<HTMLElement>("div.mt-3")!;
-    const searchModel = within(searchCard).getByRole("combobox", { name: "Select model" });
-    await user.click(searchModel);
-    await user.click(screen.getByRole("option", { name: "Default model" }));
+    await user.click(model);
+    await user.click(screen.getByRole("option", { name: "inherit (Paper Assistant's model)" }));
 
-    await waitFor(() => expect(api.setAgentModel).toHaveBeenCalledWith("s1", "search", null));
+    await waitFor(() => expect(api.patchAgent).toHaveBeenCalledWith("search", { model: null }));
   });
 
-  it("shows the effective thinking level per card from the effective-thinking endpoint", async () => {
-    render(<AgentList cwd="/p" statusByAgent={{ "paper-assistant": "idle", search: "idle" }} sessionId="s1" />);
-
-    expect(await screen.findByDisplayValue("high")).toBeVisible();
-    const searchCard = (await screen.findByText("Search")).closest<HTMLElement>("div.mt-3")!;
-    const searchThinking = within(searchCard).getByRole("combobox", { name: /select thinking/i }) as HTMLSelectElement;
-    expect(searchThinking.value).toBe("");
-    expect(within(searchThinking).getByText("Default (low)")).toBeTruthy();
-    expect(api.getEffectiveThinking).toHaveBeenCalledWith("s1");
-  });
-
-  it("shades the default value on the empty thinking option when the value is the default", async () => {
-    render(<AgentList cwd="/p" statusByAgent={{ "paper-assistant": "idle", search: "idle" }} sessionId="s1" />);
-
-    const searchCard = (await screen.findByText("Search")).closest<HTMLElement>("div.mt-3")!;
-    const thinking = within(searchCard).getByRole("combobox", { name: /select thinking/i });
-    const options = Array.from(thinking.querySelectorAll("option"));
-    expect(options.some((option) => option.value === "" && option.textContent === "Default (low)")).toBe(true);
-  });
-
-  it("applies a stage-agent thinking selection as a session override", async () => {
-    const user = userEvent.setup();
-    render(<AgentList cwd="/p" statusByAgent={{ "paper-assistant": "idle", search: "idle" }} sessionId="s1" />);
-
-    const searchCard = (await screen.findByText("Search")).closest<HTMLElement>("div.mt-3")!;
-    const thinking = within(searchCard).getByRole("combobox", { name: /select thinking/i });
-    await user.selectOptions(thinking, "off");
-
-    await waitFor(() => expect(api.setAgentThinking).toHaveBeenCalledWith("s1", "search", "off"));
-  });
-
-  it("clears the thinking override when the empty option is selected", async () => {
-    const user = userEvent.setup();
-    render(<AgentList cwd="/p" statusByAgent={{ "paper-assistant": "idle", search: "idle" }} sessionId="s1" />);
-
-    const thinking = await screen.findByDisplayValue("high");
-    await user.selectOptions(thinking, "");
-
-    await waitFor(() => expect(api.setAgentThinking).toHaveBeenCalledWith("s1", "paper-assistant", null));
-  });
-
-  it("keeps its header mounted when agent data fails", async () => {
-    vi.mocked(api.listAgents).mockRejectedValue(new Error("unavailable"));
-    render(<AgentList cwd="/p" statusByAgent={{ "paper-assistant": "idle" }} sessionId="s1" />);
-
-    expect(screen.getByText("Agents")).toBeVisible();
-  });
-
-  it("does not let an old session model response replace the current session", async () => {
-    const oldModels = deferred<Awaited<ReturnType<typeof api.getEffectiveModels>>>();
-    vi.mocked(api.getEffectiveModels)
-      .mockReturnValueOnce(oldModels.promise)
-      .mockResolvedValueOnce([
-        { name: "paper-assistant", model: "openai/current", source: "override" },
-        { name: "search", model: "openai/current", source: "override" },
-      ]);
-    const { rerender } = render(
-      <AgentList cwd="/p" statusByAgent={{ "paper-assistant": "idle", search: "idle" }} sessionId="s1" />,
-    );
-    rerender(<AgentList cwd="/p" statusByAgent={{ "paper-assistant": "idle", search: "idle" }} sessionId="s2" />);
-    await waitFor(() => {
-      const current = screen.getAllByRole("combobox").filter((el) => el.textContent?.includes("openai/current"));
-      expect(current).toHaveLength(2);
-    });
-
-    oldModels.resolve([
-      { name: "paper-assistant", model: "openai/old", source: "override" },
-      { name: "search", model: "openai/old", source: "override" },
-    ]);
-
-    await waitFor(() => {
-      const stale = screen.getAllByRole("combobox").filter((el) => el.textContent?.includes("openai/old"));
-      expect(stale).toHaveLength(0);
-    });
-  });
-
-  it("does not leave the previous session roster interactive when the current load fails", async () => {
-    const { rerender } = render(
-      <AgentList cwd="/p" statusByAgent={{ "paper-assistant": "idle", search: "idle" }} sessionId="s1" />,
-    );
-    expect(await screen.findByText("Search")).toBeVisible();
-    expect(screen.getAllByRole("combobox")).toHaveLength(4);
-    vi.mocked(api.listAgents).mockRejectedValueOnce(new Error("current project unavailable"));
-
-    rerender(<AgentList cwd="/other" statusByAgent={{ "paper-assistant": "idle" }} sessionId="s2" />);
-
-    await waitFor(() => expect(screen.queryByText("Search")).toBeNull());
-    expect(screen.getAllByRole("combobox")).toHaveLength(2);
-    expect(screen.getAllByRole("combobox")[0]).toBeDisabled();
-    expect(screen.getAllByRole("combobox")[1]).toBeDisabled();
-    expect(screen.queryByDisplayValue("openai/gpt-4o")).toBeNull();
-  });
-
-  it("shows disabled stage agents read-only and disables their model selector", async () => {
+  it("distinguishes automatic Paper Assistant thinking from inherited stage thinking", async () => {
     vi.mocked(api.listAgents).mockResolvedValueOnce([
-      {
-        name: "paper-assistant",
-        description: "Coordinates work",
-        enabled: true,
-        builtin: true,
-        source: "bundled",
-        filePath: "paper-assistant.md",
-        effectiveTools: [],
-        effectiveSkills: [],
-        missingSkills: [],
-      },
-      {
-        name: "search",
-        description: "Finds papers",
-        enabled: false,
-        builtin: true,
-        source: "bundled",
-        filePath: "search.md",
-        effectiveTools: [],
-        effectiveSkills: [],
-        missingSkills: [],
-      },
+      baseAgents[0]!,
+      { ...baseAgents[1]!, model: undefined, thinking: undefined },
     ]);
-    render(<AgentList cwd="/p" statusByAgent={{ "paper-assistant": "idle", search: "idle" }} sessionId="s1" />);
+    render(<AgentList {...props} />);
+
+    const assistant = (await screen.findByText("Paper Assistant")).closest<HTMLElement>("div.mt-3")!;
+    const search = screen.getByText("Search").closest<HTMLElement>("div.mt-3")!;
+    expect(within(assistant).getByRole("combobox", { name: /select thinking/i })).toHaveTextContent(
+      "Automatic (highest supported)",
+    );
+    expect(within(assistant).getByRole("option", { name: "max" })).toBeTruthy();
+    expect(within(search).getByRole("combobox", { name: /select thinking/i })).toHaveTextContent(
+      "inherit (Paper Assistant's thinking)",
+    );
+    expect(within(search).getByRole("option", { name: "max" })).toBeTruthy();
+  });
+
+  it("patches global thinking and clears it to the off default", async () => {
+    const user = userEvent.setup();
+    render(<AgentList {...props} />);
+    const search = (await screen.findByText("Search")).closest<HTMLElement>("div.mt-3")!;
+    const thinking = within(search).getByRole("combobox", { name: /select thinking/i });
+
+    await user.selectOptions(thinking, "off");
+    await waitFor(() => expect(api.patchAgent).toHaveBeenCalledWith("search", { thinking: "off" }));
+    await user.selectOptions(thinking, "");
+    await waitFor(() => expect(api.patchAgent).toHaveBeenCalledWith("search", { thinking: null }));
+  });
+
+  it("refetches on a newer configuration generation and reflects added and removed Agents", async () => {
+    const reviewer: AgentDto = {
+      name: "reviewer",
+      description: "Reviews evidence",
+      enabled: true,
+      builtin: false,
+      source: "global",
+      filePath: "/agent/agents/reviewer.md",
+      effectiveTools: [],
+      effectiveSkills: [],
+      missingSkills: [],
+    };
+    const view = render(<AgentList {...props} />);
+    expect(await screen.findByText("Search")).toBeVisible();
+    vi.mocked(api.listAgents).mockResolvedValueOnce([baseAgents[0]!, reviewer]);
+
+    view.rerender(<AgentList {...props} configurationGeneration={2} />);
+
+    expect(await screen.findByText("reviewer")).toBeVisible();
+    expect(screen.queryByText("Search")).toBeNull();
+  });
+
+  it("does not let a generation-two response replace generation three", async () => {
+    const stale = deferred<AgentDto[]>();
+    const initial: AgentDto = { ...baseAgents[1]!, name: "reviewer", builtin: false, description: "Initial revision" };
+    const current: AgentDto[] = [{ ...initial, description: "Generation three" }];
+    vi.mocked(api.listAgents).mockResolvedValueOnce([initial]);
+    const view = render(<AgentList {...props} />);
+    expect(await screen.findByText("Initial revision")).toBeVisible();
+    vi.mocked(api.listAgents).mockReturnValueOnce(stale.promise).mockResolvedValueOnce(current);
+
+    view.rerender(<AgentList {...props} configurationGeneration={2} />);
+    view.rerender(<AgentList {...props} configurationGeneration={3} />);
+    expect(await screen.findByText("Generation three")).toBeVisible();
+
+    await act(async () => {
+      stale.resolve([{ ...initial, description: "Generation two" }]);
+      await stale.promise;
+    });
+    expect(screen.getByText("Generation three")).toBeVisible();
+    expect(screen.queryByText("Generation two")).toBeNull();
+  });
+
+  it("keeps last-good controls under config.error and supports manual Refresh recovery", async () => {
+    const user = userEvent.setup();
+    const view = render(<AgentList {...props} />);
+    expect(await screen.findByText("Search")).toBeVisible();
+
+    view.rerender(<AgentList {...props} configurationError="Invalid Agent configuration" />);
+    expect(screen.getByRole("alert")).toHaveTextContent("Invalid Agent configuration");
+    expect(screen.getByText("Search")).toBeVisible();
+    expect(screen.getAllByRole("combobox").length).toBeGreaterThan(0);
+
+    vi.mocked(api.listAgents).mockResolvedValueOnce([
+      { ...baseAgents[1]!, name: "reviewer", builtin: false, description: "Recovered" },
+    ]);
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(await screen.findByText("Recovered")).toBeVisible();
+  });
+
+  it("keeps disabled stage Agents read-only", async () => {
+    vi.mocked(api.listAgents).mockResolvedValueOnce([baseAgents[0]!, { ...baseAgents[1]!, enabled: false }]);
+    render(<AgentList {...props} />);
 
     const search = (await screen.findByText("Search")).closest<HTMLElement>("div.mt-3")!;
     expect(within(search).getByText("Disabled")).toBeVisible();
     expect(
       within(search)
         .getAllByRole("combobox")
-        .every((box) => (box as HTMLSelectElement).disabled),
+        .every((control) => control.hasAttribute("disabled")),
     ).toBe(true);
-    expect(screen.queryByRole("switch")).toBeNull();
+  });
+
+  it("keeps the header and Paper Assistant fallback when the first load fails", async () => {
+    vi.mocked(api.listAgents).mockRejectedValueOnce(new Error("unavailable"));
+    render(<AgentList {...props} />);
+
+    expect(screen.getByText("Agents")).toBeVisible();
+    expect(await screen.findByText("Paper Assistant")).toBeVisible();
   });
 });
 

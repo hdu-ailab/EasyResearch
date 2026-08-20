@@ -3,10 +3,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
-import type { JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { ExtensionFactory, JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createAgentDefinitionExtension } from "../extensions/agent-definition";
+import type { AgentRuntimeBinding } from "../runtime/agent-runtime-binding";
 import type { AgentConfig } from "./agents";
-import { SubagentCoordinator, type CoordinatorSessionManager, type ReservedDispatch } from "./coordinator";
+import {
+  SubagentCoordinator,
+  type CoordinatorSessionManager,
+  type ReservedDispatch,
+} from "./coordinator";
 import {
   createStageSessionLauncher,
   type StageAgentSession,
@@ -15,21 +21,28 @@ import {
 } from "./stage-session";
 import type { SubagentSupervisor } from "./supervisor";
 
-const agent: AgentConfig = {
-  name: "search",
-  description: "Search",
-  enabled: true,
-  builtin: true,
-  source: "bundled",
-  filePath: "/agents/search.md",
-  systemPrompt: "Search carefully.",
-  tools: ["read", "web-search"],
-  effectiveTools: ["read", "web-search"],
-  skills: ["paper-search"],
-  effectiveSkills: ["paper-search"],
-  missingSkills: [],
-  subagents: [],
-};
+function agentRow(name: string, overrides: Partial<AgentConfig> = {}): AgentConfig {
+  return {
+    name,
+    description: name,
+    enabled: true,
+    builtin: name !== "reviewer",
+    source: name === "reviewer" ? "global" : "bundled",
+    filePath: `/agents/${name}.md`,
+    systemPrompt: `${name} prompt`,
+    tools: ["read", "web-search"],
+    effectiveTools: ["read", "web-search"],
+    skills: ["paper-search"],
+    effectiveSkills: ["paper-search"],
+    missingSkills: [],
+    subagents: [],
+    model: "openai/gpt-test",
+    thinking: "high",
+    ...overrides,
+  };
+}
+
+const stageAgent = agentRow("search", { systemPrompt: "Search carefully." });
 
 function assistant(text: string): AgentMessage {
   return {
@@ -73,46 +86,90 @@ async function isSettled(promise: Promise<unknown>): Promise<boolean> {
 
 class MemoryCoordinatorSessionManager implements CoordinatorSessionManager {
   readonly entries: unknown[] = [];
-  private sequence = 0;
 
   getSessionId(): string {
     return "root-session";
   }
-
   getSessionFile(): string {
     return "/sessions/root.jsonl";
   }
-
   getEntries(): unknown[] {
     return this.entries;
   }
-
   appendCustomEntry(customType: string, data?: unknown): string {
-    const id = `entry-${this.sequence++}`;
+    const id = `entry-${this.entries.length}`;
     this.entries.push({ type: "custom", id, customType, data });
     return id;
   }
 }
 
+class FakeLiveConfiguration {
+  generation = 1;
+  onResolve: (() => void) | undefined;
+  resolveCalls = 0;
+  private readonly listeners = new Set<(event: any) => void>();
+
+  constructor(private rows: AgentConfig[]) {}
+
+  async synchronize(): Promise<void> {}
+  isCurrent(generation: number): boolean {
+    return generation === this.generation;
+  }
+  async resolveAgents(): Promise<AgentConfig[]> {
+    const rows = this.rows;
+    this.resolveCalls += 1;
+    this.onResolve?.();
+    return rows;
+  }
+  subscribe(listener: (event: any) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+  publish(rows: AgentConfig[]): void {
+    this.rows = rows;
+    this.generation += 1;
+    for (const listener of [...this.listeners]) {
+      listener({
+        type: "config.updated",
+        generation: this.generation,
+        agentsChanged: true,
+        modelsChanged: true,
+      });
+    }
+  }
+}
+
+function liveFor(agent: AgentConfig = stageAgent): FakeLiveConfiguration {
+  return new FakeLiveConfiguration([
+    agentRow("paper-assistant", { subagents: [agent.name] }),
+    agent,
+  ]);
+}
+
 class FakeStageSession implements StageAgentSession {
   agent = { steeringMode: "one-at-a-time" as "all" | "one-at-a-time" };
-  readonly thinkingLevel: ThinkingLevel = "high";
-  readonly model = { provider: "openai", id: "gpt-test" } as Model<any>;
+  thinkingLevel: ThinkingLevel = "high";
+  model = { provider: "openai", id: "gpt-test" } as Model<any>;
   isStreaming = false;
-  promptCalls: string[] = [];
-  activeTools: string[][] = [];
-  names: string[] = [];
+  isIdle = true;
+  readonly promptCalls: string[] = [];
+  readonly activeTools: string[][] = [];
+  readonly names: string[] = [];
+  readonly bindingCalls: unknown[] = [];
+  readonly modelCalls: Model<any>[] = [];
+  readonly thinkingCalls: ThinkingLevel[] = [];
+  readonly listeners = new Set<(event: unknown) => void>();
   abortCalls = 0;
   disposeCalls = 0;
-  disposeImpl: () => void = () => {};
   unsubscribeCalls = 0;
-  unsubscribeImpl: () => void = () => {};
-  bindError?: Error;
-  abortImpl: () => Promise<void> = async () => {};
-  promptStart?: () => void;
+  reloadCalls = 0;
   waitForIdleCalls = 0;
+  bindError?: Error;
+  promptStart?: () => void;
+  abortImpl: () => Promise<void> = async () => {};
+  disposeImpl: () => void = () => {};
+  unsubscribeImpl: () => void = () => {};
   waitForIdleImpl: () => Promise<void> = async () => {};
-  readonly listeners = new Set<(event: unknown) => void>();
 
   constructor(
     readonly sessionId: string,
@@ -128,50 +185,54 @@ class FakeStageSession implements StageAgentSession {
       this.listeners.delete(listener);
     };
   }
-
-  async bindExtensions(): Promise<void> {
+  async bindExtensions(bindings: unknown): Promise<void> {
+    this.bindingCalls.push(bindings);
     if (this.bindError) throw this.bindError;
   }
-
   setSessionName(name: string): void {
     this.names.push(name);
   }
-
   getAllTools(): Array<{ name: string }> {
     return [{ name: "read" }, { name: "web-search" }, { name: "subagent" }];
   }
-
   setActiveToolsByName(names: string[]): void {
     this.activeTools.push(names);
   }
-
+  async reload(): Promise<void> {
+    this.reloadCalls += 1;
+  }
+  async setModel(model: Model<any>): Promise<void> {
+    this.modelCalls.push(model);
+    this.model = model;
+  }
+  setThinkingLevel(level: ThinkingLevel): void {
+    this.thinkingCalls.push(level);
+    this.thinkingLevel = level;
+  }
+  async waitForIdle(): Promise<void> {
+    this.waitForIdleCalls += 1;
+    await this.waitForIdleImpl();
+  }
+  async navigateTree(): Promise<{ cancelled: boolean }> {
+    return { cancelled: false };
+  }
   prompt(message: string): Promise<void> {
     this.promptCalls.push(message);
     this.promptStart?.();
     return this.promptPromise;
   }
-
-  async waitForIdle(): Promise<void> {
-    this.waitForIdleCalls += 1;
-    await this.waitForIdleImpl();
-  }
-
+  async sendCustomMessage(): Promise<void> {}
   async abort(): Promise<void> {
     this.abortCalls += 1;
     await this.abortImpl();
   }
-
-  async sendCustomMessage(): Promise<void> {}
-
   dispose(): void {
     this.disposeCalls += 1;
     this.disposeImpl();
   }
-
   emit(event: unknown): void {
-    this.listeners.forEach((listener) => listener(event));
+    for (const listener of this.listeners) listener(event);
   }
-
   emitAssistantEndAndPersist(text = "stage complete"): void {
     this.emit({ type: "message_end", message: assistant(text) });
     writeFileSync(this.sessionFile, `${JSON.stringify({ type: "session", id: this.sessionId })}\n`);
@@ -180,33 +241,22 @@ class FakeStageSession implements StageAgentSession {
 
 class FakeDirectChildSupervisor {
   readonly attached: StageAgentSession[] = [];
-  abortReasons: string[] = [];
+  readonly abortReasons: string[] = [];
   abortImpl: () => Promise<void> = async () => {};
   waitForQuiescenceImpl: () => Promise<void> = async () => {};
-  disposeCalls = 0;
   disposeImpl: () => Promise<void> = async () => {};
+  disposeCalls = 0;
 
   attach(session: StageAgentSession): void {
     this.attached.push(session);
   }
-
-  hasRunningChildren(): boolean {
-    return false;
-  }
-
-  hasPendingNotifications(): boolean {
-    return false;
-  }
-
   waitForQuiescence(): Promise<void> {
     return this.waitForQuiescenceImpl();
   }
-
   async abortAll(reason: string): Promise<void> {
     this.abortReasons.push(reason);
     await this.abortImpl();
   }
-
   async dispose(): Promise<void> {
     this.disposeCalls += 1;
     await this.disposeImpl();
@@ -217,6 +267,7 @@ interface DependencyHarness {
   dependencies: StageSessionDependencies;
   calls: Array<{ name: string; value?: unknown }>;
   supervisors: FakeDirectChildSupervisor[];
+  bindingDisposals: string[];
   openedManager: {
     getSessionId(): string;
     getCwd(): string;
@@ -224,9 +275,25 @@ interface DependencyHarness {
   };
 }
 
+function model(name = "model-metadata"): Model<any> {
+  return {
+    provider: "openai",
+    id: "gpt-test",
+    name,
+    api: "openai-completions",
+    baseUrl: "http://localhost.invalid",
+    reasoning: true,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 128_000,
+    maxTokens: 8_192,
+  } as Model<any>;
+}
+
 function dependencyHarness(session: FakeStageSession): DependencyHarness {
   const calls: Array<{ name: string; value?: unknown }> = [];
   const supervisors: FakeDirectChildSupervisor[] = [];
+  const bindingDisposals: string[] = [];
   const openedManager = {
     getSessionId: () => session.sessionId,
     getCwd: () => "/project",
@@ -235,6 +302,7 @@ function dependencyHarness(session: FakeStageSession): DependencyHarness {
   return {
     calls,
     supervisors,
+    bindingDisposals,
     openedManager,
     dependencies: {
       agentDir: "/agent",
@@ -251,7 +319,12 @@ function dependencyHarness(session: FakeStageSession): DependencyHarness {
         return { getGlobalSettings: () => ({}) };
       },
       createModelRuntime: async () => ({
-        getModel: (provider: string, id: string) => ({ provider, id } as Model<any>),
+        refresh: async () => ({ aborted: false, errors: new Map() }),
+        getError: () => undefined,
+        getModel: (provider: string, id: string) => provider === "openai" && id === "gpt-test" ? model() : undefined,
+        dispose: async () => {
+          bindingDisposals.push("binding");
+        },
       }),
       createResourceLoader: (options) => {
         calls.push({ name: "loader", value: options });
@@ -259,6 +332,8 @@ function dependencyHarness(session: FakeStageSession): DependencyHarness {
       },
       createAgentSession: async (options) => {
         calls.push({ name: "createSession", value: options });
+        session.model = options.model as Model<any>;
+        session.thinkingLevel = options.thinkingLevel as ThinkingLevel;
         return { session };
       },
       createDirectChildSupervisor: (coordinator) => {
@@ -267,11 +342,12 @@ function dependencyHarness(session: FakeStageSession): DependencyHarness {
         calls.push({ name: "supervisor", value: { coordinator, supervisor } });
         return supervisor as unknown as SubagentSupervisor;
       },
-      createExtensionFactories: (stageAgent, coordinator, supervisor) => [
-        { name: "stage", caller: stageAgent.name, coordinator, supervisor },
+      createExtensionFactories: ({ binding, coordinator, supervisor }) => [
+        { name: "stage", caller: binding.current().name, coordinator, supervisor },
         { name: "web-search" },
       ],
-      resolveSkillPaths: () => ["/skills/paper-search"],
+      resolveAutomaticModel: async () => undefined,
+      resolveSkillPaths: (agent) => agent.effectiveSkills.map((name) => `/skills/${name}`),
     },
   };
 }
@@ -287,16 +363,68 @@ function freshReservation(): ReservedDispatch {
   };
 }
 
-function stageOptions(coordinator: SubagentCoordinator, reservation: ReservedDispatch = freshReservation()): StageLaunchOptions {
+function stageOptions(
+  coordinator: SubagentCoordinator,
+  liveConfiguration: FakeLiveConfiguration = liveFor(),
+  reservation: ReservedDispatch = freshReservation(),
+): StageLaunchOptions {
   return {
     reservation,
-    agent,
+    agent: stageAgent,
+    callerAgent: "paper-assistant",
     task: "find papers",
     cwd: "/project",
     model: "openai/gpt-test",
     thinking: "high",
     coordinator,
+    liveConfiguration,
   };
+}
+
+class ExtensionResourceHost {
+  prompt: string[] = [];
+  skillPaths: string[] = [];
+  private readonly handlers = new Map<string, Array<(...args: any[]) => any>>();
+
+  constructor(
+    private readonly options: any,
+    private readonly session: FakeStageSession,
+  ) {}
+
+  async reload(): Promise<void> {
+    this.handlers.clear();
+    this.prompt = this.options.appendSystemPromptOverride(["Pi base"]);
+    for (const entry of this.options.extensionFactories as Array<{ factory: ExtensionFactory }>) {
+      await entry.factory({
+        getAllTools: () => this.session.getAllTools(),
+        on: (event: string, handler: (...args: any[]) => any) => {
+          const handlers = this.handlers.get(event) ?? [];
+          handlers.push(handler);
+          this.handlers.set(event, handlers);
+        },
+        setActiveTools: (names: string[]) => this.session.setActiveToolsByName(names),
+      } as never);
+    }
+  }
+
+  async emit(event: string, payload: unknown, context: unknown): Promise<unknown[]> {
+    const results: unknown[] = [];
+    for (const handler of [...(this.handlers.get(event) ?? [])]) results.push(await handler(payload, context));
+    return results;
+  }
+
+  async discover(reason: "startup" | "reload"): Promise<void> {
+    const results = await this.emit(
+      "resources_discover",
+      { cwd: "/project", reason },
+      { cwd: "/project" },
+    );
+    this.skillPaths = results.flatMap((result) =>
+      result && typeof result === "object" && Array.isArray((result as { skillPaths?: unknown }).skillPaths)
+        ? (result as { skillPaths: string[] }).skillPaths
+        : []
+    );
+  }
 }
 
 let root: string;
@@ -310,19 +438,18 @@ afterEach(() => {
 });
 
 describe("createStageSessionLauncher", () => {
-  it("returns a handle whose materialization can resolve before completion", async () => {
+  it("materializes before completion and binds live runtime resources to the supervisor-owned session", async () => {
     const prompt = deferred<void>();
     const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
     const harness = dependencyHarness(session);
     const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
-    const launcher = createStageSessionLauncher(harness.dependencies);
+    const handle = await createStageSessionLauncher(harness.dependencies)(stageOptions(coordinator));
 
-    const handle = await launcher(stageOptions(coordinator));
     session.emitAssistantEndAndPersist();
     await handle.materialized;
-
     expect(await isSettled(handle.completion)).toBe(false);
     prompt.resolve();
+
     await expect(handle.completion).resolves.toMatchObject({
       exitCode: 0,
       agentId: "search_0",
@@ -331,41 +458,38 @@ describe("createStageSessionLauncher", () => {
       stopReason: "stop",
       usage: { input: 2, output: 3, cacheRead: 4, cacheWrite: 5, cost: 0.25, contextTokens: 14, turns: 1 },
     });
-    expect(handle.agentId).toBe("search_0");
-    expect(handle.childSessionId).toBe("child-1");
-    expect(handle.sessionPath).toBe(session.sessionFile);
-
+    expect(handle).toMatchObject({ agentId: "search_0", childSessionId: "child-1", sessionPath: session.sessionFile });
     expect(harness.calls.find((call) => call.name === "createManager")?.value).toBe("/project");
-    expect(harness.calls.find((call) => call.name === "loader")?.value).toMatchObject({
-      cwd: "/project",
-      noSkills: true,
-      additionalSkillPaths: ["/skills/paper-search"],
-      appendSystemPrompt: ["Search carefully."],
-      extensionFactories: [
-        { name: "stage", caller: "search", coordinator, supervisor: harness.supervisors[0] },
-        { name: "web-search" },
-      ],
-    });
+    const loader = harness.calls.find((call) => call.name === "loader")?.value as {
+      additionalSkillPaths: string[];
+      appendSystemPromptOverride(base: string[]): string[];
+      extensionFactories: unknown[];
+    };
+    expect(loader.additionalSkillPaths).toEqual([]);
+    expect(loader.appendSystemPromptOverride(["Pi base"])).toEqual(["Pi base", "Search carefully."]);
+    expect(loader.extensionFactories).toEqual([
+      { name: "stage", caller: "search", coordinator, supervisor: harness.supervisors[0] },
+      { name: "web-search" },
+    ]);
     expect(harness.calls.find((call) => call.name === "createSession")?.value).toMatchObject({
       cwd: "/project",
-      tools: ["read", "web-search"],
       thinkingLevel: "high",
       model: { provider: "openai", id: "gpt-test" },
       sessionManager: { kind: "new", cwd: "/project" },
     });
+    expect(harness.calls.find((call) => call.name === "createSession")?.value).not.toHaveProperty("tools");
     expect(session.names).toEqual(["easyresearch:search"]);
     expect(session.agent.steeringMode).toBe("all");
     expect(session.promptCalls).toEqual(["Task: find papers"]);
-    expect(harness.supervisors).toHaveLength(1);
     expect(harness.supervisors[0]?.attached).toEqual([session]);
-    expect(session.disposeCalls).toBe(0);
 
     await handle.dispose();
     expect(harness.supervisors[0]?.disposeCalls).toBe(1);
     expect(session.disposeCalls).toBe(1);
+    expect(harness.bindingDisposals).toEqual(["binding"]);
   });
 
-  it("waits for a nested completion-triggered turn to become idle before stage completion", async () => {
+  it("waits for nested quiescence and the resulting stage turn before completion", async () => {
     const prompt = deferred<void>();
     const nestedQuiescence = deferred<void>();
     const resultingTurn = deferred<void>();
@@ -376,21 +500,18 @@ describe("createStageSessionLauncher", () => {
     const handle = await createStageSessionLauncher(harness.dependencies)(stageOptions(coordinator));
     harness.supervisors[0]!.waitForQuiescenceImpl = () => nestedQuiescence.promise;
 
-    session.emitAssistantEndAndPersist("initial writing turn settled");
+    session.emitAssistantEndAndPersist();
     await handle.materialized;
     prompt.resolve();
     expect(await isSettled(handle.completion)).toBe(false);
-
     nestedQuiescence.resolve();
     await new Promise((resolve) => setTimeout(resolve, 0));
-    const waitForIdleCalls = session.waitForIdleCalls;
-    const completedBeforeResultingTurn = await isSettled(handle.completion);
+    expect(session.waitForIdleCalls).toBe(1);
+    expect(await isSettled(handle.completion)).toBe(false);
     resultingTurn.resolve();
+
     await handle.completion;
     await handle.dispose();
-
-    expect(waitForIdleCalls).toBe(1);
-    expect(completedBeforeResultingTurn).toBe(false);
   });
 
   it("publishes only delta-shaped child events", async () => {
@@ -415,7 +536,6 @@ describe("createStageSessionLauncher", () => {
       type: "message_update",
       assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "new token" },
     }]);
-
     session.emitAssistantEndAndPersist();
     await handle.materialized;
     prompt.resolve();
@@ -436,19 +556,18 @@ describe("createStageSessionLauncher", () => {
       },
     });
     const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
-
     const handle = await createStageSessionLauncher(dependencyHarness(session).dependencies)(stageOptions(coordinator));
-    const firstOwnerEvents: JsonAgentSessionEvent[] = [];
-    const laterSubscriberEvents: JsonAgentSessionEvent[] = [];
-    handle.subscribe((event) => firstOwnerEvents.push(event));
-    handle.subscribe((event) => laterSubscriberEvents.push(event));
+    const first: JsonAgentSessionEvent[] = [];
+    const second: JsonAgentSessionEvent[] = [];
 
-    expect(firstOwnerEvents).toEqual([{
+    handle.subscribe((event) => first.push(event));
+    handle.subscribe((event) => second.push(event));
+
+    expect(first).toEqual([{
       type: "message_update",
       assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "early token" },
     }]);
-    expect(laterSubscriberEvents).toEqual([]);
-
+    expect(second).toEqual([]);
     session.emitAssistantEndAndPersist();
     await handle.materialized;
     prompt.resolve();
@@ -456,14 +575,15 @@ describe("createStageSessionLauncher", () => {
     await handle.dispose();
   });
 
-  it("remembers an early abort and reapplies it after agent_start", async () => {
+  it("remembers an early abort, reapplies it after agent_start, and aborts descendants", async () => {
     const prompt = deferred<void>();
     const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
     session.abortImpl = async () => {
       if (session.isStreaming) prompt.resolve();
     };
+    const harness = dependencyHarness(session);
     const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
-    const handle = await createStageSessionLauncher(dependencyHarness(session).dependencies)(stageOptions(coordinator));
+    const handle = await createStageSessionLauncher(harness.dependencies)(stageOptions(coordinator));
     const materializationFailure = expect(handle.materialized).rejects.toThrow(/materializ|ENOENT/i);
 
     const aborting = handle.abort("stopped by parent");
@@ -472,27 +592,14 @@ describe("createStageSessionLauncher", () => {
     session.emit({ type: "agent_start" });
     await aborting;
 
-    const result = await handle.completion;
+    await expect(handle.completion).resolves.toMatchObject({
+      exitCode: 1,
+      wasAborted: true,
+      errorMessage: "stopped by parent",
+    });
     await materializationFailure;
     expect(session.abortCalls).toBe(2);
-    expect(result).toMatchObject({ exitCode: 1, wasAborted: true, errorMessage: "stopped by parent" });
-    await handle.dispose();
-  });
-
-  it("propagates handle abort to the stage's direct-child supervisor", async () => {
-    const prompt = deferred<void>();
-    const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
-    session.abortImpl = async () => prompt.resolve();
-    const harness = dependencyHarness(session);
-    const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
-    const handle = await createStageSessionLauncher(harness.dependencies)(stageOptions(coordinator));
-    const materializationFailure = handle.materialized.catch((error) => error);
-
-    await handle.abort("stop the nested tree");
-    await handle.completion;
-
-    expect(harness.supervisors[0]?.abortReasons).toEqual(["stop the nested tree"]);
-    expect(await materializationFailure).toBeInstanceOf(Error);
+    expect(harness.supervisors[0]?.abortReasons).toEqual(["stopped by parent"]);
     await handle.dispose();
   });
 
@@ -514,278 +621,228 @@ describe("createStageSessionLauncher", () => {
     expect(session.listeners.size).toBe(0);
   });
 
-  it.each([
-    "session abort",
-    "descendant abort",
-    "descendant dispose",
-    "listener removal",
-    "session dispose",
-  ] as const)("attempts every stage cleanup and retries only failed %s ownership", async (failedStep) => {
+  it("disposes the session before its binding and retries only failed ownership", async () => {
     const prompt = deferred<void>();
     const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
     const harness = dependencyHarness(session);
+    const order: string[] = [];
+    session.disposeImpl = () => {
+      order.push("session");
+      if (session.disposeCalls === 1) throw new Error("session cleanup failed");
+    };
+    const originalCreateRuntime = harness.dependencies.createModelRuntime;
+    harness.dependencies.createModelRuntime = async (agentDir) => {
+      const runtime = await originalCreateRuntime(agentDir);
+      return {
+        ...runtime,
+        dispose: async () => {
+          order.push("binding");
+          await (runtime as { dispose?: () => Promise<void> }).dispose?.();
+        },
+      };
+    };
     const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
     const handle = await createStageSessionLauncher(harness.dependencies)(stageOptions(coordinator));
-    const supervisor = harness.supervisors[0]!;
-    const failure = new Error(`${failedStep} failed`);
-    let fail = true;
-    const failOnce = () => {
-      if (!fail) return;
-      fail = false;
-      throw failure;
-    };
-    const abortGate = failedStep === "session abort" || failedStep === "descendant abort"
-      ? deferred<void>()
-      : undefined;
-    if (failedStep === "session abort") {
-      session.abortImpl = async () => {
-        await abortGate!.promise;
-        failOnce();
-      };
-    }
-    if (failedStep === "descendant abort") {
-      supervisor.abortImpl = async () => {
-        await abortGate!.promise;
-        failOnce();
-      };
-    }
-    if (failedStep === "descendant dispose") supervisor.disposeImpl = async () => failOnce();
-    if (failedStep === "listener removal") session.unsubscribeImpl = failOnce;
-    if (failedStep === "session dispose") session.disposeImpl = failOnce;
-
     session.emitAssistantEndAndPersist();
     await handle.materialized;
-    const abortOutcome = handle.abort("stop stage").then(
-      () => undefined,
-      (error) => error,
-    );
     prompt.resolve();
-    const firstDisposal = handle.dispose().then(
-      () => undefined,
-      (error) => error,
-    );
-    abortGate?.resolve();
+    await handle.completion;
 
-    const [abortError, disposalError] = await Promise.all([abortOutcome, firstDisposal]);
-    if (failedStep === "session abort" || failedStep === "descendant abort") {
-      expect(abortError).toBe(failure);
-    } else {
-      expect(abortError).toBeUndefined();
-    }
-    expect(disposalError).toBe(failure);
-    expect({
-      abort: session.abortCalls,
-      descendantAbort: supervisor.abortReasons.length,
-      descendantDispose: supervisor.disposeCalls,
-      unsubscribe: session.unsubscribeCalls,
-      dispose: session.disposeCalls,
-    }).toEqual({ abort: 1, descendantAbort: 1, descendantDispose: 1, unsubscribe: 1, dispose: 1 });
-
+    await expect(handle.dispose()).rejects.toThrow("session cleanup failed");
+    expect(order).toEqual(["session"]);
     await handle.dispose();
-    const expected = (step: typeof failedStep) => step === failedStep ? 2 : 1;
-    expect({
-      abort: session.abortCalls,
-      descendantAbort: supervisor.abortReasons.length,
-      descendantDispose: supervisor.disposeCalls,
-      unsubscribe: session.unsubscribeCalls,
-      dispose: session.disposeCalls,
-    }).toEqual({
-      abort: expected("session abort"),
-      descendantAbort: expected("descendant abort"),
-      descendantDispose: expected("descendant dispose"),
-      unsubscribe: expected("listener removal"),
-      dispose: expected("session dispose"),
-    });
-
-    await handle.dispose();
-    expect({
-      abort: session.abortCalls,
-      descendantAbort: supervisor.abortReasons.length,
-      descendantDispose: supervisor.disposeCalls,
-      unsubscribe: session.unsubscribeCalls,
-      dispose: session.disposeCalls,
-    }).toEqual({
-      abort: expected("session abort"),
-      descendantAbort: expected("descendant abort"),
-      descendantDispose: expected("descendant dispose"),
-      unsubscribe: expected("listener removal"),
-      dispose: expected("session dispose"),
-    });
+    expect(order).toEqual(["session", "session", "binding"]);
+    expect(session.disposeCalls).toBe(2);
   });
 
-  it("reports all stage cleanup failures after attempting every sibling", async () => {
+  it("attempts setup cleanup and still keeps binding disposal behind session disposal", async () => {
     const prompt = deferred<void>();
     const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
     const harness = dependencyHarness(session);
-    const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
-    const handle = await createStageSessionLauncher(harness.dependencies)(stageOptions(coordinator));
-    const supervisor = harness.supervisors[0]!;
-    const failures = [
-      new Error("session abort failed"),
-      new Error("descendant abort failed"),
-      new Error("descendant dispose failed"),
-      new Error("listener removal failed"),
-      new Error("session dispose failed"),
-    ];
-    session.abortImpl = async () => { throw failures[0]; };
-    supervisor.abortImpl = async () => { throw failures[1]; };
-    supervisor.disposeImpl = async () => { throw failures[2]; };
-    session.unsubscribeImpl = () => { throw failures[3]; };
-    session.disposeImpl = () => { throw failures[4]; };
-
-    session.emitAssistantEndAndPersist();
-    await handle.materialized;
-    const abortOutcome = handle.abort("stop stage").catch(() => {});
-    prompt.resolve();
-    const cleanupError = await handle.dispose().then(
-      () => undefined,
-      (error) => error as AggregateError,
-    );
-    await abortOutcome;
-
-    expect(cleanupError).toBeInstanceOf(AggregateError);
-    expect(cleanupError?.errors).toEqual(failures);
-    expect({
-      abort: session.abortCalls,
-      descendantAbort: supervisor.abortReasons.length,
-      descendantDispose: supervisor.disposeCalls,
-      unsubscribe: session.unsubscribeCalls,
-      dispose: session.disposeCalls,
-    }).toEqual({ abort: 1, descendantAbort: 1, descendantDispose: 1, unsubscribe: 1, dispose: 1 });
-  });
-
-  it("keeps a signal-triggered abort failure owned by retryable disposal", async () => {
-    const prompt = deferred<void>();
-    const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
-    const harness = dependencyHarness(session);
-    const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
-    const controller = new AbortController();
-    const failure = new Error("signal abort failed");
-    let fail = true;
-    session.abortImpl = async () => {
-      if (fail) throw failure;
-    };
-    const handle = await createStageSessionLauncher(harness.dependencies)({
-      ...stageOptions(coordinator),
-      signal: controller.signal,
-    });
-
-    session.emitAssistantEndAndPersist();
-    await handle.materialized;
-    controller.abort("stop stage");
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    prompt.resolve();
-
-    await expect(handle.dispose()).rejects.toBe(failure);
-    fail = false;
-    await handle.dispose();
-    expect(session.abortCalls).toBe(3);
-    expect(session.disposeCalls).toBe(1);
-  });
-
-  it("rejects setup failure and disposes a session that has no launch handle", async () => {
-    const prompt = deferred<void>();
-    const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
+    const order: string[] = [];
     session.bindError = new Error("extension setup failed");
+    session.disposeImpl = () => order.push("session");
+    const originalCreateRuntime = harness.dependencies.createModelRuntime;
+    harness.dependencies.createModelRuntime = async (agentDir) => {
+      const runtime = await originalCreateRuntime(agentDir);
+      return {
+        ...runtime,
+        dispose: async () => {
+          order.push("binding");
+          await (runtime as { dispose?: () => Promise<void> }).dispose?.();
+        },
+      };
+    };
     const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
-    const launcher = createStageSessionLauncher(dependencyHarness(session).dependencies);
 
-    await expect(launcher(stageOptions(coordinator))).rejects.toThrow("extension setup failed");
+    await expect(createStageSessionLauncher(harness.dependencies)(stageOptions(coordinator)))
+      .rejects.toThrow("extension setup failed");
+    expect(order).toEqual(["session", "binding"]);
+    expect(harness.supervisors[0]?.disposeCalls).toBe(1);
+    expect(session.unsubscribeCalls).toBe(1);
+  });
+
+  it("bounds post-setup generation churn and never prompts an unauthorized stage", async () => {
+    const prompt = deferred<void>();
+    const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
+    const harness = dependencyHarness(session);
+    const live = liveFor();
+    let authorizationResolutions = 0;
+    session.setSessionName = (name) => {
+      session.names.push(name);
+      live.onResolve = () => {
+        authorizationResolutions += 1;
+        live.generation += 1;
+      };
+    };
+    const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
+
+    await expect(createStageSessionLauncher(harness.dependencies)(stageOptions(coordinator, live)))
+      .rejects.toThrow(/configuration changed/i);
+    expect(authorizationResolutions).toBe(2);
     expect(session.promptCalls).toEqual([]);
     expect(session.disposeCalls).toBe(1);
-    expect(session.listeners.size).toBe(0);
+    expect(harness.bindingDisposals).toEqual(["binding"]);
   });
 
-  it("preserves setup failure while attempting every setup cleanup step", async () => {
+  it("observes cancellation during authorization and cleans the owned stage", async () => {
     const prompt = deferred<void>();
     const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
-    const failures = [
-      new Error("extension setup failed"),
-      new Error("listener removal failed"),
-      new Error("descendant dispose failed"),
-      new Error("session dispose failed"),
-    ];
-    session.bindError = failures[0];
-    session.unsubscribeImpl = () => { throw failures[1]; };
-    session.disposeImpl = () => { throw failures[3]; };
-    const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
     const harness = dependencyHarness(session);
-    const launcher = createStageSessionLauncher(harness.dependencies);
+    const live = liveFor();
+    const controller = new AbortController();
+    session.setSessionName = (name) => {
+      session.names.push(name);
+      live.onResolve = () => {
+        live.onResolve = undefined;
+        live.generation += 1;
+        controller.abort();
+      };
+    };
+    const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
 
-    const launching = launcher(stageOptions(coordinator));
-    harness.supervisors[0]!.disposeImpl = async () => { throw failures[2]; };
-    const error = await launching.then(
-      () => undefined,
-      (failure) => failure as AggregateError,
-    );
-
-    expect(error).toBeInstanceOf(AggregateError);
-    expect(error?.errors).toEqual(failures);
-    expect(session.unsubscribeCalls).toBe(1);
-    expect(harness.supervisors[0]?.disposeCalls).toBe(1);
+    await expect(createStageSessionLauncher(harness.dependencies)({
+      ...stageOptions(coordinator, live),
+      signal: controller.signal,
+    })).rejects.toThrow("Agent authorization was cancelled.");
+    expect(session.promptCalls).toEqual([]);
+    expect(session.abortCalls).toBe(1);
+    expect(harness.supervisors[0]?.abortReasons).toHaveLength(1);
     expect(session.disposeCalls).toBe(1);
   });
 
-  it("rejects materialization but resolves completion when the prompt fails before output", async () => {
-    const prompt = deferred<void>();
-    const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
-    const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
-    const handle = await createStageSessionLauncher(dependencyHarness(session).dependencies)(stageOptions(coordinator));
-    const materializationFailure = expect(handle.materialized).rejects.toThrow("provider failed before output");
-
-    prompt.reject(new Error("provider failed before output"));
-
-    await materializationFailure;
-    await expect(handle.completion).resolves.toMatchObject({
-      exitCode: 1,
-      errorMessage: "provider failed before output",
-      stderr: "provider failed before output",
+  it("applies prompt, tools, Skills, model, thinking, and policy before the next stage turn", async () => {
+    const stageV1 = agentRow("search", {
+      model: "openai/gpt-test",
+      thinking: "low",
+      tools: ["read", "subagent"],
+      effectiveTools: ["read", "subagent"],
+      skills: ["paper-v1"],
+      effectiveSkills: ["paper-v1"],
+      systemPrompt: "Search generation one.",
+      subagents: ["reviewer"],
     });
-    await handle.dispose();
-  });
-
-  it("keeps materialization successful when the prompt fails afterward", async () => {
-    const prompt = deferred<void>();
-    const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
-    const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
-    const handle = await createStageSessionLauncher(dependencyHarness(session).dependencies)(stageOptions(coordinator));
-
-    session.emitAssistantEndAndPersist("partial final text");
-    await expect(handle.materialized).resolves.toBeUndefined();
-    prompt.reject(new Error("provider failed after output"));
-
-    await expect(handle.completion).resolves.toMatchObject({
-      exitCode: 1,
-      errorMessage: "provider failed after output",
-      messages: [expect.objectContaining({ role: "assistant" })],
+    const stageV2 = agentRow("search", {
+      model: "openai/gpt-test",
+      thinking: "high",
+      tools: ["web-search", "subagent"],
+      effectiveTools: ["web-search", "subagent"],
+      skills: ["paper-v2"],
+      effectiveSkills: ["paper-v2"],
+      systemPrompt: "Search generation two.",
+      subagents: ["reviewer"],
     });
-    await handle.dispose();
-  });
-
-  it("reports nested cleanup failure through completion and keeps teardown retryable", async () => {
+    const paper = agentRow("paper-assistant", { subagents: ["search"] });
+    const reviewer = agentRow("reviewer", { subagents: [] });
+    const live = new FakeLiveConfiguration([paper, stageV1, reviewer]);
     const prompt = deferred<void>();
     const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
-    const harness = dependencyHarness(session);
+    let resourceHost: ExtensionResourceHost | undefined;
+    let runtimeBinding: AgentRuntimeBinding | undefined;
+    let modelGeneration = 0;
+    const disposedModels: string[] = [];
+    const supervisor = new FakeDirectChildSupervisor();
+    const dependencies: StageSessionDependencies = {
+      agentDir: "/agent",
+      createSessionManager: () => ({ kind: "new" }),
+      openSessionManager: () => ({
+        getSessionId: () => session.sessionId,
+        getCwd: () => "/project",
+        getSessionFile: () => session.sessionFile,
+      }),
+      createSettingsManager: () => ({ getGlobalSettings: () => ({}) }),
+      createModelRuntime: async () => {
+        modelGeneration += 1;
+        const selected = model(`metadata-v${modelGeneration}`);
+        return {
+          refresh: async () => ({ aborted: false, errors: new Map() }),
+          getError: () => undefined,
+          getModel: (provider: string, id: string) =>
+            provider === selected.provider && id === selected.id ? selected : undefined,
+          dispose: async () => {
+            disposedModels.push(selected.name);
+          },
+        };
+      },
+      createResourceLoader: (options) => {
+        resourceHost = new ExtensionResourceHost(options, session);
+        return resourceHost;
+      },
+      createAgentSession: async (options) => {
+        session.model = options.model as Model<any>;
+        session.thinkingLevel = options.thinkingLevel as ThinkingLevel;
+        return { session };
+      },
+      createDirectChildSupervisor: () => supervisor as unknown as SubagentSupervisor,
+      createExtensionFactories: ({ binding }) => {
+        runtimeBinding = binding;
+        return [{ name: "agent-definition", factory: createAgentDefinitionExtension(binding) }];
+      },
+      resolveAutomaticModel: async () => undefined,
+      resolveSkillPaths: (agent) => agent.effectiveSkills.map((name) => `/skills/${name}`),
+    };
+    session.bindExtensions = async (bindings) => {
+      session.bindingCalls.push(bindings);
+      await resourceHost!.emit("session_start", { reason: "startup" }, { cwd: "/project" });
+      await resourceHost!.discover("startup");
+    };
+    session.reload = async () => {
+      session.reloadCalls += 1;
+      await resourceHost!.reload();
+      await resourceHost!.emit("session_start", { reason: "reload" }, { cwd: "/project" });
+      await resourceHost!.discover("reload");
+    };
+    session.promptStart = () => {
+      session.isIdle = false;
+      live.publish([paper, stageV2, reviewer]);
+      void resourceHost!.emit("turn_end", { turnIndex: 0 }, { cwd: "/project", abort: vi.fn() })
+        .then(() => {
+          session.isIdle = true;
+          session.emitAssistantEndAndPersist();
+          prompt.resolve();
+        });
+    };
     const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
-    const handle = await createStageSessionLauncher(harness.dependencies)(stageOptions(coordinator));
-    const failure = new Error("nested child cleanup failed");
-    harness.supervisors[0]!.waitForQuiescenceImpl = async () => { throw failure; };
+    const handle = await createStageSessionLauncher(dependencies)(stageOptions(coordinator, live));
 
-    session.emitAssistantEndAndPersist("partial final text");
     await handle.materialized;
-    prompt.resolve();
+    await handle.completion;
 
-    await expect(handle.completion).resolves.toMatchObject({
-      exitCode: 1,
-      errorMessage: failure.message,
-      stderr: failure.message,
-    });
-    await expect(handle.dispose()).resolves.toBeUndefined();
-    expect(harness.supervisors[0]?.disposeCalls).toBe(1);
-    expect(session.disposeCalls).toBe(1);
+    expect(session.reloadCalls).toBe(1);
+    expect(resourceHost!.prompt).toEqual(["Pi base", "Search generation two."]);
+    expect(session.activeTools.at(-1)).toEqual(["web-search", "subagent"]);
+    expect(resourceHost!.skillPaths).toEqual(["/skills/paper-v2"]);
+    expect(runtimeBinding!.current().subagents).toEqual(["reviewer"]);
+    expect(session.model?.name).toBe("metadata-v2");
+    expect(session.thinkingLevel).toBe("high");
+    expect(session.agent.steeringMode).toBe("all");
+    expect(disposedModels).toContain("metadata-v1");
+
+    await handle.dispose();
+    expect(disposedModels).toContain("metadata-v2");
   });
 
-  it("checks a continuation before opening it and validates its UUID and cwd", async () => {
+  it("validates an exact continuation before opening and reuses its readable identity", async () => {
     const prompt = deferred<void>();
     const sessionPath = join(root, "continued.jsonl");
     writeFileSync(sessionPath, "{}\n");
@@ -798,7 +855,7 @@ describe("createStageSessionLauncher", () => {
       childSessionId: "continued-child",
       sessionPath,
     };
-    const handle = await createStageSessionLauncher(harness.dependencies)(stageOptions(coordinator, reservation));
+    const handle = await createStageSessionLauncher(harness.dependencies)(stageOptions(coordinator, liveFor(), reservation));
 
     await expect(handle.materialized).resolves.toBeUndefined();
     expect(harness.calls.some((call) => call.name === "createManager")).toBe(false);
@@ -808,14 +865,11 @@ describe("createStageSessionLauncher", () => {
     await handle.dispose();
 
     harness.openedManager.getSessionId = () => "wrong-child";
-    await expect(createStageSessionLauncher(harness.dependencies)(stageOptions(coordinator, reservation))).rejects.toThrow(/UUID|session id/i);
-
-    harness.openedManager.getSessionId = () => "continued-child";
-    harness.openedManager.getCwd = () => "/another-project";
-    await expect(createStageSessionLauncher(harness.dependencies)(stageOptions(coordinator, reservation))).rejects.toThrow(/cwd/i);
+    await expect(createStageSessionLauncher(harness.dependencies)(stageOptions(coordinator, liveFor(), reservation)))
+      .rejects.toThrow(/UUID|session id/i);
   });
 
-  it("rejects an unreadable continuation before calling SessionManager.open", async () => {
+  it("rejects an unreadable continuation before SessionManager.open", async () => {
     const prompt = deferred<void>();
     const sessionPath = join(root, "deleted.jsonl");
     const session = new FakeStageSession("continued-child", sessionPath, prompt.promise);
@@ -828,9 +882,8 @@ describe("createStageSessionLauncher", () => {
       sessionPath,
     };
 
-    await expect(
-      createStageSessionLauncher(harness.dependencies)(stageOptions(coordinator, reservation)),
-    ).rejects.toThrow();
+    await expect(createStageSessionLauncher(harness.dependencies)(stageOptions(coordinator, liveFor(), reservation)))
+      .rejects.toThrow();
     expect(harness.calls.some((call) => call.name === "openManager")).toBe(false);
     expect(session.disposeCalls).toBe(0);
   });

@@ -1,8 +1,15 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { discoverAgents, discoverGlobalAgents, filterEnabledAgents, type AgentConfig } from "./agents";
+import {
+  discoverAgents,
+  discoverGlobalAgents,
+  filterEnabledAgents,
+  loadAgentCatalog,
+  resolveAgentCatalog,
+  type AgentConfig,
+} from "./agents";
 
 let root: string;
 let agentDir: string;
@@ -16,6 +23,11 @@ function agentFile(name: string, fields: string[] = [], body = "Prompt"): string
 function writeAgent(dir: string, name: string, fields: string[] = [], body?: string): void {
   mkdirSync(join(dir, "agents"), { recursive: true });
   writeFileSync(join(dir, "agents", `${name}.md`), agentFile(name, fields, body), "utf8");
+}
+
+function writeSettings(dir: string, settings: unknown): void {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "settings.json"), JSON.stringify(settings), "utf8");
 }
 
 beforeEach(() => {
@@ -40,13 +52,30 @@ describe("discoverAgents (Markdown layers)", () => {
     expect(agents[0]).toMatchObject({ name: "paper-assistant", enabled: true, builtin: true, source: "bundled" });
   });
 
-  it("lets a project Markdown file completely replace a global file", async () => {
+  it("uses global over bundled definitions without reading or changing project Agent files", async () => {
+    const project = join(root, "project");
+    const projectAgents = join(project, ".easyresearch");
     writeAgent(bundledDir, "search", ["tools: [read]", "skills: [bundled]"]);
     writeAgent(agentDir, "search", ["tools: [bash]", "skills: [global]", "model: global/model"]);
-    writeAgent(join(root, "project", ".easyresearch"), "search", ["enable: false", "tools: [grep]"]);
+    writeAgent(projectAgents, "search", ["enable: false", "tools: [write]", "model: project/model"], "PROJECT SEARCH SECRET");
+    writeAgent(projectAgents, "reviewer", ["description: Project reviewer"], "PROJECT REVIEWER SECRET");
+    const projectSearch = join(projectAgents, "agents", "search.md");
+    const projectReviewer = join(projectAgents, "agents", "reviewer.md");
+    const beforeSearch = readFileSync(projectSearch, "utf8");
+    const beforeReviewer = readFileSync(projectReviewer, "utf8");
+
     const { agents } = await discoverAgents(options());
 
-    expect(agents[0]).toMatchObject({ name: "search", enabled: false, tools: ["grep"], skills: undefined, model: undefined });
+    expect(agents.find((agent) => agent.name === "search")).toMatchObject({
+      source: "global",
+      enabled: true,
+      tools: ["bash"],
+      skills: ["global"],
+      model: undefined,
+    });
+    expect(agents.some((agent) => agent.name === "reviewer")).toBe(false);
+    expect(readFileSync(projectSearch, "utf8")).toBe(beforeSearch);
+    expect(readFileSync(projectReviewer, "utf8")).toBe(beforeReviewer);
   });
 
   it("appends custom Markdown agents and keeps built-ins before them", async () => {
@@ -59,6 +88,39 @@ describe("discoverAgents (Markdown layers)", () => {
     expect(agents[2]).toMatchObject({ builtin: false, source: "global" });
   });
 
+  it("uses global agentDefaults for built-in and custom Agents while ignoring Markdown and project values", async () => {
+    const project = join(root, "project");
+    writeAgent(bundledDir, "paper-assistant", ["model: markdown/paper", "thinking: low"]);
+    writeAgent(agentDir, "reviewer", ["model: markdown/reviewer", "thinking: minimal"]);
+    writeSettings(agentDir, {
+      easyresearch: {
+        agentDefaults: {
+          "paper-assistant": { model: "global/paper", thinking: "high" },
+          reviewer: { model: "global/reviewer", thinking: "xhigh" },
+        },
+      },
+    });
+    writeSettings(join(project, ".easyresearch"), {
+      easyresearch: {
+        agentDefaults: {
+          "paper-assistant": { model: "project/paper", thinking: "off" },
+          reviewer: { model: "project/reviewer", thinking: "off" },
+        },
+      },
+    });
+
+    const { agents } = await discoverAgents({ ...options(), cwd: project });
+
+    expect(agents.find((agent) => agent.name === "paper-assistant")).toMatchObject({
+      model: "global/paper",
+      thinking: "high",
+    });
+    expect(agents.find((agent) => agent.name === "reviewer")).toMatchObject({
+      model: "global/reviewer",
+      thinking: "xhigh",
+    });
+  });
+
   it("uses the primary built-in filename before its alias", async () => {
     writeAgent(bundledDir, "paper-assistant", ["description: bundled paper assistant"]);
     writeAgent(agentDir, "Paper Assistant", ["description: alias override"]);
@@ -69,7 +131,7 @@ describe("discoverAgents (Markdown layers)", () => {
     expect(agents[0]).toMatchObject({ name: "paper-assistant", description: "primary override", filePath: join(agentDir, "agents", "paper-assistant.md") });
   });
 
-  it("treats assistant.md as custom while paper-assistant remains the built-in", async () => {
+  it("treats a global assistant.md as custom while project definitions remain inert", async () => {
     writeAgent(bundledDir, "paper-assistant", ["enable: true"]);
     writeAgent(agentDir, "assistant", ["enable: true"]);
     writeAgent(join(root, "project", ".easyresearch"), "assistant", ["description: Project custom assistant"]);
@@ -80,13 +142,13 @@ describe("discoverAgents (Markdown layers)", () => {
     expect(agents[0]).toMatchObject({
       name: "paper-assistant",
       builtin: true,
-      source: "project",
-      description: "Project Paper Assistant",
+      source: "bundled",
+      description: "paper-assistant description",
     });
     expect(agents.find((agent) => agent.name === "assistant")).toMatchObject({
       builtin: false,
-      source: "project",
-      description: "Project custom assistant",
+      source: "global",
+      description: "assistant description",
     });
   });
 
@@ -118,25 +180,25 @@ describe("discoverAgents (Markdown layers)", () => {
     expect(filterEnabledAgents(agents).map((agent) => agent.name)).toEqual(["paper-assistant", "writing"]);
   });
 
-  it("defaults enable to true and reads complete frontmatter configuration", async () => {
+  it("defaults enable to true and reads capability frontmatter while ignoring model", async () => {
     writeAgent(bundledDir, "experiment", ["model: provider/model", "tools: [bash, subagent]", "skills: [experiment]", "subagents: [search]"]);
     const { agents } = await discoverAgents(options());
     const experiment = agents[0] as AgentConfig;
 
     expect(experiment).toMatchObject({
       enabled: true,
-      model: "provider/model",
+      model: undefined,
       tools: ["bash", "subagent"],
       skills: ["experiment"],
       subagents: ["search"],
     });
   });
 
-  it("parses the thinking frontmatter field as a string default", async () => {
+  it("ignores thinking frontmatter", async () => {
     writeAgent(bundledDir, "search", ["thinking: medium"]);
     const { agents } = await discoverAgents(options());
 
-    expect(agents[0]?.thinking).toBe("medium");
+    expect(agents[0]?.thinking).toBeUndefined();
   });
 
   it.each([["thinking: ultra"], ["thinking:"], ["thinking: [high]"]])(
@@ -207,25 +269,74 @@ describe("discoverAgents (Markdown layers)", () => {
     expect(enabled.agents[0]?.effectiveSkills).toEqual(["home-only"]);
   });
 
-  it("keeps global discovery free of project Agent and Skill roots", async () => {
+  it("resolves project Skills only when an exact cwd is supplied", async () => {
     const project = join(root, "project");
     const bundledSkillsDir = join(root, "bundled-skills");
-    writeAgent(bundledDir, "paper-assistant", ["skills: [project-only]"]);
+    writeAgent(agentDir, "paper-assistant", ["skills: [project-only]"]);
     writeAgent(join(project, ".easyresearch"), "project-custom");
     mkdirSync(join(project, ".easyresearch", "skills", "project-only"), { recursive: true });
     writeFileSync(join(project, ".easyresearch", "skills", "project-only", "SKILL.md"), "# Project only\n");
 
-    const { agents } = await discoverGlobalAgents({
+    const catalog = await loadAgentCatalog({ agentDir, bundledAgentsDir: bundledDir });
+    const projectAgents = resolveAgentCatalog(catalog, {
+      cwd: project,
+      agentDir,
+      bundledSkillsDir,
+    });
+    const { agents: globalAgents } = await discoverGlobalAgents({
       cwd: project,
       agentDir,
       bundledAgentsDir: bundledDir,
       bundledSkillsDir,
     });
 
-    expect(agents.map((agent) => agent.name)).not.toContain("project-custom");
-    expect(agents.find((agent) => agent.name === "paper-assistant")).toMatchObject({
+    expect(catalog.definitions.find((agent) => agent.name === "paper-assistant")).not.toHaveProperty("effectiveSkills");
+    expect(projectAgents.agents.map((agent) => agent.name)).not.toContain("project-custom");
+    expect(projectAgents.agents.find((agent) => agent.name === "paper-assistant")).toMatchObject({
+      source: "global",
+      effectiveSkills: ["project-only"],
+      missingSkills: [],
+    });
+    expect(globalAgents.map((agent) => agent.name)).not.toContain("project-custom");
+    expect(globalAgents.find((agent) => agent.name === "paper-assistant")).toMatchObject({
+      source: "global",
       effectiveSkills: [],
       missingSkills: ["project-only"],
     });
+  });
+
+  it("reports malformed global definitions safely and keeps valid bundled fallbacks", async () => {
+    writeAgent(bundledDir, "search", ["model: bundled/search"], "Bundled search fallback");
+    writeAgent(bundledDir, "broken", ["model: bundled/broken"], "Bundled custom fallback");
+    mkdirSync(join(agentDir, "agents"), { recursive: true });
+    writeFileSync(
+      join(agentDir, "agents", "search.md"),
+      "---\nname: [search\nprivate: SEARCH_FILE_SECRET\n---\nGLOBAL SEARCH SECRET\n",
+      "utf8",
+    );
+    writeFileSync(
+      join(agentDir, "agents", "broken.md"),
+      "---\nname: [broken\nprivate: BROKEN_FILE_SECRET\n---\nGLOBAL BROKEN SECRET\n",
+      "utf8",
+    );
+
+    const catalog = await loadAgentCatalog({ agentDir, bundledAgentsDir: bundledDir });
+
+    expect(catalog.definitions.find((agent) => agent.name === "search")).toMatchObject({
+      source: "bundled",
+      systemPrompt: "Bundled search fallback",
+    });
+    expect(catalog.definitions.find((agent) => agent.name === "broken")).toMatchObject({
+      source: "bundled",
+      systemPrompt: "Bundled custom fallback",
+    });
+    expect(catalog.diagnostics).toEqual([
+      expect.objectContaining({ agent: "search", source: "global" }),
+      expect.objectContaining({ agent: "broken", source: "global" }),
+    ]);
+    expect(JSON.stringify(catalog.diagnostics)).not.toContain("SEARCH_FILE_SECRET");
+    expect(JSON.stringify(catalog.diagnostics)).not.toContain("BROKEN_FILE_SECRET");
+    expect(JSON.stringify(catalog.diagnostics)).not.toContain("GLOBAL SEARCH SECRET");
+    expect(JSON.stringify(catalog.diagnostics)).not.toContain("GLOBAL BROKEN SECRET");
   });
 });

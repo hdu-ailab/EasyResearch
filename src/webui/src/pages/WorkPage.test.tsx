@@ -29,10 +29,7 @@ vi.mock("../api", async (importOriginal) => {
     readFileContent: vi.fn(),
     listAgents: vi.fn(),
     listModels: vi.fn(),
-    getEffectiveModels: vi.fn(),
-    setAgentModel: vi.fn(),
-    getEffectiveThinking: vi.fn(),
-    setAgentThinking: vi.fn(),
+    patchAgent: vi.fn(),
     getSessionCommands: vi.fn().mockResolvedValue([]),
     getSessionTree: vi.fn().mockResolvedValue({ tree: [], leafId: null }),
     navigateSessionTree: vi.fn().mockResolvedValue(undefined),
@@ -151,10 +148,7 @@ describe("WorkPage", () => {
     vi.mocked(api.readFileContent).mockReset();
     vi.mocked(api.listAgents).mockReset();
     vi.mocked(api.listModels).mockReset();
-    vi.mocked(api.getEffectiveModels).mockReset();
-    vi.mocked(api.setAgentModel).mockReset();
-    vi.mocked(api.getEffectiveThinking).mockReset();
-    vi.mocked(api.setAgentThinking).mockReset();
+    vi.mocked(api.patchAgent).mockReset();
     vi.mocked(api.listAgents).mockResolvedValue([
       {
         name: "paper-assistant",
@@ -163,6 +157,7 @@ describe("WorkPage", () => {
         builtin: true,
         source: "bundled",
         filePath: "paper-assistant.md",
+        model: "openai/gpt-4o",
         tools: ["subagent"],
         effectiveTools: ["subagent"],
         effectiveSkills: [],
@@ -175,6 +170,8 @@ describe("WorkPage", () => {
         builtin: true,
         source: "bundled",
         filePath: "search.md",
+        model: "anthropic/claude",
+        thinking: "high",
         effectiveTools: [],
         effectiveSkills: [],
         missingSkills: [],
@@ -219,21 +216,19 @@ describe("WorkPage", () => {
       { provider: "openai", id: "gpt-4o", reasoning: true, thinkingLevelMap: {} },
       { provider: "anthropic", id: "claude", reasoning: false, thinkingLevelMap: {} },
     ]);
-    vi.mocked(api.getEffectiveModels).mockResolvedValue([
-      { name: "paper-assistant", model: "openai/gpt-4o", source: "inherit" },
-      { name: "search", model: "anthropic/claude", source: "override" },
-      { name: "experiment", model: null, source: "inherit" },
-      { name: "writing", model: null, source: "inherit" },
-      { name: "figures", model: null, source: "inherit" },
-    ]);
-    vi.mocked(api.getEffectiveThinking).mockResolvedValue([
-      { name: "paper-assistant", thinking: null, source: "inherit" },
-      { name: "search", thinking: "high", source: "override" },
-      { name: "experiment", thinking: "low", source: "default" },
-      { name: "writing", thinking: null, source: "inherit" },
-      { name: "figures", thinking: null, source: "inherit" },
-    ]);
-    vi.mocked(api.setAgentThinking).mockResolvedValue(undefined);
+    vi.mocked(api.patchAgent).mockImplementation(async (name, patch) => ({
+      name,
+      description: name === "search" ? "Finds papers" : "Agent",
+      enabled: true,
+      builtin: true,
+      source: "global",
+      filePath: `/agent/agents/${name}.md`,
+      ...(patch.model ? { model: patch.model } : {}),
+      ...(patch.thinking ? { thinking: patch.thinking } : {}),
+      effectiveTools: [],
+      effectiveSkills: [],
+      missingSkills: [],
+    }));
     vi.mocked(api.renameSession).mockReset();
     vi.mocked(api.getSnapshot).mockResolvedValue(snapshot);
     vi.mocked(api.getChildSnapshot).mockResolvedValue({
@@ -2139,7 +2134,6 @@ describe("WorkPage", () => {
     expect(api.listEntries).toHaveBeenCalledTimes(1);
     expect(api.listAgents).toHaveBeenCalledTimes(1);
     expect(api.listModels).toHaveBeenCalledTimes(1);
-    expect(api.getEffectiveModels).toHaveBeenCalledTimes(1);
   });
 
   it("marks the panel invisible after the close transition ends", async () => {
@@ -2229,7 +2223,7 @@ describe("WorkPage", () => {
     expect(await within(region).findByText("Paper Assistant")).toBeTruthy();
   });
 
-  it("shows each agent's effective model in its model dropdown", async () => {
+  it("shows each Agent's global model field in its model dropdown", async () => {
     const user = userEvent.setup();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
@@ -2239,11 +2233,11 @@ describe("WorkPage", () => {
     expect(combos.length).toBe(10);
     expect(combos[0]!).toHaveTextContent("openai/gpt-4o");
     expect(combos[2]!).toHaveTextContent("anthropic/claude");
-    expect(within(combos[4]!).getByText("Default model")).toBeTruthy();
+    expect(within(combos[4]!).getByText("inherit (Paper Assistant's model)")).toBeTruthy();
     expect(within(region).queryByText(/inherits session/)).toBeNull();
   });
 
-  it("selecting the default option on an overridden agent clears its model", async () => {
+  it("selecting inherit on a configured Agent clears its global model field", async () => {
     const user = userEvent.setup();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
@@ -2251,8 +2245,8 @@ describe("WorkPage", () => {
     const region = screen.getByRole("region", { name: /agent list/i });
     const searchCombo = within(region).getAllByRole("combobox")[2]!;
     await user.click(searchCombo);
-    await user.click(screen.getByRole("option", { name: "Default model" }));
-    await waitFor(() => expect(api.setAgentModel).toHaveBeenCalledWith("s1", "search", null));
+    await user.click(screen.getByRole("option", { name: "inherit (Paper Assistant's model)" }));
+    await waitFor(() => expect(api.patchAgent).toHaveBeenCalledWith("search", { model: null }));
   });
 
   it("applying a model to an agent writes it immediately, with no Set button", async () => {
@@ -2264,7 +2258,7 @@ describe("WorkPage", () => {
     const searchCombo = within(region).getAllByRole("combobox")[2]!;
     await user.click(searchCombo);
     await user.click(screen.getByRole("option", { name: "openai/gpt-4o" }));
-    await waitFor(() => expect(api.setAgentModel).toHaveBeenCalledWith("s1", "search", "openai/gpt-4o"));
+    await waitFor(() => expect(api.patchAgent).toHaveBeenCalledWith("search", { model: "openai/gpt-4o" }));
     expect(within(region).queryByRole("button", { name: /^set$/i })).toBeNull();
   });
 
