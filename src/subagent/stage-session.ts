@@ -3,6 +3,7 @@ import type { Message, Model } from "@earendil-works/pi-ai";
 import type { AgentSessionEvent, JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { runCleanupSteps } from "../runtime/cleanup";
 import { toJsonSessionEvent } from "../runtime/json-session-event";
+import { applyRuntimeSettingsDefaults } from "../runtime/settings-defaults";
 import { configureBatchedSteering, type RuntimeSteeringSession } from "../runtime/steering-mode";
 import type { AgentConfig } from "./agents";
 import type { ReservedDispatch, SubagentCoordinator } from "./coordinator";
@@ -490,7 +491,7 @@ async function resolveDefaultStageSessionLauncher(): Promise<StageSessionLaunche
     agentDir,
     createSessionManager: (cwd) => pi.SessionManager.create(cwd),
     openSessionManager: (path) => pi.SessionManager.open(path),
-    createSettingsManager: (cwd, root) => pi.SettingsManager.create(cwd, root),
+    createSettingsManager: (cwd, root) => applyRuntimeSettingsDefaults(pi.SettingsManager.create(cwd, root)),
     createModelRuntime: (root) =>
       pi.ModelRuntime.create({ authPath: join(root, "auth.json"), modelsPath: join(root, "models.json") }),
     createResourceLoader: (options) =>

@@ -4,6 +4,7 @@ import type { SessionTreeNode } from "@earendil-works/pi-coding-agent";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { runCleanupSteps } from "../runtime/cleanup";
 import { toJsonSessionEvent } from "../runtime/json-session-event";
+import { applyRuntimeSettingsDefaults } from "../runtime/settings-defaults";
 import { configureBatchedSteering, type RuntimeSteeringSession } from "../runtime/steering-mode";
 import type { AgentConfig } from "../subagent/agents";
 import type { CoordinatorSessionManager, SubagentCoordinator } from "../subagent/coordinator";
@@ -274,7 +275,7 @@ export class PiSessionFactory implements SessionFactory {
       }),
       createExtensionFactories: (runtime) =>
         createAssistantExtensions(runtime).map(({ name, factory }) => ({ name, factory })),
-      createSettingsManager: (cwd, root) => pi.SettingsManager.create(cwd, root),
+      createSettingsManager: (cwd, root) => applyRuntimeSettingsDefaults(pi.SettingsManager.create(cwd, root)),
       createModelRuntime: (root) =>
         pi.ModelRuntime.create({ authPath: join(root, "auth.json"), modelsPath: join(root, "models.json") }),
       createResourceLoader: (options) =>
