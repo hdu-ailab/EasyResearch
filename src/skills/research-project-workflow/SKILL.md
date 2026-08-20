@@ -39,6 +39,11 @@ Distinguish a full pipeline from literature-only, experiment-only, readiness,
 drafting, revision, review, and figure-only requests. Never force every request
 through every stage.
 
+If the requested deliverable is a survey or review paper, proactively ask the
+user how many reference papers they expect to cover. Record their expected
+count, use it to bound the Search material package, and interpret readiness
+against that count.
+
 ## Inspect Evidence State
 
 Treat the exact session cwd as the paper-project root. Inspect only enough of
@@ -89,8 +94,14 @@ Every specialist task must include:
 - exact-cwd artifact inputs or the explicitly supplied existing layout;
 - relevant evidence and known gaps;
 - constraints and user decisions already made;
-- expected output paths;
+- expected output paths, stated as exact project-relative artifact paths;
 - completion criteria and required `complete | partial | blocked` handoff.
+
+Agree the artifact output paths with the user before dispatch whenever the
+user will inspect them or the next stage depends on them. State the exact
+paths in the task; a child must not pick an unstated or implied output
+location. Treat the outcome as incomplete until the agreed paths hold the
+required artifacts.
 
 A Writing task must state whether the user explicitly authorized a full draft
 or named section. Without authorization, request only readiness or gap analysis.
