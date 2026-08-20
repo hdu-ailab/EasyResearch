@@ -39,6 +39,9 @@ class DirectAdapter implements SessionAdapter {
   getSteeringMessages(): readonly string[] {
     return [];
   }
+  hasBackgroundWork(): boolean {
+    return false;
+  }
   async getCommands(): Promise<WebSlashCommand[]> {
     return [];
   }

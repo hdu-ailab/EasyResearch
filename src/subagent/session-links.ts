@@ -6,6 +6,9 @@ export interface SubagentSessionLink {
   toolCallId: string;
   childSessionId: string;
   agent: string;
+  ownerSessionId?: string;
+  launchId?: string;
+  agentId?: string;
   step?: number;
 }
 
@@ -32,15 +35,25 @@ export function readSubagentSessionLinks(entries: readonly unknown[]): SubagentS
     if (!isObject(entry) || entry.type !== "custom" || entry.customType !== SUBAGENT_SESSION_LINK_ENTRY) continue;
     const data = entry.data;
     if (!isObject(data)) continue;
-    const { toolCallId, childSessionId, agent, step } = data;
+    const { toolCallId, childSessionId, agent, ownerSessionId, launchId, agentId, step } = data;
     if (!isNonEmptyString(toolCallId) || !isNonEmptyString(childSessionId) || !isNonEmptyString(agent)) continue;
+    if (ownerSessionId !== undefined && !isNonEmptyString(ownerSessionId)) continue;
+    if (launchId !== undefined && !isNonEmptyString(launchId)) continue;
+    if (agentId !== undefined && !isNonEmptyString(agentId)) continue;
     if (step !== undefined && (typeof step !== "number" || !Number.isFinite(step) || !Number.isInteger(step) || step <= 0)) continue;
 
-    const key = `${toolCallId}:${step ?? "single"}`;
+    const legacyKey = `${toolCallId}:${step ?? "single"}`;
+    const key = launchId === undefined ? legacyKey : `launch:${launchId}`;
     links.delete(key);
-    links.set(key, step === undefined
-      ? { toolCallId, childSessionId, agent }
-      : { toolCallId, childSessionId, agent, step });
+    links.set(key, {
+      toolCallId,
+      childSessionId,
+      agent,
+      ...(ownerSessionId === undefined ? {} : { ownerSessionId }),
+      ...(launchId === undefined ? {} : { launchId }),
+      ...(agentId === undefined ? {} : { agentId }),
+      ...(step === undefined ? {} : { step }),
+    });
   }
   return [...links.values()];
 }

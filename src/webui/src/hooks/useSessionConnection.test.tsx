@@ -1,7 +1,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { type ReactNode, StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { SessionSnapshotDto } from "../../../web/contracts";
+import type { SessionSnapshotDto, SubagentSupervisorEventDto } from "../../../web/contracts";
 import * as api from "../api";
 import { useSessionConnection } from "./useSessionConnection";
 
@@ -58,6 +58,45 @@ function reopenedSession(id = "s2") {
 
 function unknownSession() {
   return new api.ApiError(404, { error: "Unknown session: s1" });
+}
+
+function supervisorEvent(overrides: Partial<SubagentSupervisorEventDto> = {}): SubagentSupervisorEventDto {
+  return {
+    type: "subagent_supervisor",
+    launchId: "launch-0",
+    ownerSessionId: "s1",
+    toolCallId: "subagent-0",
+    agent: "search",
+    agentId: "search_0",
+    childSessionId: "child-0",
+    status: "working",
+    ...overrides,
+  };
+}
+
+function subagentLaunchEnd(): unknown {
+  return {
+    type: "tool_execution_end",
+    toolCallId: "subagent-0",
+    toolName: "subagent",
+    isError: false,
+    result: {
+      content: [{ type: "text", text: "search_0 is working." }],
+      details: {
+        mode: "single",
+        background: true,
+        job: {
+          launchId: "launch-0",
+          ownerSessionId: "s1",
+          toolCallId: "subagent-0",
+          agent: "search",
+          agentId: "search_0",
+          childSessionId: "child-0",
+          status: "working",
+        },
+      },
+    },
+  };
 }
 
 describe("useSessionConnection", () => {
@@ -159,6 +198,81 @@ describe("useSessionConnection", () => {
 
     emit({ type: "agent_settled" });
     expect(result.current.view.isStreaming).toBe(false);
+  });
+
+  it("reduces valid supervisor frames only for the current root and keeps root run state ready", async () => {
+    const onSupervisorEvent = vi.fn();
+    const { result } = renderHook(() =>
+      useSessionConnection({ initialSessionId: "s1", cwd: "/paper", onSupervisorEvent }),
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    emit({
+      type: "tool_execution_start",
+      toolCallId: "subagent-0",
+      toolName: "subagent",
+      args: { agent: "search", task: "collect papers" },
+    });
+    emit(subagentLaunchEnd());
+
+    const rootComplete = supervisorEvent({ status: "complete", latestMessage: "root handoff" });
+    emit(rootComplete);
+
+    expect(onSupervisorEvent).toHaveBeenCalledWith(rootComplete);
+    expect(result.current.status).toBe("ready");
+    expect(result.current.view.isStreaming).toBe(false);
+    expect(result.current.view.tools[0]).toMatchObject({
+      ownerSessionId: "s1",
+      toolCallId: "subagent-0",
+      running: false,
+      done: true,
+      latestMessage: "root handoff",
+    });
+
+    const nested = supervisorEvent({
+      ownerSessionId: "child-owner",
+      toolCallId: "nested-tool",
+      childSessionId: "grandchild",
+      event: {
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "nested delta" },
+      } as never,
+    });
+    emit(nested);
+
+    expect(onSupervisorEvent).toHaveBeenLastCalledWith(nested);
+    expect(result.current.view.tools).toHaveLength(1);
+    expect(result.current.view.tools[0]?.latestMessage).toBe("root handoff");
+    expect(result.current.status).toBe("ready");
+  });
+
+  it("always forwards a valid supervisor frame before the generic event callback can consume it", async () => {
+    const onEvent = vi.fn(() => true);
+    const onSupervisorEvent = vi.fn();
+    const { result } = renderHook(() =>
+      useSessionConnection({ initialSessionId: "s1", cwd: "/paper", onEvent, onSupervisorEvent }),
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const nested = supervisorEvent({ ownerSessionId: "child-owner", toolCallId: "nested-tool" });
+
+    emit(nested);
+
+    expect(onSupervisorEvent).toHaveBeenCalledWith(nested);
+    expect(result.current.status).toBe("ready");
+  });
+
+  it("rejects malformed or path-bearing dedicated frames", async () => {
+    const onSupervisorEvent = vi.fn();
+    const { result } = renderHook(() =>
+      useSessionConnection({ initialSessionId: "s1", cwd: "/paper", onSupervisorEvent }),
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    emit({ ...supervisorEvent(), sessionPath: "/private/child.jsonl" });
+    emit({ ...supervisorEvent(), agentId: 42 });
+
+    expect(onSupervisorEvent).not.toHaveBeenCalled();
+    expect(result.current.status).toBe("ready");
+    expect(result.current.notice).toBeNull();
   });
 
   it("treats agent settlement as terminal while a prompt request is still pending", async () => {
@@ -492,6 +606,27 @@ describe("useSessionConnection", () => {
     expect(result.current.view.messages.at(-1)?.text).not.toContain("stale");
   });
 
+  it("does not synthesize terminal child state after abort HTTP success", async () => {
+    const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    emit({
+      type: "tool_execution_start",
+      toolCallId: "subagent-0",
+      toolName: "subagent",
+      args: { agent: "search", task: "collect papers" },
+    });
+    emit(subagentLaunchEnd());
+    expect(result.current.view.tools[0]).toMatchObject({ supervised: true, running: true, done: false });
+
+    await act(async () => result.current.abort());
+
+    expect(result.current.status).toBe("ready");
+    expect(result.current.view.tools[0]).toMatchObject({ supervised: true, running: true, done: false, error: false });
+
+    emit(supervisorEvent({ status: "error", latestMessage: "Stopped" }));
+    expect(result.current.view.tools[0]).toMatchObject({ running: false, done: true, error: true });
+  });
+
   it("does not let a stale abort response terminate a newer run", async () => {
     const pendingAbort = deferred<void>();
     vi.mocked(api.abortSession).mockReturnValueOnce(pendingAbort.promise);
@@ -513,6 +648,10 @@ describe("useSessionConnection", () => {
     expect(result.current.status).toBe("running");
     expect(result.current.view.isStreaming).toBe(true);
     expect(result.current.view.activeMessageKey).toBe("new-row");
+
+    await act(async () => result.current.abort());
+    expect(api.abortSession).toHaveBeenCalledTimes(2);
+    expect(result.current.status).toBe("ready");
   });
 
   it.each([

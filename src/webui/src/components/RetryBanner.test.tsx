@@ -5,12 +5,14 @@ import { PreferencesProvider } from "../preferences/PreferencesProvider";
 import type { RetryView } from "../session-reducer";
 import { RetryBanner } from "./RetryBanner";
 
-const retryView: RetryView = {
-  attempt: 2,
-  maxAttempts: 3,
-  errorMessage: "rate limit exceeded",
-  endsAt: Date.now() + 3000,
-};
+function createRetryView(): RetryView {
+  return {
+    attempt: 2,
+    maxAttempts: 3,
+    errorMessage: "rate limit exceeded",
+    endsAt: Date.now() + 3000,
+  };
+}
 
 function renderBanner(retry: RetryView) {
   return render(
@@ -31,19 +33,19 @@ afterEach(() => {
 
 describe("RetryBanner", () => {
   it("renders attempt count and error summary", () => {
-    renderBanner(retryView);
+    renderBanner(createRetryView());
     expect(screen.getByText("Retrying API call 2/3")).toBeTruthy();
     expect(screen.getByText("rate limit exceeded")).toBeTruthy();
     expect(screen.getByRole("status")).toBeTruthy();
   });
 
   it("shows the full error in the title attribute", () => {
-    renderBanner(retryView);
+    renderBanner(createRetryView());
     expect(screen.getByText("rate limit exceeded").getAttribute("title")).toBe("rate limit exceeded");
   });
 
   it("counts down every second from the endsAt deadline", () => {
-    renderBanner(retryView);
+    renderBanner(createRetryView());
     expect(screen.getByText("retrying in 3s")).toBeTruthy();
     act(() => {
       vi.advanceTimersByTime(1000);
@@ -56,7 +58,7 @@ describe("RetryBanner", () => {
   });
 
   it("renders the countdown from an already-elapsed deadline", () => {
-    renderBanner({ ...retryView, endsAt: Date.now() - 1000 });
+    renderBanner({ ...createRetryView(), endsAt: Date.now() - 1000 });
     expect(screen.getByText("retrying now…")).toBeTruthy();
   });
 });

@@ -15,6 +15,7 @@ import {
   parseSessionTree,
   parseSkillCommands,
   parseStatus,
+  parseSubagentSupervisorEvent,
   parseWebuiSettings,
 } from "./parsers";
 
@@ -129,17 +130,179 @@ describe("API response parsers", () => {
       parseSessionSnapshot({
         session,
         messages: [{ role: "assistant", content: [] }],
-        subagents: [{ toolCallId: "tool-1", childSessionId: "child-1", agent: "search" }],
+        subagents: [
+          {
+            ownerSessionId: "s1",
+            toolCallId: "tool-1",
+            childSessionId: "child-1",
+            agent: "search",
+            status: "working",
+          },
+        ],
       }),
     ).toMatchObject({ session, messages: [{ role: "assistant" }] });
     expect(
       parseChildSnapshot({
         session: { id: "child-1", cwd: "/p", sessionName: "easyresearch:search" },
         messages: [],
+        subagents: [],
       }).session,
     ).toEqual({ id: "child-1", cwd: "/p", sessionName: "easyresearch:search" });
     expect(() => parseActiveSession({ ...session, status: "unknown" })).toThrow();
     expect(() => parseSessionSnapshot({ session, messages: {}, subagents: [] })).toThrow();
+    expect(() => parseChildSnapshot({ session: { id: "child-1", cwd: "/p" }, messages: [] })).toThrow();
+  });
+
+  describe("subagent supervisor payloads", () => {
+    const liveEvent = {
+      type: "subagent_supervisor",
+      launchId: "launch-0",
+      ownerSessionId: "root",
+      toolCallId: "tool-0",
+      agent: "custom/search",
+      agentId: "opaque agent id",
+      childSessionId: "child-0",
+      status: "working",
+    } as const;
+
+    it.each(["working", "complete", "error"] as const)("accepts the %s status", (status) => {
+      expect(parseSubagentSupervisorEvent({ ...liveEvent, status })).toEqual({ ...liveEvent, status });
+    });
+
+    it("accepts optional terminal text and a delta-only child event", () => {
+      const event = {
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "next token" },
+      };
+      expect(parseSubagentSupervisorEvent({ ...liveEvent, latestMessage: "complete handoff", event })).toEqual({
+        ...liveEvent,
+        latestMessage: "complete handoff",
+        event,
+      });
+    });
+
+    it.each(["launchId", "ownerSessionId", "toolCallId", "agent", "agentId", "childSessionId"] as const)(
+      "rejects a missing or empty %s",
+      (field) => {
+        const missing = { ...liveEvent } as Record<string, unknown>;
+        delete missing[field];
+        expect(() => parseSubagentSupervisorEvent(missing)).toThrow();
+        expect(() => parseSubagentSupervisorEvent({ ...liveEvent, [field]: "  " })).toThrow();
+      },
+    );
+
+    it("rejects unknown statuses and wrong field types", () => {
+      expect(() => parseSubagentSupervisorEvent({ ...liveEvent, status: "queued" })).toThrow();
+      expect(() => parseSubagentSupervisorEvent({ ...liveEvent, latestMessage: 42 })).toThrow();
+      expect(() => parseSubagentSupervisorEvent({ ...liveEvent, event: "message_update" })).toThrow();
+      expect(() => parseSubagentSupervisorEvent({ ...liveEvent, toolCallId: 42 })).toThrow();
+    });
+
+    it.each(["sessionPath", "session_path"])("rejects a live %s leak", (field) => {
+      expect(() => parseSubagentSupervisorEvent({ ...liveEvent, [field]: "/private/child.jsonl" })).toThrow();
+    });
+
+    it.each(["sessionPath", "session_path"])("rejects a nested child %s leak", (field) => {
+      expect(() =>
+        parseSubagentSupervisorEvent({
+          ...liveEvent,
+          event: {
+            type: "message_start",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "visible" }],
+              [field]: "/private/child.jsonl",
+            },
+          },
+        }),
+      ).toThrow("session path");
+    });
+
+    it("rejects a nested hidden supervisor custom message", () => {
+      expect(() =>
+        parseSubagentSupervisorEvent({
+          ...liveEvent,
+          event: {
+            type: "message_end",
+            message: {
+              role: "custom",
+              customType: "easyresearch:agent_status",
+              content: "private handoff",
+            },
+          },
+        }),
+      ).toThrow("hidden supervisor status");
+    });
+
+    it("rejects cumulative assistant partials in nested child events", () => {
+      expect(() =>
+        parseSubagentSupervisorEvent({
+          ...liveEvent,
+          event: {
+            type: "message_update",
+            assistantMessageEvent: {
+              type: "text_delta",
+              contentIndex: 0,
+              delta: "next token",
+              partial: { role: "assistant", content: [{ type: "text", text: "all tokens" }] },
+            },
+          },
+        }),
+      ).toThrow();
+    });
+
+    it("parses current and legacy summaries while rejecting path-bearing summaries", () => {
+      const session = { id: "root", cwd: "/p", isStreaming: false, status: "ready" };
+      const summary = {
+        ownerSessionId: "root",
+        toolCallId: "tool-0",
+        childSessionId: "child-0",
+        agent: "custom/search",
+        status: "complete",
+        launchId: "launch-0",
+        agentId: "opaque agent id",
+        step: 2,
+        latestMessage: "done",
+      };
+      expect(parseSessionSnapshot({ session, messages: [], subagents: [summary] }).subagents).toEqual([summary]);
+      const legacy = {
+        ownerSessionId: "root",
+        toolCallId: "legacy-tool",
+        childSessionId: "legacy-child",
+        agent: "search",
+        status: "complete",
+      };
+      expect(parseSessionSnapshot({ session, messages: [], subagents: [legacy] }).subagents).toEqual([legacy]);
+      expect(() =>
+        parseSessionSnapshot({ session, messages: [], subagents: [{ ...summary, sessionPath: "/private/a.jsonl" }] }),
+      ).toThrow();
+      expect(() =>
+        parseSessionSnapshot({ session, messages: [], subagents: [{ ...summary, session_path: "/private/a.jsonl" }] }),
+      ).toThrow();
+      expect(() =>
+        parseSessionSnapshot({ session, messages: [], subagents: [{ ...summary, ownerSessionId: undefined }] }),
+      ).toThrow();
+      expect(() =>
+        parseSessionSnapshot({ session, messages: [], subagents: [{ ...summary, status: "queued" }] }),
+      ).toThrow();
+    });
+
+    it("parses direct subagents from child snapshots", () => {
+      const subagent = {
+        ownerSessionId: "child-0",
+        toolCallId: "nested-tool",
+        childSessionId: "grandchild-0",
+        agent: "search",
+        status: "working",
+      };
+      expect(
+        parseChildSnapshot({
+          session: { id: "child-0", cwd: "/p" },
+          messages: [],
+          subagents: [subagent],
+        }).subagents,
+      ).toEqual([subagent]);
+    });
   });
 
   it("parses config browser responses and rejects invalid entry types", () => {

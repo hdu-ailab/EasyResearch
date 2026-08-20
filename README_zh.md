@@ -8,7 +8,7 @@
 
 EasyResearch 是一条分工明确的论文生产流水线，由多个 agent 专家协作完成：
 
-- **Paper Assistant（论文助手）** —— 你的项目经理。规划流水线、在合适时机派发对应专家、原地等待结果并自主决定下一步；你只需沿途确认质量检查点。
+- **Paper Assistant（论文助手）** —— 你的项目经理。规划流水线、在合适时机派发对应专家、在后台专家 agent 运行时继续编排并自主决定下一步；你只需沿途确认质量检查点。
 - **Search（检索）agent** —— 在 OpenReview 和 arXiv 上查找候选论文，核验元数据，下载 PDF，转换为可读文本，并整理文献资料包。
 - **Experiment（实验）agent** —— 基于论文构建可复现实验：选择数据集、实现基线、多 seed 受控对比实验，产出正式证据。
 - **Writing（写作）agent** —— 起草并修订权威 Markdown 手稿，核验每条引用，导出 LaTeX/PDF。
@@ -22,7 +22,8 @@ EasyResearch 是一条分工明确的论文生产流水线，由多个 agent 专
 
 ## 环境要求
 
-- [Bun](https://bun.sh) 1.x 或更新（仅开发需要——npm 二进制无需任何运行时）
+- 通过 npm 安装时需要 `npm`
+- 只有在你想从当前仓库组装本地 npm 包时，才需要 [Bun](https://bun.sh) 1.x 或更新
 
 ## 安装
 
@@ -33,30 +34,46 @@ npm install -g easyresearch
 easyresearch
 ```
 
-各平台为自包含二进制——无需 Bun/Node。首次运行会创建 skill Python venv（留意终端进度）并解压内置 agents/skills。PDF 转换与 arXiv 功能需要 PATH 中有 Python 3；没有时这些功能自动降级。
+各平台为自包含二进制。npm 启动器使用 npm 自带的 Node 运行，但被选中的平台可执行文件本身不需要 Node 或 Bun。首次运行会创建 skill Python venv（留意终端进度）并解压内置 agents/skills。PDF 转换与 arXiv 功能需要 PATH 中有 Python 3；没有时这些功能自动降级。
 
-设置 `EASYRESEARCH_SKIP_SETUP=1` 可跳过首次运行引导。
+仅在已有完整内置资源安装时，才可设置 `EASYRESEARCH_SKIP_SETUP=1` 跳过引导。
 
-**支持平台**：linux-x64、darwin-arm64、windows-x64。其他平台（如 linux-arm64、darwin-x64）`npm install` 会给出明确错误提示——请自行编译：
+**支持平台**：linux-x64、darwin-arm64、windows-x64。其他平台上，`npm install` 会给出明确错误提示。
 
-```bash
+### 组装并安装本地 npm 包
+
+当你需要在本地验证生产安装包，而不是直接从 npm registry 安装时，使用这条路径。
+
+请选择与你实际运行 `easyresearch` 的机器一致的目标平台。
+
+#### POSIX shell
+
+```sh
 git clone https://github.com/hdu-ailab/EasyResearch.git
 cd EasyResearch
-bun install
-bun run build:release -- --only <target>   # 例如 linux-arm64
-# 二进制位于 release/easyresearch-<target>/bin/easyresearch
+bun install --frozen-lockfile
+
+TARGET=linux-x64 # Apple Silicon 请改为 darwin-arm64
+bun scripts/release.ts --dry-run --only "$TARGET"
+PLATFORM_TARBALL=$(npm pack "./release/easyresearch-$TARGET" --pack-destination ./release --silent)
+META_TARBALL=$(npm pack ./release/easyresearch --pack-destination ./release --silent)
+npm install -g "./release/$PLATFORM_TARBALL" "./release/$META_TARBALL"
+easyresearch --version
 ```
 
-有效的 `<target>` 名称见 `scripts/build.ts` 的 `TARGETS`。
+#### PowerShell
 
-### 从源码安装（开发）
+```powershell
+git clone https://github.com/hdu-ailab/EasyResearch.git
+cd EasyResearch
+bun install --frozen-lockfile
 
-```bash
-git clone <this-repo> easyresearch
-cd easyresearch
-bun install
-bun run build:web     # 构建 Web 前端（由后台服务器提供）
-bun link              # 把 `easyresearch` 命令挂到 PATH
+$Target = "windows-x64"
+bun scripts/release.ts --dry-run --only $Target
+$PlatformTarball = npm pack "./release/easyresearch-$Target" --pack-destination ./release --silent
+$MetaTarball = npm pack ./release/easyresearch --pack-destination ./release --silent
+npm install -g "./release/$PlatformTarball" "./release/$MetaTarball"
+easyresearch --version
 ```
 
 ## 启动
@@ -71,8 +88,6 @@ easyresearch --no-open          # 不自动打开浏览器
 easyresearch exit               # 停止后台服务
 ```
 
-未 link 时直接运行：`bun run src/cli/index.ts`。
-
 在首页选择一个论文项目目录并开始会话。所选目录即项目边界：项目配置位于
 `<cwd>/.easyresearch`，全局状态位于 `~/.easyresearch/agent`。
 
@@ -82,10 +97,10 @@ easyresearch exit               # 停止后台服务
 
 ### 1. Web UI（推荐）
 
-- **设置页**：按 agent 设置模型。写入 agent Markdown frontmatter 的
-  `model: provider/model-id` 字段（全局为 `~/.easyresearch/agent/agents/<name>.md`，
-  项目级为 `<cwd>/.easyresearch/agents/<name>.md`）。
-- **工作页 → Agent 面板**：当前会话的模型与思考强度覆盖。
+- **设置页**：为每个 agent 设置全局 `model` 与 `thinking`，写入
+  `~/.easyresearch/agent/agents/<name>.md`。
+- **工作页 → Agent 面板**：编辑的也是同一组全局字段。不存在按会话生效的
+  model 或 thinking 覆盖。
 
 ### 2. 模型目录与凭据
 
@@ -132,21 +147,14 @@ export OPENAI_API_KEY=sk-...
 ```markdown
 ---
 model: my-openai/gpt-4o
+thinking: medium
 ---
 ```
 
-写入 `<cwd>/.easyresearch/agents/paper-assistant.md`（项目级）或
-`~/.easyresearch/agent/agents/paper-assistant.md`（全局）。阶段 agent 未设置
-自己的 `model` 时继承 Paper Assistant 当前模型。
-
-## 开发
-
-```bash
-bun run test          # vitest
-bun run typecheck     # tsc --noEmit
-bun run build:web     # 构建 Vite 前端到 src/webui/dist
-bun run lint:web      # biome
-```
+写入 `~/.easyresearch/agent/agents/paper-assistant.md` 或其他全局 agent
+Markdown 文件。Agent 定义只采用 global-over-bundled 规则：
+`<cwd>/.easyresearch/agents/` 是惰性的，不参与运行时发现，也不会影响工作页或设置页。阶段 agent 未设置自己的 `model` 时，会继承 Paper Assistant 当前的全局模型。
 
 全局状态位于 `~/.easyresearch/agent`（settings、models、auth、sessions、
-agents）；项目级覆盖位于 `<exact-cwd>/.easyresearch`。
+agents）；项目级覆盖位于 `<exact-cwd>/.easyresearch`（settings、skills、
+prompts、themes、extensions）。

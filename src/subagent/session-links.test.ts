@@ -7,7 +7,7 @@ import {
 } from "./session-links";
 
 describe("subagent session links", () => {
-  it("keeps the latest valid link per tool-call step in final-entry order", () => {
+  it("keeps the latest valid link per identity in final-entry order", () => {
     expect(readSubagentSessionLinks([
       {
         type: "custom",
@@ -27,7 +27,14 @@ describe("subagent session links", () => {
       {
         type: "custom",
         customType: SUBAGENT_SESSION_LINK_ENTRY,
-        data: { toolCallId: "call-a", childSessionId: "child-a-new", agent: "search" },
+        data: {
+          toolCallId: "call-a",
+          childSessionId: "child-a-new",
+          agent: "search",
+          ownerSessionId: "root",
+          launchId: "launch-a",
+          agentId: "search_0",
+        },
       },
       {
         type: "custom",
@@ -40,9 +47,107 @@ describe("subagent session links", () => {
         data: { toolCallId: "call-b", childSessionId: "child-b-new", agent: "writing", step: 1 },
       },
     ])).toEqual([
-      { toolCallId: "call-a", childSessionId: "child-a-new", agent: "search" },
+      { toolCallId: "call-a", childSessionId: "child-a-old", agent: "search" },
+      {
+        toolCallId: "call-a",
+        childSessionId: "child-a-new",
+        agent: "search",
+        ownerSessionId: "root",
+        launchId: "launch-a",
+        agentId: "search_0",
+      },
       { toolCallId: "call-c", childSessionId: "child-c", agent: "figures", step: 2 },
       { toolCallId: "call-b", childSessionId: "child-b-new", agent: "writing", step: 1 },
+    ]);
+  });
+
+  it("keeps distinct launches when owners reuse the same tool-call id", () => {
+    expect(readSubagentSessionLinks([
+      {
+        type: "custom",
+        customType: SUBAGENT_SESSION_LINK_ENTRY,
+        data: {
+          toolCallId: "shared-call",
+          childSessionId: "root-child",
+          agent: "search",
+          ownerSessionId: "root",
+          launchId: "root-launch",
+          agentId: "search_0",
+        },
+      },
+      {
+        type: "custom",
+        customType: SUBAGENT_SESSION_LINK_ENTRY,
+        data: {
+          toolCallId: "shared-call",
+          childSessionId: "nested-child",
+          agent: "search",
+          ownerSessionId: "experiment-child",
+          launchId: "nested-launch",
+          agentId: "search_1",
+        },
+      },
+    ])).toEqual([
+      {
+        toolCallId: "shared-call",
+        childSessionId: "root-child",
+        agent: "search",
+        ownerSessionId: "root",
+        launchId: "root-launch",
+        agentId: "search_0",
+      },
+      {
+        toolCallId: "shared-call",
+        childSessionId: "nested-child",
+        agent: "search",
+        ownerSessionId: "experiment-child",
+        launchId: "nested-launch",
+        agentId: "search_1",
+      },
+    ]);
+  });
+
+  it("keeps legacy and launch-aware identities that share a tool-call step", () => {
+    expect(readSubagentSessionLinks([
+      {
+        type: "custom",
+        customType: SUBAGENT_SESSION_LINK_ENTRY,
+        data: {
+          toolCallId: "shared-call",
+          childSessionId: "legacy-child",
+          agent: "search",
+          step: 1,
+        },
+      },
+      {
+        type: "custom",
+        customType: SUBAGENT_SESSION_LINK_ENTRY,
+        data: {
+          toolCallId: "shared-call",
+          childSessionId: "nested-child",
+          agent: "search",
+          ownerSessionId: "experiment-child",
+          launchId: "nested-launch",
+          agentId: "search_1",
+          step: 1,
+        },
+      },
+    ])).toEqual([
+      {
+        toolCallId: "shared-call",
+        childSessionId: "legacy-child",
+        agent: "search",
+        step: 1,
+      },
+      {
+        toolCallId: "shared-call",
+        childSessionId: "nested-child",
+        agent: "search",
+        ownerSessionId: "experiment-child",
+        launchId: "nested-launch",
+        agentId: "search_1",
+        step: 1,
+      },
     ]);
   });
 
@@ -61,6 +166,9 @@ describe("subagent session links", () => {
       { ...valid, data: { ...valid.data, step: 0 } },
       { ...valid, data: { ...valid.data, step: 1.5 } },
       { ...valid, data: { ...valid.data, step: Number.POSITIVE_INFINITY } },
+      { ...valid, data: { ...valid.data, ownerSessionId: "" } },
+      { ...valid, data: { ...valid.data, launchId: 3 } },
+      { ...valid, data: { ...valid.data, agentId: " " } },
       { type: "custom", customType: "other", data: valid.data },
     ])).toEqual([
       { toolCallId: "parent-call", childSessionId: "child-uuid", agent: "search", step: 1 },

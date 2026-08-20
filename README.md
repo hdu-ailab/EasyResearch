@@ -2,13 +2,15 @@
 
 [![Release](https://github.com/hdu-ailab/EasyResearch/actions/workflows/release.yml/badge.svg)](https://github.com/hdu-ailab/EasyResearch/actions/workflows/release.yml)
 
+[简体中文](./README_zh.md) | [License](./LICENSE)
+
 Automated academic paper writing: a team of AI experts works the whole paper pipeline for you — from literature research and experiments to a finished manuscript — while you confirm the key checkpoints.
 
 ## How it works
 
 EasyResearch is a paper-production pipeline with a clear division of labor among its agent experts:
 
-- **Paper Assistant** — your project manager. It plans the pipeline, dispatches the right expert at the right moment, waits for each result, and decides the next step on its own. You only confirm quality checkpoints along the way.
+- **Paper Assistant** — your project manager. It plans the pipeline, dispatches the right expert at the right moment, keeps orchestrating while background specialists run, and decides the next step on its own. You only confirm quality checkpoints along the way.
 - **Search agent** — finds candidate papers on OpenReview and arXiv, verifies metadata, downloads the PDFs, converts them into readable text, and packages the literature.
 - **Experiment agent** — builds reproducible experiments from the papers: selects datasets, implements baselines, runs controlled trials with multiple seeds, and produces formal evidence.
 - **Writing agent** — drafts and revises the authoritative Markdown manuscript, verifies every citation, and exports LaTeX/PDF.
@@ -26,7 +28,8 @@ skill, and it will create, edit, or mount your custom agents and skills for you.
 
 ## Requirements
 
-- [Bun](https://bun.sh) 1.x or newer (development only — the npm binary needs nothing)
+- `npm` to install from the registry
+- [Bun](https://bun.sh) 1.x or newer only when you want to assemble local npm packages from this repository
 
 ## Install
 
@@ -37,35 +40,54 @@ npm install -g easyresearch
 easyresearch
 ```
 
-Self-contained binary per platform — no Bun/Node needed. The first run
-creates the skill Python venv (watch the terminal for progress) and
-extracts bundled agents/skills. Requires Python 3 on PATH for PDF
-conversion and arXiv features; without it those features degrade.
+Self-contained binary per platform. The npm launcher uses npm's Node runtime,
+but the selected platform executable needs neither Node nor Bun. The first run
+creates the skill Python venv (watch the terminal for progress) and extracts
+bundled agents/skills. Requires Python 3 on PATH for PDF conversion and arXiv
+features; without it those features degrade.
 
-Set `EASYRESEARCH_SKIP_SETUP=1` to skip first-run setup.
+Set `EASYRESEARCH_SKIP_SETUP=1` to skip setup only when a complete bundled
+installation already exists.
 
 **Supported platforms**: linux-x64, darwin-arm64, windows-x64. On other
-platforms (e.g. linux-arm64, darwin-x64) `npm install` fails with a clear
-message — build it yourself instead:
+platforms, `npm install` fails with a clear message.
 
-```bash
+### Build and install local npm packages
+
+Use this path when you need to validate the production package locally instead
+of installing from the registry.
+
+Choose the target that matches the machine where you will run the installed
+command.
+
+#### POSIX shell
+
+```sh
 git clone https://github.com/hdu-ailab/EasyResearch.git
 cd EasyResearch
-bun install
-bun run build:release -- --only <target>   # e.g. linux-arm64
-# binary at release/easyresearch-<target>/bin/easyresearch
+bun install --frozen-lockfile
+
+TARGET=linux-x64 # use darwin-arm64 on Apple Silicon
+bun scripts/release.ts --dry-run --only "$TARGET"
+PLATFORM_TARBALL=$(npm pack "./release/easyresearch-$TARGET" --pack-destination ./release --silent)
+META_TARBALL=$(npm pack ./release/easyresearch --pack-destination ./release --silent)
+npm install -g "./release/$PLATFORM_TARBALL" "./release/$META_TARBALL"
+easyresearch --version
 ```
 
-See `scripts/build.ts` `TARGETS` for valid `<target>` names.
+#### PowerShell
 
-### Install from source (development)
+```powershell
+git clone https://github.com/hdu-ailab/EasyResearch.git
+cd EasyResearch
+bun install --frozen-lockfile
 
-```bash
-git clone <this-repo> easyresearch
-cd easyresearch
-bun install
-bun run build:web     # build the Web frontend (served by the background server)
-bun link              # exposes the `easyresearch` command on PATH
+$Target = "windows-x64"
+bun scripts/release.ts --dry-run --only $Target
+$PlatformTarball = npm pack "./release/easyresearch-$Target" --pack-destination ./release --silent
+$MetaTarball = npm pack ./release/easyresearch --pack-destination ./release --silent
+npm install -g "./release/$PlatformTarball" "./release/$MetaTarball"
+easyresearch --version
 ```
 
 ## Start
@@ -80,8 +102,6 @@ easyresearch --no-open          # do not open the browser
 easyresearch exit               # stop the background server
 ```
 
-Without linking, run it directly: `bun run src/cli/index.ts`.
-
 On the home page, pick a paper project directory and start a session. The
 chosen directory is the project boundary: project config lives in
 `<cwd>/.easyresearch`, global state in `~/.easyresearch/agent`.
@@ -92,11 +112,10 @@ Three layers — pick per scenario:
 
 ### 1. Web UI (recommended)
 
-- **Settings page**: set the model per agent. This writes `model: provider/model-id`
-  into the agent's Markdown frontmatter (`~/.easyresearch/agent/agents/<name>.md`
-  globally, or `<cwd>/.easyresearch/agents/<name>.md` per project).
-- **Work page → Agent panel**: per-session model and thinking-strength
-  overrides for the current conversation.
+- **Settings page**: set each agent's global `model` and `thinking` in
+  `~/.easyresearch/agent/agents/<name>.md`.
+- **Work page → Agent panel**: edits those same global fields. There are no
+  per-session model or thinking overrides.
 
 ### 2. Model catalog and credentials
 
@@ -143,22 +162,16 @@ export OPENAI_API_KEY=sk-...
 ```markdown
 ---
 model: my-openai/gpt-4o
+thinking: medium
 ---
 ```
 
-Set it in `<cwd>/.easyresearch/agents/paper-assistant.md` (project) or
-`~/.easyresearch/agent/agents/paper-assistant.md` (global). Stage agents
-inherit the Paper Assistant's current model when they have no `model` of
-their own.
-
-## Development
-
-```bash
-bun run test          # vitest
-bun run typecheck     # tsc --noEmit
-bun run build:web     # build the Vite frontend into src/webui/dist
-bun run lint:web      # biome
-```
+Set it in `~/.easyresearch/agent/agents/paper-assistant.md` or another global
+agent Markdown file. Agent definitions are global-over-bundled only:
+`<cwd>/.easyresearch/agents/` is inert and does not affect runtime discovery,
+the Work page, or the Settings page. Stage agents inherit the Paper
+Assistant's current global model when they have no `model` of their own.
 
 Global state lives under `~/.easyresearch/agent` (settings, models, auth,
-sessions, agents); project overrides live at `<exact-cwd>/.easyresearch`.
+sessions, agents); project overrides live at `<exact-cwd>/.easyresearch`
+(settings, skills, prompts, themes, extensions).

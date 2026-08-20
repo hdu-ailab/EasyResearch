@@ -1,8 +1,8 @@
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 import { createSubagentTool, formatSubagentDescription } from "../../subagent/tool";
 import { discoverAgents, PAPER_ASSISTANT_AGENT } from "../../subagent/agents";
-import type { AgentConfig } from "../../subagent/agents";
-import { SUBAGENT_SESSION_LINK_ENTRY } from "../../subagent/session-links";
+import type { AgentCatalog, SubagentCoordinator } from "../../subagent/coordinator";
+import type { SubagentSupervisor } from "../../subagent/supervisor";
 import {
   createPaperAssistantConfigResolver,
   type PaperAssistantConfigResolverOptions,
@@ -10,15 +10,18 @@ import {
 
 /**
  * ADR-063: atomic extension registering the `subagent` dispatch tool for the
- * Paper Assistant runtime. The `agentProvider` filters specialists by the
- * effective paper-assistant definition's `subagents` allowlist (ADR-022/035);
- * the tool description's third line lists those available subagents, resolved
- * at `session_start` per cwd (ADR-084).
+ * Paper Assistant runtime. Each extension instance closes over the coordinator
+ * and direct-child supervisor owned by one root AgentSession.
  */
-export function createSubagentDispatchExtension(options: PaperAssistantConfigResolverOptions = {}): InlineExtension {
+export interface SubagentDispatchExtensionOptions extends PaperAssistantConfigResolverOptions {
+  coordinator: SubagentCoordinator;
+  supervisor: SubagentSupervisor;
+}
+
+export function createSubagentDispatchExtension(options: SubagentDispatchExtensionOptions): InlineExtension {
   return async (pi) => {
     const resolver = createPaperAssistantConfigResolver(options);
-    const agentProvider = async (cwd: string): Promise<AgentConfig[]> => {
+    const resolveCatalog = async (cwd: string): Promise<{ catalog: AgentCatalog; leaf: boolean }> => {
       const config = await resolver.resolve(cwd);
       const { agents } = await discoverAgents({
         cwd,
@@ -27,23 +30,23 @@ export function createSubagentDispatchExtension(options: PaperAssistantConfigRes
         bundledSkillsDir: resolver.bundledSkillsDir,
         homeDir: resolver.homeDir,
       });
-      const specialists = agents.filter((agent) => agent.name !== PAPER_ASSISTANT_AGENT);
-      if (config.subagents === undefined) return specialists;
-      const allowed = new Set(config.subagents);
-      return specialists.filter((agent) => allowed.has(agent.name));
+      const all = agents;
+      const allowed = config.subagents === undefined ? undefined : new Set(config.subagents);
+      const available = all.filter((agent) =>
+        agent.enabled
+        && agent.name !== PAPER_ASSISTANT_AGENT
+        && (allowed === undefined || allowed.has(agent.name)));
+      return { catalog: { all, available }, leaf: config.subagents?.length === 0 };
     };
-    const register = async (available: AgentConfig[]) => {
-      pi.registerTool(createSubagentTool({
-        persistSessionLink: (link) => pi.appendEntry(SUBAGENT_SESSION_LINK_ENTRY, link),
-        agentProvider,
-        description: formatSubagentDescription(available.map((agent) => agent.name)),
-      }));
-    };
-    await register([]);
     pi.on("session_start", async (_event, ctx) => {
-      await register(await agentProvider(ctx.cwd));
+      const { catalog, leaf } = await resolveCatalog(ctx.cwd);
+      if (leaf) return;
+      pi.registerTool(createSubagentTool({
+        coordinator: options.coordinator,
+        supervisor: options.supervisor,
+        catalog,
+        description: formatSubagentDescription(catalog.available.map((agent) => agent.name)),
+      }));
     });
   };
 }
-
-export default createSubagentDispatchExtension();

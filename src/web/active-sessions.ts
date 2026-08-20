@@ -50,6 +50,7 @@ export interface ActiveSessionRegistryOptions {
  */
 export class ActiveSessionRegistry {
   private readonly records = new Map<string, ActiveRecord>();
+  private readonly opening = new Map<string, Promise<ActiveSessionDto>>();
   private readonly idleTimeoutMs: number;
   private readonly resolveLaunchThinking?: (cwd: string) => Promise<string | undefined>;
 
@@ -67,20 +68,30 @@ export class ActiveSessionRegistry {
     return this.launch({ cwd: input.cwd });
   }
 
-  async open(input: OpenSessionInput): Promise<ActiveSessionDto> {
+  open(input: OpenSessionInput): Promise<ActiveSessionDto> {
     for (const record of this.records.values()) {
       if (
+        record.cwd === input.cwd &&
         record.sessionPath === input.sessionPath &&
         (record.dto.status === "starting" || record.dto.status === "ready" || record.dto.status === "running")
       ) {
         this.resetIdleTimer(record);
-        return { ...record.dto };
+        return Promise.resolve({ ...record.dto });
       }
     }
-    return this.launch({
+    const key = JSON.stringify([input.cwd, input.sessionPath]);
+    const pending = this.opening.get(key);
+    if (pending) return pending;
+
+    let tracked!: Promise<ActiveSessionDto>;
+    tracked = this.launch({
       cwd: input.cwd,
       sessionPath: input.sessionPath,
+    }).finally(() => {
+      if (this.opening.get(key) === tracked) this.opening.delete(key);
     });
+    this.opening.set(key, tracked);
+    return tracked;
   }
 
   list(): ActiveSessionDto[] {
@@ -137,11 +148,7 @@ export class ActiveSessionRegistry {
   async abort(id: string): Promise<void> {
     return this.withRecord(id, async (record) => {
       await record.client.abort();
-      record.dto.isStreaming = false;
-      if (record.dto.status !== "stopped" && record.dto.status !== "error") {
-        record.dto.status = "ready";
-        this.scheduleIdleStop(record);
-      }
+      await this.refreshFromClient(record);
     });
   }
 
@@ -227,10 +234,8 @@ export class ActiveSessionRegistry {
     if (!record) return;
     this.clearIdleTimer(record);
     if (!record.stopPromise) {
-      record.stopPromise = (async () => {
-        for (const listener of record.listeners) {
-          listener({ type: "session_deactivated", sessionId: record.dto.id });
-        }
+      let tracked!: Promise<void>;
+      tracked = (async () => {
         await record.fileWatcher.close().catch((error: unknown) => {
           (this.logger ?? logger).warn("file watcher close failed", {
             sessionId: record.dto.id,
@@ -241,10 +246,17 @@ export class ActiveSessionRegistry {
         record.dto.isStreaming = false;
         record.dto.status = "stopped";
         record.dto.error = undefined;
+        for (const listener of record.listeners) {
+          listener({ type: "session_deactivated", sessionId: record.dto.id });
+        }
         record.dispose();
         (this.logger ?? logger).info("session deactivated", { sessionId: record.dto.id });
-        this.records.delete(id);
-      })();
+        if (this.records.get(id) === record) this.records.delete(id);
+      })().catch((error) => {
+        if (record.stopPromise === tracked) record.stopPromise = null;
+        throw error;
+      });
+      record.stopPromise = tracked;
     }
     await record.stopPromise;
   }
@@ -272,6 +284,9 @@ export class ActiveSessionRegistry {
   }
 
   async shutdown(): Promise<void> {
+    while (this.opening.size > 0) {
+      await Promise.allSettled([...this.opening.values()]);
+    }
     await Promise.all([...this.records.values()].map((r) => this.stop(r.dto.id)));
   }
 
@@ -386,6 +401,7 @@ export class ActiveSessionRegistry {
       const name = (event as { name?: unknown }).name;
       record.dto.sessionName = typeof name === "string" ? name : undefined;
     }
+    if (type !== "agent_start" && type !== "agent_settled") this.reconcileIdleLease(record);
   }
 
   private clearIdleTimer(record: ActiveRecord): void {
@@ -396,16 +412,37 @@ export class ActiveSessionRegistry {
 
   private resetIdleTimer(record: ActiveRecord): void {
     this.clearIdleTimer(record);
-    if (record.dto.status === "ready") this.scheduleIdleStop(record);
+    this.scheduleIdleStop(record);
   }
 
   private scheduleIdleStop(record: ActiveRecord): void {
     this.clearIdleTimer(record);
-    if (this.idleTimeoutMs < 0 || record.dto.status !== "ready") return;
+    if (this.idleTimeoutMs < 0 || !this.canIdleStop(record)) return;
     record.idleTimer = setTimeout(() => {
       record.idleTimer = null;
-      if (!record.dto.isStreaming && record.dto.status === "ready") void this.stop(record.dto.id);
+      if (this.records.get(record.dto.id) === record && this.canIdleStop(record)) {
+        void this.stop(record.dto.id).catch((error: unknown) => {
+          (this.logger ?? logger).warn("idle session cleanup failed", {
+            sessionId: record.dto.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }
     }, this.idleTimeoutMs);
+  }
+
+  private reconcileIdleLease(record: ActiveRecord): void {
+    if (!this.canIdleStop(record)) {
+      this.clearIdleTimer(record);
+      return;
+    }
+    if (record.idleTimer === null) this.scheduleIdleStop(record);
+  }
+
+  private canIdleStop(record: ActiveRecord): boolean {
+    return record.dto.status === "ready"
+      && !record.dto.isStreaming
+      && !record.client.hasBackgroundWork();
   }
 
   private async refreshFromClient(record: ActiveRecord): Promise<void> {
@@ -417,6 +454,7 @@ export class ActiveSessionRegistry {
       }
       if (state.sessionFile) record.dto.sessionFile = state.sessionFile;
       if (state.sessionName) record.dto.sessionName = state.sessionName;
+      this.reconcileIdleLease(record);
     } catch (error) {
       if (record.dto.status !== "stopped") {
         record.dto.status = "error";

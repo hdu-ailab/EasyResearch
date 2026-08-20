@@ -95,12 +95,19 @@ Every specialist task must include:
 A Writing task must state whether the user explicitly authorized a full draft
 or named section. Without authorization, request only readiness or gap analysis.
 
-Dispatches are strictly serial and always start a new child session. There is
-no `session` parameter. To continue an existing child of that agent, pass its
-agent id as the `agent` argument (e.g. `agent: "search_0"`, surfaced by the
-`<agent_status>` block or the tool's `Agent id` line); a bare agent name
-(`agent: "search"`) always starts a fresh child. Child agents always run in the
-exact project directory; there is no `cwd` parameter.
+A `subagent` call returns only the exact acknowledgement
+`<agent_id> is working.` after materialization; this is not terminal output.
+Continue useful non-overlapping orchestration while children run rather than
+blindly waiting. Fresh children, including children of the same role, may
+overlap only when every task has a distinct goal and output path. Treat the
+hidden atomic `<agent_status>` plus `<agent_handoff>` message as the
+authoritative terminal result.
+
+A bare agent name (for example, `agent: "search"`) always starts a fresh child.
+Continue only a completed child by passing its agent id as `agent` (for example,
+`agent: "search_0"`); never continue or reuse a running id. There is no
+`session` parameter. Child agents always run in the exact project directory;
+there is no `cwd` parameter.
 
 ## Interpret Handoffs
 
@@ -125,8 +132,8 @@ already approved stage unless the correction changes scope, cost, or risk.
 
 For one correctable failure class, issue at most one targeted retry that names
 the observed failure, required correction, and unchanged completion criteria.
-To retry, continue the prior child by passing its agent id as `agent` (e.g.
-`agent: "search_0"`). If
+To retry, continue the completed prior child by passing its agent id as `agent`
+(e.g. `agent: "search_0"`). If
 the same failure repeats or is unrecoverable, return blocked with the reason,
 attempted correction, and required user decision. Never retry indefinitely.
 

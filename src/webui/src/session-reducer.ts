@@ -1,9 +1,8 @@
 import type { AgentSessionEvent, MessageUpdateEvent } from "@earendil-works/pi-coding-agent";
-import type { SessionSnapshotDto, SubagentSessionSummaryDto } from "../../web/contracts";
+import type { SessionSnapshotDto, SubagentSessionSummaryDto, SubagentSupervisorEventDto } from "../../web/contracts";
 import { PAPER_ASSISTANT_AGENT } from "./agent-identity";
 
-/** Latest live activity of a running subagent: a text turn or a tool call
- * (ADR-040 child event payload). */
+/** Latest live activity of a running subagent from a dedicated supervisor event. */
 export type SubagentActivity =
   | { kind: "text"; text: string }
   | { kind: "tool"; name: string; args?: string; state: "running" | "done" | "error" };
@@ -16,25 +15,32 @@ export interface ToolView {
   running: boolean;
   done: boolean;
   error: boolean;
+  /** Session that owns this supervised launch. */
+  ownerSessionId?: string;
+  /** Stable supervisor launch identity. */
+  launchId?: string;
+  /** User-facing opaque Agent invocation id, such as `search_0`. */
+  agentId?: string;
+  /** True after launch acknowledgement or persisted supervisor hydration. */
+  supervised?: boolean;
   /** Compact string of the call arguments, e.g. `ls -la`. */
   args?: string;
   /** Compact string of the tool output, shown in the expanded body. */
   output?: string;
   /** Complete latest assistant message from a `subagent` tool. */
   latestMessage?: string;
-  /** Latest live activity from the running subagent: the most recent tool
-   * call or text turn, streamed via the child event payload (ADR-040). */
+  /** Latest live activity from the running subagent. */
   latestActivity?: SubagentActivity;
-  /** Current chain step from a `subagent` tool update. */
+  /** Persisted legacy chain step; current launches are single-child. */
   step?: number;
-  /** Agent name for `subagent` tool rows (ADR-037/ADR-040: tab derivation). */
+  /** Agent name for `subagent` tool rows. */
   agentName?: string;
   /** Skill name when a `read` tool call loads a SKILL.md (like the TUI's
    * `[skill] <label>` classification); the transcript renders a skill card. */
   skillName?: string;
   /** Exact persisted child session UUID for this invocation. */
   sessionId?: string;
-  /** Every exact child mapping for this tool call, including chain steps. */
+  /** Persisted child mappings, including legacy chain steps. */
   sessionLinks?: SubagentSessionSummaryDto[];
   /** Position in the shared message/tool stream; tools interleave with messages. */
   order: number;
@@ -86,11 +92,14 @@ export interface SessionViewState {
    * agent context (ADR-083); replaced wholesale by `queue_update` and cleared
    * when the run ends. */
   steers: SteerView[];
+  /** Persisted supervisor summaries from the latest snapshot, including nested owners. */
+  subagentSummaries?: SubagentSessionSummaryDto[];
 }
 
 export interface SteerView {
   key: string;
   text: string;
+  skillInvocation?: { name: string; args?: string };
 }
 
 export interface RetryView {
@@ -158,11 +167,15 @@ function keyFor(message: { role?: unknown; id?: unknown; timestamp?: unknown }, 
   return identityFor(message) ?? String(fallback);
 }
 
-const SKILL_INVOCATION_PATTERN = /^<skill name="([^"]+)"[^>]*>[\s\S]*?<\/skill>(?:\s+([\s\S]*))?$/;
+const EXPANDED_SKILL_INVOCATION_PATTERN = /^<skill name="([^"]+)"[^>]*>[\s\S]*?<\/skill>(?:\s+([\s\S]*))?$/;
+const LITERAL_SKILL_INVOCATION_PATTERN = /^\/skill:([^\s]+)(?:\s+([\s\S]*))?$/;
 
 export function parseSkillInvocation(text: string): { name: string; args?: string } | undefined {
-  if (!text.startsWith("<skill name=")) return undefined;
-  const match = SKILL_INVOCATION_PATTERN.exec(text);
+  const match = text.startsWith("<skill name=")
+    ? EXPANDED_SKILL_INVOCATION_PATTERN.exec(text)
+    : text.startsWith("/skill:")
+      ? LITERAL_SKILL_INVOCATION_PATTERN.exec(text)
+      : null;
   if (!match) return undefined;
   const name = match[1] ?? "";
   const args = match[2]?.trim();
@@ -344,7 +357,8 @@ export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
     subagentName,
     ...(sessionName !== undefined ? { sessionName } : {}),
     nextOrder: 0,
-    steers: (snapshot.steering ?? []).map((text, index) => ({ key: `steer:${index}:${text}`, text })),
+    steers: (snapshot.steering ?? []).map((text, index) => createSteerView(text, `steer:${index}`)),
+    subagentSummaries: snapshot.subagents ?? [],
   };
   const next = () => state.nextOrder++;
   let cursorCandidate: SessionMessageView | undefined;
@@ -445,16 +459,18 @@ export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
     state.activeMessageKey = cursorCandidate.key;
     cursorCandidate.streaming = true;
   }
-  return applySubagentSummaries(state, snapshot.subagents ?? []);
+  return applySubagentSummaries(state, snapshot.subagents ?? [], snapshot.session.id);
 }
 
 export function applySubagentSummaries(
   state: SessionViewState,
   summaries: SubagentSessionSummaryDto[],
+  ownerSessionId?: string,
 ): SessionViewState {
   if (summaries.length === 0) return state;
   const byToolCall = new Map<string, SubagentSessionSummaryDto[]>();
   for (const summary of summaries) {
+    if (ownerSessionId !== undefined && summary.ownerSessionId !== ownerSessionId) continue;
     const links = byToolCall.get(summary.toolCallId) ?? [];
     links.push(summary);
     byToolCall.set(summary.toolCallId, links);
@@ -466,40 +482,88 @@ export function applySubagentSummaries(
     const summary = links.at(-1);
     if (!summary) return tool;
     changed = true;
+    const terminal = summary.status !== "working";
     return {
       ...tool,
+      ownerSessionId: summary.ownerSessionId,
+      launchId: summary.launchId,
+      agentId: summary.agentId,
+      supervised: true,
+      running: !terminal,
+      done: terminal,
+      error: summary.status === "error",
       agentName: summary.agent,
       sessionId: summary.childSessionId,
       sessionLinks: links,
       ...(summary.step !== undefined ? { step: summary.step } : {}),
-      ...(usableText(summary.latestMessage) !== undefined ? { latestMessage: summary.latestMessage } : {}),
+      latestMessage: usableText(summary.latestMessage),
+      latestActivity: terminal ? undefined : tool.latestActivity,
     };
   });
   return changed ? { ...state, tools } : state;
 }
 
-export function nestedSubagentEvent(event: AgentSessionEvent):
-  | {
-      sessionId?: string;
-      toolCallId: string;
-      agent: string;
-      event?: AgentSessionEvent;
-    }
-  | undefined {
-  if (event.type !== "tool_execution_update") return undefined;
-  const value = event as unknown as {
-    toolCallId?: unknown;
-    partialResult?: { details?: { subagent?: Record<string, unknown> } };
-  };
-  const subagent = value.partialResult?.details?.subagent;
-  if (typeof value.toolCallId !== "string" || typeof subagent?.agent !== "string" || !subagent.agent.trim()) {
+export function hydrateSubagentSummaryOwner(
+  state: SessionViewState,
+  summaries: SubagentSessionSummaryDto[],
+  ownerSessionId: string,
+): SessionViewState {
+  const owned = summaries.filter((summary) => summary.ownerSessionId === ownerSessionId);
+  if (owned.length === 0) return state;
+  const represented = new Set(
+    state.tools
+      .filter((tool) => tool.name === "subagent" && tool.toolCallId !== undefined)
+      .map((tool) => tool.toolCallId as string),
+  );
+  let nextOrder = state.nextOrder;
+  const placeholders: ToolView[] = [];
+  for (const summary of owned) {
+    if (represented.has(summary.toolCallId)) continue;
+    represented.add(summary.toolCallId);
+    placeholders.push({
+      key: summary.toolCallId,
+      toolCallId: summary.toolCallId,
+      name: "subagent",
+      running: false,
+      done: false,
+      error: false,
+      ownerSessionId,
+      order: nextOrder++,
+    });
+  }
+  const withPlaceholders =
+    placeholders.length === 0 ? state : { ...state, tools: [...state.tools, ...placeholders], nextOrder };
+  return applySubagentSummaries(withPlaceholders, owned, ownerSessionId);
+}
+
+interface SubagentLaunchIdentity {
+  launchId: string;
+  ownerSessionId: string;
+  toolCallId: string;
+  agent: string;
+  agentId: string;
+  childSessionId: string;
+}
+
+function subagentLaunchIdentity(result: unknown, expectedToolCallId: string): SubagentLaunchIdentity | undefined {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return undefined;
+  const details = (result as { details?: unknown }).details;
+  if (!details || typeof details !== "object" || Array.isArray(details)) return undefined;
+  const value = details as { mode?: unknown; background?: unknown; job?: unknown };
+  if (value.mode !== "single" || value.background !== true || !value.job || typeof value.job !== "object") {
     return undefined;
   }
+  const job = value.job as Record<string, unknown>;
+  if (job.status !== "working" || job.toolCallId !== expectedToolCallId) return undefined;
+  const keys = ["launchId", "ownerSessionId", "toolCallId", "agent", "agentId", "childSessionId"] as const;
+  if (keys.some((key) => typeof job[key] !== "string" || !(job[key] as string).trim())) return undefined;
   return {
-    toolCallId: value.toolCallId,
-    agent: subagent.agent,
-    ...(typeof subagent.sessionId === "string" && subagent.sessionId ? { sessionId: subagent.sessionId } : {}),
-    ...(subagent.event && typeof subagent.event === "object" ? { event: subagent.event as AgentSessionEvent } : {}),
+    launchId: job.launchId as string,
+    ownerSessionId: job.ownerSessionId as string,
+    toolCallId: job.toolCallId as string,
+    agent: job.agent as string,
+    agentId: job.agentId as string,
+    childSessionId: job.childSessionId as string,
   };
 }
 
@@ -552,9 +616,62 @@ function applySubagentEventActivity(
       const text = childMessageText((event as { message?: unknown }).message);
       return text ? { kind: "text", text } : current;
     }
+    case "message_update": {
+      const update = assistantUpdateOf(event as MessageUpdateEvent);
+      if (update?.kind !== "text" || !update.delta) return current;
+      return { kind: "text", text: current?.kind === "text" ? current.text + update.delta : update.delta };
+    }
     default:
       return current;
   }
+}
+
+export function reduceSubagentSupervisorEvent(
+  state: SessionViewState,
+  event: SubagentSupervisorEventDto,
+): SessionViewState {
+  let changed = false;
+  const tools = state.tools.map((tool) => {
+    if (
+      tool.name !== "subagent" ||
+      (tool.ownerSessionId !== undefined && tool.ownerSessionId !== event.ownerSessionId) ||
+      tool.toolCallId !== event.toolCallId
+    ) {
+      return tool;
+    }
+    if (tool.supervised && tool.done) return tool;
+
+    changed = true;
+    const terminal = event.status !== "working";
+    const latestMessage = usableText(event.latestMessage);
+    const latestActivity = terminal
+      ? undefined
+      : event.event
+        ? applySubagentEventActivity(event.event as unknown as AgentSessionEvent, tool.latestActivity)
+        : tool.latestActivity;
+    return {
+      ...tool,
+      ownerSessionId: event.ownerSessionId,
+      launchId: event.launchId,
+      agentId: event.agentId,
+      supervised: true,
+      running: !terminal,
+      done: terminal,
+      error: event.status === "error",
+      agentName: event.agent,
+      sessionId: event.childSessionId,
+      latestMessage: latestMessage ?? tool.latestMessage,
+      latestActivity,
+    };
+  });
+  return changed ? { ...state, tools } : state;
+}
+
+function createSteerView(text: string, keyPrefix = `steer:${Math.random().toString(36).slice(2)}`): SteerView {
+  const skillInvocation = parseSkillInvocation(text);
+  if (!skillInvocation) return { key: `${keyPrefix}:${text}`, text };
+  const compactText = `/skill:${skillInvocation.name}${skillInvocation.args ? ` ${skillInvocation.args}` : ""}`;
+  return { key: `${keyPrefix}:${compactText}`, text: compactText, skillInvocation };
 }
 
 /**
@@ -566,14 +683,15 @@ function applySubagentEventActivity(
 function syncSteers(current: SteerView[], texts: readonly string[]): SteerView[] {
   const pool = current.slice();
   const next: SteerView[] = [];
-  for (const text of texts) {
-    const index = pool.findIndex((steer) => steer.text === text);
+  for (const rawText of texts) {
+    const candidate = createSteerView(rawText);
+    const index = pool.findIndex((steer) => steer.text === candidate.text);
     const matched = pool[index];
     if (matched !== undefined) {
       next.push(matched);
       pool.splice(index, 1);
     } else {
-      next.push({ key: `steer:${Math.random().toString(36).slice(2)}`, text });
+      next.push(candidate);
     }
   }
   return next;
@@ -583,28 +701,73 @@ function syncSteers(current: SteerView[], texts: readonly string[]): SteerView[]
  * that is keyed by the persisted tool invocation. */
 export function mergeSnapshot(state: SessionViewState, snapshot: SessionSnapshotDto): SessionViewState {
   const next = fromSnapshot(snapshot);
+  const scopedKey = (ownerSessionId: string, toolCallId: string) => `${ownerSessionId}\u0000${toolCallId}`;
   const summaries = new Map<string, SubagentSessionSummaryDto>();
-  for (const summary of snapshot.subagents ?? []) summaries.set(summary.toolCallId, summary);
+  for (const summary of snapshot.subagents ?? []) {
+    summaries.set(scopedKey(summary.ownerSessionId, summary.toolCallId), summary);
+  }
   const priorSubagents = new Map<string, ToolView>();
   for (const tool of state.tools) {
-    if (tool.name === "subagent" && tool.toolCallId !== undefined) priorSubagents.set(tool.toolCallId, tool);
+    if (tool.name === "subagent" && tool.toolCallId !== undefined) {
+      priorSubagents.set(scopedKey(tool.ownerSessionId ?? snapshot.session.id, tool.toolCallId), tool);
+    }
   }
   next.tools = next.tools.map((tool) => {
     if (tool.name !== "subagent" || tool.toolCallId === undefined) return tool;
-    const prior = priorSubagents.get(tool.toolCallId);
+    const ownerSessionId = tool.ownerSessionId ?? snapshot.session.id;
+    const key = scopedKey(ownerSessionId, tool.toolCallId);
+    const prior = priorSubagents.get(key);
     if (!prior) return tool;
-    const summary = summaries.get(tool.toolCallId);
+    const summary = summaries.get(key);
     const compatible =
       summary === undefined ||
       (summary.step === prior.step && (prior.sessionId === undefined || summary.childSessionId === prior.sessionId));
+    const preserveLiveSupervised = compatible && summary === undefined && prior.supervised && !prior.done;
+    if (prior.supervised && prior.done && (!tool.done || tool.running)) {
+      return {
+        ...tool,
+        ownerSessionId: prior.ownerSessionId,
+        launchId: prior.launchId,
+        agentId: prior.agentId,
+        supervised: true,
+        running: false,
+        done: true,
+        error: prior.error,
+        agentName: prior.agentName,
+        sessionId: prior.sessionId,
+        sessionLinks: prior.sessionLinks ?? tool.sessionLinks,
+        step: prior.step,
+        latestMessage: prior.latestMessage,
+        latestActivity: undefined,
+      };
+    }
     return {
       ...tool,
-      ...(compatible && usableText(tool.latestMessage) === undefined && usableText(prior.latestMessage) !== undefined
+      ...(compatible &&
+      (!tool.done || preserveLiveSupervised) &&
+      usableText(tool.latestMessage) === undefined &&
+      usableText(prior.latestMessage) !== undefined
         ? { latestMessage: prior.latestMessage }
+        : {}),
+      ...(compatible && (!tool.done || preserveLiveSupervised) && prior.latestActivity !== undefined
+        ? { latestActivity: prior.latestActivity }
         : {}),
       ...(compatible && summary === undefined && prior.agentName !== undefined ? { agentName: prior.agentName } : {}),
       ...(compatible && summary?.step === undefined && prior.step !== undefined ? { step: prior.step } : {}),
       ...(compatible && summary === undefined && prior.sessionId !== undefined ? { sessionId: prior.sessionId } : {}),
+      ...(compatible && summary === undefined && prior.ownerSessionId !== undefined
+        ? { ownerSessionId: prior.ownerSessionId }
+        : {}),
+      ...(compatible && summary === undefined && prior.launchId !== undefined ? { launchId: prior.launchId } : {}),
+      ...(compatible && summary === undefined && prior.agentId !== undefined ? { agentId: prior.agentId } : {}),
+      ...(compatible && summary === undefined && prior.supervised
+        ? {
+            supervised: true,
+            running: prior.running,
+            done: prior.done,
+            error: prior.error,
+          }
+        : {}),
       ...(compatible && tool.sessionLinks === undefined && prior.sessionLinks !== undefined
         ? { sessionLinks: prior.sessionLinks }
         : {}),
@@ -621,7 +784,7 @@ export function terminateSessionRun(state: SessionViewState, clearError = false)
     retry: null,
     activeMessageKey: undefined,
     messages: state.messages.map((message) => ({ ...message, isThinking: false, streaming: false })),
-    tools: state.tools.map((tool) => ({ ...tool, running: false })),
+    tools: state.tools.map((tool) => (tool.supervised && !tool.done ? tool : { ...tool, running: false })),
     steers: [],
   };
 }
@@ -760,6 +923,7 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
     }
     case "message_end": {
       const message = event.message as UnknownMessage;
+      if (isDirectBashExecution(message) || isToolResultMessage(message) || isAgentStatusMessage(message)) return state;
       const identity = identityFor(message);
       const key =
         state.activeMessageKey ??
@@ -880,6 +1044,24 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
         ...state,
         tools: state.tools.map((tool) => {
           if (tool.key !== toolCallId) return tool;
+          const launch = tool.name === "subagent" && !isError ? subagentLaunchIdentity(result, toolCallId) : undefined;
+          if (launch) {
+            if (tool.supervised && tool.done) return tool;
+            return {
+              ...tool,
+              ownerSessionId: launch.ownerSessionId,
+              launchId: launch.launchId,
+              agentId: launch.agentId,
+              supervised: true,
+              running: true,
+              done: false,
+              error: false,
+              agentName: launch.agent,
+              sessionId: launch.childSessionId,
+              latestMessage: undefined,
+              latestActivity: undefined,
+            };
+          }
           const text = outputText(result);
           const finalText = usableText(text);
           const output = compactOutput(result);
@@ -896,74 +1078,15 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
     case "tool_execution_update": {
       const { toolCallId, partialResult } = event as unknown as {
         toolCallId: string;
-        partialResult?: {
-          content?: unknown;
-          details?: {
-            subagent?: {
-              agent?: unknown;
-              step?: unknown;
-              sessionId?: unknown;
-              latestMessage?: unknown;
-              event?: unknown;
-            };
-          };
-        };
+        partialResult?: { content?: unknown };
       };
-      const subagent = partialResult?.details?.subagent;
       const output = compactOutput(partialResult?.content);
+      if (!output) return state;
       let changed = false;
       const tools = state.tools.map((tool) => {
-        if (tool.key !== toolCallId) return tool;
-        if (tool.name !== "subagent") {
-          if (!tool.running || !output) return tool;
-          changed = true;
-          return { ...tool, output };
-        }
-
-        const agentName = typeof subagent?.agent === "string" && subagent.agent.trim() ? subagent.agent : undefined;
-        const step = typeof subagent?.step === "number" && Number.isFinite(subagent.step) ? subagent.step : undefined;
-        const latestMessage =
-          typeof subagent?.latestMessage === "string" && subagent.latestMessage.trim()
-            ? subagent.latestMessage
-            : undefined;
-        const sessionId =
-          typeof subagent?.sessionId === "string" && subagent.sessionId.trim() ? subagent.sessionId : undefined;
-        if (agentName === undefined && step === undefined && sessionId === undefined && latestMessage === undefined)
-          return tool;
-        const stepChanged = step !== undefined && step !== tool.step;
-        const activity = subagent?.event
-          ? applySubagentEventActivity(subagent.event as AgentSessionEvent, tool.latestActivity)
-          : undefined;
-        const effectiveAgent = agentName ?? tool.agentName;
-        const effectiveSessionId = sessionId ?? (stepChanged ? undefined : tool.sessionId);
-        const effectiveLatestMessage = latestMessage ?? (stepChanged ? undefined : tool.latestMessage);
-        let sessionLinks = tool.sessionLinks;
-        if (sessionId && effectiveAgent) {
-          const link: SubagentSessionSummaryDto = {
-            toolCallId,
-            childSessionId: sessionId,
-            agent: effectiveAgent,
-            ...(step !== undefined ? { step } : {}),
-            ...(latestMessage !== undefined ? { latestMessage } : {}),
-          };
-          const identity = (candidate: SubagentSessionSummaryDto) =>
-            candidate.toolCallId === toolCallId && candidate.step === step;
-          sessionLinks = [...(sessionLinks ?? []).filter((candidate) => !identity(candidate)), link];
-        }
+        if (tool.key !== toolCallId || tool.name === "subagent" || !tool.running) return tool;
         changed = true;
-        return {
-          ...tool,
-          ...(agentName !== undefined ? { agentName } : {}),
-          ...(step !== undefined ? { step } : {}),
-          ...(stepChanged && activity === undefined
-            ? { latestActivity: undefined }
-            : activity !== undefined
-              ? { latestActivity: activity }
-              : {}),
-          sessionId: effectiveSessionId,
-          latestMessage: effectiveLatestMessage,
-          ...(sessionLinks !== undefined ? { sessionLinks } : {}),
-        };
+        return { ...tool, output };
       });
       return changed ? { ...state, tools } : state;
     }

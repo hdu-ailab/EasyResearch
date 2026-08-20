@@ -2,7 +2,13 @@ import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core"
 import type { Model } from "@earendil-works/pi-ai";
 import type { SessionTreeNode } from "@earendil-works/pi-coding-agent";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import { runCleanupSteps } from "../runtime/cleanup";
 import { toJsonSessionEvent } from "../runtime/json-session-event";
+import { configureBatchedSteering, type RuntimeSteeringSession } from "../runtime/steering-mode";
+import type { AgentConfig } from "../subagent/agents";
+import type { CoordinatorSessionManager, SubagentCoordinator } from "../subagent/coordinator";
+import { AGENT_STATUS_TYPE } from "../subagent/notifications";
+import type { SubagentSupervisor, SupervisableAgentSession } from "../subagent/supervisor";
 
 export interface StartSessionOptions {
   cwd: string;
@@ -38,7 +44,7 @@ export interface SessionState {
   messageCount: number;
 }
 
-export interface InProcessAgentSession {
+export interface InProcessAgentSession extends RuntimeSteeringSession {
   readonly sessionFile: string | undefined;
   readonly sessionId: string;
   readonly sessionName: string | undefined;
@@ -66,6 +72,10 @@ export interface InProcessAgentSession {
   };
   subscribe(listener: (event: unknown) => void): () => void;
   prompt(message: string, options?: SteerPromptOptions): Promise<void>;
+  sendCustomMessage(
+    message: { customType: string; content: string; display: boolean; details?: unknown },
+    options: { deliverAs: "steer"; triggerTurn: boolean },
+  ): Promise<void>;
   abort(): Promise<void>;
   setModel(model: Model<any>): Promise<void>;
   setThinkingLevel(level: ThinkingLevel): void;
@@ -79,13 +89,19 @@ export interface InProcessAgentSession {
   dispose(): void;
 }
 
-export type AgentSessionCreator = (options: StartSessionOptions) => Promise<InProcessAgentSession>;
-
-interface BindableAgentSession extends InProcessAgentSession {
+export interface BindableAgentSession extends InProcessAgentSession {
   bindExtensions(bindings: unknown): Promise<void>;
   waitForIdle(): Promise<void>;
   reload(): Promise<void>;
 }
+
+export interface ManagedAgentSession {
+  session: BindableAgentSession;
+  coordinator: SubagentCoordinator;
+  supervisor: SubagentSupervisor;
+}
+
+export type AgentSessionCreator = (options: StartSessionOptions) => Promise<ManagedAgentSession>;
 
 interface ResourceLoaderLike {
   reload(options?: { resolveProjectTrust?: () => Promise<boolean> }): Promise<void>;
@@ -93,9 +109,15 @@ interface ResourceLoaderLike {
 
 export interface PiRuntimeDependencies {
   agentDir: string;
-  extensionFactories: unknown[];
-  createSessionManager(cwd: string): unknown;
-  openSessionManager(path: string): unknown;
+  createSessionManager(cwd: string): CoordinatorSessionManager;
+  openSessionManager(path: string): CoordinatorSessionManager;
+  createCoordinator(sessionManager: CoordinatorSessionManager): SubagentCoordinator;
+  recoverSubagentTree(options: { coordinator: SubagentCoordinator; expectedCwd: string }): Promise<void>;
+  createDirectChildSupervisor(coordinator: SubagentCoordinator): SubagentSupervisor;
+  createExtensionFactories(runtime: {
+    coordinator: SubagentCoordinator;
+    supervisor: SubagentSupervisor;
+  }): unknown[];
   createSettingsManager(cwd: string, agentDir: string): unknown;
   createModelRuntime(agentDir: string): Promise<unknown>;
   createResourceLoader(options: {
@@ -105,10 +127,12 @@ export interface PiRuntimeDependencies {
     extensionFactories: unknown[];
     noSkills: boolean;
     additionalSkillPaths: string[];
+    appendSystemPrompt: string[];
   }): ResourceLoaderLike;
   createAgentSession(options: Record<string, unknown>): Promise<{ session: BindableAgentSession }>;
-  resolveModel(cwd: string, modelRuntime: unknown): Promise<Model<any> | undefined>;
-  resolveSkillPaths(cwd: string, agentDir: string): Promise<string[]>;
+  resolveAssistant(cwd: string, agentDir: string): Promise<AgentConfig>;
+  resolveModel(assistant: AgentConfig, modelRuntime: unknown): Promise<Model<any> | undefined>;
+  resolveSkillPaths(assistant: AgentConfig, cwd: string, agentDir: string): Promise<string[]>;
 }
 
 export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentSessionCreator {
@@ -116,42 +140,67 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
     const sessionManager = options.sessionPath
       ? deps.openSessionManager(options.sessionPath)
       : deps.createSessionManager(options.cwd);
-    const settingsManager = deps.createSettingsManager(options.cwd, deps.agentDir);
-    const modelRuntime = await deps.createModelRuntime(deps.agentDir);
-    const skillPaths = await deps.resolveSkillPaths(options.cwd, deps.agentDir);
-    const resourceLoader = deps.createResourceLoader({
-      cwd: options.cwd,
-      agentDir: deps.agentDir,
-      settingsManager,
-      extensionFactories: deps.extensionFactories,
-      noSkills: true,
-      additionalSkillPaths: skillPaths,
-    });
-    await resourceLoader.reload({ resolveProjectTrust: async () => true });
-    const model = await deps.resolveModel(options.cwd, modelRuntime);
-    const createOptions: Record<string, unknown> = {
-      cwd: options.cwd,
-      agentDir: deps.agentDir,
-      sessionManager,
-      settingsManager,
-      modelRuntime,
-      resourceLoader,
-      ...(model ? { model } : {}),
-      ...(!options.sessionPath && options.thinking ? { thinkingLevel: options.thinking } : {}),
-    };
-    const { session } = await deps.createAgentSession(createOptions);
-    await session.bindExtensions({
-      mode: "rpc",
-      commandContextActions: {
-        waitForIdle: () => session.waitForIdle(),
-        navigateTree: async (targetId: string, navigationOptions?: Record<string, unknown>) => {
-          const result = await session.navigateTree(targetId, navigationOptions);
-          return { cancelled: result.cancelled };
+    const coordinator = deps.createCoordinator(sessionManager);
+    await deps.recoverSubagentTree({ coordinator, expectedCwd: options.cwd });
+    const supervisor = deps.createDirectChildSupervisor(coordinator);
+    let session: BindableAgentSession | undefined;
+    try {
+      const extensionFactories = deps.createExtensionFactories({ coordinator, supervisor });
+      const settingsManager = deps.createSettingsManager(options.cwd, deps.agentDir);
+      const modelRuntime = await deps.createModelRuntime(deps.agentDir);
+      const assistant = await deps.resolveAssistant(options.cwd, deps.agentDir);
+      const skillPaths = await deps.resolveSkillPaths(assistant, options.cwd, deps.agentDir);
+      const resourceLoader = deps.createResourceLoader({
+        cwd: options.cwd,
+        agentDir: deps.agentDir,
+        settingsManager,
+        extensionFactories,
+        noSkills: true,
+        additionalSkillPaths: skillPaths,
+        appendSystemPrompt: assistant.systemPrompt.trim() ? [assistant.systemPrompt] : [],
+      });
+      await resourceLoader.reload({ resolveProjectTrust: async () => true });
+      const model = await deps.resolveModel(assistant, modelRuntime);
+      const createOptions: Record<string, unknown> = {
+        cwd: options.cwd,
+        agentDir: deps.agentDir,
+        sessionManager,
+        settingsManager,
+        modelRuntime,
+        resourceLoader,
+        ...(model ? { model } : {}),
+        ...(!options.sessionPath && options.thinking ? { thinkingLevel: options.thinking } : {}),
+      };
+      ({ session } = await deps.createAgentSession(createOptions));
+      configureBatchedSteering(session);
+      coordinator.bindPaperAssistantState({
+        model: () => session?.model ? `${session.model.provider}/${session.model.id}` : undefined,
+        thinking: () => session?.thinkingLevel,
+      });
+      supervisor.attach(session as unknown as SupervisableAgentSession);
+      await session.bindExtensions({
+        mode: "rpc",
+        commandContextActions: {
+          waitForIdle: () => session!.waitForIdle(),
+          navigateTree: async (targetId: string, navigationOptions?: Record<string, unknown>) => {
+            const result = await session!.navigateTree(targetId, navigationOptions);
+            return { cancelled: result.cancelled };
+          },
+          reload: async () => {
+            await session!.reload();
+            configureBatchedSteering(session!);
+          },
         },
-        reload: () => session.reload(),
-      },
-    });
-    return session;
+      });
+      return { session, coordinator, supervisor };
+    } catch (error) {
+      await runCleanupSteps([
+        () => { throw error; },
+        () => supervisor.dispose(),
+        () => session?.dispose(),
+      ], "Paper Assistant runtime setup cleanup failed.");
+      throw error;
+    }
   };
 }
 
@@ -168,6 +217,7 @@ export interface SessionAdapter {
   getTree(): Promise<{ tree: SessionTreeNode[]; leafId: string | null }>;
   navigateTree(entryId: string): Promise<void>;
   getSteeringMessages(): readonly string[];
+  hasBackgroundWork(): boolean;
   onEvent(listener: (event: unknown) => void): () => void;
 }
 
@@ -194,15 +244,36 @@ export class PiSessionFactory implements SessionFactory {
     const { bootstrapBundledResources } = await import("../bootstrap/resources");
     await bootstrapBundledResources();
     const pi = await importPi();
-    const { assistantExtensions } = await import("../extensions");
+    const { createAssistantExtensions } = await import("../extensions");
     const { discoverAgents, PAPER_ASSISTANT_AGENT } = await import("../subagent/agents");
+    const { SubagentCoordinator } = await import("../subagent/coordinator");
+    const { recoverSubagentTree } = await import("../subagent/recovery");
+    const { SubagentSupervisor } = await import("../subagent/supervisor");
+    const { launchStageSession } = await import("../subagent/stage-session");
+    const { createSubagentRecoverySessionStore } = await import("./subagent-sessions");
     const { splitModelRef } = await import("./agent-models");
     const agentDir = getAgentDir();
     const creator = createPiAgentSessionCreator({
       agentDir,
-      extensionFactories: assistantExtensions.map(({ name, factory }) => ({ name, factory })),
       createSessionManager: (cwd) => pi.SessionManager.create(cwd),
       openSessionManager: (path) => pi.SessionManager.open(path),
+      createCoordinator: (sessionManager) => new SubagentCoordinator(sessionManager),
+      recoverSubagentTree: async ({ coordinator, expectedCwd }) => {
+        await recoverSubagentTree({
+          coordinator,
+          expectedCwd,
+          store: createSubagentRecoverySessionStore({
+            rootSession: coordinator.getRootSessionManager() as ReturnType<typeof pi.SessionManager.open>,
+            open: (path) => pi.SessionManager.open(path),
+          }),
+        });
+      },
+      createDirectChildSupervisor: (coordinator) => new SubagentSupervisor({
+        coordinator,
+        launchStage: launchStageSession,
+      }),
+      createExtensionFactories: (runtime) =>
+        createAssistantExtensions(runtime).map(({ name, factory }) => ({ name, factory })),
       createSettingsManager: (cwd, root) => pi.SettingsManager.create(cwd, root),
       createModelRuntime: (root) =>
         pi.ModelRuntime.create({ authPath: join(root, "auth.json"), modelsPath: join(root, "models.json") }),
@@ -212,10 +283,15 @@ export class PiSessionFactory implements SessionFactory {
         const result = await pi.createAgentSession(options as Parameters<typeof pi.createAgentSession>[0]);
         return { session: result.session as unknown as BindableAgentSession };
       },
-      resolveModel: async (cwd, runtime) => {
-        const configured = (await discoverAgents({ cwd, agentDir })).agents.find(
+      resolveAssistant: async (cwd) => {
+        const assistant = (await discoverAgents({ cwd, agentDir })).agents.find(
           (agent) => agent.name === PAPER_ASSISTANT_AGENT,
-        )?.model;
+        );
+        if (!assistant) throw new Error("Missing valid Paper Assistant definition");
+        return assistant;
+      },
+      resolveModel: async (assistant, runtime) => {
+        const configured = assistant.model;
         if (!configured) return undefined;
         const { provider, modelId } = splitModelRef(configured);
         return (runtime as { getModel(provider: string, modelId: string): Model<any> | undefined }).getModel(
@@ -223,12 +299,9 @@ export class PiSessionFactory implements SessionFactory {
           modelId,
         );
       },
-      resolveSkillPaths: async (cwd) => {
+      resolveSkillPaths: async (assistant, cwd) => {
         const { resolveAgentSkillDirectories, isDotAgentsSkillEnabled } = await import("../subagent/skill-resolution");
         const settingsManager = pi.SettingsManager.create(cwd, agentDir);
-        const assistant = (await discoverAgents({ cwd, agentDir })).agents.find(
-          (agent) => agent.name === PAPER_ASSISTANT_AGENT,
-        );
         return resolveAgentSkillDirectories(assistant, {
           cwd,
           agentDir,
@@ -245,9 +318,28 @@ export class PiSessionFactory implements SessionFactory {
 }
 
 class DirectSessionAdapter implements SessionAdapter {
+  private managed: ManagedAgentSession | undefined;
   private session: InProcessAgentSession | undefined;
   private unsubscribe: (() => void) | undefined;
+  private coordinatorUnsubscribe: (() => void) | undefined;
+  private startPending = false;
+  private runCancellationPending = false;
+  private treeCleanupPending = false;
+  private stopPending = false;
+  private runCancellationPromise: Promise<void> | undefined;
+  private treeCleanupPromise: Promise<void> | undefined;
+  private stopPromise: Promise<void> | undefined;
+  private stopRequested = false;
   private stopped = false;
+  private coordinatorClosingComplete = false;
+  private queueClearComplete = false;
+  private sessionAbortComplete = false;
+  private supervisorAbortComplete = false;
+  private notificationFlushComplete = false;
+  private supervisorDisposeComplete = false;
+  private coordinatorUnsubscribeComplete = false;
+  private unsubscribeComplete = false;
+  private sessionDisposeComplete = false;
   private readonly listeners = new Set<(event: unknown) => void>();
 
   constructor(
@@ -257,28 +349,90 @@ class DirectSessionAdapter implements SessionAdapter {
 
   async start(): Promise<void> {
     if (this.session) throw new Error("Session already started");
-    if (this.stopped) throw new Error("Session already stopped");
-    this.session = await this.createAgentSession(this.options);
-    this.unsubscribe = this.session.subscribe((event) => {
-      const agentEvent = event as AgentSessionEvent;
-      const jsonEvent = toJsonSessionEvent(agentEvent);
-      for (const listener of this.listeners) listener(jsonEvent);
-      // Undelivered steers are dropped when the run ends (ADR-083); delivered
-      // steers were already removed from the queue at their `message_start`,
-      // and Pi emits a final `queue_update` with the emptied queue.
-      if (agentEvent.type === "agent_settled") this.session?.clearQueue();
-    });
+    if (this.stopRequested) throw new Error("Session already stopped");
+    this.startPending = true;
+    try {
+      this.managed = await this.createAgentSession(this.options);
+      this.session = this.managed.session;
+      this.coordinatorUnsubscribe = this.managed.coordinator.subscribe((event) => {
+        for (const listener of this.listeners) listener(event);
+      });
+      this.unsubscribe = this.session.subscribe((event) => {
+        const agentEvent = event as AgentSessionEvent;
+        if (isHiddenStatusEvent(agentEvent)) return;
+        const jsonEvent = toJsonSessionEvent(agentEvent);
+        const publicEvent = jsonEvent.type === "agent_end"
+          ? { ...jsonEvent, messages: jsonEvent.messages.filter((message) => !isHiddenStatusMessage(message)) }
+          : jsonEvent.type === "queue_update"
+            ? { ...jsonEvent, steering: jsonEvent.steering.filter((message) => !isHiddenStatusContent(message)) }
+          : jsonEvent;
+        for (const listener of this.listeners) listener(publicEvent);
+      });
+    } finally {
+      this.startPending = false;
+    }
   }
 
   async stop(): Promise<void> {
     if (this.stopped) return;
-    this.stopped = true;
+    if (this.stopPromise) return this.stopPromise;
+    this.stopRequested = true;
     const session = this.session;
-    if (!session) return;
-    if (session.isStreaming) await session.abort();
-    this.unsubscribe?.();
-    this.unsubscribe = undefined;
-    session.dispose();
+    if (!session) {
+      this.stopped = true;
+      return;
+    }
+    const supervisor = this.managed?.supervisor;
+    this.stopPending = true;
+    let tracked!: Promise<void>;
+    tracked = runCleanupSteps([
+      async () => {
+        const activeCancellation = this.runCancellationPromise;
+        if (!activeCancellation) return;
+        try {
+          await activeCancellation;
+        } catch {
+          // Terminal teardown retries every ownership step below.
+        }
+      },
+      () => this.cleanupTree("Paper Assistant session stopped."),
+      async () => {
+        if (!supervisor || this.supervisorDisposeComplete) return;
+        await supervisor.dispose();
+        this.supervisorDisposeComplete = true;
+      },
+      () => {
+        if (this.coordinatorUnsubscribeComplete) return;
+        this.coordinatorUnsubscribe?.();
+        this.coordinatorUnsubscribe = undefined;
+        this.coordinatorUnsubscribeComplete = true;
+      },
+      () => {
+        if (this.unsubscribeComplete) return;
+        this.unsubscribe?.();
+        this.unsubscribe = undefined;
+        this.unsubscribeComplete = true;
+      },
+      () => {
+        if (this.sessionDisposeComplete) return;
+        session.dispose();
+        this.sessionDisposeComplete = true;
+      },
+    ], "Paper Assistant runtime cleanup failed.").then(
+      () => {
+        this.stopped = true;
+        this.session = undefined;
+        this.managed = undefined;
+      },
+      (error) => {
+        if (this.stopPromise === tracked) this.stopPromise = undefined;
+        throw error;
+      },
+    ).finally(() => {
+      this.stopPending = false;
+    });
+    this.stopPromise = tracked;
+    return tracked;
   }
 
   async prompt(message: string, options?: SteerPromptOptions): Promise<void> {
@@ -320,14 +474,27 @@ class DirectSessionAdapter implements SessionAdapter {
     });
   }
 
-  async abort(): Promise<void> {
-    // Stop cancels undelivered steers (ADR-083): clear the queue before
-    // unwinding the run so a not-yet-inserted steer never reaches context.
-    // The trailing queue_update(empty) also clears the Web footer; the
-    // agent_settled clearQueue remains as a backstop.
+  abort(): Promise<void> {
     const session = this.requiredSession();
-    session.clearQueue();
-    await session.abort();
+    const managed = this.managed;
+    if (!managed) return Promise.reject(new Error("Session has not started"));
+    if (this.runCancellationPromise) return this.runCancellationPromise;
+
+    this.runCancellationPending = true;
+    let tracked!: Promise<void>;
+    tracked = runCleanupSteps([
+      () => managed.coordinator.beginCancellation(),
+      () => session.clearQueue(),
+      () => session.abort(),
+      () => managed.supervisor.cancelAll("Paper Assistant stopped."),
+    ], "Paper Assistant run cancellation failed.")
+      .then(() => managed.coordinator.finishCancellation())
+      .finally(() => {
+        if (this.runCancellationPromise === tracked) this.runCancellationPromise = undefined;
+        this.runCancellationPending = false;
+      });
+    this.runCancellationPromise = tracked;
+    return tracked;
   }
 
   async setModel(provider: string, modelId: string): Promise<void> {
@@ -357,7 +524,7 @@ class DirectSessionAdapter implements SessionAdapter {
   }
 
   async getMessages(): Promise<AgentMessage[]> {
-    return [...this.requiredSession().messages];
+    return this.requiredSession().messages.filter((message) => !isHiddenStatusMessage(message));
   }
 
   async getCommands(): Promise<WebSlashCommand[]> {
@@ -395,12 +562,98 @@ class DirectSessionAdapter implements SessionAdapter {
   }
 
   getSteeringMessages(): readonly string[] {
-    return this.requiredSession().getSteeringMessages();
+    return this.requiredSession().getSteeringMessages().filter((message) => !isHiddenStatusContent(message));
+  }
+
+  hasBackgroundWork(): boolean {
+    if (this.startPending || this.runCancellationPending || this.treeCleanupPending || this.stopPending) return true;
+    const supervisor = this.managed?.supervisor;
+    if (!supervisor) return false;
+    try {
+      return !supervisor.isQuiescent();
+    } catch {
+      return true;
+    }
   }
 
   private requiredSession(): InProcessAgentSession {
     if (!this.session) throw new Error("Session has not started");
-    if (this.stopped) throw new Error("Session has stopped");
+    if (this.stopRequested) throw new Error("Session has stopped");
     return this.session;
   }
+
+  private cleanupTree(reason: string): Promise<void> {
+    if (this.treeCleanupPromise) return this.treeCleanupPromise;
+    const session = this.session;
+    const managed = this.managed;
+    if (!session || !managed) return Promise.resolve();
+
+    this.treeCleanupPending = true;
+    let tracked!: Promise<void>;
+    tracked = runCleanupSteps([
+      () => {
+        if (this.coordinatorClosingComplete) return;
+        managed.coordinator.beginClosing();
+        this.coordinatorClosingComplete = true;
+      },
+      () => {
+        if (this.queueClearComplete) return;
+        session.clearQueue();
+        this.queueClearComplete = true;
+      },
+      async () => {
+        if (this.sessionAbortComplete) return;
+        await session.abort();
+        this.sessionAbortComplete = true;
+      },
+      async () => {
+        if (this.supervisorAbortComplete) return;
+        await managed.supervisor.abortAll(reason);
+        this.supervisorAbortComplete = true;
+      },
+      async () => {
+        if (this.notificationFlushComplete) return;
+        await managed.supervisor.flushNotifications({ triggerTurn: false });
+        this.notificationFlushComplete = true;
+      },
+    ], "Paper Assistant tree cleanup failed.").catch((error) => {
+      if (this.treeCleanupPromise === tracked) this.treeCleanupPromise = undefined;
+      throw error;
+    }).finally(() => {
+      this.treeCleanupPending = false;
+    });
+    this.treeCleanupPromise = tracked;
+    return tracked;
+  }
+}
+
+function isHiddenStatusMessage(value: unknown): boolean {
+  return value !== null
+    && typeof value === "object"
+    && "role" in value
+    && value.role === "custom"
+    && "customType" in value
+    && value.customType === AGENT_STATUS_TYPE;
+}
+
+function isHiddenStatusEntry(value: unknown): boolean {
+  return value !== null
+    && typeof value === "object"
+    && "customType" in value
+    && value.customType === AGENT_STATUS_TYPE;
+}
+
+function isHiddenStatusContent(value: string): boolean {
+  const content = value.trim();
+  return content.startsWith("<agent_status>\n")
+    && content.includes("\n</agent_status>\n<agent_handoff>\n")
+    && content.endsWith("\n</agent_handoff>");
+}
+
+function isHiddenStatusEvent(event: AgentSessionEvent): boolean {
+  if (event.type === "message_start" || event.type === "message_end") {
+    return isHiddenStatusMessage(event.message);
+  }
+  if (event.type === "entry_appended") return isHiddenStatusEntry(event.entry);
+  return false;
 }

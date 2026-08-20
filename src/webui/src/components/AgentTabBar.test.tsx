@@ -6,122 +6,144 @@ import { AgentTabBar } from "./AgentTabBar";
 
 function tab(patch: Partial<SubagentTabState> = {}): SubagentTabState {
   return {
-    key: "tool:call-1",
+    key: "tool:root:call-1",
+    ownerSessionId: "root",
     toolCallId: "call-1",
     agent: "search",
     retained: false,
     running: true,
+    error: false,
     latestMessage: "finding papers",
     ...patch,
   };
 }
 
+function renderTabs(tabs: SubagentTabState[], activeKey = "paper-assistant") {
+  const props = {
+    tabs,
+    activeKey,
+    paperAssistantStatus: "idle" as const,
+    onSelect: vi.fn(),
+    onClose: vi.fn(),
+    onStop: vi.fn(),
+  };
+  return { ...render(<AgentTabBar {...props} />), props };
+}
+
 describe("AgentTabBar", () => {
-  it("keeps Paper Assistant first and fixed while a temporary tab has sibling select and Stop controls", async () => {
-    const onSelect = vi.fn();
-    const onStop = vi.fn();
-    render(
-      <AgentTabBar
-        tabs={[tab()]}
-        activeKey="paper-assistant"
-        paperAssistantStatus="idle"
-        onSelect={onSelect}
-        onClose={vi.fn()}
-        onStop={onStop}
-      />,
-    );
+  it("keeps Paper Assistant first and temporary select and Stop controls as siblings", async () => {
+    const { props } = renderTabs([tab()]);
 
     const buttons = screen.getAllByRole("button");
     expect(buttons[0]).toHaveAccessibleName("Agent Paper Assistant");
-    expect(screen.queryByRole("button", { name: "Close agent tab" })).toBeNull();
     const select = screen.getByRole("button", { name: "Agent Search" });
-    const stop = screen.getByRole("button", { name: "Stop agent" });
+    const stop = screen.getByRole("button", { name: "Stop agent: Search" });
     expect(select.contains(stop)).toBe(false);
     expect(select.parentElement).toBe(stop.parentElement);
     await userEvent.setup().click(stop);
-    expect(onStop).toHaveBeenCalledWith("call-1");
-    expect(onSelect).not.toHaveBeenCalled();
+    expect(props.onStop).toHaveBeenCalledWith("call-1");
+    expect(props.onSelect).not.toHaveBeenCalled();
   });
 
-  it("renders UUID tabs with close separate from Stop and close never stops", async () => {
-    const onClose = vi.fn();
-    const onStop = vi.fn();
-    render(
-      <AgentTabBar
-        tabs={[tab({ key: "session:child-uuid", sessionId: "child-uuid", retained: true, running: false })]}
-        activeKey="session:child-uuid"
-        paperAssistantStatus="working"
-        onSelect={vi.fn()}
-        onClose={onClose}
-        onStop={onStop}
-      />,
-    );
+  it("renders separate Close and Stop controls for a running retained UUID tab", async () => {
+    const retained = tab({
+      key: "session:child-uuid",
+      sessionId: "child-uuid",
+      agentId: "search job #4",
+      retained: true,
+    });
+    const { props } = renderTabs([retained], retained.key);
 
-    expect(screen.queryByRole("button", { name: "Stop agent" })).toBeNull();
-    await userEvent.setup().click(screen.getByRole("button", { name: "Close agent tab: Search" }));
-    expect(onClose).toHaveBeenCalledWith("session:child-uuid");
-    expect(onStop).not.toHaveBeenCalled();
+    const select = screen.getByRole("button", { name: "Agent search job #4" });
+    const close = screen.getByRole("button", { name: "Close agent tab: search job #4" });
+    const stop = screen.getByRole("button", { name: "Stop agent: search job #4" });
+    expect(select.contains(close)).toBe(false);
+    expect(select.contains(stop)).toBe(false);
+    expect(select.parentElement).toBe(close.parentElement);
+    expect(select.parentElement).toBe(stop.parentElement);
+
+    const user = userEvent.setup();
+    await user.click(close);
+    expect(props.onClose).toHaveBeenCalledWith("session:child-uuid");
+    expect(props.onStop).not.toHaveBeenCalled();
+    await user.click(stop);
+    expect(props.onStop).toHaveBeenCalledWith("call-1");
   });
 
-  it("localizes agent names and disambiguates duplicate UUIDs", () => {
-    render(
-      <AgentTabBar
-        tabs={[
-          tab({ key: "session:11111111-aaaa", sessionId: "11111111-aaaa", retained: true }),
-          tab({ key: "session:22222222-bbbb", toolCallId: "call-2", sessionId: "22222222-bbbb", retained: true }),
-        ]}
-        activeKey="paper-assistant"
-        paperAssistantStatus="error"
-        onSelect={vi.fn()}
-        onClose={vi.fn()}
-        onStop={vi.fn()}
-      />,
-    );
+  it("uses opaque Agent ids unchanged for unique accessible labels", () => {
+    renderTabs([
+      tab({ key: "session:first", sessionId: "first", agentId: "opaque::alpha/1", retained: true }),
+      tab({
+        key: "session:second",
+        toolCallId: "call-2",
+        sessionId: "second",
+        agentId: "opaque::beta 2",
+        retained: true,
+      }),
+    ]);
 
-    expect(screen.getByRole("button", { name: "Agent Search · 11111111" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Agent Search · 22222222" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Close agent tab: Search · 11111111" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Close agent tab: Search · 22222222" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Agent opaque::alpha/1" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Agent opaque::beta 2" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Close agent tab: opaque::alpha/1" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Stop agent: opaque::beta 2" })).toBeVisible();
   });
 
-  it("shows only the localized agent id on the subagent tab and drops the running preview (ADR-086)", () => {
-    render(
-      <AgentTabBar
-        tabs={[
-          tab({
-            key: "session:child-uuid",
-            sessionId: "child-uuid",
-            id: "search_0",
-            latestMessage: "finding papers",
-            retained: true,
-          }),
-        ]}
-        activeKey="session:child-uuid"
-        paperAssistantStatus="working"
-        onSelect={vi.fn()}
-        onClose={vi.fn()}
-        onStop={vi.fn()}
-      />,
-    );
+  it("shows terminal Error text and warning dot without a Stop control", () => {
+    const failed = tab({
+      key: "session:failed-child",
+      sessionId: "failed-child",
+      agentId: "search_8",
+      retained: true,
+      running: false,
+      error: true,
+    });
+    renderTabs([failed], failed.key);
 
-    expect(screen.getByRole("button", { name: "Agent search_0: Search_0" })).toBeVisible();
-    expect(screen.queryByText("finding papers")).toBeNull();
+    const select = screen.getByRole("button", { name: "Agent search_8" });
+    expect(withinButton(select, "Error")).toBeVisible();
+    expect(select.querySelector(".bg-v2-status-warning")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /stop agent/i })).toBeNull();
+    expect(screen.getByRole("button", { name: "Close agent tab: search_8" })).toBeVisible();
   });
 
-  it("shows the raw id alone for custom agents without a translation", () => {
-    render(
-      <AgentTabBar
-        tabs={[
-          tab({ key: "session:child-uuid", sessionId: "child-uuid", agent: "custom", id: "custom_0", retained: true }),
-        ]}
-        activeKey="paper-assistant"
-        paperAssistantStatus="idle"
-        onSelect={vi.fn()}
-        onClose={vi.fn()}
-        onStop={vi.fn()}
-      />,
-    );
+  it("retains keyboard focus when a temporary tab is promoted to its UUID", async () => {
+    const temporary = tab({ agentId: "opaque focus id", retained: true });
+    const props = {
+      tabs: [temporary],
+      activeKey: temporary.key,
+      paperAssistantStatus: "idle" as const,
+      onSelect: vi.fn(),
+      onClose: vi.fn(),
+      onStop: vi.fn(),
+    };
+    const { rerender } = render(<AgentTabBar {...props} />);
+    const focused = screen.getByRole("button", { name: "Agent opaque focus id" });
+    focused.focus();
+    expect(focused).toHaveFocus();
 
-    expect(screen.getByRole("button", { name: "Agent custom_0" })).toBeVisible();
+    const promoted = { ...temporary, key: "session:child-focus", sessionId: "child-focus" };
+    rerender(<AgentTabBar {...props} tabs={[promoted]} activeKey={promoted.key} />);
+
+    expect(screen.getByRole("button", { name: "Agent opaque focus id" })).toHaveFocus();
+  });
+
+  it("keeps mobile wrapping and visible keyboard-focus classes", () => {
+    vi.stubGlobal("innerWidth", 390);
+    const { container } = renderTabs([
+      tab({ agentId: "search_0" }),
+      tab({ toolCallId: "call-2", agentId: "search_1" }),
+    ]);
+
+    const bar = container.firstElementChild;
+    expect(bar).toHaveClass("flex-wrap");
+    const select = screen.getByRole("button", { name: "Agent search_0" });
+    expect(select.className).toContain("focus-visible:outline");
+    vi.unstubAllGlobals();
   });
 });
+
+function withinButton(button: HTMLElement, text: string): HTMLElement {
+  const match = [...button.querySelectorAll("span")].find((element) => element.textContent === text);
+  if (!(match instanceof HTMLElement)) throw new Error(`Missing ${text} in button`);
+  return match;
+}

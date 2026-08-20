@@ -5,10 +5,12 @@ import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   FIRST_RUN_CEILING_MS,
+  assertPathFreeSessionEvent,
   buildWindowsShutdownLauncherScript,
   buildWindowsShutdownScript,
   collectLaunchOutput,
   createCompiledChildEnv,
+  fetchSessionEventsBeforeDeadline,
   finishSmokeCleanup,
   readTextFileWithRetry,
   requireZeroProcessStatus,
@@ -47,6 +49,47 @@ function findPythonOnPath(): string | undefined {
 }
 
 const systemPython = findPythonOnPath();
+
+describe("assertPathFreeSessionEvent", () => {
+  it.each(["sessionPath", "session_path"])("rejects a child %s leak", (field) => {
+    expect(() => assertPathFreeSessionEvent({
+      type: "subagent_supervisor",
+      [field]: "/private/child.jsonl",
+    })).toThrow("session path");
+  });
+
+  it("rejects a hidden handoff", () => {
+    expect(() => assertPathFreeSessionEvent({ content: "<agent_handoff>hidden</agent_handoff>" }))
+      .toThrow("hidden handoff");
+  });
+
+  it("preserves allowed root-session and public path fields", () => {
+    expect(assertPathFreeSessionEvent({
+      type: "snapshot",
+      session: { sessionFile: "/sessions/root.jsonl" },
+      path: "/project/paper.md",
+    })).toContain('"sessionFile":"/sessions/root.jsonl"');
+  });
+});
+
+describe("fetchSessionEventsBeforeDeadline", () => {
+  it("aborts an SSE fetch that has not produced a response before the smoke deadline", async () => {
+    let observedSignal: AbortSignal | undefined;
+    const pending = fetchSessionEventsBeforeDeadline({
+      url: "http://127.0.0.1:3000/api/sessions/session-1/events",
+      deadline: Date.now() + 20,
+      fetch: async (_input, init) => {
+        observedSignal = init?.signal instanceof AbortSignal ? init.signal : undefined;
+        return await new Promise<Response>((_resolve, reject) => {
+          observedSignal?.addEventListener("abort", () => reject(observedSignal?.reason), { once: true });
+        });
+      },
+    });
+
+    await expect(pending).rejects.toThrow("session SSE subscription did not finish before the native smoke deadline");
+    expect(observedSignal?.aborted).toBe(true);
+  });
+});
 
 function validationFixture(python: string): { python: string; script: string; prefix: string; root: string } {
   const root = tempDir();
@@ -671,187 +714,271 @@ describe("venvToolCommand", () => {
 describe("selectSmokeModelAction", () => {
   const tool = (name: string) => ({ function: { name } });
   const completedStage = "complete\nArtifacts: none\nGaps: none\nNext action: none";
-  const state = (phase: SmokeModelState["phase"], completedRequests: number): SmokeModelState => ({
-    phase,
-    completedRequests,
+  const initialState = (): SmokeModelState => ({
+    parentCallIssued: false,
+    parentWorkingObserved: false,
+    stageBashIssued: false,
+    venvValidated: false,
+    stageCompleted: false,
+    terminalHandoffObserved: false,
+    complete: false,
+    completedRequests: 0,
   });
   const toolResult = (toolCallId: string | undefined, content: unknown) => ({
     role: "tool" as const,
     ...(toolCallId === undefined ? {} : { tool_call_id: toolCallId }),
     content,
   });
+  const parentRequest = (...messages: Array<ReturnType<typeof toolResult> | { role: "user"; content: string }>) => ({
+    tools: [tool("bash"), tool("subagent")],
+    messages,
+  });
+  const stageRequest = (...messages: Array<ReturnType<typeof toolResult>>) => ({
+    tools: [tool("bash")],
+    messages,
+  });
+  const terminalNotice = (result = completedStage) => ({
+    role: "user" as const,
+    content: [
+      "<agent_status>",
+      "Current time: 2026-08-20T00:00:00.000Z",
+      "Complete subagent:search_0",
+      "</agent_status>",
+      "<agent_handoff>",
+      "Agent: search_0",
+      `Result: ${result}`,
+      "</agent_handoff>",
+    ].join("\n"),
+  });
 
-  it("uses the explicit phase when subagent and bash are both advertised", () => {
-    const parent = selectSmokeModelAction({
-      tools: [tool("bash"), tool("subagent")],
-      messages: [toolResult("historical", "old result")],
-    }, "validate-command", state("awaiting-parent-subagent-call", 0));
-    expect(parent.action).toMatchObject({ kind: "tool", id: "call_native_stage", name: "subagent" });
+  it("accepts parent acknowledgement before the stage Bash result without treating launch as completion", () => {
+    let current = initialState();
 
-    const stage = selectSmokeModelAction({
-      tools: [tool("subagent"), tool("bash")],
-      messages: [toolResult("historical", completedStage)],
-    }, "validate-command", parent.state);
-    expect(stage.action).toEqual({
+    const parentCall = selectSmokeModelAction(parentRequest(), "validate-command", current);
+    current = parentCall.state;
+    const bashCall = selectSmokeModelAction(stageRequest(), "validate-command", current);
+    current = bashCall.state;
+    const parentWaiting = selectSmokeModelAction(
+      parentRequest(toolResult("call_native_stage", "search_0 is working.")),
+      "validate-command",
+      current,
+    );
+    current = parentWaiting.state;
+
+    expect(parentCall.action).toMatchObject({ kind: "tool", id: "call_native_stage", name: "subagent" });
+    expect(bashCall.action).toEqual({
       kind: "tool",
       id: "call_native_venv",
       name: "bash",
       arguments: JSON.stringify({ command: "validate-command", timeout: 60 }),
     });
-    expect(stage.state).toEqual({ phase: "awaiting-venv-tool-result", completedRequests: 2 });
-  });
+    expect(parentWaiting.action).toEqual({ kind: "text", text: "Parent waiting for supervised completion." });
+    expect(current).toMatchObject({
+      parentCallIssued: true,
+      parentWorkingObserved: true,
+      stageBashIssued: true,
+      stageCompleted: false,
+      terminalHandoffObserved: false,
+      complete: false,
+      completedRequests: 3,
+    });
 
-  it("matches the expected bash call instead of the last unrelated tool row", () => {
-    const transition = selectSmokeModelAction({
-      tools: [tool("subagent"), tool("bash")],
-      messages: [
-        toolResult("old-call", "easyresearch-venv-ok"),
-        toolResult("call_native_venv", "validation log\n easyresearch-venv-ok  \n"),
-        toolResult("unrelated-later-call", "wrong interpreter"),
-      ],
-    }, "validate-command", state("awaiting-venv-tool-result", 2));
+    const bashResult = selectSmokeModelAction(
+      stageRequest(toolResult("call_native_venv", "validation log\neasyresearch-venv-ok\n")),
+      "validate-command",
+      current,
+    );
+    current = bashResult.state;
+    const parentComplete = selectSmokeModelAction(
+      parentRequest(
+        toolResult("call_native_stage", "search_0 is working."),
+        terminalNotice(),
+      ),
+      "validate-command",
+      current,
+    );
 
-    expect(transition.action).toEqual({ kind: "text", text: completedStage });
-    expect(transition.state).toEqual({ phase: "awaiting-subagent-tool-result", completedRequests: 3 });
-    expect(transition.validatedVenvResult).toBe(true);
-  });
-
-  it("matches the expected subagent call instead of unrelated history", () => {
-    const transition = selectSmokeModelAction({
-      tools: [tool("bash"), tool("subagent")],
-      messages: [
-        toolResult("call_native_venv", "easyresearch-venv-ok"),
-        toolResult("unrelated", "Agent error: old failure"),
-        toolResult("call_native_stage", `${completedStage}\n\nSession history JSONL: /sessions/search.jsonl`),
-      ],
-    }, "validate-command", state("awaiting-subagent-tool-result", 3));
-
-    expect(transition).toEqual({
-      action: { kind: "text", text: "Parent smoke run complete." },
-      state: { phase: "complete", completedRequests: 4 },
-      validatedVenvResult: false,
+    expect(bashResult.action).toEqual({ kind: "text", text: completedStage });
+    expect(bashResult.validatedVenvResult).toBe(true);
+    expect(parentComplete.action).toEqual({ kind: "text", text: "Parent smoke run complete." });
+    expect(parentComplete.state).toEqual({
+      parentCallIssued: true,
+      parentWorkingObserved: true,
+      stageBashIssued: true,
+      venvValidated: true,
+      stageCompleted: true,
+      terminalHandoffObserved: true,
+      complete: true,
+      completedRequests: 5,
     });
   });
 
-  it("accepts the current agent-id metadata before the child session history", () => {
-    const transition = selectSmokeModelAction({
-      tools: [tool("subagent")],
-      messages: [
-        toolResult(
-          "call_native_stage",
-          `${completedStage}\n\nAgent id: search_0\nSession history JSONL: /sessions/search.jsonl\nInspect this file to continue.`,
-        ),
-      ],
-    }, "validate-command", state("awaiting-subagent-tool-result", 3));
+  it("accepts stage Bash completion before a short child's first post-tool parent request", () => {
+    let current = initialState();
+    current = selectSmokeModelAction(parentRequest(), "validate-command", current).state;
+    current = selectSmokeModelAction(stageRequest(), "validate-command", current).state;
+    current = selectSmokeModelAction(
+      stageRequest(toolResult("call_native_venv", "easyresearch-venv-ok\n")),
+      "validate-command",
+      current,
+    ).state;
 
-    expect(transition.state).toEqual({ phase: "complete", completedRequests: 4 });
+    const parentComplete = selectSmokeModelAction(
+      parentRequest(
+        toolResult("call_native_stage", "search_0 is working."),
+        terminalNotice(),
+      ),
+      "validate-command",
+      current,
+    );
+
+    expect(parentComplete.action).toEqual({ kind: "text", text: "Parent smoke run complete." });
+    expect(parentComplete.state).toMatchObject({
+      parentWorkingObserved: true,
+      venvValidated: true,
+      stageCompleted: true,
+      terminalHandoffObserved: true,
+      complete: true,
+      completedRequests: 4,
+    });
+  });
+
+  it("never reissues parent or stage tool calls after their independent flags are set", () => {
+    const parent = selectSmokeModelAction(
+      parentRequest(toolResult("call_native_stage", "search_0 is working.")),
+      "validate-command",
+      { ...initialState(), parentCallIssued: true, stageBashIssued: true, completedRequests: 2 },
+    );
+    const stage = selectSmokeModelAction(
+      stageRequest(toolResult("call_native_venv", "easyresearch-venv-ok")),
+      "validate-command",
+      { ...initialState(), parentCallIssued: true, stageBashIssued: true, completedRequests: 2 },
+    );
+
+    expect(parent.action).toEqual({ kind: "text", text: "Parent waiting for supervised completion." });
+    expect(stage.action).toEqual({ kind: "text", text: completedStage });
   });
 
   it.each([
-    ["awaiting-venv-tool-result", 2, "call_native_venv", undefined],
-    ["awaiting-venv-tool-result", 2, "call_native_venv", "wrong-call"],
-    ["awaiting-subagent-tool-result", 3, "call_native_stage", undefined],
-    ["awaiting-subagent-tool-result", 3, "call_native_stage", "wrong-call"],
-  ] as const)("rejects a %s request at step %s without the expected %s result", (phase, completedRequests, expectedId, actualId) => {
-    const content = expectedId === "call_native_venv" ? "easyresearch-venv-ok" : completedStage;
-    expect(() => selectSmokeModelAction({
-      tools: [tool("subagent"), tool("bash")],
-      messages: [toolResult(actualId, content)],
-    }, "validate-command", state(phase, completedRequests))).toThrow(expectedId);
-  });
-
-  it("rejects duplicate rows for the expected tool call", () => {
-    expect(() => selectSmokeModelAction({
-      tools: [tool("bash")],
-      messages: [
-        toolResult("call_native_venv", "easyresearch-venv-ok"),
-        toolResult("call_native_venv", "easyresearch-venv-ok"),
-      ],
-    }, "validate-command", state("awaiting-venv-tool-result", 2))).toThrow("exactly one");
+    ["parent", parentRequest(
+      toolResult("call_native_stage", "search_0 is working."),
+      toolResult("call_native_stage", "search_0 is working."),
+    ), { parentCallIssued: true }],
+    ["stage", stageRequest(
+      toolResult("call_native_venv", "easyresearch-venv-ok"),
+      toolResult("call_native_venv", "easyresearch-venv-ok"),
+    ), { stageBashIssued: true }],
+  ] as const)("rejects duplicate correlated %s tool results", (_name, request, flags) => {
+    expect(() => selectSmokeModelAction(
+      request,
+      "validate-command",
+      { ...initialState(), parentCallIssued: true, stageBashIssued: true, ...flags },
+    )).toThrow("exactly one");
   });
 
   it.each([
     "wrong interpreter",
+    " easyresearch-venv-ok  ",
     "easyresearch-venv-ok-invalid",
     "prefix easyresearch-venv-ok suffix",
-  ])("rejects a failed or inexact bash result: %s", (content) => {
-    expect(() => selectSmokeModelAction({
-      tools: [tool("bash")],
-      messages: [toolResult("call_native_venv", content)],
-    }, "validate-command", state("awaiting-venv-tool-result", 2))).toThrow("easyresearch-venv-ok");
+    "easyresearch-venv-ok\neasyresearch-venv-ok",
+  ])("rejects a failed, inexact, or repeated Bash sentinel: %s", (content) => {
+    expect(() => selectSmokeModelAction(
+      stageRequest(toolResult("call_native_venv", content)),
+      "validate-command",
+      { ...initialState(), stageBashIssued: true },
+    )).toThrow("easyresearch-venv-ok");
   });
 
   it.each([
-    "blocked\nArtifacts: none\nGaps: validation failed\nNext action: retry",
-    "Agent error: search stage failed",
-    "complete-invalid\nArtifacts: none\nGaps: none\nNext action: none",
-  ])("fails closed for an unsuccessful correlated subagent result: %s", (content) => {
-    expect(() => selectSmokeModelAction({
-      tools: [tool("subagent")],
-      messages: [toolResult("call_native_stage", content)],
-    }, "validate-command", state("awaiting-subagent-tool-result", 3))).toThrow("successful deterministic handoff");
+    "search_0 is working",
+    " search_0 is working. ",
+    "search_0 is working. Session history JSONL: /sessions/search.jsonl",
+    "search_1 is working.",
+  ])("rejects an inexact or path-bearing launch acknowledgement: %s", (content) => {
+    expect(() => selectSmokeModelAction(
+      parentRequest(toolResult("call_native_stage", content)),
+      "validate-command",
+      { ...initialState(), parentCallIssued: true },
+    )).toThrow("search_0 is working.");
   });
 
-  it("completes the exact four-request sequence and validates the venv result once", () => {
-    let current = state("awaiting-parent-subagent-call", 0);
-    let validatedVenvResults = 0;
-
-    const parentCall = selectSmokeModelAction({
-      tools: [tool("bash"), tool("subagent")],
-      messages: [toolResult("historical", "ignored")],
-    }, "validate-command", current);
-    current = parentCall.state;
-    validatedVenvResults += Number(parentCall.validatedVenvResult);
-
-    const bashCall = selectSmokeModelAction({
-      tools: [tool("subagent"), tool("bash")],
-      messages: [toolResult("historical", completedStage)],
-    }, "validate-command", current);
-    current = bashCall.state;
-    validatedVenvResults += Number(bashCall.validatedVenvResult);
-
-    const bashResult = selectSmokeModelAction({
-      tools: [tool("subagent"), tool("bash")],
-      messages: [toolResult("call_native_venv", "easyresearch-venv-ok\n")],
-    }, "validate-command", current);
-    current = bashResult.state;
-    validatedVenvResults += Number(bashResult.validatedVenvResult);
-
-    const parentResult = selectSmokeModelAction({
-      tools: [tool("bash"), tool("subagent")],
-      messages: [
-        toolResult("call_native_venv", "easyresearch-venv-ok\n"),
-        toolResult("call_native_stage", completedStage),
-      ],
-    }, "validate-command", current);
-    current = parentResult.state;
-    validatedVenvResults += Number(parentResult.validatedVenvResult);
-
-    expect(parentCall.action).toMatchObject({ kind: "tool", id: "call_native_stage", name: "subagent" });
-    expect(bashCall.action).toMatchObject({ kind: "tool", id: "call_native_venv", name: "bash" });
-    expect(bashResult.action).toEqual({ kind: "text", text: completedStage });
-    expect(parentResult.action).toEqual({ kind: "text", text: "Parent smoke run complete." });
-    expect(current).toEqual({ phase: "complete", completedRequests: 4 });
-    expect(validatedVenvResults).toBe(1);
+  it.each([
+    ["missing handoff", {
+      role: "user" as const,
+      content: "<agent_status>\nComplete subagent:search_0\n</agent_status>",
+    }],
+    ["handoff without Complete status", {
+      role: "user" as const,
+      content: `<agent_handoff>\nAgent: search_0\nResult: ${completedStage}\n</agent_handoff>`,
+    }],
+    ["wrong handoff agent", terminalNotice().content.replace("Agent: search_0", "Agent: search_1")],
+    ["unsuccessful handoff", terminalNotice("blocked\nArtifacts: none\nGaps: validation failed\nNext action: retry")],
+  ] as const)("rejects a malformed atomic terminal notification: %s", (_name, notice) => {
+    const message = typeof notice === "string" ? { role: "user" as const, content: notice } : notice;
+    expect(() => selectSmokeModelAction(
+      parentRequest(toolResult("call_native_stage", "search_0 is working."), message),
+      "validate-command",
+      {
+        ...initialState(),
+        parentCallIssued: true,
+        stageBashIssued: true,
+        venvValidated: true,
+        stageCompleted: true,
+      },
+    )).toThrow("atomic terminal");
   });
 
-  it("does not accept the same venv result again after advancing the phase", () => {
-    const first = selectSmokeModelAction({
-      tools: [tool("bash")],
-      messages: [toolResult("call_native_venv", "easyresearch-venv-ok")],
-    }, "validate-command", state("awaiting-venv-tool-result", 2));
-    expect(first.validatedVenvResult).toBe(true);
-
-    expect(() => selectSmokeModelAction({
-      tools: [tool("bash")],
-      messages: [toolResult("call_native_venv", "easyresearch-venv-ok")],
-    }, "validate-command", first.state)).toThrow("call_native_stage");
+  it("rejects status and handoff split across visible model messages", () => {
+    expect(() => selectSmokeModelAction(
+      parentRequest(
+        toolResult("call_native_stage", "search_0 is working."),
+        { role: "user", content: "<agent_status>\nComplete subagent:search_0\n</agent_status>" },
+        { role: "user", content: `<agent_handoff>\nAgent: search_0\nResult: ${completedStage}\n</agent_handoff>` },
+      ),
+      "validate-command",
+      {
+        ...initialState(),
+        parentCallIssued: true,
+        stageBashIssued: true,
+        venvValidated: true,
+        stageCompleted: true,
+      },
+    )).toThrow("atomic terminal");
   });
 
-  it("rejects requests after the four phases complete", () => {
-    expect(() => selectSmokeModelAction({
-      tools: [tool("subagent"), tool("bash")],
-      messages: [],
-    }, "validate-command", state("complete", 4))).toThrow("already complete");
+  it("rejects duplicate atomic terminal notifications", () => {
+    expect(() => selectSmokeModelAction(
+      parentRequest(
+        toolResult("call_native_stage", "search_0 is working."),
+        terminalNotice(),
+        terminalNotice(),
+      ),
+      "validate-command",
+      {
+        ...initialState(),
+        parentCallIssued: true,
+        stageBashIssued: true,
+        venvValidated: true,
+        stageCompleted: true,
+      },
+    )).toThrow("exactly one atomic terminal");
+  });
+
+  it("rejects model requests after terminal completion", () => {
+    expect(() => selectSmokeModelAction(
+      parentRequest(),
+      "validate-command",
+      {
+        parentCallIssued: true,
+        parentWorkingObserved: true,
+        stageBashIssued: true,
+        venvValidated: true,
+        stageCompleted: true,
+        terminalHandoffObserved: true,
+        complete: true,
+        completedRequests: 4,
+      },
+    )).toThrow("already complete");
   });
 });

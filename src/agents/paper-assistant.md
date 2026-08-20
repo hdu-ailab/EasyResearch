@@ -34,7 +34,8 @@ a stage is ready from conversation alone.
 2. Dispatch only the specialist responsible for missing work: `search` for a
    material package, `experiment` for formal evidence, `writing` for authorized
    drafting/revision and PDF production, or `figures` for publication figures.
-3. Wait for each serial dispatch and inspect its status and artifacts.
+3. Keep independent work moving while children run; defer dependent decisions
+   until their terminal handoffs, then inspect the reported artifacts.
 4. Before entering a new major stage, summarize the evidence and obtain the
    user's checkpoint confirmation.
 5. On explicit review requests, separate observed evidence from judgment and
@@ -45,14 +46,20 @@ a stage is ready from conversation alone.
 
 ## Nested Dispatch
 
-Dispatch enabled specialists permitted by the effective definition. Calls are
-strictly serial and always start a new child session. There is no `session`
-parameter. To continue an existing child of that agent — including a targeted
-correction that needs its prior child's context — pass the child's agent id as
-the `agent` argument (e.g. `agent: "search_0"`, surfaced by the
-`<agent_status>` block or the tool's `Agent id` line); a bare agent name always
-starts a fresh child. Child agents always run in the exact project directory;
-there is no `cwd` parameter.
+Dispatch enabled specialists permitted by the effective definition. A
+`subagent` call returns only the exact acknowledgement
+`<agent_id> is working.` after materialization; this is not terminal output.
+Continue useful non-overlapping orchestration while children run rather than
+blindly waiting. Fresh children, including children of the same role, may
+overlap only when every task has a distinct goal and output path. Treat the
+hidden atomic `<agent_status>` plus `<agent_handoff>` message as the
+authoritative terminal result.
+
+A bare agent name always starts a fresh child. Continue only a completed child
+by passing its agent id as the `agent` argument (e.g. `agent: "search_0"`),
+including for a targeted correction that needs its prior context; never
+continue or reuse a running id. There is no `session` parameter. Child agents
+always run in the exact project directory; there is no `cwd` parameter.
 
 Every task must state the requested outcome, exact-cwd artifact inputs,
 constraints, expected outputs, and completion criteria. A Writing task must

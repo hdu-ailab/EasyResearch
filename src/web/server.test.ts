@@ -113,6 +113,10 @@ class FakeAdapter implements SessionAdapter {
   getSteeringMessages(): readonly string[] {
     return this.steeringResult;
   }
+  backgroundWork = false;
+  hasBackgroundWork(): boolean {
+    return this.backgroundWork;
+  }
   commandsResult: WebSlashCommand[] = [];
   treeResult: { tree: SessionTreeNode[]; leafId: string | null } = { tree: [], leafId: null };
   navigateCalls: string[] = [];
@@ -603,9 +607,11 @@ describe("web routes", () => {
 
   it("includes subagent summaries in a parent HTTP snapshot", async () => {
     const subagents = [{
+      ownerSessionId: "parent-1",
       toolCallId: "tool-1",
       childSessionId: "child-1",
       agent: "search",
+      status: "complete" as const,
       latestMessage: "final child reply",
     }];
     setup({
@@ -626,6 +632,15 @@ describe("web routes", () => {
     const childSnapshot = {
       session: { id: "child-1", cwd: projectDir, sessionName: "easyresearch:search" },
       messages: [userMessage("dispatch"), assistant("complete child reply")],
+      subagents: [{
+        ownerSessionId: "child-1",
+        toolCallId: "nested-tool",
+        launchId: "nested-launch",
+        agent: "figures",
+        agentId: "figures_0",
+        childSessionId: "nested-child",
+        status: "working" as const,
+      }],
     };
     setup({
       subagentSessions: {
@@ -657,6 +672,7 @@ describe("web routes", () => {
         snapshot: async () => ({
           session: { id: "child-1", cwd: projectDir },
           messages: [assistant("complete child reply")],
+          subagents: [],
         }),
       },
     });
@@ -676,6 +692,7 @@ describe("web routes", () => {
         snapshot: async () => ({
           session: { id: "child-1", cwd: projectDir },
           messages: [assistant("persisted child reply")],
+          subagents: [],
         }),
       },
     });
@@ -716,7 +733,7 @@ describe("web routes", () => {
     reader.cancel();
   });
 
-  it("applies the acquisition barrier before enrichment and preserves only stable pre-barrier supplements", async () => {
+  it("frames the snapshot before stable supervisor supplements across every acquisition phase", async () => {
     const messages = deferred<AgentMessage[]>();
     const messagesRequested = deferred<void>();
     const summaries = deferred<SubagentSessionSummaryDto[]>();
@@ -756,6 +773,30 @@ describe("web routes", () => {
       const firstRead = reader.read();
       await Promise.all([messagesRequested.promise, summariesRequested.promise]);
       const emit = (event: unknown) => adapter.events.forEach((listener) => listener(event as never));
+      const supervisorBefore = {
+        type: "subagent_supervisor",
+        launchId: "launch-before",
+        ownerSessionId: created.id,
+        toolCallId: "tool-before",
+        agent: "search",
+        agentId: "search_0",
+        childSessionId: "child-before",
+        status: "working",
+      };
+      const supervisorAfterAcquisition = {
+        type: "subagent_supervisor",
+        launchId: "launch-after",
+        ownerSessionId: created.id,
+        toolCallId: "tool-after",
+        agent: "writing",
+        agentId: "writing_0",
+        childSessionId: "child-after",
+        status: "working",
+        event: {
+          type: "message_update",
+          assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "nested delta" },
+        },
+      };
       emit({ type: "message_start", message: assistant("overlapping message") });
       emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "overlap" } });
       emit({ type: "tool_execution_start", toolCallId: "generic-before", toolName: "bash" });
@@ -777,14 +818,20 @@ describe("web routes", () => {
       emit({ type: "agent_settled" });
       emit({ type: "session_deactivated", sessionId: created.id });
       emit({ type: "error", error: "pre-barrier lifecycle error" });
+      emit(supervisorBefore);
       emit({
         type: "tool_execution_update",
         toolCallId: "subagent-before",
         partialResult: { details: { subagent: { agent: "search", sessionId: "child-1" } } },
       });
+      emit({
+        ...supervisorBefore,
+        launchId: "",
+      });
 
       messages.resolve([assistant("committed")]);
       await barrierCrossed.promise;
+      emit(supervisorAfterAcquisition);
       emit({
         type: "message_update",
         assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "after acquisition" },
@@ -792,16 +839,16 @@ describe("web routes", () => {
       emit({ type: "tool_execution_start", toolCallId: "generic-after", toolName: "bash" });
       summaries.resolve([]);
 
-      const frames: Array<{ type: string; messages?: AgentMessage[] }> = [];
+      const frames: Array<Record<string, unknown> & { type: string; messages?: AgentMessage[] }> = [];
       let body = "";
-      while (frames.length < 9) {
+      while (frames.length < 10) {
         const { done, value } = await (frames.length === 0 ? firstRead : reader.read());
         if (done) break;
         body += decoder.decode(value, { stream: true });
         const chunks = body.split("\n\n");
         body = chunks.pop() ?? "";
         for (const chunk of chunks) {
-          frames.push(JSON.parse(chunk.slice("data: ".length)) as { type: string });
+          frames.push(JSON.parse(chunk.slice("data: ".length)) as Record<string, unknown> & { type: string });
         }
       }
 
@@ -812,11 +859,30 @@ describe("web routes", () => {
         "agent_settled",
         "session_deactivated",
         "error",
-        "tool_execution_update",
+        "subagent_supervisor",
+        "subagent_supervisor",
         "message_update",
         "tool_execution_start",
       ]);
       expect(frames[0]?.messages).toEqual([assistant("committed")]);
+      expect(frames.filter((frame) => frame.type === "tool_execution_update")).toEqual([]);
+      expect(frames.filter((frame) => frame.type === "subagent_supervisor").map((frame) => frame.launchId))
+        .toEqual(["launch-before", "launch-after"]);
+      expect(frames[7]).toEqual(supervisorAfterAcquisition);
+      expect(JSON.stringify(frames[7])).not.toContain("partial");
+
+      const supervisorAfterInit = {
+        ...supervisorBefore,
+        launchId: "launch-live",
+        toolCallId: "tool-live",
+        agentId: "search_1",
+        childSessionId: "child-live",
+        status: "complete",
+        latestMessage: "live terminal",
+      };
+      emit(supervisorAfterInit);
+      const live = await reader.read();
+      expect(JSON.parse(decoder.decode(live.value).trim().slice("data: ".length))).toEqual(supervisorAfterInit);
     } finally {
       await reader.cancel();
     }
@@ -943,9 +1009,11 @@ describe("web routes", () => {
 
   it("includes the same subagent summaries in the first SSE snapshot", async () => {
     const subagents = [{
+      ownerSessionId: "parent-1",
       toolCallId: "tool-1",
       childSessionId: "child-1",
       agent: "search",
+      status: "complete" as const,
       latestMessage: "final child reply",
     }];
     setup({
