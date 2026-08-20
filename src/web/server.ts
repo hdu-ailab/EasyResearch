@@ -18,6 +18,9 @@ import { createDaemonAuthRuntime } from "./auth-runtime";
 import { resolveRenameSessionService } from "./session-rename";
 import { createAgentPatchService } from "./agent-configuration";
 import { createLiveConfiguration, type LiveConfiguration } from "../runtime/live-configuration";
+import { resolvePiDefaultModel, type PiDefaultModelApi } from "../runtime/pi-default-model";
+import { createSessionSettingsFacade } from "../runtime/session-settings-facade";
+import { applyRuntimeSettingsDefaults } from "../runtime/settings-defaults";
 
 export interface Server {
   port: number;
@@ -31,7 +34,7 @@ export interface StartServerOptions {
 
 const WEBUI_DIST = join(fileURLToPath(new URL("..", import.meta.url)), "webui", "dist");
 
-export function agentToDto(agent: AgentConfig): AgentDto {
+export function agentToDto(agent: AgentConfig, effectiveModel: string | undefined = agent.model): AgentDto {
   return {
     name: agent.name,
     description: agent.description,
@@ -40,6 +43,7 @@ export function agentToDto(agent: AgentConfig): AgentDto {
     source: agent.source,
     filePath: agent.filePath,
     model: agent.model,
+    effectiveModel,
     thinking: isThinkingLevel(agent.thinking) ? agent.thinking : undefined,
     tools: agent.tools,
     effectiveTools: agent.effectiveTools,
@@ -50,9 +54,25 @@ export function agentToDto(agent: AgentConfig): AgentDto {
   };
 }
 
-export async function discoverAgentsForWeb(cwd: string | undefined, agentDir: string): Promise<AgentDto[]> {
+export async function agentsToDtos(
+  agents: AgentConfig[],
+  cwd: string,
+  resolveDefaultModel?: (cwd: string) => Promise<string | undefined>,
+): Promise<AgentDto[]> {
+  const paperAssistant = agents.find((agent) => agent.name === PAPER_ASSISTANT_AGENT);
+  const paperAssistantModel = paperAssistant?.model ?? (
+    paperAssistant ? await resolveDefaultModel?.(cwd) : undefined
+  );
+  return agents.map((agent) => agentToDto(agent, agent.model ?? paperAssistantModel));
+}
+
+export async function discoverAgentsForWeb(
+  cwd: string | undefined,
+  agentDir: string,
+  resolveDefaultModel?: (cwd: string) => Promise<string | undefined>,
+): Promise<AgentDto[]> {
   const result = cwd ? await discoverAgents({ cwd, agentDir }) : await discoverGlobalAgents({ agentDir });
-  return result.agents.map(agentToDto);
+  return agentsToDtos(result.agents, cwd ?? agentDir, resolveDefaultModel);
 }
 
 /**
@@ -102,7 +122,8 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
   const { assertSafeExtensionSources } = await import("../runtime/extensions-guard");
   assertSafeExtensionSources();
   const logger = createLogger("web-server");
-  const { ModelRuntime, SessionManager, getAgentDir } = await importPi();
+  const pi = await importPi();
+  const { ModelRuntime, SessionManager, SettingsManager, getAgentDir } = pi;
   const agentDir = getAgentDir();
   let liveConfiguration: LiveConfiguration | undefined;
   const config = new ConfigFileService(agentDir, {
@@ -229,6 +250,19 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
     openSessionManager: async (path) => SessionManager.open(path),
   });
   const listModels = () => auth.listModels();
+  const resolveDefaultModel = async (cwd: string): Promise<string | undefined> => {
+    const settingsManager = createSessionSettingsFacade(
+      applyRuntimeSettingsDefaults(SettingsManager.create(cwd, agentDir)),
+    );
+    const model = await resolvePiDefaultModel({
+      pi: pi as unknown as PiDefaultModelApi,
+      cwd,
+      agentDir,
+      modelRuntime: authRuntime.modelRuntime,
+      settingsManager,
+    });
+    return model ? `${model.provider}/${model.id}` : undefined;
+  };
   const services: RouteServices = {
     webuiDist: WEBUI_DIST,
     listAllSessions: async () => {
@@ -250,7 +284,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
     auth,
     configuration: live,
     logger,
-    listAgents: async (cwd) => (await live.resolveAgents(cwd)).map(agentToDto),
+    listAgents: async (cwd) => agentsToDtos(await live.resolveAgents(cwd), cwd ?? agentDir, resolveDefaultModel),
   };
   const handler = createRouteHandler(services);
 

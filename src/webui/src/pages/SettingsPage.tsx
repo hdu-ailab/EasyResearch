@@ -180,7 +180,7 @@ export function SettingsPage({
   const [models, setModels] = useState<ModelOption[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [resourceAgents, setResourceAgents] = useState<AgentResourceDto[]>([]);
+  const [, setResourceAgents] = useState<AgentResourceDto[]>([]);
   const [skills, setSkills] = useState<SkillResourceDto[]>([]);
   const [diagnosticScope, setDiagnosticScope] = useState("global");
   const [diagnosticAgents, setDiagnosticAgents] = useState<AgentDto[]>([]);
@@ -206,13 +206,14 @@ export function SettingsPage({
         listModels(),
       ]);
       if (request !== configurationRequest.current) return;
-      const nextAgents = globalAgents.length > 0 ? globalAgents : fallbackAgents;
       setResourceAgents(globalAgents);
-      setAgents(nextAgents);
+      setAgents(fallbackAgents);
       setModels(nextModels);
-      setAgentModal((current) => (current ? (nextAgents.find((agent) => agent.name === current.name) ?? null) : null));
+      setAgentModal((current) =>
+        current ? (fallbackAgents.find((agent) => agent.name === current.name) ?? null) : null,
+      );
       setDetailsAgent((current) =>
-        current ? (nextAgents.find((agent) => agent.name === current.name) ?? null) : null,
+        current ? (fallbackAgents.find((agent) => agent.name === current.name) ?? null) : null,
       );
       if (diagnosticRequest.current === 0) setDiagnosticAgents(fallbackAgents);
     } catch (cause) {
@@ -244,9 +245,12 @@ export function SettingsPage({
   }, []);
 
   const refreshAgents = async () => {
-    const next = await listAgentResources();
-    if (next.length === 0) return;
-    setResourceAgents(next);
+    const resources = await listAgentResources();
+    const next = resources.map((resource) => ({
+      ...resource,
+      effectiveModel: agents.find((agent) => agent.name === resource.name)?.effectiveModel,
+    }));
+    setResourceAgents(resources);
     setAgents(next);
     setAgentModal((current) => (current ? (next.find((agent) => agent.name === current.name) ?? null) : null));
   };
@@ -371,13 +375,14 @@ export function SettingsPage({
   };
 
   /** Pin the assistant to the first row, keeping the rest in API order. */
-  const roster = [...(resourceAgents.length > 0 ? resourceAgents : agents)].sort((a, b) => {
+  const roster = [...agents].sort((a, b) => {
     if (a.builtin !== b.builtin) return a.builtin ? -1 : 1;
     if (a.name === PAPER_ASSISTANT_AGENT) return -1;
     if (b.name === PAPER_ASSISTANT_AGENT) return 1;
     return a.name.localeCompare(b.name);
   });
-  const paperAssistantModel = roster.find((agent) => agent.name === PAPER_ASSISTANT_AGENT)?.model;
+  const paperAssistant = roster.find((agent) => agent.name === PAPER_ASSISTANT_AGENT);
+  const paperAssistantModel = paperAssistant?.model ?? paperAssistant?.effectiveModel;
   const toolInventory = [...new Set(roster.flatMap((agent) => agent.effectiveTools ?? agent.tools ?? []))].sort(
     (a, b) => a.localeCompare(b),
   );
@@ -701,17 +706,29 @@ export function SettingsPage({
           agent={agentModal}
           busy={busy}
           isPaperAssistant={agentModal.name === PAPER_ASSISTANT_AGENT}
-          modelOptions={withConfiguredModel(models, agentModal.model)}
-          modelValue={agentModal.model ?? ""}
+          modelOptions={withConfiguredModel(models, agentModal.model ?? agentModal.effectiveModel)}
+          modelValue={
+            agentModal.name === PAPER_ASSISTANT_AGENT
+              ? (agentModal.model ?? agentModal.effectiveModel ?? "")
+              : (agentModal.model ?? "")
+          }
+          modelError={
+            agentModal.name === PAPER_ASSISTANT_AGENT && !agentModal.model && !agentModal.effectiveModel
+              ? t("settings.agents.defaultModelUnavailable")
+              : undefined
+          }
           thinkingValue={agentModal.thinking ?? ""}
           thinkingLevels={thinkingLevelsForModel(
             models.find(
               (m) =>
                 `${m.provider}/${m.id}` ===
-                (agentModal.model ?? (agentModal.name === PAPER_ASSISTANT_AGENT ? undefined : paperAssistantModel)),
+                (agentModal.model ??
+                  agentModal.effectiveModel ??
+                  (agentModal.name === PAPER_ASSISTANT_AGENT ? undefined : paperAssistantModel)),
             ),
             agentModal.thinking,
             agentModal.model === undefined &&
+              agentModal.effectiveModel === undefined &&
               (agentModal.name === PAPER_ASSISTANT_AGENT || paperAssistantModel === undefined),
           )}
           editorResource={agentEditor?.name === agentModal.name ? agentEditor : null}

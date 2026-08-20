@@ -45,6 +45,7 @@ describe("API response parsers", () => {
           source: "global",
           filePath: "/agent/agents/search.md",
           model: "openai/gpt-4o",
+          effectiveModel: "openai/gpt-4o",
           thinking: "high",
           tools: ["web"],
           subagents: [],
@@ -64,6 +65,7 @@ describe("API response parsers", () => {
         source: "global",
         filePath: "/agent/agents/search.md",
         model: "openai/gpt-4o",
+        effectiveModel: "openai/gpt-4o",
         thinking: "high",
         effectiveTools: ["web"],
         effectiveSkills: ["arxiv"],
@@ -79,6 +81,19 @@ describe("API response parsers", () => {
     expect(() => parseModels({ models: [{ provider: "openai" }] })).toThrow();
     expect(() => parseModels({ models: [{ provider: "openai", id: "gpt-4o", reasoning: "yes" }] })).toThrow();
     expect(() => parseAgents([{ name: "search", description: 42 }])).toThrow();
+    expect(() =>
+      parseAgents([
+        {
+          name: "search",
+          description: "Finds papers",
+          source: "global",
+          effectiveModel: 42,
+          effectiveTools: [],
+          effectiveSkills: [],
+          missingSkills: [],
+        },
+      ]),
+    ).toThrow();
     expect(() =>
       parseAgents([
         {

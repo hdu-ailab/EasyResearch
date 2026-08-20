@@ -137,6 +137,7 @@ export interface AgentDto {
   source: "global" | "bundled";
   filePath: string;
   model?: string;
+  effectiveModel?: string;
   thinking?: ThinkingLevel;
   tools?: string[];
   effectiveTools: string[];

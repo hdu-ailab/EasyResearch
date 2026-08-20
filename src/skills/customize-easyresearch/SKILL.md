@@ -143,8 +143,10 @@ The sole model/thinking source is the sparse global
 
 - Keys are built-in or custom Agent ids; a missing Agent id is inert and
   preserved until a matching custom Agent exists.
-- A Paper Assistant without `model` uses Pi automatic resolution. Other Agents
-  without `model` inherit the Paper Assistant model.
+- A Paper Assistant without `model` uses Pi's exact native default resolution.
+  Web selects that concrete existing model option without writing it to
+  settings or adding an Automatic pseudo-option. Other Agents without `model`
+  inherit the Paper Assistant's effective model.
 - A Paper Assistant without `thinking` uses its model's highest supported
   strength. Other Agents without `thinking` inherit that effective strength;
   every value is constrained to the effective model's supported levels.

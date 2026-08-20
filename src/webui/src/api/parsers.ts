@@ -234,6 +234,9 @@ export function parseAgent(value: unknown): AgentDto {
   if (source.thinking !== undefined && !isThinkingLevel(source.thinking)) {
     throw new Error("Invalid API response: agent thinking is invalid");
   }
+  if (source.effectiveModel !== undefined && typeof source.effectiveModel !== "string") {
+    throw new Error("Invalid API response: agent effective model is invalid");
+  }
   const tools = source.tools === undefined ? undefined : stringArray(source.tools, "tools");
   const subagents = source.subagents === undefined ? undefined : stringArray(source.subagents, "subagents");
   const skills = source.skills === undefined ? undefined : stringArray(source.skills, "skills");
@@ -253,6 +256,7 @@ export function parseAgent(value: unknown): AgentDto {
     source: source.source,
     filePath: typeof source.filePath === "string" ? source.filePath : "",
     ...(typeof source.model === "string" ? { model: source.model } : {}),
+    ...(typeof source.effectiveModel === "string" ? { effectiveModel: source.effectiveModel } : {}),
     ...(isThinkingLevel(source.thinking) ? { thinking: source.thinking } : {}),
     effectiveTools,
     effectiveSkills,

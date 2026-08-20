@@ -12,6 +12,7 @@ export interface AgentConfigModalProps {
   busy: boolean;
   modelOptions: ReadonlyArray<{ provider: string; id: string }>;
   modelValue: string;
+  modelError?: string;
   thinkingValue: string;
   thinkingLevels: readonly string[];
   isPaperAssistant: boolean;
@@ -31,6 +32,7 @@ export function AgentConfigModal({
   busy,
   modelOptions,
   modelValue,
+  modelError,
   thinkingValue,
   thinkingLevels,
   isPaperAssistant,
@@ -112,17 +114,19 @@ export function AgentConfigModal({
               ariaLabel={`${t("settings.agents.selectModelFor")} ${name}`}
               value={modelValue}
               options={[
-                {
-                  value: "",
-                  label: isPaperAssistant ? t("settings.agents.automaticModel") : t("settings.agents.inherit"),
-                },
+                ...(isPaperAssistant ? [] : [{ value: "", label: t("settings.agents.inherit") }]),
                 ...modelOptions.map((m) => ({ value: `${m.provider}/${m.id}`, label: `${m.provider}/${m.id}` })),
               ]}
-              placeholder={isPaperAssistant ? t("settings.agents.automaticModel") : t("settings.agents.inherit")}
+              placeholder={isPaperAssistant ? "" : t("settings.agents.inherit")}
               disabled={busy}
               onSelect={onModelChange}
               className="h-8 w-full text-[13px]"
             />
+            {modelError && (
+              <p role="alert" className="text-[12px] text-v2-status-error">
+                {modelError}
+              </p>
+            )}
           </div>
 
           <div className="flex flex-col gap-2">

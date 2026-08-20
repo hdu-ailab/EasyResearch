@@ -168,7 +168,8 @@ global-over-bundled Markdown 规则：`<cwd>/.easyresearch/agents/` 是惰性的
 Paper Assistant 当前的全局模型与思考强度。
 
 设置页和工作页编辑的是同一组全局 settings 条目。Paper Assistant 的模型
-留空时显示为 **自动（Pi 默认）**，不会再显示猜测出的 provider/model；
+未配置时，后端直接通过 Pi 解析具体默认模型，并选中下拉列表中已有的同一模型，
+不会落盘或产生重复选项。若 Pi 无法解析模型，控件保持为空并提示配置模型或凭据。
 thinking 留空时使用该模型支持的最高强度。不再存在会话级 Agent 覆盖或
 Follow global 模式。有效的 Agent Markdown、Agent 默认值与 `models.json` 更改会自动
 刷新已打开的设置页和工作页。运行中的 Agent 会先完成当前响应和工具批次，再在

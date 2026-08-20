@@ -3,7 +3,6 @@ import type { Message, Model } from "@earendil-works/pi-ai";
 import type {
   AgentSessionEvent,
   JsonAgentSessionEvent,
-  ModelRuntime,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -15,6 +14,7 @@ import { runCleanupSteps } from "../runtime/cleanup";
 import { toJsonSessionEvent } from "../runtime/json-session-event";
 import type { LiveConfiguration } from "../runtime/live-configuration";
 import { createSessionSettingsFacade } from "../runtime/session-settings-facade";
+import { resolvePiDefaultModel, type PiDefaultModelApi } from "../runtime/pi-default-model";
 import { applyRuntimeSettingsDefaults } from "../runtime/settings-defaults";
 import { configureBatchedSteering, type RuntimeSteeringSession } from "../runtime/steering-mode";
 import type { AgentConfig } from "./agents";
@@ -658,31 +658,13 @@ async function resolveDefaultStageSessionLauncher(): Promise<StageSessionLaunche
       { name: "webfetch", factory: webFetchExtension },
     ],
     resolveAutomaticModel: async ({ cwd, modelRuntime, settingsManager }) => {
-      const probeLoader = new pi.DefaultResourceLoader({
+      return resolvePiDefaultModel({
+        pi: pi as unknown as PiDefaultModelApi,
         cwd,
         agentDir,
-        settingsManager: settingsManager as SettingsManager,
-        noExtensions: true,
-        noSkills: true,
-        noPromptTemplates: true,
-        noThemes: true,
-        noContextFiles: true,
+        modelRuntime,
+        settingsManager: settingsManager as object,
       });
-      await probeLoader.reload({ resolveProjectTrust: async () => true });
-      const { session: probe } = await pi.createAgentSession({
-        cwd,
-        agentDir,
-        sessionManager: pi.SessionManager.inMemory(cwd),
-        settingsManager: settingsManager as SettingsManager,
-        modelRuntime: modelRuntime as ModelRuntime,
-        resourceLoader: probeLoader,
-        noTools: "all",
-      });
-      try {
-        return probe.model;
-      } finally {
-        probe.dispose();
-      }
     },
     resolveSkillPaths: (agent, cwd, root, settingsManager) => {
       const deps = {

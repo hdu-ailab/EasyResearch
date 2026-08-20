@@ -180,10 +180,12 @@ the Work page, or the Settings page. Residual Markdown `model`/`thinking`
 fields are ignored. Stage agents inherit the Paper Assistant's current global
 model and thinking when they have no values of their own.
 
-Settings and Work edit these same global settings entries. An empty Paper
-Assistant model is shown as **Automatic (Pi default)** and is never replaced by
-a guessed provider/model; empty thinking uses the model's highest supported
-level. There are no per-session Agent overrides or Follow global mode. Valid
+Settings and Work edit these same global settings entries. When the Paper
+Assistant model is unset, the backend asks Pi for its concrete default and
+selects that existing model option without persisting or duplicating it. If Pi
+cannot resolve a model, the control stays empty and reports that model or
+credentials configuration is required. Empty thinking uses the model's highest
+supported level. There are no per-session Agent overrides or Follow global mode. Valid
 Agent Markdown, Agent-default, and `models.json` changes refresh open
 Settings/Work surfaces automatically. A
 running Agent completes its current response and tool batch, then applies the

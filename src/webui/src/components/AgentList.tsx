@@ -74,7 +74,7 @@ export function AgentList({ cwd, statusByAgent, configurationGeneration, configu
 
   const agents = roster ?? [];
   const paperAssistant = agents.find((agent) => agent.name === PAPER_ASSISTANT_AGENT);
-  const paperAssistantModel = paperAssistant?.model;
+  const paperAssistantModel = paperAssistant?.model ?? paperAssistant?.effectiveModel;
   const subagents = agents
     .filter((agent) => agent.name !== PAPER_ASSISTANT_AGENT)
     .sort((a, b) => {
@@ -179,6 +179,7 @@ function AgentCard({
       <ModelRow
         name={name}
         model={agent?.model}
+        effectiveModel={agent?.effectiveModel}
         thinking={agent?.thinking}
         paperAssistantModel={paperAssistantModel}
         models={models}
@@ -196,6 +197,7 @@ function statusLabel(t: Translate, status: AgentStatus): string {
 interface ModelRowProps {
   name: string;
   model: string | undefined;
+  effectiveModel: string | undefined;
   thinking: string | undefined;
   paperAssistantModel: string | undefined;
   models: ModelOption[];
@@ -203,46 +205,65 @@ interface ModelRowProps {
   onPatch: (patch: AgentConfigurationPatch) => void;
 }
 
-function ModelRow({ name, model, thinking, paperAssistantModel, models, disabled, onPatch }: ModelRowProps) {
+function ModelRow({
+  name,
+  model,
+  effectiveModel,
+  thinking,
+  paperAssistantModel,
+  models,
+  disabled,
+  onPatch,
+}: ModelRowProps) {
   const { t } = useI18n();
-  const current = model ?? "";
+  const current = name === PAPER_ASSISTANT_AGENT ? (model ?? effectiveModel ?? "") : (model ?? "");
   const slash = current.indexOf("/");
   const options =
     current !== "" && slash > 0 && !models.some((item) => `${item.provider}/${item.id}` === current)
       ? [{ provider: current.slice(0, slash), id: current.slice(slash + 1), reasoning: false }, ...models]
       : models;
-  const effectiveModelRef = current || (name === PAPER_ASSISTANT_AGENT ? undefined : paperAssistantModel);
-  const effectiveModel = models.find((item) => `${item.provider}/${item.id}` === effectiveModelRef);
-  const levels = thinkingLevelsForModel(effectiveModel, thinking, effectiveModelRef === undefined);
-  const emptyModelLabel = name === PAPER_ASSISTANT_AGENT ? t("work.automaticModel") : t("settings.agents.inherit");
+  const effectiveModelRef =
+    effectiveModel ?? (current || (name === PAPER_ASSISTANT_AGENT ? undefined : paperAssistantModel));
+  const effectiveModelOption = models.find((item) => `${item.provider}/${item.id}` === effectiveModelRef);
+  const levels = thinkingLevelsForModel(effectiveModelOption, thinking, effectiveModelRef === undefined);
+  const emptyModelLabel = name === PAPER_ASSISTANT_AGENT ? "" : t("settings.agents.inherit");
 
   return (
-    <div className="mt-2 flex items-center gap-1.5">
-      <SearchableSelect
-        ariaLabel={t("work.selectModel")}
-        value={current}
-        options={[
-          { value: "", label: emptyModelLabel },
-          ...options.map((item) => {
-            const key = `${item.provider}/${item.id}`;
-            return { value: key, label: key };
-          }),
-        ]}
-        placeholder={emptyModelLabel}
-        disabled={disabled}
-        onSelect={(value) => onPatch({ model: value === "" ? null : value })}
-        className="flex-1"
-      />
-      <ThinkingLevelSelect
-        ariaLabel={t("work.selectThinking")}
-        value={thinking ?? ""}
-        levels={levels}
-        emptyLabel={
-          name === PAPER_ASSISTANT_AGENT ? t("settings.agents.automaticThinking") : t("settings.agents.inheritThinking")
-        }
-        disabled={disabled}
-        onChange={(level) => onPatch({ thinking: level === "" ? null : isThinkingLevel(level) ? level : null })}
-      />
+    <div className="mt-2">
+      <div className="flex items-center gap-1.5">
+        <SearchableSelect
+          ariaLabel={t("work.selectModel")}
+          value={current}
+          options={[
+            ...(name === PAPER_ASSISTANT_AGENT ? [] : [{ value: "", label: emptyModelLabel }]),
+            ...options.map((item) => {
+              const key = `${item.provider}/${item.id}`;
+              return { value: key, label: key };
+            }),
+          ]}
+          placeholder={emptyModelLabel}
+          disabled={disabled}
+          onSelect={(value) => onPatch({ model: value === "" ? null : value })}
+          className="flex-1"
+        />
+        <ThinkingLevelSelect
+          ariaLabel={t("work.selectThinking")}
+          value={thinking ?? ""}
+          levels={levels}
+          emptyLabel={
+            name === PAPER_ASSISTANT_AGENT
+              ? t("settings.agents.automaticThinking")
+              : t("settings.agents.inheritThinking")
+          }
+          disabled={disabled}
+          onChange={(level) => onPatch({ thinking: level === "" ? null : isThinkingLevel(level) ? level : null })}
+        />
+      </div>
+      {name === PAPER_ASSISTANT_AGENT && !effectiveModelRef && (
+        <p role="alert" className="mt-1 text-[11px] text-v2-status-error">
+          {t("settings.agents.defaultModelUnavailable")}
+        </p>
+      )}
     </div>
   );
 }

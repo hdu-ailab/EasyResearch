@@ -11,6 +11,7 @@ import { ActiveSessionRegistry, UnknownSessionError } from "./active-sessions";
 import { DirectoryService } from "./directories";
 import { ConfigFileService } from "./config-files";
 import type {
+  AgentDto,
   ConfigurationEvent,
   ModelOptionDto,
   SessionSummaryDto,
@@ -308,6 +309,7 @@ describe("web routes", () => {
     createDaemonAuthRuntimeMock.mockReset().mockResolvedValue({
       auth: authGatewayMock,
       modelValidator: modelValidatorMock,
+      modelRuntime: {},
       dispose: disposeModelsMock,
     } as unknown as DaemonAuthRuntime);
   });
@@ -2018,6 +2020,7 @@ describe("web routes", () => {
       source: "global",
       filePath: "/agent/agents/search.md",
       model: "deepseek/ds-v3",
+      effectiveModel: "deepseek/ds-v3",
       thinking: "medium",
       tools: ["bash"],
       effectiveTools: ["bash"],
@@ -2025,6 +2028,56 @@ describe("web routes", () => {
       skills: ["paper-search", "missing-skill"],
       effectiveSkills: ["paper-search"],
       missingSkills: ["missing-skill"],
+    });
+  });
+
+  it("keeps an unset model sparse while exposing Pi's resolved default as the effective model", async () => {
+    const discover = discoverAgentsForWeb as unknown as (
+      cwd: string | undefined,
+      root: string,
+      resolveDefaultModel: (cwd: string) => Promise<string | undefined>,
+    ) => Promise<AgentDto[]>;
+
+    const agents = await discover(undefined, agentDir, async () => "openai/pi-default");
+
+    expect(agents.find((agent) => agent.name === "paper-assistant")).toMatchObject({
+      model: undefined,
+      effectiveModel: "openai/pi-default",
+    });
+    expect(agents.find((agent) => agent.name === "search")).toMatchObject({
+      model: undefined,
+      effectiveModel: "openai/pi-default",
+    });
+  });
+
+  it("uses an explicit Paper Assistant model without asking Pi for a fallback", async () => {
+    writeFileSync(
+      join(agentDir, "settings.json"),
+      JSON.stringify({
+        easyresearch: {
+          agentDefaults: {
+            "paper-assistant": { model: "anthropic/configured" },
+          },
+        },
+      }),
+    );
+    const discover = discoverAgentsForWeb as unknown as (
+      cwd: string | undefined,
+      root: string,
+      resolveDefaultModel: (cwd: string) => Promise<string | undefined>,
+    ) => Promise<AgentDto[]>;
+
+    const agents = await discover(undefined, agentDir, async () => {
+      throw new Error("Pi fallback must not run for an explicit model");
+    });
+
+    expect(agents.find((agent) => agent.name === "paper-assistant")).toMatchObject({
+      model: "anthropic/configured",
+      effectiveModel: "anthropic/configured",
+    });
+    expect(agents.find((agent) => agent.name === "search")).toMatchObject({
+      model: undefined,
+      effectiveModel: "anthropic/configured",
     });
   });
 
@@ -2201,6 +2254,90 @@ describe("web routes", () => {
       if (originalBun === undefined) delete (globalThis as { Bun?: unknown }).Bun;
       else (globalThis as { Bun?: unknown }).Bun = originalBun;
       authGatewayMock.shutdown.mockClear();
+    }
+  });
+
+  it("resolves an unset Paper Assistant model through Pi for the production Agent roster", async () => {
+    const configuration = fakeConfiguration().live;
+    configuration.resolveAgents = async () => [
+      {
+        name: "paper-assistant",
+        description: "Paper Assistant",
+        enabled: true,
+        builtin: true,
+        systemPrompt: "Coordinate",
+        source: "bundled",
+        filePath: "/bundled/paper-assistant.md",
+        effectiveTools: [],
+        effectiveSkills: [],
+        missingSkills: [],
+      },
+      {
+        name: "search",
+        description: "Search",
+        enabled: true,
+        builtin: true,
+        systemPrompt: "Search",
+        source: "bundled",
+        filePath: "/bundled/search.md",
+        effectiveTools: [],
+        effectiveSkills: [],
+        missingSkills: [],
+      },
+    ];
+    const createLive = vi.spyOn(liveConfigurationModule, "createLiveConfiguration").mockReturnValue(configuration);
+    const resolvedModel = { provider: "openai", id: "pi-default", reasoning: true };
+    const probeDispose = vi.fn();
+    const probeReload = vi.fn(async () => {});
+    createDaemonAuthRuntimeMock.mockResolvedValueOnce({
+      auth: authGatewayMock,
+      modelValidator: modelValidatorMock,
+      modelRuntime: {},
+      dispose: disposeModelsMock,
+    } as unknown as DaemonAuthRuntime);
+    const pi = await piImportModule.importPi();
+    const importPi = vi.spyOn(piImportModule, "importPi").mockResolvedValue({
+      ...pi,
+      getAgentDir: () => agentDir,
+      DefaultResourceLoader: class {
+        reload = probeReload;
+      },
+      SettingsManager: { create: () => ({}) },
+      SessionManager: { listAll: async () => [], open: vi.fn(), inMemory: () => ({}) },
+      createAgentSession: async () => ({ session: { model: resolvedModel, dispose: probeDispose } }),
+    } as never);
+    const resolveFactory = vi.spyOn(PiSessionFactory, "resolve").mockResolvedValue(new FakeFactory() as never);
+    const originalBun = (globalThis as { Bun?: unknown }).Bun;
+    let productionHandler: ((request: Request) => Promise<Response>) | undefined;
+    (globalThis as { Bun?: unknown }).Bun = {
+      serve: ({ fetch }: { fetch: (request: Request) => Promise<Response> }) => {
+        productionHandler = fetch;
+        return { port: 43219, stop: vi.fn() };
+      },
+    };
+    let server: Awaited<ReturnType<typeof startServer>> | undefined;
+
+    try {
+      server = await startServer({ host: "127.0.0.1", port: 0 });
+      const response = await productionHandler!(new Request(`http://127.0.0.1:${server.port}/api/agents`));
+      expect(response.status).toBe(200);
+      const agents = (await response.json()) as AgentDto[];
+      const paperAssistant = agents.find((agent) => agent.name === "paper-assistant");
+      const search = agents.find((agent) => agent.name === "search");
+      expect(paperAssistant).toMatchObject({ effectiveModel: "openai/pi-default" });
+      expect(paperAssistant).not.toHaveProperty("model");
+      expect(search).toMatchObject({ effectiveModel: "openai/pi-default" });
+      expect(search).not.toHaveProperty("model");
+      expect(probeReload).toHaveBeenCalledTimes(1);
+      expect(probeDispose).toHaveBeenCalledTimes(1);
+      expect(() => readFileSync(join(agentDir, "settings.json"), "utf8")).toThrow();
+    } finally {
+      await server?.stop();
+      createLive.mockRestore();
+      resolveFactory.mockRestore();
+      importPi.mockRestore();
+      if (originalBun === undefined) delete (globalThis as { Bun?: unknown }).Bun;
+      else (globalThis as { Bun?: unknown }).Bun = originalBun;
     }
   });
 
@@ -2546,6 +2683,7 @@ describe("web routes", () => {
           },
         },
         modelValidator: daemon.modelValidator,
+        modelRuntime: daemon.modelRuntime,
         dispose: async () => {
           order.push("models");
           await daemon.dispose();

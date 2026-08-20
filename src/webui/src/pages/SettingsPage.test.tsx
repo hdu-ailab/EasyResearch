@@ -48,6 +48,7 @@ beforeEach(() => {
       builtin: true,
       source: "bundled",
       filePath: "src/agents/paper-assistant.md",
+      effectiveModel: "openai/gpt-4o",
       effectiveTools: [],
       effectiveSkills: [],
       missingSkills: [],
@@ -60,6 +61,7 @@ beforeEach(() => {
       source: "global",
       filePath: "/agent/agents/search.md",
       model: "openai/gpt-4o",
+      effectiveModel: "openai/gpt-4o",
       thinking: "high",
       effectiveTools: ["read", "web-search"],
       effectiveSkills: ["paper-search", "arxiv"],
@@ -72,6 +74,7 @@ beforeEach(() => {
       builtin: true,
       source: "bundled",
       filePath: "src/agents/writing.md",
+      effectiveModel: "openai/gpt-4o",
       effectiveTools: [],
       effectiveSkills: [],
       missingSkills: [],
@@ -361,7 +364,7 @@ describe("SettingsPage", () => {
     await user.click(screen.getByRole("button", { name: "Close editor" }));
     await openAgentConfig(user, "Paper Assistant");
     expect(screen.getByRole("combobox", { name: "Select model for Paper Assistant" })).toHaveTextContent(
-      "Automatic (Pi default)",
+      "openai/gpt-4o",
     );
     expect(screen.queryByRole("switch", { name: "Enable Paper Assistant" })).toBeNull();
   });
@@ -442,27 +445,58 @@ describe("SettingsPage", () => {
     expect(screen.queryAllByRole("option", { name: /inherit/i })).toHaveLength(0);
   });
 
-  it("shows Automatic when no Paper Assistant model is configured", async () => {
+  it("selects Pi's resolved Paper Assistant model once without persisting it", async () => {
     const user = userEvent.setup();
+    vi.mocked(api.listAgents).mockResolvedValueOnce([
+      {
+        name: "paper-assistant",
+        description: "Coordinates",
+        enabled: true,
+        builtin: true,
+        source: "bundled",
+        filePath: "src/agents/paper-assistant.md",
+        effectiveModel: "deepseek/deepseek-v4-pro",
+        effectiveTools: [],
+        effectiveSkills: [],
+        missingSkills: [],
+      },
+    ]);
     vi.mocked(api.listModels).mockResolvedValueOnce([{ provider: "deepseek", id: "deepseek-v4-pro", reasoning: true }]);
     renderSettings();
     await openAgentConfig(user, "Paper Assistant");
     const combobox = screen.getByRole("combobox", { name: "Select model for Paper Assistant" });
-    expect(combobox).toHaveTextContent("Automatic (Pi default)");
-    expect(combobox).not.toHaveTextContent("deepseek/deepseek-v4-pro");
-    expect(screen.getByRole("option", { name: "max" })).toBeTruthy();
+    expect(combobox).toHaveTextContent("deepseek/deepseek-v4-pro");
     await user.click(combobox);
-    expect(screen.getAllByRole("option", { name: "Automatic (Pi default)" })).toHaveLength(1);
+    expect(screen.getAllByRole("option", { name: "deepseek/deepseek-v4-pro" })).toHaveLength(1);
+    expect(screen.queryByRole("option", { name: "Automatic (Pi default)" })).toBeNull();
     expect(screen.queryAllByRole("option", { name: /inherit/i })).toHaveLength(0);
+    expect(api.patchAgent).not.toHaveBeenCalled();
   });
 
-  it("does not duplicate the Automatic Paper Assistant option", async () => {
+  it("keeps the Paper Assistant model empty and reports when Pi resolves no default", async () => {
     const user = userEvent.setup();
+    vi.mocked(api.listAgents).mockResolvedValueOnce([
+      {
+        name: "paper-assistant",
+        description: "Coordinates",
+        enabled: true,
+        builtin: true,
+        source: "bundled",
+        filePath: "src/agents/paper-assistant.md",
+        effectiveTools: [],
+        effectiveSkills: [],
+        missingSkills: [],
+      },
+    ]);
     renderSettings();
     await openAgentConfig(user, "Paper Assistant");
     const combobox = screen.getByRole("combobox", { name: "Select model for Paper Assistant" });
-    await user.click(combobox);
-    expect(screen.queryAllByRole("option", { name: "Automatic (Pi default)" })).toHaveLength(1);
+    expect(combobox).not.toHaveTextContent("openai/gpt-4o");
+    expect(screen.queryByText("Automatic (Pi default)")).toBeNull();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Could not resolve a default model. Configure a model or credentials.",
+    );
+    expect(screen.getByRole("dialog", { name: "Agents" })).not.toHaveTextContent(/\bPi\b/);
   });
 
   it("sets the Paper Assistant model through the global Agent patch", async () => {
@@ -525,7 +559,8 @@ describe("SettingsPage", () => {
     await openAgentConfig(user, "Paper Assistant");
     const assistantThinking = screen.getByRole("combobox", { name: "Select thinking for Paper Assistant" });
     expect(within(assistantThinking).getByText("Automatic (highest supported)")).toBeTruthy();
-    expect(within(assistantThinking).getByRole("option", { name: "max" })).toBeTruthy();
+    expect(within(assistantThinking).getByRole("option", { name: "high" })).toBeTruthy();
+    expect(within(assistantThinking).queryByRole("option", { name: "max" })).toBeNull();
     expect(within(assistantThinking).queryByText("inherit (Paper Assistant's model)")).toBeNull();
   });
 

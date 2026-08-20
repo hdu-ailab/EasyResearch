@@ -26,6 +26,7 @@ export interface AcceptedModelRuntime<T extends AuthModelRuntime = AuthModelRunt
 export interface DaemonAuthRuntime {
   readonly auth: AuthGateway;
   readonly modelValidator: ModelCatalogValidator;
+  readonly modelRuntime: AuthModelRuntime;
   dispose(): Promise<void>;
 }
 
@@ -120,6 +121,7 @@ export async function createDaemonAuthRuntime<T extends AuthModelRuntime>(
   return {
     auth,
     modelValidator: accepted,
+    modelRuntime: accepted.runtime,
     dispose: () => accepted.dispose(),
   };
 }

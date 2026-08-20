@@ -2,7 +2,6 @@ import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core"
 import type { Model } from "@earendil-works/pi-ai";
 import type {
   AgentSessionEvent,
-  ModelRuntime,
   SessionTreeNode,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
@@ -17,6 +16,7 @@ import {
   type AgentRuntimeModelRuntime,
 } from "../runtime/agent-runtime-binding";
 import { createSessionSettingsFacade } from "../runtime/session-settings-facade";
+import { resolvePiDefaultModel, type PiDefaultModelApi } from "../runtime/pi-default-model";
 import {
   ConfigurationUnavailableError,
   type LiveConfiguration,
@@ -235,7 +235,7 @@ export interface PiRuntimeDependencies {
     binding: AgentRuntimeBinding;
   }): unknown[];
   createSettingsManager(cwd: string, agentDir: string): unknown;
-  createModelRuntime(agentDir: string): Promise<unknown>;
+  createModelRuntime(agentDir: string): Promise<AgentRuntimeModelRuntime>;
   createResourceLoader(options: {
     cwd: string;
     agentDir: string;
@@ -249,7 +249,7 @@ export interface PiRuntimeDependencies {
   resolveAutomaticModel(options: {
     cwd: string;
     agentDir: string;
-    modelRuntime: unknown;
+    modelRuntime: AgentRuntimeModelRuntime;
     settingsManager: unknown;
   }): Promise<Model<any> | undefined>;
   resolveSkillPaths(agent: AgentConfig, cwd: string, agentDir: string, settingsManager: unknown): string[];
@@ -441,31 +441,13 @@ export class PiSessionFactory implements SessionFactory {
         return { session: result.session as unknown as BindableAgentSession };
       },
       resolveAutomaticModel: async ({ cwd, modelRuntime, settingsManager }) => {
-        const probeLoader = new pi.DefaultResourceLoader({
+        return resolvePiDefaultModel({
+          pi: pi as unknown as PiDefaultModelApi,
           cwd,
           agentDir,
-          settingsManager: settingsManager as SettingsManager,
-          noExtensions: true,
-          noSkills: true,
-          noPromptTemplates: true,
-          noThemes: true,
-          noContextFiles: true,
+          modelRuntime,
+          settingsManager: settingsManager as object,
         });
-        await probeLoader.reload({ resolveProjectTrust: async () => true });
-        const { session: probe } = await pi.createAgentSession({
-          cwd,
-          agentDir,
-          sessionManager: pi.SessionManager.inMemory(cwd),
-          settingsManager: settingsManager as SettingsManager,
-          modelRuntime: modelRuntime as ModelRuntime,
-          resourceLoader: probeLoader,
-          noTools: "all",
-        });
-        try {
-          return probe.model;
-        } finally {
-          probe.dispose();
-        }
       },
       resolveSkillPaths: (agent, cwd, root, settingsManager) => {
         return resolveAgentSkillDirectories(agent, {
