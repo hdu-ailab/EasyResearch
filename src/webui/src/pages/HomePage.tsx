@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import packageJson from "../../../../package.json";
 import type { ActiveSessionDto, SessionSummaryDto } from "../../../web/contracts";
 import { createSession, listStatus, openSession, renameSession, stopSession, touchSession } from "../api";
 import { DirectoryDialog } from "../components/DirectoryDialog";
@@ -110,7 +111,12 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
     <div className="flex h-full flex-col">
       <Topbar
         home={{ active: true }}
-        leading={<ProductMark />}
+        leading={
+          <div className="flex min-w-0 items-center gap-2">
+            <ProductMark />
+            <span className="shrink-0 font-mono text-[11px] text-v2-text-text-faint">v{packageJson.version}</span>
+          </div>
+        }
         center={
           <span className="hidden truncate text-[13px] text-v2-text-text-muted sm:inline">{t("home.tagline")}</span>
         }

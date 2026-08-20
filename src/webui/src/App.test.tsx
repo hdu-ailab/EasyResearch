@@ -2,6 +2,7 @@ import { fireEvent, render as renderWithTestingLibrary, screen, waitFor } from "
 import userEvent from "@testing-library/user-event";
 import type { ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import packageJson from "../../../package.json";
 import { App } from "./App";
 import * as api from "./api";
 import { I18nProvider } from "./i18n/I18nProvider";
@@ -146,6 +147,18 @@ describe("App routing", () => {
   it("renders Home on an empty hash", async () => {
     render(<App />);
     expect(await screen.findByRole("region", { name: /research workspace/i })).toBeTruthy();
+  });
+
+  it("shows the package version only on the Home topbar", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await workspace();
+    const version = `v${packageJson.version}`;
+    expect(screen.getByText(version)).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await screen.findByText(/chat font size/i);
+    expect(screen.queryByText(version)).toBeNull();
   });
 
   it("falls back to Home for unknown hashes", async () => {
