@@ -15,7 +15,6 @@ import { toJsonSessionEvent } from "../runtime/json-session-event";
 import type { LiveConfiguration } from "../runtime/live-configuration";
 import { createSessionSettingsFacade } from "../runtime/session-settings-facade";
 import { resolvePiDefaultModel, type PiDefaultModelApi } from "../runtime/pi-default-model";
-import { applyRuntimeSettingsDefaults } from "../runtime/settings-defaults";
 import { configureBatchedSteering, type RuntimeSteeringSession } from "../runtime/steering-mode";
 import type { AgentConfig } from "./agents";
 import {
@@ -616,6 +615,7 @@ async function resolveDefaultStageSessionLauncher(): Promise<StageSessionLaunche
   const { createSubagentExtension } = await import("../extensions/subagent");
   const { default: webSearchExtension } = await import("../extensions/web-search");
   const { default: webFetchExtension } = await import("../extensions/webfetch");
+  const { default: windowsPowerShellExtension } = await import("../extensions/windows-powershell");
   const { SubagentSupervisor } = await import("./supervisor");
   const { isDotAgentsSkillEnabled, resolveAgentSkillDirectories } = await import("./skill-resolution");
   const agentDir = getAgentDir();
@@ -623,7 +623,7 @@ async function resolveDefaultStageSessionLauncher(): Promise<StageSessionLaunche
     agentDir,
     createSessionManager: (cwd) => pi.SessionManager.create(cwd),
     openSessionManager: (path) => pi.SessionManager.open(path),
-    createSettingsManager: (cwd, root) => applyRuntimeSettingsDefaults(pi.SettingsManager.create(cwd, root)),
+    createSettingsManager: (cwd, root) => pi.SettingsManager.create(cwd, root),
     createModelRuntime: (root) =>
       pi.ModelRuntime.create({
         authPath: join(root, "auth.json"),
@@ -641,6 +641,10 @@ async function resolveDefaultStageSessionLauncher(): Promise<StageSessionLaunche
       launchStage: launchStageSession,
     }),
     createExtensionFactories: ({ binding, liveConfiguration, coordinator, supervisor }) => [
+      {
+        name: "windows-powershell",
+        factory: windowsPowerShellExtension,
+      },
       {
         name: "agent-definition",
         factory: createAgentDefinitionExtension(binding),

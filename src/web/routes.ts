@@ -34,6 +34,13 @@ import {
   ConfigurationUnavailableError,
   type LiveConfiguration,
 } from "../runtime/live-configuration";
+import { DAEMON_CONTROL_PATH, DAEMON_TOKEN_HEADER } from "../cli/server-process";
+
+export interface DaemonControl {
+  token: string;
+  runtimeId: string;
+  requestShutdown: () => void;
+}
 
 export interface RouteServices {
   webuiDist: string;
@@ -51,6 +58,7 @@ export interface RouteServices {
   auth?: AuthGateway;
   configuration: Pick<LiveConfiguration, "generation" | "error" | "subscribe">;
   logger: Logger;
+  daemonControl?: DaemonControl;
 }
 
 export type RouteHandler = (request: Request) => Promise<Response>;
@@ -70,6 +78,16 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
     try {
       const url = new URL(req.url);
       const path = url.pathname;
+
+      if (path === DAEMON_CONTROL_PATH && (req.method === "GET" || req.method === "POST")) {
+        const control = services.daemonControl;
+        if (!control || req.headers.get(DAEMON_TOKEN_HEADER) !== control.token) {
+          return errorResponse(404, "Not found");
+        }
+        if (req.method === "GET") return jsonResponse({ runtimeId: control.runtimeId });
+        control.requestShutdown();
+        return jsonResponse({ ok: true });
+      }
 
       if (req.method === "GET" && path === "/api/status") {
         return jsonResponse({

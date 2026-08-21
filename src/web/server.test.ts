@@ -396,6 +396,33 @@ describe("web routes", () => {
     expect(checkForUpdate).toHaveBeenCalledOnce();
   });
 
+  it("keeps daemon control hidden behind the per-launch ownership token", async () => {
+    const requestShutdown = vi.fn();
+    setup({
+      daemonControl: {
+        token: "launch-token",
+        runtimeId: "runtime-current",
+        requestShutdown,
+      },
+    } as unknown as Partial<RouteServices>);
+
+    const hidden = await handler(new Request("http://localhost/api/internal/daemon"));
+    expect(hidden.status).toBe(404);
+
+    const headers = { "x-easyresearch-daemon-token": "launch-token" };
+    const probe = await handler(new Request("http://localhost/api/internal/daemon", { headers }));
+    expect(probe.status).toBe(200);
+    expect(await probe.json()).toEqual({ runtimeId: "runtime-current" });
+
+    const stop = await handler(new Request("http://localhost/api/internal/daemon", {
+      method: "POST",
+      headers,
+    }));
+    expect(stop.status).toBe(200);
+    expect(await stop.json()).toEqual({ ok: true });
+    expect(requestShutdown).toHaveBeenCalledOnce();
+  });
+
   it("lists directories for a given path", async () => {
     setup();
     const res = await handler(new Request(`http://localhost/api/directories?path=${encodeURIComponent(homeDir)}`));

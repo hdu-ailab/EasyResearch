@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir } from "../runtime/pi-import";
@@ -17,12 +18,11 @@ import {
 import { ensureSkillVenv, type SetupResult } from "../setup-venv";
 import { renameSameNameToBak } from "../setup-resources";
 import {
-  isProcessAlive,
-  readServerPid,
-  removeServerPid,
+  DAEMON_RUNTIME_ID_ENV,
+  DAEMON_TOKEN_ENV,
+  inspectServerProcess,
   serverLogFile,
   stopServerProcess,
-  writeServerPid,
 } from "./server-process";
 import { runServe } from "./commands/serve";
 
@@ -31,6 +31,12 @@ export interface CliDependencies {
   openBrowser: (url: string) => Promise<boolean>;
   waitForReady: (host: string, port: number, timeoutMs?: number) => Promise<boolean>;
   spawnBackground: (host: string, port: number) => void;
+  inspectBackground: (
+    agentDir: string,
+    host: string,
+    port: number,
+  ) => Promise<"none" | "current" | "stale">;
+  stopBackground: (agentDir: string) => Promise<boolean>;
 }
 
 export interface CliOptions {
@@ -112,6 +118,14 @@ export function daemonBinaryPath(agentDir: string): string {
     throw new Error(`Unable to prepare the daemon executable at ${target}: ${message}`);
   }
   return target;
+}
+
+export function daemonRuntimeId(
+  source = process.execPath,
+  version = embeddedPackageVersion(),
+): string {
+  const sourceStat = statSync(source);
+  return `${version}:${sourceStat.size}:${sourceStat.mtimeMs}`;
 }
 
 /** Pi's compiled asset getters resolve beside process.execPath. */
@@ -237,7 +251,7 @@ export async function runCli(
       return 0;
     }
     if (argv.length === 1 && argv[0] === "exit") {
-      const stopped = await stopServerProcess(agentDir);
+      const stopped = await deps.stopBackground(agentDir);
       console.log(stopped ? "EasyResearch service stopped." : "EasyResearch service is not running.");
       return 0;
     }
@@ -290,8 +304,8 @@ export async function runCli(
       }
     }
 
-    const existing = readServerPid(agentDir);
-    if (existing !== undefined && isProcessAlive(existing)) {
+    const background = await deps.inspectBackground(agentDir, host, port);
+    if (background === "current") {
       const ready = await deps.waitForReady(host, port);
       if (!ready) {
         console.error(`No service is listening on port ${port}.`);
@@ -302,7 +316,10 @@ export async function runCli(
       if (open && isLoopbackHost(host)) await deps.openBrowser(url);
       return 0;
     }
-    if (existing !== undefined) removeServerPid(agentDir);
+    if (background === "stale") {
+      console.log("[easyresearch] Runtime changed — restarting the background service…");
+      await deps.stopBackground(agentDir);
+    }
 
     deps.spawnBackground(host, port);
     try {
@@ -362,13 +379,22 @@ async function runRuntimeEntry(args: string[]): Promise<void> {
     process.exitCode = await runServe(host, port);
     return;
   }
+  const runtimeId = daemonRuntimeId();
   process.exitCode = await runCli(args, {
     serve: runServe,
     openBrowser,
     waitForReady,
+    inspectBackground: (agentDir, host, port) =>
+      inspectServerProcess(agentDir, runtimeId, host, port),
+    stopBackground: stopServerProcess,
     spawnBackground: (host, port) => {
       const agentDir = defaultAgentDir();
       const daemon = daemonBinaryPath(agentDir);
+      const daemonEnv = {
+        ...process.env,
+        [DAEMON_TOKEN_ENV]: randomUUID(),
+        [DAEMON_RUNTIME_ID_ENV]: runtimeId,
+      };
       const stderrPath = join(agentDir, "logs", "daemon-stderr.log");
       mkdirSync(dirname(stderrPath), { recursive: true });
       const stderrFd = openSync(stderrPath, "a");
@@ -381,14 +407,14 @@ async function runRuntimeEntry(args: string[]): Promise<void> {
           stdin: "ignore",
           stdout: "ignore",
           stderr: "ignore",
-          env: process.env,
+          env: daemonEnv,
         }).unref();
         return;
       }
       const options: Parameters<typeof spawn>[2] = {
         detached: true,
         stdio: ["ignore", "ignore", stderrFd],
-        env: process.env,
+        env: daemonEnv,
       };
       const child = isEmbeddedBuild()
         ? spawn(daemon, ["--serve", host, String(port)], options)

@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { isThinkingLevel } from "../thinking-levels";
-import { createRouteHandler, type RouteServices } from "./routes";
+import { createRouteHandler, type DaemonControl, type RouteServices } from "./routes";
 import { ActiveSessionRegistry } from "./active-sessions";
 import { PiSessionFactory } from "./session-adapter";
 import { DirectoryService } from "./directories";
@@ -20,7 +20,6 @@ import { createAgentPatchService } from "./agent-configuration";
 import { createLiveConfiguration, type LiveConfiguration } from "../runtime/live-configuration";
 import { resolvePiDefaultModel, type PiDefaultModelApi } from "../runtime/pi-default-model";
 import { createSessionSettingsFacade } from "../runtime/session-settings-facade";
-import { applyRuntimeSettingsDefaults } from "../runtime/settings-defaults";
 import { embeddedPackageVersion } from "../runtime/bundled-assets";
 import { checkNpmUpdate } from "./update-check";
 
@@ -32,6 +31,7 @@ export interface Server {
 export interface StartServerOptions {
   host?: string;
   port?: number;
+  daemonControl?: DaemonControl;
 }
 
 const WEBUI_DIST = join(fileURLToPath(new URL("..", import.meta.url)), "webui", "dist");
@@ -254,7 +254,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
   const listModels = () => auth.listModels();
   const resolveDefaultModel = async (cwd: string): Promise<string | undefined> => {
     const settingsManager = createSessionSettingsFacade(
-      applyRuntimeSettingsDefaults(SettingsManager.create(cwd, agentDir)),
+      SettingsManager.create(cwd, agentDir),
     );
     const model = await resolvePiDefaultModel({
       pi: pi as unknown as PiDefaultModelApi,
@@ -288,6 +288,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
     auth,
     configuration: live,
     logger,
+    daemonControl: options.daemonControl,
     listAgents: async (cwd) => agentsToDtos(await live.resolveAgents(cwd), cwd ?? agentDir, resolveDefaultModel),
   };
   const handler = createRouteHandler(services);

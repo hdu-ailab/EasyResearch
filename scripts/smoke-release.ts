@@ -15,6 +15,7 @@ import {
   createCompiledChildEnv,
   fetchSessionEventsBeforeDeadline,
   finishSmokeCleanup,
+  parseRecordedPid,
   readTextFileWithRetry,
   requireZeroProcessStatus,
   resolveSmokePython,
@@ -198,8 +199,7 @@ function powershellQuote(value: string): string {
 function recordedPid(path: string): number | undefined {
   if (!existsSync(path)) return undefined;
   try {
-    const pid = Number.parseInt(readFileSync(path, "utf8").trim(), 10);
-    return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
+    return parseRecordedPid(readFileSync(path, "utf8"));
   } catch {
     return undefined;
   }

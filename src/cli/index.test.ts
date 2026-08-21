@@ -22,8 +22,11 @@ function makeDeps(overrides: Partial<CliDependencies> = {}): CliDependencies {
     openBrowser: vi.fn(async () => true),
     waitForReady: vi.fn(async () => true),
     spawnBackground: vi.fn(),
+    inspectBackground: vi.fn(async (agentDir: string) =>
+      readServerPid(agentDir) === undefined ? "none" : "current"),
+    stopBackground: vi.fn(async () => false),
     ...overrides,
-  };
+  } as CliDependencies;
 }
 
 /** runCli with first-run setup stubbed out (tests must not touch real venvs). */
@@ -63,6 +66,24 @@ describe("runCli argument parsing", () => {
     expect(deps.openBrowser).toHaveBeenCalledWith("http://127.0.0.1:3000");
   });
 
+  it("restarts an existing daemon when its copied runtime is stale", async () => {
+    const stopBackground = vi.fn(async (agentDir: string) => {
+      expect(agentDir).toBe(root);
+      return true;
+    });
+    const deps = makeDeps({
+      inspectBackground: vi.fn(async () => "stale" as const),
+      stopBackground,
+    });
+
+    expect(await runTestCli([], deps, { agentDir: root })).toBe(0);
+
+    expect(stopBackground).toHaveBeenCalledOnce();
+    expect(deps.spawnBackground).toHaveBeenCalledWith("127.0.0.1", 3000);
+    expect(deps.waitForReady).toHaveBeenCalledOnce();
+    expect(deps.openBrowser).toHaveBeenCalledWith("http://127.0.0.1:3000");
+  });
+
   it("refuses to reuse a live pid when nothing listens on the requested port", async () => {
     writeServerPid(root, process.pid);
     const deps = makeDeps({ waitForReady: vi.fn(async () => false) });
@@ -88,17 +109,25 @@ describe("runCli argument parsing", () => {
   });
 
   it("exit with a live pid sends a stop", async () => {
-    writeServerPid(root, process.pid);
-    const deps = makeDeps({ spawnBackground: vi.fn(), serve: vi.fn(async () => 0) });
-    const killSpy = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
-      if (signal === 0) return true;
-      throw Object.assign(new Error("ESRCH: no such process"), { code: "ESRCH" });
+    const stopBackground = vi.fn(async () => true);
+    const deps = makeDeps({ stopBackground });
+    expect(await runTestCli(["exit"], deps, { agentDir: root })).toBe(0);
+    expect(stopBackground).toHaveBeenCalledWith(root);
+  });
+
+  it("fails closed instead of spawning when daemon ownership cannot be verified", async () => {
+    const deps = makeDeps({
+      inspectBackground: vi.fn(async () => {
+        throw new Error("Cannot verify daemon ownership");
+      }),
     });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      expect(await runTestCli(["exit"], deps, { agentDir: root })).toBe(0);
+      expect(await runTestCli([], deps, { agentDir: root })).toBe(1);
     } finally {
-      killSpy.mockRestore();
+      errorSpy.mockRestore();
     }
+    expect(deps.spawnBackground).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -388,6 +417,18 @@ describe("resource retirement version gate", () => {
 
     expect(readFileSync(join(root, "bin", "theme", "dark.json"), "utf8")).toBe("{}");
     expect(readFileSync(join(root, "bin", "photon_rs_bg.wasm"))).toEqual(Buffer.from([0, 255, 1]));
+  });
+
+  it("binds daemon runtime identity to the package version and executable metadata", () => {
+    const source = join(root, "source.exe");
+    writeFileSync(source, "new runtime");
+    const initial = cliModule.daemonRuntimeId(source, "1.0.0");
+
+    writeFileSync(source, "different runtime bytes");
+    expect(cliModule.daemonRuntimeId(source, "1.0.0")).not.toBe(initial);
+    expect(cliModule.daemonRuntimeId(source, "2.0.0")).not.toBe(
+      cliModule.daemonRuntimeId(source, "1.0.0"),
+    );
   });
 
   it("fails explicitly when the compiled daemon copy cannot be prepared", () => {

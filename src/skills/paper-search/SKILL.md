@@ -72,12 +72,13 @@ $EASYRESEARCH_VENV/bin/python scripts/fetch_papers.py --query "{topic}"
 Windows layout:
 
 ```powershell
-%EASYRESEARCH_VENV%\Scripts\python.exe scripts\fetch_papers.py --query "{topic}"
+& (Join-Path $env:EASYRESEARCH_VENV 'Scripts\python.exe') scripts\fetch_papers.py --query "{topic}"
 ```
 
 If `$EASYRESEARCH_VENV` is unset or its Python lacks the `arxiv` package, the
 script automatically falls back to the REST API (no manual `.venv` creation
-needed); the system `python3` can also run the script directly.
+needed); on Windows the system `py -3` launcher can also run the script
+directly, while Linux/macOS can use `python3`.
 
 If OpenReview scraping is unavailable, ensure `playwright-cli` works and
 prefer the local Chrome Stable:

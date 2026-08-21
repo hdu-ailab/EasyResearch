@@ -193,6 +193,24 @@ export async function buildWebUi(): Promise<void> {
   await build({ configFile: join(ROOT, "src", "webui", "vite.config.ts"), logLevel: "info" });
 }
 
+export function compileCommand(
+  target: PlatformTarget,
+  outfile: string,
+  bunExecutable = process.execPath,
+): string[] {
+  return [
+    bunExecutable,
+    "build",
+    join(ROOT, "src", "cli", "index.ts"),
+    "--compile",
+    "--target",
+    target.target,
+    "--outfile",
+    outfile,
+    "--minify",
+  ];
+}
+
 export async function compileTarget(target: PlatformTarget): Promise<string> {
   const pkgDir = platformPackageDir(target.name);
   const binDir = join(pkgDir, "bin");
@@ -202,17 +220,7 @@ export async function compileTarget(target: PlatformTarget): Promise<string> {
   // exit 0 without executing any code on startup; the `bun build --compile`
   // CLI produces working binaries for the same entry. Compile through the CLI.
   const result = Bun.spawnSync({
-    cmd: [
-      "bun",
-      "build",
-      join(ROOT, "src", "cli", "index.ts"),
-      "--compile",
-      "--target",
-      target.target,
-      "--outfile",
-      outfile,
-      "--minify",
-    ],
+    cmd: compileCommand(target, outfile),
     stdout: "inherit",
     stderr: "inherit",
   });

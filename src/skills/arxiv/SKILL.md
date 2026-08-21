@@ -51,11 +51,12 @@ $EASYRESEARCH_VENV/bin/python scripts/search_arxiv.py --id 1706.03762,2402.03300
 Windows layout:
 
 ```powershell
-%EASYRESEARCH_VENV%\Scripts\python.exe scripts\search_arxiv.py --id 1706.03762
+& (Join-Path $env:EASYRESEARCH_VENV 'Scripts\python.exe') scripts\search_arxiv.py --id 1706.03762
 ```
 
-The script depends only on the Python standard library; plain `python3` works
-when `$EASYRESEARCH_VENV` is unset.
+The script depends only on the Python standard library. When
+`EASYRESEARCH_VENV` is unset, native Windows can use `py -3` and Linux/macOS
+can use `python3`.
 
 If the arXiv Atom API returns `429`, the script automatically falls back to
 parsing the `arxiv.org/abs/{id}` page for basic metadata and BibTeX.
