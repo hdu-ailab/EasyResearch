@@ -6,6 +6,7 @@ const session = (id: string) => `${API_ROOT}/sessions/${encodeURIComponent(id)}`
 
 export const routes = {
   status: () => `${API_ROOT}/status`,
+  updateCheck: () => `${API_ROOT}/update-check`,
   agents: (cwd?: string) => {
     const query = cwd ? `?cwd=${encodeURIComponent(cwd)}` : "";
     return `${API_ROOT}/agents${query}`;

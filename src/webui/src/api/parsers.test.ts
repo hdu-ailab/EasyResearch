@@ -16,6 +16,7 @@ import {
   parseSkillCommands,
   parseStatus,
   parseSubagentSupervisorEvent,
+  parseUpdateCheck,
 } from "./parsers";
 
 describe("API response parsers", () => {
@@ -32,6 +33,13 @@ describe("API response parsers", () => {
         activeSessions: [],
       }).homeDir,
     ).toBe("/home/user");
+  });
+
+  it("accepts only a string or null update version", () => {
+    expect(parseUpdateCheck({ latestVersion: "0.0.62" })).toEqual({ latestVersion: "0.0.62" });
+    expect(parseUpdateCheck({ latestVersion: null })).toEqual({ latestVersion: null });
+    expect(() => parseUpdateCheck({})).toThrow();
+    expect(() => parseUpdateCheck({ latestVersion: 62 })).toThrow();
   });
 
   it("parses agent and model catalog rows with optional metadata", () => {

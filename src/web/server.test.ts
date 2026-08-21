@@ -320,6 +320,7 @@ describe("web routes", () => {
       webuiDist,
       listAllSessions: async () => historySessions,
       listModels: async () => [],
+      checkForUpdate: async () => ({ latestVersion: null }),
       renameSession: async () => {},
       listConfigProjects: async () => ({ home: agentDir, projects: [] }),
       directories: directoryService,
@@ -382,6 +383,17 @@ describe("web routes", () => {
     expect(body.homeDir).toBe(homeDir);
     expect(body.sessions).toHaveLength(1);
     expect(body.activeSessions).toEqual([]);
+  });
+
+  it("returns the informational package update result", async () => {
+    const checkForUpdate = vi.fn(async () => ({ latestVersion: "0.0.62" }));
+    setup({ checkForUpdate });
+
+    const res = await handler(new Request("http://localhost/api/update-check"));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ latestVersion: "0.0.62" });
+    expect(checkForUpdate).toHaveBeenCalledOnce();
   });
 
   it("lists directories for a given path", async () => {

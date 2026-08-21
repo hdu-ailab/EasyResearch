@@ -15,6 +15,7 @@ import type {
   SessionTreeDto,
   SkillCommandDto,
   StatusDto,
+  UpdateCheckDto,
 } from "../../web/contracts";
 import {
   type ModelOption,
@@ -39,6 +40,7 @@ import {
   parseSkillResource,
   parseSkillResources,
   parseStatus,
+  parseUpdateCheck,
 } from "./api/parsers";
 import { routes } from "./api/routes";
 import {
@@ -68,6 +70,10 @@ function json(method: "POST" | "PUT" | "PATCH", body: unknown): RequestInit {
 
 export function listStatus(): Promise<StatusDto> {
   return requestJson(routes.status(), parseStatus);
+}
+
+export function checkForUpdate(): Promise<UpdateCheckDto> {
+  return requestJson(routes.updateCheck(), parseUpdateCheck);
 }
 
 export function listAgents(cwd?: string): Promise<AgentDto[]> {

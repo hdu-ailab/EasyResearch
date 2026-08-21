@@ -34,7 +34,7 @@ Assistant 加载 `customize-easyresearch` skill，它就会为你创建、编辑
 ### 通过 npm 安装（推荐）
 
 ```bash
-npm install -g easyresearch
+npm install -g easyresearch@latest
 easyresearch
 ```
 

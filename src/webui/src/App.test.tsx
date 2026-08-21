@@ -14,6 +14,7 @@ vi.mock("./api", async (importOriginal) => {
   return {
     ...actual,
     listStatus: vi.fn(),
+    checkForUpdate: vi.fn(),
     openSession: vi.fn(),
     createSession: vi.fn(),
     stopSession: vi.fn(),
@@ -118,6 +119,7 @@ describe("App routing", () => {
 
   beforeEach(() => {
     vi.mocked(api.listStatus).mockReset();
+    vi.mocked(api.checkForUpdate).mockReset().mockResolvedValue({ latestVersion: null });
     vi.mocked(api.openSession).mockReset();
     vi.mocked(api.getSnapshot).mockReset();
     vi.mocked(api.connectSessionEvents).mockReset();
@@ -159,6 +161,17 @@ describe("App routing", () => {
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await screen.findByText(/chat font size/i);
     expect(screen.queryByText(version)).toBeNull();
+  });
+
+  it("shows a non-interactive update notice in the Home topbar", async () => {
+    vi.mocked(api.checkForUpdate).mockResolvedValue({ latestVersion: "0.0.62" });
+    render(<App />);
+    await workspace();
+
+    const notice = await screen.findByRole("status");
+    expect(notice).toHaveTextContent("New version available v0.0.62");
+    expect(notice.querySelector("a, button")).toBeNull();
+    expect(screen.queryByText(/npm install/i)).toBeNull();
   });
 
   it("falls back to Home for unknown hashes", async () => {

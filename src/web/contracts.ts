@@ -22,6 +22,11 @@ export interface StatusDto {
   activeSessions: ActiveSessionDto[];
 }
 
+export interface UpdateCheckDto {
+  /** Non-null only when npm's latest dist-tag is newer than this build. */
+  latestVersion: string | null;
+}
+
 export interface ActiveSessionDto {
   id: string;
   cwd: string;

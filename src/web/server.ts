@@ -21,6 +21,8 @@ import { createLiveConfiguration, type LiveConfiguration } from "../runtime/live
 import { resolvePiDefaultModel, type PiDefaultModelApi } from "../runtime/pi-default-model";
 import { createSessionSettingsFacade } from "../runtime/session-settings-facade";
 import { applyRuntimeSettingsDefaults } from "../runtime/settings-defaults";
+import { embeddedPackageVersion } from "../runtime/bundled-assets";
+import { checkNpmUpdate } from "./update-check";
 
 export interface Server {
   port: number;
@@ -263,6 +265,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
     });
     return model ? `${model.provider}/${model.id}` : undefined;
   };
+  const packageVersion = embeddedPackageVersion();
   const services: RouteServices = {
     webuiDist: WEBUI_DIST,
     listAllSessions: async () => {
@@ -270,6 +273,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
       return toUserSessionSummaries(sessions);
     },
     listModels,
+    checkForUpdate: () => checkNpmUpdate(packageVersion),
     patchAgent: createAgentPatchService(config, listModels),
     renameSession: (sessionId, name) => renameSessions.rename(sessionId, name),
     listConfigProjects: async () => {

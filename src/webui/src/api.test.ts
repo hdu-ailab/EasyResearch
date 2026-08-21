@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   abortSession,
+  checkForUpdate,
   connectConfigurationEvents,
   connectSessionEvents,
   createConfigDirectory,
@@ -49,6 +50,13 @@ describe("api transport", () => {
     const result = await listStatus();
     expect(fetchMock).toHaveBeenCalledWith("/api/status", expect.objectContaining({ method: "GET" }));
     expect(result.agentDir).toBe("/a");
+  });
+
+  it("checkForUpdate GETs the same-origin update endpoint", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ latestVersion: "0.0.62" }), { status: 200 }));
+
+    await expect(checkForUpdate()).resolves.toEqual({ latestVersion: "0.0.62" });
+    expect(fetchMock).toHaveBeenCalledWith("/api/update-check", expect.objectContaining({ method: "GET" }));
   });
 
   it("listModels GETs /api/models", async () => {

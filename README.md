@@ -37,7 +37,7 @@ edit, or mount your custom agents and skills for you.
 ### Install from npm (recommended)
 
 ```bash
-npm install -g easyresearch
+npm install -g easyresearch@latest
 easyresearch
 ```
 

@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 import packageJson from "../../../../package.json";
 import type { ActiveSessionDto, SessionSummaryDto } from "../../../web/contracts";
-import { createSession, listStatus, openSession, renameSession, stopSession, touchSession } from "../api";
+import {
+  checkForUpdate,
+  createSession,
+  listStatus,
+  openSession,
+  renameSession,
+  stopSession,
+  touchSession,
+} from "../api";
 import { DirectoryDialog } from "../components/DirectoryDialog";
 import { HomeWorkspace } from "../components/HomeWorkspace";
 import { RenameSessionDialog } from "../components/RenameSessionDialog";
@@ -30,6 +38,7 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [selectedCwd, setSelectedCwd] = useState<string | null>(null);
   const [renamingSession, setRenamingSession] = useState<ActiveSessionDto | SessionSummaryDto | null>(null);
+  const [latestVersion, setLatestVersion] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
     setError(null);
@@ -39,6 +48,18 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
   }, []);
 
   useEffect(refresh, [refresh]);
+
+  useEffect(() => {
+    let active = true;
+    checkForUpdate()
+      .then((result) => {
+        if (active) setLatestVersion(result.latestVersion);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     const timer = setInterval(refresh, MONITOR_POLL_MS);
@@ -118,7 +139,17 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
           </div>
         }
         center={
-          <span className="hidden truncate text-[13px] text-v2-text-text-muted sm:inline">{t("home.tagline")}</span>
+          latestVersion ? (
+            <span
+              role="status"
+              title={`${t("home.updateAvailable")} v${latestVersion}`}
+              className="truncate text-[12px] font-medium text-v2-text-text-accent"
+            >
+              {t("home.updateAvailable")} <span className="font-mono">v{latestVersion}</span>
+            </span>
+          ) : (
+            <span className="hidden truncate text-[13px] text-v2-text-text-muted sm:inline">{t("home.tagline")}</span>
+          )
         }
         actions={settingsButton}
       />

@@ -756,6 +756,10 @@ try {
   const createdFiles = treeFiles(root).filter((file) => !treeBefore.includes(file));
   console.log(`[smoke] files created by CLI run: ${createdFiles.length}`);
   for (const file of createdFiles.slice(0, 60)) console.log(`[smoke]   ${file}`);
+  const update = await requireOk(await fetch(`${base}/api/update-check`), "update availability probe");
+  if (update.latestVersion !== null && typeof update.latestVersion !== "string") {
+    throw new Error("compiled update availability endpoint returned an invalid latestVersion");
+  }
   const auth = await requireOk(await fetch(`${base}/api/auth/providers`), "OAuth provider probe");
   if (!Array.isArray(auth.providers) || !auth.providers.some(
     (provider: { authMethods?: string[] }) => provider.authMethods?.includes("oauth"),

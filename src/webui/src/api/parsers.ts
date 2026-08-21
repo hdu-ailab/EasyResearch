@@ -20,6 +20,7 @@ import type {
   StatusDto,
   SubagentSessionSummaryDto,
   SubagentSupervisorEventDto,
+  UpdateCheckDto,
   WebTreeEntryDto,
 } from "../../../web/contracts";
 import type { ConfigFileDto, ConfigProjectsDto } from "../types";
@@ -275,6 +276,15 @@ export function parseStatus(value: unknown): StatusDto {
     sessions: arrayOf(source.sessions, "sessions", parseSessionSummary),
     activeSessions: arrayOf(source.activeSessions, "activeSessions", parseActiveSessionValue),
   };
+}
+
+export function parseUpdateCheck(value: unknown): UpdateCheckDto {
+  const source = record(value, "update check");
+  const latestVersion = source.latestVersion;
+  if (latestVersion !== null && typeof latestVersion !== "string") {
+    throw new Error("Invalid API response: latestVersion must be a string or null");
+  }
+  return { latestVersion };
 }
 
 export function parseAgents(value: unknown): AgentDto[] {

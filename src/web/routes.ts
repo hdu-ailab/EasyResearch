@@ -16,6 +16,7 @@ import type {
   ConfigScope,
   ModelOptionDto,
   SessionSummaryDto,
+  UpdateCheckDto,
 } from "./contracts";
 import { createGlobalAgent, listGlobalAgents, readGlobalAgent, writeGlobalAgent, listGlobalSkills, readGlobalSkill, writeGlobalSkill } from "./agent-resources";
 import type { DirectoryService } from "./directories";
@@ -40,6 +41,7 @@ export interface RouteServices {
   listAgents: (cwd?: string) => Promise<AgentDto[]>;
   patchAgent: (name: string, patch: AgentConfigurationPatch) => Promise<AgentResourceDto>;
   listModels: () => Promise<ModelOptionDto[]>;
+  checkForUpdate: () => Promise<UpdateCheckDto>;
   renameSession: (sessionId: string, name: string) => Promise<void>;
   listConfigProjects: () => Promise<{ home: string; projects: Array<{ cwd: string }> }>;
   directories: DirectoryService;
@@ -76,6 +78,10 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
           sessions: await services.listAllSessions(),
           activeSessions: services.registry.listActive(),
         });
+      }
+
+      if (req.method === "GET" && path === "/api/update-check") {
+        return jsonResponse(await services.checkForUpdate());
       }
 
       if (req.method === "GET" && path === "/api/agents") {

@@ -9,6 +9,7 @@ vi.mock("../api", async (importOriginal) => {
   return {
     ...actual,
     listStatus: vi.fn(),
+    checkForUpdate: vi.fn(),
     listDirectories: vi.fn(),
     createSession: vi.fn(),
     openSession: vi.fn(),
@@ -89,6 +90,7 @@ describe("HomePage", () => {
 
   beforeEach(() => {
     vi.mocked(api.listStatus).mockReset();
+    vi.mocked(api.checkForUpdate).mockReset().mockResolvedValue({ latestVersion: null });
     vi.mocked(api.listDirectories).mockReset();
     vi.mocked(api.createSession).mockReset();
     vi.mocked(api.openSession).mockReset();
