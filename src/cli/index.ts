@@ -31,6 +31,10 @@ export interface CliDependencies {
   openBrowser: (url: string) => Promise<boolean>;
   waitForReady: (host: string, port: number, timeoutMs?: number) => Promise<boolean>;
   spawnBackground: (host: string, port: number) => void;
+  /** Compiled launchers use this to reject a live daemon copied from an older binary. */
+  isBackgroundCurrent?: (agentDir: string) => boolean;
+  /** Stops a stale daemon before its locked executable copy is refreshed. */
+  stopBackground?: (agentDir: string) => Promise<boolean>;
 }
 
 export interface CliOptions {
@@ -112,6 +116,15 @@ export function daemonBinaryPath(agentDir: string): string {
     throw new Error(`Unable to prepare the daemon executable at ${target}: ${message}`);
   }
   return target;
+}
+
+export function daemonBinaryMatchesSource(agentDir: string, source = process.execPath): boolean {
+  const binDir = join(agentDir, "bin");
+  const target = join(binDir, process.platform === "win32" ? "easyresearch-daemon.exe" : "easyresearch-daemon");
+  const stampPath = join(binDir, ".daemon-source-stamp");
+  if (!existsSync(target) || !existsSync(stampPath)) return false;
+  const srcStat = statSync(source);
+  return readFileSync(stampPath, "utf8") === `${srcStat.size}:${srcStat.mtimeMs}`;
 }
 
 /** Pi's compiled asset getters resolve beside process.execPath. */
@@ -292,15 +305,21 @@ export async function runCli(
 
     const existing = readServerPid(agentDir);
     if (existing !== undefined && isProcessAlive(existing)) {
-      const ready = await deps.waitForReady(host, port);
-      if (!ready) {
-        console.error(`No service is listening on port ${port}.`);
-        return 1;
+      const backgroundCurrent = deps.isBackgroundCurrent?.(agentDir) ?? true;
+      if (!backgroundCurrent) {
+        console.log("[easyresearch] Runtime changed — restarting the background service…");
+        await (deps.stopBackground ?? stopServerProcess)(agentDir);
+      } else {
+        const ready = await deps.waitForReady(host, port);
+        if (!ready) {
+          console.error(`No service is listening on port ${port}.`);
+          return 1;
+        }
+        const url = `http://${host}:${port}`;
+        console.log(`EasyResearch: ${url}`);
+        if (open && isLoopbackHost(host)) await deps.openBrowser(url);
+        return 0;
       }
-      const url = `http://${host}:${port}`;
-      console.log(`EasyResearch: ${url}`);
-      if (open && isLoopbackHost(host)) await deps.openBrowser(url);
-      return 0;
     }
     if (existing !== undefined) removeServerPid(agentDir);
 
@@ -366,6 +385,8 @@ async function runRuntimeEntry(args: string[]): Promise<void> {
     serve: runServe,
     openBrowser,
     waitForReady,
+    isBackgroundCurrent: (agentDir) => !isEmbeddedBuild() || daemonBinaryMatchesSource(agentDir),
+    stopBackground: stopServerProcess,
     spawnBackground: (host, port) => {
       const agentDir = defaultAgentDir();
       const daemon = daemonBinaryPath(agentDir);

@@ -1,19 +1,38 @@
 #!/usr/bin/env bun
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, posix, win32 } from "node:path";
 import { getAgentDir } from "./runtime/pi-import";
 
 export type RunFn = (command: string, args: string[]) => { status: number; stdout: string; stderr: string };
 
 export function venvPythonPath(venvDir: string, platform: NodeJS.Platform = process.platform): string {
-  return platform === "win32" ? join(venvDir, "Scripts", "python.exe") : join(venvDir, "bin", "python");
+  return platform === "win32"
+    ? win32.join(venvDir, "Scripts", "python.exe")
+    : posix.join(venvDir, "bin", "python");
 }
 
-export function detectPython(run: RunFn): string | undefined {
-  for (const candidate of ["python3", "python"]) {
-    const result = run(candidate, ["--version"]);
+export interface PythonCommand {
+  command: string;
+  prefixArgs: string[];
+}
+
+export function detectPython(
+  run: RunFn,
+  platform: NodeJS.Platform = process.platform,
+): PythonCommand | undefined {
+  const candidates: PythonCommand[] = platform === "win32"
+    ? [
+      { command: "py", prefixArgs: ["-3"] },
+      { command: "python", prefixArgs: [] },
+      { command: "python3", prefixArgs: [] },
+    ]
+    : [
+      { command: "python3", prefixArgs: [] },
+      { command: "python", prefixArgs: [] },
+    ];
+  for (const candidate of candidates) {
+    const result = run(candidate.command, [...candidate.prefixArgs, "--version"]);
     if (result.status === 0) return candidate;
   }
   return undefined;
@@ -47,18 +66,23 @@ export const SKILL_VENV_PACKAGES = [
 
 export function setupSkillVenv(deps: SetupDeps): SetupResult {
   const { venvDir, run, log, platform, packages = SKILL_VENV_PACKAGES } = deps;
-  const python = venvPythonPath(venvDir, platform);
+  const runtimePlatform = platform ?? process.platform;
+  const python = venvPythonPath(venvDir, runtimePlatform);
   const installArgs = ["-m", "pip", "install", "--upgrade", "pip", ...packages.map((pkg) => pkg.distribution)];
   if (existsSync(python)) {
     const result = run(python, installArgs);
     if (result.status !== 0) return { venvDir, success: false, reason: `pip install failed: ${result.stderr}` };
     return { venvDir, success: true };
   }
-  const pythonCmd = detectPython(run);
+  const pythonCmd = detectPython(run, runtimePlatform);
   if (!pythonCmd) {
-    return { venvDir, success: false, reason: "python3/python not found on PATH" };
+    return {
+      venvDir,
+      success: false,
+      reason: runtimePlatform === "win32" ? "py/python/python3 not found on PATH" : "python3/python not found on PATH",
+    };
   }
-  const create = run(pythonCmd, ["-m", "venv", venvDir]);
+  const create = run(pythonCmd.command, [...pythonCmd.prefixArgs, "-m", "venv", venvDir]);
   if (create.status !== 0) return { venvDir, success: false, reason: `venv creation failed: ${create.stderr}` };
   const install = run(python, installArgs);
   if (install.status !== 0) return { venvDir, success: false, reason: `pip install failed: ${install.stderr}` };
@@ -114,8 +138,11 @@ export function ensureSkillVenv(agentDir: string, options: EnsureVenvOptions = {
 
   const result = setupSkillVenv({ venvDir, run, log, packages });
   if (!result.success) {
+    const createCommand = process.platform === "win32"
+      ? `py -3 -m venv "${venvDir}"; & "${python}" -m pip install ${distributions.join(" ")}`
+      : `python3 -m venv "${venvDir}" && "${python}" -m pip install ${distributions.join(" ")}`;
     log(
-      `Skill venv setup skipped: ${result.reason}. PDF conversion, arXiv SDK, and web-search (ddgr) features will fall back to system tools. Fix with: python3 -m venv "${venvDir}" && "${python}" -m pip install ${distributions.join(" ")}`,
+      `Skill venv setup skipped: ${result.reason}. PDF conversion, arXiv SDK, and web-search (ddgr) features will fall back to system tools. Fix with: ${createCommand}`,
     );
   }
   return result;

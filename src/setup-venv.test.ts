@@ -37,13 +37,24 @@ describe("venvPythonPath", () => {
 
 describe("detectPython", () => {
   it("prefers python3 when it works", () => {
-    expect(detectPython((cmd) => (cmd === "python3" ? ok("Python 3.12") : fail()))).toBe("python3");
+    expect(detectPython((cmd) => (cmd === "python3" ? ok("Python 3.12") : fail()), "linux"))
+      .toEqual({ command: "python3", prefixArgs: [] });
   });
   it("falls back to python", () => {
-    expect(detectPython((cmd) => (cmd === "python3" ? fail() : cmd === "python" ? ok("Python 3.12") : fail()))).toBe("python");
+    expect(detectPython((cmd) => (cmd === "python" ? ok("Python 3.12") : fail()), "linux"))
+      .toEqual({ command: "python", prefixArgs: [] });
+  });
+  it("prefers the native Windows py launcher with an explicit Python 3 selector", () => {
+    const calls: string[][] = [];
+    const detected = detectPython((command, args) => {
+      calls.push([command, ...args]);
+      return command === "py" ? ok("Python 3.12") : fail();
+    }, "win32");
+    expect(detected).toEqual({ command: "py", prefixArgs: ["-3"] });
+    expect(calls[0]).toEqual(["py", "-3", "--version"]);
   });
   it("returns undefined when neither works", () => {
-    expect(detectPython(() => fail())).toBeUndefined();
+    expect(detectPython(() => fail(), "linux")).toBeUndefined();
   });
 });
 
@@ -51,7 +62,7 @@ describe("setupSkillVenv", () => {
   it("reports failure without throwing when python is missing", () => {
     const venvDir = tempVenvDir();
     const run: RunFn = () => fail();
-    const result = setupSkillVenv({ venvDir, run, log: () => {} });
+    const result = setupSkillVenv({ venvDir, run, log: () => {}, platform: "linux" });
     expect(result.success).toBe(false);
     expect(result.reason).toMatch(/python/i);
   });
@@ -67,7 +78,7 @@ describe("setupSkillVenv", () => {
       if (cmd === python && args[0] === "-m" && args[1] === "pip") return ok();
       return fail();
     };
-    const result = setupSkillVenv({ venvDir, run, log: () => {} });
+    const result = setupSkillVenv({ venvDir, run, log: () => {}, platform: "linux" });
     expect(result.success).toBe(true);
     expect(calls).toContainEqual(["python3", "--version"]);
     expect(calls).toContainEqual([
@@ -81,6 +92,22 @@ describe("setupSkillVenv", () => {
     ]);
   });
 
+  it("creates a Windows venv through py -3", () => {
+    const venvDir = tempVenvDir();
+    const python = venvPythonPath(venvDir, "win32");
+    const calls: string[][] = [];
+    const run: RunFn = (command, args) => {
+      calls.push([command, ...args]);
+      if (command === "py" && args.join(" ") === "-3 --version") return ok("Python 3.12");
+      if (command === "py" && args[0] === "-3" && args[1] === "-m" && args[2] === "venv") return ok();
+      if (command === python && args[0] === "-m" && args[1] === "pip") return ok();
+      return fail();
+    };
+    const result = setupSkillVenv({ venvDir, run, log: () => {}, platform: "win32" });
+    expect(result.success).toBe(true);
+    expect(calls).toContainEqual(["py", "-3", "-m", "venv", venvDir]);
+  });
+
   it("skips venv creation when venv python already exists", () => {
     const venvDir = tempVenvDir();
     const python = venvPythonPath(venvDir, "linux");
@@ -92,7 +119,7 @@ describe("setupSkillVenv", () => {
       if (cmd === python && args[0] === "-m" && args[1] === "pip") return ok();
       return fail();
     };
-    const result = setupSkillVenv({ venvDir, run, log: () => {} });
+    const result = setupSkillVenv({ venvDir, run, log: () => {}, platform: "linux" });
     expect(result.success).toBe(true);
     expect(calls.some((c) => c[1] === "-m" && c[2] === "venv")).toBe(false);
   });

@@ -213,12 +213,13 @@ describe("runVenvValidation", () => {
 
   it("rejects a missing interpreter with its path and stderr", () => {
     const python = join(tempDir(), "missing", "python");
+    const escapedPython = python.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
     expect(() => runVenvValidation({
       python,
       script: "/tmp/validate.py",
       exists: () => false,
       spawn: () => ({ status: 0, stdout: "", stderr: "not started" }),
-    })).toThrow(new RegExp(`${python}.*stderr`, "s"));
+    })).toThrow(new RegExp(`${escapedPython}.*stderr`, "s"));
   });
 
   it("reports spawn errors with the interpreter path and captured stderr", () => {
@@ -705,10 +706,15 @@ describe("venvToolCommand", () => {
 
   it("uses the runtime Windows venv interpreter", () => {
     const command = venvToolCommand("win32", "C:\\temp\\native validate.py");
-    expect(command).toContain("${EASYRESEARCH_VENV}/Scripts/python.exe");
-    expect(command).toContain('"C:\\\\temp\\\\native validate.py"');
-    expect(command).not.toContain("%EASYRESEARCH_VENV%");
+    expect(command).toContain("Join-Path $env:EASYRESEARCH_VENV 'Scripts\\python.exe'");
+    expect(command).toContain("'C:\\temp\\native validate.py'");
+    expect(command).not.toContain("${EASYRESEARCH_VENV}");
     expect(command).not.toContain("C:\\agent\\venv");
+  });
+
+  it("PowerShell-quotes apostrophes in the Windows validation path", () => {
+    expect(venvToolCommand("win32", "C:\\O'Brien\\validate.py"))
+      .toContain("'C:\\O''Brien\\validate.py'");
   });
 });
 

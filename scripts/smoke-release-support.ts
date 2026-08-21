@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, win32 } from "node:path";
+import { dirname, isAbsolute, posix, win32 } from "node:path";
 import { readFirstRunSetupEvidence } from "../src/runtime/first-run-setup-evidence";
 
 export const FIRST_RUN_CEILING_MS = 720_000;
@@ -53,7 +53,7 @@ export function skillVenvPython(
 ): string {
   return platform === "win32"
     ? win32.join(agentDir, "venv", "Scripts", "python.exe")
-    : join(agentDir, "venv", "bin", "python");
+    : posix.join(agentDir, "venv", "bin", "python");
 }
 
 export function writeVenvValidationScript(path: string): void {
@@ -386,11 +386,12 @@ export async function finishSmokeCleanup(options: {
 }
 
 export function venvToolCommand(platform: NodeJS.Platform, scriptPath: string): string {
+  if (platform === "win32") {
+    const quotedScript = scriptPath.replaceAll("'", "''");
+    return `& (Join-Path $env:EASYRESEARCH_VENV 'Scripts\\python.exe') '${quotedScript}'`;
+  }
   const quotedScript = scriptPath.replace(/["\\`$]/g, "\\$&");
-  const python = platform === "win32"
-    ? "${EASYRESEARCH_VENV}/Scripts/python.exe"
-    : "$EASYRESEARCH_VENV/bin/python";
-  return `"${python}" "${quotedScript}"`;
+  return `"$EASYRESEARCH_VENV/bin/python" "${quotedScript}"`;
 }
 
 export type SmokeModelAction =

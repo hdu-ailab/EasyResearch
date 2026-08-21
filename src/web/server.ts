@@ -20,7 +20,6 @@ import { createAgentPatchService } from "./agent-configuration";
 import { createLiveConfiguration, type LiveConfiguration } from "../runtime/live-configuration";
 import { resolvePiDefaultModel, type PiDefaultModelApi } from "../runtime/pi-default-model";
 import { createSessionSettingsFacade } from "../runtime/session-settings-facade";
-import { applyRuntimeSettingsDefaults } from "../runtime/settings-defaults";
 
 export interface Server {
   port: number;
@@ -252,7 +251,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
   const listModels = () => auth.listModels();
   const resolveDefaultModel = async (cwd: string): Promise<string | undefined> => {
     const settingsManager = createSessionSettingsFacade(
-      applyRuntimeSettingsDefaults(SettingsManager.create(cwd, agentDir)),
+      SettingsManager.create(cwd, agentDir),
     );
     const model = await resolvePiDefaultModel({
       pi: pi as unknown as PiDefaultModelApi,

@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -60,6 +60,25 @@ describe("runCli argument parsing", () => {
     expect(await runTestCli([], deps, { agentDir: root })).toBe(0);
     expect(deps.spawnBackground).not.toHaveBeenCalled();
     expect(deps.waitForReady).toHaveBeenCalledWith("127.0.0.1", 3000);
+    expect(deps.openBrowser).toHaveBeenCalledWith("http://127.0.0.1:3000");
+  });
+
+  it("restarts an existing daemon when its copied runtime is stale", async () => {
+    writeServerPid(root, process.pid);
+    const stopBackground = vi.fn(async (agentDir: string) => {
+      expect(agentDir).toBe(root);
+      return true;
+    });
+    const deps = makeDeps({
+      isBackgroundCurrent: vi.fn(() => false),
+      stopBackground,
+    });
+
+    expect(await runTestCli([], deps, { agentDir: root })).toBe(0);
+
+    expect(stopBackground).toHaveBeenCalledOnce();
+    expect(deps.spawnBackground).toHaveBeenCalledWith("127.0.0.1", 3000);
+    expect(deps.waitForReady).toHaveBeenCalledOnce();
     expect(deps.openBrowser).toHaveBeenCalledWith("http://127.0.0.1:3000");
   });
 
@@ -388,6 +407,23 @@ describe("resource retirement version gate", () => {
 
     expect(readFileSync(join(root, "bin", "theme", "dark.json"), "utf8")).toBe("{}");
     expect(readFileSync(join(root, "bin", "photon_rs_bg.wasm"))).toEqual(Buffer.from([0, 255, 1]));
+  });
+
+  it("detects whether the copied daemon matches the launching binary", () => {
+    const source = join(root, "source.exe");
+    const binDir = join(root, "bin");
+    const target = join(binDir, process.platform === "win32" ? "easyresearch-daemon.exe" : "easyresearch-daemon");
+    const stampPath = join(binDir, ".daemon-source-stamp");
+    writeFileSync(source, "new runtime");
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(target, "copied runtime");
+    const sourceStat = statSync(source);
+    writeFileSync(stampPath, `${sourceStat.size}:${sourceStat.mtimeMs}`);
+
+    expect(cliModule.daemonBinaryMatchesSource(root, source)).toBe(true);
+
+    writeFileSync(stampPath, "stale");
+    expect(cliModule.daemonBinaryMatchesSource(root, source)).toBe(false);
   });
 
   it("fails explicitly when the compiled daemon copy cannot be prepared", () => {

@@ -7,7 +7,6 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { runCleanupSteps } from "../runtime/cleanup";
 import { toJsonSessionEvent } from "../runtime/json-session-event";
-import { applyRuntimeSettingsDefaults } from "../runtime/settings-defaults";
 import { configureBatchedSteering, type RuntimeSteeringSession } from "../runtime/steering-mode";
 import {
   createAgentRuntimeBinding,
@@ -427,7 +426,7 @@ export class PiSessionFactory implements SessionFactory {
       createExtensionFactories: (runtime) =>
         createAssistantExtensions({ ...runtime, liveConfiguration })
           .map(({ name, factory }) => ({ name, factory })),
-      createSettingsManager: (cwd, root) => applyRuntimeSettingsDefaults(pi.SettingsManager.create(cwd, root)),
+      createSettingsManager: (cwd, root) => pi.SettingsManager.create(cwd, root),
       createModelRuntime: (root) =>
         pi.ModelRuntime.create({
           authPath: join(root, "auth.json"),

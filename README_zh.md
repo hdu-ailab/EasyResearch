@@ -44,6 +44,21 @@ easyresearch
 
 **支持平台**：linux-x64、darwin-arm64、windows-x64。其他平台上，`npm install` 会给出明确错误提示。
 
+#### Windows 原生运行
+
+Windows 包直接在 Windows 上运行，不需要也不会调用 WSL。Agent 命令由
+PowerShell 执行：优先使用已安装的 `pwsh.exe`，否则使用 Windows 自带的
+Windows PowerShell。为兼容跨平台 Agent 定义，能力名称仍保持为 `bash`，但
+Windows 下的提示和语法均为 PowerShell；无需安装 Git Bash。Python 附加功能
+同时支持 Windows 常用的 `py -3` 启动器和 PATH 中的 `python`。
+
+请从 PowerShell 或 Windows Terminal 启动：
+
+```powershell
+npm install -g easyresearch
+easyresearch
+```
+
 ### 组装并安装本地 npm 包
 
 当你需要在本地验证生产安装包，而不是直接从 npm registry 安装时，使用这条路径。

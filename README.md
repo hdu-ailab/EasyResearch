@@ -53,6 +53,22 @@ installation already exists.
 **Supported platforms**: linux-x64, darwin-arm64, windows-x64. On other
 platforms, `npm install` fails with a clear message.
 
+#### Native Windows runtime
+
+The Windows package runs directly on Windows; it does not require or invoke
+WSL. Agent command execution uses PowerShell (`pwsh.exe` when installed,
+otherwise the in-box Windows PowerShell), while the stable tool capability name
+remains `bash` for cross-platform Agent-definition compatibility. Git Bash is
+not required. Python extras accept the standard `py -3` launcher as well as a
+`python` executable on PATH.
+
+Run EasyResearch from PowerShell or Windows Terminal:
+
+```powershell
+npm install -g easyresearch
+easyresearch
+```
+
 ### Build and install local npm packages
 
 Use this path when you need to validate the production package locally instead

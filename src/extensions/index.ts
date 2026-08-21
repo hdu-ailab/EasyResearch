@@ -12,6 +12,7 @@ import { createWebTreeExtension } from "./web-tree";
 import { createSessionNameExtension } from "./session-name";
 import type { SubagentCoordinator } from "../subagent/coordinator";
 import type { SubagentSupervisor } from "../subagent/supervisor";
+import windowsPowerShellExtension from "./windows-powershell";
 
 /**
  * Bundled extensions mounted as named inline factories in Paper Assistant
@@ -46,6 +47,10 @@ export interface AssistantExtensionRuntime {
 
 export function createAssistantExtensions(runtime: AssistantExtensionRuntime): BundledExtension[] {
   return [
+    {
+      name: "windows-powershell",
+      factory: windowsPowerShellExtension,
+    },
     {
       name: "paper-assistant",
       factory: createPaperAssistantExtension(runtime.binding),

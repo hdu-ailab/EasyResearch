@@ -27,7 +27,8 @@ $EASYRESEARCH_VENV/bin/markitdown input.pdf -o output.md
 On Windows the venv layout differs — use:
 
 ```powershell
-%EASYRESEARCH_VENV%\Scripts\markitdown.exe input.pdf -o output.md
+$markitdown = Join-Path $env:EASYRESEARCH_VENV 'Scripts\markitdown.exe'
+& $markitdown input.pdf -o output.md
 ```
 
 If `$EASYRESEARCH_VENV` is unset or the binary is missing, fall back to
@@ -35,6 +36,13 @@ If `$EASYRESEARCH_VENV` is unset or the binary is missing, fall back to
 ```bash
 echo $EASYRESEARCH_VENV
 $EASYRESEARCH_VENV/bin/markitdown --help
+```
+
+PowerShell verification on Windows:
+
+```powershell
+$env:EASYRESEARCH_VENV
+& (Join-Path $env:EASYRESEARCH_VENV 'Scripts\markitdown.exe') --help
 ```
 
 ## When To Use
@@ -69,6 +77,16 @@ for pdf in ref_papers/pdf/*.pdf; do
   name=$(basename "$pdf" .pdf)
   "$EASYRESEARCH_VENV/bin/markitdown" "$pdf" -o "ref_papers/text/$name.md"
 done
+```
+
+Native Windows PowerShell batch conversion:
+
+```powershell
+$markitdown = Join-Path $env:EASYRESEARCH_VENV 'Scripts\markitdown.exe'
+Get-ChildItem -LiteralPath 'ref_papers\pdf' -Filter '*.pdf' | ForEach-Object {
+  $output = Join-Path 'ref_papers\text' ($_.BaseName + '.md')
+  & $markitdown $_.FullName -o $output
+}
 ```
 
 Follow a different existing user layout only when the dispatch explicitly
@@ -124,4 +142,10 @@ Check the skill venv CLI (falls back to `markitdown` on PATH when
 
 ```bash
 "$EASYRESEARCH_VENV/bin/markitdown" --help
+```
+
+On native Windows use PowerShell:
+
+```powershell
+& (Join-Path $env:EASYRESEARCH_VENV 'Scripts\markitdown.exe') --help
 ```

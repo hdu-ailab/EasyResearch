@@ -1,0 +1,212 @@
+import {
+  createBashTool,
+  type BashOperations,
+  type ExtensionAPI,
+  type ExtensionFactory,
+} from "@earendil-works/pi-coding-agent";
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { existsSync } from "node:fs";
+import { win32 } from "node:path";
+import { Type } from "typebox";
+
+const MAX_TIMEOUT_MS = 2_147_483_647;
+
+export interface PowerShellResolutionOptions {
+  env?: NodeJS.ProcessEnv;
+  exists?: (path: string) => boolean;
+  locateOnPath?: (name: string) => string | undefined;
+}
+
+export interface PowerShellOperationsOptions extends PowerShellResolutionOptions {
+  executable?: string;
+  taskkill?: string;
+  spawnProcess?: typeof spawn;
+  killTree?: (pid: number) => void;
+}
+
+function locateWindowsExecutable(name: string): string | undefined {
+  const result = spawnSync("where.exe", [name], {
+    encoding: "utf8",
+    timeout: 5_000,
+    windowsHide: true,
+  });
+  if (result.status !== 0 || !result.stdout) return undefined;
+  return result.stdout
+    .split(/\r?\n/u)
+    .map((entry) => entry.trim())
+    .find((entry) => entry.length > 0 && existsSync(entry));
+}
+
+/** Resolve only native Windows PowerShell implementations; WSL is never a fallback. */
+export function resolvePowerShellExecutable(options: PowerShellResolutionOptions = {}): string {
+  const env = options.env ?? process.env;
+  const exists = options.exists ?? existsSync;
+  const locateOnPath = options.locateOnPath ?? locateWindowsExecutable;
+  const pwsh = locateOnPath("pwsh.exe");
+  if (pwsh && exists(pwsh)) return pwsh;
+
+  const systemRoot = env.SystemRoot ?? env.SYSTEMROOT ?? "C:\\Windows";
+  const inbox = win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  if (exists(inbox)) return inbox;
+  throw new Error(
+    "Native Windows PowerShell was not found. Install PowerShell 7 (pwsh.exe) or enable the in-box Windows PowerShell feature.",
+  );
+}
+
+export function resolveTaskkillExecutable(env: NodeJS.ProcessEnv = process.env): string {
+  const systemRoot = env.SystemRoot ?? env.SYSTEMROOT ?? "C:\\Windows";
+  return win32.join(systemRoot, "System32", "taskkill.exe");
+}
+
+export function buildPowerShellScript(command: string): string {
+  // Keep stdin ASCII so Windows PowerShell 5.1 cannot decode non-ASCII command
+  // text through the active OEM code page. The payload itself remains UTF-16LE.
+  const encodedCommand = Buffer.from(command, "utf16le").toString("base64");
+  return [
+    "$ErrorActionPreference = 'Continue'",
+    "$easyresearchUtf8 = [System.Text.UTF8Encoding]::new($false)",
+    "[Console]::OutputEncoding = $easyresearchUtf8",
+    "$OutputEncoding = $easyresearchUtf8",
+    `$easyresearchCommand = [System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String('${encodedCommand}'))`,
+    "$easyresearchScript = [ScriptBlock]::Create($easyresearchCommand)",
+    "& $easyresearchScript",
+    "$easyresearchCommandSucceeded = $?",
+    "$easyresearchNativeExit = $global:LASTEXITCODE",
+    "if ($null -ne $easyresearchNativeExit -and $easyresearchNativeExit -ne 0) { exit $easyresearchNativeExit }",
+    "if (-not $easyresearchCommandSucceeded) { exit 1 }",
+    "exit 0",
+    "",
+  ].join("\r\n");
+}
+
+function timeoutMs(timeout: number | undefined): number | undefined {
+  if (timeout === undefined) return undefined;
+  if (!Number.isFinite(timeout) || timeout <= 0) {
+    throw new Error("Invalid timeout: must be a finite number of seconds");
+  }
+  const milliseconds = timeout * 1000;
+  if (milliseconds > MAX_TIMEOUT_MS) {
+    throw new Error(`Invalid timeout: maximum is ${MAX_TIMEOUT_MS / 1000} seconds`);
+  }
+  return milliseconds;
+}
+
+export function killWindowsProcessTree(
+  pid: number,
+  taskkill = resolveTaskkillExecutable(),
+): void {
+  const result = spawnSync(taskkill, ["/PID", String(pid), "/T", "/F"], {
+    stdio: "ignore",
+    timeout: 15_000,
+    windowsHide: true,
+  });
+  if (!result.error && result.status === 0) return;
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // The process may already have exited between taskkill and the fallback.
+  }
+}
+
+/** Native PowerShell implementation for Pi's stable BashOperations seam. */
+export function createPowerShellOperations(options: PowerShellOperationsOptions = {}): BashOperations {
+  const executable = options.executable ?? resolvePowerShellExecutable(options);
+  const spawnProcess = options.spawnProcess ?? spawn;
+  const killTree = options.killTree
+    ?? ((pid: number) => killWindowsProcessTree(pid, options.taskkill ?? resolveTaskkillExecutable(options.env)));
+
+  return {
+    exec: async (command, cwd, { onData, signal, timeout, env }) => {
+      if (signal?.aborted) throw new Error("aborted");
+      const limit = timeoutMs(timeout);
+      const child = spawnProcess(
+        executable,
+        ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", "-"],
+        {
+          cwd,
+          detached: false,
+          env,
+          stdio: ["pipe", "pipe", "pipe"],
+          windowsHide: true,
+        },
+      ) as ChildProcessWithoutNullStreams;
+
+      child.stdout.on("data", onData);
+      child.stderr.on("data", onData);
+      child.stdin.on("error", () => {});
+      child.stdin.end(buildPowerShellScript(command), "utf8");
+
+      return await new Promise<{ exitCode: number | null }>((resolve, reject) => {
+        let timedOut = false;
+        let aborted = false;
+        let timer: NodeJS.Timeout | undefined;
+        let settled = false;
+
+        const terminate = (reason: "abort" | "timeout") => {
+          if (settled || !child.pid) return;
+          aborted ||= reason === "abort";
+          timedOut ||= reason === "timeout";
+          killTree(child.pid);
+        };
+        const onAbort = () => terminate("abort");
+        const cleanup = () => {
+          if (timer) clearTimeout(timer);
+          signal?.removeEventListener("abort", onAbort);
+        };
+        if (limit !== undefined) timer = setTimeout(() => terminate("timeout"), limit);
+        if (signal?.aborted) onAbort();
+        else signal?.addEventListener("abort", onAbort, { once: true });
+
+        child.once("error", (error) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          reject(error);
+        });
+        child.once("close", (code) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          if (aborted || signal?.aborted) reject(new Error("aborted"));
+          else if (timedOut) reject(new Error(`timeout:${timeout}`));
+          else resolve({ exitCode: code });
+        });
+      });
+    },
+  };
+}
+
+export interface WindowsPowerShellExtensionOptions extends PowerShellOperationsOptions {
+  platform?: NodeJS.Platform;
+}
+
+export function createWindowsPowerShellExtension(
+  options: WindowsPowerShellExtensionOptions = {},
+): ExtensionFactory {
+  return (pi: ExtensionAPI) => {
+    if ((options.platform ?? process.platform) !== "win32") return;
+    pi.on("session_start", (_event, ctx) => {
+      const tool = createBashTool(ctx.cwd, {
+        operations: createPowerShellOperations(options),
+      });
+      pi.registerTool({
+        ...tool,
+        label: "PowerShell",
+        description:
+          "Execute a native Windows PowerShell command in the current working directory. Returns stdout and stderr with Pi's normal streaming and truncation behavior. WSL and Bash syntax are not available. Optionally provide a timeout in seconds.",
+        promptSnippet: "Execute native Windows PowerShell commands",
+        promptGuidelines: [
+          "Use PowerShell syntax and Windows paths. Do not emit Bash, WSL, cmd.exe batch, or POSIX-only commands.",
+          "Use $env:NAME for environment variables and -LiteralPath for paths supplied as data.",
+          "You can inspect PI_* environment variables for current model and session details.",
+        ],
+        parameters: Type.Object({
+          command: Type.String({ description: "PowerShell command to execute" }),
+          timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional, no default timeout)" })),
+        }),
+      });
+    });
+  };
+}
+
+export default createWindowsPowerShellExtension();
