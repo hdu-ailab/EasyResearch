@@ -18,6 +18,17 @@ export class ApiError extends Error {
   }
 }
 
+export class RawFileSizeError extends Error {
+  override readonly name = "RawFileSizeError";
+
+  constructor(
+    public readonly maxBytes: number,
+    public readonly actualBytes: number,
+  ) {
+    super(`Raw file exceeds the ${maxBytes}-byte preview limit`);
+  }
+}
+
 function messageFor(details: unknown): string {
   if (details && typeof details === "object") {
     const error = (details as { error?: unknown }).error;
@@ -57,6 +68,34 @@ export async function requestVoid(path: string, init: RequestInit): Promise<void
   const response = await fetch(path, init);
   if (!response.ok) throw new ApiError(response.status, await responseDetails(response));
   if (response.status !== 204) await response.text();
+}
+
+export async function requestBytes(
+  path: string,
+  options: { maxBytes: number; signal?: AbortSignal },
+): Promise<ArrayBuffer> {
+  const response = await fetch(path, { method: "GET", signal: options.signal });
+  if (!response.ok) throw new ApiError(response.status, await responseDetails(response));
+
+  const declaredHeader = response.headers.get("Content-Length");
+  if (declaredHeader && /^\d+$/.test(declaredHeader)) {
+    const declared = BigInt(declaredHeader);
+    if (declared > BigInt(options.maxBytes)) {
+      const actual = declared <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(declared) : Number.POSITIVE_INFINITY;
+      try {
+        await response.body?.cancel();
+      } catch {
+        // Preserve the size error when the transport has already closed the stream.
+      }
+      throw new RawFileSizeError(options.maxBytes, actual);
+    }
+  }
+
+  const bytes = await response.arrayBuffer();
+  if (bytes.byteLength > options.maxBytes) {
+    throw new RawFileSizeError(options.maxBytes, bytes.byteLength);
+  }
+  return bytes;
 }
 
 export interface SessionEventHandlers {

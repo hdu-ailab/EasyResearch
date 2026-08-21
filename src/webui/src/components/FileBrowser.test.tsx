@@ -1,9 +1,11 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileWatcherEvent } from "../../../web/contracts";
 import { listEntries, readFileContent } from "../api";
 import { FileBrowser } from "./FileBrowser";
+
+const docxLoader = vi.hoisted(() => ({ load: vi.fn(), render: vi.fn() }));
 
 vi.mock("../api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api")>();
@@ -15,12 +17,24 @@ vi.mock("./previews/pdf-runtime", async (importOriginal) => {
   return { ...actual, createPdfLoader: () => actual.fakePdfLoader({ pages: 1 }) };
 });
 
+vi.mock("./previews/docx-runtime", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./previews/docx-runtime")>();
+  return { ...actual, createDocxLoader: () => docxLoader };
+});
+
 describe("FileBrowser", () => {
   beforeEach(() => {
     vi.mocked(listEntries).mockReset();
     vi.mocked(readFileContent).mockReset();
+    docxLoader.load.mockReset().mockResolvedValue(new ArrayBuffer(1));
+    docxLoader.render.mockReset().mockImplementation(async (_bytes, body: HTMLElement) => {
+      const paragraph = body.ownerDocument.createElement("p");
+      paragraph.textContent = "DOCX manuscript";
+      body.append(paragraph);
+    });
     vi.mocked(listEntries).mockResolvedValue([
       { kind: "file", name: "paper.pdf", path: "/p/paper.pdf" },
+      { kind: "file", name: "draft.DOCX", path: "/p/draft.DOCX" },
       { kind: "file", name: "notes.md", path: "/p/notes.md" },
     ]);
   });
@@ -31,6 +45,67 @@ describe("FileBrowser", () => {
     await user.click(await screen.findByText("paper.pdf"));
     expect(await screen.findByRole("toolbar", { name: "PDF controls" })).toBeVisible();
     expect(readFileContent).not.toHaveBeenCalled();
+  });
+
+  it("dispatches a DOCX file without fetching bounded UTF-8 text", async () => {
+    const user = userEvent.setup();
+    vi.mocked(readFileContent).mockResolvedValue({
+      path: "/p/draft.DOCX",
+      content: "",
+      byteCount: 4,
+      truncated: false,
+      binary: true,
+    });
+    render(<FileBrowser root="/p" />);
+    await user.click(await screen.findByText("draft.DOCX"));
+    expect(await screen.findByRole("toolbar", { name: "DOCX controls" })).toBeVisible();
+    expect(readFileContent).not.toHaveBeenCalled();
+  });
+
+  it("reloads an active DOCX preview after a file change event", async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(<FileBrowser root="/p" fileEvent={null} />);
+    await user.click(await screen.findByText("draft.DOCX"));
+    await waitFor(() => expect(docxLoader.render).toHaveBeenCalledOnce());
+
+    const event: FileWatcherEvent = {
+      type: "file.watcher.updated",
+      properties: { file: "/p/draft.DOCX", event: "change" },
+    };
+    rerender(<FileBrowser root="/p" fileEvent={event} />);
+
+    await waitFor(() => expect(docxLoader.render).toHaveBeenCalledTimes(2));
+    expect(docxLoader.load).toHaveBeenCalledTimes(2);
+    expect(readFileContent).not.toHaveBeenCalled();
+  });
+
+  it("does not replay a DOCX change event when another tab closes", async () => {
+    const user = userEvent.setup();
+    vi.mocked(readFileContent).mockResolvedValue({
+      path: "/p/notes.md",
+      content: "# Notes",
+      byteCount: 7,
+      truncated: false,
+      binary: false,
+    });
+    const { rerender } = render(<FileBrowser root="/p" fileEvent={null} />);
+    await user.click(await screen.findByText("notes.md"));
+    await screen.findByRole("heading", { name: "Notes" });
+    await user.click(screen.getByText("draft.DOCX"));
+    await waitFor(() => expect(docxLoader.render).toHaveBeenCalledOnce());
+
+    const event: FileWatcherEvent = {
+      type: "file.watcher.updated",
+      properties: { file: "/p/draft.DOCX", event: "change" },
+    };
+    rerender(<FileBrowser root="/p" fileEvent={event} />);
+    await waitFor(() => expect(docxLoader.render).toHaveBeenCalledTimes(2));
+
+    await user.click(screen.getByRole("button", { name: "Close notes.md" }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(docxLoader.render).toHaveBeenCalledTimes(2);
+    expect(docxLoader.load).toHaveBeenCalledTimes(2);
   });
 
   it("fetches bounded text only for non-PDF files", async () => {

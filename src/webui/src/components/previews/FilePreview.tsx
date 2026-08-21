@@ -1,28 +1,29 @@
 import type { FileContentDto } from "../../../../web/contracts";
 import { useI18n } from "../../i18n/useI18n";
+import { DocxPreview } from "./DocxPreview";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { PdfPreview } from "./PdfPreview";
+import { previewKind } from "./preview-kind";
 
 export interface FilePreviewProps {
   path: string;
+  revision?: number;
   textFile: FileContentDto | null;
   onOpenFile: (path: string) => void;
 }
 
-const PDF_RE = /\.pdf$/i;
-const MARKDOWN_RE = /\.(md|markdown)$/i;
-
 /**
- * Content-aware file preview: PDF for `.pdf`, Markdown for `.md`/`.markdown`
- * (GFM + math, safe local/external links), and read-only preformatted text for
- * everything else. Binary files show a stable notice instead of content;
- * truncated files (including Markdown) show a truncation banner.
+ * Content-aware file preview: PDF and DOCX use bounded raw-byte viewers,
+ * Markdown uses GFM/math with safe links, and other files use read-only text.
+ * Binary files show a stable notice; truncated text and Markdown show a banner.
  */
-export function FilePreview({ path, textFile, onOpenFile }: FilePreviewProps) {
+export function FilePreview({ path, revision = 0, textFile, onOpenFile }: FilePreviewProps) {
   const { t } = useI18n();
-  if (PDF_RE.test(path)) return <PdfPreview path={path} />;
+  const kind = previewKind(path);
+  if (kind === "pdf") return <PdfPreview path={path} />;
+  if (kind === "docx") return <DocxPreview path={path} revision={revision} />;
   if (!textFile) return <p className="p-3 text-[12px] text-v2-text-text-faint">{t("files.loading")}</p>;
-  if (MARKDOWN_RE.test(path) && !textFile.binary) {
+  if (kind === "markdown" && !textFile.binary) {
     return (
       <div className="flex h-full min-w-0 flex-col">
         {textFile.truncated && (

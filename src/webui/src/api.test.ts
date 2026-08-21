@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as apiModule from "./api";
 import {
   ApiError,
   abortSession,
@@ -26,6 +27,14 @@ import {
   touchSession,
   writeConfigFile,
 } from "./api";
+
+type RawByteReader = (path: string, options: { maxBytes: number; signal?: AbortSignal }) => Promise<ArrayBuffer>;
+
+function rawByteReader(): RawByteReader {
+  const reader = (apiModule as typeof apiModule & { readRawFileBytes?: RawByteReader }).readRawFileBytes;
+  if (!reader) throw new Error("readRawFileBytes is not implemented");
+  return reader;
+}
 
 describe("api transport", () => {
   const fetchMock = vi.fn();
@@ -107,6 +116,67 @@ describe("api transport", () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(init.method).toBe("GET");
     expect(url).toBe("/api/directories?path=%2Fhome%2Fuser");
+  });
+
+  it("reads bounded raw file bytes through the same-origin API and forwards abort", async () => {
+    const bytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04]);
+    fetchMock.mockResolvedValueOnce(
+      new Response(bytes, { status: 200, headers: { "Content-Length": String(bytes.byteLength) } }),
+    );
+    const controller = new AbortController();
+
+    const result = await rawByteReader()("/p/paper.docx", { maxBytes: 8, signal: controller.signal });
+
+    expect(new Uint8Array(result)).toEqual(bytes);
+    expect(fetchMock).toHaveBeenCalledWith("/api/file/raw?path=%2Fp%2Fpaper.docx", {
+      method: "GET",
+      signal: controller.signal,
+    });
+  });
+
+  it("rejects an oversized declared response before buffering it", async () => {
+    const response = new Response(new Uint8Array([1, 2, 3]), {
+      status: 200,
+      headers: { "Content-Length": "3" },
+    });
+    const readBody = vi.spyOn(response, "arrayBuffer");
+    const cancelBody = vi.spyOn(response.body!, "cancel");
+    fetchMock.mockResolvedValueOnce(response);
+
+    await expect(rawByteReader()("/p/large.docx", { maxBytes: 2 })).rejects.toMatchObject({
+      name: "RawFileSizeError",
+      maxBytes: 2,
+      actualBytes: 3,
+    });
+    expect(readBody).not.toHaveBeenCalled();
+    expect(cancelBody).toHaveBeenCalledOnce();
+  });
+
+  it("rejects oversized bytes when Content-Length is absent or understated", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { "Content-Length": "1" } }),
+    );
+
+    await expect(rawByteReader()("/p/understated.docx", { maxBytes: 2 })).rejects.toMatchObject({
+      name: "RawFileSizeError",
+      maxBytes: 2,
+      actualBytes: 3,
+    });
+  });
+
+  it("rejects a declared length beyond the safe-integer range before buffering", async () => {
+    const response = new Response(new Uint8Array([1]), {
+      status: 200,
+      headers: { "Content-Length": "9007199254740992" },
+    });
+    const readBody = vi.spyOn(response, "arrayBuffer");
+    fetchMock.mockResolvedValueOnce(response);
+
+    await expect(rawByteReader()("/p/impossible.docx", { maxBytes: 2 })).rejects.toMatchObject({
+      name: "RawFileSizeError",
+      maxBytes: 2,
+    });
+    expect(readBody).not.toHaveBeenCalled();
   });
 
   it("listAgents GETs /api/agents for the exact cwd and preserves missing skills", async () => {

@@ -29,6 +29,7 @@ describe("parseByteRange", () => {
 describe("mimeTypeFor", () => {
   it("maps document extensions to conservative MIME types", () => {
     expect(mimeTypeFor("paper.pdf")).toBe("application/pdf");
+    expect(mimeTypeFor("paper.DOCX")).toBe("application/vnd.openxmlformats-officedocument.wordprocessingml.document");
     expect(mimeTypeFor("notes.md")).toBe("text/markdown; charset=utf-8");
     expect(mimeTypeFor("figure.png")).toBe("image/png");
     expect(mimeTypeFor("archive.bin")).toBe("application/octet-stream");

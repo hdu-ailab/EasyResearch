@@ -37,6 +37,7 @@ export interface RawFileDescriptor {
 
 const EXTENSION_MIME: Record<string, string> = {
   ".pdf": "application/pdf",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   ".md": "text/markdown; charset=utf-8",
   ".markdown": "text/markdown; charset=utf-8",
   ".txt": "text/plain; charset=utf-8",

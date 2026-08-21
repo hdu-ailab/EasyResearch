@@ -48,13 +48,14 @@ import {
   type AuthFlowHandlers,
   connectAuthFlow,
   connectEventStream,
+  requestBytes,
   requestJson,
   requestVoid,
   type SessionEventHandlers,
 } from "./api/transport";
 
 export type { AuthFlowHandlers, SessionEventHandlers } from "./api/transport";
-export { ApiError } from "./api/transport";
+export { ApiError, RawFileSizeError } from "./api/transport";
 
 export function isUnknownSession(error: unknown): boolean {
   return error instanceof ApiError && error.status === 404;
@@ -142,6 +143,13 @@ export function readFileContent(path: string): Promise<FileContentDto> {
 /** URL for the MIME-correct, Range-capable raw bytes endpoint. */
 export function rawFileUrl(path: string): string {
   return routes.rawFile(path);
+}
+
+export function readRawFileBytes(
+  path: string,
+  options: { maxBytes: number; signal?: AbortSignal },
+): Promise<ArrayBuffer> {
+  return requestBytes(routes.rawFile(path), options);
 }
 
 export function createSession(cwd: string): Promise<ActiveSessionDto> {

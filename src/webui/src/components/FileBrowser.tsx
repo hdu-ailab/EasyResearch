@@ -1,17 +1,16 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { FileContentDto, FileEntryDto, FileWatcherEvent } from "../../../web/contracts";
 import { readFileContent } from "../api";
 import { useI18n } from "../i18n/useI18n";
 import { FilesPanel } from "./FilesPanel";
 import { type FileTab, FileTabs } from "./FileTabs";
 import { FilePreview } from "./previews/FilePreview";
+import { previewKind } from "./previews/preview-kind";
 
 export interface FileBrowserProps {
   root: string;
   fileEvent?: FileWatcherEvent | null;
 }
-
-const PDF_RE = /\.pdf$/i;
 
 function entryName(path: string): string {
   return path.split("/").at(-1) ?? path;
@@ -31,10 +30,13 @@ export function FileBrowser({ root, fileEvent = null }: FileBrowserProps) {
   const [contents, setContents] = useState<Record<string, FileContentDto>>({});
   const [contentRevision, setContentRevision] = useState<Record<string, number>>({});
   const [treeVisible, setTreeVisible] = useState(true);
+  const handledFileEvent = useRef<FileWatcherEvent | null>(null);
 
   useEffect(() => {
+    if (!fileEvent || handledFileEvent.current === fileEvent) return;
+    handledFileEvent.current = fileEvent;
     if (fileEvent?.properties.event !== "change") return;
-    if (PDF_RE.test(fileEvent.properties.file)) return;
+    if (previewKind(fileEvent.properties.file) === "pdf") return;
     const path = fileEvent.properties.file;
     if (!tabs.some((tab) => tab.path === path)) return;
     setContents((current) => {
@@ -52,7 +54,8 @@ export function FileBrowser({ root, fileEvent = null }: FileBrowserProps) {
     if (!activeTab) return;
     if (contents[activeTab]) return;
     const revision = activeRevision;
-    if (PDF_RE.test(activeTab)) {
+    const kind = previewKind(activeTab);
+    if (kind === "pdf" || kind === "docx") {
       setContents((current) => ({
         ...current,
         [activeTab]: { path: activeTab, content: "", byteCount: 0, truncated: false, binary: false },
@@ -121,7 +124,12 @@ export function FileBrowser({ root, fileEvent = null }: FileBrowserProps) {
         </div>
         <div className="min-w-0 flex-1">
           {activeTab ? (
-            <FilePreview path={activeTab} textFile={contents[activeTab] ?? null} onOpenFile={openPath} />
+            <FilePreview
+              path={activeTab}
+              revision={activeRevision}
+              textFile={contents[activeTab] ?? null}
+              onOpenFile={openPath}
+            />
           ) : (
             <div className="flex h-full items-center justify-center text-center">
               <p className="text-[13px] font-medium text-v2-text-text-base">{t("files.emptyTitle")}</p>
