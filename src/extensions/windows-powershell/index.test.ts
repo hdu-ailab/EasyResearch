@@ -5,6 +5,7 @@ import {
   buildPowerShellScript,
   createPowerShellOperations,
   createWindowsPowerShellExtension,
+  resolveWindowsShellFromEnv,
   resolvePowerShellExecutable,
 } from "./index";
 
@@ -25,6 +26,113 @@ describe("native Windows PowerShell resolution", () => {
       locateOnPath: () => undefined,
       exists: (path) => path === "D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
     })).toBe("D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+  });
+});
+
+describe("Windows shell detection", () => {
+  it("labels PowerShell 7 from module path", () => {
+    const info = resolveWindowsShellFromEnv({
+      env: {
+        PSModulePath: "C:\\Users\\Test\\Documents\\PowerShell\\Modules;C:\\Program Files\\PowerShell\\7\\Modules",
+      },
+    });
+    expect(info.kind).toBe("powershell7");
+    expect(info.displayName).toBe("PowerShell 7");
+  });
+
+  it("labels Windows PowerShell 5.1 from module path", () => {
+    const info = resolveWindowsShellFromEnv({
+      env: {
+        PSModulePath: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules;C:\\Windows\\system32\\WindowsPowerShell\\v1.0\\Modules",
+      },
+    });
+    expect(info.kind).toBe("powershell5.1");
+    expect(info.displayName).toBe("Windows PowerShell 5.1");
+  });
+
+  it("labels Git Bash from MSYSTEM", () => {
+    const info = resolveWindowsShellFromEnv({
+      env: {
+        MSYSTEM: "MINGW64",
+        SHELL: "C:/Program Files/Git/usr/bin/bash.exe",
+      },
+    });
+    expect(info.kind).toBe("gitbash");
+    expect(info.displayName).toBe("Git Bash");
+  });
+
+  it("classifies Git Bash install path", () => {
+    const info = resolveWindowsShellFromEnv({
+      env: {
+        SHELL: "C:\\Program Files\\Git\\bin\\bash.exe",
+      },
+    });
+    expect(info.kind).toBe("gitbash");
+    expect(info.displayName).toBe("Git Bash");
+  });
+
+  it("classifies Cygwin or MSYS bash as Other Bash", () => {
+    const info = resolveWindowsShellFromEnv({
+      env: {
+        SHELL: "C:/tools/cygwin64/bin/bash.exe",
+      },
+    });
+    expect(info.kind).toBe("other-bash");
+    expect(info.displayName).toBe("Other Bash");
+  });
+
+  it("labels PowerShell 7 from SHELL path", () => {
+    const info = resolveWindowsShellFromEnv({
+      env: {
+        SHELL: "C:/Program Files/PowerShell/7/pwsh.exe",
+      },
+    });
+    expect(info.kind).toBe("powershell7");
+    expect(info.displayName).toBe("PowerShell 7");
+  });
+
+  it("labels other Bash launchers", () => {
+    const info = resolveWindowsShellFromEnv({
+      env: {
+        SHELL: "C:/Windows/System32/bash.exe",
+      },
+    });
+    expect(info.kind).toBe("other-bash");
+    expect(info.displayName).toBe("Other Bash");
+  });
+
+  it("falls back to other shell", () => {
+    const info = resolveWindowsShellFromEnv({
+      exists: () => false,
+      locateOnPath: () => undefined,
+      env: {},
+    });
+    expect(info.kind).toBe("other-shell");
+    expect(info.displayName).toBe("Other shell");
+  });
+
+  it("classifies Program Files Git Bash as Git Bash", () => {
+    const info = resolveWindowsShellFromEnv({
+      locateOnPath: () => undefined,
+      env: {
+        ProgramFiles: "C:/Program Files",
+      },
+      exists: (path) => path === "C:\\Program Files\\Git\\bin\\bash.exe",
+    });
+    expect(info.kind).toBe("gitbash");
+    expect(info.displayName).toBe("Git Bash");
+  });
+
+  it("falls back to other Bash from PATH", () => {
+    const info = resolveWindowsShellFromEnv({
+      env: {
+        SHELL: "",
+      },
+      exists: (path) => path === "C:/PortableTools/bash.exe",
+      locateOnPath: () => "C:/PortableTools/bash.exe",
+    });
+    expect(info.kind).toBe("other-bash");
+    expect(info.displayName).toBe("Other Bash");
   });
 });
 
@@ -255,6 +363,10 @@ describe("Windows-only tool override", () => {
       platform: "win32",
       executable: "C:\\Windows\\powershell.exe",
       killTree: vi.fn(),
+      env: {
+        SHELL: "C:/Program Files/Git/usr/bin/bash.exe",
+        MSYSTEM: "MINGW64",
+      },
     })({
       on: (event: string, handler: typeof start) => {
         if (event === "session_start") start = handler;
@@ -266,7 +378,8 @@ describe("Windows-only tool override", () => {
     expect(registerTool).toHaveBeenCalledWith(expect.objectContaining({
       name: "bash",
       label: "PowerShell",
-      promptSnippet: "Execute native Windows PowerShell commands",
+      description: expect.stringContaining("Detected launcher shell: Git Bash"),
+      promptSnippet: "Execute native commands from Git Bash context",
     }));
   });
 });

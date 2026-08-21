@@ -12,6 +12,102 @@ import { Type } from "typebox";
 const MAX_TIMEOUT_MS = 2_147_483_647;
 const EXIT_STDIO_GRACE_MS = 100;
 
+export type WindowsShellKind = "powershell5.1" | "powershell7" | "gitbash" | "other-bash" | "other-shell";
+
+export interface WindowsShellInfo {
+  kind: WindowsShellKind;
+  displayName: string;
+}
+
+interface BashDetectionOptions {
+  env?: NodeJS.ProcessEnv;
+  exists?: (path: string) => boolean;
+  locateOnPath?: (name: string) => string | undefined;
+}
+
+function normalized(value: string | undefined): string {
+  return (value ?? "").toLowerCase();
+}
+
+function isGitBashExecutable(pathname: string): boolean {
+  const value = normalized(pathname);
+  return value.includes("program files") && value.includes("\\git\\") && value.endsWith("\\bin\\bash.exe");
+}
+
+function resolveBashFromKnownWindowsPaths(
+  env: NodeJS.ProcessEnv,
+  exists: (path: string) => boolean,
+  locateOnPath: (name: string) => string | undefined,
+): string | undefined {
+  const candidates = [
+    env.ProgramFiles,
+    env["ProgramFiles(x86)"],
+    env.PROGRAMFILES,
+    env["PROGRAMFILES(X86)"],
+  ]
+    .filter((entry): entry is string => !!entry)
+    .map((entry) => win32.join(entry, "Git", "bin", "bash.exe"));
+
+  const gitBash = candidates.find((path) => exists(path));
+  if (gitBash) return gitBash;
+
+  const pathBash = locateOnPath("bash.exe");
+  return pathBash && exists(pathBash) ? pathBash : undefined;
+}
+
+function hasBashMarker(value: string): boolean {
+  return /(?:^|[\\/])bash(?:\.exe)?$/u.test(value) || value.includes("/bash") || value.includes("\\bash");
+}
+
+export function resolveWindowsShellFromEnv(options: BashDetectionOptions = {}): WindowsShellInfo {
+  const env = options.env ?? process.env;
+  const exists = options.exists ?? existsSync;
+  const locateOnPath = options.locateOnPath ?? locateWindowsExecutable;
+  const shell = normalized(env.SHELL);
+  const psmodulePath = normalized(env.PSModulePath);
+  const psHome = normalized(env.PSHOME);
+  const comSpec = normalized(env.ComSpec);
+
+  if (env.MSYSTEM || env.MSYS || /(?:msys|mingw)/u.test(normalized(env.MSYSTEM_CARCH))) {
+    return { kind: "gitbash", displayName: "Git Bash" };
+  }
+
+  if (shell.includes("program files/git/usr/bin/bash") || shell.includes("program files\\git\\bin\\bash.exe")) {
+    return { kind: "gitbash", displayName: "Git Bash" };
+  }
+  if (shell.includes("/cygwin") || shell.includes("/msys") || shell.includes("/wsl") || shell.includes("\\cygwin") || shell.includes("\\msys") || shell.includes("\\wsl")) {
+    return { kind: "other-bash", displayName: "Other Bash" };
+  }
+
+  if (hasBashMarker(shell) || shell.includes("/bin/bash") || shell.includes("\\bin\\bash")) {
+    return { kind: "other-bash", displayName: "Other Bash" };
+  }
+
+  if (psmodulePath.includes("powershell\\7\\modules")) {
+    return { kind: "powershell7", displayName: "PowerShell 7" };
+  }
+  if (psmodulePath.includes("windowspowershell\\v1.0\\modules")) {
+    return { kind: "powershell5.1", displayName: "Windows PowerShell 5.1" };
+  }
+
+  if (psHome.includes("powershell\\7") || shell.includes("pwsh") || comSpec.includes("pwsh")) {
+    return { kind: "powershell7", displayName: "PowerShell 7" };
+  }
+  if (psHome.includes("windowspowershell") || shell.includes("powershell") || shell.includes("powershell.exe")) {
+    return { kind: "powershell5.1", displayName: "Windows PowerShell 5.1" };
+  }
+
+  const bashPath = resolveBashFromKnownWindowsPaths(env, exists, locateOnPath);
+  if (bashPath) {
+    if (isGitBashExecutable(bashPath)) {
+      return { kind: "gitbash", displayName: "Git Bash" };
+    }
+    return { kind: "other-bash", displayName: "Other Bash" };
+  }
+
+  return { kind: "other-shell", displayName: "Other shell" };
+}
+
 export interface PowerShellResolutionOptions {
   env?: NodeJS.ProcessEnv;
   exists?: (path: string) => boolean;
@@ -261,6 +357,8 @@ export function createWindowsPowerShellExtension(
   return (pi: ExtensionAPI) => {
     if ((options.platform ?? process.platform) !== "win32") return;
     pi.on("session_start", (_event, ctx) => {
+      const shell = resolveWindowsShellFromEnv({ env: options.env, exists: options.exists, locateOnPath: options.locateOnPath });
+      const shellName = shell.displayName;
       const tool = createBashTool(ctx.cwd, {
         operations: createPowerShellOperations(options),
       });
@@ -268,9 +366,10 @@ export function createWindowsPowerShellExtension(
         ...tool,
         label: "PowerShell",
         description:
-          "Execute a native Windows PowerShell command in the current working directory. Returns stdout and stderr with Pi's normal streaming and truncation behavior. WSL and Bash syntax are not available. Optionally provide a timeout in seconds.",
-        promptSnippet: "Execute native Windows PowerShell commands",
+          `Detected launcher shell: ${shellName}. Execute a native Windows command in the current working directory. Returns stdout and stderr with Pi's normal streaming and truncation behavior. WSL and Bash syntax are not available. Optionally provide a timeout in seconds.`,
+        promptSnippet: `Execute native commands from ${shellName} context`,
         promptGuidelines: [
+          `Detected launcher shell: ${shellName}.`,
           "Use PowerShell syntax and Windows paths. Do not emit Bash, WSL, cmd.exe batch, or POSIX-only commands.",
           "Use $env:NAME for environment variables and -LiteralPath for paths supplied as data.",
           "You can inspect PI_* environment variables for current model and session details.",
