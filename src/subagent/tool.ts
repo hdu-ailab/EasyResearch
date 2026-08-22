@@ -9,7 +9,7 @@ import {
   availableSubagentsForCaller,
   withCurrentAgentCatalog,
 } from "./dispatch-authorization";
-import { PAPER_ASSISTANT_AGENT } from "./agents";
+import { RESEARCH_ASSISTANT_AGENT } from "./agents";
 import { resolveConfiguredModel } from "./model-resolution";
 import type { SubagentSupervisor } from "./supervisor";
 import { resolveConfiguredThinking } from "./thinking-resolution";
@@ -158,15 +158,15 @@ export function createSubagentTool(options: CreateSubagentToolOptions) {
             });
             const agent = available.find((candidate) => candidate.name === reserved.agent);
             if (!agent) throw new Error(`Agent "${reserved.agent}" is disabled or unavailable.`);
-            const paperAssistant = agents.find((candidate) => candidate.name === PAPER_ASSISTANT_AGENT);
-            const paperAssistantThinking = options.coordinator.getPaperAssistantThinking();
+            const researchAssistant = agents.find((candidate) => candidate.name === RESEARCH_ASSISTANT_AGENT);
+            const researchAssistantThinking = options.coordinator.getResearchAssistantThinking();
             return {
               reservation: reserved,
               agent,
-              model: resolveConfiguredModel(agent, paperAssistant?.model),
+              model: resolveConfiguredModel(agent, researchAssistant?.model),
               thinking: resolveConfiguredThinking(
                 agent,
-                isThinkingLevel(paperAssistantThinking) ? paperAssistantThinking : undefined,
+                isThinkingLevel(researchAssistantThinking) ? researchAssistantThinking : undefined,
               ),
             };
           },

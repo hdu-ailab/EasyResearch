@@ -151,12 +151,12 @@ describe("WorkPage", () => {
     vi.mocked(api.patchAgent).mockReset();
     vi.mocked(api.listAgents).mockResolvedValue([
       {
-        name: "paper-assistant",
+        name: "research-assistant",
         description: "Runs the pipeline",
         enabled: true,
         builtin: true,
         source: "bundled",
-        filePath: "paper-assistant.md",
+        filePath: "research-assistant.md",
         model: "openai/gpt-4o",
         tools: ["subagent"],
         effectiveTools: ["subagent"],
@@ -552,7 +552,7 @@ describe("WorkPage", () => {
 
     el.scrollTop = 100;
     fireEvent.scroll(el);
-    await user.click(screen.getByRole("button", { name: /agent paper assistant/i }));
+    await user.click(screen.getByRole("button", { name: /agent research assistant/i }));
     flushCapturedFrame();
     expect(el.scrollTop).toBe(400);
 
@@ -649,7 +649,7 @@ describe("WorkPage", () => {
     const latestMessage = "scanning arxiv for recent fault-diagnosis papers";
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
-    const assistantTab = screen.getByRole("button", { name: /agent paper assistant/i });
+    const assistantTab = screen.getByRole("button", { name: /agent research assistant/i });
     expect(assistantTab.getAttribute("aria-pressed")).toBe("true");
     emitInAct({
       type: "tool_execution_start",
@@ -682,7 +682,9 @@ describe("WorkPage", () => {
     });
     await waitFor(() => expect(screen.queryByRole("button", { name: /agent search/i })).toBeNull());
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: /agent paper assistant/i }).getAttribute("aria-pressed")).toBe("true"),
+      expect(screen.getByRole("button", { name: /agent research assistant/i }).getAttribute("aria-pressed")).toBe(
+        "true",
+      ),
     );
   });
 
@@ -838,7 +840,7 @@ describe("WorkPage", () => {
     expect(await screen.findByText("older inherited task")).toBeVisible();
     expect(screen.getByText("complete child answer")).toBeVisible();
     const conversation = screen.getByLabelText("Conversation");
-    expect(conversation).toHaveTextContent("Paper Assistant");
+    expect(conversation).toHaveTextContent("Research Assistant");
     expect(conversation).toHaveTextContent("Search");
     expect(screen.getByRole("textbox", { name: /message/i })).toBeDisabled();
     expect(within(conversation).queryByRole("button", { name: "View details" })).toBeNull();
@@ -1036,7 +1038,7 @@ describe("WorkPage", () => {
     expect(failedNestedCard).not.toBeNull();
     expect(within(failedNestedCard as HTMLElement).getByText("Failed")).toBeVisible();
     expect(screen.getByRole("button", { name: "Agent search_nested" })).toHaveTextContent("Error");
-    await user.click(screen.getByRole("button", { name: /agent paper assistant/i }));
+    await user.click(screen.getByRole("button", { name: /agent research assistant/i }));
     const rootCard = screen.getByText("writing complete").closest("article");
     expect(within(rootCard as HTMLElement).getByText("Completed")).toBeVisible();
     expect(within(rootCard as HTMLElement).queryByText("nested failed")).toBeNull();
@@ -1127,13 +1129,13 @@ describe("WorkPage", () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     const details = await screen.findAllByRole("button", { name: "View details" });
     await user.click(details[0]!);
-    await user.click(screen.getByRole("button", { name: /agent paper assistant/i }));
+    await user.click(screen.getByRole("button", { name: /agent research assistant/i }));
     await user.click((await screen.findAllByRole("button", { name: "View details" }))[1]!);
     expect(screen.getByRole("button", { name: "Agent search_0" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Agent search_1" })).toBeVisible();
     expect(await screen.findByText("Child session unavailable.")).toBeVisible();
     expect(screen.getAllByRole("button", { name: /Close agent tab:/ })).toHaveLength(2);
-    await user.click(screen.getByRole("button", { name: /agent paper assistant/i }));
+    await user.click(screen.getByRole("button", { name: /agent research assistant/i }));
     expect(screen.getByText("parent remains")).toBeVisible();
   });
 
@@ -1442,7 +1444,7 @@ describe("WorkPage", () => {
     });
     const select = await screen.findByRole("button", { name: "Agent search_0" });
     const stop = await screen.findByRole("button", { name: "Stop agent: search_0" });
-    const assistant = screen.getByRole("button", { name: /agent paper assistant/i });
+    const assistant = screen.getByRole("button", { name: /agent research assistant/i });
     expect(select.contains(stop)).toBe(false);
     expect(select.parentElement).toBe(stop.parentElement);
     expect(select.parentElement).toHaveClass("rounded-full", "border");
@@ -1558,7 +1560,7 @@ describe("WorkPage", () => {
 
     await user.click(await screen.findByRole("button", { name: "View details: Step 1" }));
     expect(await screen.findByText("history for child-history-search")).toBeVisible();
-    await user.click(screen.getByRole("button", { name: /agent paper assistant/i }));
+    await user.click(screen.getByRole("button", { name: /agent research assistant/i }));
     await user.click(screen.getByRole("button", { name: "View details: Step 2" }));
 
     expect(await screen.findByText("history for child-history-writing")).toBeVisible();
@@ -2195,7 +2197,7 @@ describe("WorkPage", () => {
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
     await waitFor(() => {
-      for (const display of ["Paper Assistant", "Search", "Experiment", "Writing", "Figures"]) {
+      for (const display of ["Research Assistant", "Search", "Experiment", "Writing", "Figures"]) {
         expect(within(region).getAllByText(display).length).toBeGreaterThan(0);
       }
     });
@@ -2207,20 +2209,20 @@ describe("WorkPage", () => {
     await screen.findByText("starting research");
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
-    expect(await within(region).findByText(/Paper Assistant for the paper pipeline/)).toBeTruthy();
+    expect(await within(region).findByText(/Research Assistant for the paper pipeline/)).toBeTruthy();
     expect(within(region).getByText(/Experiment agent/)).toBeTruthy();
     expect(within(region).queryByText("Subagents")).toBeNull();
     expect(within(region).queryByText("search, figures")).toBeNull();
   });
 
-  it("keeps the Paper Assistant card when the agents endpoint fails", async () => {
+  it("keeps the Research Assistant card when the agents endpoint fails", async () => {
     const user = userEvent.setup();
     vi.mocked(api.listAgents).mockRejectedValue(new Error("boom"));
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
-    expect(await within(region).findByText("Paper Assistant")).toBeTruthy();
+    expect(await within(region).findByText("Research Assistant")).toBeTruthy();
   });
 
   it("shows each Agent's global model field in its model dropdown", async () => {
@@ -2233,7 +2235,7 @@ describe("WorkPage", () => {
     expect(combos.length).toBe(10);
     expect(combos[0]!).toHaveTextContent("openai/gpt-4o");
     expect(combos[2]!).toHaveTextContent("anthropic/claude");
-    expect(within(combos[4]!).getByText("inherit (Paper Assistant's model)")).toBeTruthy();
+    expect(within(combos[4]!).getByText("inherit (Research Assistant's model)")).toBeTruthy();
     expect(within(region).queryByText(/inherits session/)).toBeNull();
   });
 
@@ -2245,7 +2247,7 @@ describe("WorkPage", () => {
     const region = screen.getByRole("region", { name: /agent list/i });
     const searchCombo = within(region).getAllByRole("combobox")[2]!;
     await user.click(searchCombo);
-    await user.click(screen.getByRole("option", { name: "inherit (Paper Assistant's model)" }));
+    await user.click(screen.getByRole("option", { name: "inherit (Research Assistant's model)" }));
     await waitFor(() => expect(api.patchAgent).toHaveBeenCalledWith("search", { model: null }));
   });
 
@@ -2355,7 +2357,7 @@ describe("WorkPage", () => {
     await user.click(await screen.findByRole("button", { name: "View details" }));
     expect(await screen.findByText("retained child history")).toBeVisible();
     expect(screen.getByRole("button", { name: "Agent search_0" })).toBeVisible();
-    await user.click(screen.getByRole("button", { name: /agent paper assistant/i }));
+    await user.click(screen.getByRole("button", { name: /agent research assistant/i }));
 
     emitInAct({ type: "session_deactivated", sessionId: "s1" });
     await user.type(screen.getByRole("textbox", { name: /message/i }), "continue please");

@@ -10,13 +10,13 @@ Automated academic paper writing: a team of AI experts works the whole paper pip
 
 EasyResearch is a paper-production pipeline with a clear division of labor among its agent experts:
 
-- **Paper Assistant** — your project manager. It plans the pipeline, dispatches the right expert at the right moment, keeps orchestrating while background specialists run, and decides the next step on its own. You only confirm quality checkpoints along the way.
+- **Research Assistant** — your project manager. It plans the pipeline, dispatches the right expert, keeps orchestrating while background specialists run, and can launch an explicitly authorized autoresearch campaign that improves a declared metric without asking after every trial. You only confirm quality checkpoints along the way.
 - **Search agent** — finds candidate papers on OpenReview and arXiv, verifies metadata, downloads the PDFs, converts them into readable text, and packages the literature.
 - **Experiment agent** — builds reproducible experiments from the papers: selects datasets, implements baselines, runs controlled trials with multiple seeds, and produces formal evidence.
 - **Writing agent** — drafts and revises the authoritative Markdown manuscript, verifies every citation, and exports LaTeX/PDF.
 - **Figures agent** — produces editable publication figures grounded in the actual experiment evidence.
 
-The agents cooperate through the complete paper workflow — initial research, paper reading and synthesis, experiment design and execution, formal results, and final manuscript — with the Paper Assistant orchestrating from start to finish. Instead of doing any of the manual work yourself, you inspect what matters and confirm each checkpoint before the pipeline moves on.
+The agents cooperate through the complete paper workflow — initial research, paper reading and synthesis, experiment design and execution, formal results, and final manuscript — with the Research Assistant orchestrating from start to finish. Instead of doing any of the manual work yourself, you inspect what matters and confirm each checkpoint before the pipeline moves on.
 
 ## Highly customizable agents
 
@@ -24,7 +24,7 @@ The agent team is fully customizable. Each agent's role and capabilities are
 defined in a plain Markdown file, model/thinking defaults live in global
 settings, and skills are just `SKILL.md` documents. You can quickly create your
 own specialist agents to plug into the pipeline. No code needed: just ask the
-Paper Assistant to load the `customize-easyresearch` skill, and it will create,
+Research Assistant to load the `customize-easyresearch` skill, and it will create,
 edit, or mount your custom agents and skills for you.
 
 ## Requirements
@@ -180,7 +180,7 @@ export OPENAI_API_KEY=sk-...
 {
   "easyresearch": {
     "agentDefaults": {
-      "paper-assistant": {
+      "research-assistant": {
         "model": "my-openai/gpt-4o",
         "thinking": "medium"
       }
@@ -193,10 +193,10 @@ Set it only in global `~/.easyresearch/agent/settings.json`. Agent definitions
 remain global-over-bundled Markdown resources:
 `<cwd>/.easyresearch/agents/` is inert and does not affect runtime discovery,
 the Work page, or the Settings page. Residual Markdown `model`/`thinking`
-fields are ignored. Stage agents inherit the Paper Assistant's current global
+fields are ignored. Stage agents inherit the Research Assistant's current global
 model and thinking when they have no values of their own.
 
-Settings and Work edit these same global settings entries. When the Paper
+Settings and Work edit these same global settings entries. When the Research
 Assistant model is unset, the backend asks Pi for its concrete default and
 selects that existing model option without persisting or duplicating it. If Pi
 cannot resolve a model, the control stays empty and reports that model or

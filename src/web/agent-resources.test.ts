@@ -199,18 +199,18 @@ describe("copy-on-save agent resources (ADR-058)", () => {
     expect(saved.effectiveTools).toContain("subagent");
   });
 
-  it("validates a global Paper Assistant alias against its actual filename", async () => {
+  it("validates a global Research Assistant alias against its actual filename", async () => {
     const { agentDir, config } = tempConfig();
     mkdirSync(join(agentDir, "agents"), { recursive: true });
-    const aliasPath = join(agentDir, "agents", "Paper Assistant.md");
-    const edited = "---\nname: Paper Assistant\ndescription: edited alias\n---\nAlias prompt\n";
-    writeFileSync(aliasPath, "---\nname: Paper Assistant\ndescription: alias\n---\nAlias prompt\n");
+    const aliasPath = join(agentDir, "agents", "Research Assistant.md");
+    const edited = "---\nname: Research Assistant\ndescription: edited alias\n---\nAlias prompt\n";
+    writeFileSync(aliasPath, "---\nname: Research Assistant\ndescription: alias\n---\nAlias prompt\n");
 
-    const saved = await writeGlobalAgent(config, "paper-assistant", edited);
+    const saved = await writeGlobalAgent(config, "research-assistant", edited);
 
-    expect(saved.name).toBe("paper-assistant");
+    expect(saved.name).toBe("research-assistant");
     expect(readFileSync(aliasPath, "utf8")).toBe(edited);
-    expect(existsSync(join(agentDir, "agents", "paper-assistant.md"))).toBe(false);
+    expect(existsSync(join(agentDir, "agents", "research-assistant.md"))).toBe(false);
   });
 
   it("reading an unknown agent raises 404", async () => {

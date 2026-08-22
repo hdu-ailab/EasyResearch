@@ -146,7 +146,7 @@ function context(manager: MemorySessionManager): ExtensionContext {
 describe("createSubagentExtension nested supervised dispatch", () => {
   it("does not register or activate subagent for an explicit leaf policy", async () => {
     const leaf = agent("search", { subagents: [] });
-    const live = new FakeLiveConfiguration([agent("paper-assistant"), leaf]);
+    const live = new FakeLiveConfiguration([agent("research-assistant"), leaf]);
     const runtime = runtimeHarness();
     const loaded = await loadExtension({
       binding: mutableBinding(leaf),
@@ -163,7 +163,7 @@ describe("createSubagentExtension nested supervised dispatch", () => {
 
   it("uses the stage's own supervisor while reserving ids in the root coordinator", async () => {
     const writing = agent("writing", { subagents: ["search"] });
-    const live = new FakeLiveConfiguration([agent("paper-assistant"), writing, agent("search")]);
+    const live = new FakeLiveConfiguration([agent("research-assistant"), writing, agent("search")]);
     const runtime = runtimeHarness();
     const loaded = await loadExtension({
       binding: mutableBinding(writing),
@@ -195,7 +195,7 @@ describe("createSubagentExtension nested supervised dispatch", () => {
 
   it("keeps caller names in the collision catalog without making them dispatchable", async () => {
     const caller = agent("search_0", { subagents: ["search"] });
-    const live = new FakeLiveConfiguration([agent("paper-assistant"), caller, agent("search")]);
+    const live = new FakeLiveConfiguration([agent("research-assistant"), caller, agent("search")]);
     const runtime = runtimeHarness();
     const loaded = await loadExtension({
       binding: mutableBinding(caller),
@@ -219,7 +219,7 @@ describe("createSubagentExtension nested supervised dispatch", () => {
     const writingV1 = agent("writing", { subagents: ["search"] });
     const writingV2 = agent("writing", { subagents: ["reviewer"] });
     const binding = mutableBinding(writingV1);
-    const live = new FakeLiveConfiguration([agent("paper-assistant"), writingV1, agent("search")]);
+    const live = new FakeLiveConfiguration([agent("research-assistant"), writingV1, agent("search")]);
     const runtime = runtimeHarness();
     const loaded = await loadExtension({
       binding,
@@ -229,7 +229,7 @@ describe("createSubagentExtension nested supervised dispatch", () => {
     });
     await loaded.handlers.get("session_start")?.({ reason: "startup" }, { cwd: "/paper" });
 
-    live.publish([agent("paper-assistant"), writingV2, agent("reviewer")]);
+    live.publish([agent("research-assistant"), writingV2, agent("reviewer")]);
     await loaded.handlers.get("session_start")?.({ reason: "reload" }, { cwd: "/paper" });
     expect(loaded.activeTools()).toEqual(["read"]);
     expect(loaded.tools.get("subagent")?.description).toContain("Available subagents: search.");

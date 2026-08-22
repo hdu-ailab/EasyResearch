@@ -32,8 +32,8 @@ function tempRoot(): string {
 
 function definition(version: string): AgentDefinition {
   return {
-    name: "paper-assistant",
-    description: `Paper Assistant ${version}`,
+    name: "research-assistant",
+    description: `Research Assistant ${version}`,
     enabled: true,
     builtin: true,
     tools: [],
@@ -41,7 +41,7 @@ function definition(version: string): AgentDefinition {
     skills: ["research-project-workflow"],
     systemPrompt: `Prompt ${version}`,
     source: "global",
-    filePath: `/private/agents/paper-assistant-${version}.md`,
+    filePath: `/private/agents/research-assistant-${version}.md`,
   };
 }
 
@@ -49,7 +49,7 @@ function catalog(version: string): AgentCatalogSnapshot {
   return {
     definitions: [definition(version)],
     diagnostics: [],
-    defaults: { "paper-assistant": { model: `provider/${version}`, thinking: "high" } },
+    defaults: { "research-assistant": { model: `provider/${version}`, thinking: "high" } },
   };
 }
 
@@ -207,7 +207,7 @@ describe("live configuration generations", () => {
     expect(state.prepareModels).toHaveBeenCalledTimes(2);
     await expect(state.live.resolveAgents("/paper")).resolves.toEqual([
       expect.objectContaining({
-        name: "paper-assistant",
+        name: "research-assistant",
         model: "provider/v2",
         systemPrompt: "Prompt v2",
         effectiveSkills: ["skill@/paper"],
@@ -241,7 +241,7 @@ describe("live configuration generations", () => {
     state.setFingerprint(fingerprint("broken-v2", "models-v1"));
     state.setCatalog({
       definitions: [],
-      diagnostics: [{ agent: "paper-assistant", source: "global", message: "SECRET raw diagnostic" }],
+      diagnostics: [{ agent: "research-assistant", source: "global", message: "SECRET raw diagnostic" }],
     });
     await state.live.synchronize();
 
@@ -268,7 +268,7 @@ describe("live configuration generations", () => {
     state.setFingerprint(fingerprint("broken-v2", "models-v2"));
     state.setCatalog({
       definitions: [],
-      diagnostics: [{ agent: "paper-assistant", source: "global", message: "invalid" }],
+      diagnostics: [{ agent: "research-assistant", source: "global", message: "invalid" }],
     });
     await state.live.synchronize();
 
@@ -301,7 +301,7 @@ describe("live configuration generations", () => {
       definitions: [definition("v2"), inheritingStage, unavailableStage],
       diagnostics: [],
       defaults: {
-        "paper-assistant": { model: "provider/v2", thinking: "high" },
+        "research-assistant": { model: "provider/v2", thinking: "high" },
         experiment: { model: "provider/missing" },
       },
     });
@@ -317,7 +317,7 @@ describe("live configuration generations", () => {
     expect(rejectedCandidate?.commit).not.toHaveBeenCalled();
     expect(rejectedCandidate?.rollback).toHaveBeenCalledTimes(1);
     await expect(state.live.resolveAgents("/paper")).resolves.toEqual([
-      expect.objectContaining({ name: "paper-assistant", model: "provider/v1" }),
+      expect.objectContaining({ name: "research-assistant", model: "provider/v1" }),
     ]);
 
     state.setModels(["provider/v2", "provider/missing"]);
@@ -325,7 +325,7 @@ describe("live configuration generations", () => {
 
     expect(state.live.generation).toBe(2);
     await expect(state.live.resolveAgents("/paper")).resolves.toEqual([
-      expect.objectContaining({ name: "paper-assistant", model: "provider/v2" }),
+      expect.objectContaining({ name: "research-assistant", model: "provider/v2" }),
       expect.objectContaining({ name: "search", model: undefined }),
       expect.objectContaining({ name: "experiment", model: "provider/missing" }),
     ]);
@@ -334,7 +334,7 @@ describe("live configuration generations", () => {
   it("keeps generation zero unavailable after invalid startup and recovers on the first valid synchronization", async () => {
     const state = harness({
       definitions: [],
-      diagnostics: [{ agent: "paper-assistant", source: "global", message: "invalid at /secret/startup" }],
+      diagnostics: [{ agent: "research-assistant", source: "global", message: "invalid at /secret/startup" }],
     });
     const events: ConfigurationEvent[] = [];
     state.live.subscribe((event) => events.push(event));
@@ -364,7 +364,7 @@ describe("live configuration generations", () => {
     ]);
   });
 
-  it("rejects non-empty diagnostics even when the catalog contains a complete Paper Assistant definition", async () => {
+  it("rejects non-empty diagnostics even when the catalog contains a complete Research Assistant definition", async () => {
     const state = harness({
       definitions: [definition("v1")],
       diagnostics: [{ agent: "search", source: "global", message: "Invalid Agent definition." }],
@@ -759,7 +759,7 @@ describe("configuration content fingerprint", () => {
   it("changes only the model component for same-size models.json replacement", async () => {
     const root = tempRoot();
     mkdirSync(join(root, "agents"), { recursive: true });
-    writeFileSync(join(root, "agents", "paper-assistant.md"), "agent", "utf8");
+    writeFileSync(join(root, "agents", "research-assistant.md"), "agent", "utf8");
     writeFileSync(join(root, "models.json"), '{"a":1}', "utf8");
     const before = await fingerprintConfiguration(root);
 
@@ -775,7 +775,7 @@ describe("configuration content fingerprint", () => {
   it("changes the configuration only when global agentDefaults change", async () => {
     const root = tempRoot();
     mkdirSync(join(root, "agents"), { recursive: true });
-    writeFileSync(join(root, "agents", "paper-assistant.md"), "agent", "utf8");
+    writeFileSync(join(root, "agents", "research-assistant.md"), "agent", "utf8");
     writeFileSync(join(root, "models.json"), "{}", "utf8");
     writeFileSync(join(root, "settings.json"), JSON.stringify({ theme: "dark" }), "utf8");
     const before = await fingerprintConfiguration(root);
@@ -797,7 +797,7 @@ describe("configuration content fingerprint", () => {
   it("excludes project files, sessions, logs, auth values, and unrelated global resources", async () => {
     const root = tempRoot();
     mkdirSync(join(root, "agents"), { recursive: true });
-    writeFileSync(join(root, "agents", "paper-assistant.md"), "agent", "utf8");
+    writeFileSync(join(root, "agents", "research-assistant.md"), "agent", "utf8");
     writeFileSync(join(root, "models.json"), "{}", "utf8");
     const before = await fingerprintConfiguration(root);
 

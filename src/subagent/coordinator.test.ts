@@ -430,19 +430,19 @@ describe("SubagentCoordinator", () => {
     });
   });
 
-  it("reads bound Paper Assistant state and refuses reservations while closing", () => {
+  it("reads bound Research Assistant state and refuses reservations while closing", () => {
     const { coordinator, manager } = harness();
     let model: string | undefined = "provider/model-a";
     let thinking: string | undefined = "high";
-    coordinator.bindPaperAssistantState({ model: () => model, thinking: () => thinking });
+    coordinator.bindResearchAssistantState({ model: () => model, thinking: () => thinking });
 
     expect(coordinator.getRootSessionManager()).toBe(manager);
-    expect(coordinator.getPaperAssistantModel()).toBe("provider/model-a");
-    expect(coordinator.getPaperAssistantThinking()).toBe("high");
+    expect(coordinator.getResearchAssistantModel()).toBe("provider/model-a");
+    expect(coordinator.getResearchAssistantThinking()).toBe("high");
     model = "provider/model-b";
     thinking = undefined;
-    expect(coordinator.getPaperAssistantModel()).toBe("provider/model-b");
-    expect(coordinator.getPaperAssistantThinking()).toBeUndefined();
+    expect(coordinator.getResearchAssistantModel()).toBe("provider/model-b");
+    expect(coordinator.getResearchAssistantThinking()).toBeUndefined();
 
     coordinator.beginClosing();
     expect(() => coordinator.reserveDispatch({ ownerSessionId: "root", toolCallId: "t0", requested: "search", catalog: catalogOf("search") }))

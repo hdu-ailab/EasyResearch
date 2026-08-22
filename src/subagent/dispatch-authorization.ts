@@ -1,7 +1,7 @@
 import type { LiveConfiguration } from "../runtime/live-configuration";
 import { ConfigurationUnavailableError } from "../runtime/live-configuration";
 import {
-  PAPER_ASSISTANT_AGENT,
+  RESEARCH_ASSISTANT_AGENT,
   type AgentConfig,
 } from "./agents";
 
@@ -69,7 +69,7 @@ export function filterAgentsByAllowlist(
   callerAgent?: string,
 ): AgentConfig[] {
   const eligible = agents.filter((agent) =>
-    agent.enabled && agent.name !== PAPER_ASSISTANT_AGENT && agent.name !== callerAgent
+    agent.enabled && agent.name !== RESEARCH_ASSISTANT_AGENT && agent.name !== callerAgent
   );
   if (allowlist === undefined) return eligible;
   const allowed = new Set(allowlist);

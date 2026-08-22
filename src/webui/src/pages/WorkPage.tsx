@@ -7,7 +7,7 @@ import type {
   SubagentSessionSummaryDto,
   SubagentSupervisorEventDto,
 } from "../../../web/contracts";
-import { PAPER_ASSISTANT_AGENT } from "../agent-identity";
+import { RESEARCH_ASSISTANT_AGENT } from "../agent-identity";
 import { getChildSnapshot, getSessionCommands, getSessionTree } from "../api";
 import { AgentList, type AgentStatus } from "../components/AgentList";
 import { AgentTabBar } from "../components/AgentTabBar";
@@ -156,7 +156,7 @@ export function WorkPage({
   const [tabsState, setTabsState] = useState<SubagentTabsState>({ tabs: [], hiddenRunningToolCalls: [] });
   const [childViews, setChildViews] = useState<Record<string, SessionViewState>>({});
   const [childErrors, setChildErrors] = useState<Record<string, boolean>>({});
-  const [activeTab, setActiveTab] = useState(PAPER_ASSISTANT_AGENT);
+  const [activeTab, setActiveTab] = useState(RESEARCH_ASSISTANT_AGENT);
   const [commands, setCommands] = useState<SkillCommandDto[]>([]);
   const [tree, setTree] = useState<SessionTreeDto | null>(null);
   const transcriptRef = useRef<ChatTranscriptHandle>(null);
@@ -390,8 +390,8 @@ export function WorkPage({
   }, [sessionView.tools, childViews, sessionId]);
 
   useEffect(() => {
-    if (activeTab !== PAPER_ASSISTANT_AGENT && !tabsState.tabs.some((tab) => tab.key === activeTab)) {
-      setActiveTab(PAPER_ASSISTANT_AGENT);
+    if (activeTab !== RESEARCH_ASSISTANT_AGENT && !tabsState.tabs.some((tab) => tab.key === activeTab)) {
+      setActiveTab(RESEARCH_ASSISTANT_AGENT);
     }
   }, [tabsState.tabs, activeTab]);
 
@@ -420,9 +420,9 @@ export function WorkPage({
           )
         : undefined));
   const activeView = activeChildId ? childViews[activeChildId] : undefined;
-  const activeMessages = activeTab === PAPER_ASSISTANT_AGENT ? sessionView.messages : (activeView?.messages ?? []);
+  const activeMessages = activeTab === RESEARCH_ASSISTANT_AGENT ? sessionView.messages : (activeView?.messages ?? []);
   const activeTools =
-    activeTab === PAPER_ASSISTANT_AGENT ? sessionView.tools : activeChildId ? (activeView?.tools ?? []) : [];
+    activeTab === RESEARCH_ASSISTANT_AGENT ? sessionView.tools : activeChildId ? (activeView?.tools ?? []) : [];
   const statusPriority: Record<AgentStatus, number> = { idle: 0, error: 1, working: 2 };
   const supervisedTools = [sessionView, ...Object.values(childViews)].flatMap((view) =>
     view.tools.filter((tool) => tool.name === "subagent"),
@@ -436,7 +436,7 @@ export function WorkPage({
       return byAgent;
     },
     {
-      [PAPER_ASSISTANT_AGENT]: sessionView.error !== null ? "error" : sessionView.isStreaming ? "working" : "idle",
+      [RESEARCH_ASSISTANT_AGENT]: sessionView.error !== null ? "error" : sessionView.isStreaming ? "working" : "idle",
     },
   );
   const projectName = cwd.split("/").filter(Boolean).at(-1) ?? cwd;
@@ -582,7 +582,7 @@ export function WorkPage({
 
   const selectAgentTab = useCallback(
     (key: string) => {
-      if (key === PAPER_ASSISTANT_AGENT) {
+      if (key === RESEARCH_ASSISTANT_AGENT) {
         setActiveTab(key);
         return;
       }
@@ -618,7 +618,7 @@ export function WorkPage({
 
   const closeAgentTab = useCallback((key: string) => {
     setTabsState((current) => closeSubagentTab(current, key));
-    setActiveTab((current) => (current === key ? PAPER_ASSISTANT_AGENT : current));
+    setActiveTab((current) => (current === key ? RESEARCH_ASSISTANT_AGENT : current));
   }, []);
 
   const startResize = useCallback(
@@ -781,7 +781,9 @@ export function WorkPage({
           <AgentTabBar
             tabs={tabsState.tabs}
             activeKey={activeTab}
-            paperAssistantStatus={sessionView.error !== null ? "error" : sessionView.isStreaming ? "working" : "idle"}
+            researchAssistantStatus={
+              sessionView.error !== null ? "error" : sessionView.isStreaming ? "working" : "idle"
+            }
             onSelect={selectAgentTab}
             onClose={closeAgentTab}
             onStop={() => abort()}
@@ -793,24 +795,24 @@ export function WorkPage({
             ref={transcriptRef}
             messages={activeMessages}
             tools={activeTools}
-            emptyHint={activeTab === PAPER_ASSISTANT_AGENT ? undefined : t("work.noMessagesYet")}
-            pending={pendingOutput && activeTab === PAPER_ASSISTANT_AGENT}
+            emptyHint={activeTab === RESEARCH_ASSISTANT_AGENT ? undefined : t("work.noMessagesYet")}
+            pending={pendingOutput && activeTab === RESEARCH_ASSISTANT_AGENT}
             onViewDetails={openSubagentTool}
-            messageMeta={activeTab === PAPER_ASSISTANT_AGENT ? messageMeta : undefined}
-            onEditMessage={activeTab === PAPER_ASSISTANT_AGENT ? onEditMessage : undefined}
-            onSwitchBranch={activeTab === PAPER_ASSISTANT_AGENT ? onSwitchBranch : undefined}
-            steers={activeTab === PAPER_ASSISTANT_AGENT ? sessionView.steers : []}
+            messageMeta={activeTab === RESEARCH_ASSISTANT_AGENT ? messageMeta : undefined}
+            onEditMessage={activeTab === RESEARCH_ASSISTANT_AGENT ? onEditMessage : undefined}
+            onSwitchBranch={activeTab === RESEARCH_ASSISTANT_AGENT ? onSwitchBranch : undefined}
+            steers={activeTab === RESEARCH_ASSISTANT_AGENT ? sessionView.steers : []}
           />
           <footer className="shrink-0 border-t border-v2-grey-200 p-3">
-            {activeTab !== PAPER_ASSISTANT_AGENT || sessionView.subagentName ? (
+            {activeTab !== RESEARCH_ASSISTANT_AGENT || sessionView.subagentName ? (
               <p className="mb-2 text-[12px] text-v2-text-text-faint">{t("work.subagentLineNote")}</p>
             ) : null}
             <ChatComposer
-              disabled={accepting || activeTab !== PAPER_ASSISTANT_AGENT || sessionView.subagentName !== undefined}
-              streaming={activeTab === PAPER_ASSISTANT_AGENT && sessionView.isStreaming}
+              disabled={accepting || activeTab !== RESEARCH_ASSISTANT_AGENT || sessionView.subagentName !== undefined}
+              streaming={activeTab === RESEARCH_ASSISTANT_AGENT && sessionView.isStreaming}
               onSend={send}
               onAbort={abort}
-              commands={activeTab === PAPER_ASSISTANT_AGENT ? commands : []}
+              commands={activeTab === RESEARCH_ASSISTANT_AGENT ? commands : []}
             />
           </footer>
         </section>

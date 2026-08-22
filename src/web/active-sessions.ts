@@ -63,7 +63,7 @@ export interface OpenSessionInput {
 
 export interface ActiveSessionRegistryOptions {
   idleTimeoutMs?: number;
-  /** Resolves the Paper Assistant thinking default for fresh session launches. */
+  /** Resolves the Research Assistant thinking default for fresh session launches. */
   resolveLaunchThinking?: (cwd: string) => Promise<string | undefined>;
 }
 
@@ -193,7 +193,7 @@ export class ActiveSessionRegistry {
   }
 
   /**
-   * Set the Paper Assistant's live thinking level. Pi applies the change to
+   * Set the Research Assistant's live thinking level. Pi applies the change to
    * the next LLM call, even while a run is in progress.
    */
   async setThinkingLevel(id: string, level: string): Promise<void> {
@@ -214,11 +214,11 @@ export class ActiveSessionRegistry {
   }
 
   /**
-   * The Paper Assistant's current model as a `provider/id` string, the level-4
+   * The Research Assistant's current model as a `provider/id` string, the level-4
    * fallback for stage agents in this session. Undefined when the session has
    * no model (e.g. no auth configured).
    */
-  async getPaperAssistantModel(id: string): Promise<string | undefined> {
+  async getResearchAssistantModel(id: string): Promise<string | undefined> {
     return this.withRecord(id, async (record) => {
       const state = await record.client.getState();
       const model = state.model;
@@ -227,11 +227,11 @@ export class ActiveSessionRegistry {
   }
 
   /**
-   * The Paper Assistant's live thinking level from session state, the level-4
+   * The Research Assistant's live thinking level from session state, the level-4
    * fallback for stage agents in this session. Undefined when the session has
    * no level (e.g. no active session record).
    */
-  async getPaperAssistantThinking(id: string): Promise<string | undefined> {
+  async getResearchAssistantThinking(id: string): Promise<string | undefined> {
     return this.withRecord(id, async (record) => {
       const state = await record.client.getState();
       return state.thinkingLevel ?? undefined;
@@ -393,7 +393,7 @@ export class ActiveSessionRegistry {
       assertSafeExtensionSources({ cwd: options.cwd });
       this.throwIfLaunchCancelled(pending);
       const listeners = options.adoptListeners ?? new Set<(event: unknown) => void>();
-      // Fresh launch metadata reflects the global Paper Assistant default;
+      // Fresh launch metadata reflects the global Research Assistant default;
       // the in-process runtime binding remains authoritative.
       const launchThinking = !options.sessionPath ? await this.resolveLaunchThinking?.(options.cwd) : undefined;
       this.throwIfLaunchCancelled(pending);

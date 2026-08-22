@@ -69,7 +69,7 @@ An existing project `agents/` directory is an ordinary inert directory.
 
 Agents resolve global → bundled. Same-name files completely replace the bundled
 fallback; global-only files append. Project Agent files never participate.
-`Paper Assistant.md` is an alias for `paper-assistant.md`; either global filename
+`Research Assistant.md` is an alias for `research-assistant.md`; either global filename
 overrides the same built-in and never creates a duplicate. Other built-ins use
 their primary filenames.
 
@@ -121,7 +121,7 @@ System prompt body.
   (`complete | partial | blocked`).
 - Unknown frontmatter fields are silently routed into options.
 
-The Paper Assistant and every stage/custom runtime consume the same effective
+The Research Assistant and every stage/custom runtime consume the same effective
 global-over-bundled definition. Exact cwd affects project Skills and other Pi
 resources, never Agent selection or Agent model/thinking.
 
@@ -134,7 +134,7 @@ The sole model/thinking source is the sparse global
 {
   "easyresearch": {
     "agentDefaults": {
-      "paper-assistant": { "model": "provider/model-id", "thinking": "high" },
+      "research-assistant": { "model": "provider/model-id", "thinking": "high" },
       "reviewer": { "thinking": "medium" }
     }
   }
@@ -143,11 +143,11 @@ The sole model/thinking source is the sparse global
 
 - Keys are built-in or custom Agent ids; a missing Agent id is inert and
   preserved until a matching custom Agent exists.
-- A Paper Assistant without `model` uses Pi's exact native default resolution.
+- A Research Assistant without `model` uses Pi's exact native default resolution.
   Web selects that concrete existing model option without writing it to
   settings or adding an Automatic pseudo-option. Other Agents without `model`
-  inherit the Paper Assistant's effective model.
-- A Paper Assistant without `thinking` uses its model's highest supported
+  inherit the Research Assistant's effective model.
+- A Research Assistant without `thinking` uses its model's highest supported
   strength. Other Agents without `thinking` inherit that effective strength;
   every value is constrained to the effective model's supported levels.
 - Web controls should use `PATCH /api/agents/:name`; direct edits must preserve
@@ -358,7 +358,7 @@ events, commands). They run with full system permissions — review before use.
 - Startup refuses to proceed when a non-empty `packages` array exists or an
   `extensions` entry resolves inside the foreign `~/.pi` tree.
 - See `.docs/pi/docs/extensions.md` and project `src/extensions/` for the API
-  and bundled examples (pa-config, subagent, web-search, …).
+  and bundled examples (research-assistant-config, subagent, web-search, …).
 
 ## Web configuration surface
 

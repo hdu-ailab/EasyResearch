@@ -1,9 +1,9 @@
-import { PAPER_ASSISTANT_AGENT } from "../agent-identity";
+import { RESEARCH_ASSISTANT_AGENT } from "../agent-identity";
 import type { MessageKey } from "./messages";
 
 /** Roster agent ids mapped to their localized display-name keys (ADR-035). */
 const AGENT_NAME_KEYS: Record<string, MessageKey> = {
-  [PAPER_ASSISTANT_AGENT]: "agent.paperAssistant",
+  [RESEARCH_ASSISTANT_AGENT]: "agent.researchAssistant",
   search: "agent.search",
   experiment: "agent.experiment",
   writing: "agent.writing",
@@ -12,7 +12,7 @@ const AGENT_NAME_KEYS: Record<string, MessageKey> = {
 
 /** Roster agent ids mapped to their localized description keys (ADR-035). */
 const AGENT_DESCRIPTION_KEYS: Record<string, MessageKey> = {
-  [PAPER_ASSISTANT_AGENT]: "agentDesc.paperAssistant",
+  [RESEARCH_ASSISTANT_AGENT]: "agentDesc.researchAssistant",
   search: "agentDesc.search",
   experiment: "agentDesc.experiment",
   writing: "agentDesc.writing",

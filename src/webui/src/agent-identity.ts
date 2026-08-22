@@ -1,1 +1,1 @@
-export const PAPER_ASSISTANT_AGENT = "paper-assistant";
+export const RESEARCH_ASSISTANT_AGENT = "research-assistant";

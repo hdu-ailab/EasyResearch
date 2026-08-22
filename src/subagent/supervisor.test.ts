@@ -260,7 +260,7 @@ const liveConfiguration = {
 function options(task = "find papers", cwd = "/exact/project") {
   return {
     agent: searchAgent,
-    callerAgent: "paper-assistant",
+    callerAgent: "research-assistant",
     task,
     cwd,
     liveConfiguration,
@@ -664,7 +664,7 @@ describe("SubagentSupervisor ownership and launch ordering", () => {
       reservation,
       coordinator,
       agent: searchAgent,
-      callerAgent: "paper-assistant",
+      callerAgent: "research-assistant",
       task: "continue search",
       cwd: "/exact/project",
       liveConfiguration,

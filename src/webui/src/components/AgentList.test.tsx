@@ -13,12 +13,12 @@ vi.mock("../api", () => ({
 
 const baseAgents: AgentDto[] = [
   {
-    name: "paper-assistant",
+    name: "research-assistant",
     description: "Coordinates work",
     enabled: true,
     builtin: true,
     source: "bundled",
-    filePath: "paper-assistant.md",
+    filePath: "research-assistant.md",
     effectiveModel: "openai/gpt-4o",
     effectiveTools: [],
     effectiveSkills: [],
@@ -42,7 +42,7 @@ const baseAgents: AgentDto[] = [
 
 const props = {
   cwd: "/p",
-  statusByAgent: { "paper-assistant": "idle", search: "idle" } as const,
+  statusByAgent: { "research-assistant": "idle", search: "idle" } as const,
   configurationGeneration: 1,
   configurationError: null,
 };
@@ -71,7 +71,7 @@ describe("AgentList", () => {
   it("renders global Agent fields for the exact cwd and has no session override action", async () => {
     render(<AgentList {...props} />);
 
-    expect(await screen.findByText("Paper Assistant")).toBeVisible();
+    expect(await screen.findByText("Research Assistant")).toBeVisible();
     expect(api.listAgents).toHaveBeenCalledWith("/p");
     expect(screen.queryByRole("button", { name: /follow global/i })).toBeNull();
     const search = screen.getByText("Search").closest<HTMLElement>("div.mt-3")!;
@@ -86,16 +86,16 @@ describe("AgentList", () => {
     const model = within(search).getByRole("combobox", { name: "Select model" });
 
     await user.click(model);
-    await user.click(screen.getByRole("option", { name: "inherit (Paper Assistant's model)" }));
+    await user.click(screen.getByRole("option", { name: "inherit (Research Assistant's model)" }));
 
     await waitFor(() => expect(api.patchAgent).toHaveBeenCalledWith("search", { model: null }));
   });
 
-  it("selects Pi's resolved Paper Assistant model once without an Automatic option", async () => {
+  it("selects Pi's resolved Research Assistant model once without an Automatic option", async () => {
     const user = userEvent.setup();
     render(<AgentList {...props} />);
 
-    const assistant = (await screen.findByText("Paper Assistant")).closest<HTMLElement>("div.mt-3")!;
+    const assistant = (await screen.findByText("Research Assistant")).closest<HTMLElement>("div.mt-3")!;
     const model = within(assistant).getByRole("combobox", { name: "Select model" });
     expect(model).toHaveTextContent("openai/gpt-4o");
     await user.click(model);
@@ -104,11 +104,11 @@ describe("AgentList", () => {
     expect(api.patchAgent).not.toHaveBeenCalled();
   });
 
-  it("keeps the Paper Assistant model empty and reports when Pi resolves no default", async () => {
+  it("keeps the Research Assistant model empty and reports when Pi resolves no default", async () => {
     vi.mocked(api.listAgents).mockResolvedValueOnce([{ ...baseAgents[0]!, effectiveModel: undefined }]);
     render(<AgentList {...props} />);
 
-    const assistant = (await screen.findByText("Paper Assistant")).closest<HTMLElement>("div.mt-3")!;
+    const assistant = (await screen.findByText("Research Assistant")).closest<HTMLElement>("div.mt-3")!;
     const model = within(assistant).getByRole("combobox", { name: "Select model" });
     expect(model).not.toHaveTextContent("openai/gpt-4o");
     expect(within(assistant).queryByText("Automatic (Pi default)")).toBeNull();
@@ -118,14 +118,14 @@ describe("AgentList", () => {
     expect(assistant).not.toHaveTextContent(/\bPi\b/);
   });
 
-  it("distinguishes automatic Paper Assistant thinking from inherited stage thinking", async () => {
+  it("distinguishes automatic Research Assistant thinking from inherited stage thinking", async () => {
     vi.mocked(api.listAgents).mockResolvedValueOnce([
       baseAgents[0]!,
       { ...baseAgents[1]!, model: undefined, effectiveModel: "openai/gpt-4o", thinking: undefined },
     ]);
     render(<AgentList {...props} />);
 
-    const assistant = (await screen.findByText("Paper Assistant")).closest<HTMLElement>("div.mt-3")!;
+    const assistant = (await screen.findByText("Research Assistant")).closest<HTMLElement>("div.mt-3")!;
     const search = screen.getByText("Search").closest<HTMLElement>("div.mt-3")!;
     expect(within(assistant).getByRole("combobox", { name: /select thinking/i })).toHaveTextContent(
       "Automatic (highest supported)",
@@ -133,7 +133,7 @@ describe("AgentList", () => {
     expect(within(assistant).getByRole("option", { name: "high" })).toBeTruthy();
     expect(within(assistant).queryByRole("option", { name: "max" })).toBeNull();
     expect(within(search).getByRole("combobox", { name: /select thinking/i })).toHaveTextContent(
-      "inherit (Paper Assistant's thinking)",
+      "inherit (Research Assistant's thinking)",
     );
     expect(within(search).getByRole("option", { name: "high" })).toBeTruthy();
     expect(within(search).queryByRole("option", { name: "max" })).toBeNull();
@@ -224,12 +224,12 @@ describe("AgentList", () => {
     ).toBe(true);
   });
 
-  it("keeps the header and Paper Assistant fallback when the first load fails", async () => {
+  it("keeps the header and Research Assistant fallback when the first load fails", async () => {
     vi.mocked(api.listAgents).mockRejectedValueOnce(new Error("unavailable"));
     render(<AgentList {...props} />);
 
     expect(screen.getByText("Agents")).toBeVisible();
-    expect(await screen.findByText("Paper Assistant")).toBeVisible();
+    expect(await screen.findByText("Research Assistant")).toBeVisible();
   });
 });
 

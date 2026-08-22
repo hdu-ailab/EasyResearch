@@ -14,13 +14,13 @@ describe("resolveConfiguredThinking", () => {
     expect(resolve({ thinking: "high" }, undefined, { reasoning: true })).toBe("high");
   });
 
-  it("uses the effective model's highest supported level for an unset Paper Assistant", () => {
+  it("uses the effective model's highest supported level for an unset Research Assistant", () => {
     expect(resolve({}, undefined, { reasoning: true, thinkingLevelMap: { max: "max" } })).toBe("max");
     expect(resolve({}, undefined, { reasoning: true })).toBe("high");
     expect(resolve({}, undefined, { reasoning: false })).toBe("off");
   });
 
-  it("inherits and constrains a Paper Assistant level for a different stage model", () => {
+  it("inherits and constrains a Research Assistant level for a different stage model", () => {
     expect(resolve({}, "xhigh", { reasoning: true, thinkingLevelMap: { xhigh: null } })).toBe("high");
     expect(resolve({ thinking: "max" }, "low", { reasoning: true })).toBe("high");
   });

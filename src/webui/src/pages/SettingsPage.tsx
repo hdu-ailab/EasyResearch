@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentDto, AgentResourceDto, SkillResourceDto } from "../../../web/contracts";
-import { PAPER_ASSISTANT_AGENT } from "../agent-identity";
+import { RESEARCH_ASSISTANT_AGENT } from "../agent-identity";
 import {
   createAgentResource,
   listAgentResources,
@@ -377,12 +377,12 @@ export function SettingsPage({
   /** Pin the assistant to the first row, keeping the rest in API order. */
   const roster = [...agents].sort((a, b) => {
     if (a.builtin !== b.builtin) return a.builtin ? -1 : 1;
-    if (a.name === PAPER_ASSISTANT_AGENT) return -1;
-    if (b.name === PAPER_ASSISTANT_AGENT) return 1;
+    if (a.name === RESEARCH_ASSISTANT_AGENT) return -1;
+    if (b.name === RESEARCH_ASSISTANT_AGENT) return 1;
     return a.name.localeCompare(b.name);
   });
-  const paperAssistant = roster.find((agent) => agent.name === PAPER_ASSISTANT_AGENT);
-  const paperAssistantModel = paperAssistant?.model ?? paperAssistant?.effectiveModel;
+  const researchAssistant = roster.find((agent) => agent.name === RESEARCH_ASSISTANT_AGENT);
+  const researchAssistantModel = researchAssistant?.model ?? researchAssistant?.effectiveModel;
   const toolInventory = [...new Set(roster.flatMap((agent) => agent.effectiveTools ?? agent.tools ?? []))].sort(
     (a, b) => a.localeCompare(b),
   );
@@ -705,15 +705,15 @@ export function SettingsPage({
         <AgentConfigModal
           agent={agentModal}
           busy={busy}
-          isPaperAssistant={agentModal.name === PAPER_ASSISTANT_AGENT}
+          isResearchAssistant={agentModal.name === RESEARCH_ASSISTANT_AGENT}
           modelOptions={withConfiguredModel(models, agentModal.model ?? agentModal.effectiveModel)}
           modelValue={
-            agentModal.name === PAPER_ASSISTANT_AGENT
+            agentModal.name === RESEARCH_ASSISTANT_AGENT
               ? (agentModal.model ?? agentModal.effectiveModel ?? "")
               : (agentModal.model ?? "")
           }
           modelError={
-            agentModal.name === PAPER_ASSISTANT_AGENT && !agentModal.model && !agentModal.effectiveModel
+            agentModal.name === RESEARCH_ASSISTANT_AGENT && !agentModal.model && !agentModal.effectiveModel
               ? t("settings.agents.defaultModelUnavailable")
               : undefined
           }
@@ -724,12 +724,12 @@ export function SettingsPage({
                 `${m.provider}/${m.id}` ===
                 (agentModal.model ??
                   agentModal.effectiveModel ??
-                  (agentModal.name === PAPER_ASSISTANT_AGENT ? undefined : paperAssistantModel)),
+                  (agentModal.name === RESEARCH_ASSISTANT_AGENT ? undefined : researchAssistantModel)),
             ),
             agentModal.thinking,
             agentModal.model === undefined &&
               agentModal.effectiveModel === undefined &&
-              (agentModal.name === PAPER_ASSISTANT_AGENT || paperAssistantModel === undefined),
+              (agentModal.name === RESEARCH_ASSISTANT_AGENT || researchAssistantModel === undefined),
           )}
           editorResource={agentEditor?.name === agentModal.name ? agentEditor : null}
           onClose={() => setAgentModal(null)}

@@ -28,9 +28,11 @@ describe("bundled agent definitions", () => {
     expect(byName.experiment!.subagents).toEqual(["search"]);
     expect(byName.writing!.subagents).toEqual(["search", "figures"]);
     expect(byName.figures!.effectiveSkills).toEqual(expect.arrayContaining(["drawio", "drawio-academic-skills"]));
-    expect(byName["paper-assistant"]!.effectiveTools).toEqual(
+    expect(byName["research-assistant"]!.effectiveTools).toEqual(
       expect.arrayContaining(["read", "bash", "edit", "write", "subagent", "web-search", "webfetch"]),
     );
+    expect(byName["research-assistant"]!.effectiveSkills).toContain("autoresearch");
+    expect(byName.experiment!.effectiveSkills).not.toContain("autoresearch");
   });
 
   it("gives every bundled agent web tools and the playwright-cli skill, and never grep/find/ls (ADR-068)", async () => {

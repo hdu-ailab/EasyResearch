@@ -31,7 +31,7 @@ describe("flipDirection", () => {
 });
 
 const OPTIONS: SearchableSelectOption[] = [
-  { value: "", label: "follow Paper Assistant" },
+  { value: "", label: "follow Research Assistant" },
   { value: "openai/gpt-4o", label: "openai/gpt-4o" },
   { value: "anthropic/claude", label: "anthropic/claude" },
 ];
@@ -91,7 +91,7 @@ describe("SearchableSelect", () => {
 
   it("shows the placeholder when value is not among options", () => {
     renderSelect({ value: "" });
-    expect(screen.getByRole("combobox")).toHaveTextContent("follow Paper Assistant");
+    expect(screen.getByRole("combobox")).toHaveTextContent("follow Research Assistant");
   });
 
   it("closes on Escape", async () => {

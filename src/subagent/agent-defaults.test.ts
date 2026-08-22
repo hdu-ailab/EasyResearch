@@ -6,13 +6,13 @@ describe("parseAgentDefaults", () => {
     expect(parseAgentDefaults({
       easyresearch: {
         agentDefaults: {
-          "paper-assistant": { model: "openai/gpt-4o", thinking: "max" },
+          "research-assistant": { model: "openai/gpt-4o", thinking: "max" },
           reviewer: { thinking: "high" },
           "审稿人": {},
         },
       },
     })).toEqual({
-      "paper-assistant": { model: "openai/gpt-4o", thinking: "max" },
+      "research-assistant": { model: "openai/gpt-4o", thinking: "max" },
       reviewer: { thinking: "high" },
       "审稿人": {},
     });

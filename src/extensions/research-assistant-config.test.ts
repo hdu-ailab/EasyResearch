@@ -2,12 +2,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createPaperAssistantConfigResolver, loadPaperAssistantPrompt } from "./pa-config";
+import { createResearchAssistantConfigResolver, loadResearchAssistantPrompt } from "./research-assistant-config";
 
 const tempDirs: string[] = [];
 
 function makeRoot(): string {
-  const dir = mkdtempSync(join(tmpdir(), "easyresearch-pa-config-"));
+  const dir = mkdtempSync(join(tmpdir(), "easyresearch-research-assistant-config-"));
   tempDirs.push(dir);
   return dir;
 }
@@ -15,8 +15,8 @@ function makeRoot(): string {
 function definition(body: string, fields: string[] = []): string {
   return [
     "---",
-    "name: paper-assistant",
-    "description: Paper Assistant",
+    "name: research-assistant",
+    "description: Research Assistant",
     ...fields,
     "---",
     body,
@@ -33,27 +33,27 @@ afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-describe("loadPaperAssistantPrompt", () => {
+describe("loadResearchAssistantPrompt", () => {
   it("ignores project Agent files and returns the global definition over bundled", async () => {
     const root = makeRoot();
     const cwd = join(root, "project");
     const agentDir = join(root, "global");
     const bundledAgentsDir = join(root, "bundled");
-    writeAgent(join(bundledAgentsDir, "agents"), "paper-assistant", definition("Bundled Paper Assistant"));
-    writeAgent(join(agentDir, "agents"), "Paper Assistant", definition("Global alias Paper Assistant", ["tools: [bash]"]));
-    writeAgent(join(cwd, ".easyresearch", "agents"), "paper-assistant", definition("Project Paper Assistant", [
+    writeAgent(join(bundledAgentsDir, "agents"), "research-assistant", definition("Bundled Research Assistant"));
+    writeAgent(join(agentDir, "agents"), "Research Assistant", definition("Global alias Research Assistant", ["tools: [bash]"]));
+    writeAgent(join(cwd, ".easyresearch", "agents"), "research-assistant", definition("Project Research Assistant", [
       "tools: [read, subagent]",
       "skills: [research-project-workflow]",
     ]));
 
-    const config = await loadPaperAssistantPrompt({ cwd, agentDir, bundledAgentsDir });
+    const config = await loadResearchAssistantPrompt({ cwd, agentDir, bundledAgentsDir });
 
     expect(config).toMatchObject({
-      name: "paper-assistant",
+      name: "research-assistant",
       source: "global",
       tools: ["bash"],
       skills: undefined,
-      systemPrompt: "Global alias Paper Assistant",
+      systemPrompt: "Global alias Research Assistant",
     });
   });
 
@@ -62,14 +62,14 @@ describe("loadPaperAssistantPrompt", () => {
     const cwd = join(root, "project");
     const agentDir = join(root, "global");
     const bundledAgentsDir = join(root, "bundled");
-    writeAgent(join(bundledAgentsDir, "agents"), "paper-assistant", definition("Bundled Paper Assistant"));
-    writeAgent(join(agentDir, "agents"), "Paper Assistant", definition("Global alias Paper Assistant", ["tools: [read]"]));
+    writeAgent(join(bundledAgentsDir, "agents"), "research-assistant", definition("Bundled Research Assistant"));
+    writeAgent(join(agentDir, "agents"), "Research Assistant", definition("Global alias Research Assistant", ["tools: [read]"]));
 
-    await expect(loadPaperAssistantPrompt({ cwd, agentDir, bundledAgentsDir })).resolves.toMatchObject({
-      name: "paper-assistant",
+    await expect(loadResearchAssistantPrompt({ cwd, agentDir, bundledAgentsDir })).resolves.toMatchObject({
+      name: "research-assistant",
       source: "global",
       tools: ["read"],
-      systemPrompt: "Global alias Paper Assistant",
+      systemPrompt: "Global alias Research Assistant",
     });
   });
 
@@ -78,22 +78,22 @@ describe("loadPaperAssistantPrompt", () => {
     const cwd = join(root, "project");
     const agentDir = join(root, "global");
     const bundledAgentsDir = join(root, "bundled");
-    writeAgent(join(bundledAgentsDir, "agents"), "paper-assistant", definition("Bundled Paper Assistant"));
+    writeAgent(join(bundledAgentsDir, "agents"), "research-assistant", definition("Bundled Research Assistant"));
 
-    await expect(loadPaperAssistantPrompt({ cwd, agentDir, bundledAgentsDir })).resolves.toMatchObject({
-      name: "paper-assistant",
+    await expect(loadResearchAssistantPrompt({ cwd, agentDir, bundledAgentsDir })).resolves.toMatchObject({
+      name: "research-assistant",
       source: "bundled",
-      systemPrompt: "Bundled Paper Assistant",
+      systemPrompt: "Bundled Research Assistant",
     });
   });
 
-  it("throws when no valid Paper Assistant definition exists", async () => {
+  it("throws when no valid Research Assistant definition exists", async () => {
     const root = makeRoot();
-    await expect(loadPaperAssistantPrompt({
+    await expect(loadResearchAssistantPrompt({
       cwd: join(root, "project"),
       agentDir: join(root, "global"),
       bundledAgentsDir: join(root, "bundled"),
-    })).rejects.toThrow(/Missing valid Paper Assistant definition/);
+    })).rejects.toThrow(/Missing valid Research Assistant definition/);
   });
 
   it("does not retain a stale cached definition between resolutions", async () => {
@@ -102,15 +102,15 @@ describe("loadPaperAssistantPrompt", () => {
     const agentDir = join(root, "global");
     const bundledAgentsDir = join(root, "bundled");
     const globalAgents = join(agentDir, "agents");
-    writeAgent(join(bundledAgentsDir, "agents"), "paper-assistant", definition("Bundled Paper Assistant"));
-    writeAgent(globalAgents, "paper-assistant", definition("Global v1", ["tools: [read]"]));
-    const resolver = createPaperAssistantConfigResolver({ agentDir, bundledAgentsDir });
+    writeAgent(join(bundledAgentsDir, "agents"), "research-assistant", definition("Bundled Research Assistant"));
+    writeAgent(globalAgents, "research-assistant", definition("Global v1", ["tools: [read]"]));
+    const resolver = createResearchAssistantConfigResolver({ agentDir, bundledAgentsDir });
 
     await expect(resolver.resolve(cwd)).resolves.toMatchObject({
       systemPrompt: "Global v1",
       tools: ["read"],
     });
-    writeAgent(globalAgents, "paper-assistant", definition("Global v2", ["tools: [bash]"]));
+    writeAgent(globalAgents, "research-assistant", definition("Global v2", ["tools: [bash]"]));
 
     await expect(resolver.resolve(cwd)).resolves.toMatchObject({
       systemPrompt: "Global v2",

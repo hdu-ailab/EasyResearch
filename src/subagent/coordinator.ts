@@ -59,7 +59,7 @@ function describeError(error: unknown): string {
 export class SubagentCoordinator {
   private state: SubagentJournalState;
   private readonly listeners = new Set<(event: SubagentSupervisorEvent) => void>();
-  private paperAssistantState?: { model(): string | undefined; thinking(): string | undefined };
+  private researchAssistantState?: { model(): string | undefined; thinking(): string | undefined };
   private lifecycle: "open" | "cancelling" | "closing" = "open";
 
   constructor(private readonly rootSessionManager: CoordinatorSessionManager) {
@@ -326,16 +326,16 @@ export class SubagentCoordinator {
     return this.rootSessionManager;
   }
 
-  getPaperAssistantModel(): string | undefined {
-    return this.paperAssistantState?.model();
+  getResearchAssistantModel(): string | undefined {
+    return this.researchAssistantState?.model();
   }
 
-  getPaperAssistantThinking(): string | undefined {
-    return this.paperAssistantState?.thinking();
+  getResearchAssistantThinking(): string | undefined {
+    return this.researchAssistantState?.thinking();
   }
 
-  bindPaperAssistantState(read: { model(): string | undefined; thinking(): string | undefined }): void {
-    this.paperAssistantState = read;
+  bindResearchAssistantState(read: { model(): string | undefined; thinking(): string | undefined }): void {
+    this.researchAssistantState = read;
   }
 
   private append(record: SubagentJobJournalRecord): void {

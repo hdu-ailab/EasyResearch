@@ -2,7 +2,7 @@ import type { AgentConfig } from "./agents";
 
 export function resolveConfiguredModel(
   agent: Pick<AgentConfig, "model">,
-  paperAssistantModel: string | undefined,
+  researchAssistantModel: string | undefined,
 ): string | undefined {
-  return agent.model ?? paperAssistantModel;
+  return agent.model ?? researchAssistantModel;
 }

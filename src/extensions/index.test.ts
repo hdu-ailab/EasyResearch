@@ -4,7 +4,7 @@ import type { AgentRuntimeBinding } from "../runtime/agent-runtime-binding";
 import type { LiveConfiguration } from "../runtime/live-configuration";
 import type { SubagentCoordinator } from "../subagent/coordinator";
 import type { SubagentSupervisor } from "../subagent/supervisor";
-import { createAssistantExtensions, type AssistantExtensionRuntime } from "./index";
+import { createResearchAssistantExtensions, type ResearchAssistantExtensionRuntime } from "./index";
 
 function binding(tools: string[]): AgentRuntimeBinding {
   return {
@@ -14,7 +14,7 @@ function binding(tools: string[]): AgentRuntimeBinding {
   } as unknown as AgentRuntimeBinding;
 }
 
-function runtime(label: string, tools = ["read"]): AssistantExtensionRuntime {
+function runtime(label: string, tools = ["read"]): ResearchAssistantExtensionRuntime {
   return {
     binding: binding(tools),
     liveConfiguration: {} as LiveConfiguration,
@@ -25,7 +25,7 @@ function runtime(label: string, tools = ["read"]): AssistantExtensionRuntime {
 
 describe("bundled extension runtime builder", () => {
   it("returns named in-process factories without the legacy agent-status extension", () => {
-    const extensions = createAssistantExtensions(runtime("root-a"));
+    const extensions = createResearchAssistantExtensions(runtime("root-a"));
 
     expect(extensions.length).toBeGreaterThan(0);
     expect(extensions.map(({ name }) => name)).not.toContain("agent-status");
@@ -36,8 +36,8 @@ describe("bundled extension runtime builder", () => {
   });
 
   it("builds fresh runtime-bound dispatch factories for separate roots", () => {
-    const first = createAssistantExtensions(runtime("root-a"));
-    const second = createAssistantExtensions(runtime("root-b"));
+    const first = createResearchAssistantExtensions(runtime("root-a"));
+    const second = createResearchAssistantExtensions(runtime("root-b"));
 
     expect(first).not.toBe(second);
     expect(first.find(({ name }) => name === "subagent-dispatch")?.factory)
@@ -45,8 +45,8 @@ describe("bundled extension runtime builder", () => {
   });
 
   it("applies the binding supplied to that registry instance", async () => {
-    const extensions = createAssistantExtensions(runtime("root-a", ["read", "subagent"]));
-    const definition = extensions.find((entry) => entry.name === "paper-assistant");
+    const extensions = createResearchAssistantExtensions(runtime("root-a", ["read", "subagent"]));
+    const definition = extensions.find((entry) => entry.name === "research-assistant");
     const handlers = new Map<string, (...args: any[]) => any>();
     const setActiveTools = vi.fn();
     const api = {

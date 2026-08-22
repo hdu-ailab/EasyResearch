@@ -11,7 +11,7 @@ function setUpFixture(): { agentDir: string; bundledAgentsDir: string; bundledSk
   const bundledAgentsDir = mkdtempSync(join(tmpdir(), "bundled-agents-"));
   const bundledSkillsDir = mkdtempSync(join(tmpdir(), "bundled-skills-"));
   tempDirs.push(agentDir, bundledAgentsDir, bundledSkillsDir);
-  writeFileSync(join(bundledAgentsDir, "paper-assistant.md"), "# paper-assistant\n");
+  writeFileSync(join(bundledAgentsDir, "research-assistant.md"), "# research-assistant\n");
   mkdirSync(join(bundledSkillsDir, "paper-search"));
   writeFileSync(join(bundledSkillsDir, "paper-search", "SKILL.md"), "# paper-search\n");
   return { agentDir, bundledAgentsDir, bundledSkillsDir };

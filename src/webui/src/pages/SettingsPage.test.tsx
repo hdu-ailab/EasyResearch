@@ -42,12 +42,12 @@ beforeEach(() => {
   vi.mocked(api.listAuthProviders).mockReset();
   vi.mocked(api.listAgents).mockResolvedValue([
     {
-      name: "paper-assistant",
+      name: "research-assistant",
       description: "Coordinates",
       enabled: true,
       builtin: true,
       source: "bundled",
-      filePath: "src/agents/paper-assistant.md",
+      filePath: "src/agents/research-assistant.md",
       effectiveModel: "openai/gpt-4o",
       effectiveTools: [],
       effectiveSkills: [],
@@ -350,7 +350,7 @@ describe("SettingsPage", () => {
     expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}")).toMatchObject({ language: "zh-CN" });
   });
 
-  it("shows stage agents with their configured model while the Paper Assistant has no disable switch", async () => {
+  it("shows stage agents with their configured model while the Research Assistant has no disable switch", async () => {
     const user = userEvent.setup();
     renderSettings();
     await openAgentConfig(user, "Search");
@@ -359,14 +359,14 @@ describe("SettingsPage", () => {
     await user.click(screen.getByRole("button", { name: "Close editor" }));
     await openAgentConfig(user, "Writing");
     expect(screen.getByRole("combobox", { name: "Select model for Writing" })).toHaveTextContent(
-      "inherit (Paper Assistant's model)",
+      "inherit (Research Assistant's model)",
     );
     await user.click(screen.getByRole("button", { name: "Close editor" }));
-    await openAgentConfig(user, "Paper Assistant");
-    expect(screen.getByRole("combobox", { name: "Select model for Paper Assistant" })).toHaveTextContent(
+    await openAgentConfig(user, "Research Assistant");
+    expect(screen.getByRole("combobox", { name: "Select model for Research Assistant" })).toHaveTextContent(
       "openai/gpt-4o",
     );
-    expect(screen.queryByRole("switch", { name: "Enable Paper Assistant" })).toBeNull();
+    expect(screen.queryByRole("switch", { name: "Enable Research Assistant" })).toBeNull();
   });
 
   it("includes a configured stage model that is absent from the model catalog", async () => {
@@ -399,38 +399,38 @@ describe("SettingsPage", () => {
     renderSettings();
     await user.click(screen.getByRole("button", { name: "简体中文" }));
 
-    await user.click(await screen.findByRole("button", { name: "配置 论文助手" }));
-    expect(screen.getByRole("combobox", { name: "选择模型： 论文助手" })).toBeTruthy();
+    await user.click(await screen.findByRole("button", { name: "配置 研究助手" }));
+    expect(screen.getByRole("combobox", { name: "选择模型： 研究助手" })).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "关闭编辑器" }));
     await user.click(await screen.findByRole("button", { name: "配置 检索" }));
     expect(screen.getByRole("combobox", { name: "选择模型： 检索" })).toBeTruthy();
   });
 
-  it("pins the Paper Assistant card to the first position regardless of API order", async () => {
+  it("pins the Research Assistant card to the first position regardless of API order", async () => {
     vi.mocked(api.listAgents).mockResolvedValue([
       { name: "writing", description: "Writes" },
-      { name: "paper-assistant", description: "Coordinates" },
+      { name: "research-assistant", description: "Coordinates" },
       { name: "search", description: "Searches" },
     ] as never);
     renderSettings();
-    await screen.findByRole("button", { name: "Configure Paper Assistant" });
-    const assistantCard = screen.getByRole("button", { name: "Configure Paper Assistant" });
+    await screen.findByRole("button", { name: "Configure Research Assistant" });
+    const assistantCard = screen.getByRole("button", { name: "Configure Research Assistant" });
     const searchCard = screen.getByRole("button", { name: "Configure Search" });
     expect(assistantCard.compareDocumentPosition(searchCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
   });
 
-  it("shows the configured Paper Assistant default without any inherit option", async () => {
+  it("shows the configured Research Assistant default without any inherit option", async () => {
     const user = userEvent.setup();
     vi.mocked(api.listAgents).mockResolvedValueOnce([
       {
-        name: "paper-assistant",
+        name: "research-assistant",
         description: "Coordinates",
         enabled: true,
         builtin: true,
         source: "global",
-        filePath: "/agent/agents/paper-assistant.md",
+        filePath: "/agent/agents/research-assistant.md",
         model: "openai/gpt-4o",
         effectiveTools: [],
         effectiveSkills: [],
@@ -438,23 +438,23 @@ describe("SettingsPage", () => {
       },
     ]);
     renderSettings();
-    await openAgentConfig(user, "Paper Assistant");
-    const combobox = screen.getByRole("combobox", { name: "Select model for Paper Assistant" });
+    await openAgentConfig(user, "Research Assistant");
+    const combobox = screen.getByRole("combobox", { name: "Select model for Research Assistant" });
     expect(combobox).toHaveTextContent("openai/gpt-4o");
     await user.click(combobox);
     expect(screen.queryAllByRole("option", { name: /inherit/i })).toHaveLength(0);
   });
 
-  it("selects Pi's resolved Paper Assistant model once without persisting it", async () => {
+  it("selects Pi's resolved Research Assistant model once without persisting it", async () => {
     const user = userEvent.setup();
     vi.mocked(api.listAgents).mockResolvedValueOnce([
       {
-        name: "paper-assistant",
+        name: "research-assistant",
         description: "Coordinates",
         enabled: true,
         builtin: true,
         source: "bundled",
-        filePath: "src/agents/paper-assistant.md",
+        filePath: "src/agents/research-assistant.md",
         effectiveModel: "deepseek/deepseek-v4-pro",
         effectiveTools: [],
         effectiveSkills: [],
@@ -463,8 +463,8 @@ describe("SettingsPage", () => {
     ]);
     vi.mocked(api.listModels).mockResolvedValueOnce([{ provider: "deepseek", id: "deepseek-v4-pro", reasoning: true }]);
     renderSettings();
-    await openAgentConfig(user, "Paper Assistant");
-    const combobox = screen.getByRole("combobox", { name: "Select model for Paper Assistant" });
+    await openAgentConfig(user, "Research Assistant");
+    const combobox = screen.getByRole("combobox", { name: "Select model for Research Assistant" });
     expect(combobox).toHaveTextContent("deepseek/deepseek-v4-pro");
     await user.click(combobox);
     expect(screen.getAllByRole("option", { name: "deepseek/deepseek-v4-pro" })).toHaveLength(1);
@@ -473,24 +473,24 @@ describe("SettingsPage", () => {
     expect(api.patchAgent).not.toHaveBeenCalled();
   });
 
-  it("keeps the Paper Assistant model empty and reports when Pi resolves no default", async () => {
+  it("keeps the Research Assistant model empty and reports when Pi resolves no default", async () => {
     const user = userEvent.setup();
     vi.mocked(api.listAgents).mockResolvedValueOnce([
       {
-        name: "paper-assistant",
+        name: "research-assistant",
         description: "Coordinates",
         enabled: true,
         builtin: true,
         source: "bundled",
-        filePath: "src/agents/paper-assistant.md",
+        filePath: "src/agents/research-assistant.md",
         effectiveTools: [],
         effectiveSkills: [],
         missingSkills: [],
       },
     ]);
     renderSettings();
-    await openAgentConfig(user, "Paper Assistant");
-    const combobox = screen.getByRole("combobox", { name: "Select model for Paper Assistant" });
+    await openAgentConfig(user, "Research Assistant");
+    const combobox = screen.getByRole("combobox", { name: "Select model for Research Assistant" });
     expect(combobox).not.toHaveTextContent("openai/gpt-4o");
     expect(screen.queryByText("Automatic (Pi default)")).toBeNull();
     expect(screen.getByRole("alert")).toHaveTextContent(
@@ -499,19 +499,19 @@ describe("SettingsPage", () => {
     expect(screen.getByRole("dialog", { name: "Agents" })).not.toHaveTextContent(/\bPi\b/);
   });
 
-  it("sets the Paper Assistant model through the global Agent patch", async () => {
+  it("sets the Research Assistant model through the global Agent patch", async () => {
     const user = userEvent.setup();
     vi.mocked(api.patchAgent).mockResolvedValueOnce({
       ...(await api.listAgents())[0]!,
       model: "anthropic/claude-sonnet-4",
     });
     renderSettings();
-    await openAgentConfig(user, "Paper Assistant");
-    await selectModelOption(user, "Paper Assistant", "anthropic/claude-sonnet-4");
+    await openAgentConfig(user, "Research Assistant");
+    await selectModelOption(user, "Research Assistant", "anthropic/claude-sonnet-4");
     await waitFor(() =>
-      expect(api.patchAgent).toHaveBeenCalledWith("paper-assistant", { model: "anthropic/claude-sonnet-4" }),
+      expect(api.patchAgent).toHaveBeenCalledWith("research-assistant", { model: "anthropic/claude-sonnet-4" }),
     );
-    expect(screen.getByRole("combobox", { name: "Select model for Paper Assistant" })).toHaveTextContent(
+    expect(screen.getByRole("combobox", { name: "Select model for Research Assistant" })).toHaveTextContent(
       "anthropic/claude-sonnet-4",
     );
   });
@@ -549,19 +549,19 @@ describe("SettingsPage", () => {
     await waitFor(() => expect(api.patchAgent).toHaveBeenCalledWith("search", { thinking: null }));
   });
 
-  it("labels empty thinking as highest-supported for Paper Assistant and inherited for stages", async () => {
+  it("labels empty thinking as highest-supported for Research Assistant and inherited for stages", async () => {
     const user = userEvent.setup();
     renderSettings();
     await openAgentConfig(user, "Search");
     const searchThinking = screen.getByRole("combobox", { name: "Select thinking for Search" });
-    expect(within(searchThinking).getByText("inherit (Paper Assistant's thinking)")).toBeTruthy();
+    expect(within(searchThinking).getByText("inherit (Research Assistant's thinking)")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Close editor" }));
-    await openAgentConfig(user, "Paper Assistant");
-    const assistantThinking = screen.getByRole("combobox", { name: "Select thinking for Paper Assistant" });
+    await openAgentConfig(user, "Research Assistant");
+    const assistantThinking = screen.getByRole("combobox", { name: "Select thinking for Research Assistant" });
     expect(within(assistantThinking).getByText("Automatic (highest supported)")).toBeTruthy();
     expect(within(assistantThinking).getByRole("option", { name: "high" })).toBeTruthy();
     expect(within(assistantThinking).queryByRole("option", { name: "max" })).toBeNull();
-    expect(within(assistantThinking).queryByText("inherit (Paper Assistant's model)")).toBeNull();
+    expect(within(assistantThinking).queryByText("inherit (Research Assistant's model)")).toBeNull();
   });
 
   it("surfaces a global Agent patch failure", async () => {
@@ -569,7 +569,7 @@ describe("SettingsPage", () => {
     vi.mocked(api.patchAgent).mockRejectedValueOnce(new Error("boom"));
     renderSettings();
     await openAgentConfig(user, "Search");
-    await selectModelOption(user, "Search", "inherit (Paper Assistant's model)");
+    await selectModelOption(user, "Search", "inherit (Research Assistant's model)");
     expect(await screen.findByText(/boom/)).toBeTruthy();
   });
 
@@ -637,12 +637,12 @@ describe("SettingsPage", () => {
         effectiveSkills: ["paper-search", "arxiv"],
       },
       {
-        name: "paper-assistant",
+        name: "research-assistant",
         description: "Coordinates",
         enabled: true,
         builtin: true,
         source: "bundled",
-        filePath: "src/agents/paper-assistant.md",
+        filePath: "src/agents/research-assistant.md",
         effectiveTools: ["read"],
         effectiveSkills: ["workflow"],
       },
@@ -654,7 +654,7 @@ describe("SettingsPage", () => {
     const names = screen
       .getAllByRole("button", { name: /configure .*assistant|configure search|configure reviewer/i })
       .map((node) => node.getAttribute("aria-label"));
-    expect(names.indexOf("Configure Paper Assistant")).toBeLessThan(names.indexOf("Configure reviewer"));
+    expect(names.indexOf("Configure Research Assistant")).toBeLessThan(names.indexOf("Configure reviewer"));
   });
 
   it("opens and saves a complete agent Markdown definition", async () => {
@@ -863,12 +863,12 @@ describe("SettingsPage", () => {
     const user = userEvent.setup();
     vi.mocked(api.listAgents).mockResolvedValue([
       {
-        name: "paper-assistant",
+        name: "research-assistant",
         description: "Coordinates",
         enabled: true,
         builtin: true,
         source: "bundled",
-        filePath: "src/agents/paper-assistant.md",
+        filePath: "src/agents/research-assistant.md",
         effectiveTools: ["read", "subagent"],
         effectiveSkills: ["workflow"],
       },

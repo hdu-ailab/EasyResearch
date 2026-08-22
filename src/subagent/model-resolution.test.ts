@@ -6,7 +6,7 @@ describe("resolveConfiguredModel", () => {
     expect(resolveConfiguredModel({ model: "openai/gpt-4o" }, "anthropic/claude")).toBe("openai/gpt-4o");
   });
 
-  it("inherits the Paper Assistant model when the Agent omits one", () => {
+  it("inherits the Research Assistant model when the Agent omits one", () => {
     expect(resolveConfiguredModel({}, "anthropic/claude")).toBe("anthropic/claude");
     expect(resolveConfiguredModel({}, undefined)).toBeUndefined();
   });

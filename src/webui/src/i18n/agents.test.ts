@@ -7,9 +7,9 @@ describe("agentDisplayName", () => {
   const zh = ((key: keyof typeof messages.en) => messages["zh-CN"][key]) as Translate;
 
   it("localizes known roster agent ids in both languages", () => {
-    expect(agentDisplayName(en, "paper-assistant")).toBe("Paper Assistant");
+    expect(agentDisplayName(en, "research-assistant")).toBe("Research Assistant");
     expect(agentDisplayName(en, "search")).toBe("Search");
-    expect(agentDisplayName(zh, "paper-assistant")).toBe("论文助手");
+    expect(agentDisplayName(zh, "research-assistant")).toBe("研究助手");
     expect(agentDisplayName(zh, "search")).toBe("检索");
     expect(agentDisplayName(zh, "experiment")).toBe("实验");
     expect(agentDisplayName(zh, "writing")).toBe("写作");
@@ -17,7 +17,7 @@ describe("agentDisplayName", () => {
   });
 
   it("matches the label casing agents arrive in", () => {
-    expect(agentDisplayName(en, "Paper-Assistant")).toBe("Paper Assistant");
+    expect(agentDisplayName(en, "Research-Assistant")).toBe("Research Assistant");
     expect(agentDisplayName(zh, "Search")).toBe("检索");
   });
 
@@ -32,8 +32,10 @@ describe("agentDescription", () => {
   const zh = (key: keyof typeof messages.en) => messages["zh-CN"][key] as string;
 
   it("localizes known roster descriptions in both languages", () => {
-    expect(agentDescription(en, "paper-assistant", "ignored")).toBe(messages.en["agentDesc.paperAssistant"]);
-    expect(agentDescription(zh, "paper-assistant", "ignored")).toBe(messages["zh-CN"]["agentDesc.paperAssistant"]);
+    expect(agentDescription(en, "research-assistant", "ignored")).toBe(messages.en["agentDesc.researchAssistant"]);
+    expect(agentDescription(zh, "research-assistant", "ignored")).toBe(
+      messages["zh-CN"]["agentDesc.researchAssistant"],
+    );
     expect(agentDescription(zh, "search", "ignored")).toBe(messages["zh-CN"]["agentDesc.search"]);
     expect(agentDescription(zh, "experiment", "ignored")).toBe(messages["zh-CN"]["agentDesc.experiment"]);
     expect(agentDescription(zh, "writing", "ignored")).toBe(messages["zh-CN"]["agentDesc.writing"]);
@@ -41,7 +43,7 @@ describe("agentDescription", () => {
   });
 
   it("matches the casing agents arrive in", () => {
-    expect(agentDescription(en, "Paper-Assistant", "ignored")).toBe(messages.en["agentDesc.paperAssistant"]);
+    expect(agentDescription(en, "Research-Assistant", "ignored")).toBe(messages.en["agentDesc.researchAssistant"]);
   });
 
   it("falls back to the registry text for unknown agents", () => {
@@ -49,7 +51,7 @@ describe("agentDescription", () => {
   });
 
   it("keeps every localized description nonempty", () => {
-    const ids = ["paper-assistant", "search", "experiment", "writing", "figures"];
+    const ids = ["research-assistant", "search", "experiment", "writing", "figures"];
     for (const id of ids) {
       for (const lang of [en, zh]) {
         expect(agentDescription(lang, id, "")).not.toBe("");

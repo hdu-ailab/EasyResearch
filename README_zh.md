@@ -8,19 +8,19 @@
 
 EasyResearch 是一条分工明确的论文生产流水线，由多个 agent 专家协作完成：
 
-- **Paper Assistant（论文助手）** —— 你的项目经理。规划流水线、在合适时机派发对应专家、在后台专家 agent 运行时继续编排并自主决定下一步；你只需沿途确认质量检查点。
+- **Research Assistant（研究助手）** —— 你的项目经理。规划流水线、派发对应专家、在后台专家 agent 运行时继续编排并自主决定下一步；经你明确授权后，还能发起无需逐轮确认、持续优化指定指标的 autoresearch 活动。你只需沿途确认质量检查点。
 - **Search（检索）agent** —— 在 OpenReview 和 arXiv 上查找候选论文，核验元数据，下载 PDF，转换为可读文本，并整理文献资料包。
 - **Experiment（实验）agent** —— 基于论文构建可复现实验：选择数据集、实现基线、多 seed 受控对比实验，产出正式证据。
 - **Writing（写作）agent** —— 起草并修订权威 Markdown 手稿，核验每条引用，导出 LaTeX/PDF。
 - **Figures（图表）agent** —— 基于真实实验证据产出可编辑的投稿级图表。
 
-各 agent 通过完整的论文工作流协作——初期调研、论文阅读与综合、实验设计与执行、正式结果、最终手稿——由 Paper Assistant 自始至终编排。你无需亲自做任何手工活，只需审查关键内容并在流水线推进前确认每个检查点。
+各 agent 通过完整的论文工作流协作——初期调研、论文阅读与综合、实验设计与执行、正式结果、最终手稿——由 Research Assistant 自始至终编排。你无需亲自做任何手工活，只需审查关键内容并在流水线推进前确认每个检查点。
 
 ## 高度可定制的 agent
 
 整个 agent 团队完全可定制。每个 agent 的角色与能力由 Markdown 文件定义，
 model/thinking 默认值位于全局 settings 中，skills 则是 `SKILL.md` 文档。
-你可以快速创建自己的专家 agent 接入流水线，无需写代码：只需让 Paper
+你可以快速创建自己的专家 agent 接入流水线，无需写代码：只需让 Research
 Assistant 加载 `customize-easyresearch` skill，它就会为你创建、编辑或挂载
 自定义 agent 与 skills。
 
@@ -167,7 +167,7 @@ export OPENAI_API_KEY=sk-...
 {
   "easyresearch": {
     "agentDefaults": {
-      "paper-assistant": {
+      "research-assistant": {
         "model": "my-openai/gpt-4o",
         "thinking": "medium"
       }
@@ -180,9 +180,9 @@ export OPENAI_API_KEY=sk-...
 global-over-bundled Markdown 规则：`<cwd>/.easyresearch/agents/` 是惰性的，
 不参与运行时发现，也不会影响工作页或设置页。残留的 Markdown
 `model`/`thinking` 字段会被忽略。阶段 agent 未设置自己的值时，会继承
-Paper Assistant 当前的全局模型与思考强度。
+Research Assistant 当前的全局模型与思考强度。
 
-设置页和工作页编辑的是同一组全局 settings 条目。Paper Assistant 的模型
+设置页和工作页编辑的是同一组全局 settings 条目。Research Assistant 的模型
 未配置时，后端直接通过 Pi 解析具体默认模型，并选中下拉列表中已有的同一模型，
 不会落盘或产生重复选项。若 Pi 无法解析模型，控件保持为空并提示配置模型或凭据。
 thinking 留空时使用该模型支持的最高强度。不再存在会话级 Agent 覆盖或

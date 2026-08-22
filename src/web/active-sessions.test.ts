@@ -348,8 +348,8 @@ describe("ActiveSessionRegistry", () => {
     await expect(registry.setThinkingLevel("nope", "high")).rejects.toThrow(UnknownSessionError);
     await expect(registry.getSessionPath("nope")).rejects.toThrow(UnknownSessionError);
     await expect(registry.getCwd("nope")).rejects.toThrow(UnknownSessionError);
-    await expect(registry.getPaperAssistantModel("nope")).rejects.toThrow(UnknownSessionError);
-    await expect(registry.getPaperAssistantThinking("nope")).rejects.toThrow(UnknownSessionError);
+    await expect(registry.getResearchAssistantModel("nope")).rejects.toThrow(UnknownSessionError);
+    await expect(registry.getResearchAssistantThinking("nope")).rejects.toThrow(UnknownSessionError);
   });
 
   it("exposes the record session path and cwd", async () => {
@@ -358,15 +358,15 @@ describe("ActiveSessionRegistry", () => {
     await expect(registry.getCwd(created.id)).resolves.toBe(cwd);
   });
 
-  it("reports the Paper Assistant model from session state as provider/id", async () => {
+  it("reports the Research Assistant model from session state as provider/id", async () => {
     const created = await registry.create({ cwd });
     factory.created[0]!.stateOverrides = { model: { provider: "deepseek", id: "ds-v3" } as never };
-    await expect(registry.getPaperAssistantModel(created.id)).resolves.toBe("deepseek/ds-v3");
+    await expect(registry.getResearchAssistantModel(created.id)).resolves.toBe("deepseek/ds-v3");
   });
 
-  it("reports no Paper Assistant model when session state has none", async () => {
+  it("reports no Research Assistant model when session state has none", async () => {
     const created = await registry.create({ cwd });
-    await expect(registry.getPaperAssistantModel(created.id)).resolves.toBeUndefined();
+    await expect(registry.getResearchAssistantModel(created.id)).resolves.toBeUndefined();
   });
 
   it("forwards setThinkingLevel to the adapter", async () => {
@@ -375,10 +375,10 @@ describe("ActiveSessionRegistry", () => {
     expect(factory.created[0]?.stats.setThinkingLevels).toEqual(["high"]);
   });
 
-  it("reports the Paper Assistant thinking level from session state", async () => {
+  it("reports the Research Assistant thinking level from session state", async () => {
     const created = await registry.create({ cwd });
     factory.created[0]!.stateOverrides = { thinkingLevel: "high" };
-    await expect(registry.getPaperAssistantThinking(created.id)).resolves.toBe("high");
+    await expect(registry.getResearchAssistantThinking(created.id)).resolves.toBe("high");
   });
 
   it("follows session_info_changed events emitted by the runtime", async () => {

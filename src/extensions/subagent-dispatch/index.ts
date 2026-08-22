@@ -15,7 +15,7 @@ import type { SubagentSupervisor } from "../../subagent/supervisor";
 
 /**
  * ADR-063: atomic extension registering the `subagent` dispatch tool for the
- * Paper Assistant runtime. Each extension instance closes over the coordinator
+ * Research Assistant runtime. Each extension instance closes over the coordinator
  * and direct-child supervisor owned by one root AgentSession.
  */
 export interface SubagentDispatchExtensionOptions {
@@ -25,7 +25,7 @@ export interface SubagentDispatchExtensionOptions {
   supervisor: SubagentSupervisor;
 }
 
-/** Paper Assistant dispatch follows the accepted caller row and target catalog. */
+/** Research Assistant dispatch follows the accepted caller row and target catalog. */
 export function createSubagentDispatchExtension(options: SubagentDispatchExtensionOptions): InlineExtension {
   return (pi) => {
     const callerAgent = options.binding.current().name;

@@ -2,7 +2,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
 import { resolveConfiguredThinking } from "../subagent/thinking-resolution";
 import {
-  PAPER_ASSISTANT_AGENT,
+  RESEARCH_ASSISTANT_AGENT,
   type AgentConfig,
 } from "../subagent/agents";
 import {
@@ -118,7 +118,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
         if (generation !== options.live.generation) continue;
         const definition = agents.find((agent) => agent.name === options.agentName);
         if (!definition) throw new Error(SAFE_MISSING_AGENT);
-        const paperAssistant = agents.find((agent) => agent.name === PAPER_ASSISTANT_AGENT);
+        const researchAssistant = agents.find((agent) => agent.name === RESEARCH_ASSISTANT_AGENT);
 
         modelRuntimeCandidate = await modelRuntimes.prepare();
         const candidateRuntime = modelRuntimeCandidate.runtime;
@@ -141,22 +141,22 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
           if (!model) throw new Error(SAFE_APPLY_ERROR);
           return model;
         };
-        const paperAssistantModel = paperAssistant?.model
-          ? resolveExplicitModel(paperAssistant.model)
+        const researchAssistantModel = researchAssistant?.model
+          ? resolveExplicitModel(researchAssistant.model)
           : await options.resolveAutomaticModel(candidateRuntime);
-        const selectedModel = definition.name === PAPER_ASSISTANT_AGENT
-          ? paperAssistantModel
+        const selectedModel = definition.name === RESEARCH_ASSISTANT_AGENT
+          ? researchAssistantModel
           : definition.model
             ? resolveExplicitModel(definition.model)
-            : paperAssistantModel;
-        const paperAssistantThinking = resolveConfiguredThinking(
-          paperAssistant ?? {},
+            : researchAssistantModel;
+        const researchAssistantThinking = resolveConfiguredThinking(
+          researchAssistant ?? {},
           undefined,
-          paperAssistantModel,
+          researchAssistantModel,
         );
-        const selectedThinking = definition.name === PAPER_ASSISTANT_AGENT
-          ? paperAssistantThinking
-          : resolveConfiguredThinking(definition, paperAssistantThinking, selectedModel);
+        const selectedThinking = definition.name === RESEARCH_ASSISTANT_AGENT
+          ? researchAssistantThinking
+          : resolveConfiguredThinking(definition, researchAssistantThinking, selectedModel);
         if (disposed) throw new Error("Agent runtime binding has been disposed.");
         if (generation !== options.live.generation) {
           await discardModelRuntimeCandidate();

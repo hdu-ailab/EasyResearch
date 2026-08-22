@@ -23,6 +23,8 @@ export interface RenameResult {
 }
 
 let renameLog: (msg: string) => void = (msg) => console.log(`[easyresearch] ${msg}`);
+const FORMER_MAIN_AGENT_FILES = ["paper-assistant.md", "Paper Assistant.md", "论文助手.md"] as const;
+
 export function setRenameLogger(log: (msg: string) => void): void {
   renameLog = log;
 }
@@ -57,10 +59,13 @@ export function renameSameNameToBak(options: RenameOptions): RenameResult {
   if (options.log) renameLog = options.log;
   const entries: RenameEntry[] = [];
 
-  for (const name of listBundledAgents(options.bundledAgentsDir)) {
-    const agentPath = join(options.agentDir, "agents", `${name}.md`);
+  const bundledAgentFiles = listBundledAgents(options.bundledAgentsDir).map((name) => `${name}.md`);
+  const agentFiles = [...new Set([...bundledAgentFiles, ...FORMER_MAIN_AGENT_FILES])];
+  for (const fileName of agentFiles) {
+    const name = fileName.slice(0, -3);
+    const agentPath = join(options.agentDir, "agents", fileName);
     if (!existsSync(agentPath)) continue;
-    const bakPath = join(options.agentDir, "agents", `${name}.md.bak`);
+    const bakPath = join(options.agentDir, "agents", `${fileName}.bak`);
     try {
       if (existsSync(bakPath)) rmSync(bakPath);
       renameSync(agentPath, bakPath);

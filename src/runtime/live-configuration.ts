@@ -4,7 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { watch as chokidarWatch, type ChokidarOptions } from "chokidar";
 import {
   loadAgentCatalog,
-  PAPER_ASSISTANT_AGENT,
+  RESEARCH_ASSISTANT_AGENT,
   resolveAgentCatalog,
   type AgentCatalogSnapshot,
   type AgentConfig,
@@ -530,7 +530,7 @@ function assertValidCatalog(snapshot: AgentCatalogSnapshot): void {
   if (
     snapshot.diagnostics.length > 0 ||
     snapshot.definitions.length === 0 ||
-    !snapshot.definitions.some((agent) => agent.name === PAPER_ASSISTANT_AGENT)
+    !snapshot.definitions.some((agent) => agent.name === RESEARCH_ASSISTANT_AGENT)
   ) {
     throw new Error("Invalid Agent catalog");
   }

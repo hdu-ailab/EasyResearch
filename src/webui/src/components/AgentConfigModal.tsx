@@ -15,7 +15,7 @@ export interface AgentConfigModalProps {
   modelError?: string;
   thinkingValue: string;
   thinkingLevels: readonly string[];
-  isPaperAssistant: boolean;
+  isResearchAssistant: boolean;
   editorResource: AgentResourceDto | null;
   onClose: () => void;
   onToggle: () => void;
@@ -35,7 +35,7 @@ export function AgentConfigModal({
   modelError,
   thinkingValue,
   thinkingLevels,
-  isPaperAssistant,
+  isResearchAssistant,
   editorResource,
   onClose,
   onToggle,
@@ -78,7 +78,7 @@ export function AgentConfigModal({
         </header>
 
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
-          {!isPaperAssistant && (
+          {!isResearchAssistant && (
             <div className="flex items-center justify-between gap-4">
               <span className="text-[13px] text-v2-text-text-base">
                 {t("settings.agents.enable").replace("{name}", name)}
@@ -98,10 +98,10 @@ export function AgentConfigModal({
               </button>
             </div>
           )}
-          {isPaperAssistant && (
+          {isResearchAssistant && (
             <div className="flex items-center gap-2 rounded-md border border-v2-grey-200 px-3 py-2 text-[12px] text-v2-text-text-muted">
               <AlertTriangle size={12} className="shrink-0" aria-hidden />
-              {t("settings.agents.paperAssistantHint")}
+              {t("settings.agents.researchAssistantHint")}
             </div>
           )}
 
@@ -114,10 +114,10 @@ export function AgentConfigModal({
               ariaLabel={`${t("settings.agents.selectModelFor")} ${name}`}
               value={modelValue}
               options={[
-                ...(isPaperAssistant ? [] : [{ value: "", label: t("settings.agents.inherit") }]),
+                ...(isResearchAssistant ? [] : [{ value: "", label: t("settings.agents.inherit") }]),
                 ...modelOptions.map((m) => ({ value: `${m.provider}/${m.id}`, label: `${m.provider}/${m.id}` })),
               ]}
-              placeholder={isPaperAssistant ? "" : t("settings.agents.inherit")}
+              placeholder={isResearchAssistant ? "" : t("settings.agents.inherit")}
               disabled={busy}
               onSelect={onModelChange}
               className="h-8 w-full text-[13px]"
@@ -139,7 +139,7 @@ export function AgentConfigModal({
               value={thinkingValue}
               levels={thinkingLevels}
               emptyLabel={
-                isPaperAssistant ? t("settings.agents.automaticThinking") : t("settings.agents.inheritThinking")
+                isResearchAssistant ? t("settings.agents.automaticThinking") : t("settings.agents.inheritThinking")
               }
               disabled={busy}
               onChange={onThinkingChange}

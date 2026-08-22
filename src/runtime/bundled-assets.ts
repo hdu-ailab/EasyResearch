@@ -73,7 +73,7 @@ export function bundledVersionMarker(root: string): string {
 
 /**
  * Resolve a bundled asset (keyed by repo-relative path, e.g. `webui/dist/index.html`
- * or `agents/paper-assistant.md`). Returns the embedded path for compiled
+ * or `agents/research-assistant.md`). Returns the embedded path for compiled
  * binaries, the on-disk path under `src/` when running from source, or
  * `undefined` when the asset does not exist in either place.
  */

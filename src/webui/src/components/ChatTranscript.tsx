@@ -42,7 +42,7 @@ type TranscriptEntry = SessionMessageView | ToolView | PendingRow;
 
 const ROLE_LABELS: Record<string, MessageKey> = {
   user: "transcript.you",
-  assistant: "transcript.paperAssistant",
+  assistant: "transcript.researchAssistant",
 };
 
 const ROW_ESTIMATE = 60;
@@ -354,7 +354,7 @@ function PendingRow() {
   return (
     <li className="flex flex-col items-start gap-1" aria-label={t("transcript.working")}>
       <span className="text-[11px] font-medium uppercase tracking-wide text-v2-text-text-faint">
-        {t("transcript.paperAssistant")}
+        {t("transcript.researchAssistant")}
       </span>
       <div className="v2-md flex items-center gap-2 rounded-lg bg-v2-background-bg-deep px-3 py-2 text-[length:var(--v2-chat-font-size)] text-v2-text-text-base">
         <span className="v2-spinner" aria-hidden />

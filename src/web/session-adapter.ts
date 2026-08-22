@@ -175,7 +175,7 @@ function createRuntimeSetupCleanup(
         await binding.dispose();
         bindingDisposed = true;
       },
-    ], "Paper Assistant runtime setup cleanup failed.");
+    ], "Research Assistant runtime setup cleanup failed.");
   };
 }
 
@@ -265,7 +265,7 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
     );
     const binding = createAgentRuntimeBinding({
       live: deps.liveConfiguration,
-      agentName: "paper-assistant",
+      agentName: "research-assistant",
       cwd: options.cwd,
       createModelRuntime: async () =>
         await deps.createModelRuntime(deps.agentDir) as AgentRuntimeModelRuntime,
@@ -313,7 +313,7 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
       };
       ({ session } = await deps.createAgentSession(createOptions));
       configureBatchedSteering(session);
-      coordinator.bindPaperAssistantState({
+      coordinator.bindResearchAssistantState({
         model: () => session?.model ? `${session.model.provider}/${session.model.id}` : undefined,
         thinking: () => session?.thinkingLevel,
       });
@@ -395,7 +395,7 @@ export class PiSessionFactory implements SessionFactory {
     const { bootstrapBundledResources } = await import("../bootstrap/resources");
     await bootstrapBundledResources();
     const pi = await importPi();
-    const { createAssistantExtensions } = await import("../extensions");
+    const { createResearchAssistantExtensions } = await import("../extensions");
     const { SubagentCoordinator } = await import("../subagent/coordinator");
     const { recoverSubagentTree } = await import("../subagent/recovery");
     const { SubagentSupervisor } = await import("../subagent/supervisor");
@@ -424,7 +424,7 @@ export class PiSessionFactory implements SessionFactory {
         launchStage: launchStageSession,
       }),
       createExtensionFactories: (runtime) =>
-        createAssistantExtensions({ ...runtime, liveConfiguration })
+        createResearchAssistantExtensions({ ...runtime, liveConfiguration })
           .map(({ name, factory }) => ({ name, factory })),
       createSettingsManager: (cwd, root) => pi.SettingsManager.create(cwd, root),
       createModelRuntime: (root) =>
@@ -597,7 +597,7 @@ class DirectSessionAdapter implements SessionAdapter {
           // Terminal teardown retries every ownership step below.
         }
       },
-      () => session ? this.cleanupTree("Paper Assistant session stopped.") : undefined,
+      () => session ? this.cleanupTree("Research Assistant session stopped.") : undefined,
       async () => {
         if (!supervisor || this.supervisorDisposeComplete) return;
         await supervisor.dispose();
@@ -635,7 +635,7 @@ class DirectSessionAdapter implements SessionAdapter {
         await binding.dispose();
         this.bindingDisposeComplete = true;
       },
-    ], "Paper Assistant runtime cleanup failed.").then(
+    ], "Research Assistant runtime cleanup failed.").then(
       () => {
         this.stopped = true;
         this.session = undefined;
@@ -716,8 +716,8 @@ class DirectSessionAdapter implements SessionAdapter {
       () => managed.coordinator.beginCancellation(),
       () => session.clearQueue(),
       () => this.abortSessionAndSettlePrompts(session),
-      () => managed.supervisor.cancelAll("Paper Assistant stopped."),
-    ], "Paper Assistant run cancellation failed.")
+      () => managed.supervisor.cancelAll("Research Assistant stopped."),
+    ], "Research Assistant run cancellation failed.")
       .then(() => managed.coordinator.finishCancellation())
       .finally(() => {
         if (this.runCancellationPromise === tracked) this.runCancellationPromise = undefined;
@@ -859,7 +859,7 @@ class DirectSessionAdapter implements SessionAdapter {
         await managed.supervisor.flushNotifications({ triggerTurn: false });
         this.notificationFlushComplete = true;
       },
-    ], "Paper Assistant tree cleanup failed.").catch((error) => {
+    ], "Research Assistant tree cleanup failed.").catch((error) => {
       if (this.treeCleanupPromise === tracked) this.treeCleanupPromise = undefined;
       throw error;
     }).finally(() => {

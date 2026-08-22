@@ -1,9 +1,9 @@
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentRuntimeBinding } from "../../runtime/agent-runtime-binding";
-import { createPaperAssistantExtension } from "./index";
+import { createResearchAssistantExtension } from "./index";
 
-describe("createPaperAssistantExtension", () => {
+describe("createResearchAssistantExtension", () => {
   it("binds tools, Skills, and safe-turn refresh to the supplied runtime binding", async () => {
     const handlers = new Map<string, (...args: any[]) => any>();
     const setActiveTools = vi.fn();
@@ -18,7 +18,7 @@ describe("createPaperAssistantExtension", () => {
       on: vi.fn((event: string, handler: (...args: any[]) => any) => handlers.set(event, handler)),
       setActiveTools,
     };
-    await (createPaperAssistantExtension(binding) as ExtensionFactory)(api as never);
+    await (createResearchAssistantExtension(binding) as ExtensionFactory)(api as never);
 
     await handlers.get("session_start")?.({ reason: "startup" }, { cwd: "/paper" });
     const resources = await handlers.get("resources_discover")?.(

@@ -22,6 +22,7 @@ function makeBundled(root: string): { agentsDir: string; skillsDir: string } {
   mkdirSync(agentsDir, { recursive: true });
   mkdirSync(skillsDir, { recursive: true });
   writeFileSync(join(agentsDir, "search.md"), "search v2");
+  writeFileSync(join(agentsDir, "research-assistant.md"), "research assistant v2");
   writeFileSync(join(agentsDir, "bundled-agents.test.md"), "ignored");
   mkdirSync(join(skillsDir, "arxiv"), { recursive: true });
   writeFileSync(join(skillsDir, "arxiv", "SKILL.md"), "arxiv v2");
@@ -32,7 +33,7 @@ describe("listBundledAgents", () => {
   it("returns .md names, excluding *.test.md, sorted", () => {
     const root = tempDir();
     const { agentsDir } = makeBundled(root);
-    expect(listBundledAgents(agentsDir)).toEqual(["search"]);
+    expect(listBundledAgents(agentsDir)).toEqual(["research-assistant", "search"]);
   });
 });
 
@@ -45,6 +46,28 @@ describe("listBundledSkills", () => {
 });
 
 describe("renameSameNameToBak", () => {
+  it("retires every former main-Agent filename during the Research Assistant identity update", () => {
+    const root = tempDir();
+    const { agentsDir, skillsDir } = makeBundled(root);
+    const userAgents = join(root, "agent", "agents");
+    mkdirSync(userAgents, { recursive: true });
+    for (const name of ["paper-assistant.md", "Paper Assistant.md", "论文助手.md"]) {
+      writeFileSync(join(userAgents, name), `old ${name}`);
+    }
+
+    renameSameNameToBak({
+      agentDir: join(root, "agent"),
+      bundledAgentsDir: agentsDir,
+      bundledSkillsDir: skillsDir,
+      log: () => {},
+    });
+
+    for (const name of ["paper-assistant.md", "Paper Assistant.md", "论文助手.md"]) {
+      expect(existsSync(join(userAgents, name))).toBe(false);
+      expect(readFileSync(join(userAgents, `${name}.bak`), "utf8")).toBe(`old ${name}`);
+    }
+  });
+
   it("retires a same-name Agent without materializing a replacement", () => {
     const root = tempDir();
     const { agentsDir, skillsDir } = makeBundled(root);

@@ -9,7 +9,7 @@ import { ConfigFileService } from "./config-files";
 import { readWebSessionIdleTimeout } from "./session-settings";
 import type { AgentDto, SessionSummaryDto } from "./contracts";
 import type { AgentConfig } from "../subagent/agents";
-import { discoverAgents, discoverGlobalAgents, PAPER_ASSISTANT_AGENT } from "../subagent/agents";
+import { discoverAgents, discoverGlobalAgents, RESEARCH_ASSISTANT_AGENT } from "../subagent/agents";
 import { createLogger } from "../runtime/logger";
 import { SubagentSessionService } from "./subagent-sessions";
 import { isSubagentSessionName } from "../subagent/session-links";
@@ -61,11 +61,11 @@ export async function agentsToDtos(
   cwd: string,
   resolveDefaultModel?: (cwd: string) => Promise<string | undefined>,
 ): Promise<AgentDto[]> {
-  const paperAssistant = agents.find((agent) => agent.name === PAPER_ASSISTANT_AGENT);
-  const paperAssistantModel = paperAssistant?.model ?? (
-    paperAssistant ? await resolveDefaultModel?.(cwd) : undefined
+  const researchAssistant = agents.find((agent) => agent.name === RESEARCH_ASSISTANT_AGENT);
+  const researchAssistantModel = researchAssistant?.model ?? (
+    researchAssistant ? await resolveDefaultModel?.(cwd) : undefined
   );
-  return agents.map((agent) => agentToDto(agent, agent.model ?? paperAssistantModel));
+  return agents.map((agent) => agentToDto(agent, agent.model ?? researchAssistantModel));
 }
 
 export async function discoverAgentsForWeb(
@@ -227,7 +227,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
       {
         idleTimeoutMs,
         resolveLaunchThinking: async (cwd) =>
-          (await live.resolveAgents(cwd)).find((agent) => agent.name === PAPER_ASSISTANT_AGENT)?.thinking,
+          (await live.resolveAgents(cwd)).find((agent) => agent.name === RESEARCH_ASSISTANT_AGENT)?.thinking,
       },
       createFileWatcherFactory(logger),
     );

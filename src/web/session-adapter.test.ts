@@ -1178,10 +1178,10 @@ describe("PiSessionFactory", () => {
   });
 });
 
-function paperAssistant(overrides: Partial<AgentConfig> = {}): AgentConfig {
+function researchAssistant(overrides: Partial<AgentConfig> = {}): AgentConfig {
   return {
-    name: "paper-assistant",
-    description: "Paper Assistant",
+    name: "research-assistant",
+    description: "Research Assistant",
     enabled: true,
     builtin: true,
     tools: ["read", "subagent"],
@@ -1192,14 +1192,14 @@ function paperAssistant(overrides: Partial<AgentConfig> = {}): AgentConfig {
     missingSkills: [],
     model: "openai/gpt-test",
     thinking: "high",
-    systemPrompt: "Current Paper Assistant body",
+    systemPrompt: "Current Research Assistant body",
     source: "global",
-    filePath: "/private/paper-assistant.md",
+    filePath: "/private/research-assistant.md",
     ...overrides,
   };
 }
 
-function liveConfiguration(agent: AgentConfig = paperAssistant()): LiveConfiguration {
+function liveConfiguration(agent: AgentConfig = researchAssistant()): LiveConfiguration {
   return {
     generation: 1,
     error: null,
@@ -1229,7 +1229,7 @@ function runtimeOwnerDeps() {
   const listeners = new Set<(event: unknown) => void>();
   return {
     createCoordinator: () => ({
-      bindPaperAssistantState: () => {},
+      bindResearchAssistantState: () => {},
       beginCancellation: () => {},
       finishCancellation: () => {},
       beginClosing: () => {},
@@ -1297,7 +1297,7 @@ describe("createPiAgentSessionCreator", () => {
     const extensionRuntimes: Array<{ coordinator: unknown; supervisor: unknown; binding: AgentRuntimeBinding }> = [];
     const coordinators: Array<{
       manager: unknown;
-      bindPaperAssistantState: ReturnType<typeof vi.fn>;
+      bindResearchAssistantState: ReturnType<typeof vi.fn>;
       live?: { model(): string | undefined; thinking(): string | undefined };
     }> = [];
     const supervisors: Array<{
@@ -1313,7 +1313,7 @@ describe("createPiAgentSessionCreator", () => {
       prepareSession: (_session: FakeAgentSession): void => {},
       recover: async (): Promise<void> => {},
     };
-    const assistant = paperAssistant({ systemPrompt: "Project Paper Assistant body" });
+    const assistant = researchAssistant({ systemPrompt: "Project Research Assistant body" });
     const live = liveConfiguration(assistant);
     const rawSettings = { kind: "settings" };
     const modelRuntime = {
@@ -1352,7 +1352,7 @@ describe("createPiAgentSessionCreator", () => {
       createCoordinator: (sessionManager: unknown) => {
         const coordinator: (typeof coordinators)[number] = {
           manager: sessionManager,
-          bindPaperAssistantState: vi.fn((live: { model(): string | undefined; thinking(): string | undefined }) => {
+          bindResearchAssistantState: vi.fn((live: { model(): string | undefined; thinking(): string | undefined }) => {
             coordinator.live = live;
             calls.push({ name: "bind-live", value: live });
           }),
@@ -1390,7 +1390,7 @@ describe("createPiAgentSessionCreator", () => {
       }) => {
         extensionRuntimes.push(runtime);
         calls.push({ name: "extensions", value: runtime });
-        return [{ name: "paper-assistant", runtime }];
+        return [{ name: "research-assistant", runtime }];
       },
       createSettingsManager: (cwd: string, agentDir: string) => {
         calls.push({ name: "settings", value: { cwd, agentDir } });
@@ -1475,12 +1475,12 @@ describe("createPiAgentSessionCreator", () => {
     });
     expect(loaderOptions.appendSystemPromptOverride(["Pi base"])).toEqual([
       "Pi base",
-      "Project Paper Assistant body",
+      "Project Research Assistant body",
     ]);
-    expect(loaderOptions.extensionFactories).toEqual([expect.objectContaining({ name: "paper-assistant" })]);
+    expect(loaderOptions.extensionFactories).toEqual([expect.objectContaining({ name: "research-assistant" })]);
     expect(harness.calls.find(({ name }) => name === "model-refresh")?.value).toEqual({ allowNetwork: false });
     expect(harness.calls.find(({ name }) => name === "skills")?.value).toEqual({
-      agent: "paper-assistant",
+      agent: "research-assistant",
       cwd: "/project",
       agentDir: "/agent",
     });
@@ -1508,7 +1508,7 @@ describe("createPiAgentSessionCreator", () => {
       { customType: "easyresearch:agent_status", content: "done", display: false },
       { deliverAs: "steer", triggerTurn: true },
     );
-    expect((managedRoot.session as FakeAgentSession).wakeSystemPrompts).toEqual([["Project Paper Assistant body"]]);
+    expect((managedRoot.session as FakeAgentSession).wakeSystemPrompts).toEqual([["Project Research Assistant body"]]);
   });
 
   it("uses batched Pi steering for the root runtime and restores it after reload", async () => {
@@ -1699,7 +1699,7 @@ describe("createPiAgentSessionCreator", () => {
 
   it("disposes the Pi session even when binding cleanup also fails after attach rejection", async () => {
     let generation = 1;
-    let currentAgent = paperAssistant({ systemPrompt: "v1" });
+    let currentAgent = researchAssistant({ systemPrompt: "v1" });
     const live: LiveConfiguration = {
       get generation() {
         return generation;
@@ -1718,7 +1718,7 @@ describe("createPiAgentSessionCreator", () => {
     const calls: Array<{ name: string; value?: unknown }> = [];
     const session = bindableSession(calls);
     session.bindExtensions = async () => {
-      currentAgent = paperAssistant({ systemPrompt: "v2" });
+      currentAgent = researchAssistant({ systemPrompt: "v2" });
       generation = 2;
     };
     session.reload = async () => {
@@ -1789,7 +1789,7 @@ describe("createPiAgentSessionCreator", () => {
 
   it("hands failed creator cleanup to the adapter for deterministic retry", async () => {
     let generation = 1;
-    let currentAgent = paperAssistant({ systemPrompt: "v1" });
+    let currentAgent = researchAssistant({ systemPrompt: "v1" });
     let unsubscribeCalls = 0;
     const live: LiveConfiguration = {
       get generation() {
@@ -1809,7 +1809,7 @@ describe("createPiAgentSessionCreator", () => {
     };
     const session = bindableSession([]);
     session.bindExtensions = async () => {
-      currentAgent = paperAssistant({ systemPrompt: "v2" });
+      currentAgent = researchAssistant({ systemPrompt: "v2" });
       generation = 2;
     };
     session.reload = async () => {

@@ -31,7 +31,7 @@ describe("release asset collection", () => {
     const renderEmbeddedAssetsModule = (build as typeof build & {
       renderEmbeddedAssetsModule(assets: string[], version: string): string;
     }).renderEmbeddedAssetsModule;
-    const rendered = renderEmbeddedAssetsModule(["agents/paper-assistant.md"], "1.2.3");
+    const rendered = renderEmbeddedAssetsModule(["agents/research-assistant.md"], "1.2.3");
     expect(rendered).toContain("embeddedFiles");
     expect(rendered).toContain('embeddedVersion = "1.2.3"');
     expect(rendered).not.toContain("extensionSourceFiles");

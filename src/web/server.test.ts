@@ -1922,7 +1922,7 @@ describe("web routes", () => {
 
   it("lists the agent roster for the exact cwd with missing-skill diagnostics", async () => {
     const listAgents = vi.fn(async () => [
-      { name: "paper-assistant", description: "Runs the pipeline", enabled: true, builtin: true, source: "bundled" as const, filePath: "paper-assistant.md", thinking: "high" as const, tools: ["subagent"], effectiveTools: ["subagent"], skills: ["research-project-workflow", "missing-skill"], effectiveSkills: ["research-project-workflow"], missingSkills: ["missing-skill"] },
+      { name: "research-assistant", description: "Runs the pipeline", enabled: true, builtin: true, source: "bundled" as const, filePath: "research-assistant.md", thinking: "high" as const, tools: ["subagent"], effectiveTools: ["subagent"], skills: ["research-project-workflow", "missing-skill"], effectiveSkills: ["research-project-workflow"], missingSkills: ["missing-skill"] },
       { name: "search", description: "Finds papers", enabled: true, builtin: true, source: "bundled" as const, filePath: "search.md", effectiveTools: [], subagents: [], skills: [], effectiveSkills: [], missingSkills: [] },
     ]);
     setup({
@@ -1943,7 +1943,7 @@ describe("web routes", () => {
       thinking?: string;
     }>;
     expect(listAgents).toHaveBeenCalledWith("/exact/project");
-    expect(body.map((a) => a.name)).toEqual(["paper-assistant", "search"]);
+    expect(body.map((a) => a.name)).toEqual(["research-assistant", "search"]);
     expect(body[0]?.tools).toEqual(["subagent"]);
     expect(body[0]?.skills).toEqual(["research-project-workflow", "missing-skill"]);
     expect(body[0]?.effectiveSkills).toEqual(["research-project-workflow"]);
@@ -2079,7 +2079,7 @@ describe("web routes", () => {
 
     const agents = await discover(undefined, agentDir, async () => "openai/pi-default");
 
-    expect(agents.find((agent) => agent.name === "paper-assistant")).toMatchObject({
+    expect(agents.find((agent) => agent.name === "research-assistant")).toMatchObject({
       model: undefined,
       effectiveModel: "openai/pi-default",
     });
@@ -2089,13 +2089,13 @@ describe("web routes", () => {
     });
   });
 
-  it("uses an explicit Paper Assistant model without asking Pi for a fallback", async () => {
+  it("uses an explicit Research Assistant model without asking Pi for a fallback", async () => {
     writeFileSync(
       join(agentDir, "settings.json"),
       JSON.stringify({
         easyresearch: {
           agentDefaults: {
-            "paper-assistant": { model: "anthropic/configured" },
+            "research-assistant": { model: "anthropic/configured" },
           },
         },
       }),
@@ -2110,7 +2110,7 @@ describe("web routes", () => {
       throw new Error("Pi fallback must not run for an explicit model");
     });
 
-    expect(agents.find((agent) => agent.name === "paper-assistant")).toMatchObject({
+    expect(agents.find((agent) => agent.name === "research-assistant")).toMatchObject({
       model: "anthropic/configured",
       effectiveModel: "anthropic/configured",
     });
@@ -2296,17 +2296,17 @@ describe("web routes", () => {
     }
   });
 
-  it("resolves an unset Paper Assistant model through Pi for the production Agent roster", async () => {
+  it("resolves an unset Research Assistant model through Pi for the production Agent roster", async () => {
     const configuration = fakeConfiguration().live;
     configuration.resolveAgents = async () => [
       {
-        name: "paper-assistant",
-        description: "Paper Assistant",
+        name: "research-assistant",
+        description: "Research Assistant",
         enabled: true,
         builtin: true,
         systemPrompt: "Coordinate",
         source: "bundled",
-        filePath: "/bundled/paper-assistant.md",
+        filePath: "/bundled/research-assistant.md",
         effectiveTools: [],
         effectiveSkills: [],
         missingSkills: [],
@@ -2361,10 +2361,10 @@ describe("web routes", () => {
       const response = await productionHandler!(new Request(`http://127.0.0.1:${server.port}/api/agents`));
       expect(response.status).toBe(200);
       const agents = (await response.json()) as AgentDto[];
-      const paperAssistant = agents.find((agent) => agent.name === "paper-assistant");
+      const researchAssistant = agents.find((agent) => agent.name === "research-assistant");
       const search = agents.find((agent) => agent.name === "search");
-      expect(paperAssistant).toMatchObject({ effectiveModel: "openai/pi-default" });
-      expect(paperAssistant).not.toHaveProperty("model");
+      expect(researchAssistant).toMatchObject({ effectiveModel: "openai/pi-default" });
+      expect(researchAssistant).not.toHaveProperty("model");
       expect(search).toMatchObject({ effectiveModel: "openai/pi-default" });
       expect(search).not.toHaveProperty("model");
       expect(probeReload).toHaveBeenCalledTimes(1);

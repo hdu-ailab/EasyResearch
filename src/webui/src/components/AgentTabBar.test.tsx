@@ -18,11 +18,11 @@ function tab(patch: Partial<SubagentTabState> = {}): SubagentTabState {
   };
 }
 
-function renderTabs(tabs: SubagentTabState[], activeKey = "paper-assistant") {
+function renderTabs(tabs: SubagentTabState[], activeKey = "research-assistant") {
   const props = {
     tabs,
     activeKey,
-    paperAssistantStatus: "idle" as const,
+    researchAssistantStatus: "idle" as const,
     onSelect: vi.fn(),
     onClose: vi.fn(),
     onStop: vi.fn(),
@@ -31,11 +31,11 @@ function renderTabs(tabs: SubagentTabState[], activeKey = "paper-assistant") {
 }
 
 describe("AgentTabBar", () => {
-  it("keeps Paper Assistant first and temporary select and Stop controls as siblings", async () => {
+  it("keeps Research Assistant first and temporary select and Stop controls as siblings", async () => {
     const { props } = renderTabs([tab()]);
 
     const buttons = screen.getAllByRole("button");
-    expect(buttons[0]).toHaveAccessibleName("Agent Paper Assistant");
+    expect(buttons[0]).toHaveAccessibleName("Agent Research Assistant");
     const select = screen.getByRole("button", { name: "Agent Search" });
     const stop = screen.getByRole("button", { name: "Stop agent: Search" });
     expect(select.contains(stop)).toBe(false);
@@ -111,7 +111,7 @@ describe("AgentTabBar", () => {
     const props = {
       tabs: [temporary],
       activeKey: temporary.key,
-      paperAssistantStatus: "idle" as const,
+      researchAssistantStatus: "idle" as const,
       onSelect: vi.fn(),
       onClose: vi.fn(),
       onStop: vi.fn(),

@@ -141,7 +141,7 @@ class FakeLiveConfiguration {
 
 function liveFor(agent: AgentConfig = stageAgent): FakeLiveConfiguration {
   return new FakeLiveConfiguration([
-    agentRow("paper-assistant", { subagents: [agent.name] }),
+    agentRow("research-assistant", { subagents: [agent.name] }),
     agent,
   ]);
 }
@@ -371,7 +371,7 @@ function stageOptions(
   return {
     reservation,
     agent: stageAgent,
-    callerAgent: "paper-assistant",
+    callerAgent: "research-assistant",
     task: "find papers",
     cwd: "/project",
     model: "openai/gpt-test",
@@ -752,7 +752,7 @@ describe("createStageSessionLauncher", () => {
       systemPrompt: "Search generation two.",
       subagents: ["reviewer"],
     });
-    const paper = agentRow("paper-assistant", { subagents: ["search"] });
+    const paper = agentRow("research-assistant", { subagents: ["search"] });
     const reviewer = agentRow("reviewer", { subagents: [] });
     const live = new FakeLiveConfiguration([paper, stageV1, reviewer]);
     const prompt = deferred<void>();

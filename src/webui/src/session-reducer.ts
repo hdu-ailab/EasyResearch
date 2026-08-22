@@ -1,6 +1,6 @@
 import type { AgentSessionEvent, MessageUpdateEvent } from "@earendil-works/pi-coding-agent";
 import type { SessionSnapshotDto, SubagentSessionSummaryDto, SubagentSupervisorEventDto } from "../../web/contracts";
-import { PAPER_ASSISTANT_AGENT } from "./agent-identity";
+import { RESEARCH_ASSISTANT_AGENT } from "./agent-identity";
 
 /** Latest live activity of a running subagent from a dedicated supervisor event. */
 export type SubagentActivity =
@@ -311,7 +311,7 @@ function usableText(text: string | undefined): string | undefined {
  * assistant, replies belong to the agent running that line. */
 function labelFor(role: string, subagentName?: string): string | undefined {
   if (!subagentName) return undefined;
-  return role === "user" ? PAPER_ASSISTANT_AGENT : subagentName;
+  return role === "user" ? RESEARCH_ASSISTANT_AGENT : subagentName;
 }
 
 function subagentNameOf(snapshot: SessionSnapshotDto): string | undefined {
@@ -335,7 +335,7 @@ function isToolResultMessage(message: UnknownMessage): boolean {
 
 const AGENT_STATUS_CUSTOM_TYPE = "easyresearch:agent_status";
 
-/** Hidden Paper Assistant context status entries (ADR-082): strictly
+/** Hidden Research Assistant context status entries (ADR-082): strictly
  * model-visible, never rendered in the transcript. */
 function isAgentStatusMessage(message: UnknownMessage): boolean {
   return message.role === "custom" && message.customType === AGENT_STATUS_CUSTOM_TYPE;

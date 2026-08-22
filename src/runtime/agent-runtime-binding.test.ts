@@ -29,8 +29,8 @@ function model(name: string, id = "same-model"): Model<any> {
 
 function definition(version: string, overrides: Partial<AgentConfig> = {}): AgentConfig {
   return {
-    name: "paper-assistant",
-    description: `Paper Assistant ${version}`,
+    name: "research-assistant",
+    description: `Research Assistant ${version}`,
     enabled: true,
     builtin: true,
     tools: [`tool-${version}`],
@@ -209,7 +209,7 @@ function createHarness(initial = definition("v1")) {
   const resolveAutomaticModel = vi.fn(async () => model("automatic", "automatic-model"));
   const binding = createAgentRuntimeBinding({
     live,
-    agentName: "paper-assistant",
+    agentName: "research-assistant",
     cwd: "/paper",
     createModelRuntime: () => models.create(),
     resolveAutomaticModel,
@@ -664,7 +664,7 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     expect(attached.session.reloadCalls).toBe(0);
   });
 
-  it("delegates Automatic Paper Assistant selection to the injected Pi-native resolver", async () => {
+  it("delegates Automatic Research Assistant selection to the injected Pi-native resolver", async () => {
     const state = createHarness();
     const attached = await attachHarness(state);
     attached.session.isIdle = false;
@@ -750,7 +750,7 @@ describe("AgentRuntimeBinding real Pi next-turn integration", () => {
     const settings = createSessionSettingsFacade(pi.SettingsManager.inMemory());
     const binding = createAgentRuntimeBinding({
       live,
-      agentName: "paper-assistant",
+      agentName: "research-assistant",
       cwd: "/paper",
       createModelRuntime: async () => {
         const runtime = await pi.ModelRuntime.create({
@@ -884,7 +884,7 @@ describe("AgentRuntimeBinding real Pi next-turn integration", () => {
     const settings = createSessionSettingsFacade(pi.SettingsManager.inMemory());
     const binding = createAgentRuntimeBinding({
       live,
-      agentName: "paper-assistant",
+      agentName: "research-assistant",
       cwd: "/paper",
       createModelRuntime: async () => {
         const runtime = await pi.ModelRuntime.create({

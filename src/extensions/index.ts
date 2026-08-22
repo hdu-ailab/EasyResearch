@@ -1,7 +1,7 @@
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 import type { AgentRuntimeBinding } from "../runtime/agent-runtime-binding";
 import type { LiveConfiguration } from "../runtime/live-configuration";
-import { createPaperAssistantExtension } from "./paper-assistant";
+import { createResearchAssistantExtension } from "./research-assistant";
 import { createSubagentDispatchExtension } from "./subagent-dispatch";
 import { createWelcomeBannerExtension } from "./welcome-banner";
 import { createEventLoggerExtension } from "./event-logger";
@@ -15,13 +15,13 @@ import type { SubagentSupervisor } from "../subagent/supervisor";
 import windowsPowerShellExtension from "./windows-powershell";
 
 /**
- * Bundled extensions mounted as named inline factories in Paper Assistant
+ * Bundled extensions mounted as named inline factories in Research Assistant
  * sessions.
  *
  * Mirrors upstream Pi's `extensionFactories` SDK channel. Bundled extensions
  * are never loaded from runtime filesystem paths (ADR-073).
  *
- * ADR-063: the former monolithic paper-assistant extension is atomized. Each
+ * ADR-063: the former monolithic research-assistant extension is atomized. Each
  * entry below owns exactly one responsibility (definition application, subagent
  * dispatch, welcome banner, event logger, project trust, or Web tools). Agent
  * status transport is owned by the runtime supervisor (ADR-087).
@@ -35,7 +35,7 @@ export interface BundledExtension {
   factory: InlineExtension;
 }
 
-export interface AssistantExtensionRuntime {
+export interface ResearchAssistantExtensionRuntime {
   binding: AgentRuntimeBinding;
   liveConfiguration: Pick<
     LiveConfiguration,
@@ -45,15 +45,15 @@ export interface AssistantExtensionRuntime {
   supervisor: SubagentSupervisor;
 }
 
-export function createAssistantExtensions(runtime: AssistantExtensionRuntime): BundledExtension[] {
+export function createResearchAssistantExtensions(runtime: ResearchAssistantExtensionRuntime): BundledExtension[] {
   return [
     {
       name: "windows-powershell",
       factory: windowsPowerShellExtension,
     },
     {
-      name: "paper-assistant",
-      factory: createPaperAssistantExtension(runtime.binding),
+      name: "research-assistant",
+      factory: createResearchAssistantExtension(runtime.binding),
     },
     {
       name: "subagent-dispatch",

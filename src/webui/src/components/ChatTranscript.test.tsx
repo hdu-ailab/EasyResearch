@@ -120,7 +120,7 @@ describe("ChatTranscript", () => {
     renderTranscript(<ChatTranscript messages={[]} tools={[]} pending />);
     const row = screen.getByLabelText("Working");
     expect(row.textContent).toContain("Working…");
-    expect(row.textContent).toContain("Paper Assistant");
+    expect(row.textContent).toContain("Research Assistant");
   });
 
   it("pins to the bottom on content change, unpins on a wheel gesture, and re-pins at the bottom", () => {
@@ -462,7 +462,7 @@ describe("ChatTranscript", () => {
     renderTranscript(
       <ChatTranscript
         messages={[
-          msg({ key: "d", role: "user", text: "Task: search papers", label: "paper-assistant", order: 0 }),
+          msg({ key: "d", role: "user", text: "Task: search papers", label: "research-assistant", order: 0 }),
           msg({ key: "r", role: "assistant", text: "found 3 papers", label: "search", order: 1 }),
         ]}
         tools={[]}
@@ -470,7 +470,7 @@ describe("ChatTranscript", () => {
     );
     const container = scrollContainer();
     expect(container.textContent).not.toContain("You");
-    expect(container.textContent).toContain("Paper Assistant");
+    expect(container.textContent).toContain("Research Assistant");
     expect(container.textContent).toContain("Search");
   });
 

@@ -1150,7 +1150,7 @@ describe("session reducer", () => {
       ] as never,
     });
     expect(state.subagentName).toBe("search");
-    expect(state.messages[0]).toMatchObject({ role: "user", label: "paper-assistant" });
+    expect(state.messages[0]).toMatchObject({ role: "user", label: "research-assistant" });
     expect(state.messages[1]).toMatchObject({ role: "assistant", label: "search" });
   });
 

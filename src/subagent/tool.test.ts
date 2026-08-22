@@ -253,7 +253,7 @@ function toolHarness(options: ToolHarnessOptions = {}) {
     coordinator,
     supervisor,
     liveConfiguration: live,
-    callerAgent: "paper-assistant",
+    callerAgent: "research-assistant",
   });
   const cwd = options.cwd ?? "/exact/project";
   const context = {
@@ -338,7 +338,7 @@ class FakeLiveConfiguration {
 }
 
 function assistantWithPolicy(subagents: string[] | undefined, model = "openai/paper"): AgentConfig {
-  return agent("paper-assistant", { model, subagents });
+  return agent("research-assistant", { model, subagents });
 }
 
 describe("createSubagentTool asynchronous launch contract", () => {
@@ -671,7 +671,7 @@ describe("createSubagentTool asynchronous launch contract", () => {
     await expect(dispatched).resolves.toMatchObject({ content: [{ text: "reviewer_0 is working." }] });
     expect(harness.stages[0]?.options).toMatchObject({
       agent: { name: "reviewer", source: "global" },
-      callerAgent: "paper-assistant",
+      callerAgent: "research-assistant",
       model: "openai/paper-v2",
       thinking: "high",
       liveConfiguration: harness.live,

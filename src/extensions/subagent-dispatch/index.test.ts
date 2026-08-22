@@ -139,8 +139,8 @@ describe("createSubagentDispatchExtension live supervised dispatch", () => {
   it("leaves dispatch inactive on catalog churn until binding and catalog share a generation", async () => {
     const search = agent("search");
     const reviewer = agent("reviewer");
-    const paperV1 = agent("paper-assistant", { subagents: ["search"] });
-    const paperV2 = agent("paper-assistant", { subagents: ["reviewer"] });
+    const paperV1 = agent("research-assistant", { subagents: ["search"] });
+    const paperV2 = agent("research-assistant", { subagents: ["reviewer"] });
     const binding = mutableBinding(paperV1);
     const live = new FakeLiveConfiguration([paperV1, search]);
     const runtime = runtimeHarness();
@@ -165,8 +165,8 @@ describe("createSubagentDispatchExtension live supervised dispatch", () => {
   it("authorizes and atomically reserves from the latest caller policy at execution", async () => {
     const search = agent("search");
     const reviewer = agent("reviewer");
-    const paperV1 = agent("paper-assistant", { subagents: ["search"] });
-    const paperV2 = agent("paper-assistant", { subagents: ["reviewer"] });
+    const paperV1 = agent("research-assistant", { subagents: ["search"] });
+    const paperV2 = agent("research-assistant", { subagents: ["reviewer"] });
     const binding = mutableBinding(paperV1);
     const live = new FakeLiveConfiguration([paperV1, search]);
     const runtime = runtimeHarness();
@@ -189,14 +189,14 @@ describe("createSubagentDispatchExtension live supervised dispatch", () => {
       expect.objectContaining({ agent: "reviewer", agentId: "reviewer_0" }),
       expect.objectContaining({
         agent: expect.objectContaining({ name: "reviewer", source: "global" }),
-        callerAgent: "paper-assistant",
+        callerAgent: "research-assistant",
         liveConfiguration: live,
       }),
     );
   });
 
   it("keeps one coordinator and supervisor across extension reloads", async () => {
-    const paper = agent("paper-assistant", { subagents: ["search"] });
+    const paper = agent("research-assistant", { subagents: ["search"] });
     const live = new FakeLiveConfiguration([paper, agent("search")]);
     const binding = mutableBinding(paper);
     const runtime = runtimeHarness();
@@ -217,8 +217,8 @@ describe("createSubagentDispatchExtension live supervised dispatch", () => {
 
   it("deactivates a leaf policy and makes the previously registered tool reject", async () => {
     const reviewer = agent("reviewer");
-    const dispatching = agent("paper-assistant", { subagents: ["reviewer"] });
-    const leaf = agent("paper-assistant", { subagents: [] });
+    const dispatching = agent("research-assistant", { subagents: ["reviewer"] });
+    const leaf = agent("research-assistant", { subagents: [] });
     const binding = mutableBinding(dispatching);
     const live = new FakeLiveConfiguration([dispatching, reviewer]);
     const runtime = runtimeHarness();

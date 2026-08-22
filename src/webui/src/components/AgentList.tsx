@@ -2,7 +2,7 @@ import { Bot, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isThinkingLevel } from "../../../thinking-levels";
 import type { AgentConfigurationPatch, AgentDto } from "../../../web/contracts";
-import { PAPER_ASSISTANT_AGENT } from "../agent-identity";
+import { RESEARCH_ASSISTANT_AGENT } from "../agent-identity";
 import { listAgents, listModels, patchAgent } from "../api";
 import type { ModelOption } from "../api/parsers";
 import { agentDescription, agentDisplayName, type Translate } from "../i18n/agents";
@@ -12,7 +12,7 @@ import { ThinkingLevelSelect, thinkingLevelsForModel } from "./ThinkingLevelSele
 
 export type AgentStatus = "idle" | "working" | "error";
 
-const BUILTIN_ORDER = [PAPER_ASSISTANT_AGENT, "search", "experiment", "writing", "figures"];
+const BUILTIN_ORDER = [RESEARCH_ASSISTANT_AGENT, "search", "experiment", "writing", "figures"];
 
 export interface AgentListProps {
   cwd: string;
@@ -73,10 +73,10 @@ export function AgentList({ cwd, statusByAgent, configurationGeneration, configu
   };
 
   const agents = roster ?? [];
-  const paperAssistant = agents.find((agent) => agent.name === PAPER_ASSISTANT_AGENT);
-  const paperAssistantModel = paperAssistant?.model ?? paperAssistant?.effectiveModel;
+  const researchAssistant = agents.find((agent) => agent.name === RESEARCH_ASSISTANT_AGENT);
+  const researchAssistantModel = researchAssistant?.model ?? researchAssistant?.effectiveModel;
   const subagents = agents
-    .filter((agent) => agent.name !== PAPER_ASSISTANT_AGENT)
+    .filter((agent) => agent.name !== RESEARCH_ASSISTANT_AGENT)
     .sort((a, b) => {
       if (a.builtin !== b.builtin) return a.builtin ? -1 : 1;
       if (a.builtin) return BUILTIN_ORDER.indexOf(a.name) - BUILTIN_ORDER.indexOf(b.name);
@@ -107,15 +107,15 @@ export function AgentList({ cwd, statusByAgent, configurationGeneration, configu
       )}
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         <AgentCard
-          agent={paperAssistant}
-          fallbackName={PAPER_ASSISTANT_AGENT}
-          fallbackDescription={t("work.paperAssistantFallback")}
-          status={statusByAgent[PAPER_ASSISTANT_AGENT] ?? "idle"}
+          agent={researchAssistant}
+          fallbackName={RESEARCH_ASSISTANT_AGENT}
+          fallbackDescription={t("work.researchAssistantFallback")}
+          status={statusByAgent[RESEARCH_ASSISTANT_AGENT] ?? "idle"}
           models={models}
-          paperAssistantModel={paperAssistantModel}
+          researchAssistantModel={researchAssistantModel}
           disabled={false}
           busy={busy || roster === null}
-          onPatch={(patch) => void applyPatch(PAPER_ASSISTANT_AGENT, patch)}
+          onPatch={(patch) => void applyPatch(RESEARCH_ASSISTANT_AGENT, patch)}
         />
         {subagents.map((agent) => (
           <AgentCard
@@ -123,7 +123,7 @@ export function AgentList({ cwd, statusByAgent, configurationGeneration, configu
             agent={agent}
             status={statusByAgent[agent.name] ?? "idle"}
             models={models}
-            paperAssistantModel={paperAssistantModel}
+            researchAssistantModel={researchAssistantModel}
             disabled={!agent.enabled}
             busy={busy}
             onPatch={(patch) => void applyPatch(agent.name, patch)}
@@ -140,7 +140,7 @@ interface AgentCardProps {
   fallbackDescription?: string;
   status: AgentStatus;
   models: ModelOption[];
-  paperAssistantModel: string | undefined;
+  researchAssistantModel: string | undefined;
   disabled: boolean;
   busy: boolean;
   onPatch: (patch: AgentConfigurationPatch) => void;
@@ -152,7 +152,7 @@ function AgentCard({
   fallbackDescription,
   status,
   models,
-  paperAssistantModel,
+  researchAssistantModel,
   disabled,
   busy,
   onPatch,
@@ -181,7 +181,7 @@ function AgentCard({
         model={agent?.model}
         effectiveModel={agent?.effectiveModel}
         thinking={agent?.thinking}
-        paperAssistantModel={paperAssistantModel}
+        researchAssistantModel={researchAssistantModel}
         models={models}
         disabled={disabled || busy}
         onPatch={onPatch}
@@ -199,7 +199,7 @@ interface ModelRowProps {
   model: string | undefined;
   effectiveModel: string | undefined;
   thinking: string | undefined;
-  paperAssistantModel: string | undefined;
+  researchAssistantModel: string | undefined;
   models: ModelOption[];
   disabled: boolean;
   onPatch: (patch: AgentConfigurationPatch) => void;
@@ -210,23 +210,23 @@ function ModelRow({
   model,
   effectiveModel,
   thinking,
-  paperAssistantModel,
+  researchAssistantModel,
   models,
   disabled,
   onPatch,
 }: ModelRowProps) {
   const { t } = useI18n();
-  const current = name === PAPER_ASSISTANT_AGENT ? (model ?? effectiveModel ?? "") : (model ?? "");
+  const current = name === RESEARCH_ASSISTANT_AGENT ? (model ?? effectiveModel ?? "") : (model ?? "");
   const slash = current.indexOf("/");
   const options =
     current !== "" && slash > 0 && !models.some((item) => `${item.provider}/${item.id}` === current)
       ? [{ provider: current.slice(0, slash), id: current.slice(slash + 1), reasoning: false }, ...models]
       : models;
   const effectiveModelRef =
-    effectiveModel ?? (current || (name === PAPER_ASSISTANT_AGENT ? undefined : paperAssistantModel));
+    effectiveModel ?? (current || (name === RESEARCH_ASSISTANT_AGENT ? undefined : researchAssistantModel));
   const effectiveModelOption = models.find((item) => `${item.provider}/${item.id}` === effectiveModelRef);
   const levels = thinkingLevelsForModel(effectiveModelOption, thinking, effectiveModelRef === undefined);
-  const emptyModelLabel = name === PAPER_ASSISTANT_AGENT ? "" : t("settings.agents.inherit");
+  const emptyModelLabel = name === RESEARCH_ASSISTANT_AGENT ? "" : t("settings.agents.inherit");
 
   return (
     <div className="mt-2">
@@ -235,7 +235,7 @@ function ModelRow({
           ariaLabel={t("work.selectModel")}
           value={current}
           options={[
-            ...(name === PAPER_ASSISTANT_AGENT ? [] : [{ value: "", label: emptyModelLabel }]),
+            ...(name === RESEARCH_ASSISTANT_AGENT ? [] : [{ value: "", label: emptyModelLabel }]),
             ...options.map((item) => {
               const key = `${item.provider}/${item.id}`;
               return { value: key, label: key };
@@ -251,7 +251,7 @@ function ModelRow({
           value={thinking ?? ""}
           levels={levels}
           emptyLabel={
-            name === PAPER_ASSISTANT_AGENT
+            name === RESEARCH_ASSISTANT_AGENT
               ? t("settings.agents.automaticThinking")
               : t("settings.agents.inheritThinking")
           }
@@ -259,7 +259,7 @@ function ModelRow({
           onChange={(level) => onPatch({ thinking: level === "" ? null : isThinkingLevel(level) ? level : null })}
         />
       </div>
-      {name === PAPER_ASSISTANT_AGENT && !effectiveModelRef && (
+      {name === RESEARCH_ASSISTANT_AGENT && !effectiveModelRef && (
         <p role="alert" className="mt-1 text-[11px] text-v2-status-error">
           {t("settings.agents.defaultModelUnavailable")}
         </p>

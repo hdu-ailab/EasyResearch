@@ -21,13 +21,15 @@ describe("dev-mode source fallback", () => {
   });
 
   it("resolves existing repo assets from disk and undefined for missing ones", () => {
-    expect(bundledFilePath("agents/paper-assistant.md")).toBeDefined();
+    expect(bundledFilePath("agents/research-assistant.md")).toBeDefined();
+    expect(bundledFilePath("agents/paper-assistant.md")).toBeUndefined();
     expect(bundledFilePath("agents/does-not-exist.md")).toBeUndefined();
   });
 
   it("lists bundled assets by repo-relative prefix", () => {
     const agents = listBundledAssets("agents/");
-    expect(agents).toContain("agents/paper-assistant.md");
+    expect(agents).toContain("agents/research-assistant.md");
+    expect(agents).not.toContain("agents/paper-assistant.md");
     expect(agents.length).toBeGreaterThan(1);
     expect(listBundledAssets("skills/").length).toBeGreaterThan(1);
   });
