@@ -223,6 +223,7 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
             name: command.name.startsWith("skill:") ? command.name.slice("skill:".length) : command.name,
             source: command.source,
             ...(command.description !== undefined ? { description: command.description } : {}),
+            ...(command.requiresPrefix !== undefined ? { requiresPrefix: command.requiresPrefix } : {}),
           })),
         });
       }

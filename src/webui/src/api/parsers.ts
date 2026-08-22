@@ -593,10 +593,14 @@ export function parseSkillCommands(value: unknown): SkillCommandDto[] {
     if (typeof entry.name !== "string" || !entry.name) continue;
     const description = optionalString(entry, "description");
     const source = entry.source;
+    if (entry.requiresPrefix !== undefined && typeof entry.requiresPrefix !== "boolean") {
+      throw new Error("Invalid API response: command.requiresPrefix must be a boolean");
+    }
     out.push({
       name: entry.name,
       source: source === "extension" || source === "prompt" || source === "skill" ? source : "skill",
       ...(description !== undefined ? { description } : {}),
+      ...(typeof entry.requiresPrefix === "boolean" ? { requiresPrefix: entry.requiresPrefix } : {}),
     });
   }
   return out;

@@ -285,7 +285,7 @@ describe("api transport", () => {
       new Response(
         JSON.stringify({
           commands: [
-            { name: "arxiv", description: "arXiv", source: "skill" },
+            { name: "arxiv", description: "arXiv", source: "skill", requiresPrefix: true },
             { name: "name", source: "extension" },
           ],
         }),
@@ -295,7 +295,7 @@ describe("api transport", () => {
     const commands = await getSessionCommands("s1");
     expect(fetchMock).toHaveBeenCalledWith("/api/sessions/s1/commands", expect.objectContaining({ method: "GET" }));
     expect(commands).toEqual([
-      { name: "arxiv", description: "arXiv", source: "skill" },
+      { name: "arxiv", description: "arXiv", source: "skill", requiresPrefix: true },
       { name: "name", source: "extension" },
     ]);
   });

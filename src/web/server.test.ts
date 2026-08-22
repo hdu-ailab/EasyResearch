@@ -720,7 +720,7 @@ describe("web routes", () => {
     const created = await registry.create({ cwd: projectDir });
     const adapter = FakeAdapter.all.at(-1)!;
     adapter.commandsResult = [
-      { name: "skill:arxiv", description: "arXiv", source: "skill" },
+      { name: "skill:arxiv", description: "arXiv", source: "skill", requiresPrefix: true },
       { name: "skill:drawio", source: "skill" },
       { name: "clear", source: "extension" },
       { name: "name", description: "Set the session display name", source: "extension" },
@@ -730,7 +730,7 @@ describe("web routes", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       commands: [
-        { name: "arxiv", description: "arXiv", source: "skill" },
+        { name: "arxiv", description: "arXiv", source: "skill", requiresPrefix: true },
         { name: "drawio", source: "skill" },
         { name: "clear", source: "extension" },
         { name: "name", description: "Set the session display name", source: "extension" },

@@ -1,7 +1,7 @@
 {
   "name": "easyresearch",
   "version": "0.0.63",
-  "description": "Automated academic paper writing CLI built on the Pi agent harness",
+  "description": "Local AI research workspace for literature, experiments, figures, and papers",
   "type": "module",
   "private": true,
   "license": "MIT",

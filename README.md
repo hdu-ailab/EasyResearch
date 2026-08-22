@@ -1,213 +1,204 @@
 # EasyResearch
 
+[![npm](https://img.shields.io/npm/v/easyresearch)](https://www.npmjs.com/package/easyresearch)
 [![Release](https://github.com/hdu-ailab/EasyResearch/actions/workflows/release.yml/badge.svg)](https://github.com/hdu-ailab/EasyResearch/actions/workflows/release.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
-[简体中文](./README_zh.md) | [License](./LICENSE)
+[简体中文](./README_zh.md)
 
-Automated academic paper writing: a team of AI experts works the whole paper pipeline for you — from literature research and experiments to a finished manuscript — while you confirm the key checkpoints.
+> **From a research question to verifiable paper artifacts.**
 
-## How it works
-
-EasyResearch is a paper-production pipeline with a clear division of labor among its agent experts:
-
-- **Research Assistant** — your project manager. It plans the pipeline, dispatches the right expert, keeps orchestrating while background specialists run, and can launch an explicitly authorized autoresearch campaign that improves a declared metric without asking after every trial. You only confirm quality checkpoints along the way.
-- **Search agent** — finds candidate papers on OpenReview and arXiv, verifies metadata, downloads the PDFs, converts them into readable text, and packages the literature.
-- **Experiment agent** — builds reproducible experiments from the papers: selects datasets, implements baselines, runs controlled trials with multiple seeds, and produces formal evidence.
-- **Writing agent** — drafts and revises the authoritative Markdown manuscript, verifies every citation, and exports LaTeX/PDF.
-- **Figures agent** — produces editable publication figures grounded in the actual experiment evidence.
-
-The agents cooperate through the complete paper workflow — initial research, paper reading and synthesis, experiment design and execution, formal results, and final manuscript — with the Research Assistant orchestrating from start to finish. Instead of doing any of the manual work yourself, you inspect what matters and confirm each checkpoint before the pipeline moves on.
-
-## Highly customizable agents
-
-The agent team is fully customizable. Each agent's role and capabilities are
-defined in a plain Markdown file, model/thinking defaults live in global
-settings, and skills are just `SKILL.md` documents. You can quickly create your
-own specialist agents to plug into the pipeline. No code needed: just ask the
-Research Assistant to load the `customize-easyresearch` skill, and it will create,
-edit, or mount your custom agents and skills for you.
-
-## Requirements
-
-- `npm` to install from the registry
-- [Bun](https://bun.sh) 1.x or newer only when you want to assemble local npm packages from this repository
-
-## Install
-
-### Install from npm (recommended)
+An AI research team that searches, experiments, writes, and draws. Start a
+literature review or a bounded experiment campaign with one instruction; every
+step leaves sources, logs, results, and checkpoints you can inspect.
 
 ```bash
 npm install -g easyresearch@latest
 easyresearch
 ```
 
-Self-contained binary per platform. The npm launcher uses npm's Node runtime,
-but the selected platform executable needs neither Node nor Bun. The first run
-creates the skill Python venv (watch the terminal for progress) and extracts
-bundled agents/skills. Requires Python 3 on PATH for PDF conversion and arXiv
-features; without it those features degrade.
+EasyResearch opens a local Web workspace. Choose a project directory, connect a
+model provider in **Settings**, and describe the outcome you want.
 
-Set `EASYRESEARCH_SKIP_SETUP=1` to skip setup only when a complete bundled
-installation already exists.
+## Start With An Outcome
 
-**Supported platforms**: linux-x64, darwin-arm64, windows-x64. On other
-platforms, `npm install` fails with a clear message.
+| Automated literature review | Autoresearch | Full paper pipeline |
+|---|---|---|
+| **From a topic to a cited review draft.** Search OpenReview and arXiv, verify metadata, read PDFs, organize the literature, and produce Markdown, LaTeX, or PDF. | **Keep improving one metric within a budget.** Run baselines, form hypotheses, execute trials, retain improvements, roll back failures, and record every result. | **Turn an idea into connected research artifacts.** Coordinate literature, experiments, editable figures, manuscript text, and PDF instead of returning disconnected chat advice. |
 
-#### Native Windows runtime
+### Generate a literature review
 
-The Windows package runs directly on Windows; it does not require or invoke
-WSL. Agent command execution uses PowerShell (`pwsh.exe` when installed,
-otherwise the in-box Windows PowerShell), while the stable tool capability name
-remains `bash` for cross-platform Agent-definition compatibility. Git Bash is
-not required. Python extras accept the standard `py -3` launcher as well as a
-`python` executable on PATH.
-
-Run EasyResearch from PowerShell or Windows Terminal:
-
-```powershell
-npm install -g easyresearch
-easyresearch
+```text
+/research-project-workflow Survey recent methods for few-shot bearing fault diagnosis.
+Collect and verify the literature first, then prepare a cited review draft.
 ```
 
-### Build and install local npm packages
+### Automatically optimize an experiment
 
-Use this path when you need to validate the production package locally instead
-of installing from the registry.
+```text
+/autoresearch Improve validation macro-F1 for the current method. Keep the
+evaluation split fixed, run at most 20 trials, and limit each trial to 30 minutes.
+```
 
-Choose the target that matches the machine where you will run the installed
-command.
+Autoresearch starts only after explicit authorization. You define the objective,
+evaluator, mutable scope, budget, rollback rule, and stopping conditions. An
+exploratory winner must still pass the normal multi-seed and robustness checks
+before it becomes formal paper evidence.
 
-#### POSIX shell
+### Run the complete paper workflow
 
-```sh
-git clone https://github.com/hdu-ailab/EasyResearch.git
-cd EasyResearch
-bun install --frozen-lockfile
+```text
+/research-project-workflow Build a reproducible study of lightweight fault
+diagnosis under domain shift, from literature collection through the final PDF.
+```
 
-TARGET=linux-x64 # use darwin-arm64 on Apple Silicon
-bun scripts/release.ts --dry-run --only "$TARGET"
-PLATFORM_TARBALL=$(npm pack "./release/easyresearch-$TARGET" --pack-destination ./release --silent)
-META_TARBALL=$(npm pack ./release/easyresearch --pack-destination ./release --silent)
-npm install -g "./release/$PLATFORM_TARBALL" "./release/$META_TARBALL"
+Major stages still stop at meaningful user checkpoints. The pipeline does not
+silently turn incomplete evidence into manuscript claims.
+
+## Useful Commands
+
+Every Skill loaded by the current Agent is available as `/<skill-name>`. If a
+Skill name conflicts with another command, the composer displays
+`/skill:<skill-name>` and only that explicit form invokes the Skill.
+
+| Command | Use it for |
+|---|---|
+| `/autoresearch <goal>` | Run a bounded, metric-driven experiment optimization campaign. |
+| `/research-project-workflow <topic>` | Start or organize an end-to-end paper project. |
+| `/customize-easyresearch <request>` | Ask the Research Assistant to add or modify an Agent or Skill. |
+| `/find-skills <need>` | Find installable Skills for a missing capability. |
+| `/skill-creator <idea>` | Create a reusable Skill for a specialized workflow. |
+| `/name <name>` | Rename the current research session; bare `/name` clears it. |
+
+Commands are shortcuts, not requirements. You can request the same outcomes in
+ordinary language.
+
+## Not Another AI Writing Tool
+
+EasyResearch is not a general chatbot with a longer system prompt. Research work
+is split across specialists with explicit responsibility boundaries:
+
+| Agent | Owns | Does not do |
+|---|---|---|
+| **Research Assistant** | Clarification, evidence inspection, dispatch, checkpoints, and authorized autoresearch coordination | Create specialist artifacts itself |
+| **Search** | Retrieval, metadata verification, permitted PDFs, readable text, and the literature package | Write review or manuscript prose |
+| **Experiment** | Baselines, methods, controlled trials, records, and formal evidence | Draft the paper or invent results |
+| **Writing** | Readiness checks, citation verification, authorized drafting, LaTeX, and PDF | Run experiments or fill evidence gaps with guesses |
+| **Figures** | Editable publication figures grounded in sources and results | Invent claims or values |
+
+Fresh specialists run in isolated sessions and can work in parallel when their
+goals and output paths do not overlap. Background tasks persist their state and
+return artifact paths, unresolved gaps, and one recommended next action.
+
+## Research Pipeline
+
+```mermaid
+flowchart LR
+    A[Research question] --> B[Literature package]
+    B --> C{User checkpoint}
+    C --> D[Baselines and experiment plan]
+    D --> E[Controlled trials and formal evidence]
+    E --> F{User checkpoint}
+    F --> G[Editable figures and manuscript]
+    G --> H[Citation verification]
+    H --> I[LaTeX and PDF]
+```
+
+The Research Assistant coordinates the flow, but Search, Experiment, Writing,
+and Figures remain the owners of their artifacts.
+
+## Inspect The Outputs
+
+The bundled workflows use a transparent project layout by default. Existing
+projects can keep an explicitly supplied layout.
+
+| Artifact | What you can verify |
+|---|---|
+| `ref_papers/source.json` | Selected papers, identifiers, metadata, and acquisition/conversion failures |
+| `ref_papers/pdf/` and `ref_papers/text/` | Original permitted PDFs and the readable evidence used downstream |
+| `experiments/experiment-record.md` | Baseline, hypotheses, trial decisions, commands, metrics, failures, and remaining budget |
+| `experiments/results/` and `experiments/logs/` | Formal outputs, seed-level results, and execution history |
+| `manuscript/citation-verification.md` | Which citations and claims were checked and which remain uncertain |
+| `manuscript/manuscript.md` | The authoritative manuscript source |
+| `figures/` | Editable evidence-grounded publication figures and exports |
+| `manuscript/manuscript.pdf` | The derived paper PDF |
+
+The actual files are the handoff between stages. A chat message is not treated
+as proof that a research stage is complete.
+
+## Evidence, Reproducibility, Control
+
+- **Evidence first:** material claims must trace to a paper source or experiment
+  output; uncertain references are reported rather than silently completed.
+- **Reproducible experiments:** configurations, commands, metrics, seeds,
+  failures, negative trials, and formal results stay in the research record.
+- **Automatic but bounded:** unattended work has an explicit goal, evaluator,
+  mutable scope, budget, rollback behavior, and stop conditions.
+- **Human checkpoints:** you approve consequential transitions such as moving
+  from literature to experiments or from evidence to full drafting.
+- **Long-running work:** supervised background sessions, persisted state, and
+  explicit continuation let useful work survive beyond one chat response.
+- **Paper-level delivery:** authoritative Markdown, derived LaTeX/PDF, and
+  editable figures remain directly inspectable.
+
+## Models And Extensibility
+
+- Assign different models and thinking strengths to different Agents.
+- Connect built-in providers, OpenAI-compatible endpoints, local model servers,
+  or custom providers.
+- Keep project files and sessions isolated by exact local directory; whether a
+  cloud model receives content is controlled by your provider configuration.
+- Add domain workflows without framework code: Agents are Markdown files and
+  Skills are `SKILL.md` resources.
+
+The recommended path is the Web UI:
+
+- Use **Settings** to connect providers and choose Agent models.
+- Use `/customize-easyresearch` to ask the Research Assistant to create or edit
+  Agents and Skills.
+
+For manual configuration:
+
+- [Model and provider configuration](./docs/model-configuration.md)
+- [Agent and Skill customization](./docs/agent-customization.md)
+
+## Installation Notes
+
+- Supported native packages: Linux x64, Apple Silicon macOS, and Windows x64.
+- The selected platform executable needs neither Node nor Bun.
+- Windows runs natively through PowerShell and does not require WSL or Git Bash.
+- Python 3 on `PATH` enables PDF conversion, arXiv SDK features, and bundled Web
+  search. Startup degrades gracefully when Python is unavailable.
+
+The first run extracts bundled Agents and Skills and creates their Python
+environment. Keep the terminal open while setup progress is shown.
+
+## CLI
+
+```bash
+easyresearch                   # start the local Web workspace and open it
+easyresearch -p 4000           # use another port
+easyresearch --host 0.0.0.0    # listen on another interface
+easyresearch --no-open         # do not open a browser
+easyresearch exit              # stop the background service
 easyresearch --version
 ```
 
-#### PowerShell
+The default server is local at `http://127.0.0.1:3000` and has no Web
+authentication. Do not expose it to an untrusted network.
 
-```powershell
+## Development
+
+```bash
 git clone https://github.com/hdu-ailab/EasyResearch.git
 cd EasyResearch
 bun install --frozen-lockfile
-
-$Target = "windows-x64"
-bun scripts/release.ts --dry-run --only $Target
-$PlatformTarball = npm pack "./release/easyresearch-$Target" --pack-destination ./release --silent
-$MetaTarball = npm pack ./release/easyresearch --pack-destination ./release --silent
-npm install -g "./release/$PlatformTarball" "./release/$MetaTarball"
-easyresearch --version
+bun run check:web
 ```
 
-## Start
+Production releases are standalone native binaries. Runtime or packaging
+changes must also pass a native compiled smoke test.
 
-```bash
-easyresearch
-# starts a background server on http://127.0.0.1:3000 and opens the browser
+## License
 
-easyresearch -p 4000            # custom port
-easyresearch --host 0.0.0.0     # listen on all interfaces (server use)
-easyresearch --no-open          # do not open the browser
-easyresearch exit               # stop the background server
-```
-
-On the home page, pick a paper project directory and start a session. The
-chosen directory is the project boundary: project config lives in
-`<cwd>/.easyresearch`, global state in `~/.easyresearch/agent`.
-
-## Configure models
-
-Three layers — pick per scenario:
-
-### 1. Web UI (recommended)
-
-- **Settings page**: set each agent's global `model` and `thinking` in
-  `~/.easyresearch/agent/settings.json` under `easyresearch.agentDefaults`.
-- **Work page → Agent panel**: edits those same global fields. There are no
-  per-session model or thinking overrides.
-
-### 2. Model catalog and credentials
-
-`~/.easyresearch/agent/models.json` registers providers and their models;
-credentials go in `~/.easyresearch/agent/auth.json`, an environment variable,
-or the provider's `apiKey` field.
-
-Example `models.json` (OpenAI-compatible providers):
-
-```json
-{
-  "providers": {
-    "my-openai": {
-      "baseUrl": "https://api.openai.com/v1",
-      "api": "openai-completions",
-      "models": [
-        { "id": "gpt-4o", "name": "GPT-4o", "reasoning": true }
-      ]
-    },
-    "local-router": {
-      "baseUrl": "http://localhost:20128/v1",
-      "api": "openai-completions",
-      "apiKey": "local",
-      "models": [
-        { "id": "deepseek-v4-flash-free", "name": "DeepSeek V4 Flash Free (Local)", "reasoning": true }
-      ]
-    }
-  }
-}
-```
-
-Credentials — use any one of:
-
-```bash
-# ~/.easyresearch/agent/auth.json
-{ "my-openai": { "type": "api_key", "key": "sk-..." } }
-
-# or an environment variable
-export OPENAI_API_KEY=sk-...
-```
-
-### 3. Global Agent defaults
-
-```json
-{
-  "easyresearch": {
-    "agentDefaults": {
-      "research-assistant": {
-        "model": "my-openai/gpt-4o",
-        "thinking": "medium"
-      }
-    }
-  }
-}
-```
-
-Set it only in global `~/.easyresearch/agent/settings.json`. Agent definitions
-remain global-over-bundled Markdown resources:
-`<cwd>/.easyresearch/agents/` is inert and does not affect runtime discovery,
-the Work page, or the Settings page. Residual Markdown `model`/`thinking`
-fields are ignored. Stage agents inherit the Research Assistant's current global
-model and thinking when they have no values of their own.
-
-Settings and Work edit these same global settings entries. When the Research
-Assistant model is unset, the backend asks Pi for its concrete default and
-selects that existing model option without persisting or duplicating it. If Pi
-cannot resolve a model, the control stays empty and reports that model or
-credentials configuration is required. Empty thinking uses the model's highest
-supported level. There are no per-session Agent overrides or Follow global mode. Valid
-Agent Markdown, Agent-default, and `models.json` changes refresh open
-Settings/Work surfaces automatically. A
-running Agent completes its current response and tool batch, then applies the
-new prompt, tools, Skills, subagent policy, model, and thinking before its next
-LLM request.
-
-Global state lives under `~/.easyresearch/agent` (settings, models, auth,
-sessions, agents); project overrides live at `<exact-cwd>/.easyresearch`
-(settings, skills, prompts, themes, extensions).
+[MIT](./LICENSE)

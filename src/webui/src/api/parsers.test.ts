@@ -349,12 +349,12 @@ describe("API response parsers", () => {
     expect(
       parseSkillCommands({
         commands: [
-          { name: "arxiv", description: "arXiv", source: "skill" },
+          { name: "arxiv", description: "arXiv", source: "skill", requiresPrefix: true },
           { name: "name", source: "extension" },
         ],
       }),
     ).toEqual([
-      { name: "arxiv", description: "arXiv", source: "skill" },
+      { name: "arxiv", description: "arXiv", source: "skill", requiresPrefix: true },
       { name: "name", source: "extension" },
     ]);
     expect(parseSkillCommands({ commands: [{ name: "legacy" }] })).toEqual([{ name: "legacy", source: "skill" }]);

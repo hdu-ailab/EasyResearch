@@ -2518,7 +2518,7 @@ describe("WorkPage", () => {
       ],
     };
 
-    it("opens the skill popover and sends the inserted /skill: command", async () => {
+    it("opens the skill popover and sends the inserted friendly command", async () => {
       const user = userEvent.setup();
       vi.mocked(api.getSessionCommands).mockResolvedValue([
         { name: "arxiv", description: "arXiv metadata", source: "skill" },
@@ -2530,9 +2530,9 @@ describe("WorkPage", () => {
       await user.click(input);
       await user.keyboard("/ar");
       await user.click(await screen.findByRole("option", { name: /\/arxiv/ }));
-      expect((input as HTMLTextAreaElement).value).toBe("/skill:arxiv ");
+      expect((input as HTMLTextAreaElement).value).toBe("/arxiv ");
       await user.click(screen.getByRole("button", { name: /send/i }));
-      await waitFor(() => expect(api.sendPrompt).toHaveBeenCalledWith("s1", "/skill:arxiv"));
+      await waitFor(() => expect(api.sendPrompt).toHaveBeenCalledWith("s1", "/arxiv"));
     });
 
     it("loads session tree metadata and offers the version switcher", async () => {

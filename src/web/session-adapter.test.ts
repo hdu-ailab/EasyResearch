@@ -50,10 +50,12 @@ class FakeAgentSession implements InProcessAgentSession {
   steeringMessages: string[] = [];
   thinkingCalls: string[] = [];
   modelCalls: unknown[] = [];
+  navigateTreeCalls: string[] = [];
   listeners = new Set<(event: unknown) => void>();
   bindCalls: unknown[] = [];
   baseSystemPrompt: string[] = [];
   wakeSystemPrompts: string[][] = [];
+  skills = [{ name: "arxiv", description: "arXiv" }];
 
   modelRuntime = {
     getModel: (provider: string, id: string) =>
@@ -64,7 +66,7 @@ class FakeAgentSession implements InProcessAgentSession {
 
   resourceLoader = {
     getSkills: () => ({
-      skills: [{ name: "arxiv", description: "arXiv" }],
+      skills: this.skills,
       diagnostics: [],
     }),
   };
@@ -72,6 +74,7 @@ class FakeAgentSession implements InProcessAgentSession {
   extensionRunner = {
     getRegisteredCommands: () => [
       { invocationName: "clear", description: "Clear", source: "extension" as const },
+      { invocationName: "web-tree", description: "Internal tree navigation", source: "extension" as const },
     ],
   };
 
@@ -137,7 +140,8 @@ class FakeAgentSession implements InProcessAgentSession {
     this.sessionName = name;
   }
 
-  async navigateTree(): Promise<{ cancelled: boolean }> {
+  async navigateTree(entryId: string): Promise<{ cancelled: boolean }> {
+    this.navigateTreeCalls.push(entryId);
     return { cancelled: false };
   }
 
@@ -344,6 +348,89 @@ describe("PiSessionFactory", () => {
       { name: "review", description: "Review", source: "prompt" },
       { name: "skill:arxiv", description: "arXiv", source: "skill" },
     ]);
+  });
+
+  it("normalizes a loaded Skill's friendly slash command before prompting Pi", async () => {
+    const session = new FakeAgentSession();
+    session.skills = [{ name: "customize-easyresearch", description: "Customize EasyResearch" }];
+    const adapter = new PiSessionFactory(async () => created(session)).create({ cwd: "/project" });
+    await adapter.start();
+
+    await adapter.prompt("/customize-easyresearch add a medical-review agent");
+
+    expect(session.promptCalls).toEqual([
+      "/skill:customize-easyresearch add a medical-review agent (steer)",
+    ]);
+  });
+
+  it("resolves friendly Skill commands after applying the latest runtime binding", async () => {
+    const session = new FakeAgentSession();
+    session.skills = [];
+    const binding = new FakeRuntimeBinding();
+    binding.ensureImpl = async () => {
+      session.skills = [{ name: "autoresearch", description: "Autonomous experiments" }];
+    };
+    const adapter = new PiSessionFactory(async () => created(session, binding)).create({ cwd: "/project" });
+    await adapter.start();
+
+    await adapter.prompt("/autoresearch improve validation F1");
+
+    expect(session.promptCalls).toEqual([
+      "/skill:autoresearch improve validation F1 (steer)",
+    ]);
+  });
+
+  it("preserves native, extension, template, and unknown slash commands", async () => {
+    const session = new FakeAgentSession();
+    session.skills = [
+      { name: "arxiv", description: "arXiv" },
+      { name: "clear", description: "Skill colliding with an extension" },
+      { name: "review", description: "Skill colliding with a prompt template" },
+    ];
+    const adapter = new PiSessionFactory(async () => created(session)).create({ cwd: "/project" });
+    await adapter.start();
+
+    await adapter.prompt("/skill:arxiv 1706.03762");
+    await adapter.prompt("/skill:clear use the colliding Skill");
+    await adapter.prompt("/clear all");
+    await adapter.prompt("/review draft");
+    await adapter.prompt("/unknown request");
+
+    expect(session.promptCalls).toEqual([
+      "/skill:arxiv 1706.03762 (steer)",
+      "/skill:clear use the colliding Skill (steer)",
+      "/clear all (steer)",
+      "/review draft (steer)",
+      "/unknown request (steer)",
+    ]);
+    await expect(adapter.getCommands()).resolves.toContainEqual({
+      name: "skill:clear",
+      description: "Skill colliding with an extension",
+      source: "skill",
+      requiresPrefix: true,
+    });
+  });
+
+  it("removes the internal web-tree command from chat while preserving typed tree navigation", async () => {
+    const session = new FakeAgentSession();
+    session.skills = [{ name: "web-tree", description: "A Skill using the reserved name" }];
+    const adapter = new PiSessionFactory(async () => created(session)).create({ cwd: "/project" });
+    await adapter.start();
+
+    await expect(adapter.prompt("/web-tree navigate entry-7")).rejects.toThrow(/not available/i);
+    await adapter.navigateTree("entry-7");
+
+    expect(session.promptCalls).toEqual([]);
+    expect(session.navigateTreeCalls).toEqual(["entry-7"]);
+    await expect(adapter.getCommands()).resolves.not.toContainEqual(
+      expect.objectContaining({ name: "web-tree" }),
+    );
+    await expect(adapter.getCommands()).resolves.toContainEqual({
+      name: "skill:web-tree",
+      description: "A Skill using the reserved name",
+      source: "skill",
+      requiresPrefix: true,
+    });
   });
 
   it("ensures the binding is current before prompting and disposes its ownership", async () => {

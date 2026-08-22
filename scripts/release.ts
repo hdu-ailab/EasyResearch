@@ -124,47 +124,52 @@ export function assemblePlatformPackage(targetName: string, version: string): vo
 
 const NPM_README = `# easyresearch
 
-Automated academic paper writing CLI with a local web panel.
+Local AI research workspace for traceable literature reviews, reproducible
+experiments, publication figures, and evidence-grounded papers.
 
 \`\`\`sh
-npm install -g easyresearch
+npm install -g easyresearch@latest
 easyresearch
 \`\`\`
 
-Self-contained binary per platform (no Bun/Node required). On first run it
-creates a local Python venv (\`markitdown\`, \`arxiv\`) and extracts bundled
-agents/skills — watch the terminal for progress. Requires Python 3 on PATH
-for PDF conversion and arXiv SDK features; everything else works without it.
+Choose a local project directory in the browser, connect a provider in Settings,
+then describe a task or use a workflow command:
+
+\`\`\`text
+/research-project-workflow Survey recent methods for few-shot fault diagnosis.
+/autoresearch Improve validation macro-F1 with at most 20 trials.
+/customize-easyresearch Add an Agent that audits medical-paper evidence.
+\`\`\`
+
+Every Skill loaded by the current Agent is available as \`/<skill-name>\`.
+Name collisions use the explicit \`/skill:<skill-name>\` form.
+
+The first run extracts bundled Agents and Skills and creates a Python environment
+for paper search and conversion; watch the terminal for progress. Python 3 on
+\`PATH\` enables PDF conversion, arXiv SDK features, and bundled Web search.
+Startup degrades gracefully when Python is unavailable.
 
 \`\`\`sh
-easyresearch          # start the web panel at http://127.0.0.1:3000
+easyresearch          # start the local Web workspace
 easyresearch exit     # stop the background service
 easyresearch --version
 \`\`\`
 
-Skip first-run setup with \`EASYRESEARCH_SKIP_SETUP=1\`.
-
 ## Supported platforms
 
-linux-x64, darwin-arm64, windows-x64. On other platforms the install fails
-with a clear message — build from source instead:
+Linux x64, macOS arm64, and Windows x64. The selected platform executable needs
+neither Node nor Bun. Windows runs natively through PowerShell without WSL or
+Git Bash.
 
-\`\`\`sh
-git clone https://github.com/hdu-ailab/EasyResearch.git
-cd EasyResearch
-bun install
-bun run build:release -- --only <target>   # e.g. linux-arm64
-# binary at release/easyresearch-<target>/bin/easyresearch
-\`\`\`
-
-See \`scripts/build.ts\` \`TARGETS\` for valid <target> names.
+Project page and full documentation:
+https://github.com/hdu-ailab/EasyResearch
 `;
 
 export function mainPackageManifest(version: string): Record<string, unknown> {
   return {
     name: MAIN_PACKAGE,
     version,
-    description: "Automated academic paper writing CLI built on the Pi agent harness",
+    description: "Local AI research workspace for literature, experiments, figures, and papers",
     license: "MIT",
     repository: { type: "git", url: "https://github.com/hdu-ailab/EasyResearch.git" },
     keywords: ["research", "paper-writing", "cli", "ai", "latex"],

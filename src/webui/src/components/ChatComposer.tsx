@@ -8,7 +8,7 @@ export interface ChatComposerProps {
   streaming: boolean;
   onSend: (text: string) => void;
   onAbort: () => void;
-  /** Skill commands of the current session agent; popover hidden when empty. */
+  /** Public slash commands of the current session agent; popover hidden when empty. */
   commands?: SkillCommandDto[];
 }
 
@@ -17,10 +17,8 @@ const SLASH_PREFIX = /^(\s*)\/(\S*)$/;
 /**
  * Chat composer. The Send button turns into Stop while the agent is
  * streaming (opencode prompt-input behavior); multiline input preserved.
- * A leading `/` opens a command popover (ADR-066/078): selecting a skill
- * command inserts `/skill:<name> `, which pi expands server-side; selecting
- * an extension command (e.g. `name`) inserts `/name `, executed by pi's
- * `_tryExecuteExtensionCommand`; neither reaches the transcript.
+ * A leading `/` opens a command popover (ADR-066/078). Skills use the friendly
+ * `/<name>` form unless a command collision requires Pi's `/skill:<name>` form.
  */
 export function ChatComposer({ disabled, streaming, onSend, onAbort, commands = [] }: ChatComposerProps) {
   const { t } = useI18n();
@@ -47,17 +45,18 @@ export function ChatComposer({ disabled, streaming, onSend, onAbort, commands = 
 
   const filtered = useMemo(() => {
     if (!slash) return [];
-    return commands.filter(
-      (command) =>
-        command.name.toLowerCase().startsWith(slash.query) || command.name.toLowerCase().includes(slash.query),
-    );
+    return commands.filter((command) => {
+      const invocation = slashInvocation(command, commands).slice(1).toLowerCase();
+      const name = command.name.toLowerCase();
+      return invocation.startsWith(slash.query) || invocation.includes(slash.query) || name.includes(slash.query);
+    });
   }, [slash, commands]);
 
   const insertSlash = (command: SkillCommandDto) => {
     if (slash === undefined) return;
     const before = text.slice(0, selectionStart - slash.prefixLength);
     const after = text.slice(selectionStart);
-    const invocation = command.source === "skill" ? `/skill:${command.name}` : `/${command.name}`;
+    const invocation = slashInvocation(command, commands);
     const next = `${before}${invocation} ${after}`;
     setText(next);
     setSelectionStart(next.length);
@@ -94,7 +93,7 @@ export function ChatComposer({ disabled, streaming, onSend, onAbort, commands = 
         >
           {filtered.map((command, index) => (
             <button
-              key={command.name}
+              key={`${command.source}:${command.name}`}
               type="button"
               role="option"
               aria-selected={index === activeIndex}
@@ -107,7 +106,7 @@ export function ChatComposer({ disabled, streaming, onSend, onAbort, commands = 
               }}
               onMouseEnter={() => setActiveIndex(index)}
             >
-              <span className="shrink-0 font-mono text-v2-blue-600">/{command.name}</span>
+              <span className="shrink-0 font-mono text-v2-blue-600">{slashInvocation(command, commands)}</span>
               {command.description ? (
                 <span className="truncate text-[12px] text-v2-text-text-faint">{command.description}</span>
               ) : null}
@@ -200,4 +199,12 @@ export function ChatComposer({ disabled, streaming, onSend, onAbort, commands = 
       </div>
     </form>
   );
+}
+
+function slashInvocation(command: SkillCommandDto, commands: SkillCommandDto[]): string {
+  if (command.source !== "skill") return `/${command.name}`;
+  const collides =
+    command.requiresPrefix ||
+    commands.some((candidate) => candidate.source !== "skill" && candidate.name === command.name);
+  return collides ? `/skill:${command.name}` : `/${command.name}`;
 }

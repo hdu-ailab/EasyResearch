@@ -58,14 +58,14 @@ describe("ChatComposer slash popover", () => {
     expect(screen.getByText("/drawio")).toBeTruthy();
   });
 
-  it("inserts /skill:name on Enter and closes", async () => {
+  it("inserts the friendly Skill command on Enter and closes", async () => {
     const { user } = await renderComposer();
     const input = screen.getByLabelText(/message/i) as HTMLTextAreaElement;
     await user.click(input);
     await user.keyboard("/ar");
     await user.keyboard("{Enter}");
-    expect(input.value).toBe("/skill:arxiv ");
-    expect(screen.queryByText("/arxiv")).toBeNull();
+    expect(input.value).toBe("/arxiv ");
+    expect(screen.queryByRole("listbox")).toBeNull();
   });
 
   it("inserts /name for extension commands on Enter", async () => {
@@ -84,7 +84,22 @@ describe("ChatComposer slash popover", () => {
     await user.keyboard("/");
     await user.keyboard("{ArrowDown}");
     await user.keyboard("{Enter}");
-    expect(input.value).toBe("/skill:drawio ");
+    expect(input.value).toBe("/drawio ");
+  });
+
+  it("displays and inserts the native prefix when a Skill collides with another command", async () => {
+    const { user } = await renderComposer({
+      commands: [
+        ...commands,
+        { name: "name", description: "A colliding Skill", source: "skill", requiresPrefix: true },
+      ],
+    });
+    const input = screen.getByLabelText(/message/i) as HTMLTextAreaElement;
+    await user.click(input);
+    await user.keyboard("/skill:nam");
+    await user.click(await screen.findByRole("option", { name: /\/skill:name/ }));
+
+    expect(input.value).toBe("/skill:name ");
   });
 
   it("does not open when commands are empty", async () => {

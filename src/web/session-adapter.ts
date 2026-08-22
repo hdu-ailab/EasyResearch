@@ -26,6 +26,7 @@ import { AGENT_STATUS_TYPE } from "../subagent/notifications";
 import type { SubagentSupervisor, SupervisableAgentSession } from "../subagent/supervisor";
 
 const SAFE_STOP_ABORT_ERROR = "Session stop could not abort active work. Retry stop.";
+const INTERNAL_WEB_TREE_COMMAND = "web-tree";
 
 export interface StartSessionOptions {
   cwd: string;
@@ -37,6 +38,7 @@ export interface WebSlashCommand {
   name: string;
   description?: string;
   source: "extension" | "prompt" | "skill";
+  requiresPrefix?: boolean;
 }
 
 /** Options accepted by the Web prompt path. Web sends always queue as steers
@@ -673,7 +675,23 @@ class DirectSessionAdapter implements SessionAdapter {
       try {
         await binding.ensureCurrent();
         if (this.stopRequested) throw new Error("Session has stopped");
-        await session.prompt(message, {
+        if (/^\/web-tree(?:\s|$)/.test(message.trimStart())) {
+          throw new Error("The /web-tree command is not available in chat.");
+        }
+        let promptMessage = message;
+        const friendlySkill = /^\/([a-z0-9]+(?:-[a-z0-9]+)*)(?=\s|$)/.exec(message);
+        if (friendlySkill && !message.startsWith("/skill:")) {
+          const name = friendlySkill[1]!;
+          const commandOwnsName = session.extensionRunner
+            .getRegisteredCommands()
+            .some((command) => command.invocationName === name)
+            || session.promptTemplates.some((template) => template.name === name);
+          const skillExists = session.resourceLoader.getSkills().skills.some((skill) => skill.name === name);
+          if (!commandOwnsName && skillExists) {
+            promptMessage = `/skill:${name}${message.slice(name.length + 1)}`;
+          }
+        }
+        await session.prompt(promptMessage, {
           streamingBehavior: "steer",
           ...options,
           preflightResult: (didSucceed) => {
@@ -759,20 +777,30 @@ class DirectSessionAdapter implements SessionAdapter {
 
   async getCommands(): Promise<WebSlashCommand[]> {
     const session = this.requiredSession();
-    const extensions = session.extensionRunner.getRegisteredCommands().map((command) => ({
-      name: command.invocationName,
-      description: command.description,
-      source: "extension" as const,
-    }));
-    const prompts = session.promptTemplates.map((prompt) => ({
-      name: prompt.name,
-      description: prompt.description,
-      source: "prompt" as const,
-    }));
+    const registeredCommands = session.extensionRunner.getRegisteredCommands();
+    const commandOwnedNames = new Set([
+      ...registeredCommands.map((command) => command.invocationName),
+      ...session.promptTemplates.map((prompt) => prompt.name),
+    ]);
+    const extensions = registeredCommands
+      .filter((command) => command.invocationName !== INTERNAL_WEB_TREE_COMMAND)
+      .map((command) => ({
+        name: command.invocationName,
+        description: command.description,
+        source: "extension" as const,
+      }));
+    const prompts = session.promptTemplates
+      .filter((prompt) => prompt.name !== INTERNAL_WEB_TREE_COMMAND)
+      .map((prompt) => ({
+        name: prompt.name,
+        description: prompt.description,
+        source: "prompt" as const,
+      }));
     const skills = session.resourceLoader.getSkills().skills.map((skill) => ({
       name: `skill:${skill.name}`,
       description: skill.description,
       source: "skill" as const,
+      ...(commandOwnedNames.has(skill.name) ? { requiresPrefix: true } : {}),
     }));
     return [...extensions, ...prompts, ...skills];
   }

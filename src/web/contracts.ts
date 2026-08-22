@@ -50,6 +50,8 @@ export interface SkillCommandDto {
   name: string;
   description?: string;
   source: "extension" | "prompt" | "skill";
+  /** Skills only: use `/skill:<name>` because another command owns the short form. */
+  requiresPrefix?: boolean;
 }
 
 export interface WebTreeEntryDto {
