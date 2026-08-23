@@ -1,13 +1,16 @@
 import { ChevronRight, File as FileIcon, Folder, FolderOpen, RefreshCw, Search } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FileEntryDto, FileWatcherEvent } from "../../../web/contracts";
-import { listEntries } from "../api";
+import { listEntries, replaceFileWatchDirectories } from "../api";
 import { parentPath } from "../file-watcher";
 import { useLazyTree } from "../hooks/useLazyTree";
 import { useI18n } from "../i18n/useI18n";
 
 export interface FilesPanelProps {
   root: string;
+  loadEnabled?: boolean;
+  sessionId?: string;
+  fileWatchLeaseId?: string | null;
   onOpenFile: (entry: FileEntryDto) => void;
   fileEvent?: FileWatcherEvent | null;
 }
@@ -17,12 +20,20 @@ interface TreeRow {
   depth: number;
 }
 
-export function FilesPanel({ root, onOpenFile, fileEvent = null }: FilesPanelProps) {
+export function FilesPanel({
+  root,
+  loadEnabled = true,
+  sessionId,
+  fileWatchLeaseId,
+  onOpenFile,
+  fileEvent = null,
+}: FilesPanelProps) {
   const { t } = useI18n();
   const [filter, setFilter] = useState("");
   const [focusedPath, setFocusedPath] = useState<string | null>(null);
-  const tree = useLazyTree<FileEntryDto>({ root, loadChildren: listEntries });
+  const tree = useLazyTree<FileEntryDto>({ root, loadChildren: listEntries, enabled: loadEnabled });
   const handledEvent = useRef<FileWatcherEvent | null>(null);
+  const watchRevision = useRef({ key: "", revision: 0 });
   const rowRefs = useRef(new Map<string, HTMLElement>());
 
   useEffect(() => {
@@ -40,6 +51,29 @@ export function FilesPanel({ root, onOpenFile, fileEvent = null }: FilesPanelPro
           : null;
     if (target && tree.status(target) === "loaded") tree.refreshDirectory(target);
   }, [fileEvent, root, tree.children, tree.refreshDirectory, tree.status]);
+
+  const watchedDirectories = useMemo(() => {
+    const directories = [root];
+    const walk = (path: string) => {
+      for (const child of tree.children(path)) {
+        if (child.kind !== "directory" || !tree.expanded.has(child.path)) continue;
+        directories.push(child.path);
+        walk(child.path);
+      }
+    };
+    walk(root);
+    return directories;
+  }, [root, tree.children, tree.expanded]);
+
+  useEffect(() => {
+    if (!loadEnabled || !sessionId || !fileWatchLeaseId) return;
+    const key = `${sessionId}\0${fileWatchLeaseId}`;
+    if (watchRevision.current.key !== key) watchRevision.current = { key, revision: 0 };
+    const revision = ++watchRevision.current.revision;
+    void replaceFileWatchDirectories(sessionId, fileWatchLeaseId, revision, watchedDirectories).catch(() => {
+      // File watching is best-effort; manual refresh remains available.
+    });
+  }, [fileWatchLeaseId, loadEnabled, sessionId, watchedDirectories]);
 
   const rows = useMemo(() => {
     const out: TreeRow[] = [];
@@ -200,7 +234,7 @@ export function FilesPanel({ root, onOpenFile, fileEvent = null }: FilesPanelPro
             </div>
           )
         ) : rows.length === 0 && !rootError ? (
-          tree.status(root) === "loading" ? (
+          !loadEnabled || tree.status(root) === "loading" ? (
             <p className="px-2 py-1 text-[12px] text-v2-text-text-faint">{t("files.loading")}</p>
           ) : (
             <p className="px-2 py-1 text-[12px] text-v2-text-text-faint">{t("files.empty")}</p>

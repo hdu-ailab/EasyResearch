@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileWatcherEvent } from "../../../web/contracts";
@@ -7,11 +7,82 @@ import { FilesPanel } from "./FilesPanel";
 
 vi.mock("../api", () => ({
   listEntries: vi.fn(),
+  replaceFileWatchDirectories: vi.fn(),
 }));
 
 describe("FilesPanel", () => {
   beforeEach(() => {
     vi.mocked(api.listEntries).mockReset();
+    vi.mocked(api.replaceFileWatchDirectories).mockReset().mockResolvedValue(undefined);
+  });
+
+  it("shows loading without listing the root until parent session hydration finishes", async () => {
+    vi.mocked(api.listEntries).mockResolvedValue([{ kind: "file", name: "paper.md", path: "/p/paper.md" }]);
+    const { rerender } = render(
+      <FilesPanel
+        root="/p"
+        loadEnabled={false}
+        sessionId="session-1"
+        fileWatchLeaseId="lease-1"
+        onOpenFile={() => {}}
+      />,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByText("Loading…")).toBeVisible();
+    expect(api.listEntries).not.toHaveBeenCalled();
+    expect(api.replaceFileWatchDirectories).not.toHaveBeenCalled();
+
+    rerender(
+      <FilesPanel root="/p" loadEnabled sessionId="session-1" fileWatchLeaseId="lease-1" onOpenFile={() => {}} />,
+    );
+    expect(await screen.findByText("paper.md")).toBeVisible();
+    expect(api.listEntries).toHaveBeenCalledOnce();
+  });
+
+  it("replaces the lease with only the root and currently visible expanded directories", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listEntries).mockImplementation(async (path) => {
+      if (path === "/p") return [{ kind: "directory", name: "folder", path: "/p/folder" }];
+      if (path === "/p/folder") return [{ kind: "directory", name: "nested", path: "/p/folder/nested" }];
+      return [{ kind: "file", name: "paper.md", path: "/p/folder/nested/paper.md" }];
+    });
+    render(<FilesPanel root="/p" sessionId="session-1" fileWatchLeaseId="lease-1" onOpenFile={() => {}} />);
+
+    await screen.findByText("folder");
+    await waitFor(() =>
+      expect(api.replaceFileWatchDirectories).toHaveBeenLastCalledWith("session-1", "lease-1", expect.any(Number), [
+        "/p",
+      ]),
+    );
+
+    await user.click(screen.getByText("folder"));
+    await screen.findByText("nested");
+    await waitFor(() =>
+      expect(api.replaceFileWatchDirectories).toHaveBeenLastCalledWith("session-1", "lease-1", expect.any(Number), [
+        "/p",
+        "/p/folder",
+      ]),
+    );
+
+    await user.click(screen.getByText("nested"));
+    await screen.findByText("paper.md");
+    await waitFor(() =>
+      expect(api.replaceFileWatchDirectories).toHaveBeenLastCalledWith("session-1", "lease-1", expect.any(Number), [
+        "/p",
+        "/p/folder",
+        "/p/folder/nested",
+      ]),
+    );
+
+    await user.click(screen.getByText("folder"));
+    await waitFor(() =>
+      expect(api.replaceFileWatchDirectories).toHaveBeenLastCalledWith("session-1", "lease-1", expect.any(Number), [
+        "/p",
+      ]),
+    );
   });
 
   it("activates a failed directory retry with the keyboard without collapsing the row", async () => {

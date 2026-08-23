@@ -41,6 +41,8 @@ export interface SessionSnapshotDto {
   session: ActiveSessionDto;
   messages: AgentMessage[];
   subagents: SubagentSessionSummaryDto[];
+  /** Present only on an SSE snapshot; scoped to that exact EventSource. */
+  fileWatchLeaseId?: string;
   contextUsage?: ContextUsageDto;
   compactionState?: CompactionStateDto;
   /** Pending steer messages not yet delivered into the agent context

@@ -352,6 +352,28 @@ export class ActiveSessionRegistry {
     return () => record.listeners.delete(listener);
   }
 
+  acquireFileWatchLease(id: string): string {
+    const record = this.records.get(id);
+    if (!record) throw new UnknownSessionError(`Unknown session: ${id}`);
+    return record.fileWatcher.acquireLease();
+  }
+
+  replaceFileWatchLease(
+    id: string,
+    leaseId: string,
+    revision: number,
+    directories: readonly string[],
+  ): boolean {
+    const record = this.records.get(id);
+    if (!record) throw new UnknownSessionError(`Unknown session: ${id}`);
+    return record.fileWatcher.replaceLease(leaseId, revision, directories);
+  }
+
+  releaseFileWatchLease(id: string, leaseId: string): void {
+    // The session may have stopped before its EventSource cancellation runs.
+    this.records.get(id)?.fileWatcher.releaseLease(leaseId);
+  }
+
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
     const pending = [...this.pendingLaunches];

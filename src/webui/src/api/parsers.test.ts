@@ -169,12 +169,14 @@ describe("API response parsers", () => {
         ],
         contextUsage: { tokens: null, contextWindow: 128_000, percent: null },
         compactionState: "queued",
+        fileWatchLeaseId: "lease-1",
       }),
     ).toMatchObject({
       session,
       messages: [{ role: "assistant" }],
       contextUsage: { tokens: null, contextWindow: 128_000, percent: null },
       compactionState: "queued",
+      fileWatchLeaseId: "lease-1",
     });
     expect(
       parseChildSnapshot({
@@ -185,6 +187,7 @@ describe("API response parsers", () => {
     ).toEqual({ id: "child-1", cwd: "/p", sessionName: "easyresearch:search" });
     expect(() => parseActiveSession({ ...session, status: "unknown" })).toThrow();
     expect(() => parseSessionSnapshot({ session, messages: {}, subagents: [] })).toThrow();
+    expect(() => parseSessionSnapshot({ session, messages: [], subagents: [], fileWatchLeaseId: 1 })).toThrow();
     expect(() =>
       parseSessionSnapshot({
         session,

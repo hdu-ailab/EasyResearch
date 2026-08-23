@@ -154,6 +154,38 @@ describe("FileBrowser", () => {
     expect(readFileContent).toHaveBeenCalledTimes(2);
   });
 
+  it("reloads opened previews when rename activity invalidates their directory", async () => {
+    const user = userEvent.setup();
+    vi.mocked(readFileContent)
+      .mockResolvedValueOnce({
+        path: "/p/notes.md",
+        content: "# Notes\n\nold content",
+        byteCount: 20,
+        truncated: false,
+        binary: false,
+      })
+      .mockResolvedValueOnce({
+        path: "/p/notes.md",
+        content: "# Notes\n\nreplaced content",
+        byteCount: 25,
+        truncated: false,
+        binary: false,
+      });
+    const { rerender } = render(<FileBrowser root="/p" fileEvent={null} />);
+    await user.click(await screen.findByText("notes.md"));
+    expect(await screen.findByText("old content")).toBeVisible();
+
+    rerender(
+      <FileBrowser
+        root="/p"
+        fileEvent={{ type: "file.watcher.updated", properties: { file: "/p", event: "change" } }}
+      />,
+    );
+
+    expect(await screen.findByText("replaced content")).toBeVisible();
+    expect(readFileContent).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps the tree toggle outside the open-file tablist", async () => {
     render(<FileBrowser root="/p" />);
     const button = await screen.findByRole("button", { name: "Toggle file tree" });

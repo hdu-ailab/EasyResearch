@@ -42,6 +42,7 @@ export interface UseSessionConnectionOptions {
 export interface SessionConnection {
   sessionId: string;
   sessionPath: string | null;
+  fileWatchLeaseId: string | null;
   view: SessionViewState;
   status: ActiveSessionDto["status"];
   notice: string | null;
@@ -147,6 +148,7 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
   sessionIdRef.current = sessionId;
   const [sessionPath, setSessionPath] = useState<string | null>(null);
   const sessionPathRef = useRef<string | null>(null);
+  const [fileWatchLeaseId, setFileWatchLeaseId] = useState<string | null>(null);
   const [accepting, setAccepting] = useState(false);
   const [pendingOutput, setPendingOutput] = useState(false);
   const pendingBaseline = useRef<number | null>(null);
@@ -216,6 +218,7 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
       receivedStreamData: false,
     };
     connectionTokenRef.current = connectionToken;
+    setFileWatchLeaseId(null);
     const isCurrentConnection = () =>
       mountedRef.current && connectionToken.active && connectionTokenRef.current === connectionToken;
     getSnapshot(sessionId)
@@ -288,6 +291,7 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
             pending.resolve();
           }
           if (typeof event.session.sessionFile === "string") updateSessionPath(event.session.sessionFile);
+          setFileWatchLeaseId(typeof event.fileWatchLeaseId === "string" ? event.fileWatchLeaseId : null);
           setStatus(event.session.status);
           setView((current) => mergeSnapshot(current, { ...event, subagents: event.subagents ?? [] }));
           return;
@@ -303,6 +307,7 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
           return;
         }
         if (type === "session_deactivated") {
+          setFileWatchLeaseId(null);
           clearTerminalState("stopped");
           return;
         }
@@ -320,6 +325,7 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
       },
       onError: () => {
         if (!isCurrentConnection()) return;
+        setFileWatchLeaseId(null);
         const message = tRef.current("work.connectionLost");
         if (pendingStreamReadyRef.current?.connectionGeneration === connectionToken.generation) {
           rejectPendingStream(new Error(message));
@@ -467,6 +473,7 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
   return {
     sessionId,
     sessionPath,
+    fileWatchLeaseId,
     view,
     status,
     notice,

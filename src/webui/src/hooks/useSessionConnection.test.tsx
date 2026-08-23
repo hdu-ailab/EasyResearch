@@ -136,6 +136,29 @@ describe("useSessionConnection", () => {
     expect(result.current.view.messages.map((message) => message.text)).toEqual(["authoritative reconnect"]);
   });
 
+  it("exposes the exact file-watch lease from each SSE snapshot", async () => {
+    const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    emit({
+      type: "snapshot",
+      session: { id: "s1", cwd: "/paper", isStreaming: false, status: "ready" },
+      messages: [],
+      subagents: [],
+      fileWatchLeaseId: "lease-first",
+    });
+    expect(result.current.fileWatchLeaseId).toBe("lease-first");
+
+    emit({
+      type: "snapshot",
+      session: { id: "s1", cwd: "/paper", isStreaming: false, status: "ready" },
+      messages: [],
+      subagents: [],
+      fileWatchLeaseId: "lease-reconnected",
+    });
+    expect(result.current.fileWatchLeaseId).toBe("lease-reconnected");
+  });
+
   it("replaces native context usage and compaction state from live session events", async () => {
     const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
     await waitFor(() => expect(result.current.status).toBe("ready"));

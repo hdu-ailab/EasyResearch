@@ -914,7 +914,13 @@ export function WorkPage({
             hidden={filesHidden}
             className={`h-full min-h-0 overflow-hidden min-[820px]:rounded-[10px] ${!filesHidden ? "animate-v2-fade-in motion-reduce:animate-none" : ""}`}
           >
-            <FileBrowser root={cwd} fileEvent={fileEvent} />
+            <FileBrowser
+              root={cwd}
+              loadEnabled={status === "ready" || status === "running" || status === "stopped"}
+              sessionId={sessionId}
+              fileWatchLeaseId={connection.fileWatchLeaseId}
+              fileEvent={fileEvent}
+            />
           </div>
           <div
             id="work-panel-agents"

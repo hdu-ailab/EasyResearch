@@ -30,6 +30,7 @@ import { ConfigPathError, ConfigServiceError } from "./config-files";
 import type { Logger } from "../runtime/logger";
 import { SubagentSessionNotFoundError, type SubagentSessionService } from "./subagent-sessions";
 import { AuthGatewayError, type AuthGateway } from "./auth-gateway";
+import { FileWatchPathError, UnknownFileWatchLeaseError } from "./file-watcher";
 import {
   ConfigurationUnavailableError,
   type LiveConfiguration,
@@ -203,6 +204,24 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       const eventsMatch = path.match(/^\/api\/sessions\/([^/]+)\/events$/);
       if (req.method === "GET" && eventsMatch) {
         return sessionEvents(services, eventsMatch[1]!);
+      }
+
+      const fileWatchesMatch = path.match(/^\/api\/sessions\/([^/]+)\/file-watches\/([^/]+)$/);
+      if (req.method === "PUT" && fileWatchesMatch) {
+        const body = await jsonBody<{ revision: unknown; directories: unknown }>(req);
+        if (!Number.isSafeInteger(body.revision) || (body.revision as number) < 0) {
+          return errorResponse(400, "revision must be a non-negative safe integer");
+        }
+        if (!Array.isArray(body.directories) || !body.directories.every((directory) => typeof directory === "string")) {
+          return errorResponse(400, "directories must be an array of paths");
+        }
+        const applied = services.registry.replaceFileWatchLease(
+          fileWatchesMatch[1]!,
+          fileWatchesMatch[2]!,
+          body.revision as number,
+          body.directories as string[],
+        );
+        return jsonResponse({ ok: true, applied });
       }
 
       const messagesMatch = path.match(/^\/api\/sessions\/([^/]+)\/messages$/);
@@ -427,6 +446,8 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       if (error instanceof DirectoryServiceError) return errorResponse(error.status, error.message);
       if (error instanceof ExtensionGuardError) return errorResponse(400, error.message);
       if (error instanceof UnknownSessionError) return errorResponse(404, error.message);
+      if (error instanceof UnknownFileWatchLeaseError) return errorResponse(404, error.message);
+      if (error instanceof FileWatchPathError) return errorResponse(400, error.message);
       if (error instanceof SubagentSessionNotFoundError) return errorResponse(404, error.message);
       if (error instanceof BodyError) return errorResponse(400, error.message);
       if (error instanceof ConfigurationUnavailableError) {
@@ -533,6 +554,7 @@ function sessionEvents(services: RouteServices, id: string): Response {
   const encoder = new TextEncoder();
   let controllerRef: ReadableStreamDefaultController<Uint8Array> | null = null;
   let unsubscribe: (() => void) | null = null;
+  let fileWatchLeaseId: string | null = null;
   let snapshotAcquired = false;
   let initialized = false;
   let cancelled = false;
@@ -548,6 +570,9 @@ function sessionEvents(services: RouteServices, id: string): Response {
     postBarrierEvents.length = 0;
     const stopListening = unsubscribe;
     unsubscribe = null;
+    const leaseId = fileWatchLeaseId;
+    fileWatchLeaseId = null;
+    if (leaseId) registry.releaseFileWatchLease(id, leaseId);
     stopListening?.();
     controllerRef = null;
     logger.info("sse disconnected", { sessionId: id });
@@ -567,7 +592,10 @@ function sessionEvents(services: RouteServices, id: string): Response {
       }
       if (controllerRef) send(controllerRef, publicEvent);
     });
+    fileWatchLeaseId = registry.acquireFileWatchLease(id);
   } catch {
+    unsubscribe?.();
+    unsubscribe = null;
     throw new UnknownSessionError(`Unknown session: ${id}`);
   }
   logger.info("sse connected", { sessionId: id });
@@ -582,7 +610,7 @@ function sessionEvents(services: RouteServices, id: string): Response {
       ]).then(
         ([snapshot, subagents]) => {
           if (cancelled) return;
-          send(controller, { type: "snapshot", ...snapshot, subagents });
+          send(controller, { type: "snapshot", ...snapshot, subagents, fileWatchLeaseId });
           for (const event of preBarrierSupplements) send(controller, event);
           for (const event of postBarrierEvents) send(controller, event);
           preBarrierSupplements.length = 0;

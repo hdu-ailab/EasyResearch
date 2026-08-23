@@ -182,12 +182,37 @@ function deferred<T>() {
 }
 
 class FakeWatcherFactory implements FileWatcherFactory {
-  created: Array<{ cwd: string; onEvent: (event: FileWatcherEvent) => void; close: ReturnType<typeof vi.fn> }> = [];
+  private nextLease = 0;
+  created: Array<{
+    cwd: string;
+    onEvent: (event: FileWatcherEvent) => void;
+    close: ReturnType<typeof vi.fn>;
+    leases: Map<string, { revision: number; directories: Set<string> }>;
+  }> = [];
 
   create({ cwd, onEvent }: { cwd: string; onEvent: (event: FileWatcherEvent) => void }) {
     const close = vi.fn(async () => {});
-    this.created.push({ cwd, onEvent, close });
-    return { close };
+    const leases = new Map<string, { revision: number; directories: Set<string> }>();
+    this.created.push({ cwd, onEvent, close, leases });
+    return {
+      acquireLease: () => {
+        const leaseId = `lease-${++this.nextLease}`;
+        leases.set(leaseId, { revision: -1, directories: new Set() });
+        return leaseId;
+      },
+      replaceLease: (leaseId: string, revision: number, directories: readonly string[]) => {
+        const lease = leases.get(leaseId);
+        if (!lease) throw new Error(`unknown lease: ${leaseId}`);
+        if (revision <= lease.revision) return false;
+        lease.revision = revision;
+        lease.directories = new Set(directories);
+        return true;
+      },
+      releaseLease: (leaseId: string) => {
+        leases.delete(leaseId);
+      },
+      close,
+    };
   }
 
   emit(event: FileWatcherEvent) {

@@ -11,6 +11,7 @@ export interface NodeLoadState<T> {
 export interface UseLazyTreeOptions<T> {
   root: string;
   loadChildren: (path: string) => Promise<T[]>;
+  enabled?: boolean;
 }
 
 export interface UseLazyTreeResult<T> {
@@ -32,7 +33,7 @@ export interface UseLazyTreeResult<T> {
  * path: it refuses to start a second request while one is already in flight,
  * so rapid batched toggles can never duplicate a fetch.
  */
-export function useLazyTree<T>({ root, loadChildren }: UseLazyTreeOptions<T>): UseLazyTreeResult<T> {
+export function useLazyTree<T>({ root, loadChildren, enabled = true }: UseLazyTreeOptions<T>): UseLazyTreeResult<T> {
   const [stateMap, setStateMap] = useState<Map<string, NodeLoadState<T>>>(() => new Map());
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const inFlight = useRef<Map<string, number>>(new Map());
@@ -41,6 +42,7 @@ export function useLazyTree<T>({ root, loadChildren }: UseLazyTreeOptions<T>): U
 
   const load = useCallback(
     (path: string) => {
+      if (!enabled) return;
       if (inFlight.current.has(path)) return;
       const token = ++tokens.current;
       inFlight.current.set(path, token);
@@ -66,18 +68,18 @@ export function useLazyTree<T>({ root, loadChildren }: UseLazyTreeOptions<T>): U
           },
         );
     },
-    [loadChildren],
+    [enabled, loadChildren],
   );
 
-  // The root change is the reset boundary; adding load here would re-run the reset when its callback identity changes.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: load is intentionally excluded from the root reset boundary.
+  // Root or enablement changes are reset boundaries; adding load here would also reset when its callback identity changes.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: load is intentionally excluded from these reset boundaries.
   useEffect(() => {
     inFlight.current.clear();
     pendingRefresh.current.clear();
     setStateMap(new Map());
     setExpanded(new Set());
-    load(root);
-  }, [root]);
+    if (enabled) load(root);
+  }, [root, enabled]);
 
   useEffect(() => {
     for (const path of pendingRefresh.current) {

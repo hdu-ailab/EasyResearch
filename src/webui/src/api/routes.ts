@@ -39,6 +39,7 @@ export const routes = {
   touch: (id: string) => `${session(id)}/touch`,
   restart: (id: string) => `${session(id)}/restart`,
   events: (id: string) => `${session(id)}/events`,
+  fileWatches: (id: string, leaseId: string) => `${session(id)}/file-watches/${encodeURIComponent(leaseId)}`,
   config: (scope: ConfigScope, cwd?: string, path?: string) => {
     const params = new URLSearchParams({ scope });
     if (cwd) params.set("cwd", cwd);

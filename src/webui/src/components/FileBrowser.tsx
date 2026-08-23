@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FileContentDto, FileEntryDto, FileWatcherEvent } from "../../../web/contracts";
 import { readFileContent } from "../api";
+import { parentPath } from "../file-watcher";
 import { useI18n } from "../i18n/useI18n";
 import { FilesPanel } from "./FilesPanel";
 import { type FileTab, FileTabs } from "./FileTabs";
@@ -9,6 +10,9 @@ import { previewKind } from "./previews/preview-kind";
 
 export interface FileBrowserProps {
   root: string;
+  loadEnabled?: boolean;
+  sessionId?: string;
+  fileWatchLeaseId?: string | null;
   fileEvent?: FileWatcherEvent | null;
 }
 
@@ -23,7 +27,13 @@ function entryName(path: string): string {
  * tab; PDF previews stream the raw bytes and never fetch the bounded text
  * route.
  */
-export function FileBrowser({ root, fileEvent = null }: FileBrowserProps) {
+export function FileBrowser({
+  root,
+  loadEnabled = true,
+  sessionId,
+  fileWatchLeaseId,
+  fileEvent = null,
+}: FileBrowserProps) {
   const { t } = useI18n();
   const [tabs, setTabs] = useState<FileTab[]>([]);
   const [activeTab, setActiveTab] = useState<string | null>(null);
@@ -36,16 +46,22 @@ export function FileBrowser({ root, fileEvent = null }: FileBrowserProps) {
     if (!fileEvent || handledFileEvent.current === fileEvent) return;
     handledFileEvent.current = fileEvent;
     if (fileEvent?.properties.event !== "change") return;
-    if (previewKind(fileEvent.properties.file) === "pdf") return;
     const path = fileEvent.properties.file;
-    if (!tabs.some((tab) => tab.path === path)) return;
+    const affected = tabs
+      .filter((tab) => previewKind(tab.path) !== "pdf" && (tab.path === path || parentPath(tab.path) === path))
+      .map((tab) => tab.path);
+    if (affected.length === 0) return;
     setContents((current) => {
-      if (!(path in current)) return current;
+      if (!affected.some((candidate) => candidate in current)) return current;
       const next = { ...current };
-      delete next[path];
+      for (const candidate of affected) delete next[candidate];
       return next;
     });
-    setContentRevision((current) => ({ ...current, [path]: (current[path] ?? 0) + 1 }));
+    setContentRevision((current) => {
+      const next = { ...current };
+      for (const candidate of affected) next[candidate] = (current[candidate] ?? 0) + 1;
+      return next;
+    });
   }, [fileEvent, tabs]);
 
   const activeRevision = activeTab ? (contentRevision[activeTab] ?? 0) : 0;
@@ -121,7 +137,14 @@ export function FileBrowser({ root, fileEvent = null }: FileBrowserProps) {
       />
       <div className="flex min-h-0 min-w-0 flex-1">
         <div className={treeVisible ? "flex w-[240px] shrink-0 flex-col border-r border-v2-grey-200" : "hidden"}>
-          <FilesPanel root={root} onOpenFile={openFile} fileEvent={fileEvent} />
+          <FilesPanel
+            root={root}
+            loadEnabled={loadEnabled}
+            sessionId={sessionId}
+            fileWatchLeaseId={fileWatchLeaseId}
+            onOpenFile={openFile}
+            fileEvent={fileEvent}
+          />
         </div>
         <div className="min-w-0 flex-1">
           {activeTab ? (

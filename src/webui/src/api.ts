@@ -141,6 +141,15 @@ export function listEntries(path: string): Promise<FileEntryDto[]> {
   return requestJson(routes.entries(path), parseEntries);
 }
 
+export function replaceFileWatchDirectories(
+  id: string,
+  leaseId: string,
+  revision: number,
+  directories: readonly string[],
+): Promise<void> {
+  return requestVoid(routes.fileWatches(id, leaseId), json("PUT", { revision, directories }));
+}
+
 export function readFileContent(path: string): Promise<FileContentDto> {
   return requestJson(routes.file(path), parseFileContent);
 }

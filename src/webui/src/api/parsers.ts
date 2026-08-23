@@ -450,6 +450,7 @@ export function parseSessionSnapshot(value: unknown): SessionSnapshotDto {
   const steering = source.steering;
   const contextUsage = source.contextUsage;
   const compactionState = source.compactionState;
+  const fileWatchLeaseId = optionalString(source, "fileWatchLeaseId");
   return {
     session: parseActiveSessionValue(source.session),
     messages: parseMessages(source.messages),
@@ -457,6 +458,7 @@ export function parseSessionSnapshot(value: unknown): SessionSnapshotDto {
     ...(steering !== undefined ? { steering: stringArray(steering, "steering") } : {}),
     ...(contextUsage !== undefined ? { contextUsage: parseContextUsage(contextUsage) } : {}),
     ...(compactionState !== undefined ? { compactionState: parseCompactionState(compactionState) } : {}),
+    ...(fileWatchLeaseId !== undefined ? { fileWatchLeaseId } : {}),
   };
 }
 

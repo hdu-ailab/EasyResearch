@@ -282,16 +282,49 @@ class FakeFactory implements SessionFactory {
 }
 
 class FakeWatcherFactory implements FileWatcherFactory {
-  created: Array<{ cwd: string; onEvent: (event: FileWatcherEvent) => void }> = [];
+  private nextLease = 0;
+  created: Array<{
+    cwd: string;
+    onEvent: (event: FileWatcherEvent) => void;
+    leases: Map<string, { revision: number; directories: Set<string> }>;
+    close: ReturnType<typeof vi.fn>;
+  }> = [];
 
   create({ cwd, onEvent }: { cwd: string; onEvent: (event: FileWatcherEvent) => void }) {
+    const leases = new Map<string, { revision: number; directories: Set<string> }>();
     const close = vi.fn(async () => {});
-    this.created.push({ cwd, onEvent });
-    return { close };
+    this.created.push({ cwd, onEvent, leases, close });
+    return {
+      acquireLease: () => {
+        const id = `watch-lease-${++this.nextLease}`;
+        leases.set(id, { revision: -1, directories: new Set() });
+        return id;
+      },
+      replaceLease: (leaseId: string, revision: number, directories: readonly string[]) => {
+        const lease = leases.get(leaseId);
+        if (!lease) throw new Error(`unknown lease: ${leaseId}`);
+        if (revision <= lease.revision) return false;
+        lease.revision = revision;
+        lease.directories = new Set(directories);
+        return true;
+      },
+      releaseLease: (leaseId: string) => {
+        leases.delete(leaseId);
+      },
+      close,
+    };
   }
 
   emit(event: FileWatcherEvent) {
     this.created.at(-1)?.onEvent(event);
+  }
+
+  activeDirectories(): string[] {
+    const directories = new Set<string>();
+    for (const lease of this.created.at(-1)?.leases.values() ?? []) {
+      for (const directory of lease.directories) directories.add(directory);
+    }
+    return [...directories].sort();
   }
 }
 
@@ -1728,6 +1761,86 @@ describe("web routes", () => {
       );
     } finally {
       await reader.cancel();
+    }
+  });
+
+  it("leases demand-driven directories through the SSE snapshot and releases them on disconnect", async () => {
+    const expanded = join(projectDir, "expanded");
+    mkdirSync(expanded);
+    setup();
+    const created = await registry.create({ cwd: projectDir });
+    const events = await handler(new Request(`http://localhost/api/sessions/${created.id}/events`));
+    const reader = events.body!.getReader();
+    try {
+      const snapshot = await readSseEvent(reader);
+      const leaseId = snapshot.fileWatchLeaseId;
+      expect(typeof leaseId).toBe("string");
+
+      const replace = await handler(new Request(
+        `http://localhost/api/sessions/${created.id}/file-watches/${leaseId}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ revision: 2, directories: [projectDir, expanded] }),
+        },
+      ));
+      expect(replace.status).toBe(200);
+      expect(watcherFactory.activeDirectories()).toEqual([expanded, projectDir].sort());
+
+      const stale = await handler(new Request(
+        `http://localhost/api/sessions/${created.id}/file-watches/${leaseId}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ revision: 1, directories: [projectDir] }),
+        },
+      ));
+      expect(stale.status).toBe(200);
+      expect(watcherFactory.activeDirectories()).toEqual([expanded, projectDir].sort());
+    } finally {
+      await reader.cancel();
+    }
+    expect(watcherFactory.activeDirectories()).toEqual([]);
+  });
+
+  it("keeps the union for concurrent Work streams when one lease collapses or disconnects", async () => {
+    const firstDirectory = join(projectDir, "first");
+    const secondDirectory = join(projectDir, "second");
+    mkdirSync(firstDirectory);
+    mkdirSync(secondDirectory);
+    setup();
+    const created = await registry.create({ cwd: projectDir });
+    const firstEvents = await handler(new Request(`http://localhost/api/sessions/${created.id}/events`));
+    const secondEvents = await handler(new Request(`http://localhost/api/sessions/${created.id}/events`));
+    const firstReader = firstEvents.body!.getReader();
+    const secondReader = secondEvents.body!.getReader();
+    try {
+      const firstLease = (await readSseEvent(firstReader)).fileWatchLeaseId as string;
+      const secondLease = (await readSseEvent(secondReader)).fileWatchLeaseId as string;
+      expect(firstLease).not.toBe(secondLease);
+
+      const replace = (lease: string, revision: number, directories: string[]) => handler(new Request(
+        `http://localhost/api/sessions/${created.id}/file-watches/${lease}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ revision, directories }),
+        },
+      ));
+      expect((await replace(firstLease, 1, [projectDir, firstDirectory])).status).toBe(200);
+      expect((await replace(secondLease, 1, [projectDir, secondDirectory])).status).toBe(200);
+      expect(watcherFactory.activeDirectories()).toEqual([firstDirectory, projectDir, secondDirectory].sort());
+
+      expect((await replace(firstLease, 2, [projectDir])).status).toBe(200);
+      expect(watcherFactory.activeDirectories()).toEqual([projectDir, secondDirectory].sort());
+
+      await firstReader.cancel();
+      expect(watcherFactory.activeDirectories()).toEqual([projectDir, secondDirectory].sort());
+      await secondReader.cancel();
+      expect(watcherFactory.activeDirectories()).toEqual([]);
+    } finally {
+      await firstReader.cancel();
+      await secondReader.cancel();
     }
   });
 

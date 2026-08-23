@@ -21,6 +21,7 @@ import {
   openSession,
   patchAgent,
   readConfigFile,
+  replaceFileWatchDirectories,
   restartSession,
   sendPrompt,
   stopSession,
@@ -262,6 +263,14 @@ describe("api transport", () => {
   it("touchSession POSTs the encoded session endpoint", async () => {
     await touchSession("abc/123");
     expect(fetchMock).toHaveBeenCalledWith("/api/sessions/abc%2F123/touch", { method: "POST" });
+  });
+
+  it("replaces one encoded file-watch lease with its complete directory set", async () => {
+    await replaceFileWatchDirectories("session/1", "lease/1", 3, ["/p", "/p/src"]);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/sessions/session%2F1/file-watches/lease%2F1");
+    expect(init.method).toBe("PUT");
+    expect(JSON.parse(init.body as string)).toEqual({ revision: 3, directories: ["/p", "/p/src"] });
   });
 
   it("getSnapshot GETs session snapshot", async () => {
