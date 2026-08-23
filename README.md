@@ -12,13 +12,54 @@ An AI research team that searches, experiments, writes, and draws. Start a
 literature review or a bounded experiment campaign with one instruction; every
 step leaves sources, logs, results, and checkpoints you can inspect.
 
+## Install
+
+### Desktop App
+
+The desktop app bundles the matching native EasyResearch backend. It does not
+require a global npm installation, Node, or Bun.
+
+| System | Download | Install |
+|---|---|---|
+| Windows x64 | [`EasyResearch-<version>-windows-x64.exe`](https://github.com/hdu-ailab/EasyResearch/releases/latest) | Run the installer. |
+| macOS Apple silicon | [`EasyResearch-<version>-macos-arm64.dmg`](https://github.com/hdu-ailab/EasyResearch/releases/latest) | Open the DMG and drag EasyResearch to Applications. |
+| Linux | No desktop package | Use the npm CLI below. |
+
+1. Open the [latest GitHub Release](https://github.com/hdu-ailab/EasyResearch/releases/latest).
+2. Download the installer for your platform and `SHA256SUMS`.
+3. Compare the installer hash with `SHA256SUMS` before opening it:
+
+```powershell
+Get-FileHash -Algorithm SHA256 .\EasyResearch-*-windows-x64.exe
+```
+
+```bash
+shasum -a 256 EasyResearch-*-macos-arm64.dmg
+```
+
+GitHub build-provenance attestations can also be checked with:
+
+```bash
+gh attestation verify /path/to/downloaded/installer --repo hdu-ailab/EasyResearch
+```
+
+The installers are currently unsigned. After verifying the download, Windows
+users can choose **More info** and **Run anyway** if SmartScreen warns. On
+macOS, right-click EasyResearch and choose **Open** if Gatekeeper blocks the
+first launch.
+
+Desktop and CLI share `~/.easyresearch/agent` state but cannot run at the same
+time. Starting Desktop stops a running CLI service; CLI start and exit commands
+are rejected while Desktop owns the state. Closing the window keeps Desktop
+active in the tray or menu bar; use **Exit** there to cancel active work and stop
+the backend. Desktop updates are manual downloads from GitHub Releases.
+
+### npm CLI
+
 ```bash
 npm install -g easyresearch@latest
 easyresearch
 ```
-
-Desktop installers for Windows x64 and Apple Silicon macOS are available from
-[GitHub Releases](https://github.com/hdu-ailab/EasyResearch/releases/latest).
 
 EasyResearch opens a local Web workspace. Choose a project directory, connect a
 model provider in **Settings**, and describe the outcome you want.
@@ -165,20 +206,10 @@ For manual configuration:
 - [Model and provider configuration](./docs/model-configuration.md)
 - [Agent and Skill customization](./docs/agent-customization.md)
 
-## Installation Notes
+## Runtime Notes
 
 - The npm CLI supports Linux x64, Apple Silicon macOS, and Windows x64. Its
   selected platform executable needs neither Node nor Bun.
-- The desktop app supports Windows x64 and Apple Silicon macOS; there is no
-  Linux desktop package. It bundles the matching native backend and does not
-  require a global npm installation.
-- Desktop and CLI use the same `~/.easyresearch/agent` state but cannot run at
-  the same time. Opening Desktop stops a running CLI service; CLI start and exit
-  commands are blocked while Desktop owns the state.
-- Closing the desktop window keeps EasyResearch running in the tray or menu
-  bar. Use **Exit** there to cancel active work and stop the backend.
-- Desktop updates are manual downloads from GitHub Releases. The installers are
-  currently unsigned, so Windows SmartScreen or macOS Gatekeeper may warn.
 - Windows runs natively through PowerShell and does not require WSL or Git Bash.
 - Python 3 on `PATH` enables PDF conversion, arXiv SDK features, and bundled Web
   search. Startup degrades gracefully when Python is unavailable.

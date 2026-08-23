@@ -11,13 +11,51 @@
 一支会检索、实验、写作和制图的 AI 研究团队。用一条指令启动文献综述或有边界的
 自动实验优化，每一步都保留可检查的来源、日志、结果与检查点。
 
+## 安装
+
+### 桌面版
+
+桌面版已经内置对应的 EasyResearch 原生后端，不要求全局安装 npm 包、Node 或 Bun。
+
+| 系统 | 下载文件 | 安装方式 |
+|---|---|---|
+| Windows x64 | [`EasyResearch-<version>-windows-x64.exe`](https://github.com/hdu-ailab/EasyResearch/releases/latest) | 运行安装程序。 |
+| Apple Silicon macOS | [`EasyResearch-<version>-macos-arm64.dmg`](https://github.com/hdu-ailab/EasyResearch/releases/latest) | 打开 DMG，将 EasyResearch 拖入 Applications。 |
+| Linux | 不提供桌面安装包 | 使用下方 npm CLI。 |
+
+1. 打开[最新 GitHub Release](https://github.com/hdu-ailab/EasyResearch/releases/latest)。
+2. 下载对应平台的安装包和 `SHA256SUMS`。
+3. 打开安装包前，将文件哈希与 `SHA256SUMS` 对比：
+
+```powershell
+Get-FileHash -Algorithm SHA256 .\EasyResearch-*-windows-x64.exe
+```
+
+```bash
+shasum -a 256 EasyResearch-*-macos-arm64.dmg
+```
+
+还可以使用 GitHub CLI 核验构建来源证明：
+
+```bash
+gh attestation verify /path/to/downloaded/installer --repo hdu-ailab/EasyResearch
+```
+
+安装包目前未签名。完成校验后，如果 Windows SmartScreen 发出警告，可选择
+**更多信息**和**仍要运行**；如果 macOS Gatekeeper 阻止首次启动，可右键
+EasyResearch 并选择**打开**。
+
+桌面版与 CLI 共用 `~/.easyresearch/agent` 状态，但不能同时运行。启动桌面版会停止
+正在运行的 CLI 服务；桌面版持有状态期间，CLI 启动与退出命令会被拒绝。关闭窗口
+只会隐藏到系统托盘或菜单栏；使用其中的**退出**才会取消活动任务并停止后端。
+桌面版通过 GitHub Releases 手动更新。
+
+### npm CLI
+
 ```bash
 npm install -g easyresearch@latest
 easyresearch
 ```
-
-Windows x64 与 Apple Silicon macOS 桌面安装包可从
-[GitHub Releases](https://github.com/hdu-ailab/EasyResearch/releases/latest) 下载。
 
 EasyResearch 会打开本地 Web 工作区。选择一个项目目录，在**设置**中连接模型
 provider，然后描述你想得到的成果。
@@ -151,18 +189,10 @@ flowchart LR
 - [模型与 provider 配置](./docs/model-configuration.zh-CN.md)
 - [Agent 与 Skill 定制](./docs/agent-customization.zh-CN.md)
 
-## 安装说明
+## 运行说明
 
 - npm CLI 支持 Linux x64、Apple Silicon macOS 和 Windows x64；被选中的平台
   可执行文件本身不需要 Node 或 Bun。
-- 桌面版支持 Windows x64 与 Apple Silicon macOS，不提供 Linux 桌面安装包。
-  桌面版内置对应原生后端，不要求预先全局安装 npm 包。
-- 桌面版与 CLI 共用 `~/.easyresearch/agent` 状态，但不能同时运行。启动桌面版会
-  停止正在运行的 CLI 服务；桌面版持有状态期间，CLI 启动与退出命令会被拒绝。
-- 关闭桌面窗口只会隐藏到系统托盘或菜单栏；使用其中的**退出**才会取消活动任务并
-  停止后端。
-- 桌面版通过 GitHub Releases 手动更新。安装包目前未签名，Windows SmartScreen
-  或 macOS Gatekeeper 可能显示警告。
 - Windows 通过 PowerShell 原生运行，不需要 WSL 或 Git Bash。
 - `PATH` 中的 Python 3 用于 PDF 转换、arXiv SDK 功能和内置 Web 检索；缺少
   Python 时，启动会降级而不是直接失败。
