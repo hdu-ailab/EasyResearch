@@ -33,6 +33,7 @@ export const routes = {
   commands: (id: string) => `${session(id)}/commands`,
   tree: (id: string) => `${session(id)}/tree`,
   treeNavigate: (id: string) => `${session(id)}/tree/navigate`,
+  compact: (id: string) => `${session(id)}/compact`,
   abort: (id: string) => `${session(id)}/abort`,
   stop: (id: string) => `${session(id)}/stop`,
   touch: (id: string) => `${session(id)}/touch`,

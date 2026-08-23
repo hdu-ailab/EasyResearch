@@ -17,13 +17,19 @@ function statusDot(configured: boolean): string {
 export function ProviderConnectModal({ onClose }: ProviderConnectModalProps) {
   const { t } = useI18n();
   const f = useProviderAuthFlow();
-  const zIndex = useModalLayer(onClose);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const zIndex = useModalLayer(onClose, dialogRef);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const [activeId, setActiveId] = useState<string | undefined>(undefined);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const searchRef = useRef<HTMLInputElement | null>(null);
 
   const selected = selectedId ? (f.providers.find((p) => p.id === selectedId) ?? null) : null;
+
+  useEffect(() => {
+    if (f.view === "idle" && !selected) searchRef.current?.focus();
+  }, [f.view, selected]);
 
   // Leaving flow (abort/error/done/back) clears the selected provider so the
   // list is the resting view.
@@ -67,8 +73,21 @@ export function ProviderConnectModal({ onClose }: ProviderConnectModalProps) {
   };
 
   const handleListKeyDown = (event: React.KeyboardEvent) => {
-    if (event.key === "ArrowDown") return move(1);
-    if (event.key === "ArrowUp") return move(-1);
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      move(event.key === "ArrowDown" ? 1 : -1);
+      return;
+    }
+    if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      const target = event.key === "Home" ? filtered[0] : filtered.at(-1);
+      if (!target) return;
+      setActiveId(target.id);
+      listRef.current
+        ?.querySelector<HTMLElement>(`[data-provider-id="${CSS.escape(target.id)}"]`)
+        ?.focus({ preventScroll: true });
+      return;
+    }
     if (event.key !== "Enter" || !activeId) return;
     const provider = filtered.find((p) => p.id === activeId);
     if (provider) openProvider(provider.id, provider.authMethods);
@@ -78,6 +97,7 @@ export function ProviderConnectModal({ onClose }: ProviderConnectModalProps) {
   return (
     <div className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/30 p-3 sm:p-6" style={{ zIndex }}>
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label={t("providerConnect.title")}
@@ -110,6 +130,7 @@ export function ProviderConnectModal({ onClose }: ProviderConnectModalProps) {
                   aria-hidden
                 />
                 <input
+                  ref={searchRef}
                   type="search"
                   aria-label={t("providerConnect.search")}
                   placeholder={t("providerConnect.search")}
@@ -130,6 +151,7 @@ export function ProviderConnectModal({ onClose }: ProviderConnectModalProps) {
                     active={activeId === p.id}
                     onActivate={() => setActiveId(p.id)}
                     onOpen={() => openProvider(p.id, p.authMethods)}
+                    onKeyDown={handleListKeyDown}
                   />
                 ))}
                 {filtered.length === 0 && (
@@ -236,11 +258,13 @@ function ProviderRow({
   active,
   onActivate,
   onOpen,
+  onKeyDown,
 }: {
   provider: AuthProviderInfoDto;
   active: boolean;
   onActivate: () => void;
   onOpen: () => void;
+  onKeyDown: (event: React.KeyboardEvent) => void;
 }) {
   const { t } = useI18n();
   return (
@@ -248,6 +272,8 @@ function ProviderRow({
       type="button"
       data-provider-id={provider.id}
       onMouseEnter={onActivate}
+      onFocus={onActivate}
+      onKeyDown={onKeyDown}
       onClick={onOpen}
       className={`flex min-h-9 w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-[13px] leading-none tracking-[-0.04px] transition-colors ${
         active ? "bg-v2-grey-100" : "hover:bg-v2-grey-100"

@@ -41,9 +41,33 @@ export interface SessionSnapshotDto {
   session: ActiveSessionDto;
   messages: AgentMessage[];
   subagents: SubagentSessionSummaryDto[];
+  contextUsage?: ContextUsageDto;
+  compactionState?: CompactionStateDto;
   /** Pending steer messages not yet delivered into the agent context
    * (ADR-083); omitted or empty for historical/stopped sessions. */
   steering?: string[];
+}
+
+export interface ContextUsageDto {
+  tokens: number | null;
+  contextWindow: number;
+  percent: number | null;
+}
+
+export type CompactionStateDto = "idle" | "queued" | "running";
+
+export interface CompactionRequestResultDto {
+  state: "queued" | "running";
+}
+
+export interface SessionStatsChangedEventDto {
+  type: "session_stats_changed";
+  contextUsage?: ContextUsageDto;
+}
+
+export interface CompactionStateChangedEventDto {
+  type: "compaction_state_changed";
+  state: CompactionStateDto;
 }
 
 export interface SkillCommandDto {
@@ -59,13 +83,46 @@ export interface WebTreeEntryDto {
   parentId: string | null;
   /** Mirrors the transcript bubble roles; non-bubble entries map to `other`. */
   role: "user" | "assistant" | "other";
+  kind:
+    | "user"
+    | "assistant"
+    | "tool"
+    | "bash"
+    | "message"
+    | "custom-message"
+    | "compaction"
+    | "branch-summary"
+    | "model-change"
+    | "thinking-change"
+    | "session-info"
+    | "custom"
+    | "label"
+    | "other";
   text: string;
+  label?: string;
+  labelTimestamp?: string;
+  stopReason?: string;
+  errorMessage?: string;
+  tokensBefore?: number;
   /** Compaction entries only: the kept context starts at this entry. */
   firstKeptEntryId?: string;
 }
 
 export interface SessionTreeDto {
   tree: WebTreeEntryDto[];
+  leafId: string | null;
+  filterMode: "default" | "no-tools" | "user-only" | "labeled-only" | "all";
+  skipBranchSummaryPrompt: boolean;
+}
+
+export interface TreeNavigationOptionsDto {
+  summarize?: boolean;
+  customInstructions?: string;
+}
+
+export interface TreeNavigationResultDto {
+  cancelled: boolean;
+  editorText?: string;
   leafId: string | null;
 }
 

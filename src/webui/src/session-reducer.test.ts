@@ -19,6 +19,7 @@ const emptyState: SessionViewState = {
   retry: null,
   nextOrder: 0,
   steers: [],
+  compactionState: "idle",
 };
 
 function userMessage(text: string) {
@@ -124,6 +125,19 @@ describe("session reducer", () => {
     expect(state.messages[0]!.role).toBe("user");
     expect(state.messages[1]!.role).toBe("assistant");
     expect(state.isStreaming).toBe(true);
+  });
+
+  it("hydrates native context usage and queued compaction state without estimating tokens", () => {
+    const state = fromSnapshot({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      subagents: [],
+      messages: [],
+      contextUsage: { tokens: null, contextWindow: 128_000, percent: null },
+      compactionState: "queued",
+    });
+
+    expect(state.contextUsage).toEqual({ tokens: null, contextWindow: 128_000, percent: null });
+    expect(state.compactionState).toBe("queued");
   });
 
   it("restores the assistant delta cursor from a running snapshot", () => {

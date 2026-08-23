@@ -208,11 +208,8 @@ export function DocxPreview({ path, revision = 0, loader }: DocxPreviewProps) {
       <header className="flex shrink-0 items-center gap-1 border-b border-v2-grey-200 px-2 py-1.5">
         <FileText size={14} className="shrink-0 text-v2-icon-icon-muted" aria-hidden />
         <span className="mr-auto shrink-0 font-mono text-[11px] text-v2-text-text-faint">DOCX</span>
-        <div
-          className="flex min-w-0 flex-wrap items-center gap-1"
-          role="toolbar"
-          aria-label={t("preview.docx.controls")}
-        >
+        <fieldset className="flex min-w-0 flex-wrap items-center gap-1 border-0 p-0">
+          <legend className="sr-only">{t("preview.docx.controls")}</legend>
           <button
             type="button"
             className={iconButton}
@@ -240,12 +237,13 @@ export function DocxPreview({ path, revision = 0, loader }: DocxPreviewProps) {
           <a
             href={rawFileUrl(path)}
             download
+            aria-label={t("preview.docx.download")}
             className="flex h-7 shrink-0 items-center gap-1 rounded-md px-1.5 text-[12px] font-medium text-v2-text-text-muted transition-colors hover:bg-v2-grey-100 hover:text-v2-text-text-base"
           >
             <Download size={13} aria-hidden />
             <span className="hidden sm:inline">{t("preview.docx.download")}</span>
           </a>
-        </div>
+        </fieldset>
       </header>
       <div className="relative min-h-0 flex-1 bg-v2-grey-100">
         <iframe

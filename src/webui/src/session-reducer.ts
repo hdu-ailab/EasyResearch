@@ -1,5 +1,11 @@
 import type { AgentSessionEvent, MessageUpdateEvent } from "@earendil-works/pi-coding-agent";
-import type { SessionSnapshotDto, SubagentSessionSummaryDto, SubagentSupervisorEventDto } from "../../web/contracts";
+import type {
+  CompactionStateDto,
+  ContextUsageDto,
+  SessionSnapshotDto,
+  SubagentSessionSummaryDto,
+  SubagentSupervisorEventDto,
+} from "../../web/contracts";
 import { RESEARCH_ASSISTANT_AGENT } from "./agent-identity";
 
 /** Latest live activity of a running subagent from a dedicated supervisor event. */
@@ -94,6 +100,8 @@ export interface SessionViewState {
   steers: SteerView[];
   /** Persisted supervisor summaries from the latest snapshot, including nested owners. */
   subagentSummaries?: SubagentSessionSummaryDto[];
+  contextUsage?: ContextUsageDto;
+  compactionState: CompactionStateDto;
 }
 
 export interface SteerView {
@@ -120,6 +128,7 @@ const emptyState: SessionViewState = {
   retry: null,
   nextOrder: 0,
   steers: [],
+  compactionState: "idle",
 };
 
 type UnknownMessage = {
@@ -359,6 +368,8 @@ export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
     nextOrder: 0,
     steers: (snapshot.steering ?? []).map((text, index) => createSteerView(text, `steer:${index}`)),
     subagentSummaries: snapshot.subagents ?? [],
+    ...(snapshot.contextUsage !== undefined ? { contextUsage: snapshot.contextUsage } : {}),
+    compactionState: snapshot.compactionState ?? "idle",
   };
   const next = () => state.nextOrder++;
   let cursorCandidate: SessionMessageView | undefined;

@@ -160,16 +160,36 @@ class FakeAdapter implements SessionAdapter {
     return this.backgroundWork;
   }
   commandsResult: WebSlashCommand[] = [];
-  treeResult: { tree: SessionTreeNode[]; leafId: string | null } = { tree: [], leafId: null };
-  navigateCalls: string[] = [];
+  treeResult: Awaited<ReturnType<SessionAdapter["getTree"]>> = {
+    tree: [] as SessionTreeNode[],
+    leafId: null as string | null,
+    filterMode: "default",
+    skipBranchSummaryPrompt: false,
+  };
+  navigateCalls: Array<{ entryId: string; options?: { summarize?: boolean; customInstructions?: string } }> = [];
+  navigateResult = { cancelled: false, editorText: "restored prompt", leafId: "leaf-after" as string | null };
+  compactCalls: Array<string | undefined> = [];
+  compactState: "queued" | "running" = "running";
+  contextUsage: { tokens: number | null; contextWindow: number; percent: number | null } | undefined;
   async getCommands(): Promise<WebSlashCommand[]> {
     return this.commandsResult;
   }
-  async getTree(): Promise<{ tree: SessionTreeNode[]; leafId: string | null }> {
+  async getTree() {
     return this.treeResult;
   }
-  async navigateTree(entryId: string): Promise<void> {
-    this.navigateCalls.push(entryId);
+  async navigateTree(entryId: string, options?: { summarize?: boolean; customInstructions?: string }) {
+    this.navigateCalls.push({ entryId, ...(options ? { options } : {}) });
+    return this.navigateResult;
+  }
+  async compact(customInstructions?: string) {
+    this.compactCalls.push(customInstructions);
+    return { state: this.compactState };
+  }
+  getCompactionState() {
+    return this.compactState;
+  }
+  getContextUsage() {
+    return this.contextUsage;
   }
   onEvent(listener: (event: unknown) => void) {
     this.events.add(listener);
@@ -742,14 +762,24 @@ describe("web routes", () => {
     setup();
     const created = await registry.create({ cwd: projectDir });
     const adapter = FakeAdapter.all.at(-1)!;
-    adapter.treeResult = { tree: [], leafId: "leaf-1" };
+    adapter.treeResult = {
+      tree: [],
+      leafId: "leaf-1",
+      filterMode: "user-only",
+      skipBranchSummaryPrompt: true,
+    };
 
     const res = await handler(new Request(`http://localhost/api/sessions/${created.id}/tree`));
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ tree: [], leafId: "leaf-1" });
+    expect(await res.json()).toEqual({
+      tree: [],
+      leafId: "leaf-1",
+      filterMode: "user-only",
+      skipBranchSummaryPrompt: true,
+    });
   });
 
-  it("POST /api/sessions/:id/tree/navigate forwards the entry id", async () => {
+  it("POST /api/sessions/:id/tree/navigate forwards summary options and returns Pi navigation state", async () => {
     setup();
     const created = await registry.create({ cwd: projectDir });
     const adapter = FakeAdapter.all.at(-1)!;
@@ -757,12 +787,44 @@ describe("web routes", () => {
     const res = await handler(
       new Request(`http://localhost/api/sessions/${created.id}/tree/navigate`, {
         method: "POST",
-        body: JSON.stringify({ entryId: "entry-9" }),
+        body: JSON.stringify({
+          entryId: "entry-9",
+          summarize: true,
+          customInstructions: "focus on evidence",
+        }),
         headers: { "Content-Type": "application/json" },
       }),
     );
     expect(res.status).toBe(200);
-    expect(adapter.navigateCalls).toEqual(["entry-9"]);
+    expect(adapter.navigateCalls).toEqual([
+      {
+        entryId: "entry-9",
+        options: { summarize: true, customInstructions: "focus on evidence" },
+      },
+    ]);
+    expect(await res.json()).toEqual({
+      cancelled: false,
+      editorText: "restored prompt",
+      leafId: "leaf-after",
+    });
+  });
+
+  it("POST /api/sessions/:id/compact accepts native custom instructions without waiting for completion", async () => {
+    setup();
+    const created = await registry.create({ cwd: projectDir });
+    const adapter = FakeAdapter.all.at(-1)!;
+    adapter.compactState = "queued";
+
+    const res = await handler(
+      new Request(`http://localhost/api/sessions/${created.id}/compact`, {
+        method: "POST",
+        body: JSON.stringify({ customInstructions: "Keep experiment decisions" }),
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ state: "queued" });
+    expect(adapter.compactCalls).toEqual(["Keep experiment decisions"]);
   });
 
   it("POST /api/sessions/:id/tree/navigate rejects a missing entry id", async () => {
@@ -891,6 +953,8 @@ describe("web routes", () => {
         }),
       )
     ).json()) as { id: string };
+    factory.created[0]!.contextUsage = { tokens: null, contextWindow: 128_000, percent: null };
+    factory.created[0]!.compactState = "queued";
 
     const res = await handler(new Request(`http://localhost/api/sessions/${created.id}/events`));
     expect(res.status).toBe(200);
@@ -898,7 +962,10 @@ describe("web routes", () => {
     const reader = res.body!.getReader();
     const decoder = new TextDecoder();
     const first = await reader.read();
-    expect(decoder.decode(first.value)).toContain('"type":"snapshot"');
+    const snapshotEvent = decoder.decode(first.value);
+    expect(snapshotEvent).toContain('"type":"snapshot"');
+    expect(snapshotEvent).toContain('"contextUsage":{"tokens":null,"contextWindow":128000,"percent":null}');
+    expect(snapshotEvent).toContain('"compactionState":"queued"');
 
     const adapter = factory.created[0]!;
     adapter.events.forEach((listener) => listener({ type: "message_start" } as never));

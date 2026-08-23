@@ -230,16 +230,42 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
 
       const treeMatch = path.match(/^\/api\/sessions\/([^/]+)\/tree$/);
       if (req.method === "GET" && treeMatch) {
-        const { tree, leafId } = await services.registry.getTree(treeMatch[1]!);
-        return jsonResponse({ tree: flattenMessageTree(tree), leafId });
+        const { tree, ...state } = await services.registry.getTree(treeMatch[1]!);
+        return jsonResponse({ tree: flattenMessageTree(tree), ...state });
       }
 
       const treeNavigateMatch = path.match(/^\/api\/sessions\/([^/]+)\/tree\/navigate$/);
       if (req.method === "POST" && treeNavigateMatch) {
-        const body = await jsonBody<{ entryId: unknown }>(req);
+        const body = await jsonBody<{
+          entryId: unknown;
+          summarize?: unknown;
+          customInstructions?: unknown;
+        }>(req);
         if (typeof body.entryId !== "string" || !body.entryId) return errorResponse(400, "entryId is required");
-        await services.registry.navigateTree(treeNavigateMatch[1]!, body.entryId);
-        return jsonResponse({ ok: true });
+        if (body.summarize !== undefined && typeof body.summarize !== "boolean") {
+          return errorResponse(400, "summarize must be a boolean");
+        }
+        if (body.customInstructions !== undefined && typeof body.customInstructions !== "string") {
+          return errorResponse(400, "customInstructions must be a string");
+        }
+        const options = {
+          ...(body.summarize !== undefined ? { summarize: body.summarize } : {}),
+          ...(body.customInstructions !== undefined ? { customInstructions: body.customInstructions } : {}),
+        };
+        return jsonResponse(await services.registry.navigateTree(
+          treeNavigateMatch[1]!,
+          body.entryId,
+          Object.keys(options).length > 0 ? options : undefined,
+        ));
+      }
+
+      const compactMatch = path.match(/^\/api\/sessions\/([^/]+)\/compact$/);
+      if (req.method === "POST" && compactMatch) {
+        const body = await jsonBody<{ customInstructions?: unknown }>(req);
+        if (body.customInstructions !== undefined && typeof body.customInstructions !== "string") {
+          return errorResponse(400, "customInstructions must be a string");
+        }
+        return jsonResponse(await services.registry.compact(compactMatch[1]!, body.customInstructions));
       }
 
       const sessionNameMatch = path.match(/^\/api\/sessions\/([^/]+)\/name$/);
@@ -554,9 +580,9 @@ function sessionEvents(services: RouteServices, id: string): Response {
         }),
         subagentSessions.summaries(id),
       ]).then(
-        ([{ session, messages, steering }, subagents]) => {
+        ([snapshot, subagents]) => {
           if (cancelled) return;
-          send(controller, { type: "snapshot", session, messages, steering, subagents });
+          send(controller, { type: "snapshot", ...snapshot, subagents });
           for (const event of preBarrierSupplements) send(controller, event);
           for (const event of postBarrierEvents) send(controller, event);
           preBarrierSupplements.length = 0;

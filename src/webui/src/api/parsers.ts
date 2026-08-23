@@ -8,18 +8,24 @@ import type {
   AuthFlowEventDto,
   AuthProviderInfoDto,
   ChildSessionSnapshotDto,
+  CompactionRequestResultDto,
+  CompactionStateChangedEventDto,
+  CompactionStateDto,
   ConfigEntryDto,
   ConfigurationEvent,
+  ContextUsageDto,
   DirectoryEntryDto,
   FileContentDto,
   FileEntryDto,
   SessionSnapshotDto,
+  SessionStatsChangedEventDto,
   SessionSummaryDto,
   SessionTreeDto,
   SkillCommandDto,
   StatusDto,
   SubagentSessionSummaryDto,
   SubagentSupervisorEventDto,
+  TreeNavigationResultDto,
   UpdateCheckDto,
   WebTreeEntryDto,
 } from "../../../web/contracts";
@@ -95,6 +101,57 @@ function optionalNumber(source: RecordValue, key: string): number | undefined {
     throw new Error(`Invalid API response: ${key} must be a number`);
   }
   return value;
+}
+
+function nullableNumber(source: RecordValue, key: string): number | null {
+  const value = source[key];
+  if (value === null) return null;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`Invalid API response: ${key} must be a number or null`);
+  }
+  return value;
+}
+
+function parseContextUsage(value: unknown): ContextUsageDto {
+  const source = record(value, "context usage");
+  return {
+    tokens: nullableNumber(source, "tokens"),
+    contextWindow: requiredNumber(source, "contextWindow"),
+    percent: nullableNumber(source, "percent"),
+  };
+}
+
+function parseCompactionState(value: unknown): CompactionStateDto {
+  if (value !== "idle" && value !== "queued" && value !== "running") {
+    throw new Error("Invalid API response: compactionState must be idle, queued, or running");
+  }
+  return value;
+}
+
+export function parseCompactionRequestResult(value: unknown): CompactionRequestResultDto {
+  const source = record(value, "compaction result");
+  const state = parseCompactionState(source.state);
+  if (state === "idle") throw new Error("Invalid API response: accepted compaction state cannot be idle");
+  return { state };
+}
+
+export function parseSessionStatsChangedEvent(value: unknown): SessionStatsChangedEventDto {
+  const source = record(value, "session stats event");
+  if (source.type !== "session_stats_changed") {
+    throw new Error("Invalid API response: session stats event type is invalid");
+  }
+  return {
+    type: "session_stats_changed",
+    ...(source.contextUsage !== undefined ? { contextUsage: parseContextUsage(source.contextUsage) } : {}),
+  };
+}
+
+export function parseCompactionStateChangedEvent(value: unknown): CompactionStateChangedEventDto {
+  const source = record(value, "compaction state event");
+  if (source.type !== "compaction_state_changed") {
+    throw new Error("Invalid API response: compaction state event type is invalid");
+  }
+  return { type: "compaction_state_changed", state: parseCompactionState(source.state) };
 }
 
 function stringArray(value: unknown, label: string): string[] {
@@ -391,11 +448,15 @@ export function parseActiveSession(value: unknown): ActiveSessionDto {
 export function parseSessionSnapshot(value: unknown): SessionSnapshotDto {
   const source = record(value, "session snapshot");
   const steering = source.steering;
+  const contextUsage = source.contextUsage;
+  const compactionState = source.compactionState;
   return {
     session: parseActiveSessionValue(source.session),
     messages: parseMessages(source.messages),
     subagents: arrayOf(source.subagents, "subagents", parseSubagentSummary),
     ...(steering !== undefined ? { steering: stringArray(steering, "steering") } : {}),
+    ...(contextUsage !== undefined ? { contextUsage: parseContextUsage(contextUsage) } : {}),
+    ...(compactionState !== undefined ? { compactionState: parseCompactionState(compactionState) } : {}),
   };
 }
 
@@ -618,19 +679,77 @@ export function parseSessionTree(value: unknown): SessionTreeDto {
       if (parentId !== null && typeof parentId !== "string") continue;
       const role = entry.role;
       if (role !== "user" && role !== "assistant" && role !== "other") continue;
+      const kind = entry.kind;
+      if (!isTreeEntryKind(kind)) continue;
       const text = entry.text;
       if (typeof text !== "string") continue;
       const firstKeptEntryId = entry.firstKeptEntryId;
       if (firstKeptEntryId !== undefined && typeof firstKeptEntryId !== "string") continue;
+      const label = optionalString(entry, "label");
+      const labelTimestamp = optionalString(entry, "labelTimestamp");
+      const stopReason = optionalString(entry, "stopReason");
+      const errorMessage = optionalString(entry, "errorMessage");
+      const tokensBefore = optionalNumber(entry, "tokensBefore");
       tree.push({
         id: entry.id,
         parentId: parentId as string | null,
         role,
+        kind,
         text,
+        ...(label !== undefined ? { label } : {}),
+        ...(labelTimestamp !== undefined ? { labelTimestamp } : {}),
+        ...(stopReason !== undefined ? { stopReason } : {}),
+        ...(errorMessage !== undefined ? { errorMessage } : {}),
+        ...(tokensBefore !== undefined ? { tokensBefore } : {}),
         ...(typeof firstKeptEntryId === "string" ? { firstKeptEntryId } : {}),
       });
     }
   }
   const leafId = body.leafId;
-  return { tree, leafId: typeof leafId === "string" ? leafId : null };
+  const filterMode = isTreeFilterMode(body.filterMode) ? body.filterMode : "default";
+  return {
+    tree,
+    leafId: typeof leafId === "string" ? leafId : null,
+    filterMode,
+    skipBranchSummaryPrompt: body.skipBranchSummaryPrompt === true,
+  };
+}
+
+export function parseTreeNavigationResult(value: unknown): TreeNavigationResultDto {
+  const body = record(value, "tree navigation");
+  const editorText = optionalString(body, "editorText");
+  const leafId = body.leafId;
+  if (leafId !== null && typeof leafId !== "string") {
+    throw new Error("Invalid API response: tree navigation leafId is invalid");
+  }
+  return {
+    cancelled: requiredBoolean(body, "cancelled"),
+    ...(editorText !== undefined ? { editorText } : {}),
+    leafId,
+  };
+}
+
+function isTreeFilterMode(value: unknown): value is SessionTreeDto["filterMode"] {
+  return (
+    value === "default" || value === "no-tools" || value === "user-only" || value === "labeled-only" || value === "all"
+  );
+}
+
+function isTreeEntryKind(value: unknown): value is WebTreeEntryDto["kind"] {
+  return (
+    value === "user" ||
+    value === "assistant" ||
+    value === "tool" ||
+    value === "bash" ||
+    value === "message" ||
+    value === "custom-message" ||
+    value === "compaction" ||
+    value === "branch-summary" ||
+    value === "model-change" ||
+    value === "thinking-change" ||
+    value === "session-info" ||
+    value === "custom" ||
+    value === "label" ||
+    value === "other"
+  );
 }

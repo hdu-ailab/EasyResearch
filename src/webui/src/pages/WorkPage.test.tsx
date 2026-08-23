@@ -31,19 +31,26 @@ vi.mock("../api", async (importOriginal) => {
     listModels: vi.fn(),
     patchAgent: vi.fn(),
     getSessionCommands: vi.fn().mockResolvedValue([]),
-    getSessionTree: vi.fn().mockResolvedValue({ tree: [], leafId: null }),
+    getSessionTree: vi.fn().mockResolvedValue({
+      tree: [],
+      leafId: null,
+      filterMode: "default",
+      skipBranchSummaryPrompt: false,
+    }),
     navigateSessionTree: vi.fn().mockResolvedValue(undefined),
+    compactSession: vi.fn(),
     renameSession: vi.fn(),
   };
 });
 
-const snapshot = {
+const snapshotValue = {
   session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready", sessionFile: "/agent/sessions/--p--/a.jsonl" },
   messages: [
     { role: "user", content: [{ type: "text", text: "write a paper" }] },
     { role: "assistant", content: [{ type: "text", text: "starting research" }] },
   ],
-} as never;
+};
+const snapshot = snapshotValue as never;
 
 let latestHandlers: { onEvent: (e: unknown) => void; onError: () => void } | null = null;
 let unsubscribeFn: ReturnType<typeof vi.fn>;
@@ -149,6 +156,23 @@ describe("WorkPage", () => {
     vi.mocked(api.listAgents).mockReset();
     vi.mocked(api.listModels).mockReset();
     vi.mocked(api.patchAgent).mockReset();
+    vi.mocked(api.getSessionCommands).mockReset();
+    vi.mocked(api.getSessionCommands).mockResolvedValue([
+      { name: "name", description: "Rename the current session", source: "extension" },
+      { name: "history", description: "Browse the current session tree", source: "extension" },
+      { name: "compact", description: "Compact the current session context", source: "extension" },
+    ]);
+    vi.mocked(api.getSessionTree).mockReset();
+    vi.mocked(api.getSessionTree).mockResolvedValue({
+      tree: [],
+      leafId: null,
+      filterMode: "default",
+      skipBranchSummaryPrompt: false,
+    });
+    vi.mocked(api.navigateSessionTree).mockReset();
+    vi.mocked(api.navigateSessionTree).mockResolvedValue({ cancelled: false, leafId: null });
+    vi.mocked(api.compactSession).mockReset();
+    vi.mocked(api.compactSession).mockResolvedValue({ state: "running" });
     vi.mocked(api.listAgents).mockResolvedValue([
       {
         name: "research-assistant",
@@ -230,6 +254,7 @@ describe("WorkPage", () => {
       missingSkills: [],
     }));
     vi.mocked(api.renameSession).mockReset();
+    vi.mocked(api.renameSession).mockResolvedValue(undefined);
     vi.mocked(api.getSnapshot).mockResolvedValue(snapshot);
     vi.mocked(api.getChildSnapshot).mockResolvedValue({
       session: { id: "child-default", cwd: "/p", sessionName: "easyresearch:search" },
@@ -255,7 +280,7 @@ describe("WorkPage", () => {
     expect(conversation.parentElement).not.toHaveClass("p-2");
   });
 
-  it("sends /name messages verbatim to the agent and never intercepts them", async () => {
+  it("opens the rename dialog with typed /name arguments and saves through the rename endpoint", async () => {
     stubEvents();
     const user = userEvent.setup();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
@@ -264,8 +289,162 @@ describe("WorkPage", () => {
     const input = screen.getByRole("textbox", { name: /message/i });
     await user.type(input, "/name Paper v2{Enter}");
 
-    await waitFor(() => expect(api.sendPrompt).toHaveBeenCalledWith("s1", "/name Paper v2"));
-    expect(api.renameSession).not.toHaveBeenCalled();
+    const nameInput = await screen.findByRole("textbox", { name: /session name/i });
+    expect(nameInput).toHaveValue("Paper v2");
+    expect(api.sendPrompt).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => expect(api.renameSession).toHaveBeenCalledWith("s1", "Paper v2"));
+    expect(screen.queryByRole("dialog", { name: /rename session/i })).toBeNull();
+  });
+
+  it("opens rename immediately when autocomplete selects /name", async () => {
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+
+    const input = screen.getByRole("textbox", { name: /message/i });
+    await user.type(input, "/na{Enter}");
+
+    expect(await screen.findByRole("dialog", { name: /rename session/i })).toBeVisible();
+    expect(api.sendPrompt).not.toHaveBeenCalled();
+  });
+
+  it("opens /history, navigates with the keyboard, and restores Pi editor text", async () => {
+    vi.mocked(api.getSessionTree).mockResolvedValue({
+      leafId: "a2",
+      filterMode: "default",
+      skipBranchSummaryPrompt: false,
+      tree: [
+        { id: "u1", parentId: null, role: "user", kind: "user", text: "Original question" },
+        { id: "a1", parentId: "u1", role: "assistant", kind: "assistant", text: "First answer" },
+        { id: "u2", parentId: "a1", role: "user", kind: "user", text: "Current branch" },
+        { id: "a2", parentId: "u2", role: "assistant", kind: "assistant", text: "Current answer" },
+      ],
+    });
+    vi.mocked(api.navigateSessionTree).mockResolvedValue({
+      cancelled: false,
+      editorText: "Original question",
+      leafId: null,
+    });
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+
+    const input = screen.getByRole("textbox", { name: /message/i });
+    await user.type(input, "/his{Enter}");
+
+    const history = await screen.findByRole("dialog", { name: /history/i });
+    const tree = within(history).getByRole("tree");
+    expect(
+      within(tree)
+        .getAllByRole("treeitem")
+        .map((item) => item.textContent),
+    ).toEqual([
+      expect.stringContaining("Original question"),
+      expect.stringContaining("First answer"),
+      expect.stringContaining("Current branch"),
+      expect.stringContaining("Current answer"),
+    ]);
+
+    await user.keyboard("{Home}{Enter}");
+    const summaryDialog = await screen.findByRole("dialog", { name: /summarize branch/i });
+    await user.click(within(summaryDialog).getByRole("button", { name: /no summary/i }));
+
+    await waitFor(() => expect(api.navigateSessionTree).toHaveBeenCalledWith("s1", "u1", { summarize: false }));
+    await waitFor(() => expect(input).toHaveValue("Original question"));
+    expect(screen.queryByRole("dialog", { name: /^history$/i })).toBeNull();
+    expect(api.sendPrompt).not.toHaveBeenCalled();
+  });
+
+  it("requests typed /compact instructions without sending slash text to the model", async () => {
+    vi.mocked(api.compactSession).mockResolvedValue({ state: "queued" });
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+
+    await user.type(screen.getByRole("textbox", { name: /message/i }), "/compact Keep experiment decisions{Enter}");
+
+    await waitFor(() => expect(api.compactSession).toHaveBeenCalledWith("s1", "Keep experiment decisions"));
+    expect(api.sendPrompt).not.toHaveBeenCalled();
+  });
+
+  it("clears a rejected command notice when the next normal message is sent", async () => {
+    vi.mocked(api.compactSession).mockRejectedValueOnce(new Error("Nothing to compact"));
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+    const input = screen.getByRole("textbox", { name: /message/i });
+
+    await user.type(input, "/compact{Enter}");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Nothing to compact");
+
+    await user.type(input, "continue{Enter}");
+    await waitFor(() => expect(api.sendPrompt).toHaveBeenCalledWith("s1", "continue"));
+    expect(screen.queryByText("Nothing to compact")).toBeNull();
+  });
+
+  it("shows native context capacity and queued compaction above the assistant composer", async () => {
+    vi.mocked(api.getSnapshot).mockResolvedValue({
+      ...snapshotValue,
+      contextUsage: { tokens: 91_000, contextWindow: 100_000, percent: 91 },
+      compactionState: "queued",
+    } as never);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+
+    const capacity = await screen.findByRole("progressbar", { name: /context capacity/i });
+
+    expect(capacity).toHaveAttribute("aria-valuenow", "91");
+    expect(capacity.closest("[data-context-severity]")).toHaveAttribute("data-context-severity", "error");
+    expect(screen.getByText("91%")).toBeVisible();
+    expect(screen.getByText("Queued")).toBeVisible();
+  });
+
+  it("keeps history browseable but disables navigation during native compaction", async () => {
+    vi.mocked(api.getSnapshot).mockResolvedValue({
+      ...snapshotValue,
+      compactionState: "running",
+    } as never);
+    vi.mocked(api.getSessionTree).mockResolvedValue({
+      tree: [
+        { id: "u1", parentId: null, role: "user", kind: "user", text: "Original question" },
+        { id: "a1", parentId: "u1", role: "assistant", kind: "assistant", text: "Current answer" },
+      ],
+      leafId: "a1",
+      filterMode: "default",
+      skipBranchSummaryPrompt: true,
+    });
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+
+    await user.type(screen.getByRole("textbox", { name: /message/i }), "/history{Enter}");
+
+    const history = await screen.findByRole("dialog", { name: /^history$/i });
+    expect(within(history).getAllByRole("treeitem")[0]).toHaveAttribute("aria-disabled", "true");
+    await user.keyboard("{Home}{Enter}");
+    expect(api.navigateSessionTree).not.toHaveBeenCalled();
+  });
+
+  it("hides context capacity on read-only child tabs", async () => {
+    vi.mocked(api.getSnapshot).mockResolvedValue({
+      ...snapshotValue,
+      contextUsage: { tokens: 40_000, contextWindow: 100_000, percent: 40 },
+      compactionState: "idle",
+    } as never);
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    expect(await screen.findByRole("progressbar", { name: /context capacity/i })).toBeVisible();
+    emitInAct({
+      type: "tool_execution_start",
+      toolCallId: "sub-capacity",
+      toolName: "subagent",
+      args: { agent: "search", task: "find papers" },
+    });
+
+    await user.click(await screen.findByRole("button", { name: /agent search/i }));
+
+    expect(screen.queryByRole("progressbar", { name: /context capacity/i })).toBeNull();
   });
 
   it("shows the session name in the topbar and updates it live on session_info_changed", async () => {
@@ -2003,7 +2182,7 @@ describe("WorkPage", () => {
     await waitFor(() =>
       expect(screen.getByRole("region", { name: /file browser/i }).getAttribute("style")).toMatch(/--panel-w:\s*600px/),
     );
-    const handle = screen.getByRole("button", { name: /resize panel/i });
+    const handle = screen.getByRole("separator", { name: /resize panel/i });
     const row = screen.getByText("starting research").closest("section")?.parentElement;
     expect(row).toBeTruthy();
     vi.spyOn(row!, "getBoundingClientRect").mockReturnValue({
@@ -2024,6 +2203,26 @@ describe("WorkPage", () => {
     expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*660px/);
   });
 
+  it("exposes the panel divider as a keyboard-adjustable separator", async () => {
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+    act(() => panelObserver().__fire(1200));
+    const handle = await screen.findByRole("separator", { name: /resize panel/i });
+    const value = () => Number(handle.getAttribute("aria-valuenow"));
+    const initial = value();
+
+    handle.focus();
+    await user.keyboard("{ArrowLeft}");
+    expect(value()).toBeGreaterThan(initial);
+    await user.keyboard("{ArrowRight}");
+    expect(value()).toBe(initial);
+    await user.keyboard("{Home}");
+    expect(value()).toBe(Number(handle.getAttribute("aria-valuemin")));
+    await user.keyboard("{End}");
+    expect(value()).toBe(Number(handle.getAttribute("aria-valuemax")));
+  });
+
   it("remembers the dragged width for the session after the first drag", async () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
@@ -2032,7 +2231,7 @@ describe("WorkPage", () => {
     await waitFor(() =>
       expect(screen.getByRole("region", { name: /file browser/i }).getAttribute("style")).toMatch(/--panel-w:\s*600px/),
     );
-    const handle = screen.getByRole("button", { name: /resize panel/i });
+    const handle = screen.getByRole("separator", { name: /resize panel/i });
     const row = screen.getByText("starting research").closest("section")?.parentElement;
     vi.spyOn(row!, "getBoundingClientRect").mockReturnValue({
       right: 1200,
@@ -2062,7 +2261,7 @@ describe("WorkPage", () => {
     await waitFor(() =>
       expect(screen.getByRole("region", { name: /file browser/i }).getAttribute("style")).toMatch(/--panel-w:\s*600px/),
     );
-    const handle = screen.getByRole("button", { name: /resize panel/i });
+    const handle = screen.getByRole("separator", { name: /resize panel/i });
     const row = screen.getByText("starting research").closest("section")?.parentElement;
     vi.spyOn(row!, "getBoundingClientRect").mockReturnValue({
       right: 1200,
@@ -2156,7 +2355,7 @@ describe("WorkPage", () => {
   it("disables panel transitions while drag-resizing", async () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
-    const handle = screen.getByRole("button", { name: /resize panel/i });
+    const handle = screen.getByRole("separator", { name: /resize panel/i });
     fireEvent.pointerDown(handle, { clientX: 880, clientY: 100, pointerId: 1 });
     const region = screen.getByRole("region", { name: /file browser/i });
     expect(region.className).not.toContain("transition-");
@@ -2171,7 +2370,7 @@ describe("WorkPage", () => {
     expect(region.className).not.toContain("overflow-hidden");
     const wrapper = region.querySelector(".animate-v2-fade-in");
     expect(wrapper?.className).toContain("overflow-hidden");
-    const handle = screen.getByRole("button", { name: /resize panel/i });
+    const handle = screen.getByRole("separator", { name: /resize panel/i });
     expect(region.contains(handle)).toBe(true);
     expect(handle.className).toContain("min-[820px]:block");
   });
@@ -2556,7 +2755,7 @@ describe("WorkPage", () => {
       const sendButtons = screen.getAllByRole("button", { name: /send/i });
       await user.click(sendButtons.find((button) => button.textContent === "Send")!);
 
-      await waitFor(() => expect(api.navigateSessionTree).toHaveBeenCalledWith("s1", "m2"));
+      await waitFor(() => expect(api.navigateSessionTree).toHaveBeenCalledWith("s1", "m2", {}));
       expect(api.sendPrompt).toHaveBeenCalledWith("s1", "rewrite the paper");
     });
 
@@ -2568,7 +2767,7 @@ describe("WorkPage", () => {
       await screen.findByText("2/2");
 
       await user.click(screen.getByRole("button", { name: /previous version/i }));
-      await waitFor(() => expect(api.navigateSessionTree).toHaveBeenCalledWith("s1", "a1"));
+      await waitFor(() => expect(api.navigateSessionTree).toHaveBeenCalledWith("s1", "a1", {}));
     });
   });
 });

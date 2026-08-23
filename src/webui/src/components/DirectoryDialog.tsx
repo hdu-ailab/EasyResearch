@@ -1,5 +1,5 @@
 import { ChevronRight, Folder, FolderOpen, FolderPlus, Home, RefreshCw, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { DirectoryEntryDto } from "../../../web/contracts";
 import { createDirectory, listDirectories } from "../api";
 import { useLazyTree } from "../hooks/useLazyTree";
@@ -41,6 +41,7 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
   const { t } = useI18n();
   const [input, setInput] = useState(homeDir);
   const [selected, setSelected] = useState<string | null>(null);
+  const [focusedPath, setFocusedPath] = useState<string | null>(null);
   const [viewPath, setViewPath] = useState(homeDir);
   const [suggestions, setSuggestions] = useState<DirectoryEntryDto[]>([]);
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
@@ -50,13 +51,16 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
   const [createName, setCreateName] = useState("");
   const [createError, setCreateError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLElement>(null);
+  const rowRefs = useRef(new Map<string, HTMLDivElement>());
+  const suggestionsId = `directory-suggestions-${useId().replaceAll(":", "")}`;
   const tree = useLazyTree<DirectoryEntryDto>({ root: viewPath, loadChildren: listDirectories });
 
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
 
-  const zIndex = useModalLayer(onClose);
+  const zIndex = useModalLayer(onClose, dialogRef);
 
   const rows = useMemo(() => {
     const out: TreeRow[] = [];
@@ -93,8 +97,10 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
       listDirectories(parent)
         .then((entries) => {
           const filtered = prefix ? entries.filter((entry) => entry.name.toLowerCase().startsWith(prefix)) : entries;
-          setSuggestions(filtered.slice(0, 12));
-          setSuggestionsOpen(true);
+          const next = filtered.slice(0, 12);
+          setSuggestions(next);
+          setSuggestionsOpen(next.length > 0);
+          setActiveSuggestion(next.length > 0 ? 0 : -1);
         })
         .catch(() => {
           setSuggestions([]);
@@ -126,13 +132,21 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
   const activeSuggestionPath = () => (activeSuggestion >= 0 ? suggestions[activeSuggestion] : suggestions[0]);
 
   const handleInputKey = (event: React.KeyboardEvent) => {
-    if (event.key === "ArrowDown") {
+    if (event.key === "Escape" && suggestionsOpen) {
+      event.preventDefault();
+      event.stopPropagation();
+      setSuggestionsOpen(false);
+      setActiveSuggestion(-1);
+    } else if (event.key === "ArrowDown") {
       event.preventDefault();
       moveSuggestion(1);
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
       moveSuggestion(-1);
-    } else if (event.key === "Tab") {
+    } else if (suggestionsOpen && (event.key === "Home" || event.key === "End")) {
+      event.preventDefault();
+      setActiveSuggestion(event.key === "Home" ? 0 : Math.max(0, suggestions.length - 1));
+    } else if (event.key === "Tab" && suggestionsOpen) {
       const suggestion = activeSuggestionPath();
       if (suggestion) {
         event.preventDefault();
@@ -158,6 +172,52 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
   const selectRow = (path: string) => {
     setSelected(path);
     setInput(path);
+  };
+
+  const rovingPath = rows.some((row) => row.path === focusedPath) ? focusedPath : (rows[0]?.path ?? null);
+  const focusRow = (path: string) => {
+    setFocusedPath(path);
+    rowRefs.current.get(path)?.focus();
+  };
+  const handleTreeKey = (event: React.KeyboardEvent<HTMLDivElement>, row: TreeRow) => {
+    if (event.target !== event.currentTarget) return;
+    const index = rows.findIndex((candidate) => candidate.path === row.path);
+    const focusAt = (nextIndex: number) => {
+      const next = rows[Math.max(0, Math.min(rows.length - 1, nextIndex))];
+      if (next) focusRow(next.path);
+    };
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      focusAt(index + (event.key === "ArrowDown" ? 1 : -1));
+      return;
+    }
+    if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      focusAt(event.key === "Home" ? 0 : rows.length - 1);
+      return;
+    }
+    if (event.key === "ArrowRight") {
+      event.preventDefault();
+      if (!tree.expanded.has(row.path)) toggleExpand(row.path);
+      else {
+        const child = rows[index + 1];
+        if (child && child.depth > row.depth) focusRow(child.path);
+      }
+      return;
+    }
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      if (tree.expanded.has(row.path)) toggleExpand(row.path);
+      else {
+        const parent = rows.find((candidate) => candidate.path === parentOf(row.path));
+        if (parent) focusRow(parent.path);
+      }
+      return;
+    }
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      selectRow(row.path);
+    }
   };
 
   const confirm = () => {
@@ -196,6 +256,7 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
       }}
     >
       <section
+        ref={dialogRef}
         className="flex h-full w-full flex-col overflow-hidden rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-overlay)] sm:h-auto sm:max-h-[84vh] sm:max-w-[640px]"
         role="dialog"
         aria-modal="true"
@@ -219,8 +280,10 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
             className="h-9 w-full rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-3 font-mono text-[13px] text-v2-text-text-base outline-none focus:border-v2-blue-600"
             value={input}
             role="combobox"
+            aria-label={t("dialog.path")}
             aria-autocomplete="list"
             aria-expanded={suggestionsOpen}
+            aria-controls={suggestionsOpen ? suggestionsId : undefined}
             aria-activedescendant={activeSuggestion >= 0 ? `directory-suggestion-${activeSuggestion}` : undefined}
             spellCheck={false}
             onChange={(event) => {
@@ -238,6 +301,7 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
               type="button"
               className="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100"
               title={t("dialog.home")}
+              aria-label={t("dialog.home")}
               onClick={() => navigate(homeDir)}
             >
               <Home size={14} />~
@@ -258,6 +322,7 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
               type="button"
               className="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100"
               title={t("dialog.root")}
+              aria-label={t("dialog.root")}
               onClick={() => navigate("/")}
             >
               /
@@ -266,6 +331,7 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
               type="button"
               className="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100"
               title={t("dialog.parent")}
+              aria-label={t("dialog.parent")}
               onClick={() => navigate(parentOf(viewPath))}
             >
               ↑
@@ -274,6 +340,7 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
               type="button"
               className="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100"
               title={t("dialog.refresh")}
+              aria-label={t("dialog.refresh")}
               onClick={() => tree.refresh(viewPath)}
             >
               <RefreshCw size={14} />
@@ -281,32 +348,43 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
           </div>
           {suggestionsOpen && suggestions.length > 0 && (
             <div
+              id={suggestionsId}
               className="absolute left-3 right-3 top-[calc(100%+8px)] z-10 max-h-[240px] overflow-y-auto rounded-md border border-v2-grey-200 bg-v2-background-bg-base p-1 shadow-[var(--v2-elevation-floating)]"
               role="listbox"
             >
               {suggestions.map((suggestion, index) => (
-                <div key={suggestion.path} role="option" aria-selected={index === activeSuggestion} tabIndex={-1}>
-                  <button
-                    type="button"
-                    id={`directory-suggestion-${index}`}
-                    className={`flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-v2-text-text-base transition-colors ${index === activeSuggestion ? "bg-v2-blue-100 text-v2-blue-600" : "hover:bg-v2-grey-100"}`}
-                    onMouseDown={(event) => {
-                      event.preventDefault();
-                      chooseSuggestion(suggestion);
-                    }}
-                    onMouseEnter={() => setActiveSuggestion(index)}
-                  >
-                    <Folder size={14} />
-                    <span>{suggestion.name}/</span>
-                  </button>
-                </div>
+                <button
+                  key={suggestion.path}
+                  type="button"
+                  id={`directory-suggestion-${index}`}
+                  role="option"
+                  aria-selected={index === activeSuggestion}
+                  tabIndex={-1}
+                  className={`flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-v2-text-text-base transition-colors ${index === activeSuggestion ? "bg-v2-blue-100 text-v2-blue-600" : "hover:bg-v2-grey-100"}`}
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    chooseSuggestion(suggestion);
+                  }}
+                  onMouseEnter={() => setActiveSuggestion(index)}
+                >
+                  <Folder size={14} aria-hidden />
+                  <span>{suggestion.name}/</span>
+                </button>
               ))}
             </div>
           )}
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-1.5" role="tree" aria-label={t("dialog.tree")}>
-          {treeError && <p className="px-2 py-1 text-[12px] text-v2-status-error">{treeError}</p>}
-          {rootError && <p className="px-2 py-1 text-[12px] text-v2-status-error">{rootError}</p>}
+          {treeError && (
+            <p role="alert" className="px-2 py-1 text-[12px] text-v2-status-error">
+              {treeError}
+            </p>
+          )}
+          {rootError && (
+            <p role="alert" className="px-2 py-1 text-[12px] text-v2-status-error">
+              {rootError}
+            </p>
+          )}
           {rows.length === 0 &&
             !treeError &&
             !rootError &&
@@ -322,23 +400,27 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
             return (
               <div
                 key={row.path}
+                ref={(element) => {
+                  if (element) rowRefs.current.set(row.path, element);
+                  else rowRefs.current.delete(row.path);
+                }}
                 role="treeitem"
+                aria-level={row.depth + 1}
                 aria-expanded={isExpanded}
                 aria-selected={isSelected}
-                tabIndex={0}
+                tabIndex={rovingPath === row.path ? 0 : -1}
                 className={`group flex cursor-pointer items-center gap-1.5 rounded-md py-1 pr-2 text-left transition-colors hover:bg-v2-grey-100 ${isSelected ? "bg-v2-blue-100/50" : ""}`}
                 style={{ paddingLeft: `${8 + row.depth * 16}px` }}
-                onClick={() => selectRow(row.path)}
-                onKeyDown={(event) => {
-                  if (event.target !== event.currentTarget) return;
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    selectRow(row.path);
-                  }
+                onFocus={() => setFocusedPath(row.path)}
+                onClick={() => {
+                  setFocusedPath(row.path);
+                  selectRow(row.path);
                 }}
+                onKeyDown={(event) => handleTreeKey(event, row)}
               >
                 <button
                   type="button"
+                  tabIndex={-1}
                   className="flex size-4 shrink-0 items-center justify-center rounded text-v2-icon-icon-muted hover:bg-v2-grey-200"
                   aria-label={
                     state === "loading"
@@ -366,6 +448,7 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
                 {state === "error" && (
                   <button
                     type="button"
+                    tabIndex={-1}
                     className="ml-auto shrink-0 rounded px-1.5 py-0.5 text-[11px] text-v2-text-text-muted hover:bg-v2-grey-200"
                     aria-label={t("dialog.retryRow").replace("{name}", row.name)}
                     onClick={(event) => {
@@ -425,16 +508,20 @@ function CreateFolderDialog({
   onCancel: () => void;
 }) {
   const { t } = useI18n();
-  const zIndex = useModalLayer(onCancel);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const zIndex = useModalLayer(onCancel, dialogRef);
   return (
     <div className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/20 p-4" style={{ zIndex }}>
       <div
+        ref={dialogRef}
         role="dialog"
+        aria-modal="true"
         aria-label={t("dialog.createFolder")}
         className="w-full max-w-[360px] rounded-[10px] bg-v2-background-bg-base p-4 shadow-[var(--v2-elevation-overlay)]"
       >
         <h2 className="mb-3 text-[13px] font-semibold">{t("dialog.createFolder")}</h2>
         <input
+          aria-label={t("dialog.folderName")}
           className="h-8 w-full rounded-md border border-v2-grey-200 px-2 font-mono text-[12px]"
           value={name}
           onChange={(event) => onNameChange(event.target.value)}

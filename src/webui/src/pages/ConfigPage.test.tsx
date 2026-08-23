@@ -135,8 +135,11 @@ describe("ConfigPage", () => {
     render(<ConfigPage onBack={() => {}} />);
     await user.click(await screen.findByRole("button", { name: /\/home\/u\/proj/ }));
     await user.click(screen.getByTitle("New folder"));
-    await user.type(screen.getByRole("dialog").querySelector("input")!, "skills/reviewer");
-    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: /confirm/i }));
+    const dialog = screen.getByRole("dialog", { name: "New folder" });
+    const input = within(dialog).getByRole("textbox", { name: "New folder" });
+    expect(input).toHaveFocus();
+    await user.type(input, "skills/reviewer");
+    await user.click(within(dialog).getByRole("button", { name: /confirm/i }));
     expect(api.createConfigDirectory).toHaveBeenCalledWith("project", "/home/u/proj", "skills/reviewer");
   });
 

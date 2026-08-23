@@ -1,4 +1,5 @@
 import { X } from "lucide-react";
+import { useRef } from "react";
 import { useModalLayer } from "../hooks/useModalLayer";
 import { useI18n } from "../i18n/useI18n";
 
@@ -11,10 +12,12 @@ export interface AgentResourceDetailsDialogProps {
 
 export function AgentResourceDetailsDialog({ agentName, tools, skills, onClose }: AgentResourceDetailsDialogProps) {
   const { t } = useI18n();
-  const zIndex = useModalLayer(onClose);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const zIndex = useModalLayer(onClose, dialogRef);
   return (
     <div className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/30 p-4" style={{ zIndex }}>
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label={t("settings.resources.detailsTitle").replace("{name}", agentName)}

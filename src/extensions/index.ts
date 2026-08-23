@@ -13,6 +13,10 @@ import { createSessionNameExtension } from "./session-name";
 import type { SubagentCoordinator } from "../subagent/coordinator";
 import type { SubagentSupervisor } from "../subagent/supervisor";
 import windowsPowerShellExtension from "./windows-powershell";
+import {
+  createManualCompactionExtension,
+  type ManualCompactionController,
+} from "../web/manual-compaction";
 
 /**
  * Bundled extensions mounted as named inline factories in Research Assistant
@@ -43,6 +47,7 @@ export interface ResearchAssistantExtensionRuntime {
   >;
   coordinator: SubagentCoordinator;
   supervisor: SubagentSupervisor;
+  compaction: ManualCompactionController;
 }
 
 export function createResearchAssistantExtensions(runtime: ResearchAssistantExtensionRuntime): BundledExtension[] {
@@ -54,6 +59,10 @@ export function createResearchAssistantExtensions(runtime: ResearchAssistantExte
     {
       name: "research-assistant",
       factory: createResearchAssistantExtension(runtime.binding),
+    },
+    {
+      name: "manual-compaction",
+      factory: createManualCompactionExtension(runtime.compaction),
     },
     {
       name: "subagent-dispatch",

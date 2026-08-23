@@ -1,5 +1,5 @@
 import { X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useModalLayer } from "../hooks/useModalLayer";
 import { useI18n } from "../i18n/useI18n";
 
@@ -30,11 +30,15 @@ export function MarkdownEditorModal({
     if (draft !== content && !window.confirm(t("settings.editor.discardConfirm"))) return;
     onClose();
   };
-  const zIndex = useModalLayer(close);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const editorRef = useRef<HTMLTextAreaElement>(null);
+  const zIndex = useModalLayer(close, dialogRef);
+  useEffect(() => editorRef.current?.focus(), []);
 
   return (
     <div className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/30 p-3 sm:p-6" style={{ zIndex }}>
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label={title}
@@ -56,6 +60,7 @@ export function MarkdownEditorModal({
         </header>
         <div className="min-h-0 flex-1 p-3 sm:p-4">
           <textarea
+            ref={editorRef}
             aria-label={editorLabel ?? t("settings.editor.markdown")}
             className="h-[min(68vh,680px)] min-h-[320px] w-full resize-none rounded-md border border-v2-grey-200 bg-v2-background-bg-deep p-3 font-mono text-[12px] leading-[1.6] text-v2-text-text-base outline-none focus:border-v2-blue-600"
             value={draft}

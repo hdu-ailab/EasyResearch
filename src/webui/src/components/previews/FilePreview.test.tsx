@@ -255,15 +255,15 @@ describe("PdfPreview", () => {
   it("keeps only page, zoom, and download controls", async () => {
     render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 1 })} />);
     await screen.findByText("1 / 1");
-    const toolbar = screen.getByRole("toolbar", { name: "PDF controls" });
-    expect(within(toolbar).getByRole("button", { name: "Previous page" })).toBeVisible();
-    expect(within(toolbar).getByRole("button", { name: "Next page" })).toBeVisible();
-    expect(within(toolbar).getByRole("button", { name: "Zoom in" })).toBeVisible();
-    expect(within(toolbar).getByRole("button", { name: "Zoom out" })).toBeVisible();
-    expect(within(toolbar).getByRole("link", { name: "Download PDF" })).toBeVisible();
-    expect(within(toolbar).queryByRole("searchbox")).toBeNull();
-    expect(within(toolbar).queryByRole("button", { name: "Fit width" })).toBeNull();
-    expect(within(toolbar).queryByRole("button", { name: "Rotate" })).toBeNull();
+    const controls = screen.getByRole("group", { name: "PDF controls" });
+    expect(within(controls).getByRole("button", { name: "Previous page" })).toBeVisible();
+    expect(within(controls).getByRole("button", { name: "Next page" })).toBeVisible();
+    expect(within(controls).getByRole("button", { name: "Zoom in" })).toBeVisible();
+    expect(within(controls).getByRole("button", { name: "Zoom out" })).toBeVisible();
+    expect(within(controls).getByRole("link", { name: "Download PDF" })).toBeVisible();
+    expect(within(controls).queryByRole("searchbox")).toBeNull();
+    expect(within(controls).queryByRole("button", { name: "Fit width" })).toBeNull();
+    expect(within(controls).queryByRole("button", { name: "Rotate" })).toBeNull();
   });
 
   it("does not display the file name in the preview header", async () => {
@@ -363,10 +363,10 @@ describe("PdfPreview", () => {
   it("wraps the toolbar on compact widths without page-level overflow", async () => {
     render(<PdfPreview path="/p/paper.pdf" loader={fakePdfLoader({ pages: 1 })} />);
     await screen.findByText("1 / 1");
-    const toolbar = screen.getByRole("toolbar", { name: "PDF controls" });
-    expect(toolbar.className).toContain("flex-wrap");
-    expect(toolbar.className).toContain("min-w-0");
-    expect(toolbar.closest(".overflow-hidden")).toBeTruthy();
+    const controls = screen.getByRole("group", { name: "PDF controls" });
+    expect(controls.className).toContain("flex-wrap");
+    expect(controls.className).toContain("min-w-0");
+    expect(controls.closest(".overflow-hidden")).toBeTruthy();
     const scroll = screen.getByTestId("pdf-scroll");
     expect(scroll.className).toContain("overflow-auto");
   });

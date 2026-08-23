@@ -1,5 +1,5 @@
 import { ChevronDown, Search } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 
 export interface SearchableSelectOption {
   value: string;
@@ -61,7 +61,8 @@ export function SearchableSelect({
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const panelId = id !== undefined ? `${id}-listbox` : undefined;
+  const generatedId = useId().replaceAll(":", "");
+  const panelId = `${id ?? `searchable-select-${generatedId}`}-listbox`;
 
   const current = options.find((option) => option.value === value);
   const shown = filterOptions(query, options);
@@ -80,7 +81,10 @@ export function SearchableSelect({
       setOpen(false);
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
     };
     document.addEventListener("pointerdown", onPointerDown);
     document.addEventListener("keydown", onKeyDown);
@@ -104,6 +108,7 @@ export function SearchableSelect({
   const choose = (option: SearchableSelectOption) => {
     setOpen(false);
     onSelect(option.value);
+    triggerRef.current?.focus();
   };
 
   const triggerRect = triggerRef.current?.getBoundingClientRect();
@@ -154,6 +159,11 @@ export function SearchableSelect({
               ref={inputRef}
               type="search"
               aria-label="Search"
+              aria-autocomplete="list"
+              aria-controls={panelId}
+              aria-activedescendant={
+                shown.length > 0 ? `${panelId}-option-${Math.min(activeIndex, shown.length - 1)}` : undefined
+              }
               placeholder={searchPlaceholder}
               value={query}
               onChange={(event) => {
@@ -169,12 +179,19 @@ export function SearchableSelect({
                     const next = event.key === "ArrowDown" ? index + 1 : index - 1;
                     return ((next % count) + count) % count;
                   });
+                } else if (event.key === "Home" || event.key === "End") {
+                  event.preventDefault();
+                  setActiveIndex(event.key === "Home" ? 0 : Math.max(0, shown.length - 1));
                 } else if (event.key === "Enter") {
                   event.preventDefault();
                   const target = shown[Math.min(activeIndex, shown.length - 1)];
                   if (target !== undefined) choose(target);
                 } else if (event.key === "Escape") {
                   event.preventDefault();
+                  event.stopPropagation();
+                  setOpen(false);
+                  triggerRef.current?.focus();
+                } else if (event.key === "Tab") {
                   setOpen(false);
                 }
               }}
@@ -187,6 +204,7 @@ export function SearchableSelect({
             shown.map((option, index) => (
               <div
                 key={option.value}
+                id={`${panelId}-option-${index}`}
                 role="option"
                 tabIndex={-1}
                 aria-selected={activeIndex === index}

@@ -63,6 +63,7 @@ describe("ProviderConnectModal", () => {
     mockedUse.mockReturnValue(makeFlow());
     const user = userEvent.setup();
     render(<ProviderConnectModal onClose={() => {}} />);
+    expect(screen.getByRole("searchbox")).toHaveFocus();
     expect(screen.getByText("Anthropic")).toBeInTheDocument();
     expect(screen.getByText("xAI")).toBeInTheDocument();
     expect(screen.getByText("Google Vertex AI")).toBeInTheDocument();
@@ -234,6 +235,11 @@ describe("ProviderConnectModal", () => {
     const search = screen.getByRole("searchbox");
     await user.click(search);
     await user.keyboard("{ArrowDown}");
+    expect(screen.getByRole("button", { name: "Anthropic" })).toHaveFocus();
+    await user.keyboard("{ArrowDown}");
+    expect(screen.getByRole("button", { name: "xAI" })).toHaveFocus();
+    await user.keyboard("{ArrowUp}");
+    expect(screen.getByRole("button", { name: "Anthropic" })).toHaveFocus();
     await user.keyboard("{Enter}");
     expect(flow.start).toHaveBeenCalledWith("anthropic", "api_key");
   });

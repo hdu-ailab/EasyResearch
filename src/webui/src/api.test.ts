@@ -29,11 +29,18 @@ import {
 } from "./api";
 
 type RawByteReader = (path: string, options: { maxBytes: number; signal?: AbortSignal }) => Promise<ArrayBuffer>;
+type CompactSession = (id: string, customInstructions?: string) => Promise<{ state: "queued" | "running" }>;
 
 function rawByteReader(): RawByteReader {
   const reader = (apiModule as typeof apiModule & { readRawFileBytes?: RawByteReader }).readRawFileBytes;
   if (!reader) throw new Error("readRawFileBytes is not implemented");
   return reader;
+}
+
+function compactSession(): CompactSession {
+  const compact = (apiModule as typeof apiModule & { compactSession?: CompactSession }).compactSession;
+  if (!compact) throw new Error("compactSession is not implemented");
+  return compact;
 }
 
 describe("api transport", () => {
@@ -302,9 +309,15 @@ describe("api transport", () => {
 
   it("getSessionTree GETs the session tree endpoint", async () => {
     fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ leafId: "m2", tree: [{ id: "m1", parentId: null, role: "user", text: "hi" }] }), {
-        status: 200,
-      }),
+      new Response(
+        JSON.stringify({
+          leafId: "m2",
+          filterMode: "default",
+          skipBranchSummaryPrompt: false,
+          tree: [{ id: "m1", parentId: null, role: "user", kind: "user", text: "hi" }],
+        }),
+        { status: 200 },
+      ),
     );
     const tree = await getSessionTree("s1");
     expect(fetchMock).toHaveBeenCalledWith("/api/sessions/s1/tree", expect.objectContaining({ method: "GET" }));
@@ -312,11 +325,38 @@ describe("api transport", () => {
     expect(tree.tree).toHaveLength(1);
   });
 
-  it("navigateSessionTree POSTs the entry id", async () => {
-    await navigateSessionTree("s1", "entry-9");
+  it("navigateSessionTree POSTs summary options and parses Pi's editor text", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ cancelled: false, editorText: "original prompt", leafId: "entry-8" }), {
+        status: 200,
+      }),
+    );
+    const result = await (
+      navigateSessionTree as unknown as (
+        id: string,
+        entryId: string,
+        options: { summarize: boolean; customInstructions: string },
+      ) => Promise<unknown>
+    )("s1", "entry-9", { summarize: true, customInstructions: "focus on evidence" });
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("/api/sessions/s1/tree/navigate");
-    expect(JSON.parse(init.body as string)).toEqual({ entryId: "entry-9" });
+    expect(JSON.parse(init.body as string)).toEqual({
+      entryId: "entry-9",
+      summarize: true,
+      customInstructions: "focus on evidence",
+    });
+    expect(result).toEqual({ cancelled: false, editorText: "original prompt", leafId: "entry-8" });
+  });
+
+  it("compactSession POSTs optional instructions and parses the accepted state", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ state: "queued" }), { status: 200 }));
+
+    const result = await compactSession()("s1", "Keep experiment decisions");
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/sessions/s1/compact");
+    expect(JSON.parse(init.body as string)).toEqual({ customInstructions: "Keep experiment decisions" });
+    expect(result).toEqual({ state: "queued" });
   });
 
   it("abortSession, stopSession, restartSession hit their endpoints", async () => {

@@ -37,8 +37,8 @@ describe("DocxPreview", () => {
   it("loads one document into an isolated iframe and keeps a raw download", async () => {
     render(<DocxPreview path="/p/paper.docx" loader={fakeLoader()} />);
 
-    const toolbar = screen.getByRole("toolbar", { name: "DOCX controls" });
-    expect(toolbar).toBeVisible();
+    const controls = screen.getByRole("group", { name: "DOCX controls" });
+    expect(controls).toBeVisible();
     expect(screen.getByRole("link", { name: "Download DOCX" })).toHaveAttribute("href", rawFileUrl("/p/paper.docx"));
     const frame = screen.getByTitle("DOCX document") as HTMLIFrameElement;
     expect(frame).toHaveAttribute("sandbox", "allow-same-origin");

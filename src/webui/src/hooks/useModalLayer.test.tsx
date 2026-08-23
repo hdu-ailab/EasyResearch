@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { useModalLayer } from "./useModalLayer";
 
@@ -25,6 +25,29 @@ function Stack() {
       <button type="button" onClick={() => setOpen((s) => ({ ...s, c: true }))}>
         open-c
       </button>
+    </>
+  );
+}
+
+function FocusLayer({ onClose }: { onClose: () => void }) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const zIndex = useModalLayer(onClose, rootRef);
+  return (
+    <div ref={rootRef} role="dialog" aria-label="focus-layer" style={{ zIndex }}>
+      <button type="button">first</button>
+      <button type="button">last</button>
+    </div>
+  );
+}
+
+function FocusHarness() {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button type="button" onClick={() => setOpen(true)}>
+        opener
+      </button>
+      {open ? <FocusLayer onClose={() => setOpen(false)} /> : null}
     </>
   );
 }
@@ -93,5 +116,27 @@ describe("useModalLayer", () => {
     const removeSpy = vi.spyOn(document, "removeEventListener");
     unmount();
     expect(removeSpy).toHaveBeenCalledWith("keydown", expect.any(Function));
+  });
+
+  it("moves focus inside, traps Tab, and restores the opener when closing", () => {
+    render(<FocusHarness />);
+    const opener = screen.getByRole("button", { name: "opener" });
+    opener.focus();
+    fireEvent.click(opener);
+    const first = screen.getByRole("button", { name: "first" });
+    const last = screen.getByRole("button", { name: "last" });
+
+    expect(first).toHaveFocus();
+    opener.focus();
+    expect(first).toHaveFocus();
+    last.focus();
+    fireEvent.keyDown(document, { key: "Tab" });
+    expect(first).toHaveFocus();
+    first.focus();
+    fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
+    expect(last).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(opener).toHaveFocus();
   });
 });

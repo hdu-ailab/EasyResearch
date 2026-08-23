@@ -1,4 +1,5 @@
 import { File as FileIcon, FolderTree, X } from "lucide-react";
+import { useLayoutEffect, useRef } from "react";
 import type { FileContentDto } from "../../../web/contracts";
 import { useI18n } from "../i18n/useI18n";
 
@@ -17,15 +18,46 @@ export interface FileTabsProps {
 
 export function FileTabs({ tabs, active, onActivate, onClose, toggle }: FileTabsProps) {
   const { t } = useI18n();
+  const tabRefs = useRef(new Map<string, HTMLButtonElement>());
+  const toggleRef = useRef<HTMLButtonElement>(null);
+  const restoreAfterClose = useRef(false);
+  const rovingPath = tabs.some((tab) => tab.path === active) ? active : (tabs[0]?.path ?? null);
+
+  useLayoutEffect(() => {
+    if (!restoreAfterClose.current) return;
+    restoreAfterClose.current = false;
+    const target = tabs.some((tab) => tab.path === active) ? active : (tabs.at(-1)?.path ?? null);
+    if (target) tabRefs.current.get(target)?.focus();
+    else toggleRef.current?.focus();
+  }, [active, tabs]);
+
+  const handleTabKey = (event: React.KeyboardEvent<HTMLButtonElement>, path: string) => {
+    const index = tabs.findIndex((tab) => tab.path === path);
+    if (event.key === "Delete") {
+      event.preventDefault();
+      restoreAfterClose.current = true;
+      onClose(path);
+      return;
+    }
+    let nextIndex: number | null = null;
+    if (event.key === "ArrowRight") nextIndex = (index + 1) % tabs.length;
+    else if (event.key === "ArrowLeft") nextIndex = (index - 1 + tabs.length) % tabs.length;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = tabs.length - 1;
+    if (nextIndex === null) return;
+    event.preventDefault();
+    const next = tabs[nextIndex];
+    if (!next) return;
+    onActivate(next.path);
+    tabRefs.current.get(next.path)?.focus();
+  };
+
   return (
-    <div
-      className="flex shrink-0 items-center gap-0.5 overflow-x-auto border-b border-v2-grey-200 px-1.5 py-1"
-      role="tablist"
-      aria-label={t("tabs.openFiles")}
-    >
+    <div className="flex shrink-0 items-center gap-0.5 overflow-x-auto border-b border-v2-grey-200 px-1.5 py-1">
       {toggle && (
         <div className="sticky left-0 z-10 shrink-0 bg-v2-background-bg-base">
           <button
+            ref={toggleRef}
             type="button"
             className={`flex size-7 shrink-0 items-center justify-center rounded text-v2-icon-icon-muted transition-colors hover:bg-v2-grey-100 ${
               toggle.opened ? "bg-v2-background-bg-layer-2" : ""
@@ -40,39 +72,50 @@ export function FileTabs({ tabs, active, onActivate, onClose, toggle }: FileTabs
           </button>
         </div>
       )}
-      {tabs.map((tab) => {
-        const isActive = active === tab.path;
-        return (
-          <div
-            key={tab.path}
-            role="tab"
-            aria-selected={isActive}
-            tabIndex={-1}
-            className={`group flex h-7 shrink-0 items-center gap-1 rounded-md px-1.5 text-[12px] transition-colors ${
-              isActive ? "bg-v2-blue-100 text-v2-blue-600" : "text-v2-text-text-muted hover:bg-v2-grey-100"
-            }`}
-          >
-            <button
-              type="button"
-              className="flex min-w-0 items-center gap-1"
-              onClick={() => onActivate(tab.path)}
-              title={tab.path}
+      <div role="tablist" aria-label={t("tabs.openFiles")} className="flex shrink-0 items-center gap-0.5">
+        {tabs.map((tab) => {
+          const isActive = active === tab.path;
+          return (
+            <div
+              key={tab.path}
+              className={`group flex h-7 shrink-0 items-center gap-1 rounded-md px-1.5 text-[12px] transition-colors ${
+                isActive ? "bg-v2-blue-100 text-v2-blue-600" : "text-v2-text-text-muted hover:bg-v2-grey-100"
+              }`}
             >
-              <FileIcon size={12} className="shrink-0" />
-              <span className="max-w-[160px] truncate">{tab.name}</span>
-            </button>
-            <button
-              type="button"
-              className="flex size-4 shrink-0 items-center justify-center rounded text-v2-text-text-faint opacity-0 transition-opacity hover:bg-v2-grey-200 hover:text-v2-text-text-base group-hover:opacity-100"
-              aria-label={t("tabs.closeRow").replace("{name}", tab.name)}
-              title={t("tabs.close")}
-              onClick={() => onClose(tab.path)}
-            >
-              <X size={11} />
-            </button>
-          </div>
-        );
-      })}
+              <button
+                ref={(element) => {
+                  if (element) tabRefs.current.set(tab.path, element);
+                  else tabRefs.current.delete(tab.path);
+                }}
+                type="button"
+                role="tab"
+                aria-selected={isActive}
+                aria-keyshortcuts="Delete"
+                tabIndex={rovingPath === tab.path ? 0 : -1}
+                className="flex min-w-0 items-center gap-1"
+                onClick={() => onActivate(tab.path)}
+                onKeyDown={(event) => handleTabKey(event, tab.path)}
+                title={tab.path}
+              >
+                <FileIcon size={12} className="shrink-0" aria-hidden />
+                <span className="max-w-[160px] truncate">{tab.name}</span>
+              </button>
+              <button
+                type="button"
+                tabIndex={-1}
+                className={`flex size-4 shrink-0 items-center justify-center rounded text-v2-text-text-faint transition-opacity hover:bg-v2-grey-200 hover:text-v2-text-text-base ${
+                  isActive ? "opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+                }`}
+                aria-label={t("tabs.closeRow").replace("{name}", tab.name)}
+                title={t("tabs.close")}
+                onClick={() => onClose(tab.path)}
+              >
+                <X size={11} aria-hidden />
+              </button>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

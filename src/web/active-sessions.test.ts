@@ -61,9 +61,16 @@ class FakeAdapter implements SessionAdapter {
   startError: Error | null = null;
   getStateError: Error | null = null;
   commandsResult: WebSlashCommand[] = [];
-  treeResult: { tree: SessionTreeNode[]; leafId: string | null } = { tree: [], leafId: null };
+  treeResult: Awaited<ReturnType<SessionAdapter["getTree"]>> = {
+    tree: [],
+    leafId: null,
+    filterMode: "default",
+    skipBranchSummaryPrompt: false,
+  };
   navigateCalls: string[] = [];
   steeringResult: string[] = [];
+  contextUsage: { tokens: number | null; contextWindow: number; percent: number | null } | undefined;
+  compactionState: "idle" | "queued" | "running" = "idle";
   backgroundWork = false;
   startImpl: () => Promise<void> = async () => {};
   stopImpl: () => Promise<void> = async () => {};
@@ -115,11 +122,21 @@ class FakeAdapter implements SessionAdapter {
   async getCommands(): Promise<WebSlashCommand[]> {
     return this.commandsResult;
   }
-  async getTree(): Promise<{ tree: SessionTreeNode[]; leafId: string | null }> {
+  async getTree(): Promise<Awaited<ReturnType<SessionAdapter["getTree"]>>> {
     return this.treeResult;
   }
-  async navigateTree(entryId: string): Promise<void> {
+  async navigateTree(entryId: string) {
     this.navigateCalls.push(entryId);
+    return { cancelled: false, leafId: this.treeResult.leafId };
+  }
+  async compact() {
+    return { state: "running" as const };
+  }
+  getCompactionState() {
+    return this.compactionState;
+  }
+  getContextUsage() {
+    return this.contextUsage;
   }
   onEvent(listener: (event: unknown) => void) {
     this.onEventCalls += 1;
@@ -588,6 +605,18 @@ describe("ActiveSessionRegistry", () => {
     expect(snapshot.steering).toEqual(["note one", "note two"]);
   });
 
+  it("snapshot includes native context usage and current manual compaction state", async () => {
+    const created = await registry.open({ cwd, sessionPath });
+    const adapter = factory.created[0]!;
+    adapter.contextUsage = { tokens: 70_000, contextWindow: 100_000, percent: 70 };
+    adapter.compactionState = "queued";
+
+    const snapshot = await registry.snapshot(created.id);
+
+    expect(snapshot.contextUsage).toEqual({ tokens: 70_000, contextWindow: 100_000, percent: 70 });
+    expect(snapshot.compactionState).toBe("queued");
+  });
+
   it("snapshot omits steering for non-live sessions (ADR-083)", async () => {
     const created = await registry.create({ cwd });
     const adapter = factory.created[0]!;
@@ -1044,7 +1073,12 @@ describe("ActiveSessionRegistry", () => {
       const created = await registry.create({ cwd });
       const adapter = FakeAdapter.all.at(-1)!;
       adapter.commandsResult = [{ name: "skill:arxiv", source: "skill" }];
-      adapter.treeResult = { tree: [], leafId: "leaf-1" };
+      adapter.treeResult = {
+        tree: [],
+        leafId: "leaf-1",
+        filterMode: "default",
+        skipBranchSummaryPrompt: false,
+      };
 
       await expect(registry.getCommands(created.id)).resolves.toEqual(adapter.commandsResult);
       await expect(registry.getTree(created.id)).resolves.toEqual(adapter.treeResult);

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useModalLayer } from "../hooks/useModalLayer";
 import { useI18n } from "../i18n/useI18n";
 
@@ -10,13 +10,16 @@ export interface RenameSessionDialogProps {
 
 export function RenameSessionDialog({ currentName, onSave, onClose }: RenameSessionDialogProps) {
   const { t } = useI18n();
-  const zIndex = useModalLayer(onClose);
+  const dialogRef = useRef<HTMLFormElement>(null);
+  const zIndex = useModalLayer(onClose, dialogRef);
   const [name, setName] = useState(currentName);
 
   return (
     <div className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/20 p-4" style={{ zIndex }}>
       <form
+        ref={dialogRef}
         role="dialog"
+        aria-modal="true"
         aria-label={t("home.renameDialogTitle")}
         className="w-full max-w-[360px] rounded-[10px] bg-v2-background-bg-base p-4 shadow-[var(--v2-elevation-overlay)]"
         onSubmit={(event) => {

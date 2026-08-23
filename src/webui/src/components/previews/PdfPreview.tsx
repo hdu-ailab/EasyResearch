@@ -225,11 +225,8 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
   return (
     <div className="flex h-full min-w-0 flex-col overflow-hidden">
       <header className="flex shrink-0 items-center gap-1 border-b border-v2-grey-200 px-2 py-1.5">
-        <div
-          className="ml-auto flex min-w-0 flex-1 flex-wrap items-center gap-1"
-          role="toolbar"
-          aria-label={t("preview.pdf.controls")}
-        >
+        <fieldset className="ml-auto flex min-w-0 flex-1 flex-wrap items-center gap-1 border-0 p-0">
+          <legend className="sr-only">{t("preview.pdf.controls")}</legend>
           <button
             type="button"
             className={iconButton}
@@ -293,12 +290,13 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
           <a
             href={rawFileUrl(path)}
             download
+            aria-label={t("preview.pdf.download")}
             className="flex h-7 shrink-0 items-center gap-1 rounded-md px-1.5 text-[12px] font-medium text-v2-text-text-muted transition-colors hover:bg-v2-grey-100 hover:text-v2-text-text-base"
           >
             <Download size={13} aria-hidden />
             <span className="hidden sm:inline">{t("preview.pdf.download")}</span>
           </a>
-        </div>
+        </fieldset>
       </header>
       <section
         ref={scrollRef}

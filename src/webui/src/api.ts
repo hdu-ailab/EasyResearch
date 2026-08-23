@@ -5,6 +5,7 @@ import type {
   AgentResourceDto,
   AuthProviderInfoDto,
   ChildSessionSnapshotDto,
+  CompactionRequestResultDto,
   ConfigEntryDto,
   ConfigScope,
   ConfigurationEvent,
@@ -15,6 +16,8 @@ import type {
   SessionTreeDto,
   SkillCommandDto,
   StatusDto,
+  TreeNavigationOptionsDto,
+  TreeNavigationResultDto,
   UpdateCheckDto,
 } from "../../web/contracts";
 import {
@@ -26,6 +29,7 @@ import {
   parseAuthLoginResponse,
   parseAuthProviderList,
   parseChildSnapshot,
+  parseCompactionRequestResult,
   parseConfigEntries,
   parseConfigFile,
   parseConfigProjects,
@@ -40,6 +44,7 @@ import {
   parseSkillResource,
   parseSkillResources,
   parseStatus,
+  parseTreeNavigationResult,
   parseUpdateCheck,
 } from "./api/parsers";
 import { routes } from "./api/routes";
@@ -180,8 +185,20 @@ export function getSessionTree(id: string): Promise<SessionTreeDto> {
   return requestJson(routes.tree(id), parseSessionTree);
 }
 
-export function navigateSessionTree(id: string, entryId: string): Promise<void> {
-  return requestVoid(routes.treeNavigate(id), json("POST", { entryId }));
+export function navigateSessionTree(
+  id: string,
+  entryId: string,
+  options: TreeNavigationOptionsDto = {},
+): Promise<TreeNavigationResultDto> {
+  return requestJson(routes.treeNavigate(id), parseTreeNavigationResult, json("POST", { entryId, ...options }));
+}
+
+export function compactSession(id: string, customInstructions?: string): Promise<CompactionRequestResultDto> {
+  return requestJson(
+    routes.compact(id),
+    parseCompactionRequestResult,
+    json("POST", customInstructions === undefined ? {} : { customInstructions }),
+  );
 }
 
 export function abortSession(id: string): Promise<void> {

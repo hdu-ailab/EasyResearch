@@ -4,6 +4,7 @@ import type { AgentRuntimeBinding } from "../runtime/agent-runtime-binding";
 import type { LiveConfiguration } from "../runtime/live-configuration";
 import type { SubagentCoordinator } from "../subagent/coordinator";
 import type { SubagentSupervisor } from "../subagent/supervisor";
+import { ManualCompactionController } from "../web/manual-compaction";
 import { createResearchAssistantExtensions, type ResearchAssistantExtensionRuntime } from "./index";
 
 function binding(tools: string[]): AgentRuntimeBinding {
@@ -20,6 +21,7 @@ function runtime(label: string, tools = ["read"]): ResearchAssistantExtensionRun
     liveConfiguration: {} as LiveConfiguration,
     coordinator: { label } as unknown as SubagentCoordinator,
     supervisor: { label } as unknown as SubagentSupervisor,
+    compaction: new ManualCompactionController(),
   };
 }
 

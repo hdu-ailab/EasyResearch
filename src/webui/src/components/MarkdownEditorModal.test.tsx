@@ -32,6 +32,7 @@ describe("MarkdownEditorModal", () => {
     const dialog = screen.getByRole("dialog");
     expect(dialog).toHaveClass("max-w-[1000px]");
     const editor = screen.getByRole("textbox", { name: "Markdown editor" });
+    expect(editor).toHaveFocus();
     await user.clear(editor);
     await user.type(editor, "# Updated");
     await user.click(screen.getByRole("button", { name: "Save changes" }));

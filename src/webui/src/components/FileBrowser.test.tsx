@@ -43,7 +43,7 @@ describe("FileBrowser", () => {
     const user = userEvent.setup();
     render(<FileBrowser root="/p" />);
     await user.click(await screen.findByText("paper.pdf"));
-    expect(await screen.findByRole("toolbar", { name: "PDF controls" })).toBeVisible();
+    expect(await screen.findByRole("group", { name: "PDF controls" })).toBeVisible();
     expect(readFileContent).not.toHaveBeenCalled();
   });
 
@@ -58,7 +58,7 @@ describe("FileBrowser", () => {
     });
     render(<FileBrowser root="/p" />);
     await user.click(await screen.findByText("draft.DOCX"));
-    expect(await screen.findByRole("toolbar", { name: "DOCX controls" })).toBeVisible();
+    expect(await screen.findByRole("group", { name: "DOCX controls" })).toBeVisible();
     expect(readFileContent).not.toHaveBeenCalled();
   });
 
@@ -154,14 +154,12 @@ describe("FileBrowser", () => {
     expect(readFileContent).toHaveBeenCalledTimes(2);
   });
 
-  it("renders the tree toggle as the first tab-bar element with aria-expanded=true", async () => {
+  it("keeps the tree toggle outside the open-file tablist", async () => {
     render(<FileBrowser root="/p" />);
     const button = await screen.findByRole("button", { name: "Toggle file tree" });
     expect(button).toHaveAttribute("aria-expanded", "true");
-    const slot = button.parentElement;
-    const tablist = slot?.parentElement;
-    expect(tablist?.getAttribute("role")).toBe("tablist");
-    expect(tablist?.firstElementChild).toBe(slot);
+    const tablist = screen.getByRole("tablist", { name: "Open files" });
+    expect(tablist).not.toContainElement(button);
   });
 
   it("colors the toggle when the tree is open and clears it when collapsed", async () => {

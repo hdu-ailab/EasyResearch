@@ -8,13 +8,16 @@ import type {
   SubagentSupervisorEventDto,
 } from "../../../web/contracts";
 import { RESEARCH_ASSISTANT_AGENT } from "../agent-identity";
-import { getChildSnapshot, getSessionCommands, getSessionTree } from "../api";
+import { compactSession, getChildSnapshot, getSessionCommands, getSessionTree, renameSession } from "../api";
 import { AgentList, type AgentStatus } from "../components/AgentList";
 import { AgentTabBar } from "../components/AgentTabBar";
-import { ChatComposer } from "../components/ChatComposer";
+import { ChatComposer, type ChatComposerHandle } from "../components/ChatComposer";
 import { ChatTranscript, type ChatTranscriptHandle } from "../components/ChatTranscript";
+import { ContextCapacity } from "../components/ContextCapacity";
 import { FileBrowser } from "../components/FileBrowser";
+import { RenameSessionDialog } from "../components/RenameSessionDialog";
 import { RetryBanner } from "../components/RetryBanner";
+import { SessionHistoryDialog } from "../components/SessionHistoryDialog";
 import { ProductMark, Topbar, TopbarIconButton } from "../components/Topbar";
 import { WorkMobileTabs, type WorkView } from "../components/WorkMobileTabs";
 import { parseFileWatcherEvent } from "../file-watcher";
@@ -58,6 +61,7 @@ const emptyView: SessionViewState = {
   retry: null,
   nextOrder: 0,
   steers: [],
+  compactionState: "idle",
 };
 
 function subagentSummary(
@@ -159,7 +163,12 @@ export function WorkPage({
   const [activeTab, setActiveTab] = useState(RESEARCH_ASSISTANT_AGENT);
   const [commands, setCommands] = useState<SkillCommandDto[]>([]);
   const [tree, setTree] = useState<SessionTreeDto | null>(null);
+  const [renameInitialName, setRenameInitialName] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyInitialQuery, setHistoryInitialQuery] = useState("");
+  const [commandError, setCommandError] = useState<string | null>(null);
   const transcriptRef = useRef<ChatTranscriptHandle>(null);
+  const composerRef = useRef<ChatComposerHandle>(null);
   const tabsStateRef = useRef(tabsState);
   const childSessionByInvocation = useRef(new Map<string, string>());
   const childLoaded = useRef(new Set<string>());
@@ -251,9 +260,17 @@ export function WorkPage({
     parentOwner.current = { id: sessionId, generation: parentOwner.current.generation + 1 };
   }
   const status = connection.status;
-  const statusText = connection.notice;
+  const statusText = commandError ?? connection.notice;
   const accepting = connection.accepting;
   const pendingOutput = connection.pendingOutput;
+  const treeBusy =
+    accepting ||
+    pendingOutput ||
+    status === "running" ||
+    sessionView.isStreaming ||
+    sessionView.compactionState !== "idle" ||
+    tabsState.tabs.some((tab) => tab.running) ||
+    tabsState.hiddenRunningToolCalls.length > 0;
 
   useEffect(() => {
     tabsStateRef.current = tabsState;
@@ -652,8 +669,24 @@ export function WorkPage({
     [panelMax, panelMin, clampedPanelWidth],
   );
 
+  const resizeWithKeyboard = useCallback(
+    (event: React.KeyboardEvent) => {
+      let next: number | undefined;
+      if (event.key === "ArrowLeft") next = clampedPanelWidth + 16;
+      else if (event.key === "ArrowRight") next = clampedPanelWidth - 16;
+      else if (event.key === "Home") next = panelMin;
+      else if (event.key === "End") next = panelMax;
+      if (next === undefined) return;
+      event.preventDefault();
+      setPanelWidth(Math.round(Math.min(panelMax, Math.max(panelMin, next))));
+      setPanelWidthTouched(true);
+    },
+    [clampedPanelWidth, panelMax, panelMin],
+  );
+
   const send = useCallback(
     async (text: string) => {
+      setCommandError(null);
       transcriptRef.current?.scrollToLatest();
       await connection.send(text);
       void refreshTree();
@@ -661,6 +694,32 @@ export function WorkPage({
     [connection.send, refreshTree],
   );
   const abort = connection.abort;
+
+  const executeCommand = useCallback(
+    (command: SkillCommandDto, args: string) => {
+      setCommandError(null);
+      if (command.name === "name") {
+        setRenameInitialName(args || sessionView.sessionName || "");
+        return;
+      }
+      if (command.name === "history") {
+        setHistoryInitialQuery(args);
+        setHistoryOpen(true);
+        void refreshTree();
+        return;
+      }
+      if (command.name === "compact") {
+        void compactSession(sessionId, args || undefined)
+          .then(({ state }) => connection.setView((current) => ({ ...current, compactionState: state })))
+          .catch((error: unknown) => {
+            setCommandError(error instanceof Error ? error.message : String(error));
+          });
+        return;
+      }
+      void send(args ? `/${command.name} ${args}` : `/${command.name}`);
+    },
+    [connection.setView, refreshTree, send, sessionId, sessionView.sessionName],
+  );
 
   const messageMeta = useMemo(
     () => buildMessageTreeMeta(sessionView.messages, tree?.tree ?? [], tree?.leafId ?? null),
@@ -807,10 +866,15 @@ export function WorkPage({
             {activeTab !== RESEARCH_ASSISTANT_AGENT || sessionView.subagentName ? (
               <p className="mb-2 text-[12px] text-v2-text-text-faint">{t("work.subagentLineNote")}</p>
             ) : null}
+            {activeTab === RESEARCH_ASSISTANT_AGENT && !sessionView.subagentName ? (
+              <ContextCapacity usage={sessionView.contextUsage} compactionState={sessionView.compactionState} />
+            ) : null}
             <ChatComposer
+              ref={composerRef}
               disabled={accepting || activeTab !== RESEARCH_ASSISTANT_AGENT || sessionView.subagentName !== undefined}
               streaming={activeTab === RESEARCH_ASSISTANT_AGENT && sessionView.isStreaming}
               onSend={send}
+              onCommand={executeCommand}
               onAbort={abort}
               commands={activeTab === RESEARCH_ASSISTANT_AGENT ? commands : []}
             />
@@ -831,12 +895,17 @@ export function WorkPage({
             (isMobile ? mobileView === "agents" : panel === "agents") ? t("work.agentList") : t("work.fileBrowser")
           }
         >
-          <button
-            type="button"
+          <hr
+            tabIndex={0}
+            aria-orientation="vertical"
             aria-label={t("work.resizePanel")}
+            aria-valuemin={Math.round(panelMin)}
+            aria-valuemax={Math.round(panelMax)}
+            aria-valuenow={Math.round(clampedPanelWidth)}
             title={t("work.resizePanel")}
             onPointerDown={startResize}
-            className="absolute inset-y-0 left-[-0.5rem] z-30 hidden w-2 cursor-col-resize min-[820px]:block"
+            onKeyDown={resizeWithKeyboard}
+            className="absolute inset-y-0 left-[-0.5rem] z-30 hidden w-2 cursor-col-resize border-0 min-[820px]:block"
           />
           <div
             id="work-panel-files"
@@ -863,6 +932,32 @@ export function WorkPage({
           </div>
         </section>
       </div>
+      {renameInitialName !== null ? (
+        <RenameSessionDialog
+          currentName={renameInitialName}
+          onClose={() => setRenameInitialName(null)}
+          onSave={(name) => {
+            setRenameInitialName(null);
+            void renameSession(sessionId, name).catch((error: unknown) => {
+              setCommandError(error instanceof Error ? error.message : String(error));
+            });
+          }}
+        />
+      ) : null}
+      {historyOpen && tree ? (
+        <SessionHistoryDialog
+          value={tree}
+          busy={treeBusy}
+          initialQuery={historyInitialQuery}
+          onClose={() => setHistoryOpen(false)}
+          onRestoreDraft={(text) => composerRef.current?.setDraft(text)}
+          onNavigate={async (entryId, options) => {
+            const result = await connection.navigateTree(entryId, options);
+            void refreshTree();
+            return result;
+          }}
+        />
+      ) : null}
     </div>
   );
 }

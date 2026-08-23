@@ -167,8 +167,15 @@ describe("API response parsers", () => {
             status: "working",
           },
         ],
+        contextUsage: { tokens: null, contextWindow: 128_000, percent: null },
+        compactionState: "queued",
       }),
-    ).toMatchObject({ session, messages: [{ role: "assistant" }] });
+    ).toMatchObject({
+      session,
+      messages: [{ role: "assistant" }],
+      contextUsage: { tokens: null, contextWindow: 128_000, percent: null },
+      compactionState: "queued",
+    });
     expect(
       parseChildSnapshot({
         session: { id: "child-1", cwd: "/p", sessionName: "easyresearch:search" },
@@ -178,6 +185,14 @@ describe("API response parsers", () => {
     ).toEqual({ id: "child-1", cwd: "/p", sessionName: "easyresearch:search" });
     expect(() => parseActiveSession({ ...session, status: "unknown" })).toThrow();
     expect(() => parseSessionSnapshot({ session, messages: {}, subagents: [] })).toThrow();
+    expect(() =>
+      parseSessionSnapshot({
+        session,
+        messages: [],
+        subagents: [],
+        contextUsage: { tokens: 10, contextWindow: 100, percent: "10" },
+      }),
+    ).toThrow();
     expect(() => parseChildSnapshot({ session: { id: "child-1", cwd: "/p" }, messages: [] })).toThrow();
   });
 
@@ -367,16 +382,34 @@ describe("API response parsers", () => {
     expect(
       parseSessionTree({
         leafId: "m2",
+        filterMode: "no-tools",
+        skipBranchSummaryPrompt: true,
         tree: [
-          { id: "m1", parentId: null, role: "user", text: "hi" },
-          { id: "m2", parentId: "m1", role: "assistant", text: "yo" },
+          { id: "m1", parentId: null, role: "user", kind: "user", text: "hi", label: "start" },
+          {
+            id: "m2",
+            parentId: "m1",
+            role: "assistant",
+            kind: "assistant",
+            text: "yo",
+            stopReason: "stop",
+          },
         ],
       }),
     ).toEqual({
       leafId: "m2",
+      filterMode: "no-tools",
+      skipBranchSummaryPrompt: true,
       tree: [
-        { id: "m1", parentId: null, role: "user", text: "hi" },
-        { id: "m2", parentId: "m1", role: "assistant", text: "yo" },
+        { id: "m1", parentId: null, role: "user", kind: "user", text: "hi", label: "start" },
+        {
+          id: "m2",
+          parentId: "m1",
+          role: "assistant",
+          kind: "assistant",
+          text: "yo",
+          stopReason: "stop",
+        },
       ],
     });
   });
@@ -385,8 +418,15 @@ describe("API response parsers", () => {
     expect(
       parseSessionTree({
         leafId: null,
-        tree: [{ id: 1 }, { id: "ok", parentId: null, role: "user", text: "" }],
+        filterMode: "invalid",
+        skipBranchSummaryPrompt: false,
+        tree: [{ id: 1 }, { id: "ok", parentId: null, role: "user", kind: "user", text: "" }],
       }),
-    ).toEqual({ leafId: null, tree: [{ id: "ok", parentId: null, role: "user", text: "" }] });
+    ).toEqual({
+      leafId: null,
+      filterMode: "default",
+      skipBranchSummaryPrompt: false,
+      tree: [{ id: "ok", parentId: null, role: "user", kind: "user", text: "" }],
+    });
   });
 });

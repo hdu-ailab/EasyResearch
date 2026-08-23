@@ -1,4 +1,5 @@
 import { AlertTriangle, Settings2, X } from "lucide-react";
+import { useRef } from "react";
 import type { AgentDto, AgentResourceDto } from "../../../web/contracts";
 import { useModalLayer } from "../hooks/useModalLayer";
 import { agentDisplayName } from "../i18n/agents";
@@ -47,13 +48,15 @@ export function AgentConfigModal({
   onShowDetails,
 }: AgentConfigModalProps) {
   const { t } = useI18n();
-  const zIndex = useModalLayer(onClose);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const zIndex = useModalLayer(onClose, dialogRef);
   const name = agentDisplayName(t, agent.name);
   const tools = agent.effectiveTools ?? agent.tools ?? [];
   const skills = agent.effectiveSkills ?? agent.skills ?? [];
   return (
     <div className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/30 p-3 sm:p-6" style={{ zIndex }}>
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label={t("settings.agents.title")}

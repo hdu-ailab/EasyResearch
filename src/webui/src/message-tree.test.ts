@@ -7,6 +7,7 @@ const entry = (id: string, parentId: string | null, role: "user" | "assistant", 
   id,
   parentId,
   role,
+  kind: role,
   text,
 });
 
@@ -14,7 +15,7 @@ const otherEntry = (
   id: string,
   parentId: string | null,
   extra: Partial<Pick<WebTreeEntryDto, "firstKeptEntryId" | "text">> = {},
-): WebTreeEntryDto => ({ id, parentId, role: "other", text: "", ...extra });
+): WebTreeEntryDto => ({ id, parentId, role: "other", kind: "other", text: "", ...extra });
 
 const view = (key: string, role: "user" | "assistant"): SessionMessageView => ({
   key,

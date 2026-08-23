@@ -112,7 +112,7 @@ describe("useSessionConnection", () => {
     vi.mocked(api.sendPrompt).mockReset().mockResolvedValue(undefined);
     vi.mocked(api.openSession).mockReset();
     vi.mocked(api.abortSession).mockReset().mockResolvedValue(undefined);
-    vi.mocked(api.navigateSessionTree).mockReset().mockResolvedValue(undefined);
+    vi.mocked(api.navigateSessionTree).mockReset().mockResolvedValue({ cancelled: false, leafId: null });
   });
 
   it("hydrates the parent session and lets reconnect snapshots replace ordinary transcript state", async () => {
@@ -134,6 +134,44 @@ describe("useSessionConnection", () => {
     });
 
     expect(result.current.view.messages.map((message) => message.text)).toEqual(["authoritative reconnect"]);
+  });
+
+  it("replaces native context usage and compaction state from live session events", async () => {
+    const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    emit({
+      type: "session_stats_changed",
+      contextUsage: { tokens: 91_000, contextWindow: 100_000, percent: 91 },
+    });
+    emit({ type: "compaction_state_changed", state: "queued" });
+
+    expect(result.current.view.contextUsage).toEqual({ tokens: 91_000, contextWindow: 100_000, percent: 91 });
+    expect(result.current.view.compactionState).toBe("queued");
+
+    emit({ type: "session_stats_changed" });
+    emit({ type: "compaction_state_changed", state: "idle" });
+    expect(result.current.view.contextUsage).toBeUndefined();
+    expect(result.current.view.compactionState).toBe("idle");
+  });
+
+  it("surfaces native compaction failures and clears the notice on the next send", async () => {
+    const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    emit({
+      type: "compaction_end",
+      reason: "manual",
+      result: undefined,
+      aborted: false,
+      willRetry: false,
+      errorMessage: "Compaction failed: Nothing to compact",
+    });
+
+    expect(result.current.notice).toBe("Compaction failed: Nothing to compact");
+
+    await act(async () => result.current.send("continue"));
+    expect(result.current.notice).toBeNull();
   });
 
   it("delivers auto_retry events to the reducer", async () => {
@@ -704,11 +742,26 @@ describe("useSessionConnection", () => {
     } as never;
     vi.mocked(api.getSnapshot).mockResolvedValueOnce(branched);
 
+    vi.mocked(api.navigateSessionTree).mockResolvedValueOnce({
+      cancelled: false,
+      editorText: "original prompt",
+      leafId: "entry-0",
+    });
+    let navigation: unknown;
     await act(async () => {
-      await result.current.navigateTree("entry-1");
+      navigation = await (
+        result.current.navigateTree as unknown as (
+          entryId: string,
+          options: { summarize: boolean; customInstructions: string },
+        ) => Promise<unknown>
+      )("entry-1", { summarize: true, customInstructions: "focus on evidence" });
     });
 
-    expect(api.navigateSessionTree).toHaveBeenCalledWith("s1", "entry-1");
+    expect(api.navigateSessionTree).toHaveBeenCalledWith("s1", "entry-1", {
+      summarize: true,
+      customInstructions: "focus on evidence",
+    });
+    expect(navigation).toEqual({ cancelled: false, editorText: "original prompt", leafId: "entry-0" });
     expect(result.current.view.messages[0]?.text).toBe("edited");
   });
 

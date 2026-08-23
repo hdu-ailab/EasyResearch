@@ -20,8 +20,10 @@ interface TreeRow {
 export function FilesPanel({ root, onOpenFile, fileEvent = null }: FilesPanelProps) {
   const { t } = useI18n();
   const [filter, setFilter] = useState("");
+  const [focusedPath, setFocusedPath] = useState<string | null>(null);
   const tree = useLazyTree<FileEntryDto>({ root, loadChildren: listEntries });
   const handledEvent = useRef<FileWatcherEvent | null>(null);
+  const rowRefs = useRef(new Map<string, HTMLElement>());
 
   useEffect(() => {
     if (!fileEvent || handledEvent.current === fileEvent) return;
@@ -71,6 +73,58 @@ export function FilesPanel({ root, onOpenFile, fileEvent = null }: FilesPanelPro
   };
 
   const rootError = tree.error(root);
+  const displayedRows: TreeRow[] = filter.trim() ? matches.map(({ entry }) => ({ entry, depth: 0 })) : rows;
+  const rovingPath = displayedRows.some(({ entry }) => entry.path === focusedPath)
+    ? focusedPath
+    : (displayedRows[0]?.entry.path ?? null);
+
+  const focusRow = (path: string) => {
+    setFocusedPath(path);
+    rowRefs.current.get(path)?.focus();
+  };
+
+  const handleTreeKey = (event: React.KeyboardEvent<HTMLElement>, row: TreeRow) => {
+    if (event.target !== event.currentTarget) return;
+    const index = displayedRows.findIndex(({ entry }) => entry.path === row.entry.path);
+    const focusAt = (nextIndex: number) => {
+      const next = displayedRows[Math.max(0, Math.min(displayedRows.length - 1, nextIndex))];
+      if (next) focusRow(next.entry.path);
+    };
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      focusAt(index + (event.key === "ArrowDown" ? 1 : -1));
+      return;
+    }
+    if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      focusAt(event.key === "Home" ? 0 : displayedRows.length - 1);
+      return;
+    }
+    if (event.key === "ArrowRight" && row.entry.kind === "directory") {
+      event.preventDefault();
+      if (!tree.expanded.has(row.entry.path)) toggle(row.entry);
+      else {
+        const child = displayedRows[index + 1];
+        if (child && child.depth > row.depth) focusRow(child.entry.path);
+      }
+      return;
+    }
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      if (row.entry.kind === "directory" && tree.expanded.has(row.entry.path)) {
+        toggle(row.entry);
+      } else {
+        const parent = displayedRows.find(({ entry }) => entry.path === parentPath(row.entry.path));
+        if (parent) focusRow(parent.entry.path);
+      }
+      return;
+    }
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      if (row.entry.kind === "directory") toggle(row.entry);
+      else onOpenFile(row.entry);
+    }
+  };
 
   const rowClass = (isDirectory: boolean) =>
     `group flex w-full cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-v2-grey-100 ${
@@ -101,7 +155,11 @@ export function FilesPanel({ root, onOpenFile, fileEvent = null }: FilesPanelPro
           <RefreshCw size={13} />
         </button>
       </div>
-      {rootError && <p className="px-2 pt-2 text-[12px] text-v2-status-error">{rootError}</p>}
+      {rootError && (
+        <p role="alert" className="px-2 pt-2 text-[12px] text-v2-status-error">
+          {rootError}
+        </p>
+      )}
       <div className="min-h-0 flex-1 overflow-y-auto p-2" role="tree" aria-label={t("files.tree")}>
         {filter.trim() ? (
           matches.length === 0 ? (
@@ -111,10 +169,23 @@ export function FilesPanel({ root, onOpenFile, fileEvent = null }: FilesPanelPro
               {matches.map(({ entry, rel }) => (
                 <button
                   key={entry.path}
+                  ref={(element) => {
+                    if (element) rowRefs.current.set(entry.path, element);
+                    else rowRefs.current.delete(entry.path);
+                  }}
                   type="button"
                   role="treeitem"
+                  aria-level={1}
+                  aria-expanded={entry.kind === "directory" ? tree.expanded.has(entry.path) : undefined}
+                  tabIndex={rovingPath === entry.path ? 0 : -1}
                   className={rowClass(entry.kind === "directory")}
-                  onClick={() => (entry.kind === "directory" ? toggle(entry) : onOpenFile(entry))}
+                  onFocus={() => setFocusedPath(entry.path)}
+                  onClick={() => {
+                    setFocusedPath(entry.path);
+                    if (entry.kind === "directory") toggle(entry);
+                    else onOpenFile(entry);
+                  }}
+                  onKeyDown={(event) => handleTreeKey(event, { entry, depth: 0 })}
                   title={entry.path}
                 >
                   {entry.kind === "directory" ? (
@@ -143,25 +214,29 @@ export function FilesPanel({ root, onOpenFile, fileEvent = null }: FilesPanelPro
               return (
                 <div
                   key={entry.path}
+                  ref={(element) => {
+                    if (element) rowRefs.current.set(entry.path, element);
+                    else rowRefs.current.delete(entry.path);
+                  }}
                   role="treeitem"
+                  aria-level={depth + 1}
                   aria-expanded={isDirectory ? isExpanded : undefined}
-                  tabIndex={0}
+                  tabIndex={rovingPath === entry.path ? 0 : -1}
                   className="group flex cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-v2-grey-100"
                   style={{ paddingLeft: `${8 + depth * 14}px` }}
-                  onClick={() => (isDirectory ? toggle(entry) : onOpenFile(entry))}
-                  onKeyDown={(event) => {
-                    if (event.target !== event.currentTarget) return;
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      if (isDirectory) toggle(entry);
-                      else onOpenFile(entry);
-                    }
+                  onFocus={() => setFocusedPath(entry.path)}
+                  onClick={() => {
+                    setFocusedPath(entry.path);
+                    if (isDirectory) toggle(entry);
+                    else onOpenFile(entry);
                   }}
+                  onKeyDown={(event) => handleTreeKey(event, { entry, depth })}
                   title={entry.path}
                 >
                   {isDirectory ? (
                     <button
                       type="button"
+                      tabIndex={-1}
                       className="flex size-4 shrink-0 items-center justify-center rounded text-v2-icon-icon-muted hover:bg-v2-grey-200"
                       aria-label={
                         state === "loading"
@@ -199,6 +274,7 @@ export function FilesPanel({ root, onOpenFile, fileEvent = null }: FilesPanelPro
                   {state === "error" && (
                     <button
                       type="button"
+                      tabIndex={-1}
                       className="ml-auto shrink-0 rounded px-1.5 py-0.5 text-[11px] text-v2-text-text-muted hover:bg-v2-grey-200"
                       aria-label={t("files.retryRow").replace("{name}", entry.name)}
                       onClick={(event) => {

@@ -1,6 +1,12 @@
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { type Dispatch, type SetStateAction, useCallback, useEffect, useRef, useState } from "react";
-import type { ActiveSessionDto, SessionSnapshotDto, SubagentSupervisorEventDto } from "../../../web/contracts";
+import type {
+  ActiveSessionDto,
+  SessionSnapshotDto,
+  SubagentSupervisorEventDto,
+  TreeNavigationOptionsDto,
+  TreeNavigationResultDto,
+} from "../../../web/contracts";
 import {
   abortSession,
   connectSessionEvents,
@@ -10,7 +16,11 @@ import {
   openSession,
   sendPrompt,
 } from "../api";
-import { parseSubagentSupervisorEvent } from "../api/parsers";
+import {
+  parseCompactionStateChangedEvent,
+  parseSessionStatsChangedEvent,
+  parseSubagentSupervisorEvent,
+} from "../api/parsers";
 import { useI18n } from "../i18n/useI18n";
 import {
   emptyState,
@@ -40,7 +50,7 @@ export interface SessionConnection {
   send(text: string): Promise<void>;
   abort(): Promise<void>;
   /** Move the session leaf to an entry in place, then refresh the view. */
-  navigateTree(entryId: string): Promise<void>;
+  navigateTree(entryId: string, options?: TreeNavigationOptionsDto): Promise<TreeNavigationResultDto>;
   setView: Dispatch<SetStateAction<SessionViewState>>;
 }
 
@@ -239,6 +249,33 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
           onSupervisorEventRef.current?.(supervisorEvent);
           return;
         }
+        if (eventType(event) === "session_stats_changed") {
+          try {
+            const stats = parseSessionStatsChangedEvent(event);
+            setView((current) => {
+              if (stats.contextUsage !== undefined) return { ...current, contextUsage: stats.contextUsage };
+              const { contextUsage: _previous, ...next } = current;
+              return next;
+            });
+          } catch {
+            // Ignore malformed SSE frames and retain the last valid state.
+          }
+          return;
+        }
+        if (eventType(event) === "compaction_state_changed") {
+          try {
+            const compaction = parseCompactionStateChangedEvent(event);
+            setView((current) => ({ ...current, compactionState: compaction.state }));
+          } catch {
+            // Ignore malformed SSE frames and retain the last valid state.
+          }
+          return;
+        }
+        if (eventType(event) === "compaction_end") {
+          const errorMessage = (event as { errorMessage?: unknown }).errorMessage;
+          if (typeof errorMessage === "string" && errorMessage) setNotice(errorMessage);
+          return;
+        }
         if (onEventRef.current?.(event)) return;
         if (isSnapshotEvent(event)) {
           const pending = pendingStreamReadyRef.current;
@@ -415,13 +452,14 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
   }, [cancelOperation, clearTerminalState]);
 
   const navigateTree = useCallback(
-    async (entryId: string) => {
-      await navigateSessionTree(sessionIdRef.current, entryId);
+    async (entryId: string, options: TreeNavigationOptionsDto = {}) => {
+      const result = await navigateSessionTree(sessionIdRef.current, entryId, options);
       const snapshot = await getSnapshot(sessionIdRef.current);
-      if (!mountedRef.current) return;
+      if (!mountedRef.current) return result;
       updateSessionPath(snapshot.session.sessionFile ?? null);
       setStatus(snapshot.session.status);
       setView((current) => mergeSnapshot(current, snapshot));
+      return result;
     },
     [updateSessionPath],
   );

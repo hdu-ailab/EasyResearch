@@ -82,6 +82,11 @@ body {
   line-height: 1.5;
 }
 
+:where(button, a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])):focus-visible {
+  outline: 2px solid var(--color-v2-blue-600);
+  outline-offset: 2px;
+}
+
 @keyframes v2-pulse {
   0%,
   100% {

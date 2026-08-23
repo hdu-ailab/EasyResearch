@@ -7,7 +7,12 @@ const node = (entry: SessionTreeNode["entry"], children: SessionTreeNode[] = [])
   children,
 });
 
-function messageEntry(id: string, parentId: string | null, role: string, text: string): SessionTreeNode["entry"] {
+function messageEntry(
+  id: string,
+  parentId: string | null,
+  role: string,
+  text: string,
+): Extract<SessionTreeNode["entry"], { type: "message" }> {
   return { type: "message", id, parentId, timestamp: "", message: { role, content: text } as never };
 }
 
@@ -20,10 +25,10 @@ describe("flattenMessageTree", () => {
       ]),
     ];
     expect(flattenMessageTree(tree)).toEqual([
-      { id: "m1", parentId: null, role: "user", text: "hello" },
-      { id: "m2", parentId: "m1", role: "assistant", text: "hi" },
-      { id: "m3", parentId: "m1", role: "user", text: "again" },
-      { id: "m4", parentId: "m3", role: "assistant", text: "ok" },
+      { id: "m1", parentId: null, role: "user", kind: "user", text: "hello" },
+      { id: "m2", parentId: "m1", role: "assistant", kind: "assistant", text: "hi" },
+      { id: "m3", parentId: "m1", role: "user", kind: "user", text: "again" },
+      { id: "m4", parentId: "m3", role: "assistant", kind: "assistant", text: "ok" },
     ]);
   });
 
@@ -42,10 +47,10 @@ describe("flattenMessageTree", () => {
       ]),
     ];
     expect(flattenMessageTree(tree)).toEqual([
-      { id: "t1", parentId: null, role: "other", text: "" },
-      { id: "m1", parentId: "t1", role: "user", text: "hi" },
-      { id: "l1", parentId: "m1", role: "other", text: "" },
-      { id: "m2", parentId: "l1", role: "assistant", text: "yo" },
+      { id: "t1", parentId: null, role: "other", kind: "thinking-change", text: "high" },
+      { id: "m1", parentId: "t1", role: "user", kind: "user", text: "hi" },
+      { id: "l1", parentId: "m1", role: "other", kind: "label", text: "x" },
+      { id: "m2", parentId: "l1", role: "assistant", kind: "assistant", text: "yo" },
     ]);
   });
 
@@ -57,10 +62,10 @@ describe("flattenMessageTree", () => {
       node(messageEntry("sys1", "m2", "system", "system note")),
     ];
     expect(flattenMessageTree(tree)).toEqual([
-      { id: "m1", parentId: null, role: "user", text: "a" },
-      { id: "tr1", parentId: "m1", role: "other", text: "" },
-      { id: "m2", parentId: "tr1", role: "assistant", text: "b" },
-      { id: "sys1", parentId: "m2", role: "other", text: "" },
+      { id: "m1", parentId: null, role: "user", kind: "user", text: "a" },
+      { id: "tr1", parentId: "m1", role: "other", kind: "tool", text: "tool output" },
+      { id: "m2", parentId: "tr1", role: "assistant", kind: "assistant", text: "b" },
+      { id: "sys1", parentId: "m2", role: "other", kind: "message", text: "system note" },
     ]);
   });
 
@@ -78,8 +83,16 @@ describe("flattenMessageTree", () => {
       node({ type: "branch_summary", id: "b1", parentId: "c1", timestamp: "", fromId: "m9", summary: "branch" }),
     ];
     expect(flattenMessageTree(tree)).toEqual([
-      { id: "c1", parentId: null, role: "other", text: "summarized", firstKeptEntryId: "m2" },
-      { id: "b1", parentId: "c1", role: "other", text: "branch" },
+      {
+        id: "c1",
+        parentId: null,
+        role: "other",
+        kind: "compaction",
+        text: "summarized",
+        firstKeptEntryId: "m2",
+        tokensBefore: 100,
+      },
+      { id: "b1", parentId: "c1", role: "other", kind: "branch-summary", text: "branch" },
     ]);
   });
 
@@ -91,6 +104,36 @@ describe("flattenMessageTree", () => {
       timestamp: "",
       message: { role: "user", content: [{ type: "text", text: "a" }, { type: "thinking", thinking: "t" }] } as never,
     };
-    expect(flattenMessageTree([node(entry)])).toEqual([{ id: "m1", parentId: null, role: "user", text: "a" }]);
+    expect(flattenMessageTree([node(entry)])).toEqual([
+      { id: "m1", parentId: null, role: "user", kind: "user", text: "a" },
+    ]);
+  });
+
+  it("keeps node labels and assistant failure state for the Pi-style history view", () => {
+    const assistant = node({
+      ...messageEntry("a1", null, "assistant", ""),
+      message: {
+        role: "assistant",
+        content: [],
+        stopReason: "error",
+        errorMessage: "provider unavailable",
+      } as never,
+    });
+    assistant.label = "checkpoint";
+    assistant.labelTimestamp = "2026-08-23T00:00:00.000Z";
+
+    expect(flattenMessageTree([assistant])).toEqual([
+      {
+        id: "a1",
+        parentId: null,
+        role: "assistant",
+        kind: "assistant",
+        text: "",
+        label: "checkpoint",
+        labelTimestamp: "2026-08-23T00:00:00.000Z",
+        stopReason: "error",
+        errorMessage: "provider unavailable",
+      },
+    ]);
   });
 });

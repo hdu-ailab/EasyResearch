@@ -60,6 +60,10 @@ describe("SearchableSelect", () => {
     await user.click(trigger);
     expect(screen.getByRole("listbox")).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "anthropic/claude" })).toBeInTheDocument();
+    const search = screen.getByRole("searchbox");
+    const activeOption = document.getElementById(search.getAttribute("aria-activedescendant") ?? "");
+    expect(activeOption).toHaveRole("option");
+    expect(activeOption).toHaveAttribute("aria-selected", "true");
   });
 
   it("filters options by typing in the search box", async () => {
@@ -87,6 +91,25 @@ describe("SearchableSelect", () => {
     await user.keyboard("{ArrowDown}");
     await user.keyboard("{Enter}");
     expect(onSelect).toHaveBeenCalledWith("anthropic/claude");
+    expect(screen.getByRole("combobox")).toHaveFocus();
+  });
+
+  it("moves to list boundaries with Home and End", async () => {
+    const user = userEvent.setup();
+    const { onSelect } = renderSelect({ value: "" });
+    await user.click(screen.getByRole("combobox"));
+    const search = screen.getByRole("searchbox");
+
+    await user.keyboard("{End}");
+    expect(document.getElementById(search.getAttribute("aria-activedescendant") ?? "")).toHaveTextContent(
+      "anthropic/claude",
+    );
+    await user.keyboard("{Home}");
+    expect(document.getElementById(search.getAttribute("aria-activedescendant") ?? "")).toHaveTextContent(
+      "follow Research Assistant",
+    );
+    await user.keyboard("{End}{Enter}");
+    expect(onSelect).toHaveBeenCalledWith("anthropic/claude");
   });
 
   it("shows the placeholder when value is not among options", () => {
@@ -101,5 +124,22 @@ describe("SearchableSelect", () => {
     expect(screen.getByRole("listbox")).toBeInTheDocument();
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(screen.getByRole("combobox")).toHaveFocus();
+  });
+
+  it("consumes Escape so a containing modal stays open", async () => {
+    const user = userEvent.setup();
+    renderSelect();
+    await user.click(screen.getByRole("combobox"));
+    const parentEscape = vi.fn();
+    const listener = (event: KeyboardEvent) => {
+      if (event.key === "Escape") parentEscape();
+    };
+    document.addEventListener("keydown", listener);
+
+    await user.keyboard("{Escape}");
+
+    expect(parentEscape).not.toHaveBeenCalled();
+    document.removeEventListener("keydown", listener);
   });
 });

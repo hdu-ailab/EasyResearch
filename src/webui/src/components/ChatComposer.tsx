@@ -1,5 +1,5 @@
 import { Square } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, useEffect, useId, useImperativeHandle, useMemo, useRef, useState } from "react";
 import type { SkillCommandDto } from "../../../web/contracts";
 import { useI18n } from "../i18n/useI18n";
 
@@ -7,9 +7,16 @@ export interface ChatComposerProps {
   disabled: boolean;
   streaming: boolean;
   onSend: (text: string) => void;
+  /** Non-Skill slash commands execute immediately; Skills remain editable completions. */
+  onCommand?: (command: SkillCommandDto, args: string) => void;
   onAbort: () => void;
   /** Public slash commands of the current session agent; popover hidden when empty. */
   commands?: SkillCommandDto[];
+}
+
+export interface ChatComposerHandle {
+  setDraft(text: string): void;
+  focus(): void;
 }
 
 const SLASH_PREFIX = /^(\s*)\/(\S*)$/;
@@ -20,7 +27,10 @@ const SLASH_PREFIX = /^(\s*)\/(\S*)$/;
  * A leading `/` opens a command popover (ADR-066/078). Skills use the friendly
  * `/<name>` form unless a command collision requires Pi's `/skill:<name>` form.
  */
-export function ChatComposer({ disabled, streaming, onSend, onAbort, commands = [] }: ChatComposerProps) {
+export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(function ChatComposer(
+  { disabled, streaming, onSend, onCommand, onAbort, commands = [] },
+  ref,
+) {
   const { t } = useI18n();
   const [text, setText] = useState("");
   const [selectionStart, setSelectionStart] = useState(0);
@@ -29,6 +39,26 @@ export function ChatComposer({ disabled, streaming, onSend, onAbort, commands = 
    * (re)enabled, covering the disable-then-enable send cycle (ADR-083). */
   const [pendingFocus, setPendingFocus] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const commandListId = `composer-commands-${useId().replaceAll(":", "")}`;
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      setDraft(nextText: string) {
+        setText(nextText);
+        setSelectionStart(nextText.length);
+        requestAnimationFrame(() => {
+          const textarea = textareaRef.current;
+          textarea?.focus();
+          textarea?.setSelectionRange(nextText.length, nextText.length);
+        });
+      },
+      focus() {
+        textareaRef.current?.focus();
+      },
+    }),
+    [],
+  );
 
   useEffect(() => {
     if (!pendingFocus || disabled) return;
@@ -63,9 +93,39 @@ export function ChatComposer({ disabled, streaming, onSend, onAbort, commands = 
     requestAnimationFrame(() => textareaRef.current?.focus());
   };
 
+  const executeCommand = (command: SkillCommandDto, args: string) => {
+    setText("");
+    setSelectionStart(0);
+    setPendingFocus(true);
+    if (onCommand) {
+      onCommand(command, args);
+      return;
+    }
+    const invocation = slashInvocation(command, commands);
+    onSend(args ? `${invocation} ${args}` : invocation);
+  };
+
+  const selectSlash = (command: SkillCommandDto) => {
+    if (command.source === "skill") {
+      insertSlash(command);
+      return;
+    }
+    executeCommand(command, "");
+  };
+
   const submit = () => {
     const trimmed = text.trim();
     if (!trimmed || disabled) return;
+    const commandMatch = /^(\/\S+)(?:\s+([\s\S]*))?$/.exec(trimmed);
+    if (commandMatch) {
+      const command = commands.find(
+        (candidate) => candidate.source !== "skill" && slashInvocation(candidate, commands) === commandMatch[1],
+      );
+      if (command) {
+        executeCommand(command, commandMatch[2]?.trim() ?? "");
+        return;
+      }
+    }
     setText("");
     setSelectionStart(0);
     setPendingFocus(true);
@@ -87,6 +147,7 @@ export function ChatComposer({ disabled, streaming, onSend, onAbort, commands = 
     >
       {slash && filtered.length > 0 ? (
         <div
+          id={commandListId}
           role="listbox"
           aria-label={t("composer.slashHint")}
           className="absolute inset-x-0 bottom-full z-20 mb-2 max-h-64 overflow-y-auto rounded-lg border border-v2-grey-200 bg-v2-background-bg-base p-1 shadow-lg"
@@ -94,15 +155,17 @@ export function ChatComposer({ disabled, streaming, onSend, onAbort, commands = 
           {filtered.map((command, index) => (
             <button
               key={`${command.source}:${command.name}`}
+              id={`${commandListId}-option-${index}`}
               type="button"
               role="option"
+              tabIndex={-1}
               aria-selected={index === activeIndex}
               className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] ${
                 index === activeIndex ? "bg-v2-grey-100 text-v2-text-text-base" : "text-v2-text-text-muted"
               }`}
               onMouseDown={(e) => {
                 e.preventDefault();
-                insertSlash(command);
+                selectSlash(command);
               }}
               onMouseEnter={() => setActiveIndex(index)}
             >
@@ -119,6 +182,13 @@ export function ChatComposer({ disabled, streaming, onSend, onAbort, commands = 
           ref={textareaRef}
           className="max-h-[160px] min-h-[52px] w-full resize-none bg-transparent px-3 py-2 text-[13px] text-v2-text-text-base outline-none placeholder:text-v2-text-text-faint"
           aria-label={t("composer.message")}
+          aria-autocomplete="list"
+          aria-controls={slash && filtered.length > 0 ? commandListId : undefined}
+          aria-activedescendant={
+            slash && filtered.length > 0
+              ? `${commandListId}-option-${Math.min(activeIndex, filtered.length - 1)}`
+              : undefined
+          }
           placeholder={t("composer.placeholder")}
           rows={2}
           value={text}
@@ -138,6 +208,11 @@ export function ChatComposer({ disabled, streaming, onSend, onAbort, commands = 
                 );
                 return;
               }
+              if (e.key === "Home" || e.key === "End") {
+                e.preventDefault();
+                setActiveIndex(e.key === "Home" ? 0 : filtered.length - 1);
+                return;
+              }
               if (e.key === "Escape") {
                 e.preventDefault();
                 setActiveIndex(0);
@@ -147,7 +222,7 @@ export function ChatComposer({ disabled, streaming, onSend, onAbort, commands = 
               if (e.key === "Enter") {
                 e.preventDefault();
                 const command = filtered[Math.min(activeIndex, filtered.length - 1)];
-                if (command) insertSlash(command);
+                if (command) selectSlash(command);
                 return;
               }
             }
@@ -199,7 +274,7 @@ export function ChatComposer({ disabled, streaming, onSend, onAbort, commands = 
       </div>
     </form>
   );
-}
+});
 
 function slashInvocation(command: SkillCommandDto, commands: SkillCommandDto[]): string {
   if (command.source !== "skill") return `/${command.name}`;

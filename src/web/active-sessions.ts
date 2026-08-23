@@ -1,16 +1,20 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionTreeNode } from "@earendil-works/pi-coding-agent";
-import type { ActiveSessionDto } from "./contracts";
+import type { ActiveSessionDto, CompactionStateDto, ContextUsageDto } from "./contracts";
 import type {
   SessionAdapter,
   SessionFactory,
   StartSessionOptions,
+  TreeNavigationOptions,
+  TreeNavigationResult,
+  WebTreeFilterMode,
   WebSlashCommand,
 } from "./session-adapter";
 import { createLogger } from "../runtime/logger";
 import { attachEventLogger } from "./event-logger";
 import type { Logger } from "../runtime/logger";
 import { createNoopFileWatcherFactory, type FileWatcher, type FileWatcherFactory } from "./file-watcher";
+import type { ManualCompactionAcceptedState } from "./manual-compaction";
 
 const logger = createLogger("web-registry");
 
@@ -137,7 +141,13 @@ export class ActiveSessionRegistry {
   async snapshot(
     id: string,
     onMessagesAcquired?: () => void,
-  ): Promise<{ session: ActiveSessionDto; messages: AgentMessage[]; steering: string[] }> {
+  ): Promise<{
+    session: ActiveSessionDto;
+    messages: AgentMessage[];
+    steering: string[];
+    contextUsage?: ContextUsageDto;
+    compactionState: CompactionStateDto;
+  }> {
     return this.withRecord(id, async (record) => {
       await this.refreshFromClient(record);
       const live =
@@ -145,11 +155,14 @@ export class ActiveSessionRegistry {
         record.dto.status === "ready" ||
         record.dto.status === "running";
       const messages = live ? await record.client.getMessages() : [];
+      const contextUsage = live ? record.client.getContextUsage() : undefined;
       onMessagesAcquired?.();
       return {
         session: { ...record.dto },
         messages,
         steering: live ? [...record.client.getSteeringMessages()] : [],
+        ...(contextUsage !== undefined ? { contextUsage } : {}),
+        compactionState: live ? record.client.getCompactionState() : "idle",
       };
     });
   }
@@ -246,7 +259,12 @@ export class ActiveSessionRegistry {
     return this.withRecord(id, (record) => record.client.getCommands());
   }
 
-  async getTree(id: string): Promise<{ tree: SessionTreeNode[]; leafId: string | null }> {
+  async getTree(id: string): Promise<{
+    tree: SessionTreeNode[];
+    leafId: string | null;
+    filterMode: WebTreeFilterMode;
+    skipBranchSummaryPrompt: boolean;
+  }> {
     return this.withRecord(id, (record) => record.client.getTree());
   }
 
@@ -255,8 +273,16 @@ export class ActiveSessionRegistry {
    * driven by the web-tree extension command. Navigate then re-fetch the
    * snapshot to view the new branch path.
    */
-  async navigateTree(id: string, entryId: string): Promise<void> {
-    return this.withRecord(id, (record) => record.client.navigateTree(entryId));
+  async navigateTree(
+    id: string,
+    entryId: string,
+    options?: TreeNavigationOptions,
+  ): Promise<TreeNavigationResult> {
+    return this.withRecord(id, (record) => record.client.navigateTree(entryId, options));
+  }
+
+  async compact(id: string, customInstructions?: string): Promise<{ state: ManualCompactionAcceptedState }> {
+    return this.withRecord(id, (record) => record.client.compact(customInstructions));
   }
 
   async stop(id: string): Promise<void> {

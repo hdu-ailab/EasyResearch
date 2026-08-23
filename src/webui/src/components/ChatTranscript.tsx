@@ -296,7 +296,7 @@ function MessageRow({
       ) : null}
       {isYou && !message.streaming && !message.error && meta ? (
         <>
-          <div className="mt-1 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+          <div className="mt-1 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
             <button
               type="button"
               aria-label={t("transcript.editMessage")}

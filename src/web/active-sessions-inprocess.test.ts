@@ -45,10 +45,26 @@ class DirectAdapter implements SessionAdapter {
   async getCommands(): Promise<WebSlashCommand[]> {
     return [];
   }
-  async getTree(): Promise<{ tree: SessionTreeNode[]; leafId: string | null }> {
-    return { tree: [], leafId: null };
+  async getTree() {
+    return {
+      tree: [] as SessionTreeNode[],
+      leafId: null,
+      filterMode: "default" as const,
+      skipBranchSummaryPrompt: false,
+    };
   }
-  async navigateTree(): Promise<void> {}
+  async navigateTree() {
+    return { cancelled: false, leafId: null };
+  }
+  async compact() {
+    return { state: "running" as const };
+  }
+  getCompactionState() {
+    return "idle" as const;
+  }
+  getContextUsage() {
+    return undefined;
+  }
   onEvent(listener: (event: unknown) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);

@@ -103,8 +103,9 @@ export function FileBrowser({ root, fileEvent = null }: FileBrowserProps) {
 
   const closeTab = useCallback((path: string) => {
     setTabs((current) => {
+      const index = current.findIndex((tab) => tab.path === path);
       const next = current.filter((tab) => tab.path !== path);
-      setActiveTab((active) => (active === path ? (next.at(-1)?.path ?? null) : active));
+      setActiveTab((active) => (active === path ? (next[Math.min(index, next.length - 1)]?.path ?? null) : active));
       return next;
     });
   }, []);

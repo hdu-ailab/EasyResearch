@@ -765,11 +765,14 @@ function AddAgentDialog({
   onCancel: () => void;
 }) {
   const { t } = useI18n();
-  const zIndex = useModalLayer(onCancel);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const zIndex = useModalLayer(onCancel, dialogRef);
   return (
     <div className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/30 p-4" style={{ zIndex }}>
       <div
+        ref={dialogRef}
         role="dialog"
+        aria-modal="true"
         aria-label={t("settings.agents.add")}
         className="w-full max-w-[380px] rounded-[10px] bg-v2-background-bg-base p-4 shadow-[var(--v2-elevation-overlay)]"
       >

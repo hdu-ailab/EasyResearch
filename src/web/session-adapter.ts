@@ -24,9 +24,21 @@ import type { AgentConfig } from "../subagent/agents";
 import type { CoordinatorSessionManager, SubagentCoordinator } from "../subagent/coordinator";
 import { AGENT_STATUS_TYPE } from "../subagent/notifications";
 import type { SubagentSupervisor, SupervisableAgentSession } from "../subagent/supervisor";
+import type { ContextUsageDto } from "./contracts";
+import {
+  ManualCompactionController,
+  type ManualCompactionAcceptedState,
+  type ManualCompactionSession,
+  type ManualCompactionState,
+} from "./manual-compaction";
 
 const SAFE_STOP_ABORT_ERROR = "Session stop could not abort active work. Retry stop.";
 const INTERNAL_WEB_TREE_COMMAND = "web-tree";
+const WEB_BUILTIN_COMMANDS: readonly WebSlashCommand[] = [
+  { name: "name", description: "Rename the current session", source: "extension" },
+  { name: "history", description: "Browse the current session tree", source: "extension" },
+  { name: "compact", description: "Compact the current session context", source: "extension" },
+];
 
 export interface StartSessionOptions {
   cwd: string;
@@ -39,6 +51,19 @@ export interface WebSlashCommand {
   description?: string;
   source: "extension" | "prompt" | "skill";
   requiresPrefix?: boolean;
+}
+
+export type WebTreeFilterMode = "default" | "no-tools" | "user-only" | "labeled-only" | "all";
+
+export interface TreeNavigationOptions {
+  summarize?: boolean;
+  customInstructions?: string;
+}
+
+export interface TreeNavigationResult {
+  cancelled: boolean;
+  editorText?: string;
+  leafId: string | null;
 }
 
 /** Options accepted by the Web prompt path. Web sends always queue as steers
@@ -64,6 +89,7 @@ export interface SessionState {
 }
 
 export interface InProcessAgentSession extends RuntimeSteeringSession {
+  agent: RuntimeSteeringSession["agent"] & ManualCompactionSession["agent"];
   readonly sessionFile: string | undefined;
   readonly sessionId: string;
   readonly sessionName: string | undefined;
@@ -86,10 +112,15 @@ export interface InProcessAgentSession extends RuntimeSteeringSession {
   readonly extensionRunner: {
     getRegisteredCommands(): ReadonlyArray<{ invocationName: string; description?: string }>;
   };
+  readonly settingsManager: {
+    getTreeFilterMode(): string;
+    getBranchSummarySkipPrompt(): boolean;
+  };
   readonly sessionManager: {
     getTree(): SessionTreeNode[];
     getLeafId(): string | null;
   };
+  getSessionStats(): { contextUsage?: ContextUsageDto };
   subscribe(listener: (event: unknown) => void): () => void;
   prompt(message: string, options?: SteerPromptOptions): Promise<void>;
   sendCustomMessage(
@@ -97,10 +128,15 @@ export interface InProcessAgentSession extends RuntimeSteeringSession {
     options: { deliverAs: "steer"; triggerTurn: boolean },
   ): Promise<void>;
   abort(): Promise<void>;
+  compact(customInstructions?: string): Promise<unknown>;
+  abortCompaction(): void;
   setModel(model: Model<any>): Promise<void>;
   setThinkingLevel(level: ThinkingLevel): void;
   setSessionName(name: string): void;
-  navigateTree(entryId: string, options?: Record<string, unknown>): Promise<{ cancelled: boolean }>;
+  navigateTree(
+    entryId: string,
+    options?: Record<string, unknown>,
+  ): Promise<{ cancelled: boolean; editorText?: string }>;
   /** Read-only pending steer messages (ADR-083). */
   getSteeringMessages(): readonly string[];
   /** Drop undelivered queued messages (Pi's `clearQueue`), emitting a final
@@ -134,24 +170,34 @@ export interface ManagedAgentSession {
   coordinator: SubagentCoordinator;
   supervisor: SubagentSupervisor;
   binding: AgentRuntimeBinding;
+  compaction: ManualCompactionController;
 }
 
 export type AgentSessionCreator = (options: StartSessionOptions) => Promise<ManagedAgentSession>;
 
 function createRuntimeSetupCleanup(
   session: Pick<InProcessAgentSession, "dispose"> | undefined,
+  compaction: Pick<ManualCompactionController, "dispose"> | undefined,
   supervisor: Pick<SubagentSupervisor, "dispose"> | undefined,
   binding: Pick<AgentRuntimeBinding, "dispose">,
   coordinatorUnsubscribe?: () => void,
+  compactionUnsubscribe?: () => void,
   sessionUnsubscribe?: () => void,
 ): () => Promise<void> {
+  let compactionDisposed = compaction === undefined;
   let supervisorDisposed = supervisor === undefined;
   let coordinatorUnsubscribed = coordinatorUnsubscribe === undefined;
+  let compactionUnsubscribed = compactionUnsubscribe === undefined;
   let sessionUnsubscribed = sessionUnsubscribe === undefined;
   let sessionDisposed = session === undefined;
   let bindingDisposed = false;
   return async () => {
     await runCleanupSteps([
+      async () => {
+        if (compactionDisposed) return;
+        await compaction!.dispose();
+        compactionDisposed = true;
+      },
       async () => {
         if (supervisorDisposed) return;
         await supervisor!.dispose();
@@ -161,6 +207,11 @@ function createRuntimeSetupCleanup(
         if (coordinatorUnsubscribed) return;
         coordinatorUnsubscribe!();
         coordinatorUnsubscribed = true;
+      },
+      () => {
+        if (compactionUnsubscribed) return;
+        compactionUnsubscribe!();
+        compactionUnsubscribed = true;
       },
       () => {
         if (sessionUnsubscribed) return;
@@ -234,6 +285,7 @@ export interface PiRuntimeDependencies {
     coordinator: SubagentCoordinator;
     supervisor: SubagentSupervisor;
     binding: AgentRuntimeBinding;
+    compaction: ManualCompactionController;
   }): unknown[];
   createSettingsManager(cwd: string, agentDir: string): unknown;
   createModelRuntime(agentDir: string): Promise<AgentRuntimeModelRuntime>;
@@ -286,12 +338,13 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
     });
     let supervisor: SubagentSupervisor | undefined;
     let session: BindableAgentSession | undefined;
+    const compaction = new ManualCompactionController();
     try {
       await binding.ensureCurrent();
       await deps.recoverSubagentTree({ coordinator, expectedCwd: options.cwd });
       supervisor = deps.createDirectChildSupervisor(coordinator);
       const modelRuntime = binding.modelRuntime();
-      const extensionFactories = deps.createExtensionFactories({ coordinator, supervisor, binding });
+      const extensionFactories = deps.createExtensionFactories({ coordinator, supervisor, binding, compaction });
       const resourceLoader = deps.createResourceLoader({
         cwd: options.cwd,
         agentDir: deps.agentDir,
@@ -314,6 +367,7 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
         thinkingLevel: binding.thinking(),
       };
       ({ session } = await deps.createAgentSession(createOptions));
+      compaction.attach(session);
       configureBatchedSteering(session);
       coordinator.bindResearchAssistantState({
         model: () => session?.model ? `${session.model.provider}/${session.model.id}` : undefined,
@@ -335,9 +389,9 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
         },
       });
       await binding.attach(createBindingSession(session));
-      return { session, coordinator, supervisor, binding };
+      return { session, coordinator, supervisor, binding, compaction };
     } catch (error) {
-      const retryCleanup = createRuntimeSetupCleanup(session, supervisor, binding);
+      const retryCleanup = createRuntimeSetupCleanup(session, compaction, supervisor, binding);
       try {
         await retryCleanup();
       } catch (cleanupError) {
@@ -362,8 +416,16 @@ export interface SessionAdapter {
   getState(): Promise<SessionState>;
   getMessages(): Promise<AgentMessage[]>;
   getCommands(): Promise<WebSlashCommand[]>;
-  getTree(): Promise<{ tree: SessionTreeNode[]; leafId: string | null }>;
-  navigateTree(entryId: string): Promise<void>;
+  getTree(): Promise<{
+    tree: SessionTreeNode[];
+    leafId: string | null;
+    filterMode: WebTreeFilterMode;
+    skipBranchSummaryPrompt: boolean;
+  }>;
+  navigateTree(entryId: string, options?: TreeNavigationOptions): Promise<TreeNavigationResult>;
+  compact(customInstructions?: string): Promise<{ state: ManualCompactionAcceptedState }>;
+  getCompactionState(): ManualCompactionState;
+  getContextUsage(): ContextUsageDto | undefined;
   getSteeringMessages(): readonly string[];
   hasBackgroundWork(): boolean;
   onEvent(listener: (event: unknown) => void): () => void;
@@ -475,6 +537,7 @@ class DirectSessionAdapter implements SessionAdapter {
   private startCleanup: (() => Promise<void>) | undefined;
   private unsubscribe: (() => void) | undefined;
   private coordinatorUnsubscribe: (() => void) | undefined;
+  private compactionUnsubscribe: (() => void) | undefined;
   private startPending = false;
   private runCancellationPending = false;
   private treeCleanupPending = false;
@@ -490,7 +553,9 @@ class DirectSessionAdapter implements SessionAdapter {
   private supervisorAbortComplete = false;
   private notificationFlushComplete = false;
   private supervisorDisposeComplete = false;
+  private compactionDisposeComplete = false;
   private coordinatorUnsubscribeComplete = false;
+  private compactionUnsubscribeComplete = false;
   private unsubscribeComplete = false;
   private sessionDisposeComplete = false;
   private bindingDisposeComplete = false;
@@ -531,6 +596,7 @@ class DirectSessionAdapter implements SessionAdapter {
       this.session = created.session;
       this.binding = created.binding;
       let coordinatorUnsubscribe: (() => void) | undefined;
+      let compactionUnsubscribe: (() => void) | undefined;
       let sessionUnsubscribe: (() => void) | undefined;
       try {
         coordinatorUnsubscribe = created.coordinator.subscribe((event) => {
@@ -538,6 +604,8 @@ class DirectSessionAdapter implements SessionAdapter {
         });
         sessionUnsubscribe = created.session.subscribe((event) => {
           const agentEvent = event as AgentSessionEvent;
+          if (agentEvent.type === "compaction_start") created.compaction.observeNativeCompaction("start");
+          if (agentEvent.type === "compaction_end") created.compaction.observeNativeCompaction("end");
           if (agentEvent.type === "agent_start" && (this.runCancellationPending || this.stopRequested)) {
             this.requestStopAbort(created.session);
           }
@@ -550,12 +618,32 @@ class DirectSessionAdapter implements SessionAdapter {
               : jsonEvent;
           for (const listener of this.listeners) listener(publicEvent);
         });
+        const unsubscribeCompactionState = created.compaction.subscribe((state) => {
+          for (const listener of this.listeners) listener({ type: "compaction_state_changed", state });
+        });
+        const unsubscribeStats = created.compaction.subscribeStats(() => {
+          const contextUsage = created.session.getSessionStats().contextUsage;
+          const event = {
+            type: "session_stats_changed",
+            ...(contextUsage !== undefined ? { contextUsage } : {}),
+          };
+          for (const listener of this.listeners) listener(event);
+        });
+        compactionUnsubscribe = () => {
+          try {
+            unsubscribeCompactionState();
+          } finally {
+            unsubscribeStats();
+          }
+        };
       } catch (error) {
         const retryCleanup = createRuntimeSetupCleanup(
           created.session,
+          created.compaction,
           created.supervisor,
           created.binding,
           coordinatorUnsubscribe,
+          compactionUnsubscribe,
           sessionUnsubscribe,
         );
         this.managed = undefined;
@@ -570,6 +658,7 @@ class DirectSessionAdapter implements SessionAdapter {
         throw error;
       }
       this.coordinatorUnsubscribe = coordinatorUnsubscribe;
+      this.compactionUnsubscribe = compactionUnsubscribe;
       this.unsubscribe = sessionUnsubscribe;
     } finally {
       this.startPending = false;
@@ -582,6 +671,7 @@ class DirectSessionAdapter implements SessionAdapter {
     this.stopRequested = true;
     const session = this.session;
     const supervisor = this.managed?.supervisor;
+    const compaction = this.managed?.compaction;
     const binding = this.binding;
     if (!session && !binding && !this.startCleanup) {
       this.stopped = true;
@@ -612,6 +702,12 @@ class DirectSessionAdapter implements SessionAdapter {
         this.coordinatorUnsubscribeComplete = true;
       },
       () => {
+        if (this.compactionUnsubscribeComplete) return;
+        this.compactionUnsubscribe?.();
+        this.compactionUnsubscribe = undefined;
+        this.compactionUnsubscribeComplete = true;
+      },
+      () => {
         if (this.unsubscribeComplete) return;
         this.unsubscribe?.();
         this.unsubscribe = undefined;
@@ -621,6 +717,11 @@ class DirectSessionAdapter implements SessionAdapter {
         if (!this.startCleanup) return;
         await this.startCleanup();
         this.startCleanup = undefined;
+      },
+      async () => {
+        if (!compaction || this.compactionDisposeComplete) return;
+        await compaction.dispose();
+        this.compactionDisposeComplete = true;
       },
       () => {
         if (!session || this.sessionDisposeComplete) return;
@@ -732,6 +833,7 @@ class DirectSessionAdapter implements SessionAdapter {
     let tracked!: Promise<void>;
     tracked = runCleanupSteps([
       () => managed.coordinator.beginCancellation(),
+      () => managed.compaction.cancel(),
       () => session.clearQueue(),
       () => this.abortSessionAndSettlePrompts(session),
       () => managed.supervisor.cancelAll("Research Assistant stopped."),
@@ -757,6 +859,20 @@ class DirectSessionAdapter implements SessionAdapter {
     this.requiredSession().setThinkingLevel(level as ThinkingLevel);
   }
 
+  async compact(customInstructions?: string): Promise<{ state: ManualCompactionAcceptedState }> {
+    const managed = this.managed;
+    if (!managed) throw new Error("Session has not started");
+    return managed.compaction.request(customInstructions);
+  }
+
+  getCompactionState(): ManualCompactionState {
+    return this.managed?.compaction.state() ?? "idle";
+  }
+
+  getContextUsage(): ContextUsageDto | undefined {
+    return this.requiredSession().getSessionStats().contextUsage;
+  }
+
   async getState(): Promise<SessionState> {
     const session = this.requiredSession();
     return {
@@ -778,19 +894,23 @@ class DirectSessionAdapter implements SessionAdapter {
   async getCommands(): Promise<WebSlashCommand[]> {
     const session = this.requiredSession();
     const registeredCommands = session.extensionRunner.getRegisteredCommands();
+    const reservedNames = new Set(WEB_BUILTIN_COMMANDS.map((command) => command.name));
     const commandOwnedNames = new Set([
+      ...reservedNames,
       ...registeredCommands.map((command) => command.invocationName),
       ...session.promptTemplates.map((prompt) => prompt.name),
     ]);
     const extensions = registeredCommands
-      .filter((command) => command.invocationName !== INTERNAL_WEB_TREE_COMMAND)
+      .filter(
+        (command) => command.invocationName !== INTERNAL_WEB_TREE_COMMAND && !reservedNames.has(command.invocationName),
+      )
       .map((command) => ({
         name: command.invocationName,
         description: command.description,
         source: "extension" as const,
       }));
     const prompts = session.promptTemplates
-      .filter((prompt) => prompt.name !== INTERNAL_WEB_TREE_COMMAND)
+      .filter((prompt) => prompt.name !== INTERNAL_WEB_TREE_COMMAND && !reservedNames.has(prompt.name))
       .map((prompt) => ({
         name: prompt.name,
         description: prompt.description,
@@ -802,16 +922,37 @@ class DirectSessionAdapter implements SessionAdapter {
       source: "skill" as const,
       ...(commandOwnedNames.has(skill.name) ? { requiresPrefix: true } : {}),
     }));
-    return [...extensions, ...prompts, ...skills];
+    return [...WEB_BUILTIN_COMMANDS, ...extensions, ...prompts, ...skills];
   }
 
-  async getTree(): Promise<{ tree: SessionTreeNode[]; leafId: string | null }> {
-    const { sessionManager } = this.requiredSession();
-    return { tree: sessionManager.getTree(), leafId: sessionManager.getLeafId() };
+  async getTree(): Promise<{
+    tree: SessionTreeNode[];
+    leafId: string | null;
+    filterMode: WebTreeFilterMode;
+    skipBranchSummaryPrompt: boolean;
+  }> {
+    const { sessionManager, settingsManager } = this.requiredSession();
+    const configuredFilter = settingsManager.getTreeFilterMode();
+    const filterMode: WebTreeFilterMode = isWebTreeFilterMode(configuredFilter) ? configuredFilter : "default";
+    return {
+      tree: sessionManager.getTree(),
+      leafId: sessionManager.getLeafId(),
+      filterMode,
+      skipBranchSummaryPrompt: settingsManager.getBranchSummarySkipPrompt(),
+    };
   }
 
-  async navigateTree(entryId: string): Promise<void> {
-    await this.requiredSession().navigateTree(entryId);
+  async navigateTree(entryId: string, options?: TreeNavigationOptions): Promise<TreeNavigationResult> {
+    const session = this.requiredSession();
+    if (this.hasBackgroundWork()) {
+      throw new Error("Wait for active work to finish before navigating the session tree.");
+    }
+    const result = await session.navigateTree(entryId, options ? { ...options } : undefined);
+    return {
+      cancelled: result.cancelled,
+      ...(result.editorText !== undefined ? { editorText: result.editorText } : {}),
+      leafId: session.sessionManager.getLeafId(),
+    };
   }
 
   onEvent(listener: (event: unknown) => void): () => void {
@@ -831,6 +972,7 @@ class DirectSessionAdapter implements SessionAdapter {
       || this.runCancellationPending
       || this.treeCleanupPending
       || this.stopPending
+      || this.managed?.compaction.hasWork()
     ) return true;
     const supervisor = this.managed?.supervisor;
     if (!supervisor) return false;
@@ -867,6 +1009,7 @@ class DirectSessionAdapter implements SessionAdapter {
         managed.coordinator.beginClosing();
         this.coordinatorClosingComplete = true;
       },
+      () => managed.compaction.cancel(),
       () => {
         if (this.queueClearComplete) return;
         session.clearQueue();
@@ -962,6 +1105,14 @@ class DirectSessionAdapter implements SessionAdapter {
       void Promise.all(prompts).then(finish, finish);
     });
   }
+}
+
+function isWebTreeFilterMode(value: string): value is WebTreeFilterMode {
+  return value === "default"
+    || value === "no-tools"
+    || value === "user-only"
+    || value === "labeled-only"
+    || value === "all";
 }
 
 function isHiddenStatusMessage(value: unknown): boolean {

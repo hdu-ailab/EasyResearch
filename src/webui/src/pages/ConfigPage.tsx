@@ -1,5 +1,5 @@
 import { ChevronLeft, FilePlus, Folder, FolderPlus, RefreshCw, Save, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ConfigEntryDto, ConfigScope } from "../../../web/contracts";
 import { createConfigDirectory, listConfig, listConfigProjects, readConfigFile, writeConfigFile } from "../api";
 import { ProductMark, Topbar } from "../components/Topbar";
@@ -183,6 +183,7 @@ export function ConfigPage({ onBack }: ConfigPageProps) {
                 type="button"
                 className="flex size-7 items-center justify-center rounded-md hover:bg-v2-grey-100"
                 title={t("config.newFile")}
+                aria-label={t("config.newFile")}
                 onClick={() => setDialog("file")}
               >
                 <FilePlus size={14} />
@@ -191,6 +192,7 @@ export function ConfigPage({ onBack }: ConfigPageProps) {
                 type="button"
                 className="flex size-7 items-center justify-center rounded-md hover:bg-v2-grey-100"
                 title={t("config.newFolder")}
+                aria-label={t("config.newFolder")}
                 onClick={() => setDialog("directory")}
               >
                 <FolderPlus size={14} />
@@ -199,6 +201,7 @@ export function ConfigPage({ onBack }: ConfigPageProps) {
                 type="button"
                 className="flex size-7 items-center justify-center rounded-md hover:bg-v2-grey-100"
                 title={t("config.refresh")}
+                aria-label={t("config.refresh")}
                 onClick={() => void loadEntries(selectedRoot, path)}
               >
                 <RefreshCw size={14} />
@@ -301,17 +304,22 @@ function ConfigCreateDialog({
   onCancel: () => void;
 }) {
   const { t } = useI18n();
-  const zIndex = useModalLayer(onCancel);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const zIndex = useModalLayer(onCancel, dialogRef);
   return (
     <div className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/30 p-4" style={{ zIndex }}>
       <div
+        ref={dialogRef}
         role="dialog"
+        aria-modal="true"
+        aria-label={kind === "file" ? t("config.newFile") : t("config.newFolder")}
         className="w-full max-w-[380px] rounded-[10px] bg-v2-background-bg-base p-4 shadow-[var(--v2-elevation-overlay)]"
       >
         <h2 className="mb-3 text-[13px] font-semibold">
           {kind === "file" ? t("config.newFile") : t("config.newFolder")}
         </h2>
         <input
+          aria-label={kind === "file" ? t("config.newFile") : t("config.newFolder")}
           className="h-8 w-full rounded-md border border-v2-grey-200 px-2 font-mono text-[12px]"
           value={name}
           onChange={(e) => onNameChange(e.target.value)}

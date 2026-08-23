@@ -32,6 +32,37 @@ describe("FilesPanel", () => {
     expect(await screen.findByText("nested.txt")).toBeVisible();
   });
 
+  it("uses roving tree focus with arrow, Home, and hierarchy navigation", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listEntries).mockImplementation(async (path) => {
+      if (path === "/p") {
+        return [
+          { kind: "directory", name: "folder", path: "/p/folder" },
+          { kind: "file", name: "sibling.txt", path: "/p/sibling.txt" },
+        ];
+      }
+      return [{ kind: "file", name: "nested.txt", path: "/p/folder/nested.txt" }];
+    });
+    render(<FilesPanel root="/p" onOpenFile={() => {}} />);
+    const folder = await screen.findByRole("treeitem", { name: /folder/i });
+    const sibling = screen.getByRole("treeitem", { name: /sibling.txt/i });
+
+    expect(folder).toHaveAttribute("tabindex", "0");
+    expect(sibling).toHaveAttribute("tabindex", "-1");
+    folder.focus();
+    await user.keyboard("{ArrowDown}");
+    expect(sibling).toHaveFocus();
+    await user.keyboard("{Home}{ArrowRight}");
+    expect(folder).toHaveAttribute("aria-expanded", "true");
+    const nested = await screen.findByRole("treeitem", { name: /nested.txt/i });
+    await user.keyboard("{ArrowRight}");
+    expect(nested).toHaveFocus();
+    await user.keyboard("{ArrowLeft}");
+    expect(folder).toHaveFocus();
+    await user.keyboard("{ArrowLeft}");
+    expect(folder).toHaveAttribute("aria-expanded", "false");
+  });
+
   it("refreshes a loaded parent when a file is added", async () => {
     let rootEntries = [{ kind: "file" as const, name: "old.txt", path: "/p/old.txt" }];
     vi.mocked(api.listEntries).mockImplementation(async (path) => {

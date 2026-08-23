@@ -15,6 +15,7 @@ import {
   type StartSessionOptions,
   type SteerPromptOptions,
 } from "./session-adapter";
+import { ManualCompactionController } from "./manual-compaction";
 
 const model = {
   provider: "openai",
@@ -23,7 +24,7 @@ const model = {
 } as InProcessAgentSession["model"];
 
 class FakeAgentSession implements InProcessAgentSession {
-  agent = { steeringMode: "one-at-a-time" as "all" | "one-at-a-time" };
+  agent: InProcessAgentSession["agent"] = { steeringMode: "one-at-a-time" };
   sessionFile = "/agent/sessions/--project--/session.jsonl";
   sessionId = "session-1";
   sessionName = "Paper";
@@ -40,6 +41,9 @@ class FakeAgentSession implements InProcessAgentSession {
   promptImpl: ((message: string, options?: SteerPromptOptions) => Promise<void>) | null = null;
   abortCalls = 0;
   abortImpl: () => Promise<void> = async () => {};
+  compactCalls: Array<string | undefined> = [];
+  compactImpl: () => Promise<void> = async () => {};
+  abortCompactionCalls = 0;
   disposeCalls = 0;
   disposeImpl: () => void = () => {};
   unsubscribeCalls = 0;
@@ -51,11 +55,15 @@ class FakeAgentSession implements InProcessAgentSession {
   thinkingCalls: string[] = [];
   modelCalls: unknown[] = [];
   navigateTreeCalls: string[] = [];
+  navigateTreeOptions: Array<Record<string, unknown> | undefined> = [];
+  treeFilterMode = "no-tools";
+  branchSummarySkipPrompt = true;
   listeners = new Set<(event: unknown) => void>();
   bindCalls: unknown[] = [];
   baseSystemPrompt: string[] = [];
   wakeSystemPrompts: string[][] = [];
   skills = [{ name: "arxiv", description: "arXiv" }];
+  contextUsage: { tokens: number | null; contextWindow: number; percent: number | null } | undefined;
 
   modelRuntime = {
     getModel: (provider: string, id: string) =>
@@ -83,6 +91,15 @@ class FakeAgentSession implements InProcessAgentSession {
     getLeafId: () => "leaf-1",
   };
 
+  settingsManager = {
+    getTreeFilterMode: () => this.treeFilterMode,
+    getBranchSummarySkipPrompt: () => this.branchSummarySkipPrompt,
+  };
+
+  getSessionStats() {
+    return { contextUsage: this.contextUsage };
+  }
+
   subscribe(listener: (event: unknown) => void): () => void {
     if (this.subscribeError) throw this.subscribeError;
     this.listeners.add(listener);
@@ -109,6 +126,21 @@ class FakeAgentSession implements InProcessAgentSession {
     this.abortCalls += 1;
     await this.abortImpl();
     this.isStreaming = false;
+  }
+
+  async compact(customInstructions?: string): Promise<void> {
+    this.compactCalls.push(customInstructions);
+    await this.abort();
+    this.isCompacting = true;
+    try {
+      await this.compactImpl();
+    } finally {
+      this.isCompacting = false;
+    }
+  }
+
+  abortCompaction(): void {
+    this.abortCompactionCalls += 1;
   }
 
   async bindExtensions(bindings: unknown): Promise<void> {
@@ -140,9 +172,10 @@ class FakeAgentSession implements InProcessAgentSession {
     this.sessionName = name;
   }
 
-  async navigateTree(entryId: string): Promise<{ cancelled: boolean }> {
+  async navigateTree(entryId: string, options?: Record<string, unknown>): Promise<{ cancelled: boolean; editorText?: string }> {
     this.navigateTreeCalls.push(entryId);
-    return { cancelled: false };
+    this.navigateTreeOptions.push(options);
+    return { cancelled: false, editorText: "restored prompt" };
   }
 
   getSteeringMessages(): readonly string[] {
@@ -165,6 +198,7 @@ class FakeAgentSession implements InProcessAgentSession {
 interface ManagedHarness {
   session: FakeAgentSession;
   binding: AgentRuntimeBinding;
+  compaction: ManualCompactionController;
   coordinator: {
     label: string;
     beginCancellation(): void;
@@ -207,8 +241,11 @@ function managed(
   binding = new FakeRuntimeBinding(),
 ): ManagedHarness & ManagedAgentSession {
   const coordinatorListeners = new Set<(event: unknown) => void>();
+  const compaction = new ManualCompactionController();
+  compaction.attach(session);
   const harness: ManagedHarness = {
     session,
+    compaction,
     coordinator: {
       label,
       beginCancellation: overrides.coordinator?.beginCancellation ?? (() => {}),
@@ -342,12 +379,77 @@ describe("PiSessionFactory", () => {
     expect(session.modelCalls).toEqual([{ provider: "anthropic", id: "claude-test" }]);
     expect(session.thinkingCalls).toEqual(["high"]);
     expect(events).toEqual([{ type: "agent_start" }]);
-    await expect(adapter.getTree()).resolves.toEqual({ tree: [], leafId: "leaf-1" });
+    await expect(adapter.getTree()).resolves.toEqual({
+      tree: [],
+      leafId: "leaf-1",
+      filterMode: "no-tools",
+      skipBranchSummaryPrompt: true,
+    });
     await expect(adapter.getCommands()).resolves.toEqual([
+      { name: "name", description: "Rename the current session", source: "extension" },
+      { name: "history", description: "Browse the current session tree", source: "extension" },
+      { name: "compact", description: "Compact the current session context", source: "extension" },
       { name: "clear", description: "Clear", source: "extension" },
       { name: "review", description: "Review", source: "prompt" },
       { name: "skill:arxiv", description: "arXiv", source: "skill" },
     ]);
+  });
+
+  it("forwards native context usage when the runtime stats signal changes", async () => {
+    const session = new FakeAgentSession();
+    session.contextUsage = { tokens: null, contextWindow: 128_000, percent: null };
+    const runtime = created(session);
+    const adapter = new PiSessionFactory(async () => runtime).create({ cwd: "/project" });
+    const events: unknown[] = [];
+    adapter.onEvent((event) => events.push(event));
+    await adapter.start();
+
+    runtime.compaction.notifyStatsChanged();
+
+    expect(events).toContainEqual({
+      type: "session_stats_changed",
+      contextUsage: { tokens: null, contextWindow: 128_000, percent: null },
+    });
+  });
+
+  it("tracks native compaction events as background work and visible state", async () => {
+    const session = new FakeAgentSession();
+    const adapter = new PiSessionFactory(async () => created(session)).create({ cwd: "/project" });
+    const events: unknown[] = [];
+    adapter.onEvent((event) => events.push(event));
+    await adapter.start();
+
+    session.isCompacting = true;
+    session.listeners.forEach((listener) => listener({ type: "compaction_start", reason: "threshold" }));
+    expect(adapter.hasBackgroundWork()).toBe(true);
+    expect(events).toContainEqual({ type: "compaction_state_changed", state: "running" });
+
+    session.isCompacting = false;
+    session.listeners.forEach((listener) => listener({ type: "compaction_end", reason: "threshold", aborted: false }));
+    expect(adapter.hasBackgroundWork()).toBe(false);
+    expect(events).toContainEqual({ type: "compaction_state_changed", state: "idle" });
+  });
+
+  it("reserves built-in action names and keeps colliding Skills explicitly addressable", async () => {
+    const session = new FakeAgentSession();
+    session.skills = [
+      { name: "name", description: "Name Skill" },
+      { name: "history", description: "History Skill" },
+      { name: "compact", description: "Compact Skill" },
+    ];
+    const adapter = new PiSessionFactory(async () => created(session)).create({ cwd: "/project" });
+    await adapter.start();
+
+    const commands = await adapter.getCommands();
+
+    expect(commands.filter((command) => command.source !== "skill").slice(0, 3).map((command) => command.name))
+      .toEqual(["name", "history", "compact"]);
+    expect(commands.filter((command) => command.source === "skill"))
+      .toEqual([
+        { name: "skill:name", description: "Name Skill", source: "skill", requiresPrefix: true },
+        { name: "skill:history", description: "History Skill", source: "skill", requiresPrefix: true },
+        { name: "skill:compact", description: "Compact Skill", source: "skill", requiresPrefix: true },
+      ]);
   });
 
   it("normalizes a loaded Skill's friendly slash command before prompting Pi", async () => {
@@ -418,10 +520,15 @@ describe("PiSessionFactory", () => {
     await adapter.start();
 
     await expect(adapter.prompt("/web-tree navigate entry-7")).rejects.toThrow(/not available/i);
-    await adapter.navigateTree("entry-7");
+    const result = await (adapter.navigateTree as unknown as (
+      entryId: string,
+      options: Record<string, unknown>,
+    ) => Promise<unknown>)("entry-7", { summarize: true, customInstructions: "focus on evidence" });
 
     expect(session.promptCalls).toEqual([]);
     expect(session.navigateTreeCalls).toEqual(["entry-7"]);
+    expect(session.navigateTreeOptions).toEqual([{ summarize: true, customInstructions: "focus on evidence" }]);
+    expect(result).toEqual({ cancelled: false, editorText: "restored prompt", leafId: "leaf-1" });
     await expect(adapter.getCommands()).resolves.not.toContainEqual(
       expect.objectContaining({ name: "web-tree" }),
     );
@@ -431,6 +538,18 @@ describe("PiSessionFactory", () => {
       source: "skill",
       requiresPrefix: true,
     });
+  });
+
+  it("refuses tree navigation while the supervisor owns background work", async () => {
+    const session = new FakeAgentSession();
+    const runtime = managed(session, session.sessionId, {
+      supervisor: { isQuiescent: () => false },
+    });
+    const adapter = new PiSessionFactory(async () => runtime).create({ cwd: "/project" });
+    await adapter.start();
+
+    await expect(adapter.navigateTree("entry-7")).rejects.toThrow(/active work/i);
+    expect(session.navigateTreeCalls).toEqual([]);
   });
 
   it("ensures the binding is current before prompting and disposes its ownership", async () => {
@@ -1662,9 +1781,20 @@ describe("createPiAgentSessionCreator", () => {
 
     expect(first.coordinator).not.toBe(second.coordinator);
     expect(first.supervisor).not.toBe(second.supervisor);
+    expect(first.compaction).not.toBe(second.compaction);
     expect(harness.extensionRuntimes).toEqual([
-      { coordinator: first.coordinator, supervisor: first.supervisor, binding: first.binding },
-      { coordinator: second.coordinator, supervisor: second.supervisor, binding: second.binding },
+      {
+        coordinator: first.coordinator,
+        supervisor: first.supervisor,
+        binding: first.binding,
+        compaction: first.compaction,
+      },
+      {
+        coordinator: second.coordinator,
+        supervisor: second.supervisor,
+        binding: second.binding,
+        compaction: second.compaction,
+      },
     ]);
   });
 

@@ -102,6 +102,29 @@ describe("DirectoryDialog", () => {
     expect(await screen.findByText("draft")).toBeTruthy();
   });
 
+  it("uses roving tree focus with arrow, Home, and hierarchy navigation", async () => {
+    const user = userEvent.setup();
+    mockListing({ [HOME]: ["papers", "notes"], [`${HOME}/papers`]: ["draft"] });
+    render(<DirectoryDialog homeDir={HOME} onSelect={() => {}} onClose={() => {}} />);
+    const papers = await screen.findByRole("treeitem", { name: /papers/i });
+    const notes = screen.getByRole("treeitem", { name: /notes/i });
+
+    expect(papers).toHaveAttribute("tabindex", "0");
+    expect(notes).toHaveAttribute("tabindex", "-1");
+    papers.focus();
+    await user.keyboard("{ArrowDown}");
+    expect(notes).toHaveFocus();
+    await user.keyboard("{Home}{ArrowRight}");
+    expect(papers).toHaveAttribute("aria-expanded", "true");
+    const draft = await screen.findByRole("treeitem", { name: /draft/i });
+    await user.keyboard("{ArrowRight}");
+    expect(draft).toHaveFocus();
+    await user.keyboard("{ArrowLeft}");
+    expect(papers).toHaveFocus();
+    await user.keyboard("{ArrowLeft}");
+    expect(papers).toHaveAttribute("aria-expanded", "false");
+  });
+
   it("selects a row and enables Create", async () => {
     mockListing({ [HOME]: ["notes"] });
     const user = userEvent.setup();
@@ -138,17 +161,43 @@ describe("DirectoryDialog", () => {
   });
 
   it("suggests directories while typing and completes on Tab", async () => {
-    mockListing({ [HOME]: ["papers", "notes"] });
+    mockListing({ [HOME]: ["papers", "patches"] });
     const user = userEvent.setup();
     render(<DirectoryDialog homeDir={HOME} onSelect={() => {}} onClose={() => {}} />);
     await waitFor(() => expect(screen.getByText("papers")).toBeTruthy());
     const input = screen.getByRole("combobox");
     await user.clear(input);
     await user.type(input, "/home/user/pa");
-    const suggestion = await screen.findByRole("option");
+    const suggestion = (await screen.findAllByRole("option"))[0];
+    if (!suggestion) throw new Error("expected a path suggestion");
     expect(suggestion).toHaveTextContent("papers");
+    expect(input).toHaveAttribute("aria-activedescendant", suggestion.id);
+    await user.keyboard("{End}");
+    expect(document.getElementById(input.getAttribute("aria-activedescendant") ?? "")).toHaveTextContent("patches");
+    await user.keyboard("{Home}");
     await user.tab();
     await waitFor(() => expect(input).toHaveValue("/home/user/papers"));
+  });
+
+  it("closes path suggestions before Escape closes the dialog", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    mockListing({ [HOME]: ["papers"] });
+    render(<DirectoryDialog homeDir={HOME} onSelect={() => {}} onClose={onClose} />);
+    const input = screen.getByRole("combobox", { name: /directory path/i });
+    await user.clear(input);
+    await user.type(input, "/home/user/pa");
+    expect(await screen.findByRole("listbox")).toBeVisible();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(input).toHaveValue("/home/user/pa");
+    await user.tab();
+    expect(input).toHaveValue("/home/user/pa");
+    expect(screen.getByRole("button", { name: "Home" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(onClose).toHaveBeenCalledOnce();
   });
 
   it("supports home shortcut navigation", async () => {
@@ -156,7 +205,7 @@ describe("DirectoryDialog", () => {
     const user = userEvent.setup();
     render(<DirectoryDialog homeDir={HOME} onSelect={() => {}} onClose={() => {}} />);
     await waitFor(() => expect(screen.getByText("papers")).toBeTruthy());
-    await user.click(screen.getByRole("button", { name: "~" }));
+    await user.click(screen.getByRole("button", { name: "Home" }));
     expect(await screen.findByText("papers")).toBeTruthy();
   });
 

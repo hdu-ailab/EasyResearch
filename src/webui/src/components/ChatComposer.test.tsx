@@ -21,6 +21,7 @@ async function renderComposer(props: Partial<React.ComponentProps<typeof ChatCom
           disabled={false}
           streaming={false}
           onSend={() => {}}
+          onCommand={() => {}}
           onAbort={() => {}}
           commands={commands}
           {...props}
@@ -39,6 +40,10 @@ describe("ChatComposer slash popover", () => {
     await user.keyboard("/");
     expect(await screen.findByText("/arxiv")).toBeTruthy();
     expect(screen.getByText("/drawio")).toBeTruthy();
+    const activeId = input.getAttribute("aria-activedescendant");
+    expect(activeId).toBeTruthy();
+    expect(document.getElementById(activeId ?? "")).toHaveRole("option");
+    expect(screen.getAllByRole("option").every((option) => option.tabIndex === -1)).toBe(true);
   });
 
   it("does not open when the slash is not at the line start", async () => {
@@ -68,13 +73,40 @@ describe("ChatComposer slash popover", () => {
     expect(screen.queryByRole("listbox")).toBeNull();
   });
 
-  it("inserts /name for extension commands on Enter", async () => {
-    const { user } = await renderComposer();
+  it("executes the selected command on Enter instead of inserting it", async () => {
+    const onCommand = vi.fn();
+    const { user } = await renderComposer({ onCommand });
     const input = screen.getByLabelText(/message/i) as HTMLTextAreaElement;
     await user.click(input);
     await user.keyboard("/nam");
     await user.keyboard("{Enter}");
-    expect(input.value).toBe("/name ");
+    expect(onCommand).toHaveBeenCalledWith(expect.objectContaining({ name: "name", source: "extension" }), "");
+    expect(input.value).toBe("");
+  });
+
+  it("executes a clicked command through the same action path", async () => {
+    const onCommand = vi.fn();
+    const { user } = await renderComposer({ onCommand });
+    const input = screen.getByLabelText(/message/i) as HTMLTextAreaElement;
+    await user.click(input);
+    await user.keyboard("/nam");
+    await user.click(await screen.findByRole("option", { name: /\/name/ }));
+
+    expect(onCommand).toHaveBeenCalledWith(expect.objectContaining({ name: "name" }), "");
+    expect(input.value).toBe("");
+  });
+
+  it("executes typed commands with their trailing arguments", async () => {
+    const onCommand = vi.fn();
+    const onSend = vi.fn();
+    const { user } = await renderComposer({ onCommand, onSend });
+    const input = screen.getByLabelText(/message/i) as HTMLTextAreaElement;
+    await user.click(input);
+    await user.keyboard("/name Paper v2{Enter}");
+
+    expect(onCommand).toHaveBeenCalledWith(expect.objectContaining({ name: "name" }), "Paper v2");
+    expect(onSend).not.toHaveBeenCalled();
+    expect(input.value).toBe("");
   });
 
   it("navigates with ArrowDown and escapes", async () => {
@@ -85,6 +117,19 @@ describe("ChatComposer slash popover", () => {
     await user.keyboard("{ArrowDown}");
     await user.keyboard("{Enter}");
     expect(input.value).toBe("/drawio ");
+  });
+
+  it("moves command selection to Home and End", async () => {
+    const onCommand = vi.fn();
+    const { user } = await renderComposer({ onCommand });
+    const input = screen.getByLabelText(/message/i) as HTMLTextAreaElement;
+    await user.click(input);
+    await user.keyboard("/{End}");
+    expect(document.getElementById(input.getAttribute("aria-activedescendant") ?? "")).toHaveTextContent("/name");
+    await user.keyboard("{Home}");
+    expect(document.getElementById(input.getAttribute("aria-activedescendant") ?? "")).toHaveTextContent("/arxiv");
+    await user.keyboard("{End}{Enter}");
+    expect(onCommand).toHaveBeenCalledWith(expect.objectContaining({ name: "name" }), "");
   });
 
   it("displays and inserts the native prefix when a Skill collides with another command", async () => {
