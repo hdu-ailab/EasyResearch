@@ -33,6 +33,7 @@ describe("PreferencesProvider", () => {
     document.documentElement.lang = "";
     document.documentElement.style.removeProperty(CHAT_FONT_VAR);
     document.documentElement.style.removeProperty(FILES_FONT_VAR);
+    delete window.easyresearchDesktop;
   });
 
   afterEach(() => {
@@ -57,6 +58,29 @@ describe("PreferencesProvider", () => {
       autoExpandThinking: false,
       autoExpandTools: true,
       expandSubagentOutput: false,
+    });
+  });
+
+  it("mirrors a same-tab preference write through the optional desktop bridge", async () => {
+    const user = userEvent.setup();
+    const persistWebUiPreferences = vi.fn();
+    window.easyresearchDesktop = {
+      platform: "darwin",
+      version: "1.2.3",
+      persistWebUiPreferences,
+    };
+    render(
+      <PreferencesProvider>
+        <Probe />
+      </PreferencesProvider>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "enable tools" }));
+
+    expect(persistWebUiPreferences).toHaveBeenCalledOnce();
+    expect(JSON.parse(persistWebUiPreferences.mock.calls[0]![0] as string)).toMatchObject({
+      autoExpandTools: true,
+      autoExpandThinking: false,
     });
   });
 

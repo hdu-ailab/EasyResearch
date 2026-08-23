@@ -1,41 +1,42 @@
 #!/usr/bin/env bun
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir } from "../runtime/pi-import";
-import { writeFirstRunSetupEvidence } from "../runtime/first-run-setup-evidence";
-import { injectSkillVenvEnv } from "../runtime/venv-env";
 import {
   bundledSourceRoot,
   defaultAgentDir,
   embeddedPackageVersion,
   isEmbeddedBuild,
-  materializeBundledIfNeeded,
-  useExistingMaterializedBundle,
 } from "../runtime/bundled-assets";
-import { ensureSkillVenv, type SetupResult } from "../setup-venv";
-import { renameSameNameToBak } from "../setup-resources";
+import type { SetupResult } from "../setup-venv";
 import {
   DAEMON_RUNTIME_ID_ENV,
   DAEMON_TOKEN_ENV,
+  DAEMON_OWNER_ENV,
+  DESKTOP_OWNS_RUNTIME_MESSAGE,
   inspectServerProcess,
   serverLogFile,
   stopServerProcess,
 } from "./server-process";
 import { runServe } from "./commands/serve";
+import { performFirstRunSetup } from "./first-run";
+import { acquireTransitionLease } from "./runtime-lease";
+import { consumeDesktopServeRequest, runDesktopServe } from "./desktop-entry";
 
 export interface CliDependencies {
   serve: (host: string, port: number) => Promise<number>;
   openBrowser: (url: string) => Promise<boolean>;
   waitForReady: (host: string, port: number, timeoutMs?: number) => Promise<boolean>;
+  withRuntimeTransition: <T>(agentDir: string, operation: () => Promise<T>) => Promise<T>;
   spawnBackground: (host: string, port: number) => void;
   inspectBackground: (
     agentDir: string,
     host: string,
     port: number,
-  ) => Promise<"none" | "current" | "stale">;
+  ) => Promise<"none" | "current" | "stale" | "desktop">;
   stopBackground: (agentDir: string) => Promise<boolean>;
 }
 
@@ -77,11 +78,6 @@ Options:
 
 export function hasHelpFlag(argv: string[]): boolean {
   return argv.some((arg) => arg === "-h" || arg === "--help");
-}
-
-export function isSkipSetupEnabled(): boolean {
-  const value = process.env.EASYRESEARCH_SKIP_SETUP;
-  return value === "1" || value === "true" || value === "yes";
 }
 
 /**
@@ -138,56 +134,6 @@ export function copyPiRuntimeAssets(agentDir: string, source = join(bundledSourc
       force: true,
     });
   }
-}
-
-/**
- * First-run bootstrap: materialize embedded bundled assets (compiled builds
- * only), create the skill Python venv with live progress, and migrate
- * same-name user agents/skills to current bundled versions. Resource
- * extraction is required; optional setup phases report failures independently.
- */
-export function ensureFirstRunSetup(agentDir: string, log: (msg: string) => void): SetupResult {
-  const version = embeddedPackageVersion();
-  materializeBundledIfNeeded(agentDir, version, log);
-  let skillVenvResult: SetupResult;
-  try {
-    skillVenvResult = ensureSkillVenv(agentDir, { stream: true, log });
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    log(`Skill environment setup failed: ${reason}`);
-    skillVenvResult = { venvDir: join(agentDir, "venv"), success: false, reason };
-  }
-  try {
-    retireBundledResourcesOnce(agentDir, version, () => {
-      const bundledRoot = bundledSourceRoot();
-      const retired = renameSameNameToBak({
-        agentDir,
-        bundledAgentsDir: join(bundledRoot, "agents"),
-        bundledSkillsDir: join(bundledRoot, "skills"),
-        log,
-      });
-      const count = retired.entries.filter((entry) => entry.renamed).length;
-      if (count > 0) log(`Retired ${count} same-name user resources to .bak backups`);
-    });
-  } catch (error) {
-    log(`Bundled resource retirement failed: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  return skillVenvResult;
-}
-
-export function retireBundledResourcesOnce(agentDir: string, version: string, retire: () => void): boolean {
-  const marker = join(agentDir, ".easyresearch-resource-retirement-version");
-  try {
-    if (readFileSync(marker, "utf8") === version) return false;
-  } catch {
-    // Missing/unreadable marker means this version has not completed retirement.
-  }
-  retire();
-  mkdirSync(agentDir, { recursive: true });
-  const temporary = `${marker}.tmp-${process.pid}-${Date.now()}`;
-  writeFileSync(temporary, version);
-  renameSync(temporary, marker);
-  return true;
 }
 
 export function isLoopbackHost(host: string): boolean {
@@ -251,28 +197,14 @@ export async function runCli(
       return 0;
     }
     if (argv.length === 1 && argv[0] === "exit") {
-      const stopped = await deps.stopBackground(agentDir);
-      console.log(stopped ? "EasyResearch service stopped." : "EasyResearch service is not running.");
-      return 0;
+      return await deps.withRuntimeTransition(agentDir, async () => {
+        const background = await deps.inspectBackground(agentDir, DEFAULT_HOST, DEFAULT_PORT);
+        if (background === "desktop") throw new DesktopOwnsRuntimeError();
+        const stopped = await deps.stopBackground(agentDir);
+        console.log(stopped ? "EasyResearch service stopped." : "EasyResearch service is not running.");
+        return 0;
+      });
     }
-
-    const setup = options.setup ?? ensureFirstRunSetup;
-    if (isSkipSetupEnabled()) {
-      const useExistingSetup = options.useExistingSetup
-        ?? ((root: string) => useExistingMaterializedBundle(root, embeddedPackageVersion()));
-      useExistingSetup(agentDir);
-    } else {
-      const log = (msg: string) => console.log(`[easyresearch] ${msg}`);
-      const setupResult = setup(agentDir, log);
-      if (setupResult !== undefined) {
-        try {
-          writeFirstRunSetupEvidence(setupResult);
-        } catch (error) {
-          log(`First-run setup evidence could not be written: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      }
-    }
-    injectSkillVenvEnv();
 
     let host = DEFAULT_HOST;
     let port = DEFAULT_PORT;
@@ -304,60 +236,88 @@ export async function runCli(
       }
     }
 
-    const background = await deps.inspectBackground(agentDir, host, port);
-    if (background === "current") {
+    return await deps.withRuntimeTransition(agentDir, async () => {
+      const background = await deps.inspectBackground(agentDir, host, port);
+      if (background === "desktop") throw new DesktopOwnsRuntimeError();
+
+      performFirstRunSetup(agentDir, {
+        setup: options.setup,
+        useExistingSetup: options.useExistingSetup,
+        log: (message) => console.log(`[easyresearch] ${message}`),
+      });
+
+      if (background === "current") {
+        const ready = await deps.waitForReady(host, port);
+        if (!ready) {
+          console.error(`No service is listening on port ${port}.`);
+          return 1;
+        }
+        const url = `http://${host}:${port}`;
+        console.log(`EasyResearch: ${url}`);
+        if (open && isLoopbackHost(host)) await deps.openBrowser(url);
+        return 0;
+      }
+      if (background === "stale") {
+        console.log("[easyresearch] Runtime changed — restarting the background service…");
+        await deps.stopBackground(agentDir);
+      }
+
+      deps.spawnBackground(host, port);
+      try {
+        writeFileSync(join(agentDir, "ready-marker-before.txt"), "1");
+      } catch {
+        // diagnostics only
+      }
       const ready = await deps.waitForReady(host, port);
+      try {
+        writeFileSync(join(agentDir, "ready-marker-after.txt"), "1");
+      } catch {
+        // diagnostics only
+      }
       if (!ready) {
-        console.error(`No service is listening on port ${port}.`);
+        console.error(`EasyResearch failed to start within ${READY_TIMEOUT_MS}ms. See ${serverLogFile(agentDir)}.`);
         return 1;
       }
+
       const url = `http://${host}:${port}`;
       console.log(`EasyResearch: ${url}`);
+      if (!isLoopbackHost(host)) {
+        console.warn(`Warning: EasyResearch is listening on ${host}. Web config editing trusts the local OS user. Make sure the network is trusted before exposing it.`);
+      }
       if (open && isLoopbackHost(host)) await deps.openBrowser(url);
       return 0;
-    }
-    if (background === "stale") {
-      console.log("[easyresearch] Runtime changed — restarting the background service…");
-      await deps.stopBackground(agentDir);
-    }
-
-    deps.spawnBackground(host, port);
-    try {
-      writeFileSync(join(agentDir, "ready-marker-before.txt"), "1");
-    } catch {
-      // diagnostics only
-    }
-    const ready = await deps.waitForReady(host, port);
-    try {
-      writeFileSync(join(agentDir, "ready-marker-after.txt"), "1");
-    } catch {
-      // diagnostics only
-    }
-    if (!ready) {
-      console.error(`EasyResearch failed to start within ${READY_TIMEOUT_MS}ms. See ${serverLogFile(agentDir)}.`);
-      return 1;
-    }
-
-    const url = `http://${host}:${port}`;
-    console.log(`EasyResearch: ${url}`);
-    if (!isLoopbackHost(host)) {
-      console.warn(`Warning: EasyResearch is listening on ${host}. Web config editing trusts the local OS user. Make sure the network is trusted before exposing it.`);
-    }
-    if (open && isLoopbackHost(host)) await deps.openBrowser(url);
-    return 0;
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(message);
-    try {
-      writeFileSync(join(agentDir, "cli-error.log"), `${message}\n${(error as Error).stack ?? ""}\n`);
-    } catch {
-      // Best-effort diagnostics only.
+    if (!(error instanceof DesktopOwnsRuntimeError)) {
+      try {
+        writeFileSync(join(agentDir, "cli-error.log"), `${message}\n${(error as Error).stack ?? ""}\n`);
+      } catch {
+        // Best-effort diagnostics only.
+      }
     }
     return 1;
   }
 }
 
+class DesktopOwnsRuntimeError extends Error {
+  constructor() {
+    super(DESKTOP_OWNS_RUNTIME_MESSAGE);
+  }
+}
+
 async function runRuntimeEntry(args: string[]): Promise<void> {
+  let desktopRequest: ReturnType<typeof consumeDesktopServeRequest> | undefined;
+  if (args[0] === "--desktop-serve") {
+    try {
+      desktopRequest = consumeDesktopServeRequest(args, process.env);
+    } catch {
+      console.error("Invalid EasyResearch desktop launch contract.");
+      process.exitCode = 1;
+      return;
+    }
+  }
   // Standalone binaries must statically register pi's lazy-loaded modules:
   // their variable-specifier dynamic imports cannot resolve inside $bunfs.
   // pi's own compiled entry (pi-coding-agent dist/bun/cli.js) does the same
@@ -368,6 +328,10 @@ async function runRuntimeEntry(args: string[]): Promise<void> {
   const { bedrockProviderModule } = await import("@earendil-works/pi-ai/bedrock-provider");
   const { setBedrockProviderModule } = await import("@earendil-works/pi-ai/compat");
   setBedrockProviderModule(bedrockProviderModule);
+  if (desktopRequest) {
+    process.exitCode = await runDesktopServe(desktopRequest);
+    return;
+  }
   if (args.length === 3 && args[0] === "--serve") {
     const host = args[1] as string;
     const port = parsePort(args[2] as string);
@@ -384,6 +348,16 @@ async function runRuntimeEntry(args: string[]): Promise<void> {
     serve: runServe,
     openBrowser,
     waitForReady,
+    withRuntimeTransition: async (agentDir, operation) => {
+      const lease = await acquireTransitionLease(agentDir, "cli");
+      try {
+        return await operation();
+      } finally {
+        if (!lease.release()) {
+          throw new Error("EasyResearch lost ownership of its runtime transition lease.");
+        }
+      }
+    },
     inspectBackground: (agentDir, host, port) =>
       inspectServerProcess(agentDir, runtimeId, host, port),
     stopBackground: stopServerProcess,
@@ -394,6 +368,7 @@ async function runRuntimeEntry(args: string[]): Promise<void> {
         ...process.env,
         [DAEMON_TOKEN_ENV]: randomUUID(),
         [DAEMON_RUNTIME_ID_ENV]: runtimeId,
+        [DAEMON_OWNER_ENV]: "cli",
       };
       const stderrPath = join(agentDir, "logs", "daemon-stderr.log");
       mkdirSync(dirname(stderrPath), { recursive: true });

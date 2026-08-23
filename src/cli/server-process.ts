@@ -1,11 +1,16 @@
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dayStamp, resolveLogConfig } from "../runtime/logger";
+export { DAEMON_CONTROL_PATH, DAEMON_TOKEN_HEADER } from "./daemon-control";
+import { DAEMON_CONTROL_PATH, DAEMON_TOKEN_HEADER } from "./daemon-control";
 
-export const DAEMON_CONTROL_PATH = "/api/internal/daemon";
-export const DAEMON_TOKEN_HEADER = "x-easyresearch-daemon-token";
 export const DAEMON_TOKEN_ENV = "EASYRESEARCH_DAEMON_TOKEN";
 export const DAEMON_RUNTIME_ID_ENV = "EASYRESEARCH_DAEMON_RUNTIME_ID";
+export const DAEMON_OWNER_ENV = "EASYRESEARCH_DAEMON_OWNER";
+export const DESKTOP_OWNS_RUNTIME_MESSAGE =
+  "EasyResearch Desktop owns the shared runtime. Quit it from the tray or menu bar before using the npm CLI.";
+
+export type ServerOwner = "cli" | "desktop";
 
 export interface ServerProcessRecord {
   schema: 1;
@@ -14,17 +19,19 @@ export interface ServerProcessRecord {
   port: number;
   token: string;
   runtimeId: string;
+  owner?: ServerOwner;
 }
 
-interface ServerProcessOptions {
+export interface ServerProcessOptions {
   fetch?: typeof fetch;
   isAlive?: (pid: number) => boolean;
   wait?: (milliseconds: number) => Promise<void>;
   now?: () => number;
   timeoutMs?: number;
+  expectedOwner?: ServerOwner;
 }
 
-type ServerProcessEntry =
+export type ServerProcessEntry =
   | { kind: "missing" }
   | { kind: "invalid" }
   | { kind: "legacy"; pid: number }
@@ -47,9 +54,13 @@ export function serverLogFile(agentDir: string): string {
 }
 
 export function readServerPid(agentDir: string): number | undefined {
-  const entry = readServerProcessEntry(agentDir);
+  const entry = readServerProcess(agentDir);
   if (entry.kind === "legacy") return entry.pid;
   return entry.kind === "owned" ? entry.record.pid : undefined;
+}
+
+export function serverOwner(record: ServerProcessRecord): ServerOwner {
+  return record.owner ?? "cli";
 }
 
 export function isProcessAlive(pid: number): boolean {
@@ -81,7 +92,7 @@ export function removeServerPid(agentDir: string, expectedToken?: string): boole
   const path = serverPidPath(agentDir);
   if (!existsSync(path)) return false;
   if (expectedToken !== undefined) {
-    const entry = readServerProcessEntry(agentDir);
+    const entry = readServerProcess(agentDir);
     if (entry.kind !== "owned" || entry.record.token !== expectedToken) return false;
   }
   unlinkSync(path);
@@ -94,8 +105,8 @@ export async function inspectServerProcess(
   requestedHost: string,
   requestedPort: number,
   options: ServerProcessOptions = {},
-): Promise<"none" | "current" | "stale"> {
-  const entry = readServerProcessEntry(agentDir);
+): Promise<"none" | "current" | "stale" | "desktop"> {
+  const entry = readServerProcess(agentDir);
   if (entry.kind === "missing") return "none";
   if (entry.kind === "invalid") {
     removeServerPid(agentDir);
@@ -114,6 +125,7 @@ export async function inspectServerProcess(
   const { record } = entry;
   try {
     const runningRuntimeId = await probeServerProcess(record, options.fetch ?? fetch);
+    if (serverOwner(record) === "desktop") return "desktop";
     return runningRuntimeId === currentRuntimeId
         && record.host === requestedHost
         && record.port === requestedPort
@@ -132,7 +144,7 @@ export async function stopServerProcess(
   agentDir: string,
   options: ServerProcessOptions = {},
 ): Promise<boolean> {
-  const entry = readServerProcessEntry(agentDir);
+  const entry = readServerProcess(agentDir);
   if (entry.kind === "missing") return false;
   if (entry.kind === "invalid") {
     removeServerPid(agentDir);
@@ -149,12 +161,21 @@ export async function stopServerProcess(
   }
 
   const { record } = entry;
+  const expectedOwner = options.expectedOwner ?? "cli";
+  const actualOwner = serverOwner(record);
+  if (actualOwner !== expectedOwner) {
+    if (actualOwner === "desktop") {
+      throw new Error(DESKTOP_OWNS_RUNTIME_MESSAGE);
+    }
+    throw new Error(`EasyResearch ${actualOwner} owns the shared runtime; expected ${expectedOwner}.`);
+  }
   const fetchControl = options.fetch ?? fetch;
   let response: Response;
   try {
     response = await fetchControl(serverControlUrl(record), {
       method: "POST",
       headers: { [DAEMON_TOKEN_HEADER]: record.token },
+      redirect: "error",
       signal: AbortSignal.timeout(2_000),
     });
   } catch (error) {
@@ -171,7 +192,7 @@ export async function stopServerProcess(
     new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
   const deadline = now() + (options.timeoutMs ?? 5_000);
   while (now() < deadline) {
-    const current = readServerProcessEntry(agentDir);
+    const current = readServerProcess(agentDir);
     if (current.kind !== "owned" || current.record.token !== record.token) {
       return true;
     }
@@ -182,7 +203,7 @@ export async function stopServerProcess(
   );
 }
 
-function readServerProcessEntry(agentDir: string): ServerProcessEntry {
+export function readServerProcess(agentDir: string): ServerProcessEntry {
   const path = serverPidPath(agentDir);
   if (!existsSync(path)) return { kind: "missing" };
   let value: string;
@@ -219,7 +240,8 @@ function isServerProcessRecord(value: unknown): value is ServerProcessRecord {
     && typeof record.token === "string"
     && record.token.length > 0
     && typeof record.runtimeId === "string"
-    && record.runtimeId.length > 0;
+    && record.runtimeId.length > 0
+    && (record.owner === undefined || record.owner === "cli" || record.owner === "desktop");
 }
 
 async function probeServerProcess(
@@ -229,6 +251,7 @@ async function probeServerProcess(
   const response = await fetchControl(serverControlUrl(record), {
     method: "GET",
     headers: { [DAEMON_TOKEN_HEADER]: record.token },
+    redirect: "error",
     signal: AbortSignal.timeout(2_000),
   });
   if (!response.ok) throw new Error(`daemon control returned HTTP ${response.status}`);

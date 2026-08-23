@@ -457,6 +457,7 @@ describe("web routes", () => {
         runtimeId: "runtime-current",
         requestShutdown,
       },
+      desktopAccess: { token: "renderer-token" },
     } as unknown as Partial<RouteServices>);
 
     const hidden = await handler(new Request("http://localhost/api/internal/daemon"));
@@ -474,6 +475,57 @@ describe("web routes", () => {
     expect(stop.status).toBe(200);
     expect(await stop.json()).toEqual({ ok: true });
     expect(requestShutdown).toHaveBeenCalledOnce();
+
+    const rendererOnly = await handler(new Request("http://localhost/api/internal/daemon", {
+      headers: { "x-easyresearch-desktop-token": "renderer-token" },
+    }));
+    expect(rendererOnly.status).toBe(404);
+  });
+
+  it("requires desktop renderer access across document, asset, API, SSE, and raw-file routes", async () => {
+    const assetDir = join(webuiDist, "assets");
+    mkdirSync(assetDir, { recursive: true });
+    writeFileSync(join(assetDir, "app.js"), "export {};", "utf8");
+    const rawFile = join(homeDir, "desktop-auth.bin");
+    writeFileSync(rawFile, Buffer.from([0, 1, 2, 3]));
+    setup({ desktopAccess: { token: "renderer-secret" } } as Partial<RouteServices>);
+    const cases = [
+      { path: "/", status: 200 },
+      { path: "/assets/app.js", status: 200 },
+      { path: "/api/status", status: 200 },
+      { path: "/api/config/events", status: 200, contentType: "text/event-stream" },
+      {
+        path: `/api/file/raw?path=${encodeURIComponent(rawFile)}`,
+        status: 206,
+        headers: { Range: "bytes=1-2" },
+        contentType: "application/octet-stream",
+      },
+    ];
+
+    for (const fixture of cases) {
+      const denied = await handler(new Request(`http://127.0.0.1${fixture.path}`, {
+        headers: fixture.headers,
+      }));
+      expect(denied.status, fixture.path).toBe(401);
+
+      const accepted = await handler(new Request(`http://127.0.0.1${fixture.path}`, {
+        headers: {
+          ...fixture.headers,
+          "x-easyresearch-desktop-token": "renderer-secret",
+        },
+      }));
+      expect(accepted.status, fixture.path).toBe(fixture.status);
+      if (fixture.contentType) {
+        expect(accepted.headers.get("content-type"), fixture.path).toContain(fixture.contentType);
+      }
+      await accepted.body?.cancel();
+    }
+  });
+
+  it("keeps ordinary CLI Web mode accessible without a renderer credential", async () => {
+    setup();
+    const response = await handler(new Request("http://127.0.0.1/api/status"));
+    expect(response.status).toBe(200);
   });
 
   it("lists directories for a given path", async () => {

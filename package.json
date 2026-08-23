@@ -39,6 +39,8 @@
     "check:web": "bun run typecheck && bun run test && bun run build:web && bun run lint:web",
     "prepack": "bun run build:web",
     "build:release": "bun scripts/build.ts",
+    "build:desktop": "bun scripts/build-desktop.ts",
+    "smoke:desktop": "bun scripts/smoke-desktop.ts",
     "release": "bun scripts/release.ts",
     "dev": "bun run src/cli/index.ts",
     "dev:web": "vite --config src/webui/vite.config.ts"
@@ -78,6 +80,8 @@
     "@types/turndown": "^5.0.6",
     "@vitejs/plugin-react": "4.7.0",
     "bun-types": "1.3.14",
+    "electron": "42.3.3",
+    "electron-builder": "26.15.2",
     "jsdom": "30.0.1",
     "tailwindcss": "4.1.13",
     "typescript": "5.9.3",

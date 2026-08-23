@@ -32,6 +32,7 @@ export interface StartServerOptions {
   host?: string;
   port?: number;
   daemonControl?: DaemonControl;
+  desktopAccess?: { token: string };
 }
 
 const WEBUI_DIST = join(fileURLToPath(new URL("..", import.meta.url)), "webui", "dist");
@@ -289,6 +290,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
     configuration: live,
     logger,
     daemonControl: options.daemonControl,
+    desktopAccess: options.desktopAccess,
     listAgents: async (cwd) => agentsToDtos(await live.resolveAgents(cwd), cwd ?? agentDir, resolveDefaultModel),
   };
   const handler = createRouteHandler(services);

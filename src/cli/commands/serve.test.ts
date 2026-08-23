@@ -6,6 +6,8 @@ import {
   DAEMON_RUNTIME_ID_ENV,
   DAEMON_TOKEN_ENV,
   readServerPid,
+  readServerProcess,
+  serverOwner,
   writeServerProcess,
 } from "../server-process";
 
@@ -16,6 +18,10 @@ const [loggerMock, createLoggerMock] = vi.hoisted(() => {
 
 const [piImportMock] = vi.hoisted(() => [{ agentDir: "" }]);
 const [bootstrapMock, startServerMock] = vi.hoisted(() => [vi.fn(), vi.fn()]);
+const [serverLeaseMock, acquireServerLeaseMock] = vi.hoisted(() => {
+  const lease = { path: "server.lease", token: "launch-token", release: vi.fn(() => true) };
+  return [lease, vi.fn(async () => lease)] as const;
+});
 
 vi.mock("../../runtime/logger", () => ({
   createLogger: createLoggerMock,
@@ -36,6 +42,10 @@ vi.mock("../../web/server", () => ({
   startServer: startServerMock,
 }));
 
+vi.mock("../runtime-lease", () => ({
+  acquireServerLease: acquireServerLeaseMock,
+}));
+
 let root: string;
 
 beforeEach(() => {
@@ -45,6 +55,8 @@ beforeEach(() => {
   startServerMock.mockReset();
   process.env[DAEMON_TOKEN_ENV] = "launch-token";
   process.env[DAEMON_RUNTIME_ID_ENV] = "runtime-current";
+  serverLeaseMock.release.mockReset().mockReturnValue(true);
+  acquireServerLeaseMock.mockClear();
 });
 
 afterEach(() => {
@@ -100,6 +112,79 @@ describe("runServe startup failure", () => {
     expect(readServerPid(root)).toBeUndefined();
   });
 
+  it("publishes an explicit desktop owner and renderer access after an ephemeral bind", async () => {
+    bootstrapMock.mockResolvedValue(undefined);
+    const stop = vi.fn(async () => {});
+    startServerMock.mockResolvedValue({ port: 43123, stop });
+    const ready = vi.fn();
+
+    const { runServe } = await import("./serve");
+    const running = runServe("127.0.0.1", 0, {
+      owner: "desktop",
+      token: "desktop-control",
+      runtimeId: "desktop-runtime",
+      rendererToken: "renderer-token",
+      onReady: ready,
+    });
+    await vi.waitFor(() => expect(ready).toHaveBeenCalledWith({
+      port: 43123,
+      logPath: expect.any(String),
+    }));
+
+    const entry = readServerProcess(root);
+    expect(entry.kind).toBe("owned");
+    if (entry.kind !== "owned") throw new Error("expected owned server record");
+    expect(serverOwner(entry.record)).toBe("desktop");
+    expect(entry.record.port).toBe(43123);
+    expect(startServerMock).toHaveBeenCalledWith({
+      host: "127.0.0.1",
+      port: 0,
+      daemonControl: expect.objectContaining({ token: "desktop-control" }),
+      desktopAccess: { token: "renderer-token" },
+    });
+
+    const options = startServerMock.mock.calls[0]?.[0] as {
+      daemonControl: { requestShutdown: () => void };
+    };
+    options.daemonControl.requestShutdown();
+    await expect(running).resolves.toBe(0);
+  });
+
+  it("never enables renderer access for a CLI-owned server", async () => {
+    bootstrapMock.mockResolvedValue(undefined);
+    startServerMock.mockResolvedValue({ port: 3456, stop: vi.fn(async () => {}) });
+
+    const { runServe } = await import("./serve");
+    const running = runServe("127.0.0.1", 3000, {
+      owner: "cli",
+      token: "cli-control",
+      runtimeId: "cli-runtime",
+      rendererToken: "must-not-be-used",
+    });
+    await vi.waitFor(() => expect(startServerMock).toHaveBeenCalledOnce());
+
+    expect(startServerMock.mock.calls[0]?.[0]).not.toHaveProperty("desktopAccess");
+    const options = startServerMock.mock.calls[0]?.[0] as {
+      daemonControl: { requestShutdown: () => void };
+    };
+    options.daemonControl.requestShutdown();
+    await expect(running).resolves.toBe(0);
+  });
+
+  it("refuses a desktop server without renderer authentication", async () => {
+    bootstrapMock.mockResolvedValue(undefined);
+
+    const { runServe } = await import("./serve");
+    await expect(runServe("127.0.0.1", 0, {
+      owner: "desktop",
+      token: "desktop-control",
+      runtimeId: "desktop-runtime",
+    })).resolves.toBe(1);
+
+    expect(startServerMock).not.toHaveBeenCalled();
+    expect(acquireServerLeaseMock).not.toHaveBeenCalled();
+  });
+
   it("consumes daemon ownership environment before starting the Web runtime", async () => {
     bootstrapMock.mockResolvedValue(undefined);
     expect(process.env[DAEMON_TOKEN_ENV]).toBe("launch-token");
@@ -135,6 +220,27 @@ describe("runServe startup failure", () => {
 
     await expect(running).resolves.toBe(0);
     expect(stop).toHaveBeenCalledOnce();
+    expect(serverLeaseMock.release).toHaveBeenCalledOnce();
+    expect(readServerPid(root)).toBeUndefined();
+  });
+
+  it("releases the live-server lease while its ownership record is still published", async () => {
+    bootstrapMock.mockResolvedValue(undefined);
+    startServerMock.mockResolvedValue({ port: 3456, stop: vi.fn(async () => {}) });
+    serverLeaseMock.release.mockImplementation(() => {
+      expect(readServerPid(root)).toBe(process.pid);
+      return true;
+    });
+
+    const { runServe } = await import("./serve");
+    const running = runServe("127.0.0.1", 3000);
+    await vi.waitFor(() => expect(readServerPid(root)).toBe(process.pid));
+    const options = startServerMock.mock.calls[0]?.[0] as {
+      daemonControl: { requestShutdown: () => void };
+    };
+    options.daemonControl.requestShutdown();
+
+    await expect(running).resolves.toBe(0);
     expect(readServerPid(root)).toBeUndefined();
   });
 

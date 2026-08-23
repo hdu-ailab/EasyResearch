@@ -17,6 +17,9 @@ npm install -g easyresearch@latest
 easyresearch
 ```
 
+Desktop installers for Windows x64 and Apple Silicon macOS are available from
+[GitHub Releases](https://github.com/hdu-ailab/EasyResearch/releases/latest).
+
 EasyResearch opens a local Web workspace. Choose a project directory, connect a
 model provider in **Settings**, and describe the outcome you want.
 
@@ -164,14 +167,25 @@ For manual configuration:
 
 ## Installation Notes
 
-- Supported native packages: Linux x64, Apple Silicon macOS, and Windows x64.
-- The selected platform executable needs neither Node nor Bun.
+- The npm CLI supports Linux x64, Apple Silicon macOS, and Windows x64. Its
+  selected platform executable needs neither Node nor Bun.
+- The desktop app supports Windows x64 and Apple Silicon macOS; there is no
+  Linux desktop package. It bundles the matching native backend and does not
+  require a global npm installation.
+- Desktop and CLI use the same `~/.easyresearch/agent` state but cannot run at
+  the same time. Opening Desktop stops a running CLI service; CLI start and exit
+  commands are blocked while Desktop owns the state.
+- Closing the desktop window keeps EasyResearch running in the tray or menu
+  bar. Use **Exit** there to cancel active work and stop the backend.
+- Desktop updates are manual downloads from GitHub Releases. The installers are
+  currently unsigned, so Windows SmartScreen or macOS Gatekeeper may warn.
 - Windows runs natively through PowerShell and does not require WSL or Git Bash.
 - Python 3 on `PATH` enables PDF conversion, arXiv SDK features, and bundled Web
   search. Startup degrades gracefully when Python is unavailable.
 
 The first run extracts bundled Agents and Skills and creates their Python
-environment. Keep the terminal open while setup progress is shown.
+environment. The CLI reports progress in the terminal; Desktop reports it in
+the loading window. Keep the selected app open until setup finishes.
 
 ## CLI
 

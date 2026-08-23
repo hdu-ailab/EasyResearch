@@ -36,6 +36,10 @@ import {
   type LiveConfiguration,
 } from "../runtime/live-configuration";
 import { DAEMON_CONTROL_PATH, DAEMON_TOKEN_HEADER } from "../cli/server-process";
+import {
+  rejectUnauthorizedDesktopRequest,
+  type DesktopAccessControl,
+} from "./desktop-access";
 
 export interface DaemonControl {
   token: string;
@@ -60,6 +64,7 @@ export interface RouteServices {
   configuration: Pick<LiveConfiguration, "generation" | "error" | "subscribe">;
   logger: Logger;
   daemonControl?: DaemonControl;
+  desktopAccess?: DesktopAccessControl;
 }
 
 export type RouteHandler = (request: Request) => Promise<Response>;
@@ -89,6 +94,9 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
         control.requestShutdown();
         return jsonResponse({ ok: true });
       }
+
+      const unauthorized = rejectUnauthorizedDesktopRequest(req, services.desktopAccess);
+      if (unauthorized) return unauthorized;
 
       if (req.method === "GET" && path === "/api/status") {
         return jsonResponse({

@@ -7,6 +7,7 @@ import {
   inspectServerProcess,
   isProcessAlive,
   readServerPid,
+  serverOwner,
   removeServerPid,
   serverLogFile,
   serverLogPath,
@@ -14,11 +15,12 @@ import {
   stopServerProcess,
   writeServerProcess,
   writeServerPid,
+  type ServerProcessRecord,
 } from "./server-process";
 
 let root: string;
 
-const ownedRecord = (token = "owned-token") => ({
+const ownedRecord = (token = "owned-token"): ServerProcessRecord => ({
   schema: 1 as const,
   pid: 4242,
   host: "127.0.0.1",
@@ -66,6 +68,14 @@ describe("readServerPid / writeServerPid / removeServerPid", () => {
   it("reads the diagnostic pid from a structured ownership record", () => {
     writeOwnedRecord();
     expect(readServerPid(root)).toBe(4242);
+  });
+
+  it("treats an omitted schema-1 owner as cli", () => {
+    expect(serverOwner(ownedRecord())).toBe("cli");
+  });
+
+  it("preserves an explicit desktop owner", () => {
+    expect(serverOwner({ ...ownedRecord(), owner: "desktop" })).toBe("desktop");
   });
 
   it("returns undefined for a non-numeric pid file", () => {
@@ -147,6 +157,23 @@ describe("inspectServerProcess", () => {
     )).rejects.toThrow(/Cannot verify EasyResearch daemon ownership/);
     expect(readServerPid(root)).toBe(4242);
   });
+
+  it("reports a live authenticated desktop owner without comparing CLI runtime or port", async () => {
+    writeOwnedRecord({ ...ownedRecord(), owner: "desktop" });
+    const fetchControl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      expect(init?.method).toBe("GET");
+      expect(new Headers(init?.headers).get("x-easyresearch-daemon-token")).toBe("owned-token");
+      return new Response(JSON.stringify({ runtimeId: "runtime-current" }), { status: 200 });
+    });
+
+    await expect(inspectServerProcess(
+      root,
+      "another-runtime",
+      "127.0.0.1",
+      3999,
+      { fetch: fetchControl as unknown as typeof fetch, isAlive: () => true },
+    )).resolves.toBe("desktop");
+  });
 });
 
 describe("stopServerProcess", () => {
@@ -210,5 +237,34 @@ describe("stopServerProcess", () => {
     expect(readServerPid(root)).toBe(4242);
     expect(killSpy).not.toHaveBeenCalledWith(4242, "SIGTERM");
     expect(killSpy).not.toHaveBeenCalledWith(4242, "SIGKILL");
+  });
+
+  it("refuses an owner-mismatched shutdown without contacting the desktop process", async () => {
+    writeOwnedRecord({ ...ownedRecord(), owner: "desktop" });
+    const fetchControl = vi.fn();
+
+    await expect(stopServerProcess(root, {
+      expectedOwner: "cli",
+      fetch: fetchControl as unknown as typeof fetch,
+      isAlive: () => true,
+    })).rejects.toThrow(/Desktop owns the shared runtime/);
+
+    expect(fetchControl).not.toHaveBeenCalled();
+    expect(readServerPid(root)).toBe(4242);
+  });
+
+  it("allows the desktop transition to stop an authenticated cli owner", async () => {
+    writeOwnedRecord({ ...ownedRecord(), owner: "cli" });
+    const fetchControl = vi.fn(async () => {
+      removeServerPid(root, "owned-token");
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+
+    await expect(stopServerProcess(root, {
+      expectedOwner: "cli",
+      fetch: fetchControl as unknown as typeof fetch,
+      isAlive: () => true,
+      wait: async () => {},
+    })).resolves.toBe(true);
   });
 });

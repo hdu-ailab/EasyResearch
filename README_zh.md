@@ -16,6 +16,9 @@ npm install -g easyresearch@latest
 easyresearch
 ```
 
+Windows x64 与 Apple Silicon macOS 桌面安装包可从
+[GitHub Releases](https://github.com/hdu-ailab/EasyResearch/releases/latest) 下载。
+
 EasyResearch 会打开本地 Web 工作区。选择一个项目目录，在**设置**中连接模型
 provider，然后描述你想得到的成果。
 
@@ -150,14 +153,22 @@ flowchart LR
 
 ## 安装说明
 
-- 原生支持 Linux x64、Apple Silicon macOS 和 Windows x64。
-- 被选中的平台可执行文件本身不需要 Node 或 Bun。
+- npm CLI 支持 Linux x64、Apple Silicon macOS 和 Windows x64；被选中的平台
+  可执行文件本身不需要 Node 或 Bun。
+- 桌面版支持 Windows x64 与 Apple Silicon macOS，不提供 Linux 桌面安装包。
+  桌面版内置对应原生后端，不要求预先全局安装 npm 包。
+- 桌面版与 CLI 共用 `~/.easyresearch/agent` 状态，但不能同时运行。启动桌面版会
+  停止正在运行的 CLI 服务；桌面版持有状态期间，CLI 启动与退出命令会被拒绝。
+- 关闭桌面窗口只会隐藏到系统托盘或菜单栏；使用其中的**退出**才会取消活动任务并
+  停止后端。
+- 桌面版通过 GitHub Releases 手动更新。安装包目前未签名，Windows SmartScreen
+  或 macOS Gatekeeper 可能显示警告。
 - Windows 通过 PowerShell 原生运行，不需要 WSL 或 Git Bash。
 - `PATH` 中的 Python 3 用于 PDF 转换、arXiv SDK 功能和内置 Web 检索；缺少
   Python 时，启动会降级而不是直接失败。
 
-首次运行会解压内置 Agents 与 Skills，并创建所需 Python 环境。终端会显示安装进度，
-请等待引导完成。
+首次运行会解压内置 Agents 与 Skills，并创建所需 Python 环境。CLI 会在终端显示进度，
+桌面版会在加载窗口显示进度；请保持当前应用运行，直至引导完成。
 
 ## CLI
 

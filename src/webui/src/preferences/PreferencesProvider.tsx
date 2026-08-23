@@ -26,6 +26,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
     shouldPersist.current = false;
     try {
       writePreferences(window.localStorage, preferences);
+      window.easyresearchDesktop?.persistWebUiPreferences(window.localStorage.getItem(STORAGE_KEY));
     } catch {
       // Keep the user's preference in memory if browser storage is unavailable.
     }

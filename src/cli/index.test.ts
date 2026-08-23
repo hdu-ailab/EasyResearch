@@ -21,6 +21,7 @@ function makeDeps(overrides: Partial<CliDependencies> = {}): CliDependencies {
     serve: vi.fn(async () => 0),
     openBrowser: vi.fn(async () => true),
     waitForReady: vi.fn(async () => true),
+    withRuntimeTransition: async (_agentDir, operation) => operation(),
     spawnBackground: vi.fn(),
     inspectBackground: vi.fn(async (agentDir: string) =>
       readServerPid(agentDir) === undefined ? "none" : "current"),
@@ -128,6 +129,73 @@ describe("runCli argument parsing", () => {
       errorSpy.mockRestore();
     }
     expect(deps.spawnBackground).not.toHaveBeenCalled();
+  });
+
+  it("rejects normal startup before setup while desktop owns the runtime", async () => {
+    const setup = vi.fn();
+    const deps = makeDeps({ inspectBackground: vi.fn(async () => "desktop" as const) });
+    const messages: string[] = [];
+    const errorSpy = vi.spyOn(console, "error").mockImplementation((message) => {
+      messages.push(String(message));
+    });
+    try {
+      expect(await runCli([], deps, { agentDir: root, setup })).toBe(1);
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    expect(setup).not.toHaveBeenCalled();
+    expect(deps.spawnBackground).not.toHaveBeenCalled();
+    expect(messages.join("\n")).toMatch(/quit it from the tray or menu bar/i);
+  });
+
+  it("rejects exit while desktop owns the runtime", async () => {
+    const setup = vi.fn();
+    const deps = makeDeps({ inspectBackground: vi.fn(async () => "desktop" as const) });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(await runCli(["exit"], deps, { agentDir: root, setup })).toBe(1);
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    expect(setup).not.toHaveBeenCalled();
+    expect(deps.stopBackground).not.toHaveBeenCalled();
+  });
+
+  it("holds one transition around inspection, setup, spawn, and readiness", async () => {
+    const order: string[] = [];
+    const deps = makeDeps({
+      withRuntimeTransition: async (_agentDir, operation) => {
+        order.push("lease-acquired");
+        const result = await operation();
+        order.push("lease-released");
+        return result;
+      },
+      inspectBackground: vi.fn(async () => {
+        order.push("inspected");
+        return "none" as const;
+      }),
+      spawnBackground: vi.fn(() => order.push("spawned")),
+      waitForReady: vi.fn(async () => {
+        order.push("ready");
+        return true;
+      }),
+    });
+
+    expect(await runCli([], deps, {
+      agentDir: root,
+      setup: () => { order.push("setup"); },
+    })).toBe(0);
+
+    expect(order).toEqual([
+      "lease-acquired",
+      "inspected",
+      "setup",
+      "spawned",
+      "ready",
+      "lease-released",
+    ]);
   });
 
   it.each([
@@ -389,20 +457,7 @@ describe("first-run setup", () => {
   });
 });
 
-describe("resource retirement version gate", () => {
-  it("retires same-name resources only once per version", () => {
-    const retireBundledResourcesOnce = (cliModule as typeof cliModule & {
-      retireBundledResourcesOnce(agentDir: string, version: string, retire: () => void): boolean;
-    }).retireBundledResourcesOnce;
-    const retire = vi.fn();
-
-    expect(retireBundledResourcesOnce(root, "1.0.0", retire)).toBe(true);
-    expect(retireBundledResourcesOnce(root, "1.0.0", retire)).toBe(false);
-    expect(retire).toHaveBeenCalledTimes(1);
-    expect(retireBundledResourcesOnce(root, "2.0.0", retire)).toBe(true);
-    expect(retire).toHaveBeenCalledTimes(2);
-  });
-
+describe("compiled runtime preparation", () => {
   it("copies materialized Pi assets beside the daemon executable", () => {
     const copyPiRuntimeAssets = (cliModule as typeof cliModule & {
       copyPiRuntimeAssets(agentDir: string, source: string): void;
