@@ -58,6 +58,13 @@ describe("detectPython", () => {
   });
 });
 
+it("uses the fresh default venv only for conversion and arXiv", () => {
+  expect(SKILL_VENV_PACKAGES).toEqual([
+    { distribution: "markitdown", imports: ["markitdown"] },
+    { distribution: "arxiv", imports: ["arxiv"] },
+  ]);
+});
+
 describe("setupSkillVenv", () => {
   it("reports failure without throwing when python is missing", () => {
     const venvDir = tempVenvDir();

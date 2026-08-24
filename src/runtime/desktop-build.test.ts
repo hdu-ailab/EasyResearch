@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { BuildManifest } from "../../scripts/build";
 import {
@@ -9,6 +9,7 @@ import {
   desktopBuilderInvocation,
   desktopTarget,
   electronBuilderConfig,
+  stageDesktopNotices,
   validateDesktopSidecar,
 } from "../../scripts/build-desktop";
 
@@ -88,6 +89,23 @@ describe("accepted sidecar integrity", () => {
       .toThrow(/target/i);
     expect(() => validateDesktopSidecar("windows-x64", manifest, binary, "1.2.4"))
       .toThrow(/version/i);
+  });
+});
+
+describe("accepted third-party notices", () => {
+  it("stages a byte-identical accepted notice beside the sidecar", () => {
+    const source = join(root, "native", "THIRD_PARTY_NOTICES.txt");
+    const destination = join(root, "stage", "sidecar", "THIRD_PARTY_NOTICES.txt");
+    mkdirSync(dirname(source), { recursive: true });
+    mkdirSync(dirname(destination), { recursive: true });
+    writeFileSync(source, "accepted notices\n");
+
+    stageDesktopNotices(source, destination, "accepted notices\n");
+
+    expect(readFileSync(destination, "utf8")).toBe("accepted notices\n");
+    writeFileSync(source, "tampered\n");
+    expect(() => stageDesktopNotices(source, destination, "accepted notices\n"))
+      .toThrow(/changed/i);
   });
 });
 

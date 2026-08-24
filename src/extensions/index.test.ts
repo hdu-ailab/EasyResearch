@@ -46,6 +46,19 @@ describe("bundled extension runtime builder", () => {
       .not.toBe(second.find(({ name }) => name === "subagent-dispatch")?.factory);
   });
 
+  it("loads web-search through one async named factory", async () => {
+    const extensions = createResearchAssistantExtensions(runtime("root-a"));
+    const entries = extensions.filter(({ name }) => name === "web-search");
+    const registerTool = vi.fn();
+
+    expect(entries).toHaveLength(1);
+    const loading = entries[0]!.factory({ registerTool } as never);
+    expect(loading).toBeInstanceOf(Promise);
+    await loading;
+    expect(registerTool).toHaveBeenCalledTimes(1);
+    expect(registerTool.mock.calls[0]?.[0].name).toBe("web-search");
+  });
+
   it("applies the binding supplied to that registry instance", async () => {
     const extensions = createResearchAssistantExtensions(runtime("root-a", ["read", "subagent"]));
     const definition = extensions.find((entry) => entry.name === "research-assistant");

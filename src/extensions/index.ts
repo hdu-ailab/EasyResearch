@@ -1,4 +1,4 @@
-import type { InlineExtension } from "@earendil-works/pi-coding-agent";
+import type { ExtensionFactory, InlineExtension } from "@earendil-works/pi-coding-agent";
 import type { AgentRuntimeBinding } from "../runtime/agent-runtime-binding";
 import type { LiveConfiguration } from "../runtime/live-configuration";
 import { createResearchAssistantExtension } from "./research-assistant";
@@ -6,7 +6,7 @@ import { createSubagentDispatchExtension } from "./subagent-dispatch";
 import { createWelcomeBannerExtension } from "./welcome-banner";
 import { createEventLoggerExtension } from "./event-logger";
 import { createProjectTrustExtension } from "./project-trust";
-import duckDuckGoSearchExtension from "./web-search";
+import webSearchExtension from "./web-search";
 import webFetchExtension from "./webfetch";
 import { createWebTreeExtension } from "./web-tree";
 import { createSessionNameExtension } from "./session-name";
@@ -36,7 +36,14 @@ import {
 export interface BundledExtension {
   name: string;
   /** Pi SDK inline-extension channel. */
-  factory: InlineExtension;
+  factory: ExtensionFactory;
+}
+
+function requireExtensionFactory(extension: InlineExtension): ExtensionFactory {
+  if (typeof extension !== "function") {
+    throw new TypeError("Bundled extension must be an inline factory.");
+  }
+  return extension;
 }
 
 export interface ResearchAssistantExtensionRuntime {
@@ -66,23 +73,23 @@ export function createResearchAssistantExtensions(runtime: ResearchAssistantExte
     },
     {
       name: "subagent-dispatch",
-      factory: createSubagentDispatchExtension(runtime),
+      factory: requireExtensionFactory(createSubagentDispatchExtension(runtime)),
     },
     {
       name: "welcome-banner",
-      factory: createWelcomeBannerExtension(),
+      factory: requireExtensionFactory(createWelcomeBannerExtension()),
     },
     {
       name: "event-logger",
-      factory: createEventLoggerExtension(),
+      factory: requireExtensionFactory(createEventLoggerExtension()),
     },
     {
       name: "project-trust",
-      factory: createProjectTrustExtension(),
+      factory: requireExtensionFactory(createProjectTrustExtension()),
     },
     {
       name: "web-search",
-      factory: duckDuckGoSearchExtension,
+      factory: webSearchExtension,
     },
     {
       name: "webfetch",
@@ -90,11 +97,11 @@ export function createResearchAssistantExtensions(runtime: ResearchAssistantExte
     },
     {
       name: "web-tree",
-      factory: createWebTreeExtension(),
+      factory: requireExtensionFactory(createWebTreeExtension()),
     },
     {
       name: "session-name",
-      factory: createSessionNameExtension(),
+      factory: requireExtensionFactory(createSessionNameExtension()),
     },
   ];
 }

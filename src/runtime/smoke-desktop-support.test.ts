@@ -13,6 +13,7 @@ import {
   readDesktopSmokeEvents,
   reduceDesktopSmokeEvents,
   verifyDesktopSidecarIdentity,
+  verifyPackagedNotice,
   verifyPackagedSidecar,
 } from "../../scripts/smoke-desktop-support";
 
@@ -53,6 +54,34 @@ describe("packaged sidecar identity", () => {
     expect(() => verifyDesktopSidecarIdentity({ ...native }, native)).not.toThrow();
     expect(() => verifyDesktopSidecarIdentity({ ...native, binaryName: "other.exe" }, native))
       .toThrow(/desktop manifest sidecar/i);
+  });
+});
+
+describe("packaged third-party notices", () => {
+  it("accepts byte-identical accepted notice content", () => {
+    const accepted = join(root, "accepted.txt");
+    const packaged = join(root, "packaged.txt");
+    writeFileSync(accepted, "accepted notices\n");
+    writeFileSync(packaged, "accepted notices\n");
+
+    expect(() => verifyPackagedNotice(packaged, accepted)).not.toThrow();
+  });
+
+  it("rejects a missing packaged notice", () => {
+    const accepted = join(root, "accepted.txt");
+    writeFileSync(accepted, "accepted notices\n");
+
+    expect(() => verifyPackagedNotice(join(root, "missing.txt"), accepted))
+      .toThrow(/ENOENT|no such file/i);
+  });
+
+  it("rejects tampered packaged notice bytes", () => {
+    const accepted = join(root, "accepted.txt");
+    const packaged = join(root, "packaged.txt");
+    writeFileSync(accepted, "accepted notices\n");
+    writeFileSync(packaged, "tampered notices\n");
+
+    expect(() => verifyPackagedNotice(packaged, accepted)).toThrow(/do not match/i);
   });
 });
 
@@ -98,11 +127,13 @@ describe("native package commands and paths", () => {
     expect(packagedApplicationPaths("windows-x64", "C:\\install")).toEqual({
       executable: "C:\\install\\EasyResearch.exe",
       sidecar: "C:\\install\\resources\\sidecar\\easyresearch.exe",
+      notices: "C:\\install\\resources\\sidecar\\THIRD_PARTY_NOTICES.txt",
       uninstaller: "C:\\install\\Uninstall EasyResearch.exe",
     });
     expect(packagedApplicationPaths("darwin-arm64", "/Volumes/EasyResearch")).toEqual({
       executable: "/Volumes/EasyResearch/EasyResearch.app/Contents/MacOS/EasyResearch",
       sidecar: "/Volumes/EasyResearch/EasyResearch.app/Contents/Resources/sidecar/easyresearch",
+      notices: "/Volumes/EasyResearch/EasyResearch.app/Contents/Resources/sidecar/THIRD_PARTY_NOTICES.txt",
     });
   });
 });

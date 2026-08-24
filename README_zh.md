@@ -194,8 +194,8 @@ flowchart LR
 - npm CLI 支持 Linux x64、Apple Silicon macOS 和 Windows x64；被选中的平台
   可执行文件本身不需要 Node 或 Bun。
 - Windows 通过 PowerShell 原生运行，不需要 WSL 或 Git Bash。
-- `PATH` 中的 Python 3 用于 PDF 转换、arXiv SDK 功能和内置 Web 检索；缺少
-  Python 时，启动会降级而不是直接失败。
+- PATH 中的 Python 3 用于 PDF 转换和 arXiv SDK 功能；内置 Web 检索不依赖
+  Python。缺少 Python 时，启动会降级而不是直接失败。
 
 首次运行会解压内置 Agents 与 Skills，并创建所需 Python 环境。CLI 会在终端显示进度，
 桌面版会在加载窗口显示进度；请保持当前应用运行，直至引导完成。

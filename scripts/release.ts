@@ -15,6 +15,11 @@ import {
   releaseDir,
   repoPackageVersion,
 } from "./build";
+import {
+  THIRD_PARTY_NOTICES_FILE,
+  assertThirdPartyNoticesFile,
+  generateThirdPartyNotices,
+} from "./third-party-notices";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const MAIN_PACKAGE = "easyresearch";
@@ -105,9 +110,13 @@ export function platformPackageManifest(target: (typeof TARGETS)[number], versio
     os: target.os,
     cpu: target.cpu,
     ...(target.os.includes("linux") ? { libc: ["glibc"] } : {}),
-    files: [`bin/${binaryName}`, "README.md", "LICENSE"],
+    files: [`bin/${binaryName}`, "README.md", "LICENSE", THIRD_PARTY_NOTICES_FILE],
     publishConfig: { registry: NPM_REGISTRY },
   };
+}
+
+export function assertPlatformPackageNotices(pkgDir: string, expectedContents: string): void {
+  assertThirdPartyNoticesFile(join(pkgDir, THIRD_PARTY_NOTICES_FILE), expectedContents);
 }
 
 export function assemblePlatformPackage(targetName: string, version: string): void {
@@ -116,6 +125,7 @@ export function assemblePlatformPackage(targetName: string, version: string): vo
   const pkgDir = platformPackageDir(targetName);
   const binPath = join(pkgDir, "bin", platformBinaryName(target));
   if (!existsSync(binPath)) throw new Error(`missing binary for ${targetName}: ${binPath}`);
+  assertPlatformPackageNotices(pkgDir, generateThirdPartyNotices(ROOT));
   writeJson(join(pkgDir, "package.json"), platformPackageManifest(target, version));
   cpSync(join(ROOT, "LICENSE"), join(pkgDir, "LICENSE"));
   writeFileSync(join(pkgDir, "README.md"), NPM_README);
@@ -146,7 +156,8 @@ Name collisions use the explicit \`/skill:<skill-name>\` form.
 
 The first run extracts bundled Agents and Skills and creates a Python environment
 for paper search and conversion; watch the terminal for progress. Python 3 on
-\`PATH\` enables PDF conversion, arXiv SDK features, and bundled Web search.
+\`PATH\` enables PDF conversion and arXiv SDK features. Bundled Web search does
+not depend on Python.
 Startup degrades gracefully when Python is unavailable.
 
 \`\`\`sh
@@ -277,15 +288,21 @@ function currentNativeTarget(): string | undefined {
     : undefined;
 }
 
-function validatePackedPackage(dir: string): void {
+function validatePackedPackage(dir: string, requireNotices: boolean): void {
   const result = spawnSync("npm", ["pack", "--dry-run", "--json", `--registry=${NPM_REGISTRY}`], {
     cwd: dir,
     encoding: "utf8",
   });
   if (result.status !== 0) throw new Error(`npm pack validation failed for ${dir}: ${(result.stderr ?? "").trim()}`);
   const paths = packedPaths(result.stdout || "[]");
-  for (const required of ["package.json", "README.md", "LICENSE"]) {
-    if (!paths.has(required)) throw new Error(`npm pack omitted ${required} for ${dir}`);
+  assertPackedPaths(paths, requireNotices);
+}
+
+export function assertPackedPaths(paths: ReadonlySet<string>, requireNotices: boolean): void {
+  const required = ["package.json", "README.md", "LICENSE"];
+  if (requireNotices) required.push(THIRD_PARTY_NOTICES_FILE);
+  for (const path of required) {
+    if (!paths.has(path)) throw new Error(`npm pack omitted ${path}`);
   }
 }
 
@@ -334,14 +351,14 @@ export async function main(): Promise<void> {
 
   for (const t of missing) {
     assemblePlatformPackage(t.name, version);
-    validatePackedPackage(platformPackageDir(t.name));
+    validatePackedPackage(platformPackageDir(t.name), true);
     await publishPackage(platformPackageDir(t.name), `easyresearch-${t.name}`, version, flags.dryRun);
   }
 
   if (!mainPublished) {
     if (!flags.dryRun) await waitForAllPlatformPackages(version);
     assembleMainPackage(version);
-    validatePackedPackage(join(releaseDir(), MAIN_PACKAGE));
+    validatePackedPackage(join(releaseDir(), MAIN_PACKAGE), false);
     await publishPackage(join(releaseDir(), MAIN_PACKAGE), MAIN_PACKAGE, version, flags.dryRun);
   } else {
     console.log(`[release] ${MAIN_PACKAGE}@${version} already published, skipping`);

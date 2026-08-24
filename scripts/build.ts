@@ -3,6 +3,10 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  THIRD_PARTY_NOTICES_FILE,
+  generateThirdPartyNotices,
+} from "./third-party-notices";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const GENERATED_MODULE = join(ROOT, "src", "generated", "embedded-assets.ts");
@@ -235,6 +239,12 @@ export async function buildTargets(only?: string, prefer?: string[]): Promise<Pl
   const developmentStub = readFileSync(GENERATED_MODULE, "utf8");
   rmSync(buildManifestPath(), { force: true });
   if (only) rmSync(buildManifestPath(only), { force: true });
+  const thirdPartyNotices = generateThirdPartyNotices(ROOT);
+  for (const target of targets) {
+    const packageDir = platformPackageDir(target.name);
+    mkdirSync(packageDir, { recursive: true });
+    writeFileSync(join(packageDir, THIRD_PARTY_NOTICES_FILE), thirdPartyNotices, "utf8");
+  }
   await buildWebUi();
   try {
     await generateEmbeddedAssetsModule(true);

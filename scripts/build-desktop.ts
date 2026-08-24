@@ -23,6 +23,11 @@ import {
   repoPackageVersion,
 } from "./build";
 import { validateBuildArtifact } from "./release";
+import {
+  THIRD_PARTY_NOTICES_FILE,
+  assertThirdPartyNoticesFile,
+  generateThirdPartyNotices,
+} from "./third-party-notices";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const ELECTRON_VERSION = "42.3.3";
@@ -106,6 +111,16 @@ export function validateDesktopSidecar(
   const artifact = matches[0]!;
   validateBuildArtifact(artifact, nativeTarget, version, binary);
   return artifact;
+}
+
+export function stageDesktopNotices(
+  source: string,
+  destination: string,
+  expectedContents: string,
+): void {
+  assertThirdPartyNoticesFile(source, expectedContents);
+  copyFileSync(source, destination);
+  assertThirdPartyNoticesFile(destination, expectedContents);
 }
 
 export function electronBuilderConfig(
@@ -197,6 +212,11 @@ export async function buildDesktop(targetName: DesktopTargetName): Promise<Deskt
   copyFileSync(sourceBinary, stagedSidecar);
   if (target.platform === "darwin") chmodSync(stagedSidecar, 0o755);
   validateDesktopSidecar(targetName, nativeManifest, stagedSidecar, version);
+  stageDesktopNotices(
+    join(platformPackageDir(targetName), THIRD_PARTY_NOTICES_FILE),
+    join(stageDir, "sidecar", THIRD_PARTY_NOTICES_FILE),
+    generateThirdPartyNotices(ROOT),
+  );
 
   const { Arch, Platform, build } = await import("electron-builder");
   const targets = target.platform === "win32"

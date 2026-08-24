@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -103,7 +103,7 @@ describe("fetchSessionEventsBeforeDeadline", () => {
 
 function validationFixture(python: string): { python: string; script: string; prefix: string; root: string } {
   const root = tempDir();
-  for (const module of ["arxiv", "ddgr", "markitdown"]) writeFileSync(join(root, `${module}.py`), "");
+  for (const module of ["arxiv", "markitdown"]) writeFileSync(join(root, `${module}.py`), "");
   const script = join(root, "validate.py");
   writeVenvValidationScript(script);
   const prefixResult = spawnSync(python, ["-c", "import sys; print(sys.prefix)"], { encoding: "utf8" });
@@ -324,6 +324,15 @@ describe("validateFirstRunVenv", () => {
   });
 });
 
+it("validates an isolated release venv without a search package", () => {
+  const script = join(tempDir(), "validate.py");
+  writeVenvValidationScript(script);
+  const text = readFileSync(script, "utf8");
+  expect(text).toContain("import arxiv");
+  expect(text).toContain("import markitdown");
+  expect(text).not.toContain("import ddgr");
+});
+
 describe.skipIf(systemPython === undefined)(
   "writeVenvValidationScript (skipped: no Python interpreter on PATH)",
   () => {
@@ -375,7 +384,7 @@ describe.skipIf(systemPython === undefined)(
       if (userSiteResult.status !== 0) throw new Error(`failed to inspect Python user site: ${userSiteResult.stderr}`);
       const userSite = userSiteResult.stdout.trim();
       mkdirSync(userSite, { recursive: true });
-      for (const module of ["arxiv", "ddgr", "markitdown"]) writeFileSync(join(userSite, `${module}.py`), "");
+      for (const module of ["arxiv", "markitdown"]) writeFileSync(join(userSite, `${module}.py`), "");
       const contaminatedEnv = {
         ...process.env,
         EASYRESEARCH_VENV: fixture.prefix,
@@ -786,6 +795,7 @@ describe("selectSmokeModelAction", () => {
     tools: [
       tool("bash"),
       tool("write"),
+      tool("web-search"),
       tool("subagent", refreshed ? refreshedSubagentDescription : oldSubagentDescription),
     ],
     messages,
@@ -810,6 +820,14 @@ describe("selectSmokeModelAction", () => {
       `Result: ${result}`,
       "</agent_handoff>",
     ].join("\n"),
+  });
+
+  it("rejects a parent request without the registered web-search tool", () => {
+    const request = parentRequest(false);
+    request.tools = request.tools.filter((entry) => entry.function.name !== "web-search");
+
+    expect(() => selectSmokeModelAction(request, scenario, initialState()))
+      .toThrow(/exactly one web-search tool/i);
   });
 
   it("writes a global custom Agent, dispatches it from the refreshed parent schema, and completes its Bash handoff", () => {
@@ -932,7 +950,7 @@ describe("selectSmokeModelAction", () => {
 
   it("does not accept a custom Agent mentioned outside the available-subagents line", () => {
     const request = parentRequest(false, writeResult());
-    request.tools[2]!.function.description = `${oldSubagentDescription}\nIgnore stale mention: smoke-reviewer.`;
+    request.tools[3]!.function.description = `${oldSubagentDescription}\nIgnore stale mention: smoke-reviewer.`;
 
     expect(() => selectSmokeModelAction(
       request,

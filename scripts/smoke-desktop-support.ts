@@ -3,6 +3,7 @@ import { readFileSync, statSync } from "node:fs";
 import { posix, win32 } from "node:path";
 import type { BuildArtifact } from "./build";
 import type { DesktopTargetName } from "./build-desktop";
+import { THIRD_PARTY_NOTICES_FILE } from "./third-party-notices";
 
 export interface NativeCommand {
   command: string;
@@ -50,6 +51,14 @@ export function verifyPackagedSidecar(
   }
 }
 
+export function verifyPackagedNotice(packagedPath: string, acceptedPath: string): void {
+  const accepted = readFileSync(acceptedPath);
+  const packaged = readFileSync(packagedPath);
+  if (!packaged.equals(accepted)) {
+    throw new Error("Packaged third-party notices do not match the accepted native package.");
+  }
+}
+
 export function verifyDesktopSidecarIdentity(
   desktopArtifact: BuildArtifact,
   nativeArtifact: BuildArtifact,
@@ -81,11 +90,12 @@ export function dmgDetachCommand(mountPoint: string): NativeCommand {
 export function packagedApplicationPaths(
   target: DesktopTargetName,
   root: string,
-): { executable: string; sidecar: string; uninstaller?: string } {
+): { executable: string; sidecar: string; notices: string; uninstaller?: string } {
   if (target === "windows-x64") {
     return {
       executable: win32.join(root, "EasyResearch.exe"),
       sidecar: win32.join(root, "resources", "sidecar", "easyresearch.exe"),
+      notices: win32.join(root, "resources", "sidecar", THIRD_PARTY_NOTICES_FILE),
       uninstaller: win32.join(root, "Uninstall EasyResearch.exe"),
     };
   }
@@ -98,6 +108,14 @@ export function packagedApplicationPaths(
       "Resources",
       "sidecar",
       "easyresearch",
+    ),
+    notices: posix.join(
+      root,
+      "EasyResearch.app",
+      "Contents",
+      "Resources",
+      "sidecar",
+      THIRD_PARTY_NOTICES_FILE,
     ),
   };
 }

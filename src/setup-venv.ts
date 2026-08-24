@@ -61,7 +61,6 @@ export interface SkillVenvPackage {
 export const SKILL_VENV_PACKAGES = [
   { distribution: "markitdown", imports: ["markitdown"] },
   { distribution: "arxiv", imports: ["arxiv"] },
-  { distribution: "ddgr", imports: ["ddgr"] },
 ] as const satisfies readonly SkillVenvPackage[];
 
 export function setupSkillVenv(deps: SetupDeps): SetupResult {
@@ -142,7 +141,7 @@ export function ensureSkillVenv(agentDir: string, options: EnsureVenvOptions = {
       ? `py -3 -m venv "${venvDir}"; & "${python}" -m pip install ${distributions.join(" ")}`
       : `python3 -m venv "${venvDir}" && "${python}" -m pip install ${distributions.join(" ")}`;
     log(
-      `Skill venv setup skipped: ${result.reason}. PDF conversion, arXiv SDK, and web-search (ddgr) features will fall back to system tools. Fix with: ${createCommand}`,
+      `Skill venv setup skipped: ${result.reason}. PDF conversion and arXiv SDK features will fall back to system tools. Fix with: ${createCommand}`,
     );
   }
   return result;

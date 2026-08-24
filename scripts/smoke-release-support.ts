@@ -77,7 +77,6 @@ export function writeVenvValidationScript(path: string): void {
 import pathlib
 import sys
 import arxiv
-import ddgr
 import markitdown
 
 expected = pathlib.Path(os.environ["EASYRESEARCH_VENV"]).resolve()
@@ -543,6 +542,10 @@ export function selectSmokeModelAction(
   };
 
   if (toolNames.has("write")) {
+    const webSearchTools = tools.filter((tool) => tool.function?.name === "web-search");
+    if (webSearchTools.length !== 1) {
+      throw new Error(`native smoke expected exactly one web-search tool, received ${webSearchTools.length}`);
+    }
     const description = subagentDescription();
     if (!state.agentWriteIssued) {
       if (descriptionListsAgent(description)) {

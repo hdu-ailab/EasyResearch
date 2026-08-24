@@ -211,8 +211,9 @@ For manual configuration:
 - The npm CLI supports Linux x64, Apple Silicon macOS, and Windows x64. Its
   selected platform executable needs neither Node nor Bun.
 - Windows runs natively through PowerShell and does not require WSL or Git Bash.
-- Python 3 on `PATH` enables PDF conversion, arXiv SDK features, and bundled Web
-  search. Startup degrades gracefully when Python is unavailable.
+- Python 3 on PATH enables PDF conversion and arXiv SDK features. Bundled Web
+  search does not depend on Python. Startup degrades gracefully when Python is
+  unavailable.
 
 The first run extracts bundled Agents and Skills and creates their Python
 environment. The CLI reports progress in the terminal; Desktop reports it in

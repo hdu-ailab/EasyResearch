@@ -32,6 +32,7 @@ import {
   SMOKE_SETUP_RUN_ID_ENV,
 } from "../src/runtime/first-run-setup-evidence";
 import { DESKTOP_SMOKE_USER_DATA_ENV } from "../src/desktop/contracts";
+import { THIRD_PARTY_NOTICES_FILE } from "./third-party-notices";
 import {
   combineDesktopSmokeFailures,
   dmgAttachCommand,
@@ -41,6 +42,7 @@ import {
   readDesktopSmokeEvents,
   reduceDesktopSmokeEvents,
   verifyDesktopSidecarIdentity,
+  verifyPackagedNotice,
   verifyPackagedSidecar,
   type NativeCommand,
 } from "./smoke-desktop-support";
@@ -151,6 +153,10 @@ try {
   const appPaths = installOrMountPackage();
   verifyPackagedSidecar(appPaths.sidecar, nativeArtifact, version);
   verifyDesktopSidecarIdentity(desktopManifest.sidecar, nativeArtifact);
+  verifyPackagedNotice(
+    appPaths.notices,
+    join(platformPackageDir(targetName), THIRD_PARTY_NOTICES_FILE),
+  );
 
   const systemPython = resolveSmokePython({ explicit: process.env.EASYRESEARCH_SMOKE_PYTHON });
   const env: NodeJS.ProcessEnv = {

@@ -31,13 +31,24 @@ describe("package manifests", () => {
     ));
   });
 
-  it("marks Linux as glibc and restricts platform package contents", () => {
+  it("ships notices only from platform packages that contain the binary", () => {
+    const platform = release.platformPackageManifest(TARGETS[0]!, "1.2.3");
+    const meta = release.mainPackageManifest("1.2.3");
+    expect(platform.files).toEqual([
+      "bin/easyresearch",
+      "README.md",
+      "LICENSE",
+      "THIRD_PARTY_NOTICES.txt",
+    ]);
+    expect(meta.files).toEqual(["launcher.mjs", "README.md", "LICENSE"]);
+  });
+
+  it("marks Linux as glibc", () => {
     const platformPackageManifest = (release as typeof release & {
       platformPackageManifest(target: (typeof TARGETS)[number], version: string): Record<string, any>;
     }).platformPackageManifest;
     const manifest = platformPackageManifest(TARGETS.find((target) => target.name === "linux-x64")!, "1.2.3");
     expect(manifest.libc).toEqual(["glibc"]);
-    expect(manifest.files).toEqual(["bin/easyresearch", "README.md", "LICENSE"]);
   });
 
   it("accepts npm pack JSON from both array and package-keyed npm versions", () => {
@@ -47,6 +58,14 @@ describe("package manifests", () => {
     const report = { files: [{ path: "package.json" }, { path: "README.md" }] };
     expect([...packedPaths(JSON.stringify([report]))]).toEqual(["package.json", "README.md"]);
     expect([...packedPaths(JSON.stringify({ easyresearch: report }))]).toEqual(["package.json", "README.md"]);
+  });
+
+  it("requires notices in a platform npm pack report", () => {
+    const paths = new Set(["package.json", "README.md", "LICENSE", "bin/easyresearch"]);
+    expect(() => release.assertPackedPaths(paths, true)).toThrow(/THIRD_PARTY_NOTICES/);
+    paths.add("THIRD_PARTY_NOTICES.txt");
+    expect(() => release.assertPackedPaths(paths, true)).not.toThrow();
+    expect(() => release.assertPackedPaths(new Set(["package.json", "README.md", "LICENSE"]), false)).not.toThrow();
   });
 });
 
@@ -94,6 +113,21 @@ describe("build artifact integrity", () => {
       sha256: "stale-hash",
       builtAt: new Date().toISOString(),
     }, TARGETS[0]!, "1.2.3", binary)).toThrow("SHA-256");
+  });
+
+  it("rejects missing or changed platform notice bytes before release assembly", () => {
+    const root = mkdtempSync(join(tmpdir(), "easyresearch-release-notices-"));
+    tempDirs.push(root);
+
+    expect(() => release.assertPlatformPackageNotices(root, "expected\n")).toThrow(
+      /Missing third-party notices/,
+    );
+    writeFileSync(join(root, "THIRD_PARTY_NOTICES.txt"), "changed\n", "utf8");
+    expect(() => release.assertPlatformPackageNotices(root, "expected\n")).toThrow(
+      /Changed third-party notices/,
+    );
+    writeFileSync(join(root, "THIRD_PARTY_NOTICES.txt"), "expected\n", "utf8");
+    expect(() => release.assertPlatformPackageNotices(root, "expected\n")).not.toThrow();
   });
 
   it("rejects native smoke output for another version", () => {
