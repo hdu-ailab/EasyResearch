@@ -41,6 +41,7 @@
     "build:release": "bun scripts/build.ts",
     "build:desktop": "bun scripts/build-desktop.ts",
     "smoke:desktop": "bun scripts/smoke-desktop.ts",
+    "preview:desktop:linux": "bun scripts/preview-desktop-linux.ts",
     "release": "bun scripts/release.ts",
     "dev": "bun run src/cli/index.ts",
     "dev:web": "vite --config src/webui/vite.config.ts"
