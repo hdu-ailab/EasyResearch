@@ -1,6 +1,7 @@
 import { elementScroll, useVirtualizer } from "@tanstack/react-virtual";
 import { AlertTriangle, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Pencil, Zap } from "lucide-react";
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import type { ApiUsageStatisticsDto } from "../../../web/contracts";
 import { isScrollKeyTarget, normalizeWheelDelta, scrollKey, scrollKeyOwner } from "../hooks/scrollGesture";
 import { useAutoScroll } from "../hooks/useAutoScroll";
 import { useExpandable } from "../hooks/useExpandable";
@@ -11,6 +12,7 @@ import { useI18n } from "../i18n/useI18n";
 import type { SessionMessageMeta } from "../message-tree";
 import { usePreferences } from "../preferences/PreferencesProvider";
 import type { SessionMessageView, SteerView, ToolView } from "../session-reducer";
+import { ApiUsageLine } from "./ApiUsageLine";
 import { MarkdownBlock } from "./MarkdownBlock";
 import { SubagentToolCard } from "./SubagentToolCard";
 
@@ -32,6 +34,8 @@ export interface ChatTranscriptProps {
   /** Steering messages queued for the active run (ADR-083); rendered below the
    * transcript as a fixed footer, newest last. */
   steers?: SteerView[];
+  showApiUsageDetails?: boolean;
+  apiUsage?: ApiUsageStatisticsDto;
 }
 
 export interface ChatTranscriptHandle {
@@ -93,7 +97,17 @@ function ReasoningBlock({
   );
 }
 
-function ToolRow({ tool, open, onToggle }: { tool: ToolView; open: boolean; onToggle: (open: boolean) => void }) {
+function ToolRow({
+  tool,
+  open,
+  onToggle,
+  showApiUsageDetails,
+}: {
+  tool: ToolView;
+  open: boolean;
+  onToggle: (open: boolean) => void;
+  showApiUsageDetails: boolean;
+}) {
   const { t } = useI18n();
   const { mounted, phase } = useExpandable(open);
   const statusClass = tool.done
@@ -132,6 +146,7 @@ function ToolRow({ tool, open, onToggle }: { tool: ToolView; open: boolean; onTo
         </span>
         {open ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}
       </button>
+      {showApiUsageDetails && tool.apiUsage ? <ApiUsageLine record={tool.apiUsage} /> : null}
       {mounted && (
         <div
           data-scrollable
@@ -239,6 +254,7 @@ function MessageRow({
   onDraftChange,
   onSubmitEdit,
   onSwitchBranch,
+  showApiUsageDetails,
 }: {
   message: SessionMessageView;
   open: boolean;
@@ -251,12 +267,20 @@ function MessageRow({
   onDraftChange: (text: string) => void;
   onSubmitEdit: (text: string) => void;
   onSwitchBranch?: (entryId: string, direction: -1 | 1) => void;
+  showApiUsageDetails: boolean;
 }) {
   const { t } = useI18n();
   const roleKey = ROLE_LABELS[message.role];
   const label = message.label ? agentDisplayName(t, message.label) : roleKey ? t(roleKey) : message.role;
   const isYou = message.role === "user" && message.label == null;
   const hasBody = Boolean(message.text) || message.error || message.streaming;
+  if (message.usageOnly && message.apiUsage) {
+    return (
+      <li className="flex flex-col items-start gap-1">
+        {showApiUsageDetails ? <ApiUsageLine record={message.apiUsage} /> : null}
+      </li>
+    );
+  }
   return (
     <li className={`group flex flex-col gap-1 ${isYou ? "items-end" : "items-start"}`}>
       <span className="text-[11px] font-medium uppercase tracking-wide text-v2-text-text-faint">{label}</span>
@@ -297,6 +321,7 @@ function MessageRow({
           {message.streaming && <span className="v2-caret" aria-hidden />}
         </span>
       ) : null}
+      {showApiUsageDetails && message.apiUsage ? <ApiUsageLine record={message.apiUsage} /> : null}
       {isYou && !message.streaming && !message.error && meta ? (
         <>
           <div className="mt-1 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
@@ -390,6 +415,8 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
     onEditMessage,
     onSwitchBranch,
     steers = [],
+    showApiUsageDetails = false,
+    apiUsage,
   },
   ref,
 ) {
@@ -700,12 +727,19 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
                           initialOpen={openByKey[key] ?? preferences.expandSubagentOutput}
                           onToggle={(next) => setOpenByKey((current) => ({ ...current, [key]: next }))}
                           onViewDetails={onViewDetails}
+                          subtreeUsage={
+                            entry.sessionId
+                              ? apiUsage?.sessions.find((session) => session.sessionId === entry.sessionId)?.subtree
+                              : undefined
+                          }
+                          showApiUsageDetails={showApiUsageDetails}
                         />
                       ) : (
                         <ToolRow
                           tool={entry}
                           open={openByKey[key] ?? preferences.autoExpandTools}
                           onToggle={(next) => setOpenByKey((current) => ({ ...current, [key]: next }))}
+                          showApiUsageDetails={showApiUsageDetails}
                         />
                       )
                     ) : (
@@ -728,6 +762,7 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
                           setEditingKey(null);
                         }}
                         onSwitchBranch={onSwitchBranch}
+                        showApiUsageDetails={showApiUsageDetails}
                       />
                     )}
                   </div>

@@ -3,6 +3,9 @@ import type {
   AgentConfigurationPatch,
   AgentDto,
   AgentResourceDto,
+  ApiUsageSettingsDto,
+  ApiUsageSettingsPatchDto,
+  ApiUsageStatisticsDto,
   AuthProviderInfoDto,
   ChildSessionSnapshotDto,
   CompactionRequestResultDto,
@@ -28,6 +31,8 @@ import {
   parseAgentResource,
   parseAgentResources,
   parseAgents,
+  parseApiUsageSettings,
+  parseApiUsageStatistics,
   parseAuthLoginResponse,
   parseAuthProviderList,
   parseChildSnapshot,
@@ -99,6 +104,14 @@ export function getCompactionSettings(): Promise<CompactionSettingsDto> {
 
 export function patchCompactionSettings(patch: CompactionSettingsPatchDto): Promise<CompactionSettingsDto> {
   return requestJson(routes.compactionSettings(), parseCompactionSettings, json("PATCH", patch));
+}
+
+export function getApiUsageSettings(): Promise<ApiUsageSettingsDto> {
+  return requestJson(routes.apiUsageSettings(), parseApiUsageSettings);
+}
+
+export function patchApiUsageSettings(patch: ApiUsageSettingsPatchDto): Promise<ApiUsageSettingsDto> {
+  return requestJson(routes.apiUsageSettings(), parseApiUsageSettings, json("PATCH", patch));
 }
 
 export function listAgentResources(): Promise<AgentResourceDto[]> {
@@ -187,6 +200,10 @@ export function openSession(path: string): Promise<ActiveSessionDto> {
 
 export function getSnapshot(id: string): Promise<SessionSnapshotDto> {
   return requestJson(routes.snapshot(id), parseSessionSnapshot);
+}
+
+export function getApiUsageStatistics(id: string): Promise<ApiUsageStatisticsDto> {
+  return requestJson(routes.statistics(id), parseApiUsageStatistics);
 }
 
 export function getChildSnapshot(parentId: string, childId: string): Promise<ChildSessionSnapshotDto> {

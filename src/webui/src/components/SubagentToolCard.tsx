@@ -1,9 +1,11 @@
 import { AlertTriangle, Check, ChevronDown, ChevronRight } from "lucide-react";
 import { useEffect, useState } from "react";
+import type { ApiUsageTotalsDto } from "../../../web/contracts";
 import { useExpandable } from "../hooks/useExpandable";
 import { agentDisplayName } from "../i18n/agents";
 import { useI18n } from "../i18n/useI18n";
 import type { ToolView } from "../session-reducer";
+import { ApiUsageSummaryLine } from "./ApiUsageLine";
 import { MarkdownBlock } from "./MarkdownBlock";
 
 const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)";
@@ -35,6 +37,8 @@ export function SubagentToolCard({
   open,
   onToggle,
   onViewDetails,
+  subtreeUsage,
+  showApiUsageDetails = false,
 }: {
   tool: ToolView;
   initialOpen: boolean;
@@ -43,6 +47,8 @@ export function SubagentToolCard({
   /** Called with the next expansion state when `open` is controlled. */
   onToggle?: (open: boolean) => void;
   onViewDetails?: (toolCallId: string, step?: number) => void;
+  subtreeUsage?: ApiUsageTotalsDto;
+  showApiUsageDetails?: boolean;
 }) {
   const { t } = useI18n();
   const [internalOpen, setInternalOpen] = useState(initialOpen);
@@ -147,6 +153,7 @@ export function SubagentToolCard({
               )}
             </div>
           ) : null}
+          {showApiUsageDetails && subtreeUsage ? <ApiUsageSummaryLine totals={subtreeUsage} /> : null}
           {canViewDetails && mappedLinks.length > 1 ? (
             <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
               {mappedLinks.map((link) => {

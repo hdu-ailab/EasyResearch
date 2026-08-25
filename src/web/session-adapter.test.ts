@@ -65,6 +65,7 @@ class FakeAgentSession implements InProcessAgentSession {
   wakeSystemPrompts: string[][] = [];
   skills = [{ name: "arxiv", description: "arXiv" }];
   contextUsage: { tokens: number | null; contextWindow: number; percent: number | null } | undefined;
+  entries: unknown[] = [];
 
   modelRuntime = {
     getModel: (provider: string, id: string) =>
@@ -90,6 +91,8 @@ class FakeAgentSession implements InProcessAgentSession {
   sessionManager = {
     getTree: () => [] as SessionTreeNode[],
     getLeafId: () => "leaf-1",
+    getEntries: () => this.entries,
+    getBranch: () => this.entries,
   };
 
   settingsManager = {
@@ -395,6 +398,7 @@ describe("PiSessionFactory", () => {
       { name: "name", description: "Rename the current session", source: "extension" },
       { name: "history", description: "Browse the current session tree", source: "extension" },
       { name: "compact", description: "Compact the current session context", source: "extension" },
+      { name: "statistics", description: "Show API usage statistics", source: "extension" },
       { name: "clear", description: "Clear", source: "extension" },
       { name: "review", description: "Review", source: "prompt" },
       { name: "skill:arxiv", description: "arXiv", source: "skill" },
@@ -888,6 +892,47 @@ describe("PiSessionFactory", () => {
     expect(adapter.getSteeringMessages()).toEqual(["visible user steer"]);
     expect(JSON.stringify({ events, messages: await adapter.getMessages(), steering: adapter.getSteeringMessages() }))
       .not.toContain("/private/child.jsonl");
+  });
+
+  it("projects stable root message ids and active-branch usage from persisted entries", async () => {
+    const session = new FakeAgentSession();
+    const message = {
+      role: "assistant" as const,
+      content: [{ type: "text" as const, text: "tracked reply" }],
+      api: "openai-completions" as const,
+      provider: "openai",
+      model: "test-model",
+      usage: {
+        input: 7,
+        output: 2,
+        cacheRead: 1,
+        cacheWrite: 0,
+        totalTokens: 10,
+        cost: { input: 0.1, output: 0.2, cacheRead: 0.01, cacheWrite: 0, total: 0.31 },
+      },
+      stopReason: "stop" as const,
+      timestamp: 42,
+    };
+    session.messages = [message];
+    session.entries = [{
+      type: "message",
+      id: "entry-assistant",
+      parentId: null,
+      timestamp: "2026-08-25T00:00:00.000Z",
+      message,
+    }];
+    const adapter = new PiSessionFactory(async () => managed(session)).create({ cwd: "/project" });
+    await adapter.start();
+
+    await expect(adapter.getMessages()).resolves.toEqual([{ ...message, id: "entry-assistant" }]);
+    expect(adapter.getInlineUsage()).toEqual([
+      expect.objectContaining({
+        id: "entry-assistant",
+        sessionId: "session-1",
+        source: "assistant",
+        anchor: { kind: "message", messageEntryId: "entry-assistant" },
+      }),
+    ]);
   });
 
   it("performs each public Stop as reusable cancellation and reserves terminal teardown for stop", async () => {
@@ -1430,6 +1475,7 @@ function liveConfiguration(agent: AgentConfig = researchAssistant()): LiveConfig
     generation: 1,
     error: null,
     compactionPolicy: { triggerPercent: 70, globalEnabled: true, globalKeepRecentTokens: 20_000 },
+    apiUsageSettings: { showApiUsageDetails: false },
     start: async () => {},
     synchronize: async () => {},
     isCurrent: (generation) => generation === 1,
@@ -1950,6 +1996,7 @@ describe("createPiAgentSessionCreator", () => {
       },
       error: null,
       compactionPolicy: { triggerPercent: 70, globalEnabled: true, globalKeepRecentTokens: 20_000 },
+      apiUsageSettings: { showApiUsageDetails: false },
       start: async () => {},
       synchronize: async () => {},
       notify: async () => {},
@@ -2042,6 +2089,7 @@ describe("createPiAgentSessionCreator", () => {
       },
       error: null,
       compactionPolicy: { triggerPercent: 70, globalEnabled: true, globalKeepRecentTokens: 20_000 },
+      apiUsageSettings: { showApiUsageDetails: false },
       start: async () => {},
       synchronize: async () => {},
       notify: async () => {},

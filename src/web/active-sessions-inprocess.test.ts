@@ -36,6 +36,9 @@ class DirectAdapter implements SessionAdapter {
   async getMessages(): Promise<AgentMessage[]> {
     return [];
   }
+  getInlineUsage() {
+    return [];
+  }
   getSteeringMessages(): readonly string[] {
     return [];
   }

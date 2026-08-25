@@ -1,5 +1,7 @@
 import type { AgentSessionEvent, MessageUpdateEvent } from "@earendil-works/pi-coding-agent";
 import type {
+  ApiUsageRecordDto,
+  ApiUsageStatisticsDto,
   CompactionPolicyDto,
   CompactionStateDto,
   ContextUsageDto,
@@ -51,12 +53,18 @@ export interface ToolView {
   sessionLinks?: SubagentSessionSummaryDto[];
   /** Position in the shared message/tool stream; tools interleave with messages. */
   order: number;
+  /** Persisted entry identities used only to anchor API usage records. */
+  callEntryId?: string;
+  resultEntryId?: string;
+  apiUsage?: ApiUsageRecordDto;
 }
 
 export interface SessionMessageView {
   key: string;
   /** Stable Pi identity used to deduplicate snapshot/live overlap when available. */
   identity?: string;
+  /** Persisted Pi entry id, attached after live `message_end` when necessary. */
+  entryId?: string;
   role: "user" | "assistant" | "tool" | "system";
   text: string;
   /** Reasoning/thinking content, rendered as a collapsible block. */
@@ -75,6 +83,8 @@ export interface SessionMessageView {
    * the transcript renders a compact card instead of the expanded content
    * (ADR-066). */
   skillInvocation?: { name: string; args?: string };
+  apiUsage?: ApiUsageRecordDto;
+  usageOnly?: boolean;
 }
 
 export interface SessionViewState {
@@ -106,6 +116,8 @@ export interface SessionViewState {
   contextUsage?: ContextUsageDto;
   compactionPolicy: CompactionPolicyDto;
   compactionState: CompactionStateDto;
+  inlineUsage?: ApiUsageRecordDto[];
+  apiUsage?: ApiUsageStatisticsDto;
 }
 
 export interface SteerView {
@@ -382,6 +394,8 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
     ...(snapshot.contextUsage !== undefined ? { contextUsage: snapshot.contextUsage } : {}),
     compactionPolicy: snapshot.compactionPolicy ?? { triggerPercent: 70, enabled: true },
     compactionState: snapshot.compactionState ?? "idle",
+    inlineUsage: [],
+    ...(snapshot.apiUsage === undefined ? {} : { apiUsage: snapshot.apiUsage }),
   };
   const next = () => state.nextOrder++;
   let cursorCandidate: SessionMessageView | undefined;
@@ -400,6 +414,7 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
         tool.running = false;
         tool.done = true;
         tool.error = Boolean(toolMessage.isError);
+        tool.resultEntryId = identityFor(message as UnknownMessage);
         if (tool.name === "subagent") {
           if (subagentText) tool.latestMessage = subagentText;
         } else if (output) {
@@ -415,6 +430,7 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
           running: false,
           done: true,
           error: Boolean(toolMessage.isError),
+          resultEntryId: identityFor(message as UnknownMessage),
           ...(toolName === "subagent" ? (subagentText ? { latestMessage: subagentText } : {}) : { output }),
           order: next(),
         });
@@ -433,6 +449,9 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
     const nextMessage: SessionMessageView = {
       key: keyFor(message, index),
       ...(identityFor(message) !== undefined ? { identity: identityFor(message) } : {}),
+      ...(typeof (message as UnknownMessage).id === "string"
+        ? { entryId: (message as UnknownMessage).id as string }
+        : {}),
       role,
       text,
       isThinking: false,
@@ -466,6 +485,7 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
           running: false,
           done: false,
           error: false,
+          callEntryId: identityFor(message as UnknownMessage),
           args: compactArgs(b.arguments),
           agentName: b.name === "subagent" ? agentNameOfToolCall(b.arguments) : undefined,
           skillName: b.name === "read" ? readSkillName(b.arguments) : undefined,
@@ -482,7 +502,145 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
     state.activeMessageKey = cursorCandidate.key;
     cursorCandidate.streaming = true;
   }
-  return applySubagentSummaries(state, snapshot.subagents ?? [], snapshot.session.id);
+  return applyInlineUsage(
+    applySubagentSummaries(state, snapshot.subagents ?? [], snapshot.session.id),
+    snapshot.inlineUsage ?? [],
+  );
+}
+
+function applyInlineUsage(state: SessionViewState, records: readonly ApiUsageRecordDto[]): SessionViewState {
+  const existingIds = new Set((state.inlineUsage ?? []).map((record) => record.id));
+  const additions = records.filter((record) => !existingIds.has(record.id));
+  if (additions.length === 0) return state;
+  let messages = state.messages.map((message) => ({ ...message }));
+  let tools = state.tools.map((tool) => ({ ...tool }));
+  let nextOrder = state.nextOrder;
+  for (const record of additions) {
+    const anchor = record.anchor;
+    if (anchor.kind === "message") {
+      const index = messages.findIndex(
+        (message) =>
+          message.entryId === anchor.messageEntryId ||
+          message.identity === anchor.messageEntryId ||
+          message.key === anchor.messageEntryId,
+      );
+      if (index >= 0) {
+        const message = messages[index];
+        if (message) messages[index] = { ...message, apiUsage: record };
+        continue;
+      }
+      const toolOrder = tools
+        .filter((tool) => tool.callEntryId === anchor.messageEntryId)
+        .reduce((minimum, tool) => Math.min(minimum, tool.order), Number.POSITIVE_INFINITY);
+      messages.push({
+        key: `usage:${record.id}`,
+        role: "assistant",
+        text: "",
+        streaming: false,
+        error: false,
+        usageOnly: true,
+        apiUsage: record,
+        order: Number.isFinite(toolOrder) ? toolOrder - 0.5 : nextOrder++,
+      });
+      continue;
+    }
+    if (anchor.kind === "tool") {
+      const index = tools.findIndex((tool) => (tool.toolCallId ?? tool.key) === anchor.toolCallId);
+      if (index >= 0) {
+        const tool = tools[index];
+        if (tool) tools[index] = { ...tool, apiUsage: record };
+      }
+      continue;
+    }
+    const anchorOrder =
+      anchor.afterEntryId === undefined
+        ? undefined
+        : (messages.find((message) => message.identity === anchor.afterEntryId || message.key === anchor.afterEntryId)
+            ?.order ??
+          tools.find((tool) => tool.resultEntryId === anchor.afterEntryId || tool.callEntryId === anchor.afterEntryId)
+            ?.order);
+    messages.push({
+      key: `usage:${record.id}`,
+      identity: record.id,
+      role: "system",
+      text: "",
+      streaming: false,
+      error: false,
+      usageOnly: true,
+      apiUsage: record,
+      order: anchorOrder === undefined ? nextOrder++ : anchorOrder + 0.5,
+    });
+  }
+  const ordered = [
+    ...messages.map((value) => ({ kind: "message" as const, value })),
+    ...tools.map((value) => ({ kind: "tool" as const, value })),
+  ]
+    .sort((left, right) => left.value.order - right.value.order)
+    .map((entry, order) => ({ ...entry, value: { ...entry.value, order } }));
+  messages = ordered.filter((entry) => entry.kind === "message").map((entry) => entry.value as SessionMessageView);
+  tools = ordered.filter((entry) => entry.kind === "tool").map((entry) => entry.value as ToolView);
+  return {
+    ...state,
+    messages,
+    tools,
+    nextOrder: ordered.length,
+    inlineUsage: [...(state.inlineUsage ?? []), ...additions],
+  };
+}
+
+export function replaceApiUsageStatistics(state: SessionViewState, apiUsage: ApiUsageStatisticsDto): SessionViewState {
+  return { ...state, apiUsage };
+}
+
+function attachPersistedEntryId(state: SessionViewState, value: unknown): SessionViewState {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return state;
+  const entry = value as { id?: unknown; type?: unknown; message?: unknown };
+  if (
+    entry.type !== "message" ||
+    typeof entry.id !== "string" ||
+    entry.message === null ||
+    typeof entry.message !== "object"
+  ) {
+    return state;
+  }
+  const message = entry.message as UnknownMessage & { toolCallId?: unknown };
+  const identity = identityFor(message);
+  let changed = false;
+  const messages = state.messages.map((candidate) => {
+    if (identity === undefined || candidate.identity !== identity) return candidate;
+    changed = true;
+    return { ...candidate, entryId: entry.id as string };
+  });
+  let tools = state.tools;
+  const content = message.content;
+  if (message.role === "assistant" && Array.isArray(content)) {
+    const toolCallIds = new Set(
+      content
+        .filter((block): block is { type: "toolCall"; id: string } =>
+          Boolean(
+            block &&
+              typeof block === "object" &&
+              (block as { type?: unknown }).type === "toolCall" &&
+              typeof (block as { id?: unknown }).id === "string",
+          ),
+        )
+        .map((block) => block.id),
+    );
+    if (toolCallIds.size > 0) {
+      tools = state.tools.map((tool) => {
+        if (!toolCallIds.has(tool.toolCallId ?? tool.key)) return tool;
+        changed = true;
+        return { ...tool, callEntryId: entry.id as string };
+      });
+    }
+  } else if (message.role === "toolResult" && typeof message.toolCallId === "string") {
+    tools = state.tools.map((tool) => {
+      if ((tool.toolCallId ?? tool.key) !== message.toolCallId) return tool;
+      changed = true;
+      return { ...tool, resultEntryId: entry.id as string };
+    });
+  }
+  return changed ? { ...state, messages, tools } : state;
 }
 
 export function applySubagentSummaries(
@@ -821,6 +979,12 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
   switch (event.type) {
     case "agent_start":
       return { ...state, isStreaming: true };
+    case "entry_appended": {
+      const appended = event as unknown as { entry?: unknown; apiUsageRecord?: ApiUsageRecordDto };
+      let next = attachPersistedEntryId(state, appended.entry);
+      if (appended.apiUsageRecord !== undefined) next = applyInlineUsage(next, [appended.apiUsageRecord]);
+      return next;
+    }
     case "message_start": {
       const message = event.message as UnknownMessage;
       if (isDirectBashExecution(message) || isToolResultMessage(message) || isAgentStatusMessage(message)) return state;

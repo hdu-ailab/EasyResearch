@@ -19,6 +19,7 @@ export const routes = {
   models: () => `${API_ROOT}/models`,
   configurationEvents: () => `${API_ROOT}/config/events`,
   compactionSettings: () => `${API_ROOT}/settings/compaction`,
+  apiUsageSettings: () => `${API_ROOT}/settings/api-usage`,
   sessionName: (id: string) => `${session(id)}/name`,
   directories: (path: string) => `${API_ROOT}/directories?${new URLSearchParams({ path }).toString()}`,
   createDirectory: () => `${API_ROOT}/directories`,
@@ -28,6 +29,7 @@ export const routes = {
   createSession: () => `${API_ROOT}/sessions`,
   openSession: () => `${API_ROOT}/sessions/open`,
   snapshot: (id: string) => `${session(id)}/snapshot`,
+  statistics: (id: string) => `${session(id)}/statistics`,
   childSnapshot: (parentId: string, childId: string) =>
     `${session(parentId)}/subagents/${encodeURIComponent(childId)}/snapshot`,
   messages: (id: string) => `${session(id)}/messages`,

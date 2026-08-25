@@ -5,7 +5,21 @@ import { readSubagentJournal } from "../subagent/job-journal";
 import { AGENT_STATUS_TYPE } from "../subagent/notifications";
 import type { RecoverySessionStore } from "../subagent/recovery";
 import { readSubagentSessionLinks } from "../subagent/session-links";
-import type { ChildSessionSnapshotDto, SubagentSessionSummaryDto } from "./contracts";
+import {
+  addApiUsageTotals,
+  applyApiUsageRecord,
+  emptyApiUsageTotals,
+  projectSessionUsage,
+  trackedApiUsageRecordIds,
+} from "./api-usage";
+import type {
+  ApiUsageSessionSummaryDto,
+  ApiUsageStatisticsDto,
+  ApiUsageRecordDto,
+  ApiUsageTotalsDto,
+  ChildSessionSnapshotDto,
+  SubagentSessionSummaryDto,
+} from "./contracts";
 
 interface ReadonlySubagentSession {
   getEntries(): unknown[];
@@ -13,7 +27,7 @@ interface ReadonlySubagentSession {
   getSessionFile(): string | undefined;
   getCwd(): string;
   getSessionName(): string | undefined;
-  getBranch(): Array<{ type: string; message?: AgentMessage }>;
+  getBranch(): Array<{ type: string; id?: string; message?: AgentMessage }>;
 }
 
 interface RecoverySessionManager extends ReadonlySubagentSession {
@@ -129,6 +143,11 @@ export interface SubagentSessionStore {
 export class SubagentSessionNotFoundError extends Error {}
 
 export class SubagentSessionService {
+  private readonly usageCache = new Map<string, {
+    statistics: ApiUsageStatisticsDto;
+    recordIds: Set<string>;
+  }>();
+
   constructor(private readonly store: SubagentSessionStore) {}
 
   async summaries(parentSessionId: string): Promise<SubagentSessionSummaryDto[]> {
@@ -149,15 +168,135 @@ export class SubagentSessionService {
     if (!paths || paths.size !== 1) throw notFound(childSessionId);
     const child = this.open([...paths][0]!, childSessionId, parent.cwd);
     const sessionName = child.getSessionName();
+    const branch = child.getBranch();
     return {
       session: {
         id: child.getSessionId(),
         cwd: child.getCwd(),
         ...(sessionName === undefined ? {} : { sessionName }),
       },
-      messages: branchMessages(child),
+      messages: branchMessagesFromEntries(branch),
+      inlineUsage: projectSessionUsage(childSessionId, child.getEntries(), branch).inlineUsage,
       subagents: folded.summaries.filter((summary) => summary.ownerSessionId === childSessionId),
     };
+  }
+
+  async statistics(parentSessionId: string): Promise<ApiUsageStatisticsDto> {
+    const cached = this.usageCache.get(parentSessionId);
+    if (cached) return cached.statistics;
+    let parent: Awaited<ReturnType<SubagentSessionService["parent"]>>;
+    try {
+      parent = await this.parent(parentSessionId);
+    } catch (error) {
+      if (error instanceof SubagentSessionNotFoundError) {
+        const statistics = emptyStatistics(parentSessionId);
+        this.usageCache.set(parentSessionId, { statistics, recordIds: new Set() });
+        return statistics;
+      }
+      throw error;
+    }
+    const folded = this.fold(parent);
+    const rootEntries = parent.manager.getEntries();
+    const recordIds = new Set(trackedApiUsageRecordIds(parent.id, rootEntries));
+    const rootProjection = projectSessionUsage(
+      parent.id,
+      rootEntries,
+      parent.manager.getBranch(),
+    );
+    const rootSession: ApiUsageSessionSummaryDto = {
+      sessionId: parent.id,
+      direct: rootProjection.direct,
+      subtree: copyTotals(rootProjection.direct),
+      models: rootProjection.models,
+    };
+    const sessions: ApiUsageSessionSummaryDto[] = [rootSession];
+    const bySessionId = new Map<string, ApiUsageSessionSummaryDto>([[parent.id, rootSession]]);
+    const summaryBySessionId = new Map<string, SubagentSessionSummaryDto>();
+    for (const summary of folded.summaries) {
+      if (!summaryBySessionId.has(summary.childSessionId)) summaryBySessionId.set(summary.childSessionId, summary);
+    }
+    const warnings: ApiUsageStatisticsDto["warnings"] = [];
+
+    for (const [childSessionId, summary] of summaryBySessionId) {
+      if (childSessionId === parent.id || bySessionId.has(childSessionId)) continue;
+      const paths = folded.pathsBySession.get(childSessionId);
+      if (!paths || paths.size !== 1) {
+        warnings.push(usageWarning(summary));
+        continue;
+      }
+      try {
+        const child = this.open([...paths][0]!, childSessionId, parent.cwd);
+        const childEntries = child.getEntries();
+        for (const recordId of trackedApiUsageRecordIds(childSessionId, childEntries)) recordIds.add(recordId);
+        const projection = projectSessionUsage(childSessionId, childEntries, child.getBranch());
+        const row: ApiUsageSessionSummaryDto = {
+          sessionId: childSessionId,
+          parentSessionId: summary.ownerSessionId,
+          agent: summary.agent,
+          ...(summary.agentId === undefined ? {} : { agentId: summary.agentId }),
+          direct: projection.direct,
+          subtree: copyTotals(projection.direct),
+          models: projection.models,
+        };
+        sessions.push(row);
+        bySessionId.set(childSessionId, row);
+      } catch {
+        warnings.push(usageWarning(summary));
+      }
+    }
+
+    const childrenByOwner = new Map<string, string[]>();
+    for (const session of sessions.slice(1)) {
+      const owner = session.parentSessionId;
+      if (!owner || !bySessionId.has(owner)) continue;
+      const children = childrenByOwner.get(owner) ?? [];
+      children.push(session.sessionId);
+      childrenByOwner.set(owner, children);
+    }
+    const resolved = new Set<string>();
+    const resolving = new Set<string>();
+    const resolveSubtree = (sessionId: string): ApiUsageTotalsDto => {
+      const row = bySessionId.get(sessionId);
+      if (!row || resolved.has(sessionId)) return row?.subtree ?? emptyApiUsageTotals();
+      if (resolving.has(sessionId)) return row.subtree;
+      resolving.add(sessionId);
+      const subtree = copyTotals(row.direct);
+      for (const childId of childrenByOwner.get(sessionId) ?? []) {
+        addApiUsageTotals(subtree, resolveSubtree(childId));
+      }
+      resolving.delete(sessionId);
+      resolved.add(sessionId);
+      row.subtree = subtree;
+      return subtree;
+    };
+    const total = copyTotals(resolveSubtree(parent.id));
+    const statistics = {
+      rootSessionId: parent.id,
+      total,
+      sessions,
+      partial: warnings.length > 0,
+      warnings,
+    };
+    this.usageCache.set(parentSessionId, { statistics, recordIds });
+    return statistics;
+  }
+
+  async trackUsage(parentSessionId: string, record: ApiUsageRecordDto): Promise<ApiUsageStatisticsDto> {
+    const cached = this.usageCache.get(parentSessionId) ?? {
+      statistics: await this.statistics(parentSessionId),
+      recordIds: this.usageCache.get(parentSessionId)?.recordIds ?? new Set<string>(),
+    };
+    const recordKey = `${record.sessionId}:${record.id}`;
+    if (cached.recordIds.has(recordKey)) return cached.statistics;
+    const next = applyApiUsageRecord(cached.statistics, record);
+    if (!next) {
+      this.usageCache.delete(parentSessionId);
+      return this.statistics(parentSessionId);
+    }
+    cached.recordIds.add(recordKey);
+    cached.statistics = next;
+    this.usageCache.set(parentSessionId, cached);
+    return next;
   }
 
   private async parent(parentSessionId: string): Promise<{
@@ -272,17 +411,54 @@ export class SubagentSessionService {
   }
 }
 
+function copyTotals(source: ApiUsageTotalsDto): ApiUsageTotalsDto {
+  const copy = emptyApiUsageTotals();
+  addApiUsageTotals(copy, source);
+  return copy;
+}
+
+function emptyStatistics(rootSessionId: string): ApiUsageStatisticsDto {
+  const direct = emptyApiUsageTotals();
+  return {
+    rootSessionId,
+    total: copyTotals(direct),
+    sessions: [{
+      sessionId: rootSessionId,
+      direct,
+      subtree: copyTotals(direct),
+      models: [],
+    }],
+    partial: false,
+    warnings: [],
+  };
+}
+
+function usageWarning(summary: SubagentSessionSummaryDto): ApiUsageStatisticsDto["warnings"][number] {
+  return {
+    sessionId: summary.childSessionId,
+    ...(summary.agentId === undefined ? {} : { agentId: summary.agentId }),
+    reason: "unreadable-descendant",
+  };
+}
+
 function branchMessages(session: ReadonlySubagentSession): AgentMessage[] {
   try {
-    return session.getBranch()
-      .filter((entry): entry is { type: "message"; message: AgentMessage } =>
-        entry.type === "message"
-        && isAgentMessage(entry.message)
-        && !isHiddenStatusMessage(entry.message))
-      .map((entry) => entry.message);
+    return branchMessagesFromEntries(session.getBranch());
   } catch {
     throw notFound(session.getSessionId());
   }
+}
+
+function branchMessagesFromEntries(entries: Array<{ type: string; id?: string; message?: AgentMessage }>): AgentMessage[] {
+  return entries
+    .filter((entry): entry is { type: "message"; id?: string; message: AgentMessage } =>
+      entry.type === "message"
+      && isAgentMessage(entry.message)
+      && !isHiddenStatusMessage(entry.message))
+    .map((entry) => ({
+      ...entry.message,
+      ...(typeof entry.id === "string" ? { id: entry.id } : {}),
+    }) as AgentMessage);
 }
 
 function isHiddenStatusMessage(message: unknown): boolean {

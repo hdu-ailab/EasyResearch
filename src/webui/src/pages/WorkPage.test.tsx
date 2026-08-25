@@ -39,6 +39,8 @@ vi.mock("../api", async (importOriginal) => {
     }),
     navigateSessionTree: vi.fn().mockResolvedValue(undefined),
     compactSession: vi.fn(),
+    getApiUsageSettings: vi.fn(),
+    getApiUsageStatistics: vi.fn(),
     renameSession: vi.fn(),
   };
 });
@@ -161,6 +163,7 @@ describe("WorkPage", () => {
       { name: "name", description: "Rename the current session", source: "extension" },
       { name: "history", description: "Browse the current session tree", source: "extension" },
       { name: "compact", description: "Compact the current session context", source: "extension" },
+      { name: "statistics", description: "Show API usage statistics", source: "extension" },
     ]);
     vi.mocked(api.getSessionTree).mockReset();
     vi.mocked(api.getSessionTree).mockResolvedValue({
@@ -173,6 +176,27 @@ describe("WorkPage", () => {
     vi.mocked(api.navigateSessionTree).mockResolvedValue({ cancelled: false, leafId: null });
     vi.mocked(api.compactSession).mockReset();
     vi.mocked(api.compactSession).mockResolvedValue({ state: "running" });
+    vi.mocked(api.getApiUsageSettings).mockReset().mockResolvedValue({ showApiUsageDetails: false });
+    vi.mocked(api.getApiUsageStatistics)
+      .mockReset()
+      .mockResolvedValue({
+        rootSessionId: "s1",
+        total: {
+          records: 0,
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          cacheWrite1h: 0,
+          reasoning: 0,
+          totalTokens: 0,
+          cacheHitRate: null,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        sessions: [],
+        partial: false,
+        warnings: [],
+      });
     vi.mocked(api.listAgents).mockResolvedValue([
       {
         name: "research-assistant",
@@ -309,6 +333,53 @@ describe("WorkPage", () => {
 
     expect(await screen.findByRole("dialog", { name: /rename session/i })).toBeVisible();
     expect(api.sendPrompt).not.toHaveBeenCalled();
+  });
+
+  it("opens /statistics without sending model-visible slash text", async () => {
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+
+    const input = screen.getByRole("textbox", { name: /message/i });
+    await user.type(input, "/statistics{Enter}");
+
+    expect(await screen.findByRole("dialog", { name: /api usage statistics/i })).toBeVisible();
+    expect(api.getApiUsageStatistics).toHaveBeenCalledWith("s1");
+    expect(api.sendPrompt).not.toHaveBeenCalled();
+  });
+
+  it("applies the daemon-owned API usage visibility setting to the Work transcript", async () => {
+    vi.mocked(api.getApiUsageSettings).mockResolvedValue({ showApiUsageDetails: true });
+    const usage = {
+      input: 5,
+      output: 2,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 7,
+      cacheHitRate: 0,
+      cost: { input: 0.1, output: 0.1, cacheRead: 0, cacheWrite: 0, total: 0.2 },
+    };
+    vi.mocked(api.getSnapshot).mockResolvedValue({
+      ...snapshotValue,
+      messages: [snapshotValue.messages[0], { ...snapshotValue.messages[1], id: "assistant-entry" }],
+      inlineUsage: [
+        {
+          id: "assistant-entry",
+          sessionId: "s1",
+          source: "assistant",
+          timestamp: "2026-08-25T00:00:00.000Z",
+          anchor: { kind: "message", messageEntryId: "assistant-entry" },
+          provider: "openai",
+          model: "test-model",
+          usage,
+        },
+      ],
+    } as never);
+
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+
+    expect(await screen.findByLabelText("API usage details")).toHaveTextContent("test-model");
+    expect(api.getApiUsageSettings).toHaveBeenCalled();
   });
 
   it("opens /history, navigates with the keyboard, and restores Pi editor text", async () => {
