@@ -155,6 +155,7 @@ export function WorkPage({
   const [panelWidthTouched, setPanelWidthTouched] = useState(false);
   const [available, setAvailable] = useState<number | undefined>(undefined);
   const [sizing, setSizing] = useState(false);
+  const [panelMotionReady, setPanelMotionReady] = useState(false);
   const panelOpen = panel !== null;
   const panelPhase = usePanelTransition(panelOpen);
   const panelInvisible = panelPhase === "closed";
@@ -182,6 +183,7 @@ export function WorkPage({
   const loadChildRef = useRef<(childId: string, refresh?: boolean) => Promise<void>>(async () => {});
   const resizing = useRef(false);
   const rowRef = useRef<HTMLDivElement>(null);
+  const previousPanel = useRef(panel);
 
   const handleWorkEvent = useCallback(
     (event: unknown) => {
@@ -342,6 +344,10 @@ export function WorkPage({
   }, []);
 
   useEffect(() => {
+    if (available !== undefined) setPanelMotionReady(true);
+  }, [available]);
+
+  useEffect(() => {
     let wasMobile = window.innerWidth < CONVERSATION_FIRST_BREAKPOINT;
     const onResize = () => {
       const mobile = window.innerWidth < CONVERSATION_FIRST_BREAKPOINT;
@@ -356,6 +362,10 @@ export function WorkPage({
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
+
+  useEffect(() => {
+    previousPanel.current = panel;
+  }, [panel]);
 
   // Keep temporary tabs synchronized across the supervised tree, then promote
   // retained invocations as soon as an exact child UUID is known.
@@ -462,6 +472,9 @@ export function WorkPage({
   const chatHidden = isMobile && mobileView !== "chat";
   const filesHidden = isMobile ? mobileView !== "files" : panel !== "files";
   const agentsHidden = isMobile ? mobileView !== "agents" : panel !== "agents";
+  const panelViewChanged = panel !== null && previousPanel.current !== null && panel !== previousPanel.current;
+  const animateFiles = !filesHidden && (isMobile || panelViewChanged);
+  const animateAgents = !agentsHidden && (isMobile || panelViewChanged);
 
   const loadChild = useCallback(
     (childId: string, refresh = false): Promise<void> => {
@@ -844,7 +857,7 @@ export function WorkPage({
           role="tabpanel"
           aria-labelledby="work-tab-chat"
           hidden={chatHidden}
-          className="v2-work-enter flex h-full min-w-0 flex-1 flex-col overflow-hidden rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]"
+          className="flex h-full min-w-0 flex-1 flex-col overflow-hidden rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]"
         >
           <AgentTabBar
             tabs={tabsState.tabs}
@@ -909,7 +922,7 @@ export function WorkPage({
         <section
           hidden={isMobile && mobileView === "chat"}
           className={`flex h-full min-w-0 w-full flex-col bg-v2-background-bg-base min-[820px]:relative min-[820px]:shrink-0 min-[820px]:w-(--panel-w) min-[820px]:rounded-[10px] min-[820px]:shadow-[var(--v2-elevation-raised)] ${
-            sizing
+            sizing || !panelMotionReady
               ? ""
               : "min-[820px]:transition-[width,opacity] min-[820px]:duration-v2-panel min-[820px]:ease-v2-panel motion-reduce:transition-none"
           } ${
@@ -937,7 +950,7 @@ export function WorkPage({
             role="tabpanel"
             aria-labelledby="work-tab-files"
             hidden={filesHidden}
-            className={`h-full min-h-0 overflow-hidden min-[820px]:rounded-[10px] ${!filesHidden ? "animate-v2-fade-in motion-reduce:animate-none" : ""}`}
+            className={`h-full min-h-0 overflow-hidden min-[820px]:rounded-[10px] ${animateFiles ? "animate-v2-fade-in motion-reduce:animate-none" : ""}`}
           >
             <FileBrowser
               root={cwd}
@@ -952,7 +965,7 @@ export function WorkPage({
             role="tabpanel"
             aria-labelledby="work-tab-agents"
             hidden={agentsHidden}
-            className={`h-full min-h-0 overflow-hidden min-[820px]:rounded-[10px] ${!agentsHidden ? "animate-v2-fade-in motion-reduce:animate-none" : ""}`}
+            className={`h-full min-h-0 overflow-hidden min-[820px]:rounded-[10px] ${animateAgents ? "animate-v2-fade-in motion-reduce:animate-none" : ""}`}
           >
             <AgentList
               cwd={cwd}

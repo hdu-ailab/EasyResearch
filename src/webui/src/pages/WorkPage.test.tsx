@@ -277,7 +277,7 @@ describe("WorkPage", () => {
     expect(onBack).toHaveBeenCalledOnce();
     const conversation = screen.getByRole("tabpanel", { name: /^chat$/i });
     expect(conversation.parentElement).toHaveClass("px-2", "pb-2", "pt-[4px]");
-    expect(conversation).toHaveClass("v2-work-enter");
+    expect(conversation).not.toHaveClass("v2-work-enter");
     expect(conversation.parentElement).not.toHaveClass("p-2");
   });
 
@@ -2359,6 +2359,7 @@ describe("WorkPage", () => {
   it("disables panel transitions while drag-resizing", async () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
+    panelObserver().__fire(1000);
     const handle = screen.getByRole("separator", { name: /resize panel/i });
     fireEvent.pointerDown(handle, { clientX: 880, clientY: 100, pointerId: 1 });
     const region = screen.getByRole("region", { name: /file browser/i });
@@ -2372,25 +2373,36 @@ describe("WorkPage", () => {
     await screen.findByText("starting research");
     const region = screen.getByRole("region", { name: /file browser/i });
     expect(region.className).not.toContain("overflow-hidden");
-    const wrapper = region.querySelector(".animate-v2-fade-in");
+    const wrapper = region.querySelector("#work-panel-files");
     expect(wrapper?.className).toContain("overflow-hidden");
     const handle = screen.getByRole("separator", { name: /resize panel/i });
     expect(region.contains(handle)).toBe(true);
     expect(handle.className).toContain("min-[820px]:block");
   });
 
-  it("fades the content wrapper when switching between panel views", async () => {
+  it("keeps entry static, arms panel transitions after layout, and fades later view switches", async () => {
     const user = userEvent.setup();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     const filesRegion = screen.getByRole("region", { name: /file browser/i });
-    const filesWrapper = filesRegion.querySelector(".animate-v2-fade-in");
+    const filesWrapper = filesRegion.querySelector("#work-panel-files");
     expect(filesWrapper).toBeTruthy();
+    expect(filesWrapper).not.toHaveClass("animate-v2-fade-in");
+    expect(filesRegion.className).not.toContain("transition-[width,opacity]");
+    panelObserver().__fire(1000);
+    await waitFor(() => expect(filesRegion.className).toContain("transition-[width,opacity]"));
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const agentsRegion = screen.getByRole("region", { name: /agent list/i });
     const agentsWrapper = agentsRegion.querySelector(".animate-v2-fade-in");
     expect(agentsWrapper).toBeTruthy();
     expect(agentsWrapper).not.toBe(filesWrapper);
+    const agentsToggle = screen.getByRole("button", { name: /agent list/i });
+    await user.click(agentsToggle);
+    expect(agentsRegion.className).toContain("transition-[width,opacity]");
+    expect(agentsRegion.className).toContain("min-[820px]:w-0");
+    await user.click(agentsToggle);
+    expect(agentsRegion.className).toContain("transition-[width,opacity]");
+    expect(agentsRegion.className).toContain("min-[820px]:opacity-100");
   });
 
   it("renders the full five-agent roster in the agents view", async () => {

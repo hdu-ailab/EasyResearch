@@ -15,8 +15,14 @@ describe("usePanelTransition", () => {
     expect(result.current).toBe("closed");
   });
 
-  it("flips to open after mount when open starts true", () => {
-    const { result } = renderHook(() => usePanelTransition(true));
+  it("starts open without an initial closed frame when open starts true", () => {
+    const phases: string[] = [];
+    const { result } = renderHook(() => {
+      const phase = usePanelTransition(true);
+      phases.push(phase);
+      return phase;
+    });
+    expect(phases[0]).toBe("open");
     expect(result.current).toBe("open");
   });
 

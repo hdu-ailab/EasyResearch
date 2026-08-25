@@ -5,7 +5,7 @@ export type PanelPhase = "open" | "closing" | "closed";
 export const PANEL_TRANSITION_MS = 200;
 
 export function usePanelTransition(open: boolean): PanelPhase {
-  const [phase, setPhase] = useState<PanelPhase>("closed");
+  const [phase, setPhase] = useState<PanelPhase>(() => (open ? "open" : "closed"));
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
