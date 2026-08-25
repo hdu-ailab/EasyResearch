@@ -166,6 +166,12 @@ body {
   animation-name: v2-transcript-row-enter;
 }
 
+[data-resize-snapshot="true"] {
+  width: var(--transcript-snapshot-w);
+  min-width: var(--transcript-snapshot-w);
+  max-width: var(--transcript-snapshot-w);
+}
+
 @keyframes v2-expand-down {
   from {
     opacity: 0;

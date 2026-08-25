@@ -37,6 +37,10 @@ export interface ChatTranscriptProps {
 export interface ChatTranscriptHandle {
   /** Re-pins the transcript to the latest message and resumes following. */
   scrollToLatest(): void;
+  /** Freezes message layout while the surrounding chat shell is resized. */
+  beginResizeSnapshot(): void;
+  /** Releases a resize snapshot so messages reflow at the final shell width. */
+  endResizeSnapshot(): void;
 }
 
 type PendingRow = { kind: "pending" };
@@ -524,6 +528,20 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
       scrollToLatest() {
         resumeScroll();
       },
+      beginResizeSnapshot() {
+        const content = contentRef.current;
+        if (!content) return;
+        const width = Math.round(content.getBoundingClientRect().width);
+        if (width <= 0) return;
+        content.style.setProperty("--transcript-snapshot-w", `${width}px`);
+        content.dataset.resizeSnapshot = "true";
+      },
+      endResizeSnapshot() {
+        const content = contentRef.current;
+        if (!content) return;
+        content.style.removeProperty("--transcript-snapshot-w");
+        delete content.dataset.resizeSnapshot;
+      },
     }),
     [resumeScroll],
   );
@@ -644,7 +662,7 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
           ref={bindScrollRef}
           data-scrollable
           tabIndex={0}
-          className="min-h-0 flex-1 overflow-y-auto"
+          className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto"
           aria-label={t("transcript.conversation")}
           onScroll={handleScroll}
           onWheel={handleWheel}

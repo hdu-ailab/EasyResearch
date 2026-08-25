@@ -181,7 +181,12 @@ export function WorkPage({
   const pendingSupervisorEvents = useRef(new Map<string, SubagentSupervisorEventDto>());
   const parentOwner = useRef({ id, generation: 1 });
   const loadChildRef = useRef<(childId: string, refresh?: boolean) => Promise<void>>(async () => {});
+  const activeResizeCleanup = useRef<(() => void) | null>(null);
   const resizing = useRef(false);
+  const appliedPanelWidth = useRef<number | null>(null);
+  const livePanelWidth = useRef<number | null>(null);
+  const panelRef = useRef<HTMLElement>(null);
+  const resizeSettleFrame = useRef<number | null>(null);
   const rowRef = useRef<HTMLDivElement>(null);
   const previousPanel = useRef(panel);
 
@@ -347,6 +352,14 @@ export function WorkPage({
     if (available !== undefined) setPanelMotionReady(true);
   }, [available]);
 
+  useEffect(
+    () => () => {
+      if (resizeSettleFrame.current !== null) cancelAnimationFrame(resizeSettleFrame.current);
+      activeResizeCleanup.current?.();
+    },
+    [],
+  );
+
   useEffect(() => {
     let wasMobile = window.innerWidth < CONVERSATION_FIRST_BREAKPOINT;
     const onResize = () => {
@@ -437,6 +450,8 @@ export function WorkPage({
       : panelWidthTouched
         ? Math.min(panelWidth, panelMax)
         : Math.min(defaultPanelWidth, panelMax);
+  const renderedPanelWidth =
+    sizing && appliedPanelWidth.current !== null ? appliedPanelWidth.current : clampedPanelWidth;
   const activeTemporaryTab = activeTab.startsWith("tool:")
     ? tabsState.tabs.find((tab) => tab.key === activeTab)
     : undefined;
@@ -663,30 +678,105 @@ export function WorkPage({
   const startResize = useCallback(
     (event: React.PointerEvent) => {
       event.preventDefault();
+      const handle = event.currentTarget;
+      const panelNode = panelRef.current;
+      if (!panelNode) return;
+      if (resizeSettleFrame.current !== null) {
+        cancelAnimationFrame(resizeSettleFrame.current);
+        resizeSettleFrame.current = null;
+      }
+      activeResizeCleanup.current?.();
       resizing.current = true;
-      setSizing(true);
       const startX = event.clientX;
       const startWidth = clampedPanelWidth;
+      transcriptRef.current?.beginResizeSnapshot();
+      appliedPanelWidth.current = startWidth;
+      livePanelWidth.current = startWidth;
+      setSizing(true);
       document.body.style.userSelect = "none";
       document.body.style.overflow = "hidden";
+      let frame: number | null = null;
+      let moved = false;
+      let released = false;
 
-      const stop = () => {
+      const applyWidth = () => {
+        frame = null;
+        const width = livePanelWidth.current;
+        if (width === null) return;
+        appliedPanelWidth.current = width;
+        panelNode.style.setProperty("--panel-w", `${width}px`);
+        handle.setAttribute("aria-valuenow", String(width));
+      };
+
+      const releaseInteraction = () => {
+        if (released) return false;
+        released = true;
+        if (frame !== null) {
+          cancelAnimationFrame(frame);
+          frame = null;
+        }
+        transcriptRef.current?.endResizeSnapshot();
         resizing.current = false;
-        setSizing(false);
         document.body.style.userSelect = "";
         document.body.style.overflow = "";
         document.removeEventListener("pointermove", move);
         document.removeEventListener("pointerup", stop);
+        document.removeEventListener("pointercancel", cancel);
+        activeResizeCleanup.current = null;
+        return true;
+      };
+
+      const settleSizing = () => {
+        resizeSettleFrame.current = requestAnimationFrame(() => {
+          resizeSettleFrame.current = requestAnimationFrame(() => {
+            resizeSettleFrame.current = null;
+            livePanelWidth.current = null;
+            appliedPanelWidth.current = null;
+            setSizing(false);
+          });
+        });
+      };
+
+      const stop = () => {
+        if (released) return;
+        if (frame !== null) {
+          cancelAnimationFrame(frame);
+          frame = null;
+        }
+        const width = livePanelWidth.current;
+        if (moved && width !== null) {
+          applyWidth();
+          setPanelWidth(width);
+          setPanelWidthTouched(true);
+        }
+        if (!releaseInteraction()) return;
+        settleSizing();
+      };
+
+      const cancel = () => {
+        if (!releaseInteraction()) return;
+        livePanelWidth.current = startWidth;
+        appliedPanelWidth.current = startWidth;
+        panelNode.style.setProperty("--panel-w", `${startWidth}px`);
+        handle.setAttribute("aria-valuenow", String(startWidth));
+        settleSizing();
       };
 
       const move = (moveEvent: PointerEvent) => {
-        const next = Math.min(panelMax, Math.max(panelMin, startWidth + startX - moveEvent.clientX));
-        setPanelWidth(Math.round(next));
-        setPanelWidthTouched(true);
+        const next = Math.round(Math.min(panelMax, Math.max(panelMin, startWidth + startX - moveEvent.clientX)));
+        livePanelWidth.current = next;
+        moved = true;
+        if (frame === null) frame = requestAnimationFrame(applyWidth);
       };
 
       document.addEventListener("pointermove", move);
       document.addEventListener("pointerup", stop);
+      document.addEventListener("pointercancel", cancel);
+      activeResizeCleanup.current = () => {
+        if (!releaseInteraction()) return;
+        livePanelWidth.current = null;
+        appliedPanelWidth.current = null;
+      };
     },
     [panelMax, panelMin, clampedPanelWidth],
   );
@@ -920,6 +1010,7 @@ export function WorkPage({
         </section>
 
         <section
+          ref={panelRef}
           hidden={isMobile && mobileView === "chat"}
           className={`flex h-full min-w-0 w-full flex-col bg-v2-background-bg-base min-[820px]:relative min-[820px]:shrink-0 min-[820px]:w-(--panel-w) min-[820px]:rounded-[10px] min-[820px]:shadow-[var(--v2-elevation-raised)] ${
             sizing || !panelMotionReady
@@ -928,7 +1019,7 @@ export function WorkPage({
           } ${
             panelPhase === "open" ? "min-[820px]:opacity-100" : "min-[820px]:w-0 min-[820px]:opacity-0"
           } ${!isMobile && panelInvisible ? "invisible" : ""} ${!isMobile && !panelInteractive ? "pointer-events-none" : ""}`}
-          style={{ "--panel-w": `${clampedPanelWidth}px` } as React.CSSProperties}
+          style={{ "--panel-w": `${renderedPanelWidth}px` } as React.CSSProperties}
           aria-label={
             (isMobile ? mobileView === "agents" : panel === "agents") ? t("work.agentList") : t("work.fileBrowser")
           }
@@ -939,11 +1030,11 @@ export function WorkPage({
             aria-label={t("work.resizePanel")}
             aria-valuemin={Math.round(panelMin)}
             aria-valuemax={Math.round(panelMax)}
-            aria-valuenow={Math.round(clampedPanelWidth)}
+            aria-valuenow={Math.round(renderedPanelWidth)}
             title={t("work.resizePanel")}
             onPointerDown={startResize}
             onKeyDown={resizeWithKeyboard}
-            className="absolute inset-y-0 left-[-0.5rem] z-30 hidden w-2 cursor-col-resize border-0 min-[820px]:block"
+            className="absolute inset-y-0 left-[-0.5rem] z-30 hidden h-auto w-2 cursor-col-resize border-0 min-[820px]:block"
           />
           <div
             id="work-panel-files"

@@ -235,6 +235,12 @@ describe("ChatTranscript", () => {
     expect(el.scrollTop).toBe(600);
   });
 
+  it("clips horizontal overflow while retaining the vertical transcript scroller", () => {
+    renderTranscript(<ChatTranscript messages={[msg({ key: "a" })]} tools={[]} />);
+
+    expect(scrollContainer()).toHaveClass("overflow-x-hidden", "overflow-y-auto");
+  });
+
   it("shows the jump-to-latest button only when scrolled far from the bottom", () => {
     renderTranscript(<ChatTranscript messages={[msg({ key: "a" }), msg({ key: "b" })]} tools={[]} />);
     const el = scrollContainer();

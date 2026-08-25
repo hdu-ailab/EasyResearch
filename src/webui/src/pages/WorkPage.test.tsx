@@ -2207,6 +2207,215 @@ describe("WorkPage", () => {
     expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*660px/);
   });
 
+  it("coalesces pointer moves into one direct width write per animation frame", async () => {
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+    panelObserver().__fire(1200);
+    const panel = screen.getByRole("region", { name: /file browser/i });
+    await waitFor(() => expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*600px/));
+    const handle = screen.getByRole("separator", { name: /resize panel/i });
+    const frames: FrameRequestCallback[] = [];
+    const requestFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    try {
+      fireEvent.pointerDown(handle, { clientX: 880, clientY: 100, pointerId: 1 });
+      fireEvent.pointerMove(document, { clientX: 840, clientY: 100, pointerId: 1 });
+      fireEvent.pointerMove(document, { clientX: 820, clientY: 100, pointerId: 1 });
+
+      expect(requestFrame).toHaveBeenCalledOnce();
+      expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*600px/);
+      act(() => frames[0]?.(performance.now()));
+      expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*660px/);
+      expect(handle).toHaveAttribute("aria-valuenow", "660");
+      fireEvent.pointerUp(document, { clientX: 820, clientY: 100, pointerId: 1 });
+      act(() => frames[1]?.(performance.now()));
+      act(() => frames[2]?.(performance.now()));
+    } finally {
+      requestFrame.mockRestore();
+    }
+  });
+
+  it("does not expose a pending drag width through unrelated React renders", async () => {
+    const view = render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+    panelObserver().__fire(1200);
+    const panel = screen.getByRole("region", { name: /file browser/i });
+    await waitFor(() => expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*600px/));
+    const handle = screen.getByRole("separator", { name: /resize panel/i });
+    const frames: FrameRequestCallback[] = [];
+    const requestFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    let dragging = false;
+    try {
+      fireEvent.pointerDown(handle, { clientX: 880, clientY: 100, pointerId: 1 });
+      dragging = true;
+      fireEvent.pointerMove(document, { clientX: 840, clientY: 100, pointerId: 1 });
+      act(() => frames[0]?.(performance.now()));
+      expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*640px/);
+
+      fireEvent.pointerMove(document, { clientX: 820, clientY: 100, pointerId: 1 });
+      view.rerender(
+        <WorkPage id="s1" cwd="/p" configurationGeneration={1} onBack={() => {}} onOpenSettings={() => {}} />,
+      );
+      expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*640px/);
+      act(() => frames[1]?.(performance.now()));
+      expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*660px/);
+
+      fireEvent.pointerUp(document, { clientX: 820, clientY: 100, pointerId: 1 });
+      dragging = false;
+      act(() => frames[2]?.(performance.now()));
+      act(() => frames[3]?.(performance.now()));
+    } finally {
+      if (dragging) fireEvent.pointerUp(document, { clientX: 820, clientY: 100, pointerId: 1 });
+      requestFrame.mockRestore();
+    }
+  });
+
+  it("keeps width transitions disabled until the frame after a rapid release", async () => {
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+    panelObserver().__fire(1200);
+    const panel = screen.getByRole("region", { name: /file browser/i });
+    await waitFor(() => expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*600px/));
+    const handle = screen.getByRole("separator", { name: /resize panel/i });
+    const frames: FrameRequestCallback[] = [];
+    const requestFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    const cancelFrame = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+    try {
+      fireEvent.pointerDown(handle, { clientX: 880, clientY: 100, pointerId: 1 });
+      fireEvent.pointerMove(document, { clientX: 820, clientY: 100, pointerId: 1 });
+      fireEvent.pointerUp(document, { clientX: 820, clientY: 100, pointerId: 1 });
+
+      expect(cancelFrame).toHaveBeenCalledWith(1);
+      expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*660px/);
+      expect(panel.className).not.toContain("transition-[width,opacity]");
+      expect(requestFrame).toHaveBeenCalledTimes(2);
+      act(() => frames[1]?.(performance.now()));
+      expect(panel.className).not.toContain("transition-[width,opacity]");
+      expect(requestFrame).toHaveBeenCalledTimes(3);
+      act(() => frames[2]?.(performance.now()));
+      expect(panel.className).toContain("transition-[width,opacity]");
+    } finally {
+      cancelFrame.mockRestore();
+      requestFrame.mockRestore();
+    }
+  });
+
+  it("releases drag globals and document listeners on pointer cancellation", async () => {
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+    panelObserver().__fire(1200);
+    const panel = screen.getByRole("region", { name: /file browser/i });
+    await waitFor(() => expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*600px/));
+    const handle = screen.getByRole("separator", { name: /resize panel/i });
+    const frames: FrameRequestCallback[] = [];
+    const requestFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    try {
+      fireEvent.pointerDown(handle, { clientX: 880, clientY: 100, pointerId: 1 });
+      expect(document.body.style.userSelect).toBe("none");
+      expect(document.body.style.overflow).toBe("hidden");
+      fireEvent.pointerMove(document, { clientX: 820, clientY: 100, pointerId: 1 });
+      act(() => frames[0]?.(performance.now()));
+      expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*660px/);
+
+      fireEvent.pointerCancel(document, { clientX: 880, clientY: 100, pointerId: 1 });
+      expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*600px/);
+      expect(handle).toHaveAttribute("aria-valuenow", "600");
+      expect(document.body.style.userSelect).toBe("");
+      expect(document.body.style.overflow).toBe("");
+      act(() => frames[1]?.(performance.now()));
+      act(() => frames[2]?.(performance.now()));
+      requestFrame.mockClear();
+      fireEvent.pointerMove(document, { clientX: 820, clientY: 100, pointerId: 1 });
+      expect(requestFrame).not.toHaveBeenCalled();
+    } finally {
+      requestFrame.mockRestore();
+    }
+  });
+
+  it("releases drag globals and document listeners when Work unmounts mid-drag", async () => {
+    const view = render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+    panelObserver().__fire(1200);
+    const handle = screen.getByRole("separator", { name: /resize panel/i });
+    const requestFrame = vi.spyOn(window, "requestAnimationFrame");
+    try {
+      fireEvent.pointerDown(handle, { clientX: 880, clientY: 100, pointerId: 1 });
+      expect(document.body.style.userSelect).toBe("none");
+      view.unmount();
+
+      expect(document.body.style.userSelect).toBe("");
+      expect(document.body.style.overflow).toBe("");
+      requestFrame.mockClear();
+      fireEvent.pointerMove(document, { clientX: 820, clientY: 100, pointerId: 1 });
+      expect(requestFrame).not.toHaveBeenCalled();
+    } finally {
+      requestFrame.mockRestore();
+    }
+  });
+
+  it("freezes only transcript message content while chat controls follow pointer dragging", async () => {
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+    panelObserver().__fire(1200);
+    const panel = screen.getByRole("region", { name: /file browser/i });
+    await waitFor(() => expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*600px/));
+    const chat = screen.getByRole("tabpanel", { name: /^chat$/i });
+    const transcriptContent = chat.querySelector<HTMLElement>(".relative.mx-auto.w-full");
+    expect(transcriptContent).toBeTruthy();
+    vi.spyOn(transcriptContent!, "getBoundingClientRect").mockReturnValue({
+      right: 568,
+      left: 0,
+      top: 0,
+      bottom: 600,
+      width: 568,
+      height: 600,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect);
+    const handle = screen.getByRole("separator", { name: /resize panel/i });
+    const frames: FrameRequestCallback[] = [];
+    const requestFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    let dragging = false;
+    try {
+      fireEvent.pointerDown(handle, { clientX: 880, clientY: 100, pointerId: 1 });
+      dragging = true;
+      expect(chat).not.toHaveClass("er-chat-resize-snapshot");
+      expect(chat.getAttribute("style") ?? "").not.toContain("--chat-snapshot-w");
+      expect(transcriptContent).toHaveAttribute("data-resize-snapshot", "true");
+      expect(transcriptContent?.getAttribute("style")).toMatch(/--transcript-snapshot-w:\s*568px/);
+
+      fireEvent.pointerMove(document, { clientX: 820, clientY: 100, pointerId: 1 });
+      act(() => frames[0]?.(performance.now()));
+      expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*660px/);
+      expect(transcriptContent?.getAttribute("style")).toMatch(/--transcript-snapshot-w:\s*568px/);
+
+      fireEvent.pointerUp(document, { clientX: 820, clientY: 100, pointerId: 1 });
+      dragging = false;
+      expect(transcriptContent).not.toHaveAttribute("data-resize-snapshot");
+      expect(transcriptContent?.getAttribute("style")).not.toContain("--transcript-snapshot-w");
+      act(() => frames[1]?.(performance.now()));
+      act(() => frames[2]?.(performance.now()));
+    } finally {
+      if (dragging) fireEvent.pointerUp(document, { clientX: 820, clientY: 100, pointerId: 1 });
+      requestFrame.mockRestore();
+    }
+  });
+
   it("exposes the panel divider as a keyboard-adjustable separator", async () => {
     const user = userEvent.setup();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
@@ -2225,6 +2434,20 @@ describe("WorkPage", () => {
     expect(value()).toBe(Number(handle.getAttribute("aria-valuemin")));
     await user.keyboard("{End}");
     expect(value()).toBe(Number(handle.getAttribute("aria-valuemax")));
+  });
+
+  it("does not let the panel divider collapse under the hr preflight height", async () => {
+    const style = document.createElement("style");
+    style.textContent = "hr { height: 0 } .h-auto { height: auto }";
+    document.head.append(style);
+    try {
+      render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+      const handle = await screen.findByRole("separator", { name: /resize panel/i });
+
+      expect(getComputedStyle(handle).height).not.toBe("0px");
+    } finally {
+      style.remove();
+    }
   });
 
   it("remembers the dragged width for the session after the first drag", async () => {
@@ -2365,7 +2588,7 @@ describe("WorkPage", () => {
     const region = screen.getByRole("region", { name: /file browser/i });
     expect(region.className).not.toContain("transition-");
     fireEvent.pointerUp(document, { clientX: 880, clientY: 100, pointerId: 1 });
-    expect(region.className).toContain("transition-[width,opacity]");
+    await waitFor(() => expect(region.className).toContain("transition-[width,opacity]"));
   });
 
   it("keeps the resize handle reachable while clipping panel content internally", async () => {
