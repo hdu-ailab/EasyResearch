@@ -399,7 +399,8 @@ describe("WorkPage", () => {
     expect(capacity).toHaveAttribute("aria-valuenow", "91");
     expect(capacity).toHaveAttribute("aria-valuetext", expect.stringMatching(/91k \/ 100k.*91%.*75%.*queued/i));
     expect(capacity.closest("[data-context-severity]")).toBeNull();
-    expect(screen.getByText("91%")).toBeVisible();
+    expect(screen.queryByText("91%")).toBeNull();
+    expect(screen.getByText("91k / 100k")).toBeInTheDocument();
     expect(capacity.closest("[data-agent-tab-trailing]")).toBeTruthy();
   });
 

@@ -7,12 +7,10 @@ export interface ContextCapacityProps {
   compactionPolicy: CompactionPolicyDto;
 }
 
-const SIZE = 36;
+const SIZE = 20;
 const CENTER = SIZE / 2;
-const TRACK_RADIUS = 15;
-const TICK_OUTER_RADIUS = 12.8;
-const TICK_INNER_RADIUS = 10;
-const CIRCUMFERENCE = 2 * Math.PI * TRACK_RADIUS;
+const TRACK_RADIUS = 8;
+const STROKE_WIDTH = 2;
 
 export function ContextCapacity({ usage, compactionState, compactionPolicy }: ContextCapacityProps) {
   const { t } = useI18n();
@@ -40,9 +38,8 @@ export function ContextCapacity({ usage, compactionState, compactionPolicy }: Co
   const statusSummary =
     compactionState === "queued" ? t("context.queued") : compactionState === "running" ? t("context.compacting") : null;
   const valueText = [usageSummary, policySummary, statusSummary].filter(Boolean).join(". ");
-  const indeterminate = compactionState === "running" || roundedPercent === null;
+  const indeterminate = compactionState === "running";
   const arcPercent = indeterminate ? 24 : (clampedPercent ?? 0);
-  const thresholdTick = compactionPolicy.enabled ? tickCoordinates(compactionPolicy.triggerPercent) : null;
 
   return (
     <div
@@ -56,16 +53,23 @@ export function ContextCapacity({ usage, compactionState, compactionPolicy }: Co
       title={valueText}
       className="flex items-center gap-2 text-v2-text-text-faint"
     >
-      <div className="relative size-9 shrink-0">
-        <svg viewBox={`0 0 ${SIZE} ${SIZE}`} className="size-9 overflow-visible" aria-hidden focusable="false">
+      <div className="size-5 shrink-0">
+        <svg
+          data-testid="context-capacity-ring"
+          viewBox={`0 0 ${SIZE} ${SIZE}`}
+          className="size-5"
+          aria-hidden
+          focusable="false"
+        >
           <title>{t("context.capacity")}</title>
           <circle
+            data-context-track
             cx={CENTER}
             cy={CENTER}
             r={TRACK_RADIUS}
             fill="none"
-            strokeWidth="2.5"
-            className="stroke-v2-grey-200"
+            strokeWidth={STROKE_WIDTH}
+            className="stroke-v2-grey-300"
           />
           <g className={indeterminate ? "origin-center animate-spin motion-reduce:animate-none" : undefined}>
             <circle
@@ -74,29 +78,15 @@ export function ContextCapacity({ usage, compactionState, compactionPolicy }: Co
               cy={CENTER}
               r={TRACK_RADIUS}
               fill="none"
-              strokeWidth="2.5"
-              strokeLinecap="round"
-              strokeDasharray={`${(CIRCUMFERENCE * arcPercent) / 100} ${CIRCUMFERENCE}`}
+              strokeWidth={STROKE_WIDTH}
+              strokeLinecap="butt"
+              pathLength={100}
+              strokeDasharray={`${arcPercent} 100`}
               transform={`rotate(-90 ${CENTER} ${CENTER})`}
-              className="origin-center stroke-v2-blue-600 transition-[stroke-dasharray] duration-200 ease-v2-panel motion-reduce:transition-none"
+              className="origin-center stroke-v2-blue-300 transition-[stroke-dasharray] duration-200 ease-v2-panel motion-reduce:transition-none"
             />
           </g>
-          {thresholdTick ? (
-            <line
-              data-testid="context-threshold-tick"
-              x1={thresholdTick.x1}
-              y1={thresholdTick.y1}
-              x2={thresholdTick.x2}
-              y2={thresholdTick.y2}
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              className="stroke-v2-text-text-muted"
-            />
-          ) : null}
         </svg>
-        <span className="absolute inset-0 flex items-center justify-center text-[8px] font-semibold tabular-nums text-v2-text-text-base">
-          {roundedPercent === null ? "—" : `${roundedPercent}%`}
-        </span>
       </div>
       {statusSummary ? (
         <span
@@ -115,18 +105,6 @@ export function ContextCapacity({ usage, compactionState, compactionPolicy }: Co
       ) : null}
     </div>
   );
-}
-
-function tickCoordinates(percent: number) {
-  const angle = (percent / 100) * Math.PI * 2 - Math.PI / 2;
-  const cos = Math.cos(angle);
-  const sin = Math.sin(angle);
-  return {
-    x1: CENTER + cos * TICK_OUTER_RADIUS,
-    y1: CENTER + sin * TICK_OUTER_RADIUS,
-    x2: CENTER + cos * TICK_INNER_RADIUS,
-    y2: CENTER + sin * TICK_INNER_RADIUS,
-  };
 }
 
 function formatTokens(tokens: number): string {

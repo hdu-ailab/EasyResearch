@@ -18,38 +18,55 @@ describe("ContextCapacity", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("preserves unknown usage during compaction and describes the active threshold", () => {
-    render(<ContextCapacity usage={usage(null, null)} compactionState="running" compactionPolicy={policy()} />);
+  it("leaves unknown usage as a grey ring without drawing a percentage", () => {
+    render(<ContextCapacity usage={usage(null, null)} compactionState="idle" compactionPolicy={policy()} />);
 
     const progress = screen.getByRole("progressbar", { name: /context capacity/i });
     expect(progress).not.toHaveAttribute("aria-valuenow");
-    expect(progress).toHaveAttribute("aria-valuetext", expect.stringMatching(/unknown.*70%.*compacting/i));
-    expect(screen.getByText("—")).toBeVisible();
+    expect(progress).toHaveAttribute("aria-valuetext", expect.stringMatching(/unknown.*70%/i));
+    expect(progress.querySelector("[data-progress-arc]")).toHaveAttribute("stroke-dasharray", "0 100");
+    expect(screen.queryByText("—")).toBeNull();
   });
 
-  it("uses one neutral arc and exposes actual usage above the clamped ring maximum", () => {
+  it("uses a 20px clockwise light-blue arc over the matching grey track", () => {
+    render(<ContextCapacity usage={usage(25, 25_000)} compactionState="idle" compactionPolicy={policy()} />);
+
+    const progress = screen.getByRole("progressbar");
+    const svg = screen.getByTestId("context-capacity-ring");
+    const track = progress.querySelector("[data-context-track]");
+    const arc = progress.querySelector("[data-progress-arc]");
+    expect(svg).toHaveClass("size-5");
+    expect(svg).not.toHaveClass("overflow-visible");
+    expect(svg).toHaveAttribute("viewBox", "0 0 20 20");
+    expect(track).toHaveClass("stroke-v2-grey-300");
+    expect(arc).toHaveClass("stroke-v2-blue-300");
+    expect(arc).toHaveAttribute("pathLength", "100");
+    expect(arc).toHaveAttribute("stroke-dasharray", "25 100");
+    expect(arc).toHaveAttribute("transform", "rotate(-90 10 10)");
+    for (const attribute of ["cx", "cy", "r", "stroke-width"]) {
+      expect(arc?.getAttribute(attribute)).toBe(track?.getAttribute(attribute));
+    }
+    expect(screen.queryByText("25%")).toBeNull();
+    expect(screen.getByText("25k / 100k")).toBeInTheDocument();
+  });
+
+  it("exposes actual usage above the clamped ring maximum without visible percentage text", () => {
     render(<ContextCapacity usage={usage(112, 112_000)} compactionState="idle" compactionPolicy={policy()} />);
 
     const progress = screen.getByRole("progressbar");
     expect(progress).toHaveAttribute("aria-valuenow", "100");
     expect(progress).toHaveAttribute("aria-valuetext", expect.stringMatching(/112k \/ 100k.*112%.*70%/i));
     expect(progress).not.toHaveAttribute("data-context-severity");
-    expect(screen.getByText("112%")).toBeVisible();
-    expect(progress.querySelector("[data-progress-arc]")).toHaveClass("stroke-v2-blue-600");
+    expect(screen.queryByText("112%")).toBeNull();
+    expect(progress.querySelector("[data-progress-arc]")).toHaveAttribute("stroke-dasharray", "100 100");
   });
 
-  it("places the threshold tick radially inside the ring", () => {
-    render(<ContextCapacity usage={usage(20)} compactionState="idle" compactionPolicy={policy(25)} />);
+  it("never draws an inner threshold mark for enabled or disabled policy", () => {
+    const view = render(<ContextCapacity usage={usage(20)} compactionState="idle" compactionPolicy={policy(25)} />);
 
-    const tick = screen.getByTestId("context-threshold-tick");
-    expect(Number(tick.getAttribute("y1"))).toBeCloseTo(Number(tick.getAttribute("y2")), 5);
-    expect(Number(tick.getAttribute("x1"))).toBeGreaterThan(Number(tick.getAttribute("x2")));
-  });
-
-  it("omits the threshold tick when native automatic compaction is disabled", () => {
-    render(<ContextCapacity usage={usage(20)} compactionState="idle" compactionPolicy={policy(70, false)} />);
-
-    expect(screen.queryByTestId("context-threshold-tick")).toBeNull();
+    expect(screen.getByTestId("context-capacity-ring").querySelector("line")).toBeNull();
+    view.rerender(<ContextCapacity usage={usage(20)} compactionState="idle" compactionPolicy={policy(70, false)} />);
+    expect(screen.getByTestId("context-capacity-ring").querySelector("line")).toBeNull();
     expect(screen.getByRole("progressbar")).toHaveAttribute(
       "aria-valuetext",
       expect.stringMatching(/automatic compaction disabled/i),
