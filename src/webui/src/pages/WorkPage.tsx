@@ -8,9 +8,17 @@ import type {
   SubagentSupervisorEventDto,
 } from "../../../web/contracts";
 import { RESEARCH_ASSISTANT_AGENT } from "../agent-identity";
-import { compactSession, getChildSnapshot, getSessionCommands, getSessionTree, renameSession } from "../api";
+import {
+  compactSession,
+  getApiUsageSettings,
+  getChildSnapshot,
+  getSessionCommands,
+  getSessionTree,
+  renameSession,
+} from "../api";
 import { AgentList, type AgentStatus } from "../components/AgentList";
 import { AgentTabBar } from "../components/AgentTabBar";
+import { ApiUsageStatisticsDialog } from "../components/ApiUsageStatisticsDialog";
 import { ChatComposer, type ChatComposerHandle } from "../components/ChatComposer";
 import { ChatTranscript, type ChatTranscriptHandle } from "../components/ChatTranscript";
 import { ContextCapacity } from "../components/ContextCapacity";
@@ -168,6 +176,8 @@ export function WorkPage({
   const [tree, setTree] = useState<SessionTreeDto | null>(null);
   const [renameInitialName, setRenameInitialName] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [statisticsOpen, setStatisticsOpen] = useState(false);
+  const [showApiUsageDetails, setShowApiUsageDetails] = useState(false);
   const [historyInitialQuery, setHistoryInitialQuery] = useState("");
   const [commandError, setCommandError] = useState<string | null>(null);
   const transcriptRef = useRef<ChatTranscriptHandle>(null);
@@ -313,6 +323,19 @@ export function WorkPage({
     childRevisions.current.clear();
     pendingSupervisorEvents.current.clear();
   }, [sessionId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void configurationGeneration;
+    getApiUsageSettings()
+      .then((settings) => {
+        if (!cancelled) setShowApiUsageDetails(settings.showApiUsageDetails);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [configurationGeneration]);
 
   useEffect(() => {
     let cancelled = false;
@@ -516,6 +539,7 @@ export function WorkPage({
             },
             messages: snapshot.messages,
             subagents: snapshot.subagents,
+            inlineUsage: snapshot.inlineUsage,
           });
           for (const [key, event] of pendingSupervisorEvents.current) {
             if (event.ownerSessionId !== childId) continue;
@@ -828,6 +852,10 @@ export function WorkPage({
           });
         return;
       }
+      if (command.name === "statistics") {
+        setStatisticsOpen(true);
+        return;
+      }
       void send(args ? `/${command.name} ${args}` : `/${command.name}`);
     },
     [connection.setView, refreshTree, send, sessionId, sessionView.sessionName],
@@ -992,6 +1020,8 @@ export function WorkPage({
                 ? `${sessionId}:root`
                 : `${sessionId}:${activeChildId ?? activeTab}`
             }
+            showApiUsageDetails={showApiUsageDetails}
+            apiUsage={sessionView.apiUsage}
           />
           <footer className="shrink-0 p-3">
             {activeTab !== RESEARCH_ASSISTANT_AGENT || sessionView.subagentName ? (
@@ -1091,6 +1121,13 @@ export function WorkPage({
             void refreshTree();
             return result;
           }}
+        />
+      ) : null}
+      {statisticsOpen ? (
+        <ApiUsageStatisticsDialog
+          sessionId={sessionId}
+          liveStatistics={sessionView.apiUsage}
+          onClose={() => setStatisticsOpen(false)}
         />
       ) : null}
     </div>

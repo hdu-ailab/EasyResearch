@@ -29,7 +29,8 @@ import type { AgentConfig } from "../subagent/agents";
 import type { CoordinatorSessionManager, SubagentCoordinator } from "../subagent/coordinator";
 import { AGENT_STATUS_TYPE } from "../subagent/notifications";
 import type { SubagentSupervisor, SupervisableAgentSession } from "../subagent/supervisor";
-import type { CompactionPolicyDto, ContextUsageDto } from "./contracts";
+import type { ApiUsageRecordDto, CompactionPolicyDto, ContextUsageDto } from "./contracts";
+import { attachMessageEntryIds, projectSessionUsage } from "./api-usage";
 import {
   ManualCompactionController,
   type ManualCompactionAcceptedState,
@@ -43,6 +44,7 @@ const WEB_BUILTIN_COMMANDS: readonly WebSlashCommand[] = [
   { name: "name", description: "Rename the current session", source: "extension" },
   { name: "history", description: "Browse the current session tree", source: "extension" },
   { name: "compact", description: "Compact the current session context", source: "extension" },
+  { name: "statistics", description: "Show API usage statistics", source: "extension" },
 ];
 
 export interface StartSessionOptions {
@@ -124,6 +126,8 @@ export interface InProcessAgentSession extends RuntimeSteeringSession {
   readonly sessionManager: {
     getTree(): SessionTreeNode[];
     getLeafId(): string | null;
+    getEntries(): unknown[];
+    getBranch(): unknown[];
   };
   getSessionStats(): { contextUsage?: ContextUsageDto };
   subscribe(listener: (event: unknown) => void): () => void;
@@ -429,6 +433,7 @@ export interface SessionAdapter {
   setThinkingLevel(level: string): Promise<void>;
   getState(): Promise<SessionState>;
   getMessages(): Promise<AgentMessage[]>;
+  getInlineUsage(): ApiUsageRecordDto[];
   getCommands(): Promise<WebSlashCommand[]>;
   getTree(): Promise<{
     tree: SessionTreeNode[];
@@ -916,7 +921,20 @@ class DirectSessionAdapter implements SessionAdapter {
   }
 
   async getMessages(): Promise<AgentMessage[]> {
-    return this.requiredSession().messages.filter((message) => !isHiddenStatusMessage(message));
+    const session = this.requiredSession();
+    return attachMessageEntryIds(
+      session.messages.filter((message) => !isHiddenStatusMessage(message)),
+      session.sessionManager.getBranch(),
+    );
+  }
+
+  getInlineUsage(): ApiUsageRecordDto[] {
+    const session = this.requiredSession();
+    return projectSessionUsage(
+      session.sessionId,
+      session.sessionManager.getEntries(),
+      session.sessionManager.getBranch(),
+    ).inlineUsage;
   }
 
   async getCommands(): Promise<WebSlashCommand[]> {

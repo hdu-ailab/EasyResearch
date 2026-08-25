@@ -5,6 +5,14 @@ import type {
   ActiveSessionDto,
   AgentDto,
   AgentResourceDto,
+  ApiUsageChangedEventDto,
+  ApiUsageDto,
+  ApiUsageModelSummaryDto,
+  ApiUsageRecordDto,
+  ApiUsageSessionSummaryDto,
+  ApiUsageSettingsDto,
+  ApiUsageStatisticsDto,
+  ApiUsageTotalsDto,
   AuthFlowEventDto,
   AuthProviderInfoDto,
   ChildSessionSnapshotDto,
@@ -159,6 +167,157 @@ export function parseCompactionRequestResult(value: unknown): CompactionRequestR
   const state = parseCompactionState(source.state);
   if (state === "idle") throw new Error("Invalid API response: accepted compaction state cannot be idle");
   return { state };
+}
+
+export function parseApiUsageSettings(value: unknown): ApiUsageSettingsDto {
+  const source = record(value, "API usage settings");
+  return { showApiUsageDetails: requiredBoolean(source, "showApiUsageDetails") };
+}
+
+function parseApiUsage(value: unknown): ApiUsageDto {
+  const source = record(value, "API usage");
+  const cost = record(source.cost, "API usage cost");
+  const cacheWrite1h = optionalNumber(source, "cacheWrite1h");
+  const reasoning = optionalNumber(source, "reasoning");
+  return {
+    input: requiredNumber(source, "input"),
+    output: requiredNumber(source, "output"),
+    cacheRead: requiredNumber(source, "cacheRead"),
+    cacheWrite: requiredNumber(source, "cacheWrite"),
+    ...(cacheWrite1h === undefined ? {} : { cacheWrite1h }),
+    ...(reasoning === undefined ? {} : { reasoning }),
+    totalTokens: requiredNumber(source, "totalTokens"),
+    cacheHitRate: nullableNumber(source, "cacheHitRate"),
+    cost: {
+      input: requiredNumber(cost, "input"),
+      output: requiredNumber(cost, "output"),
+      cacheRead: requiredNumber(cost, "cacheRead"),
+      cacheWrite: requiredNumber(cost, "cacheWrite"),
+      total: requiredNumber(cost, "total"),
+    },
+  };
+}
+
+function parseApiUsageTotals(value: unknown): ApiUsageTotalsDto {
+  const source = record(value, "API usage totals");
+  const cost = record(source.cost, "API usage total cost");
+  return {
+    records: requiredNumber(source, "records"),
+    input: requiredNumber(source, "input"),
+    output: requiredNumber(source, "output"),
+    cacheRead: requiredNumber(source, "cacheRead"),
+    cacheWrite: requiredNumber(source, "cacheWrite"),
+    cacheWrite1h: requiredNumber(source, "cacheWrite1h"),
+    reasoning: requiredNumber(source, "reasoning"),
+    totalTokens: requiredNumber(source, "totalTokens"),
+    cacheHitRate: nullableNumber(source, "cacheHitRate"),
+    cost: {
+      input: requiredNumber(cost, "input"),
+      output: requiredNumber(cost, "output"),
+      cacheRead: requiredNumber(cost, "cacheRead"),
+      cacheWrite: requiredNumber(cost, "cacheWrite"),
+      total: requiredNumber(cost, "total"),
+    },
+  };
+}
+
+export function parseApiUsageRecord(value: unknown): ApiUsageRecordDto {
+  const source = record(value, "API usage record");
+  const recordSource = source.source;
+  if (
+    recordSource !== "assistant" &&
+    recordSource !== "tool" &&
+    recordSource !== "compaction" &&
+    recordSource !== "branch-summary"
+  )
+    throw new Error("Invalid API response: API usage source is invalid");
+  const rawAnchor = record(source.anchor, "API usage anchor");
+  let anchor: ApiUsageRecordDto["anchor"];
+  if (rawAnchor.kind === "message") {
+    anchor = { kind: "message", messageEntryId: requiredIdentityString(rawAnchor, "messageEntryId") };
+  } else if (rawAnchor.kind === "tool") {
+    anchor = { kind: "tool", toolCallId: requiredIdentityString(rawAnchor, "toolCallId") };
+  } else if (rawAnchor.kind === "standalone") {
+    const afterEntryId = optionalIdentityString(rawAnchor, "afterEntryId");
+    anchor = { kind: "standalone", ...(afterEntryId === undefined ? {} : { afterEntryId }) };
+  } else {
+    throw new Error("Invalid API response: API usage anchor kind is invalid");
+  }
+  const provider = optionalIdentityString(source, "provider");
+  const model = optionalIdentityString(source, "model");
+  return {
+    id: requiredIdentityString(source, "id"),
+    sessionId: requiredIdentityString(source, "sessionId"),
+    source: recordSource,
+    timestamp: requiredString(source, "timestamp"),
+    anchor,
+    ...(provider === undefined ? {} : { provider }),
+    ...(model === undefined ? {} : { model }),
+    usage: parseApiUsage(source.usage),
+  };
+}
+
+function parseApiUsageModelSummary(value: unknown): ApiUsageModelSummaryDto {
+  const source = record(value, "API usage model summary");
+  if (source.kind !== "model" && source.kind !== "internal") {
+    throw new Error("Invalid API response: API usage model kind is invalid");
+  }
+  const provider = optionalIdentityString(source, "provider");
+  const model = optionalIdentityString(source, "model");
+  return {
+    key: requiredIdentityString(source, "key"),
+    ...(provider === undefined ? {} : { provider }),
+    ...(model === undefined ? {} : { model }),
+    kind: source.kind,
+    totals: parseApiUsageTotals(source.totals),
+  };
+}
+
+function parseApiUsageSessionSummary(value: unknown): ApiUsageSessionSummaryDto {
+  const source = record(value, "API usage session summary");
+  const parentSessionId = optionalIdentityString(source, "parentSessionId");
+  const agent = optionalIdentityString(source, "agent");
+  const agentId = optionalIdentityString(source, "agentId");
+  return {
+    sessionId: requiredIdentityString(source, "sessionId"),
+    ...(parentSessionId === undefined ? {} : { parentSessionId }),
+    ...(agent === undefined ? {} : { agent }),
+    ...(agentId === undefined ? {} : { agentId }),
+    direct: parseApiUsageTotals(source.direct),
+    subtree: parseApiUsageTotals(source.subtree),
+    models: arrayOf(source.models, "API usage models", parseApiUsageModelSummary),
+  };
+}
+
+export function parseApiUsageStatistics(value: unknown): ApiUsageStatisticsDto {
+  const source = record(value, "API usage statistics");
+  return {
+    rootSessionId: requiredIdentityString(source, "rootSessionId"),
+    total: parseApiUsageTotals(source.total),
+    sessions: arrayOf(source.sessions, "API usage sessions", parseApiUsageSessionSummary),
+    partial: requiredBoolean(source, "partial"),
+    warnings: arrayOf(source.warnings, "API usage warnings", (warning) => {
+      const item = record(warning, "API usage warning");
+      rejectSessionPath(item, "API usage warning");
+      if (item.reason !== "unreadable-descendant") {
+        throw new Error("Invalid API response: API usage warning reason is invalid");
+      }
+      const agentId = optionalIdentityString(item, "agentId");
+      return {
+        sessionId: requiredIdentityString(item, "sessionId"),
+        ...(agentId === undefined ? {} : { agentId }),
+        reason: item.reason,
+      };
+    }),
+  };
+}
+
+export function parseApiUsageChangedEvent(value: unknown): ApiUsageChangedEventDto {
+  const source = record(value, "API usage changed event");
+  if (source.type !== "api_usage_changed") {
+    throw new Error("Invalid API response: API usage event type is invalid");
+  }
+  return { type: "api_usage_changed", statistics: parseApiUsageStatistics(source.statistics) };
 }
 
 export function parseSessionStatsChangedEvent(value: unknown): SessionStatsChangedEventDto {
@@ -478,10 +637,16 @@ export function parseSessionSnapshot(value: unknown): SessionSnapshotDto {
   const contextUsage = source.contextUsage;
   const compactionState = source.compactionState;
   const fileWatchLeaseId = optionalString(source, "fileWatchLeaseId");
+  const inlineUsage = source.inlineUsage;
+  const apiUsage = source.apiUsage;
   return {
     session: parseActiveSessionValue(source.session),
     messages: parseMessages(source.messages),
     subagents: arrayOf(source.subagents, "subagents", parseSubagentSummary),
+    ...(inlineUsage === undefined
+      ? {}
+      : { inlineUsage: arrayOf(inlineUsage, "inline API usage", parseApiUsageRecord) }),
+    ...(apiUsage === undefined ? {} : { apiUsage: parseApiUsageStatistics(apiUsage) }),
     ...(steering !== undefined ? { steering: stringArray(steering, "steering") } : {}),
     ...(contextUsage !== undefined ? { contextUsage: parseContextUsage(contextUsage) } : {}),
     compactionPolicy: parseCompactionPolicy(source.compactionPolicy),
@@ -501,6 +666,9 @@ export function parseChildSnapshot(value: unknown): ChildSessionSnapshotDto {
       ...(sessionName !== undefined ? { sessionName } : {}),
     },
     messages: parseMessages(source.messages),
+    ...(source.inlineUsage === undefined
+      ? {}
+      : { inlineUsage: arrayOf(source.inlineUsage, "inline API usage", parseApiUsageRecord) }),
     subagents: arrayOf(source.subagents, "subagents", parseSubagentSummary),
   };
 }

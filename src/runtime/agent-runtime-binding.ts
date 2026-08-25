@@ -398,6 +398,10 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
       session = attached;
       unsubscribe = options.live.subscribe((event) => {
         if (event.type !== "config.updated" || event.generation <= requireApplied().generation) return;
+        if (event.apiUsageChanged === true && event.runtimeChanged === false) {
+          applied = { ...requireApplied(), generation: event.generation };
+          return;
+        }
         if (applyPromise) eventApplyRequested = true;
         if (!attached.isIdle) return;
         void ensureCurrent().catch((error: unknown) => {

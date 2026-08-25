@@ -44,6 +44,8 @@ export interface SessionSnapshotDto {
   /** Present only on an SSE snapshot; scoped to that exact EventSource. */
   fileWatchLeaseId?: string;
   contextUsage?: ContextUsageDto;
+  inlineUsage?: ApiUsageRecordDto[];
+  apiUsage?: ApiUsageStatisticsDto;
   compactionPolicy: CompactionPolicyDto;
   compactionState?: CompactionStateDto;
   /** Pending steer messages not yet delivered into the agent context
@@ -55,6 +57,83 @@ export interface ContextUsageDto {
   tokens: number | null;
   contextWindow: number;
   percent: number | null;
+}
+
+export interface ApiUsageDto {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  cacheWrite1h?: number;
+  reasoning?: number;
+  totalTokens: number;
+  cacheHitRate: number | null;
+  cost: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    total: number;
+  };
+}
+
+export interface ApiUsageTotalsDto {
+  records: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  cacheWrite1h: number;
+  reasoning: number;
+  totalTokens: number;
+  cacheHitRate: number | null;
+  cost: ApiUsageDto["cost"];
+}
+
+export type ApiUsageAnchorDto =
+  | { kind: "message"; messageEntryId: string }
+  | { kind: "tool"; toolCallId: string }
+  | { kind: "standalone"; afterEntryId?: string };
+
+export interface ApiUsageRecordDto {
+  id: string;
+  sessionId: string;
+  source: "assistant" | "tool" | "compaction" | "branch-summary";
+  timestamp: string;
+  anchor: ApiUsageAnchorDto;
+  provider?: string;
+  model?: string;
+  usage: ApiUsageDto;
+}
+
+export interface ApiUsageModelSummaryDto {
+  key: string;
+  provider?: string;
+  model?: string;
+  kind: "model" | "internal";
+  totals: ApiUsageTotalsDto;
+}
+
+export interface ApiUsageSessionSummaryDto {
+  sessionId: string;
+  parentSessionId?: string;
+  agent?: string;
+  agentId?: string;
+  direct: ApiUsageTotalsDto;
+  subtree: ApiUsageTotalsDto;
+  models: ApiUsageModelSummaryDto[];
+}
+
+export interface ApiUsageStatisticsDto {
+  rootSessionId: string;
+  total: ApiUsageTotalsDto;
+  sessions: ApiUsageSessionSummaryDto[];
+  partial: boolean;
+  warnings: Array<{
+    sessionId: string;
+    agentId?: string;
+    reason: "unreadable-descendant";
+  }>;
 }
 
 export type CompactionStateDto = "idle" | "queued" | "running";
@@ -73,6 +152,12 @@ export interface CompactionSettingsPatchDto {
   triggerPercent: number;
 }
 
+export interface ApiUsageSettingsDto {
+  showApiUsageDetails: boolean;
+}
+
+export type ApiUsageSettingsPatchDto = ApiUsageSettingsDto;
+
 export interface CompactionRequestResultDto {
   state: "queued" | "running";
 }
@@ -81,6 +166,11 @@ export interface SessionStatsChangedEventDto {
   type: "session_stats_changed";
   contextUsage?: ContextUsageDto;
   compactionPolicy: CompactionPolicyDto;
+}
+
+export interface ApiUsageChangedEventDto {
+  type: "api_usage_changed";
+  statistics: ApiUsageStatisticsDto;
 }
 
 export interface CompactionStateChangedEventDto {
@@ -168,6 +258,7 @@ export interface ChildSessionSnapshotDto {
     sessionName?: string;
   };
   messages: AgentMessage[];
+  inlineUsage?: ApiUsageRecordDto[];
   subagents: SubagentSessionSummaryDto[];
 }
 
@@ -192,6 +283,10 @@ export interface ConfigurationUpdatedEvent {
   generation: number;
   agentsChanged: boolean;
   modelsChanged: boolean;
+  /** Present only when ADR-098 display state changed after startup. */
+  apiUsageChanged?: boolean;
+  /** Whether that same accepted generation also needs an Agent runtime refresh. */
+  runtimeChanged?: boolean;
 }
 
 export interface ConfigurationErrorEvent {

@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   parseActiveSession,
   parseAgents,
+  parseApiUsageChangedEvent,
+  parseApiUsageRecord,
+  parseApiUsageSettings,
+  parseApiUsageStatistics,
   parseChildSnapshot,
   parseCompactionSettings,
   parseConfigEntries,
@@ -42,6 +46,78 @@ describe("API response parsers", () => {
     });
     expect(() => parseCompactionSettings({ triggerPercent: 70, enabled: true })).toThrow();
     expect(() => parseSessionStatsChangedEvent({ type: "session_stats_changed" })).toThrow();
+  });
+
+  it("parses complete backend-owned API usage settings, records, and replacement summaries", () => {
+    const totals = {
+      records: 1,
+      input: 10,
+      output: 3,
+      cacheRead: 2,
+      cacheWrite: 1,
+      cacheWrite1h: 1,
+      reasoning: 2,
+      totalTokens: 16,
+      cacheHitRate: 0.2,
+      cost: { input: 0.1, output: 0.2, cacheRead: 0.01, cacheWrite: 0.02, total: 0.33 },
+    };
+    const statistics = {
+      rootSessionId: "root-1",
+      total: totals,
+      sessions: [
+        {
+          sessionId: "root-1",
+          direct: totals,
+          subtree: totals,
+          models: [
+            {
+              key: "openai/test-model",
+              provider: "openai",
+              model: "test-model",
+              kind: "model",
+              totals,
+            },
+          ],
+        },
+      ],
+      partial: true,
+      warnings: [{ sessionId: "child-1", agentId: "search_0", reason: "unreadable-descendant" }],
+    };
+    const usageRecord = {
+      id: "entry-1",
+      sessionId: "root-1",
+      source: "assistant",
+      timestamp: "2026-08-25T00:00:00.000Z",
+      anchor: { kind: "message", messageEntryId: "entry-1" },
+      provider: "openai",
+      model: "test-model",
+      usage: {
+        input: 10,
+        output: 3,
+        cacheRead: 2,
+        cacheWrite: 1,
+        cacheWrite1h: 1,
+        reasoning: 2,
+        totalTokens: 16,
+        cacheHitRate: 0.2,
+        cost: totals.cost,
+      },
+    };
+
+    expect(parseApiUsageSettings({ showApiUsageDetails: true })).toEqual({ showApiUsageDetails: true });
+    expect(parseApiUsageRecord(usageRecord)).toEqual(usageRecord);
+    expect(parseApiUsageStatistics(statistics)).toEqual(statistics);
+    expect(parseApiUsageChangedEvent({ type: "api_usage_changed", statistics })).toEqual({
+      type: "api_usage_changed",
+      statistics,
+    });
+    expect(() =>
+      parseApiUsageStatistics({
+        ...statistics,
+        total: { ...totals, cost: { total: 0.33 } },
+      }),
+    ).toThrow();
+    expect(() => parseApiUsageChangedEvent({ type: "api_usage_changed", statistics: {} })).toThrow();
   });
   it("rejects a status payload with a missing homeDir", () => {
     expect(() => parseStatus({ agentDir: "/a", sessions: [], activeSessions: [] })).toThrow();

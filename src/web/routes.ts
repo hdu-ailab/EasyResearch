@@ -12,6 +12,9 @@ import type {
   AuthLogoutRequestDto,
   AuthProvidersResponseDto,
   AuthRespondRequestDto,
+  ApiUsageSettingsDto,
+  ApiUsageSettingsPatchDto,
+  ApiUsageRecordDto,
   ConfigurationEvent,
   CompactionSettingsDto,
   CompactionSettingsPatchDto,
@@ -42,6 +45,7 @@ import {
   rejectUnauthorizedDesktopRequest,
   type DesktopAccessControl,
 } from "./desktop-access";
+import { projectApiUsageRecord } from "./api-usage";
 
 export interface DaemonControl {
   token: string;
@@ -56,6 +60,8 @@ export interface RouteServices {
   patchAgent: (name: string, patch: AgentConfigurationPatch) => Promise<AgentResourceDto>;
   getCompactionSettings: () => Promise<CompactionSettingsDto>;
   patchCompactionSettings: (patch: CompactionSettingsPatchDto) => Promise<CompactionSettingsDto>;
+  getApiUsageSettings: () => Promise<ApiUsageSettingsDto>;
+  patchApiUsageSettings: (patch: ApiUsageSettingsPatchDto) => Promise<ApiUsageSettingsDto>;
   listModels: () => Promise<ModelOptionDto[]>;
   checkForUpdate: () => Promise<UpdateCheckDto>;
   renameSession: (sessionId: string, name: string) => Promise<void>;
@@ -63,7 +69,7 @@ export interface RouteServices {
   directories: DirectoryService;
   registry: ActiveSessionRegistry;
   config: ConfigFileService;
-  subagentSessions: Pick<SubagentSessionService, "summaries" | "snapshot">;
+  subagentSessions: Pick<SubagentSessionService, "summaries" | "snapshot" | "statistics" | "trackUsage">;
   auth?: AuthGateway;
   configuration: Pick<LiveConfiguration, "generation" | "error" | "subscribe">;
   logger: Logger;
@@ -125,6 +131,14 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       if (req.method === "PATCH" && path === "/api/settings/compaction") {
         return jsonResponse(await services.patchCompactionSettings(
           await jsonBody<CompactionSettingsPatchDto>(req),
+        ));
+      }
+      if (req.method === "GET" && path === "/api/settings/api-usage") {
+        return jsonResponse(await services.getApiUsageSettings());
+      }
+      if (req.method === "PATCH" && path === "/api/settings/api-usage") {
+        return jsonResponse(await services.patchApiUsageSettings(
+          await jsonBody<ApiUsageSettingsPatchDto>(req),
         ));
       }
 
@@ -210,6 +224,11 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
         return jsonResponse({ ok: true });
       }
 
+      const statisticsMatch = path.match(/^\/api\/sessions\/([^/]+)\/statistics$/);
+      if (req.method === "GET" && statisticsMatch) {
+        return jsonResponse(await services.subagentSessions.statistics(statisticsMatch[1]!));
+      }
+
       const childSnapshotMatch = path.match(/^\/api\/sessions\/([^/]+)\/subagents\/([^/]+)\/snapshot$/);
       if (req.method === "GET" && childSnapshotMatch) {
         return jsonResponse(await services.subagentSessions.snapshot(childSnapshotMatch[1]!, childSnapshotMatch[2]!));
@@ -218,8 +237,12 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       const sessionMatch = path.match(/^\/api\/sessions\/([^/]+)\/snapshot$/);
       if (req.method === "GET" && sessionMatch) {
         const sessionId = sessionMatch[1]!;
-        const snapshot = await services.registry.snapshot(sessionId);
-        return jsonResponse({ ...snapshot, subagents: await services.subagentSessions.summaries(sessionId) });
+        const [snapshot, subagents, apiUsage] = await Promise.all([
+          services.registry.snapshot(sessionId),
+          services.subagentSessions.summaries(sessionId),
+          services.subagentSessions.statistics(sessionId),
+        ]);
+        return jsonResponse({ ...snapshot, subagents, apiUsage });
       }
 
       const eventsMatch = path.match(/^\/api\/sessions\/([^/]+)\/events$/);
@@ -586,6 +609,26 @@ function sessionEvents(services: RouteServices, id: string): Response {
   const send = (controller: ReadableStreamDefaultController<Uint8Array>, event: unknown): void => {
     controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
   };
+  const publishOrQueue = (event: unknown): void => {
+    if (cancelled) return;
+    if (!initialized) {
+      if (snapshotAcquired) postBarrierEvents.push(event);
+      else if (isPreBarrierSupplement(event)) preBarrierSupplements.push(event);
+      return;
+    }
+    if (controllerRef) send(controllerRef, event);
+  };
+  let usageRefreshTail = Promise.resolve();
+  const refreshUsage = (record: ApiUsageRecordDto): void => {
+    usageRefreshTail = usageRefreshTail
+      .then(async () => {
+        const statistics = await subagentSessions.trackUsage(id, record);
+        publishOrQueue({ type: "api_usage_changed", statistics });
+      })
+      .catch(() => {
+        logger.warn("api usage projection refresh failed", { sessionId: id });
+      });
+  };
   const disconnect = (): void => {
     if (cancelled) return;
     cancelled = true;
@@ -605,15 +648,10 @@ function sessionEvents(services: RouteServices, id: string): Response {
       if (cancelled) return;
       const publicEvent = publicSessionEvent(event);
       if (publicEvent === undefined) return;
-      if (!initialized) {
-        if (snapshotAcquired) {
-          postBarrierEvents.push(publicEvent);
-        } else if (isPreBarrierSupplement(publicEvent)) {
-          preBarrierSupplements.push(publicEvent);
-        }
-        return;
-      }
-      if (controllerRef) send(controllerRef, publicEvent);
+      const enrichedEvent = withApiUsageRecord(publicEvent, id);
+      publishOrQueue(enrichedEvent);
+      const usageRecord = trackedUsageRecord(enrichedEvent);
+      if (usageRecord !== undefined) refreshUsage(usageRecord);
     });
     fileWatchLeaseId = registry.acquireFileWatchLease(id);
   } catch {
@@ -630,10 +668,11 @@ function sessionEvents(services: RouteServices, id: string): Response {
           snapshotAcquired = true;
         }),
         subagentSessions.summaries(id),
+        subagentSessions.statistics(id),
       ]).then(
-        ([snapshot, subagents]) => {
+        ([snapshot, subagents, apiUsage]) => {
           if (cancelled) return;
-          send(controller, { type: "snapshot", ...snapshot, subagents, fileWatchLeaseId });
+          send(controller, { type: "snapshot", ...snapshot, subagents, apiUsage, fileWatchLeaseId });
           for (const event of preBarrierSupplements) send(controller, event);
           for (const event of postBarrierEvents) send(controller, event);
           preBarrierSupplements.length = 0;
@@ -654,6 +693,35 @@ function sessionEvents(services: RouteServices, id: string): Response {
     },
   });
   return new Response(stream, { headers: SSE_HEADERS });
+}
+
+function trackedUsageRecord(event: unknown): ApiUsageRecordDto | undefined {
+  if (!isObject(event)) return undefined;
+  if (event.type === "entry_appended" && isObject(event.apiUsageRecord)) {
+    return event.apiUsageRecord as unknown as ApiUsageRecordDto;
+  }
+  if (event.type !== "subagent_supervisor" || !isObject(event.event)) return undefined;
+  const childEvent = event.event;
+  return childEvent.type === "entry_appended" && isObject(childEvent.apiUsageRecord)
+    ? childEvent.apiUsageRecord as unknown as ApiUsageRecordDto
+    : undefined;
+}
+
+function withApiUsageRecord(event: unknown, rootSessionId: string): unknown {
+  if (!isObject(event)) return event;
+  if (event.type === "entry_appended") {
+    const apiUsageRecord = projectApiUsageRecord(rootSessionId, event.entry);
+    return apiUsageRecord === undefined ? event : { ...event, apiUsageRecord };
+  }
+  if (event.type !== "subagent_supervisor" || !isObject(event.event)) return event;
+  const childEvent = event.event;
+  if (childEvent.type !== "entry_appended") return event;
+  const childSessionId = typeof event.childSessionId === "string" ? event.childSessionId : undefined;
+  if (!childSessionId) return event;
+  const apiUsageRecord = projectApiUsageRecord(childSessionId, childEvent.entry);
+  return apiUsageRecord === undefined
+    ? event
+    : { ...event, event: { ...childEvent, apiUsageRecord } };
 }
 
 function authFlowSse(services: RouteServices, flowId: string): Response {
@@ -755,6 +823,7 @@ function isPreBarrierSupplement(event: unknown): boolean {
     value.type === "agent_start" ||
     value.type === "agent_settled" ||
     value.type === "session_deactivated" ||
+    value.type === "api_usage_changed" ||
     value.type === "error"
   ) {
     return true;

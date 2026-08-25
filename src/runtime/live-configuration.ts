@@ -22,6 +22,8 @@ import {
   parseGlobalCompactionPolicy,
   type GlobalCompactionPolicy,
 } from "./compaction-policy";
+import type { ApiUsageSettingsDto } from "../web/contracts";
+import { parseGlobalApiUsageSettings } from "./api-usage-settings";
 
 export type { ConfigurationErrorEvent, ConfigurationEvent, ConfigurationUpdatedEvent } from "../web/contracts";
 
@@ -39,6 +41,8 @@ export interface ConfigurationFingerprint {
   agentDefaults?: string;
   compaction: string;
   compactionPolicy: GlobalCompactionPolicy;
+  apiUsage: string;
+  apiUsageSettings: ApiUsageSettingsDto;
 }
 
 export interface ModelCatalogEntry {
@@ -89,6 +93,7 @@ export interface LiveConfiguration {
   readonly generation: number;
   readonly error: string | null;
   readonly compactionPolicy: GlobalCompactionPolicy;
+  readonly apiUsageSettings: ApiUsageSettingsDto;
   start(): Promise<void>;
   synchronize(): Promise<void>;
   /** True only for the latest validation-clean accepted generation. */
@@ -137,6 +142,7 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
   let currentCatalog: AgentCatalogSnapshot | undefined;
   let currentFingerprint: ConfigurationFingerprint | undefined;
   let currentCompactionPolicy = parseGlobalCompactionPolicy({});
+  let currentApiUsageSettings = parseGlobalApiUsageSettings({});
   let watcher: ConfigurationWatcher | undefined;
   let settleWatcherReady: (() => void) | undefined;
   let watcherReady: Promise<void> | undefined;
@@ -256,11 +262,18 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
           failedModelsChanged ||
           currentFingerprint === undefined ||
           candidate.models !== currentFingerprint.models;
+        const apiUsageChanged = currentFingerprint !== undefined
+          && candidate.apiUsage !== currentFingerprint.apiUsage;
+        const runtimeChanged = agentsChanged
+          || modelsChanged
+          || currentFingerprint === undefined
+          || candidate.compaction !== currentFingerprint.compaction;
         const event: ConfigurationUpdatedEvent = {
           type: "config.updated",
           generation: currentGeneration + 1,
           agentsChanged,
           modelsChanged,
+          ...(apiUsageChanged ? { apiUsageChanged: true, runtimeChanged } : {}),
         };
 
         preparedModels.commit();
@@ -268,6 +281,7 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
         currentCatalog = nextCatalog;
         currentFingerprint = candidate;
         currentCompactionPolicy = candidate.compactionPolicy;
+        currentApiUsageSettings = candidate.apiUsageSettings;
         currentGeneration = event.generation;
         validationError = null;
         failedAgentsChanged = false;
@@ -412,6 +426,9 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
     get compactionPolicy() {
       return { ...currentCompactionPolicy };
     },
+    get apiUsageSettings() {
+      return { ...currentApiUsageSettings };
+    },
     start() {
       if (closed) return Promise.resolve();
       startPromise ??= (async () => {
@@ -540,14 +557,32 @@ export async function fingerprintConfiguration(agentDir: string): Promise<Config
   updateHashField(compactionHash, Buffer.from(compactionPolicy.globalEnabled ? "true" : "false", "utf8"));
   updateHashField(compactionHash, Buffer.from(String(compactionPolicy.globalKeepRecentTokens), "utf8"));
   const compaction = compactionHash.digest("hex");
+  const apiUsageSettings = parseGlobalApiUsageSettings(settings);
+  const apiUsageHash = createHash("sha256");
+  apiUsageHash.update("easyresearch-api-usage-v1\0");
+  updateHashField(
+    apiUsageHash,
+    Buffer.from(apiUsageSettings.showApiUsageDetails ? "true" : "false", "utf8"),
+  );
+  const apiUsage = apiUsageHash.digest("hex");
   const value = createHash("sha256")
-    .update("easyresearch-configuration-v2\0")
+    .update("easyresearch-configuration-v3\0")
     .update(agents)
     .update(models)
     .update(agentDefaults)
     .update(compaction)
+    .update(apiUsage)
     .digest("hex");
-  return { value, agents, models, agentDefaults, compaction, compactionPolicy };
+  return {
+    value,
+    agents,
+    models,
+    agentDefaults,
+    compaction,
+    compactionPolicy,
+    apiUsage,
+    apiUsageSettings,
+  };
 }
 
 function assertValidCatalog(snapshot: AgentCatalogSnapshot): void {
@@ -578,7 +613,8 @@ function sameFingerprint(left: ConfigurationFingerprint, right: ConfigurationFin
     left.agents === right.agents &&
     left.models === right.models &&
     left.agentDefaults === right.agentDefaults &&
-    left.compaction === right.compaction;
+    left.compaction === right.compaction &&
+    left.apiUsage === right.apiUsage;
 }
 
 function isAgentMarkdownPath(path: string, agentsDir: string): boolean {

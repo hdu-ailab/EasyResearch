@@ -7,6 +7,7 @@ import {
   parseSkillInvocation,
   reduceSessionEvent,
   reduceSubagentSupervisorEvent,
+  replaceApiUsageStatistics,
   type SessionViewState,
   terminateSessionRun,
 } from "./session-reducer";
@@ -127,6 +128,171 @@ describe("session reducer", () => {
     expect(state.messages[0]!.role).toBe("user");
     expect(state.messages[1]!.role).toBe("assistant");
     expect(state.isStreaming).toBe(true);
+  });
+
+  it("hydrates tool-only, nested-tool, and internal usage with the backend statistics replacement", () => {
+    const usage = {
+      input: 4,
+      output: 1,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 5,
+      cacheHitRate: 0,
+      cost: { input: 0.1, output: 0.1, cacheRead: 0, cacheWrite: 0, total: 0.2 },
+    };
+    const totals = {
+      records: 3,
+      input: 12,
+      output: 3,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cacheWrite1h: 0,
+      reasoning: 0,
+      totalTokens: 15,
+      cacheHitRate: 0,
+      cost: { input: 0.3, output: 0.3, cacheRead: 0, cacheWrite: 0, total: 0.6 },
+    };
+    const apiUsage = {
+      rootSessionId: "s1",
+      total: totals,
+      sessions: [{ sessionId: "s1", direct: totals, subtree: totals, models: [] }],
+      partial: false,
+      warnings: [],
+    };
+    const inlineUsage = [
+      {
+        id: "assistant-tool-entry",
+        sessionId: "s1",
+        source: "assistant",
+        timestamp: "2026-08-25T00:00:01.000Z",
+        anchor: { kind: "message", messageEntryId: "assistant-tool-entry" },
+        provider: "openai",
+        model: "test-model",
+        usage,
+      },
+      {
+        id: "tool-result-entry",
+        sessionId: "s1",
+        source: "tool",
+        timestamp: "2026-08-25T00:00:02.000Z",
+        anchor: { kind: "tool", toolCallId: "tool-1" },
+        usage,
+      },
+      {
+        id: "compaction-entry",
+        sessionId: "s1",
+        source: "compaction",
+        timestamp: "2026-08-25T00:00:03.000Z",
+        anchor: { kind: "standalone", afterEntryId: "tool-result-entry" },
+        usage,
+      },
+    ] as const;
+    const state = fromSnapshot({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      subagents: [],
+      messages: [
+        {
+          id: "assistant-tool-entry",
+          role: "assistant",
+          content: [{ type: "toolCall", id: "tool-1", name: "bash", arguments: {} }],
+        },
+        { id: "tool-result-entry", role: "toolResult", toolCallId: "tool-1", toolName: "bash", content: [] },
+      ] as never,
+      inlineUsage: inlineUsage as never,
+      apiUsage,
+    });
+
+    expect(state.apiUsage).toEqual(apiUsage);
+    expect(state.tools).toEqual([expect.objectContaining({ key: "tool-1", apiUsage: inlineUsage[1] })]);
+    expect(state.messages).toEqual([
+      expect.objectContaining({ usageOnly: true, apiUsage: inlineUsage[0] }),
+      expect.objectContaining({ usageOnly: true, apiUsage: inlineUsage[2] }),
+    ]);
+  });
+
+  it("adds a live persisted usage record once and replaces recursive statistics", () => {
+    const record = {
+      id: "entry-live",
+      sessionId: "s1",
+      source: "assistant" as const,
+      timestamp: "2026-08-25T00:00:00.000Z",
+      anchor: { kind: "message" as const, messageEntryId: "entry-live" },
+      provider: "openai",
+      model: "test-model",
+      usage: {
+        input: 2,
+        output: 1,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 3,
+        cacheHitRate: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+    };
+    const afterRecord = reduceSessionEvent(emptyState, {
+      type: "entry_appended",
+      entry: {},
+      apiUsageRecord: record,
+    } as never);
+    const duplicate = reduceSessionEvent(afterRecord, {
+      type: "entry_appended",
+      entry: {},
+      apiUsageRecord: record,
+    } as never);
+    expect(duplicate.messages).toEqual([expect.objectContaining({ key: "usage:entry-live", apiUsage: record })]);
+
+    const totals = {
+      records: 1,
+      input: 2,
+      output: 1,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cacheWrite1h: 0,
+      reasoning: 0,
+      totalTokens: 3,
+      cacheHitRate: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    };
+    const statistics = {
+      rootSessionId: "s1",
+      total: totals,
+      sessions: [{ sessionId: "s1", direct: totals, subtree: totals, models: [] }],
+      partial: false,
+      warnings: [],
+    };
+    expect(replaceApiUsageStatistics(duplicate, statistics).apiUsage).toBe(statistics);
+  });
+
+  it("reconciles a persisted usage id onto the existing live assistant response", () => {
+    const message = { role: "assistant", content: [{ type: "text", text: "answer" }], timestamp: 42 };
+    const started = reduceSessionEvent(emptyState, { type: "message_start", message } as never);
+    const ended = reduceSessionEvent(started, { type: "message_end", message } as never);
+    const record = {
+      id: "entry-answer",
+      sessionId: "s1",
+      source: "assistant" as const,
+      timestamp: "2026-08-25T00:00:00.000Z",
+      anchor: { kind: "message" as const, messageEntryId: "entry-answer" },
+      usage: {
+        input: 2,
+        output: 1,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 3,
+        cacheHitRate: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+    };
+
+    const persisted = reduceSessionEvent(ended, {
+      type: "entry_appended",
+      entry: { type: "message", id: "entry-answer", message },
+      apiUsageRecord: record,
+    } as never);
+
+    expect(persisted.messages).toHaveLength(1);
+    expect(persisted.messages[0]).toMatchObject({ text: "answer", entryId: "entry-answer", apiUsage: record });
+    expect(persisted.messages[0]?.usageOnly).not.toBe(true);
   });
 
   it("hydrates native context usage and queued compaction state without estimating tokens", () => {

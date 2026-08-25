@@ -106,6 +106,64 @@ describe("ChatTranscript", () => {
     expect(screen.queryByText("Send a message to start.")).toBeNull();
   });
 
+  it("shows every inline API usage placement only when the global display flag is enabled", () => {
+    const usage = {
+      input: 10,
+      output: 3,
+      cacheRead: 2,
+      cacheWrite: 1,
+      cacheWrite1h: 1,
+      reasoning: 2,
+      totalTokens: 16,
+      cacheHitRate: 2 / 13,
+      cost: { input: 0.1, output: 0.2, cacheRead: 0.01, cacheWrite: 0.02, total: 0.33 },
+    };
+    const assistantRecord = {
+      id: "assistant-entry",
+      sessionId: "s1",
+      source: "assistant" as const,
+      timestamp: "2026-08-25T00:00:00.000Z",
+      anchor: { kind: "message" as const, messageEntryId: "assistant-entry" },
+      provider: "openai",
+      model: "test-model",
+      usage,
+    };
+    const toolRecord = {
+      ...assistantRecord,
+      id: "tool-entry",
+      source: "tool" as const,
+      anchor: { kind: "tool" as const, toolCallId: "tool-1" },
+      provider: undefined,
+      model: undefined,
+    };
+    const internalRecord = {
+      ...assistantRecord,
+      id: "compact-entry",
+      source: "compaction" as const,
+      anchor: { kind: "standalone" as const, afterEntryId: "tool-entry" },
+      provider: undefined,
+      model: undefined,
+    };
+    const messages = [
+      msg({ key: "assistant", text: "answer", apiUsage: assistantRecord }),
+      msg({ key: "internal", role: "system", text: "", usageOnly: true, apiUsage: internalRecord, order: 2 }),
+    ];
+    const tools = [tool({ key: "tool-1", toolCallId: "tool-1", apiUsage: toolRecord, order: 1 })];
+    const { rerender } = renderTranscript(
+      <ChatTranscript messages={messages} tools={tools} showApiUsageDetails={false} />,
+    );
+    expect(screen.queryByLabelText("API usage details")).toBeNull();
+
+    rerender(<ChatTranscript messages={messages} tools={tools} showApiUsageDetails />);
+
+    expect(screen.getAllByLabelText("API usage details")).toHaveLength(3);
+    expect(screen.getByText(/Internal summary/)).toBeInTheDocument();
+    expect(screen.getAllByText(/In 10/)).toHaveLength(3);
+    expect(screen.getAllByText(/Out 3/)).toHaveLength(3);
+    expect(screen.getAllByText(/\$0\.3300/)).toHaveLength(3);
+    expect(screen.getAllByText(/Cache hit 15\.4%/)).toHaveLength(3);
+  });
+
   it("does not pin the measured row height so content shrink re-measures", () => {
     // Regression: a `minHeight: virtualRow.size` on the measured element makes
     // ResizeObserver silent when content shrinks (window resize, collapsed

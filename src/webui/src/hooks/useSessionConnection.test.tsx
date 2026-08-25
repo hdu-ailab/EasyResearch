@@ -192,6 +192,34 @@ describe("useSessionConnection", () => {
     expect(result.current.view.compactionState).toBe("idle");
   });
 
+  it("replaces recursive API usage from the dedicated SSE event", async () => {
+    const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const totals = {
+      records: 2,
+      input: 8,
+      output: 2,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cacheWrite1h: 0,
+      reasoning: 0,
+      totalTokens: 10,
+      cacheHitRate: 0,
+      cost: { input: 0.1, output: 0.1, cacheRead: 0, cacheWrite: 0, total: 0.2 },
+    };
+    const statistics = {
+      rootSessionId: "s1",
+      total: totals,
+      sessions: [{ sessionId: "s1", direct: totals, subtree: totals, models: [] }],
+      partial: false,
+      warnings: [],
+    };
+
+    emit({ type: "api_usage_changed", statistics });
+
+    expect(result.current.view.apiUsage).toEqual(statistics);
+  });
+
   it("surfaces native compaction failures and clears the notice on the next send", async () => {
     const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
     await waitFor(() => expect(result.current.status).toBe("ready"));

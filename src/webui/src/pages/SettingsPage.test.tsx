@@ -14,6 +14,8 @@ vi.mock("../api", async (importOriginal) => {
     patchAgent: vi.fn(),
     getCompactionSettings: vi.fn(),
     patchCompactionSettings: vi.fn(),
+    getApiUsageSettings: vi.fn(),
+    patchApiUsageSettings: vi.fn(),
     listAgents: vi.fn(),
     listModels: vi.fn(),
     listAgentResources: vi.fn(),
@@ -41,6 +43,10 @@ beforeEach(() => {
       triggerPercent,
       globalEnabled: true,
     }));
+  vi.mocked(api.getApiUsageSettings).mockReset().mockResolvedValue({ showApiUsageDetails: false });
+  vi.mocked(api.patchApiUsageSettings)
+    .mockReset()
+    .mockImplementation(async ({ showApiUsageDetails }) => ({ showApiUsageDetails }));
   vi.mocked(api.listAgents).mockReset();
   vi.mocked(api.listModels).mockReset();
   vi.mocked(api.listAgentResources).mockReset();

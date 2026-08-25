@@ -120,6 +120,19 @@ class FakeLiveConfiguration {
     };
     for (const listener of [...this.listeners]) listener(event);
   }
+
+  publishApiUsageDisplay(): void {
+    this.generation += 1;
+    const event: ConfigurationUpdatedEvent = {
+      type: "config.updated",
+      generation: this.generation,
+      agentsChanged: false,
+      modelsChanged: false,
+      apiUsageChanged: true,
+      runtimeChanged: false,
+    };
+    for (const listener of [...this.listeners]) listener(event);
+  }
 }
 
 class FakeModelRuntimeFactory {
@@ -262,6 +275,19 @@ async function attachHarness(state: ReturnType<typeof createHarness>) {
 }
 
 describe("AgentRuntimeBinding safe boundaries", () => {
+  it("accepts a visual-only API-usage generation without rebuilding the Agent runtime", async () => {
+    const state = createHarness();
+    const attached = await attachHarness(state);
+    const reloads = attached.session.reloadCalls;
+    const modelCalls = attached.session.modelCalls.length;
+
+    state.live.publishApiUsageDisplay();
+    await vi.waitFor(() => expect(state.binding.generation()).toBe(2));
+
+    expect(attached.session.reloadCalls).toBe(reloads);
+    expect(attached.session.modelCalls).toHaveLength(modelCalls);
+  });
+
   it("applies and reapplies the accepted compaction policy without a new Agent definition", async () => {
     const state = createHarness();
 

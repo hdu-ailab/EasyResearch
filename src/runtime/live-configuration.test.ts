@@ -59,14 +59,18 @@ function fingerprint(
   agentDefaults = "defaults-v1",
   compaction = "compaction-v1",
   compactionPolicy = { triggerPercent: 70, globalEnabled: true, globalKeepRecentTokens: 20_000 },
+  apiUsage = "api-usage-v1",
+  apiUsageSettings = { showApiUsageDetails: false },
 ): ConfigurationFingerprint {
   return {
-    value: `${agents}:${models}:${agentDefaults}:${compaction}`,
+    value: `${agents}:${models}:${agentDefaults}:${compaction}:${apiUsage}`,
     agents,
     models,
     agentDefaults,
     compaction,
     compactionPolicy,
+    apiUsage,
+    apiUsageSettings,
   };
 }
 
@@ -865,6 +869,34 @@ describe("configuration content fingerprint", () => {
     );
 
     await expect(fingerprintConfiguration(root)).rejects.toThrow(/integer.*10.*90/i);
+  });
+
+  it("accepts only the global API-usage boolean into the live configuration fingerprint", async () => {
+    const root = tempRoot();
+    mkdirSync(join(root, "agents"), { recursive: true });
+    writeFileSync(join(root, "agents", "research-assistant.md"), "agent", "utf8");
+    writeFileSync(join(root, "models.json"), "{}", "utf8");
+    const before = await fingerprintConfiguration(root);
+
+    writeFileSync(
+      join(root, "settings.json"),
+      JSON.stringify({ easyresearch: { web: { showApiUsageDetails: true } } }),
+      "utf8",
+    );
+    const after = await fingerprintConfiguration(root);
+
+    expect(before.apiUsageSettings).toEqual({ showApiUsageDetails: false });
+    expect(after.apiUsageSettings).toEqual({ showApiUsageDetails: true });
+    expect(after.apiUsage).not.toBe(before.apiUsage);
+    expect(after.compaction).toBe(before.compaction);
+    expect(after.value).not.toBe(before.value);
+
+    writeFileSync(
+      join(root, "settings.json"),
+      JSON.stringify({ easyresearch: { web: { showApiUsageDetails: "true" } } }),
+      "utf8",
+    );
+    await expect(fingerprintConfiguration(root)).rejects.toThrow(/boolean/i);
   });
 
   it("excludes project files, sessions, logs, auth values, and unrelated global resources", async () => {

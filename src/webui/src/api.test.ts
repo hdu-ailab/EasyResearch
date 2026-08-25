@@ -33,6 +33,9 @@ import {
 
 type RawByteReader = (path: string, options: { maxBytes: number; signal?: AbortSignal }) => Promise<ArrayBuffer>;
 type CompactSession = (id: string, customInstructions?: string) => Promise<{ state: "queued" | "running" }>;
+type GetApiUsageSettings = () => Promise<{ showApiUsageDetails: boolean }>;
+type PatchApiUsageSettings = (patch: { showApiUsageDetails: boolean }) => Promise<{ showApiUsageDetails: boolean }>;
+type GetApiUsageStatistics = (id: string) => Promise<{ rootSessionId: string; total: { totalTokens: number } }>;
 
 function rawByteReader(): RawByteReader {
   const reader = (apiModule as typeof apiModule & { readRawFileBytes?: RawByteReader }).readRawFileBytes;
@@ -44,6 +47,18 @@ function compactSession(): CompactSession {
   const compact = (apiModule as typeof apiModule & { compactSession?: CompactSession }).compactSession;
   if (!compact) throw new Error("compactSession is not implemented");
   return compact;
+}
+
+function apiUsageMethods() {
+  const module = apiModule as typeof apiModule & {
+    getApiUsageSettings?: GetApiUsageSettings;
+    patchApiUsageSettings?: PatchApiUsageSettings;
+    getApiUsageStatistics?: GetApiUsageStatistics;
+  };
+  if (!module.getApiUsageSettings || !module.patchApiUsageSettings || !module.getApiUsageStatistics) {
+    throw new Error("API usage methods are not implemented");
+  }
+  return module;
 }
 
 describe("api transport", () => {
@@ -138,6 +153,52 @@ describe("api transport", () => {
     expect(url).toBe("/api/settings/compaction");
     expect(init.method).toBe("PATCH");
     expect(JSON.parse(init.body as string)).toEqual({ triggerPercent: 80 });
+  });
+
+  it("reads and patches API-usage visibility and gets encoded session statistics", async () => {
+    const totals = {
+      records: 0,
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cacheWrite1h: 0,
+      reasoning: 0,
+      totalTokens: 0,
+      cacheHitRate: null,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    };
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ showApiUsageDetails: false }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ showApiUsageDetails: true }), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            rootSessionId: "root/1",
+            total: totals,
+            sessions: [],
+            partial: false,
+            warnings: [],
+          }),
+          { status: 200 },
+        ),
+      );
+    const methods = apiUsageMethods();
+
+    await expect(methods.getApiUsageSettings()).resolves.toEqual({ showApiUsageDetails: false });
+    await expect(methods.patchApiUsageSettings({ showApiUsageDetails: true })).resolves.toEqual({
+      showApiUsageDetails: true,
+    });
+    await expect(methods.getApiUsageStatistics("root/1")).resolves.toMatchObject({
+      rootSessionId: "root/1",
+      total: { totalTokens: 0 },
+    });
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/settings/api-usage");
+    const [patchUrl, patchInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(patchUrl).toBe("/api/settings/api-usage");
+    expect(JSON.parse(patchInit.body as string)).toEqual({ showApiUsageDetails: true });
+    expect(fetchMock.mock.calls[2]?.[0]).toBe("/api/sessions/root%2F1/statistics");
   });
 
   it("listDirectories GETs /api/directories with path", async () => {

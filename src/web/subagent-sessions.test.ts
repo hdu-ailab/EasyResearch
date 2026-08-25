@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, expectTypeOf, it } from "vitest";
@@ -42,6 +42,26 @@ function assistant(...texts: string[]): Message {
     provider: "openai",
     model: "test-model",
     usage,
+    stopReason: "stop",
+    timestamp: Date.now(),
+  };
+}
+
+function assistantUsage(input: number, output: number, totalCost: number, text: string): Message {
+  return {
+    role: "assistant",
+    content: [{ type: "text", text }],
+    api: "openai-completions",
+    provider: "openai",
+    model: "test-model",
+    usage: {
+      input,
+      output,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: input + output,
+      cost: { input: totalCost, output: 0, cacheRead: 0, cacheWrite: 0, total: totalCost },
+    },
     stopReason: "stop",
     timestamp: Date.now(),
   };
@@ -214,7 +234,22 @@ describe("SubagentSessionService", () => {
         cwd,
         sessionName: "easyresearch:search",
       },
-      messages: [{ role: "user" }, { role: "assistant" }],
+      messages: [
+        { role: "user", id: expect.any(String) },
+        { role: "assistant", id: expect.any(String) },
+      ],
+      inlineUsage: [
+        {
+          id: expect.any(String),
+          sessionId: child.getSessionId(),
+          source: "assistant",
+          anchor: { kind: "message", messageEntryId: expect.any(String) },
+          provider: "openai",
+          model: "test-model",
+          usage,
+          timestamp: expect.any(String),
+        },
+      ],
       subagents: [],
     });
   });
@@ -310,6 +345,70 @@ describe("SubagentSessionService", () => {
     expect(serialized).not.toContain("session_path");
     expect(serialized).not.toContain(nestedError.getSessionFile()!);
     expect(serialized).not.toContain("<agent_handoff>");
+  });
+
+  it("rebuilds recursive old-session statistics without recounting a continued child or writing migration data", async () => {
+    const parent = createSession();
+    const owner = createSession();
+    const nested = createSession();
+    parent.appendMessage(user("parent request"));
+    parent.appendMessage(assistantUsage(10, 2, 0.1, "parent reply"));
+    owner.appendMessage(user("run experiment"));
+    owner.appendMessage(assistantUsage(5, 1, 0.05, "owner reply"));
+    nested.appendMessage(user("find evidence"));
+    nested.appendMessage(assistantUsage(3, 1, 0.03, "nested reply"));
+
+    journalJob(parent, owner, {
+      launchId: "launch-owner",
+      ownerSessionId: parent.getSessionId(),
+      toolCallId: "tool-owner",
+      agent: "experiment",
+      agentId: "experiment_0",
+      status: "complete",
+    });
+    journalJob(parent, nested, {
+      launchId: "launch-nested",
+      ownerSessionId: owner.getSessionId(),
+      toolCallId: "tool-nested",
+      agent: "search",
+      agentId: "search_0",
+      status: "complete",
+    });
+    journalJob(parent, owner, {
+      launchId: "launch-owner-continuation",
+      ownerSessionId: parent.getSessionId(),
+      toolCallId: "tool-owner-continuation",
+      agent: "experiment",
+      agentId: "experiment_0",
+      status: "complete",
+    });
+
+    const files = [parent, owner, nested].map((session) => session.getSessionFile()!);
+    const before = files.map((path) => readFileSync(path, "utf8"));
+    const statistics = await service().statistics(parent.getSessionId());
+
+    expect(statistics.partial).toBe(false);
+    expect(statistics.warnings).toEqual([]);
+    expect(statistics.sessions).toHaveLength(3);
+    expect(statistics.total).toMatchObject({ records: 3, input: 18, output: 4, totalTokens: 22 });
+    expect(statistics.sessions.map((session) => session.sessionId)).toEqual([
+      parent.getSessionId(),
+      owner.getSessionId(),
+      nested.getSessionId(),
+    ]);
+    expect(statistics.sessions[1]).toMatchObject({
+      parentSessionId: parent.getSessionId(),
+      agent: "experiment",
+      agentId: "experiment_0",
+      direct: { records: 1, totalTokens: 6 },
+      subtree: { records: 2, totalTokens: 10 },
+    });
+    expect(statistics.sessions[2]).toMatchObject({
+      parentSessionId: owner.getSessionId(),
+      direct: { records: 1, totalTokens: 4 },
+      subtree: { records: 1, totalTokens: 4 },
+    });
+    expect(files.map((path) => readFileSync(path, "utf8"))).toEqual(before);
   });
 
   it("uses the exact root-journal path mapping instead of authorizing a same-cwd UUID from the global listing", async () => {

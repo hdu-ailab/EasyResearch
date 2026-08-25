@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionTreeNode } from "@earendil-works/pi-coding-agent";
-import type { ActiveSessionDto, CompactionPolicyDto, CompactionStateDto, ContextUsageDto } from "./contracts";
+import type { ActiveSessionDto, ApiUsageRecordDto, CompactionPolicyDto, CompactionStateDto, ContextUsageDto } from "./contracts";
 import type {
   SessionAdapter,
   SessionFactory,
@@ -144,6 +144,7 @@ export class ActiveSessionRegistry {
   ): Promise<{
     session: ActiveSessionDto;
     messages: AgentMessage[];
+    inlineUsage: ApiUsageRecordDto[];
     steering: string[];
     contextUsage?: ContextUsageDto;
     compactionPolicy: CompactionPolicyDto;
@@ -161,6 +162,7 @@ export class ActiveSessionRegistry {
       return {
         session: { ...record.dto },
         messages,
+        inlineUsage: live ? record.client.getInlineUsage() : [],
         steering: live ? [...record.client.getSteeringMessages()] : [],
         ...(contextUsage !== undefined ? { contextUsage } : {}),
         compactionPolicy: record.client.getCompactionPolicy(),

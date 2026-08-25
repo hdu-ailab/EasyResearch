@@ -17,6 +17,7 @@ import {
   sendPrompt,
 } from "../api";
 import {
+  parseApiUsageChangedEvent,
   parseCompactionStateChangedEvent,
   parseSessionStatsChangedEvent,
   parseSubagentSupervisorEvent,
@@ -28,6 +29,7 @@ import {
   mergeSnapshot,
   reduceSessionEvent,
   reduceSubagentSupervisorEvent,
+  replaceApiUsageStatistics,
   type SessionViewState,
   terminateSessionRun,
 } from "../session-reducer";
@@ -268,6 +270,15 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
             });
           } catch {
             // Ignore malformed SSE frames and retain the last valid state.
+          }
+          return;
+        }
+        if (eventType(event) === "api_usage_changed") {
+          try {
+            const usage = parseApiUsageChangedEvent(event);
+            setView((current) => replaceApiUsageStatistics(current, usage.statistics));
+          } catch {
+            // Ignore malformed SSE frames and retain the last valid projection.
           }
           return;
         }

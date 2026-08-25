@@ -80,6 +80,43 @@ describe("subagentMessagePreview", () => {
 });
 
 describe("SubagentToolCard", () => {
+  it("shows only the server-calculated subtree total when API usage details are enabled", () => {
+    const totals = {
+      records: 3,
+      input: 12,
+      output: 3,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cacheWrite1h: 0,
+      reasoning: 0,
+      totalTokens: 15,
+      cacheHitRate: 0.25,
+      cost: { input: 0.1, output: 0.2, cacheRead: 0, cacheWrite: 0, total: 0.3 },
+    };
+    const { rerender } = render(
+      <SubagentToolCard
+        tool={subagentTool({ sessionId: "child-1" })}
+        initialOpen={false}
+        subtreeUsage={totals}
+        showApiUsageDetails={false}
+      />,
+    );
+    expect(screen.queryByLabelText("Subagent subtree API usage")).toBeNull();
+
+    rerender(
+      <SubagentToolCard
+        tool={subagentTool({ sessionId: "child-1" })}
+        initialOpen={false}
+        subtreeUsage={totals}
+        showApiUsageDetails
+      />,
+    );
+
+    expect(screen.getByLabelText("Subagent subtree API usage")).toHaveTextContent("15 tokens");
+    expect(screen.getByLabelText("Subagent subtree API usage")).toHaveTextContent("$0.3000");
+    expect(screen.getByLabelText("Subagent subtree API usage")).toHaveTextContent("Cache hit 25.0%");
+  });
+
   it("keeps a successful launch acknowledgement Working until a supervisor terminal", () => {
     const started = reduceSessionEvent(emptyState, {
       type: "tool_execution_start",

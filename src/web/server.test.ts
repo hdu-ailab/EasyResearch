@@ -151,6 +151,10 @@ class FakeAdapter implements SessionAdapter {
   async getMessages(): Promise<AgentMessage[]> {
     return this.getMessagesPromise ?? this.messages;
   }
+  inlineUsageResult: ReturnType<SessionAdapter["getInlineUsage"]> = [];
+  getInlineUsage() {
+    return this.inlineUsageResult;
+  }
   steeringResult: string[] = [];
   getSteeringMessages(): readonly string[] {
     return this.steeringResult;
@@ -229,6 +233,7 @@ function fakeConfiguration(
       return error;
     },
     compactionPolicy: { triggerPercent: 70, globalEnabled: true, globalKeepRecentTokens: 20_000 },
+    apiUsageSettings: { showApiUsageDetails: false },
     start: async () => {},
     synchronize: async () => {},
     isCurrent: (candidate) => error === null && candidate === generation,
@@ -372,8 +377,39 @@ describe("web routes", () => {
     } as unknown as DaemonAuthRuntime);
   });
 
-  function setup(overrides: Partial<RouteServices> = {}): void {
+  function setup(
+    overrides: Partial<Omit<RouteServices, "subagentSessions">> & {
+      subagentSessions?: Partial<RouteServices["subagentSessions"]>;
+    } = {},
+  ): void {
     const configuration = fakeConfiguration().live;
+    const { subagentSessions: subagentOverrides, ...routeOverrides } = overrides;
+    const emptyStatistics = async (rootSessionId: string) => ({
+      rootSessionId,
+      total: {
+        records: 0,
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cacheWrite1h: 0,
+        reasoning: 0,
+        totalTokens: 0,
+        cacheHitRate: null,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      sessions: [],
+      partial: false,
+      warnings: [],
+    });
+    const defaultSubagentSessions: RouteServices["subagentSessions"] = {
+      summaries: async () => [],
+      statistics: emptyStatistics,
+      trackUsage: emptyStatistics,
+      snapshot: async (_parentSessionId: string, childSessionId: string) => {
+        throw new SubagentSessionNotFoundError(`Subagent session not found: ${childSessionId}`);
+      },
+    };
     const services: RouteServices = {
       webuiDist,
       listAllSessions: async () => historySessions,
@@ -390,13 +426,15 @@ describe("web routes", () => {
       patchAgent: async (name, patch) => patchGlobalAgent(configService, name, patch, () => true),
       getCompactionSettings: async () => ({ triggerPercent: 70, globalEnabled: true }),
       patchCompactionSettings: async ({ triggerPercent }) => ({ triggerPercent, globalEnabled: true }),
+      getApiUsageSettings: async () => ({ showApiUsageDetails: false }),
+      patchApiUsageSettings: async ({ showApiUsageDetails }) => ({ showApiUsageDetails }),
       subagentSessions: {
-        summaries: async () => [],
-        snapshot: async (_parentSessionId: string, childSessionId: string) => {
-          throw new SubagentSessionNotFoundError(`Subagent session not found: ${childSessionId}`);
-        },
+        ...defaultSubagentSessions,
+        ...subagentOverrides,
+        trackUsage: subagentOverrides?.trackUsage
+          ?? (async (rootSessionId) => (subagentOverrides?.statistics ?? emptyStatistics)(rootSessionId)),
       },
-      ...overrides,
+      ...routeOverrides,
     };
     handler = createRouteHandler(services);
   }
@@ -422,6 +460,64 @@ describe("web routes", () => {
     await expect(patch.json()).resolves.toEqual({ triggerPercent: 80, globalEnabled: false });
     expect(patchCompactionSettings).toHaveBeenCalledWith({ triggerPercent: 80 });
     expect(getCompactionSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads and patches the focused global API-usage setting", async () => {
+    const getApiUsageSettings = vi.fn(async () => ({ showApiUsageDetails: false }));
+    const patchApiUsageSettings = vi.fn(async ({ showApiUsageDetails }: { showApiUsageDetails: boolean }) => ({
+      showApiUsageDetails,
+    }));
+    setup({ getApiUsageSettings, patchApiUsageSettings });
+
+    const read = await handler(new Request("http://localhost/api/settings/api-usage"));
+    expect(read.status).toBe(200);
+    await expect(read.json()).resolves.toEqual({ showApiUsageDetails: false });
+
+    const patch = await handler(new Request("http://localhost/api/settings/api-usage", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ showApiUsageDetails: true }),
+    }));
+    expect(patch.status).toBe(200);
+    await expect(patch.json()).resolves.toEqual({ showApiUsageDetails: true });
+    expect(patchApiUsageSettings).toHaveBeenCalledWith({ showApiUsageDetails: true });
+    expect(getApiUsageSettings).toHaveBeenCalledOnce();
+  });
+
+  it("returns backend-owned recursive session statistics", async () => {
+    const statistics = vi.fn(async (rootSessionId: string) => ({
+      rootSessionId,
+      total: {
+        records: 2,
+        input: 8,
+        output: 2,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cacheWrite1h: 0,
+        reasoning: 0,
+        totalTokens: 10,
+        cacheHitRate: 0,
+        cost: { input: 0.1, output: 0.1, cacheRead: 0, cacheWrite: 0, total: 0.2 },
+      },
+      sessions: [],
+      partial: false,
+      warnings: [],
+    }));
+    setup({
+      subagentSessions: {
+        summaries: async () => [],
+        statistics,
+        snapshot: async (_parentSessionId: string, childSessionId: string) => {
+          throw new SubagentSessionNotFoundError(`Subagent session not found: ${childSessionId}`);
+        },
+      },
+    });
+
+    const response = await handler(new Request("http://localhost/api/sessions/root-1/statistics"));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ rootSessionId: "root-1", total: { totalTokens: 10 } });
+    expect(statistics).toHaveBeenCalledWith("root-1");
   });
 
   it("returns a structured code when malformed global settings block a compaction patch", async () => {
@@ -851,11 +947,36 @@ describe("web routes", () => {
         }),
       )
     ).json()) as { id: string };
+    FakeAdapter.all.at(-1)!.inlineUsageResult = [{
+      id: "usage-1",
+      sessionId: created.id,
+      source: "assistant",
+      timestamp: "2026-08-25T00:00:00.000Z",
+      anchor: { kind: "message", messageEntryId: "usage-1" },
+      provider: "openai",
+      model: "test-model",
+      usage: {
+        input: 1,
+        output: 1,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 2,
+        cacheHitRate: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+    }];
     const res = await handler(new Request(`http://localhost/api/sessions/${created.id}/snapshot`));
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { session: { id: string }; messages: unknown[] };
+    const body = (await res.json()) as {
+      session: { id: string };
+      messages: unknown[];
+      inlineUsage: unknown[];
+      apiUsage: { rootSessionId: string };
+    };
     expect(body.session.id).toBe(created.id);
     expect(body.messages).toEqual([]);
+    expect(body.inlineUsage).toHaveLength(1);
+    expect(body.apiUsage.rootSessionId).toBe(created.id);
   });
 
   it("includes pending steer texts in the HTTP snapshot (ADR-083)", async () => {
@@ -1107,6 +1228,69 @@ describe("web routes", () => {
     const second = await reader.read();
     expect(decoder.decode(second.value)).toContain('"type":"message_start"');
     reader.cancel();
+  });
+
+  it("streams a backend replacement after a persisted Pi usage record", async () => {
+    let records = 0;
+    const statistics = vi.fn(async (rootSessionId: string) => ({
+      rootSessionId,
+      total: {
+        records,
+        input: records * 5,
+        output: records,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cacheWrite1h: 0,
+        reasoning: 0,
+        totalTokens: records * 6,
+        cacheHitRate: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: records * 0.1 },
+      },
+      sessions: [],
+      partial: false,
+      warnings: [],
+    }));
+    setup({
+      subagentSessions: {
+        summaries: async () => [],
+        statistics,
+        snapshot: async (_parentSessionId: string, childSessionId: string) => {
+          throw new SubagentSessionNotFoundError(`Subagent session not found: ${childSessionId}`);
+        },
+      },
+    });
+    const created = await registry.create({ cwd: projectDir });
+    const response = await handler(new Request(`http://localhost/api/sessions/${created.id}/events`));
+    const reader = response.body!.getReader();
+    expect((await readSseEvent(reader)).type).toBe("snapshot");
+
+    records = 1;
+    const adapter = factory.created[0]!;
+    adapter.events.forEach((listener) => listener({
+      type: "entry_appended",
+      entry: {
+        type: "message",
+        id: "assistant-entry",
+        parentId: null,
+        timestamp: "2026-08-25T00:00:00.000Z",
+        message: assistant("tracked"),
+      },
+    }));
+
+    expect(await readSseEvent(reader)).toMatchObject({
+      type: "entry_appended",
+      apiUsageRecord: {
+        id: "assistant-entry",
+        sessionId: created.id,
+        source: "assistant",
+      },
+    });
+    expect(await readSseEvent(reader)).toMatchObject({
+      type: "api_usage_changed",
+      statistics: { rootSessionId: created.id, total: { records: 1, totalTokens: 6 } },
+    });
+    expect(statistics).toHaveBeenCalledTimes(2);
+    await reader.cancel();
   });
 
   it("streams one current configuration event before ordered daemon-wide updates", async () => {
