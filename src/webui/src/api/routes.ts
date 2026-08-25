@@ -18,6 +18,7 @@ export const routes = {
   skillResource: (name: string) => `${API_ROOT}/skill-resources/${encodeURIComponent(name)}`,
   models: () => `${API_ROOT}/models`,
   configurationEvents: () => `${API_ROOT}/config/events`,
+  compactionSettings: () => `${API_ROOT}/settings/compaction`,
   sessionName: (id: string) => `${session(id)}/name`,
   directories: (path: string) => `${API_ROOT}/directories?${new URLSearchParams({ path }).toString()}`,
   createDirectory: () => `${API_ROOT}/directories`,

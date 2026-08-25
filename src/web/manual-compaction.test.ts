@@ -192,10 +192,10 @@ it("registers an awaited agent-end handler for the safe compaction boundary", as
 
   await handlers.get("agent_end")?.();
   await handlers.get("agent_settled")?.();
-  await handlers.get("model_select")?.();
   await handlers.get("session_tree")?.();
   await handlers.get("session_compact")?.();
 
   expect(onAgentEnd).toHaveBeenCalledOnce();
-  expect(notifyStatsChanged).toHaveBeenCalledTimes(4);
+  expect(handlers.has("model_select")).toBe(false);
+  expect(notifyStatsChanged).toHaveBeenCalledTimes(3);
 });

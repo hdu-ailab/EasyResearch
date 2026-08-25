@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, type ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -260,6 +260,61 @@ describe("ChatTranscript", () => {
     flushFollowFrame();
     fireEvent.click(screen.getByRole("button", { name: /jump to latest/i }));
     expect(el.scrollTop).toBe(1000);
+  });
+
+  it("shows transcript fades only beyond the corresponding scroll boundaries", () => {
+    renderTranscript(<ChatTranscript messages={[msg({ key: "a" }), msg({ key: "b" })]} tools={[]} />);
+    const el = scrollContainer();
+    metricStub(el, { scrollHeight: 1000, clientHeight: 200 });
+
+    el.scrollTop = 0;
+    fireEvent.scroll(el);
+    flushFollowFrame();
+    expect(screen.queryByTestId("transcript-top-fade")).toBeNull();
+    expect(screen.getByTestId("transcript-bottom-fade")).toBeVisible();
+
+    el.scrollTop = 100;
+    fireEvent.scroll(el);
+    flushFollowFrame();
+    expect(screen.getByTestId("transcript-top-fade")).toBeVisible();
+    expect(screen.getByTestId("transcript-bottom-fade")).toBeVisible();
+
+    el.scrollTop = 800;
+    fireEvent.scroll(el);
+    flushFollowFrame();
+    expect(screen.getByTestId("transcript-top-fade")).toBeVisible();
+    expect(screen.queryByTestId("transcript-bottom-fade")).toBeNull();
+  });
+
+  it("animates only rows appended after hydration and does not replay their entrance", async () => {
+    const initial = msg({ key: "initial", text: "history" });
+    const appended = msg({ key: "appended", text: "new answer", order: 1 });
+    const { rerender, container } = renderTranscript(<ChatTranscript messages={[]} tools={[]} hydrationRevision={0} />);
+
+    rerender(<ChatTranscript messages={[initial]} tools={[]} hydrationRevision={1} />);
+
+    expect(container.querySelector('[data-row-key="initial"]')).not.toHaveClass("v2-transcript-row-enter");
+    rerender(<ChatTranscript messages={[initial, appended]} tools={[]} hydrationRevision={1} />);
+
+    const appendedRow = container.querySelector('[data-row-key="appended"]');
+    expect(appendedRow).toHaveClass("v2-transcript-row-enter");
+    await waitFor(() => expect(appendedRow).not.toHaveClass("v2-transcript-row-enter"));
+
+    rerender(<ChatTranscript messages={[initial]} tools={[]} hydrationRevision={1} />);
+    rerender(<ChatTranscript messages={[initial, appended]} tools={[]} hydrationRevision={1} />);
+    expect(container.querySelector('[data-row-key="appended"]')).not.toHaveClass("v2-transcript-row-enter");
+  });
+
+  it("seeds history again when switching between session scopes with equal revisions", () => {
+    const root = msg({ key: "root-history", text: "root" });
+    const child = msg({ key: "child-history", text: "child" });
+    const { rerender, container } = renderTranscript(
+      <ChatTranscript messages={[root]} tools={[]} hydrationRevision={1} hydrationScope="root" />,
+    );
+
+    rerender(<ChatTranscript messages={[child]} tools={[]} hydrationRevision={1} hydrationScope="child" />);
+
+    expect(container.querySelector('[data-row-key="child-history"]')).not.toHaveClass("v2-transcript-row-enter");
   });
 
   it("arms a scroll gesture on scroll keys over the transcript", () => {
@@ -712,6 +767,9 @@ describe("ChatTranscript", () => {
         />,
       );
       expect(screen.getByRole("status", { name: /queued messages/i })).toBeTruthy();
+      expect(screen.getByTestId("transcript-viewport")).not.toContainElement(
+        screen.getByRole("status", { name: /queued messages/i }),
+      );
       const bubbles = screen.getAllByText(/note (one|two)/);
       expect(bubbles).toHaveLength(2);
       expect(screen.getAllByText(/queued/i).length).toBeGreaterThanOrEqual(2);

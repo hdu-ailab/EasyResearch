@@ -10,6 +10,7 @@ export class ConfigServiceError extends Error {
   constructor(
     public readonly status: number,
     message: string,
+    public readonly code?: string,
   ) {
     super(message);
   }
@@ -41,6 +42,15 @@ export interface AuthoritativeConfigChange {
 
 export interface ConfigFileServiceOptions {
   onAuthoritativeWrite?: (change: AuthoritativeConfigChange) => void | Promise<void>;
+}
+
+export interface GlobalSettingsMutation<T> {
+  settings: Record<string, unknown>;
+  result: T;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**
@@ -99,6 +109,8 @@ function canonicalizeNearestAncestor(target: string): string {
  * File contents are never logged or embedded in errors.
  */
 export class ConfigFileService {
+  private settingsMutationTail: Promise<void> = Promise.resolve();
+
   constructor(
     private readonly agentDir: string = getAgentDir(),
     private readonly options: ConfigFileServiceOptions = {},
@@ -153,6 +165,42 @@ export class ConfigFileService {
   }
 
   async write(input: ConfigWriteInput): Promise<void> {
+    if (isGlobalSettingsWrite(input)) {
+      return this.enqueueGlobalSettingsMutation(() => this.writeNow(input));
+    }
+    return this.writeNow(input);
+  }
+
+  async mutateGlobalSettings<T>(
+    mutate: (settings: Record<string, unknown>) => GlobalSettingsMutation<T>,
+  ): Promise<T> {
+    return this.enqueueGlobalSettingsMutation(async () => {
+      const settingsPath = join(this.agentDir, "settings.json");
+      let settings: Record<string, unknown> = {};
+      if (fs.existsSync(settingsPath)) {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(fs.readFileSync(settingsPath, "utf8")) as unknown;
+        } catch {
+          throw new ConfigServiceError(409, "Global settings.json is invalid", "CONFIG_INVALID");
+        }
+        if (!isRecord(parsed)) {
+          throw new ConfigServiceError(409, "Global settings.json must contain an object", "CONFIG_INVALID");
+        }
+        settings = parsed;
+      }
+
+      const next = mutate(settings);
+      await this.writeNow({
+        scope: "global",
+        path: "settings.json",
+        content: `${JSON.stringify(next.settings, null, 2)}\n`,
+      });
+      return next.result;
+    });
+  }
+
+  private async writeNow(input: ConfigWriteInput): Promise<void> {
     const root = this.rootFor(input.scope, input.cwd);
     if (input.path.endsWith(".json")) {
       try {
@@ -174,6 +222,12 @@ export class ConfigFileService {
     } finally {
       fs.rmSync(tempPath, { force: true });
     }
+  }
+
+  private enqueueGlobalSettingsMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const current = this.settingsMutationTail.then(operation);
+    this.settingsMutationTail = current.then(() => undefined, () => undefined);
+    return current;
   }
 
   async createDirectory(input: ConfigListInput): Promise<void> {
@@ -202,11 +256,15 @@ export class ConfigFileService {
   }
 }
 
+function isGlobalSettingsWrite(input: ConfigWriteInput): boolean {
+  return input.scope === "global" && normalize(input.path) === "settings.json";
+}
+
 function authoritativeChange(input: ConfigWriteInput): AuthoritativeConfigChange | undefined {
   if (input.scope !== "global") return undefined;
   const path = normalize(input.path);
   if (path === "models.json") return { modelsChanged: true };
-  if (path === "settings.json") return { agentsChanged: true };
+  if (path === "settings.json") return {};
   if (dirname(path) === "agents" && basename(path).endsWith(".md")) {
     return { agentsChanged: true };
   }

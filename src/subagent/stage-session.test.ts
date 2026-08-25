@@ -105,6 +105,7 @@ class MemoryCoordinatorSessionManager implements CoordinatorSessionManager {
 
 class FakeLiveConfiguration {
   generation = 1;
+  compactionPolicy = { triggerPercent: 70, globalEnabled: true, globalKeepRecentTokens: 20_000 };
   onResolve: (() => void) | undefined;
   resolveCalls = 0;
   private readonly listeners = new Set<(event: any) => void>();
@@ -125,8 +126,12 @@ class FakeLiveConfiguration {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
-  publish(rows: AgentConfig[]): void {
+  publish(
+    rows: AgentConfig[],
+    compactionPolicy = this.compactionPolicy,
+  ): void {
     this.rows = rows;
+    this.compactionPolicy = { ...compactionPolicy };
     this.generation += 1;
     for (const listener of [...this.listeners]) {
       listener({
@@ -290,6 +295,19 @@ function model(name = "model-metadata"): Model<any> {
   } as Model<any>;
 }
 
+function fakeSettingsManager<T extends object>(base: T): T & {
+  getCompactionSettings(): { enabled: boolean; reserveTokens: number; keepRecentTokens: number };
+  applyOverrides(overrides: { compaction: { enabled: boolean; reserveTokens: number; keepRecentTokens: number } }): void;
+} {
+  let compaction = { enabled: true, reserveTokens: 16_384, keepRecentTokens: 20_000 };
+  return Object.assign(base, {
+    getCompactionSettings: () => ({ ...compaction }),
+    applyOverrides: (overrides: { compaction: typeof compaction }) => {
+      compaction = { ...overrides.compaction };
+    },
+  });
+}
+
 function dependencyHarness(session: FakeStageSession): DependencyHarness {
   const calls: Array<{ name: string; value?: unknown }> = [];
   const supervisors: FakeDirectChildSupervisor[] = [];
@@ -316,7 +334,7 @@ function dependencyHarness(session: FakeStageSession): DependencyHarness {
       },
       createSettingsManager: (cwd, agentDir) => {
         calls.push({ name: "settings", value: { cwd, agentDir } });
-        return { getGlobalSettings: () => ({}) };
+        return fakeSettingsManager({ getGlobalSettings: () => ({}) });
       },
       createModelRuntime: async () => ({
         refresh: async () => ({ aborted: false, errors: new Map() }),
@@ -762,6 +780,7 @@ describe("createStageSessionLauncher", () => {
     let modelGeneration = 0;
     const disposedModels: string[] = [];
     const supervisor = new FakeDirectChildSupervisor();
+    const policySettings = fakeSettingsManager({ getGlobalSettings: () => ({}) });
     const dependencies: StageSessionDependencies = {
       agentDir: "/agent",
       createSessionManager: () => ({ kind: "new" }),
@@ -770,7 +789,7 @@ describe("createStageSessionLauncher", () => {
         getCwd: () => "/project",
         getSessionFile: () => session.sessionFile,
       }),
-      createSettingsManager: () => ({ getGlobalSettings: () => ({}) }),
+      createSettingsManager: () => policySettings,
       createModelRuntime: async () => {
         modelGeneration += 1;
         const selected = model(`metadata-v${modelGeneration}`);
@@ -814,7 +833,10 @@ describe("createStageSessionLauncher", () => {
     };
     session.promptStart = () => {
       session.isIdle = false;
-      live.publish([paper, stageV2, reviewer]);
+      live.publish(
+        [paper, stageV2, reviewer],
+        { triggerPercent: 80, globalEnabled: true, globalKeepRecentTokens: 20_000 },
+      );
       void resourceHost!.emit("turn_end", { turnIndex: 0 }, { cwd: "/project", abort: vi.fn() })
         .then(() => {
           session.isIdle = true;
@@ -835,6 +857,11 @@ describe("createStageSessionLauncher", () => {
     expect(runtimeBinding!.current().subagents).toEqual(["reviewer"]);
     expect(session.model?.name).toBe("metadata-v2");
     expect(session.thinkingLevel).toBe("high");
+    expect(policySettings.getCompactionSettings()).toMatchObject({
+      reserveTokens: 25_600,
+      keepRecentTokens: 20_000,
+    });
+    expect(runtimeBinding!.compactionPolicy()).toEqual({ triggerPercent: 80, enabled: true });
     expect(session.agent.steeringMode).toBe("all");
     expect(disposedModels).toContain("metadata-v1");
 

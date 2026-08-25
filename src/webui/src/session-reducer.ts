@@ -1,5 +1,6 @@
 import type { AgentSessionEvent, MessageUpdateEvent } from "@earendil-works/pi-coding-agent";
 import type {
+  CompactionPolicyDto,
   CompactionStateDto,
   ContextUsageDto,
   SessionSnapshotDto,
@@ -79,6 +80,8 @@ export interface SessionMessageView {
 export interface SessionViewState {
   messages: SessionMessageView[];
   tools: ToolView[];
+  /** Increments whenever an authoritative snapshot seeds transcript history. */
+  hydrationRevision: number;
   /** True while an agent run is active, independently of message streaming. */
   isStreaming: boolean;
   error: string | null;
@@ -101,6 +104,7 @@ export interface SessionViewState {
   /** Persisted supervisor summaries from the latest snapshot, including nested owners. */
   subagentSummaries?: SubagentSessionSummaryDto[];
   contextUsage?: ContextUsageDto;
+  compactionPolicy: CompactionPolicyDto;
   compactionState: CompactionStateDto;
 }
 
@@ -123,12 +127,18 @@ const SUBAGENT_SESSION_PREFIX = "easyresearch:";
 const emptyState: SessionViewState = {
   messages: [],
   tools: [],
+  hydrationRevision: 0,
   isStreaming: false,
   error: null,
   retry: null,
   nextOrder: 0,
   steers: [],
+  compactionPolicy: { triggerPercent: 70, enabled: true },
   compactionState: "idle",
+};
+
+type SessionSnapshotInput = Omit<SessionSnapshotDto, "compactionPolicy"> & {
+  compactionPolicy?: CompactionPolicyDto;
 };
 
 type UnknownMessage = {
@@ -323,7 +333,7 @@ function labelFor(role: string, subagentName?: string): string | undefined {
   return role === "user" ? RESEARCH_ASSISTANT_AGENT : subagentName;
 }
 
-function subagentNameOf(snapshot: SessionSnapshotDto): string | undefined {
+function subagentNameOf(snapshot: Pick<SessionSnapshotDto, "session">): string | undefined {
   const name = snapshot.session?.sessionName;
   if (typeof name !== "string" || !name.startsWith(SUBAGENT_SESSION_PREFIX)) return undefined;
   const agent = name.slice(SUBAGENT_SESSION_PREFIX.length);
@@ -350,7 +360,7 @@ function isAgentStatusMessage(message: UnknownMessage): boolean {
   return message.role === "custom" && message.customType === AGENT_STATUS_CUSTOM_TYPE;
 }
 
-export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
+export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision = 1): SessionViewState {
   const subagentName = subagentNameOf(snapshot);
   const sessionName =
     snapshot.session.sessionName !== undefined && snapshot.session.sessionName !== null
@@ -360,6 +370,7 @@ export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
   const state: SessionViewState = {
     messages: [],
     tools: [],
+    hydrationRevision,
     isStreaming,
     error: null,
     retry: null,
@@ -369,6 +380,7 @@ export function fromSnapshot(snapshot: SessionSnapshotDto): SessionViewState {
     steers: (snapshot.steering ?? []).map((text, index) => createSteerView(text, `steer:${index}`)),
     subagentSummaries: snapshot.subagents ?? [],
     ...(snapshot.contextUsage !== undefined ? { contextUsage: snapshot.contextUsage } : {}),
+    compactionPolicy: snapshot.compactionPolicy ?? { triggerPercent: 70, enabled: true },
     compactionState: snapshot.compactionState ?? "idle",
   };
   const next = () => state.nextOrder++;
@@ -710,8 +722,8 @@ function syncSteers(current: SteerView[], texts: readonly string[]): SteerView[]
 
 /** Rehydrate authoritative snapshot state while retaining subagent metadata
  * that is keyed by the persisted tool invocation. */
-export function mergeSnapshot(state: SessionViewState, snapshot: SessionSnapshotDto): SessionViewState {
-  const next = fromSnapshot(snapshot);
+export function mergeSnapshot(state: SessionViewState, snapshot: SessionSnapshotInput): SessionViewState {
+  const next = fromSnapshot(snapshot, state.hydrationRevision + 1);
   const scopedKey = (ownerSessionId: string, toolCallId: string) => `${ownerSessionId}\u0000${toolCallId}`;
   const summaries = new Map<string, SubagentSessionSummaryDto>();
   for (const summary of snapshot.subagents ?? []) {

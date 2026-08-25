@@ -3,6 +3,7 @@ import {
   parseActiveSession,
   parseAgents,
   parseChildSnapshot,
+  parseCompactionSettings,
   parseConfigEntries,
   parseConfigFile,
   parseConfigProjects,
@@ -12,6 +13,7 @@ import {
   parseFileContent,
   parseModels,
   parseSessionSnapshot,
+  parseSessionStatsChangedEvent,
   parseSessionTree,
   parseSkillCommands,
   parseStatus,
@@ -20,6 +22,27 @@ import {
 } from "./parsers";
 
 describe("API response parsers", () => {
+  const compactionPolicy = { triggerPercent: 70, enabled: true };
+
+  it("parses global and session-effective compaction settings without conflating enabled state", () => {
+    expect(parseCompactionSettings({ triggerPercent: 80, globalEnabled: false })).toEqual({
+      triggerPercent: 80,
+      globalEnabled: false,
+    });
+    expect(
+      parseSessionStatsChangedEvent({
+        type: "session_stats_changed",
+        contextUsage: { tokens: 90, contextWindow: 100, percent: 90 },
+        compactionPolicy: { triggerPercent: 80, enabled: true },
+      }),
+    ).toEqual({
+      type: "session_stats_changed",
+      contextUsage: { tokens: 90, contextWindow: 100, percent: 90 },
+      compactionPolicy: { triggerPercent: 80, enabled: true },
+    });
+    expect(() => parseCompactionSettings({ triggerPercent: 70, enabled: true })).toThrow();
+    expect(() => parseSessionStatsChangedEvent({ type: "session_stats_changed" })).toThrow();
+  });
   it("rejects a status payload with a missing homeDir", () => {
     expect(() => parseStatus({ agentDir: "/a", sessions: [], activeSessions: [] })).toThrow();
   });
@@ -169,6 +192,7 @@ describe("API response parsers", () => {
         ],
         contextUsage: { tokens: null, contextWindow: 128_000, percent: null },
         compactionState: "queued",
+        compactionPolicy,
         fileWatchLeaseId: "lease-1",
       }),
     ).toMatchObject({
@@ -176,6 +200,7 @@ describe("API response parsers", () => {
       messages: [{ role: "assistant" }],
       contextUsage: { tokens: null, contextWindow: 128_000, percent: null },
       compactionState: "queued",
+      compactionPolicy,
       fileWatchLeaseId: "lease-1",
     });
     expect(
@@ -186,13 +211,17 @@ describe("API response parsers", () => {
       }).session,
     ).toEqual({ id: "child-1", cwd: "/p", sessionName: "easyresearch:search" });
     expect(() => parseActiveSession({ ...session, status: "unknown" })).toThrow();
-    expect(() => parseSessionSnapshot({ session, messages: {}, subagents: [] })).toThrow();
-    expect(() => parseSessionSnapshot({ session, messages: [], subagents: [], fileWatchLeaseId: 1 })).toThrow();
+    expect(() => parseSessionSnapshot({ session, messages: {}, subagents: [], compactionPolicy })).toThrow();
+    expect(() => parseSessionSnapshot({ session, messages: [], subagents: [] })).toThrow();
+    expect(() =>
+      parseSessionSnapshot({ session, messages: [], subagents: [], compactionPolicy, fileWatchLeaseId: 1 }),
+    ).toThrow();
     expect(() =>
       parseSessionSnapshot({
         session,
         messages: [],
         subagents: [],
+        compactionPolicy,
         contextUsage: { tokens: 10, contextWindow: 100, percent: "10" },
       }),
     ).toThrow();
@@ -310,7 +339,9 @@ describe("API response parsers", () => {
         step: 2,
         latestMessage: "done",
       };
-      expect(parseSessionSnapshot({ session, messages: [], subagents: [summary] }).subagents).toEqual([summary]);
+      expect(parseSessionSnapshot({ session, messages: [], subagents: [summary], compactionPolicy }).subagents).toEqual(
+        [summary],
+      );
       const legacy = {
         ownerSessionId: "root",
         toolCallId: "legacy-tool",
@@ -318,18 +349,40 @@ describe("API response parsers", () => {
         agent: "search",
         status: "complete",
       };
-      expect(parseSessionSnapshot({ session, messages: [], subagents: [legacy] }).subagents).toEqual([legacy]);
+      expect(parseSessionSnapshot({ session, messages: [], subagents: [legacy], compactionPolicy }).subagents).toEqual([
+        legacy,
+      ]);
       expect(() =>
-        parseSessionSnapshot({ session, messages: [], subagents: [{ ...summary, sessionPath: "/private/a.jsonl" }] }),
+        parseSessionSnapshot({
+          session,
+          messages: [],
+          subagents: [{ ...summary, sessionPath: "/private/a.jsonl" }],
+          compactionPolicy,
+        }),
       ).toThrow();
       expect(() =>
-        parseSessionSnapshot({ session, messages: [], subagents: [{ ...summary, session_path: "/private/a.jsonl" }] }),
+        parseSessionSnapshot({
+          session,
+          messages: [],
+          subagents: [{ ...summary, session_path: "/private/a.jsonl" }],
+          compactionPolicy,
+        }),
       ).toThrow();
       expect(() =>
-        parseSessionSnapshot({ session, messages: [], subagents: [{ ...summary, ownerSessionId: undefined }] }),
+        parseSessionSnapshot({
+          session,
+          messages: [],
+          subagents: [{ ...summary, ownerSessionId: undefined }],
+          compactionPolicy,
+        }),
       ).toThrow();
       expect(() =>
-        parseSessionSnapshot({ session, messages: [], subagents: [{ ...summary, status: "queued" }] }),
+        parseSessionSnapshot({
+          session,
+          messages: [],
+          subagents: [{ ...summary, status: "queued" }],
+          compactionPolicy,
+        }),
       ).toThrow();
     });
 

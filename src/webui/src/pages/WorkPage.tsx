@@ -56,11 +56,13 @@ type Panel = "files" | "agents" | null;
 const emptyView: SessionViewState = {
   messages: [],
   tools: [],
+  hydrationRevision: 0,
   isStreaming: false,
   error: null,
   retry: null,
   nextOrder: 0,
   steers: [],
+  compactionPolicy: { triggerPercent: 70, enabled: true },
   compactionState: "idle",
 };
 
@@ -502,14 +504,21 @@ export function WorkPage({
             return next;
           });
           setChildViews((current) => {
+            const seeded = {
+              ...hydrated,
+              hydrationRevision: (current[childId]?.hydrationRevision ?? 0) + 1,
+            };
             const merged = current[childId]
               ? refresh
                 ? (childRevisions.current.get(childId) ?? 0) > startRevision
-                  ? mergeChildView(hydrated, current[childId])
-                  : mergeChildView(current[childId], hydrated)
-                : mergeChildView(hydrated, current[childId])
-              : hydrated;
-            return { ...current, [childId]: merged };
+                  ? mergeChildView(seeded, current[childId])
+                  : mergeChildView(current[childId], seeded)
+                : mergeChildView(seeded, current[childId])
+              : seeded;
+            return {
+              ...current,
+              [childId]: { ...merged, hydrationRevision: seeded.hydrationRevision },
+            };
           });
         })
         .catch(() => {
@@ -835,7 +844,7 @@ export function WorkPage({
           role="tabpanel"
           aria-labelledby="work-tab-chat"
           hidden={chatHidden}
-          className="flex h-full min-w-0 flex-1 flex-col overflow-hidden rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]"
+          className="v2-work-enter flex h-full min-w-0 flex-1 flex-col overflow-hidden rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]"
         >
           <AgentTabBar
             tabs={tabsState.tabs}
@@ -846,6 +855,15 @@ export function WorkPage({
             onSelect={selectAgentTab}
             onClose={closeAgentTab}
             onStop={() => abort()}
+            trailing={
+              activeTab === RESEARCH_ASSISTANT_AGENT && !sessionView.subagentName ? (
+                <ContextCapacity
+                  usage={sessionView.contextUsage}
+                  compactionState={sessionView.compactionState}
+                  compactionPolicy={sessionView.compactionPolicy}
+                />
+              ) : undefined
+            }
           />
           {activeChildId && childErrors[activeChildId] ? (
             <p className="px-4 py-3 text-[13px] text-v2-text-text-muted">{t("work.childUnavailable")}</p>
@@ -861,13 +879,20 @@ export function WorkPage({
             onEditMessage={activeTab === RESEARCH_ASSISTANT_AGENT ? onEditMessage : undefined}
             onSwitchBranch={activeTab === RESEARCH_ASSISTANT_AGENT ? onSwitchBranch : undefined}
             steers={activeTab === RESEARCH_ASSISTANT_AGENT ? sessionView.steers : []}
+            hydrationRevision={
+              activeTab === RESEARCH_ASSISTANT_AGENT
+                ? sessionView.hydrationRevision
+                : (activeView?.hydrationRevision ?? 0)
+            }
+            hydrationScope={
+              activeTab === RESEARCH_ASSISTANT_AGENT
+                ? `${sessionId}:root`
+                : `${sessionId}:${activeChildId ?? activeTab}`
+            }
           />
-          <footer className="shrink-0 border-t border-v2-grey-200 p-3">
+          <footer className="shrink-0 p-3">
             {activeTab !== RESEARCH_ASSISTANT_AGENT || sessionView.subagentName ? (
               <p className="mb-2 text-[12px] text-v2-text-text-faint">{t("work.subagentLineNote")}</p>
-            ) : null}
-            {activeTab === RESEARCH_ASSISTANT_AGENT && !sessionView.subagentName ? (
-              <ContextCapacity usage={sessionView.contextUsage} compactionState={sessionView.compactionState} />
             ) : null}
             <ChatComposer
               ref={composerRef}

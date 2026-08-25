@@ -15,6 +15,11 @@ import {
   type AgentRuntimeModelRuntime,
 } from "../runtime/agent-runtime-binding";
 import { createSessionSettingsFacade } from "../runtime/session-settings-facade";
+import {
+  createCompactionPolicyBinding,
+  DEFAULT_GLOBAL_COMPACTION_POLICY,
+  type CompactionPolicySettingsManager,
+} from "../runtime/compaction-policy";
 import { resolvePiDefaultModel, type PiDefaultModelApi } from "../runtime/pi-default-model";
 import {
   ConfigurationUnavailableError,
@@ -24,7 +29,7 @@ import type { AgentConfig } from "../subagent/agents";
 import type { CoordinatorSessionManager, SubagentCoordinator } from "../subagent/coordinator";
 import { AGENT_STATUS_TYPE } from "../subagent/notifications";
 import type { SubagentSupervisor, SupervisableAgentSession } from "../subagent/supervisor";
-import type { ContextUsageDto } from "./contracts";
+import type { CompactionPolicyDto, ContextUsageDto } from "./contracts";
 import {
   ManualCompactionController,
   type ManualCompactionAcceptedState,
@@ -317,6 +322,10 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
     const settingsManager = createSessionSettingsFacade(
       deps.createSettingsManager(options.cwd, deps.agentDir) as object,
     );
+    const automaticCompaction = createCompactionPolicyBinding(
+      settingsManager as CompactionPolicySettingsManager,
+    );
+    const compaction = new ManualCompactionController();
     const binding = createAgentRuntimeBinding({
       live: deps.liveConfiguration,
       agentName: "research-assistant",
@@ -335,10 +344,11 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
         deps.agentDir,
         settingsManager,
       ),
+      compaction: automaticCompaction,
+      onCompactionPolicyChanged: () => compaction.notifyStatsChanged(),
     });
     let supervisor: SubagentSupervisor | undefined;
     let session: BindableAgentSession | undefined;
-    const compaction = new ManualCompactionController();
     try {
       await binding.ensureCurrent();
       await deps.recoverSubagentTree({ coordinator, expectedCwd: options.cwd });
@@ -385,6 +395,10 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
           reload: async () => {
             await session!.reload();
             configureBatchedSteering(session!);
+            await binding.ensureCurrent({
+              activeBoundary: true,
+              recaptureCompactionBase: true,
+            });
           },
         },
       });
@@ -425,6 +439,7 @@ export interface SessionAdapter {
   navigateTree(entryId: string, options?: TreeNavigationOptions): Promise<TreeNavigationResult>;
   compact(customInstructions?: string): Promise<{ state: ManualCompactionAcceptedState }>;
   getCompactionState(): ManualCompactionState;
+  getCompactionPolicy(): CompactionPolicyDto;
   getContextUsage(): ContextUsageDto | undefined;
   getSteeringMessages(): readonly string[];
   hasBackgroundWork(): boolean;
@@ -534,6 +549,10 @@ class DirectSessionAdapter implements SessionAdapter {
   private managed: ManagedAgentSession | undefined;
   private session: InProcessAgentSession | undefined;
   private binding: AgentRuntimeBinding | undefined;
+  private lastCompactionPolicy: CompactionPolicyDto = {
+    triggerPercent: DEFAULT_GLOBAL_COMPACTION_POLICY.triggerPercent,
+    enabled: DEFAULT_GLOBAL_COMPACTION_POLICY.globalEnabled,
+  };
   private startCleanup: (() => Promise<void>) | undefined;
   private unsubscribe: (() => void) | undefined;
   private coordinatorUnsubscribe: (() => void) | undefined;
@@ -595,6 +614,7 @@ class DirectSessionAdapter implements SessionAdapter {
       this.managed = created;
       this.session = created.session;
       this.binding = created.binding;
+      this.lastCompactionPolicy = created.binding.compactionPolicy();
       let coordinatorUnsubscribe: (() => void) | undefined;
       let compactionUnsubscribe: (() => void) | undefined;
       let sessionUnsubscribe: (() => void) | undefined;
@@ -623,9 +643,11 @@ class DirectSessionAdapter implements SessionAdapter {
         });
         const unsubscribeStats = created.compaction.subscribeStats(() => {
           const contextUsage = created.session.getSessionStats().contextUsage;
+          this.lastCompactionPolicy = created.binding.compactionPolicy();
           const event = {
             type: "session_stats_changed",
             ...(contextUsage !== undefined ? { contextUsage } : {}),
+            compactionPolicy: { ...this.lastCompactionPolicy },
           };
           for (const listener of this.listeners) listener(event);
         });
@@ -867,6 +889,12 @@ class DirectSessionAdapter implements SessionAdapter {
 
   getCompactionState(): ManualCompactionState {
     return this.managed?.compaction.state() ?? "idle";
+  }
+
+  getCompactionPolicy(): CompactionPolicyDto {
+    const policy = this.binding?.compactionPolicy() ?? this.lastCompactionPolicy;
+    this.lastCompactionPolicy = { ...policy };
+    return { ...this.lastCompactionPolicy };
   }
 
   getContextUsage(): ContextUsageDto | undefined {

@@ -8,7 +8,9 @@ import type {
   AuthFlowEventDto,
   AuthProviderInfoDto,
   ChildSessionSnapshotDto,
+  CompactionPolicyDto,
   CompactionRequestResultDto,
+  CompactionSettingsDto,
   CompactionStateChangedEventDto,
   CompactionStateDto,
   ConfigEntryDto,
@@ -128,6 +130,30 @@ function parseCompactionState(value: unknown): CompactionStateDto {
   return value;
 }
 
+function parseCompactionPolicy(value: unknown): CompactionPolicyDto {
+  const source = record(value, "compaction policy");
+  const triggerPercent = requiredNumber(source, "triggerPercent");
+  if (!Number.isSafeInteger(triggerPercent) || triggerPercent < 10 || triggerPercent > 90) {
+    throw new Error("Invalid API response: triggerPercent must be an integer from 10 through 90");
+  }
+  return {
+    triggerPercent,
+    enabled: requiredBoolean(source, "enabled"),
+  };
+}
+
+export function parseCompactionSettings(value: unknown): CompactionSettingsDto {
+  const source = record(value, "compaction settings");
+  const triggerPercent = requiredNumber(source, "triggerPercent");
+  if (!Number.isSafeInteger(triggerPercent) || triggerPercent < 10 || triggerPercent > 90) {
+    throw new Error("Invalid API response: triggerPercent must be an integer from 10 through 90");
+  }
+  return {
+    triggerPercent,
+    globalEnabled: requiredBoolean(source, "globalEnabled"),
+  };
+}
+
 export function parseCompactionRequestResult(value: unknown): CompactionRequestResultDto {
   const source = record(value, "compaction result");
   const state = parseCompactionState(source.state);
@@ -143,6 +169,7 @@ export function parseSessionStatsChangedEvent(value: unknown): SessionStatsChang
   return {
     type: "session_stats_changed",
     ...(source.contextUsage !== undefined ? { contextUsage: parseContextUsage(source.contextUsage) } : {}),
+    compactionPolicy: parseCompactionPolicy(source.compactionPolicy),
   };
 }
 
@@ -457,6 +484,7 @@ export function parseSessionSnapshot(value: unknown): SessionSnapshotDto {
     subagents: arrayOf(source.subagents, "subagents", parseSubagentSummary),
     ...(steering !== undefined ? { steering: stringArray(steering, "steering") } : {}),
     ...(contextUsage !== undefined ? { contextUsage: parseContextUsage(contextUsage) } : {}),
+    compactionPolicy: parseCompactionPolicy(source.compactionPolicy),
     ...(compactionState !== undefined ? { compactionState: parseCompactionState(compactionState) } : {}),
     ...(fileWatchLeaseId !== undefined ? { fileWatchLeaseId } : {}),
   };

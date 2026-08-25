@@ -44,6 +44,7 @@ export interface SessionSnapshotDto {
   /** Present only on an SSE snapshot; scoped to that exact EventSource. */
   fileWatchLeaseId?: string;
   contextUsage?: ContextUsageDto;
+  compactionPolicy: CompactionPolicyDto;
   compactionState?: CompactionStateDto;
   /** Pending steer messages not yet delivered into the agent context
    * (ADR-083); omitted or empty for historical/stopped sessions. */
@@ -58,6 +59,20 @@ export interface ContextUsageDto {
 
 export type CompactionStateDto = "idle" | "queued" | "running";
 
+export interface CompactionPolicyDto {
+  triggerPercent: number;
+  enabled: boolean;
+}
+
+export interface CompactionSettingsDto {
+  triggerPercent: number;
+  globalEnabled: boolean;
+}
+
+export interface CompactionSettingsPatchDto {
+  triggerPercent: number;
+}
+
 export interface CompactionRequestResultDto {
   state: "queued" | "running";
 }
@@ -65,6 +80,7 @@ export interface CompactionRequestResultDto {
 export interface SessionStatsChangedEventDto {
   type: "session_stats_changed";
   contextUsage?: ContextUsageDto;
+  compactionPolicy: CompactionPolicyDto;
 }
 
 export interface CompactionStateChangedEventDto {

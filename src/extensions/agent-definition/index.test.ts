@@ -8,6 +8,7 @@ function binding(tools: string[] | undefined): AgentRuntimeBinding {
     current: () => ({ tools }) as ReturnType<AgentRuntimeBinding["current"]>,
     skillPaths: () => ["/skills/workflow"],
     ensureCurrent: vi.fn(async () => {}),
+    reapplyCompaction: vi.fn(async () => {}),
   } as unknown as AgentRuntimeBinding;
 }
 
@@ -69,5 +70,24 @@ describe("createAgentDefinitionExtension", () => {
     release();
     await turnEnd;
     expect(settled).toBe(true);
+  });
+
+  it("applies active configuration before Pi's post-run threshold check", async () => {
+    const runtimeBinding = binding(["read"]);
+    const { handlers } = await loadExtension(runtimeBinding);
+
+    await handlers.get("agent_end")?.({}, { cwd: "/paper" });
+
+    expect(runtimeBinding.ensureCurrent).toHaveBeenCalledWith({ activeBoundary: true });
+  });
+
+  it("reapplies model-aware compaction before model selection settles", async () => {
+    const runtimeBinding = binding(["read"]);
+    const { handlers } = await loadExtension(runtimeBinding);
+
+    await handlers.get("model_select")?.({ model: { contextWindow: 8_192 } }, { cwd: "/paper" });
+
+    expect(runtimeBinding.reapplyCompaction).toHaveBeenCalledOnce();
+    expect(runtimeBinding.ensureCurrent).not.toHaveBeenCalled();
   });
 });

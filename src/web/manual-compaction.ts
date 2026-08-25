@@ -222,7 +222,6 @@ export function createManualCompactionExtension(
     });
     const notifyStatsChanged = () => controller.notifyStatsChanged();
     pi.on("agent_settled", notifyStatsChanged);
-    pi.on("model_select", notifyStatsChanged);
     pi.on("session_tree", notifyStatsChanged);
     pi.on("session_compact", notifyStatsChanged);
   };

@@ -53,8 +53,21 @@ function catalog(version: string): AgentCatalogSnapshot {
   };
 }
 
-function fingerprint(agents: string, models: string, agentDefaults = "defaults-v1"): ConfigurationFingerprint {
-  return { value: `${agents}:${models}:${agentDefaults}`, agents, models, agentDefaults };
+function fingerprint(
+  agents: string,
+  models: string,
+  agentDefaults = "defaults-v1",
+  compaction = "compaction-v1",
+  compactionPolicy = { triggerPercent: 70, globalEnabled: true, globalKeepRecentTokens: 20_000 },
+): ConfigurationFingerprint {
+  return {
+    value: `${agents}:${models}:${agentDefaults}:${compaction}`,
+    agents,
+    models,
+    agentDefaults,
+    compaction,
+    compactionPolicy,
+  };
 }
 
 function resolvedAgents(snapshot: AgentCatalogSnapshot, options: DiscoveryOptions = {}): AgentDiscoveryResult {
@@ -188,6 +201,32 @@ function harness(
 }
 
 describe("live configuration generations", () => {
+  it("publishes the accepted compaction policy with its generation", async () => {
+    const state = harness();
+    await state.live.start();
+
+    expect(state.live.compactionPolicy).toEqual({
+      triggerPercent: 70,
+      globalEnabled: true,
+      globalKeepRecentTokens: 20_000,
+    });
+
+    state.setFingerprint(fingerprint(
+      "agents-v1",
+      "models-v1",
+      "defaults-v1",
+      "compaction-v2",
+      { triggerPercent: 80, globalEnabled: false, globalKeepRecentTokens: 7_000 },
+    ));
+    await state.live.synchronize();
+
+    expect(state.live.compactionPolicy).toEqual({
+      triggerPercent: 80,
+      globalEnabled: false,
+      globalKeepRecentTokens: 7_000,
+    });
+  });
+
   it("starts at generation one and coalesces concurrent synchronization onto one complete refresh", async () => {
     const state = harness();
 
@@ -772,7 +811,7 @@ describe("configuration content fingerprint", () => {
     expect(after.value).not.toBe(before.value);
   });
 
-  it("changes the configuration only when global agentDefaults change", async () => {
+  it("changes the configuration only for accepted Agent defaults and compaction inputs", async () => {
     const root = tempRoot();
     mkdirSync(join(root, "agents"), { recursive: true });
     writeFileSync(join(root, "agents", "research-assistant.md"), "agent", "utf8");
@@ -785,6 +824,26 @@ describe("configuration content fingerprint", () => {
 
     writeFileSync(
       join(root, "settings.json"),
+      JSON.stringify({
+        theme: "light",
+        compaction: { enabled: false, keepRecentTokens: 7_000 },
+        easyresearch: { compaction: { triggerPercent: 80 } },
+      }),
+      "utf8",
+    );
+    const compaction = await fingerprintConfiguration(root);
+    expect(compaction.agents).toBe(before.agents);
+    expect(compaction.models).toBe(before.models);
+    expect(compaction.agentDefaults).toBe(before.agentDefaults);
+    expect(compaction.compaction).not.toBe(before.compaction);
+    expect(compaction.compactionPolicy).toEqual({
+      triggerPercent: 80,
+      globalEnabled: false,
+      globalKeepRecentTokens: 7_000,
+    });
+
+    writeFileSync(
+      join(root, "settings.json"),
       JSON.stringify({ theme: "light", easyresearch: { agentDefaults: { reviewer: { thinking: "high" } } } }),
       "utf8",
     );
@@ -792,6 +851,20 @@ describe("configuration content fingerprint", () => {
     expect(after.agents).toBe(before.agents);
     expect(after.models).toBe(before.models);
     expect(after.value).not.toBe(before.value);
+  });
+
+  it("rejects an invalid configured compaction percentage", async () => {
+    const root = tempRoot();
+    mkdirSync(join(root, "agents"), { recursive: true });
+    writeFileSync(join(root, "agents", "research-assistant.md"), "agent", "utf8");
+    writeFileSync(join(root, "models.json"), "{}", "utf8");
+    writeFileSync(
+      join(root, "settings.json"),
+      JSON.stringify({ easyresearch: { compaction: { triggerPercent: 91 } } }),
+      "utf8",
+    );
+
+    await expect(fingerprintConfiguration(root)).rejects.toThrow(/integer.*10.*90/i);
   });
 
   it("excludes project files, sessions, logs, auth values, and unrelated global resources", async () => {

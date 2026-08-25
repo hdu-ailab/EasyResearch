@@ -13,6 +13,8 @@ import type {
   AuthProvidersResponseDto,
   AuthRespondRequestDto,
   ConfigurationEvent,
+  CompactionSettingsDto,
+  CompactionSettingsPatchDto,
   ConfigScope,
   ModelOptionDto,
   SessionSummaryDto,
@@ -52,6 +54,8 @@ export interface RouteServices {
   listAllSessions: () => Promise<SessionSummaryDto[]>;
   listAgents: (cwd?: string) => Promise<AgentDto[]>;
   patchAgent: (name: string, patch: AgentConfigurationPatch) => Promise<AgentResourceDto>;
+  getCompactionSettings: () => Promise<CompactionSettingsDto>;
+  patchCompactionSettings: (patch: CompactionSettingsPatchDto) => Promise<CompactionSettingsDto>;
   listModels: () => Promise<ModelOptionDto[]>;
   checkForUpdate: () => Promise<UpdateCheckDto>;
   renameSession: (sessionId: string, name: string) => Promise<void>;
@@ -113,6 +117,15 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
 
       if (req.method === "GET" && path === "/api/agents") {
         return jsonResponse(await services.listAgents(url.searchParams.get("cwd") ?? undefined));
+      }
+
+      if (req.method === "GET" && path === "/api/settings/compaction") {
+        return jsonResponse(await services.getCompactionSettings());
+      }
+      if (req.method === "PATCH" && path === "/api/settings/compaction") {
+        return jsonResponse(await services.patchCompactionSettings(
+          await jsonBody<CompactionSettingsPatchDto>(req),
+        ));
       }
 
       const agentConfigMatch = path.match(/^\/api\/agents\/([^/]+)$/);
@@ -450,7 +463,9 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       return new Response("Not found", { status: 404 });
     } catch (error) {
       if (error instanceof ConfigPathError) return errorResponse(403, error.message);
-      if (error instanceof ConfigServiceError) return errorResponse(error.status, error.message);
+      if (error instanceof ConfigServiceError) {
+        return errorResponse(error.status, error.message, error.code ? { code: error.code } : undefined);
+      }
       if (error instanceof DirectoryServiceError) return errorResponse(error.status, error.message);
       if (error instanceof ExtensionGuardError) return errorResponse(400, error.message);
       if (error instanceof UnknownSessionError) return errorResponse(404, error.message);

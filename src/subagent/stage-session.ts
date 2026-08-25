@@ -14,6 +14,10 @@ import { runCleanupSteps } from "../runtime/cleanup";
 import { toJsonSessionEvent } from "../runtime/json-session-event";
 import type { LiveConfiguration } from "../runtime/live-configuration";
 import { createSessionSettingsFacade } from "../runtime/session-settings-facade";
+import {
+  createCompactionPolicyBinding,
+  type CompactionPolicySettingsManager,
+} from "../runtime/compaction-policy";
 import { resolvePiDefaultModel, type PiDefaultModelApi } from "../runtime/pi-default-model";
 import { configureBatchedSteering, type RuntimeSteeringSession } from "../runtime/steering-mode";
 import type { AgentConfig } from "./agents";
@@ -71,7 +75,7 @@ export interface StageLaunchOptions {
   liveConfiguration: Pick<
     LiveConfiguration,
     "generation" | "synchronize" | "isCurrent" | "resolveAgents" | "subscribe"
-  >;
+  > & Partial<Pick<LiveConfiguration, "compactionPolicy">>;
   signal?: AbortSignal;
 }
 
@@ -129,7 +133,7 @@ export interface StageExtensionRuntime {
   liveConfiguration: Pick<
     LiveConfiguration,
     "generation" | "synchronize" | "isCurrent" | "resolveAgents" | "subscribe"
-  >;
+  > & Partial<Pick<LiveConfiguration, "compactionPolicy">>;
   coordinator: SubagentCoordinator;
   supervisor: SubagentSupervisor;
 }
@@ -234,6 +238,9 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
       const settingsManager = createSessionSettingsFacade(
         deps.createSettingsManager(options.cwd, deps.agentDir) as object,
       );
+      const automaticCompaction = createCompactionPolicyBinding(
+        settingsManager as CompactionPolicySettingsManager,
+      );
       binding = createAgentRuntimeBinding({
         live: options.liveConfiguration,
         agentName: options.agent.name,
@@ -251,6 +258,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
           deps.agentDir,
           settingsManager,
         ),
+        compaction: automaticCompaction,
       });
       await binding.ensureCurrent();
       const currentAgent = binding.current();
@@ -398,6 +406,10 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
           reload: async () => {
             await session!.reload();
             configureBatchedSteering(session!);
+            await binding!.ensureCurrent({
+              activeBoundary: true,
+              recaptureCompactionBase: true,
+            });
           },
         },
       });

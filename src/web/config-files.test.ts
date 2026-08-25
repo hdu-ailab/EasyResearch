@@ -161,7 +161,7 @@ describe("ConfigFileService", () => {
     expect(observations).toEqual([
       { change: { agentsChanged: true }, bytes: "---\nname: search\n---\nPrompt\n" },
       {
-        change: { agentsChanged: true },
+        change: {},
         bytes: '{"easyresearch":{"agentDefaults":{"search":{"thinking":"high"}}}}',
       },
       { change: { modelsChanged: true }, bytes: '{"providers":{}}' },
@@ -206,6 +206,47 @@ describe("ConfigFileService", () => {
     expect(tmp.startsWith(join(agentDir, "."))).toBe(true);
     expect(readdirSync(agentDir)).not.toContain(tmp.split("/").pop());
     expect(readFileSync(target, "utf8")).toBe('{"defaultModel":"a"}');
+  });
+
+  it("serializes global settings read-modify-write operations without losing sibling fields", async () => {
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ theme: "dark" }));
+
+    await Promise.all([
+      service.mutateGlobalSettings((settings) => ({
+        settings: {
+          ...settings,
+          easyresearch: { agentDefaults: { search: { thinking: "high" } } },
+        },
+        result: "agents",
+      })),
+      service.mutateGlobalSettings((settings) => ({
+        settings: {
+          ...settings,
+          easyresearch: {
+            ...(settings.easyresearch as Record<string, unknown> | undefined),
+            compaction: { triggerPercent: 80 },
+          },
+        },
+        result: "compaction",
+      })),
+    ]);
+
+    expect(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"))).toEqual({
+      theme: "dark",
+      easyresearch: {
+        agentDefaults: { search: { thinking: "high" } },
+        compaction: { triggerPercent: 80 },
+      },
+    });
+  });
+
+  it("rejects malformed current global settings without overwriting their bytes", async () => {
+    const settingsPath = join(agentDir, "settings.json");
+    writeFileSync(settingsPath, "{malformed", "utf8");
+
+    await expect(service.mutateGlobalSettings((settings) => ({ settings, result: undefined })))
+      .rejects.toMatchObject({ status: 409 });
+    expect(readFileSync(settingsPath, "utf8")).toBe("{malformed");
   });
 
   it("cleans up the temporary file when rename fails", async () => {

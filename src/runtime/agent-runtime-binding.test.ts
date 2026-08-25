@@ -5,7 +5,9 @@ import type { AgentConfig } from "../subagent/agents";
 import type { ConfigurationEvent, ConfigurationUpdatedEvent } from "../web/contracts";
 import { createAgentDefinitionExtension } from "../extensions/agent-definition";
 import { createSessionSettingsFacade } from "./session-settings-facade";
+import { createCompactionPolicyBinding } from "./compaction-policy";
 import { importPi } from "./pi-import";
+import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
   createAgentRuntimeBinding,
   type AgentRuntimeBinding,
@@ -51,6 +53,7 @@ function definition(version: string, overrides: Partial<AgentConfig> = {}): Agen
 class FakeLiveConfiguration {
   generation = 1;
   error: string | null = null;
+  compactionPolicy = { triggerPercent: 70, globalEnabled: true, globalKeepRecentTokens: 20_000 };
   synchronizeCalls = 0;
   authoritative = true;
   closed = false;
@@ -92,8 +95,12 @@ class FakeLiveConfiguration {
     return () => this.listeners.delete(listener);
   }
 
-  publish(next: AgentConfig[]): void {
+  publish(
+    next: AgentConfig[],
+    compactionPolicy = this.compactionPolicy,
+  ): void {
     this.agents = next;
+    this.compactionPolicy = { ...compactionPolicy };
     this.generation += 1;
     const event: ConfigurationUpdatedEvent = {
       type: "config.updated",
@@ -171,6 +178,7 @@ class FakeSession implements AgentRuntimeBindingSession {
   modelCalls: Model<any>[] = [];
   thinkingCalls: ThinkingLevel[] = [];
   failNextReload: Error | undefined;
+  failNextModel: Error | undefined;
   onReload: (() => void) | undefined;
 
   get isIdle(): boolean {
@@ -192,6 +200,9 @@ class FakeSession implements AgentRuntimeBindingSession {
 
   async setModel(next: Model<any>): Promise<void> {
     this.modelCalls.push(next);
+    const error = this.failNextModel;
+    this.failNextModel = undefined;
+    if (error) throw error;
     this.model = next;
   }
 
@@ -201,12 +212,19 @@ class FakeSession implements AgentRuntimeBindingSession {
   }
 }
 
-function createHarness(initial = definition("v1")) {
+function createHarness(
+  initial = definition("v1"),
+  onCompactionPolicyChanged = vi.fn(),
+  initialModel: Model<any> = model("metadata-v1"),
+) {
   const live = new FakeLiveConfiguration([initial]);
   const models = new FakeModelRuntimeFactory();
-  const initialModel = model("metadata-v1");
   models.setNext(initialModel);
   const resolveAutomaticModel = vi.fn(async () => model("automatic", "automatic-model"));
+  const settings = SettingsManager.inMemory({
+    compaction: { enabled: true, reserveTokens: 16_384, keepRecentTokens: 20_000 },
+  });
+  const compaction = createCompactionPolicyBinding(settings);
   const binding = createAgentRuntimeBinding({
     live,
     agentName: "research-assistant",
@@ -214,8 +232,10 @@ function createHarness(initial = definition("v1")) {
     createModelRuntime: () => models.create(),
     resolveAutomaticModel,
     resolveSkillPaths: (agent) => agent.effectiveSkills.map((name) => `/skills/${name}`),
+    compaction,
+    onCompactionPolicyChanged,
   });
-  return { live, models, binding, resolveAutomaticModel, initialModel };
+  return { live, models, binding, resolveAutomaticModel, initialModel, settings, compaction, onCompactionPolicyChanged };
 }
 
 async function attachHarness(state: ReturnType<typeof createHarness>) {
@@ -242,6 +262,72 @@ async function attachHarness(state: ReturnType<typeof createHarness>) {
 }
 
 describe("AgentRuntimeBinding safe boundaries", () => {
+  it("applies and reapplies the accepted compaction policy without a new Agent definition", async () => {
+    const state = createHarness();
+
+    await state.binding.ensureCurrent();
+    expect(state.settings.getCompactionSettings()).toMatchObject({
+      reserveTokens: 38_400,
+      keepRecentTokens: 20_000,
+    });
+    expect(state.binding.compactionPolicy()).toEqual({ triggerPercent: 70, enabled: true });
+
+    state.live.publish(
+      [definition("v1")],
+      { triggerPercent: 80, globalEnabled: true, globalKeepRecentTokens: 20_000 },
+    );
+    await state.binding.ensureCurrent();
+
+    expect(state.settings.getCompactionSettings()).toMatchObject({
+      reserveTokens: 25_600,
+      keepRecentTokens: 20_000,
+    });
+    expect(state.binding.compactionPolicy()).toEqual({ triggerPercent: 80, enabled: true });
+    expect(state.onCompactionPolicyChanged).toHaveBeenCalledWith({ triggerPercent: 80, enabled: true });
+  });
+
+  it("reapplies after an external settings reload even when generation is unchanged", async () => {
+    const state = createHarness();
+    await state.binding.ensureCurrent();
+    await state.settings.reload();
+    expect(state.settings.getCompactionReserveTokens()).toBe(16_384);
+
+    await state.binding.ensureCurrent({ recaptureCompactionBase: true });
+
+    expect(state.settings.getCompactionReserveTokens()).toBe(38_400);
+  });
+
+  it("notifies when equal-id model metadata changes the context window", async () => {
+    const state = createHarness();
+    await attachHarness(state);
+    state.onCompactionPolicyChanged.mockClear();
+    state.models.setNext({ ...model("metadata-v2"), contextWindow: 64_000 });
+
+    state.live.publish([definition("v2")]);
+
+    await vi.waitFor(() => expect(state.settings.getCompactionReserveTokens()).toBe(19_200));
+    expect(state.onCompactionPolicyChanged).toHaveBeenCalledWith({ triggerPercent: 70, enabled: true });
+  });
+
+  it("preserves the uncapped retained-tail base when a model update rolls back", async () => {
+    const smallModel = { ...model("small"), contextWindow: 8_192 };
+    const state = createHarness(definition("v1"), vi.fn(), smallModel);
+    const attached = await attachHarness(state);
+    expect(state.settings.getCompactionKeepRecentTokens()).toBe(2_867);
+    attached.session.isIdle = false;
+    const largeModel = model("large");
+    state.models.setNext(largeModel);
+    attached.session.failNextModel = new Error("model rejected");
+    state.live.publish([definition("v2")]);
+
+    await expect(state.binding.ensureCurrent({ activeBoundary: true })).rejects.toThrow();
+    expect(attached.session.model).toBe(smallModel);
+
+    attached.session.model = largeModel;
+    await state.binding.reapplyCompaction();
+    expect(state.settings.getCompactionKeepRecentTokens()).toBe(20_000);
+  });
+
   it("exposes only the generation of the fully applied runtime state", async () => {
     const state = createHarness();
 
@@ -765,6 +851,7 @@ describe("AgentRuntimeBinding real Pi next-turn integration", () => {
       },
       resolveAutomaticModel: async () => undefined,
       resolveSkillPaths: () => [],
+      compaction: createCompactionPolicyBinding(settings),
     });
     await binding.ensureCurrent();
     const modelRuntime = binding.modelRuntime() as typeof pi.ModelRuntime.prototype;
@@ -897,6 +984,7 @@ describe("AgentRuntimeBinding real Pi next-turn integration", () => {
       },
       resolveAutomaticModel: async () => undefined,
       resolveSkillPaths: () => [],
+      compaction: createCompactionPolicyBinding(settings),
     });
     await binding.ensureCurrent();
     const modelRuntime = binding.modelRuntime() as typeof pi.ModelRuntime.prototype;

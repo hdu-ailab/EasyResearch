@@ -9,7 +9,7 @@ import { createRouteHandler } from "./routes";
 import { PiSessionFactory, type SessionAdapter, type SessionFactory, type SessionState, type StartSessionOptions, type SteerPromptOptions, type WebSlashCommand } from "./session-adapter";
 import { ActiveSessionRegistry, UnknownSessionError } from "./active-sessions";
 import { DirectoryService } from "./directories";
-import { ConfigFileService } from "./config-files";
+import { ConfigFileService, ConfigServiceError } from "./config-files";
 import type {
   AgentDto,
   ConfigurationEvent,
@@ -171,6 +171,7 @@ class FakeAdapter implements SessionAdapter {
   compactCalls: Array<string | undefined> = [];
   compactState: "queued" | "running" = "running";
   contextUsage: { tokens: number | null; contextWindow: number; percent: number | null } | undefined;
+  compactionPolicy = { triggerPercent: 70, enabled: true };
   async getCommands(): Promise<WebSlashCommand[]> {
     return this.commandsResult;
   }
@@ -187,6 +188,9 @@ class FakeAdapter implements SessionAdapter {
   }
   getCompactionState() {
     return this.compactState;
+  }
+  getCompactionPolicy() {
+    return { ...this.compactionPolicy };
   }
   getContextUsage() {
     return this.contextUsage;
@@ -224,6 +228,7 @@ function fakeConfiguration(
       accessOrder.push("error");
       return error;
     },
+    compactionPolicy: { triggerPercent: 70, globalEnabled: true, globalKeepRecentTokens: 20_000 },
     start: async () => {},
     synchronize: async () => {},
     isCurrent: (candidate) => error === null && candidate === generation,
@@ -383,6 +388,8 @@ describe("web routes", () => {
       configuration,
       listAgents: async () => [],
       patchAgent: async (name, patch) => patchGlobalAgent(configService, name, patch, () => true),
+      getCompactionSettings: async () => ({ triggerPercent: 70, globalEnabled: true }),
+      patchCompactionSettings: async ({ triggerPercent }) => ({ triggerPercent, globalEnabled: true }),
       subagentSessions: {
         summaries: async () => [],
         snapshot: async (_parentSessionId: string, childSessionId: string) => {
@@ -393,6 +400,49 @@ describe("web routes", () => {
     };
     handler = createRouteHandler(services);
   }
+
+  it("reads and patches the focused global compaction setting", async () => {
+    const getCompactionSettings = vi.fn(async () => ({ triggerPercent: 70, globalEnabled: false }));
+    const patchCompactionSettings = vi.fn(async ({ triggerPercent }: { triggerPercent: number }) => ({
+      triggerPercent,
+      globalEnabled: false,
+    }));
+    setup({ getCompactionSettings, patchCompactionSettings });
+
+    const read = await handler(new Request("http://localhost/api/settings/compaction"));
+    expect(read.status).toBe(200);
+    await expect(read.json()).resolves.toEqual({ triggerPercent: 70, globalEnabled: false });
+
+    const patch = await handler(new Request("http://localhost/api/settings/compaction", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ triggerPercent: 80 }),
+    }));
+    expect(patch.status).toBe(200);
+    await expect(patch.json()).resolves.toEqual({ triggerPercent: 80, globalEnabled: false });
+    expect(patchCompactionSettings).toHaveBeenCalledWith({ triggerPercent: 80 });
+    expect(getCompactionSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns a structured code when malformed global settings block a compaction patch", async () => {
+    setup({
+      patchCompactionSettings: async () => {
+        throw new ConfigServiceError(409, "Global settings.json is invalid", "CONFIG_INVALID");
+      },
+    });
+
+    const response = await handler(new Request("http://localhost/api/settings/compaction", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ triggerPercent: 80 }),
+    }));
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: "Global settings.json is invalid",
+      code: "CONFIG_INVALID",
+    });
+  });
 
   it.each([
     ["GET", "/api/webui-settings", undefined],
@@ -1157,7 +1207,7 @@ describe("web routes", () => {
       }));
 
     expect((await send("/api/agents/search", "PATCH", { thinking: "high" })).status).toBe(200);
-    expect(configuration.notifications.at(-1)).toEqual({ agentsChanged: true });
+    expect(configuration.notifications.at(-1)).toEqual({});
 
     expect((await send("/api/agent-resources/search", "PUT", {
       content: "---\nname: search\ndescription: Saved\n---\nSaved prompt\n",
@@ -1185,7 +1235,7 @@ describe("web routes", () => {
       path: "settings.json",
       content: "{}",
     })).status).toBe(200);
-    expect(configuration.notifications.at(-1)).toEqual({ agentsChanged: true });
+    expect(configuration.notifications.at(-1)).toEqual({});
     const afterSettingsCount = configuration.notifications.length;
     expect((await send("/api/config/file", "PUT", {
       scope: "project",

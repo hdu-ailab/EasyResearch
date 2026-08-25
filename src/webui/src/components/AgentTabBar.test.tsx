@@ -127,7 +127,7 @@ describe("AgentTabBar", () => {
     expect(screen.getByRole("button", { name: "Agent opaque focus id" })).toHaveFocus();
   });
 
-  it("keeps mobile wrapping and visible keyboard-focus classes", () => {
+  it("keeps mobile tabs wrapping separately from the trailing meter slot", () => {
     vi.stubGlobal("innerWidth", 390);
     const { container } = renderTabs([
       tab({ agentId: "search_0" }),
@@ -135,10 +135,29 @@ describe("AgentTabBar", () => {
     ]);
 
     const bar = container.firstElementChild;
-    expect(bar).toHaveClass("flex-wrap");
+    expect(bar).not.toHaveClass("flex-wrap");
+    expect(screen.getByTestId("agent-tab-group")).toHaveClass("min-w-0", "flex-1", "flex-wrap");
     const select = screen.getByRole("button", { name: "Agent search_0" });
     expect(select.className).toContain("focus-visible:outline");
     vi.unstubAllGlobals();
+  });
+
+  it("keeps trailing content in a non-wrapping far-right slot", () => {
+    render(
+      <AgentTabBar
+        tabs={[tab()]}
+        activeKey="research-assistant"
+        researchAssistantStatus="idle"
+        onSelect={() => {}}
+        onClose={() => {}}
+        onStop={() => {}}
+        trailing={<span>meter</span>}
+      />,
+    );
+
+    const slot = screen.getByTestId("agent-tab-trailing");
+    expect(slot).toHaveClass("ml-auto", "shrink-0");
+    expect(slot).toHaveTextContent("meter");
   });
 });
 

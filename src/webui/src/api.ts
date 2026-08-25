@@ -6,6 +6,8 @@ import type {
   AuthProviderInfoDto,
   ChildSessionSnapshotDto,
   CompactionRequestResultDto,
+  CompactionSettingsDto,
+  CompactionSettingsPatchDto,
   ConfigEntryDto,
   ConfigScope,
   ConfigurationEvent,
@@ -30,6 +32,7 @@ import {
   parseAuthProviderList,
   parseChildSnapshot,
   parseCompactionRequestResult,
+  parseCompactionSettings,
   parseConfigEntries,
   parseConfigFile,
   parseConfigProjects,
@@ -88,6 +91,14 @@ export function listAgents(cwd?: string): Promise<AgentDto[]> {
 
 export function patchAgent(name: string, patch: AgentConfigurationPatch): Promise<AgentDto> {
   return requestJson(routes.agentConfiguration(name), parseAgentResource, json("PATCH", patch));
+}
+
+export function getCompactionSettings(): Promise<CompactionSettingsDto> {
+  return requestJson(routes.compactionSettings(), parseCompactionSettings);
+}
+
+export function patchCompactionSettings(patch: CompactionSettingsPatchDto): Promise<CompactionSettingsDto> {
+  return requestJson(routes.compactionSettings(), parseCompactionSettings, json("PATCH", patch));
 }
 
 export function listAgentResources(): Promise<AgentResourceDto[]> {

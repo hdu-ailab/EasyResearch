@@ -227,7 +227,7 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
         updateSessionPath(snapshot.session.sessionFile ?? null);
         if (connectionToken.receivedStreamData) return;
         setStatus(snapshot.session.status);
-        setView(fromSnapshot(snapshot));
+        setView(fromSnapshot(snapshot, viewRef.current.hydrationRevision + 1));
       })
       .catch((error: unknown) => {
         if (!isCurrentConnection() || connectionToken.receivedStreamData) return;
@@ -256,9 +256,15 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
           try {
             const stats = parseSessionStatsChangedEvent(event);
             setView((current) => {
-              if (stats.contextUsage !== undefined) return { ...current, contextUsage: stats.contextUsage };
+              if (stats.contextUsage !== undefined) {
+                return {
+                  ...current,
+                  contextUsage: stats.contextUsage,
+                  compactionPolicy: stats.compactionPolicy,
+                };
+              }
               const { contextUsage: _previous, ...next } = current;
-              return next;
+              return { ...next, compactionPolicy: stats.compactionPolicy };
             });
           } catch {
             // Ignore malformed SSE frames and retain the last valid state.

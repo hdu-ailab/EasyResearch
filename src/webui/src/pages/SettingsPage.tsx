@@ -31,6 +31,7 @@ import type { ModelOption } from "../api/parsers";
 import { AgentConfigModal } from "../components/AgentConfigModal";
 import { AgentMarkdownEditor } from "../components/AgentMarkdownEditor";
 import { AgentResourceDetailsDialog } from "../components/AgentResourceDetailsDialog";
+import { CompactionThresholdSetting } from "../components/CompactionThresholdSetting";
 import { ProviderConnectModal } from "../components/ProviderConnectModal";
 import { SkillResourceEditor } from "../components/SkillResourceEditor";
 import { thinkingLevelsForModel } from "../components/ThinkingLevelSelect";
@@ -447,6 +448,7 @@ export function SettingsPage({
               <h2 className="text-[13px] font-semibold text-v2-text-text-base">{t("settings.conversation.title")}</h2>
             </header>
             <div className="flex flex-col gap-3 px-4 py-4">
+              <CompactionThresholdSetting configurationGeneration={configurationGeneration} />
               <PreferenceSwitch
                 label={t("settings.conversation.autoExpandThinking")}
                 checked={prefs.autoExpandThinking}

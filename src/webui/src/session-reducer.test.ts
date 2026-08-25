@@ -14,11 +14,13 @@ import {
 const emptyState: SessionViewState = {
   messages: [],
   tools: [],
+  hydrationRevision: 0,
   isStreaming: false,
   error: null,
   retry: null,
   nextOrder: 0,
   steers: [],
+  compactionPolicy: { triggerPercent: 70, enabled: true },
   compactionState: "idle",
 };
 

@@ -71,6 +71,7 @@ class FakeAdapter implements SessionAdapter {
   steeringResult: string[] = [];
   contextUsage: { tokens: number | null; contextWindow: number; percent: number | null } | undefined;
   compactionState: "idle" | "queued" | "running" = "idle";
+  compactionPolicy = { triggerPercent: 70, enabled: true };
   backgroundWork = false;
   startImpl: () => Promise<void> = async () => {};
   stopImpl: () => Promise<void> = async () => {};
@@ -134,6 +135,9 @@ class FakeAdapter implements SessionAdapter {
   }
   getCompactionState() {
     return this.compactionState;
+  }
+  getCompactionPolicy() {
+    return { ...this.compactionPolicy };
   }
   getContextUsage() {
     return this.contextUsage;
@@ -630,15 +634,17 @@ describe("ActiveSessionRegistry", () => {
     expect(snapshot.steering).toEqual(["note one", "note two"]);
   });
 
-  it("snapshot includes native context usage and current manual compaction state", async () => {
+  it("snapshot includes native context usage and the effective compaction policy/state", async () => {
     const created = await registry.open({ cwd, sessionPath });
     const adapter = factory.created[0]!;
     adapter.contextUsage = { tokens: 70_000, contextWindow: 100_000, percent: 70 };
     adapter.compactionState = "queued";
+    adapter.compactionPolicy = { triggerPercent: 80, enabled: false };
 
     const snapshot = await registry.snapshot(created.id);
 
     expect(snapshot.contextUsage).toEqual({ tokens: 70_000, contextWindow: 100_000, percent: 70 });
+    expect(snapshot.compactionPolicy).toEqual({ triggerPercent: 80, enabled: false });
     expect(snapshot.compactionState).toBe("queued");
   });
 

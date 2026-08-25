@@ -8,6 +8,7 @@ import {
   connectSessionEvents,
   createConfigDirectory,
   createSession,
+  getCompactionSettings,
   getSessionCommands,
   getSessionTree,
   getSnapshot,
@@ -20,6 +21,7 @@ import {
   navigateSessionTree,
   openSession,
   patchAgent,
+  patchCompactionSettings,
   readConfigFile,
   replaceFileWatchDirectories,
   restartSession,
@@ -116,6 +118,26 @@ describe("api transport", () => {
     expect(init.method).toBe("PATCH");
     expect(JSON.parse(init.body as string)).toEqual({ model: "openai/gpt-4o", thinking: null });
     expect(agent).toMatchObject({ name: "reviewer/strict", source: "global", model: "openai/gpt-4o" });
+  });
+
+  it("reads and patches the focused global compaction setting", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ triggerPercent: 70, globalEnabled: true }), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ triggerPercent: 80, globalEnabled: true }), { status: 200 }),
+      );
+
+    await expect(getCompactionSettings()).resolves.toEqual({ triggerPercent: 70, globalEnabled: true });
+    await expect(patchCompactionSettings({ triggerPercent: 80 })).resolves.toEqual({
+      triggerPercent: 80,
+      globalEnabled: true,
+    });
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/settings/compaction");
+    const [url, init] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(url).toBe("/api/settings/compaction");
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(init.body as string)).toEqual({ triggerPercent: 80 });
   });
 
   it("listDirectories GETs /api/directories with path", async () => {
@@ -280,6 +302,7 @@ describe("api transport", () => {
           session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
           messages: [],
           subagents: [],
+          compactionPolicy: { triggerPercent: 70, enabled: true },
         }),
         { status: 200 },
       ),

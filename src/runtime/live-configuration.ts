@@ -18,6 +18,10 @@ import type {
 } from "../web/contracts";
 import { getAgentDir } from "./pi-import";
 import { readGlobalAgentDefaults } from "../subagent/agent-defaults";
+import {
+  parseGlobalCompactionPolicy,
+  type GlobalCompactionPolicy,
+} from "./compaction-policy";
 
 export type { ConfigurationErrorEvent, ConfigurationEvent, ConfigurationUpdatedEvent } from "../web/contracts";
 
@@ -33,6 +37,8 @@ export interface ConfigurationFingerprint {
   agents: string;
   models: string;
   agentDefaults?: string;
+  compaction: string;
+  compactionPolicy: GlobalCompactionPolicy;
 }
 
 export interface ModelCatalogEntry {
@@ -82,6 +88,7 @@ export interface LiveConfigurationOptions {
 export interface LiveConfiguration {
   readonly generation: number;
   readonly error: string | null;
+  readonly compactionPolicy: GlobalCompactionPolicy;
   start(): Promise<void>;
   synchronize(): Promise<void>;
   /** True only for the latest validation-clean accepted generation. */
@@ -129,6 +136,7 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
   let watcherError: string | null = null;
   let currentCatalog: AgentCatalogSnapshot | undefined;
   let currentFingerprint: ConfigurationFingerprint | undefined;
+  let currentCompactionPolicy = parseGlobalCompactionPolicy({});
   let watcher: ConfigurationWatcher | undefined;
   let settleWatcherReady: (() => void) | undefined;
   let watcherReady: Promise<void> | undefined;
@@ -259,6 +267,7 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
         preparedModels = undefined;
         currentCatalog = nextCatalog;
         currentFingerprint = candidate;
+        currentCompactionPolicy = candidate.compactionPolicy;
         currentGeneration = event.generation;
         validationError = null;
         failedAgentsChanged = false;
@@ -374,7 +383,7 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
       const synchronizePath = (candidate: unknown) => {
         if (closed) return;
         const path = resolve(String(candidate));
-        if (path === settingsPath) void requestSynchronization({ agentsChanged: true });
+        if (path === settingsPath) void requestSynchronization({});
         else if (path === modelsPath || isAgentMarkdownPath(path, agentsDir)) void requestSynchronization({});
       };
       watcher.on("add", synchronizePath);
@@ -399,6 +408,9 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
     },
     get error() {
       return validationError ?? watcherError;
+    },
+    get compactionPolicy() {
+      return { ...currentCompactionPolicy };
     },
     start() {
       if (closed) return Promise.resolve();
@@ -517,13 +529,25 @@ export async function fingerprintConfiguration(agentDir: string): Promise<Config
     updateHashField(defaultsHash, Buffer.from(entry.thinking ?? "", "utf8"));
   }
   const agentDefaults = defaultsHash.digest("hex");
+
+  const settingsBytes = await readOptionalFile(join(agentDir, "settings.json"));
+  let settings: unknown = {};
+  if (settingsBytes !== undefined) settings = JSON.parse(settingsBytes.toString("utf8")) as unknown;
+  const compactionPolicy = parseGlobalCompactionPolicy(settings);
+  const compactionHash = createHash("sha256");
+  compactionHash.update("easyresearch-compaction-v1\0");
+  updateHashField(compactionHash, Buffer.from(String(compactionPolicy.triggerPercent), "utf8"));
+  updateHashField(compactionHash, Buffer.from(compactionPolicy.globalEnabled ? "true" : "false", "utf8"));
+  updateHashField(compactionHash, Buffer.from(String(compactionPolicy.globalKeepRecentTokens), "utf8"));
+  const compaction = compactionHash.digest("hex");
   const value = createHash("sha256")
-    .update("easyresearch-configuration-v1\0")
+    .update("easyresearch-configuration-v2\0")
     .update(agents)
     .update(models)
     .update(agentDefaults)
+    .update(compaction)
     .digest("hex");
-  return { value, agents, models, agentDefaults };
+  return { value, agents, models, agentDefaults, compaction, compactionPolicy };
 }
 
 function assertValidCatalog(snapshot: AgentCatalogSnapshot): void {
@@ -553,7 +577,8 @@ function sameFingerprint(left: ConfigurationFingerprint, right: ConfigurationFin
   return left.value === right.value &&
     left.agents === right.agents &&
     left.models === right.models &&
-    left.agentDefaults === right.agentDefaults;
+    left.agentDefaults === right.agentDefaults &&
+    left.compaction === right.compaction;
 }
 
 function isAgentMarkdownPath(path: string, agentsDir: string): boolean {

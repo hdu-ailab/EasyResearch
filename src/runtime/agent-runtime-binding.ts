@@ -13,6 +13,12 @@ import {
   createModelRuntimeTransaction,
   type ModelRuntimeCandidate,
 } from "./model-runtime-transaction";
+import type {
+  CompactionPolicyBinding,
+  EffectiveCompactionPolicy,
+  GlobalCompactionPolicy,
+} from "./compaction-policy";
+import { DEFAULT_GLOBAL_COMPACTION_POLICY } from "./compaction-policy";
 
 const SAFE_APPLY_ERROR = "Agent runtime configuration could not be applied. Retry after fixing the configuration.";
 const SAFE_MISSING_AGENT = "The configured Agent is not available in the current valid configuration.";
@@ -35,6 +41,8 @@ export interface AgentRuntimeBindingSession {
 export interface EnsureCurrentOptions {
   /** `turn_end` is active but is Pi's guaranteed pre-next-request boundary. */
   activeBoundary?: boolean;
+  /** Pi reload/save rebuilt effective settings and discarded transient overrides. */
+  recaptureCompactionBase?: boolean;
 }
 
 export interface AgentRuntimeBinding {
@@ -43,20 +51,27 @@ export interface AgentRuntimeBinding {
   model(): Model<any> | undefined;
   modelRuntime(): AgentRuntimeModelRuntime;
   thinking(): ThinkingLevel;
+  compactionPolicy(): EffectiveCompactionPolicy;
   appendSystemPrompt(base: string[]): string[];
   skillPaths(): string[];
   attach(session: AgentRuntimeBindingSession): Promise<void>;
   ensureCurrent(options?: EnsureCurrentOptions): Promise<void>;
+  reapplyCompaction(): Promise<void>;
   dispose(): Promise<void>;
 }
 
 export interface AgentRuntimeBindingOptions {
-  live: Pick<LiveConfiguration, "generation" | "synchronize" | "isCurrent" | "resolveAgents" | "subscribe">;
+  live: Pick<
+    LiveConfiguration,
+    "generation" | "synchronize" | "isCurrent" | "resolveAgents" | "subscribe"
+  > & Partial<Pick<LiveConfiguration, "compactionPolicy">>;
   agentName: string;
   cwd: string;
   createModelRuntime(): Promise<AgentRuntimeModelRuntime>;
   resolveAutomaticModel(modelRuntime: AgentRuntimeModelRuntime): Promise<Model<any> | undefined>;
   resolveSkillPaths(agent: AgentConfig): string[] | Promise<string[]>;
+  compaction: CompactionPolicyBinding;
+  onCompactionPolicyChanged?: (policy: EffectiveCompactionPolicy) => void;
   onError?: (error: Error) => void;
 }
 
@@ -66,6 +81,7 @@ interface AppliedRuntimeState {
   model: Model<any> | undefined;
   thinking: ThinkingLevel;
   skillPaths: string[];
+  compactionPolicy: GlobalCompactionPolicy;
 }
 
 interface PreparedRuntimeState extends AppliedRuntimeState {
@@ -92,12 +108,27 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
   let disposePromise: Promise<void> | undefined;
   let eventApplyRequested = false;
   let activeBoundaryRequested = false;
+  let recaptureCompactionBaseRequested = false;
+  let applyingRuntimeModel = false;
+  let notifiedCompactionSignature: string | undefined;
   let disposed = false;
   let modelRuntimeDisposed = false;
 
   const requireApplied = (): AppliedRuntimeState => {
     if (!applied) throw new ConfigurationUnavailableError();
     return applied;
+  };
+
+  const applyCompaction = (recaptureBase = false): EffectiveCompactionPolicy => {
+    const current = requireApplied();
+    const model = session?.model ?? current.model;
+    const policy = options.compaction.apply(current.compactionPolicy, model, { recaptureBase });
+    const signature = `${policy.triggerPercent}:${policy.enabled}:${model?.contextWindow ?? "none"}`;
+    if (!applyingRuntimeModel && signature !== notifiedCompactionSignature) {
+      notifiedCompactionSignature = signature;
+      options.onCompactionPolicyChanged?.(policy);
+    }
+    return policy;
   };
 
   const prepareCandidate = async (): Promise<PreparedRuntimeState | undefined> => {
@@ -182,6 +213,9 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
           model: selectedModel,
           thinking: selectedThinking,
           skillPaths: [...skillPaths],
+          compactionPolicy: {
+            ...(options.live.compactionPolicy ?? DEFAULT_GLOBAL_COMPACTION_POLICY),
+          },
           modelRuntimeCandidate,
         };
       } catch (error) {
@@ -208,10 +242,13 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
       // The prior binding remains authoritative and a later boundary retries.
     }
     if (previousModel) {
+      applyingRuntimeModel = true;
       try {
         await session.setModel(previousModel);
       } catch {
         // Best effort: the prior model object can outlive a removed catalog row.
+      } finally {
+        applyingRuntimeModel = false;
       }
     }
     try {
@@ -219,9 +256,10 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
     } catch {
       // Best effort after restoring the prior resource binding.
     }
+    applyCompaction();
   };
 
-  const applyLatest = async (activeBoundary: boolean): Promise<void> => {
+  const applyLatest = async (activeBoundary: boolean): Promise<boolean> => {
     for (;;) {
       let candidate: PreparedRuntimeState | undefined;
       try {
@@ -230,7 +268,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
         if (error instanceof ConfigurationUnavailableError) throw error;
         throw new Error(error instanceof Error && error.message === SAFE_MISSING_AGENT ? SAFE_MISSING_AGENT : SAFE_APPLY_ERROR);
       }
-      if (!candidate) return;
+      if (!candidate) return false;
       if (!options.live.isCurrent(candidate.generation)) {
         try {
           await candidate.modelRuntimeCandidate.dispose();
@@ -248,7 +286,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
         } catch {
           throw new Error(SAFE_APPLY_ERROR);
         }
-        return;
+        return false;
       }
       const previous = applied;
       const { modelRuntimeCandidate, ...next } = candidate;
@@ -256,7 +294,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
       applied = next;
       if (!attached) {
         await modelRuntimeCandidate.commit();
-        return;
+        return true;
       }
       const previousModel = attached.model;
       const previousThinking = attached.thinkingLevel;
@@ -265,7 +303,12 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
         if (disposed) throw new Error(SAFE_APPLY_ERROR);
         if (candidate.model) {
           // Always rebind, including equal provider/id metadata replacements.
-          await attached.setModel(candidate.model);
+          applyingRuntimeModel = true;
+          try {
+            await attached.setModel(candidate.model);
+          } finally {
+            applyingRuntimeModel = false;
+          }
         } else if (attached.model) {
           throw new Error(SAFE_APPLY_ERROR);
         }
@@ -280,13 +323,14 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
         await restoreSession(previous, previousModel, previousThinking);
         throw new Error(SAFE_APPLY_ERROR);
       }
-      return;
+      return true;
     }
   };
 
   const ensureCurrent = (ensureOptions: EnsureCurrentOptions = {}): Promise<void> => {
     if (disposed) return Promise.reject(new Error("Agent runtime binding has been disposed."));
     if (ensureOptions.activeBoundary === true) activeBoundaryRequested = true;
+    if (ensureOptions.recaptureCompactionBase === true) recaptureCompactionBaseRequested = true;
     if (session && !session.isIdle && ensureOptions.activeBoundary !== true) return Promise.resolve();
     if (applyPromise) return applyPromise;
 
@@ -300,11 +344,15 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
             activeBoundary = true;
             activeBoundaryRequested = false;
           }
-          await applyLatest(activeBoundary);
+          const recaptureCompactionBase = recaptureCompactionBaseRequested;
+          recaptureCompactionBaseRequested = false;
+          const runtimeChanged = await applyLatest(activeBoundary);
+          if (applied) applyCompaction(runtimeChanged || recaptureCompactionBase);
         } while (
           !disposed &&
           (
             activeBoundaryRequested ||
+            recaptureCompactionBaseRequested ||
             (eventApplyRequested && (session === undefined || session.isIdle || activeBoundary))
           )
         );
@@ -333,6 +381,10 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
     thinking() {
       return requireApplied().thinking;
     },
+    compactionPolicy() {
+      requireApplied();
+      return options.compaction.current();
+    },
     appendSystemPrompt(base) {
       return [...base, requireApplied().definition.systemPrompt];
     },
@@ -355,6 +407,11 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
       await ensureCurrent();
     },
     ensureCurrent,
+    async reapplyCompaction() {
+      if (disposed) throw new Error("Agent runtime binding has been disposed.");
+      if (applyingRuntimeModel) return;
+      applyCompaction();
+    },
     dispose() {
       if (disposePromise) return disposePromise;
       if (disposed && !unsubscribe && !session && !applyPromise && modelRuntimeDisposed) return Promise.resolve();

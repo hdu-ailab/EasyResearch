@@ -277,6 +277,7 @@ describe("WorkPage", () => {
     expect(onBack).toHaveBeenCalledOnce();
     const conversation = screen.getByRole("tabpanel", { name: /^chat$/i });
     expect(conversation.parentElement).toHaveClass("px-2", "pb-2", "pt-[4px]");
+    expect(conversation).toHaveClass("v2-work-enter");
     expect(conversation.parentElement).not.toHaveClass("p-2");
   });
 
@@ -384,20 +385,22 @@ describe("WorkPage", () => {
     expect(screen.queryByText("Nothing to compact")).toBeNull();
   });
 
-  it("shows native context capacity and queued compaction above the assistant composer", async () => {
+  it("shows neutral native context capacity and the accepted policy in the Agent header", async () => {
     vi.mocked(api.getSnapshot).mockResolvedValue({
       ...snapshotValue,
       contextUsage: { tokens: 91_000, contextWindow: 100_000, percent: 91 },
       compactionState: "queued",
+      compactionPolicy: { triggerPercent: 75, enabled: true },
     } as never);
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
 
     const capacity = await screen.findByRole("progressbar", { name: /context capacity/i });
 
     expect(capacity).toHaveAttribute("aria-valuenow", "91");
-    expect(capacity.closest("[data-context-severity]")).toHaveAttribute("data-context-severity", "error");
+    expect(capacity).toHaveAttribute("aria-valuetext", expect.stringMatching(/91k \/ 100k.*91%.*75%.*queued/i));
+    expect(capacity.closest("[data-context-severity]")).toBeNull();
     expect(screen.getByText("91%")).toBeVisible();
-    expect(screen.getByText("Queued")).toBeVisible();
+    expect(capacity.closest("[data-agent-tab-trailing]")).toBeTruthy();
   });
 
   it("keeps history browseable but disables navigation during native compaction", async () => {

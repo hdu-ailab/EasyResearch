@@ -21,6 +21,7 @@ const model = {
   provider: "openai",
   id: "gpt-test",
   reasoning: true,
+  contextWindow: 128_000,
 } as InProcessAgentSession["model"];
 
 class FakeAgentSession implements InProcessAgentSession {
@@ -278,6 +279,11 @@ class FakeRuntimeBinding {
   disposeCalls = 0;
   ensureImpl: (() => Promise<void>) | undefined;
   disposeImpl: (() => Promise<void>) | undefined;
+  policy = { triggerPercent: 70, enabled: true };
+
+  compactionPolicy() {
+    return { ...this.policy };
+  }
 
   async ensureCurrent(): Promise<void> {
     this.ensureCalls += 1;
@@ -409,6 +415,7 @@ describe("PiSessionFactory", () => {
     expect(events).toContainEqual({
       type: "session_stats_changed",
       contextUsage: { tokens: null, contextWindow: 128_000, percent: null },
+      compactionPolicy: { triggerPercent: 70, enabled: true },
     });
   });
 
@@ -1405,10 +1412,24 @@ function researchAssistant(overrides: Partial<AgentConfig> = {}): AgentConfig {
   };
 }
 
+function fakeSettingsManager<T extends object>(base: T): T & {
+  getCompactionSettings(): { enabled: boolean; reserveTokens: number; keepRecentTokens: number };
+  applyOverrides(overrides: { compaction: { enabled: boolean; reserveTokens: number; keepRecentTokens: number } }): void;
+} {
+  let compaction = { enabled: true, reserveTokens: 16_384, keepRecentTokens: 20_000 };
+  return Object.assign(base, {
+    getCompactionSettings: () => ({ ...compaction }),
+    applyOverrides: (overrides: { compaction: typeof compaction }) => {
+      compaction = { ...overrides.compaction };
+    },
+  });
+}
+
 function liveConfiguration(agent: AgentConfig = researchAssistant()): LiveConfiguration {
   return {
     generation: 1,
     error: null,
+    compactionPolicy: { triggerPercent: 70, globalEnabled: true, globalKeepRecentTokens: 20_000 },
     start: async () => {},
     synchronize: async () => {},
     isCurrent: (generation) => generation === 1,
@@ -1469,7 +1490,7 @@ function retryableStartHarness(
     createExtensionFactories: () => [],
     createSessionManager: () => ({} as never),
     openSessionManager: () => ({} as never),
-    createSettingsManager: () => ({}),
+    createSettingsManager: () => fakeSettingsManager({}),
     createModelRuntime: async () => {
       const attempt = ++runtimeAttempts;
       return {
@@ -1521,7 +1542,7 @@ describe("createPiAgentSessionCreator", () => {
     };
     const assistant = researchAssistant({ systemPrompt: "Project Research Assistant body" });
     const live = liveConfiguration(assistant);
-    const rawSettings = { kind: "settings" };
+    const rawSettings = fakeSettingsManager({ kind: "settings" });
     const modelRuntime = {
       refresh: async (options: unknown) => calls.push({ name: "model-refresh", value: options }),
       getModel: (provider: string, id: string) => provider === "openai" && id === "gpt-test" ? model : undefined,
@@ -1691,6 +1712,12 @@ describe("createPiAgentSessionCreator", () => {
       agentDir: "/agent",
     });
     expect(harness.createdOptions[0]?.settingsManager).not.toBe(harness.rawSettings);
+    expect((harness.createdOptions[0]?.settingsManager as {
+      getCompactionSettings(): { reserveTokens: number; keepRecentTokens: number };
+    }).getCompactionSettings()).toMatchObject({
+      reserveTokens: 38_400,
+      keepRecentTokens: 20_000,
+    });
     const order = harness.calls.map(({ name }) => name);
     expect(order.indexOf("session-manager")).toBeLessThan(order.indexOf("coordinator"));
     expect(order.indexOf("coordinator")).toBeLessThan(order.indexOf("recovery"));
@@ -1864,7 +1891,7 @@ describe("createPiAgentSessionCreator", () => {
       createExtensionFactories: () => [],
       createSessionManager: () => ({} as never),
       openSessionManager: () => ({} as never),
-      createSettingsManager: () => ({}),
+      createSettingsManager: () => fakeSettingsManager({}),
       createModelRuntime: async () => ({
         refresh: async () => {},
         getModel: () => undefined,
@@ -1891,7 +1918,7 @@ describe("createPiAgentSessionCreator", () => {
       createExtensionFactories: () => [],
       createSessionManager: () => ({} as never),
       openSessionManager: () => ({} as never),
-      createSettingsManager: () => ({}),
+      createSettingsManager: () => fakeSettingsManager({}),
       createModelRuntime: async () => ({
         refresh: async () => {},
         getModel: () => model,
@@ -1922,6 +1949,7 @@ describe("createPiAgentSessionCreator", () => {
         return generation;
       },
       error: null,
+      compactionPolicy: { triggerPercent: 70, globalEnabled: true, globalKeepRecentTokens: 20_000 },
       start: async () => {},
       synchronize: async () => {},
       notify: async () => {},
@@ -1948,7 +1976,7 @@ describe("createPiAgentSessionCreator", () => {
       createExtensionFactories: () => [],
       createSessionManager: () => ({} as never),
       openSessionManager: () => ({} as never),
-      createSettingsManager: () => ({}),
+      createSettingsManager: () => fakeSettingsManager({}),
       createModelRuntime: async () => ({
         refresh: async () => {},
         getModel: () => model,
@@ -1984,7 +2012,7 @@ describe("createPiAgentSessionCreator", () => {
       createExtensionFactories: () => [],
       createSessionManager: () => ({} as never),
       openSessionManager: () => ({} as never),
-      createSettingsManager: () => ({}),
+      createSettingsManager: () => fakeSettingsManager({}),
       createModelRuntime: async () => ({
         refresh: async () => {},
         getModel: () => model,
@@ -2013,6 +2041,7 @@ describe("createPiAgentSessionCreator", () => {
         return generation;
       },
       error: null,
+      compactionPolicy: { triggerPercent: 70, globalEnabled: true, globalKeepRecentTokens: 20_000 },
       start: async () => {},
       synchronize: async () => {},
       notify: async () => {},
@@ -2044,7 +2073,7 @@ describe("createPiAgentSessionCreator", () => {
       createExtensionFactories: () => [],
       createSessionManager: () => ({} as never),
       openSessionManager: () => ({} as never),
-      createSettingsManager: () => ({}),
+      createSettingsManager: () => fakeSettingsManager({}),
       createModelRuntime: async () => ({
         refresh: async () => {},
         getModel: () => model,

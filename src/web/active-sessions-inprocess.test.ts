@@ -62,6 +62,9 @@ class DirectAdapter implements SessionAdapter {
   getCompactionState() {
     return "idle" as const;
   }
+  getCompactionPolicy() {
+    return { triggerPercent: 70, enabled: true };
+  }
   getContextUsage() {
     return undefined;
   }

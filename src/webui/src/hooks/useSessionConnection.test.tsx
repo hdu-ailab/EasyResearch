@@ -28,12 +28,23 @@ const initialSnapshot: SessionSnapshotDto = {
   },
   messages: [{ role: "assistant", content: [{ type: "text", text: "snapshot text" }] }],
   subagents: [],
+  compactionPolicy: { triggerPercent: 70, enabled: true },
 } as never;
 
 let handlers: api.SessionEventHandlers[];
 
 function emit(event: unknown, index = handlers.length - 1) {
-  act(() => handlers[index]?.onEvent(event));
+  let complete = event;
+  if (event && typeof event === "object") {
+    const source = event as Record<string, unknown>;
+    if (
+      (source.type === "snapshot" || source.type === "session_stats_changed") &&
+      source.compactionPolicy === undefined
+    ) {
+      complete = { ...source, compactionPolicy: { triggerPercent: 70, enabled: true } };
+    }
+  }
+  act(() => handlers[index]?.onEvent(complete));
 }
 
 function deferred<T>() {
@@ -166,15 +177,18 @@ describe("useSessionConnection", () => {
     emit({
       type: "session_stats_changed",
       contextUsage: { tokens: 91_000, contextWindow: 100_000, percent: 91 },
+      compactionPolicy: { triggerPercent: 80, enabled: false },
     });
     emit({ type: "compaction_state_changed", state: "queued" });
 
     expect(result.current.view.contextUsage).toEqual({ tokens: 91_000, contextWindow: 100_000, percent: 91 });
+    expect(result.current.view.compactionPolicy).toEqual({ triggerPercent: 80, enabled: false });
     expect(result.current.view.compactionState).toBe("queued");
 
-    emit({ type: "session_stats_changed" });
+    emit({ type: "session_stats_changed", compactionPolicy: { triggerPercent: 75, enabled: true } });
     emit({ type: "compaction_state_changed", state: "idle" });
     expect(result.current.view.contextUsage).toBeUndefined();
+    expect(result.current.view.compactionPolicy).toEqual({ triggerPercent: 75, enabled: true });
     expect(result.current.view.compactionState).toBe("idle");
   });
 

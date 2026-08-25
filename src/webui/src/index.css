@@ -143,6 +143,29 @@ body {
   }
 }
 
+@keyframes v2-work-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+@keyframes v2-transcript-row-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+.v2-work-enter,
+.v2-transcript-row-enter {
+  animation: v2-work-enter 200ms var(--ease-v2-panel);
+}
+
+.v2-transcript-row-enter {
+  animation-name: v2-transcript-row-enter;
+}
+
 @keyframes v2-expand-down {
   from {
     opacity: 0;
@@ -164,7 +187,9 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .v2-steer-queued {
+  .v2-steer-queued,
+  .v2-work-enter,
+  .v2-transcript-row-enter {
     animation: none;
   }
 }

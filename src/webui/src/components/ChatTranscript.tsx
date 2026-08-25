@@ -17,6 +17,8 @@ import { SubagentToolCard } from "./SubagentToolCard";
 export interface ChatTranscriptProps {
   messages: SessionMessageView[];
   tools: ToolView[];
+  hydrationRevision?: number;
+  hydrationScope?: string;
   emptyHint?: string;
   /** While true, renders a working agent row under the newest user message. */
   pending?: boolean;
@@ -378,6 +380,8 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
   {
     messages,
     tools,
+    hydrationRevision = 0,
+    hydrationScope = "default",
     emptyHint,
     pending = false,
     onViewDetails,
@@ -402,6 +406,36 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
     if (!pending) return base;
     return [...base, { kind: "pending" }];
   }, [messages, tools, pending]);
+  const entryKeys = useMemo(
+    () => entries.map((entry, index) => ("kind" in entry ? "pending" : (entry.key ?? `removed:${index}`))),
+    [entries],
+  );
+  const seenRowKeys = useRef<Set<string> | null>(null);
+  const hydrationIdentity = `${hydrationScope}\u0000${hydrationRevision}`;
+  const seenHydrationIdentity = useRef(hydrationIdentity);
+  if (seenRowKeys.current === null || seenHydrationIdentity.current !== hydrationIdentity) {
+    seenHydrationIdentity.current = hydrationIdentity;
+    seenRowKeys.current = new Set(entryKeys);
+  }
+  const [entrance, setEntrance] = useState(() => ({ identity: hydrationIdentity, keys: new Set<string>() }));
+
+  useEffect(() => {
+    const seen = seenRowKeys.current;
+    if (!seen) return;
+    const added = entryKeys.filter((key) => !seen.has(key));
+    if (added.length === 0) return;
+    for (const key of added) seen.add(key);
+    setEntrance((current) => ({
+      identity: hydrationIdentity,
+      keys: new Set([...(current.identity === hydrationIdentity ? current.keys : []), ...added]),
+    }));
+  }, [entryKeys, hydrationIdentity]);
+
+  useEffect(() => {
+    if (entrance.keys.size === 0) return;
+    const timeout = window.setTimeout(() => setEntrance({ identity: hydrationIdentity, keys: new Set() }), 220);
+    return () => window.clearTimeout(timeout);
+  }, [entrance, hydrationIdentity]);
 
   const autoScroll = useAutoScroll({ working: true, overflowAnchor: "none" });
   const {
@@ -415,7 +449,7 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
   const { markScrollGesture, markBoundaryWheel, hasScrollGesture } = useScrollGesture(scrollRef);
   const shouldAnchorBottom = useCallback(() => !userScrolled(), [userScrolled]);
 
-  const [scrollState, setScrollState] = useState({ overflow: false, bottom: true, jump: false });
+  const [scrollState, setScrollState] = useState({ overflow: false, top: true, bottom: true, jump: false });
   const scrollStateFrame = useRef<number | null>(null);
   const scrollStateEl = useRef<HTMLDivElement | null>(null);
 
@@ -433,12 +467,13 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
         const max = target.scrollHeight - target.clientHeight;
         const distance = max - target.scrollTop;
         const overflow = max > 1;
+        const top = !overflow || target.scrollTop <= 2;
         const bottom = !overflow || distance <= 2;
         const jump = overflow && distance > jumpThreshold(target);
         setScrollState((current) =>
-          current.overflow === overflow && current.bottom === bottom && current.jump === jump
+          current.overflow === overflow && current.top === top && current.bottom === bottom && current.jump === jump
             ? current
-            : { overflow, bottom, jump },
+            : { overflow, top, bottom, jump },
         );
       });
     },
@@ -459,6 +494,7 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
     anchorTo: "end",
     followOnAppend: true,
     scrollEndThreshold: 80,
+    paddingStart: 32,
     paddingEnd: 64,
     initialOffset: () => (shouldAnchorBottom() ? Number.MAX_SAFE_INTEGER : 0),
     scrollToFn: (offset, options, instance) => {
@@ -583,110 +619,137 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
   }, [entries.length, hasScrollGesture, shouldAnchorBottom, virtualizer]);
 
   return (
-    <div className="relative flex min-h-0 flex-1 flex-col">
-      {scrollState.overflow && scrollState.jump ? (
-        <button
-          type="button"
-          aria-label={t("transcript.jumpToLatest")}
-          onClick={resumeScroll}
-          className="pointer-events-auto absolute bottom-6 left-1/2 z-50 flex h-7 -translate-x-1/2 items-center justify-center rounded-lg bg-v2-background-bg-base/95 px-2.5 text-v2-text-text-base shadow-[var(--v2-elevation-raised)] backdrop-blur transition-colors hover:bg-v2-background-bg-strong"
-        >
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
-            <title>{t("transcript.jumpToLatest")}</title>
-            <path
-              d="M12.3333 8.66665L8 13L3.66667 8.66665M8 12.6667V2.83332"
-              stroke="currentColor"
-              stroke-linecap="square"
-            />
-          </svg>
-        </button>
-      ) : null}
-      {/* The scroll container is focusable so scroll keys reach it (opencode scroll-view parity); biome.json scopes this in. */}
-      <section
-        ref={bindScrollRef}
-        data-scrollable
-        tabIndex={0}
-        className="min-h-0 flex-1 overflow-y-auto"
-        aria-label={t("transcript.conversation")}
-        onScroll={handleScroll}
-        onWheel={handleWheel}
-        onPointerDown={(event) => markScrollGesture(event.target)}
-        onPointerMove={(event) => {
-          if (event.buttons === 1) markScrollGesture(event.target);
-        }}
-        onKeyDown={handleKeyDown}
-        onClick={handleInteraction}
-      >
-        {entries.length === 0 ? (
-          <p className="px-4 pt-6 text-center text-[length:var(--v2-chat-font-size)] text-v2-text-text-faint">{hint}</p>
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div data-testid="transcript-viewport" className="relative flex min-h-0 flex-1">
+        {scrollState.overflow && scrollState.jump ? (
+          <button
+            type="button"
+            aria-label={t("transcript.jumpToLatest")}
+            onClick={resumeScroll}
+            className="pointer-events-auto absolute bottom-6 left-1/2 z-50 flex h-7 -translate-x-1/2 items-center justify-center rounded-lg bg-v2-background-bg-base/95 px-2.5 text-v2-text-text-base shadow-[var(--v2-elevation-raised)] backdrop-blur transition-colors hover:bg-v2-background-bg-strong"
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+              <title>{t("transcript.jumpToLatest")}</title>
+              <path
+                d="M12.3333 8.66665L8 13L3.66667 8.66665M8 12.6667V2.83332"
+                stroke="currentColor"
+                strokeLinecap="square"
+              />
+            </svg>
+          </button>
         ) : null}
-        <div
-          ref={bindContentRef}
-          className="relative mx-auto w-full max-w-[1000px]"
-          style={{ height: virtualizer.getTotalSize() }}
+        {/* The scroll container is focusable so scroll keys reach it (opencode scroll-view parity); biome.json scopes this in. */}
+        <section
+          ref={bindScrollRef}
+          data-scrollable
+          tabIndex={0}
+          className="min-h-0 flex-1 overflow-y-auto"
+          aria-label={t("transcript.conversation")}
+          onScroll={handleScroll}
+          onWheel={handleWheel}
+          onPointerDown={(event) => markScrollGesture(event.target)}
+          onPointerMove={(event) => {
+            if (event.buttons === 1) markScrollGesture(event.target);
+          }}
+          onKeyDown={handleKeyDown}
+          onClick={handleInteraction}
         >
-          {virtualizer.getVirtualItems().map((virtualRow) => {
-            const entry = entries[virtualRow.index];
-            if (!entry) return null;
-            const key = rowKey(entry, virtualRow.index);
-            return (
-              <div key={key} style={{ position: "absolute", top: `${virtualRow.start}px`, left: 0, width: "100%" }}>
-                <div
-                  data-index={virtualRow.index}
-                  ref={virtualizer.measureElement}
-                  className="px-4"
-                  // No min-height here: pinning the measured element at
-                  // `virtualRow.size` makes ResizeObserver silent when content
-                  // shrinks (window resize, collapsed bodies), leaving stale
-                  // oversized rows and giant gaps between messages.
-                  style={{ paddingBottom: ROW_GAP_PX }}
-                >
-                  {"kind" in entry ? (
-                    <PendingRow />
-                  ) : "name" in entry ? (
-                    entry.name === "subagent" ? (
-                      <SubagentToolCard
-                        tool={entry}
-                        open={openByKey[key] ?? preferences.expandSubagentOutput}
-                        initialOpen={openByKey[key] ?? preferences.expandSubagentOutput}
-                        onToggle={(next) => setOpenByKey((current) => ({ ...current, [key]: next }))}
-                        onViewDetails={onViewDetails}
-                      />
+          {entries.length === 0 ? (
+            <p className="px-4 pt-6 text-center text-[length:var(--v2-chat-font-size)] text-v2-text-text-faint">
+              {hint}
+            </p>
+          ) : null}
+          <div
+            ref={bindContentRef}
+            className="relative mx-auto w-full max-w-[1000px]"
+            style={{ height: virtualizer.getTotalSize() }}
+          >
+            {virtualizer.getVirtualItems().map((virtualRow) => {
+              const entry = entries[virtualRow.index];
+              if (!entry) return null;
+              const key = rowKey(entry, virtualRow.index);
+              return (
+                <div key={key} style={{ position: "absolute", top: `${virtualRow.start}px`, left: 0, width: "100%" }}>
+                  <div
+                    data-index={virtualRow.index}
+                    data-row-key={key}
+                    ref={virtualizer.measureElement}
+                    className={`px-4 ${entrance.identity === hydrationIdentity && entrance.keys.has(key) ? "v2-transcript-row-enter" : ""}`}
+                    onAnimationEnd={() => {
+                      setEntrance((current) => {
+                        if (current.identity !== hydrationIdentity || !current.keys.has(key)) return current;
+                        const next = new Set(current.keys);
+                        next.delete(key);
+                        return { identity: current.identity, keys: next };
+                      });
+                    }}
+                    // No min-height here: pinning the measured element at
+                    // `virtualRow.size` makes ResizeObserver silent when content
+                    // shrinks (window resize, collapsed bodies), leaving stale
+                    // oversized rows and giant gaps between messages.
+                    style={{ paddingBottom: ROW_GAP_PX }}
+                  >
+                    {"kind" in entry ? (
+                      <PendingRow />
+                    ) : "name" in entry ? (
+                      entry.name === "subagent" ? (
+                        <SubagentToolCard
+                          tool={entry}
+                          open={openByKey[key] ?? preferences.expandSubagentOutput}
+                          initialOpen={openByKey[key] ?? preferences.expandSubagentOutput}
+                          onToggle={(next) => setOpenByKey((current) => ({ ...current, [key]: next }))}
+                          onViewDetails={onViewDetails}
+                        />
+                      ) : (
+                        <ToolRow
+                          tool={entry}
+                          open={openByKey[key] ?? preferences.autoExpandTools}
+                          onToggle={(next) => setOpenByKey((current) => ({ ...current, [key]: next }))}
+                        />
+                      )
                     ) : (
-                      <ToolRow
-                        tool={entry}
-                        open={openByKey[key] ?? preferences.autoExpandTools}
+                      <MessageRow
+                        message={entry}
+                        open={openByKey[key] ?? preferences.autoExpandThinking}
                         onToggle={(next) => setOpenByKey((current) => ({ ...current, [key]: next }))}
+                        meta={messageMeta?.[entry.key]}
+                        editing={editingKey === entry.key}
+                        draft={draft}
+                        onStartEdit={() => {
+                          setEditingKey(entry.key);
+                          setDraft(entry.text);
+                        }}
+                        onCancelEdit={() => setEditingKey(null)}
+                        onDraftChange={setDraft}
+                        onSubmitEdit={(text) => {
+                          const meta = messageMeta?.[entry.key];
+                          if (meta) onEditMessage?.(meta.entryId, text);
+                          setEditingKey(null);
+                        }}
+                        onSwitchBranch={onSwitchBranch}
                       />
-                    )
-                  ) : (
-                    <MessageRow
-                      message={entry}
-                      open={openByKey[key] ?? preferences.autoExpandThinking}
-                      onToggle={(next) => setOpenByKey((current) => ({ ...current, [key]: next }))}
-                      meta={messageMeta?.[entry.key]}
-                      editing={editingKey === entry.key}
-                      draft={draft}
-                      onStartEdit={() => {
-                        setEditingKey(entry.key);
-                        setDraft(entry.text);
-                      }}
-                      onCancelEdit={() => setEditingKey(null)}
-                      onDraftChange={setDraft}
-                      onSubmitEdit={(text) => {
-                        const meta = messageMeta?.[entry.key];
-                        if (meta) onEditMessage?.(meta.entryId, text);
-                        setEditingKey(null);
-                      }}
-                      onSwitchBranch={onSwitchBranch}
-                    />
-                  )}
+                    )}
+                  </div>
                 </div>
-              </div>
-            );
-          })}
-        </div>
-      </section>
+              );
+            })}
+          </div>
+        </section>
+        {!scrollState.top ? (
+          <div
+            data-testid="transcript-top-fade"
+            aria-hidden
+            className="pointer-events-none absolute left-0 right-3 top-0 z-20 h-8 bg-gradient-to-b from-v2-background-bg-base via-v2-background-bg-base/75 to-transparent"
+          />
+        ) : null}
+        {scrollState.overflow && !scrollState.bottom ? (
+          <div
+            data-testid="transcript-bottom-fade"
+            aria-hidden
+            className="pointer-events-none absolute bottom-0 left-0 right-3 z-20 h-10 bg-gradient-to-t from-v2-background-bg-base via-v2-background-bg-base/75 to-transparent"
+          />
+        ) : null}
+      </div>
       {steers.length > 0 ? (
         <div
           role="status"

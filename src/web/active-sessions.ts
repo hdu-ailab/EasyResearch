@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionTreeNode } from "@earendil-works/pi-coding-agent";
-import type { ActiveSessionDto, CompactionStateDto, ContextUsageDto } from "./contracts";
+import type { ActiveSessionDto, CompactionPolicyDto, CompactionStateDto, ContextUsageDto } from "./contracts";
 import type {
   SessionAdapter,
   SessionFactory,
@@ -146,6 +146,7 @@ export class ActiveSessionRegistry {
     messages: AgentMessage[];
     steering: string[];
     contextUsage?: ContextUsageDto;
+    compactionPolicy: CompactionPolicyDto;
     compactionState: CompactionStateDto;
   }> {
     return this.withRecord(id, async (record) => {
@@ -162,6 +163,7 @@ export class ActiveSessionRegistry {
         messages,
         steering: live ? [...record.client.getSteeringMessages()] : [],
         ...(contextUsage !== undefined ? { contextUsage } : {}),
+        compactionPolicy: record.client.getCompactionPolicy(),
         compactionState: live ? record.client.getCompactionState() : "idle",
       };
     });

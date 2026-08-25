@@ -22,6 +22,7 @@ import { resolvePiDefaultModel, type PiDefaultModelApi } from "../runtime/pi-def
 import { createSessionSettingsFacade } from "../runtime/session-settings-facade";
 import { embeddedPackageVersion } from "../runtime/bundled-assets";
 import { checkNpmUpdate } from "./update-check";
+import { createCompactionSettingsService } from "./compaction-settings";
 
 export interface Server {
   port: number;
@@ -253,6 +254,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
     openSessionManager: async (path) => SessionManager.open(path),
   });
   const listModels = () => auth.listModels();
+  const compactionSettings = createCompactionSettingsService(config, live);
   const resolveDefaultModel = async (cwd: string): Promise<string | undefined> => {
     const settingsManager = createSessionSettingsFacade(
       SettingsManager.create(cwd, agentDir),
@@ -276,6 +278,8 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
     listModels,
     checkForUpdate: () => checkNpmUpdate(packageVersion),
     patchAgent: createAgentPatchService(config, listModels),
+    getCompactionSettings: () => compactionSettings.get(),
+    patchCompactionSettings: (patch) => compactionSettings.patch(patch),
     renameSession: (sessionId, name) => renameSessions.rename(sessionId, name),
     listConfigProjects: async () => {
       const sessions = await SessionManager.listAll(undefined);

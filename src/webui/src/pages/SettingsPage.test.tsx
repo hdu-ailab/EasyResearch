@@ -12,6 +12,8 @@ vi.mock("../api", async (importOriginal) => {
   return {
     ...actual,
     patchAgent: vi.fn(),
+    getCompactionSettings: vi.fn(),
+    patchCompactionSettings: vi.fn(),
     listAgents: vi.fn(),
     listModels: vi.fn(),
     listAgentResources: vi.fn(),
@@ -29,6 +31,16 @@ vi.mock("../api", async (importOriginal) => {
 beforeEach(() => {
   window.localStorage.clear();
   vi.mocked(api.patchAgent).mockReset();
+  vi.mocked(api.getCompactionSettings).mockReset().mockResolvedValue({
+    triggerPercent: 70,
+    globalEnabled: true,
+  });
+  vi.mocked(api.patchCompactionSettings)
+    .mockReset()
+    .mockImplementation(async ({ triggerPercent }) => ({
+      triggerPercent,
+      globalEnabled: true,
+    }));
   vi.mocked(api.listAgents).mockReset();
   vi.mocked(api.listModels).mockReset();
   vi.mocked(api.listAgentResources).mockReset();
@@ -278,6 +290,14 @@ describe("SettingsPage", () => {
       autoExpandTools: true,
       expandSubagentOutput: true,
     });
+  });
+
+  it("shows the global automatic compaction threshold with conversation preferences", async () => {
+    renderSettings();
+
+    const input = await screen.findByRole("spinbutton", { name: /automatic compaction/i });
+    expect(input).toHaveValue(70);
+    expect(api.getCompactionSettings).toHaveBeenCalledOnce();
   });
 
   it("contains all switch thumbs with fixed pixel geometry in both states", async () => {
