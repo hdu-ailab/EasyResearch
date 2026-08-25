@@ -42,7 +42,8 @@ it("falls back to the first eight id characters when no name or first message is
 it("exposes a rename control per recent row", () => {
   const onRenameSession = vi.fn();
   renderList([history({ id: "h1" })], onRenameSession);
-  const rename = screen.getByRole("button", { name: /rename session/i });
+  fireEvent.click(screen.getByRole("button", { name: /session actions: fault diagnosis/i }));
+  const rename = screen.getByRole("menuitem", { name: /^rename session$/i });
   fireEvent.click(rename);
   expect(onRenameSession).toHaveBeenCalledWith(expect.objectContaining({ id: "h1" }));
 });

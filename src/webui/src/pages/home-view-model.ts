@@ -1,6 +1,11 @@
 import type { ActiveSessionDto, SessionSummaryDto } from "../../../web/contracts";
+import type { Language } from "../preferences";
 
-export type HomeActiveSession = ActiveSessionDto & { firstMessage?: string };
+export type HomeActiveSession = ActiveSessionDto & {
+  firstMessage?: string;
+  modified?: string;
+  messageCount?: number;
+};
 
 export interface HomeProjectGroup {
   cwd: string;
@@ -38,19 +43,66 @@ export function buildHomeProjectGroups(history: SessionSummaryDto[], active: Act
       .map((session) => session.sessionFile)
       .filter((path): path is string => Boolean(path)),
   );
-  const firstMessages = new Map<string, string>();
+  const summariesByPath = new Map<string, SessionSummaryDto>();
   for (const session of history) {
-    if (session.path) firstMessages.set(session.path, session.firstMessage);
+    if (session.path) summariesByPath.set(session.path, session);
   }
   for (const session of active.filter(isConnected)) {
-    const firstMessage = session.sessionFile ? firstMessages.get(session.sessionFile) : undefined;
-    ensure(session.cwd).active.push(firstMessage === undefined ? session : { ...session, firstMessage });
+    const summary = session.sessionFile ? summariesByPath.get(session.sessionFile) : undefined;
+    ensure(session.cwd).active.push(
+      summary === undefined
+        ? session
+        : {
+            ...session,
+            firstMessage: summary.firstMessage,
+            modified: summary.modified,
+            messageCount: summary.messageCount,
+          },
+    );
   }
   for (const session of history) {
     if (session.path && activePaths.has(session.path)) continue;
     ensure(session.cwd).history.push(session);
   }
   return [...groups.values()];
+}
+
+export function directoryName(path: string): string {
+  const normalized = path.replace(/[\\/]+$/, "");
+  if (!normalized) return path;
+  return normalized.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+}
+
+export function compactParentPath(path: string): string {
+  const normalized = path.replace(/[\\/]+$/, "");
+  const separator = normalized.includes("\\") ? "\\" : "/";
+  const lastSeparator = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
+  if (lastSeparator < 0) return normalized;
+  const parent = normalized.slice(0, lastSeparator) || separator;
+  const absolutePrefix = parent.startsWith(separator) ? separator : "";
+  const segments = parent.split(/[\\/]/).filter(Boolean);
+  if (segments.length <= 3) return parent;
+  return `${absolutePrefix}${[segments[0], segments[1], "…", segments.at(-1)].join(separator)}`;
+}
+
+export function formatRelativeModifiedTime(modified: string | undefined, language: Language, now = Date.now()): string {
+  if (!modified) return "";
+  const timestamp = Date.parse(modified);
+  if (!Number.isFinite(timestamp)) return "";
+  const difference = timestamp - now;
+  const absolute = Math.abs(difference);
+  const units: Array<[Intl.RelativeTimeFormatUnit, number]> = [
+    ["year", 365 * 24 * 60 * 60 * 1000],
+    ["month", 30 * 24 * 60 * 60 * 1000],
+    ["week", 7 * 24 * 60 * 60 * 1000],
+    ["day", 24 * 60 * 60 * 1000],
+    ["hour", 60 * 60 * 1000],
+    ["minute", 60 * 1000],
+  ];
+  const [unit, size] = units.find(([, candidate]) => absolute >= candidate) ?? ["minute", 60 * 1000];
+  let value = Math.round(difference / size);
+  if (value === 0 && difference < 0) value = -1;
+  return new Intl.RelativeTimeFormat(language, { numeric: "auto" }).format(value, unit);
 }
 
 export function isActuallyRunning(session: ActiveSessionDto): boolean {
@@ -73,8 +125,8 @@ export function matchesSessionQuery(session: SessionSummaryDto | HomeActiveSessi
   const needle = query.trim().toLocaleLowerCase();
   if (!needle) return true;
   const values =
-    "messageCount" in session
-      ? [session.cwd, session.id, session.name, session.firstMessage]
-      : [session.cwd, session.id, session.sessionName, session.firstMessage];
+    "status" in session
+      ? [session.cwd, session.id, session.sessionName, session.firstMessage]
+      : [session.cwd, session.id, session.name, session.firstMessage];
   return values.some((value) => value?.toLocaleLowerCase().includes(needle));
 }

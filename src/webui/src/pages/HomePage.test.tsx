@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../api";
@@ -131,7 +131,8 @@ describe("HomePage", () => {
       />,
     );
     expect(await screen.findByText("Fault diagnosis")).toBeTruthy();
-    expect(screen.getAllByText("/proj").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "/proj" })).toBeVisible();
+    expect(screen.getAllByText("proj").length).toBeGreaterThan(0);
     expect(screen.getAllByText("12").length).toBeGreaterThan(0);
   });
 
@@ -184,7 +185,7 @@ describe("HomePage", () => {
       ],
     } as never);
     renderHome();
-    expect(await screen.findByText(/^2 active$/i)).toBeVisible();
+    expect(await screen.findByText(/^2 sessions$/i)).toBeVisible();
     expect(screen.getByText("Running paper")).toBeVisible();
     expect(screen.getByText("Ready paper")).toBeVisible();
     expect(screen.queryByText("Error paper")).toBeNull();
@@ -261,7 +262,8 @@ describe("HomePage", () => {
       />,
     );
     await user.click(screen.getByRole("button", { name: /^new session$/i }));
-    await user.click(await screen.findByText("proj"));
+    const dialog = await screen.findByRole("dialog", { name: /choose project directory/i });
+    await user.click(await within(dialog).findByRole("treeitem", { name: /proj/i }));
     await user.click(screen.getByRole("button", { name: /create session/i }));
     await waitFor(() => expect(api.createSession).toHaveBeenCalledWith("/proj"));
   });
@@ -279,7 +281,8 @@ describe("HomePage", () => {
       />,
     );
     await user.click(screen.getByRole("button", { name: /^new session$/i }));
-    await user.click(await screen.findByText("proj"));
+    const dialog = await screen.findByRole("dialog", { name: /choose project directory/i });
+    await user.click(await within(dialog).findByRole("treeitem", { name: /proj/i }));
     await user.click(screen.getByRole("button", { name: /create session/i }));
     expect(await screen.findByText(/user-added Pi extensions/)).toBeTruthy();
     expect(screen.queryByText(/trust decision/i)).toBeNull();
@@ -314,7 +317,8 @@ describe("HomePage", () => {
     renderHome();
 
     await screen.findByText("Fault diagnosis");
-    const rename = screen.getByRole("button", { name: /rename session: fault diagnosis/i });
+    await user.click(screen.getByRole("button", { name: /session actions: fault diagnosis/i }));
+    const rename = screen.getByRole("menuitem", { name: /^rename session$/i });
     await user.click(rename);
     const input = screen.getByRole("textbox", { name: /session name/i });
     await user.clear(input);
@@ -385,7 +389,8 @@ describe("HomePage", () => {
       />,
     );
 
-    await user.click(await screen.findByRole("button", { name: /disconnect.*a1|disconnect/i }));
+    await user.click(await screen.findByRole("button", { name: /session actions: a1/i }));
+    await user.click(screen.getByRole("menuitem", { name: /^disconnect$/i }));
     await waitFor(() => expect(api.stopSession).toHaveBeenCalledWith("a1"));
     expect(onOpen).not.toHaveBeenCalled();
     expect(api.listStatus).toHaveBeenCalledTimes(2);

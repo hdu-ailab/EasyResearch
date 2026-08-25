@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import type { ActiveSessionDto, SessionSummaryDto } from "../../../web/contracts";
 import { buildHomeProjectGroups } from "../pages/home-view-model";
@@ -93,17 +93,31 @@ it("falls back to the first eight real id characters for an active session witho
 it("renders a ready session in the active list with the idle status", () => {
   renderWorkspace([], [active({ id: "idle-session", status: "ready", sessionName: "Idle session" })]);
   expect(screen.getByText("Idle session")).toBeVisible();
-  expect(screen.getByText("Idle")).toBeVisible();
+  expect(screen.getAllByText("Idle").length).toBeGreaterThan(0);
 });
 
 it("renders a separate disconnect control for an active session", () => {
   renderWorkspace([], [active({ sessionName: "Disconnectable" })]);
-  expect(screen.getByRole("button", { name: /^disconnect session/i })).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: /session actions: disconnectable/i }));
+  expect(screen.getByRole("menuitem", { name: /^disconnect$/i })).toBeVisible();
 });
 
-it("renders a rename control per active row and per history row", () => {
+it("keeps rename available from each active and history row menu", () => {
   const onRenameActive = vi.fn();
   const onRenameHistory = vi.fn();
   renderWorkspace([history({ id: "h1" })], [active({ id: "a1" })], { onRenameActive, onRenameHistory });
-  expect(screen.getAllByRole("button", { name: /rename session/i })).toHaveLength(2);
+  const actions = screen.getAllByRole("button", { name: /session actions/i });
+  expect(actions).toHaveLength(2);
+  fireEvent.click(actions[0]!);
+  fireEvent.click(screen.getByRole("menuitem", { name: /^rename session$/i }));
+  expect(onRenameActive).toHaveBeenCalledWith(expect.objectContaining({ id: "a1" }));
+  fireEvent.click(actions[1]!);
+  fireEvent.click(screen.getByRole("menuitem", { name: /^rename session$/i }));
+  expect(onRenameHistory).toHaveBeenCalledWith(expect.objectContaining({ id: "h1" }));
+});
+
+it("shows project basenames as the primary folder values", () => {
+  renderWorkspace([history({ cwd: "/papers/fault-diagnosis" })], []);
+  expect(screen.getAllByText("fault-diagnosis").length).toBeGreaterThan(0);
+  expect(screen.getByRole("button", { name: "/papers/fault-diagnosis" })).toBeVisible();
 });

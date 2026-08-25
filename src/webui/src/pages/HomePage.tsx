@@ -135,7 +135,9 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
         leading={
           <div className="flex min-w-0 items-center gap-2">
             <ProductMark />
-            <span className="shrink-0 font-mono text-[11px] text-v2-text-text-faint">v{packageJson.version}</span>
+            <span className="shrink-0 rounded-md border border-v2-grey-300 bg-v2-background-bg-base px-1.5 py-0.5 font-mono text-[11px] text-v2-text-text-faint">
+              v{packageJson.version}
+            </span>
           </div>
         }
         center={
