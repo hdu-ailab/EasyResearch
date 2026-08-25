@@ -128,7 +128,12 @@ Use this pattern when a paper screenshot or existing figure must become editable
 
 ## Venue Palette Mapping
 
-After determining the venue, choose `meta.palette` independently from the theme. If the user did not specify a palette, ask once with `AskUserQuestion`: put the venue recommendation first with `(Recommended)`, offer 3-4 options, use each palette's display name as the label, and state colorblind/grayscale safety in the description. If the user named an unambiguous palette or style, apply it directly and do not ask.
+After determining the venue, choose `meta.palette` independently from the theme.
+If the dispatch did not specify a palette, apply the venue recommendation with
+its colorblind/grayscale-safe variant. If the user named an unambiguous palette
+or style, apply it directly. A stage Agent never opens a direct user question;
+when a consequential palette decision remains unresolved, preserve the plan and
+return `blocked` with `required_user_input` for the caller.
 
 | Venue or scenario             | Recommended  | Alternatives                                              |
 | ----------------------------- | ------------ | --------------------------------------------------------- |
@@ -140,7 +145,8 @@ After determining the venue, choose `meta.palette` independently from the theme.
 | Engineering architecture / C4 | `c4-blue`    | `cloud-aws`, `drawio-classic`                             |
 | Cloud architecture            | `cloud-aws`  | `c4-blue`                                                 |
 
-For replication, preserve the source palette and skip this question unless the user explicitly asks to normalize or recolor the figure.
+For replication, preserve the source palette unless the dispatch explicitly
+authorizes normalization or recoloring.
 
 ## Academic Delivery Matrix
 

@@ -50,7 +50,8 @@ Use MarkItDown when:
 - A research paper PDF must be converted into Markdown for agent reading.
 - The project workflow needs `ref_papers/pdf/` converted into `ref_papers/text/`.
 - The PDF is public, user-provided, or otherwise legally accessible.
-- The converted text will be used for literature review, component extraction, or citation notes.
+- The converted text will be used for `paper-material-package`, survey writing,
+  component extraction, experiments, or citation verification.
 
 Do not use it to bypass paywalls, login walls, captcha, DRM, or institutional access restrictions.
 
@@ -119,7 +120,9 @@ If MarkItDown output is not usable:
 - Try `pdftotext -layout` for a plain-text fallback.
 - Try `pymupdf4llm` for an alternative Markdown conversion.
 - Use arXiv HTML or abstract pages when available.
-- For scanned PDFs, ask before using OCR-heavy workflows.
+- For scanned PDFs, preserve the failed conversion and return `blocked` with the
+  OCR cost/privacy decision as `required_user_input`; do not ask the user
+  directly from Search.
 
 Do not spend excessive time perfecting conversion for weakly relevant papers. Prioritize high-value selected papers.
 

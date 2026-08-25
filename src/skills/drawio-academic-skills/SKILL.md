@@ -19,7 +19,7 @@ metadata:
     - math
     - svg
 argument-hint: [figure-description-or-instruction]
-allowed-tools: Read, Write, Bash, AskUserQuestion
+allowed-tools: Read, Write, Bash
 ---
 
 # Draw.io Academic Overlay
@@ -51,11 +51,13 @@ If `../drawio/scripts/cli.js` is missing, stop and report that the sibling base 
 
 ## Academic Preflight
 
-Before generating or editing, determine and state: venue/audience; figure type (`architecture`, `roadmap`, or `workflow`); color policy; caption/legend/title, formula, and text-fidelity needs; export expectations. Estimate the **node budget** (authoritative targets, thresholds, and split strategies: `references/docs/academic-figure-playbook.md § Node Budget Management`); over target, confirm a split/simplify strategy with the user and start from the compact patterns in `references/templates/`. Full decision detail: `references/docs/publication-overlay.md § Required Academic Decisions`.
+Before generating or editing, determine and state: venue/audience; figure type (`architecture`, `roadmap`, or `workflow`); color policy; caption/legend/title, formula, and text-fidelity needs; export expectations. Estimate the **node budget** (authoritative targets, thresholds, and split strategies: `references/docs/academic-figure-playbook.md § Node Budget Management`). When the dispatch and evidence determine a safe compact split/simplify strategy, apply it. When a consequential content choice remains user-owned, preserve the plan and return `blocked` with one `required_user_input` for the caller; do not address the user directly. Full decision detail: `references/docs/publication-overlay.md § Required Academic Decisions`.
 
 ### Palette Preflight
 
-After the venue is known, if the user did not specify a palette, use `AskUserQuestion` as a single-select: venue recommendation first with `(Recommended)`, 3-4 choices, each palette's `displayName` as the label, and colorblind/grayscale safety plus venue rationale in each description. Venue map: `references/docs/academic-figure-playbook.md § Venue Palette Mapping`.
+After the venue is known, if the dispatch does not specify a palette, apply the
+venue recommendation with its colorblind/grayscale-safe variant. Venue map:
+`references/docs/academic-figure-playbook.md § Venue Palette Mapping`.
 
 If the user already specified a palette or an unambiguous style, map it directly and do not ask. For academic replication, preserve the source palette and skip selection unless the user explicitly requests normalization. Record the chosen name in `meta.palette`. The completion report must name the palette and its colorblind/grayscale safety flags, including any print-gate downgrade.
 
@@ -65,11 +67,19 @@ Extract only what the figure needs from papers, reference images, or text-only p
 
 ## Diagram Plan Gate
 
-For complex paper-derived figures or academic image-replication work, present a concise diagram plan and wait for confirmation before rendering; simple academic diagrams may skip the gate. Template: `references/docs/publication-overlay.md § Diagram Plan Gate`.
+For complex paper-derived figures or academic image-replication work, create a
+concise diagram plan before rendering. Proceed when the dispatch and evidence
+resolve its content. If structure or fidelity requires a user-owned choice,
+preserve the plan and return `blocked` with one `required_user_input`; do not
+wait for direct confirmation inside the Figures child. Simple academic diagrams
+may skip the gate. Template: `references/docs/publication-overlay.md § Diagram Plan Gate`.
 
 ## Optional Image Preview
 
-Only after the diagram plan is confirmed, and only with privacy approval before sending unpublished or sensitive content; treat generated text as approximate and correct final labels/formulas/geometry in YAML. Full rules: `references/docs/publication-overlay.md § Optional Image Preview`.
+Use a preview only after the diagram plan is resolved and prior privacy authority
+explicitly permits sending the relevant content. Otherwise skip it; do not ask
+from the Figures child. Treat generated text as approximate and correct final
+labels/formulas/geometry in YAML. Full rules: `references/docs/publication-overlay.md § Optional Image Preview`.
 
 ## Task Routing
 
@@ -113,7 +123,7 @@ Intermediate work directory:
 
 ## Create Flow
 
-1. Classify the figure as `architecture`, `roadmap`, or `workflow`; complex paper-derived requests confirm the diagram plan first (preview only after confirmation).
+1. Classify the figure as `architecture`, `roadmap`, or `workflow`; complex paper-derived requests resolve the diagram plan first (preview only after prior privacy authority).
 2. Draft or normalize the YAML spec as the canonical source; shorten labels before shrinking fonts.
 3. Validate and render through the sibling base CLI, then self-check the exported artifact before reporting:
 

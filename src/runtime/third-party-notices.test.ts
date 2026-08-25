@@ -757,7 +757,7 @@ z license
 });
 
 describe("installed third-party closure", () => {
-  it("collects the complete locked Open-WebSearch and Axios production closure", () => {
+  it("collects the complete locked Web-search, Axios, and SSH production closure", () => {
     const entries = collectThirdPartyNoticeEntries(PROJECT_ROOT);
     const identities = entries.map((entry) => `${entry.name}@${entry.version}`);
     const first = generateThirdPartyNotices(PROJECT_ROOT);
@@ -767,6 +767,8 @@ describe("installed third-party closure", () => {
     expect(first.endsWith("\n")).toBe(true);
     expect(identities).toContain("axios@1.19.0");
     expect(identities).toContain("open-websearch@2.1.11");
+    expect(identities).toContain("ssh2@1.17.0");
+    expect(identities).toContain("bcrypt-pbkdf@1.0.2");
     expect(identities).toContain("boolbase@1.0.0");
     expect(identities).toContain("saxes@6.0.0");
     expect(identities).toContain("cookie-signature@1.0.7");

@@ -1,7 +1,7 @@
 ---
 name: experiment
 description: |-
-  Build and manage ML/AI paper experiment workspaces: read papers first, select 2-5 authoritative datasets, implement baselines, test model-driven or problem-driven component combinations, run controlled trials, enforce five-seed formal reporting when feasible, and promote only formal outputs into a clean results directory. Use proactively when the user wants to start, organize, run, compare, or record experiments for a publishable model idea.
+  Use when Experiment must build, run, compare, or record reproducible ML/AI paper experiments locally or through the Research Assistant-configured ssh-bash tool and verified SSHFS workspace, including baselines, datasets, controlled trials, multi-seed formal evidence, ablations, and results promotion.
 
   Examples:
   - user: "Set up experiments for this paper idea" then create the workspace, read papers, choose datasets, and define baselines
@@ -13,7 +13,7 @@ metadata:
   hermes:
     tags: [research, experiments, ml, baselines, datasets, reproducibility]
     category: research
-    related_skills: [research-project-workflow, paper-search, arxiv, research-paper-writing]
+    related_skills: [research-project-workflow, paper-material-package, paper-search, arxiv, research-paper-writing, ssh-experiment, remote-experiment-preflight]
 ---
 
 # Experiment Workspace
@@ -25,13 +25,16 @@ Most practical model innovations are not invented from nothing. They are discove
 
 Do not jump directly to a proposed model. Read papers first, build baselines first, then try component combinations.
 
-In the bundled paper workflow, apply this skill to exact-cwd `experiments/` as the experiment root. Follow a different existing root only when the dispatch explicitly supplies it.
+In the bundled paper workflow, select exactly one root from the dispatch before
+editing: exact-cwd `experiments/` for local execution or the Research
+Assistant-created and marker-verified exact-cwd `experiment_ssh/` mount for SSH
+execution. Do not mix or mirror the two roots.
 
 ## Required Directory Layout
 Create or maintain this structure under the user-specified experiment root:
 
 ```text
-experiments/
+<experiment-root>/
   .venv/
   src/
   external/
@@ -50,7 +53,10 @@ experiments/
   experiment-record.md
 ```
 
-The bundled default is exact-cwd `experiments/`; the diagram names that concrete root. An explicitly supplied existing user layout may use another root.
+For local mode, `<experiment-root>` is `experiments/`. For SSH mode, it is only
+`experiment_ssh/`, which is the local view of the configured remote project
+root. An explicitly supplied existing user layout may replace the local-mode
+root, but it never replaces the verified bundled SSH mount.
 
 Directory rules:
 - `.venv/`: main experiment environment managed by `uv`; use it only for this project's own experiment code, routers, models, analysis, plotting, and lightweight adapters.
@@ -95,16 +101,27 @@ When running experiment related script or shell command, extend tool timeout to 
 
 ## Execution Location
 
-Decide where to run based on task type:
+Use the execution mode carried by the dispatch. Do not choose a remote host,
+mount, credential, or cost boundary on the user's behalf.
 
-| Run Locally | Run on Server (ssh {{SSH_HOST}}) |
-|-------------|-------------------------------|
-| Data preprocessing, EDA, plotting | Image recognition (CNNs, ViTs) |
-| Small ML (sklearn, XGBoost, etc.) | Deep learning training (PyTorch, TF) |
-| Statistical analysis, metrics | LLM fine-tuning, large transformers |
-| Figure generation | Hyperparameter search, multi-trial |
+Run locally when the request or existing project decision selects local work and
+the machine has the required resources. Use `ssh-experiment` only when Research
+Assistant has configured exact-cwd `easyresearch.ssh`, `ssh-bash` test passed,
+and the SSHFS mount identity was verified.
 
-For GPU-intensive tasks, delegate to the **ssh-experiment** skill, which manages GPU selection (3x RTX3090-24G), remote environment setup, and workspace paths consistent with this layout.
+Before remote code changes or commands, call `ssh-bash` test, repeat mount
+identity verification, and recheck required compute. This is a freshness guard,
+not permission to reconfigure credentials, remount over files, install system
+components, or select a different server. If configuration or mount is missing,
+stale, or inconsistent, preserve local work and return `blocked` with one
+`required_user_input` for Research Assistant.
+
+Edit remote experiment code only through the verified exact-cwd
+`experiment_ssh/` mount; execute only through `ssh-bash`. Never create, inspect,
+or use local-only `experiments/` for that SSH task. Never read credential files
+or copy their contents into commands, logs, records, or project files. Record
+actual hardware and environment facts rather than assuming GPU models, indices,
+CUDA versions, usernames, or package locations.
 
 ## Paper-First Workflow
 Before designing the proposed model:
@@ -116,7 +133,10 @@ Before designing the proposed model:
 - Separate component purpose from component name. For example, record whether an attention module improves long-range context, robustness, cross-domain alignment, feature selection, or interpretability.
 - Design a new model by combining components with a clear rationale, not by stacking modules blindly.
 
-If the research domain or target task is unclear, ask one short clarification question before creating datasets or code.
+If the research domain or target task cannot be derived from the dispatch,
+material package, or existing experiment record, stop before creating datasets
+or code and return `blocked` with one `required_user_input` for the caller. Do
+not address the user directly.
 
 ## Research Routes
 Use one of these routes to structure experiments.
@@ -349,3 +369,12 @@ Gate 4: Expansion
 - Favor reproducible comparisons over optimistic one-off results.
 - When the proposed model underperforms, use the result to redesign the component combination rather than hiding the run.
 - Describe novelty as an evidence-backed component combination unless there is a genuinely new mechanism.
+
+## Blocked Work
+
+Stop rather than guess when a required source, dataset permission, configured
+SSH connection, mount, compute resource, metric choice,
+or consequential protocol decision is unavailable. Preserve usable artifacts
+and report one `required_user_input` the caller cannot derive. Do not address the
+user directly; the Research Assistant checks existing decisions first and asks
+only when needed.

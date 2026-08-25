@@ -628,6 +628,7 @@ async function resolveDefaultStageSessionLauncher(): Promise<StageSessionLaunche
   const { default: webSearchExtension } = await import("../extensions/web-search");
   const { default: webFetchExtension } = await import("../extensions/webfetch");
   const { default: windowsPowerShellExtension } = await import("../extensions/windows-powershell");
+  const { createSshBashExtension } = await import("../extensions/ssh-bash");
   const { SubagentSupervisor } = await import("./supervisor");
   const { isDotAgentsSkillEnabled, resolveAgentSkillDirectories } = await import("./skill-resolution");
   const agentDir = getAgentDir();
@@ -657,6 +658,9 @@ async function resolveDefaultStageSessionLauncher(): Promise<StageSessionLaunche
         name: "windows-powershell",
         factory: windowsPowerShellExtension,
       },
+      ...(binding.current().name === "experiment"
+        ? [{ name: "ssh-bash", factory: createSshBashExtension({ allowConfigure: false }) }]
+        : []),
       {
         name: "agent-definition",
         factory: createAgentDefinitionExtension(binding),

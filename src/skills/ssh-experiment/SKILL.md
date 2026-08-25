@@ -1,172 +1,123 @@
 ---
 name: ssh-experiment
 description: |-
-  Run GPU-intensive deep learning experiments on a remote SSH server ({{SSH_HOST}},
-  3x RTX3090-24G example). Check GPU availability via nvidia-smi before launching,
-  select free GPUs with CUDA_VISIBLE_DEVICES, mount the server home via sshfs if
-  needed. Use proactively when user needs image recognition, deep learning, or any
-  task requiring GPU acceleration.
-
-  Examples:
-  - user: "Train this CNN on CIFAR-10" → check GPU, select free GPU, run via ssh
-  - user: "Run hyperparameter grid search" → distribute trials across available GPUs
-  - user: "Check GPU usage on server" → ssh nvidia-smi, report free GPUs
-  - user: "Mount server home" → sshfs {{SSH_USER}}@{{SSH_HOST}}: {{SSHFS_MOUNT}}
+  Use when Experiment must work through a Research Assistant-verified SSH connection and exact-cwd experiment_ssh mount.
+license: MIT
+metadata:
+  hermes:
+    tags: [research, experiment, ssh, remote-compute, gpu]
+    category: research
+    related_skills: [experiment, remote-experiment-preflight]
 ---
 
-# SSH Experiment Server
+# SSH Experiment Execution
 
-** MAKE SURE YOU HAVE READ `experiment` SKILL BEFORE CONNECTING TO REMOTE SERVER **
+## Boundary
 
-## Placeholders
+Read `experiment` first. Use this Skill only after Research Assistant configured
+the project's single `easyresearch.ssh` object and verified the SSHFS mapping.
+Experiment may test and run the connection through `ssh-bash`; it must not
+reconfigure host, port, username, authentication, credential files, or mounts.
 
-This is a sanitized template. Replace every `{{TOKEN}}` with your own values before first use (your global copy at `~/.easyresearch/agent/skills/ssh-experiment` is never overwritten by startup).
+Never read credential files with Agent-visible tools. `ssh-bash` reads their
+contents inside the daemon and returns only remote command output.
 
-| Token | Meaning | Generic example |
-|-------|---------|-----------------|
-| `{{SSH_HOST}}` | SSH server hostname or alias | `your-server-alias` |
-| `{{SSH_USER}}` | SSH login username | `your-username` |
-| `{{SSH_PRIMARY_HOST}}` | Primary LAN host for primary-first connection | `192.168.0.x` |
-| `{{SSHFS_MOUNT}}` | Local directory where the server home is sshfs-mounted | `~/server-mount` |
-| `{{REMOTE_PROJECT_ROOT}}` | Absolute remote path corresponding to the paper project's exact session cwd | `/home/user/papers/my-paper` |
-| `{{SSHFS_PROJECT_ROOT}}` | Local SSHFS path corresponding to the same exact project root | `~/server-mount/papers/my-paper` |
+## Freshness Guard
 
-## Server Info
+Before the first edit or launch, after reconnect, and after a long idle period:
 
-| Item | Value |
-|------|-------|
-| GPUs | 3x NVIDIA RTX 3090 (24576 MiB each) |
-| CUDA | 12.4, Driver 550.144.03 |
-| Local mount | `{{SSHFS_MOUNT}}/` |
-| uv | `~/.local/bin/uv` — PATH configured via `~/.bashrc`, works in both interactive and non-interactive SSH |
+1. call `ssh-bash` with `action: "test"`;
+2. confirm exact-cwd `experiment_ssh/` remains the configured mount;
+3. repeat the owner-only marker round trip through `ssh-bash run` and the local
+   mount; and
+4. query current compute availability.
 
-## Quick Commands
+If any check fails, preserve work and return `blocked`. Research Assistant must
+repair/reconfigure the connection and mount before this child continues.
 
-```bash
-# rssh is added in PATH, you can use it directly
-rssh
+## Editing And Artifact Paths
 
-# Check GPU status
-rssh "nvidia-smi"
+Edit through the verified local mount using Read/Edit/Write:
 
-# Launch experiment with log (returns immediately)
-rssh -f "cd {{REMOTE_PROJECT_ROOT}}/experiments && CUDA_VISIBLE_DEVICES=1 uv run python src/train.py --epochs 200 > logs/<run-id>.log 2>&1"
-
-# Mount if {{SSHFS_MOUNT}} is empty
-sshfs {{SSH_USER}}@{{SSH_HOST}}: {{SSHFS_MOUNT}}
+```text
+experiment_ssh/src/
+experiment_ssh/external/
+experiment_ssh/datasets/
+experiment_ssh/outputs/
+experiment_ssh/results/
+experiment_ssh/logs/
+experiment_ssh/experiment-record.md
 ```
 
-Edit code and check logs with Read/Edit/Write tools under `{{SSHFS_PROJECT_ROOT}}/experiments/` (no SSH). This mirrors exact-cwd `experiments/`; follow another path only when the dispatch explicitly supplies an existing user layout.
+This verified mount is the sole experiment root for SSH mode. Never create,
+read, or write local-only `experiments/` during the remote task and never create
+an `experiments/` child inside the mount. Keep raw/failed artifacts in
+`outputs/`, formal promoted evidence in `results/`, and every command/status in
+`experiment-record.md`.
 
-**All SSH to {{SSH_HOST}} MUST use `rssh`** (the installed Skill's `scripts/rssh`). This wrapper adds keepalive (`ServerAliveInterval=30`, `ServerAliveCountMax=10`) and timeout handling to prevent connection drops. Use `-f` to launch background jobs that return immediately.
+## Remote Commands
 
-For interactive sessions, use `rssh-tmux`.
+Use only the configured tool:
 
-## Mount Check
-
-Before any server operation, verify `{{SSHFS_MOUNT}}/` is mounted — use Read tool on the directory. If it returns empty or only `.` and `..`, mount it:
-
-```bash
-sshfs {{SSH_USER}}@{{SSH_HOST}}: {{SSHFS_MOUNT}}
+```text
+ssh-bash { action: "run", command: "<remote command>", timeout: <1-7200> }
 ```
 
-The mount is a direct SSHFS mirror of the remote home directory. Files written here appear on the server and vice versa.
+The tool is cross-platform and provides complete bounded remote Bash; do not
+invoke `ssh`, `sshpass`, a POSIX wrapper, PowerShell remoting, or a second
+executable. Commands execute on the configured server and are not confined by
+the tool to the project root, so every experiment command must explicitly enter
+the configured remote project root first. Use conservative shell quoting and put
+free-form experiment values in reviewed config files on the mounted workspace
+rather than interpolating paper text or user-authored shell fragments.
 
-## Local vs Remote: Core Principle
+Long training commands must detach remotely and return a PID or scheduler job id
+within the tool deadline. Record the exact command before launch. A typical
+shape is:
 
-**The mount is sshfs-mounted** → all files are accessible locally. Only TWO things go through SSH:
-
-| Action | Where | How |
-|--------|-------|-----|
-| Edit code, write files | **Local** | Use Edit/Write tools on `{{SSHFS_PROJECT_ROOT}}/experiments/src/` |
-| Read logs, check outputs | **Local** | Use Read tool on `{{SSHFS_PROJECT_ROOT}}/experiments/logs/` |
-| Compile PDF, LaTeX | **Local** | latexmk on local path |
-| Run `python` scripts | **Server via SSH** | `rssh -f "cd {{REMOTE_PROJECT_ROOT}}/experiments && CUDA_VISIBLE_DEVICES=1 uv run python src/train.py"` |
-| nvidia-smi, GPU check | **Server via SSH** | `rssh "nvidia-smi"` |
-| Install packages in server venv | **Server via SSH** | `rssh "cd {{REMOTE_PROJECT_ROOT}}/experiments && uv pip install ..."` |
-| mkdir, file ops on server | **Either** | Local writes appear on server via sshfs; SSH also works |
-
-## GPU Selection Protocol
-
-Before launching any GPU job:
-
-1. **Check GPU usage:**
-   ```bash
-   rssh "nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader"
-   ```
-
-2. **Select free GPU(s):** pick GPUs with minimal memory usage. Usually GPU 0 has desktop processes (Xorg, gnome-shell), prefer GPU 1 and 2.
-
-3. **Set CUDA_VISIBLE_DEVICES** in the job command:
-   ```bash
-   rssh -f "cd {{REMOTE_PROJECT_ROOT}}/experiments && CUDA_VISIBLE_DEVICES=1 uv run python src/train.py"
-   ```
-
-4. **Multi-GPU:** when using multiple GPUs, list them comma-separated:
-   ```bash
-   rssh -f "cd {{REMOTE_PROJECT_ROOT}}/experiments && CUDA_VISIBLE_DEVICES=1,2 uv run python -m torch.distributed.launch src/train.py"
-   ```
-
-## Running Experiments
-
-**Workflow**: write/edit code locally → launch via `rssh -f` → poll logs locally until done.
-
-### 1. Write code locally
-
-Use Edit/Write tools on `{{SSHFS_PROJECT_ROOT}}/experiments/src/` — mirrored to server instantly via sshfs.
-
-### 2. Launch on server
-
-Use `rssh -f` with log redirection (returns immediately):
-
-```bash
-rssh -f "cd {{REMOTE_PROJECT_ROOT}}/experiments && CUDA_VISIBLE_DEVICES=<gpu_id> uv run python src/train.py --epochs 200 > logs/<run-id>.log 2>&1"
+```text
+remote_root='<configured-remote-experiment-root>' &&
+case "$remote_root" in /*) ;; *) remote_root="$HOME/$remote_root" ;; esac &&
+cd "$remote_root" && mkdir -p logs outputs &&
+nohup env CUDA_VISIBLE_DEVICES=<ids> uv run python src/train.py
+  <reviewed-arguments> > logs/<run-id>.log 2>&1 < /dev/null & echo $!
 ```
 
-For short debugging runs, use `rssh` without `-f`:
+Use the actual environment command when it differs from `uv` and record it.
 
-```bash
-rssh "cd {{REMOTE_PROJECT_ROOT}}/experiments && CUDA_VISIBLE_DEVICES=<gpu_id> uv run python src/train.py --epochs 2 2>&1 | tee logs/<run-id>.log"
+## GPU Selection
+
+Immediately before a GPU launch, run:
+
+```text
+nvidia-smi --query-gpu=index,name,memory.used,memory.total,utilization.gpu --format=csv,noheader
 ```
 
-### 3. Poll and monitor
+Select only currently available GPUs compatible with the approved task. Set
+`CUDA_VISIBLE_DEVICES` explicitly. Never assume a GPU model, count, fixed index,
+CUDA version, or scheduler policy.
 
-After launching, poll logs **locally** (no SSH) with this adaptive sleep schedule:
+## Launch And Monitor
 
-1. **Launch + sleep 60s** — quick sanity check that the process started.
-2. **Read log locally** — use Read tool or `cat` on the mounted path. NO SSH needed:
-   ```
-   cat {{SSHFS_PROJECT_ROOT}}/experiments/logs/<run-id>.log
-   ```
-   Check for: epoch progress, loss values, ETA, errors, or completion markers.
-3. **If running normally → sleep 1h**, then read log again.
-4. **Assess progress**: compare elapsed epochs vs total epochs. 
-   - If progress is far from done (e.g. < 30%), extend sleep to 2h+.
-   - If near completion (e.g. > 80%), sleep shorter (15-30min).
-5. **Repeat** until log shows completion (e.g. "training finished", final metrics printed) or error.
+Before launch:
 
-```bash
-# Check if process is still running (this IS SSH — pgrep is server-side)
-rssh "pgrep -f 'uv run python src/train.py' && echo running || echo done"
-```
+- create a stable run id;
+- record dataset, split, seed, metrics, command, output/log paths, and expected
+  resources;
+- ensure raw output goes to `outputs/<run-id>/` and logs to `logs/`; and
+- run a short smoke trial when code or environment changed.
 
-If the process died early, check the log for errors. If it completed, promote outputs to `results/`.
+Monitor logs and outputs through the local mount, with occasional bounded
+`ssh-bash` status calls. Do not keep an interactive connection open for hours.
+Update `experiment-record.md` after completion or failure before another run.
 
-### 4. Interactive monitoring (when needed)
+A PID or quiet log is not proof of success. Verify exit/status evidence and
+expected outputs, then promote only reproducible formal artifacts to `results/`.
 
-For interactive inspection of a running job, use `rssh-tmux`:
+## Blocked Outcome
 
-```bash
-# One-time setup: start persistent SSH session
-rssh-tmux start
-
-# Send commands to the running session  
-rssh-tmux send "nvidia-smi"
-rssh-tmux send "tail -f {{REMOTE_PROJECT_ROOT}}/experiments/logs/<run-id>.log"
-
-# Capture last 100 lines of output
-rssh-tmux capture 100
-
-# Stop when done
-rssh-tmux stop
-```
+Stop on stale connection/mount identity, unavailable approved compute, missing
+remote permissions, uncertain scheduler ownership, or any need to change
+`easyresearch.ssh`. Return preserved artifacts, the failed check, safe
+diagnostics, and one user-owned `required_user_input`, or `none` when no user
+action can resolve the failure.

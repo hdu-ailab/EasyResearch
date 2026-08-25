@@ -13,6 +13,7 @@ import { createSessionNameExtension } from "./session-name";
 import type { SubagentCoordinator } from "../subagent/coordinator";
 import type { SubagentSupervisor } from "../subagent/supervisor";
 import windowsPowerShellExtension from "./windows-powershell";
+import { createSshBashExtension } from "./ssh-bash";
 import {
   createManualCompactionExtension,
   type ManualCompactionController,
@@ -62,6 +63,10 @@ export function createResearchAssistantExtensions(runtime: ResearchAssistantExte
     {
       name: "windows-powershell",
       factory: windowsPowerShellExtension,
+    },
+    {
+      name: "ssh-bash",
+      factory: createSshBashExtension({ allowConfigure: true }),
     },
     {
       name: "research-assistant",

@@ -15,6 +15,7 @@ export const THIRD_PARTY_NOTICES_FILE = "THIRD_PARTY_NOTICES.txt";
 export const THIRD_PARTY_NOTICE_ROOTS = [
   { name: "axios", version: "1.19.0" },
   { name: "open-websearch", version: "2.1.11" },
+  { name: "ssh2", version: "1.17.0" },
 ] as const;
 
 export interface ThirdPartyTextFile {

@@ -31,6 +31,7 @@ describe("bundled extension runtime builder", () => {
 
     expect(extensions.length).toBeGreaterThan(0);
     expect(extensions.map(({ name }) => name)).not.toContain("agent-status");
+    expect(extensions.map(({ name }) => name)).toContain("ssh-bash");
     for (const extension of extensions) {
       expect(extension.name.length).toBeGreaterThan(0);
       expect(typeof extension.factory).toBe("function");

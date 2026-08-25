@@ -245,6 +245,19 @@ describe("discoverAgents (Markdown layers)", () => {
     expect(researchAssistant.missingSkills).toEqual(["missing-skill"]);
   });
 
+  it("reports ssh-bash for all-tools Research Assistant and Experiment definitions only", async () => {
+    writeAgent(bundledDir, "research-assistant", ["tools: []"]);
+    writeAgent(bundledDir, "experiment", ["tools: []"]);
+    writeAgent(bundledDir, "custom", ["tools: []"]);
+
+    const { agents } = await discoverAgents(options());
+    const byName = Object.fromEntries(agents.map((agent) => [agent.name, agent]));
+
+    expect(byName["research-assistant"]?.effectiveTools).toContain("ssh-bash");
+    expect(byName.experiment?.effectiveTools).toContain("ssh-bash");
+    expect(byName.custom?.effectiveTools).not.toContain("ssh-bash");
+  });
+
   it("preserves an empty subagent allowlist for leaf agents", async () => {
     writeAgent(bundledDir, "search", ["subagents: []"]);
 
