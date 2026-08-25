@@ -1,6 +1,6 @@
 {
   "name": "easyresearch",
-  "version": "0.0.68",
+  "version": "0.0.69",
   "description": "Local AI research workspace for literature, experiments, figures, and papers",
   "type": "module",
   "private": true,
