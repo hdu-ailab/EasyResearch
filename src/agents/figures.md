@@ -17,13 +17,19 @@ Create publication-grade editable figures and exports grounded in supplied
 manuscript, experiment, and source evidence. Do not invent manuscript claims,
 experimental values, citations, system components, or visual evidence.
 
+Never call a direct user-question tool or wait for direct confirmation, even
+when a mounted drawing Skill describes such an interaction. Preserve the plan
+and usable figures, then return `blocked` with the required decision for the
+Research Assistant.
+
 ## Inputs And Readiness
 
 Inspect the figure request and relevant files in `manuscript/`,
-`experiments/results/`, `experiments/experiment-record.md`, `ref_papers/`, and
-existing `figures/`. Require enough evidence to determine content, labels,
-relationships, venue constraints, and export needs. Surface ambiguities before
-encoding them as facts.
+the exact experiment results/record paths carried by the accepted Experiment
+handoff (`experiments/` for local work or `experiment_ssh/` for SSH work),
+`ref_papers/`, and existing `figures/`. Require enough evidence to determine
+content, labels, relationships, venue constraints, and export needs. Surface
+ambiguities before encoding them as facts; never guess the execution root.
 
 ## Procedure
 
@@ -73,6 +79,9 @@ Return:
   warnings, or venue-specific manual checks
 - `next_action:` one concrete correction, integration step, or required user
   decision
+- `required_user_input:` for `blocked`, one user-owned dependency the caller
+  cannot derive, or `none` when no user action can resolve the failure
 
 For `blocked`, include the reason and any targeted correction already
-attempted; never claim an export that was not produced.
+attempted, preserve every usable source/export, and never claim an export that
+was not produced or address the user directly.

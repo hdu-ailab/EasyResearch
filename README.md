@@ -96,8 +96,11 @@ before it becomes formal paper evidence.
 diagnosis under domain shift, from literature collection through the final PDF.
 ```
 
-Major stages still stop at meaningful user checkpoints. The pipeline does not
-silently turn incomplete evidence into manuscript claims.
+After each specialist finishes, the Research Assistant checks the reported
+artifacts and advances automatically when they satisfy the authorized goal. It
+asks only for missing access or authority, consequential evidence tradeoffs, or
+safety and resource decisions; incomplete evidence is never silently converted
+into manuscript claims.
 
 ## Useful Commands
 
@@ -124,10 +127,10 @@ is split across specialists with explicit responsibility boundaries:
 
 | Agent | Owns | Does not do |
 |---|---|---|
-| **Research Assistant** | Clarification, evidence inspection, dispatch, checkpoints, and authorized autoresearch coordination | Create specialist artifacts itself |
-| **Search** | Retrieval, metadata verification, permitted PDFs, readable text, and the literature package | Write review or manuscript prose |
+| **Research Assistant** | Route classification, evidence inspection, specialist dispatch, acceptance review, authorized SSH preflight, and autoresearch coordination | Create specialist artifacts or run experiments itself |
+| **Search** | Retrieval, metadata verification, permitted PDFs, readable text, and per-paper factual material notes | Write cross-paper synthesis or manuscript prose |
 | **Experiment** | Baselines, methods, controlled trials, records, and formal evidence | Draft the paper or invent results |
-| **Writing** | Readiness checks, citation verification, authorized drafting, LaTeX, and PDF | Run experiments or fill evidence gaps with guesses |
+| **Writing** | Empirical/survey readiness, survey taxonomy and coverage, citation verification, authorized drafting, LaTeX, and PDF | Run experiments or fill evidence gaps with guesses |
 | **Figures** | Editable publication figures grounded in sources and results | Invent claims or values |
 
 Fresh specialists run in isolated sessions and can work in parallel when their
@@ -139,11 +142,13 @@ return artifact paths, unresolved gaps, and one recommended next action.
 ```mermaid
 flowchart LR
     A[Research question] --> B[Literature package]
-    B --> C{User checkpoint}
-    C --> D[Baselines and experiment plan]
+    B --> C{RA acceptance review}
+    C -->|Survey| G[Survey plan and manuscript]
+    C -->|Empirical| D[Baselines and experiment plan]
+    C -->|Hybrid| D
     D --> E[Controlled trials and formal evidence]
-    E --> F{User checkpoint}
-    F --> G[Editable figures and manuscript]
+    E --> F{RA acceptance review}
+    F --> G
     G --> H[Citation verification]
     H --> I[LaTeX and PDF]
 ```
@@ -160,8 +165,10 @@ projects can keep an explicitly supplied layout.
 |---|---|
 | `ref_papers/source.json` | Selected papers, identifiers, metadata, and acquisition/conversion failures |
 | `ref_papers/pdf/` and `ref_papers/text/` | Original permitted PDFs and the readable evidence used downstream |
-| `experiments/experiment-record.md` | Baseline, hypotheses, trial decisions, commands, metrics, failures, and remaining budget |
-| `experiments/results/` and `experiments/logs/` | Formal outputs, seed-level results, and execution history |
+| `ref_papers/paper-notes.md` | Per-paper questions, methods, evidence, limitations, relevance, and source locators |
+| `experiments/experiment-record.md` or `experiment_ssh/experiment-record.md` | Baseline, hypotheses, trial decisions, commands, metrics, failures, and remaining budget for local or SSH execution |
+| Selected root's `results/` and `logs/` | Formal outputs, seed-level results, and execution history; SSH projects are mounted at `experiment_ssh/` |
+| `manuscript/survey-plan.md` | Survey scope, candidate taxonomies, final outline, coverage matrix, and claim-source plan |
 | `manuscript/citation-verification.md` | Which citations and claims were checked and which remain uncertain |
 | `manuscript/manuscript.md` | The authoritative manuscript source |
 | `figures/` | Editable evidence-grounded publication figures and exports |
@@ -178,8 +185,9 @@ as proof that a research stage is complete.
   failures, negative trials, and formal results stay in the research record.
 - **Automatic but bounded:** unattended work has an explicit goal, evaluator,
   mutable scope, budget, rollback behavior, and stop conditions.
-- **Human checkpoints:** you approve consequential transitions such as moving
-  from literature to experiments or from evidence to full drafting.
+- **Minimal interruption:** the Research Assistant advances accepted work inside
+  your original authorization and asks only when access, authority, evidence
+  standards, safety, or resource consequences require your decision.
 - **Long-running work:** supervised background sessions, persisted state, and
   explicit continuation let useful work survive beyond one chat response.
 - **Paper-level delivery:** authoritative Markdown, derived LaTeX/PDF, and

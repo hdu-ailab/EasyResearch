@@ -33,6 +33,17 @@ describe("bundled agent definitions", () => {
     );
     expect(byName["research-assistant"]!.effectiveSkills).toContain("autoresearch");
     expect(byName.experiment!.effectiveSkills).not.toContain("autoresearch");
+    expect(byName["research-assistant"]!.effectiveSkills).toContain("remote-experiment-preflight");
+    expect(byName.search!.effectiveSkills).toContain("paper-material-package");
+    expect(byName.writing!.effectiveSkills).toContain("survey-paper-writing");
+    expect(byName.experiment!.effectiveSkills).toContain("ssh-experiment");
+    expect(byName.experiment!.effectiveSkills).not.toContain("remote-experiment-preflight");
+    expect(byName["research-assistant"]!.effectiveSkills).not.toContain("ssh-experiment");
+    expect(byName["research-assistant"]!.effectiveTools).toContain("ssh-bash");
+    expect(byName.experiment!.effectiveTools).toContain("ssh-bash");
+    expect(byName.search!.effectiveTools).not.toContain("ssh-bash");
+    expect(byName.writing!.effectiveTools).not.toContain("ssh-bash");
+    expect(byName.figures!.effectiveTools).not.toContain("ssh-bash");
   });
 
   it("gives every bundled agent web tools and the playwright-cli skill, and never grep/find/ls (ADR-068)", async () => {

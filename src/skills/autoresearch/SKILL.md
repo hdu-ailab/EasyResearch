@@ -53,10 +53,14 @@ only on compute the user has already authorized.
 
 ## Default Artifact Contract
 
-When the user does not supply another existing layout, use:
+Select the experiment root from the accepted execution mode before constructing
+the campaign: exact-cwd `experiments/` for local execution or the verified
+exact-cwd `experiment_ssh/` mount for SSH execution. Never mirror one campaign
+across both roots. When the user does not supply another existing layout,
+use:
 
 ```text
-experiments/
+<experiment-root>/
   experiment-record.md
   logs/<trial-id>.log
   outputs/autoresearch/<campaign-id>/
@@ -165,5 +169,7 @@ Require the Experiment specialist to return:
 After the handoff, inspect the reported artifacts. A promising candidate enters
 the existing Experiment workflow for matched protocols, multiple seeds,
 multiple datasets where feasible, leakage checks, statistics, and ablations.
-Crossing that formal-evidence checkpoint or beginning Writing still requires the
-normal user confirmation.
+The Research Assistant acceptance-reviews those formal artifacts and advances
+to Writing automatically when the original request already authorizes a paper;
+it asks only when drafting authority or a consequential evidence decision is
+still missing.

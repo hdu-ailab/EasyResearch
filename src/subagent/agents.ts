@@ -57,6 +57,8 @@ export const CONTROLLED_TOOL_INVENTORY = [
   "web-search",
   "webfetch",
 ] as const;
+const RESEARCH_ASSISTANT_TOOL_INVENTORY = [...CONTROLLED_TOOL_INVENTORY, "ssh-bash"] as const;
+const EXPERIMENT_TOOL_INVENTORY = [...CONTROLLED_TOOL_INVENTORY, "ssh-bash"] as const;
 const BUILTIN_ALIASES: Record<string, string> = {
   [RESEARCH_ASSISTANT_AGENT]: "Research Assistant",
 };
@@ -240,7 +242,13 @@ export function resolveAgentCatalog(
       model: runtimeDefault?.model,
       thinking: runtimeDefault?.thinking,
       tools,
-      effectiveTools: tools ?? [...CONTROLLED_TOOL_INVENTORY],
+      effectiveTools: tools ?? [
+        ...(definition.name === RESEARCH_ASSISTANT_AGENT
+          ? RESEARCH_ASSISTANT_TOOL_INVENTORY
+          : definition.name === "experiment"
+            ? EXPERIMENT_TOOL_INVENTORY
+            : CONTROLLED_TOOL_INVENTORY),
+      ],
       subagents: definition.subagents ? [...definition.subagents] : definition.subagents,
       skills,
       effectiveSkills,

@@ -12,7 +12,7 @@ metadata:
   hermes:
     tags: [research, arxiv, papers, bibtex, citations]
     category: research
-    related_skills: [research-project-workflow, paper-search, pdf-to-markdown]
+    related_skills: [research-project-workflow, paper-search, pdf-to-markdown, paper-material-package, survey-paper-writing]
 ---
 
 # arXiv Metadata

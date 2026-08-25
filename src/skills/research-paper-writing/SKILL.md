@@ -1,7 +1,7 @@
 ---
 name: research-paper-writing
 description: |-
-  Write and revise ML/AI manuscripts only after evidence is complete enough: inspect experiment-record.md and results/, verify citations, check five-seed formal reporting where feasible, draft Markdown by default, require a formula-rich Method section, use first-person "We" style, format tables with `(ours)` labels and bold best scores, and list uncertain references for manual verification. Drafting requires explicit user consent — produce readiness reports by default. Use proactively when the user asks to write, revise, audit, or prepare a paper.
+  Use when Writing must assess, draft, revise, or audit an empirical ML/AI method paper whose claims depend on experiment-record.md and results/, including baseline fairness, multi-seed reporting, ablations, formula-rich methods, result tables, citation verification, and derived submission artifacts. Do not use its empirical readiness gate for a survey-only paper.
 
   Examples:
   - user: "Write the paper from these experiment results" then check readiness before drafting
@@ -13,34 +13,42 @@ metadata:
   hermes:
     tags: [research, paper-writing, manuscript, markdown, citations, method-section]
     category: research
-    related_skills: [research-project-workflow, experiment, paper-search, arxiv, pdf-to-markdown]
+    related_skills: [research-project-workflow, experiment, paper-search, arxiv, pdf-to-markdown, survey-paper-writing]
 ---
 
 # Research Paper Writing
 
 ## Scope
-Use this skill for writing or revising a research manuscript after there is enough experimental evidence to support the claims.
+Use this skill for writing or revising an empirical research manuscript after
+there is enough experimental evidence to support its method and result claims.
+For a survey, review, tutorial, taxonomy, or literature-synthesis paper, use
+`survey-paper-writing`; do not apply this Skill's baseline, seed, proposed-model,
+or ablation gate to literature synthesis. For a hybrid survey with an original
+benchmark, apply this Skill only to benchmark-derived claims.
 
 This skill is not responsible for exploratory experiments or PDF conversion. Use `research-project-workflow` to orchestrate the full paper project. Use `experiment` for experiment setup, baselines, model trials, dataset expansion, and experiment-record management. Use `paper-search` for paper discovery. Use `arxiv` for arXiv metadata, BibTeX, and citation checks. Use `pdf-to-markdown` to convert public or user-provided PDFs before reading them deeply.
 
 ## Non-Negotiable Rule
 Do not start writing the manuscript body just because a few small or incomplete experiments exist.
 
-Even when evidence is sufficient, **never start drafting the full paper without explicit user consent**. Only write the manuscript when the user explicitly says to draft, write, or compose the paper. Without such a directive, produce readiness reports and gap analyses instead.
+Even when evidence is sufficient, **never start drafting the full paper without explicit user consent**. Only write the manuscript when the user explicitly says to draft, write, compose, or complete the paper. An initial end-to-end request to complete a paper carries that authority through accepted stages; do not ask again. Without such a directive, produce readiness reports and gap analyses instead.
 
 ## Writing Readiness Gate
 Before drafting Introduction, Method, Experiments, or Abstract, inspect the available experiment evidence.
 
 Read when available:
-- `experiments/experiment-record.md`
-- `experiments/results/`
-- `experiments/outputs/` only for context or failed-run diagnosis
-- `experiments/logs/` only when needed to verify commands or failures
+- `<experiment-root>/experiment-record.md`
+- `<experiment-root>/results/`
+- `<experiment-root>/outputs/` only for context or failed-run diagnosis
+- `<experiment-root>/logs/` only when needed to verify commands or failures
 - result summary CSV/JSON/Markdown files
 - ablation files and dataset/split manifests
 
-These paths are relative to the exact session cwd. Follow another existing
-layout only when the dispatch explicitly supplies it.
+The accepted Experiment handoff selects `<experiment-root>`: `experiments/` for
+local execution or `experiment_ssh/` for SSH execution. These paths are relative
+to the exact session cwd. Never merge evidence across both roots or guess the
+mode when the handoff is missing. Follow another existing local layout only when
+the dispatch explicitly supplies it.
 
 The manuscript body may be drafted only when ALL of:
 - These conditions are satisfied (or explicitly waived by the user).
@@ -197,7 +205,9 @@ Include:
 - Main comparison table.
 - Ablation table or ablation summary.
 - Negative or weak cases when they exist.
-- Reproducibility details pointing to `experiments/results/` and `experiments/experiment-record.md`.
+- Reproducibility details pointing to the selected
+  `<experiment-root>/results/` and
+  `<experiment-root>/experiment-record.md`.
 
 Do not hide failed or underperforming settings if they are relevant to the claim.
 

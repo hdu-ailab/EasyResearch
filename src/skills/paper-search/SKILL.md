@@ -12,7 +12,7 @@ metadata:
   hermes:
     tags: [research, papers, openreview, arxiv, search]
     category: research
-    related_skills: [research-project-workflow, arxiv, pdf-to-markdown]
+    related_skills: [research-project-workflow, arxiv, pdf-to-markdown, paper-material-package]
 ---
 
 # Paper Search
@@ -28,7 +28,8 @@ metadata:
 - In a full paper project, `research-project-workflow` first coordinates the
   directory layout and stage order; then this skill searches candidate papers.
 - This skill only returns a candidate paper list; PDF download, text
-  conversion, experiments, and manuscript writing are outside its scope.
+  conversion, factual paper cards, experiments, and manuscript writing are
+  outside its scope.
 - In a paper project, organize or save the script JSON output to
   `ref_papers/source.json` under the exact cwd; if the dispatch explicitly
   supplies an existing user layout, follow that layout.
@@ -37,6 +38,9 @@ metadata:
 - If public PDFs must be fetched and converted to Markdown, the Search agent
   uses the `pdf-to-markdown` skill; the orchestration layer never performs
   conversion directly.
+- After selected papers are verified and converted, Search uses
+  `paper-material-package` to create `ref_papers/paper-notes.md`. Do not add
+  summaries or survey prose to this candidate-search Skill.
 
 ## Inputs
 Extract from the user request:
@@ -50,8 +54,9 @@ By default only `query` is needed; the remaining parameters use their
 defaults. Add a time range, data sources, or result count only when the user
 explicitly asks.
 
-If the user gives no search direction, ask for it first; if no time range is
-given, default to `2026-01-01` through today.
+If no search direction can be derived from the dispatch or existing artifacts,
+return `blocked` with `required_user_input` for the caller; do not address the
+user directly. If no time range is given, default to `2026-01-01` through today.
 
 ## Commands
 Prefer the Python from the EasyResearch skill venv (auto-created by first-run
@@ -165,7 +170,8 @@ Output requirements:
 - No matches: return "no matching paper found in the given direction and time range"
 - A single source fails: keep the other source's results and note the partial source failure
 - OpenReview conference missing or API unavailable: skip that conference and continue searching
-- Invalid user time range (`since > until`): ask the user to correct it
+- Invalid user time range (`since > until`): return `blocked` with the invalid
+  values and one `required_user_input` for the caller
 - If `playwright-cli` or Chrome Stable is missing: suggest installing or
   fixing local Chrome and verify with
   `playwright-cli open --browser=chrome https://example.com`

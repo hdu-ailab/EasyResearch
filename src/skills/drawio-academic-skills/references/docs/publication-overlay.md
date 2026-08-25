@@ -81,7 +81,12 @@ Do not force every item into the figure. Include the items that explain the pape
 
 ## Diagram Plan Gate
 
-For complex paper-derived figures, ambiguous diagrams, or academic image-improvement work, confirm a diagram plan before rendering. Use this template:
+For complex paper-derived figures, ambiguous diagrams, or academic
+image-improvement work, resolve a diagram plan before rendering. Proceed when
+the dispatch and evidence determine the content. If a consequential structural
+choice remains user-owned, preserve the plan and return `blocked` with one
+`required_user_input` for the caller instead of waiting for direct confirmation.
+Use this template:
 
 ```text
 Source type:
@@ -96,7 +101,8 @@ Preview path:
 Terms needing confirmation:
 ```
 
-Skip this gate only for simple academic diagrams where the user already gave the figure type, labels, layout, and export expectations clearly.
+Skip this gate only for simple academic diagrams where the dispatch already
+provides the figure type, labels, layout, and export expectations clearly.
 
 ## Content Compression
 
@@ -132,7 +138,10 @@ Skip external image-generation preview for simple, straightforward academic diag
 
 Privacy rules:
 
-- Ask before sending unpublished papers, confidential reports, proprietary data, or sensitive research content to an external model.
+- Send unpublished papers, confidential reports, proprietary data, or sensitive
+  research content to an external model only when the dispatch already carries
+  explicit privacy authority. Otherwise skip the optional external preview; do
+  not ask directly from Figures.
 - Prefer sending the confirmed diagram plan, short labels, layout intent, and visual style constraints instead of raw source documents.
 - If the user declines external processing, no image tool is available, or generation fails, fall back to local YAML/SVG preview.
 

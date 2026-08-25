@@ -1,61 +1,90 @@
 ---
 name: research-project-workflow
 description: |-
-  Orchestrate an evidence-driven ML/AI paper project by clarifying the requested outcome, inspecting exact-cwd artifacts, dispatching only the responsible specialists, managing user checkpoints, interpreting structured handoffs, and escalating blocked work. Use proactively for multi-stage paper projects and requests that require deciding which paper specialist should act next.
-
-  Examples:
-  - user: "I want to write a paper on fault diagnosis" then clarify the outcome, inspect existing evidence, and dispatch only the missing stage
-  - user: "Continue this paper project" then classify exact-cwd artifacts and resume from the first unresolved checkpoint
-  - user: "Now write the manuscript" then verify evidence and authorization before dispatching Writing
+  Use when the Research Assistant must classify and orchestrate a multi-stage paper request, continue an existing project from exact-cwd artifacts, choose between survey, empirical, or hybrid routes, acceptance-review specialist handoffs, or decide whether missing authority, access, evidence, cost, or safety requires a user question.
 license: MIT
 metadata:
   hermes:
-    tags: [research, workflow, papers, experiments, manuscript, orchestration]
+    tags: [research, workflow, survey, experiments, manuscript, orchestration]
     category: research
-    related_skills: [paper-search, experiment, research-paper-writing]
+    related_skills: [paper-material-package, survey-paper-writing, experiment, research-paper-writing, remote-experiment-preflight]
 ---
 
 # Research Project Workflow
 
 ## Scope
 
-Use this Skill only to coordinate the paper pipeline. It may clarify goals,
-inspect evidence state, construct specialist tasks, manage checkpoints,
-interpret handoffs, request one targeted correction, escalate blocks, and
-complete the requested outcome.
+Use this Skill only to coordinate the paper pipeline. Clarify and classify the
+requested outcome, inspect evidence state, construct specialist tasks,
+acceptance-review handoffs, continue one correctable child, escalate genuine
+blocks, and complete the authorized outcome.
 
-Do not retrieve papers, download or convert PDFs, design or execute
-experiments, draft manuscript prose, compile LaTeX, or produce figures. Those
-actions belong to Search, Experiment, Writing, and Figures.
+Do not retrieve papers, download or convert PDFs, create paper notes, design or
+execute experiments, draft manuscript prose, compile LaTeX, or produce figures.
+Those actions belong to Search, Experiment, Writing, and Figures. The only
+direct infrastructure exception is a user-selected remote empirical route: use
+the separate `remote-experiment-preflight` Skill for SSH/connectivity/compute/
+mount checks before dispatching Experiment.
 
-## Clarify The Outcome
+## Classify The Route
 
-Identify the requested deliverable and constraints. Ask one focused question
-only when the topic, requested scope, or a required user decision is too vague
-to dispatch safely. Do not require venue details unless they immediately affect
-the requested work.
+Choose the smallest route that produces the requested outcome:
 
-Distinguish a full pipeline from literature-only, experiment-only, readiness,
-drafting, revision, review, and figure-only requests. Never force every request
-through every stage.
+- **Survey:** survey, review, tutorial, taxonomy, research landscape, or
+  literature synthesis. Search -> Writing. Do not require Experiment.
+- **Empirical:** new method, model improvement, hypothesis test, benchmark,
+  baseline comparison, ablation, or reproducible evaluation. Search ->
+  Experiment -> Writing when drafting is authorized.
+- **Hybrid:** survey plus an explicitly requested original benchmark or
+  evaluation. Search -> Experiment for only that empirical component -> Writing.
+- **Narrow task:** literature-only, experiment-only, readiness, revision,
+  citation audit, review, figure-only, or compilation. Dispatch only the owner.
 
-If the requested deliverable is a survey or review paper, proactively ask the
-user how many reference papers they expect to cover. Record their expected
-count, use it to bound the Search material package, and interpret readiness
-against that count.
+Ask one focused route-deciding question only when the request and existing
+artifacts do not distinguish these routes. Do not turn every request into a
+questionnaire.
+
+For a survey, derive the expected paper count from the request or existing
+decision. Ask for it only when absent. Use that count to bound Search completion
+and Writing coverage; do not silently invent a count.
+
+## Capture Existing Authority
+
+Treat the user's initial request as authority for its plainly stated outcome. A
+request to complete a paper authorizes downstream full drafting and the default
+derived PDF. A request only to search, plan, experiment, review, or assess
+readiness does not authorize full manuscript drafting.
+
+Record constraints already supplied: topic/scope, source and date limits,
+expected count, local/remote compute, budgets, mutable paths, output format,
+venue, and accepted limitations. Do not ask again at each stage.
+
+Ask the user only when progress requires:
+
+- drafting authority not present in the original request;
+- user-only access, authentication, permission, or missing source material;
+- an unapproved system/mount change, external cost, or remote resource use;
+- a consequential scope reduction or evidence-standard compromise; or
+- an unrecoverable safety, privacy, leakage, or conflicting-evidence decision.
 
 ## Inspect Evidence State
 
-Treat the exact session cwd as the paper-project root. Inspect only enough of
-the following default artifacts to classify readiness:
+Treat the exact session cwd as the paper-project root. Inspect only enough to
+classify readiness:
 
 ```text
 ref_papers/source.json
 ref_papers/pdf/
 ref_papers/text/
+ref_papers/paper-notes.md
 experiments/experiment-record.md
 experiments/outputs/
 experiments/results/
+experiment_ssh/experiment-record.md
+experiment_ssh/outputs/
+experiment_ssh/results/
+manuscript/writing-readiness-report.md
+manuscript/survey-plan.md
 manuscript/manuscript.md
 manuscript/citation-verification.md
 manuscript/latex/
@@ -63,100 +92,96 @@ manuscript/manuscript.pdf
 figures/
 ```
 
-An explicitly supplied existing user layout may replace these paths for that
-dispatch. Do not invent another default root.
+Inspect `experiments/` only for local execution and `experiment_ssh/` only for a
+remote execution mapping accepted by `remote-experiment-preflight`; they are
+alternative experiment roots, not duplicate readiness requirements.
 
-Classify what exists, whether it is usable for the requested outcome, and what
-evidence is missing. Artifacts on disk plus specialist handoffs are
-authoritative; conversation claims alone do not establish readiness.
+Follow an explicitly supplied existing user layout for that dispatch. Artifacts
+plus specialist handoffs are authoritative; conversation claims alone do not
+establish readiness.
 
 ## Choose The Responsible Specialist
 
-- Dispatch `search` when the requested outcome lacks a verified, readable
-  material package.
-- Dispatch `experiment` when the research question needs reproducible formal
-  evidence or experimental correction.
-- Dispatch `writing` for readiness analysis, explicitly authorized drafting or
-  revision, citation verification, LaTeX, and PDF production.
-- Dispatch `figures` for evidence-grounded publication figures or figure
-  corrections.
+- Dispatch `search` when verified readable sources or
+  `ref_papers/paper-notes.md` are missing or insufficient.
+- Dispatch `experiment` when an empirical/hybrid question lacks reproducible
+  formal evidence or needs correction.
+- Dispatch `writing` for survey planning/synthesis, empirical or survey
+  readiness, authorized drafting/revision, citation verification, and PDF.
+- Dispatch `figures` for evidence-grounded publication figures or corrections.
 
-For explicit review, critique, validation, risk analysis, or advice, inspect
-available evidence and recommend one action: proceed, dispatch the responsible
-specialist with a targeted correction, or stop for a user decision. Review is
-not permission to perform specialist work.
+For remote empirical work, run `remote-experiment-preflight` first. Configure and
+test the project's single `easyresearch.ssh` object through `ssh-bash`, let that
+Skill create the selected remote project directory, then verify its exact-cwd
+`experiment_ssh/` SSHFS mapping. Never dispatch an SSH task with missing
+authentication, an unverified mount, or machine placeholders.
 
 ## Construct The Dispatch
 
-Every specialist task must include:
+Every task states:
 
-- requested outcome;
-- exact-cwd artifact inputs or the explicitly supplied existing layout;
-- relevant evidence and known gaps;
-- constraints and user decisions already made;
-- expected output paths, stated as exact project-relative artifact paths;
-- completion criteria and required `complete | partial | blocked` handoff.
+- requested outcome and route;
+- exact-cwd artifact inputs or the explicit existing layout;
+- relevant evidence, known gaps, and user decisions already made;
+- constraints, authority, and accepted resource/side-effect bounds;
+- exact project-relative output paths;
+- completion criteria; and
+- the required `complete | partial | blocked` handoff.
 
-Agree the artifact output paths with the user before dispatch whenever the
-user will inspect them or the next stage depends on them. State the exact
-paths in the task; a child must not pick an unstated or implied output
-location. Treat the outcome as incomplete until the agreed paths hold the
-required artifacts.
+An Experiment task explicitly names `local` or `remote` execution. Local tasks
+use `experiments/`; remote tasks use only the accepted `experiment_ssh/` mount
+and require exact record/output/result paths under that root.
 
-A Writing task must state whether the user explicitly authorized a full draft
-or named section. Without authorization, request only readiness or gap analysis.
+Search survey tasks require `ref_papers/source.json`, selected PDF/text material,
+and `ref_papers/paper-notes.md` at the expected count. Writing survey tasks
+require every selected in-scope `note_key` to appear in the
+`manuscript/survey-plan.md` coverage matrix; the accepted count is the minimum
+coverage target, not permission to omit additional selected papers. They also require
+`manuscript/manuscript.md`, citation verification, and complete-paper derived
+output unless the user limited scope. Writing tasks carry the exact drafting
+authority already supplied.
 
-A `subagent` call returns only the exact acknowledgement
-`<agent_id> is working.` after materialization; this is not terminal output.
-Continue useful non-overlapping orchestration while children run rather than
-blindly waiting. Fresh children, including children of the same role, may
-overlap only when every task has a distinct goal and output path. Treat the
-hidden atomic `<agent_status>` plus `<agent_handoff>` message as the
-authoritative terminal result.
+A `subagent` call returns only `<agent_id> is working.` after materialization.
+This is not terminal output. Continue useful non-overlapping orchestration while
+children run. Fresh concurrent children need distinct goals and output paths.
 
-A bare agent name (for example, `agent: "search"`) always starts a fresh child.
-Continue only a completed child by passing its agent id as `agent` (for example,
-`agent: "search_0"`); never continue or reuse a running id. There is no
-`session` parameter. Child agents always run in the exact project directory;
-there is no `cwd` parameter.
+A bare agent name starts a fresh child. Continue only a completed child by
+passing its agent id as `agent`; never continue a running id. There is no
+`session` or `cwd` parameter.
 
-## Interpret Handoffs
+## Acceptance Review
 
-Require every specialist handoff to report:
+On the hidden terminal status+handoff:
 
-- `status: complete | partial | blocked`;
-- produced artifact paths;
-- unresolved evidence gaps;
-- one recommended next action.
+1. Read the handoff and inspect the exact artifacts required by the dispatch.
+2. For `complete`, confirm paths, counts, required sections/fields, evidence
+   support, disclosed failures, and next-stage inputs. Advance automatically when
+   they satisfy the authorized outcome.
+3. For `partial`, preserve usable work. Continue only if the remaining gaps do
+   not affect the requested outcome or an accepted limitation already covers
+   them; otherwise request one targeted correction.
+4. For `blocked`, first derive the missing dependency from existing decisions,
+   artifacts, and other handoffs. Ask the user only when one
+   `required_user_input` remains genuinely user-owned. A stale SSH connection or
+   mount re-enters Research Assistant preflight before Experiment may continue.
+5. For one correctable failure class, continue the same completed child once
+   with the observed failure and unchanged criteria. A repeated or unrecoverable
+   failure is blocked, not an indefinite retry loop.
 
-Verify that reported artifacts relevant to the next decision exist. Treat
-`complete` as eligible for a checkpoint, not automatic permission to cross into
-a new major stage. Preserve usable artifacts from `partial` and decide whether
-the remaining gap is required for the user's scope. Stop on `blocked` until its
-dependency or user decision is supplied.
-
-## Checkpoints And Retry
-
-Before crossing into a new major stage, summarize the evidence and obtain user
-confirmation. Do not request a checkpoint for routine corrections within an
-already approved stage unless the correction changes scope, cost, or risk.
-
-For one correctable failure class, issue at most one targeted retry that names
-the observed failure, required correction, and unchanged completion criteria.
-To retry, continue the completed prior child by passing its agent id as `agent`
-(e.g. `agent: "search_0"`). If
-the same failure repeats or is unrecoverable, return blocked with the reason,
-attempted correction, and required user decision. Never retry indefinitely.
+This is routine acceptance against dispatch criteria. Perform deeper critique,
+risk analysis, or cross-cutting peer review only when the user asks for it.
 
 ## Completion
 
-Stop when the user's requested outcome is supported by inspectable artifacts
-and required checkpoints. Report:
+Stop when the authorized outcome is supported by accepted inspectable artifacts.
+Report:
 
 - `status: complete | partial | blocked`;
 - relevant specialist-produced artifact paths;
 - unresolved gaps;
-- one next action, or `none` when complete.
+- one next action, or `none` when complete; and
+- for `blocked`, one user-owned `required_user_input` not derivable from current
+  evidence, or `none` when no user action can resolve the failure.
 
-Do not create a separate workflow-state file. Keep decisions in the session and
-specialist-owned artifacts.
+Do not create a separate workflow-state or checkpoint file. Keep decisions in
+Pi session history and specialist-owned artifacts.

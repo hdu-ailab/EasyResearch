@@ -124,13 +124,15 @@ through a dedicated Chrome profile, never through stored passwords.
 ### First-time login (one time only)
 
 1. Ensure `playwright-cli` is available; prefer Chrome Stable.
-2. Open Overleaf with the dedicated profile and ask the user to log in:
+2. Open Overleaf with the dedicated profile:
    ```bash
    playwright-cli open --browser=chrome --profile=~/.cache/playwright-cli/overleaf-profile https://www.overleaf.com/login
    ```
-3. Let the user complete the login in the opened browser and close it.
-   The cookies are saved in the profile for reuse.
-4. Do not ask for or store the user's Overleaf password.
+3. Return `blocked` with `required_user_input` asking the caller to have the user
+   complete login in the opened browser and close it. Preserve the LaTeX source;
+   the Research Assistant can continue this Writing child after login. The
+   cookies are saved in the profile for reuse.
+4. Do not request or store the user's Overleaf password.
 
 ### Compile flow (every time)
 
@@ -138,8 +140,9 @@ through a dedicated Chrome profile, never through stored passwords.
    ```bash
    playwright-cli open --browser=chrome --profile=~/.cache/playwright-cli/overleaf-profile https://www.overleaf.com/project
    ```
-2. If the page asks for login, the stored login state has expired — repeat the
-   first-time login step and stop until the user confirms they are logged in.
+2. If the page asks for login, the stored login state has expired — preserve the
+   source and return the first-time-login blocked handoff. Do not wait for a
+   direct user response inside the Writing child.
 3. Create a new blank project (New Project → Blank Project).
 4. Upload every source file from `manuscript/latex/`: the main `*.tex`,
    `*.bib`, all figures referenced by `\includegraphics{...}`, and any

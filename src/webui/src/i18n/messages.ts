@@ -244,13 +244,13 @@ export const en = {
   "agent.writing": "Writing",
   "agent.figures": "Figures",
   "agentDesc.researchAssistant":
-    "Research Assistant for the paper pipeline. Clarifies the goal, leads specialist agents, tracks evidence, and decides the next step. On explicit auto-research requests, it launches a bounded autonomous experiment campaign that keeps improving the declared metric without routine prompts. It reviews work only when asked, keeps quality checkpoints user-confirmed, and never replaces specialist work.",
+    "Research Assistant for the paper pipeline. Classifies survey, empirical, and hybrid routes, leads specialist agents, acceptance-reviews their artifacts, and advances automatically within existing authority. It can perform user-authorized SSH preflight and launch bounded auto-research, but never replaces specialist work or runs experiments itself.",
   "agentDesc.search":
-    "Web research agent. Searches academic papers for a given topic using the paper-search and arxiv skills, verifies metadata with the arxiv skill, converts PDFs to readable Markdown with pdf-to-markdown, and produces a material package in ref_papers/. Returns a summary of what was found as its final output. Does not write literature reviews.",
+    "Web research agent. Searches and verifies papers, converts permitted PDFs to readable Markdown, and produces source.json plus a durable paper-notes.md with per-paper facts and evidence locators. It does not create cross-paper taxonomy or manuscript prose.",
   "agentDesc.experiment":
-    "Experiment agent. Creates the experiment workspace, reads the referenced papers, selects datasets, implements baselines, runs controlled trials (local or remote GPU per configuration), and records formal results in the experiments/ area. May dispatch the search agent to retrieve papers or material.",
+    "Experiment agent. Creates the experiment workspace, reads source material, selects datasets, implements baselines, runs controlled local or Research Assistant-validated remote trials, and records formal results in the selected local experiments/ or remote experiment_ssh/ root. May dispatch Search for missing material.",
   "agentDesc.writing":
-    "Writing agent. Drafts and revises the manuscript body in Markdown from the material package and experiment records, writes the literature review with verified citations, and compiles the LaTeX-exported PDF. May dispatch the search agent for source material and the figures agent for diagrams.",
+    "Writing agent. Applies empirical or survey-specific readiness, builds survey taxonomy and coverage plans, drafts authoritative Markdown with verified claim support, and compiles the derived LaTeX/PDF. May dispatch Search for evidence and Figures for diagrams.",
   "agentDesc.figures":
     "Figures agent. Creates publication-grade diagrams (architecture, workflow, results) with the drawio-academic-skills skill, saving editable sources and exported images under figures/. May dispatch the search agent to retrieve source material.",
   "files.filter": "Filter files",
@@ -583,13 +583,13 @@ export const zhCN: Record<MessageKey, string> = {
   "agent.writing": "写作",
   "agent.figures": "图表",
   "agentDesc.researchAssistant":
-    "论文流水线的研究助手。澄清目标，带领检索、实验、写作和图表等专业智能体，跟踪证据并决定下一步。用户明确要求自动研究时，发起有边界的自主实验活动，在无需逐轮确认的情况下持续优化指定指标。仅在用户要求时评审，质量检查点仍由用户确认，且不替代专业智能体的工作。",
+    "论文流水线的研究助手。判断综述、实验与混合路线，带领专业智能体，验收其真实产物，并在已有授权内自动推进。可执行用户授权的 SSH 预检和有边界的自动研究，但不替代专业智能体，也不亲自运行实验。",
   "agentDesc.search":
-    "网络研究智能体。使用 paper-search 与 arxiv 技能按主题检索学术论文，用 arxiv 技能核验元数据，用 pdf-to-markdown 将 PDF 转为可读的 Markdown，并在 ref_papers/ 中产出素材包。最终输出返回检索摘要，不撰写文献综述。",
+    "网络研究智能体。检索并核验论文，将允许获取的 PDF 转为可读 Markdown，并产出 source.json 与包含逐篇事实和证据定位的 paper-notes.md；不创建跨论文分类体系或手稿正文。",
   "agentDesc.experiment":
-    "实验智能体。创建实验工作区，阅读引用论文，选择数据集，实现基线方法，运行受控实验（按配置使用本地或远程 GPU），并在 experiments/ 中记录正式结果。可分派检索智能体获取论文或素材。",
+    "实验智能体。创建实验工作区，阅读来源材料，选择数据集，实现基线方法，运行受控的本地实验或经研究助手预检的远程实验，并在本地 experiments/ 或远程 experiment_ssh/ 实验根中记录正式结果。可分派检索智能体补充材料。",
   "agentDesc.writing":
-    "写作智能体。根据素材包与实验记录用 Markdown 起草并修改正文，撰写含已验证引用的文献综述，并编译 LaTeX 导出的 PDF。可分派检索智能体获取素材、图表智能体绘制图表。",
+    "写作智能体。采用实验论文或综述专用准备度标准，构建综述分类体系与覆盖计划，基于已核验证据起草权威 Markdown，并编译派生的 LaTeX/PDF。可分派检索智能体补充证据、图表智能体绘图。",
   "agentDesc.figures":
     "图表智能体。使用 drawio-academic-skills 技能绘制出版级图表（架构、流程、结果），将可编辑源文件与导出的图片保存在 figures/ 下。可分派检索智能体获取素材。",
   "files.filter": "过滤文件",
