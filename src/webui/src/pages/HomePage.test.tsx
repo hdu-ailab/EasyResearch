@@ -152,7 +152,7 @@ describe("HomePage", () => {
   it("keeps mobile interaction and landmark order aligned with the visual workspace order", async () => {
     renderHomeWithTwoProjects();
     const elements = [
-      await screen.findByRole("button", { name: /^new session$/i }),
+      await screen.findByRole("button", { name: /^new project$/i }),
       screen.getByRole("searchbox", { name: /search sessions/i }),
       screen.getByRole("heading", { name: /active sessions/i }),
       screen.getByRole("complementary", { name: /projects/i }),
@@ -260,7 +260,7 @@ describe("HomePage", () => {
         settingsButton={<button type="button">Settings</button>}
       />,
     );
-    await user.click(screen.getByRole("button", { name: /^new session$/i }));
+    await user.click(screen.getByRole("button", { name: /^new project$/i }));
     await user.click(await screen.findByText("proj"));
     await user.click(screen.getByRole("button", { name: /create session/i }));
     await waitFor(() => expect(api.createSession).toHaveBeenCalledWith("/proj"));
@@ -278,7 +278,7 @@ describe("HomePage", () => {
         settingsButton={<button type="button">Settings</button>}
       />,
     );
-    await user.click(screen.getByRole("button", { name: /^new session$/i }));
+    await user.click(screen.getByRole("button", { name: /^new project$/i }));
     await user.click(await screen.findByText("proj"));
     await user.click(screen.getByRole("button", { name: /create session/i }));
     expect(await screen.findByText(/user-added Pi extensions/)).toBeTruthy();
@@ -334,7 +334,7 @@ describe("HomePage", () => {
         settingsButton={<button type="button">Settings</button>}
       />,
     );
-    expect(screen.getByRole("button", { name: /^new session$/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /^new project$/i })).toBeEnabled();
   });
 
   it("shows an error state that does not shift layout", async () => {
@@ -347,7 +347,7 @@ describe("HomePage", () => {
       />,
     );
     expect(await screen.findByText(/agent dir unavailable/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: /^new session$/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^new project$/i })).toBeTruthy();
   });
 
   it("opens a running active session directly without restart", async () => {

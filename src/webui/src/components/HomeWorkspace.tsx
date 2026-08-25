@@ -128,7 +128,7 @@ export function HomeWorkspace({
           onClick={onChooseDirectory}
         >
           <Plus size={14} aria-hidden />
-          {t("home.newSession")}
+          {t("home.newProject")}
         </button>
       </div>
       <div className="border-t border-v2-grey-200 p-3 lg:col-start-2 lg:row-start-1 lg:border-t-0">

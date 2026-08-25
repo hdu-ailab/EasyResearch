@@ -107,3 +107,10 @@ it("renders a rename control per active row and per history row", () => {
   renderWorkspace([history({ id: "h1" })], [active({ id: "a1" })], { onRenameActive, onRenameHistory });
   expect(screen.getAllByRole("button", { name: /rename session/i })).toHaveLength(2);
 });
+
+it("separates the New project entry from an existing project's New session action", () => {
+  renderWorkspace([history()], []);
+
+  expect(screen.getByRole("button", { name: "New project" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "New session /proj" })).toBeVisible();
+});

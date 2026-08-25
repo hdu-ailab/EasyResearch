@@ -309,8 +309,8 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
             <button
               type="button"
               className="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100"
-              title={t("dialog.createFolder")}
-              aria-label={t("dialog.createFolder")}
+              title={t("dialog.createProject")}
+              aria-label={t("dialog.createProject")}
               onClick={() => {
                 setCreateOpen(true);
                 setCreateError(null);
@@ -516,10 +516,10 @@ function CreateFolderDialog({
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
-        aria-label={t("dialog.createFolder")}
+        aria-label={t("dialog.createProject")}
         className="w-full max-w-[360px] rounded-[10px] bg-v2-background-bg-base p-4 shadow-[var(--v2-elevation-overlay)]"
       >
-        <h2 className="mb-3 text-[13px] font-semibold">{t("dialog.createFolder")}</h2>
+        <h2 className="mb-3 text-[13px] font-semibold">{t("dialog.createProject")}</h2>
         <input
           aria-label={t("dialog.folderName")}
           className="h-8 w-full rounded-md border border-v2-grey-200 px-2 font-mono text-[12px]"

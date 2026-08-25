@@ -107,6 +107,29 @@ describe("i18n", () => {
     expect(screen.getByTestId("subagent-copy")).toHaveTextContent("子智能体进展");
   });
 
+  it("keeps project, session, and reasoning-state terms distinct in both languages", () => {
+    const english = messages.en as Record<string, string>;
+    const chinese = messages["zh-CN"] as Record<string, string>;
+
+    expect(english["home.newProject"]).toBe("New project");
+    expect(english["home.newSession"]).toBe("New session");
+    expect(english["dialog.createProject"]).toBe("New project");
+    expect(english["dialog.createSession"]).toBe("Create session");
+    expect(english["config.newFolder"]).toBe("New folder");
+    expect(english["transcript.thinkingProcess"]).toBe("Thinking process");
+    expect(english["transcript.showDetails"]).toBe("Show details");
+    expect(english["transcript.hideDetails"]).toBe("Hide details");
+    expect(chinese["home.newProject"]).toBe("新增项目");
+    expect(chinese["home.newSession"]).toBe("新增会话");
+    expect(chinese["dialog.createProject"]).toBe("新增项目");
+    expect(chinese["dialog.createSession"]).toBe("创建会话");
+    expect(chinese["config.newFolder"]).toBe("新建文件夹");
+    expect(chinese["transcript.thinking"]).toBe("思考中");
+    expect(chinese["transcript.thinkingProcess"]).toBe("思考过程");
+    expect(chinese["transcript.showDetails"]).toBe("显示详情");
+    expect(chinese["transcript.hideDetails"]).toBe("隐藏详情");
+  });
+
   it("falls back to en without a provider", () => {
     render(<Probe />);
     expect(screen.getByTestId("label").textContent).toBe("Language");

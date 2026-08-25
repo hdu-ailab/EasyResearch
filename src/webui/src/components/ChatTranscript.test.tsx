@@ -340,7 +340,7 @@ describe("ChatTranscript", () => {
     smallTranscript(container, 400);
     fireTranscriptGrowth(container);
 
-    const toggle = screen.getByRole("button", { name: /show details/i });
+    const toggle = screen.getByRole("button", { name: /thinking process/i });
     fireEvent.keyDown(toggle, { key: "PageDown" });
     el.scrollTop = 100;
     fireEvent.scroll(el);
@@ -378,9 +378,9 @@ describe("ChatTranscript", () => {
     );
     scrollIntoViewSpy.mockClear();
 
-    fireEvent.click(screen.getByRole("button", { name: /hide details/i }));
+    fireEvent.click(screen.getByRole("button", { name: /thinking process/i }));
     fireEvent.click(screen.getByRole("button", { name: /grep/i }));
-    fireEvent.click(screen.getByRole("button", { name: /show details/i }));
+    fireEvent.click(screen.getByRole("button", { name: /thinking process/i }));
     fireEvent.click(screen.getByRole("button", { name: /grep/i }));
 
     expect(scrollIntoViewSpy).not.toHaveBeenCalled();
@@ -398,10 +398,10 @@ describe("ChatTranscript", () => {
   it("expands the reasoning body with a pop-down animation and retracts it with a collapse-up animation", () => {
     vi.useFakeTimers();
     renderTranscript(<ChatTranscript messages={[msg({ key: "a", reasoning: "deep thought" })]} tools={[]} />);
-    const toggle = screen.getByRole("button", { name: /show details/i });
+    const toggle = screen.getByRole("button", { name: /thinking process/i });
     fireEvent.click(toggle);
     expect(screen.getByText("deep thought").closest(".animate-v2-expand-down")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /hide details/i }));
+    fireEvent.click(screen.getByRole("button", { name: /thinking process/i }));
     expect(screen.getByText("deep thought").closest(".animate-v2-collapse-up")).toBeTruthy();
     act(() => vi.advanceTimersByTime(200));
     expect(screen.queryByText("deep thought")).toBeNull();
@@ -411,6 +411,7 @@ describe("ChatTranscript", () => {
     const active = msg({ key: "a", reasoning: "deep thought", isThinking: true });
     const { rerender } = renderTranscript(<ChatTranscript messages={[active]} tools={[]} />);
 
+    expect(screen.getByRole("button", { name: "Thinking" })).toBeVisible();
     expect(screen.getByText("Thinking")).toHaveClass("v2-thinking-active");
 
     rerender(
@@ -421,7 +422,7 @@ describe("ChatTranscript", () => {
     );
 
     expect(screen.queryByText("Thinking")).toBeNull();
-    expect(screen.getByRole("button", { name: /show details/i })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Thinking process" })).toBeVisible();
   });
 
   it("shows active thinking before the first reasoning token arrives", () => {
@@ -442,7 +443,7 @@ describe("ChatTranscript", () => {
     );
 
     expect(screen.queryByText("Thinking")).toBeNull();
-    expect(screen.getByRole("button", { name: /show details/i })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Thinking process" })).toBeVisible();
   });
 
   it("expands the tool output body with a pop-down animation", () => {
@@ -581,7 +582,7 @@ describe("ChatTranscript", () => {
       autoExpandTools: true,
     });
 
-    const firstReasoningToggle = screen.getByRole("button", { name: /hide details/i });
+    const firstReasoningToggle = screen.getByRole("button", { name: /thinking process/i });
     const firstToolToggle = screen.getByRole("button", { name: /grep/i });
     expect(screen.getByText("first thought")).toBeVisible();
     expect(screen.getByText("first tool output")).toBeVisible();
@@ -595,7 +596,7 @@ describe("ChatTranscript", () => {
       />,
     );
 
-    const reasoningToggles = screen.getAllByRole("button", { name: /details/i });
+    const reasoningToggles = screen.getAllByRole("button", { name: /thinking process/i });
     expect(reasoningToggles[0]).toHaveAttribute("aria-expanded", "false");
     expect(reasoningToggles[1]).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("button", { name: /grep/i })).toHaveAttribute("aria-expanded", "false");
@@ -632,14 +633,14 @@ describe("ChatTranscript", () => {
     const { rerender } = renderTranscript(<ChatTranscript messages={[reasoning]} tools={[]} />, {
       autoExpandThinking: true,
     });
-    const toggle = screen.getByRole("button", { name: /hide details/i });
+    const toggle = screen.getByRole("button", { name: /thinking process/i });
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "false");
 
     rerender(<ChatTranscript messages={[]} tools={[]} />);
     rerender(<ChatTranscript messages={[reasoning]} tools={[]} />);
 
-    expect(screen.getByRole("button", { name: /show details/i })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: /thinking process/i })).toHaveAttribute("aria-expanded", "false");
   });
 
   describe("skill invocation cards (ADR-066)", () => {

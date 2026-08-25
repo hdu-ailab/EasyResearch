@@ -504,7 +504,7 @@ describe("WorkPage", () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
 
     const conversation = await screen.findByLabelText("Conversation");
-    const reasoningButtons = within(conversation).getAllByRole("button", { name: /show details/i });
+    const reasoningButtons = within(conversation).getAllByRole("button", { name: /thinking process/i });
     expect(reasoningButtons).toHaveLength(2);
     for (const button of reasoningButtons) {
       expect(button.closest("li")?.querySelector("div.v2-md")).toBeNull();
@@ -2139,12 +2139,12 @@ describe("WorkPage", () => {
         },
       ],
     });
-    const toggle = await screen.findByRole("button", { name: /show details/i });
+    const toggle = await screen.findByRole("button", { name: /thinking process/i });
     expect(screen.queryByText("secret chain of thought")).toBeNull();
     expect(screen.getByText("visible answer")).toBeTruthy();
     await userEvent.setup().click(toggle);
     expect(await screen.findByText("secret chain of thought")).toBeTruthy();
-    expect(screen.getByRole("button", { name: /hide details/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /thinking process/i })).toHaveAttribute("aria-expanded", "true");
   });
 
   it("shows tool arguments and expands tool output on demand", async () => {

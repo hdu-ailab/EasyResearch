@@ -226,7 +226,7 @@ describe("DirectoryDialog", () => {
     expect(await screen.findByText(/boom/)).toBeTruthy();
   });
 
-  it("creates a nested folder under the current view, enters it, and selects it", async () => {
+  it("creates a nested project under the current view, enters it, and selects it", async () => {
     const user = userEvent.setup();
     mockListing({ [HOME]: ["papers"], [`${HOME}/papers`]: [], [`${HOME}/papers/new folder/review`]: [] });
     vi.mocked(api.createDirectory).mockResolvedValue({ path: `${HOME}/papers/new folder/review` });
@@ -237,8 +237,9 @@ describe("DirectoryDialog", () => {
     await user.clear(pathInput);
     await user.type(pathInput, `${HOME}/papers`);
     await user.keyboard("{Enter}");
-    await user.click(screen.getByRole("button", { name: /create folder/i }));
-    const createDialog = screen.getByRole("dialog", { name: "Create folder" });
+    expect(screen.getByRole("button", { name: "Create session" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: /new project/i }));
+    const createDialog = screen.getByRole("dialog", { name: "New project" });
     await user.type(createDialog.querySelector("input")!, "new folder/review");
     await user.click(within(createDialog).getByRole("button", { name: /create/i }));
     expect(api.createDirectory).toHaveBeenCalledWith(`${HOME}/papers/new folder/review`);
@@ -250,8 +251,8 @@ describe("DirectoryDialog", () => {
     mockListing({ [HOME]: [] });
     vi.mocked(api.createDirectory).mockRejectedValue(new Error("cannot create"));
     render(<DirectoryDialog homeDir={HOME} onSelect={() => {}} onClose={() => {}} />);
-    await user.click(screen.getByRole("button", { name: /create folder/i }));
-    const createDialog = screen.getByRole("dialog", { name: "Create folder" });
+    await user.click(screen.getByRole("button", { name: /new project/i }));
+    const createDialog = screen.getByRole("dialog", { name: "New project" });
     await user.type(createDialog.querySelector("input")!, "bad\0name");
     await user.click(within(createDialog).getByRole("button", { name: /create/i }));
     expect(api.createDirectory).not.toHaveBeenCalled();

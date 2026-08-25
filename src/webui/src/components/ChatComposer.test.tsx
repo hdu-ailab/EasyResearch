@@ -167,14 +167,16 @@ describe("ChatComposer slash popover", () => {
 });
 
 describe("ChatComposer single running-state button (ADR-083)", () => {
-  it("moves the keyboard focus indicator from the textarea to the rounded shell", async () => {
+  it("darkens the shell's one grey border without drawing another focus frame", async () => {
     const { user } = await renderComposer();
     const input = screen.getByLabelText(/message/i);
     await user.tab();
 
     expect(input).toHaveFocus();
-    expect(input).toHaveClass("focus-visible:outline-none");
-    expect(input.parentElement?.className).toContain("has-[textarea:focus-visible]:outline-2");
+    expect(input).toHaveStyle({ outline: "none" });
+    expect(input.parentElement).toHaveClass("border-v2-grey-200", "focus-within:border-v2-grey-400");
+    expect(input.parentElement?.className).not.toContain("has-[textarea:focus-visible]:outline");
+    expect(input.parentElement?.className).not.toContain("focus-within:border-v2-blue-600");
   });
 
   it("sends while streaming whenever the input has content", async () => {

@@ -28,7 +28,7 @@ describe("ContextCapacity", () => {
     expect(screen.queryByText("—")).toBeNull();
   });
 
-  it("uses a 20px clockwise light-blue arc over the matching grey track", () => {
+  it("uses a 20px clockwise high-contrast cobalt arc over the matching grey track", () => {
     render(<ContextCapacity usage={usage(25, 25_000)} compactionState="idle" compactionPolicy={policy()} />);
 
     const progress = screen.getByRole("progressbar");
@@ -39,15 +39,23 @@ describe("ContextCapacity", () => {
     expect(svg).not.toHaveClass("overflow-visible");
     expect(svg).toHaveAttribute("viewBox", "0 0 20 20");
     expect(track).toHaveClass("stroke-v2-grey-300");
-    expect(arc).toHaveClass("stroke-v2-blue-300");
+    expect(arc).toHaveClass("stroke-v2-blue-600");
     expect(arc).toHaveAttribute("pathLength", "100");
     expect(arc).toHaveAttribute("stroke-dasharray", "25 100");
     expect(arc).toHaveAttribute("transform", "rotate(-90 10 10)");
+    expect(arc).not.toHaveClass("origin-center");
     for (const attribute of ["cx", "cy", "r", "stroke-width"]) {
       expect(arc?.getAttribute(attribute)).toBe(track?.getAttribute(attribute));
     }
     expect(screen.queryByText("25%")).toBeNull();
     expect(screen.getByText("25k / 100k")).toBeInTheDocument();
+  });
+
+  it("keeps positive fractional usage visible instead of rounding the arc to zero", () => {
+    render(<ContextCapacity usage={usage(0.4, 400)} compactionState="idle" compactionPolicy={policy()} />);
+
+    const arc = screen.getByRole("progressbar").querySelector("[data-progress-arc]");
+    expect(arc).toHaveAttribute("stroke-dasharray", "0.4 100");
   });
 
   it("exposes actual usage above the clamped ring maximum without visible percentage text", () => {

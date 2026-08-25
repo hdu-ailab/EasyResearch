@@ -39,7 +39,7 @@ export function ContextCapacity({ usage, compactionState, compactionPolicy }: Co
     compactionState === "queued" ? t("context.queued") : compactionState === "running" ? t("context.compacting") : null;
   const valueText = [usageSummary, policySummary, statusSummary].filter(Boolean).join(". ");
   const indeterminate = compactionState === "running";
-  const arcPercent = indeterminate ? 24 : (clampedPercent ?? 0);
+  const arcPercent = indeterminate ? 24 : actualPercent === null ? 0 : Math.min(100, Math.max(0, actualPercent));
 
   return (
     <div
@@ -83,7 +83,7 @@ export function ContextCapacity({ usage, compactionState, compactionPolicy }: Co
               pathLength={100}
               strokeDasharray={`${arcPercent} 100`}
               transform={`rotate(-90 ${CENTER} ${CENTER})`}
-              className="origin-center stroke-v2-blue-300 transition-[stroke-dasharray] duration-200 ease-v2-panel motion-reduce:transition-none"
+              className="stroke-v2-blue-600 transition-[stroke-dasharray] duration-200 ease-v2-panel motion-reduce:transition-none"
             />
           </g>
         </svg>

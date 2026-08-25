@@ -74,8 +74,9 @@ function ReasoningBlock({
         onClick={() => onToggle(!open)}
       >
         {open ? <ChevronDown size={14} aria-hidden /> : <ChevronRight size={14} aria-hidden />}
-        <span>{open ? t("transcript.hideDetails") : t("transcript.showDetails")}</span>
-        {active ? <span className="v2-thinking-active text-v2-text-text-faint">{t("transcript.thinking")}</span> : null}
+        <span className={active ? "v2-thinking-active text-v2-text-text-faint" : undefined}>
+          {active ? t("transcript.thinking") : t("transcript.thinkingProcess")}
+        </span>
       </button>
       {mounted && (
         <div
