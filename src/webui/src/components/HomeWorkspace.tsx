@@ -3,7 +3,10 @@ import { useState } from "react";
 import type { ActiveSessionDto, SessionSummaryDto } from "../../../web/contracts";
 import { useI18n } from "../i18n/useI18n";
 import {
+  compactParentPath,
   countConnectedSessions,
+  directoryName,
+  formatRelativeModifiedTime,
   type HomeProjectGroup,
   isActuallyRunning,
   isConnected,
@@ -51,7 +54,7 @@ export function HomeWorkspace({
   onRenameHistory,
   disconnectingSessionId = null,
 }: HomeWorkspaceProps) {
-  const { t } = useI18n();
+  const { language, t } = useI18n();
   const [query, setQuery] = useState("");
   const selectedGroups = selectedCwd === null ? groups : groups.filter((group) => group.cwd === selectedCwd);
   const visibleActive = selectedGroups
@@ -64,7 +67,7 @@ export function HomeWorkspace({
   const activeCount = countConnectedSessions(selectedGroups.flatMap((group) => group.active));
   const emptyHistory = selectedCwd === null ? t("sessions.noSessions") : t("home.noSessionsForProject");
 
-  const renderActiveSession = (session: ActiveSessionDto) => {
+  const renderActiveSession = (session: (typeof visibleActive)[number]) => {
     const running = isActuallyRunning(session);
     const statusLabel = running
       ? t("home.runningStatus")
@@ -72,39 +75,63 @@ export function HomeWorkspace({
         ? t("home.startingStatus")
         : t("home.idleStatus");
     const disconnecting = disconnectingSessionId === session.id;
+    const title = sessionTitle(session);
+    const folder = directoryName(session.cwd);
+    const modified = formatRelativeModifiedTime(session.modified, language);
+
     return (
-      <li key={session.id} className="flex min-w-0 items-center gap-1 rounded-md p-0.5 hover:bg-v2-grey-100">
+      <li
+        key={session.id}
+        className="group relative flex min-w-0 border-t border-v2-grey-200 transition-colors hover:bg-v2-grey-100"
+      >
         <button
           type="button"
-          className="flex min-w-0 flex-1 items-center gap-3 rounded-md px-1.5 py-1.5 text-left transition-colors"
+          className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)] gap-y-1 px-5 py-3.5 text-left lg:grid-cols-[minmax(0,1.55fr)_minmax(140px,0.9fr)_84px_104px] lg:items-center lg:gap-x-5 lg:px-6 lg:py-4"
           onClick={() => onOpenActive(session)}
         >
-          <span className={`size-2 shrink-0 rounded-full ${statusDot[session.status]}`} aria-hidden />
-          <span
-            className="min-w-0 flex-1 truncate text-[13px] font-medium text-v2-text-text-base"
-            title={sessionTitle(session)}
-          >
-            {sessionTitle(session)}
+          <span className="flex min-w-0 items-center gap-3">
+            <span className={`size-2 shrink-0 rounded-full ${statusDot[session.status]}`} aria-hidden />
+            <span className="min-w-0 truncate text-[14px] font-medium text-v2-text-text-base" title={title}>
+              {title}
+            </span>
           </span>
-          {selectedCwd === null && (
-            <span className="max-w-[220px] truncate font-mono text-[12px] text-v2-text-text-faint">{session.cwd}</span>
-          )}
-          <span className="shrink-0 text-[12px] text-v2-text-text-muted">{statusLabel}</span>
+          <span
+            className="hidden min-w-0 items-center gap-2 text-[13px] text-v2-text-text-faint lg:flex"
+            title={session.cwd}
+          >
+            <Folder size={15} className="shrink-0" aria-hidden />
+            <span className="truncate">{folder}</span>
+          </span>
+          <span className="hidden shrink-0 text-[13px] text-v2-text-text-muted lg:block">{statusLabel}</span>
+          <span className="hidden shrink-0 text-[13px] text-v2-text-text-faint lg:block">{modified}</span>
+          <span className="flex min-w-0 items-center gap-2 pl-5 text-[12px] text-v2-text-text-faint lg:hidden">
+            <span className="truncate" title={session.cwd}>
+              {folder}
+            </span>
+            <span aria-hidden>·</span>
+            <span>{statusLabel}</span>
+            {modified && (
+              <>
+                <span aria-hidden>·</span>
+                <span>{modified}</span>
+              </>
+            )}
+          </span>
         </button>
         <button
           type="button"
-          aria-label={`${t("home.rename")}: ${sessionTitle(session)}`}
+          aria-label={`${t("home.rename")}: ${title}`}
           title={t("home.renameTitle")}
-          className="flex size-8 shrink-0 items-center justify-center rounded-md text-v2-text-text-faint transition-colors hover:bg-v2-grey-200 hover:text-v2-text-text-base"
+          className="flex size-8 shrink-0 self-center items-center justify-center rounded-md text-v2-text-text-faint transition-colors hover:bg-v2-grey-200 hover:text-v2-text-text-base"
           onClick={() => onRenameSession(session)}
         >
           <Pencil size={13} aria-hidden />
         </button>
         <button
           type="button"
-          aria-label={`${t("home.disconnectTitle")}: ${sessionTitle(session)}`}
+          aria-label={`${t("home.disconnectTitle")}: ${title}`}
           title={t("home.disconnectTitle")}
-          className="flex min-h-8 shrink-0 items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-faint transition-colors hover:bg-v2-grey-200 hover:text-v2-text-text-base disabled:cursor-wait disabled:opacity-50"
+          className="mr-2 flex min-h-8 shrink-0 self-center items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-faint transition-colors hover:bg-v2-grey-200 hover:text-v2-text-text-base disabled:cursor-wait disabled:opacity-50 lg:mr-4"
           disabled={disconnecting}
           onClick={() => onDisconnectActive(session)}
         >
@@ -118,96 +145,106 @@ export function HomeWorkspace({
   return (
     <section
       aria-label={t("home.workspace")}
-      className="mx-auto grid w-full max-w-[1080px] overflow-hidden rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)] lg:grid-cols-[280px_minmax(0,1fr)]"
+      className="home-workspace mx-auto grid w-full max-w-[1600px] overflow-hidden rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)] lg:grid-cols-[minmax(280px,25%)_minmax(0,1fr)] lg:grid-rows-[80px_auto_minmax(0,1fr)]"
     >
-      <div className="p-3 lg:col-start-1 lg:row-start-1 lg:border-r lg:border-v2-grey-200">
+      <div className="p-4 lg:col-start-1 lg:row-start-1 lg:border-r lg:border-v2-grey-200">
         <button
           type="button"
-          className="flex h-9 w-full items-center justify-center gap-2 rounded-md bg-v2-grey-1100 px-3 text-[13px] font-medium text-v2-grey-50 transition-opacity hover:opacity-90 disabled:opacity-50"
+          className="flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-v2-blue-600 px-4 text-[14px] font-medium text-v2-grey-50 transition-colors hover:bg-v2-blue-700 disabled:opacity-50"
           disabled={creating}
           onClick={onChooseDirectory}
         >
-          <Plus size={14} aria-hidden />
+          <Plus size={18} aria-hidden />
           {t("home.newProject")}
         </button>
       </div>
-      <div className="border-t border-v2-grey-200 p-3 lg:col-start-2 lg:row-start-1 lg:border-t-0">
-        <label className="flex h-9 items-center gap-2 rounded-md border border-v2-grey-300 bg-v2-background-bg-base px-3 focus-within:border-v2-blue-600">
-          <Search size={14} className="shrink-0 text-v2-icon-icon-muted" aria-hidden />
+      <div className="border-t border-v2-grey-200 p-4 lg:col-start-2 lg:row-start-1 lg:border-t-0">
+        <label className="flex h-12 items-center gap-3 rounded-lg border border-v2-grey-300 bg-v2-background-bg-base px-4 transition-colors focus-within:border-v2-blue-600">
+          <Search size={17} className="shrink-0 text-v2-icon-icon-muted" aria-hidden />
           <input
             type="search"
             aria-label={t("home.searchSessions")}
             placeholder={t("home.searchPlaceholder")}
-            className="min-w-0 flex-1 bg-transparent text-[13px] text-v2-text-text-base outline-none placeholder:text-v2-text-text-faint"
+            className="min-w-0 flex-1 bg-transparent text-[14px] text-v2-text-text-base outline-none placeholder:text-v2-text-text-faint"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
           />
         </label>
       </div>
       <section
-        className="border-t border-v2-grey-200 p-3 lg:col-start-2 lg:row-start-2"
+        className="border-t border-v2-grey-200 lg:col-start-2 lg:row-start-2"
         aria-labelledby="active-sessions-heading"
       >
-        <h2
-          id="active-sessions-heading"
-          className="mb-2 flex items-center gap-2 text-[13px] font-semibold text-v2-text-text-base"
-        >
-          <Activity size={14} className="text-v2-icon-icon-muted" aria-hidden />
-          {t("home.activeSessions")}
-          <span className="ml-auto text-[12px] font-normal text-v2-text-text-faint">
+        <div className="flex items-center gap-2 px-5 py-4 lg:px-6">
+          <Activity size={16} className="text-v2-icon-icon-muted" aria-hidden />
+          <h2 id="active-sessions-heading" className="text-[14px] font-semibold text-v2-text-text-base">
+            {t("home.activeSessions")}
+          </h2>
+          <span className="ml-auto text-[13px] font-normal text-v2-text-text-faint">
             {activeCount} {t("home.active")}
           </span>
-        </h2>
+        </div>
         {loading ? (
-          <p className="px-2 py-2 text-[13px] text-v2-text-text-faint">{t("home.loadingSessions")}</p>
+          <p className="border-t border-v2-grey-200 px-6 py-4 text-[13px] text-v2-text-text-faint">
+            {t("home.loadingSessions")}
+          </p>
         ) : visibleActive.length === 0 ? (
-          <p className="px-2 py-2 text-[13px] text-v2-text-text-muted">
+          <p className="border-t border-v2-grey-200 px-6 py-4 text-[13px] text-v2-text-text-muted">
             {selectedCwd === null ? t("home.noAgentsRunning") : t("home.noSessionsForProject")}
           </p>
         ) : (
-          <ul className="flex flex-col gap-0.5">{visibleActive.map(renderActiveSession)}</ul>
+          <ul>{visibleActive.map(renderActiveSession)}</ul>
         )}
       </section>
       <aside
         aria-label={t("home.projects")}
         className="border-t border-v2-grey-200 p-3 lg:col-start-1 lg:row-start-2 lg:row-span-2 lg:border-r lg:border-t-0"
       >
-        <div>
+        <div className="flex flex-col gap-1">
           <button
             type="button"
             aria-current={selectedCwd === null ? "true" : undefined}
-            className={`flex w-full items-center gap-2 border-l-2 px-2 py-2 text-left text-[13px] transition-colors ${selectedCwd === null ? "border-v2-blue-600 bg-v2-blue-100 font-medium text-v2-blue-700" : "border-transparent text-v2-text-text-muted hover:bg-v2-grey-100"}`}
+            className={`flex w-full items-center gap-3 rounded-md border-l-2 px-3 py-3 text-left text-[14px] transition-colors ${selectedCwd === null ? "border-v2-blue-600 bg-v2-blue-100 font-medium text-v2-blue-700" : "border-transparent text-v2-text-text-muted hover:bg-v2-grey-100"}`}
             onClick={() => onSelectProject(null)}
           >
-            {selectedCwd === null ? <FolderOpen size={14} aria-hidden /> : <Folder size={14} aria-hidden />}
+            {selectedCwd === null ? <FolderOpen size={17} aria-hidden /> : <Folder size={17} aria-hidden />}
             {t("home.allProjects")}
           </button>
           {groups.map((group) => {
             const selected = selectedCwd === group.cwd;
+            const name = directoryName(group.cwd);
+            const parent = compactParentPath(group.cwd);
             return (
-              <div key={group.cwd} className="group flex items-center">
+              <div key={group.cwd} className="group flex items-center rounded-md hover:bg-v2-grey-100">
                 <button
                   type="button"
+                  aria-label={group.cwd}
                   aria-current={selected ? "true" : undefined}
-                  className={`flex min-w-0 flex-1 items-center gap-2 border-l-2 px-2 py-2 text-left text-[13px] transition-colors ${selected ? "border-v2-blue-600 bg-v2-blue-100 font-medium text-v2-blue-700" : "border-transparent text-v2-text-text-muted hover:bg-v2-grey-100"}`}
+                  title={group.cwd}
+                  className={`flex min-w-0 flex-1 items-center gap-3 rounded-l-md border-l-2 px-3 py-2.5 text-left transition-colors ${selected ? "border-v2-blue-600 bg-v2-blue-100 text-v2-blue-700" : "border-transparent text-v2-text-text-muted"}`}
                   onClick={() => onSelectProject(group.cwd)}
                 >
                   {selected ? (
-                    <FolderOpen size={14} className="shrink-0" aria-hidden />
+                    <FolderOpen size={17} className="shrink-0" aria-hidden />
                   ) : (
-                    <Folder size={14} className="shrink-0" aria-hidden />
+                    <Folder size={17} className="shrink-0 text-v2-icon-icon-base" aria-hidden />
                   )}
-                  <span className="truncate font-mono text-[12px]">{group.cwd}</span>
+                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <span className={`truncate text-[14px] ${selected ? "font-medium" : "text-v2-text-text-base"}`}>
+                      {name}
+                    </span>
+                    <span className="truncate font-mono text-[12px] text-v2-text-text-faint">{parent}</span>
+                  </span>
                 </button>
                 <button
                   type="button"
                   aria-label={`${t("home.newSession")} ${group.cwd}`}
                   title={`${t("home.newSession")} ${group.cwd}`}
-                  className="flex size-8 shrink-0 items-center justify-center rounded-md text-v2-icon-icon-muted transition-colors hover:bg-v2-grey-100 hover:text-v2-icon-icon-base disabled:opacity-50"
+                  className={`flex size-9 shrink-0 items-center justify-center rounded-md text-v2-icon-icon-muted transition-colors hover:text-v2-icon-icon-base disabled:opacity-50 ${selected ? "bg-v2-blue-100" : ""}`}
                   disabled={creating}
                   onClick={() => onCreateInProject(group.cwd)}
                 >
-                  <Plus size={14} aria-hidden />
+                  <Plus size={16} aria-hidden />
                 </button>
               </div>
             );
@@ -215,16 +252,18 @@ export function HomeWorkspace({
         </div>
       </aside>
       <section
-        className="min-w-0 border-t border-v2-grey-200 p-3 lg:col-start-2 lg:row-start-3"
+        className="min-w-0 border-t border-v2-grey-200 lg:col-start-2 lg:row-start-3"
         aria-labelledby="recent-sessions-heading"
       >
-        <h2 id="recent-sessions-heading" className="mb-2 text-[13px] font-semibold text-v2-text-text-base">
+        <h2 id="recent-sessions-heading" className="px-5 py-4 text-[14px] font-semibold text-v2-text-text-base lg:px-6">
           {t("home.recentSessions")}
         </h2>
         {loading ? (
-          <p className="px-2 py-2 text-[13px] text-v2-text-text-faint">{t("home.loadingSessions")}</p>
+          <p className="border-t border-v2-grey-200 px-6 py-4 text-[13px] text-v2-text-text-faint">
+            {t("home.loadingSessions")}
+          </p>
         ) : visibleHistory.length === 0 ? (
-          <p className="px-2 py-2 text-[13px] text-v2-text-text-muted">{emptyHistory}</p>
+          <p className="border-t border-v2-grey-200 px-6 py-4 text-[13px] text-v2-text-text-muted">{emptyHistory}</p>
         ) : (
           <SessionList
             history={visibleHistory}

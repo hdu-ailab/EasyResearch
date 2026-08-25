@@ -2,8 +2,11 @@ import { expect, it } from "vitest";
 import type { ActiveSessionDto, SessionSummaryDto } from "../../../web/contracts";
 import {
   buildHomeProjectGroups,
+  compactParentPath,
   countConnectedSessions,
   countRunningSessions,
+  directoryName,
+  formatRelativeModifiedTime,
   isActuallyRunning,
   isConnected,
   matchesSessionQuery,
@@ -115,8 +118,32 @@ it("copies the exact-file history firstMessage onto the running active view mode
     [{ ...active("r1", "/papers/a", "running"), sessionFile: "/sessions/r1.jsonl" }],
   );
   const groupA = groups.find((group) => group.cwd === "/papers/a")!;
-  expect(groupA.active[0]).toMatchObject({ id: "r1", firstMessage: "fault diagnosis prompt" });
+  expect(groupA.active[0]).toMatchObject({
+    id: "r1",
+    firstMessage: "fault diagnosis prompt",
+    modified: "2026-08-07T00:00:00.000Z",
+    messageCount: 1,
+  });
   expect(groupA.history.map((session) => session.id)).toEqual(["h1"]);
+});
+
+it("formats project folder names and compact parent paths across supported path styles", () => {
+  expect(directoryName("C:\\Users\\researcher\\Desktop\\paper")).toBe("paper");
+  expect(compactParentPath("C:\\Users\\researcher\\Desktop\\paper")).toBe("C:\\Users\\…\\Desktop");
+  expect(compactParentPath("C:\\paper")).toBe("C:\\");
+  expect(compactParentPath("\\\\server\\share\\researcher\\experiments\\paper")).toBe(
+    "\\\\server\\share\\…\\experiments",
+  );
+  expect(directoryName("/home/researcher/paper")).toBe("paper");
+  expect(compactParentPath("/home/researcher/paper")).toBe("/home/researcher");
+});
+
+it("formats summary timestamps as deterministic localized relative time", () => {
+  const now = Date.parse("2026-08-25T12:00:00.000Z");
+  expect(formatRelativeModifiedTime("2026-08-25T11:59:59.000Z", "en", now)).toBe("this minute");
+  expect(formatRelativeModifiedTime("2026-08-25T11:59:00.000Z", "en", now)).toBe("1 minute ago");
+  expect(formatRelativeModifiedTime("2026-08-24T12:00:00.000Z", "zh-CN", now)).toBe("昨天");
+  expect(formatRelativeModifiedTime(undefined, "en", now)).toBe("");
 });
 
 it("never copies a firstMessage from a different session file", () => {

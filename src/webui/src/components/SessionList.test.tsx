@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import type { SessionSummaryDto } from "../../../web/contracts";
 import { SessionList } from "./SessionList";
@@ -37,6 +37,21 @@ it("renders the full first prompt as the recent title tooltip on a single trunca
 it("falls back to the first eight id characters when no name or first message is set", () => {
   renderList([history({ name: undefined, firstMessage: "   " })]);
   expect(screen.getByText("01234567")).toBeVisible();
+});
+
+it("shows the project folder and message count in the recent-session ledger", () => {
+  renderList([history({ cwd: "/papers/fault-diagnosis", messageCount: 12 })]);
+  const row = screen.getByText("Fault diagnosis").closest("li");
+  expect(row).not.toBeNull();
+  expect(within(row!).getAllByText("fault-diagnosis").length).toBeGreaterThan(0);
+  expect(within(row!).getAllByText("12").length).toBeGreaterThan(0);
+  expect(within(row!).getByRole("button", { name: /12 messages/i })).toBeVisible();
+});
+
+it("uses a singular accessible message-count label", () => {
+  renderList([history({ messageCount: 1 })]);
+  expect(screen.getByRole("button", { name: /1 message/i })).toBeVisible();
+  expect(screen.queryByRole("button", { name: /1 messages/i })).not.toBeInTheDocument();
 });
 
 it("exposes a rename control per recent row", () => {

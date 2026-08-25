@@ -1,7 +1,7 @@
-import { History, MessageSquareText, Pencil } from "lucide-react";
+import { Folder, MessageSquareText, Pencil } from "lucide-react";
 import type { SessionSummaryDto } from "../../../web/contracts";
 import { useI18n } from "../i18n/useI18n";
-import { sessionTitle } from "../pages/home-view-model";
+import { directoryName, formatRelativeModifiedTime, sessionTitle } from "../pages/home-view-model";
 
 export interface SessionListProps {
   history: SessionSummaryDto[];
@@ -10,62 +10,84 @@ export interface SessionListProps {
   onRenameSession: (session: SessionSummaryDto) => void;
 }
 
-/**
- * Home history list. Historical sessions are opened through their recorded
- * session file. Active sessions are listed separately in the home workspace,
- * which shows only running sessions; idle/stopped sessions are reopened from
- * this history list.
- */
+/** Home history ledger. Historical sessions open through their recorded session file. */
 export function SessionList({ history, showCwd = true, onOpenHistory, onRenameSession }: SessionListProps) {
-  const { t } = useI18n();
+  const { language, t } = useI18n();
   return (
-    <section className="flex flex-col gap-3" aria-label={t("sessions.ariaLabel")}>
-      <div>
-        <h3 className="mb-1 flex items-center gap-1.5 text-[12px] font-medium text-v2-text-text-faint">
-          <History size={12} />
-          {t("sessions.history")}
-        </h3>
-        {history.length === 0 ? (
-          <p className="px-2 py-1 text-[13px] text-v2-text-text-muted">{t("sessions.noSessions")}</p>
-        ) : (
-          <ul className="flex flex-col gap-0.5">
-            {history.map((session) => (
-              <li key={session.id} className="flex items-center gap-1 rounded-md p-0.5 hover:bg-v2-grey-100">
+    <section aria-label={t("sessions.ariaLabel")}>
+      {history.length === 0 ? (
+        <p className="border-t border-v2-grey-200 px-6 py-4 text-[13px] text-v2-text-text-muted">
+          {t("sessions.noSessions")}
+        </p>
+      ) : (
+        <ul>
+          {history.map((session) => {
+            const title = sessionTitle(session);
+            const folder = directoryName(session.cwd);
+            const modified = formatRelativeModifiedTime(session.modified, language);
+            const messageLabel = `${session.messageCount} ${t(session.messageCount === 1 ? "sessions.message" : "sessions.messages")}`;
+            return (
+              <li
+                key={session.id}
+                className="group relative flex min-w-0 border-t border-v2-grey-200 transition-colors hover:bg-v2-grey-100"
+              >
                 <button
                   type="button"
-                  className="group flex min-w-0 flex-1 items-center gap-3 rounded-md px-2 py-1.5 text-left transition-colors"
+                  className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)] gap-y-1 px-5 py-3.5 text-left lg:grid-cols-[minmax(0,1.55fr)_minmax(140px,0.9fr)_84px_104px] lg:items-center lg:gap-x-5 lg:px-6 lg:py-4"
                   onClick={() => onOpenHistory(session)}
                 >
+                  <span className="min-w-0 truncate text-[14px] font-medium text-v2-text-text-base" title={title}>
+                    {title}
+                  </span>
                   <span
-                    className="min-w-0 flex-1 truncate text-[13px] font-medium text-v2-text-text-base"
-                    title={sessionTitle(session)}
+                    className="hidden min-w-0 items-center gap-2 text-[13px] text-v2-text-text-faint lg:flex"
+                    title={showCwd ? session.cwd : undefined}
                   >
-                    {sessionTitle(session)}
+                    {showCwd && (
+                      <>
+                        <Folder size={15} className="shrink-0" aria-hidden />
+                        <span className="truncate">{folder}</span>
+                      </>
+                    )}
                   </span>
-                  <span className="flex shrink-0 items-center gap-1 text-[12px] text-v2-text-text-faint">
-                    <MessageSquareText size={12} />
-                    {session.messageCount}
+                  <span className="hidden shrink-0 items-center gap-1.5 text-[13px] text-v2-text-text-faint lg:flex">
+                    <MessageSquareText size={14} aria-hidden />
+                    <span aria-hidden>{session.messageCount}</span>
+                    <span className="sr-only">{messageLabel}</span>
                   </span>
-                  {showCwd && (
-                    <span className="max-w-[220px] truncate font-mono text-[12px] text-v2-text-text-faint">
-                      {session.cwd}
+                  <span className="hidden shrink-0 text-[13px] text-v2-text-text-faint lg:block">{modified}</span>
+                  <span className="flex min-w-0 items-center gap-2 text-[12px] text-v2-text-text-faint lg:hidden">
+                    {showCwd && (
+                      <>
+                        <span className="truncate" title={session.cwd}>
+                          {folder}
+                        </span>
+                        <span aria-hidden>·</span>
+                      </>
+                    )}
+                    <span className="flex items-center gap-1">
+                      <MessageSquareText size={12} aria-hidden />
+                      <span aria-hidden>{session.messageCount}</span>
+                      <span className="sr-only">{messageLabel}</span>
                     </span>
-                  )}
+                    <span aria-hidden>·</span>
+                    <span>{modified}</span>
+                  </span>
                 </button>
                 <button
                   type="button"
-                  aria-label={`${t("home.rename")}: ${sessionTitle(session)}`}
+                  aria-label={`${t("home.rename")}: ${title}`}
                   title={t("home.renameTitle")}
-                  className="flex size-8 shrink-0 items-center justify-center rounded-md text-v2-text-text-faint transition-colors hover:bg-v2-grey-200 hover:text-v2-text-text-base"
+                  className="mr-2 flex size-8 shrink-0 self-center items-center justify-center rounded-md text-v2-text-text-faint transition-colors hover:bg-v2-grey-200 hover:text-v2-text-text-base lg:mr-4"
                   onClick={() => onRenameSession(session)}
                 >
                   <Pencil size={13} aria-hidden />
                 </button>
               </li>
-            ))}
-          </ul>
-        )}
-      </div>
+            );
+          })}
+        </ul>
+      )}
     </section>
   );
 }

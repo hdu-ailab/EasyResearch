@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import type { ActiveSessionDto, SessionSummaryDto } from "../../../web/contracts";
 import { buildHomeProjectGroups } from "../pages/home-view-model";
@@ -93,7 +93,23 @@ it("falls back to the first eight real id characters for an active session witho
 it("renders a ready session in the active list with the idle status", () => {
   renderWorkspace([], [active({ id: "idle-session", status: "ready", sessionName: "Idle session" })]);
   expect(screen.getByText("Idle session")).toBeVisible();
-  expect(screen.getByText("Idle")).toBeVisible();
+  expect(screen.getAllByText("Idle").length).toBeGreaterThan(0);
+});
+
+it("shows relative modified time from the exact matched summary in the active row", () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-08-25T12:00:00.000Z"));
+  try {
+    renderWorkspace(
+      [history({ path: "/agent/sessions/a1.jsonl", modified: "2026-08-25T11:59:00.000Z" })],
+      [active({ sessionFile: "/agent/sessions/a1.jsonl" })],
+    );
+    const row = screen.getByText("Custom active name").closest("li");
+    expect(row).not.toBeNull();
+    expect(within(row!).getAllByText("1 minute ago").length).toBeGreaterThan(0);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("renders a separate disconnect control for an active session", () => {
@@ -106,6 +122,13 @@ it("renders a rename control per active row and per history row", () => {
   const onRenameHistory = vi.fn();
   renderWorkspace([history({ id: "h1" })], [active({ id: "a1" })], { onRenameActive, onRenameHistory });
   expect(screen.getAllByRole("button", { name: /rename session/i })).toHaveLength(2);
+});
+
+it("shows project basenames as the primary folder values while preserving the exact path label", () => {
+  renderWorkspace([history({ cwd: "/papers/fault-diagnosis" })], []);
+  const project = screen.getByRole("button", { name: "/papers/fault-diagnosis" });
+  expect(within(project).getByText("fault-diagnosis")).toBeVisible();
+  expect(within(project).getByText("/papers")).toBeVisible();
 });
 
 it("separates the New project entry from an existing project's New session action", () => {
