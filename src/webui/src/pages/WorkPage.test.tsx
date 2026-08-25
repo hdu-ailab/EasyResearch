@@ -408,6 +408,15 @@ describe("WorkPage", () => {
 
     const history = await screen.findByRole("dialog", { name: /history/i });
     const tree = within(history).getByRole("tree");
+    const filter = within(history).getByRole("combobox", { name: /history filter/i });
+    expect(filter).toHaveValue("user-only");
+    expect(
+      within(tree)
+        .getAllByRole("treeitem")
+        .map((item) => item.textContent),
+    ).toEqual([expect.stringContaining("Original question"), expect.stringContaining("Current branch")]);
+
+    await user.selectOptions(filter, "messages");
     expect(
       within(tree)
         .getAllByRole("treeitem")
@@ -419,7 +428,8 @@ describe("WorkPage", () => {
       expect.stringContaining("Current answer"),
     ]);
 
-    await user.keyboard("{Home}{Enter}");
+    within(tree).getAllByRole("treeitem")[0]?.focus();
+    await user.keyboard("{Enter}");
     const summaryDialog = await screen.findByRole("dialog", { name: /summarize branch/i });
     await user.click(within(summaryDialog).getByRole("button", { name: /no summary/i }));
 

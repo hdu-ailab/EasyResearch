@@ -13,9 +13,12 @@ interface HistoryRow {
   entry: WebTreeEntryDto;
   depth: number;
   active: boolean;
-  parentId: string | null;
-  children: string[];
+  foldable: boolean;
+  previousSegmentId: string;
+  nextSegmentId: string;
 }
+
+type HistoryFilterMode = "user-only" | "messages" | "all";
 
 export interface SessionHistoryDialogProps {
   value: SessionTreeDto;
@@ -26,13 +29,11 @@ export interface SessionHistoryDialogProps {
   onClose(): void;
 }
 
-const SETTINGS_KINDS = new Set<WebTreeEntryDto["kind"]>([
-  "label",
-  "custom",
-  "model-change",
-  "thinking-change",
-  "session-info",
-]);
+const HISTORY_FILTER_KINDS = {
+  "user-only": new Set<WebTreeEntryDto["kind"]>(["user"]),
+  messages: new Set<WebTreeEntryDto["kind"]>(["user", "assistant"]),
+  all: new Set<WebTreeEntryDto["kind"]>(["user", "assistant", "tool", "bash"]),
+} satisfies Record<HistoryFilterMode, ReadonlySet<WebTreeEntryDto["kind"]>>;
 
 export function SessionHistoryDialog({
   value,
@@ -46,7 +47,7 @@ export function SessionHistoryDialog({
   const dialogRef = useRef<HTMLElement>(null);
   const zIndex = useModalLayer(onClose, dialogRef);
   const [query, setQuery] = useState(initialQuery);
-  const [filterMode, setFilterMode] = useState<SessionTreeDto["filterMode"]>(value.filterMode);
+  const [filterMode, setFilterMode] = useState<HistoryFilterMode>("user-only");
   const [folded, setFolded] = useState<Set<string>>(() => new Set());
   const [selectedId, setSelectedId] = useState<string | null>(value.leafId);
   const [summaryTarget, setSummaryTarget] = useState<string | null>(null);
@@ -127,27 +128,27 @@ export function SessionHistoryDialog({
     }
     if (event.key === "ArrowLeft") {
       event.preventDefault();
-      if (row.children.length > 0 && !folded.has(row.entry.id)) {
+      if (row.foldable && !folded.has(row.entry.id)) {
         focusTreeSelection.current = true;
         setFolded((current) => new Set(current).add(row.entry.id));
-      } else if (row.parentId) {
+      } else if (row.previousSegmentId !== row.entry.id) {
         focusTreeSelection.current = true;
-        setSelectedId(row.parentId);
+        setSelectedId(row.previousSegmentId);
       }
       return;
     }
     if (event.key === "ArrowRight") {
       event.preventDefault();
-      if (folded.has(row.entry.id)) {
+      if (row.foldable && folded.has(row.entry.id)) {
         focusTreeSelection.current = true;
         setFolded((current) => {
           const next = new Set(current);
           next.delete(row.entry.id);
           return next;
         });
-      } else if (row.children[0]) {
+      } else if (row.nextSegmentId !== row.entry.id) {
         focusTreeSelection.current = true;
-        setSelectedId(row.children[0]);
+        setSelectedId(row.nextSegmentId);
       }
       return;
     }
@@ -190,7 +191,10 @@ export function SessionHistoryDialog({
               aria-label={t("history.search")}
               className="min-w-0 flex-1 bg-transparent text-[12px] text-v2-text-text-base outline-none"
               value={query}
-              onChange={(event) => setQuery(event.target.value)}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                setFolded(new Set());
+              }}
             />
           </label>
           <select
@@ -198,14 +202,12 @@ export function SessionHistoryDialog({
             className="h-8 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[12px] text-v2-text-text-base"
             value={filterMode}
             onChange={(event) => {
-              setFilterMode(event.target.value as SessionTreeDto["filterMode"]);
+              setFilterMode(event.target.value as HistoryFilterMode);
               setFolded(new Set());
             }}
           >
-            <option value="default">{t("history.filterDefault")}</option>
-            <option value="no-tools">{t("history.filterNoTools")}</option>
             <option value="user-only">{t("history.filterUser")}</option>
-            <option value="labeled-only">{t("history.filterLabeled")}</option>
+            <option value="messages">{t("history.filterMessages")}</option>
             <option value="all">{t("history.filterAll")}</option>
           </select>
         </div>
@@ -237,26 +239,29 @@ export function SessionHistoryDialog({
                   aria-level={row.depth + 1}
                   aria-selected={selected}
                   aria-current={row.entry.id === value.leafId ? "true" : undefined}
-                  aria-expanded={row.children.length > 0 ? !folded.has(row.entry.id) : undefined}
+                  aria-expanded={row.foldable ? !folded.has(row.entry.id) : undefined}
                   aria-disabled={busy || undefined}
                   tabIndex={selected ? 0 : -1}
-                  className={`flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-[12px] ${
+                  className={`flex min-w-full w-max items-start rounded-md px-2 py-1.5 text-left text-[12px] ${
                     selected ? "bg-v2-blue-100 text-v2-text-text-base" : "text-v2-text-text-muted hover:bg-v2-grey-100"
                   }`}
-                  style={{ paddingLeft: `${8 + row.depth * 18}px` }}
                   onFocus={() => setSelectedId(row.entry.id)}
                   onClick={() => select(row.entry.id)}
                   onKeyDown={(event) => handleTreeKey(event, row)}
                 >
-                  <span className="w-3 shrink-0 text-center text-v2-text-text-faint" aria-hidden>
-                    {row.children.length > 0 ? (folded.has(row.entry.id) ? "+" : "-") : row.active ? "•" : "·"}
+                  <span className="shrink-0" style={{ width: `${row.depth * 18}px` }} aria-hidden />
+                  <span className="mr-1 w-3 shrink-0 text-center text-v2-text-text-faint" aria-hidden>
+                    {row.foldable ? (folded.has(row.entry.id) ? "+" : "-") : ""}
                   </span>
-                  <span className="shrink-0 font-mono text-[11px] text-v2-text-text-faint">
+                  <span className="mr-2 w-3 shrink-0 text-center text-v2-text-text-faint" aria-hidden>
+                    {row.active ? "•" : "·"}
+                  </span>
+                  <span className="mr-2 shrink-0 font-mono text-[11px] text-v2-text-text-faint">
                     {entryLabel(row.entry, t)}:
                   </span>
-                  <span className="min-w-0 flex-1 truncate">{entryText(row.entry, t)}</span>
+                  <span className="shrink-0 whitespace-nowrap">{entryText(row.entry, t)}</span>
                   {row.entry.label ? (
-                    <span className="shrink-0 rounded bg-v2-status-warning/10 px-1 text-[10px] text-v2-status-warning">
+                    <span className="ml-2 shrink-0 rounded bg-v2-status-warning/10 px-1 text-[10px] text-v2-status-warning">
                       {row.entry.label}
                     </span>
                   ) : null}
@@ -391,7 +396,7 @@ function BranchSummaryDialog({
 function historyRows(
   entries: WebTreeEntryDto[],
   leafId: string | null,
-  filterMode: SessionTreeDto["filterMode"],
+  filterMode: HistoryFilterMode,
   query: string,
   folded: Set<string>,
 ): HistoryRow[] {
@@ -407,10 +412,7 @@ function historyRows(
     if (entry.kind === "assistant" && entry.id !== leafId && !entry.text.trim()) {
       if (!entry.stopReason || entry.stopReason === "stop" || entry.stopReason === "toolUse") return false;
     }
-    if (filterMode === "user-only" && entry.kind !== "user") return false;
-    if (filterMode === "labeled-only" && !entry.label) return false;
-    if (filterMode !== "all" && SETTINGS_KINDS.has(entry.kind)) return false;
-    if (filterMode === "no-tools" && entry.kind === "tool") return false;
+    if (!HISTORY_FILTER_KINDS[filterMode].has(entry.kind)) return false;
     if (tokens.length > 0) {
       const searchable = `${entry.kind} ${entry.label ?? ""} ${entry.text}`.toLowerCase();
       if (!tokens.every((token) => searchable.includes(token))) return false;
@@ -418,14 +420,26 @@ function historyRows(
     return true;
   });
   const visibleIds = new Set(visible.map((entry) => entry.id));
+  const nearestVisibleCache = new Map<string, string | null>();
   const nearestVisibleParent = (entry: WebTreeEntryDto): string | null => {
-    let parentId = entry.parentId;
-    while (parentId && !visibleIds.has(parentId)) parentId = byId.get(parentId)?.parentId ?? null;
-    return parentId;
+    let currentId = entry.parentId;
+    const hiddenPath: string[] = [];
+    while (currentId && !visibleIds.has(currentId)) {
+      if (nearestVisibleCache.has(currentId)) {
+        currentId = nearestVisibleCache.get(currentId) ?? null;
+        break;
+      }
+      hiddenPath.push(currentId);
+      currentId = byId.get(currentId)?.parentId ?? null;
+    }
+    for (const hiddenId of hiddenPath) nearestVisibleCache.set(hiddenId, currentId);
+    return currentId;
   };
+  const parents = new Map<string, string | null>();
   const children = new Map<string | null, string[]>();
   for (const entry of visible) {
     const parentId = nearestVisibleParent(entry);
+    parents.set(entry.id, parentId);
     const list = children.get(parentId) ?? [];
     list.push(entry.id);
     children.set(parentId, list);
@@ -434,15 +448,66 @@ function historyRows(
     list.sort((left, right) => Number(activePath.has(right)) - Number(activePath.has(left)));
   }
   const rows: HistoryRow[] = [];
-  const visit = (id: string, depth: number) => {
+  const roots = children.get(null) ?? [];
+  const stack: Array<{
+    id: string;
+    depth: number;
+    justBranched: boolean;
+    segmentStartId: string;
+    previousSegmentStartId: string;
+  }> = [];
+  for (let index = roots.length - 1; index >= 0; index -= 1) {
+    const id = roots[index];
+    if (id) {
+      stack.push({ id, depth: 0, justBranched: roots.length > 1, segmentStartId: id, previousSegmentStartId: id });
+    }
+  }
+  while (stack.length > 0) {
+    const frame = stack.pop();
+    if (!frame) break;
+    const { id, depth, justBranched, segmentStartId, previousSegmentStartId } = frame;
     const entry = byId.get(id);
-    if (!entry) return;
+    if (!entry) continue;
     const childIds = children.get(id) ?? [];
-    rows.push({ entry, depth, active: activePath.has(id), parentId: nearestVisibleParent(entry), children: childIds });
-    if (folded.has(id)) return;
-    for (const childId of childIds) visit(childId, depth + 1);
-  };
-  for (const rootId of children.get(null) ?? []) visit(rootId, 0);
+    const parentId = parents.get(id) ?? null;
+    const siblings = children.get(parentId) ?? [];
+    const foldable = childIds.length > 0 && (parentId === null || siblings.length > 1);
+    rows.push({
+      entry,
+      depth,
+      active: activePath.has(id),
+      foldable,
+      previousSegmentId: id === segmentStartId ? previousSegmentStartId : segmentStartId,
+      nextSegmentId: id,
+    });
+    if (foldable && folded.has(id)) continue;
+
+    const branches = childIds.length > 1;
+    const childDepth = branches || justBranched ? depth + 1 : depth;
+    for (let index = childIds.length - 1; index >= 0; index -= 1) {
+      const childId = childIds[index];
+      if (!childId) continue;
+      stack.push({
+        id: childId,
+        depth: childDepth,
+        justBranched: branches,
+        segmentStartId: branches ? childId : segmentStartId,
+        previousSegmentStartId: branches ? segmentStartId : previousSegmentStartId,
+      });
+    }
+  }
+
+  const rowById = new Map(rows.map((row) => [row.entry.id, row]));
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const row = rows[index];
+    if (!row || (row.foldable && folded.has(row.entry.id))) continue;
+    const childIds = children.get(row.entry.id) ?? [];
+    if (childIds.length > 1) {
+      row.nextSegmentId = childIds[0] ?? row.entry.id;
+    } else if (childIds[0]) {
+      row.nextSegmentId = rowById.get(childIds[0])?.nextSegmentId ?? row.entry.id;
+    }
+  }
   return rows;
 }
 
