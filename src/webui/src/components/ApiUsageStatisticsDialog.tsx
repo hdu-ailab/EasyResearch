@@ -3,12 +3,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ApiUsageSessionSummaryDto, ApiUsageStatisticsDto, ApiUsageTotalsDto } from "../../../web/contracts";
 import { getApiUsageStatistics } from "../api";
 import { useModalLayer } from "../hooks/useModalLayer";
-import { agentDisplayName } from "../i18n/agents";
+import { agentDisplayName, type Translate } from "../i18n/agents";
 import { useI18n } from "../i18n/useI18n";
 import { formatApiUsageCost, formatCacheHitRate } from "./ApiUsageLine";
 
-function totalsText(totals: ApiUsageTotalsDto, tokensLabel: string, cacheHitLabel: string): string {
-  return `${new Intl.NumberFormat().format(totals.totalTokens)} ${tokensLabel} · ${cacheHitLabel} ${formatCacheHitRate(totals.cacheHitRate)} · ${formatApiUsageCost(totals.cost.total)}`;
+function totalsText(totals: ApiUsageTotalsDto, t: Translate): string {
+  const number = new Intl.NumberFormat();
+  return `${t("usage.inputShort")} ${number.format(totals.input)} · ${t("usage.outputShort")} ${number.format(totals.output)} · ${t("usage.cacheReadShort")} ${number.format(totals.cacheRead)} · ${t("usage.cacheHit")} ${formatCacheHitRate(totals.cacheHitRate)} · ${formatApiUsageCost(totals.cost.total)}`;
 }
 
 export function ApiUsageStatisticsDialog({
@@ -89,15 +90,7 @@ export function ApiUsageStatisticsDialog({
             <>
               <div className="rounded-lg bg-v2-background-bg-deep px-3 py-2">
                 <p className="font-mono text-[13px] font-medium text-v2-text-text-base">
-                  {totalsText(statistics.total, t("usage.tokens"), t("usage.cacheHit"))}
-                </p>
-                <p className="mt-1 font-mono text-[11px] text-v2-text-text-faint">
-                  {statistics.total.records} {t("usage.records")} · {t("usage.inputShort")} {statistics.total.input} ·{" "}
-                  {t("usage.outputShort")} {statistics.total.output}
-                  {" · "}
-                  {t("usage.cacheReadShort")} {statistics.total.cacheRead}
-                  {" · "}
-                  {t("usage.cacheWriteShort")} {statistics.total.cacheWrite}
+                  {totalsText(statistics.total, t)}
                 </p>
               </div>
               {statistics.partial ? (
@@ -160,14 +153,12 @@ function SessionUsageRow({
       >
         {expanded ? <ChevronDown size={14} aria-hidden /> : <ChevronRight size={14} aria-hidden />}
         <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-v2-text-text-base">{label}</span>
-        <span className="shrink-0 font-mono text-[11px] text-v2-text-text-faint">
-          {totalsText(session.subtree, t("usage.tokens"), t("usage.cacheHit"))}
-        </span>
+        <span className="shrink-0 font-mono text-[11px] text-v2-text-text-faint">{totalsText(session.subtree, t)}</span>
       </button>
       {expanded ? (
         <div className="border-t border-v2-grey-200 px-3 py-2">
           <p className="mb-2 font-mono text-[11px] text-v2-text-text-faint">
-            {t("usage.direct")} · {totalsText(session.direct, t("usage.tokens"), t("usage.cacheHit"))}
+            {t("usage.direct")} · {totalsText(session.direct, t)}
           </p>
           <div className="flex flex-col gap-1.5">
             {session.models.map((model) => (
@@ -175,9 +166,7 @@ function SessionUsageRow({
                 <span className="min-w-0 truncate text-v2-text-text-muted">
                   {model.kind === "internal" ? t("usage.internalTools") : model.key}
                 </span>
-                <span className="shrink-0 font-mono text-v2-text-text-faint">
-                  {totalsText(model.totals, t("usage.tokens"), t("usage.cacheHit"))}
-                </span>
+                <span className="shrink-0 font-mono text-v2-text-text-faint">{totalsText(model.totals, t)}</span>
               </div>
             ))}
           </div>

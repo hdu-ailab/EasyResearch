@@ -12,28 +12,28 @@ vi.mock("../api", async (importOriginal) => {
   return { ...actual, getApiUsageStatistics: vi.fn() };
 });
 
-const totals = (tokens: number, cost: number) => ({
+const totals = (input: number, cost: number) => ({
   records: 2,
-  input: tokens - 2,
+  input,
   output: 2,
-  cacheRead: 0,
-  cacheWrite: 0,
-  cacheWrite1h: 0,
-  reasoning: 0,
-  totalTokens: tokens,
+  cacheRead: 3,
+  cacheWrite: 4,
+  cacheWrite1h: 2,
+  reasoning: 5,
+  totalTokens: input + 9,
   cacheHitRate: 0.25,
   cost: { input: cost, output: 0, cacheRead: 0, cacheWrite: 0, total: cost },
 });
 
-function statistics(tokens = 15): ApiUsageStatisticsDto {
+function statistics(input = 13): ApiUsageStatisticsDto {
   return {
     rootSessionId: "root-1",
-    total: totals(tokens, 0.3),
+    total: totals(input, 0.3),
     sessions: [
       {
         sessionId: "root-1",
         direct: totals(5, 0.1),
-        subtree: totals(tokens, 0.3),
+        subtree: totals(input, 0.3),
         models: [
           {
             key: "openai/test-model",
@@ -81,21 +81,24 @@ describe("ApiUsageStatisticsDialog", () => {
     const user = userEvent.setup();
     renderDialog();
     const dialog = await screen.findByRole("dialog", { name: /api usage statistics/i });
-    expect(dialog).toHaveTextContent("15 tokens");
+    expect(dialog).toHaveTextContent("In 13");
+    expect(dialog).toHaveTextContent("Out 2");
+    expect(dialog).toHaveTextContent("Cache read 3");
     expect(dialog).toHaveTextContent("$0.3000");
     expect(dialog).toHaveTextContent("Cache hit 25.0%");
     expect(dialog).toHaveTextContent("search_0");
     expect(dialog).toHaveTextContent(/some mapped session usage is unavailable/i);
     expect(dialog).not.toHaveTextContent("/agent/sessions");
+    expect(dialog).not.toHaveTextContent(/Cache write|Reasoning|tokens|tracked records/i);
 
     await user.click(screen.getByRole("button", { name: /search_0/i }));
     expect(dialog).toHaveTextContent("Internal tools and summaries");
-    expect(dialog).toHaveTextContent("10 tokens");
+    expect(dialog).toHaveTextContent("In 10");
   });
 
   it("replaces loaded totals with a newer live server projection", async () => {
     const view = renderDialog();
-    expect(await screen.findAllByText(/15 tokens/)).not.toHaveLength(0);
+    expect(await screen.findAllByText(/In 13/)).not.toHaveLength(0);
 
     view.rerender(
       <PreferencesProvider>
@@ -105,6 +108,6 @@ describe("ApiUsageStatisticsDialog", () => {
       </PreferencesProvider>,
     );
 
-    await waitFor(() => expect(screen.getByRole("dialog")).toHaveTextContent("20 tokens"));
+    await waitFor(() => expect(screen.getByRole("dialog")).toHaveTextContent("In 20"));
   });
 });

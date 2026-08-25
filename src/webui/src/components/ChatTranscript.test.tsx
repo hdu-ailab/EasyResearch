@@ -160,8 +160,14 @@ describe("ChatTranscript", () => {
     expect(screen.getByText(/Internal summary/)).toBeInTheDocument();
     expect(screen.getAllByText(/In 10/)).toHaveLength(3);
     expect(screen.getAllByText(/Out 3/)).toHaveLength(3);
+    expect(screen.getAllByText(/Cache read 2/)).toHaveLength(3);
     expect(screen.getAllByText(/\$0\.3300/)).toHaveLength(3);
     expect(screen.getAllByText(/Cache hit 15\.4%/)).toHaveLength(3);
+    for (const details of screen.getAllByLabelText("API usage details")) {
+      expect(details).not.toHaveTextContent(/Cache write/i);
+      expect(details).not.toHaveTextContent(/Reasoning/i);
+      expect(details).not.toHaveTextContent(/tokens|tracked records/i);
+    }
   });
 
   it("does not pin the measured row height so content shrink re-measures", () => {

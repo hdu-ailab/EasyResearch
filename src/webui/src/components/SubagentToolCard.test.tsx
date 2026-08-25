@@ -85,11 +85,11 @@ describe("SubagentToolCard", () => {
       records: 3,
       input: 12,
       output: 3,
-      cacheRead: 0,
-      cacheWrite: 0,
-      cacheWrite1h: 0,
-      reasoning: 0,
-      totalTokens: 15,
+      cacheRead: 4,
+      cacheWrite: 5,
+      cacheWrite1h: 2,
+      reasoning: 6,
+      totalTokens: 24,
       cacheHitRate: 0.25,
       cost: { input: 0.1, output: 0.2, cacheRead: 0, cacheWrite: 0, total: 0.3 },
     };
@@ -112,9 +112,13 @@ describe("SubagentToolCard", () => {
       />,
     );
 
-    expect(screen.getByLabelText("Subagent subtree API usage")).toHaveTextContent("15 tokens");
-    expect(screen.getByLabelText("Subagent subtree API usage")).toHaveTextContent("$0.3000");
-    expect(screen.getByLabelText("Subagent subtree API usage")).toHaveTextContent("Cache hit 25.0%");
+    const summary = screen.getByLabelText("Subagent subtree API usage");
+    expect(summary).toHaveTextContent("In 12");
+    expect(summary).toHaveTextContent("Out 3");
+    expect(summary).toHaveTextContent("Cache read 4");
+    expect(summary).toHaveTextContent("Cache hit 25.0%");
+    expect(summary).toHaveTextContent("$0.3000");
+    expect(summary).not.toHaveTextContent(/Cache write|Reasoning|tokens|tracked records/i);
   });
 
   it("keeps a successful launch acknowledgement Working until a supervisor terminal", () => {

@@ -21,11 +21,6 @@ export function ApiUsageLine({ record }: { record: ApiUsageRecordDto }) {
     `${t("usage.inputShort")} ${formatNumber(usage.input)}`,
     `${t("usage.outputShort")} ${formatNumber(usage.output)}`,
     `${t("usage.cacheReadShort")} ${formatNumber(usage.cacheRead)}`,
-    `${t("usage.cacheWriteShort")} ${formatNumber(usage.cacheWrite)}`,
-    usage.cacheWrite1h === undefined
-      ? undefined
-      : `${t("usage.cacheWrite1hShort")} ${formatNumber(usage.cacheWrite1h)}`,
-    usage.reasoning === undefined ? undefined : `${t("usage.reasoningShort")} ${formatNumber(usage.reasoning)}`,
     `${t("usage.cacheHit")} ${formatCacheHitRate(usage.cacheHitRate)}`,
     formatApiUsageCost(usage.cost.total),
   ].filter((part): part is string => Boolean(part));
@@ -50,7 +45,8 @@ export function ApiUsageSummaryLine({ totals }: { totals: ApiUsageTotalsDto }) {
       className="font-mono text-[11px] leading-5 text-v2-text-text-faint"
       title={t("usage.estimateTitle")}
     >
-      {t("usage.api")} · {formatNumber(totals.totalTokens)} {t("usage.tokens")} · {t("usage.cacheHit")}{" "}
+      {t("usage.inputShort")} {formatNumber(totals.input)} · {t("usage.outputShort")} {formatNumber(totals.output)} ·{" "}
+      {t("usage.cacheReadShort")} {formatNumber(totals.cacheRead)} · {t("usage.cacheHit")}{" "}
       {formatCacheHitRate(totals.cacheHitRate)} · {formatApiUsageCost(totals.cost.total)}
     </div>
   );
