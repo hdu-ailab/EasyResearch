@@ -312,14 +312,15 @@ function reviewedLicenseText(
     `Reviewed license text ${override.licenseTextFile} missing for ${identity}`,
   );
   const bytes = readFileSync(filePath);
-  const actualHash = createHash("sha256").update(bytes).digest("hex");
+  const reviewedText = bytes.toString("utf8").replace(/\r\n?/g, "\n");
+  const actualHash = createHash("sha256").update(reviewedText, "utf8").digest("hex");
   if (actualHash !== override.upstreamSha256) {
     throw new Error(`Reviewed license hash mismatch for ${identity}`);
   }
   return [
     {
       fileName: basename(override.licenseTextFile),
-      text: normalizeText(bytes.toString("utf8")),
+      text: normalizeText(reviewedText),
     },
   ];
 }

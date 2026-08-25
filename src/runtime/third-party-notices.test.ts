@@ -595,6 +595,28 @@ describe("third-party notice collection", () => {
     ).toThrow("Reviewed license hash mismatch for boolbase@1.0.0");
   });
 
+  it("accepts audited text when a Windows checkout converts LF to CRLF", () => {
+    const project = createNoticeFixture({
+      roots: ["boolbase@1.0.0"],
+      packages: { boolbase: { identity: "boolbase@1.0.0" } },
+    });
+    const manifest = readPackageManifest(project, "boolbase");
+    manifest.license = "ISC";
+    writePackageManifest(project, "boolbase", manifest);
+    removeFixtureLicense(project, "boolbase");
+    const reviewedFile = join(project, "scripts/licenses/boolbase-1.0.0.txt");
+    mkdirSync(dirname(reviewedFile), { recursive: true });
+    writeFileSync(reviewedFile, BOOLBASE_REVIEWED_TEXT.replaceAll("\n", "\r\n"));
+
+    const [entry] = collectThirdPartyNoticeEntries(project, [
+      { name: "boolbase", version: "1.0.0" },
+    ]);
+
+    expect(entry?.licenseTexts).toEqual([
+      { fileName: basename(reviewedFile), text: BOOLBASE_REVIEWED_TEXT },
+    ]);
+  });
+
   it("does not reuse an audited text override for another package version", () => {
     const project = createNoticeFixture({
       roots: ["boolbase@1.0.1"],
