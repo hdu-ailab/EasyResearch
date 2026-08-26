@@ -7,6 +7,7 @@ import type { ExtensionFactory, JsonAgentSessionEvent } from "@earendil-works/pi
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAgentDefinitionExtension } from "../extensions/agent-definition";
 import type { AgentRuntimeBinding } from "../runtime/agent-runtime-binding";
+import { excludedLocalShellTools } from "../runtime/platform-tools";
 import type { AgentConfig } from "./agents";
 import {
   SubagentCoordinator,
@@ -44,7 +45,7 @@ function agentRow(name: string, overrides: Partial<AgentConfig> = {}): AgentConf
 
 const stageAgent = agentRow("search", { systemPrompt: "Search carefully." });
 
-function assistant(text: string): AgentMessage {
+function assistant(text: string): Extract<AgentMessage, { role: "assistant" }> {
   return {
     role: "assistant",
     content: [{ type: "text", text }],
@@ -271,6 +272,7 @@ class FakeDirectChildSupervisor {
 interface DependencyHarness {
   dependencies: StageSessionDependencies;
   calls: Array<{ name: string; value?: unknown }>;
+  rawSettings: ReturnType<typeof fakeSettingsManager>;
   supervisors: FakeDirectChildSupervisor[];
   bindingDisposals: string[];
   openedManager: {
@@ -312,6 +314,7 @@ function dependencyHarness(session: FakeStageSession): DependencyHarness {
   const calls: Array<{ name: string; value?: unknown }> = [];
   const supervisors: FakeDirectChildSupervisor[] = [];
   const bindingDisposals: string[] = [];
+  const rawSettings = fakeSettingsManager({ getGlobalSettings: () => ({}) });
   const openedManager = {
     getSessionId: () => session.sessionId,
     getCwd: () => "/project",
@@ -319,6 +322,7 @@ function dependencyHarness(session: FakeStageSession): DependencyHarness {
   };
   return {
     calls,
+    rawSettings,
     supervisors,
     bindingDisposals,
     openedManager,
@@ -334,7 +338,7 @@ function dependencyHarness(session: FakeStageSession): DependencyHarness {
       },
       createSettingsManager: (cwd, agentDir) => {
         calls.push({ name: "settings", value: { cwd, agentDir } });
-        return fakeSettingsManager({ getGlobalSettings: () => ({}) });
+        return rawSettings;
       },
       createModelRuntime: async () => ({
         refresh: async () => ({ aborted: false, errors: new Map() }),
@@ -489,13 +493,22 @@ describe("createStageSessionLauncher", () => {
       { name: "stage", caller: "search", coordinator, supervisor: harness.supervisors[0] },
       { name: "web-search" },
     ]);
-    expect(harness.calls.find((call) => call.name === "createSession")?.value).toMatchObject({
+    const stageCreateOptions = harness.calls.find(
+      (call) => call.name === "createSession",
+    )?.value as Record<string, unknown>;
+    const stageLoaderOptions = harness.calls.find(
+      (call) => call.name === "loader",
+    )?.value as Record<string, unknown>;
+    expect(stageCreateOptions.settingsManager).toBe(harness.rawSettings);
+    expect(stageLoaderOptions.settingsManager).toBe(harness.rawSettings);
+    expect(stageCreateOptions).toMatchObject({
       cwd: "/project",
       thinkingLevel: "high",
       model: { provider: "openai", id: "gpt-test" },
       sessionManager: { kind: "new", cwd: "/project" },
+      excludeTools: excludedLocalShellTools(process.platform),
     });
-    expect(harness.calls.find((call) => call.name === "createSession")?.value).not.toHaveProperty("tools");
+    expect(stageCreateOptions).not.toHaveProperty("tools");
     expect(session.names).toEqual(["easyresearch:search"]);
     expect(session.agent.steeringMode).toBe("all");
     expect(session.promptCalls).toEqual(["Task: find papers"]);
@@ -538,20 +551,23 @@ describe("createStageSessionLauncher", () => {
     const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
     const handle = await createStageSessionLauncher(dependencyHarness(session).dependencies)(stageOptions(coordinator));
     const events: JsonAgentSessionEvent[] = [];
+    const completeAssistant = assistant("all tokens");
     handle.subscribe((event) => events.push(event));
 
     session.emit({
       type: "message_update",
+      message: completeAssistant,
       assistantMessageEvent: {
         type: "text_delta",
         contentIndex: 0,
         delta: "new token",
-        partial: { role: "assistant", content: [{ type: "text", text: "all tokens" }] },
+        partial: completeAssistant,
       },
     });
 
     expect(events).toEqual([{
       type: "message_update",
+      usage: completeAssistant.usage,
       assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "new token" },
     }]);
     session.emitAssistantEndAndPersist();
@@ -564,13 +580,15 @@ describe("createStageSessionLauncher", () => {
   it("replays synchronous prompt-start events once to the first owner subscriber", async () => {
     const prompt = deferred<void>();
     const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
+    const completeAssistant = assistant("all early tokens");
     session.promptStart = () => session.emit({
       type: "message_update",
+      message: completeAssistant,
       assistantMessageEvent: {
         type: "text_delta",
         contentIndex: 0,
         delta: "early token",
-        partial: { role: "assistant", content: [{ type: "text", text: "all early tokens" }] },
+        partial: completeAssistant,
       },
     });
     const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
@@ -583,6 +601,7 @@ describe("createStageSessionLauncher", () => {
 
     expect(first).toEqual([{
       type: "message_update",
+      usage: completeAssistant.usage,
       assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "early token" },
     }]);
     expect(second).toEqual([]);

@@ -13,7 +13,7 @@ import {
 import { runCleanupSteps } from "../runtime/cleanup";
 import { toJsonSessionEvent } from "../runtime/json-session-event";
 import type { LiveConfiguration } from "../runtime/live-configuration";
-import { createSessionSettingsFacade } from "../runtime/session-settings-facade";
+import { excludedLocalShellTools } from "../runtime/platform-tools";
 import {
   createCompactionPolicyBinding,
   type CompactionPolicySettingsManager,
@@ -235,9 +235,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         sessionManager = deps.createSessionManager(options.cwd);
       }
 
-      const settingsManager = createSessionSettingsFacade(
-        deps.createSettingsManager(options.cwd, deps.agentDir) as object,
-      );
+      const settingsManager = deps.createSettingsManager(options.cwd, deps.agentDir);
       const automaticCompaction = createCompactionPolicyBinding(
         settingsManager as CompactionPolicySettingsManager,
       );
@@ -293,6 +291,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         resourceLoader,
         ...(model ? { model } : {}),
         thinkingLevel: binding.thinking(),
+        excludeTools: excludedLocalShellTools(process.platform),
       });
       session = created.session;
       result.model = model ? `${model.provider}/${model.id}` : result.model;
@@ -627,7 +626,6 @@ async function resolveDefaultStageSessionLauncher(): Promise<StageSessionLaunche
   const { createSubagentExtension } = await import("../extensions/subagent");
   const { default: webSearchExtension } = await import("../extensions/web-search");
   const { default: webFetchExtension } = await import("../extensions/webfetch");
-  const { default: windowsPowerShellExtension } = await import("../extensions/windows-powershell");
   const { createSshBashExtension } = await import("../extensions/ssh-bash");
   const { SubagentSupervisor } = await import("./supervisor");
   const { isDotAgentsSkillEnabled, resolveAgentSkillDirectories } = await import("./skill-resolution");
@@ -654,10 +652,6 @@ async function resolveDefaultStageSessionLauncher(): Promise<StageSessionLaunche
       launchStage: launchStageSession,
     }),
     createExtensionFactories: ({ binding, liveConfiguration, coordinator, supervisor }) => [
-      {
-        name: "windows-powershell",
-        factory: windowsPowerShellExtension,
-      },
       ...(binding.current().name === "experiment"
         ? [{ name: "ssh-bash", factory: createSshBashExtension({ allowConfigure: false }) }]
         : []),

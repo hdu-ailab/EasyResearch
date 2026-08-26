@@ -12,7 +12,6 @@ import { createWebTreeExtension } from "./web-tree";
 import { createSessionNameExtension } from "./session-name";
 import type { SubagentCoordinator } from "../subagent/coordinator";
 import type { SubagentSupervisor } from "../subagent/supervisor";
-import windowsPowerShellExtension from "./windows-powershell";
 import { createSshBashExtension } from "./ssh-bash";
 import {
   createManualCompactionExtension,
@@ -60,10 +59,6 @@ export interface ResearchAssistantExtensionRuntime {
 
 export function createResearchAssistantExtensions(runtime: ResearchAssistantExtensionRuntime): BundledExtension[] {
   return [
-    {
-      name: "windows-powershell",
-      factory: windowsPowerShellExtension,
-    },
     {
       name: "ssh-bash",
       factory: createSshBashExtension({ allowConfigure: true }),

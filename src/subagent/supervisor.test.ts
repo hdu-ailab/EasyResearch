@@ -360,10 +360,13 @@ describe("SubagentSupervisor ownership and launch ordering", () => {
     stage.materialization.resolve();
     await launching;
 
-    stage.emit({
+    const progressUsage = assistant("progress").usage;
+    const progress = {
       type: "message_update",
+      usage: progressUsage,
       assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "progress" },
-    } as JsonAgentSessionEvent);
+    } satisfies JsonAgentSessionEvent;
+    stage.emit(progress);
     stage.emit({
       type: "agent_end",
       messages: [
@@ -383,7 +386,11 @@ describe("SubagentSupervisor ownership and launch ordering", () => {
     await turn();
 
     expect(events).toContainEqual(expect.objectContaining({
-      event: { type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "progress" } },
+      event: {
+        type: "message_update",
+        usage: progressUsage,
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "progress" },
+      },
     }));
     expect(events.some((event) => event.event?.type === "agent_end")).toBe(false);
 

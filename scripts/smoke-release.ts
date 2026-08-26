@@ -18,7 +18,9 @@ import {
   parseRecordedPid,
   readTextFileWithRetry,
   requireZeroProcessStatus,
+  resolveSmokePowerShell,
   resolveSmokePython,
+  resolveSmokeWindowsSystem32,
   selectSmokeModelAction,
   type SmokeModelScenario,
   type SmokeModelState,
@@ -32,6 +34,7 @@ import {
   SMOKE_SETUP_RESULT_PATH_ENV,
   SMOKE_SETUP_RUN_ID_ENV,
 } from "../src/runtime/first-run-setup-evidence";
+import { nativeLocalShellTool } from "../src/runtime/platform-tools";
 
 const targetName = process.argv[2];
 const target = TARGETS.find((candidate) => candidate.name === targetName);
@@ -44,6 +47,13 @@ if (versionVerifiedByRunner && target.name !== "windows-x64") {
 
 const binary = resolve(platformPackageDir(target.name), "bin", platformBinaryName(target));
 const systemPython = resolveSmokePython({ explicit: process.env.EASYRESEARCH_SMOKE_PYTHON });
+const smokeShellToolName = nativeLocalShellTool(process.platform);
+const systemPowerShell = process.platform === "win32"
+  ? resolveSmokePowerShell()
+  : undefined;
+const windowsSystem32 = process.platform === "win32"
+  ? resolveSmokeWindowsSystem32(process.env)
+  : undefined;
 const root = mkdtempSync(join(tmpdir(), "easyresearch-native-smoke-"));
 const home = join(root, "home");
 const agentDir = join(root, "agent");
@@ -72,7 +82,7 @@ const smokeAgentContent = [
   "description: Native smoke custom reviewer",
   "enable: true",
   "tools:",
-  "  - bash",
+  `  - ${smokeShellToolName}`,
   "skills:",
   "  - native-smoke-no-skill",
   "subagents: []",
@@ -83,6 +93,7 @@ const smokeAgentContent = [
   "",
 ].join("\n");
 const smokeModelScenario: SmokeModelScenario = {
+  shellToolName: smokeShellToolName,
   toolCommand: venvToolCommand(process.platform, validationScript),
   agentName: smokeAgentName,
   agentPath: smokeAgentPath,
@@ -103,7 +114,7 @@ let smokeModelState: SmokeModelState = {
   agentWriteObserved: false,
   customDispatchIssued: false,
   parentWorkingObserved: false,
-  stageBashIssued: false,
+  stageShellIssued: false,
   venvValidated: false,
   stageCompleted: false,
   terminalHandoffObserved: false,
@@ -173,6 +184,9 @@ portProbe.stop(true);
 const env = createCompiledChildEnv({
   base: process.env,
   python: systemPython,
+  platform: process.platform,
+  powershellExecutable: systemPowerShell,
+  windowsSystem32,
   overrides: {
     HOME: home,
     USERPROFILE: home,
@@ -219,8 +233,10 @@ function run(args: string[], captureName: "first-run" | "shutdown"): { stdout: s
     // Start-Process owns those capture paths so Node must not open them first.
     const nul = openSync("NUL", "w");
     try {
-      const powershell = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
-      const taskkill = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe");
+      if (!systemPowerShell) throw new Error("Windows smoke PowerShell preflight result is missing");
+      if (!windowsSystem32) throw new Error("Windows smoke System32 preflight result is missing");
+      const powershell = systemPowerShell;
+      const taskkill = join(windowsSystem32, "taskkill.exe");
       let script: string;
       if (asynchronous) {
         script = [
@@ -312,7 +328,8 @@ function isProcessAlive(pid: number): boolean {
 }
 
 function terminateWindowsProcessTree(pid: number): void {
-  const taskkill = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe");
+  if (!windowsSystem32) throw new Error("Windows smoke System32 preflight result is missing");
+  const taskkill = join(windowsSystem32, "taskkill.exe");
   const result = spawnSync(taskkill, ["/PID", String(pid), "/T", "/F"], {
     env,
     encoding: "utf8",
@@ -440,6 +457,10 @@ async function requireOk(response: Response, label: string): Promise<any> {
 
 function smokeProgressDiagnostics(): string {
   return JSON.stringify({
+    smokeShellToolName,
+    systemPowerShell: systemPowerShell ?? null,
+    windowsSystem32: windowsSystem32 ?? null,
+    childPath: env.PATH,
     modelRequests,
     smokeModelState,
     venvToolResults,
@@ -579,6 +600,7 @@ async function stopConfigurationEventStream(): Promise<void> {
 }
 
 async function dumpServerLogs(): Promise<void> {
+  console.log(`[smoke] progress diagnostics:\n${smokeProgressDiagnostics()}`);
   console.log(`[smoke] system Python: ${systemPython}`);
   console.log(`[smoke] system Python --version: ${systemPythonVersionOutput}`);
   console.log(`[smoke] expected venv Python: ${venvPython}`);
@@ -814,7 +836,7 @@ try {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      message: "Write the supplied global custom reviewer, dispatch it after configuration reload, and require only its deterministic bash venv-validation tool call.",
+      message: `Write the supplied global custom reviewer, dispatch it after configuration reload, and require only its deterministic ${smokeShellToolName} venv-validation tool call.`,
     }),
   }), "custom Agent write and dispatch");
   await waitForSmokeCondition(
@@ -844,7 +866,7 @@ try {
     || customAgent.source !== "global"
     || customAgent.filePath !== smokeAgentPath
     || customAgent.model !== "smoke/smoke-model"
-    || JSON.stringify(customAgent.effectiveTools) !== JSON.stringify(["bash"])
+    || JSON.stringify(customAgent.effectiveTools) !== JSON.stringify([smokeShellToolName])
     || JSON.stringify(customAgent.subagents) !== JSON.stringify([])
   ) {
     throw new Error(`custom Agent catalog row was not authoritative: ${JSON.stringify(customAgent)}`);

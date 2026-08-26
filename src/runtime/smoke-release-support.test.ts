@@ -15,7 +15,9 @@ import {
   parseRecordedPid,
   readTextFileWithRetry,
   requireZeroProcessStatus,
+  resolveSmokePowerShell,
   resolveSmokePython,
+  resolveSmokeWindowsSystem32,
   runVenvValidation,
   selectSmokeModelAction,
   type SmokeModelScenario,
@@ -26,6 +28,7 @@ import {
   venvToolCommand,
   writeVenvValidationScript,
 } from "../../scripts/smoke-release-support";
+import type { NativeLocalShellTool } from "./platform-tools";
 
 const tempDirs: string[] = [];
 
@@ -139,33 +142,169 @@ describe("resolveSmokePython", () => {
   );
 });
 
+describe("resolveSmokePowerShell", () => {
+  it("prefers pwsh.exe over Windows PowerShell", () => {
+    expect(resolveSmokePowerShell({
+      which: (name) => name === "pwsh.exe"
+        ? "C:\\Program Files\\PowerShell\\7\\pwsh.exe"
+        : "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      exists: () => true,
+    })).toBe("C:\\Program Files\\PowerShell\\7\\pwsh.exe");
+  });
+
+  it("falls back to an existing absolute powershell.exe", () => {
+    expect(resolveSmokePowerShell({
+      which: (name) => name === "powershell.exe"
+        ? "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+        : undefined,
+      exists: () => true,
+    })).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+  });
+
+  it.each([
+    ["missing", undefined, false],
+    ["relative", "PowerShell\\7\\pwsh.exe", true],
+    ["nonexistent", "C:\\Program Files\\PowerShell\\7\\pwsh.exe", false],
+  ] as const)("rejects a %s PowerShell executable", (_name, candidate, candidateExists) => {
+    expect(() => resolveSmokePowerShell({
+      which: () => candidate,
+      exists: () => candidateExists,
+    }))
+      .toThrow("Windows native smoke requires an existing absolute pwsh.exe or powershell.exe");
+  });
+});
+
+describe("resolveSmokeWindowsSystem32", () => {
+  it("finds SystemRoot case-insensitively and requires its exact where.exe", () => {
+    const checked: string[] = [];
+
+    const system32 = resolveSmokeWindowsSystem32(
+      { sYsTeMrOoT: "C:\\Windows" },
+      (path) => {
+        checked.push(path);
+        return path === "C:\\Windows\\System32\\where.exe";
+      },
+    );
+
+    expect(system32).toBe("C:\\Windows\\System32");
+    expect(checked).toEqual(["C:\\Windows\\System32\\where.exe"]);
+  });
+
+  it.each([
+    ["missing", {}],
+    ["relative", { SystemRoot: "Windows" }],
+  ] as const)("rejects a %s SystemRoot", (_name, env) => {
+    expect(() => resolveSmokeWindowsSystem32(env, () => true))
+      .toThrow("Windows native smoke requires a non-empty absolute SystemRoot");
+  });
+
+  it("reports the required where.exe path when it is absent", () => {
+    expect(() => resolveSmokeWindowsSystem32(
+      { SYSTEMROOT: "C:\\Windows" },
+      () => false,
+    )).toThrow("Windows native smoke requires where.exe at C:\\Windows\\System32\\where.exe");
+  });
+});
+
 describe("createCompiledChildEnv", () => {
-  it("constructs a Python-only child PATH with bounded pip retries", () => {
+  it.each(["linux", "darwin"] as const)(
+    "constructs a CPython-only child PATH with bounded pip retries on %s",
+    (platform) => {
+      const env = createCompiledChildEnv({
+        base: { PATH: "/node:/bun", SECRET: "kept" },
+        python: "/toolcache/python/bin/python",
+        platform,
+      });
+
+      expect(env.PATH).toBe("/toolcache/python/bin");
+      expect(env.PIP_RETRIES).toBe("3");
+      expect(env.PIP_DEFAULT_TIMEOUT).toBe("30");
+      expect(env.PATH).not.toContain("node");
+      expect(env.PATH).not.toContain("bun");
+      expect(env.SECRET).toBe("kept");
+    },
+  );
+
+  it("exposes exactly the Python, preflight PowerShell, and validated System32 directories on Windows", () => {
     const env = createCompiledChildEnv({
-      base: { PATH: "/node:/bun", SECRET: "kept" },
-      python: "/toolcache/python/bin/python",
+      base: { Path: "C:\\node", PATH: "C:\\bun", SAFE: "kept" },
+      python: "C:\\hostedtoolcache\\Python\\3.12\\x64\\python.exe",
+      powershellExecutable: "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+      windowsSystem32: "C:\\Windows\\System32",
+      platform: "win32",
+      exists: (path) => path === "C:\\Windows\\System32\\where.exe",
     });
 
-    expect(env.PATH).toBe("/toolcache/python/bin");
-    expect(env.PIP_RETRIES).toBe("3");
-    expect(env.PIP_DEFAULT_TIMEOUT).toBe("30");
-    expect(env.PATH).not.toContain("node");
-    expect(env.PATH).not.toContain("bun");
-    expect(env.SECRET).toBe("kept");
+    expect(env.PATH).toBe(
+      "C:\\hostedtoolcache\\Python\\3.12\\x64;C:\\Program Files\\PowerShell\\7;C:\\Windows\\System32",
+    );
+    expect(Object.keys(env).filter((key) => key.toUpperCase() === "PATH")).toEqual(["PATH"]);
+    expect(env.SAFE).toBe("kept");
   });
 
-  it("emits one canonical PATH key for case-insensitive Windows environments", () => {
-    const env = createCompiledChildEnv({
-      base: { Path: "/node", PATH: "/bun" },
-      python: "/toolcache/python/bin/python",
-      overrides: { SMOKE_OVERRIDE: "kept" },
-    });
-
-    const pathKeys = Object.keys(env).filter((key) => key.toUpperCase() === "PATH");
-    expect(pathKeys).toEqual(["PATH"]);
-    expect(env.PATH).toBe("/toolcache/python/bin");
-    expect(env.SMOKE_OVERRIDE).toBe("kept");
+  it.each([
+    ["missing", undefined],
+    ["relative", "PowerShell\\7\\pwsh.exe"],
+  ] as const)("rejects a %s PowerShell executable on Windows", (_name, powershellExecutable) => {
+    expect(() => createCompiledChildEnv({
+      base: {},
+      python: "C:\\hostedtoolcache\\Python\\3.12\\x64\\python.exe",
+      platform: "win32",
+      powershellExecutable,
+      windowsSystem32: "C:\\Windows\\System32",
+      exists: () => true,
+    })).toThrow("Windows native smoke requires an absolute PowerShell executable");
   });
+
+  it.each([
+    ["missing", undefined],
+    ["relative", "Windows\\System32"],
+  ] as const)("rejects a %s System32 directory on Windows", (_name, windowsSystem32) => {
+    expect(() => createCompiledChildEnv({
+      base: {},
+      python: "C:\\hostedtoolcache\\Python\\3.12\\x64\\python.exe",
+      platform: "win32",
+      powershellExecutable: "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+      windowsSystem32,
+      exists: () => true,
+    })).toThrow("Windows native smoke requires an absolute System32 directory");
+  });
+
+  it("rejects a System32 directory without where.exe", () => {
+    expect(() => createCompiledChildEnv({
+      base: {},
+      python: "C:\\hostedtoolcache\\Python\\3.12\\x64\\python.exe",
+      platform: "win32",
+      powershellExecutable: "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+      windowsSystem32: "C:\\Windows\\System32",
+      exists: () => false,
+    })).toThrow("Windows native smoke requires where.exe at C:\\Windows\\System32\\where.exe");
+  });
+
+  it.each(["linux", "darwin"] as const)(
+    "rejects a supplied PowerShell executable on %s",
+    (platform) => {
+      expect(() => createCompiledChildEnv({
+        base: {},
+        python: "/toolcache/python/bin/python",
+        platform,
+        powershellExecutable: "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+      })).toThrow("PowerShell executable is only valid for Windows native smoke");
+    },
+  );
+
+  it.each(["linux", "darwin"] as const)(
+    "rejects a supplied Windows System32 directory on %s",
+    (platform) => {
+      expect(() => createCompiledChildEnv({
+        base: {},
+        python: "/toolcache/python/bin/python",
+        platform,
+        windowsSystem32: "C:\\Windows\\System32",
+        exists: () => true,
+      })).toThrow("System32 directory is only valid for Windows native smoke");
+    },
+  );
 
   it("removes ambient Python import contamination case-insensitively", () => {
     const env = createCompiledChildEnv({
@@ -175,6 +314,7 @@ describe("createCompiledChildEnv", () => {
         SAFE_VALUE: "kept",
       },
       python: "/toolcache/python/bin/python",
+      platform: "linux",
       overrides: { PYTHONUSERBASE: "/ambient/user-site" },
     });
 
@@ -738,30 +878,19 @@ describe("venvToolCommand", () => {
 
 describe("selectSmokeModelAction", () => {
   const completedStage = "complete\nArtifacts: none\nGaps: none\nNext action: none";
-  const agentPromptMarker = "NATIVE_SMOKE_CUSTOM_REVIEWER_PROMPT";
-  const agentContent = [
-    "---",
-    "name: smoke-reviewer",
-    "description: Native smoke custom reviewer",
-    "enable: true",
-    "tools:",
-    "  - bash",
-    "skills:",
-    "  - native-smoke-no-skill",
-    "subagents: []",
-    "---",
-    "",
-    agentPromptMarker,
-    "Run only the requested venv validation command, then return a complete handoff.",
-    "",
-  ].join("\n");
-  const scenario: SmokeModelScenario = {
-    toolCommand: "validate-command",
-    agentName: "smoke-reviewer",
-    agentPath: "/agent/agents/smoke-reviewer.md",
-    agentContent,
-    agentPromptMarker,
-  };
+  function scenarioFor(shellToolName: NativeLocalShellTool): SmokeModelScenario {
+    return {
+      shellToolName,
+      toolCommand: "validate-command",
+      agentName: "smoke-reviewer",
+      agentPath: "/agent/agents/smoke-reviewer.md",
+      agentContent: "SMOKE_ROLE_MARKER\n",
+      agentPromptMarker: "SMOKE_ROLE_MARKER",
+    };
+  }
+  const scenario = scenarioFor("bash");
+  const agentContent = scenario.agentContent;
+  const agentPromptMarker = scenario.agentPromptMarker;
   const oldSubagentDescription = "Available subagents: search, experiment, writing, figures.";
   const refreshedSubagentDescription = `${oldSubagentDescription.slice(0, -1)}, smoke-reviewer.`;
   const tool = (name: string, description?: string) => ({
@@ -772,7 +901,7 @@ describe("selectSmokeModelAction", () => {
     agentWriteObserved: false,
     customDispatchIssued: false,
     parentWorkingObserved: false,
-    stageBashIssued: false,
+    stageShellIssued: false,
     venvValidated: false,
     stageCompleted: false,
     terminalHandoffObserved: false,
@@ -784,30 +913,42 @@ describe("selectSmokeModelAction", () => {
     ...(toolCallId === undefined ? {} : { tool_call_id: toolCallId }),
     content,
   });
-  const writeResult = () => toolResult(
+  const writeResultFor = (modelScenario: SmokeModelScenario) => toolResult(
     "call_native_agent_write",
-    `Successfully wrote ${agentContent.length} bytes to ${scenario.agentPath}`,
+    `Successfully wrote ${modelScenario.agentContent.length} bytes to ${modelScenario.agentPath}`,
   );
-  const parentRequest = (
+  const writeResult = () => writeResultFor(scenario);
+  const parentRequestFor = (
+    modelScenario: SmokeModelScenario,
     refreshed: boolean,
     ...messages: Array<ReturnType<typeof toolResult> | { role: "user"; content: string }>
   ) => ({
     tools: [
-      tool("bash"),
+      tool(modelScenario.shellToolName),
       tool("write"),
       tool("web-search"),
       tool("subagent", refreshed ? refreshedSubagentDescription : oldSubagentDescription),
     ],
     messages,
   });
-  const stageRequest = (
-    prompt = agentPromptMarker,
-    tools = [tool("bash")],
+  const parentRequest = (
+    refreshed: boolean,
+    ...messages: Array<ReturnType<typeof toolResult> | { role: "user"; content: string }>
+  ) => parentRequestFor(scenario, refreshed, ...messages);
+  const stageRequestFor = (
+    modelScenario: SmokeModelScenario,
+    prompt = modelScenario.agentPromptMarker,
+    tools = [tool(modelScenario.shellToolName)],
     ...messages: Array<ReturnType<typeof toolResult>>
   ) => ({
     tools,
     messages: [{ role: "system" as const, content: prompt }, ...messages],
   });
+  const stageRequest = (
+    prompt = agentPromptMarker,
+    tools = [tool(scenario.shellToolName)],
+    ...messages: Array<ReturnType<typeof toolResult>>
+  ) => stageRequestFor(scenario, prompt, tools, ...messages);
   const terminalNotice = (result = completedStage) => ({
     role: "user" as const,
     content: [
@@ -830,82 +971,105 @@ describe("selectSmokeModelAction", () => {
       .toThrow(/exactly one web-search tool/i);
   });
 
-  it("writes a global custom Agent, dispatches it from the refreshed parent schema, and completes its Bash handoff", () => {
-    let current = initialState();
+  it.each(["bash", "powershell"] as const)(
+    "completes the custom-stage chain using only %s",
+    (shellToolName) => {
+      const modelScenario = scenarioFor(shellToolName);
+      let current = initialState();
 
-    const write = selectSmokeModelAction(parentRequest(false), scenario, current);
-    current = write.state;
-    const dispatch = selectSmokeModelAction(parentRequest(true, writeResult()), scenario, current);
-    current = dispatch.state;
-    const bash = selectSmokeModelAction(stageRequest(), scenario, current);
-    current = bash.state;
-    const parentWaiting = selectSmokeModelAction(
-      parentRequest(
-        true,
-        writeResult(),
-        toolResult("call_native_reviewer", "smoke-reviewer_0 is working."),
-      ),
-      scenario,
-      current,
-    );
-    current = parentWaiting.state;
-    const bashResult = selectSmokeModelAction(
-      stageRequest(agentPromptMarker, [tool("bash")], toolResult("call_native_venv", "log\neasyresearch-venv-ok\n")),
-      scenario,
-      current,
-    );
-    current = bashResult.state;
-    const complete = selectSmokeModelAction(
-      parentRequest(
-        true,
-        writeResult(),
-        toolResult("call_native_reviewer", "smoke-reviewer_0 is working."),
-        terminalNotice(),
-      ),
-      scenario,
-      current,
-    );
+      const write = selectSmokeModelAction(
+        parentRequestFor(modelScenario, false),
+        modelScenario,
+        current,
+      );
+      current = write.state;
+      const dispatch = selectSmokeModelAction(
+        parentRequestFor(modelScenario, true, writeResultFor(modelScenario)),
+        modelScenario,
+        current,
+      );
+      current = dispatch.state;
+      const shell = selectSmokeModelAction(stageRequestFor(modelScenario), modelScenario, current);
+      current = shell.state;
+      const parentWaiting = selectSmokeModelAction(
+        parentRequestFor(
+          modelScenario,
+          true,
+          writeResultFor(modelScenario),
+          toolResult("call_native_reviewer", "smoke-reviewer_0 is working."),
+        ),
+        modelScenario,
+        current,
+      );
+      current = parentWaiting.state;
+      const shellResult = selectSmokeModelAction(
+        stageRequestFor(
+          modelScenario,
+          modelScenario.agentPromptMarker,
+          [tool(shellToolName)],
+          toolResult("call_native_venv", "log\neasyresearch-venv-ok\n"),
+        ),
+        modelScenario,
+        current,
+      );
+      current = shellResult.state;
+      const complete = selectSmokeModelAction(
+        parentRequestFor(
+          modelScenario,
+          true,
+          writeResultFor(modelScenario),
+          toolResult("call_native_reviewer", "smoke-reviewer_0 is working."),
+          terminalNotice(),
+        ),
+        modelScenario,
+        current,
+      );
 
-    expect(write.action).toEqual({
-      kind: "tool",
-      id: "call_native_agent_write",
-      name: "write",
-      arguments: JSON.stringify({ path: scenario.agentPath, content: agentContent }),
-    });
-    expect(dispatch.action).toEqual({
-      kind: "tool",
-      id: "call_native_reviewer",
-      name: "subagent",
-      arguments: JSON.stringify({
-        agent: "smoke-reviewer",
-        task: "Run the native venv validation command with the bash tool and return a complete handoff.",
-      }),
-    });
-    expect(bash.action).toEqual({
-      kind: "tool",
-      id: "call_native_venv",
-      name: "bash",
-      arguments: JSON.stringify({ command: "validate-command", timeout: 60 }),
-    });
-    expect(parentWaiting.action).toEqual({ kind: "text", text: "Parent waiting for supervised completion." });
-    expect(bashResult).toMatchObject({
-      action: { kind: "text", text: completedStage },
-      validatedVenvResult: true,
-    });
-    expect(complete.action).toEqual({ kind: "text", text: "Parent smoke run complete." });
-    expect(complete.state).toEqual({
-      agentWriteIssued: true,
-      agentWriteObserved: true,
-      customDispatchIssued: true,
-      parentWorkingObserved: true,
-      stageBashIssued: true,
-      venvValidated: true,
-      stageCompleted: true,
-      terminalHandoffObserved: true,
-      complete: true,
-      completedRequests: 6,
-    });
-  });
+      expect(modelScenario.shellToolName).toBe(shellToolName);
+      expect(write.action).toEqual({
+        kind: "tool",
+        id: "call_native_agent_write",
+        name: "write",
+        arguments: JSON.stringify({
+          path: modelScenario.agentPath,
+          content: modelScenario.agentContent,
+        }),
+      });
+      expect(dispatch.action).toEqual({
+        kind: "tool",
+        id: "call_native_reviewer",
+        name: "subagent",
+        arguments: JSON.stringify({
+          agent: "smoke-reviewer",
+          task: `Run the native venv validation command with the ${shellToolName} tool and return a complete handoff.`,
+        }),
+      });
+      expect(shell.action).toEqual({
+        kind: "tool",
+        id: "call_native_venv",
+        name: shellToolName,
+        arguments: JSON.stringify({ command: "validate-command", timeout: 60 }),
+      });
+      expect(parentWaiting.action).toEqual({ kind: "text", text: "Parent waiting for supervised completion." });
+      expect(shellResult).toMatchObject({
+        action: { kind: "text", text: completedStage },
+        validatedVenvResult: true,
+      });
+      expect(complete.action).toEqual({ kind: "text", text: "Parent smoke run complete." });
+      expect(complete.state).toEqual({
+        agentWriteIssued: true,
+        agentWriteObserved: true,
+        customDispatchIssued: true,
+        parentWorkingObserved: true,
+        stageShellIssued: true,
+        venvValidated: true,
+        stageCompleted: true,
+        terminalHandoffObserved: true,
+        complete: true,
+        completedRequests: 6,
+      });
+    },
+  );
 
   it("accepts custom-stage completion before the first post-dispatch parent request", () => {
     let current = selectSmokeModelAction(parentRequest(false), scenario, initialState()).state;
@@ -992,6 +1156,28 @@ describe("selectSmokeModelAction", () => {
     )).toThrow(/configured tools|current role prompt/u);
   });
 
+  for (const shellToolName of ["bash", "powershell"] as const) {
+    const modelScenario = scenarioFor(shellToolName);
+    const wrongShell = shellToolName === "bash" ? "powershell" : "bash";
+    it.each([
+      ["wrong shell", [tool(wrongShell)], /expected exactly one local shell tool/u],
+      ["both shells", [tool("bash"), tool("powershell")], /expected exactly one local shell tool/u],
+      ["no shell", [], /expected exactly one local shell tool/u],
+      ["expected shell plus an extra strict child tool", [tool(shellToolName), tool("read")], /configured tools/u],
+    ] as const)(`rejects %s when ${shellToolName} is required`, (_name, tools, error) => {
+      expect(() => selectSmokeModelAction(
+        stageRequestFor(modelScenario, modelScenario.agentPromptMarker, [...tools]),
+        modelScenario,
+        {
+          ...initialState(),
+          agentWriteIssued: true,
+          agentWriteObserved: true,
+          customDispatchIssued: true,
+        },
+      )).toThrow(error);
+    });
+  }
+
   it("rejects an inexact write result", () => {
     expect(() => selectSmokeModelAction(
       parentRequest(true, toolResult("call_native_agent_write", "wrote another file")),
@@ -1014,7 +1200,7 @@ describe("selectSmokeModelAction", () => {
       agentWriteObserved: true,
       customDispatchIssued: true,
     }],
-    ["stage Bash", stageRequest(
+    ["stage shell", stageRequest(
       agentPromptMarker,
       [tool("bash")],
       toolResult("call_native_venv", "easyresearch-venv-ok"),
@@ -1023,7 +1209,7 @@ describe("selectSmokeModelAction", () => {
       agentWriteIssued: true,
       agentWriteObserved: true,
       customDispatchIssued: true,
-      stageBashIssued: true,
+      stageShellIssued: true,
     }],
   ] as const)("rejects duplicate correlated %s tool results", (_name, request, flags) => {
     expect(() => selectSmokeModelAction(
@@ -1039,7 +1225,7 @@ describe("selectSmokeModelAction", () => {
     "easyresearch-venv-ok-invalid",
     "prefix easyresearch-venv-ok suffix",
     "easyresearch-venv-ok\neasyresearch-venv-ok",
-  ])("rejects a failed, inexact, or repeated Bash sentinel: %s", (content) => {
+  ])("rejects a failed, inexact, or repeated local-shell sentinel: %s", (content) => {
     expect(() => selectSmokeModelAction(
       stageRequest(agentPromptMarker, [tool("bash")], toolResult("call_native_venv", content)),
       scenario,
@@ -1048,10 +1234,56 @@ describe("selectSmokeModelAction", () => {
         agentWriteIssued: true,
         agentWriteObserved: true,
         customDispatchIssued: true,
-        stageBashIssued: true,
+        stageShellIssued: true,
       },
     )).toThrow("easyresearch-venv-ok");
   });
+
+  it.each(["bash", "powershell"] as const)(
+    "names %s in failed sentinel diagnostics",
+    (shellToolName) => {
+      const modelScenario = scenarioFor(shellToolName);
+      expect(() => selectSmokeModelAction(
+        stageRequestFor(
+          modelScenario,
+          modelScenario.agentPromptMarker,
+          [tool(shellToolName)],
+          toolResult("call_native_venv", "wrong interpreter"),
+        ),
+        modelScenario,
+        {
+          ...initialState(),
+          agentWriteIssued: true,
+          agentWriteObserved: true,
+          customDispatchIssued: true,
+          stageShellIssued: true,
+        },
+      )).toThrow(`${shellToolName} tool result`);
+    },
+  );
+
+  it.each(["bash", "powershell"] as const)(
+    "rejects a terminal handoff before successful %s validation",
+    (shellToolName) => {
+      const modelScenario = scenarioFor(shellToolName);
+      expect(() => selectSmokeModelAction(
+        parentRequestFor(
+          modelScenario,
+          true,
+          writeResultFor(modelScenario),
+          toolResult("call_native_reviewer", "smoke-reviewer_0 is working."),
+          terminalNotice(),
+        ),
+        modelScenario,
+        {
+          ...initialState(),
+          agentWriteIssued: true,
+          agentWriteObserved: true,
+          customDispatchIssued: true,
+        },
+      )).toThrow(`${shellToolName} stage validation`);
+    },
+  );
 
   it.each([
     "smoke-reviewer_0 is working",
@@ -1101,7 +1333,7 @@ describe("selectSmokeModelAction", () => {
         agentWriteIssued: true,
         agentWriteObserved: true,
         customDispatchIssued: true,
-        stageBashIssued: true,
+        stageShellIssued: true,
         venvValidated: true,
         stageCompleted: true,
       },
@@ -1123,7 +1355,7 @@ describe("selectSmokeModelAction", () => {
         agentWriteIssued: true,
         agentWriteObserved: true,
         customDispatchIssued: true,
-        stageBashIssued: true,
+        stageShellIssued: true,
         venvValidated: true,
         stageCompleted: true,
       },
@@ -1145,7 +1377,7 @@ describe("selectSmokeModelAction", () => {
         agentWriteIssued: true,
         agentWriteObserved: true,
         customDispatchIssued: true,
-        stageBashIssued: true,
+        stageShellIssued: true,
         venvValidated: true,
         stageCompleted: true,
       },

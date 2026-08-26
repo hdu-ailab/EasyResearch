@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionTreeNode } from "@earendil-works/pi-coding-agent";
 import type { AgentRuntimeBinding } from "../runtime/agent-runtime-binding";
+import { excludedLocalShellTools } from "../runtime/platform-tools";
 import type { AgentConfig } from "../subagent/agents";
 import {
   ConfigurationUnavailableError,
@@ -786,17 +787,35 @@ describe("PiSessionFactory", () => {
     const factory = new PiSessionFactory(async () => created(session));
     const adapter = factory.create({ cwd: "/project" });
     const events: unknown[] = [];
+    const assistant = {
+      role: "assistant",
+      content: [{ type: "text", text: "all tokens so far" }],
+      api: "openai-completions",
+      provider: "openai",
+      model: "test-model",
+      usage: {
+        input: 2,
+        output: 3,
+        cacheRead: 4,
+        cacheWrite: 5,
+        totalTokens: 14,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.25 },
+      },
+      stopReason: "stop",
+      timestamp: 1,
+    } satisfies Extract<AgentMessage, { role: "assistant" }>;
     adapter.onEvent((event) => events.push(event));
     await adapter.start();
 
     session.listeners.forEach((listener) =>
       listener({
         type: "message_update",
+        message: assistant,
         assistantMessageEvent: {
           type: "text_delta",
           contentIndex: 0,
           delta: "token",
-          partial: { role: "assistant", content: [{ type: "text", text: "all tokens so far" }] },
+          partial: assistant,
         },
       }),
     );
@@ -804,6 +823,7 @@ describe("PiSessionFactory", () => {
     expect(events).toEqual([
       {
         type: "message_update",
+        usage: assistant.usage,
         assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "token" },
       },
     ]);
@@ -1739,6 +1759,7 @@ describe("createPiAgentSessionCreator", () => {
       appendSystemPromptOverride(base: string[]): string[];
       additionalSkillPaths: string[];
       extensionFactories: Array<{ name: string }>;
+      settingsManager: unknown;
     };
     expect(loaderOptions).toMatchObject({
       cwd: "/project",
@@ -1757,13 +1778,18 @@ describe("createPiAgentSessionCreator", () => {
       cwd: "/project",
       agentDir: "/agent",
     });
-    expect(harness.createdOptions[0]?.settingsManager).not.toBe(harness.rawSettings);
+    expect(harness.createdOptions[0]?.settingsManager).toBe(harness.rawSettings);
+    expect(loaderOptions.settingsManager).toBe(harness.rawSettings);
     expect((harness.createdOptions[0]?.settingsManager as {
       getCompactionSettings(): { reserveTokens: number; keepRecentTokens: number };
     }).getCompactionSettings()).toMatchObject({
       reserveTokens: 38_400,
       keepRecentTokens: 20_000,
     });
+    expect(harness.createdOptions[0]).toMatchObject({
+      excludeTools: excludedLocalShellTools(process.platform),
+    });
+    expect(harness.createdOptions[0]).not.toHaveProperty("tools");
     const order = harness.calls.map(({ name }) => name);
     expect(order.indexOf("session-manager")).toBeLessThan(order.indexOf("coordinator"));
     expect(order.indexOf("coordinator")).toBeLessThan(order.indexOf("recovery"));

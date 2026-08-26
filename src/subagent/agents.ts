@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { bundledSourceRoot } from "../runtime/bundled-assets";
+import { normalizeLocalShellTools } from "../runtime/platform-tools";
 import { getAgentDir, importPi } from "../runtime/pi-import";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { readGlobalAgentDefaults, type AgentRuntimeDefaults } from "./agent-defaults";
@@ -71,6 +72,7 @@ export interface DiscoveryOptions {
   bundledSkillsDir?: string;
   homeDir?: string;
   enableDotAgentsSkill?: boolean;
+  platform?: NodeJS.Platform;
 }
 
 function bundledAgentsDir(): string {
@@ -225,10 +227,18 @@ export function resolveAgentCatalog(
   const agentDir = options.agentDir ?? getAgentDir();
   const includeProject = options.cwd !== undefined;
   const cwd = options.cwd ?? agentDir;
+  const platform = options.platform ?? process.platform;
   const agents = snapshot.definitions.map((definition): AgentConfig => {
     const runtimeDefault = snapshot.defaults?.[definition.name];
     const tools = definition.tools ? [...definition.tools] : undefined;
     const skills = definition.skills ? [...definition.skills] : undefined;
+    const inventory = tools ?? [
+      ...(definition.name === RESEARCH_ASSISTANT_AGENT
+        ? RESEARCH_ASSISTANT_TOOL_INVENTORY
+        : definition.name === "experiment"
+          ? EXPERIMENT_TOOL_INVENTORY
+          : CONTROLLED_TOOL_INVENTORY),
+    ];
     const { effectiveSkills, missingSkills } = resolveSkillSelection(skills, {
       cwd,
       agentDir,
@@ -242,13 +252,7 @@ export function resolveAgentCatalog(
       model: runtimeDefault?.model,
       thinking: runtimeDefault?.thinking,
       tools,
-      effectiveTools: tools ?? [
-        ...(definition.name === RESEARCH_ASSISTANT_AGENT
-          ? RESEARCH_ASSISTANT_TOOL_INVENTORY
-          : definition.name === "experiment"
-            ? EXPERIMENT_TOOL_INVENTORY
-            : CONTROLLED_TOOL_INVENTORY),
-      ],
+      effectiveTools: normalizeLocalShellTools(inventory, platform),
       subagents: definition.subagents ? [...definition.subagents] : definition.subagents,
       skills,
       effectiveSkills,

@@ -82,6 +82,12 @@ Common controlled tool names include `read`, `bash`, `edit`, `write`,
 `subagent`, `web-search`, and `webfetch`. Registration and permission are
 separate: an allowlist cannot make an unavailable tool exist.
 
+`bash` and `powershell` in Agent frontmatter are portable names for the local
+shell capability. EasyResearch exposes the real platform tool to the Agent:
+`powershell` on Windows and `bash` on Linux/macOS. Only that effective name
+appears in tool metadata and prompts. `ssh-bash` is separate and always means
+remote POSIX Bash.
+
 Keep model choice out of Agent Markdown. Configure model and thinking defaults
 in global `easyresearch.agentDefaults`; see
 [Model Configuration](./model-configuration.md).

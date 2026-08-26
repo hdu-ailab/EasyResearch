@@ -1178,6 +1178,14 @@ describe("WorkPage", () => {
       childSessionId: "child-live",
       event: {
         type: "message_update",
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
         assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "live " },
       },
     });
@@ -1188,6 +1196,14 @@ describe("WorkPage", () => {
       childSessionId: "child-live",
       event: {
         type: "message_update",
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
         assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "tokens" },
       },
     });
@@ -1583,6 +1599,14 @@ describe("WorkPage", () => {
       childSessionId: "child-race",
       event: {
         type: "message_update",
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
         assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "new nested output" },
       },
     });

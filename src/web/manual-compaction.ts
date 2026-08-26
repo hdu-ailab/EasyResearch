@@ -187,7 +187,7 @@ export class ManualCompactionController {
     };
     let operation: Promise<unknown>;
     try {
-      // Pi 0.84.1 calls abort synchronously before its first await. The agent_end
+      // Pi compact() calls abort synchronously before its first await. The agent_end
       // hook is already at a completed-turn boundary, where waiting for that same
       // run to become idle would deadlock the awaited hook.
       operation = session.compact(customInstructions);
