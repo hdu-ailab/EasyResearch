@@ -827,100 +827,103 @@ describe("AgentRuntimeBinding real Pi next-turn integration", () => {
     const root = mkdtempSync(join(tmpdir(), "easyresearch-runtime-binding-"));
     const cwd = join(root, "paper");
     const agentDir = join(root, "agent");
-    mkdirSync(cwd);
-    mkdirSync(agentDir);
-    const initialSettings = {
-      defaultProvider: "preserved-provider",
-      defaultModel: "preserved-model",
-      defaultThinkingLevel: "medium",
-      easyresearch: {
-        agentDefaults: {
-          "research-assistant": {
-            model: "test-provider/same-model",
-            thinking: "low",
+    let binding: AgentRuntimeBinding | undefined;
+    let session: Awaited<ReturnType<typeof pi.createAgentSession>>["session"] | undefined;
+    let failed = false;
+    let failure: unknown;
+    try {
+      mkdirSync(cwd);
+      mkdirSync(agentDir);
+      const initialSettings = {
+        defaultProvider: "preserved-provider",
+        defaultModel: "preserved-model",
+        defaultThinkingLevel: "medium",
+        easyresearch: {
+          agentDefaults: {
+            "research-assistant": {
+              model: "test-provider/same-model",
+              thinking: "low",
+            },
           },
         },
-      },
-    };
-    const before = `${JSON.stringify(initialSettings, null, 2)}\n`;
-    writeFileSync(join(agentDir, "settings.json"), before);
-    const live = new FakeLiveConfiguration([definition("v1", {
-      tools: ["tool-v1"],
-      effectiveTools: ["tool-v1"],
-      skills: undefined,
-      effectiveSkills: [],
-    })]);
-    const firstProvider = fauxProvider({
-      provider: "test-provider",
-      models: [{ id: "same-model", name: "metadata-v1", reasoning: true }],
-    });
-    const secondRequests: Array<{
-      model: Model<any>;
-      systemPrompt: string | undefined;
-      tools: string[];
-      descriptions: string[];
-      thinking: unknown;
-    }> = [];
-    const secondProvider = fauxProvider({
-      provider: "test-provider",
-      models: [{ id: "same-model", name: "metadata-v2", reasoning: true }],
-    });
-    firstProvider.setResponses([
-      fauxAssistantMessage(fauxToolCall("tool-v1", {}), { stopReason: "toolUse" }),
-    ]);
-    secondProvider.setResponses([
-      (context, options, _state, requestModel) => {
-        secondRequests.push({
-          model: requestModel,
-          systemPrompt: context.systemPrompt,
-          tools: context.tools?.map((tool) => tool.name) ?? [],
-          descriptions: context.tools?.map((tool) => tool.description) ?? [],
-          thinking: options?.reasoning,
-        });
-        return fauxAssistantMessage("generation-v2 complete");
-      },
-    ]);
-    const credentials = new InMemoryCredentialStore();
-    const settings = pi.SettingsManager.create(cwd, agentDir);
-    const binding = createAgentRuntimeBinding({
-      live,
-      agentName: "research-assistant",
-      cwd,
-      createModelRuntime: async () => {
-        const runtime = await pi.ModelRuntime.create({
-          credentials,
-          modelsPath: null,
-          refreshOnCreate: false,
-        });
-        runtime.registerNativeProvider(
-          live.generation === 1 ? firstProvider.provider : secondProvider.provider,
-        );
-        return runtime;
-      },
-      resolveAutomaticModel: async () => undefined,
-      resolveSkillPaths: () => [],
-      compaction: createCompactionPolicyBinding(settings),
-    });
-    await binding.ensureCurrent();
-    const modelRuntime = binding.modelRuntime() as typeof pi.ModelRuntime.prototype;
-    const resourceLoader = new pi.DefaultResourceLoader({
-      cwd,
-      agentDir,
-      settingsManager: settings,
-      extensionFactories: [{
-        name: "agent-definition",
-        factory: createAgentDefinitionExtension(binding),
-      }],
-      noSkills: true,
-      noPromptTemplates: true,
-      noThemes: true,
-      noContextFiles: true,
-      additionalSkillPaths: [],
-      appendSystemPromptOverride: (base) => binding.appendSystemPrompt(base),
-    });
-    await resourceLoader.reload({ resolveProjectTrust: async () => true });
-    let session: Awaited<ReturnType<typeof pi.createAgentSession>>["session"] | undefined;
-    try {
+      };
+      const before = `${JSON.stringify(initialSettings, null, 2)}\n`;
+      writeFileSync(join(agentDir, "settings.json"), before);
+      const live = new FakeLiveConfiguration([definition("v1", {
+        tools: ["tool-v1"],
+        effectiveTools: ["tool-v1"],
+        skills: undefined,
+        effectiveSkills: [],
+      })]);
+      const firstProvider = fauxProvider({
+        provider: "test-provider",
+        models: [{ id: "same-model", name: "metadata-v1", reasoning: true }],
+      });
+      const secondRequests: Array<{
+        model: Model<any>;
+        systemPrompt: string | undefined;
+        tools: string[];
+        descriptions: string[];
+        thinking: unknown;
+      }> = [];
+      const secondProvider = fauxProvider({
+        provider: "test-provider",
+        models: [{ id: "same-model", name: "metadata-v2", reasoning: true }],
+      });
+      firstProvider.setResponses([
+        fauxAssistantMessage(fauxToolCall("tool-v1", {}), { stopReason: "toolUse" }),
+      ]);
+      secondProvider.setResponses([
+        (context, options, _state, requestModel) => {
+          secondRequests.push({
+            model: requestModel,
+            systemPrompt: context.systemPrompt,
+            tools: context.tools?.map((tool) => tool.name) ?? [],
+            descriptions: context.tools?.map((tool) => tool.description) ?? [],
+            thinking: options?.reasoning,
+          });
+          return fauxAssistantMessage("generation-v2 complete");
+        },
+      ]);
+      const credentials = new InMemoryCredentialStore();
+      const settings = pi.SettingsManager.create(cwd, agentDir);
+      binding = createAgentRuntimeBinding({
+        live,
+        agentName: "research-assistant",
+        cwd,
+        createModelRuntime: async () => {
+          const runtime = await pi.ModelRuntime.create({
+            credentials,
+            modelsPath: null,
+            refreshOnCreate: false,
+          });
+          runtime.registerNativeProvider(
+            live.generation === 1 ? firstProvider.provider : secondProvider.provider,
+          );
+          return runtime;
+        },
+        resolveAutomaticModel: async () => undefined,
+        resolveSkillPaths: () => [],
+        compaction: createCompactionPolicyBinding(settings),
+      });
+      await binding.ensureCurrent();
+      const modelRuntime = binding.modelRuntime() as typeof pi.ModelRuntime.prototype;
+      const resourceLoader = new pi.DefaultResourceLoader({
+        cwd,
+        agentDir,
+        settingsManager: settings,
+        extensionFactories: [{
+          name: "agent-definition",
+          factory: createAgentDefinitionExtension(binding),
+        }],
+        noSkills: true,
+        noPromptTemplates: true,
+        noThemes: true,
+        noContextFiles: true,
+        additionalSkillPaths: [],
+        appendSystemPromptOverride: (base) => binding!.appendSystemPrompt(base),
+      });
+      await resourceLoader.reload({ resolveProjectTrust: async () => true });
       const created = await pi.createAgentSession({
         cwd,
         agentDir,
@@ -987,10 +990,32 @@ describe("AgentRuntimeBinding real Pi next-turn integration", () => {
       expect(settings.getDefaultProvider()).toBe("preserved-provider");
       expect(settings.getDefaultModel()).toBe("preserved-model");
       expect(settings.getDefaultThinkingLevel()).toBe("medium");
-    } finally {
-      await binding.dispose();
+    } catch (error) {
+      failed = true;
+      failure = error;
+    }
+
+    const cleanupErrors: unknown[] = [];
+    try {
+      await binding?.dispose();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    try {
       session?.dispose();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    try {
       rmSync(root, { recursive: true, force: true });
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+
+    if (failed) throw failure;
+    if (cleanupErrors.length === 1) throw cleanupErrors[0];
+    if (cleanupErrors.length > 1) {
+      throw new AggregateError(cleanupErrors, "real Pi next-turn test cleanup failed");
     }
   });
 

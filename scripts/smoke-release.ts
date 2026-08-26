@@ -20,6 +20,7 @@ import {
   requireZeroProcessStatus,
   resolveSmokePowerShell,
   resolveSmokePython,
+  resolveSmokeWindowsSystem32,
   selectSmokeModelAction,
   type SmokeModelScenario,
   type SmokeModelState,
@@ -49,6 +50,9 @@ const systemPython = resolveSmokePython({ explicit: process.env.EASYRESEARCH_SMO
 const smokeShellToolName = nativeLocalShellTool(process.platform);
 const systemPowerShell = process.platform === "win32"
   ? resolveSmokePowerShell()
+  : undefined;
+const windowsSystem32 = process.platform === "win32"
+  ? resolveSmokeWindowsSystem32(process.env)
   : undefined;
 const root = mkdtempSync(join(tmpdir(), "easyresearch-native-smoke-"));
 const home = join(root, "home");
@@ -182,6 +186,7 @@ const env = createCompiledChildEnv({
   python: systemPython,
   platform: process.platform,
   powershellExecutable: systemPowerShell,
+  windowsSystem32,
   overrides: {
     HOME: home,
     USERPROFILE: home,
@@ -229,8 +234,9 @@ function run(args: string[], captureName: "first-run" | "shutdown"): { stdout: s
     const nul = openSync("NUL", "w");
     try {
       if (!systemPowerShell) throw new Error("Windows smoke PowerShell preflight result is missing");
+      if (!windowsSystem32) throw new Error("Windows smoke System32 preflight result is missing");
       const powershell = systemPowerShell;
-      const taskkill = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe");
+      const taskkill = join(windowsSystem32, "taskkill.exe");
       let script: string;
       if (asynchronous) {
         script = [
@@ -322,7 +328,8 @@ function isProcessAlive(pid: number): boolean {
 }
 
 function terminateWindowsProcessTree(pid: number): void {
-  const taskkill = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe");
+  if (!windowsSystem32) throw new Error("Windows smoke System32 preflight result is missing");
+  const taskkill = join(windowsSystem32, "taskkill.exe");
   const result = spawnSync(taskkill, ["/PID", String(pid), "/T", "/F"], {
     env,
     encoding: "utf8",
@@ -452,6 +459,7 @@ function smokeProgressDiagnostics(): string {
   return JSON.stringify({
     smokeShellToolName,
     systemPowerShell: systemPowerShell ?? null,
+    windowsSystem32: windowsSystem32 ?? null,
     childPath: env.PATH,
     modelRequests,
     smokeModelState,

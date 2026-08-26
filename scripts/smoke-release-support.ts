@@ -66,11 +66,32 @@ export function resolveSmokePowerShell(
   );
 }
 
+export function resolveSmokeWindowsSystem32(
+  env: NodeJS.ProcessEnv = process.env,
+  exists: (path: string) => boolean = existsSync,
+): string {
+  const systemRoot = Object.entries(env).find(
+    ([key]) => key.toLowerCase() === "systemroot",
+  )?.[1];
+  if (!systemRoot || !win32.isAbsolute(systemRoot)) {
+    throw new Error("Windows native smoke requires a non-empty absolute SystemRoot");
+  }
+
+  const system32 = win32.join(systemRoot, "System32");
+  const whereExecutable = win32.join(system32, "where.exe");
+  if (!exists(whereExecutable)) {
+    throw new Error(`Windows native smoke requires where.exe at ${whereExecutable}`);
+  }
+  return system32;
+}
+
 export function createCompiledChildEnv(options: {
   base: NodeJS.ProcessEnv;
   python: string;
   platform?: NodeJS.Platform;
   powershellExecutable?: string;
+  windowsSystem32?: string;
+  exists?: (path: string) => boolean;
   overrides?: NodeJS.ProcessEnv;
 }): NodeJS.ProcessEnv {
   const platform = options.platform ?? process.platform;
@@ -79,8 +100,20 @@ export function createCompiledChildEnv(options: {
     if (!options.powershellExecutable || !win32.isAbsolute(options.powershellExecutable)) {
       throw new Error("Windows native smoke requires an absolute PowerShell executable");
     }
-  } else if (options.powershellExecutable !== undefined) {
-    throw new Error("PowerShell executable is only valid for Windows native smoke");
+    if (!options.windowsSystem32 || !win32.isAbsolute(options.windowsSystem32)) {
+      throw new Error("Windows native smoke requires an absolute System32 directory");
+    }
+    const whereExecutable = win32.join(options.windowsSystem32, "where.exe");
+    if (!(options.exists ?? existsSync)(whereExecutable)) {
+      throw new Error(`Windows native smoke requires where.exe at ${whereExecutable}`);
+    }
+  } else {
+    if (options.powershellExecutable !== undefined) {
+      throw new Error("PowerShell executable is only valid for Windows native smoke");
+    }
+    if (options.windowsSystem32 !== undefined) {
+      throw new Error("System32 directory is only valid for Windows native smoke");
+    }
   }
 
   const env = { ...options.base, ...options.overrides };
@@ -90,7 +123,7 @@ export function createCompiledChildEnv(options: {
     if (normalized === "PATH" || PYTHON_CONTAMINATION_KEYS.has(normalized)) delete env[key];
   }
   env.PATH = windows
-    ? [pythonDir, win32.dirname(options.powershellExecutable!)].join(win32.delimiter)
+    ? [pythonDir, win32.dirname(options.powershellExecutable!), options.windowsSystem32!].join(win32.delimiter)
     : pythonDir;
   env.PIP_RETRIES = "3";
   env.PIP_DEFAULT_TIMEOUT = "30";

@@ -17,6 +17,7 @@ import {
   requireZeroProcessStatus,
   resolveSmokePowerShell,
   resolveSmokePython,
+  resolveSmokeWindowsSystem32,
   runVenvValidation,
   selectSmokeModelAction,
   type SmokeModelScenario,
@@ -163,12 +164,45 @@ describe("resolveSmokePowerShell", () => {
   it.each([
     ["missing", undefined, false],
     ["relative", "PowerShell\\7\\pwsh.exe", true],
+    ["nonexistent", "C:\\Program Files\\PowerShell\\7\\pwsh.exe", false],
   ] as const)("rejects a %s PowerShell executable", (_name, candidate, candidateExists) => {
     expect(() => resolveSmokePowerShell({
       which: () => candidate,
       exists: () => candidateExists,
     }))
       .toThrow("Windows native smoke requires an existing absolute pwsh.exe or powershell.exe");
+  });
+});
+
+describe("resolveSmokeWindowsSystem32", () => {
+  it("finds SystemRoot case-insensitively and requires its exact where.exe", () => {
+    const checked: string[] = [];
+
+    const system32 = resolveSmokeWindowsSystem32(
+      { sYsTeMrOoT: "C:\\Windows" },
+      (path) => {
+        checked.push(path);
+        return path === "C:\\Windows\\System32\\where.exe";
+      },
+    );
+
+    expect(system32).toBe("C:\\Windows\\System32");
+    expect(checked).toEqual(["C:\\Windows\\System32\\where.exe"]);
+  });
+
+  it.each([
+    ["missing", {}],
+    ["relative", { SystemRoot: "Windows" }],
+  ] as const)("rejects a %s SystemRoot", (_name, env) => {
+    expect(() => resolveSmokeWindowsSystem32(env, () => true))
+      .toThrow("Windows native smoke requires a non-empty absolute SystemRoot");
+  });
+
+  it("reports the required where.exe path when it is absent", () => {
+    expect(() => resolveSmokeWindowsSystem32(
+      { SYSTEMROOT: "C:\\Windows" },
+      () => false,
+    )).toThrow("Windows native smoke requires where.exe at C:\\Windows\\System32\\where.exe");
   });
 });
 
@@ -191,16 +225,18 @@ describe("createCompiledChildEnv", () => {
     },
   );
 
-  it("exposes exactly the Python and preflight PowerShell directories on Windows", () => {
+  it("exposes exactly the Python, preflight PowerShell, and validated System32 directories on Windows", () => {
     const env = createCompiledChildEnv({
       base: { Path: "C:\\node", PATH: "C:\\bun", SAFE: "kept" },
       python: "C:\\hostedtoolcache\\Python\\3.12\\x64\\python.exe",
       powershellExecutable: "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+      windowsSystem32: "C:\\Windows\\System32",
       platform: "win32",
+      exists: (path) => path === "C:\\Windows\\System32\\where.exe",
     });
 
     expect(env.PATH).toBe(
-      "C:\\hostedtoolcache\\Python\\3.12\\x64;C:\\Program Files\\PowerShell\\7",
+      "C:\\hostedtoolcache\\Python\\3.12\\x64;C:\\Program Files\\PowerShell\\7;C:\\Windows\\System32",
     );
     expect(Object.keys(env).filter((key) => key.toUpperCase() === "PATH")).toEqual(["PATH"]);
     expect(env.SAFE).toBe("kept");
@@ -215,7 +251,34 @@ describe("createCompiledChildEnv", () => {
       python: "C:\\hostedtoolcache\\Python\\3.12\\x64\\python.exe",
       platform: "win32",
       powershellExecutable,
+      windowsSystem32: "C:\\Windows\\System32",
+      exists: () => true,
     })).toThrow("Windows native smoke requires an absolute PowerShell executable");
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["relative", "Windows\\System32"],
+  ] as const)("rejects a %s System32 directory on Windows", (_name, windowsSystem32) => {
+    expect(() => createCompiledChildEnv({
+      base: {},
+      python: "C:\\hostedtoolcache\\Python\\3.12\\x64\\python.exe",
+      platform: "win32",
+      powershellExecutable: "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+      windowsSystem32,
+      exists: () => true,
+    })).toThrow("Windows native smoke requires an absolute System32 directory");
+  });
+
+  it("rejects a System32 directory without where.exe", () => {
+    expect(() => createCompiledChildEnv({
+      base: {},
+      python: "C:\\hostedtoolcache\\Python\\3.12\\x64\\python.exe",
+      platform: "win32",
+      powershellExecutable: "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+      windowsSystem32: "C:\\Windows\\System32",
+      exists: () => false,
+    })).toThrow("Windows native smoke requires where.exe at C:\\Windows\\System32\\where.exe");
   });
 
   it.each(["linux", "darwin"] as const)(
@@ -227,6 +290,19 @@ describe("createCompiledChildEnv", () => {
         platform,
         powershellExecutable: "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
       })).toThrow("PowerShell executable is only valid for Windows native smoke");
+    },
+  );
+
+  it.each(["linux", "darwin"] as const)(
+    "rejects a supplied Windows System32 directory on %s",
+    (platform) => {
+      expect(() => createCompiledChildEnv({
+        base: {},
+        python: "/toolcache/python/bin/python",
+        platform,
+        windowsSystem32: "C:\\Windows\\System32",
+        exists: () => true,
+      })).toThrow("System32 directory is only valid for Windows native smoke");
     },
   );
 
