@@ -1,7 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, posix, win32 } from "node:path";
+import { isAbsolute, posix, win32 } from "node:path";
 import { readFirstRunSetupEvidence } from "../src/runtime/first-run-setup-evidence";
+import type { NativeLocalShellTool } from "../src/runtime/platform-tools";
 
 export const FIRST_RUN_CEILING_MS = 720_000;
 
@@ -46,18 +47,51 @@ export function resolveSmokePython(options: ResolveSmokePythonOptions = {}): str
   throw new Error("EASYRESEARCH_SMOKE_PYTHON is unset and no Python interpreter was found");
 }
 
+export interface ResolveSmokePowerShellOptions {
+  which?: (name: string) => string | null | undefined;
+  exists?: (path: string) => boolean;
+}
+
+export function resolveSmokePowerShell(
+  options: ResolveSmokePowerShellOptions = {},
+): string {
+  const which = options.which ?? Bun.which;
+  const exists = options.exists ?? existsSync;
+  for (const name of ["pwsh.exe", "powershell.exe"] as const) {
+    const candidate = which(name);
+    if (candidate && win32.isAbsolute(candidate) && exists(candidate)) return candidate;
+  }
+  throw new Error(
+    "Windows native smoke requires an existing absolute pwsh.exe or powershell.exe discovered on the runner PATH",
+  );
+}
+
 export function createCompiledChildEnv(options: {
   base: NodeJS.ProcessEnv;
   python: string;
+  platform?: NodeJS.Platform;
+  powershellExecutable?: string;
   overrides?: NodeJS.ProcessEnv;
 }): NodeJS.ProcessEnv {
+  const platform = options.platform ?? process.platform;
+  const windows = platform === "win32";
+  if (windows) {
+    if (!options.powershellExecutable || !win32.isAbsolute(options.powershellExecutable)) {
+      throw new Error("Windows native smoke requires an absolute PowerShell executable");
+    }
+  } else if (options.powershellExecutable !== undefined) {
+    throw new Error("PowerShell executable is only valid for Windows native smoke");
+  }
+
   const env = { ...options.base, ...options.overrides };
-  const pythonDir = dirname(options.python);
+  const pythonDir = windows ? win32.dirname(options.python) : posix.dirname(options.python);
   for (const key of Object.keys(env)) {
     const normalized = key.toUpperCase();
     if (normalized === "PATH" || PYTHON_CONTAMINATION_KEYS.has(normalized)) delete env[key];
   }
-  env.PATH = pythonDir;
+  env.PATH = windows
+    ? [pythonDir, win32.dirname(options.powershellExecutable!)].join(win32.delimiter)
+    : pythonDir;
   env.PIP_RETRIES = "3";
   env.PIP_DEFAULT_TIMEOUT = "30";
   return env;
@@ -410,10 +444,11 @@ export function venvToolCommand(platform: NodeJS.Platform, scriptPath: string): 
 }
 
 export type SmokeModelAction =
-  | { kind: "tool"; id: string; name: "write" | "subagent" | "bash"; arguments: string }
+  | { kind: "tool"; id: string; name: "write" | "subagent" | NativeLocalShellTool; arguments: string }
   | { kind: "text"; text: string };
 
 export interface SmokeModelScenario {
+  shellToolName: NativeLocalShellTool;
   toolCommand: string;
   agentName: string;
   agentPath: string;
@@ -426,7 +461,7 @@ export interface SmokeModelState {
   agentWriteObserved: boolean;
   customDispatchIssued: boolean;
   parentWorkingObserved: boolean;
-  stageBashIssued: boolean;
+  stageShellIssued: boolean;
   venvValidated: boolean;
   stageCompleted: boolean;
   terminalHandoffObserved: boolean;
@@ -499,6 +534,16 @@ export function selectSmokeModelAction(
   }
   const tools = request.tools ?? [];
   const toolNames = new Set(tools.map((tool) => tool.function?.name));
+  const shellTools = tools
+    .map((tool) => tool.function?.name)
+    .filter((name): name is NativeLocalShellTool =>
+      name === "bash" || name === "powershell"
+    );
+  if (shellTools.length !== 1 || shellTools[0] !== scenario.shellToolName) {
+    throw new Error(
+      `native smoke expected exactly one local shell tool named ${scenario.shellToolName}; received ${shellTools.join(", ") || "none"}`,
+    );
+  }
   if (state.complete) throw new Error("native smoke model sequence is already complete");
   const agentId = `${scenario.agentName}_0`;
 
@@ -574,7 +619,7 @@ export function selectSmokeModelAction(
         name: "subagent",
         arguments: JSON.stringify({
           agent: scenario.agentName,
-          task: "Run the native venv validation command with the bash tool and return a complete handoff.",
+          task: `Run the native venv validation command with the ${scenario.shellToolName} tool and return a complete handoff.`,
         }),
       }, { agentWriteObserved: true, customDispatchIssued: true });
     }
@@ -597,7 +642,9 @@ export function selectSmokeModelAction(
       );
     }
     if (!state.venvValidated || !state.stageCompleted) {
-      throw new Error("native smoke received the terminal handoff before successful stage validation");
+      throw new Error(
+        `native smoke received the terminal handoff before successful ${scenario.shellToolName} stage validation`,
+      );
     }
     return transition(
       { kind: "text", text: "Parent smoke run complete." },
@@ -605,12 +652,12 @@ export function selectSmokeModelAction(
     );
   }
 
-  if (toolNames.has("bash")) {
+  if (toolNames.has(scenario.shellToolName)) {
     if (!state.customDispatchIssued) {
       throw new Error("native smoke custom child ran before the parent dispatch");
     }
     const configuredTools = tools.map((tool) => tool.function?.name);
-    if (configuredTools.length !== 1 || configuredTools[0] !== "bash") {
+    if (configuredTools.length !== 1 || configuredTools[0] !== scenario.shellToolName) {
       throw new Error(`native smoke custom child did not receive only its configured tools: ${configuredTools.join(", ")}`);
     }
     const systemPrompt = request.messages
@@ -621,13 +668,13 @@ export function selectSmokeModelAction(
     if (!systemPrompt.includes(scenario.agentPromptMarker)) {
       throw new Error("native smoke custom child did not receive its current role prompt");
     }
-    if (!state.stageBashIssued) {
+    if (!state.stageShellIssued) {
       return transition({
         kind: "tool",
         id: "call_native_venv",
-        name: "bash",
+        name: scenario.shellToolName,
         arguments: JSON.stringify({ command: scenario.toolCommand, timeout: 60 }),
-      }, { stageBashIssued: true });
+      }, { stageShellIssued: true });
     }
     if (state.stageCompleted) {
       throw new Error("native smoke stage model sequence is already complete");
@@ -637,7 +684,9 @@ export function selectSmokeModelAction(
       .split(/\r?\n/u)
       .filter((line) => line === VENV_SENTINEL);
     if (sentinelLines.length !== 1) {
-      throw new Error(`bash tool result did not contain exactly one ${VENV_SENTINEL} line: ${content}`);
+      throw new Error(
+        `${scenario.shellToolName} tool result did not contain exactly one ${VENV_SENTINEL} line: ${content}`,
+      );
     }
     return transition(
       { kind: "text", text: STAGE_COMPLETION },
@@ -646,5 +695,7 @@ export function selectSmokeModelAction(
     );
   }
 
-  throw new Error("native smoke model request exposed neither the parent write tool nor the custom child bash tool");
+  throw new Error(
+    `native smoke model request exposed neither the parent write tool nor the custom child ${scenario.shellToolName} tool`,
+  );
 }
