@@ -80,6 +80,11 @@ remaining gaps, and one recommended next action.
 `web-search` 和 `webfetch`。工具注册与权限是两件事：allowlist 不能让尚未注册的
 工具凭空出现。
 
+Agent frontmatter 中的 `bash` 与 `powershell` 都表示可移植的本地 shell 能力。
+EasyResearch 只向 Agent 暴露当前平台的真实工具名：Windows 为 `powershell`，
+Linux/macOS 为 `bash`。工具元数据和 prompt 中也只出现该有效名称。
+`ssh-bash` 是独立能力，始终表示远端 POSIX Bash。
+
 不要在 Agent Markdown 中配置模型。模型和思考强度应写入全局
 `easyresearch.agentDefaults`；参见[模型配置](./model-configuration.zh-CN.md)。
 
