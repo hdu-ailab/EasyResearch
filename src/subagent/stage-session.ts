@@ -14,7 +14,6 @@ import { runCleanupSteps } from "../runtime/cleanup";
 import { toJsonSessionEvent } from "../runtime/json-session-event";
 import type { LiveConfiguration } from "../runtime/live-configuration";
 import { excludedLocalShellTools } from "../runtime/platform-tools";
-import { createSessionSettingsFacade } from "../runtime/session-settings-facade";
 import {
   createCompactionPolicyBinding,
   type CompactionPolicySettingsManager,
@@ -236,9 +235,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         sessionManager = deps.createSessionManager(options.cwd);
       }
 
-      const settingsManager = createSessionSettingsFacade(
-        deps.createSettingsManager(options.cwd, deps.agentDir) as object,
-      );
+      const settingsManager = deps.createSettingsManager(options.cwd, deps.agentDir);
       const automaticCompaction = createCompactionPolicyBinding(
         settingsManager as CompactionPolicySettingsManager,
       );

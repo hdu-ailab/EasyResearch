@@ -1,10 +1,12 @@
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
 import type { AgentConfig } from "../subagent/agents";
 import type { ConfigurationEvent, ConfigurationUpdatedEvent } from "../web/contracts";
 import { createAgentDefinitionExtension } from "../extensions/agent-definition";
-import { createSessionSettingsFacade } from "./session-settings-facade";
 import { createCompactionPolicyBinding } from "./compaction-policy";
 import { importPi } from "./pi-import";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
@@ -822,6 +824,26 @@ describe("AgentRuntimeBinding real Pi next-turn integration", () => {
       "@earendil-works/pi-ai"
     );
     const { Type } = await import("typebox");
+    const root = mkdtempSync(join(tmpdir(), "easyresearch-runtime-binding-"));
+    const cwd = join(root, "paper");
+    const agentDir = join(root, "agent");
+    mkdirSync(cwd);
+    mkdirSync(agentDir);
+    const initialSettings = {
+      defaultProvider: "preserved-provider",
+      defaultModel: "preserved-model",
+      defaultThinkingLevel: "medium",
+      easyresearch: {
+        agentDefaults: {
+          "research-assistant": {
+            model: "test-provider/same-model",
+            thinking: "low",
+          },
+        },
+      },
+    };
+    const before = `${JSON.stringify(initialSettings, null, 2)}\n`;
+    writeFileSync(join(agentDir, "settings.json"), before);
     const live = new FakeLiveConfiguration([definition("v1", {
       tools: ["tool-v1"],
       effectiveTools: ["tool-v1"],
@@ -859,11 +881,11 @@ describe("AgentRuntimeBinding real Pi next-turn integration", () => {
       },
     ]);
     const credentials = new InMemoryCredentialStore();
-    const settings = createSessionSettingsFacade(pi.SettingsManager.inMemory());
+    const settings = pi.SettingsManager.create(cwd, agentDir);
     const binding = createAgentRuntimeBinding({
       live,
       agentName: "research-assistant",
-      cwd: "/paper",
+      cwd,
       createModelRuntime: async () => {
         const runtime = await pi.ModelRuntime.create({
           credentials,
@@ -882,8 +904,8 @@ describe("AgentRuntimeBinding real Pi next-turn integration", () => {
     await binding.ensureCurrent();
     const modelRuntime = binding.modelRuntime() as typeof pi.ModelRuntime.prototype;
     const resourceLoader = new pi.DefaultResourceLoader({
-      cwd: "/paper",
-      agentDir: "/agent",
+      cwd,
+      agentDir,
       settingsManager: settings,
       extensionFactories: [{
         name: "agent-definition",
@@ -900,11 +922,11 @@ describe("AgentRuntimeBinding real Pi next-turn integration", () => {
     let session: Awaited<ReturnType<typeof pi.createAgentSession>>["session"] | undefined;
     try {
       const created = await pi.createAgentSession({
-        cwd: "/paper",
-        agentDir: "/agent",
+        cwd,
+        agentDir,
         modelRuntime,
         settingsManager: settings,
-        sessionManager: pi.SessionManager.inMemory("/paper"),
+        sessionManager: pi.SessionManager.inMemory(cwd),
         resourceLoader,
         model: binding.model(),
         thinkingLevel: binding.thinking(),
@@ -960,9 +982,15 @@ describe("AgentRuntimeBinding real Pi next-turn integration", () => {
       expect(secondRequests[0]?.systemPrompt).not.toContain("Prompt v1");
       expect(session.model).toBe(secondProvider.getModel("same-model"));
       expect(session.thinkingLevel).toBe("high");
+      await settings.flush();
+      expect(readFileSync(join(agentDir, "settings.json"), "utf8")).toBe(before);
+      expect(settings.getDefaultProvider()).toBe("preserved-provider");
+      expect(settings.getDefaultModel()).toBe("preserved-model");
+      expect(settings.getDefaultThinkingLevel()).toBe("medium");
     } finally {
       await binding.dispose();
       session?.dispose();
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
@@ -994,7 +1022,7 @@ describe("AgentRuntimeBinding real Pi next-turn integration", () => {
       },
     ]);
     const credentials = new InMemoryCredentialStore();
-    const settings = createSessionSettingsFacade(pi.SettingsManager.inMemory());
+    const settings = pi.SettingsManager.inMemory();
     const binding = createAgentRuntimeBinding({
       live,
       agentName: "research-assistant",

@@ -15,7 +15,6 @@ import {
   type AgentRuntimeBindingSession,
   type AgentRuntimeModelRuntime,
 } from "../runtime/agent-runtime-binding";
-import { createSessionSettingsFacade } from "../runtime/session-settings-facade";
 import {
   createCompactionPolicyBinding,
   DEFAULT_GLOBAL_COMPACTION_POLICY,
@@ -324,9 +323,7 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
       ? deps.openSessionManager(options.sessionPath)
       : deps.createSessionManager(options.cwd);
     const coordinator = deps.createCoordinator(sessionManager);
-    const settingsManager = createSessionSettingsFacade(
-      deps.createSettingsManager(options.cwd, deps.agentDir) as object,
-    );
+    const settingsManager = deps.createSettingsManager(options.cwd, deps.agentDir);
     const automaticCompaction = createCompactionPolicyBinding(
       settingsManager as CompactionPolicySettingsManager,
     );

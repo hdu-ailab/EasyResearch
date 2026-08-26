@@ -1759,6 +1759,7 @@ describe("createPiAgentSessionCreator", () => {
       appendSystemPromptOverride(base: string[]): string[];
       additionalSkillPaths: string[];
       extensionFactories: Array<{ name: string }>;
+      settingsManager: unknown;
     };
     expect(loaderOptions).toMatchObject({
       cwd: "/project",
@@ -1777,7 +1778,8 @@ describe("createPiAgentSessionCreator", () => {
       cwd: "/project",
       agentDir: "/agent",
     });
-    expect(harness.createdOptions[0]?.settingsManager).not.toBe(harness.rawSettings);
+    expect(harness.createdOptions[0]?.settingsManager).toBe(harness.rawSettings);
+    expect(loaderOptions.settingsManager).toBe(harness.rawSettings);
     expect((harness.createdOptions[0]?.settingsManager as {
       getCompactionSettings(): { reserveTokens: number; keepRecentTokens: number };
     }).getCompactionSettings()).toMatchObject({

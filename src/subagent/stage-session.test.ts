@@ -272,6 +272,7 @@ class FakeDirectChildSupervisor {
 interface DependencyHarness {
   dependencies: StageSessionDependencies;
   calls: Array<{ name: string; value?: unknown }>;
+  rawSettings: ReturnType<typeof fakeSettingsManager>;
   supervisors: FakeDirectChildSupervisor[];
   bindingDisposals: string[];
   openedManager: {
@@ -313,6 +314,7 @@ function dependencyHarness(session: FakeStageSession): DependencyHarness {
   const calls: Array<{ name: string; value?: unknown }> = [];
   const supervisors: FakeDirectChildSupervisor[] = [];
   const bindingDisposals: string[] = [];
+  const rawSettings = fakeSettingsManager({ getGlobalSettings: () => ({}) });
   const openedManager = {
     getSessionId: () => session.sessionId,
     getCwd: () => "/project",
@@ -320,6 +322,7 @@ function dependencyHarness(session: FakeStageSession): DependencyHarness {
   };
   return {
     calls,
+    rawSettings,
     supervisors,
     bindingDisposals,
     openedManager,
@@ -335,7 +338,7 @@ function dependencyHarness(session: FakeStageSession): DependencyHarness {
       },
       createSettingsManager: (cwd, agentDir) => {
         calls.push({ name: "settings", value: { cwd, agentDir } });
-        return fakeSettingsManager({ getGlobalSettings: () => ({}) });
+        return rawSettings;
       },
       createModelRuntime: async () => ({
         refresh: async () => ({ aborted: false, errors: new Map() }),
@@ -493,6 +496,11 @@ describe("createStageSessionLauncher", () => {
     const stageCreateOptions = harness.calls.find(
       (call) => call.name === "createSession",
     )?.value as Record<string, unknown>;
+    const stageLoaderOptions = harness.calls.find(
+      (call) => call.name === "loader",
+    )?.value as Record<string, unknown>;
+    expect(stageCreateOptions.settingsManager).toBe(harness.rawSettings);
+    expect(stageLoaderOptions.settingsManager).toBe(harness.rawSettings);
     expect(stageCreateOptions).toMatchObject({
       cwd: "/project",
       thinkingLevel: "high",
