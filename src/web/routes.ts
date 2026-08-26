@@ -182,6 +182,10 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
         return jsonResponse({ models: await services.listModels() });
       }
 
+      if (req.method === "GET" && path === "/api/directories/roots") {
+        return jsonResponse({ roots: services.directories.listRoots() });
+      }
+
       if (req.method === "GET" && path === "/api/directories") {
         return jsonResponse(services.directories.list(url.searchParams.get("path") ?? undefined));
       }
@@ -522,8 +526,9 @@ async function createSession(
   body: { cwd: string },
 ): Promise<Response> {
   if (!body.cwd) throw new BodyError("cwd is required");
+  const cwd = services.directories.requireCwd(body.cwd);
   try {
-    return jsonResponse(await services.registry.create({ cwd: body.cwd }));
+    return jsonResponse(await services.registry.create({ cwd }));
   } catch (error) {
     if (error instanceof ExtensionGuardError) throw error;
     throw new SessionStartError(error);
@@ -538,6 +543,7 @@ async function openSession(
   const sessions = await services.listAllSessions();
   const session = sessions.find((s) => s.path === body.path);
   if (!session) throw new UnknownSessionError(`Unknown session path: ${body.path}`);
+  services.directories.requireCwd(session.cwd);
   try {
     const dto: ActiveSessionDto = await services.registry.open({
       cwd: session.cwd,

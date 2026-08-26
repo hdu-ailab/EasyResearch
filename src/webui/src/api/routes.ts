@@ -21,6 +21,7 @@ export const routes = {
   compactionSettings: () => `${API_ROOT}/settings/compaction`,
   apiUsageSettings: () => `${API_ROOT}/settings/api-usage`,
   sessionName: (id: string) => `${session(id)}/name`,
+  directoryRoots: () => `${API_ROOT}/directories/roots`,
   directories: (path: string) => `${API_ROOT}/directories?${new URLSearchParams({ path }).toString()}`,
   createDirectory: () => `${API_ROOT}/directories`,
   entries: (path: string) => `${API_ROOT}/entries?${new URLSearchParams({ path }).toString()}`,

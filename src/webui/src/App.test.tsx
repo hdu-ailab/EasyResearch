@@ -306,4 +306,16 @@ describe("App routing", () => {
     });
     expect(vi.mocked(api.openSession)).toHaveBeenCalledWith("/store/s1.jsonl");
   });
+
+  it("shows a persisted-session open error with a route back to Home", async () => {
+    const user = userEvent.setup();
+    window.location.hash = "#/work/s1?cwd=%2Fp";
+    vi.mocked(api.listStatus).mockResolvedValue(persisted);
+    vi.mocked(api.openSession).mockRejectedValue(new Error("not a directory: /missing"));
+    render(<App />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("not a directory: /missing");
+    await user.click(screen.getByRole("button", { name: /back to home/i }));
+    expect(await workspace()).toBeVisible();
+  });
 });

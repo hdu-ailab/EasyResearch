@@ -1,3 +1,5 @@
+import { isAbsoluteFilesystemPath, resolveFilesystemPath } from "../../filesystem-path";
+
 const SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i;
 
 function decodeSegment(segment: string): string {
@@ -20,19 +22,16 @@ function decodeSegment(segment: string): string {
 export function resolveLocalPreviewPath(documentPath: string, href: string): string | null {
   if (!href) return null;
   const target = href.trim();
-  if (!target || target.startsWith("#") || target.startsWith("//") || SCHEME_RE.test(target)) return null;
+  if (
+    !target ||
+    target.startsWith("#") ||
+    target.startsWith("//") ||
+    (SCHEME_RE.test(target) && !isAbsoluteFilesystemPath(target))
+  ) {
+    return null;
+  }
   const [pathOnly] = target.split(/[?#]/, 1);
   if (!pathOnly || pathOnly.startsWith("//")) return null;
-  const baseDir = documentPath.includes("/") ? documentPath.slice(0, documentPath.lastIndexOf("/")) : "";
-  const joined = pathOnly.startsWith("/") ? pathOnly : `${baseDir}/${pathOnly}`;
-  const parts: string[] = [];
-  for (const segment of joined.split("/")) {
-    if (!segment || segment === ".") continue;
-    if (segment === "..") {
-      parts.pop();
-      continue;
-    }
-    parts.push(decodeSegment(segment));
-  }
-  return `/${parts.join("/")}`;
+  const decoded = pathOnly.split("/").map(decodeSegment).join("/");
+  return resolveFilesystemPath(documentPath, decoded);
 }

@@ -65,16 +65,18 @@ export interface WorkSessionResolver {
  * to its persisted JSONL path through the status listing, then open it so the
  * backend attaches the active registry record or resumes the persisted
  * history. When the session is not persisted yet (no first assistant message)
- * or the resolution round trip fails, the URL identity is returned unchanged.
+ * or listing is unavailable, the URL identity is returned unchanged so an
+ * already-active session can still attach. A known persisted session's open
+ * failure remains actionable and is propagated.
  */
 export async function resolveWorkSession(id: string, cwd: string, deps: WorkSessionResolver): Promise<WorkSession> {
+  let status: Awaited<ReturnType<WorkSessionResolver["listStatus"]>>;
   try {
-    const status = await deps.listStatus();
-    const summary = status.sessions.find((session) => session.id === id);
-    if (summary) return await deps.openSession(summary.path);
+    status = await deps.listStatus();
   } catch {
-    // Session listing/open unavailable: fall through to the URL identity,
-    // which still attaches when the registry record is active.
+    return { id, cwd };
   }
+  const summary = status.sessions.find((session) => session.id === id);
+  if (summary) return await deps.openSession(summary.path);
   return { id, cwd };
 }

@@ -25,6 +25,7 @@ import type {
   ConfigurationEvent,
   ContextUsageDto,
   DirectoryEntryDto,
+  DirectoryListingDto,
   FileContentDto,
   FileEntryDto,
   SessionSnapshotDto,
@@ -606,9 +607,17 @@ function optionalThinkingLevelMap(value: unknown): Record<string, string | null>
   return map;
 }
 
-export function parseDirectories(value: unknown): DirectoryEntryDto[] {
+export function parseDirectories(value: unknown): DirectoryListingDto {
   const source = record(value, "directories");
-  return arrayOf(source.entries, "directory entries", parseDirectoryEntry);
+  return {
+    path: requiredString(source, "path"),
+    entries: arrayOf(source.entries, "directory entries", parseDirectoryEntry),
+  };
+}
+
+export function parseDirectoryRoots(value: unknown): DirectoryEntryDto[] {
+  const source = record(value, "directory roots");
+  return arrayOf(source.roots, "directory roots", parseDirectoryEntry);
 }
 
 export function parseEntries(value: unknown): FileEntryDto[] {

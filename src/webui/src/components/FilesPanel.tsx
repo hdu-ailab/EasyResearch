@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { FileEntryDto, FileWatcherEvent } from "../../../web/contracts";
 import { listEntries, replaceFileWatchDirectories } from "../api";
 import { parentPath } from "../file-watcher";
+import { relativeFilesystemPath } from "../filesystem-path";
 import { useLazyTree } from "../hooks/useLazyTree";
 import { useI18n } from "../i18n/useI18n";
 
@@ -93,7 +94,8 @@ export function FilesPanel({
     const out: { entry: FileEntryDto; rel: string }[] = [];
     const walk = (path: string) => {
       for (const child of tree.children(path)) {
-        out.push({ entry: child, rel: path === root ? child.name : `${path.slice(root.length + 1)}/${child.name}` });
+        const parent = relativeFilesystemPath(root, path)?.replaceAll("\\", "/");
+        out.push({ entry: child, rel: parent ? `${parent}/${child.name}` : child.name });
         if (child.kind === "directory") walk(child.path);
       }
     };

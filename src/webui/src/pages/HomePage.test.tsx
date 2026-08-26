@@ -11,6 +11,7 @@ vi.mock("../api", async (importOriginal) => {
     listStatus: vi.fn(),
     checkForUpdate: vi.fn(),
     listDirectories: vi.fn(),
+    listDirectoryRoots: vi.fn(),
     createSession: vi.fn(),
     openSession: vi.fn(),
     restartSession: vi.fn(),
@@ -92,6 +93,9 @@ describe("HomePage", () => {
     vi.mocked(api.listStatus).mockReset();
     vi.mocked(api.checkForUpdate).mockReset().mockResolvedValue({ latestVersion: null });
     vi.mocked(api.listDirectories).mockReset();
+    vi.mocked(api.listDirectoryRoots)
+      .mockReset()
+      .mockResolvedValue([{ name: "/", path: "/" }]);
     vi.mocked(api.createSession).mockReset();
     vi.mocked(api.openSession).mockReset();
     vi.mocked(api.restartSession).mockReset();
@@ -104,7 +108,7 @@ describe("HomePage", () => {
       sessions: history,
       activeSessions: active,
     } as never);
-    vi.mocked(api.listDirectories).mockResolvedValue([{ name: "proj", path: "/proj" }]);
+    vi.mocked(api.listDirectories).mockResolvedValue({ path: "/", entries: [{ name: "proj", path: "/proj" }] });
     vi.mocked(api.createSession).mockResolvedValue({
       id: "new1",
       cwd: "/proj",

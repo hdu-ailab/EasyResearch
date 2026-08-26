@@ -1141,6 +1141,17 @@ describe("session reducer", () => {
     expect(plain.tools[0]!.skillName).toBeUndefined();
   });
 
+  it("derives a skill name from a Windows SKILL.md path", () => {
+    const active = reduceSessionEvent(emptyState, {
+      type: "tool_execution_start",
+      toolCallId: "t-win",
+      toolName: "read",
+      args: { path: String.raw`D:\project\.easyresearch\skills\arxiv\SKILL.md` },
+    } as never);
+
+    expect(active.tools[0]!.skillName).toBe("arxiv");
+  });
+
   it("restores a skill name from a snapshot read tool call", () => {
     const state = fromSnapshot({
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "done" } as never,

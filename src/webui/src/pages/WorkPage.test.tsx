@@ -305,6 +305,16 @@ describe("WorkPage", () => {
     expect(conversation.parentElement).not.toHaveClass("p-2");
   });
 
+  it("shows only the Windows project directory name in the mobile topbar", async () => {
+    vi.stubGlobal("innerWidth", 390);
+    const cwd = String.raw`D:\papers\fault-study`;
+    render(<WorkPage id="s1" cwd={cwd} onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+
+    expect(screen.getByTitle(cwd)).toHaveTextContent("fault-study");
+    expect(screen.getByTitle(cwd)).not.toHaveTextContent(cwd);
+  });
+
   it("opens the rename dialog with typed /name arguments and saves through the rename endpoint", async () => {
     stubEvents();
     const user = userEvent.setup();

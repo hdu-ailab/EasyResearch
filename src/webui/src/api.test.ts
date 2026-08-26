@@ -36,6 +36,7 @@ type CompactSession = (id: string, customInstructions?: string) => Promise<{ sta
 type GetApiUsageSettings = () => Promise<{ showApiUsageDetails: boolean }>;
 type PatchApiUsageSettings = (patch: { showApiUsageDetails: boolean }) => Promise<{ showApiUsageDetails: boolean }>;
 type GetApiUsageStatistics = (id: string) => Promise<{ rootSessionId: string; total: { totalTokens: number } }>;
+type ListDirectoryRoots = () => Promise<Array<{ name: string; path: string }>>;
 
 function rawByteReader(): RawByteReader {
   const reader = (apiModule as typeof apiModule & { readRawFileBytes?: RawByteReader }).readRawFileBytes;
@@ -202,11 +203,22 @@ describe("api transport", () => {
   });
 
   it("listDirectories GETs /api/directories with path", async () => {
-    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ entries: [] }), { status: 200 }));
-    await listDirectories("/home/user");
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ path: "/home/user", entries: [] }), { status: 200 }));
+    await expect(listDirectories("/home/user")).resolves.toEqual({ path: "/home/user", entries: [] });
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(init.method).toBe("GET");
     expect(url).toBe("/api/directories?path=%2Fhome%2Fuser");
+  });
+
+  it("lists server-reported filesystem roots", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ roots: [{ name: "D:\\", path: "D:\\" }] }), { status: 200 }),
+    );
+    const method = (apiModule as unknown as { listDirectoryRoots?: ListDirectoryRoots }).listDirectoryRoots;
+    const roots = method ? await method() : [];
+
+    expect(roots).toEqual([{ name: "D:\\", path: "D:\\" }]);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/directories/roots");
   });
 
   it("reads bounded raw file bytes through the same-origin API and forwards abort", async () => {

@@ -158,6 +158,36 @@ describe("useLazyTree", () => {
     expect(result.current.status("/p/c")).toBe("loaded");
   });
 
+  it("refresh invalidates a Windows subtree while retaining prefix siblings", async () => {
+    const root = String.raw`D:\project`;
+    const branch = String.raw`D:\project\a`;
+    const nested = String.raw`D:\project\a\b`;
+    const sibling = String.raw`D:\project\a-old`;
+    const loadChildren = vi.fn(async (path: string): Promise<Entry[]> => {
+      if (path === root)
+        return [
+          { path: branch, name: "a" },
+          { path: sibling, name: "a-old" },
+        ];
+      if (path === branch) return [{ path: nested, name: "b" }];
+      return [];
+    });
+    const { result } = renderHook(() => useLazyTree({ root, loadChildren }));
+    await settle();
+    act(() => {
+      result.current.toggle(branch);
+      result.current.toggle(nested);
+      result.current.toggle(sibling);
+    });
+    await settle();
+
+    act(() => result.current.refresh(branch));
+    await settle();
+
+    expect(result.current.status(nested)).toBe("unloaded");
+    expect(result.current.status(sibling)).toBe("loaded");
+  });
+
   it("refreshes one loaded directory without collapsing it or its siblings", async () => {
     let aChildren = [folder("/p/a/old")];
     const loadChildren = vi.fn(async (path: string): Promise<Entry[]> => {

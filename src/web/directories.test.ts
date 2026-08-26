@@ -1,6 +1,16 @@
-import { closeSync, mkdirSync, openSync, realpathSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  mkdirSync,
+  openSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DirectoryService, DirectoryServiceError, FILE_PREVIEW_LIMIT } from "./directories";
 
@@ -32,6 +42,25 @@ describe("DirectoryService", () => {
     expect(listing.entries.map((e) => e.name)).toEqual(["a-dir", "z-dir"]);
   });
 
+  it("enumerates every readable Windows drive root", () => {
+    type RootAwareService = DirectoryService & { listRoots(): Array<{ name: string; path: string }> };
+    const RootAwareDirectoryService = DirectoryService as unknown as new (
+      homeDir: string,
+      options: { platform: NodeJS.Platform; resolveRoot: (candidate: string) => string | null },
+    ) => RootAwareService;
+    const readable = new Set(["C:\\", "D:\\"]);
+    const service = new RootAwareDirectoryService(String.raw`C:\Users\researcher`, {
+      platform: "win32",
+      resolveRoot: (candidate) => (readable.has(candidate) ? candidate : null),
+    });
+    const roots = typeof service.listRoots === "function" ? service.listRoots() : [];
+
+    expect(roots).toEqual([
+      { name: "C:\\", path: "C:\\" },
+      { name: "D:\\", path: "D:\\" },
+    ]);
+  });
+
   it("returns canonical path from requireCwd", () => {
     const service = new DirectoryService(fakeHome);
     const project = join(fakeHome, "project");
@@ -50,6 +79,19 @@ describe("DirectoryService", () => {
     const missing = join(fakeHome, "nope");
     expect(() => service.requireCwd(missing)).toThrow(/does not exist/);
     expect(() => service.requireCwd(missing)).toThrow(DirectoryServiceError);
+  });
+
+  it("rejects a readable directory that cannot be searched", () => {
+    if (process.platform === "win32" || process.getuid?.() === 0) return;
+    const service = new DirectoryService(fakeHome);
+    const blocked = join(fakeHome, "no-search");
+    mkdirSync(blocked);
+    chmodSync(blocked, 0o400);
+    try {
+      expect(() => service.requireCwd(blocked)).toThrow(/not readable/i);
+    } finally {
+      chmodSync(blocked, 0o700);
+    }
   });
 
   it("rejects listing a missing path with a typed error", () => {
@@ -72,6 +114,17 @@ describe("DirectoryService", () => {
     const { path, entries } = service.listEntries();
     expect(path).toBe(realpathSync(fakeHome));
     expect(entries.every((e) => e.path.startsWith(path))).toBe(true);
+  });
+
+  it("preserves a requested directory alias in file entry paths", () => {
+    const service = new DirectoryService(fakeHome);
+    const alias = join(fakeHome, "project-alias");
+    symlinkSync(join(fakeHome, "project"), alias, process.platform === "win32" ? "junction" : "dir");
+
+    const listing = service.listEntries(alias);
+
+    expect(listing.path).toBe(resolve(alias));
+    expect(listing.entries.map((entry) => entry.path)).toContain(join(resolve(alias), "file.txt"));
   });
 
   it("reads a file's text content with its canonical path", () => {

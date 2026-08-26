@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { isSameOrDescendantPath } from "../filesystem-path";
 
 export type NodeLoadStatus = "unloaded" | "loading" | "loaded" | "error";
 
@@ -107,23 +108,22 @@ export function useLazyTree<T>({ root, loadChildren, enabled = true }: UseLazyTr
 
   const refresh = useCallback(
     (path: string) => {
-      const prefix = path === "/" ? "/" : `${path}/`;
       setStateMap((current) => {
         const next = new Map(current);
         for (const key of current.keys()) {
-          if (key === path || key.startsWith(prefix)) next.delete(key);
+          if (isSameOrDescendantPath(path, key)) next.delete(key);
         }
         return next;
       });
       setExpanded((current) => {
         const next = new Set(current);
         for (const key of current) {
-          if (key === path || key.startsWith(prefix)) next.delete(key);
+          if (isSameOrDescendantPath(path, key)) next.delete(key);
         }
         return next;
       });
       for (const key of [...inFlight.current.keys()]) {
-        if (key === path || key.startsWith(prefix)) inFlight.current.delete(key);
+        if (isSameOrDescendantPath(path, key)) inFlight.current.delete(key);
       }
       load(path);
     },

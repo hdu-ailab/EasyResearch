@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../api";
@@ -6,22 +6,34 @@ import { DirectoryDialog } from "./DirectoryDialog";
 
 vi.mock("../api", () => ({
   listDirectories: vi.fn(),
+  listDirectoryRoots: vi.fn(),
   createDirectory: vi.fn(),
 }));
 
 const HOME = "/home/user";
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 function mockListing(map: Record<string, string[]>) {
   vi.mocked(api.listDirectories).mockImplementation(async (p) => {
     const names = map[p];
     if (!names) throw new Error(`unexpected path ${p}`);
-    return names.map((name) => ({ name, path: `${p}/${name}` }));
+    return { path: p, entries: names.map((name) => ({ name, path: `${p}/${name}` })) };
   });
 }
 
 describe("DirectoryDialog", () => {
   beforeEach(() => {
     vi.mocked(api.listDirectories).mockReset();
+    vi.mocked(api.listDirectoryRoots)
+      .mockReset()
+      .mockResolvedValue([{ name: "/", path: "/" }]);
     vi.mocked(api.createDirectory).mockReset();
   });
 
@@ -34,9 +46,9 @@ describe("DirectoryDialog", () => {
 
   it("shows a chevron for untouched directories and a spinner only while loading", async () => {
     const user = userEvent.setup();
-    const pending = new Promise<{ name: string; path: string }[]>(() => {});
+    const pending = new Promise<{ path: string; entries: { name: string; path: string }[] }>(() => {});
     vi.mocked(api.listDirectories).mockImplementation(async (p) => {
-      if (p === HOME) return [{ name: "folder", path: `${HOME}/folder` }];
+      if (p === HOME) return { path: p, entries: [{ name: "folder", path: `${HOME}/folder` }] };
       return pending;
     });
     render(<DirectoryDialog homeDir={HOME} onSelect={() => {}} onClose={() => {}} />);
@@ -48,7 +60,7 @@ describe("DirectoryDialog", () => {
   });
 
   it("shows a loading message instead of empty content while the root is pending", async () => {
-    const pending = new Promise<{ name: string; path: string }[]>(() => {});
+    const pending = new Promise<{ path: string; entries: { name: string; path: string }[] }>(() => {});
     vi.mocked(api.listDirectories).mockImplementation(async () => pending);
     render(<DirectoryDialog homeDir={HOME} onSelect={() => {}} onClose={() => {}} />);
     expect(await screen.findByText("Loading…")).toBeTruthy();
@@ -58,7 +70,7 @@ describe("DirectoryDialog", () => {
   it("shows Retry on a failed directory and recovers", async () => {
     const user = userEvent.setup();
     vi.mocked(api.listDirectories).mockImplementation(async (p) => {
-      if (p === HOME) return [{ name: "folder", path: `${HOME}/folder` }];
+      if (p === HOME) return { path: p, entries: [{ name: "folder", path: `${HOME}/folder` }] };
       throw new Error("boom");
     });
     render(<DirectoryDialog homeDir={HOME} onSelect={() => {}} onClose={() => {}} />);
@@ -66,8 +78,8 @@ describe("DirectoryDialog", () => {
     await user.click(screen.getByRole("button", { name: "Expand folder" }));
     expect(await screen.findByRole("button", { name: "Retry folder" })).toBeTruthy();
     vi.mocked(api.listDirectories).mockImplementation(async (p) => {
-      if (p === HOME) return [{ name: "folder", path: `${HOME}/folder` }];
-      return [{ name: "nested", path: `${HOME}/folder/nested` }];
+      if (p === HOME) return { path: p, entries: [{ name: "folder", path: `${HOME}/folder` }] };
+      return { path: p, entries: [{ name: "nested", path: `${HOME}/folder/nested` }] };
     });
     await user.click(screen.getByRole("button", { name: "Retry folder" }));
     expect(await screen.findByText("nested")).toBeTruthy();
@@ -76,14 +88,17 @@ describe("DirectoryDialog", () => {
   it("activates a failed directory retry with the keyboard without selecting the row", async () => {
     const user = userEvent.setup();
     vi.mocked(api.listDirectories).mockImplementation(async (p) => {
-      if (p === HOME) return [{ name: "folder", path: `${HOME}/folder` }];
+      if (p === HOME) return { path: p, entries: [{ name: "folder", path: `${HOME}/folder` }] };
       throw new Error("boom");
     });
     render(<DirectoryDialog homeDir={HOME} onSelect={() => {}} onClose={() => {}} />);
     await user.click(await screen.findByText("folder"));
     await user.click(screen.getByRole("button", { name: "Expand folder" }));
     const retry = await screen.findByRole("button", { name: "Retry folder" });
-    vi.mocked(api.listDirectories).mockResolvedValue([{ name: "nested", path: `${HOME}/folder/nested` }]);
+    vi.mocked(api.listDirectories).mockResolvedValue({
+      path: `${HOME}/folder`,
+      entries: [{ name: "nested", path: `${HOME}/folder/nested` }],
+    });
 
     retry.focus();
     await user.keyboard("{Enter}");
@@ -160,6 +175,120 @@ describe("DirectoryDialog", () => {
     expect(onSelect).not.toHaveBeenCalled();
   });
 
+  it("selects the canonical directory returned by the server", async () => {
+    const submitted = "/aliases/paper";
+    const canonical = "/data/paper";
+    const onSelect = vi.fn();
+    vi.mocked(api.listDirectories).mockImplementation(async (path) => {
+      if (path === HOME) return { path, entries: [] };
+      if (path === submitted || path === canonical) return { path: canonical, entries: [] };
+      throw new Error(`unexpected path ${path}`);
+    });
+    render(<DirectoryDialog homeDir={HOME} onSelect={onSelect} onClose={() => {}} />);
+    const input = screen.getByRole("combobox");
+    fireEvent.change(input, { target: { value: submitted } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => expect(input).toHaveValue(canonical));
+    await userEvent.click(screen.getByRole("button", { name: /create session/i }));
+    expect(onSelect).toHaveBeenCalledWith(canonical);
+  });
+
+  it("ignores an older navigation response that settles last", async () => {
+    const first = deferred<{ path: string; entries: [] }>();
+    const second = deferred<{ path: string; entries: [] }>();
+    vi.mocked(api.listDirectories).mockImplementation(async (path) => {
+      if (path === HOME || path === "/") return { path, entries: [] };
+      if (path === "/first") return first.promise;
+      if (path === "/second") return second.promise;
+      throw new Error(`unexpected path ${path}`);
+    });
+    render(<DirectoryDialog homeDir={HOME} onSelect={() => {}} onClose={() => {}} />);
+    const input = screen.getByRole("combobox", { name: /directory path/i });
+
+    fireEvent.change(input, { target: { value: "/first" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.change(input, { target: { value: "/second" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await act(() => second.resolve({ path: "/second", entries: [] }));
+    await waitFor(() => expect(input).toHaveValue("/second"));
+    await act(() => first.resolve({ path: "/first", entries: [] }));
+
+    expect(input).toHaveValue("/second");
+  });
+
+  it("ignores stale path suggestions that settle after the current input", async () => {
+    const first = deferred<{ path: string; entries: Array<{ name: string; path: string }> }>();
+    const second = deferred<{ path: string; entries: Array<{ name: string; path: string }> }>();
+    let suggestionRequest = 0;
+    vi.mocked(api.listDirectories).mockImplementation(async (path) => {
+      if (path === HOME) return { path, entries: [] };
+      if (path === "/") return ++suggestionRequest === 1 ? first.promise : second.promise;
+      throw new Error(`unexpected path ${path}`);
+    });
+    render(<DirectoryDialog homeDir={HOME} onSelect={() => {}} onClose={() => {}} />);
+    const input = screen.getByRole("combobox", { name: /directory path/i });
+
+    fireEvent.change(input, { target: { value: "/a" } });
+    fireEvent.change(input, { target: { value: "/b" } });
+    await act(() => second.resolve({ path: "/", entries: [{ name: "beta", path: "/beta" }] }));
+    expect(await screen.findByRole("option", { name: /beta/i })).toBeVisible();
+    await act(() => first.resolve({ path: "/", entries: [{ name: "alpha", path: "/alpha" }] }));
+
+    expect(screen.queryByRole("option", { name: /alpha/i })).toBeNull();
+    expect(screen.getByRole("option", { name: /beta/i })).toBeVisible();
+  });
+
+  it("does not select an old suggestion while the current query is pending", async () => {
+    const current = deferred<{ path: string; entries: Array<{ name: string; path: string }> }>();
+    let suggestionRequest = 0;
+    vi.mocked(api.listDirectories).mockImplementation(async (path) => {
+      if (path === HOME) return { path, entries: [] };
+      if (path === "/") {
+        suggestionRequest += 1;
+        return suggestionRequest === 1 ? { path, entries: [{ name: "alpha", path: "/alpha" }] } : current.promise;
+      }
+      if (path === "/alpha" || path === "/beta") return { path, entries: [] };
+      throw new Error(`unexpected path ${path}`);
+    });
+    render(<DirectoryDialog homeDir={HOME} onSelect={() => {}} onClose={() => {}} />);
+    const input = screen.getByRole("combobox", { name: /directory path/i });
+    fireEvent.change(input, { target: { value: "/a" } });
+    expect(await screen.findByRole("option", { name: /alpha/i })).toBeVisible();
+
+    fireEvent.change(input, { target: { value: "/beta" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => expect(api.listDirectories).toHaveBeenCalledWith("/beta"));
+    expect(api.listDirectories).not.toHaveBeenCalledWith("/alpha");
+  });
+
+  it("does not reopen suggestions when a dismissed request settles", async () => {
+    const current = deferred<{ path: string; entries: Array<{ name: string; path: string }> }>();
+    let suggestionRequest = 0;
+    vi.mocked(api.listDirectories).mockImplementation(async (path) => {
+      if (path === HOME) return { path, entries: [] };
+      if (path === "/") {
+        suggestionRequest += 1;
+        return suggestionRequest === 1 ? { path, entries: [{ name: "alpha", path: "/alpha" }] } : current.promise;
+      }
+      throw new Error(`unexpected path ${path}`);
+    });
+    const onClose = vi.fn();
+    render(<DirectoryDialog homeDir={HOME} onSelect={() => {}} onClose={onClose} />);
+    const input = screen.getByRole("combobox", { name: /directory path/i });
+    fireEvent.change(input, { target: { value: "/a" } });
+    expect(await screen.findByRole("option", { name: /alpha/i })).toBeVisible();
+
+    fireEvent.change(input, { target: { value: "/b" } });
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(onClose).toHaveBeenCalledOnce();
+    await act(() => current.resolve({ path: "/", entries: [{ name: "beta", path: "/beta" }] }));
+
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
   it("suggests directories while typing and completes on Tab", async () => {
     mockListing({ [HOME]: ["papers", "patches"] });
     const user = userEvent.setup();
@@ -207,6 +336,94 @@ describe("DirectoryDialog", () => {
     await waitFor(() => expect(screen.getByText("papers")).toBeTruthy());
     await user.click(screen.getByRole("button", { name: "Home" }));
     expect(await screen.findByText("papers")).toBeTruthy();
+  });
+
+  it("switches to any server-reported Windows drive root", async () => {
+    const home = String.raw`C:\Users\researcher`;
+    const drive = "D:\\";
+    vi.mocked(api.listDirectoryRoots).mockResolvedValue([
+      { name: "C:\\", path: "C:\\" },
+      { name: drive, path: drive },
+    ]);
+    vi.mocked(api.listDirectories).mockImplementation(async (path) => {
+      if (path === home || path === drive) return { path, entries: [] };
+      throw new Error(`unexpected path ${path}`);
+    });
+    const user = userEvent.setup();
+    render(<DirectoryDialog homeDir={home} onSelect={() => {}} onClose={() => {}} />);
+
+    const roots = await screen.findByRole("combobox", { name: "Root" });
+    await user.selectOptions(roots, drive);
+
+    await waitFor(() => expect(api.listDirectories).toHaveBeenCalledWith(drive));
+    expect(screen.getByRole("combobox", { name: /directory path/i })).toHaveValue(drive);
+  });
+
+  it("treats a drive-absolute Windows input as independent from HOME", async () => {
+    const home = String.raw`C:\Users\researcher`;
+    const target = String.raw`D:\papers`;
+    vi.mocked(api.listDirectories).mockImplementation(async (path) => {
+      if (path === home || path === target) return { path, entries: [] };
+      throw new Error(`unexpected path ${path}`);
+    });
+    const user = userEvent.setup();
+    render(<DirectoryDialog homeDir={home} onSelect={() => {}} onClose={() => {}} />);
+    const input = screen.getByRole("combobox");
+    await user.clear(input);
+    await user.type(input, target);
+    await user.keyboard("{Enter}");
+
+    await waitFor(() => expect(api.listDirectories).toHaveBeenCalledWith(target));
+    expect(input).toHaveValue(target);
+  });
+
+  it("navigates directly to a typed UNC share", async () => {
+    const home = String.raw`C:\Users\researcher`;
+    const target = String.raw`\\server\share\paper`;
+    vi.mocked(api.listDirectories).mockImplementation(async (path) => {
+      if (path === home || path === target) return { path, entries: [] };
+      throw new Error(`unexpected path ${path}`);
+    });
+    const user = userEvent.setup();
+    render(<DirectoryDialog homeDir={home} onSelect={() => {}} onClose={() => {}} />);
+    const input = screen.getByRole("combobox");
+    await user.clear(input);
+    await user.type(input, target);
+    await user.keyboard("{Enter}");
+
+    await waitFor(() => expect(api.listDirectories).toHaveBeenCalledWith(target));
+  });
+
+  it("moves to the native parent of a Windows directory", async () => {
+    const home = String.raw`D:\papers\current`;
+    const parent = String.raw`D:\papers`;
+    vi.mocked(api.listDirectories).mockImplementation(async (path) => {
+      if (path === home || path === parent || path === "/") return { path, entries: [] };
+      throw new Error(`unexpected path ${path}`);
+    });
+    const user = userEvent.setup();
+    render(<DirectoryDialog homeDir={home} onSelect={() => {}} onClose={() => {}} />);
+    await user.click(screen.getByRole("button", { name: /parent/i }));
+
+    await waitFor(() => expect(api.listDirectories).toHaveBeenCalledWith(parent));
+  });
+
+  it("creates nested project paths with the current Windows separator", async () => {
+    const home = String.raw`D:\papers`;
+    const created = String.raw`D:\papers\new folder\review`;
+    vi.mocked(api.listDirectories).mockImplementation(async (path) => {
+      if (path === home || path === created) return { path, entries: [] };
+      throw new Error(`unexpected path ${path}`);
+    });
+    vi.mocked(api.createDirectory).mockResolvedValue({ path: created });
+    const user = userEvent.setup();
+    render(<DirectoryDialog homeDir={home} onSelect={() => {}} onClose={() => {}} />);
+    await user.click(screen.getByRole("button", { name: /new project/i }));
+    const createDialog = screen.getByRole("dialog", { name: "New project" });
+    await user.type(createDialog.querySelector("input")!, "new folder/review");
+    await user.click(within(createDialog).getByRole("button", { name: /create/i }));
+
+    expect(api.createDirectory).toHaveBeenCalledWith(created);
   });
 
   it("closes on Escape and Cancel", async () => {

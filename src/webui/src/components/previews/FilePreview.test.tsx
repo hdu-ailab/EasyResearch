@@ -73,6 +73,28 @@ describe("resolveLocalPreviewPath", () => {
     expect(resolveLocalPreviewPath("/p/paper.md", "/p/abs/b.png")).toBe("/p/abs/b.png");
   });
 
+  it("resolves local resources beside a Windows document", () => {
+    expect(resolveLocalPreviewPath(String.raw`D:\papers\docs\paper.md`, "../figures/a.png")).toBe(
+      String.raw`D:\papers\figures\a.png`,
+    );
+    expect(resolveLocalPreviewPath(String.raw`\\server\share\docs\paper.md`, "figure.png")).toBe(
+      String.raw`\\server\share\docs\figure.png`,
+    );
+  });
+
+  it("accepts a drive-absolute Windows resource before URL scheme detection", () => {
+    expect(resolveLocalPreviewPath(String.raw`C:\papers\paper.md`, String.raw`D:\figures\a.png`)).toBe(
+      String.raw`D:\figures\a.png`,
+    );
+  });
+
+  it("clamps excess parent segments at the filesystem root", () => {
+    expect(resolveLocalPreviewPath("/p/docs/paper.md", "../../../../figure.png")).toBe("/figure.png");
+    expect(resolveLocalPreviewPath(String.raw`D:\p\docs\paper.md`, "../../../figure.png")).toBe(
+      String.raw`D:\figure.png`,
+    );
+  });
+
   it("rejects external, fragment, and empty hrefs", () => {
     expect(resolveLocalPreviewPath("/p/docs/paper.md", "https://example.com/a.png")).toBeNull();
     expect(resolveLocalPreviewPath("/p/docs/paper.md", "//example.com/a.png")).toBeNull();

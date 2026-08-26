@@ -279,9 +279,9 @@ export function readSkillName(args: unknown): string | undefined {
       : typeof (args as { path?: unknown }).path === "string"
         ? (args as { path: string }).path
         : undefined;
-  if (typeof raw !== "string" || !raw.endsWith("/SKILL.md")) return undefined;
+  if (typeof raw !== "string" || !/[\\/]SKILL\.md$/u.test(raw)) return undefined;
   const dir = raw.slice(0, -"/SKILL.md".length);
-  const lastSlash = dir.lastIndexOf("/");
+  const lastSlash = Math.max(dir.lastIndexOf("/"), dir.lastIndexOf("\\"));
   return lastSlash === -1 ? undefined : dir.slice(lastSlash + 1) || undefined;
 }
 

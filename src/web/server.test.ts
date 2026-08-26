@@ -1,6 +1,6 @@
-import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, parse } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionTreeNode } from "@earendil-works/pi-coding-agent";
@@ -846,6 +846,45 @@ describe("web routes", () => {
     expect(factory.created[0]?.options.cwd).toBe(projectDir);
   });
 
+  it("returns readable filesystem roots through the directory API", async () => {
+    setup();
+    const res = await handler(new Request("http://localhost/api/directories/roots"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { roots: Array<{ name: string; path: string }> };
+    expect(body.roots.some((root) => root.path === parse(realpathSync(homeDir)).root)).toBe(true);
+  });
+
+  it("canonicalizes a selected cwd before constructing the session runtime", async () => {
+    setup();
+    const submitted = `${projectDir}/.`;
+    const res = await handler(
+      new Request("http://localhost/api/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cwd: submitted }),
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(factory.created.at(-1)?.options.cwd).toBe(realpathSync(projectDir));
+  });
+
+  it("rejects a file cwd before constructing a session runtime", async () => {
+    const file = join(projectDir, "paper.md");
+    writeFileSync(file, "# paper");
+    setup();
+    const res = await handler(
+      new Request("http://localhost/api/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cwd: file }),
+      }),
+    );
+
+    expect(res.status).toBe(400);
+    expect(factory.created).toHaveLength(0);
+  });
+
   it("returns a typed safe error and logs the cause when session construction fails", async () => {
     const cause = new Error("secret provider detail");
     const logger = fakeLogger();
@@ -893,6 +932,35 @@ describe("web routes", () => {
     expect(dto.id).toBe("sess-1");
     expect(factory.created[0]?.options.sessionPath).toBe(sessionPath);
     expect(factory.created[0]?.options.cwd).toBe(projectDir);
+  });
+
+  it("rejects a historical session whose recorded cwd is no longer a directory", async () => {
+    const cwd = join(projectDir, "paper.md");
+    const sessionPath = "/agent/sessions/--p--/file-cwd.jsonl";
+    writeFileSync(cwd, "# paper");
+    historySessions = [
+      {
+        id: "h-file-cwd",
+        path: sessionPath,
+        cwd,
+        created: "2026-08-01T00:00:00.000Z",
+        modified: "2026-08-01T00:00:00.000Z",
+        messageCount: 1,
+        firstMessage: "hello",
+      },
+    ];
+    setup();
+
+    const res = await handler(
+      new Request("http://localhost/api/sessions/open", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: sessionPath }),
+      }),
+    );
+
+    expect(res.status).toBe(400);
+    expect(factory.created).toHaveLength(0);
   });
 
   it("lists active sessions", async () => {

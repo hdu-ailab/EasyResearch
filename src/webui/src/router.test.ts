@@ -72,15 +72,17 @@ describe("resolveWorkSession", () => {
     expect(session).toEqual({ id: "fresh-1", cwd: "/p" });
   });
 
-  it("falls back to the URL identity when listing or opening fails", async () => {
+  it("falls back to the URL identity when session listing fails", async () => {
     const failing = deps();
     failing.listStatus.mockRejectedValue(new Error("server down"));
     expect(await resolveWorkSession("s-1", "/p", failing)).toEqual({ id: "s-1", cwd: "/p" });
+  });
 
+  it("propagates a persisted-session open failure", async () => {
     const opening = deps({
       status: { sessions: [{ id: "s-1", path: "/store/s-1.jsonl" }] },
     });
     opening.openSession.mockRejectedValue(new Error("unknown"));
-    expect(await resolveWorkSession("s-1", "/p", opening)).toEqual({ id: "s-1", cwd: "/p" });
+    await expect(resolveWorkSession("s-1", "/p", opening)).rejects.toThrow("unknown");
   });
 });

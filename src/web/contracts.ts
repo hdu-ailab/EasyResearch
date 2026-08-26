@@ -267,6 +267,11 @@ export interface DirectoryEntryDto {
   path: string;
 }
 
+export interface DirectoryListingDto {
+  path: string;
+  entries: DirectoryEntryDto[];
+}
+
 export interface FileEntryDto extends DirectoryEntryDto {
   kind: "file" | "directory";
 }

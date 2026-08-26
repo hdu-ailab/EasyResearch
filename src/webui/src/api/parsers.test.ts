@@ -232,9 +232,10 @@ describe("API response parsers", () => {
   });
 
   it("parses directory, file, and text-content responses", () => {
-    expect(parseDirectories({ entries: [{ name: "papers", path: "/p/papers" }] })).toEqual([
-      { name: "papers", path: "/p/papers" },
-    ]);
+    expect(parseDirectories({ path: "/p", entries: [{ name: "papers", path: "/p/papers" }] })).toEqual({
+      path: "/p",
+      entries: [{ name: "papers", path: "/p/papers" }],
+    });
     expect(parseEntries({ entries: [{ kind: "file", name: "notes.md", path: "/p/notes.md" }] })).toEqual([
       { kind: "file", name: "notes.md", path: "/p/notes.md" },
     ]);

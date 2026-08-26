@@ -123,6 +123,44 @@ describe("FileBrowser", () => {
     expect(readFileContent).toHaveBeenCalledWith("/p/notes.md");
   });
 
+  it("keeps an alias-backed tab active when the file API returns a canonical path", async () => {
+    const user = userEvent.setup();
+    vi.mocked(listEntries).mockResolvedValue([{ kind: "file", name: "notes.md", path: "/alias/notes.md" }]);
+    vi.mocked(readFileContent).mockResolvedValue({
+      path: "/real/notes.md",
+      content: "# Alias notes",
+      byteCount: 13,
+      truncated: false,
+      binary: false,
+    });
+    render(<FileBrowser root="/alias" />);
+
+    await user.click(await screen.findByText("notes.md"));
+
+    expect(await screen.findByRole("heading", { name: "Alias notes" })).toBeVisible();
+  });
+
+  it("uses the basename for a Windows file opened from a Markdown link", async () => {
+    const user = userEvent.setup();
+    const root = String.raw`D:\papers`;
+    const paper = String.raw`D:\papers\paper.md`;
+    const notes = String.raw`D:\papers\notes.md`;
+    vi.mocked(listEntries).mockResolvedValue([{ kind: "file", name: "paper.md", path: paper }]);
+    vi.mocked(readFileContent).mockImplementation(async (path) => ({
+      path,
+      content: path === paper ? "[notes](notes.md)" : "# Notes",
+      byteCount: 18,
+      truncated: false,
+      binary: false,
+    }));
+    render(<FileBrowser root={root} />);
+    await user.click(await screen.findByText("paper.md"));
+    await user.click(await screen.findByRole("link", { name: "notes" }));
+
+    expect(await screen.findByRole("tab", { name: "notes.md" })).toBeVisible();
+    expect(readFileContent).toHaveBeenCalledWith(notes);
+  });
+
   it("reloads an opened text preview after a file change event", async () => {
     const user = userEvent.setup();
     vi.mocked(readFileContent)

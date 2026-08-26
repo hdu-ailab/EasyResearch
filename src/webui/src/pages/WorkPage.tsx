@@ -29,6 +29,7 @@ import { SessionHistoryDialog } from "../components/SessionHistoryDialog";
 import { ProductMark, Topbar, TopbarIconButton } from "../components/Topbar";
 import { WorkMobileTabs, type WorkView } from "../components/WorkMobileTabs";
 import { parseFileWatcherEvent } from "../file-watcher";
+import { filesystemPathName } from "../filesystem-path";
 import { usePanelTransition } from "../hooks/usePanelTransition";
 import { useSessionConnection } from "../hooks/useSessionConnection";
 import { useI18n } from "../i18n/useI18n";
@@ -506,7 +507,7 @@ export function WorkPage({
       [RESEARCH_ASSISTANT_AGENT]: sessionView.error !== null ? "error" : sessionView.isStreaming ? "working" : "idle",
     },
   );
-  const projectName = cwd.split("/").filter(Boolean).at(-1) ?? cwd;
+  const projectName = filesystemPathName(cwd);
   const chatHidden = isMobile && mobileView !== "chat";
   const filesHidden = isMobile ? mobileView !== "files" : panel !== "files";
   const agentsHidden = isMobile ? mobileView !== "agents" : panel !== "agents";

@@ -1,6 +1,6 @@
 import { accessSync, closeSync, constants, mkdirSync, openSync, readFileSync, readdirSync, readSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, win32 } from "node:path";
 import type { DirectoryEntryDto, FileContentDto, FileEntryDto } from "./contracts";
 import { isBinaryBytes, mimeTypeFor, RawFileRangeError, type ByteRange, type RawFileDescriptor } from "./raw-file";
 
@@ -10,6 +10,11 @@ export const FILE_PREVIEW_LIMIT = 1024 * 1024;
 export interface DirectoryListing {
   path: string;
   entries: DirectoryEntryDto[];
+}
+
+export interface DirectoryServiceOptions {
+  platform?: NodeJS.Platform;
+  resolveRoot?: (candidate: string) => string | null;
 }
 
 /** Typed service error mapping to a 4xx HTTP status in routes. */
@@ -28,30 +33,30 @@ export class DirectoryServiceError extends Error {
  * path; a project root is never inferred from an ancestor.
  */
 export class DirectoryService {
-  constructor(public readonly homeDir: string = homedir()) {}
+  constructor(
+    public readonly homeDir: string = homedir(),
+    private readonly options: DirectoryServiceOptions = {},
+  ) {}
+
+  listRoots(): DirectoryEntryDto[] {
+    const platform = this.options.platform ?? process.platform;
+    const candidates = platform === "win32" ? this.windowsRootCandidates() : ["/"];
+    const roots: DirectoryEntryDto[] = [];
+    const seen = new Set<string>();
+    for (const candidate of candidates) {
+      const path = this.options.resolveRoot ? this.options.resolveRoot(candidate) : this.tryReadableDirectory(candidate);
+      if (!path) continue;
+      const key = platform === "win32" ? path.toLowerCase() : path;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      roots.push({ name: path, path });
+    }
+    return roots;
+  }
 
   list(path?: string): DirectoryListing {
     const target = path ?? this.homeDir;
-    let real: string;
-    try {
-      real = realpathSync(target);
-    } catch (error) {
-      throw new DirectoryServiceError(404, `does not exist: ${target}`);
-    }
-    let stat;
-    try {
-      stat = statSync(real);
-    } catch {
-      throw new DirectoryServiceError(404, `does not exist: ${target}`);
-    }
-    if (!stat.isDirectory()) {
-      throw new DirectoryServiceError(400, `not a directory: ${target}`);
-    }
-    try {
-      accessSync(real, constants.R_OK);
-    } catch {
-      throw new DirectoryServiceError(403, `Directory is not readable: ${target}`);
-    }
+    const real = this.resolveReadableDirectory(target);
     let dirents;
     try {
       dirents = readdirSync(real, { withFileTypes: true });
@@ -66,7 +71,7 @@ export class DirectoryService {
   }
 
   createDirectory(path: string): string {
-    const parent = path.replace(/\/+$/, "");
+    const parent = path.replace(/[\\/]+$/, "");
     if (!parent || parent.includes("\0")) throw new DirectoryServiceError(400, "invalid directory path");
     try {
       mkdirSync(parent, { recursive: true });
@@ -81,19 +86,20 @@ export class DirectoryService {
    * sorted by name. Powers the files panel tree.
    */
   listEntries(path?: string): { path: string; entries: FileEntryDto[] } {
-    const listing = this.list(path);
+    const requested = resolve(path ?? this.homeDir);
+    const listing = this.list(requested);
     const dirents = readdirSync(listing.path, { withFileTypes: true });
     const entries: FileEntryDto[] = dirents
       .map((d) => ({
         kind: d.isDirectory() ? ("directory" as const) : ("file" as const),
         name: d.name,
-        path: join(listing.path, d.name),
+        path: join(requested, d.name),
       }))
       .sort((a, b) => {
         if (a.kind !== b.kind) return a.kind === "directory" ? -1 : 1;
         return a.name.localeCompare(b.name);
       });
-    return { path: listing.path, entries };
+    return { path: requested, entries };
   }
 
   /**
@@ -245,19 +251,43 @@ export class DirectoryService {
   }
 
   requireCwd(path: string): string {
+    return this.resolveReadableDirectory(path);
+  }
+
+  private windowsRootCandidates(): string[] {
+    const roots = Array.from({ length: 26 }, (_, index) => `${String.fromCharCode(65 + index)}:\\`);
+    const homeRoot = win32.parse(this.homeDir).root;
+    if (homeRoot && !roots.some((candidate) => candidate.toLowerCase() === homeRoot.toLowerCase())) roots.push(homeRoot);
+    return roots;
+  }
+
+  private tryReadableDirectory(path: string): string | null {
+    try {
+      return this.resolveReadableDirectory(path);
+    } catch {
+      return null;
+    }
+  }
+
+  private resolveReadableDirectory(path: string): string {
+    let real: string;
+    try {
+      real = realpathSync(path);
+    } catch {
+      throw new DirectoryServiceError(404, `does not exist: ${path}`);
+    }
     let stat;
     try {
-      stat = statSync(path);
+      stat = statSync(real);
     } catch {
       throw new DirectoryServiceError(404, `does not exist: ${path}`);
     }
-    if (!stat.isDirectory()) {
-      throw new DirectoryServiceError(400, `not a directory: ${path}`);
-    }
+    if (!stat.isDirectory()) throw new DirectoryServiceError(400, `not a directory: ${path}`);
     try {
-      return realpathSync(path);
+      accessSync(real, constants.R_OK | constants.X_OK);
     } catch {
-      throw new DirectoryServiceError(404, `does not exist: ${path}`);
+      throw new DirectoryServiceError(403, `Directory is not readable: ${path}`);
     }
+    return real;
   }
 }

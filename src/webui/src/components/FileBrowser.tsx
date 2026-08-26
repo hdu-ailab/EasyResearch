@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { FileContentDto, FileEntryDto, FileWatcherEvent } from "../../../web/contracts";
 import { readFileContent } from "../api";
 import { parentPath } from "../file-watcher";
+import { filesystemPathName } from "../filesystem-path";
 import { useI18n } from "../i18n/useI18n";
 import { FilesPanel } from "./FilesPanel";
 import { type FileTab, FileTabs } from "./FileTabs";
@@ -14,10 +15,6 @@ export interface FileBrowserProps {
   sessionId?: string;
   fileWatchLeaseId?: string | null;
   fileEvent?: FileWatcherEvent | null;
-}
-
-function entryName(path: string): string {
-  return path.split("/").at(-1) ?? path;
 }
 
 /**
@@ -81,8 +78,8 @@ export function FileBrowser({
     let stale = false;
     readFileContent(activeTab)
       .then((file) => {
-        if (!stale && (contentRevision[file.path] ?? 0) === revision) {
-          setContents((current) => ({ ...current, [file.path]: file }));
+        if (!stale && (contentRevision[activeTab] ?? 0) === revision) {
+          setContents((current) => ({ ...current, [activeTab]: file }));
         }
       })
       .catch((e: unknown) => {
@@ -112,7 +109,7 @@ export function FileBrowser({
 
   const openPath = useCallback(
     (path: string) => {
-      openFile({ kind: "file", path, name: entryName(path) });
+      openFile({ kind: "file", path, name: filesystemPathName(path) });
     },
     [openFile],
   );

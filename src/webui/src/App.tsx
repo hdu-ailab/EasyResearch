@@ -24,16 +24,23 @@ export function App() {
   const configuration = useConfigurationEvents();
   const { route, navigate } = useHashRoute();
   const [workResolved, setWorkResolved] = useState<WorkSession | null>(null);
+  const [workError, setWorkError] = useState<string | null>(null);
   const [workRevision, setWorkRevision] = useState(0);
 
   useEffect(() => {
     if (route.page !== "work") return;
     let cancelled = false;
-    resolveWorkSession(route.session.id, route.session.cwd, { listStatus, openSession }).then((session) => {
-      if (cancelled) return;
-      setWorkResolved(session);
-      setWorkRevision((revision) => revision + 1);
-    });
+    setWorkResolved(null);
+    setWorkError(null);
+    resolveWorkSession(route.session.id, route.session.cwd, { listStatus, openSession })
+      .then((session) => {
+        if (cancelled) return;
+        setWorkResolved(session);
+        setWorkRevision((revision) => revision + 1);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setWorkError(error instanceof Error ? error.message : String(error));
+      });
     return () => {
       cancelled = true;
     };
@@ -62,6 +69,22 @@ export function App() {
           onBack={() => navigate({ page: "home" })}
           onOpenSettings={() => navigate({ page: "settings" })}
         />
+      );
+    }
+    if (workError) {
+      return (
+        <div className="flex h-full flex-col items-center justify-center gap-3 p-4 text-center">
+          <p role="alert" className="max-w-[640px] text-[13px] text-v2-status-error">
+            {workError}
+          </p>
+          <button
+            type="button"
+            className="h-8 rounded-md border border-v2-grey-200 px-3 text-[12px] text-v2-text-text-base hover:bg-v2-grey-100"
+            onClick={() => navigate({ page: "home" })}
+          >
+            {t("topbar.backToHome")}
+          </button>
+        </div>
       );
     }
     return (

@@ -15,6 +15,7 @@ import type {
   ConfigScope,
   ConfigurationEvent,
   DirectoryEntryDto,
+  DirectoryListingDto,
   FileContentDto,
   FileEntryDto,
   SessionSnapshotDto,
@@ -43,6 +44,7 @@ import {
   parseConfigProjects,
   parseConfigurationEvent,
   parseDirectories,
+  parseDirectoryRoots,
   parseEntries,
   parseFileContent,
   parseModels,
@@ -144,8 +146,12 @@ export function renameSession(id: string, name: string): Promise<void> {
   return requestVoid(routes.sessionName(id), json("PUT", { name }));
 }
 
-export function listDirectories(path: string): Promise<DirectoryEntryDto[]> {
+export function listDirectories(path: string): Promise<DirectoryListingDto> {
   return requestJson(routes.directories(path), parseDirectories);
+}
+
+export function listDirectoryRoots(): Promise<DirectoryEntryDto[]> {
+  return requestJson(routes.directoryRoots(), parseDirectoryRoots);
 }
 
 export function createDirectory(path: string): Promise<{ path: string }> {

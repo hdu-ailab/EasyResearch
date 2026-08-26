@@ -103,6 +103,25 @@ describe("FilesPanel", () => {
     expect(await screen.findByText("nested.txt")).toBeVisible();
   });
 
+  it("keeps a complete relative label when filtering a Windows drive root", async () => {
+    const user = userEvent.setup();
+    const root = "D:\\";
+    const folder = String.raw`D:\folder`;
+    const file = String.raw`D:\folder\paper.md`;
+    vi.mocked(api.listEntries).mockImplementation(async (path) =>
+      path === root
+        ? [{ kind: "directory", name: "folder", path: folder }]
+        : [{ kind: "file", name: "paper.md", path: file }],
+    );
+    render(<FilesPanel root={root} onOpenFile={() => {}} />);
+    await user.click(await screen.findByText("folder"));
+    await screen.findByText("paper.md");
+
+    await user.type(screen.getByRole("textbox", { name: /filter files/i }), "paper");
+
+    expect(screen.getByTitle(file).textContent).toBe("paper.mdfolder/paper.md");
+  });
+
   it("uses roving tree focus with arrow, Home, and hierarchy navigation", async () => {
     const user = userEvent.setup();
     vi.mocked(api.listEntries).mockImplementation(async (path) => {

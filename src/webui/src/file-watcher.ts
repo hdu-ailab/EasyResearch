@@ -1,4 +1,10 @@
 import type { FileWatcherEvent } from "../../web/contracts";
+import {
+  isSameOrDescendantPath,
+  joinFilesystemPath,
+  normalizeAbsoluteFilesystemPath,
+  parentFilesystemPath,
+} from "./filesystem-path";
 
 export type { FileWatcherEvent } from "../../web/contracts";
 
@@ -8,41 +14,15 @@ function record(value: unknown): RecordValue | null {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as RecordValue) : null;
 }
 
-function normalizeAbsolutePath(value: string): string | null {
-  if (!value.startsWith("/")) return null;
-  const parts: string[] = [];
-  for (const part of value.split("/")) {
-    if (!part || part === ".") continue;
-    if (part === "..") {
-      if (parts.length === 0) return null;
-      parts.pop();
-      continue;
-    }
-    parts.push(part);
-  }
-  return `/${parts.join("/")}`;
-}
-
-function normalizeRoot(root: string): string | null {
-  const normalized = normalizeAbsolutePath(root);
-  if (!normalized) return null;
-  return normalized === "/" ? normalized : normalized.replace(/\/+$/, "");
-}
-
-function isInRoot(root: string, file: string): boolean {
-  return root === "/" ? file.startsWith("/") : file === root || file.startsWith(`${root}/`);
-}
-
 function isGitPath(root: string, file: string): boolean {
-  const git = root === "/" ? "/.git" : `${root}/.git`;
-  return file === git || file.startsWith(`${git}/`);
+  return isSameOrDescendantPath(joinFilesystemPath(root, ".git"), file);
 }
 
 export function parseFileWatcherEvent(value: unknown, root: string): FileWatcherEvent | null {
   const source = record(value);
   const properties = record(source?.properties);
-  const normalizedRoot = normalizeRoot(root);
-  const file = typeof properties?.file === "string" ? normalizeAbsolutePath(properties.file) : null;
+  const normalizedRoot = normalizeAbsoluteFilesystemPath(root);
+  const file = typeof properties?.file === "string" ? normalizeAbsoluteFilesystemPath(properties.file) : null;
   const event = properties?.event;
   if (
     source?.type !== "file.watcher.updated" ||
@@ -50,7 +30,7 @@ export function parseFileWatcherEvent(value: unknown, root: string): FileWatcher
     !normalizedRoot ||
     !file ||
     (event !== "add" && event !== "change" && event !== "unlink") ||
-    !isInRoot(normalizedRoot, file) ||
+    !isSameOrDescendantPath(normalizedRoot, file) ||
     isGitPath(normalizedRoot, file)
   ) {
     return null;
@@ -62,6 +42,5 @@ export function parseFileWatcherEvent(value: unknown, root: string): FileWatcher
 }
 
 export function parentPath(path: string): string {
-  const separator = path.lastIndexOf("/");
-  return separator <= 0 ? "/" : path.slice(0, separator);
+  return parentFilesystemPath(path);
 }

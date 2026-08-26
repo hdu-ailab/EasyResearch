@@ -1,7 +1,8 @@
 import { ChevronRight, Folder, FolderOpen, FolderPlus, Home, RefreshCw, X } from "lucide-react";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { DirectoryEntryDto } from "../../../web/contracts";
-import { createDirectory, listDirectories } from "../api";
+import { createDirectory, listDirectories, listDirectoryRoots } from "../api";
+import { expandFilesystemPath, filesystemPathName, joinFilesystemPath, parentFilesystemPath } from "../filesystem-path";
 import { useLazyTree } from "../hooks/useLazyTree";
 import { useModalLayer } from "../hooks/useModalLayer";
 import { useI18n } from "../i18n/useI18n";
@@ -18,25 +19,6 @@ interface TreeRow {
   depth: number;
 }
 
-function parentOf(path: string): string {
-  const normalized = path.replace(/\/+$/, "");
-  const index = normalized.lastIndexOf("/");
-  return index <= 0 ? "/" : normalized.slice(0, index);
-}
-
-function nameOf(path: string): string {
-  const normalized = path.replace(/\/+$/, "");
-  const index = normalized.lastIndexOf("/");
-  return normalized.slice(index + 1) || normalized;
-}
-
-function expandHome(input: string, homeDir: string): string {
-  if (input === "~") return homeDir;
-  if (input.startsWith("~/")) return `${homeDir}/${input.slice(2)}`;
-  if (input.startsWith("/")) return input;
-  return input === "" ? homeDir : `${homeDir}/${input}`;
-}
-
 export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogProps) {
   const { t } = useI18n();
   const [input, setInput] = useState(homeDir);
@@ -47,17 +29,35 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   const [activeSuggestion, setActiveSuggestion] = useState(-1);
   const [treeError, setTreeError] = useState<string | null>(null);
+  const [roots, setRoots] = useState<DirectoryEntryDto[]>([]);
   const [createOpen, setCreateOpen] = useState(false);
   const [createName, setCreateName] = useState("");
   const [createError, setCreateError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLElement>(null);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
+  const navigationGeneration = useRef(0);
+  const suggestionGeneration = useRef(0);
   const suggestionsId = `directory-suggestions-${useId().replaceAll(":", "")}`;
-  const tree = useLazyTree<DirectoryEntryDto>({ root: viewPath, loadChildren: listDirectories });
+  const loadChildren = useCallback(async (path: string) => (await listDirectories(path)).entries, []);
+  const tree = useLazyTree<DirectoryEntryDto>({ root: viewPath, loadChildren });
 
   useEffect(() => {
     inputRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    listDirectoryRoots()
+      .then((next) => {
+        if (active) setRoots(next);
+      })
+      .catch((error: unknown) => {
+        if (active) setTreeError(error instanceof Error ? error.message : String(error));
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
   const zIndex = useModalLayer(onClose, dialogRef);
@@ -76,33 +76,45 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
 
   const navigate = useCallback(
     (path: string) => {
+      const generation = ++navigationGeneration.current;
+      suggestionGeneration.current += 1;
       const target = path === "~" ? homeDir : path;
       listDirectories(target)
-        .then(() => {
-          setViewPath(target);
-          setInput(target);
-          setSelected(target);
+        .then((listing) => {
+          if (navigationGeneration.current !== generation) return;
+          setViewPath(listing.path);
+          setInput(listing.path);
+          setSelected(listing.path);
           setTreeError(null);
         })
-        .catch((e: unknown) => setTreeError(e instanceof Error ? e.message : String(e)));
+        .catch((e: unknown) => {
+          if (navigationGeneration.current === generation) {
+            setTreeError(e instanceof Error ? e.message : String(e));
+          }
+        });
     },
     [homeDir],
   );
 
   const refreshSuggestions = useCallback(
     (raw: string) => {
-      const target = expandHome(raw.trim(), homeDir);
-      const parent = parentOf(target);
-      const prefix = nameOf(target).toLowerCase();
+      const generation = ++suggestionGeneration.current;
+      const target = expandFilesystemPath(raw.trim(), homeDir);
+      const parent = parentFilesystemPath(target);
+      const prefix = filesystemPathName(target).toLowerCase();
       listDirectories(parent)
-        .then((entries) => {
-          const filtered = prefix ? entries.filter((entry) => entry.name.toLowerCase().startsWith(prefix)) : entries;
+        .then((listing) => {
+          if (suggestionGeneration.current !== generation) return;
+          const filtered = prefix
+            ? listing.entries.filter((entry) => entry.name.toLowerCase().startsWith(prefix))
+            : listing.entries;
           const next = filtered.slice(0, 12);
           setSuggestions(next);
           setSuggestionsOpen(next.length > 0);
           setActiveSuggestion(next.length > 0 ? 0 : -1);
         })
         .catch(() => {
+          if (suggestionGeneration.current !== generation) return;
           setSuggestions([]);
           setSuggestionsOpen(false);
         });
@@ -132,11 +144,14 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
   const activeSuggestionPath = () => (activeSuggestion >= 0 ? suggestions[activeSuggestion] : suggestions[0]);
 
   const handleInputKey = (event: React.KeyboardEvent) => {
-    if (event.key === "Escape" && suggestionsOpen) {
-      event.preventDefault();
-      event.stopPropagation();
-      setSuggestionsOpen(false);
-      setActiveSuggestion(-1);
+    if (event.key === "Escape") {
+      suggestionGeneration.current += 1;
+      if (suggestionsOpen) {
+        event.preventDefault();
+        event.stopPropagation();
+        setSuggestionsOpen(false);
+        setActiveSuggestion(-1);
+      }
     } else if (event.key === "ArrowDown") {
       event.preventDefault();
       moveSuggestion(1);
@@ -160,7 +175,7 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
         chooseSuggestion(suggestion);
       } else if (input.trim()) {
         event.preventDefault();
-        navigate(expandHome(input.trim(), homeDir));
+        navigate(expandFilesystemPath(input.trim(), homeDir));
         setSuggestionsOpen(false);
         setActiveSuggestion(-1);
       }
@@ -209,7 +224,7 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
       event.preventDefault();
       if (tree.expanded.has(row.path)) toggleExpand(row.path);
       else {
-        const parent = rows.find((candidate) => candidate.path === parentOf(row.path));
+        const parent = rows.find((candidate) => candidate.path === parentFilesystemPath(row.path));
         if (parent) focusRow(parent.path);
       }
       return;
@@ -234,7 +249,7 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
       return;
     }
     try {
-      const created = await createDirectory(`${viewPath.replace(/\/$/, "")}/${relative}`);
+      const created = await createDirectory(joinFilesystemPath(viewPath, relative));
       setCreateOpen(false);
       setCreateName("");
       setCreateError(null);
@@ -288,13 +303,19 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
             spellCheck={false}
             onChange={(event) => {
               const value = event.target.value;
+              navigationGeneration.current += 1;
               setInput(value);
               setSelected(null);
+              setSuggestions([]);
+              setSuggestionsOpen(false);
               setActiveSuggestion(-1);
               refreshSuggestions(value);
             }}
             onKeyDown={handleInputKey}
-            onBlur={() => setTimeout(() => setSuggestionsOpen(false), 120)}
+            onBlur={() => {
+              suggestionGeneration.current += 1;
+              setTimeout(() => setSuggestionsOpen(false), 120);
+            }}
           />
           <div className="flex items-center gap-1">
             <button
@@ -318,21 +339,41 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
             >
               <FolderPlus size={14} />
             </button>
-            <button
-              type="button"
-              className="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100"
-              title={t("dialog.root")}
-              aria-label={t("dialog.root")}
-              onClick={() => navigate("/")}
-            >
-              /
-            </button>
+            {roots.length > 1 ? (
+              <select
+                value=""
+                className="h-7 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 font-mono text-[12px] text-v2-text-text-muted"
+                title={t("dialog.root")}
+                aria-label={t("dialog.root")}
+                onChange={(event) => navigate(event.target.value)}
+              >
+                <option value="" disabled>
+                  {t("dialog.root")}
+                </option>
+                {roots.map((root) => (
+                  <option key={root.path} value={root.path}>
+                    {root.name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <button
+                type="button"
+                className="flex h-7 items-center gap-1 rounded-md px-2 font-mono text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100 disabled:opacity-40"
+                title={t("dialog.root")}
+                aria-label={t("dialog.root")}
+                disabled={roots.length === 0}
+                onClick={() => roots[0] && navigate(roots[0].path)}
+              >
+                {roots[0]?.name ?? t("dialog.root")}
+              </button>
+            )}
             <button
               type="button"
               className="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100"
               title={t("dialog.parent")}
               aria-label={t("dialog.parent")}
-              onClick={() => navigate(parentOf(viewPath))}
+              onClick={() => navigate(parentFilesystemPath(viewPath))}
             >
               ↑
             </button>
