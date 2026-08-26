@@ -47,10 +47,10 @@
     "dev:web": "vite --config src/webui/vite.config.ts"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "0.84.1",
-    "@earendil-works/pi-ai": "0.84.1",
-    "@earendil-works/pi-coding-agent": "0.84.1",
-    "@earendil-works/pi-tui": "0.84.1",
+    "@earendil-works/pi-agent-core": "0.84.3",
+    "@earendil-works/pi-ai": "0.84.3",
+    "@earendil-works/pi-coding-agent": "0.84.3",
+    "@earendil-works/pi-tui": "0.84.3",
     "@tanstack/react-virtual": "3.14.9",
     "axios": "1.19.0",
     "cheerio": "1.1.2",

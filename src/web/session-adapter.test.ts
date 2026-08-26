@@ -786,17 +786,35 @@ describe("PiSessionFactory", () => {
     const factory = new PiSessionFactory(async () => created(session));
     const adapter = factory.create({ cwd: "/project" });
     const events: unknown[] = [];
+    const assistant = {
+      role: "assistant",
+      content: [{ type: "text", text: "all tokens so far" }],
+      api: "openai-completions",
+      provider: "openai",
+      model: "test-model",
+      usage: {
+        input: 2,
+        output: 3,
+        cacheRead: 4,
+        cacheWrite: 5,
+        totalTokens: 14,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.25 },
+      },
+      stopReason: "stop",
+      timestamp: 1,
+    } satisfies Extract<AgentMessage, { role: "assistant" }>;
     adapter.onEvent((event) => events.push(event));
     await adapter.start();
 
     session.listeners.forEach((listener) =>
       listener({
         type: "message_update",
+        message: assistant,
         assistantMessageEvent: {
           type: "text_delta",
           contentIndex: 0,
           delta: "token",
-          partial: { role: "assistant", content: [{ type: "text", text: "all tokens so far" }] },
+          partial: assistant,
         },
       }),
     );
@@ -804,6 +822,7 @@ describe("PiSessionFactory", () => {
     expect(events).toEqual([
       {
         type: "message_update",
+        usage: assistant.usage,
         assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "token" },
       },
     ]);

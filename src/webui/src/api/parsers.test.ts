@@ -1,3 +1,4 @@
+import type { JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import {
   parseActiveSession,
@@ -323,8 +324,16 @@ describe("API response parsers", () => {
     it("accepts optional terminal text and a delta-only child event", () => {
       const event = {
         type: "message_update",
+        usage: {
+          input: 3,
+          output: 5,
+          cacheRead: 7,
+          cacheWrite: 11,
+          totalTokens: 26,
+          cost: { input: 0.1, output: 0.2, cacheRead: 0.3, cacheWrite: 0.4, total: 1 },
+        },
         assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "next token" },
-      };
+      } satisfies JsonAgentSessionEvent;
       expect(parseSubagentSupervisorEvent({ ...liveEvent, latestMessage: "complete handoff", event })).toEqual({
         ...liveEvent,
         latestMessage: "complete handoff",

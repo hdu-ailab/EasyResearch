@@ -44,7 +44,7 @@ function agentRow(name: string, overrides: Partial<AgentConfig> = {}): AgentConf
 
 const stageAgent = agentRow("search", { systemPrompt: "Search carefully." });
 
-function assistant(text: string): AgentMessage {
+function assistant(text: string): Extract<AgentMessage, { role: "assistant" }> {
   return {
     role: "assistant",
     content: [{ type: "text", text }],
@@ -538,20 +538,23 @@ describe("createStageSessionLauncher", () => {
     const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
     const handle = await createStageSessionLauncher(dependencyHarness(session).dependencies)(stageOptions(coordinator));
     const events: JsonAgentSessionEvent[] = [];
+    const completeAssistant = assistant("all tokens");
     handle.subscribe((event) => events.push(event));
 
     session.emit({
       type: "message_update",
+      message: completeAssistant,
       assistantMessageEvent: {
         type: "text_delta",
         contentIndex: 0,
         delta: "new token",
-        partial: { role: "assistant", content: [{ type: "text", text: "all tokens" }] },
+        partial: completeAssistant,
       },
     });
 
     expect(events).toEqual([{
       type: "message_update",
+      usage: completeAssistant.usage,
       assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "new token" },
     }]);
     session.emitAssistantEndAndPersist();
@@ -564,13 +567,15 @@ describe("createStageSessionLauncher", () => {
   it("replays synchronous prompt-start events once to the first owner subscriber", async () => {
     const prompt = deferred<void>();
     const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
+    const completeAssistant = assistant("all early tokens");
     session.promptStart = () => session.emit({
       type: "message_update",
+      message: completeAssistant,
       assistantMessageEvent: {
         type: "text_delta",
         contentIndex: 0,
         delta: "early token",
-        partial: { role: "assistant", content: [{ type: "text", text: "all early tokens" }] },
+        partial: completeAssistant,
       },
     });
     const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
@@ -583,6 +588,7 @@ describe("createStageSessionLauncher", () => {
 
     expect(first).toEqual([{
       type: "message_update",
+      usage: completeAssistant.usage,
       assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "early token" },
     }]);
     expect(second).toEqual([]);
