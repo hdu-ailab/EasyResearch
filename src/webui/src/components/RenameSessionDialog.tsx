@@ -11,7 +11,7 @@ export interface RenameSessionDialogProps {
 export function RenameSessionDialog({ currentName, onSave, onClose }: RenameSessionDialogProps) {
   const { t } = useI18n();
   const dialogRef = useRef<HTMLFormElement>(null);
-  const zIndex = useModalLayer(onClose, dialogRef);
+  const { zIndex, dialogProps } = useModalLayer(onClose, dialogRef);
   const [name, setName] = useState(currentName);
 
   return (
@@ -19,7 +19,7 @@ export function RenameSessionDialog({ currentName, onSave, onClose }: RenameSess
       <form
         ref={dialogRef}
         role="dialog"
-        aria-modal="true"
+        {...dialogProps}
         aria-label={t("home.renameDialogTitle")}
         className="w-full max-w-[360px] rounded-[10px] bg-v2-background-bg-base p-4 shadow-[var(--v2-elevation-overlay)]"
         onSubmit={(event) => {

@@ -32,17 +32,20 @@ export function MarkdownEditorModal({
   };
   const dialogRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
-  const zIndex = useModalLayer(close, dialogRef);
+  const { zIndex, dialogProps } = useModalLayer(close, dialogRef);
   useEffect(() => editorRef.current?.focus(), []);
 
   return (
-    <div className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/30 p-3 sm:p-6" style={{ zIndex }}>
+    <div
+      className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/30 p-0 min-[820px]:p-6"
+      style={{ zIndex }}
+    >
       <div
         ref={dialogRef}
         role="dialog"
-        aria-modal="true"
+        {...dialogProps}
         aria-label={title}
-        className="flex max-h-[min(900px,calc(100vh-24px))] w-full max-w-[1000px] flex-col overflow-hidden rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-overlay)]"
+        className="flex h-full w-full flex-col overflow-hidden bg-v2-background-bg-base shadow-[var(--v2-elevation-overlay)] min-[820px]:h-auto min-[820px]:max-h-[min(900px,calc(100vh-24px))] min-[820px]:max-w-[1000px] min-[820px]:rounded-[10px]"
       >
         <header className="flex items-center gap-3 border-b border-v2-grey-200 px-4 py-3">
           <div className="min-w-0">
@@ -62,7 +65,7 @@ export function MarkdownEditorModal({
           <textarea
             ref={editorRef}
             aria-label={editorLabel ?? t("settings.editor.markdown")}
-            className="h-[min(68vh,680px)] min-h-[320px] w-full resize-none rounded-md border border-v2-grey-200 bg-v2-background-bg-deep p-3 font-mono text-[12px] leading-[1.6] text-v2-text-text-base outline-none focus:border-v2-blue-600"
+            className="h-full min-h-0 w-full resize-none rounded-md border border-v2-grey-200 bg-v2-background-bg-deep p-3 font-mono text-[12px] leading-[1.6] text-v2-text-text-base outline-none focus:border-v2-blue-600 min-[820px]:h-[min(68vh,680px)] min-[820px]:min-h-[320px]"
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             spellCheck={false}

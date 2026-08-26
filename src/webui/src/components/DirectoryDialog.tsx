@@ -60,7 +60,7 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
     };
   }, []);
 
-  const zIndex = useModalLayer(onClose, dialogRef);
+  const { zIndex, dialogProps } = useModalLayer(onClose, dialogRef);
 
   const rows = useMemo(() => {
     const out: TreeRow[] = [];
@@ -274,7 +274,7 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
         ref={dialogRef}
         className="flex h-full w-full flex-col overflow-hidden rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-overlay)] sm:h-auto sm:max-h-[84vh] sm:max-w-[640px]"
         role="dialog"
-        aria-modal="true"
+        {...dialogProps}
         aria-label={t("dialog.title")}
       >
         <header className="flex h-10 shrink-0 items-center justify-between border-b border-v2-grey-200 px-3">
@@ -550,13 +550,13 @@ function CreateFolderDialog({
 }) {
   const { t } = useI18n();
   const dialogRef = useRef<HTMLDivElement>(null);
-  const zIndex = useModalLayer(onCancel, dialogRef);
+  const { zIndex, dialogProps } = useModalLayer(onCancel, dialogRef);
   return (
     <div className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/20 p-4" style={{ zIndex }}>
       <div
         ref={dialogRef}
         role="dialog"
-        aria-modal="true"
+        {...dialogProps}
         aria-label={t("dialog.createProject")}
         className="w-full max-w-[360px] rounded-[10px] bg-v2-background-bg-base p-4 shadow-[var(--v2-elevation-overlay)]"
       >

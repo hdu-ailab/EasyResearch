@@ -1,6 +1,6 @@
 import { act, fireEvent, render as renderWithTestingLibrary, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactElement, ReactNode } from "react";
+import { createRef, type ReactElement, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileEntryDto, SubagentSessionSummaryDto, SubagentSupervisorEventDto } from "../../../web/contracts";
 import * as api from "../api";
@@ -556,11 +556,22 @@ describe("WorkPage", () => {
 
   it("opens settings from the topbar settings button", async () => {
     const onOpenSettings = vi.fn();
+    const settingsButtonRef = createRef<HTMLButtonElement>();
     const user = userEvent.setup();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={onOpenSettings} />);
+    render(
+      <WorkPage
+        id="s1"
+        cwd="/p"
+        onBack={() => {}}
+        onOpenSettings={onOpenSettings}
+        settingsButtonRef={settingsButtonRef}
+      />,
+    );
     await screen.findByText("starting research");
 
-    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const settingsButton = screen.getByRole("button", { name: "Settings" });
+    expect(settingsButtonRef.current).toBe(settingsButton);
+    await user.click(settingsButton);
     expect(onOpenSettings).toHaveBeenCalledOnce();
   });
 

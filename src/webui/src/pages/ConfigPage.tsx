@@ -8,7 +8,8 @@ import { useI18n } from "../i18n/useI18n";
 import type { ConfigProjectsDto } from "../types";
 
 export interface ConfigPageProps {
-  onBack: () => void;
+  onHome(): void;
+  onBackToSettings(): void;
 }
 
 type Root = { kind: "home" } | { kind: "project"; cwd: string };
@@ -24,7 +25,7 @@ function savedMessage(root: Root, path: string): "config.saved" | "config.savedL
   return "config.savedRestart";
 }
 
-export function ConfigPage({ onBack }: ConfigPageProps) {
+export function ConfigPage({ onHome, onBackToSettings }: ConfigPageProps) {
   const { t } = useI18n();
   const [data, setData] = useState<ConfigProjectsDto | null>(null);
   const [selectedRoot, setSelectedRoot] = useState<Root | null>(null);
@@ -120,8 +121,20 @@ export function ConfigPage({ onBack }: ConfigPageProps) {
   return (
     <div className="flex h-full flex-col">
       <Topbar
-        home={{ active: false, onClick: onBack }}
-        leading={<ProductMark />}
+        home={{ active: false, onClick: onHome }}
+        leading={
+          <>
+            <button
+              type="button"
+              className="flex h-[28px] shrink-0 items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100 hover:text-v2-text-text-base"
+              onClick={onBackToSettings}
+            >
+              <ChevronLeft size={14} aria-hidden />
+              {t("config.backToSettings")}
+            </button>
+            <ProductMark />
+          </>
+        }
         center={<span className="truncate text-[13px] text-v2-text-text-muted">{t("config.browser")}</span>}
       />
       <div className="min-h-0 flex-1 px-4 pb-4 pt-[4px]">
@@ -305,13 +318,13 @@ function ConfigCreateDialog({
 }) {
   const { t } = useI18n();
   const dialogRef = useRef<HTMLDivElement>(null);
-  const zIndex = useModalLayer(onCancel, dialogRef);
+  const { zIndex, dialogProps } = useModalLayer(onCancel, dialogRef);
   return (
     <div className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/30 p-4" style={{ zIndex }}>
       <div
         ref={dialogRef}
         role="dialog"
-        aria-modal="true"
+        {...dialogProps}
         aria-label={kind === "file" ? t("config.newFile") : t("config.newFolder")}
         className="w-full max-w-[380px] rounded-[10px] bg-v2-background-bg-base p-4 shadow-[var(--v2-elevation-overlay)]"
       >

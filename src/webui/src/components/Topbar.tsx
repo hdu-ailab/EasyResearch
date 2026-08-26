@@ -1,5 +1,5 @@
 import { House, Lightbulb } from "lucide-react";
-import type { ReactNode } from "react";
+import type { ReactNode, Ref } from "react";
 import { useI18n } from "../i18n/useI18n";
 
 export interface TopbarProps {
@@ -44,12 +44,14 @@ export function Topbar({ home, leading, center, actions }: TopbarProps) {
 
 export function TopbarIconButton({
   active = false,
+  buttonRef,
   label,
   title,
   onClick,
   children,
 }: {
   active?: boolean;
+  buttonRef?: Ref<HTMLButtonElement>;
   label: string;
   title: string;
   onClick: () => void;
@@ -57,6 +59,7 @@ export function TopbarIconButton({
 }) {
   return (
     <button
+      ref={buttonRef}
       type="button"
       aria-label={label}
       title={title}

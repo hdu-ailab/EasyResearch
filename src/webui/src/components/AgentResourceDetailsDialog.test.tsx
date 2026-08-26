@@ -6,6 +6,35 @@ import { PreferencesProvider } from "../preferences/PreferencesProvider";
 import { AgentResourceDetailsDialog } from "./AgentResourceDetailsDialog";
 
 describe("AgentResourceDetailsDialog", () => {
+  it("uses the full mobile viewport with a scrolling body and keeps its desktop bounds at 820px", () => {
+    render(
+      <PreferencesProvider>
+        <I18nProvider>
+          <AgentResourceDetailsDialog
+            agentName="Search"
+            tools={["read"]}
+            skills={["paper-search"]}
+            onClose={() => {}}
+          />
+        </I18nProvider>
+      </PreferencesProvider>,
+    );
+
+    const dialog = screen.getByRole("dialog", { name: "Search resources" });
+    expect(dialog.parentElement).toHaveClass("p-0", "min-[820px]:p-4");
+    expect(dialog).toHaveClass(
+      "flex",
+      "h-full",
+      "w-full",
+      "overflow-hidden",
+      "min-[820px]:h-auto",
+      "min-[820px]:max-w-[520px]",
+      "min-[820px]:rounded-[10px]",
+    );
+    expect(dialog).not.toHaveClass("max-w-[520px]", "rounded-[10px]");
+    expect(dialog.querySelector("header")?.nextElementSibling).toHaveClass("min-h-0", "flex-1", "overflow-y-auto");
+  });
+
   it("shows the concrete effective tools and skills and closes", async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();

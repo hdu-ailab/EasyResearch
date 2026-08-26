@@ -4,8 +4,9 @@
  * fallback. Pure parsing/serialization lives here; the React binding is
  * `src/webui/src/hooks/useHashRoute.ts`.
  *
- * Routes: `#/` home, `#/settings` settings, `#/config` JSON config,
- * `#/work/<sessionId>?cwd=<encoded>` work.
+ * Routes: `#/` home, `#/config` JSON config, and
+ * `#/work/<sessionId>?cwd=<encoded>` work. Settings is canonical query state
+ * over Home or Work; `#/settings` remains a legacy parser input only.
  */
 
 export interface WorkSession {
@@ -13,45 +14,118 @@ export interface WorkSession {
   cwd: string;
 }
 
-export type AppRoute =
-  | { page: "home" }
-  | { page: "settings" }
-  | { page: "config" }
-  | { page: "work"; session: WorkSession };
+export interface HomeRoute {
+  page: "home";
+  settingsOpen?: true;
+}
+
+export interface WorkRoute {
+  page: "work";
+  session: WorkSession;
+  settingsOpen?: true;
+}
+
+export type SettingsHostRoute =
+  | { page: "home"; settingsOpen: true }
+  | { page: "work"; session: WorkSession; settingsOpen: true };
+
+export interface ConfigRoute {
+  page: "config";
+  returnTo: SettingsHostRoute | null;
+}
+
+export type AppRoute = HomeRoute | WorkRoute | ConfigRoute;
 
 const HOME = "#/";
+
+export function withSettings(route: HomeRoute | WorkRoute): SettingsHostRoute {
+  return route.page === "home"
+    ? { page: "home", settingsOpen: true }
+    : { page: "work", session: route.session, settingsOpen: true };
+}
+
+export function withoutSettings(route: HomeRoute | WorkRoute): HomeRoute | WorkRoute {
+  return route.page === "home" ? { page: "home" } : { page: "work", session: route.session };
+}
+
+export function isSettingsHostRoute(route: AppRoute): route is SettingsHostRoute {
+  return route.page !== "config" && route.settingsOpen === true;
+}
+
+export function sameHostRoute(a: HomeRoute | WorkRoute, b: HomeRoute | WorkRoute): boolean {
+  if (a.page === "home" || b.page === "home") return a.page === b.page;
+  return a.session.id === b.session.id && a.session.cwd === b.session.cwd;
+}
 
 /** Parses a raw `location.hash` value; unknown or malformed hashes return null. */
 export function parseHashRoute(hash: string): AppRoute | null {
   const raw = hash.startsWith("#") ? hash.slice(1) : hash;
-  if (raw === "" || raw === "/") return { page: "home" };
-  if (raw === "/settings") return { page: "settings" };
-  if (raw === "/config") return { page: "config" };
-  if (!raw.startsWith("/work/")) return null;
-  const rest = raw.slice("/work/".length);
-  const queryIndex = rest.indexOf("?");
-  const idPart = queryIndex >= 0 ? rest.slice(0, queryIndex) : rest;
-  const query = queryIndex >= 0 ? rest.slice(queryIndex + 1) : "";
+  const queryIndex = raw.indexOf("?");
+  const path = queryIndex >= 0 ? raw.slice(0, queryIndex) : raw;
+  const query = queryIndex >= 0 ? raw.slice(queryIndex + 1) : "";
+
+  if (path === "" || path === "/") {
+    if (queryIndex < 0) return { page: "home" };
+    const entries = [...new URLSearchParams(query).entries()];
+    return entries.length === 1 && entries[0]?.[0] === "settings" && entries[0][1] === "1"
+      ? { page: "home", settingsOpen: true }
+      : null;
+  }
+
+  if (path === "/settings" && queryIndex < 0) return { page: "home", settingsOpen: true };
+
+  if (path === "/config") {
+    if (queryIndex < 0) return { page: "config", returnTo: null };
+    const entries = [...new URLSearchParams(query).entries()];
+    if (entries.length !== 1 || entries[0]?.[0] !== "returnTo") return { page: "config", returnTo: null };
+
+    const decodedReturnTo = entries[0][1];
+    const parsedReturnTo = parseHashRoute(decodedReturnTo);
+    return {
+      page: "config",
+      returnTo:
+        parsedReturnTo && isSettingsHostRoute(parsedReturnTo) && routeToHash(parsedReturnTo) === decodedReturnTo
+          ? parsedReturnTo
+          : null,
+    };
+  }
+
+  if (!path.startsWith("/work/") || queryIndex < 0) return null;
+  const idPart = path.slice("/work/".length);
   try {
     const id = decodeURIComponent(idPart);
-    const cwd = new URLSearchParams(query).get("cwd");
-    if (id && cwd) return { page: "work", session: { id, cwd } };
+    const params = new URLSearchParams(query);
+    const entries = [...params.entries()];
+    const cwdValues = params.getAll("cwd");
+    const settingsValues = params.getAll("settings");
+    if (
+      !id ||
+      cwdValues.length !== 1 ||
+      !cwdValues[0] ||
+      settingsValues.length > 1 ||
+      (settingsValues.length === 1 && settingsValues[0] !== "1") ||
+      entries.some(([key]) => key !== "cwd" && key !== "settings")
+    ) {
+      return null;
+    }
+
+    const route: WorkRoute = { page: "work", session: { id, cwd: cwdValues[0] } };
+    return settingsValues.length === 1 ? withSettings(route) : route;
   } catch {
     return null;
   }
-  return null;
 }
 
 export function routeToHash(route: AppRoute): string {
   switch (route.page) {
     case "home":
-      return HOME;
-    case "settings":
-      return "#/settings";
+      return route.settingsOpen ? "#/?settings=1" : HOME;
     case "config":
-      return "#/config";
+      return route.returnTo ? `#/config?returnTo=${encodeURIComponent(routeToHash(route.returnTo))}` : "#/config";
     case "work":
-      return `#/work/${encodeURIComponent(route.session.id)}?cwd=${encodeURIComponent(route.session.cwd)}`;
+      return `#/work/${encodeURIComponent(route.session.id)}?cwd=${encodeURIComponent(route.session.cwd)}${
+        route.settingsOpen ? "&settings=1" : ""
+      }`;
   }
 }
 

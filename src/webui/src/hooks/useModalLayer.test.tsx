@@ -1,12 +1,22 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { useRef, useState } from "react";
+import { createRef, type RefObject, useRef, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
-import { useModalLayer } from "./useModalLayer";
+import { hasModalAbove, requestModalCloseAbove, useModalLayer } from "./useModalLayer";
 
-function Layer({ onClose, label }: { onClose: () => void; label: string }) {
-  const zIndex = useModalLayer(onClose);
+function Layer({
+  onClose,
+  label,
+  rootRef,
+}: {
+  onClose: () => void;
+  label: string;
+  rootRef?: RefObject<HTMLDivElement | null>;
+}) {
+  const ownRef = useRef<HTMLDivElement>(null);
+  const dialogRef = rootRef ?? ownRef;
+  const { zIndex, isTop, dialogProps } = useModalLayer(onClose, dialogRef);
   return (
-    <div role="dialog" aria-label={label} style={{ zIndex }}>
+    <div ref={dialogRef} role="dialog" aria-label={label} data-is-top={isTop} {...dialogProps} style={{ zIndex }}>
       {label}
     </div>
   );
@@ -29,25 +39,52 @@ function Stack() {
   );
 }
 
-function FocusLayer({ onClose }: { onClose: () => void }) {
-  const rootRef = useRef<HTMLDivElement>(null);
-  const zIndex = useModalLayer(onClose, rootRef);
+function BlockedFocusCandidates({ position }: { position: "before" | "after" }) {
   return (
-    <div ref={rootRef} role="dialog" aria-label="focus-layer" style={{ zIndex }}>
+    <>
+      <div hidden>
+        <button type="button">hidden-{position}</button>
+      </div>
+      <div aria-hidden="true">
+        <button type="button">aria-hidden-{position}</button>
+      </div>
+      <div inert>
+        <button type="button">inert-{position}</button>
+      </div>
+      <button type="button" disabled tabIndex={0}>
+        disabled-{position}
+      </button>
+    </>
+  );
+}
+
+function FocusLayer({
+  onClose,
+  withBlockedCandidates = false,
+}: {
+  onClose: () => void;
+  withBlockedCandidates?: boolean;
+}) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const { zIndex, dialogProps } = useModalLayer(onClose, rootRef);
+  return (
+    <div ref={rootRef} role="dialog" aria-label="focus-layer" {...dialogProps} style={{ zIndex }}>
+      {withBlockedCandidates && <BlockedFocusCandidates position="before" />}
       <button type="button">first</button>
       <button type="button">last</button>
+      {withBlockedCandidates && <BlockedFocusCandidates position="after" />}
     </div>
   );
 }
 
-function FocusHarness() {
+function FocusHarness({ withBlockedCandidates = false }: { withBlockedCandidates?: boolean }) {
   const [open, setOpen] = useState(false);
   return (
     <>
       <button type="button" onClick={() => setOpen(true)}>
         opener
       </button>
-      {open ? <FocusLayer onClose={() => setOpen(false)} /> : null}
+      {open ? <FocusLayer onClose={() => setOpen(false)} withBlockedCandidates={withBlockedCandidates} /> : null}
     </>
   );
 }
@@ -61,10 +98,69 @@ describe("useModalLayer", () => {
         <Layer label="third" onClose={() => {}} />
       </>,
     );
-    const dialogs = screen.getAllByRole("dialog");
+    const dialogs = screen.getAllByRole("dialog", { hidden: true });
     const zs = dialogs.map((d) => Number((d as HTMLElement).style.zIndex));
     expect(zs[0]).toBeLessThan(zs[1]!);
     expect(zs[1]).toBeLessThan(zs[2]!);
+  });
+
+  it("exposes modal semantics only on the top layer and promotes the layer below", () => {
+    const { rerender } = render(
+      <>
+        <Layer label="lower" onClose={() => {}} />
+        <Layer label="upper" onClose={() => {}} />
+      </>,
+    );
+
+    const [lower, upper] = screen.getAllByRole("dialog", { hidden: true });
+    expect(lower).toHaveAttribute("aria-hidden", "true");
+    expect(lower).toHaveAttribute("inert");
+    expect(lower).not.toHaveAttribute("aria-modal");
+    expect(lower).toHaveAttribute("data-is-top", "false");
+    expect(upper).toHaveAttribute("aria-modal", "true");
+    expect(upper).not.toHaveAttribute("aria-hidden");
+    expect(upper).not.toHaveAttribute("inert");
+    expect(upper).toHaveAttribute("data-is-top", "true");
+
+    rerender(<Layer label="lower" onClose={() => {}} />);
+    const promoted = screen.getByRole("dialog");
+    expect(promoted).toHaveAttribute("aria-modal", "true");
+    expect(promoted).not.toHaveAttribute("aria-hidden");
+    expect(promoted).not.toHaveAttribute("inert");
+    expect(promoted).toHaveAttribute("data-is-top", "true");
+  });
+
+  it("detects and requests closure of only the modal above a registered root", () => {
+    const lowerRef = createRef<HTMLDivElement>();
+    const upperRef = createRef<HTMLDivElement>();
+    const onCloseLower = vi.fn();
+    const onCloseUpper = vi.fn();
+    render(
+      <>
+        <Layer label="lower" rootRef={lowerRef} onClose={onCloseLower} />
+        <Layer label="upper" rootRef={upperRef} onClose={onCloseUpper} />
+      </>,
+    );
+
+    expect(hasModalAbove(lowerRef.current)).toBe(true);
+    expect(requestModalCloseAbove(lowerRef.current)).toBe(true);
+    expect(onCloseUpper).toHaveBeenCalledOnce();
+    expect(onCloseLower).not.toHaveBeenCalled();
+    expect(hasModalAbove(upperRef.current)).toBe(false);
+    expect(requestModalCloseAbove(upperRef.current)).toBe(false);
+    expect(onCloseUpper).toHaveBeenCalledOnce();
+  });
+
+  it("does not query or close the stack for null and unregistered roots", () => {
+    const onClose = vi.fn();
+    render(<Layer label="top" onClose={onClose} />);
+    const unregistered = document.createElement("div");
+
+    expect(hasModalAbove(null)).toBe(false);
+    expect(requestModalCloseAbove(null)).toBe(false);
+    expect(hasModalAbove(unregistered)).toBe(false);
+    expect(requestModalCloseAbove(unregistered)).toBe(false);
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it("Escape closes only the top-most modal", () => {
@@ -98,17 +194,17 @@ describe("useModalLayer", () => {
     // open b then c on top of a
     fireEvent.click(screen.getByText("open-b"));
     fireEvent.click(screen.getByText("open-c"));
-    const dialogs = screen.getAllByRole("dialog");
+    const dialogs = screen.getAllByRole("dialog", { hidden: true });
     expect(dialogs).toHaveLength(3);
     const zs = dialogs.map((d) => Number((d as HTMLElement).style.zIndex));
     expect(zs[0]! < zs[1]! && zs[1]! < zs[2]!).toBe(true);
 
     fireEvent.keyDown(document, { key: "Escape" });
-    expect(screen.getAllByRole("dialog")).toHaveLength(2);
+    expect(screen.getAllByRole("dialog", { hidden: true })).toHaveLength(2);
     fireEvent.keyDown(document, { key: "Escape" });
-    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    expect(screen.getAllByRole("dialog", { hidden: true })).toHaveLength(1);
     fireEvent.keyDown(document, { key: "Escape" });
-    expect(screen.queryAllByRole("dialog")).toHaveLength(0);
+    expect(screen.queryAllByRole("dialog", { hidden: true })).toHaveLength(0);
   });
 
   it("removes the document listener when the last modal unmounts", () => {
@@ -116,6 +212,59 @@ describe("useModalLayer", () => {
     const removeSpy = vi.spyOn(document, "removeEventListener");
     unmount();
     expect(removeSpy).toHaveBeenCalledWith("keydown", expect.any(Function));
+  });
+
+  it("removes inert before initially focusing a newly registered top dialog", () => {
+    const nativeFocus = HTMLElement.prototype.focus;
+    const focusSpy = vi.spyOn(HTMLElement.prototype, "focus").mockImplementation(function (
+      this: HTMLElement,
+      options?: FocusOptions,
+    ) {
+      if (this.closest('[role="dialog"][inert]')) return;
+      nativeFocus.call(this, options);
+    });
+
+    try {
+      render(<FocusHarness />);
+      const opener = screen.getByRole("button", { name: "opener" });
+      opener.focus();
+      fireEvent.click(opener);
+
+      expect(screen.getByRole("button", { name: "first" })).toHaveFocus();
+    } finally {
+      focusSpy.mockRestore();
+    }
+  });
+
+  it("wraps Tab only between visible controls when retained descendants are interaction-hidden", () => {
+    render(<FocusHarness withBlockedCandidates />);
+    const opener = screen.getByRole("button", { name: "opener" });
+    opener.focus();
+    fireEvent.click(opener);
+    const first = screen.getByRole("button", { name: "first" });
+    const last = screen.getByRole("button", { name: "last" });
+
+    last.focus();
+    fireEvent.keyDown(document, { key: "Tab" });
+    expect(first).toHaveFocus();
+
+    first.focus();
+    fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
+    expect(last).toHaveFocus();
+  });
+
+  it("redirects programmatic focus escape to the first visible control", () => {
+    render(<FocusHarness withBlockedCandidates />);
+    const opener = screen.getByRole("button", { name: "opener" });
+    opener.focus();
+    fireEvent.click(opener);
+    const first = screen.getByRole("button", { name: "first" });
+    const last = screen.getByRole("button", { name: "last" });
+
+    last.focus();
+    opener.focus();
+
+    expect(first).toHaveFocus();
   });
 
   it("moves focus inside, traps Tab, and restores the opener when closing", () => {

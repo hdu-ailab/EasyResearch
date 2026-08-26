@@ -5,6 +5,18 @@ interface ModalEntry {
   onClose: () => void;
   root: () => HTMLElement | null;
   restoreFocus: HTMLElement | null;
+  isTop: boolean;
+  setIsTop: (isTop: boolean) => void;
+}
+
+export interface ModalLayerResult {
+  zIndex: number;
+  isTop: boolean;
+  dialogProps: {
+    "aria-modal": true | undefined;
+    "aria-hidden": true | undefined;
+    inert: true | undefined;
+  };
 }
 
 const openModals = new Set<ModalEntry>();
@@ -16,6 +28,50 @@ function topModal(): ModalEntry | null {
     if (!top || entry.z > top.z) top = entry;
   }
   return top;
+}
+
+function synchronizeTopState(): void {
+  const top = topModal();
+  for (const entry of openModals) {
+    const isTop = entry === top;
+    if (entry.isTop === isTop) continue;
+    entry.isTop = isTop;
+    const root = entry.root();
+    if (root) {
+      if (isTop) {
+        root.removeAttribute("aria-hidden");
+        root.removeAttribute("inert");
+        root.setAttribute("aria-modal", "true");
+      } else {
+        root.removeAttribute("aria-modal");
+        root.setAttribute("aria-hidden", "true");
+        root.setAttribute("inert", "");
+      }
+    }
+    entry.setIsTop(isTop);
+  }
+}
+
+function registeredModal(root: HTMLElement | null): ModalEntry | null {
+  if (!root) return null;
+  for (const entry of openModals) {
+    if (entry.root() === root) return entry;
+  }
+  return null;
+}
+
+export function hasModalAbove(root: HTMLElement | null): boolean {
+  const entry = registeredModal(root);
+  const top = topModal();
+  return entry !== null && top !== null && top.z > entry.z;
+}
+
+export function requestModalCloseAbove(root: HTMLElement | null): boolean {
+  const entry = registeredModal(root);
+  const top = topModal();
+  if (!entry || !top || top.z <= entry.z) return false;
+  top.onClose();
+  return true;
 }
 
 function onKeyDown(event: KeyboardEvent): void {
@@ -64,7 +120,11 @@ function focusableElements(root: HTMLElement): HTMLElement[] {
     root.querySelectorAll<HTMLElement>(
       'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
     ),
-  ).filter((element) => !element.hidden && element.getAttribute("aria-hidden") !== "true");
+  ).filter(
+    (element) =>
+      !element.matches(':disabled, input[type="hidden"]') &&
+      element.closest('[hidden], [aria-hidden="true"], [inert]') === null,
+  );
 }
 
 function focusFirst(root: HTMLElement): void {
@@ -88,13 +148,14 @@ function focusFirst(root: HTMLElement): void {
  *
  * When a dialog ref is supplied, the top layer also owns initial focus, focus
  * containment, Tab wrapping, and restoration to its still-connected opener.
- * Returns the z-index to apply to the modal's fixed overlay.
+ * Returns the overlay z-index and top-only dialog accessibility state.
  */
 export function useModalLayer<T extends HTMLElement = HTMLElement>(
   onClose: () => void,
   rootRef?: RefObject<T | null>,
-): number {
+): ModalLayerResult {
   const [z] = useState(() => ++nextZ);
+  const [isTop, setIsTop] = useState(false);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
@@ -105,8 +166,11 @@ export function useModalLayer<T extends HTMLElement = HTMLElement>(
       onClose: () => onCloseRef.current(),
       root: () => rootRef?.current ?? null,
       restoreFocus: active instanceof HTMLElement && active !== document.body ? active : null,
+      isTop: false,
+      setIsTop,
     };
     openModals.add(entry);
+    synchronizeTopState();
     if (openModals.size === 1) {
       document.addEventListener("keydown", onKeyDown);
       document.addEventListener("focusin", onFocusIn);
@@ -116,6 +180,7 @@ export function useModalLayer<T extends HTMLElement = HTMLElement>(
     return () => {
       const wasTop = topModal() === entry;
       openModals.delete(entry);
+      synchronizeTopState();
       if (openModals.size === 0) {
         document.removeEventListener("keydown", onKeyDown);
         document.removeEventListener("focusin", onFocusIn);
@@ -131,5 +196,11 @@ export function useModalLayer<T extends HTMLElement = HTMLElement>(
     };
   }, [rootRef, z]);
 
-  return z;
+  return {
+    zIndex: z,
+    isTop,
+    dialogProps: isTop
+      ? { "aria-modal": true, "aria-hidden": undefined, inert: undefined }
+      : { "aria-modal": undefined, "aria-hidden": true, inert: true },
+  };
 }

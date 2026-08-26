@@ -1,15 +1,15 @@
 import { Settings } from "lucide-react";
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listStatus, openSession } from "./api";
+import { SettingsModal } from "./components/settings/SettingsModal";
 import { TopbarIconButton } from "./components/Topbar";
 import { useConfigurationEvents } from "./hooks/useConfigurationEvents";
 import { useHashRoute } from "./hooks/useHashRoute";
 import { useI18n } from "./i18n/useI18n";
 import { ConfigPage } from "./pages/ConfigPage";
 import { HomePage } from "./pages/HomePage";
-import { SettingsPage } from "./pages/SettingsPage";
 import { WorkPage } from "./pages/WorkPage";
-import { resolveWorkSession, type WorkSession } from "./router";
+import { isSettingsHostRoute, resolveWorkSession, type WorkSession } from "./router";
 
 /**
  * Hash-routed page shell (ADR-076): the URL keeps the current page across
@@ -22,44 +22,79 @@ import { resolveWorkSession, type WorkSession } from "./router";
 export function App() {
   const { t } = useI18n();
   const configuration = useConfigurationEvents();
-  const { route, navigate } = useHashRoute();
-  const [workResolved, setWorkResolved] = useState<WorkSession | null>(null);
-  const [workError, setWorkError] = useState<string | null>(null);
+  const { route, navigate, openSettings, closeSettings, openConfig, returnToSettings, registerSettingsCloseGuard } =
+    useHashRoute();
+  const [workResolution, setWorkResolution] = useState<{
+    requested: WorkSession;
+    resolved: WorkSession | null;
+    error: string | null;
+  } | null>(null);
   const [workRevision, setWorkRevision] = useState(0);
+  const settingsTriggerRef = useRef<HTMLButtonElement>(null);
+  const settingsOpen = isSettingsHostRoute(route);
+  const configOpen = route.page === "config";
+  const hostRoute = configOpen ? route.returnTo : route;
+  const previousSettingsOpen = useRef(settingsOpen);
+  const routeWorkId = hostRoute?.page === "work" ? hostRoute.session.id : null;
+  const routeWorkCwd = hostRoute?.page === "work" ? hostRoute.session.cwd : null;
 
   useEffect(() => {
-    if (route.page !== "work") return;
+    if (routeWorkId === null || routeWorkCwd === null) return;
     let cancelled = false;
-    setWorkResolved(null);
-    setWorkError(null);
-    resolveWorkSession(route.session.id, route.session.cwd, { listStatus, openSession })
-      .then((session) => {
+    const requested = { id: routeWorkId, cwd: routeWorkCwd };
+    setWorkResolution({ requested, resolved: null, error: null });
+    resolveWorkSession(routeWorkId, routeWorkCwd, { listStatus, openSession })
+      .then((resolved) => {
         if (cancelled) return;
-        setWorkResolved(session);
+        setWorkResolution({ requested, resolved, error: null });
         setWorkRevision((revision) => revision + 1);
       })
       .catch((error: unknown) => {
-        if (!cancelled) setWorkError(error instanceof Error ? error.message : String(error));
+        if (cancelled) return;
+        setWorkResolution({
+          requested,
+          resolved: null,
+          error: error instanceof Error ? error.message : String(error),
+        });
       });
     return () => {
       cancelled = true;
     };
-  }, [route]);
+  }, [routeWorkCwd, routeWorkId]);
+
+  useLayoutEffect(() => {
+    if (previousSettingsOpen.current && !settingsOpen && !configOpen) {
+      settingsTriggerRef.current?.focus({ preventScroll: true });
+    }
+    previousSettingsOpen.current = settingsOpen;
+  }, [configOpen, settingsOpen]);
 
   const settingsButton = (
     <TopbarIconButton
+      buttonRef={settingsTriggerRef}
       label={t("home.settings")}
       title={t("home.settingsTitle")}
-      onClick={() => navigate({ page: "settings" })}
+      onClick={() => openSettings({ page: "home" })}
     >
       <Settings size={15} />
     </TopbarIconButton>
   );
 
-  if (route.page === "work") {
-    const session = workResolved !== null && workResolved.id === route.session.id ? workResolved : null;
-    if (session) {
-      return (
+  let baseSurface: ReactNode = null;
+  let workLoading = false;
+  let workError: string | null = null;
+  if (hostRoute?.page === "work") {
+    const resolution =
+      workResolution?.requested.id === hostRoute.session.id && workResolution.requested.cwd === hostRoute.session.cwd
+        ? workResolution
+        : null;
+    const session = resolution?.resolved ?? null;
+    if (resolution?.error) {
+      workError = resolution.error;
+    } else if (!session) {
+      workLoading = true;
+    } else {
+      baseSurface = (
         <WorkPage
           key={`${session.id}:${workRevision}`}
           id={session.id}
@@ -67,26 +102,39 @@ export function App() {
           configurationGeneration={configuration.generation}
           configurationError={configuration.error}
           onBack={() => navigate({ page: "home" })}
-          onOpenSettings={() => navigate({ page: "settings" })}
+          onOpenSettings={() => openSettings(hostRoute)}
+          settingsButtonRef={settingsTriggerRef}
         />
       );
     }
-    if (workError) {
-      return (
-        <div className="flex h-full flex-col items-center justify-center gap-3 p-4 text-center">
-          <p role="alert" className="max-w-[640px] text-[13px] text-v2-status-error">
-            {workError}
-          </p>
-          <button
-            type="button"
-            className="h-8 rounded-md border border-v2-grey-200 px-3 text-[12px] text-v2-text-text-base hover:bg-v2-grey-100"
-            onClick={() => navigate({ page: "home" })}
-          >
-            {t("topbar.backToHome")}
-          </button>
-        </div>
-      );
-    }
+  } else if (hostRoute?.page === "home") {
+    baseSurface = (
+      <HomePage
+        onOpenSession={(session) => navigate({ page: "work", session })}
+        onOpenSettings={() => openSettings(hostRoute)}
+        settingsButton={settingsButton}
+      />
+    );
+  }
+
+  if (workError && !configOpen) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-3 p-4 text-center">
+        <p role="alert" className="max-w-[640px] text-[13px] text-v2-status-error">
+          {workError}
+        </p>
+        <button
+          type="button"
+          className="h-8 rounded-md border border-v2-grey-200 px-3 text-[12px] text-v2-text-text-base hover:bg-v2-grey-100"
+          onClick={() => navigate({ page: "home" })}
+        >
+          {t("topbar.backToHome")}
+        </button>
+      </div>
+    );
+  }
+
+  if (workLoading && !configOpen) {
     return (
       <div className="flex h-full items-center justify-center">
         <p className="text-[12px] text-v2-text-text-muted">{t("work.loading")}</p>
@@ -94,26 +142,31 @@ export function App() {
     );
   }
 
-  if (route.page === "settings") {
-    return (
-      <SettingsPage
-        onBack={() => navigate({ page: "home" })}
-        onOpenConfigPage={() => navigate({ page: "config" })}
-        configurationGeneration={configuration.generation}
-        configurationError={configuration.error}
-      />
-    );
-  }
-
-  if (route.page === "config") {
-    return <ConfigPage onBack={() => navigate({ page: "settings" })} />;
-  }
-
   return (
-    <HomePage
-      onOpenSession={(session) => navigate({ page: "work", session })}
-      onOpenSettings={() => navigate({ page: "settings" })}
-      settingsButton={settingsButton}
-    />
+    <>
+      {baseSurface && (
+        <div
+          data-app-surface
+          className="h-full"
+          hidden={configOpen}
+          inert={settingsOpen || configOpen ? true : undefined}
+          aria-hidden={settingsOpen || configOpen ? "true" : undefined}
+        >
+          {baseSurface}
+        </div>
+      )}
+      {configOpen && (
+        <ConfigPage onHome={() => navigate({ page: "home" })} onBackToSettings={() => returnToSettings(route)} />
+      )}
+      {settingsOpen && (
+        <SettingsModal
+          configurationGeneration={configuration.generation}
+          configurationError={configuration.error}
+          onClose={() => closeSettings(route)}
+          onOpenConfig={() => openConfig(route)}
+          registerRouteCloseGuard={registerSettingsCloseGuard}
+        />
+      )}
+    </>
   );
 }

@@ -1,14 +1,14 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import * as api from "../api";
-import { I18nProvider } from "../i18n/I18nProvider";
-import { readPreferences, STORAGE_KEY } from "../preferences";
-import { PreferencesProvider } from "../preferences/PreferencesProvider";
-import { SettingsPage } from "./SettingsPage";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as api from "../../api";
+import { I18nProvider } from "../../i18n/I18nProvider";
+import { readPreferences, STORAGE_KEY } from "../../preferences";
+import { PreferencesProvider } from "../../preferences/PreferencesProvider";
+import { SettingsModal, type SettingsModalProps } from "./SettingsModal";
 
-vi.mock("../api", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../api")>();
+vi.mock("../../api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../api")>();
   return {
     ...actual,
     patchAgent: vi.fn(),
@@ -31,6 +31,7 @@ vi.mock("../api", async (importOriginal) => {
 });
 
 beforeEach(() => {
+  vi.stubGlobal("innerWidth", 1200);
   window.localStorage.clear();
   vi.mocked(api.patchAgent).mockReset();
   vi.mocked(api.getCompactionSettings).mockReset().mockResolvedValue({
@@ -177,18 +178,32 @@ beforeEach(() => {
   ] as never);
 });
 
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
+const defaultModalProps: SettingsModalProps = {
+  configurationGeneration: 1,
+  configurationError: null,
+  onClose: vi.fn(),
+  onOpenConfig: vi.fn(),
+  registerRouteCloseGuard: () => () => {},
+};
+
 function settingsElement(
-  onOpenConfigPage: () => void = () => {},
-  onHome: () => void = () => {},
+  onOpenConfig: () => void = () => {},
+  onClose: () => void = () => {},
   configurationGeneration = 1,
   configurationError: string | null = null,
 ) {
   return (
     <PreferencesProvider>
       <I18nProvider>
-        <SettingsPage
-          onBack={onHome}
-          onOpenConfigPage={onOpenConfigPage}
+        <SettingsModal
+          onClose={onClose}
+          onOpenConfig={onOpenConfig}
+          registerRouteCloseGuard={defaultModalProps.registerRouteCloseGuard}
           configurationGeneration={configurationGeneration}
           configurationError={configurationError}
         />
@@ -197,11 +212,17 @@ function settingsElement(
   );
 }
 
-function renderSettings(onOpenConfigPage: () => void = () => {}, onHome: () => void = () => {}) {
-  return render(settingsElement(onOpenConfigPage, onHome));
+function renderSettings(onOpenConfig: () => void = () => {}, onClose: () => void = () => {}) {
+  return render(settingsElement(onOpenConfig, onClose));
+}
+
+async function selectCategory(user: ReturnType<typeof userEvent.setup>, name: string) {
+  const tab = screen.getByRole("tab", { name });
+  if (tab.getAttribute("aria-selected") !== "true") await user.click(tab);
 }
 
 async function openAgentConfig(user: ReturnType<typeof userEvent.setup>, name: string) {
+  await selectCategory(user, "Agents");
   await user.click(await screen.findByRole("button", { name: `Configure ${name}` }));
   return screen.getByRole("dialog", { name: "Agents" });
 }
@@ -222,18 +243,209 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-describe("SettingsPage", () => {
-  it("navigates Home and starts settings content 4px below the topbar", async () => {
-    const onHome = vi.fn();
+describe("SettingsModal", () => {
+  it("uses an automatically activating vertical tablist on desktop", async () => {
     const user = userEvent.setup();
-    renderSettings(() => {}, onHome);
+    renderSettings();
+    const tabs = screen.getByRole("tablist", { name: "Settings" });
+    expect(tabs).toHaveAttribute("aria-orientation", "vertical");
+    const general = screen.getByRole("tab", { name: "General" });
+    const conversation = screen.getByRole("tab", { name: "Conversation" });
+    general.focus();
+    await user.keyboard("{ArrowDown}");
+    expect(conversation).toHaveFocus();
+    expect(conversation).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tabpanel", { name: "Conversation" })).toBeVisible();
+  });
 
-    await user.click(screen.getByRole("button", { name: /back to home/i }));
-    expect(onHome).toHaveBeenCalledOnce();
-    const appearance = screen.getByRole("region", { name: "Appearance" });
-    const pageContent = appearance.parentElement?.parentElement;
-    expect(pageContent).toHaveClass("px-4", "pb-4", "pt-[4px]");
-    expect(pageContent).not.toHaveClass("p-4");
+  it("opens a category index first on mobile and restores row focus on Back", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("innerWidth", 390);
+    renderSettings();
+    const agents = screen.getByRole("button", { name: "Agents" });
+    await user.click(agents);
+    expect(screen.getByRole("heading", { name: "Agents" })).toHaveFocus();
+    await user.click(screen.getByRole("button", { name: "Back to settings" }));
+    expect(agents).toHaveFocus();
+  });
+
+  it("opens Agent configuration as a full mobile viewport layer with desktop bounds at 820px", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("innerWidth", 390);
+    renderSettings();
+    await user.click(screen.getByRole("button", { name: "Agents" }));
+    await user.click(await screen.findByRole("button", { name: "Configure Search" }));
+
+    const dialog = screen.getByRole("dialog", { name: "Agents" });
+    expect(dialog.parentElement).toHaveClass("p-0", "min-[820px]:p-6");
+    expect(dialog).toHaveClass(
+      "h-full",
+      "w-full",
+      "min-[820px]:h-auto",
+      "min-[820px]:max-h-[min(720px,calc(100vh-24px))]",
+      "min-[820px]:max-w-[520px]",
+      "min-[820px]:rounded-[10px]",
+    );
+    expect(dialog).not.toHaveClass("max-h-[min(720px,calc(100vh-24px))]", "max-w-[520px]", "rounded-[10px]");
+  });
+
+  it("renders a named modal shell without a page Topbar and closes from its control", async () => {
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    renderSettings(() => {}, onClose);
+
+    expect(screen.getByRole("dialog", { name: "Settings" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: /back to home/i })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("dismisses only a direct desktop backdrop press", () => {
+    const onClose = vi.fn();
+    renderSettings(() => {}, onClose);
+    const dialog = screen.getByRole("dialog", { name: "Settings" });
+    const backdrop = dialog.parentElement;
+    expect(backdrop).not.toBeNull();
+
+    fireEvent.mouseDown(dialog);
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.mouseDown(backdrop!);
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("uses an inset-free full-screen shell without mobile backdrop dismissal", () => {
+    const onClose = vi.fn();
+    vi.stubGlobal("innerWidth", 390);
+    renderSettings(() => {}, onClose);
+    const dialog = screen.getByRole("dialog", { name: "Settings" });
+    const backdrop = dialog.parentElement;
+
+    expect(dialog).toHaveClass("h-full", "w-full");
+    expect(backdrop).toHaveClass("p-0");
+    fireEvent.mouseDown(backdrop!);
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("focuses the selected desktop category on first mount", () => {
+    renderSettings();
+    expect(screen.getByRole("tab", { name: "General" })).toHaveFocus();
+  });
+
+  it("returns to the mobile category index when crossing below 820px and restores the active desktop tab", async () => {
+    const user = userEvent.setup();
+    renderSettings();
+    await selectCategory(user, "Agents");
+
+    vi.stubGlobal("innerWidth", 819);
+    fireEvent(window, new Event("resize"));
+    expect(screen.getByRole("button", { name: "Agents" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Agents" })).toBeNull();
+
+    vi.stubGlobal("innerWidth", 820);
+    fireEvent(window, new Event("resize"));
+    expect(screen.getByRole("tab", { name: "Agents" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tabpanel", { name: "Agents" })).toBeVisible();
+  });
+
+  it("does not dismiss the outer layer while a nested dialog is above it", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    renderSettings(() => {}, onClose);
+    await selectCategory(user, "Model providers");
+    await user.click(screen.getByRole("button", { name: /^Connect providers/ }));
+    expect(screen.getByRole("dialog", { name: "Connect providers" })).toBeVisible();
+
+    const outer = document.querySelector<HTMLElement>('[role="dialog"][aria-labelledby="settings-dialog-title"]');
+    expect(outer).not.toBeNull();
+    fireEvent.mouseDown(outer!.parentElement!);
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("registers a route guard that closes only the nested top layer", async () => {
+    const user = userEvent.setup();
+    let guard: Parameters<SettingsModalProps["registerRouteCloseGuard"]>[0] | null = null;
+    const registerRouteCloseGuard: SettingsModalProps["registerRouteCloseGuard"] = (next) => {
+      guard = next;
+      return () => {
+        guard = null;
+      };
+    };
+    render(
+      <PreferencesProvider>
+        <I18nProvider>
+          <SettingsModal {...defaultModalProps} registerRouteCloseGuard={registerRouteCloseGuard} />
+        </I18nProvider>
+      </PreferencesProvider>,
+    );
+    await openAgentConfig(user, "Search");
+    expect(guard).not.toBeNull();
+    expect(guard!.shouldBlock()).toBe(true);
+
+    act(() => guard!.requestClose());
+
+    expect(screen.queryByRole("dialog", { name: "Agents" })).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Settings" })).toBeVisible();
+    expect(guard!.shouldBlock()).toBe(false);
+  });
+
+  it("routes close-above through the dirty Markdown discard guard", async () => {
+    const user = userEvent.setup();
+    const confirmDiscard = vi.spyOn(window, "confirm").mockReturnValue(false);
+    let guard: Parameters<SettingsModalProps["registerRouteCloseGuard"]>[0] | null = null;
+    const registerRouteCloseGuard: SettingsModalProps["registerRouteCloseGuard"] = (next) => {
+      guard = next;
+      return () => {
+        guard = null;
+      };
+    };
+    render(
+      <PreferencesProvider>
+        <I18nProvider>
+          <SettingsModal {...defaultModalProps} registerRouteCloseGuard={registerRouteCloseGuard} />
+        </I18nProvider>
+      </PreferencesProvider>,
+    );
+    const config = await openAgentConfig(user, "Search");
+    await user.click(within(config).getByRole("button", { name: "Edit Search" }));
+    const editor = await screen.findByRole("textbox", { name: /agent markdown/i });
+    fireEvent.change(editor, { target: { value: "---\nname: search\n---\nChanged prompt\n" } });
+
+    act(() => guard!.requestClose());
+
+    expect(confirmDiscard).toHaveBeenCalledOnce();
+    expect(editor).toBeVisible();
+    expect(guard!.shouldBlock()).toBe(true);
+
+    confirmDiscard.mockReturnValue(true);
+    act(() => guard!.requestClose());
+
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: /agent markdown/i })).toBeNull());
+    expect(screen.getByRole("dialog", { name: "Agents" })).toBeVisible();
+    expect(document.querySelector('[role="dialog"][aria-labelledby="settings-dialog-title"]')).toBeInTheDocument();
+    expect(guard!.shouldBlock()).toBe(true);
+  });
+
+  it("opens provider management from its category with the connected count", async () => {
+    const user = userEvent.setup();
+    renderSettings();
+    await selectCategory(user, "Model providers");
+
+    const providerAction = (await screen.findByText("1 providers connected")).closest("button");
+    expect(providerAction).not.toBeNull();
+    expect(providerAction).toHaveAccessibleName("Connect providers 1 providers connected");
+    await user.click(providerAction!);
+    expect(screen.getByRole("dialog", { name: "Connect providers" })).toBeVisible();
+  });
+
+  it("renders localized category and route-control copy", async () => {
+    const user = userEvent.setup();
+    renderSettings();
+    await user.click(screen.getByRole("button", { name: "简体中文" }));
+
+    expect(screen.getByRole("tab", { name: "常规" })).toBeVisible();
+    expect(screen.getByRole("tab", { name: "模型提供商" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "打开配置浏览器…" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "关闭" })).toBeVisible();
   });
 
   it("renders default font sizes with steppers and a preview", async () => {
@@ -268,6 +480,7 @@ describe("SettingsPage", () => {
   it("persists each conversation expansion preference independently", async () => {
     const user = userEvent.setup();
     renderSettings();
+    await selectCategory(user, "Conversation");
 
     const thinking = screen.getByRole("switch", { name: /auto-expand thinking/i });
     const tools = screen.getByRole("switch", { name: /auto-expand tool output/i });
@@ -299,16 +512,89 @@ describe("SettingsPage", () => {
   });
 
   it("shows the global automatic compaction threshold with conversation preferences", async () => {
+    const user = userEvent.setup();
     renderSettings();
+    await selectCategory(user, "Conversation");
 
     const input = await screen.findByRole("spinbutton", { name: /automatic compaction/i });
     expect(input).toHaveValue(70);
     expect(api.getCompactionSettings).toHaveBeenCalledOnce();
   });
 
+  it("retains an in-flight compaction failure and its Retry target across category switches", async () => {
+    const user = userEvent.setup();
+    const failedSave = deferred<Awaited<ReturnType<typeof api.patchCompactionSettings>>>();
+    vi.mocked(api.patchCompactionSettings)
+      .mockReturnValueOnce(failedSave.promise)
+      .mockResolvedValueOnce({ triggerPercent: 80, globalEnabled: true });
+    renderSettings();
+    await selectCategory(user, "Conversation");
+    const input = await screen.findByRole("spinbutton", { name: /automatic compaction/i });
+
+    await user.clear(input);
+    await user.type(input, "80");
+    await user.tab();
+    await waitFor(() => expect(api.patchCompactionSettings).toHaveBeenCalledOnce());
+    await selectCategory(user, "General");
+    await act(async () => {
+      failedSave.reject(new Error("offline"));
+      await failedSave.promise.catch(() => {});
+    });
+    await selectCategory(user, "Conversation");
+
+    expect(screen.getByRole("spinbutton", { name: /automatic compaction/i })).toBe(input);
+    expect(input).toHaveValue(70);
+    expect(screen.getByRole("button", { name: "Retry" })).toBeVisible();
+    expect(api.getCompactionSettings).toHaveBeenCalledOnce();
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(api.patchCompactionSettings).toHaveBeenCalledTimes(2));
+    expect(api.patchCompactionSettings).toHaveBeenLastCalledWith({ triggerPercent: 80 });
+    expect(input).toHaveValue(80);
+  });
+
+  it("retains the accepted API usage value and failed Retry target across category switches", async () => {
+    const user = userEvent.setup();
+    const failedSave = deferred<Awaited<ReturnType<typeof api.patchApiUsageSettings>>>();
+    vi.mocked(api.patchApiUsageSettings)
+      .mockResolvedValueOnce({ showApiUsageDetails: true })
+      .mockReturnValueOnce(failedSave.promise)
+      .mockResolvedValueOnce({ showApiUsageDetails: false });
+    renderSettings();
+    await selectCategory(user, "Conversation");
+    const toggle = await screen.findByRole("switch", { name: /show api usage details/i });
+
+    await user.click(toggle);
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
+    await selectCategory(user, "General");
+    await selectCategory(user, "Conversation");
+    expect(screen.getByRole("switch", { name: /show api usage details/i })).toBe(toggle);
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+
+    await user.click(toggle);
+    await waitFor(() => expect(api.patchApiUsageSettings).toHaveBeenCalledTimes(2));
+    await selectCategory(user, "Agents");
+    await act(async () => {
+      failedSave.reject(new Error("offline"));
+      await failedSave.promise.catch(() => {});
+    });
+    await selectCategory(user, "Conversation");
+
+    expect(screen.getByRole("switch", { name: /show api usage details/i })).toBe(toggle);
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("button", { name: "Retry" })).toBeVisible();
+    expect(api.getApiUsageSettings).toHaveBeenCalledOnce();
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(api.patchApiUsageSettings).toHaveBeenCalledTimes(3));
+    expect(api.patchApiUsageSettings).toHaveBeenLastCalledWith({ showApiUsageDetails: false });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+  });
+
   it("contains all switch thumbs with fixed pixel geometry in both states", async () => {
     const user = userEvent.setup();
     renderSettings();
+    await selectCategory(user, "Conversation");
     const switches = [
       screen.getByRole("switch", { name: /auto-expand thinking/i }),
       screen.getByRole("switch", { name: /auto-expand tool output/i }),
@@ -327,7 +613,7 @@ describe("SettingsPage", () => {
 
   it("follows font preference changes from another tab", async () => {
     renderSettings();
-    await screen.findByRole("button", { name: "Configure Search" });
+    await waitFor(() => expect(api.listAgents).toHaveBeenCalled());
     window.localStorage.setItem(
       STORAGE_KEY,
       JSON.stringify({
@@ -424,6 +710,7 @@ describe("SettingsPage", () => {
     const user = userEvent.setup();
     renderSettings();
     await user.click(screen.getByRole("button", { name: "简体中文" }));
+    await user.click(screen.getByRole("tab", { name: "智能体" }));
 
     await user.click(await screen.findByRole("button", { name: "配置 研究助手" }));
     expect(screen.getByRole("combobox", { name: "选择模型： 研究助手" })).toBeTruthy();
@@ -433,12 +720,14 @@ describe("SettingsPage", () => {
   });
 
   it("pins the Research Assistant card to the first position regardless of API order", async () => {
+    const user = userEvent.setup();
     vi.mocked(api.listAgents).mockResolvedValue([
       { name: "writing", description: "Writes" },
       { name: "research-assistant", description: "Coordinates" },
       { name: "search", description: "Searches" },
     ] as never);
     renderSettings();
+    await selectCategory(user, "Agents");
     await screen.findByRole("button", { name: "Configure Research Assistant" });
     const assistantCard = screen.getByRole("button", { name: "Configure Research Assistant" });
     const searchCard = screen.getByRole("button", { name: "Configure Search" });
@@ -600,6 +889,7 @@ describe("SettingsPage", () => {
   });
 
   it("refreshes the Settings roster on a newer configuration generation", async () => {
+    const user = userEvent.setup();
     const reviewer = {
       name: "reviewer",
       description: "Reviews evidence",
@@ -612,6 +902,7 @@ describe("SettingsPage", () => {
       missingSkills: [],
     };
     const view = renderSettings();
+    await selectCategory(user, "Agents");
     expect(await screen.findByRole("button", { name: "Configure Search" })).toBeVisible();
     vi.mocked(api.listAgentResources).mockResolvedValueOnce([reviewer]);
     vi.mocked(api.listAgents).mockResolvedValueOnce([reviewer]);
@@ -623,7 +914,9 @@ describe("SettingsPage", () => {
   });
 
   it("refreshes the connected provider count on a newer configuration generation", async () => {
+    const user = userEvent.setup();
     const view = renderSettings();
+    await selectCategory(user, "Model providers");
     expect(await screen.findByText("1 providers connected")).toBeVisible();
     vi.mocked(api.listAuthProviders).mockResolvedValueOnce([
       {
@@ -649,8 +942,23 @@ describe("SettingsPage", () => {
     expect(await screen.findByText("2 providers connected")).toBeVisible();
   });
 
+  it("clears the prior Agents error after a successful Refresh", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listModels).mockRejectedValueOnce(new Error("agent refresh failed"));
+    renderSettings();
+    await selectCategory(user, "Agents");
+    expect(await screen.findByRole("alert")).toHaveTextContent("agent refresh failed");
+
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+
+    expect(await screen.findByRole("button", { name: "Configure Search" })).toBeVisible();
+    await waitFor(() => expect(screen.queryByText("agent refresh failed")).toBeNull());
+  });
+
   it("retains last-good Settings controls while configuration is malformed", async () => {
+    const user = userEvent.setup();
     const view = renderSettings();
+    await selectCategory(user, "Agents");
     expect(await screen.findByRole("button", { name: "Configure Search" })).toBeVisible();
 
     view.rerender(settingsElement(undefined, undefined, 1, "Invalid Agent configuration"));
@@ -668,6 +976,7 @@ describe("SettingsPage", () => {
   });
 
   it("shows pinned agents with effective tool and skill counts and details", async () => {
+    const user = userEvent.setup();
     vi.mocked(api.listAgents).mockResolvedValue([
       {
         name: "reviewer",
@@ -701,6 +1010,7 @@ describe("SettingsPage", () => {
       },
     ] as never);
     renderSettings();
+    await selectCategory(user, "Agents");
     expect(await screen.findByText("2 tools, 2 skills")).toBeTruthy();
     expect(screen.getByText("2 tools, 2 skills")).toBeTruthy();
     expect(screen.getAllByText("1 tools, 1 skills").length).toBeGreaterThan(0);
@@ -729,6 +1039,7 @@ describe("SettingsPage", () => {
   it("creates a new agent and opens its Markdown editor", async () => {
     const user = userEvent.setup();
     renderSettings();
+    await selectCategory(user, "Agents");
     await user.click(screen.getByRole("button", { name: /add agent/i }));
     await user.type(screen.getByRole("dialog").querySelector("input")!, "reviewer");
     await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: /create/i }));
@@ -741,6 +1052,7 @@ describe("SettingsPage", () => {
   it("copies a bundled skill when its editor is opened and saves its Markdown", async () => {
     const user = userEvent.setup();
     renderSettings();
+    await selectCategory(user, "Skills and tools");
     await user.click(await screen.findByRole("button", { name: /edit skill.*paper-search/i }));
     const editor = await screen.findByRole("textbox", { name: /skill markdown/i });
     await user.clear(editor);
@@ -756,12 +1068,14 @@ describe("SettingsPage", () => {
       .mockResolvedValueOnce([{ name: "search", description: "Searches", missingSkills: ["before-save"] }] as never)
       .mockResolvedValueOnce([{ name: "search", description: "Searches", missingSkills: ["after-save"] }] as never);
     renderSettings();
+    await selectCategory(user, "Skills and tools");
     expect(await screen.findByText("before-save")).toBeVisible();
 
     await openAgentConfig(user, "Search");
     await user.click(screen.getByRole("button", { name: "Edit Search" }));
     await user.click(screen.getByRole("button", { name: /save agent/i }));
 
+    await selectCategory(user, "Skills and tools");
     expect(await screen.findByText("after-save")).toBeVisible();
     expect(screen.queryByText("before-save")).toBeNull();
     expect(api.listAgents).toHaveBeenLastCalledWith(undefined);
@@ -778,6 +1092,7 @@ describe("SettingsPage", () => {
         { name: "writing", description: "Writes", missingSkills: ["after-skill-save"] },
       ] as never);
     renderSettings();
+    await selectCategory(user, "Skills and tools");
     const scope = await screen.findByRole("combobox", { name: "Skill diagnostic scope" });
     await user.selectOptions(scope, "/papers/project-a");
     expect(await screen.findByText("before-skill-save")).toBeVisible();
@@ -800,6 +1115,7 @@ describe("SettingsPage", () => {
         { name: "writing", description: "Writes", missingSkills: ["fresh-after-save"] },
       ] as never);
     renderSettings();
+    await selectCategory(user, "Skills and tools");
     const scope = await screen.findByRole("combobox", { name: "Skill diagnostic scope" });
     await user.selectOptions(scope, "/papers/project-a");
     await user.click(await screen.findByRole("button", { name: /edit skill.*paper-search/i }));
@@ -815,12 +1131,14 @@ describe("SettingsPage", () => {
   });
 
   it("defaults Skill diagnostics to Global and groups affected Agents by missing Skill", async () => {
+    const user = userEvent.setup();
     vi.mocked(api.listAgents).mockResolvedValue([
       { name: "search", description: "Searches", missingSkills: ["missing-skill"] },
       { name: "writing", description: "Writes", missingSkills: ["missing-skill"] },
     ] as never);
 
     renderSettings();
+    await selectCategory(user, "Skills and tools");
 
     const scope = await screen.findByRole("combobox", { name: "Skill diagnostic scope" });
     expect(scope).toHaveValue("global");
@@ -837,6 +1155,7 @@ describe("SettingsPage", () => {
       .mockResolvedValueOnce([{ name: "writing", description: "Writes", missingSkills: ["project-missing"] }] as never);
 
     renderSettings();
+    await selectCategory(user, "Skills and tools");
     const scope = await screen.findByRole("combobox", { name: "Skill diagnostic scope" });
     expect(screen.getByText("global-missing")).toBeVisible();
 
@@ -860,6 +1179,7 @@ describe("SettingsPage", () => {
       .mockReturnValueOnce(projectB.promise);
 
     renderSettings();
+    await selectCategory(user, "Skills and tools");
     const scope = await screen.findByRole("combobox", { name: "Skill diagnostic scope" });
     await user.selectOptions(scope, "/papers/project-a");
     await user.selectOptions(scope, "/papers/project-b");
@@ -890,6 +1210,7 @@ describe("SettingsPage", () => {
       ] as never);
 
     renderSettings();
+    await selectCategory(user, "Skills and tools");
     const scope = await screen.findByRole("combobox", { name: "Skill diagnostic scope" });
     expect(await screen.findByText("global-missing")).toBeVisible();
 
@@ -904,12 +1225,44 @@ describe("SettingsPage", () => {
   });
 
   it("keeps global Skill resources available when diagnostic project discovery fails", async () => {
+    const user = userEvent.setup();
     vi.mocked(api.listConfigProjects).mockRejectedValueOnce(new Error("project discovery failed"));
 
     renderSettings();
+    await waitFor(() => expect(api.listConfigProjects).toHaveBeenCalled());
+    expect(screen.queryByRole("alert")).toBeNull();
+    await selectCategory(user, "Skills and tools");
 
     expect(await screen.findByRole("button", { name: "Edit skill paper-search" })).toBeVisible();
     expect(screen.getByRole("alert")).toHaveTextContent("project discovery failed");
+
+    await selectCategory(user, "General");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("retries the owning Skill and project loads and clears their initial error", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listSkillResources)
+      .mockRejectedValueOnce(new Error("resource discovery failed"))
+      .mockResolvedValueOnce([
+        {
+          name: "paper-search",
+          source: "bundled",
+          path: "src/skills/paper-search",
+          skillPath: "src/skills/paper-search/SKILL.md",
+        },
+      ] as never);
+    renderSettings();
+    await selectCategory(user, "Skills and tools");
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("resource discovery failed");
+
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
+
+    expect(await screen.findByRole("button", { name: "Edit skill paper-search" })).toBeVisible();
+    await waitFor(() => expect(screen.queryByText("resource discovery failed")).toBeNull());
+    expect(api.listSkillResources).toHaveBeenCalledTimes(2);
+    expect(api.listConfigProjects).toHaveBeenCalledTimes(2);
   });
 
   it("shows deduplicated resource lists and opens agent resource details", async () => {
@@ -938,15 +1291,17 @@ describe("SettingsPage", () => {
     ] as never);
     renderSettings();
 
-    expect(await screen.findByRole("button", { name: "View details for Search" })).toBeTruthy();
+    await selectCategory(user, "Skills and tools");
     expect(screen.getByRole("heading", { name: "Tools" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Skills" })).toBeTruthy();
     expect(screen.getAllByText("read")).toHaveLength(1);
 
+    await selectCategory(user, "Agents");
     await user.click(screen.getByRole("button", { name: "View details for Search" }));
-    expect(screen.getByRole("dialog")).toBeTruthy();
-    expect(within(screen.getByRole("dialog")).getByText("web-search")).toBeTruthy();
-    expect(within(screen.getByRole("dialog")).getByText("paper-search")).toBeTruthy();
+    const details = screen.getByRole("dialog", { name: "Search resources" });
+    expect(details).toBeTruthy();
+    expect(within(details).getByText("web-search")).toBeTruthy();
+    expect(within(details).getByText("paper-search")).toBeTruthy();
   });
 
   it("opens the agent config modal with the enable switch, model, thinking, and edit controls", async () => {
