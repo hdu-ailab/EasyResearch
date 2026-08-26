@@ -6,9 +6,12 @@ import { describe, expect, it } from "vitest";
 import { importPi } from "./pi-import";
 
 describe("Pi platform shell exclusion", () => {
-  it.each(["bash", "powershell"] as const)(
-    "keeps %s absent through extension loading and reload",
-    async (excluded) => {
+  it.each([
+    ["bash", "powershell"],
+    ["powershell", "bash"],
+  ] as const)(
+    "keeps %s absent and %s available through extension loading and reload",
+    async (excluded, available) => {
       const root = mkdtempSync(join(tmpdir(), "easyresearch-platform-tools-"));
       const cwd = join(root, "paper");
       const agentDir = join(root, "agent");
@@ -44,16 +47,25 @@ describe("Pi platform shell exclusion", () => {
           settingsManager,
           sessionManager: pi.SessionManager.inMemory(cwd),
           resourceLoader,
+          tools: ["bash", "powershell"],
           excludeTools: [excluded],
-          noTools: "all",
         });
         try {
           await session.bindExtensions({ mode: "print" });
-          expect(session.getAllTools().map(({ name }) => name)).not.toContain(excluded);
+          const expectShellPolicy = () => {
+            const allTools = session.getAllTools().map(({ name }) => name);
+            expect(allTools).not.toContain(excluded);
+            expect(allTools).toContain(available);
+            const activeTools = session.getActiveToolNames();
+            expect(activeTools).not.toContain(excluded);
+            expect(activeTools).toContain(available);
+          };
+
+          expectShellPolicy();
           session.setActiveToolsByName(["bash", "powershell"]);
-          expect(session.getActiveToolNames()).not.toContain(excluded);
+          expectShellPolicy();
           await session.reload();
-          expect(session.getAllTools().map(({ name }) => name)).not.toContain(excluded);
+          expectShellPolicy();
         } finally {
           session.dispose();
         }
