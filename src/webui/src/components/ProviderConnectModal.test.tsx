@@ -59,6 +59,23 @@ function makeFlow(overrides: Partial<UseProviderAuthFlow> = {}): UseProviderAuth
 }
 
 describe("ProviderConnectModal", () => {
+  it("uses the full mobile viewport and keeps its desktop bounds at 820px", () => {
+    mockedUse.mockReturnValue(makeFlow());
+    render(<ProviderConnectModal onClose={() => {}} />);
+
+    const dialog = screen.getByRole("dialog", { name: "Connect providers" });
+    expect(dialog.parentElement).toHaveClass("p-0", "min-[820px]:p-6");
+    expect(dialog).toHaveClass(
+      "h-full",
+      "w-full",
+      "min-[820px]:h-auto",
+      "min-[820px]:max-h-[min(720px,calc(100vh-24px))]",
+      "min-[820px]:max-w-[720px]",
+      "min-[820px]:rounded-[10px]",
+    );
+    expect(dialog).not.toHaveClass("max-h-[min(720px,calc(100vh-24px))]", "max-w-[720px]", "rounded-[10px]");
+  });
+
   it("renders the provider list with status dots and ambient hint", async () => {
     mockedUse.mockReturnValue(makeFlow());
     const user = userEvent.setup();

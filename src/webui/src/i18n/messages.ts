@@ -2,6 +2,13 @@ import type { Language } from "../preferences";
 
 export const en = {
   "settings.title": "Settings",
+  "settings.category.general": "General",
+  "settings.category.conversation": "Conversation",
+  "settings.category.providers": "Model providers",
+  "settings.category.agents": "Agents",
+  "settings.category.resources": "Skills and tools",
+  "settings.backToCategories": "Back to settings",
+  "settings.close": "Close",
   "settings.appearance.title": "Appearance",
   "settings.appearance.chatFontSize": "Chat font size",
   "settings.appearance.filesFontSize": "Files font size",
@@ -321,6 +328,7 @@ export const en = {
   "config.cancel": "Cancel",
   "config.files": "Config files",
   "config.backToFiles": "Back to files",
+  "config.backToSettings": "Back to Settings",
   "config.editor": "Editor",
   "config.save": "Save",
   "config.close": "Close editor",
@@ -375,6 +383,13 @@ export type MessageKey = keyof typeof en;
 
 export const zhCN: Record<MessageKey, string> = {
   "settings.title": "设置",
+  "settings.category.general": "常规",
+  "settings.category.conversation": "对话",
+  "settings.category.providers": "模型提供商",
+  "settings.category.agents": "智能体",
+  "settings.category.resources": "技能与工具",
+  "settings.backToCategories": "返回设置",
+  "settings.close": "关闭",
   "settings.appearance.title": "外观",
   "settings.appearance.chatFontSize": "聊天字号",
   "settings.appearance.filesFontSize": "文件字号",
@@ -692,6 +707,7 @@ export const zhCN: Record<MessageKey, string> = {
   "config.cancel": "取消",
   "config.files": "配置文件",
   "config.backToFiles": "返回文件",
+  "config.backToSettings": "返回设置",
   "config.editor": "编辑器",
   "config.save": "保存",
   "config.close": "关闭编辑器",

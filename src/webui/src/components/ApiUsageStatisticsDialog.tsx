@@ -23,7 +23,7 @@ export function ApiUsageStatisticsDialog({
 }) {
   const { t } = useI18n();
   const dialogRef = useRef<HTMLElement>(null);
-  const zIndex = useModalLayer(onClose, dialogRef);
+  const { zIndex, dialogProps } = useModalLayer(onClose, dialogRef);
   const request = useRef(0);
   const [statistics, setStatistics] = useState<ApiUsageStatisticsDto | null>(liveStatistics ?? null);
   const [error, setError] = useState(false);
@@ -68,7 +68,7 @@ export function ApiUsageStatisticsDialog({
       <section
         ref={dialogRef}
         role="dialog"
-        aria-modal="true"
+        {...dialogProps}
         aria-labelledby="api-usage-statistics-title"
         className="flex max-h-[min(680px,calc(100vh-32px))] w-full max-w-[620px] flex-col overflow-hidden rounded-[12px] border border-v2-grey-200 bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]"
       >

@@ -49,18 +49,21 @@ export function AgentConfigModal({
 }: AgentConfigModalProps) {
   const { t } = useI18n();
   const dialogRef = useRef<HTMLDivElement>(null);
-  const zIndex = useModalLayer(onClose, dialogRef);
+  const { zIndex, dialogProps } = useModalLayer(onClose, dialogRef);
   const name = agentDisplayName(t, agent.name);
   const tools = agent.effectiveTools ?? agent.tools ?? [];
   const skills = agent.effectiveSkills ?? agent.skills ?? [];
   return (
-    <div className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/30 p-3 sm:p-6" style={{ zIndex }}>
+    <div
+      className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/30 p-0 min-[820px]:p-6"
+      style={{ zIndex }}
+    >
       <div
         ref={dialogRef}
         role="dialog"
-        aria-modal="true"
+        {...dialogProps}
         aria-label={t("settings.agents.title")}
-        className="flex max-h-[min(720px,calc(100vh-24px))] w-full max-w-[520px] flex-col overflow-hidden rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-overlay)]"
+        className="flex h-full w-full flex-col overflow-hidden bg-v2-background-bg-base shadow-[var(--v2-elevation-overlay)] min-[820px]:h-auto min-[820px]:max-h-[min(720px,calc(100vh-24px))] min-[820px]:max-w-[520px] min-[820px]:rounded-[10px]"
       >
         <header className="flex items-center gap-3 border-b border-v2-grey-200 px-4 py-3">
           <Settings2 size={14} className="shrink-0 text-v2-icon-icon-muted" aria-hidden />
@@ -174,11 +177,10 @@ export function AgentConfigModal({
             {t("settings.agents.edit").replace("{name}", name)}
           </button>
         </div>
-
-        {editorResource && (
-          <AgentMarkdownEditor resource={editorResource} busy={busy} onSave={onSaveMarkdown} onClose={onCloseEditor} />
-        )}
       </div>
+      {editorResource && (
+        <AgentMarkdownEditor resource={editorResource} busy={busy} onSave={onSaveMarkdown} onClose={onCloseEditor} />
+      )}
     </div>
   );
 }

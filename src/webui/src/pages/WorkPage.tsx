@@ -1,5 +1,5 @@
 import { Bot, FileSearch, Settings } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type Ref, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   FileWatcherEvent,
   SessionTreeDto,
@@ -55,6 +55,7 @@ export interface WorkPageProps {
   cwd: string;
   onBack: () => void;
   onOpenSettings: () => void;
+  settingsButtonRef?: Ref<HTMLButtonElement>;
   configurationGeneration?: number;
   configurationError?: string | null;
 }
@@ -151,6 +152,7 @@ export function WorkPage({
   cwd,
   onBack,
   onOpenSettings,
+  settingsButtonRef,
   configurationGeneration = 0,
   configurationError = null,
 }: WorkPageProps) {
@@ -953,7 +955,12 @@ export function WorkPage({
                 </TopbarIconButton>
               </>
             )}
-            <TopbarIconButton label={t("home.settings")} title={t("home.settingsTitle")} onClick={onOpenSettings}>
+            <TopbarIconButton
+              buttonRef={settingsButtonRef}
+              label={t("home.settings")}
+              title={t("home.settingsTitle")}
+              onClick={onOpenSettings}
+            >
               <Settings size={15} />
             </TopbarIconButton>
           </>

@@ -18,7 +18,7 @@ export function ProviderConnectModal({ onClose }: ProviderConnectModalProps) {
   const { t } = useI18n();
   const f = useProviderAuthFlow();
   const dialogRef = useRef<HTMLDivElement>(null);
-  const zIndex = useModalLayer(onClose, dialogRef);
+  const { zIndex, dialogProps } = useModalLayer(onClose, dialogRef);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const [activeId, setActiveId] = useState<string | undefined>(undefined);
@@ -95,13 +95,16 @@ export function ProviderConnectModal({ onClose }: ProviderConnectModalProps) {
   };
 
   return (
-    <div className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/30 p-3 sm:p-6" style={{ zIndex }}>
+    <div
+      className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/30 p-0 min-[820px]:p-6"
+      style={{ zIndex }}
+    >
       <div
         ref={dialogRef}
         role="dialog"
-        aria-modal="true"
+        {...dialogProps}
         aria-label={t("providerConnect.title")}
-        className="flex max-h-[min(720px,calc(100vh-24px))] w-full max-w-[720px] flex-col overflow-hidden rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-overlay)]"
+        className="flex h-full w-full flex-col overflow-hidden bg-v2-background-bg-base shadow-[var(--v2-elevation-overlay)] min-[820px]:h-auto min-[820px]:max-h-[min(720px,calc(100vh-24px))] min-[820px]:max-w-[720px] min-[820px]:rounded-[10px]"
       >
         <header className="flex items-center gap-3 border-b border-v2-grey-200 px-4 py-3">
           <div className="min-w-0">

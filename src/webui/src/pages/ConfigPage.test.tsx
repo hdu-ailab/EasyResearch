@@ -17,6 +17,13 @@ vi.mock("../api", async (importOriginal) => {
   };
 });
 
+function renderConfigPage() {
+  const onHome = vi.fn();
+  const onBackToSettings = vi.fn();
+  const view = render(<ConfigPage onHome={onHome} onBackToSettings={onBackToSettings} />);
+  return { ...view, onHome, onBackToSettings };
+}
+
 describe("ConfigPage", () => {
   beforeEach(() => {
     vi.mocked(api.listConfigProjects)
@@ -37,8 +44,28 @@ describe("ConfigPage", () => {
     vi.mocked(api.createConfigDirectory).mockReset().mockResolvedValue();
   });
 
+  it("keeps Home separate from Back to Settings", async () => {
+    const user = userEvent.setup();
+    const { onHome, onBackToSettings } = renderConfigPage();
+
+    await user.click(screen.getByRole("button", { name: /back to home/i }));
+
+    expect(onHome).toHaveBeenCalledOnce();
+    expect(onBackToSettings).not.toHaveBeenCalled();
+  });
+
+  it("returns to Settings without invoking Home", async () => {
+    const user = userEvent.setup();
+    const { onHome, onBackToSettings } = renderConfigPage();
+
+    await user.click(screen.getByRole("button", { name: "Back to Settings" }));
+
+    expect(onBackToSettings).toHaveBeenCalledOnce();
+    expect(onHome).not.toHaveBeenCalled();
+  });
+
   it("lists the global root before project roots", async () => {
-    render(<ConfigPage onBack={() => {}} />);
+    renderConfigPage();
     const list = await screen.findByRole("list", { name: /project folder/i });
     const items = within(list).getAllByRole("listitem");
     expect(items[0]).toHaveTextContent(/Global/);
@@ -48,13 +75,16 @@ describe("ConfigPage", () => {
 
   it("opens a project and reads a Markdown file without JSON parsing", async () => {
     const user = userEvent.setup();
-    render(<ConfigPage onBack={() => {}} />);
+    const { onHome, onBackToSettings } = renderConfigPage();
     await user.click(await screen.findByRole("button", { name: /\/home\/u\/proj/ }));
     await user.click(screen.getByRole("button", { name: "notes.md" }));
     expect(api.readConfigFile).toHaveBeenCalledWith("project", "/home/u/proj", "notes.md");
 
     vi.mocked(api.listConfig).mockResolvedValueOnce([{ name: "notes.md", path: "notes.md", type: "file" }]);
     await user.click(screen.getByRole("button", { name: /back to files/i }));
+    expect(await screen.findByRole("list", { name: /project folder/i })).toBeVisible();
+    expect(onHome).not.toHaveBeenCalled();
+    expect(onBackToSettings).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: /\/home\/u\/proj/ }));
     await user.click(screen.getByRole("button", { name: "notes.md" }));
     expect(await screen.findByRole("textbox", { name: /editor/i })).toHaveValue("# Notes\n");
@@ -62,7 +92,7 @@ describe("ConfigPage", () => {
 
   it("saves Markdown verbatim", async () => {
     const user = userEvent.setup();
-    render(<ConfigPage onBack={() => {}} />);
+    renderConfigPage();
     await user.click(await screen.findByRole("button", { name: /\/home\/u\/proj/ }));
     await user.click(screen.getByRole("button", { name: "notes.md" }));
     const editor = await screen.findByRole("textbox", { name: /editor/i });
@@ -83,7 +113,7 @@ describe("ConfigPage", () => {
       path,
       content: path.endsWith(".json") ? "{}\n" : "# Agent\n",
     });
-    render(<ConfigPage onBack={() => {}} />);
+    renderConfigPage();
     await user.click(await screen.findByRole("button", { name: /Global/ }));
     await user.click(screen.getByRole("button", { name: path.split("/").at(-1)! }));
     await user.click(screen.getByRole("button", { name: /save/i }));
@@ -99,7 +129,7 @@ describe("ConfigPage", () => {
       path: "agents/search.md",
       content: "# Inert project file\n",
     });
-    render(<ConfigPage onBack={() => {}} />);
+    renderConfigPage();
     await user.click(await screen.findByRole("button", { name: /\/home\/u\/proj/ }));
     await user.click(screen.getByRole("button", { name: "search.md" }));
     await user.click(screen.getByRole("button", { name: /save/i }));
@@ -111,7 +141,7 @@ describe("ConfigPage", () => {
   it("keeps restart guidance for ordinary configuration saves", async () => {
     const user = userEvent.setup();
     vi.mocked(api.readConfigFile).mockResolvedValueOnce({ path: "settings.json", content: "{}\n" });
-    render(<ConfigPage onBack={() => {}} />);
+    renderConfigPage();
     await user.click(await screen.findByRole("button", { name: /Global/ }));
     await user.click(screen.getByRole("button", { name: "settings.json" }));
     await user.click(screen.getByRole("button", { name: /save/i }));
@@ -122,7 +152,7 @@ describe("ConfigPage", () => {
   it("rejects malformed JSON while allowing other text", async () => {
     const user = userEvent.setup();
     vi.mocked(api.readConfigFile).mockResolvedValue({ path: "settings.json", content: "{\n" });
-    render(<ConfigPage onBack={() => {}} />);
+    renderConfigPage();
     await user.click(await screen.findByRole("button", { name: /\/home\/u\/proj/ }));
     await user.click(screen.getByRole("button", { name: "settings.json" }));
     await user.click(screen.getByRole("button", { name: /save/i }));
@@ -132,7 +162,7 @@ describe("ConfigPage", () => {
 
   it("creates a directory under the current config path", async () => {
     const user = userEvent.setup();
-    render(<ConfigPage onBack={() => {}} />);
+    renderConfigPage();
     await user.click(await screen.findByRole("button", { name: /\/home\/u\/proj/ }));
     await user.click(screen.getByTitle("New folder"));
     const dialog = screen.getByRole("dialog", { name: "New folder" });
@@ -146,7 +176,7 @@ describe("ConfigPage", () => {
   it("keeps the editor error visible when a file read fails", async () => {
     const user = userEvent.setup();
     vi.mocked(api.readConfigFile).mockRejectedValueOnce(new ApiError(500, { error: "boom" }));
-    render(<ConfigPage onBack={() => {}} />);
+    renderConfigPage();
     await user.click(await screen.findByRole("button", { name: /\/home\/u\/proj/ }));
     await user.click(screen.getByRole("button", { name: "settings.json" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("boom");

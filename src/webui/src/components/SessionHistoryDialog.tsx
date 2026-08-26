@@ -45,7 +45,7 @@ export function SessionHistoryDialog({
 }: SessionHistoryDialogProps) {
   const { t } = useI18n();
   const dialogRef = useRef<HTMLElement>(null);
-  const zIndex = useModalLayer(onClose, dialogRef);
+  const { zIndex, dialogProps } = useModalLayer(onClose, dialogRef);
   const [query, setQuery] = useState(initialQuery);
   const [filterMode, setFilterMode] = useState<HistoryFilterMode>("user-only");
   const [folded, setFolded] = useState<Set<string>>(() => new Set());
@@ -163,7 +163,7 @@ export function SessionHistoryDialog({
       <section
         ref={dialogRef}
         role="dialog"
-        aria-modal="true"
+        {...dialogProps}
         aria-labelledby="history-dialog-title"
         className="flex max-h-[min(760px,calc(100vh-24px))] w-full max-w-[820px] flex-col overflow-hidden rounded-[14px] border border-v2-grey-200 bg-v2-background-bg-base shadow-[var(--v2-elevation-overlay)]"
       >
@@ -318,7 +318,7 @@ function BranchSummaryDialog({
 }) {
   const { t } = useI18n();
   const dialogRef = useRef<HTMLElement>(null);
-  const zIndex = useModalLayer(onCancel, dialogRef);
+  const { zIndex, dialogProps } = useModalLayer(onCancel, dialogRef);
   const customInputRef = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
     if (custom) customInputRef.current?.focus();
@@ -328,7 +328,7 @@ function BranchSummaryDialog({
       <section
         ref={dialogRef}
         role="dialog"
-        aria-modal="true"
+        {...dialogProps}
         aria-labelledby="branch-summary-title"
         className="w-full max-w-[420px] rounded-[10px] border border-v2-grey-200 bg-v2-background-bg-base p-4 shadow-[var(--v2-elevation-overlay)]"
       >
