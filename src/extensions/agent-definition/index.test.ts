@@ -12,15 +12,18 @@ function binding(tools: string[] | undefined): AgentRuntimeBinding {
   } as unknown as AgentRuntimeBinding;
 }
 
-async function loadExtension(runtimeBinding: AgentRuntimeBinding) {
+async function loadExtension(
+  runtimeBinding: AgentRuntimeBinding,
+  platform: NodeJS.Platform = "linux",
+) {
   const handlers = new Map<string, (...args: any[]) => any>();
   const setActiveTools = vi.fn();
   const api = {
-    getAllTools: vi.fn(() => ["read", "bash", "subagent"].map((name) => ({ name }))),
+    getAllTools: vi.fn(() => ["read", "powershell", "ssh-bash"].map((name) => ({ name }))),
     on: vi.fn((event: string, handler: (...args: any[]) => any) => handlers.set(event, handler)),
     setActiveTools,
   };
-  await (createAgentDefinitionExtension(runtimeBinding) as ExtensionFactory)(api as never);
+  await (createAgentDefinitionExtension(runtimeBinding, platform) as ExtensionFactory)(api as never);
   return { handlers, setActiveTools };
 }
 
@@ -44,7 +47,26 @@ describe("createAgentDefinitionExtension", () => {
 
     await handlers.get("session_start")?.({ reason: "reload" }, { cwd: "/paper" });
 
-    expect(setActiveTools).toHaveBeenCalledWith(["read", "bash", "subagent"]);
+    expect(setActiveTools).toHaveBeenCalledWith(["read", "powershell", "ssh-bash"]);
+  });
+
+  it("normalizes strict shell names to powershell on Windows", async () => {
+    const { handlers, setActiveTools } = await loadExtension(
+      binding(["read", "bash", "powershell", "ssh-bash"]),
+      "win32",
+    );
+
+    await handlers.get("session_start")?.({ reason: "startup" }, { cwd: "/paper" });
+
+    expect(setActiveTools).toHaveBeenCalledWith(["read", "powershell", "ssh-bash"]);
+  });
+
+  it("uses Pi's already-filtered registry for all-tools", async () => {
+    const { handlers, setActiveTools } = await loadExtension(binding(undefined), "win32");
+
+    await handlers.get("session_start")?.({ reason: "reload" }, { cwd: "/paper" });
+
+    expect(setActiveTools).toHaveBeenCalledWith(["read", "powershell", "ssh-bash"]);
   });
 
   it("awaits active-generation application from turn_end", async () => {

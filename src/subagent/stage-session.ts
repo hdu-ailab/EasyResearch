@@ -13,6 +13,7 @@ import {
 import { runCleanupSteps } from "../runtime/cleanup";
 import { toJsonSessionEvent } from "../runtime/json-session-event";
 import type { LiveConfiguration } from "../runtime/live-configuration";
+import { excludedLocalShellTools } from "../runtime/platform-tools";
 import { createSessionSettingsFacade } from "../runtime/session-settings-facade";
 import {
   createCompactionPolicyBinding,
@@ -293,6 +294,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         resourceLoader,
         ...(model ? { model } : {}),
         thinkingLevel: binding.thinking(),
+        excludeTools: excludedLocalShellTools(process.platform),
       });
       session = created.session;
       result.model = model ? `${model.provider}/${model.id}` : result.model;

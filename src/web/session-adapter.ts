@@ -7,6 +7,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { runCleanupSteps } from "../runtime/cleanup";
 import { toJsonSessionEvent } from "../runtime/json-session-event";
+import { excludedLocalShellTools } from "../runtime/platform-tools";
 import { configureBatchedSteering, type RuntimeSteeringSession } from "../runtime/steering-mode";
 import {
   createAgentRuntimeBinding,
@@ -379,6 +380,7 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
         resourceLoader,
         ...(model ? { model } : {}),
         thinkingLevel: binding.thinking(),
+        excludeTools: excludedLocalShellTools(process.platform),
       };
       ({ session } = await deps.createAgentSession(createOptions));
       compaction.attach(session);

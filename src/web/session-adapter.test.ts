@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionTreeNode } from "@earendil-works/pi-coding-agent";
 import type { AgentRuntimeBinding } from "../runtime/agent-runtime-binding";
+import { excludedLocalShellTools } from "../runtime/platform-tools";
 import type { AgentConfig } from "../subagent/agents";
 import {
   ConfigurationUnavailableError,
@@ -1783,6 +1784,10 @@ describe("createPiAgentSessionCreator", () => {
       reserveTokens: 38_400,
       keepRecentTokens: 20_000,
     });
+    expect(harness.createdOptions[0]).toMatchObject({
+      excludeTools: excludedLocalShellTools(process.platform),
+    });
+    expect(harness.createdOptions[0]).not.toHaveProperty("tools");
     const order = harness.calls.map(({ name }) => name);
     expect(order.indexOf("session-manager")).toBeLessThan(order.indexOf("coordinator"));
     expect(order.indexOf("coordinator")).toBeLessThan(order.indexOf("recovery"));

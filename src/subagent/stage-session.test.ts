@@ -7,6 +7,7 @@ import type { ExtensionFactory, JsonAgentSessionEvent } from "@earendil-works/pi
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAgentDefinitionExtension } from "../extensions/agent-definition";
 import type { AgentRuntimeBinding } from "../runtime/agent-runtime-binding";
+import { excludedLocalShellTools } from "../runtime/platform-tools";
 import type { AgentConfig } from "./agents";
 import {
   SubagentCoordinator,
@@ -489,13 +490,17 @@ describe("createStageSessionLauncher", () => {
       { name: "stage", caller: "search", coordinator, supervisor: harness.supervisors[0] },
       { name: "web-search" },
     ]);
-    expect(harness.calls.find((call) => call.name === "createSession")?.value).toMatchObject({
+    const stageCreateOptions = harness.calls.find(
+      (call) => call.name === "createSession",
+    )?.value as Record<string, unknown>;
+    expect(stageCreateOptions).toMatchObject({
       cwd: "/project",
       thinkingLevel: "high",
       model: { provider: "openai", id: "gpt-test" },
       sessionManager: { kind: "new", cwd: "/project" },
+      excludeTools: excludedLocalShellTools(process.platform),
     });
-    expect(harness.calls.find((call) => call.name === "createSession")?.value).not.toHaveProperty("tools");
+    expect(stageCreateOptions).not.toHaveProperty("tools");
     expect(session.names).toEqual(["easyresearch:search"]);
     expect(session.agent.steeringMode).toBe("all");
     expect(session.promptCalls).toEqual(["Task: find papers"]);
