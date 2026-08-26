@@ -33,14 +33,14 @@ export function SessionList({ history, showCwd = true, onOpenHistory, onRenameSe
               >
                 <button
                   type="button"
-                  className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)] gap-y-1 px-5 py-3.5 text-left lg:grid-cols-[minmax(0,1.55fr)_minmax(140px,0.9fr)_84px_104px] lg:items-center lg:gap-x-5 lg:px-6 lg:py-4"
+                  className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)] gap-y-1 px-5 py-3.5 text-left min-[820px]:grid-cols-[minmax(0,1.55fr)_minmax(0,0.9fr)_minmax(56px,72px)_minmax(72px,92px)] min-[820px]:items-center min-[820px]:gap-x-2 min-[820px]:px-4 min-[820px]:py-4"
                   onClick={() => onOpenHistory(session)}
                 >
                   <span className="min-w-0 truncate text-[14px] font-medium text-v2-text-text-base" title={title}>
                     {title}
                   </span>
                   <span
-                    className="hidden min-w-0 items-center gap-2 text-[13px] text-v2-text-text-faint lg:flex"
+                    className="hidden min-w-0 items-center gap-2 text-[13px] text-v2-text-text-faint min-[820px]:flex"
                     title={showCwd ? session.cwd : undefined}
                   >
                     {showCwd && (
@@ -50,13 +50,15 @@ export function SessionList({ history, showCwd = true, onOpenHistory, onRenameSe
                       </>
                     )}
                   </span>
-                  <span className="hidden shrink-0 items-center gap-1.5 text-[13px] text-v2-text-text-faint lg:flex">
+                  <span className="hidden min-w-0 items-center gap-1.5 text-[13px] text-v2-text-text-faint min-[820px]:flex">
                     <MessageSquareText size={14} aria-hidden />
                     <span aria-hidden>{session.messageCount}</span>
                     <span className="sr-only">{messageLabel}</span>
                   </span>
-                  <span className="hidden shrink-0 text-[13px] text-v2-text-text-faint lg:block">{modified}</span>
-                  <span className="flex min-w-0 items-center gap-2 text-[12px] text-v2-text-text-faint lg:hidden">
+                  <span className="hidden min-w-0 truncate text-[13px] text-v2-text-text-faint min-[820px]:block">
+                    {modified}
+                  </span>
+                  <span className="flex min-w-0 items-center gap-2 text-[12px] text-v2-text-text-faint min-[820px]:hidden">
                     {showCwd && (
                       <>
                         <span className="truncate" title={session.cwd}>
@@ -78,7 +80,7 @@ export function SessionList({ history, showCwd = true, onOpenHistory, onRenameSe
                   type="button"
                   aria-label={`${t("home.rename")}: ${title}`}
                   title={t("home.renameTitle")}
-                  className="mr-2 flex size-8 shrink-0 self-center items-center justify-center rounded-md text-v2-text-text-faint transition-colors hover:bg-v2-grey-200 hover:text-v2-text-text-base lg:mr-4"
+                  className="mr-2 flex size-8 shrink-0 self-center items-center justify-center rounded-md text-v2-text-text-faint transition-colors hover:bg-v2-grey-200 hover:text-v2-text-text-base min-[820px]:mr-4"
                   onClick={() => onRenameSession(session)}
                 >
                   <Pencil size={13} aria-hidden />

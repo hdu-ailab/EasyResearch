@@ -86,7 +86,7 @@ export function HomeWorkspace({
       >
         <button
           type="button"
-          className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)] gap-y-1 px-5 py-3.5 text-left lg:grid-cols-[minmax(0,1.55fr)_minmax(140px,0.9fr)_84px_104px] lg:items-center lg:gap-x-5 lg:px-6 lg:py-4"
+          className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)] gap-y-1 px-5 py-3.5 text-left min-[820px]:grid-cols-[minmax(0,1.55fr)_minmax(0,0.9fr)_minmax(56px,72px)_minmax(72px,92px)] min-[820px]:items-center min-[820px]:gap-x-2 min-[820px]:px-4 min-[820px]:py-4"
           onClick={() => onOpenActive(session)}
         >
           <span className="flex min-w-0 items-center gap-3">
@@ -96,15 +96,19 @@ export function HomeWorkspace({
             </span>
           </span>
           <span
-            className="hidden min-w-0 items-center gap-2 text-[13px] text-v2-text-text-faint lg:flex"
+            className="hidden min-w-0 items-center gap-2 text-[13px] text-v2-text-text-faint min-[820px]:flex"
             title={session.cwd}
           >
             <Folder size={15} className="shrink-0" aria-hidden />
             <span className="truncate">{folder}</span>
           </span>
-          <span className="hidden shrink-0 text-[13px] text-v2-text-text-muted lg:block">{statusLabel}</span>
-          <span className="hidden shrink-0 text-[13px] text-v2-text-text-faint lg:block">{modified}</span>
-          <span className="flex min-w-0 items-center gap-2 pl-5 text-[12px] text-v2-text-text-faint lg:hidden">
+          <span className="hidden min-w-0 truncate text-[13px] text-v2-text-text-muted min-[820px]:block">
+            {statusLabel}
+          </span>
+          <span className="hidden min-w-0 truncate text-[13px] text-v2-text-text-faint min-[820px]:block">
+            {modified}
+          </span>
+          <span className="flex min-w-0 items-center gap-2 pl-5 text-[12px] text-v2-text-text-faint min-[820px]:hidden">
             <span className="truncate" title={session.cwd}>
               {folder}
             </span>
@@ -131,7 +135,7 @@ export function HomeWorkspace({
           type="button"
           aria-label={`${t("home.disconnectTitle")}: ${title}`}
           title={t("home.disconnectTitle")}
-          className="mr-2 flex min-h-8 shrink-0 self-center items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-faint transition-colors hover:bg-v2-grey-200 hover:text-v2-text-text-base disabled:cursor-wait disabled:opacity-50 lg:mr-4"
+          className="mr-2 flex min-h-8 shrink-0 self-center items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-faint transition-colors hover:bg-v2-grey-200 hover:text-v2-text-text-base disabled:cursor-wait disabled:opacity-50 min-[820px]:mr-4"
           disabled={disconnecting}
           onClick={() => onDisconnectActive(session)}
         >
@@ -145,9 +149,9 @@ export function HomeWorkspace({
   return (
     <section
       aria-label={t("home.workspace")}
-      className="home-workspace mx-auto grid w-full max-w-[1600px] overflow-hidden rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)] lg:grid-cols-[minmax(280px,25%)_minmax(0,1fr)] lg:grid-rows-[80px_auto_minmax(0,1fr)]"
+      className="home-workspace mx-auto grid w-full max-w-[1600px] overflow-hidden rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)] min-[820px]:grid-cols-[minmax(280px,25%)_minmax(0,1fr)] min-[820px]:grid-rows-[80px_auto_minmax(0,1fr)]"
     >
-      <div className="p-4 lg:col-start-1 lg:row-start-1 lg:border-r lg:border-v2-grey-200">
+      <div className="p-4 min-[820px]:col-start-1 min-[820px]:row-start-1 min-[820px]:border-r min-[820px]:border-v2-grey-200">
         <button
           type="button"
           className="flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-v2-blue-600 px-4 text-[14px] font-medium text-v2-grey-50 transition-colors hover:bg-v2-blue-700 disabled:opacity-50"
@@ -158,7 +162,7 @@ export function HomeWorkspace({
           {t("home.newProject")}
         </button>
       </div>
-      <div className="border-t border-v2-grey-200 p-4 lg:col-start-2 lg:row-start-1 lg:border-t-0">
+      <div className="border-t border-v2-grey-200 p-4 min-[820px]:col-start-2 min-[820px]:row-start-1 min-[820px]:border-t-0">
         <label className="flex h-12 items-center gap-3 rounded-lg border border-v2-grey-300 bg-v2-background-bg-base px-4 transition-colors focus-within:border-v2-blue-600">
           <Search size={17} className="shrink-0 text-v2-icon-icon-muted" aria-hidden />
           <input
@@ -172,10 +176,10 @@ export function HomeWorkspace({
         </label>
       </div>
       <section
-        className="border-t border-v2-grey-200 lg:col-start-2 lg:row-start-2"
+        className="border-t border-v2-grey-200 min-[820px]:col-start-2 min-[820px]:row-start-2"
         aria-labelledby="active-sessions-heading"
       >
-        <div className="flex items-center gap-2 px-5 py-4 lg:px-6">
+        <div className="flex items-center gap-2 px-5 py-4 min-[820px]:px-6">
           <Activity size={16} className="text-v2-icon-icon-muted" aria-hidden />
           <h2 id="active-sessions-heading" className="text-[14px] font-semibold text-v2-text-text-base">
             {t("home.activeSessions")}
@@ -198,7 +202,7 @@ export function HomeWorkspace({
       </section>
       <aside
         aria-label={t("home.projects")}
-        className="border-t border-v2-grey-200 p-3 lg:col-start-1 lg:row-start-2 lg:row-span-2 lg:border-r lg:border-t-0"
+        className="border-t border-v2-grey-200 p-3 min-[820px]:col-start-1 min-[820px]:row-start-2 min-[820px]:row-span-2 min-[820px]:border-r min-[820px]:border-t-0"
       >
         <div className="flex flex-col gap-1">
           <button
@@ -252,10 +256,13 @@ export function HomeWorkspace({
         </div>
       </aside>
       <section
-        className="min-w-0 border-t border-v2-grey-200 lg:col-start-2 lg:row-start-3"
+        className="min-w-0 border-t border-v2-grey-200 min-[820px]:col-start-2 min-[820px]:row-start-3"
         aria-labelledby="recent-sessions-heading"
       >
-        <h2 id="recent-sessions-heading" className="px-5 py-4 text-[14px] font-semibold text-v2-text-text-base lg:px-6">
+        <h2
+          id="recent-sessions-heading"
+          className="px-5 py-4 text-[14px] font-semibold text-v2-text-text-base min-[820px]:px-6"
+        >
           {t("home.recentSessions")}
         </h2>
         {loading ? (

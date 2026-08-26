@@ -86,7 +86,7 @@ body {
   min-height: min(720px, calc(100vh - 52px));
 }
 
-@media (width < 64rem) {
+@media (width < 820px) {
   .home-workspace {
     min-height: 0;
   }
@@ -95,40 +95,6 @@ body {
 :where(button, a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])):focus-visible {
   outline: 2px solid var(--color-v2-blue-600);
   outline-offset: 2px;
-}
-
-@keyframes v2-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.35;
-  }
-}
-
-.v2-thinking-active {
-  animation: v2-thinking-opacity 1.6s ease-in-out infinite;
-}
-
-@keyframes v2-thinking-opacity {
-  0%,
-  100% {
-    opacity: 0.55;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-
-.v2-caret {
-  display: inline-block;
-  width: 2px;
-  height: 1em;
-  margin-left: 1px;
-  vertical-align: text-bottom;
-  background-color: var(--color-v2-text-text-accent);
-  animation: v2-pulse 1s steps(2, start) infinite;
 }
 
 .v2-spinner {
@@ -237,7 +203,6 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .v2-thinking-active,
   .v2-subagent-card-running::before {
     animation: none;
   }

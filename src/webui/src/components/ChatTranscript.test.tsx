@@ -185,6 +185,8 @@ describe("ChatTranscript", () => {
     const row = screen.getByLabelText("Working");
     expect(row.textContent).toContain("Working…");
     expect(row.textContent).toContain("Research Assistant");
+    expect(row.querySelector(".v2-spinner")).toBeTruthy();
+    expect(row.querySelector(".v2-caret")).toBeNull();
   });
 
   it("pins to the bottom on content change, unpins on a wheel gesture, and re-pins at the bottom", () => {
@@ -477,12 +479,18 @@ describe("ChatTranscript", () => {
     expect(screen.queryByText("deep thought")).toBeNull();
   });
 
-  it("shows the animated thinking label only while reasoning is active", () => {
+  it("uses the settled thinking-process typography for active thinking labels", () => {
     const active = msg({ key: "a", reasoning: "deep thought", isThinking: true });
     const { rerender } = renderTranscript(<ChatTranscript messages={[active]} tools={[]} />);
 
-    expect(screen.getByRole("button", { name: "Thinking" })).toBeVisible();
-    expect(screen.getByText("Thinking")).toHaveClass("v2-thinking-active");
+    const collapsed = screen.getByRole("button", { name: "Thinking: deep thought" });
+    const collapsedLabel = within(collapsed).getByText("Thinking:");
+    expect(collapsedLabel).toHaveClass("text-v2-text-text-faint");
+    expect(collapsedLabel).not.toHaveClass("v2-thinking-active");
+    fireEvent.click(collapsed);
+    const expandedLabel = within(screen.getByRole("button", { name: "Thinking" })).getByText("Thinking");
+    expect(expandedLabel).toHaveClass("text-v2-text-text-faint");
+    expect(expandedLabel).not.toHaveClass("v2-thinking-active");
 
     rerender(
       <ChatTranscript
@@ -492,7 +500,109 @@ describe("ChatTranscript", () => {
     );
 
     expect(screen.queryByText("Thinking")).toBeNull();
-    expect(screen.getByRole("button", { name: "Thinking process" })).toBeVisible();
+    const settledLabel = within(screen.getByRole("button", { name: "Thinking process" })).getByText("Thinking process");
+    expect(settledLabel).toHaveClass("text-v2-text-text-faint");
+    expect(settledLabel).not.toHaveClass("v2-thinking-active");
+  });
+
+  it("updates a collapsed thinking preview from the latest non-empty reasoning paragraph", () => {
+    const { rerender } = renderTranscript(
+      <ChatTranscript
+        messages={[
+          msg({
+            key: "a",
+            reasoning: "earlier paragraph\r\n\r\n   latest paragraph   ",
+            isThinking: true,
+          }),
+        ]}
+        tools={[]}
+      />,
+    );
+
+    let toggle = screen.getByRole("button", { name: "Thinking: latest paragraph" });
+    expect(within(toggle).getByText("Thinking:")).not.toHaveClass("v2-thinking-active");
+    expect(within(toggle).getByText("latest paragraph")).toHaveClass("min-w-0", "truncate", "text-v2-text-text-muted");
+    expect(within(toggle).getByText("latest paragraph")).not.toHaveClass("v2-thinking-active");
+
+    rerender(
+      <ChatTranscript
+        messages={[
+          msg({
+            key: "a",
+            reasoning: "earlier paragraph\r\n\r\nlatest paragraph\nnext paragraph",
+            isThinking: true,
+          }),
+        ]}
+        tools={[]}
+      />,
+    );
+
+    toggle = screen.getByRole("button", { name: "Thinking: next paragraph" });
+    expect(toggle).not.toHaveTextContent("latest paragraph");
+  });
+
+  it("uses the expanded reasoning typography for the collapsed paragraph preview", () => {
+    renderTranscript(
+      <ChatTranscript messages={[msg({ key: "a", reasoning: "matching typography", isThinking: true })]} tools={[]} />,
+    );
+
+    const toggle = screen.getByRole("button", { name: "Thinking: matching typography" });
+    expect(within(toggle).getByText("matching typography")).toHaveClass(
+      "text-[12.5px]",
+      "font-normal",
+      "text-v2-text-text-muted",
+    );
+    fireEvent.click(toggle);
+    expect(screen.getByText("matching typography").closest(".v2-md")).toHaveClass(
+      "text-[12.5px]",
+      "font-normal",
+      "text-v2-text-text-muted",
+    );
+  });
+
+  it("hides the empty assistant body while reasoning and shows it when body text arrives", () => {
+    const { rerender } = renderTranscript(
+      <ChatTranscript
+        messages={[msg({ key: "a", text: "", reasoning: "active reasoning", isThinking: true, streaming: true })]}
+        tools={[]}
+      />,
+    );
+
+    let row = screen.getByRole("button", { name: "Thinking: active reasoning" }).closest("li");
+    expect(row?.querySelector("div.v2-md")).toBeNull();
+    expect(row?.querySelector(".v2-caret")).toBeNull();
+
+    rerender(
+      <ChatTranscript
+        messages={[msg({ key: "a", text: " \n ", reasoning: "active reasoning", isThinking: true, streaming: true })]}
+        tools={[]}
+      />,
+    );
+
+    row = screen.getByRole("button", { name: "Thinking: active reasoning" }).closest("li");
+    expect(row?.querySelector("div.v2-md")).toBeNull();
+    expect(row?.querySelector(".v2-caret")).toBeNull();
+
+    rerender(
+      <ChatTranscript
+        messages={[msg({ key: "a", text: "answer", reasoning: "active reasoning", isThinking: true, streaming: true })]}
+        tools={[]}
+      />,
+    );
+
+    row = screen.getByRole("button", { name: "Thinking: active reasoning" }).closest("li");
+    expect(within(row!).getByText("answer").closest("div.v2-md")).toBeTruthy();
+    expect(row?.querySelector(".v2-caret")).toBeNull();
+  });
+
+  it("updates a text-only streaming body without a caret", () => {
+    renderTranscript(
+      <ChatTranscript messages={[msg({ key: "a", text: "streaming answer", streaming: true })]} tools={[]} />,
+    );
+
+    const body = screen.getByText("streaming answer").closest("div.v2-md");
+    expect(body).toBeTruthy();
+    expect(body?.querySelector(".v2-caret")).toBeNull();
   });
 
   it("shows active thinking before the first reasoning token arrives", () => {
@@ -503,7 +613,8 @@ describe("ChatTranscript", () => {
       />,
     );
 
-    expect(screen.getByText("Thinking")).toHaveClass("v2-thinking-active");
+    expect(screen.getByText("Thinking")).toHaveClass("text-v2-text-text-faint");
+    expect(screen.getByText("Thinking")).not.toHaveClass("v2-thinking-active");
     expect(screen.queryByRole("button", { name: /details/i })).toBeNull();
   });
 

@@ -2258,6 +2258,21 @@ describe("WorkPage", () => {
     expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*320px/);
   });
 
+  it("removes the inter-panel gap when the desktop side panel closes", async () => {
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+    const chat = screen.getByRole("tabpanel", { name: /chat/i });
+    const row = chat?.parentElement;
+    expect(row).toBeTruthy();
+    expect(row).toHaveClass("gap-2", "px-2");
+
+    await user.click(screen.getByRole("button", { name: /files browser/i }));
+
+    expect(row).toHaveClass("gap-0", "px-2");
+    expect(row).not.toHaveClass("gap-2");
+  });
+
   it("resizes the panel within min/max while dragging", async () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");

@@ -675,6 +675,23 @@ describe("session reducer", () => {
     expect(state.messages[0]!.text).toBe("");
   });
 
+  it("keeps the text-only placeholder through text start and replaces it with the first delta", () => {
+    let state = reduceSessionEvent(emptyState, assistantEvent("message_start", ""));
+    const key = state.messages[0]!.key;
+    expect(state.messages[0]!.text).toBe("...");
+
+    state = reduceSessionEvent(state, {
+      type: "message_update",
+      assistantMessageEvent: { type: "text_start", contentIndex: 0 },
+    } as never);
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]).toMatchObject({ key, text: "...", streaming: true, isThinking: false });
+
+    state = reduceSessionEvent(state, assistantEvent("message_update", "answer"));
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]).toMatchObject({ key, text: "answer", streaming: true, isThinking: false });
+  });
+
   it("ignores empty text deltas without ending active thinking", () => {
     let state = reduceSessionEvent(emptyState, assistantEvent("message_start", ""));
     state = reduceSessionEvent(state, {
@@ -1000,6 +1017,31 @@ describe("session reducer", () => {
     } as unknown as AgentSessionEvent);
     expect(started.messages[0]!.error).toBe(true);
     expect(started.messages[0]!.text).toContain("provider down");
+  });
+
+  it("keeps the error body when an assistant failure also contains reasoning", () => {
+    const message = {
+      role: "assistant",
+      content: [{ type: "thinking", thinking: "diagnosing request" }],
+      errorMessage: "provider down",
+    };
+    const live = reduceSessionEvent(emptyState, {
+      type: "message_start",
+      message,
+    } as unknown as AgentSessionEvent);
+    const persisted = fromSnapshot({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "error" },
+      subagents: [],
+      messages: [message],
+    } as never);
+
+    for (const state of [live, persisted]) {
+      expect(state.messages[0]).toMatchObject({
+        text: "⚠ provider down",
+        reasoning: "diagnosing request",
+        error: true,
+      });
+    }
   });
 
   it("flags the run error on the session state and clears it on settle", () => {

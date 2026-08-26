@@ -170,7 +170,8 @@ type UnknownMessage = {
  */
 function splitContent(message: UnknownMessage): { text: string; reasoning: string } {
   const content = message.content;
-  if (typeof content === "string") return { text: content, reasoning: "" };
+  const errorText = typeof message.errorMessage === "string" ? `⚠ ${message.errorMessage}` : "";
+  if (typeof content === "string") return { text: content.trim() ? content : errorText, reasoning: "" };
   if (Array.isArray(content)) {
     const texts: string[] = [];
     const reasoning: string[] = [];
@@ -188,9 +189,11 @@ function splitContent(message: UnknownMessage): { text: string; reasoning: strin
     }
     const text = texts.join("\n\n");
     const joinedReasoning = reasoning.join("\n\n");
-    if (text || joinedReasoning) return { text, reasoning: joinedReasoning };
+    if (text.trim() || joinedReasoning) {
+      return { text: text.trim() ? text : errorText, reasoning: joinedReasoning };
+    }
   }
-  if (typeof message.errorMessage === "string") return { text: `⚠ ${message.errorMessage}`, reasoning: "" };
+  if (errorText) return { text: errorText, reasoning: "" };
   return { text: "", reasoning: "" };
 }
 
@@ -1088,7 +1091,7 @@ export function reduceSessionEvent(state: SessionViewState, event: AgentSessionE
           : update.kind === "text-start"
             ? {
                 ...target,
-                text: target.text === "..." ? "" : target.text,
+                text: target.text,
                 isThinking: false,
                 streaming: true,
               }

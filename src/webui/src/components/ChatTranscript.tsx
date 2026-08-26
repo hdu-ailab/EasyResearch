@@ -72,19 +72,37 @@ function ReasoningBlock({
 }) {
   const { t } = useI18n();
   const { mounted, phase } = useExpandable(open);
+  const preview =
+    active && !open
+      ? text
+          .split(/\r?\n/)
+          .findLast((line) => line.trim())
+          ?.trim()
+      : undefined;
 
   return (
     <div className="flex w-full flex-col gap-1.5">
       <button
         type="button"
-        className="flex items-center gap-1 text-[12px] font-medium text-v2-text-text-faint transition-colors hover:text-v2-text-text-muted"
+        className="flex w-full min-w-0 items-center gap-1 text-[12px] font-medium text-v2-text-text-faint transition-colors hover:text-v2-text-text-muted"
         aria-expanded={open}
         onClick={() => onToggle(!open)}
       >
-        {open ? <ChevronDown size={14} aria-hidden /> : <ChevronRight size={14} aria-hidden />}
-        <span className={active ? "v2-thinking-active text-v2-text-text-faint" : undefined}>
-          {active ? t("transcript.thinking") : t("transcript.thinkingProcess")}
-        </span>
+        {open ? (
+          <ChevronDown size={14} className="shrink-0" aria-hidden />
+        ) : (
+          <ChevronRight size={14} className="shrink-0" aria-hidden />
+        )}
+        {preview ? (
+          <span className="flex min-w-0 items-center gap-1">
+            <span className="shrink-0 text-v2-text-text-faint">{t("transcript.thinking")}:</span>{" "}
+            <span className="min-w-0 truncate text-[12.5px] font-normal text-v2-text-text-muted">{preview}</span>
+          </span>
+        ) : (
+          <span className="shrink-0 text-v2-text-text-faint">
+            {active ? t("transcript.thinking") : t("transcript.thinkingProcess")}
+          </span>
+        )}
       </button>
       {mounted && (
         <div
@@ -92,7 +110,7 @@ function ReasoningBlock({
             phase === "enter" ? "animate-v2-expand-down" : "animate-v2-collapse-up"
           } motion-reduce:animate-none`}
         >
-          <div className="v2-md text-[12.5px] text-v2-text-text-muted">
+          <div className="v2-md text-[12.5px] font-normal text-v2-text-text-muted">
             <MarkdownBlock text={text} />
           </div>
         </div>
@@ -277,7 +295,7 @@ function MessageRow({
   const roleKey = ROLE_LABELS[message.role];
   const label = message.label ? agentDisplayName(t, message.label) : roleKey ? t(roleKey) : message.role;
   const isYou = message.role === "user" && message.label == null;
-  const hasBody = Boolean(message.text) || message.error || message.streaming;
+  const hasBody = Boolean(message.text.trim()) || (message.streaming && !message.reasoning && !message.isThinking);
   if (message.usageOnly && message.apiUsage) {
     return (
       <li className="flex flex-col items-start gap-1">
@@ -291,9 +309,7 @@ function MessageRow({
       {message.reasoning ? (
         <ReasoningBlock text={message.reasoning} open={open} onToggle={onToggle} active={Boolean(message.isThinking)} />
       ) : message.isThinking ? (
-        <span className="v2-thinking-active text-[12px] font-medium text-v2-text-text-faint">
-          {t("transcript.thinking")}
-        </span>
+        <span className="text-[12px] font-medium text-v2-text-text-faint">{t("transcript.thinking")}</span>
       ) : null}
       {editing && isYou ? (
         <EditMessageDraft
@@ -313,7 +329,6 @@ function MessageRow({
           ) : (
             <MarkdownBlock text={message.text} />
           )}
-          {message.streaming && <span className="v2-caret" aria-hidden />}
         </div>
       ) : hasBody ? (
         <span
@@ -322,7 +337,6 @@ function MessageRow({
           }`}
         >
           {message.text}
-          {message.streaming && <span className="v2-caret" aria-hidden />}
         </span>
       ) : null}
       {showApiUsageDetails && message.apiUsage ? <ApiUsageLine record={message.apiUsage} /> : null}
@@ -391,7 +405,6 @@ function PendingRow() {
       <div className="v2-md flex items-center gap-2 rounded-lg bg-v2-background-bg-deep px-3 py-2 text-[length:var(--v2-chat-font-size)] text-v2-text-text-base">
         <span className="v2-spinner" aria-hidden />
         <span className="text-[12px] text-v2-text-text-faint">{t("transcript.workingInProgress")}</span>
-        <span className="v2-caret" aria-hidden />
       </div>
     </li>
   );

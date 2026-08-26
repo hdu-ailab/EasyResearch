@@ -137,3 +137,32 @@ it("separates the New project entry from an existing project's New session actio
   expect(screen.getByRole("button", { name: "New project" })).toBeVisible();
   expect(screen.getByRole("button", { name: "New session /proj" })).toBeVisible();
 });
+
+it("uses the 820px desktop threshold for the workspace, project rail, and active-session details", () => {
+  renderWorkspace([history({ path: "/agent/sessions/a1.jsonl" })], [active()]);
+
+  expect(screen.getByRole("region", { name: "Research workspace" })).toHaveClass(
+    "min-[820px]:grid-cols-[minmax(280px,25%)_minmax(0,1fr)]",
+  );
+  expect(screen.getByRole("complementary", { name: "Projects" })).toHaveClass(
+    "min-[820px]:col-start-1",
+    "min-[820px]:row-span-2",
+  );
+
+  const sessionButton = screen.getByText("Custom active name").closest("button");
+  expect(sessionButton).toHaveClass(
+    "min-[820px]:grid-cols-[minmax(0,1.55fr)_minmax(0,0.9fr)_minmax(56px,72px)_minmax(72px,92px)]",
+    "min-[820px]:gap-x-2",
+    "min-[820px]:px-4",
+  );
+  expect(
+    within(sessionButton!)
+      .getAllByTitle("/proj")
+      .some((element) => element.classList.contains("min-[820px]:flex")),
+  ).toBe(true);
+  expect(
+    within(sessionButton!)
+      .getAllByText("Running")
+      .some((element) => element.classList.contains("min-w-0") && element.classList.contains("truncate")),
+  ).toBe(true);
+});

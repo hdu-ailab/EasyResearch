@@ -61,3 +61,15 @@ it("exposes a rename control per recent row", () => {
   fireEvent.click(rename);
   expect(onRenameSession).toHaveBeenCalledWith(expect.objectContaining({ id: "h1" }));
 });
+
+it("uses shrinkable recent-session columns at the 820px Home desktop threshold", () => {
+  renderList([history()]);
+
+  const sessionButton = screen.getByText("Fault diagnosis").closest("button");
+  expect(sessionButton).toHaveClass(
+    "min-[820px]:grid-cols-[minmax(0,1.55fr)_minmax(0,0.9fr)_minmax(56px,72px)_minmax(72px,92px)]",
+    "min-[820px]:gap-x-2",
+    "min-[820px]:px-4",
+  );
+  expect(within(sessionButton!).getAllByText("proj")[0]).toHaveClass("truncate");
+});

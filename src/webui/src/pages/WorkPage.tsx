@@ -969,7 +969,12 @@ export function WorkPage({
       )}
       {sessionView.retry ? <RetryBanner retry={sessionView.retry} /> : null}
       <WorkMobileTabs active={mobileView} onChange={setMobileView} />
-      <div ref={rowRef} className="relative flex min-h-0 flex-1 gap-2 overflow-x-clip px-2 pb-2 pt-[4px]">
+      <div
+        ref={rowRef}
+        className={`relative flex min-h-0 flex-1 overflow-x-clip px-2 pb-2 pt-[4px] ${panelOpen ? "gap-2" : "gap-0"} ${
+          panelMotionReady ? "transition-[gap] duration-v2-panel ease-v2-panel motion-reduce:transition-none" : ""
+        }`}
+      >
         <section
           id="work-panel-chat"
           role="tabpanel"
