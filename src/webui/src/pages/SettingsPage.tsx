@@ -202,15 +202,17 @@ export function SettingsPage({
   const refreshConfiguration = useCallback(async () => {
     const request = ++configurationRequest.current;
     try {
-      const [globalAgents, fallbackAgents, nextModels] = await Promise.all([
+      const [globalAgents, fallbackAgents, nextModels, providerList] = await Promise.all([
         listAgentResources(),
         listAgents(),
         listModels(),
+        listAuthProviders().catch(() => null),
       ]);
       if (request !== configurationRequest.current) return;
       setResourceAgents(globalAgents);
       setAgents(fallbackAgents);
       setModels(nextModels);
+      setProviderConnectedCount(providerList?.filter((provider) => provider.authStatus?.configured).length ?? null);
       setAgentModal((current) =>
         current ? (fallbackAgents.find((agent) => agent.name === current.name) ?? null) : null,
       );
@@ -241,9 +243,6 @@ export function SettingsPage({
     listConfigProjects()
       .then((configProjects) => setProjects(configProjects.projects))
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
-    listAuthProviders()
-      .then((providerList) => setProviderConnectedCount(providerList.filter((p) => p.authStatus?.configured).length))
-      .catch(() => setProviderConnectedCount(null));
   }, []);
 
   const refreshAgents = async () => {

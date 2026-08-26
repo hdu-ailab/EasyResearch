@@ -622,6 +622,33 @@ describe("SettingsPage", () => {
     expect(screen.queryByRole("button", { name: "Configure Search" })).toBeNull();
   });
 
+  it("refreshes the connected provider count on a newer configuration generation", async () => {
+    const view = renderSettings();
+    expect(await screen.findByText("1 providers connected")).toBeVisible();
+    vi.mocked(api.listAuthProviders).mockResolvedValueOnce([
+      {
+        id: "anthropic",
+        name: "Anthropic",
+        authMethods: ["api_key"],
+        connectable: true,
+        authStatus: { configured: true },
+        modelsJson: false,
+      },
+      {
+        id: "xai",
+        name: "xAI",
+        authMethods: ["api_key", "oauth"],
+        connectable: true,
+        authStatus: { configured: true },
+        modelsJson: false,
+      },
+    ] as never);
+
+    view.rerender(settingsElement(undefined, undefined, 2));
+
+    expect(await screen.findByText("2 providers connected")).toBeVisible();
+  });
+
   it("retains last-good Settings controls while configuration is malformed", async () => {
     const view = renderSettings();
     expect(await screen.findByRole("button", { name: "Configure Search" })).toBeVisible();
