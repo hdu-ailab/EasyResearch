@@ -21,6 +21,7 @@ describe("bundled agent definitions", () => {
       agentDir: join(root, "agent"),
       cwd: join(root, "project"),
       homeDir: join(root, "home"),
+      platform: "linux",
     });
     const byName = Object.fromEntries(agents.map((agent) => [agent.name, agent])) as Record<string, AgentConfig>;
 
@@ -54,6 +55,7 @@ describe("bundled agent definitions", () => {
       agentDir: join(root, "agent"),
       cwd: join(root, "project"),
       homeDir: join(root, "home"),
+      platform: "linux",
     });
     expect(agents.length).toBeGreaterThan(0);
     for (const agent of agents) {
@@ -61,5 +63,26 @@ describe("bundled agent definitions", () => {
       expect(agent.effectiveTools).not.toEqual(expect.arrayContaining(["grep", "find", "ls"]));
       expect(agent.effectiveSkills).toContain("playwright-cli");
     }
+  });
+
+  it.each([
+    ["win32", "powershell", "bash"],
+    ["linux", "bash", "powershell"],
+    ["darwin", "bash", "powershell"],
+  ] as const)("reports the native local shell for all-tools metadata on %s", async (platform, native, excluded) => {
+    const catalog = await loadAgentCatalog({
+      agentDir: join(root, "agent"),
+    });
+    const { agents } = resolveAgentCatalog(catalog, {
+      agentDir: join(root, "agent"),
+      cwd: join(root, "project"),
+      homeDir: join(root, "home"),
+      platform,
+    });
+    const researchAssistant = agents.find((agent) => agent.name === "research-assistant");
+
+    expect(researchAssistant?.effectiveTools).toContain(native);
+    expect(researchAssistant?.effectiveTools).not.toContain(excluded);
+    expect(researchAssistant?.effectiveTools).toContain("ssh-bash");
   });
 });

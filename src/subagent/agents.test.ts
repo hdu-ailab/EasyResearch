@@ -39,8 +39,8 @@ beforeEach(() => {
 
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-function options() {
-  return { agentDir, bundledAgentsDir: bundledDir, cwd: join(root, "project") };
+function options(platform: NodeJS.Platform = "linux") {
+  return { agentDir, bundledAgentsDir: bundledDir, cwd: join(root, "project"), platform };
 }
 
 describe("discoverAgents (Markdown layers)", () => {
@@ -194,6 +194,22 @@ describe("discoverAgents (Markdown layers)", () => {
     });
   });
 
+  it.each([
+    ["win32", ["read", "powershell", "ssh-bash"]],
+    ["linux", ["read", "bash", "ssh-bash"]],
+    ["darwin", ["read", "bash", "ssh-bash"]],
+  ] as const)("normalizes strict local-shell names on %s", async (platform, expected) => {
+    writeAgent(bundledDir, "experiment", [
+      "tools: [read, bash, powershell, ssh-bash]",
+    ]);
+
+    const { agents } = await discoverAgents({ ...options(), platform });
+    const experiment = agents.find((agent) => agent.name === "experiment");
+
+    expect(experiment?.tools).toEqual(["read", "bash", "powershell", "ssh-bash"]);
+    expect(experiment?.effectiveTools).toEqual(expected);
+  });
+
   it("ignores thinking frontmatter", async () => {
     writeAgent(bundledDir, "search", ["thinking: medium"]);
     const { agents } = await discoverAgents(options());
@@ -295,12 +311,14 @@ describe("discoverAgents (Markdown layers)", () => {
       cwd: project,
       agentDir,
       bundledSkillsDir,
+      platform: "linux",
     });
     const { agents: globalAgents } = await discoverGlobalAgents({
       cwd: project,
       agentDir,
       bundledAgentsDir: bundledDir,
       bundledSkillsDir,
+      platform: "linux",
     });
 
     expect(catalog.definitions.find((agent) => agent.name === "research-assistant")).not.toHaveProperty("effectiveSkills");
