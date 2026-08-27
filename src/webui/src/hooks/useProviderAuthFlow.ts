@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { AuthFlowEventDto, AuthProviderInfoDto } from "../../../web/contracts";
 import {
   authFlowEventSource,
@@ -43,6 +43,7 @@ export type NotifyCard =
 
 export interface UseProviderAuthFlow {
   providers: AuthProviderInfoDto[];
+  providersLoaded: boolean;
   connectedCount: number;
   view: FlowView;
   pendingPrompt: PendingPrompt | null;
@@ -69,8 +70,9 @@ function sortProviders(providers: AuthProviderInfoDto[]): AuthProviderInfoDto[] 
   return [...providers].sort((a, b) => Number(isPinned(b)) - Number(isPinned(a)));
 }
 
-export function useProviderAuthFlow(): UseProviderAuthFlow {
+export function useProviderAuthFlow(configurationGeneration?: number): UseProviderAuthFlow {
   const [providers, setProviders] = useState<AuthProviderInfoDto[]>([]);
+  const [providersLoaded, setProvidersLoaded] = useState(false);
   const [view, setView] = useState<FlowView>("idle");
   const [pendingPrompt, setPendingPrompt] = useState<PendingPrompt | null>(null);
   const [notifies, setNotifies] = useState<NotifyCard[]>([]);
@@ -83,14 +85,27 @@ export function useProviderAuthFlow(): UseProviderAuthFlow {
   const flowIdRef = useRef<string | null>(null);
   const terminalRef = useRef(false);
   const errorStreakRef = useRef(0);
+  const providerRequestRef = useRef(0);
 
   const refresh = useCallback(async () => {
-    setProviders(sortProviders(await listAuthProviders()));
+    const request = ++providerRequestRef.current;
+    try {
+      const next = sortProviders(await listAuthProviders());
+      if (request !== providerRequestRef.current) return;
+      setProviders(next);
+      setProvidersLoaded(true);
+    } catch {
+      // Provider metadata is observational. Keep the last complete list.
+    }
   }, []);
 
   useEffect(() => {
+    void configurationGeneration;
     void refresh();
-  }, [refresh]);
+    return () => {
+      providerRequestRef.current += 1;
+    };
+  }, [configurationGeneration, refresh]);
 
   const closeStream = useCallback(() => {
     unsubRef.current?.();
@@ -101,6 +116,7 @@ export function useProviderAuthFlow(): UseProviderAuthFlow {
   // the single-flight lock is not held after the modal goes away.
   useEffect(() => {
     return () => {
+      genRef.current += 1;
       closeStream();
       const flowId = flowIdRef.current;
       flowIdRef.current = null;
@@ -152,6 +168,7 @@ export function useProviderAuthFlow(): UseProviderAuthFlow {
           });
         } else if (event.type === "done") {
           terminalRef.current = true;
+          flowIdRef.current = null;
           setPendingPrompt(null);
           setWarning(event.warning);
           setView("done");
@@ -170,6 +187,7 @@ export function useProviderAuthFlow(): UseProviderAuthFlow {
             void refresh();
             return;
           }
+          flowIdRef.current = null;
           setErrorMessage(event.message);
           setErrorReason(event.reason);
           setView("error");
@@ -230,21 +248,21 @@ export function useProviderAuthFlow(): UseProviderAuthFlow {
     setErrorMessage(undefined);
     setErrorReason(undefined);
     setActiveProviderId(undefined);
-    void refresh();
-  }, [closeStream, refresh]);
+  }, [closeStream]);
 
   const logout = useCallback(
     async (providerId: string) => {
       await logoutProvider(providerId);
-      void refresh();
+      await refresh();
     },
     [refresh],
   );
 
-  const connectedCount = useMemo(() => providers.filter((p) => p.authStatus?.configured).length, [providers]);
+  const connectedCount = providers.filter((provider) => provider.authStatus?.configured).length;
 
   return {
     providers,
+    providersLoaded,
     connectedCount,
     view,
     pendingPrompt,

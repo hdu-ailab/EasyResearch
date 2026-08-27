@@ -40,6 +40,7 @@ const ambientProvider: AuthProviderInfoDto = {
 function makeFlow(overrides: Partial<UseProviderAuthFlow> = {}): UseProviderAuthFlow {
   return {
     providers: [apiKeyProvider, dualProvider, ambientProvider],
+    providersLoaded: true,
     connectedCount: 0,
     view: "idle",
     pendingPrompt: null,
@@ -119,6 +120,7 @@ describe("ProviderConnectModal", () => {
     const user = userEvent.setup();
     render(<ProviderConnectModal onClose={() => {}} />);
     await user.click(screen.getByRole("button", { name: "Anthropic" }));
+    expect(flow.start).not.toHaveBeenCalled();
     await user.click(screen.getByText("Disconnect Anthropic"));
     expect(flow.logout).toHaveBeenCalledWith("anthropic");
   });

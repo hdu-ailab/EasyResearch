@@ -27,6 +27,7 @@ vi.mock("../../api", async (importOriginal) => {
     readSkillResource: vi.fn(),
     writeSkillResource: vi.fn(),
     listAuthProviders: vi.fn(),
+    logoutProvider: vi.fn(),
     refreshConfigurationResources: vi.fn(),
   };
 });
@@ -60,6 +61,7 @@ beforeEach(() => {
   vi.mocked(api.readSkillResource).mockReset();
   vi.mocked(api.writeSkillResource).mockReset();
   vi.mocked(api.listAuthProviders).mockReset();
+  vi.mocked(api.logoutProvider).mockReset().mockResolvedValue(undefined);
   vi.mocked(api.refreshConfigurationResources).mockReset().mockResolvedValue({ generation: 1, error: null });
   vi.mocked(api.listAgents).mockResolvedValue([
     {
@@ -945,6 +947,107 @@ describe("SettingsModal", () => {
     view.rerender(settingsElement(undefined, undefined, 2));
 
     expect(await screen.findByText("2 providers connected")).toBeVisible();
+  });
+
+  it("refreshes Provider count independently when unrelated Settings metadata fails", async () => {
+    const user = userEvent.setup();
+    const view = renderSettings();
+    await selectCategory(user, "Model providers");
+    expect(await screen.findByText("1 providers connected")).toBeVisible();
+    vi.mocked(api.listAgentResources).mockRejectedValueOnce(new Error("Agent metadata unavailable"));
+    vi.mocked(api.listAuthProviders).mockResolvedValueOnce([
+      {
+        id: "anthropic",
+        name: "Anthropic",
+        authMethods: ["api_key"],
+        connectable: true,
+        authStatus: { configured: true },
+        modelsJson: false,
+      },
+      {
+        id: "xai",
+        name: "xAI",
+        authMethods: ["api_key", "oauth"],
+        connectable: true,
+        authStatus: { configured: true },
+        modelsJson: false,
+      },
+    ] as never);
+
+    view.rerender(settingsElement(undefined, undefined, 2));
+
+    expect(await screen.findByText("2 providers connected")).toBeVisible();
+  });
+
+  it("opens Provider management without creating a second Provider state request", async () => {
+    const user = userEvent.setup();
+    renderSettings();
+    await selectCategory(user, "Model providers");
+    const providerAction = (await screen.findByText("1 providers connected")).closest("button");
+    expect(api.listAuthProviders).toHaveBeenCalledOnce();
+
+    await user.click(providerAction!);
+    expect(screen.getByRole("dialog", { name: "Connect providers" })).toBeVisible();
+    await act(async () => {});
+
+    expect(api.listAuthProviders).toHaveBeenCalledOnce();
+  });
+
+  it("retries the shared Provider list when management opens after initial loading failed", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listAuthProviders)
+      .mockRejectedValueOnce(new Error("provider list unavailable"))
+      .mockResolvedValueOnce([
+        {
+          id: "anthropic",
+          name: "Anthropic",
+          authMethods: ["api_key"],
+          connectable: true,
+          authStatus: { configured: true },
+          modelsJson: false,
+        },
+      ] as never);
+    renderSettings();
+    await selectCategory(user, "Model providers");
+    const providerAction = screen.getByRole("button", { name: "Connect providers" });
+
+    await user.click(providerAction);
+
+    const dialog = screen.getByRole("dialog", { name: "Connect providers" });
+    expect(await within(dialog).findByText("1 providers connected")).toBeVisible();
+    expect(api.listAuthProviders).toHaveBeenCalledTimes(2);
+  });
+
+  it("shares logout refresh state between the Provider dialog and Settings count", async () => {
+    const user = userEvent.setup();
+    let connected = true;
+    vi.mocked(api.listAuthProviders).mockImplementation(
+      async () =>
+        [
+          {
+            id: "anthropic",
+            name: "Anthropic",
+            authMethods: ["api_key"],
+            connectable: true,
+            authStatus: { configured: connected },
+            modelsJson: false,
+          },
+        ] as never,
+    );
+    vi.mocked(api.logoutProvider).mockImplementation(async () => {
+      connected = false;
+    });
+    renderSettings();
+    await selectCategory(user, "Model providers");
+    const providerAction = (await screen.findByText("1 providers connected")).closest("button");
+    await user.click(providerAction!);
+    const dialog = screen.getByRole("dialog", { name: "Connect providers" });
+    await user.click(within(dialog).getByRole("button", { name: "Anthropic" }));
+    await user.click(within(dialog).getByText("Disconnect Anthropic"));
+    await waitFor(() => expect(within(dialog).getByText("0 providers connected")).toBeVisible());
+    await user.click(within(dialog).getByRole("button", { name: "Close editor" }));
+
+    expect(await screen.findByText("0 providers connected")).toBeVisible();
   });
 
   it("refreshes Skill rows and the selected project diagnostics independently of slow metadata", async () => {

@@ -1,6 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AuthFlowEventDto } from "../../../web/contracts";
+import type { AuthFlowEventDto, AuthProviderInfoDto } from "../../../web/contracts";
 import * as api from "../api";
 import { useProviderAuthFlow } from "./useProviderAuthFlow";
 
@@ -45,6 +45,27 @@ vi.mock("../api", async (importOriginal) => {
 
 const handlersList: api.AuthFlowHandlers[] = [];
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function provider(id: string, configured: boolean): AuthProviderInfoDto {
+  return {
+    id,
+    name: id,
+    authMethods: ["api_key"],
+    connectable: true,
+    authStatus: { configured },
+    modelsJson: false,
+  };
+}
+
 function emit(event: AuthFlowEventDto, index = handlersList.length - 1) {
   act(() => handlersList[index]?.onEvent(event));
 }
@@ -53,13 +74,63 @@ describe("useProviderAuthFlow", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     handlersList.length = 0;
+    vi.mocked(api.listAuthProviders)
+      .mockReset()
+      .mockResolvedValue([
+        provider("anthropic", false),
+        {
+          ...provider("xai", true),
+          name: "xAI",
+          authMethods: ["api_key", "oauth"],
+        },
+        {
+          ...provider("google-vertex", false),
+          name: "Google Vertex AI",
+          connectable: false,
+          hint: "ambient",
+        },
+      ]);
   });
 
   it("loads providers and computes the connected count", async () => {
     const { result } = renderHook(() => useProviderAuthFlow());
     await waitFor(() => expect(result.current.providers).toHaveLength(3));
     expect(result.current.connectedCount).toBe(1);
+    expect(result.current.providersLoaded).toBe(true);
     expect(result.current.view).toBe("idle");
+  });
+
+  it("keeps only the latest generation refresh and ignores an older response", async () => {
+    const older = deferred<AuthProviderInfoDto[]>();
+    const newer = deferred<AuthProviderInfoDto[]>();
+    vi.mocked(api.listAuthProviders).mockReset().mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+    const view = renderHook(({ generation }: { generation: number }) => useProviderAuthFlow(generation), {
+      initialProps: { generation: 1 },
+    });
+    await waitFor(() => expect(api.listAuthProviders).toHaveBeenCalledOnce());
+
+    view.rerender({ generation: 2 });
+    await waitFor(() => expect(api.listAuthProviders).toHaveBeenCalledTimes(2));
+    await act(async () => newer.resolve([provider("new-a", true), provider("new-b", true)]));
+    await waitFor(() => expect(view.result.current.connectedCount).toBe(2));
+    await act(async () => older.resolve([provider("old", true)]));
+
+    expect(view.result.current.providers.map(({ id }) => id)).toEqual(["new-a", "new-b"]);
+    expect(view.result.current.connectedCount).toBe(2);
+  });
+
+  it("preserves the last provider state when a generation refresh fails", async () => {
+    const view = renderHook(({ generation }: { generation: number }) => useProviderAuthFlow(generation), {
+      initialProps: { generation: 1 },
+    });
+    await waitFor(() => expect(view.result.current.connectedCount).toBe(1));
+    vi.mocked(api.listAuthProviders).mockRejectedValueOnce(new Error("provider list unavailable"));
+
+    view.rerender({ generation: 2 });
+    await waitFor(() => expect(api.listAuthProviders).toHaveBeenCalledTimes(2));
+
+    expect(view.result.current.connectedCount).toBe(1);
+    expect(view.result.current.providersLoaded).toBe(true);
   });
 
   it("starts a flow and surfaces a prompt event", async () => {

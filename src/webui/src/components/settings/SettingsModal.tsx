@@ -15,7 +15,6 @@ import {
   createAgentResource,
   listAgentResources,
   listAgents,
-  listAuthProviders,
   listConfigProjects,
   listModels,
   listSkillResources,
@@ -29,12 +28,13 @@ import {
 import type { ModelOption } from "../../api/parsers";
 import type { SettingsCloseGuard } from "../../hooks/useHashRoute";
 import { hasModalAbove, type ModalLayerResult, requestModalCloseAbove, useModalLayer } from "../../hooks/useModalLayer";
+import { useProviderAuthFlow } from "../../hooks/useProviderAuthFlow";
 import { agentDisplayName } from "../../i18n/agents";
 import { useI18n } from "../../i18n/useI18n";
 import { AgentConfigModal } from "../AgentConfigModal";
 import { AgentMarkdownEditor } from "../AgentMarkdownEditor";
 import { AgentResourceDetailsDialog } from "../AgentResourceDetailsDialog";
-import { ProviderConnectModal } from "../ProviderConnectModal";
+import { ProviderConnectModalContent } from "../ProviderConnectModal";
 import { SkillResourceEditor } from "../SkillResourceEditor";
 import { thinkingLevelsForModel } from "../ThinkingLevelSelect";
 import { type SettingsCategory, SettingsNavigation } from "./SettingsNavigation";
@@ -120,6 +120,7 @@ export function SettingsModal({
   registerRouteCloseGuard,
 }: SettingsModalProps) {
   const { t } = useI18n();
+  const providerFlow = useProviderAuthFlow(configurationGeneration);
   const dialogRef = useRef<HTMLElement>(null);
   const titleRef = useRef<HTMLHeadingElement>(null);
   const mobileButtons = useRef<Partial<Record<SettingsCategory, HTMLButtonElement | null>>>({});
@@ -145,7 +146,6 @@ export function SettingsModal({
   const [diagnosticError, setDiagnosticError] = useState<string | null>(null);
   const [projects, setProjects] = useState<Array<{ cwd: string }>>([]);
   const [providerConnectOpen, setProviderConnectOpen] = useState(false);
-  const [providerConnectedCount, setProviderConnectedCount] = useState<number | null>(null);
   const [agentModal, setAgentModal] = useState<AgentDto | null>(null);
   const diagnosticRequest = useRef(0);
   const configurationRequest = useRef(0);
@@ -173,17 +173,15 @@ export function SettingsModal({
     async (refreshError: string | null = null) => {
       const request = ++configurationRequest.current;
       try {
-        const [globalAgents, fallbackAgents, nextModels, providerList] = await Promise.all([
+        const [globalAgents, fallbackAgents, nextModels] = await Promise.all([
           listAgentResources(),
           listAgents(),
           listModels(),
-          listAuthProviders().catch(() => null),
         ]);
         if (request !== configurationRequest.current) return;
         setResourceAgents(globalAgents);
         setAgents(fallbackAgents);
         setModels(nextModels);
-        setProviderConnectedCount(providerList?.filter((provider) => provider.authStatus?.configured).length ?? null);
         setAgentModal((current) =>
           current ? (fallbackAgents.find((agent) => agent.name === current.name) ?? null) : null,
         );
@@ -497,7 +495,13 @@ export function SettingsModal({
     general: <GeneralSettingsPanel />,
     conversation: <ConversationSettingsPanel configurationGeneration={configurationGeneration} />,
     providers: (
-      <ProviderSettingsPanel connectedCount={providerConnectedCount} onOpen={() => setProviderConnectOpen(true)} />
+      <ProviderSettingsPanel
+        connectedCount={providerFlow.providersLoaded ? providerFlow.connectedCount : null}
+        onOpen={() => {
+          if (!providerFlow.providersLoaded) void providerFlow.refresh();
+          setProviderConnectOpen(true);
+        }}
+      />
     ),
     agents: (
       <AgentSettingsPanel
@@ -599,7 +603,15 @@ export function SettingsModal({
           onClose={() => setDetailsAgent(null)}
         />
       )}
-      {providerConnectOpen && <ProviderConnectModal onClose={() => setProviderConnectOpen(false)} />}
+      {providerConnectOpen && (
+        <ProviderConnectModalContent
+          flow={providerFlow}
+          onClose={() => {
+            providerFlow.backToList();
+            setProviderConnectOpen(false);
+          }}
+        />
+      )}
       {agentEditor && !agentModal && !roster.some((agent) => agent.name === agentEditor.name) && (
         <AgentMarkdownEditor
           resource={agentEditor}

@@ -2,7 +2,12 @@ import { AlertTriangle, CheckCircle2, ExternalLink, KeyRound, Search, ShieldChec
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { AuthProviderInfoDto } from "../../../web/contracts";
 import { useModalLayer } from "../hooks/useModalLayer";
-import { type NotifyCard, type PendingPrompt, useProviderAuthFlow } from "../hooks/useProviderAuthFlow";
+import {
+  type NotifyCard,
+  type PendingPrompt,
+  type UseProviderAuthFlow,
+  useProviderAuthFlow,
+} from "../hooks/useProviderAuthFlow";
 import { useI18n } from "../i18n/useI18n";
 import { ProviderIcon } from "./ProviderIcon";
 
@@ -10,13 +15,21 @@ export interface ProviderConnectModalProps {
   onClose: () => void;
 }
 
+export interface ProviderConnectModalContentProps extends ProviderConnectModalProps {
+  flow: UseProviderAuthFlow;
+}
+
 function statusDot(configured: boolean): string {
   return configured ? "bg-emerald-500" : "bg-v2-grey-400";
 }
 
 export function ProviderConnectModal({ onClose }: ProviderConnectModalProps) {
+  const flow = useProviderAuthFlow();
+  return <ProviderConnectModalContent flow={flow} onClose={onClose} />;
+}
+
+export function ProviderConnectModalContent({ onClose, flow: f }: ProviderConnectModalContentProps) {
   const { t } = useI18n();
-  const f = useProviderAuthFlow();
   const dialogRef = useRef<HTMLDivElement>(null);
   const { zIndex, dialogProps } = useModalLayer(onClose, dialogRef);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -44,10 +57,10 @@ export function ProviderConnectModal({ onClose }: ProviderConnectModalProps) {
     return f.providers.filter((p) => `${p.id} ${p.name}`.toLowerCase().includes(query));
   }, [f.providers, filter]);
 
-  const openProvider = (providerId: string, methods: ("api_key" | "oauth")[]) => {
-    setSelectedId(providerId);
-    if (methods.length === 1 && methods[0]) {
-      void f.start(providerId, methods[0]);
+  const openProvider = (provider: AuthProviderInfoDto) => {
+    setSelectedId(provider.id);
+    if (!provider.authStatus.configured && provider.authMethods.length === 1 && provider.authMethods[0]) {
+      void f.start(provider.id, provider.authMethods[0]);
     }
   };
 
@@ -56,7 +69,7 @@ export function ProviderConnectModal({ onClose }: ProviderConnectModalProps) {
   };
 
   const retry = () => {
-    if (selected) openProvider(selected.id, selected.authMethods);
+    if (selected) openProvider(selected);
   };
 
   const move = (direction: 1 | -1) => {
@@ -90,7 +103,7 @@ export function ProviderConnectModal({ onClose }: ProviderConnectModalProps) {
     }
     if (event.key !== "Enter" || !activeId) return;
     const provider = filtered.find((p) => p.id === activeId);
-    if (provider) openProvider(provider.id, provider.authMethods);
+    if (provider) openProvider(provider);
     event.preventDefault();
   };
 
@@ -153,7 +166,7 @@ export function ProviderConnectModal({ onClose }: ProviderConnectModalProps) {
                     provider={p}
                     active={activeId === p.id}
                     onActivate={() => setActiveId(p.id)}
-                    onOpen={() => openProvider(p.id, p.authMethods)}
+                    onOpen={() => openProvider(p)}
                     onKeyDown={handleListKeyDown}
                   />
                 ))}
