@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { fingerprintSkillRoot } from "../runtime/resource-fingerprint";
 import { ConfigFileService, ConfigPathError, ConfigServiceError, resolveAllowedConfigPath } from "./config-files";
 
 const { renameSyncMock, realRenameSync } = vi.hoisted(() => ({
@@ -168,21 +169,223 @@ describe("ConfigFileService", () => {
     ]);
   });
 
-  it("does not notify for project, unrelated global, or nested Agent writes", async () => {
+  it("notifies exactly once after atomic root and nested global Skill descriptor writes", async () => {
+    const observations: Array<{ change: unknown; path: string; bytes: string }> = [];
+    let expectedPath = "";
+    const notifying = new ConfigFileService(agentDir, {
+      onAuthoritativeWrite: async (change) => {
+        observations.push({
+          change,
+          path: expectedPath,
+          bytes: readFileSync(join(agentDir, expectedPath), "utf8"),
+        });
+      },
+    });
+
+    expectedPath = "skills/root-skill.md";
+    await notifying.write({
+      scope: "global",
+      path: expectedPath,
+      content: "root descriptor",
+    });
+    expectedPath = "skills/namespace/deep/SKILL.md";
+    await notifying.write({
+      scope: "global",
+      path: expectedPath,
+      content: "nested descriptor",
+    });
+
+    expect(observations).toEqual([
+      {
+        change: { skillsChanged: true },
+        path: "skills/root-skill.md",
+        bytes: "root descriptor",
+      },
+      {
+        change: { skillsChanged: true },
+        path: "skills/namespace/deep/SKILL.md",
+        bytes: "nested descriptor",
+      },
+    ]);
+  });
+
+  it("acquires an exact project before each descriptor write, synchronizes persisted bytes once, and releases", async () => {
+    const events: string[] = [];
+    let owned = false;
+    const notifying = new ConfigFileService(agentDir, {
+      acquireProject: async (observedCwd) => {
+        events.push(`acquire:${observedCwd}`);
+        owned = true;
+        return {
+          cwd: observedCwd,
+          release: async () => {
+            expect(owned).toBe(true);
+            owned = false;
+            events.push(`release:${observedCwd}`);
+          },
+        };
+      },
+      synchronizeProject: async (observedCwd) => {
+        expect(owned).toBe(true);
+        const descriptorRoot = join(cwd, ".easyresearch", "skills");
+        const descriptor = fs.existsSync(join(descriptorRoot, "root-project.md"))
+          ? join(descriptorRoot, "root-project.md")
+          : join(descriptorRoot, "namespace", "deep", "SKILL.md");
+        events.push(`synchronize:${observedCwd}:${readFileSync(descriptor, "utf8")}`);
+      },
+    });
+
+    await notifying.write({
+      scope: "project",
+      cwd,
+      path: "skills/namespace/deep/SKILL.md",
+      content: "nested project descriptor",
+    });
+    await notifying.write({
+      scope: "project",
+      cwd,
+      path: "skills/root-project.md",
+      content: "root project descriptor",
+    });
+
+    expect(events).toEqual([
+      `acquire:${cwd}`,
+      `synchronize:${cwd}:nested project descriptor`,
+      `release:${cwd}`,
+      `acquire:${cwd}`,
+      `synchronize:${cwd}:root project descriptor`,
+      `release:${cwd}`,
+    ]);
+    expect(owned).toBe(false);
+    expect(readFileSync(join(cwd, ".easyresearch", "skills", "namespace", "deep", "SKILL.md"), "utf8"))
+      .toBe("nested project descriptor");
+    expect(readFileSync(join(cwd, ".easyresearch", "skills", "root-project.md"), "utf8"))
+      .toBe("root project descriptor");
+  });
+
+  it("resolves a project descriptor target only after exact-cwd acquisition", async () => {
+    const projectA = freshDir();
+    const projectB = freshDir();
+    const alias = join(freshDir(), "project-link");
+    symlinkSync(projectA, alias, process.platform === "win32" ? "junction" : "dir");
+    const previousDescriptor = join(projectA, ".easyresearch", "skills", "retargeted", "SKILL.md");
+    mkdirSync(join(previousDescriptor, ".."), { recursive: true });
+    writeFileSync(previousDescriptor, "accepted project", "utf8");
+    const events: string[] = [];
+    const notifying = new ConfigFileService(agentDir, {
+      acquireProject: async (observedCwd) => {
+        events.push(`acquire:${observedCwd}`);
+        fs.unlinkSync(alias);
+        symlinkSync(projectB, alias, process.platform === "win32" ? "junction" : "dir");
+        return {
+          cwd: observedCwd,
+          release: async () => {
+            events.push(`release:${observedCwd}`);
+          },
+        };
+      },
+      synchronizeProject: async (observedCwd) => {
+        events.push(`synchronize:${observedCwd}`);
+      },
+    });
+
+    await notifying.write({
+      scope: "project",
+      cwd: alias,
+      path: "skills/retargeted/SKILL.md",
+      content: "current project",
+    });
+
+    expect(readFileSync(previousDescriptor, "utf8")).toBe("accepted project");
+    expect(readFileSync(join(projectB, ".easyresearch", "skills", "retargeted", "SKILL.md"), "utf8"))
+      .toBe("current project");
+    expect(events).toEqual([`acquire:${alias}`, `synchronize:${alias}`, `release:${alias}`]);
+  });
+
+  it("rolls back a project descriptor when the exact cwd retargets during atomic rename", async () => {
+    const projectA = freshDir();
+    const projectB = freshDir();
+    const alias = join(freshDir(), "project-link");
+    symlinkSync(projectA, alias, process.platform === "win32" ? "junction" : "dir");
+    const previousDescriptor = join(projectA, ".easyresearch", "skills", "retargeted", "SKILL.md");
+    mkdirSync(join(previousDescriptor, ".."), { recursive: true });
+    writeFileSync(previousDescriptor, "accepted project", "utf8");
+    const events: string[] = [];
+    const notifying = new ConfigFileService(agentDir, {
+      acquireProject: async (observedCwd) => ({
+        cwd: observedCwd,
+        release: async () => {
+          events.push(`release:${observedCwd}`);
+        },
+      }),
+      synchronizeProject: async (observedCwd) => {
+        events.push(`synchronize:${observedCwd}`);
+      },
+    });
+    let retargeted = false;
+    renameSyncMock.mockImplementation((source, target) => {
+      if (!retargeted && String(target).endsWith(join("retargeted", "SKILL.md"))) {
+        retargeted = true;
+        fs.unlinkSync(alias);
+        symlinkSync(projectB, alias, process.platform === "win32" ? "junction" : "dir");
+      }
+      realRenameSync.impl(source, target);
+    });
+
+    await expect(notifying.write({
+      scope: "project",
+      cwd: alias,
+      path: "skills/retargeted/SKILL.md",
+      content: "stale project",
+    })).rejects.toThrow(/project.*changed/i);
+
+    expect(readFileSync(previousDescriptor, "utf8")).toBe("accepted project");
+    expect(fs.existsSync(join(projectB, ".easyresearch", "skills", "retargeted", "SKILL.md"))).toBe(false);
+    expect(events).toEqual([`release:${alias}`]);
+  });
+
+  it("keeps auxiliary Skills, empty directories, project Agents, and unrelated writes silent", async () => {
     const onAuthoritativeWrite = vi.fn(async () => {});
-    const notifying = new ConfigFileService(agentDir, { onAuthoritativeWrite });
+    const projectEvents: string[] = [];
+    const notifying = new ConfigFileService(agentDir, {
+      onAuthoritativeWrite,
+      acquireProject: async (observedCwd) => {
+        projectEvents.push(`acquire:${observedCwd}`);
+        return {
+          cwd: observedCwd,
+          release: async () => {
+            projectEvents.push(`release:${observedCwd}`);
+          },
+        };
+      },
+      synchronizeProject: async (observedCwd) => {
+        projectEvents.push(`synchronize:${observedCwd}`);
+      },
+    });
+    const globalBefore = await fingerprintSkillRoot(join(agentDir, "skills"), "global");
+    const projectBefore = await fingerprintSkillRoot(join(cwd, ".easyresearch", "skills"), `project:${cwd}`);
 
     await notifying.write({ scope: "global", path: "notes.json", content: "{}" });
     await notifying.write({ scope: "global", path: "agents/nested/search.md", content: "nested" });
     await notifying.write({ scope: "global", path: "agents/search.txt", content: "text" });
+    await notifying.write({ scope: "global", path: "skills/tool/helper.ts", content: "helper" });
+    await notifying.write({ scope: "global", path: "skills/tool/README.md", content: "readme" });
     await notifying.write({ scope: "project", cwd, path: "agents/search.md", content: "project" });
+    await notifying.write({ scope: "project", cwd, path: "skills/tool/helper.ts", content: "helper" });
+    await notifying.write({ scope: "project", cwd, path: "skills/tool/README.md", content: "readme" });
+    await notifying.createDirectory({ scope: "global", path: "skills/empty/nested" });
+    await notifying.createDirectory({ scope: "project", cwd, path: "skills/empty/nested" });
 
     expect(onAuthoritativeWrite).not.toHaveBeenCalled();
+    expect(projectEvents).toEqual([]);
+    expect(await fingerprintSkillRoot(join(agentDir, "skills"), "global")).toEqual(globalBefore);
+    expect(await fingerprintSkillRoot(join(cwd, ".easyresearch", "skills"), `project:${cwd}`)).toEqual(projectBefore);
   });
 
   it("does not notify when validation or the atomic rename fails", async () => {
     const onAuthoritativeWrite = vi.fn(async () => {});
     const notifying = new ConfigFileService(agentDir, { onAuthoritativeWrite });
+    const skillBefore = await fingerprintSkillRoot(join(agentDir, "skills"), "global");
 
     await expect(
       notifying.write({ scope: "global", path: "models.json", content: "{" }),
@@ -193,8 +396,80 @@ describe("ConfigFileService", () => {
     await expect(
       notifying.write({ scope: "global", path: "agents/search.md", content: "candidate" }),
     ).rejects.toThrow("disk full");
+    await expect(
+      notifying.write({ scope: "global", path: "skills/search.md", content: "candidate" }),
+    ).rejects.toThrow("disk full");
 
     expect(onAuthoritativeWrite).not.toHaveBeenCalled();
+    expect(await fingerprintSkillRoot(join(agentDir, "skills"), "global")).toEqual(skillBefore);
+  });
+
+  it("releases project ownership without synchronization when atomic persistence fails", async () => {
+    const events: string[] = [];
+    const skillRoot = join(cwd, ".easyresearch", "skills");
+    const skillBefore = await fingerprintSkillRoot(skillRoot, `project:${cwd}`);
+    const notifying = new ConfigFileService(agentDir, {
+      acquireProject: async (observedCwd) => {
+        events.push(`acquire:${observedCwd}`);
+        return {
+          cwd: observedCwd,
+          release: async () => {
+            events.push(`release:${observedCwd}`);
+          },
+        };
+      },
+      synchronizeProject: async (observedCwd) => {
+        events.push(`synchronize:${observedCwd}`);
+      },
+    });
+    renameSyncMock.mockImplementation(() => {
+      throw new Error("disk full");
+    });
+
+    await expect(notifying.write({
+      scope: "project",
+      cwd,
+      path: "skills/failed/SKILL.md",
+      content: "candidate",
+    })).rejects.toThrow("disk full");
+
+    expect(events).toEqual([`acquire:${cwd}`, `release:${cwd}`]);
+    expect(fs.existsSync(join(cwd, ".easyresearch", "skills", "failed", "SKILL.md"))).toBe(false);
+    expect(await fingerprintSkillRoot(skillRoot, `project:${cwd}`)).toEqual(skillBefore);
+  });
+
+  it("releases project ownership after a post-persistence synchronization failure", async () => {
+    const events: string[] = [];
+    const target = join(cwd, ".easyresearch", "skills", "saved", "SKILL.md");
+    const notifying = new ConfigFileService(agentDir, {
+      acquireProject: async (observedCwd) => {
+        events.push(`acquire:${observedCwd}`);
+        return {
+          cwd: observedCwd,
+          release: async () => {
+            events.push(`release:${observedCwd}`);
+          },
+        };
+      },
+      synchronizeProject: async (observedCwd) => {
+        events.push(`synchronize:${observedCwd}:${readFileSync(target, "utf8")}`);
+        throw new Error("synchronization failed");
+      },
+    });
+
+    await expect(notifying.write({
+      scope: "project",
+      cwd,
+      path: "skills/saved/SKILL.md",
+      content: "persisted before synchronization",
+    })).rejects.toThrow("synchronization failed");
+
+    expect(events).toEqual([
+      `acquire:${cwd}`,
+      `synchronize:${cwd}:persisted before synchronization`,
+      `release:${cwd}`,
+    ]);
+    expect(readFileSync(target, "utf8")).toBe("persisted before synchronization");
   });
 
   it("writes via a same-directory temporary file and atomic rename", async () => {

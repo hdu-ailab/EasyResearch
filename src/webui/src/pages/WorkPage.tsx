@@ -72,6 +72,7 @@ const emptyView: SessionViewState = {
   retry: null,
   nextOrder: 0,
   steers: [],
+  runtimeConfigurationGeneration: 0,
   compactionPolicy: { triggerPercent: 70, enabled: true },
   compactionState: "idle",
 };
@@ -194,6 +195,12 @@ export function WorkPage({
   const pendingSupervisorEvents = useRef(new Map<string, SubagentSupervisorEventDto>());
   const parentOwner = useRef({ id, generation: 1 });
   const loadChildRef = useRef<(childId: string, refresh?: boolean) => Promise<void>>(async () => {});
+  const commandRequest = useRef(0);
+  const commandGeneration = useRef<{
+    sessionId: string;
+    hydrationRevision: number;
+    generation: number | null;
+  } | null>(null);
   const activeResizeCleanup = useRef<(() => void) | null>(null);
   const resizing = useRef(false);
   const appliedPanelWidth = useRef<number | null>(null);
@@ -277,6 +284,10 @@ export function WorkPage({
   });
   const sessionView = connection.view;
   const sessionId = connection.sessionId;
+  const runtimeConfigurationGeneration = sessionView.runtimeConfigurationGeneration;
+  const hydrationRevision = sessionView.hydrationRevision;
+  const hydrationRevisionRef = useRef(hydrationRevision);
+  hydrationRevisionRef.current = hydrationRevision;
   const childCacheSessionId = useRef(sessionId);
   if (parentOwner.current.id !== sessionId) {
     parentOwner.current = { id: sessionId, generation: parentOwner.current.generation + 1 };
@@ -340,19 +351,52 @@ export function WorkPage({
     };
   }, [configurationGeneration]);
 
+  const refreshCommands = useCallback(async () => {
+    const request = ++commandRequest.current;
+    try {
+      const list = await getSessionCommands(sessionId);
+      if (request === commandRequest.current) setCommands(list);
+    } catch {
+      if (request === commandRequest.current) setCommands([]);
+    }
+  }, [sessionId]);
+
   useEffect(() => {
-    let cancelled = false;
-    getSessionCommands(sessionId)
-      .then((list) => {
-        if (!cancelled) setCommands(list);
-      })
-      .catch(() => {
-        if (!cancelled) setCommands([]);
-      });
+    commandGeneration.current = {
+      sessionId,
+      hydrationRevision: hydrationRevisionRef.current,
+      generation: null,
+    };
+    commandRequest.current += 1;
+    setCommands([]);
     return () => {
-      cancelled = true;
+      commandRequest.current += 1;
     };
   }, [sessionId]);
+
+  useEffect(() => {
+    const generation = runtimeConfigurationGeneration;
+    const baseline = commandGeneration.current;
+    if (!baseline || baseline.sessionId !== sessionId) return;
+    const hasNewSnapshot = hydrationRevision > baseline.hydrationRevision;
+    if (baseline.generation === null) {
+      if (!hasNewSnapshot) return;
+      baseline.hydrationRevision = hydrationRevision;
+      baseline.generation = generation;
+      void refreshCommands();
+      return;
+    }
+    const previous = baseline.generation;
+    if (!hasNewSnapshot && generation <= previous) return;
+    if (hasNewSnapshot) baseline.hydrationRevision = hydrationRevision;
+    baseline.generation = generation;
+    if (generation > previous) {
+      void refreshCommands();
+    } else if (hasNewSnapshot && generation < previous) {
+      commandRequest.current += 1;
+      setCommands([]);
+    }
+  }, [hydrationRevision, refreshCommands, runtimeConfigurationGeneration, sessionId]);
 
   const refreshTree = useCallback(async () => {
     try {
@@ -535,6 +579,7 @@ export function WorkPage({
         .then((snapshot) => {
           if (!ownsRequest()) return;
           let hydrated = fromSnapshot({
+            runtimeConfigurationGeneration: 0,
             session: {
               ...snapshot.session,
               isStreaming: false,

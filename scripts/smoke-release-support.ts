@@ -477,7 +477,7 @@ export function venvToolCommand(platform: NodeJS.Platform, scriptPath: string): 
 }
 
 export type SmokeModelAction =
-  | { kind: "tool"; id: string; name: "write" | "subagent" | NativeLocalShellTool; arguments: string }
+  | { kind: "tool"; id: string; name: "subagent" | NativeLocalShellTool; arguments: string }
   | { kind: "text"; text: string };
 
 export interface SmokeModelScenario {
@@ -487,19 +487,95 @@ export interface SmokeModelScenario {
   agentPath: string;
   agentContent: string;
   agentPromptMarker: string;
+  skillName: string;
+  skillPath: string;
+  skillContent: string;
+  skillPromptMarker: string;
 }
 
 export interface SmokeModelState {
-  agentWriteIssued: boolean;
-  agentWriteObserved: boolean;
+  baselineConfigurationGeneration: number | undefined;
+  externalResourcesWritten: boolean;
+  acceptedConfigurationGeneration: number | undefined;
+  rootAppliedConfigurationGeneration: number | undefined;
   customDispatchIssued: boolean;
   parentWorkingObserved: boolean;
+  childSkillObserved: boolean;
   stageShellIssued: boolean;
   venvValidated: boolean;
   stageCompleted: boolean;
   terminalHandoffObserved: boolean;
   complete: boolean;
   completedRequests: number;
+}
+
+export type SmokeAcceptanceMilestone =
+  | { kind: "baseline-snapshot"; generation: number }
+  | { kind: "external-resources-written" }
+  | { kind: "accepted-generation"; generation: number }
+  | { kind: "root-applied-generation"; generation: number };
+
+export function recordSmokeAcceptanceMilestone(
+  state: SmokeModelState,
+  milestone: SmokeAcceptanceMilestone,
+): SmokeModelState {
+  const validGeneration = (generation: number): boolean =>
+    Number.isSafeInteger(generation) && generation >= 0;
+  if (milestone.kind === "baseline-snapshot") {
+    if (
+      !validGeneration(milestone.generation)
+      || state.baselineConfigurationGeneration !== undefined
+      || state.externalResourcesWritten
+      || state.acceptedConfigurationGeneration !== undefined
+      || state.rootAppliedConfigurationGeneration !== undefined
+    ) {
+      throw new Error("native smoke baseline snapshot milestone is invalid or out of order");
+    }
+    return { ...state, baselineConfigurationGeneration: milestone.generation };
+  }
+
+  const baseline = state.baselineConfigurationGeneration;
+  if (baseline === undefined) {
+    throw new Error("native smoke must obtain the root baseline snapshot before later milestones");
+  }
+  if (milestone.kind === "external-resources-written") {
+    if (
+      state.externalResourcesWritten
+      || state.acceptedConfigurationGeneration !== undefined
+      || state.rootAppliedConfigurationGeneration !== undefined
+    ) {
+      throw new Error("native smoke external resource write milestone is out of order");
+    }
+    return { ...state, externalResourcesWritten: true };
+  }
+  if (!state.externalResourcesWritten) {
+    throw new Error("native smoke must externally write Agent and Skill resources before generation acceptance");
+  }
+  if (milestone.kind === "accepted-generation") {
+    if (
+      !validGeneration(milestone.generation)
+      || milestone.generation <= baseline
+      || state.acceptedConfigurationGeneration !== undefined
+      || state.rootAppliedConfigurationGeneration !== undefined
+    ) {
+      throw new Error("native smoke accepted generation must be greater than the baseline and recorded in order");
+    }
+    return { ...state, acceptedConfigurationGeneration: milestone.generation };
+  }
+
+  const accepted = state.acceptedConfigurationGeneration;
+  if (accepted === undefined) {
+    throw new Error("native smoke must observe the accepted generation before root application");
+  }
+  if (
+    !validGeneration(milestone.generation)
+    || milestone.generation <= baseline
+    || milestone.generation < accepted
+    || state.rootAppliedConfigurationGeneration !== undefined
+  ) {
+    throw new Error("native smoke root-applied generation must be greater than the baseline and include acceptance");
+  }
+  return { ...state, rootAppliedConfigurationGeneration: milestone.generation };
 }
 
 export interface SmokeModelTransition {
@@ -562,8 +638,17 @@ export function selectSmokeModelAction(
   if (!isAbsolute(scenario.agentPath)) {
     throw new Error(`native smoke custom Agent path must be absolute: ${scenario.agentPath}`);
   }
+  if (!isAbsolute(scenario.skillPath)) {
+    throw new Error(`native smoke custom Skill path must be absolute: ${scenario.skillPath}`);
+  }
   if (!scenario.agentContent.includes(scenario.agentPromptMarker)) {
     throw new Error("native smoke custom Agent content is missing its role-prompt marker");
+  }
+  if (!scenario.agentContent.includes(scenario.skillName)) {
+    throw new Error("native smoke custom Agent content does not reference its unique Skill");
+  }
+  if (!scenario.skillContent.includes(scenario.skillPromptMarker)) {
+    throw new Error("native smoke custom Skill content is missing its prompt marker");
   }
   const tools = request.tools ?? [];
   const toolNames = new Set(tools.map((tool) => tool.function?.name));
@@ -576,6 +661,18 @@ export function selectSmokeModelAction(
     throw new Error(
       `native smoke expected exactly one local shell tool named ${scenario.shellToolName}; received ${shellTools.join(", ") || "none"}`,
     );
+  }
+  if (state.baselineConfigurationGeneration === undefined) {
+    throw new Error("native smoke model request arrived before the root baseline snapshot");
+  }
+  if (!state.externalResourcesWritten) {
+    throw new Error("native smoke model request arrived before external Agent and Skill writes");
+  }
+  if (state.acceptedConfigurationGeneration === undefined) {
+    throw new Error("native smoke model request arrived before configuration acceptance");
+  }
+  if (state.rootAppliedConfigurationGeneration === undefined) {
+    throw new Error("native smoke model request arrived before root configuration application");
   }
   if (state.complete) throw new Error("native smoke model sequence is already complete");
   const agentId = `${scenario.agentName}_0`;
@@ -625,26 +722,9 @@ export function selectSmokeModelAction(
       throw new Error(`native smoke expected exactly one web-search tool, received ${webSearchTools.length}`);
     }
     const description = subagentDescription();
-    if (!state.agentWriteIssued) {
-      if (descriptionListsAgent(description)) {
-        throw new Error(`native smoke custom Agent ${scenario.agentName} existed before its write tool call`);
-      }
-      return transition({
-        kind: "tool",
-        id: "call_native_agent_write",
-        name: "write",
-        arguments: JSON.stringify({ path: scenario.agentPath, content: scenario.agentContent }),
-      }, { agentWriteIssued: true });
-    }
-
-    if (!state.agentWriteObserved) {
-      const actualWriteResult = expectedToolResult("call_native_agent_write");
-      const expectedWriteResult = `Successfully wrote ${scenario.agentContent.length} bytes to ${scenario.agentPath}`;
-      if (actualWriteResult !== expectedWriteResult) {
-        throw new Error(`native smoke custom Agent write result was not exact: ${actualWriteResult}`);
-      }
+    if (!state.customDispatchIssued) {
       if (!descriptionListsAgent(description)) {
-        throw new Error(`native smoke next parent request did not expose ${scenario.agentName} in the subagent schema`);
+        throw new Error(`native smoke post-application parent request did not expose ${scenario.agentName} in the subagent schema`);
       }
       return transition({
         kind: "tool",
@@ -654,11 +734,7 @@ export function selectSmokeModelAction(
           agent: scenario.agentName,
           task: `Run the native venv validation command with the ${scenario.shellToolName} tool and return a complete handoff.`,
         }),
-      }, { agentWriteObserved: true, customDispatchIssued: true });
-    }
-
-    if (!state.customDispatchIssued) {
-      throw new Error("native smoke parent observed the custom Agent write without issuing its dispatch");
+      }, { customDispatchIssued: true });
     }
     if (!descriptionListsAgent(description)) {
       throw new Error(`native smoke parent lost ${scenario.agentName} from the refreshed subagent schema`);
@@ -674,7 +750,7 @@ export function selectSmokeModelAction(
         { parentWorkingObserved: true },
       );
     }
-    if (!state.venvValidated || !state.stageCompleted) {
+    if (!state.childSkillObserved || !state.venvValidated || !state.stageCompleted) {
       throw new Error(
         `native smoke received the terminal handoff before successful ${scenario.shellToolName} stage validation`,
       );
@@ -690,7 +766,11 @@ export function selectSmokeModelAction(
       throw new Error("native smoke custom child ran before the parent dispatch");
     }
     const configuredTools = tools.map((tool) => tool.function?.name);
-    if (configuredTools.length !== 1 || configuredTools[0] !== scenario.shellToolName) {
+    if (
+      configuredTools.length !== 2
+      || configuredTools.filter((name) => name === "read").length !== 1
+      || configuredTools.filter((name) => name === scenario.shellToolName).length !== 1
+    ) {
       throw new Error(`native smoke custom child did not receive only its configured tools: ${configuredTools.join(", ")}`);
     }
     const systemPrompt = request.messages
@@ -701,13 +781,16 @@ export function selectSmokeModelAction(
     if (!systemPrompt.includes(scenario.agentPromptMarker)) {
       throw new Error("native smoke custom child did not receive its current role prompt");
     }
+    if (!systemPrompt.includes(scenario.skillPromptMarker)) {
+      throw new Error("native smoke custom child did not receive its referenced Skill marker");
+    }
     if (!state.stageShellIssued) {
       return transition({
         kind: "tool",
         id: "call_native_venv",
         name: scenario.shellToolName,
         arguments: JSON.stringify({ command: scenario.toolCommand, timeout: 60 }),
-      }, { stageShellIssued: true });
+      }, { childSkillObserved: true, stageShellIssued: true });
     }
     if (state.stageCompleted) {
       throw new Error("native smoke stage model sequence is already complete");

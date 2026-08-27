@@ -19,6 +19,7 @@ vi.mock("../api", async (importOriginal) => {
 });
 
 const initialSnapshot: SessionSnapshotDto = {
+  runtimeConfigurationGeneration: 1,
   session: {
     id: "s1",
     cwd: "/paper",
@@ -139,6 +140,7 @@ describe("useSessionConnection", () => {
     });
     emit({
       type: "snapshot",
+      runtimeConfigurationGeneration: 1,
       session: { id: "s1", cwd: "/paper", isStreaming: false, status: "ready" },
       messages: [{ role: "assistant", content: [{ type: "text", text: "authoritative reconnect" }] }],
       subagents: [],
@@ -147,12 +149,72 @@ describe("useSessionConnection", () => {
     expect(result.current.view.messages.map((message) => message.text)).toEqual(["authoritative reconnect"]);
   });
 
+  it("orders increasing live runtime generations and lets reconnect snapshots replace them authoritatively", async () => {
+    vi.mocked(api.getSnapshot).mockResolvedValueOnce({
+      ...initialSnapshot,
+      runtimeConfigurationGeneration: 2,
+    });
+    const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
+    await waitFor(() => expect(result.current.view.runtimeConfigurationGeneration).toBe(2));
+
+    emit({ type: "runtime_configuration_applied", generation: 3 });
+    emit({ type: "runtime_configuration_applied", generation: 3 });
+    emit({ type: "runtime_configuration_applied", generation: 1 });
+    emit({ type: "runtime_configuration_applied", generation: 3.5 });
+
+    expect(result.current.view.runtimeConfigurationGeneration).toBe(3);
+
+    emit({
+      type: "snapshot",
+      runtimeConfigurationGeneration: 1,
+      session: { id: "s1", cwd: "/paper", isStreaming: false, status: "ready" },
+      messages: [],
+      subagents: [],
+    });
+    expect(result.current.view.runtimeConfigurationGeneration).toBe(1);
+
+    const hydrationRevision = result.current.view.hydrationRevision;
+    emit({
+      type: "snapshot",
+      runtimeConfigurationGeneration: -1,
+      session: { id: "s1", cwd: "/paper", isStreaming: false, status: "ready" },
+      messages: [{ role: "assistant", content: [{ type: "text", text: "malformed snapshot" }] }],
+      subagents: [],
+    });
+    expect(result.current.view.runtimeConfigurationGeneration).toBe(1);
+    expect(result.current.view.hydrationRevision).toBe(hydrationRevision);
+  });
+
+  it("does not let a malformed generation snapshot suppress a pending valid HTTP snapshot", async () => {
+    const pendingHttp = deferred<SessionSnapshotDto>();
+    vi.mocked(api.getSnapshot).mockReturnValueOnce(pendingHttp.promise);
+    const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
+    await waitFor(() => expect(handlers).toHaveLength(1));
+
+    emit({
+      type: "snapshot",
+      runtimeConfigurationGeneration: -1,
+      session: { id: "s1", cwd: "/paper", isStreaming: false, status: "ready" },
+      messages: [],
+      subagents: [],
+    });
+    act(() =>
+      pendingHttp.resolve({
+        ...initialSnapshot,
+        runtimeConfigurationGeneration: 5,
+      }),
+    );
+
+    await waitFor(() => expect(result.current.view.runtimeConfigurationGeneration).toBe(5));
+  });
+
   it("exposes the exact file-watch lease from each SSE snapshot", async () => {
     const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
     emit({
       type: "snapshot",
+      runtimeConfigurationGeneration: 1,
       session: { id: "s1", cwd: "/paper", isStreaming: false, status: "ready" },
       messages: [],
       subagents: [],
@@ -162,6 +224,7 @@ describe("useSessionConnection", () => {
 
     emit({
       type: "snapshot",
+      runtimeConfigurationGeneration: 2,
       session: { id: "s1", cwd: "/paper", isStreaming: false, status: "ready" },
       messages: [],
       subagents: [],
@@ -431,6 +494,7 @@ describe("useSessionConnection", () => {
     vi.mocked(api.getSnapshot)
       .mockResolvedValueOnce(initialSnapshot)
       .mockResolvedValue({
+        runtimeConfigurationGeneration: 1,
         session: { id: "s2", cwd: "/paper", isStreaming: false, status: "ready" },
         messages: [],
         subagents: [],
@@ -447,6 +511,7 @@ describe("useSessionConnection", () => {
 
     emit({
       type: "snapshot",
+      runtimeConfigurationGeneration: 1,
       session: { id: "s2", cwd: "/paper", isStreaming: false, status: "ready" },
       messages: [],
       subagents: [],
@@ -477,6 +542,7 @@ describe("useSessionConnection", () => {
     await waitFor(() => expect(handlers).toHaveLength(2));
     emit({
       type: "snapshot",
+      runtimeConfigurationGeneration: 2,
       session: reopenedSession(),
       messages: [{ role: "assistant", content: [{ type: "text", text: "authoritative SSE" }] }],
       subagents: [],
@@ -511,6 +577,7 @@ describe("useSessionConnection", () => {
     const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
     emit({
       type: "snapshot",
+      runtimeConfigurationGeneration: 1,
       session: reopenedSession("s1"),
       messages: [{ role: "assistant", content: [{ type: "text", text: "initial SSE" }] }],
       subagents: [],
@@ -525,6 +592,7 @@ describe("useSessionConnection", () => {
     emit(
       {
         type: "snapshot",
+        runtimeConfigurationGeneration: 2,
         session: reopenedSession(),
         messages: [{ role: "assistant", content: [{ type: "text", text: "current SSE" }] }],
         subagents: [],
@@ -580,6 +648,7 @@ describe("useSessionConnection", () => {
     await waitFor(() => expect(settled).toBe(true));
     emit({
       type: "snapshot",
+      runtimeConfigurationGeneration: 2,
       session: reopenedSession(),
       messages: [],
       subagents: [],
@@ -612,6 +681,7 @@ describe("useSessionConnection", () => {
     await waitFor(() => expect(firstSettled).toBe(true));
     emit({
       type: "snapshot",
+      runtimeConfigurationGeneration: 2,
       session: reopenedSession(),
       messages: [],
       subagents: [],
@@ -795,6 +865,7 @@ describe("useSessionConnection", () => {
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
     const branched: SessionSnapshotDto = {
+      runtimeConfigurationGeneration: 1,
       session: {
         id: "s1",
         cwd: "/paper",
@@ -832,6 +903,7 @@ describe("useSessionConnection", () => {
 
   it("queues a send as a steer while the run is active, without prompt lifecycle state (ADR-083)", async () => {
     vi.mocked(api.getSnapshot).mockResolvedValueOnce({
+      runtimeConfigurationGeneration: 1,
       session: { id: "s1", cwd: "/paper", isStreaming: true, status: "running" },
       messages: [],
       subagents: [],
@@ -849,6 +921,7 @@ describe("useSessionConnection", () => {
 
   it("hydrates pending steers from a running snapshot and clears them at agent_settled (ADR-083)", async () => {
     vi.mocked(api.getSnapshot).mockResolvedValueOnce({
+      runtimeConfigurationGeneration: 1,
       session: { id: "s1", cwd: "/paper", isStreaming: true, status: "running" },
       messages: [],
       subagents: [],

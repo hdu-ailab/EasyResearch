@@ -17,7 +17,10 @@ import type { SubagentSupervisor } from "../../subagent/supervisor";
 
 export interface SubagentExtensionOptions {
   binding: AgentRuntimeBinding;
-  liveConfiguration: Pick<LiveConfiguration, "generation" | "synchronize" | "isCurrent" | "resolveAgents" | "subscribe">;
+  liveConfiguration: Pick<
+    LiveConfiguration,
+    "generation" | "synchronize" | "acquireProject" | "isCurrent" | "resolveAgents" | "subscribe"
+  >;
   coordinator: SubagentCoordinator;
   supervisor: SubagentSupervisor;
 }

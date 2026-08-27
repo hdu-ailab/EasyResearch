@@ -1,4 +1,4 @@
-import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, parse } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -32,10 +32,16 @@ import { createAgentPatchService, patchGlobalAgent } from "./agent-configuration
 import * as piImportModule from "../runtime/pi-import";
 import {
   ConfigurationUnavailableError,
+  type ConfigurationWatchImplementation,
   createLiveConfiguration,
   type LiveConfiguration,
 } from "../runtime/live-configuration";
 import * as liveConfigurationModule from "../runtime/live-configuration";
+import {
+  createConfigurationProjectWatches,
+  type ConfigurationProjectWatches,
+} from "./configuration-project-watches";
+import * as configurationProjectWatchesModule from "./configuration-project-watches";
 
 const [loggerMock, createLoggerMock] = vi.hoisted(() => {
   const mockLogger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
@@ -176,6 +182,7 @@ class FakeAdapter implements SessionAdapter {
   compactState: "queued" | "running" = "running";
   contextUsage: { tokens: number | null; contextWindow: number; percent: number | null } | undefined;
   compactionPolicy = { triggerPercent: 70, enabled: true };
+  runtimeConfigurationGeneration = 0;
   async getCommands(): Promise<WebSlashCommand[]> {
     return this.commandsResult;
   }
@@ -198,6 +205,9 @@ class FakeAdapter implements SessionAdapter {
   }
   getContextUsage() {
     return this.contextUsage;
+  }
+  getRuntimeConfigurationGeneration() {
+    return this.runtimeConfigurationGeneration;
   }
   onEvent(listener: (event: unknown) => void) {
     this.events.add(listener);
@@ -222,7 +232,13 @@ function fakeConfiguration(
   let error = initial.error;
   const listeners = new Set<(event: ConfigurationEvent) => void>();
   const accessOrder: string[] = [];
-  const notifications: Array<{ agentsChanged?: boolean; modelsChanged?: boolean; force?: boolean }> = [];
+  const notifications: Array<{
+    agentsChanged?: boolean;
+    modelsChanged?: boolean;
+    skillsChanged?: boolean;
+    projectCwds?: readonly string[];
+    force?: boolean;
+  }> = [];
   const live: LiveConfiguration = {
     get generation() {
       accessOrder.push("generation");
@@ -234,8 +250,10 @@ function fakeConfiguration(
     },
     compactionPolicy: { triggerPercent: 70, globalEnabled: true, globalKeepRecentTokens: 20_000 },
     apiUsageSettings: { showApiUsageDetails: false },
+    skillPolicy: { enableDotAgentsSkill: false },
     start: async () => {},
     synchronize: async () => {},
+    acquireProject: async (cwd) => ({ cwd, release: async () => {} }),
     isCurrent: (candidate) => error === null && candidate === generation,
     notify: async (change) => {
       notifications.push(change);
@@ -261,6 +279,22 @@ function fakeConfiguration(
       for (const listener of [...listeners]) listener(event);
     },
   };
+}
+
+function droppedConfigurationWatch(): ConfigurationWatchImplementation {
+  return (() => {
+    const watcher = {
+      on(event: string, listener: (...args: unknown[]) => void) {
+        if (event === "ready") queueMicrotask(listener);
+        return watcher;
+      },
+      add() {
+        return watcher;
+      },
+      async close() {},
+    };
+    return watcher;
+  }) as ConfigurationWatchImplementation;
 }
 
 async function readSseEvent(
@@ -380,6 +414,7 @@ describe("web routes", () => {
   function setup(
     overrides: Partial<Omit<RouteServices, "subagentSessions">> & {
       subagentSessions?: Partial<RouteServices["subagentSessions"]>;
+      configurationProjectWatches?: ConfigurationProjectWatches;
     } = {},
   ): void {
     const configuration = fakeConfiguration().live;
@@ -422,6 +457,10 @@ describe("web routes", () => {
       config: configService,
       logger: noopLogger,
       configuration,
+      configurationProjectWatches: createConfigurationProjectWatches({
+        live: configuration,
+        isKnownCwd: async () => false,
+      }),
       listAgents: async () => [],
       patchAgent: async (name, patch) => patchGlobalAgent(configService, name, patch, () => true),
       getCompactionSettings: async () => ({ triggerPercent: 70, globalEnabled: true }),
@@ -435,7 +474,7 @@ describe("web routes", () => {
           ?? (async (rootSessionId) => (subagentOverrides?.statistics ?? emptyStatistics)(rootSessionId)),
       },
       ...routeOverrides,
-    };
+    } as RouteServices;
     handler = createRouteHandler(services);
   }
 
@@ -1015,6 +1054,7 @@ describe("web routes", () => {
         }),
       )
     ).json()) as { id: string };
+    FakeAdapter.all.at(-1)!.runtimeConfigurationGeneration = 4;
     FakeAdapter.all.at(-1)!.inlineUsageResult = [{
       id: "usage-1",
       sessionId: created.id,
@@ -1040,11 +1080,13 @@ describe("web routes", () => {
       messages: unknown[];
       inlineUsage: unknown[];
       apiUsage: { rootSessionId: string };
+      runtimeConfigurationGeneration: number;
     };
     expect(body.session.id).toBe(created.id);
     expect(body.messages).toEqual([]);
     expect(body.inlineUsage).toHaveLength(1);
     expect(body.apiUsage.rootSessionId).toBe(created.id);
+    expect(body.runtimeConfigurationGeneration).toBe(4);
   });
 
   it("includes pending steer texts in the HTTP snapshot (ADR-083)", async () => {
@@ -1363,19 +1405,29 @@ describe("web routes", () => {
 
   it("streams one current configuration event before ordered daemon-wide updates", async () => {
     const configuration = fakeConfiguration({ generation: 1, error: null });
-    setup({ configuration: configuration.live } as Partial<RouteServices>);
+    const configurationProjectWatches = createConfigurationProjectWatches({
+      live: configuration.live,
+      isKnownCwd: async () => false,
+    });
+    setup({ configuration: configuration.live, configurationProjectWatches });
 
     const response = await handler(new Request("http://localhost/api/config/events"));
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("text/event-stream");
     const reader = response.body!.getReader();
+    let leaseId = "";
     try {
-      expect(await readSseEvent(reader)).toEqual({
+      const initial = await readSseEvent(reader);
+      expect(initial).toEqual({
         type: "config.updated",
         generation: 1,
         agentsChanged: true,
         modelsChanged: true,
+        skillsChanged: true,
+        runtimeChanged: true,
+        projectWatchLeaseId: expect.any(String),
       });
+      leaseId = initial.projectWatchLeaseId as string;
       expect(configuration.accessOrder[0]).toBe("subscribe");
 
       configuration.emit({
@@ -1383,41 +1435,94 @@ describe("web routes", () => {
         generation: 2,
         agentsChanged: true,
         modelsChanged: false,
+        skillsChanged: false,
+        runtimeChanged: true,
+        projectWatchLeaseId: "must-not-be-forwarded",
       });
       configuration.emit({
         type: "config.updated",
         generation: 3,
         agentsChanged: false,
         modelsChanged: true,
+        skillsChanged: false,
+        runtimeChanged: true,
       });
       expect(await readSseEvent(reader)).toEqual({
         type: "config.updated",
         generation: 2,
         agentsChanged: true,
         modelsChanged: false,
+        skillsChanged: false,
+        runtimeChanged: true,
       });
       expect(await readSseEvent(reader)).toEqual({
         type: "config.updated",
         generation: 3,
         agentsChanged: false,
         modelsChanged: true,
+        skillsChanged: false,
+        runtimeChanged: true,
       });
     } finally {
       await reader.cancel();
     }
     expect(configuration.activeSubscribers()).toBe(0);
+    const released = await handler(new Request(
+      `http://localhost/api/config/project-watches/${encodeURIComponent(leaseId)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ revision: 0, cwds: [] }),
+      },
+    ));
+    expect(released.status).toBe(404);
+  });
+
+  it("lists Settings Skills with the accepted home policy instead of raw settings bytes", async () => {
+    const previousHome = process.env.HOME;
+    const homeSkill = join(homeDir, ".agents", "skills", "accepted-home", "SKILL.md");
+    mkdirSync(parse(homeSkill).dir, { recursive: true });
+    writeFileSync(homeSkill, "---\nname: accepted-home\ndescription: accepted\n---\n", "utf8");
+    writeFileSync(join(agentDir, "settings.json"), "{ malformed current candidate", "utf8");
+    process.env.HOME = homeDir;
+    const configuration = fakeConfiguration();
+    configuration.live.skillPolicy.enableDotAgentsSkill = true;
+    setup({ configuration: configuration.live });
+
+    try {
+      const response = await handler(new Request("http://localhost/api/skill-resources"));
+      expect(response.status).toBe(200);
+      const skills = await response.json() as Array<{ name: string; source: string; skillPath: string }>;
+      expect(skills).toContainEqual(expect.objectContaining({
+        name: "accepted-home",
+        source: "home",
+        skillPath: homeSkill,
+      }));
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
   });
 
   it("keeps configuration SSE open across a redacted generation-zero error and recovery", async () => {
     const safeError = "Configuration validation failed. Fix the global Agent or model configuration and retry.";
     const configuration = fakeConfiguration({ generation: 0, error: safeError });
-    setup({ configuration: configuration.live } as Partial<RouteServices>);
+    const configurationProjectWatches = createConfigurationProjectWatches({
+      live: configuration.live,
+      isKnownCwd: async () => false,
+    });
+    setup({ configuration: configuration.live, configurationProjectWatches });
 
     const response = await handler(new Request("http://localhost/api/config/events"));
     const reader = response.body!.getReader();
     try {
       const initial = await readSseEvent(reader);
-      expect(initial).toEqual({ type: "config.error", generation: 0, message: safeError });
+      expect(initial).toEqual({
+        type: "config.error",
+        generation: 0,
+        message: safeError,
+        projectWatchLeaseId: expect.any(String),
+      });
       expect(initial).not.toHaveProperty("messages");
       expect(initial).not.toHaveProperty("session");
       expect(JSON.stringify(initial)).not.toContain("/private/");
@@ -1427,22 +1532,206 @@ describe("web routes", () => {
         generation: 1,
         agentsChanged: true,
         modelsChanged: true,
+        skillsChanged: true,
+        runtimeChanged: true,
       });
       expect(await readSseEvent(reader)).toEqual({
         type: "config.updated",
         generation: 1,
         agentsChanged: true,
         modelsChanged: true,
+        skillsChanged: true,
+        runtimeChanged: true,
       });
     } finally {
       await reader.cancel();
     }
   });
 
-  it("notifies every successful authoritative route write and no failed or irrelevant write", async () => {
+  it("serves exact project-watch replacement and manual-refresh status contracts without prompting a model", async () => {
+    const configuration = fakeConfiguration({ generation: 4, error: null });
+    const configurationProjectWatches = createConfigurationProjectWatches({
+      live: configuration.live,
+      isKnownCwd: async (cwd) => cwd === projectDir,
+    });
+    const prompt = vi.spyOn(registry, "prompt");
+    setup({ configuration: configuration.live, configurationProjectWatches });
+    const leaseId = configurationProjectWatches.acquireLease();
+    const put = (candidateLeaseId: string, body: unknown) => handler(new Request(
+      `http://localhost/api/config/project-watches/${encodeURIComponent(candidateLeaseId)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ));
+    const refresh = (body: unknown) => handler(new Request("http://localhost/api/config/refresh", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }));
+
+    const accepted = await put(leaseId, { revision: 0, cwds: [projectDir] });
+    expect(accepted.status).toBe(200);
+    await expect(accepted.json()).resolves.toEqual({ applied: true, revision: 0 });
+
+    const stale = await put(leaseId, { revision: 0, cwds: [] });
+    expect(stale.status).toBe(200);
+    await expect(stale.json()).resolves.toEqual({ applied: false, revision: 0 });
+
+    const malformed = await put(leaseId, { revision: -1, cwds: [] });
+    expect(malformed.status).toBe(400);
+    const malformedJson = await handler(new Request(
+      `http://localhost/api/config/project-watches/${encodeURIComponent(leaseId)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: "{",
+      },
+    ));
+    expect(malformedJson.status).toBe(400);
+    expect((await put(leaseId, { revision: 1, cwds: [homeDir] })).status).toBe(400);
+    expect((await put("unknown", { revision: 0, cwds: [] })).status).toBe(404);
+
+    const globalRefresh = await refresh({});
+    expect(globalRefresh.status).toBe(200);
+    await expect(globalRefresh.json()).resolves.toEqual({ generation: 4, error: null });
+    const projectRefresh = await refresh({ projectCwds: [projectDir] });
+    expect(projectRefresh.status).toBe(200);
+    await expect(projectRefresh.json()).resolves.toEqual({ generation: 4, error: null });
+    expect((await refresh({ projectCwds: [homeDir] })).status).toBe(400);
+    expect((await refresh({ projectCwds: "invalid" })).status).toBe(400);
+
+    expect(prompt).not.toHaveBeenCalled();
+    await configurationProjectWatches.releaseLease(leaseId);
+    await configurationProjectWatches.close();
+  });
+
+  it("returns a safe 200 refresh result when synchronization fails", async () => {
+    const configuration = fakeConfiguration({ generation: 7, error: null });
+    configuration.live.synchronize = async () => {
+      throw new Error(`/private/${projectDir}/fingerprint failed`);
+    };
+    const configurationProjectWatches = createConfigurationProjectWatches({
+      live: configuration.live,
+      isKnownCwd: async () => false,
+    });
+    setup({ configuration: configuration.live, configurationProjectWatches });
+
+    const response = await handler(new Request("http://localhost/api/config/refresh", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    }));
+
+    expect(response.status).toBe(200);
+    const result = await response.json() as { generation: number; error: string | null };
+    expect(result.generation).toBe(7);
+    expect(result.error).toMatch(/refresh|monitoring|configuration/i);
+    expect(JSON.stringify(result)).not.toContain("/private/");
+    await configurationProjectWatches.close();
+  });
+
+  it("repairs separately dropped external Agent and Skill events through manual Refresh in one generation", async () => {
+    const agentName = "manual-refresh-reviewer";
+    const skillName = "manual-refresh-skill";
+    const live = createLiveConfiguration({
+      agentDir,
+      catalogOptions: { homeDir },
+      modelValidator: {
+        async prepareModelCatalog() {
+          return { models: [], commit() {}, rollback() {} };
+        },
+      },
+      watch: droppedConfigurationWatch(),
+    });
+    const events: ConfigurationEvent[] = [];
+    live.subscribe((event) => events.push(event));
+    await live.start();
+    const baseline = live.generation;
+    const configurationProjectWatches = createConfigurationProjectWatches({
+      live,
+      isKnownCwd: async () => false,
+    });
+    setup({ configuration: live, configurationProjectWatches });
+    const prompt = vi.spyOn(registry, "prompt");
+    try {
+      const agentPath = join(agentDir, "agents", `${agentName}.md`);
+      const skillPath = join(agentDir, "skills", skillName, "SKILL.md");
+      mkdirSync(join(agentPath, ".."), { recursive: true });
+      mkdirSync(join(skillPath, ".."), { recursive: true });
+      writeFileSync(agentPath, [
+        "---",
+        `name: ${agentName}`,
+        "description: Manual refresh reviewer",
+        "enable: true",
+        "tools:",
+        "  - read",
+        "skills:",
+        `  - ${skillName}`,
+        "subagents: []",
+        "---",
+        "",
+        "MANUAL_REFRESH_ROLE",
+        "",
+      ].join("\n"), "utf8");
+      writeFileSync(skillPath, [
+        "---",
+        `name: ${skillName}`,
+        "description: MANUAL_REFRESH_SKILL_MARKER",
+        "---",
+        "",
+        "# Manual refresh",
+        "",
+      ].join("\n"), "utf8");
+      expect(live.generation).toBe(baseline);
+
+      const response = await handler(new Request("http://localhost/api/config/refresh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      }));
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({ generation: baseline + 1, error: null });
+      const reviewer = (await live.resolveAgents(projectDir)).find((agent) => agent.name === agentName);
+      expect(reviewer?.systemPrompt).toContain("MANUAL_REFRESH_ROLE");
+      expect(reviewer?.effectiveSkillPaths).toEqual([join(agentDir, "skills", skillName)]);
+      expect(events.filter((event) => event.type === "config.updated")).toHaveLength(2);
+      expect(events.at(-1)).toMatchObject({
+        generation: baseline + 1,
+        agentsChanged: true,
+        skillsChanged: true,
+        runtimeChanged: true,
+      });
+      expect(prompt).not.toHaveBeenCalled();
+    } finally {
+      await configurationProjectWatches.close();
+      await live.close();
+    }
+  });
+
+  it("notifies successful Agent/global-Skill writes and coordinates only project Skill descriptors", async () => {
     const configuration = fakeConfiguration();
+    const projectLifecycle: string[] = [];
+    configuration.live.acquireProject = async (cwd) => {
+      projectLifecycle.push(`acquire:${cwd}`);
+      return {
+        cwd,
+        release: async () => {
+          projectLifecycle.push(`release:${cwd}`);
+        },
+      };
+    };
+    configuration.live.synchronize = async ({ projectCwds } = {}) => {
+      const cwd = projectCwds?.[0] ?? "global";
+      const descriptor = join(cwd, ".easyresearch", "skills", "route-skill", "SKILL.md");
+      projectLifecycle.push(`synchronize:${cwd}:${readFileSync(descriptor, "utf8")}`);
+    };
     configService = new ConfigFileService(agentDir, {
       onAuthoritativeWrite: (change) => configuration.live.notify(change),
+      acquireProject: (cwd) => configuration.live.acquireProject(cwd),
+      synchronizeProject: (cwd) => configuration.live.synchronize({ projectCwds: [cwd] }),
     });
     mkdirSync(join(agentDir, "agents"), { recursive: true });
     writeFileSync(
@@ -1488,7 +1777,36 @@ describe("web routes", () => {
       content: "{}",
     })).status).toBe(200);
     expect(configuration.notifications.at(-1)).toEqual({});
-    const afterSettingsCount = configuration.notifications.length;
+
+    const beforeSkillsCount = configuration.notifications.length;
+    expect((await send("/api/config/file", "PUT", {
+      scope: "global",
+      path: "skills/root-route.md",
+      content: "root route skill",
+    })).status).toBe(200);
+    expect((await send("/api/config/file", "PUT", {
+      scope: "global",
+      path: "skills/namespace/route-skill/SKILL.md",
+      content: "nested route skill",
+    })).status).toBe(200);
+    expect(configuration.notifications.slice(beforeSkillsCount)).toEqual([
+      { skillsChanged: true },
+      { skillsChanged: true },
+    ]);
+
+    expect((await send("/api/config/file", "PUT", {
+      scope: "project",
+      cwd: projectDir,
+      path: "skills/route-skill/SKILL.md",
+      content: "project route skill",
+    })).status).toBe(200);
+    expect(projectLifecycle).toEqual([
+      `acquire:${projectDir}`,
+      `synchronize:${projectDir}:project route skill`,
+      `release:${projectDir}`,
+    ]);
+
+    const afterDescriptorsCount = configuration.notifications.length;
     expect((await send("/api/config/file", "PUT", {
       scope: "project",
       cwd: projectDir,
@@ -1496,11 +1814,23 @@ describe("web routes", () => {
       content: "project",
     })).status).toBe(200);
     expect((await send("/api/config/file", "PUT", {
+      scope: "project",
+      cwd: projectDir,
+      path: "skills/route-skill/asset.bin",
+      content: "asset",
+    })).status).toBe(200);
+    expect((await send("/api/config/directory", "POST", {
+      scope: "project",
+      cwd: projectDir,
+      path: "skills/empty",
+    })).status).toBe(200);
+    expect((await send("/api/config/file", "PUT", {
       scope: "global",
       path: "models.json",
       content: "{",
     })).status).toBe(400);
-    expect(configuration.notifications).toHaveLength(afterSettingsCount);
+    expect(configuration.notifications).toHaveLength(afterDescriptorsCount);
+    expect(projectLifecycle).toHaveLength(3);
   });
 
   it("recovers generation-zero startup through config write and observes a later external Agent edit", async () => {
@@ -1571,6 +1901,8 @@ describe("web routes", () => {
         generation: 1,
         agentsChanged: true,
         modelsChanged: true,
+        skillsChanged: true,
+        runtimeChanged: true,
       });
 
       const created = await handler(new Request("http://localhost/api/sessions", {
@@ -1596,6 +1928,8 @@ describe("web routes", () => {
         generation: 2,
         agentsChanged: true,
         modelsChanged: false,
+        skillsChanged: false,
+        runtimeChanged: true,
       });
     } finally {
       await reader.cancel();
@@ -1769,6 +2103,8 @@ describe("web routes", () => {
           generation: 1,
           agentsChanged: true,
           modelsChanged: true,
+          skillsChanged: true,
+          runtimeChanged: true,
         });
         expect(await (await request("/api/models")).json()).toEqual({
           models: [{
@@ -1821,6 +2157,8 @@ describe("web routes", () => {
           generation: 2,
           agentsChanged: true,
           modelsChanged: true,
+          skillsChanged: false,
+          runtimeChanged: true,
         });
         expect(await (await request("/api/models")).json()).toMatchObject({
           models: [{ provider: "rejected-provider", id: "rejected-model" }],
@@ -1930,6 +2268,8 @@ describe("web routes", () => {
       emit({ type: "session_deactivated", sessionId: created.id });
       emit({ type: "error", error: "pre-barrier lifecycle error" });
       emit(supervisorBefore);
+      adapter.runtimeConfigurationGeneration = 2;
+      emit({ type: "runtime_configuration_applied", generation: 2 });
       emit({
         type: "tool_execution_update",
         toolCallId: "subagent-before",
@@ -1942,17 +2282,20 @@ describe("web routes", () => {
 
       messages.resolve([assistant("committed")]);
       await barrierCrossed.promise;
+      adapter.runtimeConfigurationGeneration = 3;
+      emit({ type: "runtime_configuration_applied", generation: 3 });
       emit(supervisorAfterAcquisition);
       emit({
         type: "message_update",
         assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "after acquisition" },
       });
       emit({ type: "tool_execution_start", toolCallId: "generic-after", toolName: "bash" });
+      emit({ type: "queue_update", steering: [], followUp: [] });
       summaries.resolve([]);
 
       const frames: Array<Record<string, unknown> & { type: string; messages?: AgentMessage[] }> = [];
       let body = "";
-      while (frames.length < 10) {
+      while (!frames.some((frame) => frame.type === "queue_update")) {
         const { done, value } = await (frames.length === 0 ? firstRead : reader.read());
         if (done) break;
         body += decoder.decode(value, { stream: true });
@@ -1971,16 +2314,24 @@ describe("web routes", () => {
         "session_deactivated",
         "error",
         "subagent_supervisor",
+        "runtime_configuration_applied",
+        "runtime_configuration_applied",
         "subagent_supervisor",
         "message_update",
         "tool_execution_start",
+        "queue_update",
       ]);
       expect(frames[0]?.messages).toEqual([assistant("committed")]);
+      expect(frames[0]?.runtimeConfigurationGeneration).toBe(2);
+      expect(frames.filter((frame) => frame.type === "runtime_configuration_applied")).toEqual([
+        { type: "runtime_configuration_applied", generation: 2 },
+        { type: "runtime_configuration_applied", generation: 3 },
+      ]);
       expect(frames.filter((frame) => frame.type === "tool_execution_update")).toEqual([]);
       expect(frames.filter((frame) => frame.type === "subagent_supervisor").map((frame) => frame.launchId))
         .toEqual(["launch-before", "launch-after"]);
-      expect(frames[7]).toEqual(supervisorAfterAcquisition);
-      expect(JSON.stringify(frames[7])).not.toContain("partial");
+      expect(frames[9]).toEqual(supervisorAfterAcquisition);
+      expect(JSON.stringify(frames[9])).not.toContain("partial");
 
       const supervisorAfterInit = {
         ...supervisorBefore,
@@ -2578,6 +2929,7 @@ describe("web routes", () => {
         subagents: ["experiment"],
         skills: ["paper-search", "missing-skill"],
         effectiveSkills: ["paper-search"],
+        effectiveSkillPaths: ["/private/skills/paper-search"],
         missingSkills: ["missing-skill"],
         model: "deepseek/ds-v3",
         thinking: "medium",
@@ -2843,6 +3195,7 @@ describe("web routes", () => {
         filePath: "/bundled/research-assistant.md",
         effectiveTools: [],
         effectiveSkills: [],
+        effectiveSkillPaths: [],
         missingSkills: [],
       },
       {
@@ -2855,6 +3208,7 @@ describe("web routes", () => {
         filePath: "/bundled/search.md",
         effectiveTools: [],
         effectiveSkills: [],
+        effectiveSkillPaths: [],
         missingSkills: [],
       },
     ];
@@ -2914,6 +3268,79 @@ describe("web routes", () => {
     }
   });
 
+  it("wires successful global and project Skill descriptor writes to the daemon LiveConfiguration", async () => {
+    const configuration = fakeConfiguration();
+    const projectLifecycle: string[] = [];
+    const projectDescriptor = join(projectDir, ".easyresearch", "skills", "server-skill", "SKILL.md");
+    configuration.live.acquireProject = async (cwd) => {
+      projectLifecycle.push(`acquire:${cwd}:${existsSync(projectDescriptor)}`);
+      return {
+        cwd,
+        release: async () => {
+          projectLifecycle.push(`release:${cwd}`);
+        },
+      };
+    };
+    configuration.live.synchronize = async ({ projectCwds } = {}) => {
+      projectLifecycle.push(`synchronize:${projectCwds?.[0]}:${readFileSync(projectDescriptor, "utf8")}`);
+    };
+    const createLive = vi.spyOn(liveConfigurationModule, "createLiveConfiguration").mockReturnValue(configuration.live);
+    const pi = await piImportModule.importPi();
+    const importPi = vi.spyOn(piImportModule, "importPi").mockResolvedValue({
+      ...pi,
+      getAgentDir: () => agentDir,
+      SessionManager: { listAll: async () => [], open: vi.fn() },
+    } as never);
+    const resolveFactory = vi.spyOn(PiSessionFactory, "resolve").mockResolvedValue(new FakeFactory() as never);
+    const originalBun = (globalThis as { Bun?: unknown }).Bun;
+    let productionHandler: ((request: Request) => Promise<Response>) | undefined;
+    (globalThis as { Bun?: unknown }).Bun = {
+      serve: ({ fetch }: { fetch: (request: Request) => Promise<Response> }) => {
+        productionHandler = fetch;
+        return { port: 43221, stop: vi.fn() };
+      },
+    };
+    let server: Awaited<ReturnType<typeof startServer>> | undefined;
+
+    try {
+      server = await startServer({ host: "127.0.0.1", port: 0 });
+      const writeConfig = (body: unknown) => productionHandler!(new Request(
+        `http://127.0.0.1:${server!.port}/api/config/file`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      ));
+
+      expect((await writeConfig({
+        scope: "global",
+        path: "skills/server-root.md",
+        content: "global descriptor",
+      })).status).toBe(200);
+      expect(configuration.notifications).toEqual([{ skillsChanged: true }]);
+
+      expect((await writeConfig({
+        scope: "project",
+        cwd: projectDir,
+        path: "skills/server-skill/SKILL.md",
+        content: "project descriptor",
+      })).status).toBe(200);
+      expect(projectLifecycle).toEqual([
+        `acquire:${projectDir}:false`,
+        `synchronize:${projectDir}:project descriptor`,
+        `release:${projectDir}`,
+      ]);
+    } finally {
+      await server?.stop();
+      createLive.mockRestore();
+      resolveFactory.mockRestore();
+      importPi.mockRestore();
+      if (originalBun === undefined) delete (globalThis as { Bun?: unknown }).Bun;
+      else (globalThis as { Bun?: unknown }).Bun = originalBun;
+    }
+  });
+
   it("constructs one daemon LiveConfiguration and injects it into every session factory", async () => {
     const pi = await piImportModule.importPi();
     const createModelRuntime = vi.fn(async () => ({}));
@@ -2957,6 +3384,8 @@ describe("web routes", () => {
         type: "config.updated",
         generation: 2,
         modelsChanged: true,
+        skillsChanged: false,
+        runtimeChanged: true,
       });
     } finally {
       await server?.stop();
@@ -2979,6 +3408,19 @@ describe("web routes", () => {
       order.push("configuration");
     });
     const createLive = vi.spyOn(liveConfigurationModule, "createLiveConfiguration").mockReturnValue(configuration);
+    const projectWatches: ConfigurationProjectWatches = {
+      acquireLease: () => "unused",
+      replace: async (_leaseId, request) => ({ applied: true, revision: request.revision }),
+      releaseLease: async () => {},
+      refresh: async () => ({ generation: configuration.generation, error: configuration.error }),
+      close: async () => {
+        order.push("project-watches");
+      },
+    };
+    const createProjectWatches = vi.spyOn(
+      configurationProjectWatchesModule,
+      "createConfigurationProjectWatches",
+    ).mockReturnValue(projectWatches);
     authGatewayMock.shutdown.mockImplementation(async () => {
       order.push("auth-start");
       await authCleanup;
@@ -3012,13 +3454,22 @@ describe("web routes", () => {
       server = await startServer({ host: "127.0.0.1", port: 0 });
       const stopping = server.stop();
       await vi.waitFor(() => {
-        expect(order).toEqual(["sessions", "configuration", "auth-start"]);
+        expect(order).toEqual(["sessions", "project-watches", "configuration", "auth-start"]);
       });
       releaseAuth();
       await stopping;
-      expect(order).toEqual(["sessions", "configuration", "auth-start", "auth-done", "models", "server"]);
+      expect(order).toEqual([
+        "sessions",
+        "project-watches",
+        "configuration",
+        "auth-start",
+        "auth-done",
+        "models",
+        "server",
+      ]);
     } finally {
       createLive.mockRestore();
+      createProjectWatches.mockRestore();
       shutdown.mockRestore();
       resolveFactory.mockRestore();
       importPi.mockRestore();

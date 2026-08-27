@@ -1,7 +1,14 @@
 import { ChevronLeft, FilePlus, Folder, FolderPlus, RefreshCw, Save, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { ConfigEntryDto, ConfigScope } from "../../../web/contracts";
-import { createConfigDirectory, listConfig, listConfigProjects, readConfigFile, writeConfigFile } from "../api";
+import {
+  createConfigDirectory,
+  listConfig,
+  listConfigProjects,
+  readConfigFile,
+  refreshConfigurationResources,
+  writeConfigFile,
+} from "../api";
 import { ProductMark, Topbar } from "../components/Topbar";
 import { useModalLayer } from "../hooks/useModalLayer";
 import { useI18n } from "../i18n/useI18n";
@@ -10,6 +17,7 @@ import type { ConfigProjectsDto } from "../types";
 export interface ConfigPageProps {
   onHome(): void;
   onBackToSettings(): void;
+  onProjectInterestChange(cwd?: string): void;
 }
 
 type Root = { kind: "home" } | { kind: "project"; cwd: string };
@@ -19,13 +27,19 @@ function rootScope(root: Root): { scope: ConfigScope; cwd?: string } {
 }
 
 function savedMessage(root: Root, path: string): "config.saved" | "config.savedLive" | "config.savedRestart" {
-  const agentMarkdown = /^agents\/[^/]+\.md$/.test(path);
-  if (root.kind === "home" && (path === "models.json" || agentMarkdown)) return "config.savedLive";
+  const parts = path.split(/[\\/]/);
+  const filename = parts.at(-1) ?? "";
+  const directMarkdown = parts.length === 2 && filename.length > ".md".length && filename.endsWith(".md");
+  const agentMarkdown = parts[0] === "agents" && directMarkdown;
+  const skillDescriptor = parts[0] === "skills" && (directMarkdown || (parts.length > 2 && filename === "SKILL.md"));
+  if (skillDescriptor || (root.kind === "home" && (path === "models.json" || agentMarkdown))) {
+    return "config.savedLive";
+  }
   if (root.kind === "project" && agentMarkdown) return "config.saved";
   return "config.savedRestart";
 }
 
-export function ConfigPage({ onHome, onBackToSettings }: ConfigPageProps) {
+export function ConfigPage({ onHome, onBackToSettings, onProjectInterestChange }: ConfigPageProps) {
   const { t } = useI18n();
   const [data, setData] = useState<ConfigProjectsDto | null>(null);
   const [selectedRoot, setSelectedRoot] = useState<Root | null>(null);
@@ -37,15 +51,20 @@ export function ConfigPage({ onHome, onBackToSettings }: ConfigPageProps) {
   const [saved, setSaved] = useState(false);
   const [dialog, setDialog] = useState<"file" | "directory" | null>(null);
   const [name, setName] = useState("");
+  const entryRequest = useRef(0);
 
-  const loadEntries = async (root: Root, nextPath = "") => {
+  const loadEntries = async (root: Root, nextPath = "", refreshError: string | null = null) => {
+    const request = ++entryRequest.current;
     const params = rootScope(root);
     setError(null);
     try {
-      setEntries(await listConfig(params.scope, params.cwd, nextPath || undefined));
+      const nextEntries = await listConfig(params.scope, params.cwd, nextPath || undefined);
+      if (request !== entryRequest.current) return;
+      setEntries(nextEntries);
       setPath(nextPath);
+      setError(refreshError);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (request === entryRequest.current) setError(e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -55,6 +74,20 @@ export function ConfigPage({ onHome, onBackToSettings }: ConfigPageProps) {
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, []);
 
+  const selectedProjectCwd = selectedRoot?.kind === "project" ? selectedRoot.cwd : undefined;
+
+  useEffect(() => {
+    onProjectInterestChange(selectedProjectCwd);
+  }, [onProjectInterestChange, selectedProjectCwd]);
+
+  useEffect(
+    () => () => {
+      onProjectInterestChange(undefined);
+      entryRequest.current += 1;
+    },
+    [onProjectInterestChange],
+  );
+
   const openRoot = async (root: Root) => {
     setSelectedRoot(root);
     setSelectedFile(null);
@@ -62,16 +95,42 @@ export function ConfigPage({ onHome, onBackToSettings }: ConfigPageProps) {
     await loadEntries(root);
   };
 
+  const closeRoot = () => {
+    entryRequest.current += 1;
+    setSelectedRoot(null);
+    setSelectedFile(null);
+    setContent("");
+    setPath("");
+    setEntries([]);
+    setError(null);
+  };
+
+  const refreshEntries = async () => {
+    if (!selectedRoot) return;
+    const root = selectedRoot;
+    const currentPath = path;
+    const request = ++entryRequest.current;
+    try {
+      const result = await refreshConfigurationResources(root.kind === "project" ? { projectCwds: [root.cwd] } : {});
+      if (request !== entryRequest.current) return;
+      await loadEntries(root, currentPath, result.error);
+    } catch (cause) {
+      if (request === entryRequest.current) setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
+
   const openFile = async (entry: ConfigEntryDto) => {
     if (!selectedRoot || entry.type !== "file") return;
+    const request = ++entryRequest.current;
     try {
       const file = await readConfigFile(rootScope(selectedRoot).scope, rootScope(selectedRoot).cwd, entry.path);
+      if (request !== entryRequest.current) return;
       setSelectedFile(entry.path);
       setContent(file.content);
       setSaved(false);
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (request === entryRequest.current) setError(e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -185,7 +244,7 @@ export function ConfigPage({ onHome, onBackToSettings }: ConfigPageProps) {
                 type="button"
                 className="flex size-7 items-center justify-center rounded-md hover:bg-v2-grey-100"
                 aria-label={t("config.backToFiles")}
-                onClick={() => setSelectedRoot(null)}
+                onClick={closeRoot}
               >
                 <ChevronLeft size={15} />
               </button>
@@ -215,7 +274,7 @@ export function ConfigPage({ onHome, onBackToSettings }: ConfigPageProps) {
                 className="flex size-7 items-center justify-center rounded-md hover:bg-v2-grey-100"
                 title={t("config.refresh")}
                 aria-label={t("config.refresh")}
-                onClick={() => void loadEntries(selectedRoot, path)}
+                onClick={() => void refreshEntries()}
               >
                 <RefreshCw size={14} />
               </button>

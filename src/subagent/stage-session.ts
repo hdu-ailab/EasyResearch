@@ -3,7 +3,6 @@ import type { Message, Model } from "@earendil-works/pi-ai";
 import type {
   AgentSessionEvent,
   JsonAgentSessionEvent,
-  SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import {
   createAgentRuntimeBinding,
@@ -74,7 +73,7 @@ export interface StageLaunchOptions {
   coordinator: SubagentCoordinator;
   liveConfiguration: Pick<
     LiveConfiguration,
-    "generation" | "synchronize" | "isCurrent" | "resolveAgents" | "subscribe"
+    "generation" | "synchronize" | "acquireProject" | "isCurrent" | "resolveAgents" | "subscribe"
   > & Partial<Pick<LiveConfiguration, "compactionPolicy">>;
   signal?: AbortSignal;
 }
@@ -132,7 +131,7 @@ export interface StageExtensionRuntime {
   binding: AgentRuntimeBinding;
   liveConfiguration: Pick<
     LiveConfiguration,
-    "generation" | "synchronize" | "isCurrent" | "resolveAgents" | "subscribe"
+    "generation" | "synchronize" | "acquireProject" | "isCurrent" | "resolveAgents" | "subscribe"
   > & Partial<Pick<LiveConfiguration, "compactionPolicy">>;
   coordinator: SubagentCoordinator;
   supervisor: SubagentSupervisor;
@@ -162,7 +161,6 @@ export interface StageSessionDependencies {
     modelRuntime: AgentRuntimeModelRuntime;
     settingsManager: unknown;
   }): Promise<Model<any> | undefined>;
-  resolveSkillPaths(agent: AgentConfig, cwd: string, agentDir: string, settingsManager: unknown): string[];
 }
 
 const emptyUsage = (): StageUsageStats => ({
@@ -177,6 +175,32 @@ const emptyUsage = (): StageUsageStats => ({
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function stageSetupAggregate(originalError: unknown, cleanupError: unknown): AggregateError {
+  const failures: unknown[] = [];
+  const append = (error: unknown): void => {
+    if (error instanceof AggregateError) {
+      for (const nested of error.errors) append(nested);
+      return;
+    }
+    if (!failures.some((failure) => Object.is(failure, error))) failures.push(error);
+  };
+  append(originalError);
+  append(cleanupError);
+  return new AggregateError(failures, "Stage AgentSession setup cleanup failed.");
+}
+
+export class RetryableStageSessionCreationError extends AggregateError {
+  constructor(
+    originalError: unknown,
+    readonly retryCleanup: () => Promise<void>,
+    cleanupError: unknown,
+  ) {
+    const aggregate = stageSetupAggregate(originalError, cleanupError);
+    super(aggregate.errors, aggregate.message, { cause: cleanupError });
+    this.name = "RetryableStageSessionCreationError";
+  }
 }
 
 function validateContinuation(
@@ -216,7 +240,58 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
     let unsubscribe: (() => void) | undefined;
     let signalListener: (() => void) | undefined;
     let pendingAbortOperation: Promise<void> | undefined;
+    let setupBarrierDisposed = false;
+    let setupSignalListenerRemoved = false;
+    let setupAbortSettled = false;
+    let setupSessionUnsubscribed = false;
+    let setupSupervisorDisposed = false;
     let setupSessionDisposed = false;
+    let setupBindingDisposed = false;
+
+    const retrySetupCleanup = async (): Promise<void> => {
+      await runCleanupSteps([
+        () => {
+          if (setupBarrierDisposed) return;
+          barrier?.dispose();
+          setupBarrierDisposed = true;
+        },
+        () => {
+          if (setupSignalListenerRemoved) return;
+          if (signalListener) options.signal?.removeEventListener("abort", signalListener);
+          signalListener = undefined;
+          setupSignalListenerRemoved = true;
+        },
+        async () => {
+          if (setupAbortSettled) return;
+          try {
+            await pendingAbortOperation;
+          } finally {
+            setupAbortSettled = true;
+          }
+        },
+        () => {
+          if (setupSessionUnsubscribed) return;
+          unsubscribe?.();
+          unsubscribe = undefined;
+          setupSessionUnsubscribed = true;
+        },
+        async () => {
+          if (setupSupervisorDisposed) return;
+          if (supervisor) await supervisor.dispose();
+          setupSupervisorDisposed = true;
+        },
+        () => {
+          if (setupSessionDisposed) return;
+          if (session) session.dispose();
+          setupSessionDisposed = true;
+        },
+        async () => {
+          if (setupBindingDisposed || !setupSessionDisposed) return;
+          if (binding) await binding.dispose();
+          setupBindingDisposed = true;
+        },
+      ], "Stage AgentSession setup cleanup failed.");
+    };
 
     try {
       let sessionManager: unknown;
@@ -250,13 +325,8 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
           modelRuntime,
           settingsManager,
         }),
-        resolveSkillPaths: (stageAgent) => deps.resolveSkillPaths(
-          stageAgent,
-          options.cwd,
-          deps.agentDir,
-          settingsManager,
-        ),
         compaction: automaticCompaction,
+        onRuntimeCoherent: () => supervisor?.runtimeBecameCoherent(),
       });
       await binding.ensureCurrent();
       const currentAgent = binding.current();
@@ -393,7 +463,10 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         if (!ownerSubscribed) pendingOwnerEvents.push(event);
         else for (const listener of listeners) deliver(listener, event);
       });
-      supervisor.attach(session as unknown as SupervisableAgentSession);
+      supervisor.attach(session as unknown as SupervisableAgentSession, async () => {
+        if (!session!.isIdle) await session!.waitForIdle();
+        await binding!.ensureCurrent();
+      });
       await session.bindExtensions({
         mode: "rpc",
         commandContextActions: {
@@ -412,7 +485,26 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
           },
         },
       });
-      await binding.attach(session);
+      await binding.attach({
+        get isIdle() {
+          return session!.isIdle;
+        },
+        get model() {
+          return session!.model;
+        },
+        get thinkingLevel() {
+          return session!.thinkingLevel;
+        },
+        reload: () => session!.reload(),
+        async abort() {
+          // Pi signals abort synchronously, then waits for this event drain to
+          // reach agent_settled; do not deadlock the active-boundary handler.
+          const operation = session!.abort();
+          void operation.catch(() => {});
+        },
+        setModel: (selectedModel) => session!.setModel(selectedModel),
+        setThinkingLevel: (level) => session!.setThinkingLevel(level),
+      });
       session.setSessionName(sessionNameFor(currentAgent.name));
 
       signalListener = () => {
@@ -581,29 +673,11 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
       };
       return handle;
     } catch (error) {
-      await runCleanupSteps([
-        () => {
-          throw error;
-        },
-        () => barrier?.dispose(),
-        () => {
-          if (signalListener) options.signal?.removeEventListener("abort", signalListener);
-        },
-        () => pendingAbortOperation,
-        () => unsubscribe?.(),
-        () => supervisor?.dispose(),
-        () => {
-          if (!session) {
-            setupSessionDisposed = true;
-            return;
-          }
-          session.dispose();
-          setupSessionDisposed = true;
-        },
-        () => {
-          if (setupSessionDisposed) return binding?.dispose();
-        },
-      ], "Stage AgentSession setup cleanup failed.");
+      try {
+        await retrySetupCleanup();
+      } catch (cleanupError) {
+        throw new RetryableStageSessionCreationError(error, retrySetupCleanup, cleanupError);
+      }
       throw error;
     }
   };
@@ -628,7 +702,6 @@ async function resolveDefaultStageSessionLauncher(): Promise<StageSessionLaunche
   const { default: webFetchExtension } = await import("../extensions/webfetch");
   const { createSshBashExtension } = await import("../extensions/ssh-bash");
   const { SubagentSupervisor } = await import("./supervisor");
-  const { isDotAgentsSkillEnabled, resolveAgentSkillDirectories } = await import("./skill-resolution");
   const agentDir = getAgentDir();
   return createStageSessionLauncher({
     agentDir,
@@ -679,16 +752,6 @@ async function resolveDefaultStageSessionLauncher(): Promise<StageSessionLaunche
         modelRuntime,
         settingsManager: settingsManager as object,
       });
-    },
-    resolveSkillPaths: (agent, cwd, root, settingsManager) => {
-      const deps = {
-        cwd,
-        agentDir: root,
-        enableDotAgentsSkill: isDotAgentsSkillEnabled(
-          (settingsManager as SettingsManager).getGlobalSettings(),
-        ),
-      };
-      return resolveAgentSkillDirectories(agent, deps);
     },
   });
 }

@@ -17,6 +17,7 @@ import {
   finishSmokeCleanup,
   parseRecordedPid,
   readTextFileWithRetry,
+  recordSmokeAcceptanceMilestone,
   requireZeroProcessStatus,
   resolveSmokePowerShell,
   resolveSmokePython,
@@ -75,21 +76,34 @@ const daemonPidPath = join(agentDir, "server.pid");
 writeVenvValidationScript(validationScript);
 const smokeAgentName = "smoke-reviewer";
 const smokeAgentPromptMarker = "NATIVE_SMOKE_CUSTOM_REVIEWER_PROMPT";
+const smokeSkillName = "native-smoke-resource";
+const smokeSkillPromptMarker = `NATIVE_SMOKE_SKILL_${setupRunId}`;
 const smokeAgentPath = join(agentDir, "agents", `${smokeAgentName}.md`);
+const smokeSkillPath = join(agentDir, "skills", smokeSkillName, "SKILL.md");
 const smokeAgentContent = [
   "---",
   `name: ${smokeAgentName}`,
   "description: Native smoke custom reviewer",
   "enable: true",
   "tools:",
+  "  - read",
   `  - ${smokeShellToolName}`,
   "skills:",
-  "  - native-smoke-no-skill",
+  `  - ${smokeSkillName}`,
   "subagents: []",
   "---",
   "",
   smokeAgentPromptMarker,
   "Run only the requested venv validation command, then return a complete handoff.",
+  "",
+].join("\n");
+const smokeSkillContent = [
+  "---",
+  `name: ${smokeSkillName}`,
+  `description: ${smokeSkillPromptMarker}`,
+  "---",
+  "",
+  "# Native smoke resource",
   "",
 ].join("\n");
 const smokeModelScenario: SmokeModelScenario = {
@@ -99,6 +113,10 @@ const smokeModelScenario: SmokeModelScenario = {
   agentPath: smokeAgentPath,
   agentContent: smokeAgentContent,
   agentPromptMarker: smokeAgentPromptMarker,
+  skillName: smokeSkillName,
+  skillPath: smokeSkillPath,
+  skillContent: smokeSkillContent,
+  skillPromptMarker: smokeSkillPromptMarker,
 };
 let systemPythonVersionOutput = "not checked";
 let validationStdout = "not run";
@@ -110,10 +128,13 @@ let daemonPid: number | undefined;
 let modelRequests = 0;
 let venvToolResults = 0;
 let smokeModelState: SmokeModelState = {
-  agentWriteIssued: false,
-  agentWriteObserved: false,
+  baselineConfigurationGeneration: undefined,
+  externalResourcesWritten: false,
+  acceptedConfigurationGeneration: undefined,
+  rootAppliedConfigurationGeneration: undefined,
   customDispatchIssued: false,
   parentWorkingObserved: false,
+  childSkillObserved: false,
   stageShellIssued: false,
   venvValidated: false,
   stageCompleted: false,
@@ -130,6 +151,8 @@ let sessionEventsStopping = false;
 const recentSessionEvents: string[] = [];
 let initialConfigurationGeneration: number | undefined;
 let advancedConfigurationGeneration: number | undefined;
+let snapshotConfigurationGeneration: number | undefined;
+let observedRootAppliedGeneration: number | undefined;
 let configurationEventError: Error | undefined;
 let configurationEventReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 let configurationEventTask: Promise<void> | undefined;
@@ -466,8 +489,12 @@ function smokeProgressDiagnostics(): string {
     venvToolResults,
     smokeAgentPath,
     smokeAgentExists: existsSync(smokeAgentPath),
+    smokeSkillPath,
+    smokeSkillExists: existsSync(smokeSkillPath),
     initialConfigurationGeneration,
     advancedConfigurationGeneration,
+    snapshotConfigurationGeneration,
+    observedRootAppliedGeneration,
     configurationEventError: configurationEventError?.message,
     recentConfigurationEvents,
     sessionSnapshotObserved,
@@ -482,8 +509,28 @@ function observeSessionEvent(event: unknown): void {
   recentSessionEvents.push(serialized.slice(0, 1_000));
   if (recentSessionEvents.length > 12) recentSessionEvents.shift();
   if (!event || typeof event !== "object") return;
-  const value = event as { type?: unknown; agentId?: unknown; status?: unknown };
-  if (value.type === "snapshot") sessionSnapshotObserved = true;
+  const value = event as {
+    type?: unknown;
+    agentId?: unknown;
+    status?: unknown;
+    generation?: unknown;
+    runtimeConfigurationGeneration?: unknown;
+  };
+  if (value.type === "snapshot") {
+    const generation = value.runtimeConfigurationGeneration;
+    if (!Number.isSafeInteger(generation) || (generation as number) < 1) {
+      throw new Error(`root session snapshot had an invalid runtime configuration generation: ${serialized}`);
+    }
+    snapshotConfigurationGeneration = generation as number;
+    sessionSnapshotObserved = true;
+  }
+  if (value.type === "runtime_configuration_applied") {
+    const generation = value.generation;
+    if (!Number.isSafeInteger(generation) || (generation as number) < 1) {
+      throw new Error(`root runtime application event had an invalid generation: ${serialized}`);
+    }
+    observedRootAppliedGeneration = Math.max(observedRootAppliedGeneration ?? 0, generation as number);
+  }
   if (value.type !== "subagent_supervisor" || value.agentId !== `${smokeAgentName}_0`) return;
   if (value.status === "error") throw new Error(`${smokeAgentName}_0 supervisor reported error: ${serialized}`);
   if (value.status === "complete") observedSupervisorTerminal = true;
@@ -500,6 +547,7 @@ function observeConfigurationEvent(event: unknown): void {
     type?: unknown;
     generation?: unknown;
     agentsChanged?: unknown;
+    skillsChanged?: unknown;
     message?: unknown;
   };
   if (value.type === "config.error") {
@@ -519,11 +567,15 @@ function observeConfigurationEvent(event: unknown): void {
     return;
   }
   if (
-    generation > initialConfigurationGeneration
+    snapshotConfigurationGeneration !== undefined
+    && generation > snapshotConfigurationGeneration
     && value.agentsChanged === true
-    && smokeModelState.agentWriteIssued
+    && value.skillsChanged === true
+    && smokeModelState.externalResourcesWritten
     && existsSync(smokeAgentPath)
     && readFileSync(smokeAgentPath, "utf8") === smokeAgentContent
+    && existsSync(smokeSkillPath)
+    && readFileSync(smokeSkillPath, "utf8") === smokeSkillContent
   ) {
     advancedConfigurationGeneration = Math.max(advancedConfigurationGeneration ?? 0, generation);
   }
@@ -832,27 +884,78 @@ try {
     sessionEventError = error instanceof Error ? error : new Error(String(error));
   });
   await waitForSmokeCondition("session SSE subscription", () => sessionSnapshotObserved);
+  if (snapshotConfigurationGeneration === undefined) {
+    throw new Error("root session snapshot did not provide a baseline configuration generation");
+  }
+  if (initialConfigurationGeneration !== snapshotConfigurationGeneration) {
+    throw new Error(
+      `root baseline generation ${snapshotConfigurationGeneration} did not match accepted configuration ${initialConfigurationGeneration}`,
+    );
+  }
+  smokeModelState = recordSmokeAcceptanceMilestone(smokeModelState, {
+    kind: "baseline-snapshot",
+    generation: snapshotConfigurationGeneration,
+  });
+
+  mkdirSync(join(smokeAgentPath, ".."), { recursive: true });
+  mkdirSync(join(smokeSkillPath, ".."), { recursive: true });
+  writeFileSync(smokeAgentPath, smokeAgentContent, "utf8");
+  writeFileSync(smokeSkillPath, smokeSkillContent, "utf8");
+  if (readFileSync(smokeAgentPath, "utf8") !== smokeAgentContent) {
+    throw new Error(`external global custom Agent write was not exact at ${smokeAgentPath}`);
+  }
+  if (readFileSync(smokeSkillPath, "utf8") !== smokeSkillContent) {
+    throw new Error(`external global custom Skill write was not exact at ${smokeSkillPath}`);
+  }
+  smokeModelState = recordSmokeAcceptanceMilestone(smokeModelState, {
+    kind: "external-resources-written",
+  });
+
+  await waitForSmokeCondition(
+    "accepted configuration generation after external Agent and Skill writes",
+    () => advancedConfigurationGeneration !== undefined,
+  );
+  if (advancedConfigurationGeneration === undefined) {
+    throw new Error("external Agent and Skill writes did not produce an accepted configuration generation");
+  }
+  smokeModelState = recordSmokeAcceptanceMilestone(smokeModelState, {
+    kind: "accepted-generation",
+    generation: advancedConfigurationGeneration,
+  });
+  await waitForSmokeCondition(
+    "root runtime application after external Agent and Skill acceptance",
+    () => observedRootAppliedGeneration !== undefined
+      && advancedConfigurationGeneration !== undefined
+      && observedRootAppliedGeneration >= advancedConfigurationGeneration,
+  );
+  if (observedRootAppliedGeneration === undefined) {
+    throw new Error("root runtime did not report an applied external-resource generation");
+  }
+  smokeModelState = recordSmokeAcceptanceMilestone(smokeModelState, {
+    kind: "root-applied-generation",
+    generation: observedRootAppliedGeneration,
+  });
+
   await requireOk(await fetch(`${base}/api/sessions/${created.id}/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      message: `Write the supplied global custom reviewer, dispatch it after configuration reload, and require only its deterministic ${smokeShellToolName} venv-validation tool call.`,
+      message: `Launch the externally loaded ${smokeAgentName} and require its referenced ${smokeSkillName} resource plus deterministic ${smokeShellToolName} venv-validation tool call.`,
     }),
-  }), "custom Agent write and dispatch");
+  }), "post-reload custom Agent dispatch");
   await waitForSmokeCondition(
     "background custom-stage completion",
     () => smokeModelState.complete
-      && smokeModelState.agentWriteObserved
       && smokeModelState.customDispatchIssued
+      && smokeModelState.childSkillObserved
       && venvToolResults === 1
       && observedSupervisorTerminal,
   );
-  await waitForSmokeCondition(
-    "configuration generation after custom Agent write",
-    () => advancedConfigurationGeneration !== undefined,
-  );
   if (!existsSync(smokeAgentPath) || readFileSync(smokeAgentPath, "utf8") !== smokeAgentContent) {
-    throw new Error(`global custom Agent was not written exactly at ${smokeAgentPath}`);
+    throw new Error(`global custom Agent changed after external creation at ${smokeAgentPath}`);
+  }
+  if (!existsSync(smokeSkillPath) || readFileSync(smokeSkillPath, "utf8") !== smokeSkillContent) {
+    throw new Error(`global custom Skill changed after external creation at ${smokeSkillPath}`);
   }
   const agents = await requireOk(
     await fetch(`${base}/api/agents?cwd=${encodeURIComponent(project)}`),
@@ -866,14 +969,16 @@ try {
     || customAgent.source !== "global"
     || customAgent.filePath !== smokeAgentPath
     || customAgent.model !== "smoke/smoke-model"
-    || JSON.stringify(customAgent.effectiveTools) !== JSON.stringify([smokeShellToolName])
+    || JSON.stringify(customAgent.effectiveTools) !== JSON.stringify(["read", smokeShellToolName])
+    || JSON.stringify(customAgent.effectiveSkills) !== JSON.stringify([smokeSkillName])
+    || JSON.stringify(customAgent.missingSkills) !== JSON.stringify([])
     || JSON.stringify(customAgent.subagents) !== JSON.stringify([])
   ) {
     throw new Error(`custom Agent catalog row was not authoritative: ${JSON.stringify(customAgent)}`);
   }
   if (
     smokeModelState.completedRequests !== modelRequests
-    || (modelRequests !== 5 && modelRequests !== 6)
+    || (modelRequests !== 4 && modelRequests !== 5)
   ) {
     throw new Error(`native smoke completed an unexpected model-request sequence: ${smokeProgressDiagnostics()}`);
   }

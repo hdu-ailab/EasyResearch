@@ -120,7 +120,7 @@ export interface CreateSubagentToolOptions {
   supervisor: SubagentSupervisor;
   liveConfiguration: Pick<
     LiveConfiguration,
-    "generation" | "synchronize" | "isCurrent" | "resolveAgents" | "subscribe"
+    "generation" | "synchronize" | "acquireProject" | "isCurrent" | "resolveAgents" | "subscribe"
   >;
   callerAgent: string;
   description?: string;

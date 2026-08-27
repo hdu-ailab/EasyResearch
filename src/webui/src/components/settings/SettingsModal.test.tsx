@@ -27,6 +27,7 @@ vi.mock("../../api", async (importOriginal) => {
     readSkillResource: vi.fn(),
     writeSkillResource: vi.fn(),
     listAuthProviders: vi.fn(),
+    refreshConfigurationResources: vi.fn(),
   };
 });
 
@@ -59,6 +60,7 @@ beforeEach(() => {
   vi.mocked(api.readSkillResource).mockReset();
   vi.mocked(api.writeSkillResource).mockReset();
   vi.mocked(api.listAuthProviders).mockReset();
+  vi.mocked(api.refreshConfigurationResources).mockReset().mockResolvedValue({ generation: 1, error: null });
   vi.mocked(api.listAgents).mockResolvedValue([
     {
       name: "research-assistant",
@@ -188,6 +190,7 @@ const defaultModalProps: SettingsModalProps = {
   configurationError: null,
   onClose: vi.fn(),
   onOpenConfig: vi.fn(),
+  onProjectInterestChange: vi.fn(),
   registerRouteCloseGuard: () => () => {},
 };
 
@@ -196,6 +199,7 @@ function settingsElement(
   onClose: () => void = () => {},
   configurationGeneration = 1,
   configurationError: string | null = null,
+  onProjectInterestChange: (cwd?: string) => void = () => {},
 ) {
   return (
     <PreferencesProvider>
@@ -203,6 +207,7 @@ function settingsElement(
         <SettingsModal
           onClose={onClose}
           onOpenConfig={onOpenConfig}
+          onProjectInterestChange={onProjectInterestChange}
           registerRouteCloseGuard={defaultModalProps.registerRouteCloseGuard}
           configurationGeneration={configurationGeneration}
           configurationError={configurationError}
@@ -942,6 +947,190 @@ describe("SettingsModal", () => {
     expect(await screen.findByText("2 providers connected")).toBeVisible();
   });
 
+  it("refreshes Skill rows and the selected project diagnostics independently of slow metadata", async () => {
+    const user = userEvent.setup();
+    const slowMetadata = deferred<Awaited<ReturnType<typeof api.listAgents>>>();
+    const staleResources = deferred<Awaited<ReturnType<typeof api.listSkillResources>>>();
+    const staleDiagnostics = deferred<Awaited<ReturnType<typeof api.listAgents>>>();
+    let generation = 1;
+    const metadata = (revision: number) =>
+      [
+        {
+          name: `reviewer-${revision}`,
+          description: `Metadata ${revision}`,
+          enabled: true,
+          builtin: false,
+          source: "global" as const,
+          filePath: `/agent/agents/reviewer-${revision}.md`,
+          effectiveTools: [],
+          effectiveSkills: [],
+          missingSkills: [],
+        },
+      ] as never;
+    const diagnostics = (revision: number) =>
+      [{ name: "writing", description: "Writes", missingSkills: [`missing-${revision}`] }] as never;
+    const resources = (revision: number) =>
+      [
+        {
+          name: `skill-${revision}`,
+          source: "global" as const,
+          path: `/agent/skills/skill-${revision}`,
+          skillPath: `/agent/skills/skill-${revision}/SKILL.md`,
+        },
+      ] as never;
+    vi.mocked(api.listAgents).mockImplementation((cwd) => {
+      const requestedGeneration = generation;
+      if (requestedGeneration === 2 && cwd === undefined) return slowMetadata.promise;
+      if (requestedGeneration === 4 && cwd === "/papers/project-a") return staleDiagnostics.promise;
+      return Promise.resolve(
+        cwd === "/papers/project-a" ? diagnostics(requestedGeneration) : metadata(requestedGeneration),
+      );
+    });
+    vi.mocked(api.listSkillResources).mockImplementation(() => {
+      const requestedGeneration = generation;
+      return requestedGeneration === 4 ? staleResources.promise : Promise.resolve(resources(requestedGeneration));
+    });
+
+    const view = renderSettings();
+    await selectCategory(user, "Skills and tools");
+    const scope = await screen.findByRole("combobox", { name: "Skill diagnostic scope" });
+    await user.selectOptions(scope, "/papers/project-a");
+    expect(await screen.findByText("missing-1")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Edit skill skill-1" })).toBeVisible();
+
+    generation = 2;
+    view.rerender(settingsElement(undefined, undefined, 2));
+
+    expect(await screen.findByText("missing-2")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Edit skill skill-2" })).toBeVisible();
+    expect(scope).toHaveValue("/papers/project-a");
+
+    generation = 3;
+    view.rerender(settingsElement(undefined, undefined, 3));
+    await selectCategory(user, "Agents");
+    expect(await screen.findByRole("button", { name: "Configure reviewer-3" })).toBeVisible();
+    await act(async () => {
+      slowMetadata.resolve(metadata(2));
+      await slowMetadata.promise;
+    });
+    expect(screen.getByRole("button", { name: "Configure reviewer-3" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Configure reviewer-2" })).toBeNull();
+
+    await selectCategory(user, "Skills and tools");
+    generation = 4;
+    view.rerender(settingsElement(undefined, undefined, 4));
+    generation = 5;
+    view.rerender(settingsElement(undefined, undefined, 5));
+    expect(await screen.findByText("missing-5")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Edit skill skill-5" })).toBeVisible();
+
+    await act(async () => {
+      staleResources.resolve(resources(4));
+      staleDiagnostics.resolve(diagnostics(4));
+      await Promise.all([staleResources.promise, staleDiagnostics.promise]);
+    });
+    expect(scope).toHaveValue("/papers/project-a");
+    expect(screen.getByText("missing-5")).toBeVisible();
+    expect(screen.queryByText("missing-4")).toBeNull();
+    expect(screen.getByRole("button", { name: "Edit skill skill-5" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Edit skill skill-4" })).toBeNull();
+  });
+
+  it("reports only the selected diagnostic project and clears the interest on reset and unmount", async () => {
+    const user = userEvent.setup();
+    const onProjectInterestChange = vi.fn();
+    const view = render(settingsElement(undefined, undefined, 1, null, onProjectInterestChange));
+    await selectCategory(user, "Skills and tools");
+    const scope = await screen.findByRole("combobox", { name: "Skill diagnostic scope" });
+
+    await user.selectOptions(scope, "/papers/project-a");
+    expect(onProjectInterestChange).toHaveBeenLastCalledWith("/papers/project-a");
+
+    await user.selectOptions(scope, "global");
+    expect(onProjectInterestChange).toHaveBeenLastCalledWith(undefined);
+
+    await user.selectOptions(scope, "/papers/project-b");
+    expect(onProjectInterestChange).toHaveBeenLastCalledWith("/papers/project-b");
+    view.unmount();
+    expect(onProjectInterestChange).toHaveBeenLastCalledWith(undefined);
+  });
+
+  it("awaits selected-project synchronization before Settings Refresh and keeps a safe refresh error visible", async () => {
+    const user = userEvent.setup();
+    const synchronization = deferred<Awaited<ReturnType<typeof api.refreshConfigurationResources>>>();
+    vi.mocked(api.refreshConfigurationResources).mockReturnValue(synchronization.promise);
+    renderSettings();
+    await selectCategory(user, "Skills and tools");
+    const scope = await screen.findByRole("combobox", { name: "Skill diagnostic scope" });
+    await user.selectOptions(scope, "/papers/project-a");
+    await selectCategory(user, "Agents");
+    await screen.findByRole("button", { name: "Configure Search" });
+    const metadataCalls = vi.mocked(api.listModels).mock.calls.length;
+
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+
+    expect(api.refreshConfigurationResources).toHaveBeenCalledWith({ projectCwds: ["/papers/project-a"] });
+    expect(api.listModels).toHaveBeenCalledTimes(metadataCalls);
+
+    await act(async () => {
+      synchronization.resolve({ generation: 2, error: "Configuration refresh failed. Retry refresh." });
+      await synchronization.promise;
+    });
+    await waitFor(() => expect(api.listModels).toHaveBeenCalledTimes(metadataCalls + 1));
+    expect(screen.getByRole("alert")).toHaveTextContent("Configuration refresh failed. Retry refresh.");
+    expect(screen.getByRole("button", { name: "Configure Search" })).toBeVisible();
+  });
+
+  it("invalidates pending manual Refresh on diagnostic scope change and unmount while the new scope stays current", async () => {
+    const user = userEvent.setup();
+    const projectARefresh = deferred<Awaited<ReturnType<typeof api.refreshConfigurationResources>>>();
+    const projectBRefresh = deferred<Awaited<ReturnType<typeof api.refreshConfigurationResources>>>();
+    vi.mocked(api.refreshConfigurationResources)
+      .mockReturnValueOnce(projectARefresh.promise)
+      .mockReturnValueOnce(projectBRefresh.promise);
+    const view = renderSettings();
+    await selectCategory(user, "Agents");
+    await screen.findByRole("button", { name: "Configure Search" });
+    const metadataCalls = vi.mocked(api.listModels).mock.calls.length;
+    vi.mocked(api.listAgents).mockImplementation(async (cwd) =>
+      cwd === "/papers/project-b"
+        ? ([{ name: "writing", description: "Writes", missingSkills: ["project-b-current"] }] as never)
+        : ([] as never),
+    );
+
+    await selectCategory(user, "Skills and tools");
+    const scope = screen.getByRole("combobox", { name: "Skill diagnostic scope" });
+    await user.selectOptions(scope, "/papers/project-a");
+    await selectCategory(user, "Agents");
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(api.refreshConfigurationResources).toHaveBeenLastCalledWith({ projectCwds: ["/papers/project-a"] });
+
+    await selectCategory(user, "Skills and tools");
+    await user.selectOptions(scope, "/papers/project-b");
+    expect(await screen.findByText("project-b-current")).toBeVisible();
+    await act(async () => {
+      projectARefresh.resolve({ generation: 2, error: "stale project A refresh" });
+      await projectARefresh.promise;
+    });
+
+    expect(scope).toHaveValue("/papers/project-b");
+    expect(screen.getByText("project-b-current")).toBeVisible();
+    await selectCategory(user, "Agents");
+    expect(screen.queryByText("stale project A refresh")).toBeNull();
+    expect(api.listModels).toHaveBeenCalledTimes(metadataCalls);
+    const refresh = screen.getByRole("button", { name: "Refresh" });
+    expect(refresh).not.toBeDisabled();
+
+    await user.click(refresh);
+    expect(api.refreshConfigurationResources).toHaveBeenLastCalledWith({ projectCwds: ["/papers/project-b"] });
+    view.unmount();
+    await act(async () => {
+      projectBRefresh.resolve({ generation: 3, error: "stale unmounted refresh" });
+      await projectBRefresh.promise;
+    });
+    expect(api.listModels).toHaveBeenCalledTimes(metadataCalls);
+  });
+
   it("clears the prior Agents error after a successful Refresh", async () => {
     const user = userEvent.setup();
     vi.mocked(api.listModels).mockRejectedValueOnce(new Error("agent refresh failed"));
@@ -1064,7 +1253,9 @@ describe("SettingsModal", () => {
 
   it("refreshes current Global diagnostics after a successful Agent save", async () => {
     const user = userEvent.setup();
+    const metadata = vi.mocked(api.listAgents).getMockImplementation()!;
     vi.mocked(api.listAgents)
+      .mockImplementationOnce(metadata)
       .mockResolvedValueOnce([{ name: "search", description: "Searches", missingSkills: ["before-save"] }] as never)
       .mockResolvedValueOnce([{ name: "search", description: "Searches", missingSkills: ["after-save"] }] as never);
     renderSettings();
@@ -1083,7 +1274,9 @@ describe("SettingsModal", () => {
 
   it("refreshes the selected project diagnostics after a successful global Skill save", async () => {
     const user = userEvent.setup();
+    const metadata = vi.mocked(api.listAgents).getMockImplementation()!;
     vi.mocked(api.listAgents)
+      .mockImplementationOnce(metadata)
       .mockResolvedValueOnce([{ name: "search", description: "Searches", missingSkills: ["global-missing"] }] as never)
       .mockResolvedValueOnce([
         { name: "writing", description: "Writes", missingSkills: ["before-skill-save"] },
@@ -1108,7 +1301,9 @@ describe("SettingsModal", () => {
   it("does not let a pre-save diagnostic response overwrite the post-save refresh", async () => {
     const user = userEvent.setup();
     const stale = deferred<Awaited<ReturnType<typeof api.listAgents>>>();
+    const metadata = vi.mocked(api.listAgents).getMockImplementation()!;
     vi.mocked(api.listAgents)
+      .mockImplementationOnce(metadata)
       .mockResolvedValueOnce([{ name: "search", description: "Searches", missingSkills: ["global-missing"] }] as never)
       .mockReturnValueOnce(stale.promise)
       .mockResolvedValueOnce([
@@ -1150,7 +1345,9 @@ describe("SettingsModal", () => {
 
   it("refetches only diagnostic Agents when a project scope is selected", async () => {
     const user = userEvent.setup();
+    const metadata = vi.mocked(api.listAgents).getMockImplementation()!;
     vi.mocked(api.listAgents)
+      .mockImplementationOnce(metadata)
       .mockResolvedValueOnce([{ name: "search", description: "Searches", missingSkills: ["global-missing"] }] as never)
       .mockResolvedValueOnce([{ name: "writing", description: "Writes", missingSkills: ["project-missing"] }] as never);
 
@@ -1173,7 +1370,9 @@ describe("SettingsModal", () => {
     const user = userEvent.setup();
     const projectA = deferred<Awaited<ReturnType<typeof api.listAgents>>>();
     const projectB = deferred<Awaited<ReturnType<typeof api.listAgents>>>();
+    const metadata = vi.mocked(api.listAgents).getMockImplementation()!;
     vi.mocked(api.listAgents)
+      .mockImplementationOnce(metadata)
       .mockResolvedValueOnce([{ name: "search", description: "Searches", missingSkills: ["global-missing"] }] as never)
       .mockReturnValueOnce(projectA.promise)
       .mockReturnValueOnce(projectB.promise);
@@ -1202,7 +1401,9 @@ describe("SettingsModal", () => {
 
   it("clears stale diagnostics on failure and clears the diagnostic error after recovery", async () => {
     const user = userEvent.setup();
+    const metadata = vi.mocked(api.listAgents).getMockImplementation()!;
     vi.mocked(api.listAgents)
+      .mockImplementationOnce(metadata)
       .mockResolvedValueOnce([{ name: "search", description: "Searches", missingSkills: ["global-missing"] }] as never)
       .mockRejectedValueOnce(new Error("diagnostic failed"))
       .mockResolvedValueOnce([

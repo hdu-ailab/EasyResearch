@@ -1,5 +1,5 @@
 import { Settings } from "lucide-react";
-import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listStatus, openSession } from "./api";
 import { SettingsModal } from "./components/settings/SettingsModal";
 import { TopbarIconButton } from "./components/Topbar";
@@ -37,6 +37,23 @@ export function App() {
   const previousSettingsOpen = useRef(settingsOpen);
   const routeWorkId = hostRoute?.page === "work" ? hostRoute.session.id : null;
   const routeWorkCwd = hostRoute?.page === "work" ? hostRoute.session.cwd : null;
+  const resolvedWorkSession =
+    hostRoute?.page === "work" &&
+    workResolution?.requested.id === hostRoute.session.id &&
+    workResolution.requested.cwd === hostRoute.session.cwd
+      ? workResolution.resolved
+      : null;
+  const mountedWorkCwd = resolvedWorkSession?.cwd;
+  const setProjectInterests = configuration.setProjectInterests;
+
+  const onSettingsProjectInterestChange = useCallback(
+    (cwd?: string) => setProjectInterests("settings", cwd === undefined ? [] : [cwd]),
+    [setProjectInterests],
+  );
+  const onConfigProjectInterestChange = useCallback(
+    (cwd?: string) => setProjectInterests("config", cwd === undefined ? [] : [cwd]),
+    [setProjectInterests],
+  );
 
   useEffect(() => {
     if (routeWorkId === null || routeWorkCwd === null) return;
@@ -61,6 +78,17 @@ export function App() {
       cancelled = true;
     };
   }, [routeWorkCwd, routeWorkId]);
+
+  useEffect(() => {
+    setProjectInterests("work", mountedWorkCwd === undefined ? [] : [mountedWorkCwd]);
+  }, [mountedWorkCwd, setProjectInterests]);
+
+  useEffect(
+    () => () => {
+      setProjectInterests("work", []);
+    },
+    [setProjectInterests],
+  );
 
   useLayoutEffect(() => {
     if (previousSettingsOpen.current && !settingsOpen && !configOpen) {
@@ -88,7 +116,7 @@ export function App() {
       workResolution?.requested.id === hostRoute.session.id && workResolution.requested.cwd === hostRoute.session.cwd
         ? workResolution
         : null;
-    const session = resolution?.resolved ?? null;
+    const session = resolvedWorkSession;
     if (resolution?.error) {
       workError = resolution.error;
     } else if (!session) {
@@ -156,7 +184,11 @@ export function App() {
         </div>
       )}
       {configOpen && (
-        <ConfigPage onHome={() => navigate({ page: "home" })} onBackToSettings={() => returnToSettings(route)} />
+        <ConfigPage
+          onHome={() => navigate({ page: "home" })}
+          onBackToSettings={() => returnToSettings(route)}
+          onProjectInterestChange={onConfigProjectInterestChange}
+        />
       )}
       {settingsOpen && (
         <SettingsModal
@@ -164,6 +196,7 @@ export function App() {
           configurationError={configuration.error}
           onClose={() => closeSettings(route)}
           onOpenConfig={() => openConfig(route)}
+          onProjectInterestChange={onSettingsProjectInterestChange}
           registerRouteCloseGuard={registerSettingsCloseGuard}
         />
       )}

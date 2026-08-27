@@ -37,6 +37,7 @@ const searchAgent: AgentConfig = {
   effectiveTools: ["read"],
   skills: ["paper-search"],
   effectiveSkills: ["paper-search"],
+  effectiveSkillPaths: ["/skills/paper-search"],
   missingSkills: [],
   subagents: [],
 };
@@ -252,6 +253,7 @@ function reserve(coordinator: SubagentCoordinator, toolCallId: string, requested
 const liveConfiguration = {
   generation: 1,
   synchronize: async () => {},
+  acquireProject: async (cwd: string) => ({ cwd, release: async () => {} }),
   isCurrent: (generation: number) => generation === 1,
   resolveAgents: async () => [searchAgent, figuresAgent],
   subscribe: () => () => {},
@@ -273,6 +275,7 @@ function makeHarness(input: {
   parentSessionId?: string;
   schedule?: (run: () => void) => void;
   createId?: () => string;
+  ensureTriggeredTurnReady?: () => Promise<void>;
 }) {
   const manager = new MemorySessionManager();
   const coordinator = new SubagentCoordinator(manager);
@@ -285,7 +288,7 @@ function makeHarness(input: {
     createId: input.createId ?? (() => `batch-${batchSequence++}`),
     ...(input.schedule ? { schedule: input.schedule } : {}),
   });
-  supervisor.attach(parent);
+  supervisor.attach(parent, input.ensureTriggeredTurnReady);
   return { manager, coordinator, parent, supervisor };
 }
 
@@ -855,6 +858,228 @@ describe("SubagentSupervisor ownership and launch ordering", () => {
 });
 
 describe("SubagentSupervisor notification acknowledgement", () => {
+  it("drains multiple frozen triggered batches in order after coherent recovery", async () => {
+    const first = new FakeStage("search_0", "child-0", "/sessions/child-0.jsonl");
+    const second = new FakeStage("search_1", "child-1", "/sessions/child-1.jsonl");
+    const stages = new Map([["search_0", first], ["search_1", second]]);
+    let coherent = false;
+    const ensureTriggeredTurnReady = vi.fn(async () => {
+      if (!coherent) throw new Error("Agent runtime configuration could not be applied.");
+    });
+    const scheduled: Array<() => void> = [];
+    const { coordinator, parent, supervisor } = makeHarness({
+      launchStage: async (reservation) => {
+        const stage = stages.get(reservation.agentId);
+        if (!stage) throw new Error(`Missing stage ${reservation.agentId}.`);
+        return stage.handle;
+      },
+      schedule: (run) => scheduled.push(run),
+      ensureTriggeredTurnReady,
+    });
+    const firstReservation = reserve(coordinator, "tool-0");
+    const secondReservation = reserve(coordinator, "tool-1");
+    const firstLaunch = supervisor.launch(firstReservation, options("first"));
+    const secondLaunch = supervisor.launch(secondReservation, options("second"));
+    first.materialization.resolve();
+    second.materialization.resolve();
+    await Promise.all([firstLaunch, secondLaunch]);
+    parent.acknowledgeLaunch("tool-0");
+    parent.acknowledgeLaunch("tool-1");
+
+    first.completion.resolve(result("first", { agentId: "search_0" }));
+    await turn();
+    expect(scheduled).toHaveLength(1);
+    scheduled.shift()?.();
+    await turn();
+    expect(ensureTriggeredTurnReady).toHaveBeenCalledTimes(1);
+    expect(parent.sent).toEqual([]);
+    expect(scheduled).toHaveLength(1);
+    scheduled.shift()?.();
+    await turn();
+    expect(ensureTriggeredTurnReady).toHaveBeenCalledTimes(2);
+    expect(parent.sent).toEqual([]);
+
+    second.completion.resolve(result("second", { agentId: "search_1" }));
+    await turn();
+    expect(scheduled).toHaveLength(1);
+    scheduled.shift()?.();
+    await turn();
+    expect(ensureTriggeredTurnReady).toHaveBeenCalledTimes(2);
+    expect(parent.sent).toEqual([]);
+    expect(coordinator.journal().pendingBatches).toEqual([
+      expect.objectContaining({
+        batchId: "batch-0",
+        launchIds: [firstReservation.launchId],
+        triggerTurn: true,
+      }),
+      expect.objectContaining({
+        batchId: "batch-1",
+        launchIds: [secondReservation.launchId],
+        triggerTurn: true,
+      }),
+    ]);
+
+    coherent = true;
+    supervisor.runtimeBecameCoherent();
+    supervisor.runtimeBecameCoherent();
+    supervisor.runtimeBecameCoherent();
+    expect(scheduled).toHaveLength(1);
+    scheduled.shift()?.();
+    await turn();
+    expect(ensureTriggeredTurnReady).toHaveBeenCalledTimes(3);
+    expect(parent.sent).toEqual([
+      expect.objectContaining({
+        message: expect.objectContaining({
+          content: expect.stringContaining("Complete subagent:search_0"),
+          details: { batchId: "batch-0" },
+        }),
+      }),
+    ]);
+
+    supervisor.runtimeBecameCoherent();
+    supervisor.runtimeBecameCoherent();
+    expect(scheduled).toEqual([]);
+    parent.acknowledgeLastMessage();
+    expect(scheduled).toHaveLength(1);
+    supervisor.runtimeBecameCoherent();
+    expect(scheduled).toHaveLength(1);
+    scheduled.shift()?.();
+    await turn();
+    expect(ensureTriggeredTurnReady).toHaveBeenCalledTimes(4);
+    expect(parent.sent).toHaveLength(2);
+    expect(parent.sent[1]).toEqual(expect.objectContaining({
+      message: expect.objectContaining({
+        content: expect.stringContaining("Complete subagent:search_1"),
+        details: { batchId: "batch-1" },
+      }),
+    }));
+    expect(parent.sent[1]?.message.content).not.toContain("Complete subagent:search_0");
+
+    parent.acknowledgeLastMessage();
+    await supervisor.waitForQuiescence();
+    supervisor.runtimeBecameCoherent();
+    await turn();
+    expect(coordinator.journal().pendingBatches).toEqual([]);
+    expect(parent.sent).toHaveLength(2);
+    expect(scheduled).toEqual([]);
+  });
+
+  it("automatically retries a frozen triggered batch when the owner reports coherent recovery", async () => {
+    const stage = new FakeStage("search_0", "child-0", "/sessions/child-0.jsonl");
+    const coherenceFailure = new Error("Agent runtime configuration could not be applied.");
+    const ensureTriggeredTurnReady = vi.fn()
+      .mockRejectedValueOnce(coherenceFailure)
+      .mockResolvedValueOnce(undefined);
+    const scheduled: Array<() => void> = [];
+    const { coordinator, parent, supervisor } = makeHarness({
+      launchStage: async () => stage.handle,
+      autoAcknowledge: true,
+      schedule: (run) => scheduled.push(run),
+      ensureTriggeredTurnReady,
+    });
+    const reservation = reserve(coordinator, "tool-0");
+    const launching = supervisor.launch(reservation, options());
+    stage.materialization.resolve();
+    await launching;
+    parent.acknowledgeLaunch("tool-0");
+    stage.completion.resolve(result());
+    await turn();
+
+    expect(scheduled).toHaveLength(1);
+    scheduled.shift()?.();
+    await turn();
+    expect(ensureTriggeredTurnReady).toHaveBeenCalledTimes(1);
+    expect(parent.sent).toEqual([]);
+    expect(coordinator.journal().pendingBatches).toEqual([
+      expect.objectContaining({ launchIds: [reservation.launchId], triggerTurn: true }),
+    ]);
+
+    (supervisor as unknown as { runtimeBecameCoherent?(): void }).runtimeBecameCoherent?.();
+    expect(scheduled).toHaveLength(1);
+    scheduled.shift()?.();
+    await turn();
+    expect(ensureTriggeredTurnReady).toHaveBeenCalledTimes(2);
+    expect(parent.sent).toHaveLength(1);
+    parent.acknowledgeLastMessage();
+    await supervisor.waitForQuiescence();
+  });
+
+  it("attempts one event-loop retry after a triggered guard failure, then waits for a recovery event", async () => {
+    const stage = new FakeStage("search_0", "child-0", "/sessions/child-0.jsonl");
+    const ensureTriggeredTurnReady = vi.fn()
+      .mockRejectedValueOnce(new Error("transient readiness failure"))
+      .mockRejectedValueOnce(new Error("readiness still unavailable"))
+      .mockResolvedValueOnce(undefined);
+    const scheduled: Array<() => void> = [];
+    const { coordinator, parent, supervisor } = makeHarness({
+      launchStage: async () => stage.handle,
+      autoAcknowledge: true,
+      schedule: (run) => scheduled.push(run),
+      ensureTriggeredTurnReady,
+    });
+    const reservation = reserve(coordinator, "tool-0");
+    const launching = supervisor.launch(reservation, options());
+    stage.materialization.resolve();
+    await launching;
+    parent.acknowledgeLaunch("tool-0");
+    stage.completion.resolve(result());
+    await turn();
+
+    scheduled.shift()?.();
+    await turn();
+    expect(ensureTriggeredTurnReady).toHaveBeenCalledTimes(1);
+    expect(scheduled).toHaveLength(1);
+
+    scheduled.shift()?.();
+    await turn();
+    expect(ensureTriggeredTurnReady).toHaveBeenCalledTimes(2);
+    expect(parent.sent).toEqual([]);
+    expect(scheduled).toEqual([]);
+
+    supervisor.runtimeBecameCoherent();
+    expect(scheduled).toHaveLength(1);
+    scheduled.shift()?.();
+    await turn();
+    expect(ensureTriggeredTurnReady).toHaveBeenCalledTimes(3);
+    expect(parent.sent).toHaveLength(1);
+    parent.acknowledgeLastMessage();
+    await supervisor.waitForQuiescence();
+  });
+
+  it("does not resurrect a blocked triggered retry after supervisor disposal", async () => {
+    const stage = new FakeStage("search_0", "child-0", "/sessions/child-0.jsonl");
+    const ensureTriggeredTurnReady = vi.fn(async () => {
+      throw new Error("runtime remains poisoned");
+    });
+    const scheduled: Array<() => void> = [];
+    const { coordinator, parent, supervisor } = makeHarness({
+      launchStage: async () => stage.handle,
+      autoAcknowledge: true,
+      schedule: (run) => scheduled.push(run),
+      ensureTriggeredTurnReady,
+    });
+    const reservation = reserve(coordinator, "tool-0");
+    const launching = supervisor.launch(reservation, options());
+    stage.materialization.resolve();
+    await launching;
+    parent.acknowledgeLaunch("tool-0");
+    stage.completion.resolve(result());
+    await turn();
+    scheduled.shift()?.();
+    await turn();
+    expect(parent.sent).toEqual([]);
+
+    await supervisor.dispose();
+    const sentAtDisposal = parent.sent.length;
+    const scheduledAtDisposal = scheduled.length;
+    (supervisor as unknown as { runtimeBecameCoherent?(): void }).runtimeBecameCoherent?.();
+    await turn();
+
+    expect(scheduled).toHaveLength(scheduledAtDisposal);
+    expect(parent.sent).toHaveLength(sentAtDisposal);
+    expect(parent.sent.every(({ options }) => options.triggerTurn === false)).toBe(true);
+  });
+
   it("uses a pending recovery batch's persisted no-trigger mode when a supervisor later attaches", async () => {
     const manager = new MemorySessionManager();
     const coordinator = new SubagentCoordinator(manager);
@@ -873,7 +1098,10 @@ describe("SubagentSupervisor notification acknowledgement", () => {
       schedule: (run) => scheduled.push(run),
     });
 
-    supervisor.attach(parent);
+    const ensureTriggeredTurnReady = vi.fn(async () => {
+      throw new Error("no-trigger delivery must not check runtime coherence");
+    });
+    supervisor.attach(parent, ensureTriggeredTurnReady);
     expect(scheduled).toHaveLength(1);
     scheduled.shift()!();
     await turn();
@@ -884,6 +1112,7 @@ describe("SubagentSupervisor notification acknowledgement", () => {
         options: { deliverAs: "steer", triggerTurn: false },
       }),
     ]);
+    expect(ensureTriggeredTurnReady).not.toHaveBeenCalled();
     await supervisor.waitForQuiescence();
     await supervisor.dispose();
   });
@@ -1029,10 +1258,16 @@ describe("SubagentSupervisor notification acknowledgement", () => {
     await turn();
     await supervisor.flushNotifications();
 
+    expect(parent.sent).toHaveLength(1);
+    expect(coordinator.journal().pendingBatches).toHaveLength(2);
+    parent.acknowledgeLastMessage();
+    await supervisor.flushNotifications();
+
     expect(parent.sent).toHaveLength(2);
     expect(parent.sent[1]?.message.content).toContain("Complete subagent:search_1");
     expect(parent.sent[1]?.message.content).not.toContain("Complete subagent:search_0");
-    expect(coordinator.journal().pendingBatches).toHaveLength(2);
+    parent.acknowledgeLastMessage();
+    await supervisor.waitForQuiescence();
   });
 
   it("consumes a batch only after observing its live hidden custom message", async () => {

@@ -6,7 +6,11 @@ import { normalizeLocalShellTools } from "../runtime/platform-tools";
 import { getAgentDir, importPi } from "../runtime/pi-import";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { readGlobalAgentDefaults, type AgentRuntimeDefaults } from "./agent-defaults";
-import { isDotAgentsSkillEnabled, resolveSkillSelection } from "./skill-resolution";
+import {
+  type AcceptedSkillDescriptors,
+  isDotAgentsSkillEnabled,
+  resolveSkillSelection,
+} from "./skill-resolution";
 
 export type AgentSource = "global" | "bundled";
 
@@ -40,6 +44,7 @@ export interface AgentConfig extends AgentDefinition {
   thinking?: ThinkingLevel;
   effectiveTools: string[];
   effectiveSkills: string[];
+  effectiveSkillPaths: string[];
   missingSkills: string[];
 }
 
@@ -72,6 +77,7 @@ export interface DiscoveryOptions {
   bundledSkillsDir?: string;
   homeDir?: string;
   enableDotAgentsSkill?: boolean;
+  acceptedSkillDescriptors?: AcceptedSkillDescriptors;
   platform?: NodeJS.Platform;
 }
 
@@ -239,12 +245,13 @@ export function resolveAgentCatalog(
           ? EXPERIMENT_TOOL_INVENTORY
           : CONTROLLED_TOOL_INVENTORY),
     ];
-    const { effectiveSkills, missingSkills } = resolveSkillSelection(skills, {
+    const { effectiveSkills, effectiveSkillPaths, missingSkills } = resolveSkillSelection(skills, {
       cwd,
       agentDir,
       homeDir: options.homeDir ?? homedir(),
       bundledSkillsDir: options.bundledSkillsDir,
       enableDotAgentsSkill: options.enableDotAgentsSkill,
+      acceptedSkillDescriptors: options.acceptedSkillDescriptors,
       includeProject,
     });
     return {
@@ -256,6 +263,7 @@ export function resolveAgentCatalog(
       subagents: definition.subagents ? [...definition.subagents] : definition.subagents,
       skills,
       effectiveSkills,
+      effectiveSkillPaths,
       missingSkills,
     };
   });

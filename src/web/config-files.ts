@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, join, normalize, relative, sep } from "node:path";
 import type { ConfigEntryDto, ConfigScope } from "./contracts";
 import { getAgentDir } from "../runtime/pi-import";
+import { isSkillDescriptorRelativePath } from "../runtime/resource-fingerprint";
 
 export class ConfigPathError extends Error {}
 
@@ -38,15 +39,28 @@ export interface ConfigListInput {
 export interface AuthoritativeConfigChange {
   agentsChanged?: true;
   modelsChanged?: true;
+  skillsChanged?: true;
+}
+
+export interface ProjectConfigRegistration {
+  readonly cwd: string;
+  release(): Promise<void>;
 }
 
 export interface ConfigFileServiceOptions {
   onAuthoritativeWrite?: (change: AuthoritativeConfigChange) => void | Promise<void>;
+  acquireProject?: (cwd: string) => Promise<ProjectConfigRegistration>;
+  synchronizeProject?: (cwd: string) => Promise<void>;
 }
 
 export interface GlobalSettingsMutation<T> {
   settings: Record<string, unknown>;
   result: T;
+}
+
+interface ProjectWriteContext {
+  cwd: string;
+  canonicalCwd: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -125,7 +139,7 @@ export class ConfigFileService {
     const dirPath = input.path
       ? resolveAllowedConfigPath(root, input.path, "read")
       : root;
-    let dirents;
+    let dirents: fs.Dirent[];
     try {
       dirents = fs.readdirSync(dirPath, { withFileTypes: true });
     } catch (error) {
@@ -168,6 +182,15 @@ export class ConfigFileService {
     if (isGlobalSettingsWrite(input)) {
       return this.enqueueGlobalSettingsMutation(() => this.writeNow(input));
     }
+    if (isProjectSkillDescriptorInput(input) && input.cwd && this.options.acquireProject) {
+      const registration = await this.options.acquireProject(input.cwd);
+      try {
+        await this.writeNow(input, this.projectWriteContext(input.cwd));
+      } finally {
+        await registration.release();
+      }
+      return;
+    }
     return this.writeNow(input);
   }
 
@@ -200,8 +223,10 @@ export class ConfigFileService {
     });
   }
 
-  private async writeNow(input: ConfigWriteInput): Promise<void> {
-    const root = this.rootFor(input.scope, input.cwd);
+  private async writeNow(input: ConfigWriteInput, projectContext?: ProjectWriteContext): Promise<void> {
+    const root = projectContext
+      ? join(projectContext.canonicalCwd, ".easyresearch")
+      : this.rootFor(input.scope, input.cwd);
     if (input.path.endsWith(".json")) {
       try {
         JSON.parse(input.content);
@@ -210,17 +235,78 @@ export class ConfigFileService {
       }
     }
     const target = resolveAllowedConfigPath(root, input.path, "write");
+    const skillDescriptor = isSkillDescriptorTarget(root, target);
+    const projectDescriptor = input.scope === "project" && skillDescriptor;
+    const stableProject = projectDescriptor && input.cwd
+      ? (projectContext ?? this.projectWriteContext(input.cwd))
+      : undefined;
+    if (stableProject) this.assertProjectUnchanged(stableProject);
     fs.mkdirSync(dirname(target), { recursive: true });
     const tempPath = join(dirname(target), `.${basename(target)}.${randomUUID()}.tmp`);
+    const previous = fs.existsSync(target)
+      ? { bytes: fs.readFileSync(target), mode: fs.statSync(target).mode }
+      : undefined;
+    let persisted = false;
     try {
       fs.writeFileSync(tempPath, input.content, { mode: 0o600 });
+      if (stableProject) this.assertProjectUnchanged(stableProject);
       fs.renameSync(tempPath, target);
-      const change = authoritativeChange(input);
-      if (change) await this.options.onAuthoritativeWrite?.(change);
-    } catch (error) {
-      throw error;
+      persisted = true;
+      if (stableProject) {
+        try {
+          this.assertProjectUnchanged(stableProject);
+        } catch (error) {
+          this.restoreAfterRetarget(target, previous);
+          persisted = false;
+          throw error;
+        }
+      }
     } finally {
       fs.rmSync(tempPath, { force: true });
+    }
+    if (!persisted) return;
+    const change = authoritativeChange(input, skillDescriptor);
+    if (change) await this.options.onAuthoritativeWrite?.(change);
+    if (projectDescriptor && input.cwd) await this.options.synchronizeProject?.(input.cwd);
+  }
+
+  private projectWriteContext(cwd: string): ProjectWriteContext {
+    let canonicalCwd: string;
+    try {
+      canonicalCwd = fs.realpathSync(cwd);
+    } catch {
+      throw new ConfigServiceError(404, `does not exist: ${cwd}`);
+    }
+    if (!fs.statSync(canonicalCwd).isDirectory()) throw new ConfigServiceError(400, `not a directory: ${cwd}`);
+    return { cwd, canonicalCwd };
+  }
+
+  private assertProjectUnchanged(context: ProjectWriteContext): void {
+    let current: string;
+    try {
+      current = fs.realpathSync(context.cwd);
+    } catch {
+      throw new ConfigServiceError(409, "Project changed during configuration write", "PROJECT_CHANGED");
+    }
+    if (current !== context.canonicalCwd) {
+      throw new ConfigServiceError(409, "Project changed during configuration write", "PROJECT_CHANGED");
+    }
+  }
+
+  private restoreAfterRetarget(
+    target: string,
+    previous: { bytes: Buffer; mode: number } | undefined,
+  ): void {
+    if (!previous) {
+      fs.rmSync(target, { force: true });
+      return;
+    }
+    const rollbackPath = join(dirname(target), `.${basename(target)}.${randomUUID()}.rollback`);
+    try {
+      fs.writeFileSync(rollbackPath, previous.bytes, { mode: previous.mode });
+      fs.renameSync(rollbackPath, target);
+    } finally {
+      fs.rmSync(rollbackPath, { force: true });
     }
   }
 
@@ -237,7 +323,7 @@ export class ConfigFileService {
       : root;
     try {
       fs.mkdirSync(target, { recursive: true });
-    } catch (error) {
+    } catch {
       throw new ConfigServiceError(400, `Cannot create directory: ${input.path ?? target}`);
     }
   }
@@ -245,7 +331,7 @@ export class ConfigFileService {
   private rootFor(scope: ConfigScope, cwd?: string): string {
     if (scope === "global") return this.agentDir;
     if (!cwd) throw new ConfigServiceError(400, "cwd is required for project scope");
-    let stat;
+    let stat: fs.Stats;
     try {
       stat = fs.statSync(cwd);
     } catch {
@@ -260,7 +346,17 @@ function isGlobalSettingsWrite(input: ConfigWriteInput): boolean {
   return input.scope === "global" && normalize(input.path) === "settings.json";
 }
 
-function authoritativeChange(input: ConfigWriteInput): AuthoritativeConfigChange | undefined {
+function isProjectSkillDescriptorInput(input: ConfigWriteInput): boolean {
+  if (input.scope !== "project" || !input.cwd) return false;
+  const components = input.path.split(/[\\/]/);
+  if (components[0] !== "skills") return false;
+  return isSkillDescriptorRelativePath(components.slice(1).join("/"));
+}
+
+function authoritativeChange(
+  input: ConfigWriteInput,
+  skillDescriptor: boolean,
+): AuthoritativeConfigChange | undefined {
   if (input.scope !== "global") return undefined;
   const path = normalize(input.path);
   if (path === "models.json") return { modelsChanged: true };
@@ -268,5 +364,11 @@ function authoritativeChange(input: ConfigWriteInput): AuthoritativeConfigChange
   if (dirname(path) === "agents" && basename(path).endsWith(".md")) {
     return { agentsChanged: true };
   }
+  if (skillDescriptor) return { skillsChanged: true };
   return undefined;
+}
+
+function isSkillDescriptorTarget(root: string, target: string): boolean {
+  const skillRoot = canonicalizeNearestAncestor(join(root, "skills"));
+  return isSkillDescriptorRelativePath(relative(skillRoot, target));
 }

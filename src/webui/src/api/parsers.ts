@@ -2,6 +2,10 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { privateSubagentEventDataReason } from "../../../subagent/notifications";
 import { isThinkingLevel } from "../../../thinking-levels";
 import type {
+  ConfigurationRefreshResult,
+  ProjectWatchReplacementResult,
+} from "../../../web/configuration-project-watches";
+import type {
   ActiveSessionDto,
   AgentDto,
   AgentResourceDto,
@@ -28,6 +32,7 @@ import type {
   DirectoryListingDto,
   FileContentDto,
   FileEntryDto,
+  RuntimeConfigurationAppliedEvent,
   SessionSnapshotDto,
   SessionStatsChangedEventDto,
   SessionSummaryDto,
@@ -112,6 +117,14 @@ function optionalNumber(source: RecordValue, key: string): number | undefined {
     throw new Error(`Invalid API response: ${key} must be a number`);
   }
   return value;
+}
+
+function requiredSafeGeneration(source: RecordValue, key: string, minimum: number): number {
+  const generation = requiredNumber(source, key);
+  if (!Number.isSafeInteger(generation) || generation < minimum) {
+    throw new Error(`Invalid API response: ${key} must be an integer of at least ${minimum}`);
+  }
+  return generation;
 }
 
 function nullableNumber(source: RecordValue, key: string): number | null {
@@ -333,6 +346,17 @@ export function parseSessionStatsChangedEvent(value: unknown): SessionStatsChang
   };
 }
 
+export function parseRuntimeConfigurationAppliedEvent(value: unknown): RuntimeConfigurationAppliedEvent {
+  const source = record(value, "runtime configuration applied event");
+  if (source.type !== "runtime_configuration_applied") {
+    throw new Error("Invalid API response: runtime configuration event type is invalid");
+  }
+  return {
+    type: "runtime_configuration_applied",
+    generation: requiredSafeGeneration(source, "generation", 1),
+  };
+}
+
 export function parseCompactionStateChangedEvent(value: unknown): CompactionStateChangedEventDto {
   const source = record(value, "compaction state event");
   if (source.type !== "compaction_state_changed") {
@@ -541,18 +565,51 @@ export function parseConfigurationEvent(value: unknown): ConfigurationEvent {
   if (!Number.isSafeInteger(generation) || generation < 0) {
     throw new Error("Invalid API response: generation must be a non-negative integer");
   }
+  const projectWatchLeaseId = optionalIdentityString(source, "projectWatchLeaseId");
   if (source.type === "config.updated") {
+    if (source.apiUsageChanged !== undefined && source.apiUsageChanged !== true) {
+      throw new Error("Invalid API response: apiUsageChanged must be true");
+    }
     return {
       type: "config.updated",
       generation,
       agentsChanged: requiredBoolean(source, "agentsChanged"),
       modelsChanged: requiredBoolean(source, "modelsChanged"),
+      skillsChanged: requiredBoolean(source, "skillsChanged"),
+      runtimeChanged: requiredBoolean(source, "runtimeChanged"),
+      ...(source.apiUsageChanged === true ? { apiUsageChanged: true } : {}),
+      ...(projectWatchLeaseId === undefined ? {} : { projectWatchLeaseId }),
     };
   }
   if (source.type === "config.error") {
-    return { type: "config.error", generation, message: requiredString(source, "message") };
+    return {
+      type: "config.error",
+      generation,
+      message: requiredString(source, "message"),
+      ...(projectWatchLeaseId === undefined ? {} : { projectWatchLeaseId }),
+    };
   }
   throw new Error("Invalid API response: configuration event type is invalid");
+}
+
+export function parseProjectWatchReplacementResult(value: unknown): ProjectWatchReplacementResult {
+  const source = record(value, "configuration project-watch replacement");
+  return {
+    applied: requiredBoolean(source, "applied"),
+    revision: requiredSafeGeneration(source, "revision", 0),
+  };
+}
+
+export function parseConfigurationRefreshResult(value: unknown): ConfigurationRefreshResult {
+  const source = record(value, "configuration refresh");
+  const error = source.error;
+  if (error !== null && typeof error !== "string") {
+    throw new Error("Invalid API response: error must be a string or null");
+  }
+  return {
+    generation: requiredSafeGeneration(source, "generation", 0),
+    error,
+  };
 }
 
 export function parseAgentResource(value: unknown): AgentResourceDto {
@@ -650,6 +707,7 @@ export function parseSessionSnapshot(value: unknown): SessionSnapshotDto {
   const apiUsage = source.apiUsage;
   return {
     session: parseActiveSessionValue(source.session),
+    runtimeConfigurationGeneration: requiredSafeGeneration(source, "runtimeConfigurationGeneration", 0),
     messages: parseMessages(source.messages),
     subagents: arrayOf(source.subagents, "subagents", parseSubagentSummary),
     ...(inlineUsage === undefined

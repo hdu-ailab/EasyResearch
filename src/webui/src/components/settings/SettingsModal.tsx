@@ -22,6 +22,7 @@ import {
   patchAgent,
   readAgentResource,
   readSkillResource,
+  refreshConfigurationResources,
   writeAgentResource,
   writeSkillResource,
 } from "../../api";
@@ -51,6 +52,7 @@ export interface SettingsModalProps {
   configurationError: string | null;
   onClose(): void;
   onOpenConfig(): void;
+  onProjectInterestChange(cwd?: string): void;
   registerRouteCloseGuard(guard: SettingsCloseGuard): () => void;
 }
 
@@ -114,6 +116,7 @@ export function SettingsModal({
   configurationError,
   onClose,
   onOpenConfig,
+  onProjectInterestChange,
   registerRouteCloseGuard,
 }: SettingsModalProps) {
   const { t } = useI18n();
@@ -134,6 +137,7 @@ export function SettingsModal({
   const [resourceLoadError, setResourceLoadError] = useState<string | null>(null);
   const [resourcesLoading, setResourcesLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [manualRefreshBusy, setManualRefreshBusy] = useState(false);
   const [, setResourceAgents] = useState<AgentResourceDto[]>([]);
   const [skills, setSkills] = useState<SkillResourceDto[]>([]);
   const [diagnosticScope, setDiagnosticScope] = useState("global");
@@ -146,6 +150,7 @@ export function SettingsModal({
   const diagnosticRequest = useRef(0);
   const configurationRequest = useRef(0);
   const resourceRequest = useRef(0);
+  const manualRefreshRequest = useRef(0);
   const [agentEditor, setAgentEditor] = useState<AgentResourceDto | null>(null);
   const [skillEditor, setSkillEditor] = useState<SkillResourceDto | null>(null);
   const [detailsAgent, setDetailsAgent] = useState<AgentDto | null>(null);
@@ -164,32 +169,34 @@ export function SettingsModal({
     });
   }, []);
 
-  const refreshConfiguration = useCallback(async () => {
-    const request = ++configurationRequest.current;
-    try {
-      const [globalAgents, fallbackAgents, nextModels, providerList] = await Promise.all([
-        listAgentResources(),
-        listAgents(),
-        listModels(),
-        listAuthProviders().catch(() => null),
-      ]);
-      if (request !== configurationRequest.current) return;
-      setResourceAgents(globalAgents);
-      setAgents(fallbackAgents);
-      setModels(nextModels);
-      setProviderConnectedCount(providerList?.filter((provider) => provider.authStatus?.configured).length ?? null);
-      setAgentModal((current) =>
-        current ? (fallbackAgents.find((agent) => agent.name === current.name) ?? null) : null,
-      );
-      setDetailsAgent((current) =>
-        current ? (fallbackAgents.find((agent) => agent.name === current.name) ?? null) : null,
-      );
-      if (diagnosticRequest.current === 0) setDiagnosticAgents(fallbackAgents);
-      setCategoryError("agents", null);
-    } catch (cause) {
-      if (request === configurationRequest.current) setCategoryError("agents", cause);
-    }
-  }, [setCategoryError]);
+  const refreshConfiguration = useCallback(
+    async (refreshError: string | null = null) => {
+      const request = ++configurationRequest.current;
+      try {
+        const [globalAgents, fallbackAgents, nextModels, providerList] = await Promise.all([
+          listAgentResources(),
+          listAgents(),
+          listModels(),
+          listAuthProviders().catch(() => null),
+        ]);
+        if (request !== configurationRequest.current) return;
+        setResourceAgents(globalAgents);
+        setAgents(fallbackAgents);
+        setModels(nextModels);
+        setProviderConnectedCount(providerList?.filter((provider) => provider.authStatus?.configured).length ?? null);
+        setAgentModal((current) =>
+          current ? (fallbackAgents.find((agent) => agent.name === current.name) ?? null) : null,
+        );
+        setDetailsAgent((current) =>
+          current ? (fallbackAgents.find((agent) => agent.name === current.name) ?? null) : null,
+        );
+        setCategoryError("agents", refreshError);
+      } catch (cause) {
+        if (request === configurationRequest.current) setCategoryError("agents", cause);
+      }
+    },
+    [setCategoryError],
+  );
 
   const refreshResources = useCallback(async () => {
     const request = ++resourceRequest.current;
@@ -209,6 +216,18 @@ export function SettingsModal({
     setResourcesLoading(false);
   }, []);
 
+  const refreshDiagnostics = useCallback(async (scope: string) => {
+    const request = ++diagnosticRequest.current;
+    setDiagnosticAgents([]);
+    setDiagnosticError(null);
+    try {
+      const next = await listAgents(scope === "global" ? undefined : scope);
+      if (request === diagnosticRequest.current) setDiagnosticAgents(next);
+    } catch (cause) {
+      if (request === diagnosticRequest.current) setDiagnosticError(messageFrom(cause));
+    }
+  }, []);
+
   useEffect(() => {
     void configurationGeneration;
     void refreshConfiguration();
@@ -218,11 +237,32 @@ export function SettingsModal({
   }, [configurationGeneration, refreshConfiguration]);
 
   useEffect(() => {
+    void configurationGeneration;
     void refreshResources();
     return () => {
       resourceRequest.current += 1;
     };
-  }, [refreshResources]);
+  }, [configurationGeneration, refreshResources]);
+
+  useEffect(() => {
+    void configurationGeneration;
+    void refreshDiagnostics(diagnosticScope);
+    return () => {
+      diagnosticRequest.current += 1;
+    };
+  }, [configurationGeneration, diagnosticScope, refreshDiagnostics]);
+
+  useEffect(() => {
+    onProjectInterestChange(diagnosticScope === "global" ? undefined : diagnosticScope);
+  }, [diagnosticScope, onProjectInterestChange]);
+
+  useEffect(
+    () => () => {
+      onProjectInterestChange(undefined);
+      manualRefreshRequest.current += 1;
+    },
+    [onProjectInterestChange],
+  );
 
   useEffect(() => {
     let wasMobile = window.innerWidth < 820;
@@ -290,7 +330,9 @@ export function SettingsModal({
   }, [active, isMobile, mobileDetailOpen]);
 
   const refreshAgents = async () => {
+    const request = ++configurationRequest.current;
     const resources = await listAgentResources();
+    if (request !== configurationRequest.current) return;
     const next = resources.map((resource) => ({
       ...resource,
       effectiveModel: agents.find((agent) => agent.name === resource.name)?.effectiveModel,
@@ -298,18 +340,6 @@ export function SettingsModal({
     setResourceAgents(resources);
     setAgents(next);
     setAgentModal((current) => (current ? (next.find((agent) => agent.name === current.name) ?? null) : null));
-  };
-
-  const refreshDiagnostics = async (scope = diagnosticScope) => {
-    const request = ++diagnosticRequest.current;
-    setDiagnosticAgents([]);
-    setDiagnosticError(null);
-    try {
-      const next = await listAgents(scope === "global" ? undefined : scope);
-      if (request === diagnosticRequest.current) setDiagnosticAgents(next);
-    } catch (cause) {
-      if (request === diagnosticRequest.current) setDiagnosticError(messageFrom(cause));
-    }
   };
 
   const openAgentEditor = async (name: string) => {
@@ -326,7 +356,7 @@ export function SettingsModal({
     setBusy(true);
     try {
       await writeAgentResource(agentEditor.name, content);
-      await Promise.all([refreshAgents(), refreshDiagnostics()]);
+      await Promise.all([refreshAgents(), refreshDiagnostics(diagnosticScope)]);
       setAgentEditor(null);
     } catch (cause) {
       setCategoryError("agents", cause);
@@ -343,7 +373,7 @@ export function SettingsModal({
       setResourceAgents((current) => current.map((item) => (item.name === savedAgent.name ? savedAgent : item)));
       setAgents((current) => current.map((item) => (item.name === savedAgent.name ? savedAgent : item)));
       setAgentModal((current) => (current?.name === savedAgent.name ? savedAgent : current));
-      await refreshDiagnostics();
+      await refreshDiagnostics(diagnosticScope);
     } catch (cause) {
       setCategoryError("agents", cause);
     }
@@ -361,7 +391,7 @@ export function SettingsModal({
       setAgentModal(created);
       setResourceAgents((current) => [...current.filter((item) => item.name !== created.name), created]);
       setAgents((current) => [...current.filter((item) => item.name !== created.name), created]);
-      await Promise.all([refreshAgents(), refreshDiagnostics()]);
+      await Promise.all([refreshAgents(), refreshDiagnostics(diagnosticScope)]);
     } catch (cause) {
       setCategoryError("agents", cause);
     } finally {
@@ -382,7 +412,7 @@ export function SettingsModal({
     setBusy(true);
     try {
       await writeSkillResource(skillEditor.name, content);
-      await Promise.all([listSkillResources().then(setSkills), refreshDiagnostics()]);
+      await Promise.all([refreshResources(), refreshDiagnostics(diagnosticScope)]);
       setSkillEditor(null);
     } catch (cause) {
       setCategoryError("resources", cause);
@@ -391,9 +421,26 @@ export function SettingsModal({
     }
   };
 
-  const selectDiagnosticScope = async (scope: string) => {
+  const selectDiagnosticScope = (scope: string) => {
+    manualRefreshRequest.current += 1;
+    setManualRefreshBusy(false);
     setDiagnosticScope(scope);
-    await refreshDiagnostics(scope);
+  };
+
+  const refreshAgentsManually = async () => {
+    const request = ++manualRefreshRequest.current;
+    setManualRefreshBusy(true);
+    try {
+      const result = await refreshConfigurationResources(
+        diagnosticScope === "global" ? {} : { projectCwds: [diagnosticScope] },
+      );
+      if (request !== manualRefreshRequest.current) return;
+      await refreshConfiguration(result.error);
+    } catch (cause) {
+      if (request === manualRefreshRequest.current) setCategoryError("agents", cause);
+    } finally {
+      if (request === manualRefreshRequest.current) setManualRefreshBusy(false);
+    }
   };
 
   const patchAgentConfiguration = async (
@@ -455,8 +502,8 @@ export function SettingsModal({
     agents: (
       <AgentSettingsPanel
         roster={roster}
-        busy={busy}
-        onRefresh={() => void refreshConfiguration()}
+        busy={busy || manualRefreshBusy}
+        onRefresh={() => void refreshAgentsManually()}
         onAdd={() => setAddAgentOpen(true)}
         onConfigure={setAgentModal}
         onShowDetails={setDetailsAgent}
@@ -470,7 +517,7 @@ export function SettingsModal({
         diagnosticScope={diagnosticScope}
         diagnostics={diagnostics}
         diagnosticError={diagnosticError}
-        onScopeChange={(scope) => void selectDiagnosticScope(scope)}
+        onScopeChange={selectDiagnosticScope}
         onEditSkill={(name) => void openSkillEditor(name)}
       />
     ),
@@ -539,7 +586,7 @@ export function SettingsModal({
       {skillEditor && (
         <SkillResourceEditor
           resource={skillEditor}
-          busy={busy}
+          busy={busy || manualRefreshBusy}
           onSave={(content) => void saveSkill(content)}
           onClose={() => setSkillEditor(null)}
         />
@@ -556,7 +603,7 @@ export function SettingsModal({
       {agentEditor && !agentModal && !roster.some((agent) => agent.name === agentEditor.name) && (
         <AgentMarkdownEditor
           resource={agentEditor}
-          busy={busy}
+          busy={busy || manualRefreshBusy}
           onSave={(content) => void saveAgent(content)}
           onClose={() => setAgentEditor(null)}
         />
@@ -564,7 +611,7 @@ export function SettingsModal({
       {agentModal && (
         <AgentConfigModal
           agent={agentModal}
-          busy={busy}
+          busy={busy || manualRefreshBusy}
           isResearchAssistant={agentModal.name === RESEARCH_ASSISTANT_AGENT}
           modelOptions={withConfiguredModel(models, agentModal.model ?? agentModal.effectiveModel)}
           modelValue={

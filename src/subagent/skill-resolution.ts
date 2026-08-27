@@ -1,8 +1,12 @@
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { bundledSourceRoot } from "../runtime/bundled-assets";
+import {
+  type AcceptedSkillDescriptor,
+  selectSkillDescriptors,
+  type SkillDescriptor,
+} from "../runtime/resource-fingerprint";
 
 export interface SkillResolverDeps {
   cwd: string;
@@ -11,6 +15,19 @@ export interface SkillResolverDeps {
   bundledSkillsDir?: string;
   enableDotAgentsSkill?: boolean;
   includeProject?: boolean;
+  acceptedSkillDescriptors?: AcceptedSkillDescriptors;
+}
+
+export interface AcceptedSkillDescriptors {
+  global: readonly AcceptedSkillDescriptor[];
+  home: readonly AcceptedSkillDescriptor[] | null;
+  project?: readonly AcceptedSkillDescriptor[];
+}
+
+export interface ResolvedSkillSelection {
+  effectiveSkills: string[];
+  effectiveSkillPaths: string[];
+  missingSkills: string[];
 }
 
 function expandHome(path: string, home?: string): string {
@@ -41,36 +58,95 @@ export function defaultSkillDirectories(deps: SkillResolverDeps): string[] {
   return skillSites(deps).filter((site, index, sites) => sites.indexOf(site) === index && existsSync(site));
 }
 
-function skillNamesInDirectory(root: string, includeRootFiles = true): string[] {
-  if (!existsSync(root)) return [];
-  const names: string[] = [];
-  let entries;
-  try {
-    entries = readdirSync(root, { withFileTypes: true });
-  } catch {
-    return names;
-  }
-  for (const entry of entries) {
-    const entryPath = join(root, entry.name);
-    let isDirectory = entry.isDirectory();
-    let isFile = entry.isFile();
-    if (entry.isSymbolicLink()) {
-      try {
-        const stats = statSync(entryPath);
-        isDirectory = stats.isDirectory();
-        isFile = stats.isFile();
-      } catch {
-        continue;
+function controlledSkillDescriptors(deps: SkillResolverDeps): SkillDescriptor[] {
+  const accepted = deps.acceptedSkillDescriptors;
+  if (accepted) {
+    const projectRoot = join(deps.cwd, ".easyresearch", "skills");
+    const bundledRoot = deps.bundledSkillsDir ?? dirnameFromModule();
+    const groups: readonly (readonly SkillDescriptor[])[] = [
+      ...(deps.includeProject === false
+        ? []
+        : [accepted.project === undefined
+          ? selectSkillDescriptors([projectRoot]).map(({ descriptor }) => descriptor)
+          : materializeAcceptedDescriptors(projectRoot, accepted.project)]),
+      materializeAcceptedDescriptors(join(deps.agentDir, "skills"), accepted.global),
+      ...(deps.enableDotAgentsSkill === true
+        ? [materializeAcceptedDescriptors(join(deps.homeDir ?? homedir(), ".agents", "skills"), accepted.home ?? [])]
+        : []),
+      selectSkillDescriptors([bundledRoot]).map(({ descriptor }) => descriptor),
+    ];
+    const selected = new Map<string, SkillDescriptor>();
+    for (const descriptors of groups) {
+      for (const descriptor of descriptors) {
+        if (!selected.has(descriptor.name)) selected.set(descriptor.name, descriptor);
       }
     }
-    if (isDirectory) {
-      if (validSkillPath(entryPath)) names.push(entry.name);
-      else names.push(...skillNamesInDirectory(entryPath, false));
-    } else if (includeRootFiles && isFile && entry.name.endsWith(".md")) {
-      names.push(entry.name.slice(0, -3));
-    }
+    return [...selected.values()].sort((left, right) =>
+      left.name < right.name ? -1 : left.name > right.name ? 1 : 0
+    );
   }
-  return names;
+  return selectSkillDescriptors(skillSites(deps)).map(({ descriptor }) => descriptor);
+}
+
+function materializeAcceptedDescriptors(
+  root: string,
+  descriptors: readonly AcceptedSkillDescriptor[],
+): SkillDescriptor[] {
+  return descriptors.map(({ name, relativePath }) => {
+    const skillPath = join(root, ...relativePath.split("/"));
+    const directFile = !relativePath.includes("/");
+    const path = directFile ? skillPath : join(skillPath, "..");
+    return {
+      name,
+      relativePath,
+      path,
+      skillPath,
+      canonicalPath: path,
+      canonicalSkillPath: skillPath,
+    };
+  });
+}
+
+function acceptedControlledPath(target: string, deps: SkillResolverDeps): string | undefined | null {
+  const accepted = deps.acceptedSkillDescriptors;
+  if (!accepted) return null;
+  const roots: Array<{ root: string; descriptors: readonly AcceptedSkillDescriptor[] | undefined }> = [
+    ...(deps.includeProject === false
+      ? []
+      : [{ root: join(deps.cwd, ".easyresearch", "skills"), descriptors: accepted.project }]),
+    { root: join(deps.agentDir, "skills"), descriptors: accepted.global },
+    ...(deps.enableDotAgentsSkill === true
+      ? [{ root: join(deps.homeDir ?? homedir(), ".agents", "skills"), descriptors: accepted.home ?? [] }]
+      : []),
+  ];
+  for (const { root, descriptors } of roots) {
+    if (!isWithin(root, target)) continue;
+    if (descriptors === undefined) return null;
+    const descriptor = materializeAcceptedDescriptors(root, descriptors).find((candidate) =>
+      resolve(candidate.path) === target || resolve(candidate.skillPath) === target
+    );
+    return descriptor === undefined ? undefined : target;
+  }
+  return null;
+}
+
+function configuredSkillResolver(deps: SkillResolverDeps): (value: string) => string | undefined {
+  let named: Map<string, SkillDescriptor> | undefined;
+  return (value) => {
+    if (isPathRef(value)) {
+      const expanded = expandHome(value, deps.homeDir);
+      const target = resolve(deps.cwd, expanded);
+      const accepted = acceptedControlledPath(target, deps);
+      return accepted === null ? validSkillPath(target) : accepted;
+    }
+    named ??= new Map(controlledSkillDescriptors(deps).map((descriptor) => [descriptor.name, descriptor]));
+    return named.get(value)?.path;
+  };
+}
+
+function isWithin(root: string, target: string): boolean {
+  const child = relative(resolve(root), target);
+  return child === "" || (child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child));
 }
 
 export function resolveEffectiveSkillNames(skills: string[] | undefined, deps: SkillResolverDeps): string[] {
@@ -80,20 +156,29 @@ export function resolveEffectiveSkillNames(skills: string[] | undefined, deps: S
 export function resolveSkillSelection(
   skills: string[] | undefined,
   deps: SkillResolverDeps,
-): { effectiveSkills: string[]; missingSkills: string[] } {
+): ResolvedSkillSelection {
   if (skills !== undefined) {
+    const resolveConfigured = configuredSkillResolver(deps);
     const effectiveSkills: string[] = [];
+    const effectiveSkillPaths: string[] = [];
     const missingSkills: string[] = [];
     for (const skill of skills) {
-      (resolveOne(skill, deps) === undefined ? missingSkills : effectiveSkills).push(skill);
+      const path = resolveConfigured(skill);
+      if (path === undefined) {
+        missingSkills.push(skill);
+      } else {
+        effectiveSkills.push(skill);
+        effectiveSkillPaths.push(path);
+      }
     }
-    return { effectiveSkills, missingSkills };
+    return { effectiveSkills, effectiveSkillPaths, missingSkills };
   }
-  const names = new Set<string>();
-  for (const site of skillSites(deps)) {
-    for (const name of skillNamesInDirectory(site)) names.add(name);
-  }
-  return { effectiveSkills: [...names].sort((a, b) => a.localeCompare(b)), missingSkills: [] };
+  const descriptors = controlledSkillDescriptors(deps);
+  return {
+    effectiveSkills: descriptors.map(({ name }) => name),
+    effectiveSkillPaths: descriptors.map(({ path }) => path),
+    missingSkills: [],
+  };
 }
 
 export function buildDefaultSkillArgs(deps: SkillResolverDeps): string[] {
@@ -109,20 +194,6 @@ export async function readGlobalDotAgentsSkillSetting(cwd: string, agentDir: str
 
 function dirnameFromModule(): string {
   return join(bundledSourceRoot(), "skills");
-}
-
-function resolveOne(value: string, deps: SkillResolverDeps): string | undefined {
-  if (isPathRef(value)) {
-    const expanded = expandHome(value, deps.homeDir);
-    return validSkillPath(resolve(deps.cwd, expanded));
-  }
-  for (const site of skillSites(deps)) {
-    const directory = validSkillPath(join(site, value));
-    if (directory) return directory;
-    const file = validSkillPath(join(site, `${value}.md`));
-    if (file) return file;
-  }
-  return undefined;
 }
 
 function validSkillPath(target: string): string | undefined {
@@ -144,10 +215,7 @@ function validSkillPath(target: string): string | undefined {
 
 export function resolveSkillDirectories(skills: string[] | undefined, deps: SkillResolverDeps): string[] | undefined {
   if (skills === undefined) return undefined;
-  return skills.flatMap((skill) => {
-    const resolved = resolveOne(skill, deps);
-    return resolved ? [resolved] : [];
-  });
+  return resolveSkillSelection(skills, deps).effectiveSkillPaths;
 }
 
 /**
@@ -160,6 +228,6 @@ export function resolveAgentSkillDirectories(
 ): string[] {
   if (!agent) return [];
   return agent.skills && agent.skills.length > 0
-    ? (resolveSkillDirectories(agent.skills, deps) ?? [])
-    : defaultSkillDirectories(deps);
+    ? resolveSkillSelection(agent.skills, deps).effectiveSkillPaths
+    : resolveSkillSelection(undefined, deps).effectiveSkillPaths;
 }

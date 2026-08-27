@@ -34,6 +34,7 @@ export interface AgentRuntimeBindingSession {
   readonly model: Model<any> | undefined;
   readonly thinkingLevel: ThinkingLevel;
   reload(): Promise<void>;
+  abort(): Promise<void>;
   setModel(model: Model<any>): Promise<void>;
   setThinkingLevel(level: ThinkingLevel): void;
 }
@@ -63,15 +64,16 @@ export interface AgentRuntimeBinding {
 export interface AgentRuntimeBindingOptions {
   live: Pick<
     LiveConfiguration,
-    "generation" | "synchronize" | "isCurrent" | "resolveAgents" | "subscribe"
+    "generation" | "synchronize" | "acquireProject" | "isCurrent" | "resolveAgents" | "subscribe"
   > & Partial<Pick<LiveConfiguration, "compactionPolicy">>;
   agentName: string;
   cwd: string;
   createModelRuntime(): Promise<AgentRuntimeModelRuntime>;
   resolveAutomaticModel(modelRuntime: AgentRuntimeModelRuntime): Promise<Model<any> | undefined>;
-  resolveSkillPaths(agent: AgentConfig): string[] | Promise<string[]>;
   compaction: CompactionPolicyBinding;
   onCompactionPolicyChanged?: (policy: EffectiveCompactionPolicy) => void;
+  onRuntimeCoherent?: () => void;
+  onApplied?: (generation: number) => void;
   onError?: (error: Error) => void;
 }
 
@@ -87,6 +89,8 @@ interface AppliedRuntimeState {
 interface PreparedRuntimeState extends AppliedRuntimeState {
   modelRuntimeCandidate: ModelRuntimeCandidate<AgentRuntimeModelRuntime>;
 }
+
+type RuntimeBindingStatus = "clean" | "applying" | "restoring" | "poisoned";
 
 function modelRefreshFailed(result: unknown): boolean {
   if (typeof result !== "object" || result === null) return false;
@@ -109,14 +113,51 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
   let eventApplyRequested = false;
   let activeBoundaryRequested = false;
   let recaptureCompactionBaseRequested = false;
+  let abortOnActiveFailureRequested = false;
   let applyingRuntimeModel = false;
   let notifiedCompactionSignature: string | undefined;
+  let projectRegistration: Awaited<ReturnType<LiveConfiguration["acquireProject"]>> | undefined;
+  let runtimeStatus: RuntimeBindingStatus = "clean";
+  let pendingRuntimeGeneration: number | undefined;
+  let projectedGeneration = 0;
   let disposed = false;
   let modelRuntimeDisposed = false;
 
   const requireApplied = (): AppliedRuntimeState => {
+    if (runtimeStatus === "poisoned") throw new Error(SAFE_APPLY_ERROR);
     if (!applied) throw new ConfigurationUnavailableError();
     return applied;
+  };
+
+  const markRuntimePending = (generation: number): void => {
+    pendingRuntimeGeneration = Math.max(pendingRuntimeGeneration ?? 0, generation);
+  };
+
+  const markRuntimeApplied = (generation: number): void => {
+    if (pendingRuntimeGeneration !== undefined && pendingRuntimeGeneration <= generation) {
+      pendingRuntimeGeneration = undefined;
+    }
+    runtimeStatus = "clean";
+  };
+
+  const projectAppliedGeneration = (): void => {
+    const generation = applied?.generation;
+    if (runtimeStatus !== "clean" || generation === undefined || generation <= projectedGeneration) return;
+    projectedGeneration = generation;
+    try {
+      options.onApplied?.(generation);
+    } catch {
+      // The public generation projection is observational to binding state.
+    }
+  };
+
+  const projectAfterCurrentTransaction = (): void => {
+    const transaction = applyPromise;
+    if (!transaction) {
+      projectAppliedGeneration();
+      return;
+    }
+    void transaction.then(projectAppliedGeneration, () => {});
   };
 
   const applyCompaction = (recaptureBase = false): EffectiveCompactionPolicy => {
@@ -132,6 +173,12 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
   };
 
   const prepareCandidate = async (): Promise<PreparedRuntimeState | undefined> => {
+    const observedGeneration = options.live.generation;
+    if (applied && observedGeneration > applied.generation) markRuntimePending(observedGeneration);
+    if (!projectRegistration) {
+      projectRegistration = await options.live.acquireProject(options.cwd);
+    }
+    if (disposed) throw new Error("Agent runtime binding has been disposed.");
     for (;;) {
       let modelRuntimeCandidate: ModelRuntimeCandidate<AgentRuntimeModelRuntime> | undefined;
       const discardModelRuntimeCandidate = async (): Promise<void> => {
@@ -140,10 +187,15 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
         await candidate?.dispose();
       };
       try {
-        await options.live.synchronize();
+        await options.live.synchronize({ projectCwds: [options.cwd] });
         if (disposed) throw new Error("Agent runtime binding has been disposed.");
         const generation = options.live.generation;
-        if (applied && generation <= applied.generation) return undefined;
+        if (
+          applied &&
+          generation <= applied.generation &&
+          pendingRuntimeGeneration === undefined &&
+          runtimeStatus !== "poisoned"
+        ) return undefined;
 
         const agents = await options.live.resolveAgents(options.cwd);
         if (generation !== options.live.generation) continue;
@@ -194,13 +246,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
           continue;
         }
 
-        const skillPaths = await options.resolveSkillPaths(definition);
-        if (disposed) throw new Error("Agent runtime binding has been disposed.");
-        if (generation !== options.live.generation) {
-          await discardModelRuntimeCandidate();
-          continue;
-        }
-        await options.live.synchronize();
+        await options.live.synchronize({ projectCwds: [options.cwd] });
         if (disposed) throw new Error("Agent runtime binding has been disposed.");
         if (!options.live.isCurrent(generation)) {
           await discardModelRuntimeCandidate();
@@ -212,7 +258,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
           definition,
           model: selectedModel,
           thinking: selectedThinking,
-          skillPaths: [...skillPaths],
+          skillPaths: [...definition.effectiveSkillPaths],
           compactionPolicy: {
             ...(options.live.compactionPolicy ?? DEFAULT_GLOBAL_COMPACTION_POLICY),
           },
@@ -233,20 +279,25 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
     previous: AppliedRuntimeState | undefined,
     previousModel: Model<any> | undefined,
     previousThinking: ThinkingLevel,
-  ): Promise<void> => {
+  ): Promise<boolean> => {
     applied = previous;
-    if (!session || !previous) return;
+    runtimeStatus = "restoring";
+    if (!session || !previous) {
+      runtimeStatus = "poisoned";
+      return false;
+    }
+    let restored = true;
     try {
       await session.reload();
     } catch {
-      // The prior binding remains authoritative and a later boundary retries.
+      restored = false;
     }
     if (previousModel) {
       applyingRuntimeModel = true;
       try {
         await session.setModel(previousModel);
       } catch {
-        // Best effort: the prior model object can outlive a removed catalog row.
+        restored = false;
       } finally {
         applyingRuntimeModel = false;
       }
@@ -254,9 +305,15 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
     try {
       session.setThinkingLevel(previousThinking);
     } catch {
-      // Best effort after restoring the prior resource binding.
+      restored = false;
     }
-    applyCompaction();
+    try {
+      applyCompaction();
+    } catch {
+      restored = false;
+    }
+    runtimeStatus = restored ? "clean" : "poisoned";
+    return restored;
   };
 
   const applyLatest = async (activeBoundary: boolean): Promise<boolean> => {
@@ -292,8 +349,10 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
       const { modelRuntimeCandidate, ...next } = candidate;
       modelRuntimeCandidate.activate();
       applied = next;
+      runtimeStatus = "applying";
       if (!attached) {
         await modelRuntimeCandidate.commit();
+        markRuntimeApplied(candidate.generation);
         return true;
       }
       const previousModel = attached.model;
@@ -314,6 +373,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
         }
         attached.setThinkingLevel(candidate.thinking);
         await modelRuntimeCandidate.commit();
+        markRuntimeApplied(candidate.generation);
       } catch {
         try {
           await modelRuntimeCandidate.rollback();
@@ -321,6 +381,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
           // The prior delegate is already restored; failed cleanup stays retryable.
         }
         await restoreSession(previous, previousModel, previousThinking);
+        markRuntimePending(candidate.generation);
         throw new Error(SAFE_APPLY_ERROR);
       }
       return true;
@@ -329,13 +390,17 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
 
   const ensureCurrent = (ensureOptions: EnsureCurrentOptions = {}): Promise<void> => {
     if (disposed) return Promise.reject(new Error("Agent runtime binding has been disposed."));
-    if (ensureOptions.activeBoundary === true) activeBoundaryRequested = true;
+    if (ensureOptions.activeBoundary === true) {
+      activeBoundaryRequested = true;
+      abortOnActiveFailureRequested = true;
+    }
     if (ensureOptions.recaptureCompactionBase === true) recaptureCompactionBaseRequested = true;
     if (session && !session.isIdle && ensureOptions.activeBoundary !== true) return Promise.resolve();
     if (applyPromise) return applyPromise;
 
     let operation: Promise<void>;
     operation = Promise.resolve().then(async () => {
+      let runtimeApplied = false;
       try {
         let activeBoundary = false;
         do {
@@ -347,7 +412,17 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
           const recaptureCompactionBase = recaptureCompactionBaseRequested;
           recaptureCompactionBaseRequested = false;
           const runtimeChanged = await applyLatest(activeBoundary);
-          if (applied) applyCompaction(runtimeChanged || recaptureCompactionBase);
+          runtimeApplied ||= runtimeChanged;
+          if (applied) {
+            try {
+              applyCompaction(runtimeChanged || recaptureCompactionBase);
+            } catch {
+              runtimeStatus = "poisoned";
+              markRuntimePending(options.live.generation);
+              throw new Error(SAFE_APPLY_ERROR);
+            }
+          }
+          projectAppliedGeneration();
         } while (
           !disposed &&
           (
@@ -356,6 +431,26 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
             (eventApplyRequested && (session === undefined || session.isIdle || activeBoundary))
           )
         );
+        abortOnActiveFailureRequested = false;
+        if (runtimeApplied && runtimeStatus === "clean") {
+          try {
+            options.onRuntimeCoherent?.();
+          } catch {
+            // Runtime recovery notification is observational to binding state.
+          }
+        }
+      } catch (error) {
+        const shouldAbort = abortOnActiveFailureRequested;
+        abortOnActiveFailureRequested = false;
+        activeBoundaryRequested = false;
+        if (shouldAbort && session) {
+          try {
+            await session.abort();
+          } catch {
+            // Preserve the safe configuration failure after the abort attempt.
+          }
+        }
+        throw error;
       } finally {
         if (applyPromise === operation) applyPromise = undefined;
       }
@@ -394,19 +489,30 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
     async attach(attached) {
       if (disposed) throw new Error("Agent runtime binding has been disposed.");
       if (session) throw new Error("Agent runtime binding is already attached.");
-      requireApplied();
+      const current = requireApplied();
+      const acceptedGeneration = options.live.generation;
+      if (acceptedGeneration > current.generation) markRuntimePending(acceptedGeneration);
       session = attached;
       unsubscribe = options.live.subscribe((event) => {
-        if (event.type !== "config.updated" || event.generation <= requireApplied().generation) return;
-        if (event.apiUsageChanged === true && event.runtimeChanged === false) {
-          applied = { ...requireApplied(), generation: event.generation };
+        if (event.type !== "config.updated") return;
+        const appliedGeneration = applied?.generation ?? 0;
+        if (event.runtimeChanged) {
+          if (applyPromise) eventApplyRequested = true;
+          if (event.generation <= Math.max(appliedGeneration, pendingRuntimeGeneration ?? 0)) return;
+          markRuntimePending(event.generation);
+          if (!attached.isIdle) return;
+          void ensureCurrent().catch((error: unknown) => {
+            options.onError?.(error instanceof Error ? error : new Error(SAFE_APPLY_ERROR));
+          });
           return;
         }
-        if (applyPromise) eventApplyRequested = true;
-        if (!attached.isIdle) return;
-        void ensureCurrent().catch((error: unknown) => {
-          options.onError?.(error instanceof Error ? error : new Error(SAFE_APPLY_ERROR));
-        });
+        if (event.generation <= appliedGeneration) return;
+        if (pendingRuntimeGeneration !== undefined || runtimeStatus !== "clean") {
+          if (applyPromise) eventApplyRequested = true;
+          return;
+        }
+        applied = { ...applied!, generation: event.generation };
+        projectAfterCurrentTransaction();
       });
       await ensureCurrent();
     },
@@ -414,11 +520,24 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
     async reapplyCompaction() {
       if (disposed) throw new Error("Agent runtime binding has been disposed.");
       if (applyingRuntimeModel) return;
-      applyCompaction();
+      try {
+        applyCompaction();
+      } catch {
+        runtimeStatus = "poisoned";
+        markRuntimePending(options.live.generation);
+        throw new Error(SAFE_APPLY_ERROR);
+      }
     },
     dispose() {
       if (disposePromise) return disposePromise;
-      if (disposed && !unsubscribe && !session && !applyPromise && modelRuntimeDisposed) return Promise.resolve();
+      if (
+        disposed &&
+        !unsubscribe &&
+        !session &&
+        !applyPromise &&
+        modelRuntimeDisposed &&
+        !projectRegistration
+      ) return Promise.resolve();
       disposed = true;
       disposePromise = (async () => {
         const errors: unknown[] = [];
@@ -439,6 +558,15 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
           modelRuntimeDisposed = true;
         } catch (error) {
           errors.push(error);
+        }
+        const registration = projectRegistration;
+        if (registration) {
+          try {
+            await registration.release();
+            if (projectRegistration === registration) projectRegistration = undefined;
+          } catch (error) {
+            errors.push(error);
+          }
         }
         if (errors.length === 1) throw errors[0];
         if (errors.length > 1) throw new AggregateError(errors, "Agent runtime binding disposal failed");

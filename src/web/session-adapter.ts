@@ -3,7 +3,6 @@ import type { Model } from "@earendil-works/pi-ai";
 import type {
   AgentSessionEvent,
   SessionTreeNode,
-  SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { runCleanupSteps } from "../runtime/cleanup";
 import { toJsonSessionEvent } from "../runtime/json-session-event";
@@ -25,7 +24,6 @@ import {
   ConfigurationUnavailableError,
   type LiveConfiguration,
 } from "../runtime/live-configuration";
-import type { AgentConfig } from "../subagent/agents";
 import type { CoordinatorSessionManager, SubagentCoordinator } from "../subagent/coordinator";
 import { AGENT_STATUS_TYPE } from "../subagent/notifications";
 import type { SubagentSupervisor, SupervisableAgentSession } from "../subagent/supervisor";
@@ -182,7 +180,10 @@ export interface ManagedAgentSession {
   compaction: ManualCompactionController;
 }
 
-export type AgentSessionCreator = (options: StartSessionOptions) => Promise<ManagedAgentSession>;
+export type AgentSessionCreator = (
+  options: StartSessionOptions,
+  onApplied?: (generation: number) => void,
+) => Promise<ManagedAgentSession>;
 
 function createRuntimeSetupCleanup(
   session: Pick<InProcessAgentSession, "dispose"> | undefined,
@@ -273,6 +274,12 @@ function createBindingSession(session: BindableAgentSession): AgentRuntimeBindin
       await session.reload();
       configureBatchedSteering(session);
     },
+    async abort() {
+      // Pi signals abort synchronously, but its promise waits for agent_settled,
+      // which cannot occur until the current turn_end handler returns.
+      const operation = session.abort();
+      void operation.catch(() => {});
+    },
     setModel: (model) => session.setModel(model),
     setThinkingLevel: (level) => session.setThinkingLevel(level),
   };
@@ -314,11 +321,10 @@ export interface PiRuntimeDependencies {
     modelRuntime: AgentRuntimeModelRuntime;
     settingsManager: unknown;
   }): Promise<Model<any> | undefined>;
-  resolveSkillPaths(agent: AgentConfig, cwd: string, agentDir: string, settingsManager: unknown): string[];
 }
 
 export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentSessionCreator {
-  return async (options) => {
+  return async (options, onApplied) => {
     const sessionManager = options.sessionPath
       ? deps.openSessionManager(options.sessionPath)
       : deps.createSessionManager(options.cwd);
@@ -340,14 +346,10 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
         modelRuntime,
         settingsManager,
       }),
-      resolveSkillPaths: (agent) => deps.resolveSkillPaths(
-        agent,
-        options.cwd,
-        deps.agentDir,
-        settingsManager,
-      ),
       compaction: automaticCompaction,
       onCompactionPolicyChanged: () => compaction.notifyStatsChanged(),
+      onRuntimeCoherent: () => supervisor?.runtimeBecameCoherent(),
+      onApplied,
     });
     let supervisor: SubagentSupervisor | undefined;
     let session: BindableAgentSession | undefined;
@@ -386,7 +388,10 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
         model: () => session?.model ? `${session.model.provider}/${session.model.id}` : undefined,
         thinking: () => session?.thinkingLevel,
       });
-      supervisor.attach(session as unknown as SupervisableAgentSession);
+      supervisor.attach(session as unknown as SupervisableAgentSession, async () => {
+        if (!session!.isIdle) await session!.waitForIdle();
+        await binding.ensureCurrent();
+      });
       await session.bindExtensions({
         mode: "rpc",
         commandContextActions: {
@@ -445,6 +450,7 @@ export interface SessionAdapter {
   getCompactionState(): ManualCompactionState;
   getCompactionPolicy(): CompactionPolicyDto;
   getContextUsage(): ContextUsageDto | undefined;
+  getRuntimeConfigurationGeneration(): number;
   getSteeringMessages(): readonly string[];
   hasBackgroundWork(): boolean;
   onEvent(listener: (event: unknown) => void): () => void;
@@ -483,7 +489,6 @@ export class PiSessionFactory implements SessionFactory {
     const { recoverSubagentTree } = await import("../subagent/recovery");
     const { SubagentSupervisor } = await import("../subagent/supervisor");
     const { launchStageSession } = await import("../subagent/stage-session");
-    const { resolveAgentSkillDirectories, isDotAgentsSkillEnabled } = await import("../subagent/skill-resolution");
     const { createSubagentRecoverySessionStore } = await import("./subagent-sessions");
     const agentDir = getAgentDir();
     const creator = createPiAgentSessionCreator({
@@ -529,15 +534,6 @@ export class PiSessionFactory implements SessionFactory {
           agentDir,
           modelRuntime,
           settingsManager: settingsManager as object,
-        });
-      },
-      resolveSkillPaths: (agent, cwd, root, settingsManager) => {
-        return resolveAgentSkillDirectories(agent, {
-          cwd,
-          agentDir: root,
-          enableDotAgentsSkill: isDotAgentsSkillEnabled(
-            (settingsManager as SettingsManager).getGlobalSettings(),
-          ),
         });
       },
     });
@@ -589,6 +585,7 @@ class DirectSessionAdapter implements SessionAdapter {
   private stopAbortSequence = 0;
   private stopAbortSuccessSequence = 0;
   private stopAbortFailureSequence = 0;
+  private runtimeConfigurationGeneration = 0;
   private readonly listeners = new Set<(event: unknown) => void>();
 
   constructor(
@@ -607,7 +604,10 @@ class DirectSessionAdapter implements SessionAdapter {
     try {
       let created: ManagedAgentSession;
       try {
-        created = await this.createAgentSession(this.options);
+        created = await this.createAgentSession(
+          this.options,
+          (generation) => this.applyRuntimeConfigurationGeneration(generation),
+        );
       } catch (error) {
         if (error instanceof RetryableAgentSessionCreationError) {
           this.startCleanup = error.retryCleanup;
@@ -624,7 +624,7 @@ class DirectSessionAdapter implements SessionAdapter {
       let sessionUnsubscribe: (() => void) | undefined;
       try {
         coordinatorUnsubscribe = created.coordinator.subscribe((event) => {
-          for (const listener of this.listeners) listener(event);
+          this.publishEvent(event);
         });
         sessionUnsubscribe = created.session.subscribe((event) => {
           const agentEvent = event as AgentSessionEvent;
@@ -640,10 +640,10 @@ class DirectSessionAdapter implements SessionAdapter {
             : jsonEvent.type === "queue_update"
               ? { ...jsonEvent, steering: jsonEvent.steering.filter((message) => !isHiddenStatusContent(message)) }
               : jsonEvent;
-          for (const listener of this.listeners) listener(publicEvent);
+          this.publishEvent(publicEvent);
         });
         const unsubscribeCompactionState = created.compaction.subscribe((state) => {
-          for (const listener of this.listeners) listener({ type: "compaction_state_changed", state });
+          this.publishEvent({ type: "compaction_state_changed", state });
         });
         const unsubscribeStats = created.compaction.subscribeStats(() => {
           const contextUsage = created.session.getSessionStats().contextUsage;
@@ -653,7 +653,7 @@ class DirectSessionAdapter implements SessionAdapter {
             ...(contextUsage !== undefined ? { contextUsage } : {}),
             compactionPolicy: { ...this.lastCompactionPolicy },
           };
-          for (const listener of this.listeners) listener(event);
+          this.publishEvent(event);
         });
         compactionUnsubscribe = () => {
           try {
@@ -905,6 +905,10 @@ class DirectSessionAdapter implements SessionAdapter {
     return this.requiredSession().getSessionStats().contextUsage;
   }
 
+  getRuntimeConfigurationGeneration(): number {
+    return this.runtimeConfigurationGeneration;
+  }
+
   async getState(): Promise<SessionState> {
     const session = this.requiredSession();
     return {
@@ -1038,6 +1042,27 @@ class DirectSessionAdapter implements SessionAdapter {
     if (!this.binding) throw new Error("Session has not started");
     if (this.stopRequested) throw new Error("Session has stopped");
     return this.binding;
+  }
+
+  private applyRuntimeConfigurationGeneration(generation: number): void {
+    if (
+      !Number.isSafeInteger(generation)
+      || generation <= 0
+      || generation <= this.runtimeConfigurationGeneration
+    ) return;
+    this.runtimeConfigurationGeneration = generation;
+    const event = { type: "runtime_configuration_applied", generation } as const;
+    this.publishEvent(event);
+  }
+
+  private publishEvent(event: unknown): void {
+    for (const listener of [...this.listeners]) {
+      try {
+        listener(event);
+      } catch {
+        // Session subscribers observe state; they never control runtime ownership.
+      }
+    }
   }
 
   private cleanupTree(reason: string): Promise<void> {

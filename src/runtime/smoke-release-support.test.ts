@@ -14,6 +14,7 @@ import {
   finishSmokeCleanup,
   parseRecordedPid,
   readTextFileWithRetry,
+  recordSmokeAcceptanceMilestone,
   requireZeroProcessStatus,
   resolveSmokePowerShell,
   resolveSmokePython,
@@ -876,31 +877,15 @@ describe("venvToolCommand", () => {
   });
 });
 
-describe("selectSmokeModelAction", () => {
-  const completedStage = "complete\nArtifacts: none\nGaps: none\nNext action: none";
-  function scenarioFor(shellToolName: NativeLocalShellTool): SmokeModelScenario {
-    return {
-      shellToolName,
-      toolCommand: "validate-command",
-      agentName: "smoke-reviewer",
-      agentPath: "/agent/agents/smoke-reviewer.md",
-      agentContent: "SMOKE_ROLE_MARKER\n",
-      agentPromptMarker: "SMOKE_ROLE_MARKER",
-    };
-  }
-  const scenario = scenarioFor("bash");
-  const agentContent = scenario.agentContent;
-  const agentPromptMarker = scenario.agentPromptMarker;
-  const oldSubagentDescription = "Available subagents: search, experiment, writing, figures.";
-  const refreshedSubagentDescription = `${oldSubagentDescription.slice(0, -1)}, smoke-reviewer.`;
-  const tool = (name: string, description?: string) => ({
-    function: { name, ...(description === undefined ? {} : { description }) },
-  });
+describe("recordSmokeAcceptanceMilestone", () => {
   const initialState = (): SmokeModelState => ({
-    agentWriteIssued: false,
-    agentWriteObserved: false,
+    baselineConfigurationGeneration: undefined,
+    externalResourcesWritten: false,
+    acceptedConfigurationGeneration: undefined,
+    rootAppliedConfigurationGeneration: undefined,
     customDispatchIssued: false,
     parentWorkingObserved: false,
+    childSkillObserved: false,
     stageShellIssued: false,
     venvValidated: false,
     stageCompleted: false,
@@ -908,16 +893,137 @@ describe("selectSmokeModelAction", () => {
     complete: false,
     completedRequests: 0,
   });
+
+  it("records baseline, external writes, accepted generation, and root application in that order", () => {
+    let state = recordSmokeAcceptanceMilestone(initialState(), {
+      kind: "baseline-snapshot",
+      generation: 7,
+    });
+    state = recordSmokeAcceptanceMilestone(state, { kind: "external-resources-written" });
+    state = recordSmokeAcceptanceMilestone(state, {
+      kind: "accepted-generation",
+      generation: 8,
+    });
+    state = recordSmokeAcceptanceMilestone(state, {
+      kind: "root-applied-generation",
+      generation: 8,
+    });
+
+    expect(state).toMatchObject({
+      baselineConfigurationGeneration: 7,
+      externalResourcesWritten: true,
+      acceptedConfigurationGeneration: 8,
+      rootAppliedConfigurationGeneration: 8,
+      customDispatchIssued: false,
+      completedRequests: 0,
+    });
+  });
+
+  it.each([
+    ["external write before baseline", { kind: "external-resources-written" }],
+    ["accepted generation before external write", { kind: "accepted-generation", generation: 8 }],
+    ["root application before acceptance", { kind: "root-applied-generation", generation: 8 }],
+  ] as const)("rejects %s", (_name, milestone) => {
+    expect(() => recordSmokeAcceptanceMilestone(initialState(), milestone)).toThrow(/order|baseline|external|accepted/i);
+  });
+
+  it("rejects accepted or applied generations that do not advance the baseline", () => {
+    let state = recordSmokeAcceptanceMilestone(initialState(), {
+      kind: "baseline-snapshot",
+      generation: 7,
+    });
+    state = recordSmokeAcceptanceMilestone(state, { kind: "external-resources-written" });
+    expect(() => recordSmokeAcceptanceMilestone(state, {
+      kind: "accepted-generation",
+      generation: 7,
+    })).toThrow(/greater than.*baseline/i);
+
+    state = recordSmokeAcceptanceMilestone(state, {
+      kind: "accepted-generation",
+      generation: 8,
+    });
+    expect(() => recordSmokeAcceptanceMilestone(state, {
+      kind: "root-applied-generation",
+      generation: 7,
+    })).toThrow(/greater than.*baseline/i);
+  });
+});
+
+describe("selectSmokeModelAction", () => {
+  const completedStage = "complete\nArtifacts: none\nGaps: none\nNext action: none";
+  function scenarioFor(shellToolName: NativeLocalShellTool): SmokeModelScenario {
+    const skillName = "native-smoke-resource";
+    const skillPromptMarker = "NATIVE_SMOKE_UNIQUE_SKILL_MARKER";
+    return {
+      shellToolName,
+      toolCommand: "validate-command",
+      agentName: "smoke-reviewer",
+      agentPath: "/agent/agents/smoke-reviewer.md",
+      agentContent: [
+        "---",
+        "name: smoke-reviewer",
+        "tools:",
+        "  - read",
+        `  - ${shellToolName}`,
+        "skills:",
+        `  - ${skillName}`,
+        "subagents: []",
+        "---",
+        "SMOKE_ROLE_MARKER",
+        "",
+      ].join("\n"),
+      agentPromptMarker: "SMOKE_ROLE_MARKER",
+      skillName,
+      skillPath: `/agent/skills/${skillName}/SKILL.md`,
+      skillContent: [
+        "---",
+        `name: ${skillName}`,
+        `description: ${skillPromptMarker}`,
+        "---",
+        "",
+        "# Native smoke resource",
+        "",
+      ].join("\n"),
+      skillPromptMarker,
+    };
+  }
+  const scenario = scenarioFor("bash");
+  const agentPromptMarker = scenario.agentPromptMarker;
+  const childSystemPrompt = `${agentPromptMarker}\n${scenario.skillPromptMarker}`;
+  const oldSubagentDescription = "Available subagents: search, experiment, writing, figures.";
+  const refreshedSubagentDescription = `${oldSubagentDescription.slice(0, -1)}, smoke-reviewer.`;
+  const tool = (name: string, description?: string) => ({
+    function: { name, ...(description === undefined ? {} : { description }) },
+  });
+  const unreadyState = (): SmokeModelState => ({
+    baselineConfigurationGeneration: undefined,
+    externalResourcesWritten: false,
+    acceptedConfigurationGeneration: undefined,
+    rootAppliedConfigurationGeneration: undefined,
+    customDispatchIssued: false,
+    parentWorkingObserved: false,
+    childSkillObserved: false,
+    stageShellIssued: false,
+    venvValidated: false,
+    stageCompleted: false,
+    terminalHandoffObserved: false,
+    complete: false,
+    completedRequests: 0,
+  });
+  const initialState = (): SmokeModelState => {
+    let state = recordSmokeAcceptanceMilestone(unreadyState(), {
+      kind: "baseline-snapshot",
+      generation: 7,
+    });
+    state = recordSmokeAcceptanceMilestone(state, { kind: "external-resources-written" });
+    state = recordSmokeAcceptanceMilestone(state, { kind: "accepted-generation", generation: 8 });
+    return recordSmokeAcceptanceMilestone(state, { kind: "root-applied-generation", generation: 8 });
+  };
   const toolResult = (toolCallId: string | undefined, content: unknown) => ({
     role: "tool" as const,
     ...(toolCallId === undefined ? {} : { tool_call_id: toolCallId }),
     content,
   });
-  const writeResultFor = (modelScenario: SmokeModelScenario) => toolResult(
-    "call_native_agent_write",
-    `Successfully wrote ${modelScenario.agentContent.length} bytes to ${modelScenario.agentPath}`,
-  );
-  const writeResult = () => writeResultFor(scenario);
   const parentRequestFor = (
     modelScenario: SmokeModelScenario,
     refreshed: boolean,
@@ -925,6 +1031,7 @@ describe("selectSmokeModelAction", () => {
   ) => ({
     tools: [
       tool(modelScenario.shellToolName),
+      tool("read"),
       tool("write"),
       tool("web-search"),
       tool("subagent", refreshed ? refreshedSubagentDescription : oldSubagentDescription),
@@ -937,16 +1044,16 @@ describe("selectSmokeModelAction", () => {
   ) => parentRequestFor(scenario, refreshed, ...messages);
   const stageRequestFor = (
     modelScenario: SmokeModelScenario,
-    prompt = modelScenario.agentPromptMarker,
-    tools = [tool(modelScenario.shellToolName)],
+    prompt = `${modelScenario.agentPromptMarker}\n${modelScenario.skillPromptMarker}`,
+    tools = [tool("read"), tool(modelScenario.shellToolName)],
     ...messages: Array<ReturnType<typeof toolResult>>
   ) => ({
     tools,
     messages: [{ role: "system" as const, content: prompt }, ...messages],
   });
   const stageRequest = (
-    prompt = agentPromptMarker,
-    tools = [tool(scenario.shellToolName)],
+    prompt = childSystemPrompt,
+    tools = [tool("read"), tool(scenario.shellToolName)],
     ...messages: Array<ReturnType<typeof toolResult>>
   ) => stageRequestFor(scenario, prompt, tools, ...messages);
   const terminalNotice = (result = completedStage) => ({
@@ -972,19 +1079,13 @@ describe("selectSmokeModelAction", () => {
   });
 
   it.each(["bash", "powershell"] as const)(
-    "completes the custom-stage chain using only %s",
+    "completes the post-reload custom-stage chain with the %s venv tool and referenced Skill",
     (shellToolName) => {
       const modelScenario = scenarioFor(shellToolName);
       let current = initialState();
 
-      const write = selectSmokeModelAction(
-        parentRequestFor(modelScenario, false),
-        modelScenario,
-        current,
-      );
-      current = write.state;
       const dispatch = selectSmokeModelAction(
-        parentRequestFor(modelScenario, true, writeResultFor(modelScenario)),
+        parentRequestFor(modelScenario, true),
         modelScenario,
         current,
       );
@@ -995,7 +1096,6 @@ describe("selectSmokeModelAction", () => {
         parentRequestFor(
           modelScenario,
           true,
-          writeResultFor(modelScenario),
           toolResult("call_native_reviewer", "smoke-reviewer_0 is working."),
         ),
         modelScenario,
@@ -1005,8 +1105,8 @@ describe("selectSmokeModelAction", () => {
       const shellResult = selectSmokeModelAction(
         stageRequestFor(
           modelScenario,
-          modelScenario.agentPromptMarker,
-          [tool(shellToolName)],
+          `${modelScenario.agentPromptMarker}\n${modelScenario.skillPromptMarker}`,
+          [tool("read"), tool(shellToolName)],
           toolResult("call_native_venv", "log\neasyresearch-venv-ok\n"),
         ),
         modelScenario,
@@ -1017,7 +1117,6 @@ describe("selectSmokeModelAction", () => {
         parentRequestFor(
           modelScenario,
           true,
-          writeResultFor(modelScenario),
           toolResult("call_native_reviewer", "smoke-reviewer_0 is working."),
           terminalNotice(),
         ),
@@ -1026,15 +1125,6 @@ describe("selectSmokeModelAction", () => {
       );
 
       expect(modelScenario.shellToolName).toBe(shellToolName);
-      expect(write.action).toEqual({
-        kind: "tool",
-        id: "call_native_agent_write",
-        name: "write",
-        arguments: JSON.stringify({
-          path: modelScenario.agentPath,
-          content: modelScenario.agentContent,
-        }),
-      });
       expect(dispatch.action).toEqual({
         kind: "tool",
         id: "call_native_reviewer",
@@ -1057,26 +1147,32 @@ describe("selectSmokeModelAction", () => {
       });
       expect(complete.action).toEqual({ kind: "text", text: "Parent smoke run complete." });
       expect(complete.state).toEqual({
-        agentWriteIssued: true,
-        agentWriteObserved: true,
+        baselineConfigurationGeneration: 7,
+        externalResourcesWritten: true,
+        acceptedConfigurationGeneration: 8,
+        rootAppliedConfigurationGeneration: 8,
         customDispatchIssued: true,
         parentWorkingObserved: true,
+        childSkillObserved: true,
         stageShellIssued: true,
         venvValidated: true,
         stageCompleted: true,
         terminalHandoffObserved: true,
         complete: true,
-        completedRequests: 6,
+        completedRequests: 5,
       });
     },
   );
 
   it("accepts custom-stage completion before the first post-dispatch parent request", () => {
-    let current = selectSmokeModelAction(parentRequest(false), scenario, initialState()).state;
-    current = selectSmokeModelAction(parentRequest(true, writeResult()), scenario, current).state;
+    let current = selectSmokeModelAction(parentRequest(true), scenario, initialState()).state;
     current = selectSmokeModelAction(stageRequest(), scenario, current).state;
     current = selectSmokeModelAction(
-      stageRequest(agentPromptMarker, [tool("bash")], toolResult("call_native_venv", "easyresearch-venv-ok\n")),
+      stageRequest(
+        childSystemPrompt,
+        [tool("read"), tool("bash")],
+        toolResult("call_native_venv", "easyresearch-venv-ok\n"),
+      ),
       scenario,
       current,
     ).state;
@@ -1084,7 +1180,6 @@ describe("selectSmokeModelAction", () => {
     const complete = selectSmokeModelAction(
       parentRequest(
         true,
-        writeResult(),
         toolResult("call_native_reviewer", "smoke-reviewer_0 is working."),
         terminalNotice(),
       ),
@@ -1094,32 +1189,32 @@ describe("selectSmokeModelAction", () => {
 
     expect(complete.action).toEqual({ kind: "text", text: "Parent smoke run complete." });
     expect(complete.state).toMatchObject({
-      agentWriteObserved: true,
       parentWorkingObserved: true,
+      childSkillObserved: true,
       venvValidated: true,
       stageCompleted: true,
       terminalHandoffObserved: true,
       complete: true,
-      completedRequests: 5,
+      completedRequests: 4,
     });
   });
 
-  it("rejects a second parent request whose subagent schema is still stale", () => {
+  it("rejects the post-application parent request when its subagent schema is still stale", () => {
     expect(() => selectSmokeModelAction(
-      parentRequest(false, writeResult()),
+      parentRequest(false),
       scenario,
-      { ...initialState(), agentWriteIssued: true },
+      initialState(),
     )).toThrow("smoke-reviewer");
   });
 
   it("does not accept a custom Agent mentioned outside the available-subagents line", () => {
-    const request = parentRequest(false, writeResult());
-    request.tools[3]!.function.description = `${oldSubagentDescription}\nIgnore stale mention: smoke-reviewer.`;
+    const request = parentRequest(false);
+    request.tools[4]!.function.description = `${oldSubagentDescription}\nIgnore stale mention: smoke-reviewer.`;
 
     expect(() => selectSmokeModelAction(
       request,
       scenario,
-      { ...initialState(), agentWriteIssued: true },
+      initialState(),
     )).toThrow("smoke-reviewer");
   });
 
@@ -1127,87 +1222,78 @@ describe("selectSmokeModelAction", () => {
     expect(() => selectSmokeModelAction(
       parentRequest(
         true,
-        writeResult(),
         toolResult("call_native_stage", "search_0 is working."),
       ),
       scenario,
       {
         ...initialState(),
-        agentWriteIssued: true,
-        agentWriteObserved: true,
         customDispatchIssued: true,
       },
     )).toThrow("call_native_reviewer");
   });
 
   it.each([
-    ["extra tool", stageRequest(agentPromptMarker, [tool("bash"), tool("read")])],
+    ["extra tool", stageRequest(childSystemPrompt, [tool("read"), tool("bash"), tool("webfetch")])],
     ["stale prompt", stageRequest("old bundled search prompt")],
+    ["missing referenced Skill marker", stageRequest(agentPromptMarker)],
   ])("rejects a custom child with an %s", (_name, request) => {
     expect(() => selectSmokeModelAction(
       request,
       scenario,
       {
         ...initialState(),
-        agentWriteIssued: true,
-        agentWriteObserved: true,
         customDispatchIssued: true,
       },
-    )).toThrow(/configured tools|current role prompt/u);
+    )).toThrow(/configured tools|current role prompt|referenced Skill/u);
   });
 
   for (const shellToolName of ["bash", "powershell"] as const) {
     const modelScenario = scenarioFor(shellToolName);
     const wrongShell = shellToolName === "bash" ? "powershell" : "bash";
     it.each([
-      ["wrong shell", [tool(wrongShell)], /expected exactly one local shell tool/u],
-      ["both shells", [tool("bash"), tool("powershell")], /expected exactly one local shell tool/u],
-      ["no shell", [], /expected exactly one local shell tool/u],
-      ["expected shell plus an extra strict child tool", [tool(shellToolName), tool("read")], /configured tools/u],
+      ["wrong shell", [tool("read"), tool(wrongShell)], /expected exactly one local shell tool/u],
+      ["both shells", [tool("read"), tool("bash"), tool("powershell")], /expected exactly one local shell tool/u],
+      ["no shell", [tool("read")], /expected exactly one local shell tool/u],
+      ["missing read", [tool(shellToolName)], /configured tools/u],
+      ["extra strict child tool", [tool("read"), tool(shellToolName), tool("webfetch")], /configured tools/u],
     ] as const)(`rejects %s when ${shellToolName} is required`, (_name, tools, error) => {
       expect(() => selectSmokeModelAction(
-        stageRequestFor(modelScenario, modelScenario.agentPromptMarker, [...tools]),
+        stageRequestFor(
+          modelScenario,
+          `${modelScenario.agentPromptMarker}\n${modelScenario.skillPromptMarker}`,
+          [...tools],
+        ),
         modelScenario,
         {
           ...initialState(),
-          agentWriteIssued: true,
-          agentWriteObserved: true,
           customDispatchIssued: true,
         },
       )).toThrow(error);
     });
   }
 
-  it("rejects an inexact write result", () => {
+  it("rejects a parent provider request before root application of the external resources", () => {
     expect(() => selectSmokeModelAction(
-      parentRequest(true, toolResult("call_native_agent_write", "wrote another file")),
+      parentRequest(true),
       scenario,
-      { ...initialState(), agentWriteIssued: true },
-    )).toThrow("custom Agent write result");
+      unreadyState(),
+    )).toThrow(/baseline|external|accepted|root/i);
   });
 
   it.each([
-    ["write", parentRequest(true, writeResult(), writeResult()), {
-      agentWriteIssued: true,
-    }],
     ["custom launch", parentRequest(
       true,
-      writeResult(),
       toolResult("call_native_reviewer", "smoke-reviewer_0 is working."),
       toolResult("call_native_reviewer", "smoke-reviewer_0 is working."),
     ), {
-      agentWriteIssued: true,
-      agentWriteObserved: true,
       customDispatchIssued: true,
     }],
     ["stage shell", stageRequest(
-      agentPromptMarker,
-      [tool("bash")],
+      childSystemPrompt,
+      [tool("read"), tool("bash")],
       toolResult("call_native_venv", "easyresearch-venv-ok"),
       toolResult("call_native_venv", "easyresearch-venv-ok"),
     ), {
-      agentWriteIssued: true,
-      agentWriteObserved: true,
       customDispatchIssued: true,
       stageShellIssued: true,
     }],
@@ -1227,12 +1313,10 @@ describe("selectSmokeModelAction", () => {
     "easyresearch-venv-ok\neasyresearch-venv-ok",
   ])("rejects a failed, inexact, or repeated local-shell sentinel: %s", (content) => {
     expect(() => selectSmokeModelAction(
-      stageRequest(agentPromptMarker, [tool("bash")], toolResult("call_native_venv", content)),
+      stageRequest(childSystemPrompt, [tool("read"), tool("bash")], toolResult("call_native_venv", content)),
       scenario,
       {
         ...initialState(),
-        agentWriteIssued: true,
-        agentWriteObserved: true,
         customDispatchIssued: true,
         stageShellIssued: true,
       },
@@ -1246,15 +1330,13 @@ describe("selectSmokeModelAction", () => {
       expect(() => selectSmokeModelAction(
         stageRequestFor(
           modelScenario,
-          modelScenario.agentPromptMarker,
-          [tool(shellToolName)],
+          `${modelScenario.agentPromptMarker}\n${modelScenario.skillPromptMarker}`,
+          [tool("read"), tool(shellToolName)],
           toolResult("call_native_venv", "wrong interpreter"),
         ),
         modelScenario,
         {
           ...initialState(),
-          agentWriteIssued: true,
-          agentWriteObserved: true,
           customDispatchIssued: true,
           stageShellIssued: true,
         },
@@ -1270,15 +1352,12 @@ describe("selectSmokeModelAction", () => {
         parentRequestFor(
           modelScenario,
           true,
-          writeResultFor(modelScenario),
           toolResult("call_native_reviewer", "smoke-reviewer_0 is working."),
           terminalNotice(),
         ),
         modelScenario,
         {
           ...initialState(),
-          agentWriteIssued: true,
-          agentWriteObserved: true,
           customDispatchIssued: true,
         },
       )).toThrow(`${shellToolName} stage validation`);
@@ -1294,14 +1373,11 @@ describe("selectSmokeModelAction", () => {
     expect(() => selectSmokeModelAction(
       parentRequest(
         true,
-        writeResult(),
         toolResult("call_native_reviewer", content),
       ),
       scenario,
       {
         ...initialState(),
-        agentWriteIssued: true,
-        agentWriteObserved: true,
         customDispatchIssued: true,
       },
     )).toThrow("smoke-reviewer_0 is working.");
@@ -1323,15 +1399,12 @@ describe("selectSmokeModelAction", () => {
     expect(() => selectSmokeModelAction(
       parentRequest(
         true,
-        writeResult(),
         toolResult("call_native_reviewer", "smoke-reviewer_0 is working."),
         message,
       ),
       scenario,
       {
         ...initialState(),
-        agentWriteIssued: true,
-        agentWriteObserved: true,
         customDispatchIssued: true,
         stageShellIssued: true,
         venvValidated: true,
@@ -1344,7 +1417,6 @@ describe("selectSmokeModelAction", () => {
     expect(() => selectSmokeModelAction(
       parentRequest(
         true,
-        writeResult(),
         toolResult("call_native_reviewer", "smoke-reviewer_0 is working."),
         { role: "user", content: "<agent_status>\nComplete subagent:smoke-reviewer_0\n</agent_status>" },
         { role: "user", content: `<agent_handoff>\nAgent: smoke-reviewer_0\nResult: ${completedStage}\n</agent_handoff>` },
@@ -1352,8 +1424,6 @@ describe("selectSmokeModelAction", () => {
       scenario,
       {
         ...initialState(),
-        agentWriteIssued: true,
-        agentWriteObserved: true,
         customDispatchIssued: true,
         stageShellIssued: true,
         venvValidated: true,
@@ -1366,7 +1436,6 @@ describe("selectSmokeModelAction", () => {
     expect(() => selectSmokeModelAction(
       parentRequest(
         true,
-        writeResult(),
         toolResult("call_native_reviewer", "smoke-reviewer_0 is working."),
         terminalNotice(),
         terminalNotice(),
@@ -1374,8 +1443,6 @@ describe("selectSmokeModelAction", () => {
       scenario,
       {
         ...initialState(),
-        agentWriteIssued: true,
-        agentWriteObserved: true,
         customDispatchIssued: true,
         stageShellIssued: true,
         venvValidated: true,

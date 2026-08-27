@@ -39,6 +39,7 @@ export interface ActiveSessionDto {
 
 export interface SessionSnapshotDto {
   session: ActiveSessionDto;
+  runtimeConfigurationGeneration: number;
   messages: AgentMessage[];
   subagents: SubagentSessionSummaryDto[];
   /** Present only on an SSE snapshot; scoped to that exact EventSource. */
@@ -168,6 +169,11 @@ export interface SessionStatsChangedEventDto {
   compactionPolicy: CompactionPolicyDto;
 }
 
+export interface RuntimeConfigurationAppliedEvent {
+  type: "runtime_configuration_applied";
+  generation: number;
+}
+
 export interface ApiUsageChangedEventDto {
   type: "api_usage_changed";
   statistics: ApiUsageStatisticsDto;
@@ -288,16 +294,18 @@ export interface ConfigurationUpdatedEvent {
   generation: number;
   agentsChanged: boolean;
   modelsChanged: boolean;
+  skillsChanged: boolean;
+  runtimeChanged: boolean;
   /** Present only when ADR-098 display state changed after startup. */
-  apiUsageChanged?: boolean;
-  /** Whether that same accepted generation also needs an Agent runtime refresh. */
-  runtimeChanged?: boolean;
+  apiUsageChanged?: true;
+  projectWatchLeaseId?: string;
 }
 
 export interface ConfigurationErrorEvent {
   type: "config.error";
   generation: number;
   message: string;
+  projectWatchLeaseId?: string;
 }
 
 export type ConfigurationEvent = ConfigurationUpdatedEvent | ConfigurationErrorEvent;

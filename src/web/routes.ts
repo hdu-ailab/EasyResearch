@@ -46,6 +46,12 @@ import {
   type DesktopAccessControl,
 } from "./desktop-access";
 import { projectApiUsageRecord } from "./api-usage";
+import {
+  ConfigurationProjectWatchRequestError,
+  type ConfigurationProjectWatches,
+  type ConfigurationRefreshRequest,
+  type ProjectWatchReplacement,
+} from "./configuration-project-watches";
 
 export interface DaemonControl {
   token: string;
@@ -71,7 +77,8 @@ export interface RouteServices {
   config: ConfigFileService;
   subagentSessions: Pick<SubagentSessionService, "summaries" | "snapshot" | "statistics" | "trackUsage">;
   auth?: AuthGateway;
-  configuration: Pick<LiveConfiguration, "generation" | "error" | "subscribe">;
+  configuration: Pick<LiveConfiguration, "generation" | "error" | "skillPolicy" | "subscribe">;
+  configurationProjectWatches: ConfigurationProjectWatches;
   logger: Logger;
   daemonControl?: DaemonControl;
   desktopAccess?: DesktopAccessControl;
@@ -167,15 +174,30 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       }
 
       if (req.method === "GET" && path === "/api/skill-resources") {
-        return jsonResponse(await listGlobalSkills(services.config));
+        return jsonResponse(await listGlobalSkills(services.config, {
+          skillPolicy: services.configuration.skillPolicy,
+        }));
       }
       const skillResourceMatch = path.match(/^\/api\/skill-resources\/([^/]+)$/);
       if (skillResourceMatch && req.method === "GET") {
-        return jsonResponse(await readGlobalSkill(services.config, decodeURIComponent(skillResourceMatch[1]!)));
+        const encodedName = skillResourceMatch[1];
+        if (!encodedName) return errorResponse(404, "Not found");
+        return jsonResponse(await readGlobalSkill(
+          services.config,
+          decodeURIComponent(encodedName),
+          { skillPolicy: services.configuration.skillPolicy },
+        ));
       }
       if (skillResourceMatch && req.method === "PUT") {
+        const encodedName = skillResourceMatch[1];
+        if (!encodedName) return errorResponse(404, "Not found");
         const body = await jsonBody<{ content: string }>(req);
-        return jsonResponse(await writeGlobalSkill(services.config, decodeURIComponent(skillResourceMatch[1]!), body.content));
+        return jsonResponse(await writeGlobalSkill(
+          services.config,
+          decodeURIComponent(encodedName),
+          body.content,
+          { skillPolicy: services.configuration.skillPolicy },
+        ));
       }
 
       if (req.method === "GET" && path === "/api/models") {
@@ -364,7 +386,23 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       }
 
       if (path === "/api/config/events" && req.method === "GET") {
-        return configurationEvents(services.configuration);
+        return configurationEvents(services.configuration, services.configurationProjectWatches);
+      }
+
+      const projectWatchMatch = path.match(/^\/api\/config\/project-watches\/([^/]+)$/);
+      if (projectWatchMatch && req.method === "PUT") {
+        const body = await jsonBody<ProjectWatchReplacement>(req);
+        const leaseId = projectWatchMatch[1];
+        if (!leaseId) return errorResponse(404, "Not found");
+        return jsonResponse(await services.configurationProjectWatches.replace(
+          decodeURIComponent(leaseId),
+          body,
+        ));
+      }
+
+      if (path === "/api/config/refresh" && req.method === "POST") {
+        const body = await jsonBody<ConfigurationRefreshRequest>(req);
+        return jsonResponse(await services.configurationProjectWatches.refresh(body));
       }
 
       if (path === "/api/config/file" && req.method === "GET") {
@@ -500,6 +538,9 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       if (error instanceof FileWatchPathError) return errorResponse(400, error.message);
       if (error instanceof SubagentSessionNotFoundError) return errorResponse(404, error.message);
       if (error instanceof BodyError) return errorResponse(400, error.message);
+      if (error instanceof ConfigurationProjectWatchRequestError) {
+        return errorResponse(error.status, error.message);
+      }
       if (error instanceof ConfigurationUnavailableError) {
         return configurationUnavailableResponse(error);
       }
@@ -776,8 +817,10 @@ function authFlowSse(services: RouteServices, flowId: string): Response {
 
 function configurationEvents(
   configuration: Pick<LiveConfiguration, "generation" | "error" | "subscribe">,
+  projectWatches: ConfigurationProjectWatches,
 ): Response {
   const encoder = new TextEncoder();
+  const projectWatchLeaseId = projectWatches.acquireLease();
   let unsubscribe: (() => void) | null = null;
   let initialized = false;
   let cancelled = false;
@@ -789,26 +832,37 @@ function configurationEvents(
   };
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
-      unsubscribe = configuration.subscribe((event) => {
-        if (cancelled || !initialized) return;
-        send(controller, event);
-      });
-      const error = configuration.error;
-      if (error !== null) {
-        send(controller, {
-          type: "config.error",
-          generation: configuration.generation,
-          message: error,
+      try {
+        unsubscribe = configuration.subscribe((event) => {
+          if (cancelled || !initialized) return;
+          const laterEvent: ConfigurationEvent = { ...event };
+          delete laterEvent.projectWatchLeaseId;
+          send(controller, laterEvent);
         });
-      } else {
-        send(controller, {
-          type: "config.updated",
-          generation: configuration.generation,
-          agentsChanged: true,
-          modelsChanged: true,
-        });
+        const error = configuration.error;
+        if (error !== null) {
+          send(controller, {
+            type: "config.error",
+            generation: configuration.generation,
+            message: error,
+            projectWatchLeaseId,
+          });
+        } else {
+          send(controller, {
+            type: "config.updated",
+            generation: configuration.generation,
+            agentsChanged: true,
+            modelsChanged: true,
+            skillsChanged: true,
+            runtimeChanged: true,
+            projectWatchLeaseId,
+          });
+        }
+        initialized = true;
+      } catch (error) {
+        void projectWatches.releaseLease(projectWatchLeaseId).catch(() => {});
+        throw error;
       }
-      initialized = true;
     },
     cancel() {
       if (cancelled) return;
@@ -816,6 +870,7 @@ function configurationEvents(
       const stop = unsubscribe;
       unsubscribe = null;
       stop?.();
+      return projectWatches.releaseLease(projectWatchLeaseId);
     },
   });
   return new Response(stream, { headers: SSE_HEADERS });
@@ -830,6 +885,7 @@ function isPreBarrierSupplement(event: unknown): boolean {
     value.type === "agent_settled" ||
     value.type === "session_deactivated" ||
     value.type === "api_usage_changed" ||
+    value.type === "runtime_configuration_applied" ||
     value.type === "error"
   ) {
     return true;

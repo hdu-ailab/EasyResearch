@@ -67,11 +67,27 @@ function stubEvents() {
 }
 
 function emit(event: unknown) {
+  if (event && typeof event === "object" && (event as { type?: unknown }).type === "snapshot") {
+    latestHandlers?.onEvent({
+      runtimeConfigurationGeneration: 0,
+      compactionPolicy: { triggerPercent: 70, enabled: true },
+      ...(event as Record<string, unknown>),
+    });
+    return;
+  }
   latestHandlers?.onEvent(event);
 }
 
 function emitInAct(event: unknown) {
   act(() => emit(event));
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 function supervisorEvent(
@@ -390,6 +406,139 @@ describe("WorkPage", () => {
 
     expect(await screen.findByLabelText("API usage details")).toHaveTextContent("test-model");
     expect(api.getApiUsageSettings).toHaveBeenCalled();
+  });
+
+  it("refetches commands only for increasing root-applied generations and rebases on a lower reconnect snapshot", async () => {
+    const initialSnapshot = deferred<Awaited<ReturnType<typeof api.getSnapshot>>>();
+    vi.mocked(api.getSnapshot).mockReturnValue(initialSnapshot.promise);
+    const snapshotWithGeneration = {
+      ...snapshotValue,
+      messages: [],
+      runtimeConfigurationGeneration: 4,
+      compactionPolicy: { triggerPercent: 70, enabled: true },
+      compactionState: "idle",
+      subagents: [],
+    } as never;
+    const view = renderWithTestingLibrary(
+      <WorkPage id="s1" cwd="/p" configurationGeneration={1} onBack={() => {}} onOpenSettings={() => {}} />,
+      {
+        wrapper: ({ children }: { children: ReactNode }) => (
+          <PreferencesProvider>
+            <I18nProvider>{children}</I18nProvider>
+          </PreferencesProvider>
+        ),
+      },
+    );
+
+    const commandCallsBeforeSnapshot = vi.mocked(api.getSessionCommands).mock.calls.length;
+    await act(async () => {
+      initialSnapshot.resolve(snapshotWithGeneration);
+      await initialSnapshot.promise;
+    });
+    await waitFor(() => expect(api.getSessionCommands).toHaveBeenCalledTimes(commandCallsBeforeSnapshot + 1));
+    expect(commandCallsBeforeSnapshot).toBe(0);
+    expect(api.getSessionCommands).toHaveBeenCalledOnce();
+    vi.mocked(api.getSessionCommands).mockClear();
+
+    view.rerender(
+      <WorkPage id="s1" cwd="/p" configurationGeneration={2} onBack={() => {}} onOpenSettings={() => {}} />,
+    );
+    await act(async () => {});
+    expect(api.getSessionCommands).not.toHaveBeenCalled();
+
+    emitInAct({ type: "runtime_configuration_applied", generation: 5 });
+    await waitFor(() => expect(api.getSessionCommands).toHaveBeenCalledTimes(1));
+    emitInAct({ type: "runtime_configuration_applied", generation: 5 });
+    emitInAct({ type: "runtime_configuration_applied", generation: 3 });
+    expect(api.getSessionCommands).toHaveBeenCalledTimes(1);
+
+    emitInAct({
+      type: "snapshot",
+      runtimeConfigurationGeneration: 2,
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      messages: snapshotValue.messages,
+      subagents: [],
+    });
+    await act(async () => {});
+    expect(api.getSessionCommands).toHaveBeenCalledTimes(1);
+
+    emitInAct({ type: "runtime_configuration_applied", generation: 3 });
+    await waitFor(() => expect(api.getSessionCommands).toHaveBeenCalledTimes(2));
+  });
+
+  it("clears newer commands and invalidates their in-flight response on a lower authoritative snapshot", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getSnapshot).mockResolvedValue({
+      ...snapshotValue,
+      runtimeConfigurationGeneration: 4,
+      compactionPolicy: { triggerPercent: 70, enabled: true },
+      compactionState: "idle",
+      subagents: [],
+    } as never);
+    const newerResponse = deferred<Awaited<ReturnType<typeof api.getSessionCommands>>>();
+    vi.mocked(api.getSessionCommands)
+      .mockReset()
+      .mockResolvedValueOnce([{ name: "newer-skill", description: "Newer", source: "skill" }])
+      .mockReturnValueOnce(newerResponse.promise);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+    await waitFor(() => expect(api.getSessionCommands).toHaveBeenCalledOnce());
+
+    const input = screen.getByRole("textbox", { name: /message/i });
+    await user.type(input, "/");
+    expect(await screen.findByRole("option", { name: /newer-skill/ })).toBeVisible();
+
+    emitInAct({ type: "runtime_configuration_applied", generation: 5 });
+    await waitFor(() => expect(api.getSessionCommands).toHaveBeenCalledTimes(2));
+    emitInAct({
+      type: "snapshot",
+      runtimeConfigurationGeneration: 2,
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      messages: snapshotValue.messages,
+      subagents: [],
+    });
+
+    await waitFor(() => expect(screen.queryByRole("option", { name: /newer-skill/ })).toBeNull());
+    await act(async () => {
+      newerResponse.resolve([{ name: "stale-newer-skill", description: "Stale", source: "skill" }]);
+      await newerResponse.promise;
+    });
+    expect(screen.queryByRole("option", { name: /stale-newer-skill/ })).toBeNull();
+  });
+
+  it("keeps newer applied-generation command data when an older request resolves last", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getSnapshot).mockResolvedValue({
+      ...snapshotValue,
+      runtimeConfigurationGeneration: 0,
+      compactionPolicy: { triggerPercent: 70, enabled: true },
+      compactionState: "idle",
+      subagents: [],
+    } as never);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+    await waitFor(() => expect(api.getSessionCommands).toHaveBeenCalledOnce());
+    const stale = deferred<Awaited<ReturnType<typeof api.getSessionCommands>>>();
+    vi.mocked(api.getSessionCommands)
+      .mockReset()
+      .mockReturnValueOnce(stale.promise)
+      .mockResolvedValueOnce([{ name: "fresh-skill", description: "Fresh", source: "skill" }]);
+
+    emitInAct({ type: "runtime_configuration_applied", generation: 1 });
+    await waitFor(() => expect(api.getSessionCommands).toHaveBeenCalledOnce());
+    emitInAct({ type: "runtime_configuration_applied", generation: 2 });
+    await waitFor(() => expect(api.getSessionCommands).toHaveBeenCalledTimes(2));
+
+    const input = screen.getByRole("textbox", { name: /message/i });
+    await user.type(input, "/");
+    expect(await screen.findByRole("option", { name: /fresh-skill/ })).toBeVisible();
+
+    await act(async () => {
+      stale.resolve([{ name: "stale-skill", description: "Stale", source: "skill" }]);
+      await stale.promise;
+    });
+    expect(screen.getByRole("option", { name: /fresh-skill/ })).toBeVisible();
+    expect(screen.queryByRole("option", { name: /stale-skill/ })).toBeNull();
   });
 
   it("opens /history, navigates with the keyboard, and restores Pi editor text", async () => {
@@ -2964,6 +3113,8 @@ describe("WorkPage", () => {
       if (connections === 2) {
         handlers.onEvent({
           type: "snapshot",
+          runtimeConfigurationGeneration: 0,
+          compactionPolicy: { triggerPercent: 70, enabled: true },
           session: { id: "s2", cwd: "/p", isStreaming: false, status: "ready" },
           messages: [{ role: "user", content: [{ type: "text", text: "continue please" }] }],
           subagents: [],

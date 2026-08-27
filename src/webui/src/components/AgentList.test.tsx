@@ -9,6 +9,7 @@ vi.mock("../api", () => ({
   listAgents: vi.fn(),
   listModels: vi.fn(),
   patchAgent: vi.fn(),
+  refreshConfigurationResources: vi.fn(),
 }));
 
 const baseAgents: AgentDto[] = [
@@ -65,6 +66,7 @@ beforeEach(() => {
       else if (patch.thinking !== undefined) next.thinking = patch.thinking;
       return next;
     });
+  vi.mocked(api.refreshConfigurationResources).mockReset().mockResolvedValue({ generation: 1, error: null });
 });
 
 describe("AgentList", () => {
@@ -173,6 +175,30 @@ describe("AgentList", () => {
     expect(screen.queryByText("Search")).toBeNull();
   });
 
+  it("updates rendered effective Skill counts after missing project Skills resolve", async () => {
+    vi.mocked(api.listAgents).mockResolvedValueOnce([
+      baseAgents[0]!,
+      { ...baseAgents[1]!, missingSkills: ["project-search"] },
+    ]);
+    const view = render(<AgentList {...props} />);
+    const initial = (await screen.findByText("Search")).closest<HTMLElement>("div.mt-3")!;
+    expect(within(initial).getByText("1 tools, 1 skills")).toBeVisible();
+    vi.mocked(api.listAgents).mockResolvedValueOnce([
+      baseAgents[0]!,
+      {
+        ...baseAgents[1]!,
+        effectiveSkills: ["paper-search", "project-search"],
+        missingSkills: [],
+      },
+    ]);
+
+    view.rerender(<AgentList {...props} configurationGeneration={2} />);
+
+    const refreshed = (await screen.findByText("Search")).closest<HTMLElement>("div.mt-3")!;
+    expect(within(refreshed).getByText("1 tools, 2 skills")).toBeVisible();
+    expect(within(refreshed).queryByText("1 tools, 1 skills")).toBeNull();
+  });
+
   it("does not let a generation-two response replace generation three", async () => {
     const stale = deferred<AgentDto[]>();
     const initial: AgentDto = { ...baseAgents[1]!, name: "reviewer", builtin: false, description: "Initial revision" };
@@ -209,6 +235,30 @@ describe("AgentList", () => {
     ]);
     await user.click(screen.getByRole("button", { name: "Refresh" }));
     expect(await screen.findByText("Recovered")).toBeVisible();
+  });
+
+  it("awaits exact-project synchronization before manual Refresh and surfaces its safe error", async () => {
+    const user = userEvent.setup();
+    const synchronization = deferred<Awaited<ReturnType<typeof api.refreshConfigurationResources>>>();
+    vi.mocked(api.refreshConfigurationResources).mockReturnValue(synchronization.promise);
+    vi.mocked(api.listAgents)
+      .mockResolvedValueOnce(baseAgents)
+      .mockResolvedValueOnce([{ ...baseAgents[1]!, name: "reviewer", builtin: false, description: "Recovered" }]);
+    render(<AgentList {...props} />);
+    expect(await screen.findByText("Search")).toBeVisible();
+    const agentCalls = vi.mocked(api.listAgents).mock.calls.length;
+
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+
+    expect(api.refreshConfigurationResources).toHaveBeenCalledWith({ projectCwds: ["/p"] });
+    expect(api.listAgents).toHaveBeenCalledTimes(agentCalls);
+
+    await act(async () => {
+      synchronization.resolve({ generation: 2, error: "Configuration refresh failed. Retry refresh." });
+      await synchronization.promise;
+    });
+    expect(await screen.findByText("Recovered")).toBeVisible();
+    expect(screen.getByText("Configuration refresh failed. Retry refresh.")).toBeVisible();
   });
 
   it("keeps disabled stage Agents read-only", async () => {

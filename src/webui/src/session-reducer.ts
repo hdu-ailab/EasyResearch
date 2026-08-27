@@ -5,6 +5,7 @@ import type {
   CompactionPolicyDto,
   CompactionStateDto,
   ContextUsageDto,
+  RuntimeConfigurationAppliedEvent,
   SessionSnapshotDto,
   SubagentSessionSummaryDto,
   SubagentSupervisorEventDto,
@@ -111,6 +112,7 @@ export interface SessionViewState {
    * agent context (ADR-083); replaced wholesale by `queue_update` and cleared
    * when the run ends. */
   steers: SteerView[];
+  runtimeConfigurationGeneration: number;
   /** Persisted supervisor summaries from the latest snapshot, including nested owners. */
   subagentSummaries?: SubagentSessionSummaryDto[];
   contextUsage?: ContextUsageDto;
@@ -145,6 +147,7 @@ const emptyState: SessionViewState = {
   retry: null,
   nextOrder: 0,
   steers: [],
+  runtimeConfigurationGeneration: 0,
   compactionPolicy: { triggerPercent: 70, enabled: true },
   compactionState: "idle",
 };
@@ -393,6 +396,7 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
     ...(sessionName !== undefined ? { sessionName } : {}),
     nextOrder: 0,
     steers: (snapshot.steering ?? []).map((text, index) => createSteerView(text, `steer:${index}`)),
+    runtimeConfigurationGeneration: snapshot.runtimeConfigurationGeneration,
     subagentSummaries: snapshot.subagents ?? [],
     ...(snapshot.contextUsage !== undefined ? { contextUsage: snapshot.contextUsage } : {}),
     compactionPolicy: snapshot.compactionPolicy ?? { triggerPercent: 70, enabled: true },
@@ -978,8 +982,15 @@ export function terminateSessionRun(state: SessionViewState, clearError = false)
  * each `message_update` token delta; `agent_settled` clears the streaming
  * flag. Tool activity is reflected in `activity` rather than as a message.
  */
-export function reduceSessionEvent(state: SessionViewState, event: AgentSessionEvent): SessionViewState {
+export function reduceSessionEvent(
+  state: SessionViewState,
+  event: AgentSessionEvent | RuntimeConfigurationAppliedEvent,
+): SessionViewState {
   switch (event.type) {
+    case "runtime_configuration_applied":
+      return event.generation <= state.runtimeConfigurationGeneration
+        ? state
+        : { ...state, runtimeConfigurationGeneration: event.generation };
     case "agent_start":
       return { ...state, isStreaming: true };
     case "entry_appended": {

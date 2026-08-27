@@ -1,5 +1,6 @@
 import type { JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
+import * as parserModule from "./parsers";
 import {
   parseActiveSession,
   parseAgents,
@@ -28,6 +29,30 @@ import {
 
 describe("API response parsers", () => {
   const compactionPolicy = { triggerPercent: 70, enabled: true };
+
+  it("parses only positive safe root runtime-applied generation events", () => {
+    const parseRuntimeConfigurationAppliedEvent = (
+      parserModule as unknown as {
+        parseRuntimeConfigurationAppliedEvent(value: unknown): unknown;
+      }
+    ).parseRuntimeConfigurationAppliedEvent;
+
+    expect(
+      parseRuntimeConfigurationAppliedEvent({
+        type: "runtime_configuration_applied",
+        generation: 4,
+      }),
+    ).toEqual({ type: "runtime_configuration_applied", generation: 4 });
+    for (const generation of [-1, 0, 1.5, Number.MAX_SAFE_INTEGER + 1, "4"]) {
+      expect(() =>
+        parseRuntimeConfigurationAppliedEvent({
+          type: "runtime_configuration_applied",
+          generation,
+        }),
+      ).toThrow();
+    }
+    expect(() => parseRuntimeConfigurationAppliedEvent({ type: "config.updated", generation: 4 })).toThrow();
+  });
 
   it("parses global and session-effective compaction settings without conflating enabled state", () => {
     expect(parseCompactionSettings({ triggerPercent: 80, globalEnabled: false })).toEqual({
@@ -219,17 +244,144 @@ describe("API response parsers", () => {
     ).toThrow();
   });
 
-  it("parses both configuration event variants and rejects incomplete payloads", () => {
-    expect(
-      parseConfigurationEvent({ type: "config.updated", generation: 3, agentsChanged: true, modelsChanged: false }),
-    ).toEqual({ type: "config.updated", generation: 3, agentsChanged: true, modelsChanged: false });
-    expect(parseConfigurationEvent({ type: "config.error", generation: 3, message: "Invalid configuration" })).toEqual({
+  it("parses complete configuration events with optional project-watch leases", () => {
+    const updated = {
+      type: "config.updated",
+      generation: 3,
+      agentsChanged: true,
+      modelsChanged: false,
+      skillsChanged: true,
+      runtimeChanged: true,
+      projectWatchLeaseId: "project-watch-1",
+    } as const;
+    const error = {
       type: "config.error",
       generation: 3,
       message: "Invalid configuration",
+      projectWatchLeaseId: "project-watch-2",
+    } as const;
+
+    expect(parseConfigurationEvent(updated)).toEqual(updated);
+    expect(parseConfigurationEvent(error)).toEqual(error);
+  });
+
+  it("preserves only the true API-usage display marker", () => {
+    const displayOnly = {
+      type: "config.updated",
+      generation: 4,
+      agentsChanged: false,
+      modelsChanged: false,
+      skillsChanged: false,
+      runtimeChanged: false,
+      apiUsageChanged: true,
+    } as const;
+
+    expect(parseConfigurationEvent(displayOnly)).toEqual(displayOnly);
+    expect(() => parseConfigurationEvent({ ...displayOnly, apiUsageChanged: false })).toThrow();
+  });
+
+  it.each(["agentsChanged", "modelsChanged", "skillsChanged", "runtimeChanged"] as const)(
+    "rejects config.updated without %s",
+    (field) => {
+      const event: Record<string, unknown> = {
+        type: "config.updated",
+        generation: 3,
+        agentsChanged: true,
+        modelsChanged: false,
+        skillsChanged: true,
+        runtimeChanged: true,
+      };
+      delete event[field];
+
+      expect(() => parseConfigurationEvent(event)).toThrow(`${field} must be a boolean`);
+    },
+  );
+
+  it.each([-1, 1.5, Number.MAX_SAFE_INTEGER + 1, "3"])(
+    "rejects malformed configuration generation %s",
+    (generation) => {
+      expect(() =>
+        parseConfigurationEvent({
+          type: "config.error",
+          generation,
+          message: "Invalid configuration",
+        }),
+      ).toThrow();
+    },
+  );
+
+  it.each(["config.updated", "config.error"] as const)("rejects malformed project-watch lease ids on %s", (type) => {
+    const event =
+      type === "config.updated"
+        ? {
+            type,
+            generation: 3,
+            agentsChanged: true,
+            modelsChanged: false,
+            skillsChanged: true,
+            runtimeChanged: true,
+          }
+        : { type, generation: 3, message: "Invalid configuration" };
+
+    for (const projectWatchLeaseId of ["", "  ", 42]) {
+      expect(() => parseConfigurationEvent({ ...event, projectWatchLeaseId })).toThrow();
+    }
+  });
+
+  it("parses project-watch replacement and configuration refresh results", () => {
+    const parsers = parserModule as typeof parserModule & {
+      parseProjectWatchReplacementResult?: (value: unknown) => unknown;
+      parseConfigurationRefreshResult?: (value: unknown) => unknown;
+    };
+    if (!parsers.parseProjectWatchReplacementResult || !parsers.parseConfigurationRefreshResult) {
+      throw new Error("Configuration resource result parsers are not implemented");
+    }
+
+    expect(parsers.parseProjectWatchReplacementResult({ applied: true, revision: 0 })).toEqual({
+      applied: true,
+      revision: 0,
     });
-    expect(() => parseConfigurationEvent({ type: "config.updated", generation: 3, agentsChanged: true })).toThrow();
-    expect(() => parseConfigurationEvent({ type: "config.error", generation: -1, message: "bad" })).toThrow();
+    expect(parsers.parseProjectWatchReplacementResult({ applied: false, revision: 9 })).toEqual({
+      applied: false,
+      revision: 9,
+    });
+    expect(parsers.parseConfigurationRefreshResult({ generation: 0, error: null })).toEqual({
+      generation: 0,
+      error: null,
+    });
+    expect(
+      parsers.parseConfigurationRefreshResult({ generation: 7, error: "Configuration validation failed" }),
+    ).toEqual({ generation: 7, error: "Configuration validation failed" });
+  });
+
+  it("rejects malformed project-watch replacement and configuration refresh results", () => {
+    const parsers = parserModule as typeof parserModule & {
+      parseProjectWatchReplacementResult?: (value: unknown) => unknown;
+      parseConfigurationRefreshResult?: (value: unknown) => unknown;
+    };
+    if (!parsers.parseProjectWatchReplacementResult || !parsers.parseConfigurationRefreshResult) {
+      throw new Error("Configuration resource result parsers are not implemented");
+    }
+
+    for (const value of [
+      { applied: "yes", revision: 0 },
+      { applied: true, revision: -1 },
+      { applied: true, revision: 1.5 },
+      { applied: true, revision: Number.MAX_SAFE_INTEGER + 1 },
+      { applied: true, revision: "1" },
+    ]) {
+      expect(() => parsers.parseProjectWatchReplacementResult?.(value)).toThrow();
+    }
+    for (const value of [
+      { generation: -1, error: null },
+      { generation: 1.5, error: null },
+      { generation: Number.MAX_SAFE_INTEGER + 1, error: null },
+      { generation: "1", error: null },
+      { generation: 1 },
+      { generation: 1, error: 42 },
+    ]) {
+      expect(() => parsers.parseConfigurationRefreshResult?.(value)).toThrow();
+    }
   });
 
   it("parses directory, file, and text-content responses", () => {
@@ -258,6 +410,7 @@ describe("API response parsers", () => {
     expect(
       parseSessionSnapshot({
         session,
+        runtimeConfigurationGeneration: 2,
         messages: [{ role: "assistant", content: [] }],
         subagents: [
           {
@@ -276,6 +429,7 @@ describe("API response parsers", () => {
     ).toMatchObject({
       session,
       messages: [{ role: "assistant" }],
+      runtimeConfigurationGeneration: 2,
       contextUsage: { tokens: null, contextWindow: 128_000, percent: null },
       compactionState: "queued",
       compactionPolicy,
@@ -289,14 +443,49 @@ describe("API response parsers", () => {
       }).session,
     ).toEqual({ id: "child-1", cwd: "/p", sessionName: "easyresearch:search" });
     expect(() => parseActiveSession({ ...session, status: "unknown" })).toThrow();
-    expect(() => parseSessionSnapshot({ session, messages: {}, subagents: [], compactionPolicy })).toThrow();
-    expect(() => parseSessionSnapshot({ session, messages: [], subagents: [] })).toThrow();
     expect(() =>
-      parseSessionSnapshot({ session, messages: [], subagents: [], compactionPolicy, fileWatchLeaseId: 1 }),
+      parseSessionSnapshot({
+        session,
+        runtimeConfigurationGeneration: 2,
+        messages: {},
+        subagents: [],
+        compactionPolicy,
+      }),
+    ).toThrow();
+    expect(() => parseSessionSnapshot({ session, messages: [], subagents: [], compactionPolicy })).toThrow();
+    expect(() =>
+      parseSessionSnapshot({
+        session,
+        runtimeConfigurationGeneration: 2,
+        messages: [],
+        subagents: [],
+      }),
     ).toThrow();
     expect(() =>
       parseSessionSnapshot({
         session,
+        runtimeConfigurationGeneration: 2,
+        messages: [],
+        subagents: [],
+        compactionPolicy,
+        fileWatchLeaseId: 1,
+      }),
+    ).toThrow();
+    for (const runtimeConfigurationGeneration of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, "2"]) {
+      expect(() =>
+        parseSessionSnapshot({
+          session,
+          runtimeConfigurationGeneration,
+          messages: [],
+          subagents: [],
+          compactionPolicy,
+        }),
+      ).toThrow();
+    }
+    expect(() =>
+      parseSessionSnapshot({
+        session,
+        runtimeConfigurationGeneration: 2,
         messages: [],
         subagents: [],
         compactionPolicy,
@@ -425,9 +614,15 @@ describe("API response parsers", () => {
         step: 2,
         latestMessage: "done",
       };
-      expect(parseSessionSnapshot({ session, messages: [], subagents: [summary], compactionPolicy }).subagents).toEqual(
-        [summary],
-      );
+      expect(
+        parseSessionSnapshot({
+          session,
+          runtimeConfigurationGeneration: 2,
+          messages: [],
+          subagents: [summary],
+          compactionPolicy,
+        }).subagents,
+      ).toEqual([summary]);
       const legacy = {
         ownerSessionId: "root",
         toolCallId: "legacy-tool",
@@ -435,12 +630,19 @@ describe("API response parsers", () => {
         agent: "search",
         status: "complete",
       };
-      expect(parseSessionSnapshot({ session, messages: [], subagents: [legacy], compactionPolicy }).subagents).toEqual([
-        legacy,
-      ]);
+      expect(
+        parseSessionSnapshot({
+          session,
+          runtimeConfigurationGeneration: 2,
+          messages: [],
+          subagents: [legacy],
+          compactionPolicy,
+        }).subagents,
+      ).toEqual([legacy]);
       expect(() =>
         parseSessionSnapshot({
           session,
+          runtimeConfigurationGeneration: 2,
           messages: [],
           subagents: [{ ...summary, sessionPath: "/private/a.jsonl" }],
           compactionPolicy,
@@ -449,6 +651,7 @@ describe("API response parsers", () => {
       expect(() =>
         parseSessionSnapshot({
           session,
+          runtimeConfigurationGeneration: 2,
           messages: [],
           subagents: [{ ...summary, session_path: "/private/a.jsonl" }],
           compactionPolicy,
@@ -457,6 +660,7 @@ describe("API response parsers", () => {
       expect(() =>
         parseSessionSnapshot({
           session,
+          runtimeConfigurationGeneration: 2,
           messages: [],
           subagents: [{ ...summary, ownerSessionId: undefined }],
           compactionPolicy,
@@ -465,6 +669,7 @@ describe("API response parsers", () => {
       expect(() =>
         parseSessionSnapshot({
           session,
+          runtimeConfigurationGeneration: 2,
           messages: [],
           subagents: [{ ...summary, status: "queued" }],
           compactionPolicy,

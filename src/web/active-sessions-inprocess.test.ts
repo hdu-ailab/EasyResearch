@@ -71,6 +71,9 @@ class DirectAdapter implements SessionAdapter {
   getContextUsage() {
     return undefined;
   }
+  getRuntimeConfigurationGeneration() {
+    return 0;
+  }
   onEvent(listener: (event: unknown) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);

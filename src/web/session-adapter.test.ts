@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { SessionTreeNode } from "@earendil-works/pi-coding-agent";
+import type { ExtensionFactory, SessionTreeNode } from "@earendil-works/pi-coding-agent";
+import { createAgentDefinitionExtension } from "../extensions/agent-definition";
 import type { AgentRuntimeBinding } from "../runtime/agent-runtime-binding";
 import { excludedLocalShellTools } from "../runtime/platform-tools";
 import type { AgentConfig } from "../subagent/agents";
+import { SubagentCoordinator, type CoordinatorSessionManager } from "../subagent/coordinator";
+import { SubagentSupervisor, type SupervisableAgentSession } from "../subagent/supervisor";
 import {
   ConfigurationUnavailableError,
   type LiveConfiguration,
@@ -404,6 +407,83 @@ describe("PiSessionFactory", () => {
       { name: "review", description: "Review", source: "prompt" },
       { name: "skill:arxiv", description: "arXiv", source: "skill" },
     ]);
+  });
+
+  it("projects only increasing root runtime generations through adapter events and state", async () => {
+    const session = new FakeAgentSession();
+    let apply!: (generation: number) => void;
+    const creator = async (
+      _options: StartSessionOptions,
+      onApplied?: (generation: number) => void,
+    ): Promise<ManagedAgentSession> => {
+      apply = onApplied ?? (() => {});
+      apply(2);
+      apply(2);
+      apply(1);
+      return created(session);
+    };
+    const adapter = new PiSessionFactory(creator).create({ cwd: "/project" });
+    const events: unknown[] = [];
+    adapter.onEvent((event) => events.push(event));
+
+    await adapter.start();
+
+    expect(adapter.getRuntimeConfigurationGeneration()).toBe(2);
+    expect(events).toEqual([{ type: "runtime_configuration_applied", generation: 2 }]);
+
+    apply(3);
+    apply(3);
+    apply(2);
+
+    expect(adapter.getRuntimeConfigurationGeneration()).toBe(3);
+    expect(events).toEqual([
+      { type: "runtime_configuration_applied", generation: 2 },
+      { type: "runtime_configuration_applied", generation: 3 },
+    ]);
+  });
+
+  it("isolates generation observers and snapshots listener removal during ordered fan-out", async () => {
+    const session = new FakeAgentSession();
+    let apply!: (generation: number) => void;
+    const creator = async (
+      _options: StartSessionOptions,
+      onApplied?: (generation: number) => void,
+    ): Promise<ManagedAgentSession> => {
+      apply = onApplied ?? (() => {});
+      apply(2);
+      return created(session);
+    };
+    const adapter = new PiSessionFactory(creator).create({ cwd: "/project" });
+    let throwingCalls = 0;
+    adapter.onEvent(() => {
+      throwingCalls += 1;
+      throw new Error("observer failed");
+    });
+    const received: string[] = [];
+    let removeThird = () => {};
+    adapter.onEvent((event) => {
+      const generation = (event as { generation: number }).generation;
+      received.push(`second:${generation}`);
+      removeThird();
+    });
+    removeThird = adapter.onEvent((event) => {
+      received.push(`third:${(event as { generation: number }).generation}`);
+    });
+
+    await expect(adapter.start()).resolves.toBeUndefined();
+
+    expect(adapter.getRuntimeConfigurationGeneration()).toBe(2);
+    expect(received).toEqual(["second:2", "third:2"]);
+
+    expect(() => {
+      apply(2);
+      apply(1);
+      apply(3);
+    }).not.toThrow();
+
+    expect(adapter.getRuntimeConfigurationGeneration()).toBe(3);
+    expect(throwingCalls).toBe(2);
+    expect(received).toEqual(["second:2", "third:2", "second:3"]);
   });
 
   it("forwards native context usage when the runtime stats signal changes", async () => {
@@ -1467,6 +1547,7 @@ function researchAssistant(overrides: Partial<AgentConfig> = {}): AgentConfig {
     subagents: ["search"],
     skills: ["research-project-workflow"],
     effectiveSkills: ["research-project-workflow"],
+    effectiveSkillPaths: ["/skills/research-project-workflow"],
     missingSkills: [],
     model: "openai/gpt-test",
     thinking: "high",
@@ -1496,14 +1577,98 @@ function liveConfiguration(agent: AgentConfig = researchAssistant()): LiveConfig
     error: null,
     compactionPolicy: { triggerPercent: 70, globalEnabled: true, globalKeepRecentTokens: 20_000 },
     apiUsageSettings: { showApiUsageDetails: false },
+    skillPolicy: { enableDotAgentsSkill: false },
     start: async () => {},
     synchronize: async () => {},
+    acquireProject: async (cwd) => ({ cwd, release: async () => {} }),
     isCurrent: (generation) => generation === 1,
     notify: async () => {},
     resolveAgents: async () => [agent],
     subscribe: () => () => {},
     close: async () => {},
   };
+}
+
+function mutableLiveConfiguration(initial: AgentConfig) {
+  let generation = 1;
+  let agent = initial;
+  const listeners = new Set<(event: {
+    type: "config.updated";
+    generation: number;
+    agentsChanged: boolean;
+    modelsChanged: boolean;
+    skillsChanged: boolean;
+    runtimeChanged: boolean;
+  }) => void>();
+  const base = liveConfiguration(initial);
+  const live: LiveConfiguration = {
+    ...base,
+    get generation() {
+      return generation;
+    },
+    isCurrent: (candidate) => candidate === generation,
+    resolveAgents: async () => [agent],
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+  return {
+    live,
+    publishSkills(next: AgentConfig) {
+      agent = next;
+      generation += 1;
+      for (const listener of [...listeners]) {
+        listener({
+          type: "config.updated",
+          generation,
+          agentsChanged: false,
+          modelsChanged: false,
+          skillsChanged: true,
+          runtimeChanged: true,
+        });
+      }
+    },
+  };
+}
+
+class RootResourceHost {
+  skillPaths: string[] = [];
+  reloadCalls = 0;
+  private readonly handlers = new Map<
+    string,
+    Array<(event: unknown, context: unknown) => unknown | Promise<unknown>>
+  >();
+
+  constructor(private readonly options: { extensionFactories: unknown[] }) {}
+
+  async reload(): Promise<void> {
+    this.reloadCalls += 1;
+    this.handlers.clear();
+    for (const entry of this.options.extensionFactories as Array<{ factory: ExtensionFactory }>) {
+      await entry.factory({
+        getAllTools: () => [],
+        on: (event: string, handler: (event: unknown, context: unknown) => unknown | Promise<unknown>) => {
+          const handlers = this.handlers.get(event) ?? [];
+          handlers.push(handler);
+          this.handlers.set(event, handlers);
+        },
+        setActiveTools: () => {},
+      } as never);
+    }
+  }
+
+  async discover(reason: "startup" | "reload"): Promise<void> {
+    const results = [];
+    for (const handler of this.handlers.get("resources_discover") ?? []) {
+      results.push(await handler({ cwd: "/project", reason }, { cwd: "/project" }));
+    }
+    this.skillPaths = results.flatMap((result) =>
+      result && typeof result === "object" && Array.isArray((result as { skillPaths?: unknown }).skillPaths)
+        ? (result as { skillPaths: string[] }).skillPaths
+        : []
+    );
+  }
 }
 
 function bindableSession(calls: Array<{ name: string; value?: unknown }>) {
@@ -1578,7 +1743,6 @@ function retryableStartHarness(
     },
     createAgentSession: async () => ({ session }),
     resolveAutomaticModel: async () => undefined,
-    resolveSkillPaths: () => [],
   } as never);
   return { creator, runtimeAttempts: () => runtimeAttempts };
 }
@@ -1596,8 +1760,10 @@ describe("createPiAgentSessionCreator", () => {
     const supervisors: Array<{
       coordinator: unknown;
       attached: FakeAgentSession[];
+      turnGuards: Array<(() => Promise<void>) | undefined>;
+      runtimeCoherentCalls: number;
       disposeCalls: number;
-      attach(session: FakeAgentSession): void;
+      attach(session: FakeAgentSession, ensureTriggeredTurnReady?: () => Promise<void>): void;
       dispose(): Promise<void>;
     }> = [];
     let sessionSequence = 0;
@@ -1606,7 +1772,10 @@ describe("createPiAgentSessionCreator", () => {
       prepareSession: (_session: FakeAgentSession): void => {},
       recover: async (): Promise<void> => {},
     };
-    const assistant = researchAssistant({ systemPrompt: "Project Research Assistant body" });
+    const assistant = researchAssistant({
+      systemPrompt: "Project Research Assistant body",
+      effectiveSkillPaths: ["/accepted/project/research-project-workflow"],
+    });
     const live = liveConfiguration(assistant);
     const rawSettings = fakeSettingsManager({ kind: "settings" });
     const modelRuntime = {
@@ -1662,10 +1831,16 @@ describe("createPiAgentSessionCreator", () => {
         const supervisor = {
           coordinator,
           attached: [] as FakeAgentSession[],
+          turnGuards: [] as Array<(() => Promise<void>) | undefined>,
+          runtimeCoherentCalls: 0,
           disposeCalls: 0,
-          attach(session: FakeAgentSession) {
+          attach(session: FakeAgentSession, ensureTriggeredTurnReady?: () => Promise<void>) {
             this.attached.push(session);
+            this.turnGuards.push(ensureTriggeredTurnReady);
             calls.push({ name: "attach", value: session });
+          },
+          runtimeBecameCoherent() {
+            this.runtimeCoherentCalls += 1;
           },
           async dispose() {
             this.disposeCalls += 1;
@@ -1694,10 +1869,6 @@ describe("createPiAgentSessionCreator", () => {
         return modelRuntime;
       },
       resolveAutomaticModel: async () => undefined,
-      resolveSkillPaths: (agent: AgentConfig, cwd: string, agentDir: string) => {
-        calls.push({ name: "skills", value: { agent: agent.name, cwd, agentDir } });
-        return ["/skills/research-project-workflow"];
-      },
       createResourceLoader: (options: {
         appendSystemPromptOverride?: (base: string[]) => string[];
         [key: string]: unknown;
@@ -1773,11 +1944,7 @@ describe("createPiAgentSessionCreator", () => {
     ]);
     expect(loaderOptions.extensionFactories).toEqual([expect.objectContaining({ name: "research-assistant" })]);
     expect(harness.calls.find(({ name }) => name === "model-refresh")?.value).toEqual({ allowNetwork: false });
-    expect(harness.calls.find(({ name }) => name === "skills")?.value).toEqual({
-      agent: "research-assistant",
-      cwd: "/project",
-      agentDir: "/agent",
-    });
+    expect(managedRoot.binding.skillPaths()).toEqual(["/accepted/project/research-project-workflow"]);
     expect(harness.createdOptions[0]?.settingsManager).toBe(harness.rawSettings);
     expect(loaderOptions.settingsManager).toBe(harness.rawSettings);
     expect((harness.createdOptions[0]?.settingsManager as {
@@ -1814,6 +1981,178 @@ describe("createPiAgentSessionCreator", () => {
       { deliverAs: "steer", triggerTurn: true },
     );
     expect((managedRoot.session as FakeAgentSession).wakeSystemPrompts).toEqual([["Project Research Assistant body"]]);
+  });
+
+  it("forwards committed root binding generations to its per-runtime projection callback", async () => {
+    const harness = creatorHarness();
+    const initial = researchAssistant({
+      effectiveSkillPaths: ["/accepted/project/research-project-workflow"],
+    });
+    const state = mutableLiveConfiguration(initial);
+    harness.deps.liveConfiguration = state.live;
+    const applied: number[] = [];
+    const creator = createPiAgentSessionCreator(harness.deps as never) as unknown as (
+      options: StartSessionOptions,
+      onApplied: (generation: number) => void,
+    ) => Promise<ManagedAgentSession>;
+
+    await creator({ cwd: "/project" }, (generation) => applied.push(generation));
+
+    expect(applied).toEqual([1]);
+
+    state.publishSkills(researchAssistant({
+      effectiveSkillPaths: ["/accepted/global/research-project-workflow"],
+    }));
+
+    await vi.waitFor(() => expect(applied).toEqual([1, 2]));
+  });
+
+  it("owns one exact-cwd project registration until root binding disposal", async () => {
+    const harness = creatorHarness();
+    const release = vi.fn(async () => {});
+    const acquireProject = vi.fn(async (cwd: string) => ({ cwd, release }));
+    harness.deps.liveConfiguration.acquireProject = acquireProject;
+    const creator = createPiAgentSessionCreator(harness.deps as never);
+
+    const managedRoot = await creator({ cwd: "/project" });
+
+    expect(acquireProject).toHaveBeenCalledOnce();
+    expect(acquireProject).toHaveBeenCalledWith("/project");
+    expect(release).not.toHaveBeenCalled();
+
+    await managedRoot.binding.dispose();
+    await managedRoot.binding.dispose();
+
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("attaches a root wake guard that waits for idle before binding catch-up", async () => {
+    const harness = creatorHarness();
+    const order: string[] = [];
+    harness.controls.prepareSession = (session) => {
+      session.waitForIdle = async () => {
+        order.push("idle");
+        session.isIdle = true;
+      };
+    };
+    const managedRoot = await createPiAgentSessionCreator(harness.deps as never)({ cwd: "/project" });
+    const guard = harness.supervisors[0]?.turnGuards[0];
+    expect(guard).toBeTypeOf("function");
+    const ensureCurrent = vi.spyOn(managedRoot.binding, "ensureCurrent").mockImplementation(async () => {
+      order.push("binding");
+    });
+    const session = managedRoot.session as FakeAgentSession;
+    session.isIdle = false;
+
+    await guard?.();
+
+    expect(order).toEqual(["idle", "binding"]);
+    expect(ensureCurrent).toHaveBeenCalledOnce();
+  });
+
+  it("lets the real root wake guard recover a transient triggered batch on its bounded retry", async () => {
+    const harness = creatorHarness();
+    const managedRoot = await createPiAgentSessionCreator(harness.deps as never)({ cwd: "/project" });
+    const guard = harness.supervisors[0]?.turnGuards[0];
+    expect(guard).toBeTypeOf("function");
+    const session = managedRoot.session as FakeAgentSession;
+    let guardAttempts = 0;
+    session.isIdle = false;
+    session.waitForIdle = async () => {
+      guardAttempts += 1;
+      if (guardAttempts === 1) throw new Error("transient root readiness failure");
+      session.isIdle = true;
+    };
+    const entries: unknown[] = [];
+    const manager: CoordinatorSessionManager = {
+      getSessionId: () => session.sessionId,
+      getSessionFile: () => session.sessionFile,
+      getEntries: () => entries,
+      appendCustomEntry(customType, data) {
+        const id = `entry-${entries.length}`;
+        entries.push({ type: "custom", id, customType, data });
+        return id;
+      },
+    };
+    const coordinator = new SubagentCoordinator(manager);
+    coordinator.recordNotificationBatch({
+      batchId: "root-triggered-batch",
+      ownerSessionId: session.sessionId,
+      launchIds: [],
+      content: "root hidden handoff",
+      triggerTurn: true,
+    });
+    const scheduled: Array<() => void> = [];
+    const supervisor = new SubagentSupervisor({
+      coordinator,
+      launchStage: async () => {
+        throw new Error("not used");
+      },
+      schedule: (run) => scheduled.push(run),
+    });
+    const sent: string[] = [];
+    session.sendCustomMessage = async (message) => {
+      sent.push(message.content);
+      const persisted = { role: "custom", ...message };
+      session.entries.push(persisted);
+      for (const listener of session.listeners) listener({ type: "message_end", message: persisted });
+    };
+    supervisor.attach(session as unknown as SupervisableAgentSession, guard);
+
+    scheduled.shift()?.();
+    await vi.waitFor(() => {
+      expect(guardAttempts).toBe(1);
+      expect(scheduled).toHaveLength(1);
+    });
+
+    scheduled.shift()?.();
+    await vi.waitFor(() => expect(sent).toEqual(["root hidden handoff"]));
+    expect(guardAttempts).toBe(2);
+    await supervisor.waitForQuiescence();
+    await supervisor.dispose();
+  });
+
+  it("reloads an idle root from accepted Skill paths instead of raw home-policy settings", async () => {
+    const harness = creatorHarness();
+    const initial = researchAssistant({
+      effectiveSkillPaths: ["/accepted/project/research-project-workflow"],
+    });
+    const state = mutableLiveConfiguration(initial);
+    harness.deps.liveConfiguration = state.live;
+    Object.assign(harness.rawSettings, {
+      getGlobalSettings: () => ({ easyresearch: { enable_dot_agents_skill: true } }),
+    });
+    let resourceHost: RootResourceHost | undefined;
+    harness.deps.createExtensionFactories = (({ binding }: { binding: AgentRuntimeBinding }) => [
+      { name: "agent-definition", factory: createAgentDefinitionExtension(binding) },
+    ]) as unknown as typeof harness.deps.createExtensionFactories;
+    harness.deps.createResourceLoader = ((options: { extensionFactories: unknown[] }) => {
+      resourceHost = new RootResourceHost(options);
+      return resourceHost;
+    }) as unknown as typeof harness.deps.createResourceLoader;
+    harness.controls.prepareSession = (session) => {
+      session.bindExtensions = async (bindings) => {
+        session.bindCalls.push(bindings);
+        await resourceHost?.discover("startup");
+      };
+      session.reload = async () => {
+        await resourceHost?.reload();
+        await resourceHost?.discover("reload");
+      };
+    };
+    const creator = createPiAgentSessionCreator(harness.deps as never);
+    const managedRoot = await creator({ cwd: "/project" });
+
+    expect(managedRoot.binding.skillPaths()).toEqual(["/accepted/project/research-project-workflow"]);
+    expect(resourceHost?.skillPaths).toEqual(["/accepted/project/research-project-workflow"]);
+
+    state.publishSkills(researchAssistant({
+      effectiveSkillPaths: ["/accepted/global/research-project-workflow"],
+    }));
+
+    await vi.waitFor(() => expect(resourceHost?.skillPaths).toEqual(["/accepted/global/research-project-workflow"]));
+    expect(resourceHost?.reloadCalls).toBe(2);
+    expect(harness.supervisors[0]?.runtimeCoherentCalls).toBe(1);
   });
 
   it("uses batched Pi steering for the root runtime and restores it after reload", async () => {
@@ -1972,7 +2311,6 @@ describe("createPiAgentSessionCreator", () => {
       createResourceLoader,
       createAgentSession,
       resolveAutomaticModel: async () => undefined,
-      resolveSkillPaths: () => [],
     });
 
     await expect(creator({ cwd: "/project" })).rejects.toThrow(/No valid configuration/i);
@@ -1982,10 +2320,13 @@ describe("createPiAgentSessionCreator", () => {
 
   it("disposes binding ownership when resource loading fails before session creation", async () => {
     const disposeRuntime = vi.fn();
+    const releaseProject = vi.fn(async () => {});
+    const live = liveConfiguration();
+    live.acquireProject = async (cwd) => ({ cwd, release: releaseProject });
     const createAgentSession = vi.fn(async () => ({ session: bindableSession([]) }));
     const creator = createPiAgentSessionCreator({
       agentDir: "/agent",
-      liveConfiguration: liveConfiguration(),
+      liveConfiguration: live,
       ...runtimeOwnerDeps(),
       createExtensionFactories: () => [],
       createSessionManager: () => ({} as never),
@@ -2004,12 +2345,12 @@ describe("createPiAgentSessionCreator", () => {
       }),
       createAgentSession,
       resolveAutomaticModel: async () => undefined,
-      resolveSkillPaths: () => [],
     });
 
     await expect(creator({ cwd: "/project" })).rejects.toThrow("resource reload failed");
 
     expect(disposeRuntime).toHaveBeenCalledTimes(1);
+    expect(releaseProject).toHaveBeenCalledTimes(1);
     expect(createAgentSession).not.toHaveBeenCalled();
   });
 
@@ -2023,8 +2364,10 @@ describe("createPiAgentSessionCreator", () => {
       error: null,
       compactionPolicy: { triggerPercent: 70, globalEnabled: true, globalKeepRecentTokens: 20_000 },
       apiUsageSettings: { showApiUsageDetails: false },
+      skillPolicy: { enableDotAgentsSkill: false },
       start: async () => {},
       synchronize: async () => {},
+      acquireProject: async (cwd) => ({ cwd, release: async () => {} }),
       notify: async () => {},
       isCurrent: (candidate) => candidate === generation,
       resolveAgents: async () => [currentAgent],
@@ -2058,7 +2401,6 @@ describe("createPiAgentSessionCreator", () => {
       createResourceLoader: () => ({ reload: async () => {} }),
       createAgentSession: async () => ({ session }),
       resolveAutomaticModel: async () => undefined,
-      resolveSkillPaths: () => [],
     });
 
     await expect(creator({ cwd: "/project" })).rejects.toThrow();
@@ -2097,7 +2439,6 @@ describe("createPiAgentSessionCreator", () => {
       createResourceLoader: () => ({ reload: async () => {} }),
       createAgentSession: async () => ({ session }),
       resolveAutomaticModel: async () => undefined,
-      resolveSkillPaths: () => [],
     });
 
     await expect(creator({ cwd: "/project" })).rejects.toThrow("attach failed");
@@ -2116,8 +2457,10 @@ describe("createPiAgentSessionCreator", () => {
       error: null,
       compactionPolicy: { triggerPercent: 70, globalEnabled: true, globalKeepRecentTokens: 20_000 },
       apiUsageSettings: { showApiUsageDetails: false },
+      skillPolicy: { enableDotAgentsSkill: false },
       start: async () => {},
       synchronize: async () => {},
+      acquireProject: async (cwd) => ({ cwd, release: async () => {} }),
       notify: async () => {},
       isCurrent: (candidate) => candidate === generation,
       resolveAgents: async () => [currentAgent],
@@ -2156,7 +2499,6 @@ describe("createPiAgentSessionCreator", () => {
       createResourceLoader: () => ({ reload: async () => {} }),
       createAgentSession: async () => ({ session }),
       resolveAutomaticModel: async () => undefined,
-      resolveSkillPaths: () => [],
     });
     const adapter = new PiSessionFactory(creator).create({ cwd: "/project" });
 

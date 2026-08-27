@@ -146,6 +146,7 @@ export class ActiveSessionRegistry {
     messages: AgentMessage[];
     inlineUsage: ApiUsageRecordDto[];
     steering: string[];
+    runtimeConfigurationGeneration: number;
     contextUsage?: ContextUsageDto;
     compactionPolicy: CompactionPolicyDto;
     compactionState: CompactionStateDto;
@@ -158,12 +159,14 @@ export class ActiveSessionRegistry {
         record.dto.status === "running";
       const messages = live ? await record.client.getMessages() : [];
       const contextUsage = live ? record.client.getContextUsage() : undefined;
+      const runtimeConfigurationGeneration = record.client.getRuntimeConfigurationGeneration();
       onMessagesAcquired?.();
       return {
         session: { ...record.dto },
         messages,
         inlineUsage: live ? record.client.getInlineUsage() : [],
         steering: live ? [...record.client.getSteeringMessages()] : [],
+        runtimeConfigurationGeneration,
         ...(contextUsage !== undefined ? { contextUsage } : {}),
         compactionPolicy: record.client.getCompactionPolicy(),
         compactionState: live ? record.client.getCompactionState() : "idle",
@@ -220,6 +223,13 @@ export class ActiveSessionRegistry {
   /** True when a live registry record exists for the id (i.e. the session is connected). */
   has(id: string): boolean {
     return this.records.has(id);
+  }
+
+  /** True only for an exact cwd spelling currently owned by a connected session. */
+  hasConnectedCwd(cwd: string): boolean {
+    return [...this.records.values()].some(
+      (record) => record.cwd === cwd && isConnectedStatus(record.dto.status),
+    );
   }
 
   async getSessionPath(id: string): Promise<string | undefined> {
@@ -308,9 +318,7 @@ export class ActiveSessionRegistry {
         await record.client.stop();
         if (!record.stopNotified) {
           record.stopNotified = true;
-          for (const listener of record.listeners) {
-            listener({ type: "session_deactivated", sessionId: record.dto.id });
-          }
+          this.publishEvent(record, { type: "session_deactivated", sessionId: record.dto.id });
         }
         record.dto.isStreaming = false;
         record.dto.status = "stopped";
@@ -484,7 +492,7 @@ export class ActiveSessionRegistry {
         record.fileWatcher = this.fileWatcherFactory.create({
           cwd: record.cwd,
           onEvent: (event) => {
-            for (const listener of record.listeners) listener(event);
+            this.publishEvent(record, event);
           },
         });
       } catch (error) {
@@ -495,7 +503,7 @@ export class ActiveSessionRegistry {
       }
 
       const eventCancel = client.onEvent((event) => {
-        for (const listener of record.listeners) listener(event);
+        this.publishEvent(record, event);
         this.syncDtoFromEvent(record, event);
       });
       const eventLogCancel = attachEventLogger(dto.id, record.cwd, client.onEvent.bind(client), this.logger ?? logger);
@@ -583,6 +591,16 @@ export class ActiveSessionRegistry {
       },
     );
     return attempt;
+  }
+
+  private publishEvent(record: ActiveRecord, event: unknown): void {
+    for (const listener of [...record.listeners]) {
+      try {
+        listener(event);
+      } catch {
+        // Registry subscribers observe state; they never control session ownership.
+      }
+    }
   }
 
   /**

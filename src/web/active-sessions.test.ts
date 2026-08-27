@@ -72,6 +72,7 @@ class FakeAdapter implements SessionAdapter {
   contextUsage: { tokens: number | null; contextWindow: number; percent: number | null } | undefined;
   compactionState: "idle" | "queued" | "running" = "idle";
   compactionPolicy = { triggerPercent: 70, enabled: true };
+  runtimeConfigurationGeneration = 0;
   backgroundWork = false;
   startImpl: () => Promise<void> = async () => {};
   stopImpl: () => Promise<void> = async () => {};
@@ -144,6 +145,9 @@ class FakeAdapter implements SessionAdapter {
   }
   getContextUsage() {
     return this.contextUsage;
+  }
+  getRuntimeConfigurationGeneration() {
+    return this.runtimeConfigurationGeneration;
   }
   onEvent(listener: (event: unknown) => void) {
     this.onEventCalls += 1;
@@ -277,6 +281,49 @@ describe("ActiveSessionRegistry", () => {
     expect(listener).toHaveBeenCalledWith({
       type: "file.watcher.updated",
       properties: { file: `${cwd}/new.md`, event: "add" },
+    });
+  });
+
+  it("isolates registry subscribers and snapshots listener removal during ordered fan-out", async () => {
+    const created = await registry.create({ cwd });
+    const adapter = factory.created[0]!;
+    let throwingCalls = 0;
+    registry.subscribe(created.id, () => {
+      throwingCalls += 1;
+      throw new Error("subscriber failed");
+    });
+    const received: string[] = [];
+    let removeThird = () => {};
+    registry.subscribe(created.id, (event) => {
+      const generation = (event as { generation: number }).generation;
+      received.push(`second:${generation}`);
+      removeThird();
+    });
+    removeThird = registry.subscribe(created.id, (event) => {
+      received.push(`third:${(event as { generation: number }).generation}`);
+    });
+    const emit = (generation: number) => {
+      adapter.runtimeConfigurationGeneration = generation;
+      for (const listener of [...adapter.events]) {
+        listener({ type: "runtime_configuration_applied", generation });
+      }
+    };
+
+    expect(() => emit(4)).not.toThrow();
+
+    expect(received).toEqual(["second:4", "third:4"]);
+    await expect(registry.snapshot(created.id)).resolves.toMatchObject({
+      session: { status: "ready" },
+      runtimeConfigurationGeneration: 4,
+    });
+
+    expect(() => emit(5)).not.toThrow();
+
+    expect(throwingCalls).toBe(2);
+    expect(received).toEqual(["second:4", "third:4", "second:5"]);
+    await expect(registry.snapshot(created.id)).resolves.toMatchObject({
+      session: { status: "ready" },
+      runtimeConfigurationGeneration: 5,
     });
   });
 
@@ -447,6 +494,22 @@ describe("ActiveSessionRegistry", () => {
     expect(registry.has(created.id)).toBe(true);
     await registry.stop(created.id);
     expect(registry.has(created.id)).toBe(false);
+  });
+
+  it("recognizes only exact cwd spellings owned by connected sessions", async () => {
+    expect(registry.hasConnectedCwd(cwd)).toBe(false);
+    const created = await registry.create({ cwd });
+
+    expect(registry.hasConnectedCwd(cwd)).toBe(true);
+    expect(registry.hasConnectedCwd(`${cwd}/.`)).toBe(false);
+
+    const adapter = factory.created[0]!;
+    adapter.getStateError = new Error("state unavailable");
+    await registry.snapshot(created.id);
+    expect(registry.hasConnectedCwd(cwd)).toBe(false);
+
+    await registry.stop(created.id);
+    expect(registry.hasConnectedCwd(cwd)).toBe(false);
   });
 
   it("launches a fresh session with the resolved thinking level", async () => {
@@ -649,6 +712,17 @@ describe("ActiveSessionRegistry", () => {
     expect(snapshot.contextUsage).toEqual({ tokens: 70_000, contextWindow: 100_000, percent: 70 });
     expect(snapshot.compactionPolicy).toEqual({ triggerPercent: 80, enabled: false });
     expect(snapshot.compactionState).toBe("queued");
+  });
+
+  it("snapshot reports the root adapter's authoritative applied generation", async () => {
+    const created = await registry.open({ cwd, sessionPath });
+    const adapter = factory.created[0]!;
+
+    expect((await registry.snapshot(created.id)).runtimeConfigurationGeneration).toBe(0);
+
+    adapter.runtimeConfigurationGeneration = 7;
+
+    expect((await registry.snapshot(created.id)).runtimeConfigurationGeneration).toBe(7);
   });
 
   it("snapshot omits steering for non-live sessions (ADR-083)", async () => {

@@ -21,6 +21,7 @@ const emptyState: SessionViewState = {
   retry: null,
   nextOrder: 0,
   steers: [],
+  runtimeConfigurationGeneration: 0,
   compactionPolicy: { triggerPercent: 70, enabled: true },
   compactionState: "idle",
 };
@@ -108,6 +109,7 @@ describe("session reducer", () => {
     expect(byEnd.activeMessageKey).toBe("visible");
 
     const bySnapshot = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "idle" },
       subagents: [],
       messages: [hidden],
@@ -117,6 +119,7 @@ describe("session reducer", () => {
 
   it("hydrates from a snapshot", () => {
     const state = fromSnapshot({
+      runtimeConfigurationGeneration: 3,
       session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" } as never,
       subagents: [],
       messages: [
@@ -128,6 +131,41 @@ describe("session reducer", () => {
     expect(state.messages[0]!.role).toBe("user");
     expect(state.messages[1]!.role).toBe("assistant");
     expect(state.isStreaming).toBe(true);
+    expect(state.runtimeConfigurationGeneration).toBe(3);
+  });
+
+  it("advances only on increasing live runtime generations and replaces from an authoritative snapshot", () => {
+    const hydrated = fromSnapshot({
+      runtimeConfigurationGeneration: 3,
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      subagents: [],
+      messages: [],
+    });
+
+    const advanced = reduceSessionEvent(hydrated, {
+      type: "runtime_configuration_applied",
+      generation: 4,
+    } as never);
+    const duplicate = reduceSessionEvent(advanced, {
+      type: "runtime_configuration_applied",
+      generation: 4,
+    } as never);
+    const stale = reduceSessionEvent(duplicate, {
+      type: "runtime_configuration_applied",
+      generation: 2,
+    } as never);
+
+    expect(advanced.runtimeConfigurationGeneration).toBe(4);
+    expect(duplicate).toBe(advanced);
+    expect(stale).toBe(advanced);
+
+    const reconnected = mergeSnapshot(stale, {
+      runtimeConfigurationGeneration: 2,
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      subagents: [],
+      messages: [],
+    });
+    expect(reconnected.runtimeConfigurationGeneration).toBe(2);
   });
 
   it("hydrates tool-only, nested-tool, and internal usage with the backend statistics replacement", () => {
@@ -188,6 +226,7 @@ describe("session reducer", () => {
       },
     ] as const;
     const state = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
       subagents: [],
       messages: [
@@ -297,6 +336,7 @@ describe("session reducer", () => {
 
   it("hydrates native context usage and queued compaction state without estimating tokens", () => {
     const state = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
       subagents: [],
       messages: [],
@@ -310,6 +350,7 @@ describe("session reducer", () => {
 
   it("restores the assistant delta cursor from a running snapshot", () => {
     const hydrated = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
       subagents: [],
       messages: [userMessage("question"), assistantMessage("partial")],
@@ -323,6 +364,7 @@ describe("session reducer", () => {
 
   it("restores run and assistant cursor state when status is running but isStreaming is false", () => {
     const hydrated = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "running" },
       subagents: [],
       messages: [userMessage("question"), assistantMessage("partial")],
@@ -335,6 +377,7 @@ describe("session reducer", () => {
 
   it("does not fabricate an assistant cursor when a running snapshot ends in a user message", () => {
     const hydrated = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
       subagents: [],
       messages: [assistantMessage("earlier"), userMessage("follow-up")],
@@ -347,6 +390,7 @@ describe("session reducer", () => {
 
   it("starts a new assistant row when a running snapshot ends in a tool-call-only message", () => {
     const hydrated = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
       subagents: [],
       messages: [
@@ -366,6 +410,7 @@ describe("session reducer", () => {
 
   it("starts a new assistant row when a running snapshot ends in a tool result", () => {
     const hydrated = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
       subagents: [],
       messages: [
@@ -386,6 +431,7 @@ describe("session reducer", () => {
 
   it("creates one temporary assistant row when a running empty snapshot receives its first delta", () => {
     const hydrated = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
       subagents: [],
       messages: [],
@@ -401,6 +447,7 @@ describe("session reducer", () => {
 
   it("keeps user and assistant rows distinct when Pi assigns the same timestamp", () => {
     const state = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "child", cwd: "/p", isStreaming: false, status: "ready", sessionName: "easyresearch:search" },
       subagents: [],
       messages: [
@@ -416,6 +463,7 @@ describe("session reducer", () => {
 
   it("reconciles a missing assistant row from the authoritative message_end", () => {
     const hydrated = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
       subagents: [],
       messages: [],
@@ -440,6 +488,7 @@ describe("session reducer", () => {
 
   it("creates a missing assistant row directly from message_end", () => {
     const hydrated = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
       subagents: [],
       messages: [],
@@ -454,6 +503,7 @@ describe("session reducer", () => {
 
   it("does not overwrite a user row when message_end must create a missing assistant row", () => {
     const hydrated = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
       subagents: [],
       messages: [userMessage("question")],
@@ -483,6 +533,7 @@ describe("session reducer", () => {
 
   it("does not add direct bash execution output to the snapshot transcript", () => {
     const state = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" } as never,
       subagents: [],
       messages: [
@@ -951,6 +1002,7 @@ describe("session reducer", () => {
 
     it("restores a Working card from a ready reconnect summary", () => {
       const state = fromSnapshot({
+        runtimeConfigurationGeneration: 0,
         session: { id: "root", cwd: "/p", isStreaming: false, status: "ready" },
         messages: [
           {
@@ -1030,6 +1082,7 @@ describe("session reducer", () => {
       message,
     } as unknown as AgentSessionEvent);
     const persisted = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "error" },
       subagents: [],
       messages: [message],
@@ -1076,6 +1129,7 @@ describe("session reducer", () => {
 
   it("splits thinking blocks into reasoning, keeping the body text", () => {
     const state = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "done" } as never,
       subagents: [],
       messages: [
@@ -1154,6 +1208,7 @@ describe("session reducer", () => {
 
   it("restores a skill name from a snapshot read tool call", () => {
     const state = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "done" } as never,
       subagents: [],
       messages: [
@@ -1244,6 +1299,7 @@ describe("session reducer", () => {
 
   it("pairs snapshot toolCall blocks with toolResult messages", () => {
     const state = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "done" } as never,
       subagents: [],
       messages: [
@@ -1268,6 +1324,7 @@ describe("session reducer", () => {
 
   it("unwraps text-block arrays from toolResult content", () => {
     const state = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "done" } as never,
       subagents: [],
       messages: [
@@ -1287,6 +1344,7 @@ describe("session reducer", () => {
     const latestMessage = "s".repeat(2_500);
     const genericOutput = "g".repeat(2_500);
     const state = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "done" } as never,
       subagents: [],
       messages: [
@@ -1321,6 +1379,7 @@ describe("session reducer", () => {
 
   it("does not treat whitespace-only snapshot subagent output as a latest message", () => {
     const state = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "done" } as never,
       subagents: [],
       messages: [
@@ -1344,6 +1403,7 @@ describe("session reducer", () => {
 
   it("orders tools at their stream position, interleaving with messages", () => {
     const state = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "done" } as never,
       subagents: [],
       messages: [
@@ -1377,6 +1437,7 @@ describe("session reducer", () => {
 
   it("labels a subagent-line dispatch as assistant, not the user", () => {
     const state = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s2", cwd: "/p", sessionName: "easyresearch:search", isStreaming: false, status: "done" } as never,
       subagents: [],
       messages: [
@@ -1391,6 +1452,7 @@ describe("session reducer", () => {
 
   it("keeps plain sessions user-labeled and unlabeled assistants", () => {
     const state = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "done" } as never,
       subagents: [],
       messages: [
@@ -1442,6 +1504,7 @@ describe("session reducer", () => {
 
   it("captures the agent name from snapshot subagent toolCall blocks (JSON-string args)", () => {
     const state = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "done" } as never,
       subagents: [],
       messages: [
@@ -1456,6 +1519,7 @@ describe("session reducer", () => {
 
   it("applies persisted child summaries to the exact parent tool invocation", () => {
     const state = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "parent", cwd: "/p", isStreaming: false, status: "ready" } as never,
       subagents: [
         {
@@ -1487,6 +1551,7 @@ describe("session reducer", () => {
 
   it("preserves every historical chain-step mapping on one parent tool row", () => {
     const state = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "parent", cwd: "/p", isStreaming: false, status: "ready" } as never,
       subagents: [
         {
@@ -1545,6 +1610,7 @@ describe("session reducer", () => {
       nextOrder: 1,
     };
     const snapshot = {
+      runtimeConfigurationGeneration: 0,
       session: { id: "parent", cwd: "/p", isStreaming: true, status: "running" },
       subagents: [
         {
@@ -1603,6 +1669,7 @@ describe("session reducer", () => {
       nextOrder: 1,
     };
     const snapshot = {
+      runtimeConfigurationGeneration: 0,
       session: { id: "parent", cwd: "/p", isStreaming: true, status: "running" },
       subagents: [
         {
@@ -1647,6 +1714,7 @@ describe("session reducer", () => {
       nextOrder: 1,
     };
     const snapshot = {
+      runtimeConfigurationGeneration: 0,
       session: { id: "parent", cwd: "/p", isStreaming: true, status: "running" },
       subagents: [],
       messages: [
@@ -1685,6 +1753,7 @@ describe("session reducer", () => {
       nextOrder: 1,
     };
     const snapshot = {
+      runtimeConfigurationGeneration: 0,
       session: { id: "parent", cwd: "/p", isStreaming: false, status: "ready" },
       subagents: [],
       messages: [
@@ -1733,6 +1802,7 @@ describe("session reducer", () => {
       nextOrder: 1,
     };
     const snapshot = {
+      runtimeConfigurationGeneration: 0,
       session: { id: "parent", cwd: "/p", isStreaming: true, status: "running" },
       subagents: [
         {
@@ -1774,6 +1844,7 @@ describe("session reducer", () => {
     prior = reduceSessionEvent(prior, assistantEvent("message_start", "Plan A"));
     prior = reduceSessionEvent(prior, toolEvent("tool_execution_start", "live-tool", "bash"));
     const snapshot = {
+      runtimeConfigurationGeneration: 0,
       session: { id: "parent", cwd: "/p", isStreaming: false, status: "ready" },
       subagents: [],
       messages: [userMessage("repeat"), assistantMessage("Plan")],
@@ -1791,6 +1862,7 @@ describe("session reducer", () => {
 
   it("uses the running snapshot final assistant as the sole cursor for the next delta", () => {
     const snapshot = {
+      runtimeConfigurationGeneration: 0,
       session: { id: "parent", cwd: "/p", isStreaming: true, status: "running" },
       subagents: [],
       messages: [assistantMessage("partial")],
@@ -1816,11 +1888,13 @@ describe("session reducer", () => {
       },
     ] as never;
     const streaming = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" } as never,
       subagents: [],
       messages,
     });
     const settled = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "done" } as never,
       subagents: [],
       messages,
@@ -1857,6 +1931,7 @@ describe("session reducer", () => {
 
   it("keeps the session name from a snapshot and updates it on session_info_changed", () => {
     const base = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready", sessionName: "Old name" },
       messages: [],
       subagents: [],
@@ -1872,6 +1947,7 @@ describe("session reducer", () => {
 
   it("leaves the session name unset for unnamed snapshots", () => {
     const state = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
       messages: [],
       subagents: [],
@@ -1921,6 +1997,7 @@ describe("session reducer", () => {
 
   it("hydrates retry as null from a snapshot", () => {
     const hydrated = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
       subagents: [],
       messages: [assistantMessage("hello")],
@@ -1947,6 +2024,7 @@ describe("session reducer", () => {
 
   it("marks skill-invoked user messages with a compact view (fromSnapshot)", () => {
     const state = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
       subagents: [],
       messages: [
@@ -1980,6 +2058,7 @@ describe("session reducer", () => {
 
   it("does not mark ordinary messages", () => {
     const state = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
       subagents: [],
       messages: [userMessage("plain text")],
@@ -1991,6 +2070,7 @@ describe("session reducer", () => {
 describe("steer queue reducer (ADR-083)", () => {
   it("hydrates pending steers from a running snapshot", () => {
     const state = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
       subagents: [],
       messages: [],
@@ -2002,6 +2082,7 @@ describe("steer queue reducer (ADR-083)", () => {
   it("treats an empty or missing steering array as no queued steers", () => {
     expect(
       fromSnapshot({
+        runtimeConfigurationGeneration: 0,
         session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
         subagents: [],
         messages: [],
@@ -2010,6 +2091,7 @@ describe("steer queue reducer (ADR-083)", () => {
     ).toEqual([]);
     expect(
       fromSnapshot({
+        runtimeConfigurationGeneration: 0,
         session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
         subagents: [],
         messages: [],
@@ -2047,6 +2129,7 @@ describe("steer queue reducer (ADR-083)", () => {
     ["literal", "/skill:paper-search query"],
   ])("compacts a queued %s Skill invocation without retaining its expanded body", (_kind, text) => {
     const snapshot = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
       subagents: [],
       messages: [],

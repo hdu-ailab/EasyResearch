@@ -28,6 +28,7 @@ function agent(name: string, overrides: Partial<AgentConfig> = {}): AgentConfig 
     effectiveTools: ["read", "subagent"],
     skills: [],
     effectiveSkills: [],
+    effectiveSkillPaths: [],
     missingSkills: [],
     ...overrides,
   };
@@ -40,6 +41,9 @@ class FakeLiveConfiguration {
   constructor(private rows: AgentConfig[]) {}
 
   async synchronize(): Promise<void> {}
+  async acquireProject(cwd: string): Promise<{ cwd: string; release(): Promise<void> }> {
+    return { cwd, release: async () => {} };
+  }
   isCurrent(generation: number): boolean {
     return generation === this.generation;
   }

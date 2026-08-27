@@ -1,9 +1,8 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  defaultSkillDirectories,
   isDotAgentsSkillEnabled,
   readGlobalDotAgentsSkillSetting,
   resolveAgentSkillDirectories,
@@ -116,6 +115,66 @@ describe("resolveSkillDirectories", () => {
     ]);
   });
 
+  it("resolves nested names with project, global, enabled-home, then bundled precedence", () => {
+    expect(deps.homeDir).toBeDefined();
+    const project = join(cwd, ".easyresearch", "skills", "namespace", "shared");
+    const global = join(agentDir, "skills", "namespace", "shared");
+    const home = join(deps.homeDir ?? "", ".agents", "skills", "namespace", "shared");
+    const bundled = join(bundledSkillsDir, "shared");
+    for (const directory of [project, global, home, bundled]) {
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(join(directory, "SKILL.md"), directory, "utf8");
+    }
+    const enabled = { ...deps, enableDotAgentsSkill: true };
+
+    expect(resolveSkillDirectories(["shared"], enabled)).toEqual([project]);
+    rmSync(project, { recursive: true });
+    expect(resolveSkillDirectories(["shared"], enabled)).toEqual([global]);
+    rmSync(global, { recursive: true });
+    expect(resolveSkillDirectories(["shared"], enabled)).toEqual([home]);
+    rmSync(home, { recursive: true });
+    expect(resolveSkillDirectories(["shared"], enabled)).toEqual([bundled]);
+  });
+
+  it("uses canonical bytewise first-name-wins for root-file and directory collisions", () => {
+    const globalSite = join(agentDir, "skills");
+    mkdirSync(join(globalSite, "foo"), { recursive: true });
+    writeFileSync(join(globalSite, "foo.md"), "root file", "utf8");
+    writeFileSync(join(globalSite, "foo", "SKILL.md"), "directory", "utf8");
+
+    expect(resolveSkillDirectories(["foo"], deps)).toEqual([join(globalSite, "foo.md")]);
+    expect(resolveSkillSelection(undefined, deps)).toEqual({
+      effectiveSkills: ["foo"],
+      effectiveSkillPaths: [join(globalSite, "foo.md")],
+      missingSkills: [],
+    });
+    expect(resolveAgentSkillDirectories({ skills: undefined }, deps)).toEqual([join(globalSite, "foo.md")]);
+  });
+
+  it("excludes out-of-root symlinks, terminates cycles, and propagates canonical depth bounds", () => {
+    const globalSite = join(agentDir, "skills");
+    const inside = join(globalSite, "namespace", "deep");
+    const outside = join(cwd, "outside");
+    mkdirSync(inside, { recursive: true });
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(inside, "SKILL.md"), "inside", "utf8");
+    writeFileSync(join(outside, "SKILL.md"), "outside", "utf8");
+    symlinkSync("..", join(globalSite, "namespace", "cycle"), "dir");
+    symlinkSync(outside, join(globalSite, "outside"), "dir");
+
+    expect(resolveSkillSelection(undefined, deps)).toEqual({
+      effectiveSkills: ["deep"],
+      effectiveSkillPaths: [inside],
+      missingSkills: [],
+    });
+    expect(resolveSkillDirectories(["outside"], deps)).toEqual([]);
+
+    const tooDeep = join(globalSite, ...Array.from({ length: 17 }, (_, index) => `level-${index}`));
+    mkdirSync(tooDeep, { recursive: true });
+    writeFileSync(join(tooDeep, "SKILL.md"), "too deep", "utf8");
+    expect(() => resolveSkillSelection(undefined, deps)).toThrow(/depth/i);
+  });
+
   it("rejects existing directories without SKILL.md and non-Markdown files", () => {
     const projectSite = join(cwd, ".easyresearch", "skills");
     mkdirSync(join(projectSite, "invalid-dir"), { recursive: true });
@@ -123,6 +182,7 @@ describe("resolveSkillDirectories", () => {
 
     expect(resolveSkillSelection(["invalid-dir", "./.easyresearch/skills/invalid-file.txt"], deps)).toEqual({
       effectiveSkills: [],
+      effectiveSkillPaths: [],
       missingSkills: ["invalid-dir", "./.easyresearch/skills/invalid-file.txt"],
     });
   });
@@ -142,6 +202,10 @@ describe("resolveSkillSelection", () => {
 
     expect(resolveSkillSelection(undefined, deps)).toEqual({
       effectiveSkills: ["available-skill", "file-skill"],
+      effectiveSkillPaths: [
+        join(bundledSkillsDir, "available-skill"),
+        join(bundledSkillsDir, "file-skill.md"),
+      ],
       missingSkills: [],
     });
   });
@@ -151,8 +215,61 @@ describe("resolveSkillSelection", () => {
 
     expect(resolveSkillSelection(["available-skill", "missing-skill"], deps)).toEqual({
       effectiveSkills: ["available-skill"],
+      effectiveSkillPaths: [join(bundledSkillsDir, "available-skill")],
       missingSkills: ["missing-skill"],
     });
+  });
+
+  it("returns exact first-name-wins names and load paths from one resolution", () => {
+    const projectSite = join(cwd, ".easyresearch", "skills");
+    const globalSite = join(agentDir, "skills");
+    const homeSite = join(tmpdir(), "fake-home", ".agents", "skills");
+    const staticSite = join(cwd, "static-skills");
+
+    for (const site of [projectSite, globalSite, homeSite, bundledSkillsDir]) {
+      withSkill(site, "shared");
+    }
+    writeFileSync(join(globalSite, "global-file.md"), "# global file\n");
+    withSkill(homeSite, "home-directory");
+    writeFileSync(join(bundledSkillsDir, "bundled-file.md"), "# bundled file\n");
+    withSkill(globalSite, "controlled-explicit");
+    withSkill(staticSite, "outside-explicit");
+
+    const controlledExplicit = join(globalSite, "controlled-explicit");
+    const outsideExplicit = join(staticSite, "outside-explicit");
+    const selection = resolveSkillSelection([
+      "shared",
+      "global-file",
+      "home-directory",
+      "bundled-file",
+      controlledExplicit,
+      outsideExplicit,
+      "missing-skill",
+    ], {
+      ...deps,
+      enableDotAgentsSkill: true,
+    });
+
+    expect(selection).toEqual({
+      effectiveSkills: [
+        "shared",
+        "global-file",
+        "home-directory",
+        "bundled-file",
+        controlledExplicit,
+        outsideExplicit,
+      ],
+      effectiveSkillPaths: [
+        join(projectSite, "shared"),
+        join(globalSite, "global-file.md"),
+        join(homeSite, "home-directory"),
+        join(bundledSkillsDir, "bundled-file.md"),
+        controlledExplicit,
+        outsideExplicit,
+      ],
+      missingSkills: ["missing-skill"],
+    });
+    expect(selection.effectiveSkills).toHaveLength(selection.effectiveSkillPaths.length);
   });
 });
 
@@ -169,8 +286,14 @@ describe("resolveAgentSkillDirectories", () => {
     expect(resolveAgentSkillDirectories({ skills: ["no-such-skill"] }, deps)).toEqual([]);
   });
 
-  it("falls back to the default skill directories when the allowlist is omitted", () => {
-    expect(resolveAgentSkillDirectories({ skills: undefined }, deps)).toEqual(defaultSkillDirectories(deps));
+  it("loads canonical selected Skill paths when the allowlist is omitted", () => {
+    withSkill(bundledSkillsDir, "available-skill");
+    writeFileSync(join(bundledSkillsDir, "file-skill.md"), "# file skill\n", "utf8");
+
+    expect(resolveAgentSkillDirectories({ skills: undefined }, deps)).toEqual([
+      join(bundledSkillsDir, "available-skill"),
+      join(bundledSkillsDir, "file-skill.md"),
+    ]);
   });
 });
 

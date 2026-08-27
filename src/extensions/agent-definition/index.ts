@@ -8,14 +8,7 @@ export function createAgentDefinitionExtension(
   platform: NodeJS.Platform = process.platform,
 ): ExtensionFactory {
   return (pi) => {
-    const applyAtActiveBoundary = async (_event: unknown, ctx: { abort(): void }) => {
-      try {
-        await binding.ensureCurrent({ activeBoundary: true });
-      } catch (error) {
-        ctx.abort();
-        throw error;
-      }
-    };
+    const applyAtActiveBoundary = async () => binding.ensureCurrent({ activeBoundary: true });
     pi.on("session_start", () => {
       const agent = binding.current();
       const activeTools = agent.tools === undefined

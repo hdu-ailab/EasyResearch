@@ -56,6 +56,7 @@ function agent(name: string, overrides: Partial<AgentConfig> = {}): AgentConfig 
     effectiveTools: ["read"],
     skills: [],
     effectiveSkills: [],
+    effectiveSkillPaths: [],
     missingSkills: [],
     ...overrides,
   };
@@ -307,6 +308,10 @@ class FakeLiveConfiguration {
 
   async synchronize(): Promise<void> {}
 
+  async acquireProject(cwd: string): Promise<{ cwd: string; release(): Promise<void> }> {
+    return { cwd, release: async () => {} };
+  }
+
   isCurrent(generation: number): boolean {
     const current = this.authoritative && generation === this.generation;
     this.onCurrentCheck?.();
@@ -321,6 +326,7 @@ class FakeLiveConfiguration {
       subagents: entry.subagents ? [...entry.subagents] : entry.subagents,
       skills: entry.skills ? [...entry.skills] : undefined,
       effectiveSkills: [...entry.effectiveSkills],
+      effectiveSkillPaths: [...entry.effectiveSkillPaths],
       missingSkills: [...entry.missingSkills],
     }));
     this.onResolve?.();

@@ -37,6 +37,14 @@ type GetApiUsageSettings = () => Promise<{ showApiUsageDetails: boolean }>;
 type PatchApiUsageSettings = (patch: { showApiUsageDetails: boolean }) => Promise<{ showApiUsageDetails: boolean }>;
 type GetApiUsageStatistics = (id: string) => Promise<{ rootSessionId: string; total: { totalTokens: number } }>;
 type ListDirectoryRoots = () => Promise<Array<{ name: string; path: string }>>;
+type ReplaceConfigurationProjectWatches = (
+  leaseId: string,
+  request: { revision: number; cwds: string[] },
+) => Promise<{ applied: boolean; revision: number }>;
+type RefreshConfigurationResources = (request?: { projectCwds?: string[] }) => Promise<{
+  generation: number;
+  error: string | null;
+}>;
 
 function rawByteReader(): RawByteReader {
   const reader = (apiModule as typeof apiModule & { readRawFileBytes?: RawByteReader }).readRawFileBytes;
@@ -58,6 +66,17 @@ function apiUsageMethods() {
   };
   if (!module.getApiUsageSettings || !module.patchApiUsageSettings || !module.getApiUsageStatistics) {
     throw new Error("API usage methods are not implemented");
+  }
+  return module;
+}
+
+function configurationResourceMethods() {
+  const module = apiModule as typeof apiModule & {
+    replaceConfigurationProjectWatches?: ReplaceConfigurationProjectWatches;
+    refreshConfigurationResources?: RefreshConfigurationResources;
+  };
+  if (!module.replaceConfigurationProjectWatches || !module.refreshConfigurationResources) {
+    throw new Error("Configuration resource methods are not implemented");
   }
   return module;
 }
@@ -368,11 +387,53 @@ describe("api transport", () => {
     expect(JSON.parse(init.body as string)).toEqual({ revision: 3, directories: ["/p", "/p/src"] });
   });
 
+  it("replaces one encoded configuration project-watch lease with a parsed revision result", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ applied: false, revision: 8 }), { status: 200 }));
+
+    const result = await configurationResourceMethods().replaceConfigurationProjectWatches("lease/one", {
+      revision: 7,
+      cwds: ["/exact/Project", "/exact/project"],
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/config/project-watches/lease%2Fone");
+    expect(init.method).toBe("PUT");
+    expect(JSON.parse(init.body as string)).toEqual({
+      revision: 7,
+      cwds: ["/exact/Project", "/exact/project"],
+    });
+    expect(result).toEqual({ applied: false, revision: 8 });
+  });
+
+  it("refreshes configuration resources with an empty or exact-project request", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ generation: 4, error: null }), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ generation: 5, error: "Configuration validation failed" }), { status: 200 }),
+      );
+    const refresh = configurationResourceMethods().refreshConfigurationResources;
+
+    await expect(refresh()).resolves.toEqual({ generation: 4, error: null });
+    await expect(refresh({ projectCwds: ["/exact/Project"] })).resolves.toEqual({
+      generation: 5,
+      error: "Configuration validation failed",
+    });
+
+    const [firstUrl, firstInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(firstUrl).toBe("/api/config/refresh");
+    expect(firstInit.method).toBe("POST");
+    expect(JSON.parse(firstInit.body as string)).toEqual({});
+    const [secondUrl, secondInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(secondUrl).toBe("/api/config/refresh");
+    expect(JSON.parse(secondInit.body as string)).toEqual({ projectCwds: ["/exact/Project"] });
+  });
+
   it("getSnapshot GETs session snapshot", async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
           session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+          runtimeConfigurationGeneration: 1,
           messages: [],
           subagents: [],
           compactionPolicy: { triggerPercent: 70, enabled: true },
@@ -631,16 +692,36 @@ describe("connectConfigurationEvents", () => {
     expect(source.url).toBe("/api/config/events");
 
     source.onmessage?.({
-      data: JSON.stringify({ type: "config.updated", generation: 2, agentsChanged: true, modelsChanged: false }),
+      data: JSON.stringify({
+        type: "config.updated",
+        generation: 2,
+        agentsChanged: true,
+        modelsChanged: false,
+        skillsChanged: true,
+        runtimeChanged: true,
+        projectWatchLeaseId: "project-watch-1",
+      }),
     } as MessageEvent);
     expect(handlers.onEvent).toHaveBeenCalledWith({
       type: "config.updated",
       generation: 2,
       agentsChanged: true,
       modelsChanged: false,
+      skillsChanged: true,
+      runtimeChanged: true,
+      projectWatchLeaseId: "project-watch-1",
     });
 
-    source.onmessage?.({ data: JSON.stringify({ type: "config.updated", generation: "2" }) } as MessageEvent);
+    source.onmessage?.({
+      data: JSON.stringify({
+        type: "config.updated",
+        generation: "2",
+        agentsChanged: true,
+        modelsChanged: false,
+        skillsChanged: false,
+        runtimeChanged: true,
+      }),
+    } as MessageEvent);
     expect(handlers.onEvent).toHaveBeenCalledTimes(1);
     expect(handlers.onError).toHaveBeenCalledTimes(1);
 

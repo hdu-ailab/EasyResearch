@@ -10,11 +10,12 @@ import {
   notificationBatchId,
   type TerminalNotificationOutcome,
 } from "./notifications";
-import type {
-  StageLaunchHandle,
-  StageLaunchOptions,
-  StageRunResult,
-  StageSessionLauncher,
+import {
+  RetryableStageSessionCreationError,
+  type StageLaunchHandle,
+  type StageLaunchOptions,
+  type StageRunResult,
+  type StageSessionLauncher,
 } from "./stage-session";
 
 export interface SupervisableAgentSession {
@@ -35,6 +36,9 @@ interface OwnedChild {
   reservation: ReservedDispatch;
   startup: Promise<StageLaunchHandle>;
   startupPending: boolean;
+  startupCleanup?: () => Promise<void>;
+  startupCleanupPromise?: Promise<void>;
+  startupCleanupComplete: boolean;
   handle?: StageLaunchHandle;
   subscription?: () => void;
   completion?: Promise<StageRunResult>;
@@ -142,9 +146,14 @@ export class SubagentSupervisor {
   private readonly cleanupFailures = new Map<string, unknown>();
   private readonly pendingAcknowledgementChecks = new Set<string>();
   private parent?: SupervisableAgentSession;
+  private ensureTriggeredTurnReady?: () => Promise<void>;
   private parentSubscription?: () => void;
   private sendPromise?: Promise<void>;
   private notificationScheduled = false;
+  private blockedTriggeredBatchId?: string;
+  private scheduledTriggeredRetryBatchId?: string;
+  private readonly automaticallyRetriedTriggeredBatchIds = new Set<string>();
+  private awaitingAcknowledgementBatchId?: string;
   private stopping = false;
   private closing = false;
   private disposed = false;
@@ -166,11 +175,15 @@ export class SubagentSupervisor {
     this.schedule = options.schedule ?? queueMicrotask;
   }
 
-  attach(session: SupervisableAgentSession): void {
+  attach(session: SupervisableAgentSession, ensureTriggeredTurnReady?: () => Promise<void>): void {
     if (this.disposed) throw new Error("Cannot attach a disposed subagent supervisor.");
-    if (this.parent === session) return;
+    if (this.parent === session) {
+      if (ensureTriggeredTurnReady) this.ensureTriggeredTurnReady = ensureTriggeredTurnReady;
+      return;
+    }
     if (this.parent) throw new Error("Subagent supervisor is already attached to another AgentSession.");
     this.parent = session;
+    this.ensureTriggeredTurnReady = ensureTriggeredTurnReady;
     this.parentSubscription = session.subscribe((event) => this.observeParentEvent(event));
     if (this.hasPendingNotifications()) this.scheduleNotification();
     this.stateChanged();
@@ -238,6 +251,7 @@ export class SubagentSupervisor {
       reservation,
       startup: Promise.resolve(undefined as never),
       startupPending: true,
+      startupCleanupComplete: true,
       materialization: "pending",
       queuedEvents: [],
       acknowledgementEvents: [],
@@ -263,6 +277,10 @@ export class SubagentSupervisor {
         return handle;
       }, (error) => {
         child.startupPending = false;
+        if (error instanceof RetryableStageSessionCreationError) {
+          child.startupCleanup = error.retryCleanup;
+          child.startupCleanupComplete = false;
+        }
         this.stateChanged();
         throw error;
       });
@@ -310,6 +328,7 @@ export class SubagentSupervisor {
       await runCleanupSteps([
         () => { throw error; },
         () => this.coordinator.recordPreMaterializationFailure(reservation, error),
+        () => this.retryStartupCleanup(child),
         async () => {
           if (!child.handle) return;
           try {
@@ -328,7 +347,10 @@ export class SubagentSupervisor {
           await this.disposeChildResources(child);
         },
         () => {
-          if (!child.handle || child.resourcesDisposed) this.removeChild(child);
+          if (
+            (!child.handle && (!child.startupCleanup || child.startupCleanupComplete))
+            || child.resourcesDisposed
+          ) this.removeChild(child);
         },
       ], "Subagent launch cleanup failed.");
       throw error;
@@ -337,7 +359,11 @@ export class SubagentSupervisor {
 
   hasRunningChildren(): boolean {
     for (const child of this.children.values()) {
-      if (child.startupPending || (child.handle !== undefined && !child.resourcesDisposed)) return true;
+      if (
+        child.startupPending
+        || (child.startupCleanup !== undefined && !child.startupCleanupComplete)
+        || (child.handle !== undefined && !child.resourcesDisposed)
+      ) return true;
     }
     return false;
   }
@@ -374,6 +400,46 @@ export class SubagentSupervisor {
     return new Promise((resolve, reject) => this.quiescenceWaiters.add({ resolve, reject }));
   }
 
+  runtimeBecameCoherent(): void {
+    const batchId = this.blockedTriggeredBatchId;
+    if (
+      !batchId
+      || this.stopping
+      || this.closing
+      || this.disposed
+      || this.scheduledTriggeredRetryBatchId === batchId
+      || !this.isPendingBatch(batchId)
+    ) return;
+    this.scheduleTriggeredRetry(batchId);
+  }
+
+  private scheduleTriggeredRetry(batchId: string): void {
+    this.scheduledTriggeredRetryBatchId = batchId;
+    try {
+      this.schedule(() => {
+        if (this.scheduledTriggeredRetryBatchId !== batchId) return;
+        this.scheduledTriggeredRetryBatchId = undefined;
+        if (
+          this.blockedTriggeredBatchId !== batchId
+          || this.stopping
+          || this.closing
+          || this.disposed
+          || !this.isPendingBatch(batchId)
+        ) return;
+        if (this.sendPromise) {
+          const activeSend = this.sendPromise;
+          void activeSend.finally(() => this.runtimeBecameCoherent()).catch(() => {});
+          return;
+        }
+        void this.flushNotificationBatch(true, false, batchId).catch(() => {});
+      });
+    } catch {
+      if (this.scheduledTriggeredRetryBatchId === batchId) {
+        this.scheduledTriggeredRetryBatchId = undefined;
+      }
+    }
+  }
+
   flushNotifications(options: { triggerTurn?: boolean } = {}): Promise<void> {
     return this.flushNotificationBatch(options.triggerTurn ?? !this.isStopping(), false);
   }
@@ -382,11 +448,15 @@ export class SubagentSupervisor {
     return this.flushNotificationBatch(false, true);
   }
 
-  private flushNotificationBatch(triggerTurn: boolean, closingBatch: boolean): Promise<void> {
+  private flushNotificationBatch(
+    triggerTurn: boolean,
+    closingBatch: boolean,
+    retryTriggeredBatchId?: string,
+  ): Promise<void> {
     if (this.sendPromise) return this.sendPromise;
     let tracked!: Promise<void>;
     tracked = Promise.resolve()
-      .then(() => this.sendNextBatch(triggerTurn, closingBatch))
+      .then(() => this.sendNextBatch(triggerTurn, closingBatch, retryTriggeredBatchId))
       .finally(() => {
         if (this.sendPromise === tracked) this.sendPromise = undefined;
         this.stateChanged();
@@ -408,6 +478,9 @@ export class SubagentSupervisor {
     if (terminal) this.closing = true;
     if (this.stopPromise) return this.stopPromise;
     this.stopping = true;
+    this.blockedTriggeredBatchId = undefined;
+    this.scheduledTriggeredRetryBatchId = undefined;
+    this.automaticallyRetriedTriggeredBatchIds.clear();
     const owned = [...this.children.values()];
     const stoppingPreparationFailures: unknown[] = [];
     for (const child of owned) {
@@ -434,6 +507,8 @@ export class SubagentSupervisor {
         try {
           await child.startup;
         } catch {
+          await this.retryStartupCleanup(child);
+          if (!child.handle && (!child.startupCleanup || child.startupCleanupComplete)) this.removeChild(child);
           await child.finished;
           return;
         }
@@ -473,6 +548,7 @@ export class SubagentSupervisor {
                 this.coordinator.supersedeNotification(batch.batchId);
               }
             }
+            this.reconcileNotificationQueueState();
             await this.flushStoppingNotification();
           } catch (error) {
             notificationFailed = true;
@@ -513,6 +589,11 @@ export class SubagentSupervisor {
       this.parentSubscription?.();
       this.parentSubscription = undefined;
       this.parent = undefined;
+      this.ensureTriggeredTurnReady = undefined;
+      this.blockedTriggeredBatchId = undefined;
+      this.scheduledTriggeredRetryBatchId = undefined;
+      this.automaticallyRetriedTriggeredBatchIds.clear();
+      this.awaitingAcknowledgementBatchId = undefined;
       this.disposed = true;
       this.stateChanged();
     })().catch((error) => {
@@ -665,6 +746,34 @@ export class SubagentSupervisor {
     return tracked;
   }
 
+  private retryStartupCleanup(child: OwnedChild): Promise<void> {
+    const startupCleanup = child.startupCleanup;
+    if (!startupCleanup || child.startupCleanupComplete) return Promise.resolve();
+    if (child.startupCleanupPromise) return child.startupCleanupPromise;
+    const failureKey = `startup:${child.reservation.launchId}`;
+    let tracked!: Promise<void>;
+    tracked = Promise.resolve()
+      .then(startupCleanup)
+      .then(
+        () => {
+          child.startupCleanupComplete = true;
+          child.startupCleanup = undefined;
+          this.cleanupFailures.delete(failureKey);
+          if (child.startupCleanupPromise === tracked) child.startupCleanupPromise = undefined;
+          this.stateChanged();
+        },
+        (error) => {
+          if (child.startupCleanupPromise === tracked) child.startupCleanupPromise = undefined;
+          if (child.removed) this.cleanupFailures.delete(failureKey);
+          else this.cleanupFailures.set(failureKey, error);
+          this.stateChanged();
+          throw error;
+        },
+      );
+    child.startupCleanupPromise = tracked;
+    return tracked;
+  }
+
   private forceChildError(child: OwnedChild, reason: string): void {
     if (child.terminalPublished) return;
     child.forcedError = reason;
@@ -733,6 +842,7 @@ export class SubagentSupervisor {
     this.children.delete(child.reservation.launchId);
     this.cleanupFailures.delete(`abort:${child.reservation.launchId}`);
     this.cleanupFailures.delete(`dispose:${child.reservation.launchId}`);
+    this.cleanupFailures.delete(`startup:${child.reservation.launchId}`);
     child.resolveFinished();
     this.stateChanged();
   }
@@ -743,6 +853,15 @@ export class SubagentSupervisor {
     try {
       this.schedule(() => {
         this.notificationScheduled = false;
+        if (!this.parent || this.disposed) return;
+        if (this.sendPromise) {
+          const activeSend = this.sendPromise;
+          void activeSend.finally(() => {
+            if (this.hasSchedulableNotificationWork()) this.scheduleNotification();
+          }).catch(() => {});
+          return;
+        }
+        if (!this.hasSchedulableNotificationWork()) return;
         void this.flushNotifications({ triggerTurn: !this.isStopping() }).catch(() => {});
       });
     } catch {
@@ -785,22 +904,15 @@ export class SubagentSupervisor {
     return outcomes;
   }
 
-  private async sendNextBatch(triggerTurn: boolean, closingBatch: boolean): Promise<void> {
+  private async sendNextBatch(
+    triggerTurn: boolean,
+    closingBatch: boolean,
+    retryTriggeredBatchId?: string,
+  ): Promise<void> {
     const parent = this.requireParent();
     const outcomes = this.collectDeliverableOutcomes();
-    let batch = closingBatch && this.stoppingBatchId
-      ? this.coordinator.journal().pendingBatches.find(
-        (candidate) => candidate.ownerSessionId === parent.sessionId && candidate.batchId === this.stoppingBatchId,
-      )
-      : closingBatch
-        ? undefined
-        : outcomes.length === 0
-          ? this.coordinator.journal().pendingBatches.find(
-            (candidate) => candidate.ownerSessionId === parent.sessionId,
-          )
-          : undefined;
-    if (!batch) {
-      if (outcomes.length === 0) return;
+    let createdBatchId: string | undefined;
+    if (outcomes.length > 0) {
       const state = this.coordinator.journal();
       const workingAgentIds = [...state.jobs.values()]
         .filter((job) =>
@@ -818,26 +930,58 @@ export class SubagentSupervisor {
         content,
         triggerTurn,
       });
-      batch = {
-        batchId,
-        ownerSessionId: parent.sessionId,
-        launchIds: outcomes.map(({ launchId }) => launchId),
-        content,
-        triggerTurn,
-        createdAt: this.now(),
-      };
+      createdBatchId = batchId;
     }
+
+    const pendingBatches = this.coordinator.journal().pendingBatches.filter(
+      (candidate) => candidate.ownerSessionId === parent.sessionId,
+    );
+    const batch = closingBatch
+      ? pendingBatches.find((candidate) => candidate.batchId === this.stoppingBatchId)
+        ?? pendingBatches.find((candidate) => candidate.batchId === createdBatchId)
+      : pendingBatches[0];
+    if (!batch) return;
     if (closingBatch) this.stoppingBatchId = batch.batchId;
 
-    await parent.sendCustomMessage(
-      {
-        customType: AGENT_STATUS_TYPE,
-        content: batch.content,
-        display: false,
-        details: { batchId: batch.batchId },
-      },
-      { deliverAs: "steer", triggerTurn: batch.triggerTurn },
-    );
+    this.reconcileNotificationQueueState(pendingBatches);
+    if (this.awaitingAcknowledgementBatchId) return;
+    if (this.blockedTriggeredBatchId === batch.batchId && retryTriggeredBatchId !== batch.batchId) return;
+    if (retryTriggeredBatchId && retryTriggeredBatchId !== batch.batchId) return;
+
+    if (batch.triggerTurn) {
+      try {
+        await this.ensureTriggeredTurnReady?.();
+      } catch (error) {
+        if (!this.isStopping() && !this.disposed && this.isPendingBatch(batch.batchId)) {
+          this.blockedTriggeredBatchId = batch.batchId;
+          if (!this.automaticallyRetriedTriggeredBatchIds.has(batch.batchId)) {
+            this.automaticallyRetriedTriggeredBatchIds.add(batch.batchId);
+            this.scheduleTriggeredRetry(batch.batchId);
+          }
+        }
+        throw error;
+      }
+      if (this.blockedTriggeredBatchId === batch.batchId) this.blockedTriggeredBatchId = undefined;
+      if (this.isStopping() || this.disposed || !this.isPendingBatch(batch.batchId)) return;
+    }
+
+    this.awaitingAcknowledgementBatchId = batch.batchId;
+    try {
+      await parent.sendCustomMessage(
+        {
+          customType: AGENT_STATUS_TYPE,
+          content: batch.content,
+          display: false,
+          details: { batchId: batch.batchId },
+        },
+        { deliverAs: "steer", triggerTurn: batch.triggerTurn },
+      );
+    } catch (error) {
+      if (this.awaitingAcknowledgementBatchId === batch.batchId) {
+        this.awaitingAcknowledgementBatchId = undefined;
+      }
+      throw error;
+    }
   }
 
   private nextBatchId(): string {
@@ -869,11 +1013,62 @@ export class SubagentSupervisor {
     const stillPending = this.coordinator.journal().pendingBatches.some(
       (candidate) => candidate.batchId === batch.batchId && candidate.ownerSessionId === batch.ownerSessionId,
     );
-    if (!stillPending) return true;
-    this.coordinator.acknowledgeNotification(batch.batchId);
-    if (this.hasDeliverableOutcomes()) this.scheduleNotification();
+    if (stillPending) this.coordinator.acknowledgeNotification(batch.batchId);
+    this.clearNotificationBatchState(batch.batchId);
+    if (this.hasSchedulableNotificationWork()) this.scheduleNotification();
     this.stateChanged();
     return true;
+  }
+
+  private isPendingBatch(batchId: string): boolean {
+    const ownerSessionId = this.parent?.sessionId;
+    return ownerSessionId !== undefined && this.coordinator.journal().pendingBatches.some(
+      (batch) => batch.ownerSessionId === ownerSessionId && batch.batchId === batchId,
+    );
+  }
+
+  private hasSchedulableNotificationWork(): boolean {
+    const parent = this.parent;
+    if (!parent || this.disposed) return false;
+    if (this.hasDeliverableOutcomes()) return true;
+    const pendingBatches = this.coordinator.journal().pendingBatches.filter(
+      (batch) => batch.ownerSessionId === parent.sessionId,
+    );
+    this.reconcileNotificationQueueState(pendingBatches);
+    const batch = pendingBatches[0];
+    return batch !== undefined
+      && this.awaitingAcknowledgementBatchId === undefined
+      && this.blockedTriggeredBatchId !== batch.batchId;
+  }
+
+  private reconcileNotificationQueueState(pendingBatches?: NotificationBatchRecord[]): void {
+    const ownerSessionId = this.parent?.sessionId;
+    const pendingIds = new Set(
+      (pendingBatches ?? this.coordinator.journal().pendingBatches)
+        .filter((batch) => batch.ownerSessionId === ownerSessionId)
+        .map((batch) => batch.batchId),
+    );
+    if (
+      this.awaitingAcknowledgementBatchId
+      && !pendingIds.has(this.awaitingAcknowledgementBatchId)
+    ) this.awaitingAcknowledgementBatchId = undefined;
+    if (this.blockedTriggeredBatchId && !pendingIds.has(this.blockedTriggeredBatchId)) {
+      const staleBatchId = this.blockedTriggeredBatchId;
+      this.blockedTriggeredBatchId = undefined;
+      if (this.scheduledTriggeredRetryBatchId === staleBatchId) {
+        this.scheduledTriggeredRetryBatchId = undefined;
+      }
+    }
+    for (const batchId of this.automaticallyRetriedTriggeredBatchIds) {
+      if (!pendingIds.has(batchId)) this.automaticallyRetriedTriggeredBatchIds.delete(batchId);
+    }
+  }
+
+  private clearNotificationBatchState(batchId: string): void {
+    if (this.awaitingAcknowledgementBatchId === batchId) this.awaitingAcknowledgementBatchId = undefined;
+    if (this.blockedTriggeredBatchId === batchId) this.blockedTriggeredBatchId = undefined;
+    if (this.scheduledTriggeredRetryBatchId === batchId) this.scheduledTriggeredRetryBatchId = undefined;
+    this.automaticallyRetriedTriggeredBatchIds.delete(batchId);
   }
 
   private scheduleAcknowledgementCheck(batchId: string): void {

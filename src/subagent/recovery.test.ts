@@ -19,6 +19,7 @@ const searchAgent: AgentConfig = {
   effectiveTools: ["read"],
   skills: ["paper-search"],
   effectiveSkills: ["paper-search"],
+  effectiveSkillPaths: ["/skills/paper-search"],
   missingSkills: [],
   subagents: [],
 };

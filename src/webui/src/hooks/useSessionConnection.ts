@@ -19,6 +19,8 @@ import {
 import {
   parseApiUsageChangedEvent,
   parseCompactionStateChangedEvent,
+  parseRuntimeConfigurationAppliedEvent,
+  parseSessionSnapshot,
   parseSessionStatsChangedEvent,
   parseSubagentSupervisorEvent,
 } from "../api/parsers";
@@ -239,6 +241,7 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
     const unsubscribe = connectSessionEvents(sessionId, {
       onEvent: (event) => {
         if (!isCurrentConnection()) return;
+        const hadReceivedStreamData = connectionToken.receivedStreamData;
         connectionToken.receivedStreamData = true;
         setNotice((current) => (current === tRef.current("work.connectionLost") ? null : current));
         if (eventType(event) === "subagent_supervisor") {
@@ -291,6 +294,16 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
           }
           return;
         }
+        if (eventType(event) === "runtime_configuration_applied") {
+          try {
+            const applied = parseRuntimeConfigurationAppliedEvent(event);
+            setView((current) => reduceSessionEvent(current, applied));
+          } catch {
+            // Ignore malformed SSE frames and retain the last applied generation.
+            connectionToken.receivedStreamData = hadReceivedStreamData;
+          }
+          return;
+        }
         if (eventType(event) === "compaction_end") {
           const errorMessage = (event as { errorMessage?: unknown }).errorMessage;
           if (typeof errorMessage === "string" && errorMessage) setNotice(errorMessage);
@@ -298,6 +311,14 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
         }
         if (onEventRef.current?.(event)) return;
         if (isSnapshotEvent(event)) {
+          let snapshot: SessionSnapshotDto;
+          try {
+            snapshot = parseSessionSnapshot({ ...event, subagents: event.subagents ?? [] });
+          } catch {
+            // A malformed reconnect frame cannot replace the last valid snapshot.
+            connectionToken.receivedStreamData = hadReceivedStreamData;
+            return;
+          }
           const pending = pendingStreamReadyRef.current;
           if (
             pending?.sessionId === sessionId &&
@@ -307,10 +328,10 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
             pendingStreamReadyRef.current = null;
             pending.resolve();
           }
-          if (typeof event.session.sessionFile === "string") updateSessionPath(event.session.sessionFile);
-          setFileWatchLeaseId(typeof event.fileWatchLeaseId === "string" ? event.fileWatchLeaseId : null);
-          setStatus(event.session.status);
-          setView((current) => mergeSnapshot(current, { ...event, subagents: event.subagents ?? [] }));
+          if (typeof snapshot.session.sessionFile === "string") updateSessionPath(snapshot.session.sessionFile);
+          setFileWatchLeaseId(snapshot.fileWatchLeaseId ?? null);
+          setStatus(snapshot.session.status);
+          setView((current) => mergeSnapshot(current, snapshot));
           return;
         }
         const type = eventType(event);

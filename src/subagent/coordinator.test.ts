@@ -18,6 +18,7 @@ function agent(name: string): AgentConfig {
     builtin: false,
     effectiveTools: [],
     effectiveSkills: [],
+    effectiveSkillPaths: [],
     missingSkills: [],
     systemPrompt: "",
     source: "global",

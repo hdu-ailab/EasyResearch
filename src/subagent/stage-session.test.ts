@@ -16,11 +16,12 @@ import {
 } from "./coordinator";
 import {
   createStageSessionLauncher,
+  RetryableStageSessionCreationError,
   type StageAgentSession,
   type StageLaunchOptions,
   type StageSessionDependencies,
 } from "./stage-session";
-import type { SubagentSupervisor } from "./supervisor";
+import { SubagentSupervisor, type SupervisableAgentSession } from "./supervisor";
 
 function agentRow(name: string, overrides: Partial<AgentConfig> = {}): AgentConfig {
   return {
@@ -35,6 +36,7 @@ function agentRow(name: string, overrides: Partial<AgentConfig> = {}): AgentConf
     effectiveTools: ["read", "web-search"],
     skills: ["paper-search"],
     effectiveSkills: ["paper-search"],
+    effectiveSkillPaths: ["/skills/paper-search"],
     missingSkills: [],
     subagents: [],
     model: "openai/gpt-test",
@@ -109,11 +111,27 @@ class FakeLiveConfiguration {
   compactionPolicy = { triggerPercent: 70, globalEnabled: true, globalKeepRecentTokens: 20_000 };
   onResolve: (() => void) | undefined;
   resolveCalls = 0;
+  readonly synchronizeOptions: Array<{ projectCwds?: readonly string[] } | undefined> = [];
+  readonly acquiredProjects: string[] = [];
+  projectReleaseCalls = 0;
+  projectReleaseImpl: () => Promise<void> = async () => {};
   private readonly listeners = new Set<(event: any) => void>();
 
   constructor(private rows: AgentConfig[]) {}
 
-  async synchronize(): Promise<void> {}
+  async synchronize(options?: { projectCwds?: readonly string[] }): Promise<void> {
+    this.synchronizeOptions.push(options);
+  }
+  async acquireProject(cwd: string): Promise<{ cwd: string; release(): Promise<void> }> {
+    this.acquiredProjects.push(cwd);
+    return {
+      cwd,
+      release: async () => {
+        this.projectReleaseCalls += 1;
+        await this.projectReleaseImpl();
+      },
+    };
+  }
   isCurrent(generation: number): boolean {
     return generation === this.generation;
   }
@@ -140,6 +158,23 @@ class FakeLiveConfiguration {
         generation: this.generation,
         agentsChanged: true,
         modelsChanged: true,
+        skillsChanged: false,
+        runtimeChanged: true,
+      });
+    }
+  }
+
+  publishSkills(rows: AgentConfig[]): void {
+    this.rows = rows;
+    this.generation += 1;
+    for (const listener of [...this.listeners]) {
+      listener({
+        type: "config.updated",
+        generation: this.generation,
+        agentsChanged: false,
+        modelsChanged: false,
+        skillsChanged: true,
+        runtimeChanged: true,
       });
     }
   }
@@ -165,6 +200,8 @@ class FakeStageSession implements StageAgentSession {
   readonly modelCalls: Model<any>[] = [];
   readonly thinkingCalls: ThinkingLevel[] = [];
   readonly listeners = new Set<(event: unknown) => void>();
+  readonly entries: unknown[] = [];
+  readonly sessionManager = { getEntries: () => this.entries };
   abortCalls = 0;
   disposeCalls = 0;
   unsubscribeCalls = 0;
@@ -227,7 +264,10 @@ class FakeStageSession implements StageAgentSession {
     this.promptStart?.();
     return this.promptPromise;
   }
-  async sendCustomMessage(): Promise<void> {}
+  async sendCustomMessage(
+    _message: { customType: string; content: string; display: boolean; details?: unknown },
+    _options: { deliverAs: "steer"; triggerTurn: boolean },
+  ): Promise<void> {}
   async abort(): Promise<void> {
     this.abortCalls += 1;
     await this.abortImpl();
@@ -247,17 +287,23 @@ class FakeStageSession implements StageAgentSession {
 
 class FakeDirectChildSupervisor {
   readonly attached: StageAgentSession[] = [];
+  readonly turnGuards: Array<(() => Promise<void>) | undefined> = [];
   readonly abortReasons: string[] = [];
   abortImpl: () => Promise<void> = async () => {};
   waitForQuiescenceImpl: () => Promise<void> = async () => {};
   disposeImpl: () => Promise<void> = async () => {};
   disposeCalls = 0;
+  runtimeCoherentCalls = 0;
 
-  attach(session: StageAgentSession): void {
+  attach(session: StageAgentSession, ensureTriggeredTurnReady?: () => Promise<void>): void {
     this.attached.push(session);
+    this.turnGuards.push(ensureTriggeredTurnReady);
   }
   waitForQuiescence(): Promise<void> {
     return this.waitForQuiescenceImpl();
+  }
+  runtimeBecameCoherent(): void {
+    this.runtimeCoherentCalls += 1;
   }
   async abortAll(reason: string): Promise<void> {
     this.abortReasons.push(reason);
@@ -369,7 +415,6 @@ function dependencyHarness(session: FakeStageSession): DependencyHarness {
         { name: "web-search" },
       ],
       resolveAutomaticModel: async () => undefined,
-      resolveSkillPaths: (agent) => agent.effectiveSkills.map((name) => `/skills/${name}`),
     },
   };
 }
@@ -465,7 +510,8 @@ describe("createStageSessionLauncher", () => {
     const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
     const harness = dependencyHarness(session);
     const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
-    const handle = await createStageSessionLauncher(harness.dependencies)(stageOptions(coordinator));
+    const live = liveFor();
+    const handle = await createStageSessionLauncher(harness.dependencies)(stageOptions(coordinator, live));
 
     session.emitAssistantEndAndPersist();
     await handle.materialized;
@@ -513,11 +559,98 @@ describe("createStageSessionLauncher", () => {
     expect(session.agent.steeringMode).toBe("all");
     expect(session.promptCalls).toEqual(["Task: find papers"]);
     expect(harness.supervisors[0]?.attached).toEqual([session]);
+    const turnGuard = harness.supervisors[0]?.turnGuards[0];
+    expect(turnGuard).toBeTypeOf("function");
+    const synchronizationBaseline = live.synchronizeOptions.length;
+    const waitForIdleBaseline = session.waitForIdleCalls;
+    session.isIdle = false;
+    session.waitForIdleImpl = async () => {
+      session.isIdle = true;
+    };
+    await turnGuard?.();
+    expect(session.waitForIdleCalls).toBe(waitForIdleBaseline + 1);
+    expect(live.synchronizeOptions).toHaveLength(synchronizationBaseline + 1);
+    expect(live.acquiredProjects).toEqual(["/project"]);
+    expect(live.synchronizeOptions.slice(0, 2)).toEqual([
+      { projectCwds: ["/project"] },
+      { projectCwds: ["/project"] },
+    ]);
 
     await handle.dispose();
     expect(harness.supervisors[0]?.disposeCalls).toBe(1);
     expect(session.disposeCalls).toBe(1);
     expect(harness.bindingDisposals).toEqual(["binding"]);
+    expect(live.projectReleaseCalls).toBe(1);
+  });
+
+  it("lets the real stage wake guard recover a transient triggered batch on its bounded retry", async () => {
+    const prompt = deferred<void>();
+    const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
+    const harness = dependencyHarness(session);
+    const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
+    const handle = await createStageSessionLauncher(harness.dependencies)(stageOptions(coordinator));
+    const guard = harness.supervisors[0]?.turnGuards[0];
+    expect(guard).toBeTypeOf("function");
+    let guardAttempts = 0;
+    session.isIdle = false;
+    session.waitForIdleImpl = async () => {
+      guardAttempts += 1;
+      if (guardAttempts === 1) throw new Error("transient stage readiness failure");
+      session.isIdle = true;
+    };
+    const notificationEntries: unknown[] = [];
+    const notificationManager: CoordinatorSessionManager = {
+      getSessionId: () => session.sessionId,
+      getSessionFile: () => session.sessionFile,
+      getEntries: () => notificationEntries,
+      appendCustomEntry(customType, data) {
+        const id = `entry-${notificationEntries.length}`;
+        notificationEntries.push({ type: "custom", id, customType, data });
+        return id;
+      },
+    };
+    const notificationCoordinator = new SubagentCoordinator(notificationManager);
+    notificationCoordinator.recordNotificationBatch({
+      batchId: "stage-triggered-batch",
+      ownerSessionId: session.sessionId,
+      launchIds: [],
+      content: "stage hidden handoff",
+      triggerTurn: true,
+    });
+    const scheduled: Array<() => void> = [];
+    const supervisor = new SubagentSupervisor({
+      coordinator: notificationCoordinator,
+      launchStage: async () => {
+        throw new Error("not used");
+      },
+      schedule: (run) => scheduled.push(run),
+    });
+    const sent: string[] = [];
+    session.sendCustomMessage = async (message) => {
+      sent.push(message.content);
+      const persisted = { role: "custom", ...message };
+      session.entries.push(persisted);
+      for (const listener of session.listeners) listener({ type: "message_end", message: persisted });
+    };
+    supervisor.attach(session as unknown as SupervisableAgentSession, guard);
+
+    scheduled.shift()?.();
+    await vi.waitFor(() => {
+      expect(guardAttempts).toBe(1);
+      expect(scheduled).toHaveLength(1);
+    });
+
+    scheduled.shift()?.();
+    await vi.waitFor(() => expect(sent).toEqual(["stage hidden handoff"]));
+    expect(guardAttempts).toBe(2);
+    await supervisor.waitForQuiescence();
+    await supervisor.dispose();
+
+    session.emitAssistantEndAndPersist();
+    await handle.materialized;
+    prompt.resolve();
+    await handle.completion;
+    await handle.dispose();
   });
 
   it("waits for nested quiescence and the resulting stage turn before completion", async () => {
@@ -696,6 +829,7 @@ describe("createStageSessionLauncher", () => {
     const prompt = deferred<void>();
     const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
     const harness = dependencyHarness(session);
+    const live = liveFor();
     const order: string[] = [];
     session.bindError = new Error("extension setup failed");
     session.disposeImpl = () => order.push("session");
@@ -712,11 +846,122 @@ describe("createStageSessionLauncher", () => {
     };
     const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
 
-    await expect(createStageSessionLauncher(harness.dependencies)(stageOptions(coordinator)))
+    await expect(createStageSessionLauncher(harness.dependencies)(stageOptions(coordinator, live)))
       .rejects.toThrow("extension setup failed");
     expect(order).toEqual(["session", "binding"]);
     expect(harness.supervisors[0]?.disposeCalls).toBe(1);
     expect(session.unsubscribeCalls).toBe(1);
+    expect(live.projectReleaseCalls).toBe(1);
+  });
+
+  it("retries setup-session disposal before releasing the binding", async () => {
+    const prompt = deferred<void>();
+    const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
+    const harness = dependencyHarness(session);
+    const live = liveFor();
+    const setupFailure = new Error("extension setup failed");
+    const sessionFailure = new Error("setup session disposal failed");
+    const order: string[] = [];
+    let failSessionDisposal = true;
+    session.bindError = setupFailure;
+    session.disposeImpl = () => {
+      order.push("session");
+      if (failSessionDisposal) {
+        failSessionDisposal = false;
+        throw sessionFailure;
+      }
+    };
+    const originalCreateRuntime = harness.dependencies.createModelRuntime;
+    harness.dependencies.createModelRuntime = async (agentDir) => {
+      const runtime = await originalCreateRuntime(agentDir);
+      return {
+        ...runtime,
+        dispose: async () => {
+          order.push("binding");
+          await (runtime as { dispose?: () => Promise<void> }).dispose?.();
+        },
+      };
+    };
+    live.projectReleaseImpl = async () => {
+      order.push("release");
+    };
+    const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
+
+    const failure = await createStageSessionLauncher(harness.dependencies)(stageOptions(coordinator, live))
+      .catch((error) => error);
+
+    expect(failure).toBeInstanceOf(RetryableStageSessionCreationError);
+    expect((failure as AggregateError).errors).toEqual([setupFailure, sessionFailure]);
+    expect(session.disposeCalls).toBe(1);
+    expect(order).toEqual(["session"]);
+    expect(harness.bindingDisposals).toEqual([]);
+    expect(live.projectReleaseCalls).toBe(0);
+
+    await (failure as RetryableStageSessionCreationError).retryCleanup();
+
+    expect(session.disposeCalls).toBe(2);
+    expect(order).toEqual(["session", "session", "binding", "release"]);
+    expect(harness.bindingDisposals).toEqual(["binding"]);
+    expect(live.projectReleaseCalls).toBe(1);
+  });
+
+  it("lets the owning supervisor retry a rejected launch's failed binding release", async () => {
+    const prompt = deferred<void>();
+    const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
+    const harness = dependencyHarness(session);
+    const live = liveFor();
+    const setupFailure = new Error("extension setup failed");
+    const releaseFailure = new Error("project watcher close failed");
+    let remainingReleaseFailures = 2;
+    live.projectReleaseImpl = async () => {
+      if (remainingReleaseFailures > 0) {
+        remainingReleaseFailures -= 1;
+        throw releaseFailure;
+      }
+    };
+    session.bindError = setupFailure;
+    const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
+    const reservation = coordinator.reserveDispatch({
+      ownerSessionId: "root-session",
+      toolCallId: "tool-setup",
+      requested: "search",
+      catalog: { all: [stageAgent], available: [stageAgent] },
+    });
+    const supervisor = new SubagentSupervisor({
+      coordinator,
+      launchStage: createStageSessionLauncher(harness.dependencies),
+    });
+    supervisor.attach({
+      sessionId: "root-session",
+      sessionFile: "/sessions/root.jsonl",
+      isStreaming: false,
+      sessionManager: { getEntries: () => [] },
+      subscribe: () => () => {},
+      sendCustomMessage: async () => {},
+      abort: async () => {},
+      dispose: () => {},
+    });
+
+    const failure = await supervisor.launch(reservation, {
+      agent: stageAgent,
+      callerAgent: "research-assistant",
+      task: "find papers",
+      cwd: "/project",
+      liveConfiguration: live,
+    }).catch((error) => error);
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors).toEqual([setupFailure, releaseFailure]);
+    expect(live.projectReleaseCalls).toBe(2);
+    expect(session.disposeCalls).toBe(1);
+    expect(supervisor.hasRunningChildren()).toBe(true);
+    await expect(supervisor.waitForQuiescence()).rejects.toThrow(releaseFailure);
+
+    await supervisor.dispose();
+
+    expect(live.projectReleaseCalls).toBe(3);
+    expect(session.disposeCalls).toBe(1);
+    expect(supervisor.hasRunningChildren()).toBe(false);
   });
 
   it("bounds post-setup generation churn and never prompts an unauthorized stage", async () => {
@@ -776,6 +1021,7 @@ describe("createStageSessionLauncher", () => {
       effectiveTools: ["read", "subagent"],
       skills: ["paper-v1"],
       effectiveSkills: ["paper-v1"],
+      effectiveSkillPaths: ["/project/.easyresearch/skills/paper"],
       systemPrompt: "Search generation one.",
       subagents: ["reviewer"],
     });
@@ -786,6 +1032,7 @@ describe("createStageSessionLauncher", () => {
       effectiveTools: ["web-search", "subagent"],
       skills: ["paper-v2"],
       effectiveSkills: ["paper-v2"],
+      effectiveSkillPaths: ["/agent/skills/paper"],
       systemPrompt: "Search generation two.",
       subagents: ["reviewer"],
     });
@@ -797,6 +1044,8 @@ describe("createStageSessionLauncher", () => {
     let resourceHost: ExtensionResourceHost | undefined;
     let runtimeBinding: AgentRuntimeBinding | undefined;
     let modelGeneration = 0;
+    let reloadCallsBeforeBoundary = -1;
+    let initialSkillPaths: string[] = [];
     const disposedModels: string[] = [];
     const supervisor = new FakeDirectChildSupervisor();
     const policySettings = fakeSettingsManager({ getGlobalSettings: () => ({}) });
@@ -837,7 +1086,6 @@ describe("createStageSessionLauncher", () => {
         return [{ name: "agent-definition", factory: createAgentDefinitionExtension(binding) }];
       },
       resolveAutomaticModel: async () => undefined,
-      resolveSkillPaths: (agent) => agent.effectiveSkills.map((name) => `/skills/${name}`),
     };
     session.bindExtensions = async (bindings) => {
       session.bindingCalls.push(bindings);
@@ -852,10 +1100,13 @@ describe("createStageSessionLauncher", () => {
     };
     session.promptStart = () => {
       session.isIdle = false;
+      if (!resourceHost) throw new Error("Stage resource host was not constructed.");
+      initialSkillPaths = [...resourceHost.skillPaths];
       live.publish(
         [paper, stageV2, reviewer],
         { triggerPercent: 80, globalEnabled: true, globalKeepRecentTokens: 20_000 },
       );
+      reloadCallsBeforeBoundary = session.reloadCalls;
       void resourceHost!.emit("turn_end", { turnIndex: 0 }, { cwd: "/project", abort: vi.fn() })
         .then(() => {
           session.isIdle = true;
@@ -865,14 +1116,18 @@ describe("createStageSessionLauncher", () => {
     };
     const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
     const handle = await createStageSessionLauncher(dependencies)(stageOptions(coordinator, live));
+    const stageEvents: JsonAgentSessionEvent[] = [];
+    handle.subscribe((event) => stageEvents.push(event));
 
     await handle.materialized;
     await handle.completion;
 
     expect(session.reloadCalls).toBe(1);
+    expect(reloadCallsBeforeBoundary).toBe(0);
+    expect(initialSkillPaths).toEqual(["/project/.easyresearch/skills/paper"]);
     expect(resourceHost!.prompt).toEqual(["Pi base", "Search generation two."]);
     expect(session.activeTools.at(-1)).toEqual(["web-search", "subagent"]);
-    expect(resourceHost!.skillPaths).toEqual(["/skills/paper-v2"]);
+    expect(resourceHost!.skillPaths).toEqual(["/agent/skills/paper"]);
     expect(runtimeBinding!.current().subagents).toEqual(["reviewer"]);
     expect(session.model?.name).toBe("metadata-v2");
     expect(session.thinkingLevel).toBe("high");
@@ -881,8 +1136,22 @@ describe("createStageSessionLauncher", () => {
       keepRecentTokens: 20_000,
     });
     expect(runtimeBinding!.compactionPolicy()).toEqual({ triggerPercent: 80, enabled: true });
+    expect(supervisor.runtimeCoherentCalls).toBe(1);
     expect(session.agent.steeringMode).toBe("all");
     expect(disposedModels).toContain("metadata-v1");
+    expect(stageEvents.some((event) => (event as { type: string }).type === "runtime_configuration_applied")).toBe(false);
+
+    live.publishSkills([paper, stageV2, reviewer]);
+    await vi.waitFor(() => expect(session.reloadCalls).toBe(2));
+    expect(resourceHost?.skillPaths).toEqual(["/agent/skills/paper"]);
+
+    const stageV3 = agentRow("search", {
+      ...stageV2,
+      effectiveSkillPaths: ["/project/.easyresearch/skills/paper"],
+    });
+    live.publishSkills([paper, stageV3, reviewer]);
+    await vi.waitFor(() => expect(session.reloadCalls).toBe(3));
+    expect(resourceHost?.skillPaths).toEqual(["/project/.easyresearch/skills/paper"]);
 
     await handle.dispose();
     expect(disposedModels).toContain("metadata-v2");

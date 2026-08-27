@@ -50,7 +50,7 @@ export interface ResearchAssistantExtensionRuntime {
   binding: AgentRuntimeBinding;
   liveConfiguration: Pick<
     LiveConfiguration,
-    "generation" | "synchronize" | "isCurrent" | "resolveAgents" | "subscribe"
+    "generation" | "synchronize" | "acquireProject" | "isCurrent" | "resolveAgents" | "subscribe"
   >;
   coordinator: SubagentCoordinator;
   supervisor: SubagentSupervisor;

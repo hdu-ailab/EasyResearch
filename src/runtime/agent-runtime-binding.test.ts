@@ -7,7 +7,7 @@ import type { Model } from "@earendil-works/pi-ai";
 import type { AgentConfig } from "../subagent/agents";
 import type { ConfigurationEvent, ConfigurationUpdatedEvent } from "../web/contracts";
 import { createAgentDefinitionExtension } from "../extensions/agent-definition";
-import { createCompactionPolicyBinding } from "./compaction-policy";
+import { createCompactionPolicyBinding, type CompactionPolicyBinding } from "./compaction-policy";
 import { importPi } from "./pi-import";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
@@ -42,6 +42,7 @@ function definition(version: string, overrides: Partial<AgentConfig> = {}): Agen
     subagents: [`search-${version}`],
     skills: [`skill-${version}`],
     effectiveSkills: [`skill-${version}`],
+    effectiveSkillPaths: [`/skills/skill-${version}`],
     missingSkills: [],
     model: "test-provider/same-model",
     thinking: version === "v1" ? "low" : "high",
@@ -57,6 +58,10 @@ class FakeLiveConfiguration {
   error: string | null = null;
   compactionPolicy = { triggerPercent: 70, globalEnabled: true, globalKeepRecentTokens: 20_000 };
   synchronizeCalls = 0;
+  readonly synchronizeOptions: Array<{ projectCwds?: readonly string[] } | undefined> = [];
+  readonly operations: string[] = [];
+  projectAcquireCalls = 0;
+  projectReleaseCalls = 0;
   authoritative = true;
   closed = false;
   validationClean = true;
@@ -69,9 +74,23 @@ class FakeLiveConfiguration {
     this.agents = initial;
   }
 
-  async synchronize(): Promise<void> {
+  async synchronize(options?: { projectCwds?: readonly string[] }): Promise<void> {
     this.synchronizeCalls += 1;
+    this.synchronizeOptions.push(options);
+    this.operations.push("synchronize");
     await this.synchronizeImpl?.();
+  }
+
+  async acquireProject(cwd: string): Promise<{ cwd: string; release(): Promise<void> }> {
+    this.projectAcquireCalls += 1;
+    this.operations.push(`acquire:${cwd}`);
+    return {
+      cwd,
+      release: async () => {
+        this.projectReleaseCalls += 1;
+        this.operations.push(`release:${cwd}`);
+      },
+    };
   }
 
   isCurrent(generation: number): boolean {
@@ -81,6 +100,7 @@ class FakeLiveConfiguration {
   }
 
   async resolveAgents(): Promise<AgentConfig[]> {
+    this.operations.push("resolve");
     return this.agents.map((agent) => ({
       ...agent,
       tools: agent.tools ? [...agent.tools] : undefined,
@@ -88,6 +108,7 @@ class FakeLiveConfiguration {
       subagents: agent.subagents ? [...agent.subagents] : agent.subagents,
       skills: agent.skills ? [...agent.skills] : undefined,
       effectiveSkills: [...agent.effectiveSkills],
+      effectiveSkillPaths: [...agent.effectiveSkillPaths],
       missingSkills: [...agent.missingSkills],
     }));
   }
@@ -109,6 +130,8 @@ class FakeLiveConfiguration {
       generation: this.generation,
       agentsChanged: true,
       modelsChanged: true,
+      skillsChanged: false,
+      runtimeChanged: true,
     };
     for (const listener of [...this.listeners]) listener(event);
   }
@@ -119,6 +142,8 @@ class FakeLiveConfiguration {
       generation: this.generation,
       agentsChanged: true,
       modelsChanged: true,
+      skillsChanged: false,
+      runtimeChanged: true,
     };
     for (const listener of [...this.listeners]) listener(event);
   }
@@ -130,8 +155,23 @@ class FakeLiveConfiguration {
       generation: this.generation,
       agentsChanged: false,
       modelsChanged: false,
+      skillsChanged: false,
       apiUsageChanged: true,
       runtimeChanged: false,
+    };
+    for (const listener of [...this.listeners]) listener(event);
+  }
+
+  publishSkills(next: AgentConfig[]): void {
+    this.agents = next;
+    this.generation += 1;
+    const event: ConfigurationUpdatedEvent = {
+      type: "config.updated",
+      generation: this.generation,
+      agentsChanged: false,
+      modelsChanged: false,
+      skillsChanged: true,
+      runtimeChanged: true,
     };
     for (const listener of [...this.listeners]) listener(event);
   }
@@ -194,6 +234,11 @@ class FakeSession implements AgentRuntimeBindingSession {
   thinkingCalls: ThinkingLevel[] = [];
   failNextReload: Error | undefined;
   failNextModel: Error | undefined;
+  readonly reloadFailures: Error[] = [];
+  readonly modelFailures: Error[] = [];
+  readonly thinkingFailures: Error[] = [];
+  abortCalls = 0;
+  abortImpl: () => Promise<void> = async () => {};
   onReload: (() => void) | undefined;
 
   get isIdle(): boolean {
@@ -207,7 +252,7 @@ class FakeSession implements AgentRuntimeBindingSession {
 
   async reload(): Promise<void> {
     this.reloadCalls += 1;
-    const error = this.failNextReload;
+    const error = this.failNextReload ?? this.reloadFailures.shift();
     this.failNextReload = undefined;
     if (error) throw error;
     this.onReload?.();
@@ -215,7 +260,7 @@ class FakeSession implements AgentRuntimeBindingSession {
 
   async setModel(next: Model<any>): Promise<void> {
     this.modelCalls.push(next);
-    const error = this.failNextModel;
+    const error = this.failNextModel ?? this.modelFailures.shift();
     this.failNextModel = undefined;
     if (error) throw error;
     this.model = next;
@@ -223,7 +268,14 @@ class FakeSession implements AgentRuntimeBindingSession {
 
   setThinkingLevel(next: ThinkingLevel): void {
     this.thinkingCalls.push(next);
+    const error = this.thinkingFailures.shift();
+    if (error) throw error;
     this.thinkingLevel = next;
+  }
+
+  async abort(): Promise<void> {
+    this.abortCalls += 1;
+    await this.abortImpl();
   }
 }
 
@@ -231,6 +283,8 @@ function createHarness(
   initial = definition("v1"),
   onCompactionPolicyChanged = vi.fn(),
   initialModel: Model<any> = model("metadata-v1"),
+  onRuntimeCoherent = vi.fn(),
+  onApplied = vi.fn(),
 ) {
   const live = new FakeLiveConfiguration([initial]);
   const models = new FakeModelRuntimeFactory();
@@ -239,18 +293,40 @@ function createHarness(
   const settings = SettingsManager.inMemory({
     compaction: { enabled: true, reserveTokens: 16_384, keepRecentTokens: 20_000 },
   });
-  const compaction = createCompactionPolicyBinding(settings);
+  const baseCompaction = createCompactionPolicyBinding(settings);
+  const compactionFailures: Error[] = [];
+  const compaction: CompactionPolicyBinding = {
+    apply(policy, selectedModel, applyOptions) {
+      const error = compactionFailures.shift();
+      if (error) throw error;
+      return baseCompaction.apply(policy, selectedModel, applyOptions);
+    },
+    current: () => baseCompaction.current(),
+  };
   const binding = createAgentRuntimeBinding({
     live,
     agentName: "research-assistant",
     cwd: "/paper",
     createModelRuntime: () => models.create(),
     resolveAutomaticModel,
-    resolveSkillPaths: (agent) => agent.effectiveSkills.map((name) => `/skills/${name}`),
     compaction,
     onCompactionPolicyChanged,
+    onRuntimeCoherent,
+    onApplied,
   });
-  return { live, models, binding, resolveAutomaticModel, initialModel, settings, compaction, onCompactionPolicyChanged };
+  return {
+    live,
+    models,
+    binding,
+    resolveAutomaticModel,
+    initialModel,
+    settings,
+    compaction,
+    compactionFailures,
+    onCompactionPolicyChanged,
+    onRuntimeCoherent,
+    onApplied,
+  };
 }
 
 async function attachHarness(state: ReturnType<typeof createHarness>) {
@@ -276,7 +352,50 @@ async function attachHarness(state: ReturnType<typeof createHarness>) {
   return { session, observed: () => observed };
 }
 
+function attachPiSession(binding: AgentRuntimeBinding, session: AgentRuntimeBindingSession): Promise<void> {
+  return binding.attach({
+    get isIdle() {
+      return session.isIdle;
+    },
+    get model() {
+      return session.model;
+    },
+    get thinkingLevel() {
+      return session.thinkingLevel;
+    },
+    reload: () => session.reload(),
+    async abort() {
+      const operation = session.abort();
+      void operation.catch(() => {});
+    },
+    setModel: (selectedModel) => session.setModel(selectedModel),
+    setThinkingLevel: (level) => session.setThinkingLevel(level),
+  });
+}
+
 describe("AgentRuntimeBinding safe boundaries", () => {
+  it("acquires the exact cwd before initial synchronization and releases it once", async () => {
+    const state = createHarness();
+
+    await state.binding.ensureCurrent();
+
+    expect(state.live.operations.slice(0, 3)).toEqual([
+      "acquire:/paper",
+      "synchronize",
+      "resolve",
+    ]);
+    expect(state.live.synchronizeOptions).toEqual([
+      { projectCwds: ["/paper"] },
+      { projectCwds: ["/paper"] },
+    ]);
+    expect(state.live.projectAcquireCalls).toBe(1);
+
+    await state.binding.dispose();
+    await state.binding.dispose();
+
+    expect(state.live.projectReleaseCalls).toBe(1);
+  });
+
   it("accepts a visual-only API-usage generation without rebuilding the Agent runtime", async () => {
     const state = createHarness();
     const attached = await attachHarness(state);
@@ -288,6 +407,26 @@ describe("AgentRuntimeBinding safe boundaries", () => {
 
     expect(attached.session.reloadCalls).toBe(reloads);
     expect(attached.session.modelCalls).toHaveLength(modelCalls);
+  });
+
+  it("advances a display-only generation during an in-flight no-op boundary without reloading Pi", async () => {
+    const state = createHarness();
+    const attached = await attachHarness(state);
+    let releaseSynchronization!: () => void;
+    const synchronizationGate = new Promise<void>((resolve) => {
+      releaseSynchronization = resolve;
+    });
+    state.live.synchronizeImpl = () => synchronizationGate;
+    const synchronizationBaseline = state.live.synchronizeCalls;
+
+    const checking = state.binding.ensureCurrent({ recaptureCompactionBase: true });
+    await vi.waitFor(() => expect(state.live.synchronizeCalls).toBe(synchronizationBaseline + 1));
+    state.live.publishApiUsageDisplay();
+    releaseSynchronization();
+    await checking;
+
+    expect(state.binding.generation()).toBe(2);
+    expect(attached.session.reloadCalls).toBe(0);
   });
 
   it("applies and reapplies the accepted compaction policy without a new Agent definition", async () => {
@@ -369,6 +508,125 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     expect(state.binding.generation()).toBe(2);
   });
 
+  it("projects initial and eager idle generations only after their complete transactions commit", async () => {
+    const commits: Array<{
+      generation: number;
+      bindingGeneration: number;
+      prompt: string;
+      modelName: string | undefined;
+      reloads: number;
+    }> = [];
+    let state!: ReturnType<typeof createHarness>;
+    let attached: Awaited<ReturnType<typeof attachHarness>> | undefined;
+    const onApplied = vi.fn((generation: number) => {
+      commits.push({
+        generation,
+        bindingGeneration: state.binding.generation(),
+        prompt: state.binding.current().systemPrompt,
+        modelName: attached?.session.model?.name ?? state.binding.model()?.name,
+        reloads: attached?.session.reloadCalls ?? 0,
+      });
+    });
+    state = createHarness(definition("v1"), vi.fn(), model("metadata-v1"), vi.fn(), onApplied);
+
+    await state.binding.ensureCurrent();
+
+    expect(commits).toEqual([{
+      generation: 1,
+      bindingGeneration: 1,
+      prompt: "Prompt v1",
+      modelName: "metadata-v1",
+      reloads: 0,
+    }]);
+
+    attached = await attachHarness(state);
+    commits.length = 0;
+    state.models.setNext(model("metadata-v2"));
+    state.live.publish([definition("v2")]);
+
+    await vi.waitFor(() => expect(commits).toHaveLength(1));
+    expect(commits).toEqual([{
+      generation: 2,
+      bindingGeneration: 2,
+      prompt: "Prompt v2",
+      modelName: "metadata-v2",
+      reloads: 1,
+    }]);
+
+    state.live.signalCurrent();
+    await state.binding.ensureCurrent();
+    expect(commits).toHaveLength(1);
+  });
+
+  it("projects an active generation only after the awaited safe-boundary transaction", async () => {
+    const commits: Array<{ generation: number; prompt: string; reloads: number }> = [];
+    let state!: ReturnType<typeof createHarness>;
+    let attached!: Awaited<ReturnType<typeof attachHarness>>;
+    const onApplied = vi.fn((generation: number) => {
+      commits.push({
+        generation,
+        prompt: state.binding.current().systemPrompt,
+        reloads: attached.session.reloadCalls,
+      });
+    });
+    state = createHarness(definition("v1"), vi.fn(), model("metadata-v1"), vi.fn(), onApplied);
+    attached = await attachHarness(state);
+    commits.length = 0;
+    attached.session.isIdle = false;
+    state.models.setNext(model("metadata-v2"));
+
+    state.live.publish([definition("v2")]);
+    await state.binding.ensureCurrent();
+
+    expect(commits).toEqual([]);
+    expect(attached.session.reloadCalls).toBe(0);
+
+    await state.binding.ensureCurrent({ activeBoundary: true });
+
+    expect(commits).toEqual([{ generation: 2, prompt: "Prompt v2", reloads: 1 }]);
+  });
+
+  it("projects a committed display-only generation without reloading Pi", async () => {
+    const state = createHarness();
+    const attached = await attachHarness(state);
+    state.onApplied.mockClear();
+
+    state.live.publishApiUsageDisplay();
+
+    await vi.waitFor(() => expect(state.onApplied).toHaveBeenCalledWith(2));
+    expect(state.onApplied).toHaveBeenCalledOnce();
+    expect(state.binding.generation()).toBe(2);
+    expect(attached.session.reloadCalls).toBe(0);
+  });
+
+  it("defers display-only projection behind an in-flight transaction that later fails compaction", async () => {
+    const state = createHarness();
+    await attachHarness(state);
+    state.onApplied.mockClear();
+    let releaseSynchronization!: () => void;
+    state.live.synchronizeImpl = () => new Promise<void>((resolve) => {
+      releaseSynchronization = resolve;
+    });
+    state.compactionFailures.push(new Error("compaction reapply failed"));
+    const synchronizationBaseline = state.live.synchronizeCalls;
+
+    const checking = state.binding.ensureCurrent({ recaptureCompactionBase: true });
+    await vi.waitFor(() => expect(state.live.synchronizeCalls).toBe(synchronizationBaseline + 1));
+    state.live.publishApiUsageDisplay();
+    expect(state.binding.generation()).toBe(2);
+    expect(state.onApplied).not.toHaveBeenCalled();
+    releaseSynchronization();
+
+    await expect(checking).rejects.toThrow(/runtime configuration/i);
+    expect(state.onApplied).not.toHaveBeenCalled();
+
+    state.live.synchronizeImpl = undefined;
+    await state.binding.ensureCurrent({ activeBoundary: true });
+
+    expect(state.onApplied).toHaveBeenCalledOnce();
+    expect(state.onApplied).toHaveBeenCalledWith(2);
+  });
+
   it("applies an idle revision immediately across prompt, tools, Skills, subagents, model, and thinking", async () => {
     const state = createHarness();
     const attached = await attachHarness(state);
@@ -390,6 +648,140 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     expect(attached.session.modelCalls.at(-1)).toBe(nextModel);
   });
 
+  it("eagerly applies an accepted project-to-global Skill fallback without changing Agent Markdown", async () => {
+    const initial = definition("v1", {
+      effectiveSkillPaths: ["/paper/.easyresearch/skills/shared"],
+    });
+    const state = createHarness(initial);
+    const attached = await attachHarness(state);
+    expect(attached.observed().skills).toEqual(["/paper/.easyresearch/skills/shared"]);
+
+    state.live.publishSkills([definition("v1", {
+      effectiveSkillPaths: ["/agent/skills/shared"],
+    })]);
+
+    await vi.waitFor(() => expect(attached.observed().skills).toEqual(["/agent/skills/shared"]));
+    expect(attached.observed()).toMatchObject({
+      prompt: ["Pi base", "Prompt v1"],
+      tools: ["tool-v1"],
+      subagents: ["search-v1"],
+    });
+    expect(attached.session.reloadCalls).toBe(1);
+  });
+
+  it("defers a Skill-only project override while active and applies it at the safe boundary", async () => {
+    const state = createHarness(definition("v1", {
+      effectiveSkillPaths: ["/agent/skills/shared"],
+    }));
+    const attached = await attachHarness(state);
+    attached.session.isIdle = false;
+
+    state.live.publishSkills([definition("v1", {
+      effectiveSkillPaths: ["/paper/.easyresearch/skills/shared"],
+    })]);
+    await Promise.resolve();
+    await state.binding.ensureCurrent();
+
+    expect(attached.session.reloadCalls).toBe(0);
+    expect(state.binding.skillPaths()).toEqual(["/agent/skills/shared"]);
+
+    await state.binding.ensureCurrent({ activeBoundary: true });
+
+    expect(attached.session.reloadCalls).toBe(1);
+    expect(attached.observed().skills).toEqual(["/paper/.easyresearch/skills/shared"]);
+  });
+
+  it("keeps deferred runtime work pending across a later display-only generation", async () => {
+    const state = createHarness(definition("v1", {
+      effectiveSkillPaths: ["/agent/skills/shared"],
+    }));
+    const attached = await attachHarness(state);
+    attached.session.isIdle = false;
+
+    state.live.publishSkills([definition("v1", {
+      effectiveSkillPaths: ["/paper/.easyresearch/skills/shared"],
+    })]);
+    state.live.publishApiUsageDisplay();
+    await Promise.resolve();
+
+    expect(state.binding.generation()).toBe(1);
+    expect(state.binding.skillPaths()).toEqual(["/agent/skills/shared"]);
+    expect(attached.session.reloadCalls).toBe(0);
+
+    await state.binding.ensureCurrent({ activeBoundary: true });
+
+    expect(state.binding.generation()).toBe(3);
+    expect(state.binding.skillPaths()).toEqual(["/paper/.easyresearch/skills/shared"]);
+    expect(attached.session.reloadCalls).toBe(1);
+  });
+
+  it("marks pre-subscription catch-up pending before display churn during candidate preparation", async () => {
+    const state = createHarness(definition("v1", {
+      effectiveSkillPaths: ["/agent/skills/shared"],
+    }));
+    await state.binding.ensureCurrent();
+    const session = new FakeSession();
+    session.model = state.binding.model();
+    session.thinkingLevel = state.binding.thinking();
+    state.models.setNext(model("metadata-v2"));
+    state.live.publishSkills([definition("v1", {
+      effectiveSkillPaths: ["/paper/.easyresearch/skills/shared"],
+    })]);
+    let releaseRefresh!: () => void;
+    state.models.refreshGate = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const refreshBaseline = state.models.refreshCalls.length;
+
+    const attaching = state.binding.attach(session);
+    await vi.waitFor(() => expect(state.models.refreshCalls).toHaveLength(refreshBaseline + 1));
+    state.live.publishApiUsageDisplay();
+    releaseRefresh();
+    await attaching;
+
+    expect(state.binding.generation()).toBe(3);
+    expect(state.binding.skillPaths()).toEqual(["/paper/.easyresearch/skills/shared"]);
+    expect(session.reloadCalls).toBe(1);
+    expect(session.model?.name).toBe("metadata-v2");
+  });
+
+  it("marks attach catch-up before a display event can run ahead of the preparation microtask", async () => {
+    const state = createHarness(definition("v1", {
+      effectiveSkillPaths: ["/agent/skills/shared"],
+    }));
+    await state.binding.ensureCurrent();
+    const session = new FakeSession();
+    session.model = state.binding.model();
+    session.thinkingLevel = state.binding.thinking();
+    state.models.setNext(model("metadata-v2"));
+    state.live.publishSkills([definition("v1", {
+      effectiveSkillPaths: ["/paper/.easyresearch/skills/shared"],
+    })]);
+
+    const attaching = state.binding.attach(session);
+    state.live.publishApiUsageDisplay();
+    await attaching;
+
+    expect(state.binding.generation()).toBe(3);
+    expect(state.binding.skillPaths()).toEqual(["/paper/.easyresearch/skills/shared"]);
+    expect(session.reloadCalls).toBe(1);
+  });
+
+  it("reloads an idle runtime for same-path Skill metadata or body changes", async () => {
+    const state = createHarness(definition("v1", {
+      effectiveSkillPaths: ["/agent/skills/shared"],
+    }));
+    const attached = await attachHarness(state);
+
+    state.live.publishSkills([definition("v1", {
+      effectiveSkillPaths: ["/agent/skills/shared"],
+    })]);
+
+    await vi.waitFor(() => expect(state.binding.generation()).toBe(2));
+    expect(attached.session.reloadCalls).toBe(1);
+    expect(attached.observed().skills).toEqual(["/agent/skills/shared"]);
+  });
+
   it("does not mutate an active response or tool batch until the awaited turn-end boundary", async () => {
     const state = createHarness();
     const attached = await attachHarness(state);
@@ -407,6 +799,7 @@ describe("AgentRuntimeBinding safe boundaries", () => {
 
     expect(state.binding.current().systemPrompt).toBe("Prompt v2");
     expect(attached.observed().tools).toEqual(["tool-v2"]);
+    expect(attached.session.abortCalls).toBe(0);
   });
 
   it("defers an idle apply when an agent run starts during asynchronous preparation", async () => {
@@ -694,6 +1087,122 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     expect(attached.observed().prompt).toEqual(["Pi base", "Prompt v2"]);
   });
 
+  it.each(["preparation", "reload", "restoration", "compaction"] as const)(
+    "does not project a generation on %s failure and projects its later coherent retry once",
+    async (failurePoint) => {
+      const state = createHarness();
+      const attached = await attachHarness(state);
+      state.onApplied.mockClear();
+      attached.session.isIdle = false;
+      state.models.setNext(model("metadata-v2"));
+      if (failurePoint === "preparation") {
+        state.models.refreshResult = {
+          aborted: false,
+          errors: new Map([["test-provider", new Error("candidate refresh failed")]]),
+        };
+      } else if (failurePoint === "reload") {
+        attached.session.reloadFailures.push(new Error("candidate reload failed"));
+      } else if (failurePoint === "restoration") {
+        attached.session.reloadFailures.push(
+          new Error("candidate reload failed"),
+          new Error("prior reload restoration failed"),
+        );
+      } else {
+        state.compactionFailures.push(new Error("candidate compaction failed"));
+      }
+      state.live.publish([definition("v2")]);
+
+      await expect(state.binding.ensureCurrent({ activeBoundary: true })).rejects.toThrow(/runtime configuration/i);
+
+      expect(state.onApplied).not.toHaveBeenCalled();
+
+      state.models.refreshResult = { aborted: false, errors: new Map() };
+      await state.binding.ensureCurrent({ activeBoundary: true });
+
+      expect(state.onApplied).toHaveBeenCalledOnce();
+      expect(state.onApplied).toHaveBeenCalledWith(2);
+      expect(state.binding.generation()).toBe(2);
+      expect(attached.session.model?.name).toBe("metadata-v2");
+      expect(attached.session.thinkingLevel).toBe("high");
+    },
+  );
+
+  it.each(["resources", "model", "thinking", "compaction"] as const)(
+    "poisons access after %s restoration fails and clears poison only after a coherent retry",
+    async (failedRestoration) => {
+      const state = createHarness();
+      const attached = await attachHarness(state);
+      attached.session.isIdle = false;
+      state.models.setNext(model("metadata-v2"));
+      state.live.publish([definition("v2")]);
+
+      if (failedRestoration === "resources") {
+        attached.session.reloadFailures.push(
+          new Error("candidate resource apply failed"),
+          new Error("prior resource restoration failed"),
+        );
+      } else {
+        attached.session.modelFailures.push(new Error("candidate model apply failed"));
+        if (failedRestoration === "model") {
+          attached.session.modelFailures.push(new Error("prior model restoration failed"));
+        } else if (failedRestoration === "thinking") {
+          attached.session.thinkingFailures.push(new Error("prior thinking restoration failed"));
+        } else {
+          state.compactionFailures.push(new Error("prior compaction restoration failed"));
+        }
+      }
+
+      await expect(state.binding.ensureCurrent({ activeBoundary: true })).rejects.toThrow(/runtime configuration/i);
+
+      const blockedAccessors = [
+        () => state.binding.generation(),
+        () => state.binding.current(),
+        () => state.binding.model(),
+        () => state.binding.modelRuntime(),
+        () => state.binding.thinking(),
+        () => state.binding.compactionPolicy(),
+        () => state.binding.appendSystemPrompt(["Pi base"]),
+        () => state.binding.skillPaths(),
+      ];
+      for (const access of blockedAccessors) expect(access).toThrow(/runtime configuration/i);
+      await expect(state.binding.reapplyCompaction()).rejects.toThrow(/runtime configuration/i);
+      expect(state.models.runtimes[1]?.disposeCalls).toBe(1);
+      expect(attached.session.abortCalls).toBe(1);
+
+      await state.binding.ensureCurrent({ activeBoundary: true });
+
+      expect(state.binding.generation()).toBe(2);
+      expect(state.binding.current().systemPrompt).toBe("Prompt v2");
+      expect(state.binding.skillPaths()).toEqual(["/skills/skill-v2"]);
+      expect(attached.session.model?.name).toBe("metadata-v2");
+      expect(attached.session.thinkingLevel).toBe("high");
+      expect(state.binding.compactionPolicy()).toEqual({ triggerPercent: 70, enabled: true });
+    },
+  );
+
+  it("rolls back failed Skill-path application and retries the same accepted generation", async () => {
+    const state = createHarness(definition("v1", {
+      effectiveSkillPaths: ["/paper/.easyresearch/skills/shared"],
+    }));
+    const attached = await attachHarness(state);
+    attached.session.isIdle = false;
+    attached.session.failNextReload = new Error("Skill reload failed");
+    state.live.publishSkills([definition("v1", {
+      effectiveSkillPaths: ["/agent/skills/shared"],
+    })]);
+
+    await expect(state.binding.ensureCurrent({ activeBoundary: true })).rejects.toThrow(/runtime configuration/i);
+
+    expect(state.binding.generation()).toBe(1);
+    expect(state.binding.skillPaths()).toEqual(["/paper/.easyresearch/skills/shared"]);
+    expect(attached.observed().skills).toEqual(["/paper/.easyresearch/skills/shared"]);
+
+    await state.binding.ensureCurrent({ activeBoundary: true });
+
+    expect(state.binding.generation()).toBe(2);
+    expect(attached.observed().skills).toEqual(["/agent/skills/shared"]);
+  });
+
   it("redacts a failed active rollback and retains the candidate for teardown retry", async () => {
     const state = createHarness();
     const attached = await attachHarness(state);
@@ -737,10 +1246,61 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     expect(failure.message).not.toContain("SECRET");
     expect(state.binding.current().systemPrompt).toBe("Prompt v1");
     expect(attached.session.reloadCalls).toBe(0);
+    expect(attached.session.abortCalls).toBe(1);
 
     state.models.refreshResult = { aborted: false, errors: new Map() };
     await state.binding.ensureCurrent({ activeBoundary: true });
     expect(state.binding.current().systemPrompt).toBe("Prompt v2");
+  });
+
+  it("awaits direct session abort before rejecting an active-boundary failure", async () => {
+    const state = createHarness();
+    const attached = await attachHarness(state);
+    attached.session.isIdle = false;
+    state.models.setNext(model("metadata-v2"));
+    state.models.refreshResult = {
+      aborted: false,
+      errors: new Map([["test-provider", new Error("candidate refresh failed")]]),
+    };
+    state.live.publish([definition("v2")]);
+    let releaseAbort!: () => void;
+    const abortGate = new Promise<void>((resolve) => {
+      releaseAbort = resolve;
+    });
+    attached.session.abortImpl = () => abortGate;
+    let settled = false;
+
+    const applying = state.binding.ensureCurrent({ activeBoundary: true }).finally(() => {
+      settled = true;
+    });
+    void applying.catch(() => {});
+    await vi.waitFor(() => expect(attached.session.abortCalls).toBe(1));
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    releaseAbort();
+
+    await expect(applying).rejects.toThrow(/runtime configuration/i);
+    expect(settled).toBe(true);
+  });
+
+  it("signals internal recovery only after a failed generation later applies coherently", async () => {
+    const state = createHarness();
+    const attached = await attachHarness(state);
+    state.onRuntimeCoherent.mockClear();
+    attached.session.isIdle = false;
+    state.models.setNext(model("metadata-v2"));
+    attached.session.reloadFailures.push(
+      new Error("candidate resource apply failed"),
+      new Error("prior resource restoration failed"),
+    );
+    state.live.publish([definition("v2")]);
+
+    await expect(state.binding.ensureCurrent({ activeBoundary: true })).rejects.toThrow(/runtime configuration/i);
+    expect(state.onRuntimeCoherent).not.toHaveBeenCalled();
+
+    await state.binding.ensureCurrent({ activeBoundary: true });
+
+    expect(state.onRuntimeCoherent).toHaveBeenCalledOnce();
   });
 
   it("keeps the accepted model runtime unchanged when candidate refresh validation fails", async () => {
@@ -854,6 +1414,7 @@ describe("AgentRuntimeBinding real Pi next-turn integration", () => {
         effectiveTools: ["tool-v1"],
         skills: undefined,
         effectiveSkills: [],
+        effectiveSkillPaths: [],
       })]);
       const firstProvider = fauxProvider({
         provider: "test-provider",
@@ -903,7 +1464,6 @@ describe("AgentRuntimeBinding real Pi next-turn integration", () => {
           return runtime;
         },
         resolveAutomaticModel: async () => undefined,
-        resolveSkillPaths: () => [],
         compaction: createCompactionPolicyBinding(settings),
       });
       await binding.ensureCurrent();
@@ -943,8 +1503,9 @@ describe("AgentRuntimeBinding real Pi next-turn integration", () => {
               live.publish([definition("v2", {
                 tools: ["tool-v2"],
                 effectiveTools: ["tool-v2"],
-                skills: undefined,
-                effectiveSkills: [],
+                 skills: undefined,
+                 effectiveSkills: [],
+                 effectiveSkillPaths: [],
               })]);
               return { content: [{ type: "text" as const, text: "updated" }], details: {} };
             },
@@ -970,7 +1531,7 @@ describe("AgentRuntimeBinding real Pi next-turn integration", () => {
           reload: () => session!.reload(),
         },
       });
-      await binding.attach(session);
+      await attachPiSession(binding, session);
 
       await session.prompt("run the configured tool");
 
@@ -1030,6 +1591,7 @@ describe("AgentRuntimeBinding real Pi next-turn integration", () => {
       effectiveTools: ["tool-v1"],
       skills: undefined,
       effectiveSkills: [],
+      effectiveSkillPaths: [],
     })]);
     let providerRequests = 0;
     const provider = fauxProvider({
@@ -1062,7 +1624,6 @@ describe("AgentRuntimeBinding real Pi next-turn integration", () => {
         return runtime;
       },
       resolveAutomaticModel: async () => undefined,
-      resolveSkillPaths: () => [],
       compaction: createCompactionPolicyBinding(settings),
     });
     await binding.ensureCurrent();
@@ -1106,6 +1667,7 @@ describe("AgentRuntimeBinding real Pi next-turn integration", () => {
               effectiveTools: ["tool-v1"],
               skills: undefined,
               effectiveSkills: [],
+              effectiveSkillPaths: [],
             })]);
             return { content: [{ type: "text" as const, text: "updated" }], details: {} };
           },
@@ -1123,11 +1685,134 @@ describe("AgentRuntimeBinding real Pi next-turn integration", () => {
           reload: () => session!.reload(),
         },
       });
-      await binding.attach(session);
+      await attachPiSession(binding, session);
 
       await session.prompt("publish an invalid generation");
 
       expect(providerRequests).toBe(1);
+    } finally {
+      await binding.dispose();
+      session?.dispose();
+    }
+  });
+
+  it("directly aborts a stale-runner follow-up when candidate and restoration reload both fail", async () => {
+    const pi = await importPi();
+    const { InMemoryCredentialStore, fauxAssistantMessage, fauxProvider, fauxToolCall } = await import(
+      "@earendil-works/pi-ai"
+    );
+    const { Type } = await import("typebox");
+    const live = new FakeLiveConfiguration([definition("v1", {
+      tools: ["tool-v1"],
+      effectiveTools: ["tool-v1"],
+      skills: undefined,
+      effectiveSkills: [],
+      effectiveSkillPaths: [],
+    })]);
+    let providerRequests = 0;
+    const provider = fauxProvider({
+      provider: "test-provider",
+      models: [{ id: "same-model", name: "metadata", reasoning: true }],
+    });
+    provider.setResponses([
+      () => {
+        providerRequests += 1;
+        return fauxAssistantMessage(fauxToolCall("tool-v1", {}), { stopReason: "toolUse" });
+      },
+      () => {
+        providerRequests += 1;
+        return fauxAssistantMessage("poisoned stale runner continued");
+      },
+    ]);
+    const credentials = new InMemoryCredentialStore();
+    const settings = pi.SettingsManager.inMemory();
+    const binding = createAgentRuntimeBinding({
+      live,
+      agentName: "research-assistant",
+      cwd: "/paper",
+      createModelRuntime: async () => {
+        const runtime = await pi.ModelRuntime.create({
+          credentials,
+          modelsPath: null,
+          refreshOnCreate: false,
+        });
+        runtime.registerNativeProvider(provider.provider);
+        return runtime;
+      },
+      resolveAutomaticModel: async () => undefined,
+      compaction: createCompactionPolicyBinding(settings),
+    });
+    await binding.ensureCurrent();
+    const modelRuntime = binding.modelRuntime() as typeof pi.ModelRuntime.prototype;
+    const resourceLoader = new pi.DefaultResourceLoader({
+      cwd: "/paper",
+      agentDir: "/agent",
+      settingsManager: settings,
+      extensionFactories: [{ name: "agent-definition", factory: createAgentDefinitionExtension(binding) }],
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+      noContextFiles: true,
+      additionalSkillPaths: [],
+      appendSystemPromptOverride: (base) => binding.appendSystemPrompt(base),
+    });
+    await resourceLoader.reload({ resolveProjectTrust: async () => true });
+    let session: Awaited<ReturnType<typeof pi.createAgentSession>>["session"] | undefined;
+    try {
+      const created = await pi.createAgentSession({
+        cwd: "/paper",
+        agentDir: "/agent",
+        modelRuntime,
+        settingsManager: settings,
+        sessionManager: pi.SessionManager.inMemory("/paper"),
+        resourceLoader,
+        model: binding.model(),
+        thinkingLevel: binding.thinking(),
+        customTools: [{
+          name: "tool-v1",
+          label: "Tool V1",
+          description: "publishes a valid generation before reload failure",
+          parameters: Type.Object({}),
+          execute: async () => {
+            live.publish([definition("v2", {
+              tools: ["tool-v1"],
+              effectiveTools: ["tool-v1"],
+              skills: undefined,
+              effectiveSkills: [],
+              effectiveSkillPaths: [],
+            })]);
+            return { content: [{ type: "text" as const, text: "updated" }], details: {} };
+          },
+        }],
+      });
+      session = created.session;
+      await session.bindExtensions({
+        mode: "rpc",
+        commandContextActions: {
+          waitForIdle: () => session!.waitForIdle(),
+          newSession: async () => ({ cancelled: true }),
+          fork: async () => ({ cancelled: true }),
+          switchSession: async () => ({ cancelled: true }),
+          navigateTree: async () => ({ cancelled: false }),
+          reload: () => session!.reload(),
+        },
+      });
+      await attachPiSession(binding, session);
+      const originalReload = resourceLoader.reload.bind(resourceLoader);
+      let remainingReloadFailures = 2;
+      vi.spyOn(resourceLoader, "reload").mockImplementation(async (...args) => {
+        if (remainingReloadFailures > 0) {
+          remainingReloadFailures -= 1;
+          throw new Error("resource reload failed after runner invalidation");
+        }
+        await originalReload(...args);
+      });
+      const abort = vi.spyOn(session, "abort");
+
+      await session.prompt("publish a valid generation and fail reload");
+
+      expect(providerRequests).toBe(1);
+      expect(abort).toHaveBeenCalledOnce();
     } finally {
       await binding.dispose();
       session?.dispose();

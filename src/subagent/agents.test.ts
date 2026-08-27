@@ -244,6 +244,7 @@ describe("discoverAgents (Markdown layers)", () => {
     expect(researchAssistant.skills).toBeUndefined();
     expect(researchAssistant.effectiveTools).toEqual(expect.arrayContaining(["read", "subagent", "web-search"]));
     expect(researchAssistant.effectiveSkills).toEqual(["available-skill"]);
+    expect(researchAssistant.effectiveSkillPaths).toEqual([join(bundledSkillsDir, "available-skill")]);
     expect(researchAssistant.missingSkills).toEqual([]);
   });
 
@@ -258,6 +259,7 @@ describe("discoverAgents (Markdown layers)", () => {
 
     expect(researchAssistant.skills).toEqual(["available-skill", "missing-skill"]);
     expect(researchAssistant.effectiveSkills).toEqual(["available-skill"]);
+    expect(researchAssistant.effectiveSkillPaths).toEqual([join(bundledSkillsDir, "available-skill")]);
     expect(researchAssistant.missingSkills).toEqual(["missing-skill"]);
   });
 
@@ -293,9 +295,11 @@ describe("discoverAgents (Markdown layers)", () => {
 
     const disabled = await discoverAgents({ ...options(), homeDir, bundledSkillsDir });
     expect(disabled.agents[0]?.effectiveSkills).toEqual(["home-only"]);
+    expect(disabled.agents[0]?.effectiveSkillPaths).toEqual([join(bundledSkillsDir, "home-only")]);
 
     const enabled = await discoverAgents({ ...options(), homeDir, bundledSkillsDir, enableDotAgentsSkill: true });
     expect(enabled.agents[0]?.effectiveSkills).toEqual(["home-only"]);
+    expect(enabled.agents[0]?.effectiveSkillPaths).toEqual([join(homeDir, ".agents", "skills", "home-only")]);
   });
 
   it("resolves project Skills only when an exact cwd is supplied", async () => {
@@ -326,12 +330,14 @@ describe("discoverAgents (Markdown layers)", () => {
     expect(projectAgents.agents.find((agent) => agent.name === "research-assistant")).toMatchObject({
       source: "global",
       effectiveSkills: ["project-only"],
+      effectiveSkillPaths: [join(project, ".easyresearch", "skills", "project-only")],
       missingSkills: [],
     });
     expect(globalAgents.map((agent) => agent.name)).not.toContain("project-custom");
     expect(globalAgents.find((agent) => agent.name === "research-assistant")).toMatchObject({
       source: "global",
       effectiveSkills: [],
+      effectiveSkillPaths: [],
       missingSkills: ["project-only"],
     });
   });

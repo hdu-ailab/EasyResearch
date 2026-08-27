@@ -35,6 +35,7 @@ vi.mock("./api", async (importOriginal) => {
     writeConfigFile: vi.fn(),
     createConfigDirectory: vi.fn(),
     connectConfigurationEvents: vi.fn(),
+    replaceConfigurationProjectWatches: vi.fn(),
     listAgentResources: vi.fn().mockResolvedValue([]),
     listAgents: vi.fn().mockResolvedValue([]),
     listModels: vi.fn().mockResolvedValue([]),
@@ -45,6 +46,7 @@ vi.mock("./api", async (importOriginal) => {
     readSkillResource: vi.fn(),
     writeSkillResource: vi.fn(),
     listAuthProviders: vi.fn().mockResolvedValue([]),
+    refreshConfigurationResources: vi.fn(),
   };
 });
 
@@ -76,6 +78,15 @@ const persisted = {
 let unsubscribeFn: ReturnType<typeof vi.fn>;
 let disconnectConfiguration: () => void;
 let configurationHandlers: Parameters<typeof api.connectConfigurationEvents>[0];
+
+type ReplaceConfigurationProjectWatches = (
+  leaseId: string,
+  request: { revision: number; cwds: string[] },
+) => Promise<{ applied: boolean; revision: number }>;
+
+const configurationApi = api as typeof api & {
+  replaceConfigurationProjectWatches: ReplaceConfigurationProjectWatches;
+};
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -141,10 +152,16 @@ describe("App routing", () => {
     vi.mocked(api.getSnapshot).mockReset();
     vi.mocked(api.connectSessionEvents).mockReset();
     vi.mocked(api.connectConfigurationEvents).mockReset();
+    vi.mocked(configurationApi.replaceConfigurationProjectWatches)
+      .mockReset()
+      .mockImplementation((_leaseId, request) => Promise.resolve({ applied: true, revision: request.revision }));
     vi.mocked(api.listAgents).mockReset().mockResolvedValue([]);
     vi.mocked(api.listModels).mockReset().mockResolvedValue([]);
     vi.mocked(api.listAgentResources).mockReset().mockResolvedValue([]);
+    vi.mocked(api.listConfigProjects).mockReset().mockResolvedValue({ home: "/tmp", projects: [] });
+    vi.mocked(api.listSkillResources).mockReset().mockResolvedValue([]);
     vi.mocked(api.readAgentResource).mockReset();
+    vi.mocked(api.refreshConfigurationResources).mockReset().mockResolvedValue({ generation: 0, error: null });
     vi.mocked(api.listStatus).mockResolvedValue({
       agentDir: "/tmp/agent",
       homeDir: "/tmp",
@@ -222,12 +239,111 @@ describe("App routing", () => {
     await workspace();
     expect(api.connectConfigurationEvents).toHaveBeenCalledOnce();
 
+    act(() =>
+      configurationHandlers.onEvent({
+        type: "config.updated",
+        generation: 1,
+        agentsChanged: true,
+        modelsChanged: true,
+        skillsChanged: true,
+        runtimeChanged: true,
+        projectWatchLeaseId: "app/lease",
+      }),
+    );
+    expect(configurationApi.replaceConfigurationProjectWatches).toHaveBeenCalledWith("app/lease", {
+      revision: 0,
+      cwds: [],
+    });
+
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await screen.findByRole("dialog", { name: "Settings" });
     expect(api.connectConfigurationEvents).toHaveBeenCalledOnce();
 
     view.unmount();
     expect(disconnectConfiguration).toHaveBeenCalledOnce();
+  });
+
+  it("unions exact mounted Work, Settings, and Config project interests through the one App lease", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listStatus).mockResolvedValue(persisted);
+    vi.mocked(api.openSession).mockResolvedValue({
+      id: "s1",
+      cwd: "/papers/exact-work",
+      isStreaming: false,
+      status: "ready",
+      sessionFile: "/store/s1.jsonl",
+    });
+    vi.mocked(api.listConfigProjects).mockResolvedValue({
+      home: "/tmp/agent",
+      projects: [{ cwd: "/papers/settings" }, { cwd: "/papers/config" }],
+    });
+    window.location.hash = "#/work/s1?cwd=%2Fp";
+    await renderWork();
+
+    act(() =>
+      configurationHandlers.onEvent({
+        type: "config.updated",
+        generation: 1,
+        agentsChanged: true,
+        modelsChanged: true,
+        skillsChanged: true,
+        runtimeChanged: true,
+        projectWatchLeaseId: "surface/lease",
+      }),
+    );
+    await waitFor(() =>
+      expect(configurationApi.replaceConfigurationProjectWatches).toHaveBeenLastCalledWith("surface/lease", {
+        revision: 0,
+        cwds: ["/papers/exact-work"],
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("tab", { name: "Skills and tools" }));
+    await user.selectOptions(
+      await screen.findByRole("combobox", { name: "Skill diagnostic scope" }),
+      "/papers/settings",
+    );
+    await waitFor(() =>
+      expect(configurationApi.replaceConfigurationProjectWatches).toHaveBeenLastCalledWith("surface/lease", {
+        revision: 1,
+        cwds: ["/papers/exact-work", "/papers/settings"],
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: /open config browser/i }));
+    expect(await screen.findByText("Config browser")).toBeVisible();
+    await waitFor(() =>
+      expect(configurationApi.replaceConfigurationProjectWatches).toHaveBeenLastCalledWith("surface/lease", {
+        revision: 2,
+        cwds: ["/papers/exact-work"],
+      }),
+    );
+    await user.click(await screen.findByRole("button", { name: "/papers/config" }));
+    await waitFor(() =>
+      expect(configurationApi.replaceConfigurationProjectWatches).toHaveBeenLastCalledWith("surface/lease", {
+        revision: 3,
+        cwds: ["/papers/exact-work", "/papers/config"],
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: /back to files/i }));
+    await waitFor(() =>
+      expect(configurationApi.replaceConfigurationProjectWatches).toHaveBeenLastCalledWith("surface/lease", {
+        revision: 4,
+        cwds: ["/papers/exact-work"],
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: "Back to Settings" }));
+    await user.click(await screen.findByRole("button", { name: "Close" }));
+    await user.click(screen.getByRole("button", { name: /back to home/i }));
+    await waitFor(() =>
+      expect(configurationApi.replaceConfigurationProjectWatches).toHaveBeenLastCalledWith("surface/lease", {
+        revision: 5,
+        cwds: [],
+      }),
+    );
+    expect(api.connectConfigurationEvents).toHaveBeenCalledOnce();
   });
 
   it("forwards one accepted configuration generation to open Settings and the mounted Work surface", async () => {
@@ -273,6 +389,8 @@ describe("App routing", () => {
         generation: 2,
         agentsChanged: true,
         modelsChanged: false,
+        skillsChanged: false,
+        runtimeChanged: true,
       }),
     );
 

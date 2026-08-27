@@ -1,4 +1,10 @@
 import type {
+  ConfigurationRefreshRequest,
+  ConfigurationRefreshResult,
+  ProjectWatchReplacement,
+  ProjectWatchReplacementResult,
+} from "../../web/configuration-project-watches";
+import type {
   ActiveSessionDto,
   AgentConfigurationPatch,
   AgentDto,
@@ -43,11 +49,13 @@ import {
   parseConfigFile,
   parseConfigProjects,
   parseConfigurationEvent,
+  parseConfigurationRefreshResult,
   parseDirectories,
   parseDirectoryRoots,
   parseEntries,
   parseFileContent,
   parseModels,
+  parseProjectWatchReplacementResult,
   parseSessionSnapshot,
   parseSessionTree,
   parseSkillCommands,
@@ -69,6 +77,12 @@ import {
   type SessionEventHandlers,
 } from "./api/transport";
 
+export type {
+  ConfigurationRefreshRequest,
+  ConfigurationRefreshResult,
+  ProjectWatchReplacement,
+  ProjectWatchReplacementResult,
+} from "../../web/configuration-project-watches";
 export type { AuthFlowHandlers, SessionEventHandlers } from "./api/transport";
 export { ApiError, RawFileSizeError } from "./api/transport";
 
@@ -305,6 +319,23 @@ export function connectConfigurationEvents(handlers: ConfigurationEventHandlers)
     },
     onError: handlers.onError,
   });
+}
+
+export function replaceConfigurationProjectWatches(
+  leaseId: string,
+  request: ProjectWatchReplacement,
+): Promise<ProjectWatchReplacementResult> {
+  return requestJson(
+    routes.configurationProjectWatches(leaseId),
+    parseProjectWatchReplacementResult,
+    json("PUT", request),
+  );
+}
+
+export function refreshConfigurationResources(
+  request: ConfigurationRefreshRequest = {},
+): Promise<ConfigurationRefreshResult> {
+  return requestJson(routes.configurationRefresh(), parseConfigurationRefreshResult, json("POST", request));
 }
 
 // ---- Provider auth (ADR-065) ---------------------------------------------

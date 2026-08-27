@@ -23,6 +23,10 @@ import { embeddedPackageVersion } from "../runtime/bundled-assets";
 import { checkNpmUpdate } from "./update-check";
 import { createCompactionSettingsService } from "./compaction-settings";
 import { createApiUsageSettingsService } from "./api-usage-settings";
+import {
+  createConfigurationProjectWatches,
+  type ConfigurationProjectWatches,
+} from "./configuration-project-watches";
 
 export interface Server {
   port: number;
@@ -132,6 +136,14 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
   let liveConfiguration: LiveConfiguration | undefined;
   const config = new ConfigFileService(agentDir, {
     onAuthoritativeWrite: (change) => liveConfiguration?.notify(change) ?? Promise.resolve(),
+    acquireProject: async (cwd) => {
+      if (!liveConfiguration) throw new Error("Configuration monitoring is unavailable.");
+      return liveConfiguration.acquireProject(cwd);
+    },
+    synchronizeProject: async (cwd) => {
+      if (!liveConfiguration) throw new Error("Configuration monitoring is unavailable.");
+      await liveConfiguration.synchronize({ projectCwds: [cwd] });
+    },
   });
   const authRuntime = await createDaemonAuthRuntime({
     config,
@@ -170,8 +182,10 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
   }
   const live = liveConfiguration;
   let registry: ActiveSessionRegistry | undefined;
+  let configurationProjectWatches: ConfigurationProjectWatches | undefined;
   let server: ReturnType<typeof Bun.serve> | undefined;
   let sessionsStopped = false;
+  let projectWatchesClosed = false;
   let configurationClosed = false;
   let authStopped = false;
   let modelsDisposed = false;
@@ -181,6 +195,10 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
     if (registry && !sessionsStopped) {
       await registry.shutdown();
       sessionsStopped = true;
+    }
+    if (configurationProjectWatches && !projectWatchesClosed) {
+      await configurationProjectWatches.close();
+      projectWatchesClosed = true;
     }
     if (!configurationClosed) {
       await live.close();
@@ -237,6 +255,20 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
     return failStartupAfterCleanup(error);
   }
   const activeRegistry = registry;
+  const listConfigProjects = async () => {
+    const sessions = await SessionManager.listAll(undefined);
+    const cwds = [...new Set(sessions.map((session) => session.cwd).filter(Boolean))];
+    return { home: agentDir, projects: cwds.map((cwd) => ({ cwd })) };
+  };
+  configurationProjectWatches = createConfigurationProjectWatches({
+    live,
+    isKnownCwd: async (cwd) => {
+      if (activeRegistry.hasConnectedCwd(cwd)) return true;
+      const { projects } = await listConfigProjects();
+      return projects.some((project) => project.cwd === cwd);
+    },
+  });
+  const projectWatches = configurationProjectWatches;
   const subagentSessions = new SubagentSessionService({
     open: (path) => SessionManager.open(path),
     listAll: async () => {
@@ -282,17 +314,14 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
     getApiUsageSettings: () => apiUsageSettings.get(),
     patchApiUsageSettings: (patch) => apiUsageSettings.patch(patch),
     renameSession: (sessionId, name) => renameSessions.rename(sessionId, name),
-    listConfigProjects: async () => {
-      const sessions = await SessionManager.listAll(undefined);
-      const cwds = [...new Set(sessions.map((s) => s.cwd).filter(Boolean))];
-      return { home: agentDir, projects: cwds.map((cwd) => ({ cwd })) };
-    },
+    listConfigProjects,
     directories: new DirectoryService(),
     registry: activeRegistry,
     config,
     subagentSessions,
     auth,
     configuration: live,
+    configurationProjectWatches: projectWatches,
     logger,
     daemonControl: options.daemonControl,
     desktopAccess: options.desktopAccess,

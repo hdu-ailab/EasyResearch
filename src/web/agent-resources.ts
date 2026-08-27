@@ -1,14 +1,15 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { basename, join } from "node:path";
+import { bundledSourceRoot } from "../runtime/bundled-assets";
 import { importPi } from "../runtime/pi-import";
+import { selectSkillDescriptors } from "../runtime/resource-fingerprint";
 import { discoverGlobalAgents, type AgentConfig } from "../subagent/agents";
 import type { AgentResourceDto, SkillResourceDto } from "./contracts";
 import type { ConfigFileService } from "./config-files";
 import { ConfigServiceError } from "./config-files";
 import { starterAgentMarkdown } from "./agent-markdown";
-import { isDotAgentsSkillEnabled } from "../subagent/skill-resolution";
 import { isThinkingLevel } from "../thinking-levels";
 
 /**
@@ -122,38 +123,77 @@ export async function createGlobalAgent(config: ConfigFileService, name: string)
   return readGlobalAgent(config, trimmed);
 }
 
-function skillDirectories(root: string): string[] {
-  try {
-    return readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
-  } catch {
-    return [];
-  }
+export interface SkillResourceOptions {
+  skillPolicy: { enableDotAgentsSkill: boolean };
+  homeDir?: string;
+  bundledSkillsDir?: string;
 }
 
-export async function listGlobalSkills(config: ConfigFileService): Promise<SkillResourceDto[]> {
-  const bundledRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "skills");
-  const roots: Array<{ root: string; source: SkillResourceDto["source"] }> = [
-    { root: join(config.globalRoot, "skills"), source: "global" as const },
-    { root: bundledRoot, source: "bundled" as const },
+interface SkillResourceRoot {
+  root: string;
+  source: SkillResourceDto["source"];
+}
+
+interface DiscoveredSkillResource extends SkillResourceDto {
+  canonicalPath: string;
+  canonicalSkillPath: string;
+}
+
+interface SkillAssetMaterialization {
+  commit(): void;
+  rollback(): void;
+}
+
+interface PathSnapshot {
+  dev: number;
+  ino: number;
+  mode: number;
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+}
+
+const skillWriteQueues = new WeakMap<ConfigFileService, Map<string, Promise<void>>>();
+
+function discoverGlobalSkills(
+  config: ConfigFileService,
+  options: SkillResourceOptions,
+): DiscoveredSkillResource[] {
+  const roots: SkillResourceRoot[] = [
+    { root: join(config.globalRoot, "skills"), source: "global" },
+    ...(options.skillPolicy.enableDotAgentsSkill
+      ? [{ root: join(options.homeDir ?? homedir(), ".agents", "skills"), source: "home" as const }]
+      : []),
+    { root: options.bundledSkillsDir ?? join(bundledSourceRoot(), "skills"), source: "bundled" },
   ];
-  let enableDotAgentsSkill = false;
-  try {
-    const settings = JSON.parse(await config.read({ scope: "global", path: "settings.json" })) as unknown;
-    enableDotAgentsSkill = isDotAgentsSkillEnabled(settings);
-  } catch {
-    enableDotAgentsSkill = false;
-  }
-  if (enableDotAgentsSkill) roots.splice(1, 0, { root: join(homedir(), ".agents", "skills"), source: "home" as const });
-  const names = new Set(roots.flatMap(({ root }) => skillDirectories(root)));
-  return [...names].sort((a, b) => a.localeCompare(b)).map((name) => {
-    const chosen = roots.find(({ root }) => existsSync(join(root, name, "SKILL.md"))) ?? roots[0]!;
+  return selectSkillDescriptors(roots.map(({ root }) => root)).map(({ descriptor, rootIndex }) => {
+    const source = roots[rootIndex]?.source;
+    if (source === undefined) throw new Error("Skill resource root selection is invalid.");
     return {
-      name,
-      source: chosen.source,
-      path: join(chosen.root, name),
-      skillPath: join(chosen.root, name, "SKILL.md"),
+      name: descriptor.name,
+      source,
+      path: descriptor.path,
+      skillPath: descriptor.skillPath,
+      canonicalPath: descriptor.canonicalPath,
+      canonicalSkillPath: descriptor.canonicalSkillPath,
     };
   });
+}
+
+function publicSkillResource(skill: DiscoveredSkillResource): SkillResourceDto {
+  return {
+    name: skill.name,
+    source: skill.source,
+    path: skill.path,
+    skillPath: skill.skillPath,
+  };
+}
+
+export async function listGlobalSkills(
+  config: ConfigFileService,
+  options: SkillResourceOptions,
+): Promise<SkillResourceDto[]> {
+  return discoverGlobalSkills(config, options).map(publicSkillResource);
 }
 
 /**
@@ -161,11 +201,15 @@ export async function listGlobalSkills(config: ConfigFileService): Promise<Skill
  * user-layer skill directory. Opening an editor never materializes a copy
  * (ADR-058).
  */
-export async function readGlobalSkill(config: ConfigFileService, name: string): Promise<SkillResourceDto> {
-  const skill = (await listGlobalSkills(config)).find((item) => item.name === name);
+export async function readGlobalSkill(
+  config: ConfigFileService,
+  name: string,
+  options: SkillResourceOptions,
+): Promise<SkillResourceDto> {
+  const skill = discoverGlobalSkills(config, options).find((item) => item.name === name);
   if (!skill) throw new ConfigServiceError(404, `unknown skill: ${name}`);
   const content = readFileSync(skill.skillPath, "utf8");
-  return { ...skill, content };
+  return { ...publicSkillResource(skill), content };
 }
 
 /**
@@ -173,19 +217,146 @@ export async function readGlobalSkill(config: ConfigFileService, name: string): 
  * directory when no user-layer copy exists, then writes the edited SKILL.md
  * (ADR-058).
  */
-export async function writeGlobalSkill(config: ConfigFileService, name: string, content: string): Promise<SkillResourceDto> {
-  const skill = (await listGlobalSkills(config)).find((item) => item.name === name);
-  if (!skill) throw new ConfigServiceError(404, `unknown skill: ${name}`);
-  if (skill.source === "bundled" || skill.source === "home") {
-    const target = join(config.globalRoot, "skills", name);
-    if (!existsSync(target)) {
-      mkdirSync(join(config.globalRoot, "skills"), { recursive: true });
-      cpSync(skill.path, target, { recursive: true });
+export async function writeGlobalSkill(
+  config: ConfigFileService,
+  name: string,
+  content: string,
+  options: SkillResourceOptions,
+): Promise<SkillResourceDto> {
+  return serializeSkillWrite(config, name, async () => {
+    const skill = discoverGlobalSkills(config, options).find((item) => item.name === name);
+    if (!skill) throw new ConfigServiceError(404, `unknown skill: ${name}`);
+    let skillPath = skill.skillPath;
+    let materialization: SkillAssetMaterialization | undefined;
+    if (skill.source === "bundled" || skill.source === "home") {
+      if (skill.path === skill.skillPath) {
+        skillPath = join(config.globalRoot, "skills", `${name}.md`);
+      } else {
+        const target = join(config.globalRoot, "skills", name);
+        materialization = materializeSkillAssets(
+          config.globalRoot,
+          skill.canonicalPath,
+          skill.canonicalSkillPath,
+          target,
+        );
+        skillPath = join(target, "SKILL.md");
+      }
     }
-    skill.path = target;
-    skill.skillPath = join(target, "SKILL.md");
-    skill.source = "global";
+    try {
+      await config.write({ scope: "global", path: skillPath.slice(config.globalRoot.length + 1), content });
+      materialization?.commit();
+    } catch (error) {
+      materialization?.rollback();
+      throw error;
+    }
+    return readGlobalSkill(config, name, options);
+  });
+}
+
+function serializeSkillWrite<T>(
+  config: ConfigFileService,
+  name: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  let queues = skillWriteQueues.get(config);
+  if (!queues) {
+    queues = new Map();
+    skillWriteQueues.set(config, queues);
   }
-  await config.write({ scope: "global", path: skill.skillPath.slice(config.globalRoot.length + 1), content });
-  return readGlobalSkill(config, name);
+  const previous = queues.get(name) ?? Promise.resolve();
+  const result = previous.then(operation);
+  const tail = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  queues.set(name, tail);
+  void tail.then(() => {
+    if (queues?.get(name) !== tail) return;
+    queues.delete(name);
+    if (queues.size === 0) skillWriteQueues.delete(config);
+  });
+  return result;
+}
+
+function materializeSkillAssets(
+  globalRoot: string,
+  source: string,
+  sourceDescriptor: string,
+  target: string,
+): SkillAssetMaterialization {
+  const suffix = randomUUID();
+  const staging = join(globalRoot, `.skill-copy-${suffix}.staging`);
+  const backup = join(globalRoot, `.skill-copy-${suffix}.backup`);
+  const initialTarget = snapshotPath(target);
+  let targetMoved = false;
+  let promoted = false;
+  mkdirSync(globalRoot, { recursive: true });
+  mkdirSync(join(globalRoot, "skills"), { recursive: true });
+  const sourceDescriptorEntry = join(source, "SKILL.md");
+  try {
+    cpSync(source, staging, {
+      recursive: true,
+      filter: (candidate) => candidate !== sourceDescriptorEntry && candidate !== sourceDescriptor,
+    });
+    if (!samePathSnapshot(initialTarget, snapshotPath(target))) {
+      throw new ConfigServiceError(409, "Skill target changed during materialization", "SKILL_TARGET_CHANGED");
+    }
+    if (existsSync(target)) {
+      renameSync(target, backup);
+      targetMoved = true;
+    }
+    renameSync(staging, target);
+    promoted = true;
+  } catch (error) {
+    if (targetMoved && !promoted && !existsSync(target) && existsSync(backup)) {
+      renameSync(backup, target);
+    }
+    throw error;
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
+
+  let settled = false;
+  return {
+    commit() {
+      if (settled) return;
+      settled = true;
+      try {
+        rmSync(backup, { recursive: true, force: true });
+      } catch {
+        // The promoted Skill is complete; a hidden backup is safer than rolling it back after notification.
+      }
+    },
+    rollback() {
+      if (settled) return;
+      rmSync(target, { recursive: true, force: true });
+      if (targetMoved && existsSync(backup)) renameSync(backup, target);
+      settled = true;
+      rmSync(staging, { recursive: true, force: true });
+      rmSync(backup, { recursive: true, force: true });
+    },
+  };
+}
+
+function snapshotPath(path: string): PathSnapshot | undefined {
+  if (!existsSync(path)) return undefined;
+  const stats = lstatSync(path);
+  return {
+    dev: stats.dev,
+    ino: stats.ino,
+    mode: stats.mode,
+    size: stats.size,
+    mtimeMs: stats.mtimeMs,
+    ctimeMs: stats.ctimeMs,
+  };
+}
+
+function samePathSnapshot(left: PathSnapshot | undefined, right: PathSnapshot | undefined): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return left.dev === right.dev
+    && left.ino === right.ino
+    && left.mode === right.mode
+    && left.size === right.size
+    && left.mtimeMs === right.mtimeMs
+    && left.ctimeMs === right.ctimeMs;
 }

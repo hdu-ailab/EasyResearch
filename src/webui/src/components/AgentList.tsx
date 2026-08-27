@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { isThinkingLevel } from "../../../thinking-levels";
 import type { AgentConfigurationPatch, AgentDto } from "../../../web/contracts";
 import { RESEARCH_ASSISTANT_AGENT } from "../agent-identity";
-import { listAgents, listModels, patchAgent } from "../api";
+import { listAgents, listModels, patchAgent, refreshConfigurationResources } from "../api";
 import type { ModelOption } from "../api/parsers";
 import { agentDescription, agentDisplayName, type Translate } from "../i18n/agents";
 import { useI18n } from "../i18n/useI18n";
@@ -33,22 +33,40 @@ export function AgentList({ cwd, statusByAgent, configurationGeneration, configu
   const [busy, setBusy] = useState(false);
   const request = useRef(0);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(
+    async (refreshError: string | null = null) => {
+      const owner = ++request.current;
+      setBusy(true);
+      try {
+        const [agents, catalog] = await Promise.all([listAgents(cwd), listModels()]);
+        if (owner !== request.current) return;
+        setRoster(agents);
+        setModels(catalog);
+        setLoadError(refreshError);
+      } catch (error) {
+        if (owner !== request.current) return;
+        setLoadError(error instanceof Error ? error.message : String(error));
+      } finally {
+        if (owner === request.current) setBusy(false);
+      }
+    },
+    [cwd],
+  );
+
+  const refreshManually = async () => {
     const owner = ++request.current;
     setBusy(true);
     try {
-      const [agents, catalog] = await Promise.all([listAgents(cwd), listModels()]);
+      const result = await refreshConfigurationResources({ projectCwds: [cwd] });
       if (owner !== request.current) return;
-      setRoster(agents);
-      setModels(catalog);
-      setLoadError(null);
+      await refresh(result.error);
     } catch (error) {
       if (owner !== request.current) return;
       setLoadError(error instanceof Error ? error.message : String(error));
     } finally {
       if (owner === request.current) setBusy(false);
     }
-  }, [cwd]);
+  };
 
   useEffect(() => {
     // The revision triggers a refetch; the APIs remain the data authority.
@@ -93,7 +111,7 @@ export function AgentList({ cwd, statusByAgent, configurationGeneration, configu
           type="button"
           aria-label={t("dialog.refresh")}
           disabled={busy}
-          onClick={() => void refresh()}
+          onClick={() => void refreshManually()}
           className="ml-auto flex h-7 items-center gap-1 rounded-md border border-v2-grey-200 px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100 disabled:opacity-50"
         >
           <RefreshCw size={12} aria-hidden />
