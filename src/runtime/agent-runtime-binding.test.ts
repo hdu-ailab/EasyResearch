@@ -419,6 +419,20 @@ function attachPiSession(
 }
 
 describe("AgentRuntimeBinding safe boundaries", () => {
+  it("clears Pi's internal unknown model when the accepted configuration has no model", async () => {
+    const state = createHarness(definition("v1", { model: undefined }));
+    state.resolveAutomaticModel.mockResolvedValue(undefined);
+    await state.binding.ensureCurrent();
+    const session = new FakeSession();
+    session.model = { ...model("unknown", "unknown"), provider: "unknown" };
+    session.thinkingLevel = state.binding.thinking();
+
+    await state.binding.attach(session);
+
+    expect(session.model).toBeUndefined();
+    expect(session.modelCalls).toEqual([undefined]);
+  });
+
   it("refreshes availability without rebinding an unchanged explicit model", async () => {
     const state = createHarness();
     const attached = await attachHarness(state);

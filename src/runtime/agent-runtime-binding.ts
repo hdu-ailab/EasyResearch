@@ -512,6 +512,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
       const acceptedGeneration = options.live.generation;
       if (acceptedGeneration > current.generation) markRuntimePending(acceptedGeneration);
       session = attached;
+      if (!sameModel(attached.model, current.model)) attached.rebindModel(current.model);
       unsubscribe = options.live.subscribe((event) => {
         if (event.type !== "config.updated") return;
         if (
