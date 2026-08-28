@@ -250,9 +250,9 @@ function run(args: string[], captureName: "first-run" | "shutdown"): { stdout: s
   const asynchronous = process.platform === "win32" && captureName === "first-run";
   let result: ReturnType<typeof spawnSync>;
   if (process.platform === "win32") {
-    // Bun 1.3.14 spawnSync silently fails to start compiled executables on
-    // Windows. Launch first run without waiting because Start-Process -Wait
-    // waits on the live daemon; readiness is polled by the smoke script.
+    // Native testing under the former Bun 1.3.14 pin found that spawnSync could
+    // silently miss compiled Windows executables. Retain the PowerShell launch;
+    // Start-Process -Wait would wait on the live daemon, so smoke polls readiness.
     // Start-Process owns those capture paths so Node must not open them first.
     const nul = openSync("NUL", "w");
     try {

@@ -220,9 +220,9 @@ export async function compileTarget(target: PlatformTarget): Promise<string> {
   const binDir = join(pkgDir, "bin");
   mkdirSync(binDir, { recursive: true });
   const outfile = join(binDir, platformBinaryName(target));
-  // Bun 1.3.14's `Bun.build({ compile })` API emits Windows executables that
-  // exit 0 without executing any code on startup; the `bun build --compile`
-  // CLI produces working binaries for the same entry. Compile through the CLI.
+  // Native testing under the former Bun 1.3.14 pin found that
+  // `Bun.build({ compile })` emitted inert Windows executables. Keep the proven
+  // `bun build --compile` CLI path until every target validates an API change.
   const result = Bun.spawnSync({
     cmd: compileCommand(target, outfile),
     stdout: "inherit",
