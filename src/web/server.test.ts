@@ -25,7 +25,11 @@ import {
 } from "./server";
 import type { Logger } from "../runtime/logger";
 import type { AuthModelRuntime } from "./auth-gateway";
-import type { DaemonAuthRuntime, DaemonAuthRuntimeOptions } from "./auth-runtime";
+import type {
+  DaemonAuthRuntime,
+  DaemonAuthRuntimeOptions,
+  RuntimeApiKeyModelRuntime,
+} from "./auth-runtime";
 import { SubagentSessionNotFoundError } from "./subagent-sessions";
 import type { FileWatcherEvent, FileWatcherFactory } from "./file-watcher";
 import { createAgentPatchService, patchGlobalAgent } from "./agent-configuration";
@@ -34,8 +38,11 @@ import {
   ConfigurationUnavailableError,
   type ConfigurationWatchImplementation,
   createLiveConfiguration,
+  type ModelCatalogEntry,
+  type PreparedModelCatalog,
   type LiveConfiguration,
 } from "../runtime/live-configuration";
+import { ModelRequestError, type ModelRequestErrorCode } from "../runtime/model-request-error";
 import * as liveConfigurationModule from "../runtime/live-configuration";
 import {
   createConfigurationProjectWatches,
@@ -60,11 +67,17 @@ vi.mock("../runtime/extensions-guard", () => ({
 const [authGatewayMock, createDaemonAuthRuntimeMock, modelValidatorMock, disposeModelsMock] = vi.hoisted(() => {
   const gateway = { listModels: vi.fn(async () => [] as any[]), shutdown: vi.fn() };
   const modelValidator = {
-    prepareModelCatalog: vi.fn(async () => ({ models: [], commit() {}, rollback() {} })),
+    prepareModelCatalog: vi.fn<() => Promise<PreparedModelCatalog>>(async () => ({
+      registeredModels: [],
+      availableModels: [],
+      commit() {},
+      rollback() {},
+    })),
+    currentAvailableModels: vi.fn<() => ModelCatalogEntry[]>(() => []),
   };
   const disposeModels = vi.fn(async () => {});
   const createDaemon = vi.fn<
-    (options: DaemonAuthRuntimeOptions<AuthModelRuntime>) => Promise<DaemonAuthRuntime>
+    (options: DaemonAuthRuntimeOptions<AuthModelRuntime & RuntimeApiKeyModelRuntime>) => Promise<DaemonAuthRuntime>
   >(async () => ({
     auth: gateway,
     modelValidator,
@@ -237,6 +250,7 @@ function fakeConfiguration(
     modelsChanged?: boolean;
     skillsChanged?: boolean;
     projectCwds?: readonly string[];
+    availabilityChanged?: boolean;
     force?: boolean;
   }> = [];
   const live: LiveConfiguration = {
@@ -244,6 +258,7 @@ function fakeConfiguration(
       accessOrder.push("generation");
       return generation;
     },
+    availabilityEpoch: initial.generation > 0 ? 1 : 0,
     get error() {
       accessOrder.push("error");
       return error;
@@ -252,11 +267,12 @@ function fakeConfiguration(
     apiUsageSettings: { showApiUsageDetails: false },
     skillPolicy: { enableDotAgentsSkill: false },
     start: async () => {},
-    synchronize: async () => {},
+    synchronize: async () => ({ status: "unchanged", generation, availabilityEpoch: 1, error }),
     acquireProject: async (cwd) => ({ cwd, release: async () => {} }),
     isCurrent: (candidate) => error === null && candidate === generation,
     notify: async (change) => {
       notifications.push(change);
+      return { status: "unchanged", generation, availabilityEpoch: 1, error };
     },
     resolveAgents: async () => [],
     subscribe(listener) {
@@ -1421,6 +1437,7 @@ describe("web routes", () => {
       expect(initial).toEqual({
         type: "config.updated",
         generation: 1,
+        availabilityEpoch: 1,
         agentsChanged: true,
         modelsChanged: true,
         skillsChanged: true,
@@ -1520,6 +1537,7 @@ describe("web routes", () => {
       expect(initial).toEqual({
         type: "config.error",
         generation: 0,
+        availabilityEpoch: 0,
         message: safeError,
         projectWatchLeaseId: expect.any(String),
       });
@@ -1640,8 +1658,9 @@ describe("web routes", () => {
       catalogOptions: { homeDir },
       modelValidator: {
         async prepareModelCatalog() {
-          return { models: [], commit() {}, rollback() {} };
+          return { registeredModels: [], availableModels: [], commit() {}, rollback() {} };
         },
+        currentAvailableModels: () => [],
       },
       watch: droppedConfigurationWatch(),
     });
@@ -1696,7 +1715,9 @@ describe("web routes", () => {
       await expect(response.json()).resolves.toEqual({ generation: baseline + 1, error: null });
       const reviewer = (await live.resolveAgents(projectDir)).find((agent) => agent.name === agentName);
       expect(reviewer?.systemPrompt).toContain("MANUAL_REFRESH_ROLE");
-      expect(reviewer?.effectiveSkillPaths).toEqual([join(agentDir, "skills", skillName)]);
+      expect(reviewer?.effectiveSkillPaths).toEqual([
+        expect.stringContaining("easyresearch-skill-snapshots-"),
+      ]);
       expect(events.filter((event) => event.type === "config.updated")).toHaveLength(2);
       expect(events.at(-1)).toMatchObject({
         generation: baseline + 1,
@@ -1727,6 +1748,7 @@ describe("web routes", () => {
       const cwd = projectCwds?.[0] ?? "global";
       const descriptor = join(cwd, ".easyresearch", "skills", "route-skill", "SKILL.md");
       projectLifecycle.push(`synchronize:${cwd}:${readFileSync(descriptor, "utf8")}`);
+      return { status: "unchanged", generation: 1, availabilityEpoch: 1, error: null };
     };
     configService = new ConfigFileService(agentDir, {
       onAuthoritativeWrite: (change) => configuration.live.notify(change),
@@ -1844,8 +1866,9 @@ describe("web routes", () => {
           if (!parsed.providers || typeof parsed.providers !== "object" || Array.isArray(parsed.providers)) {
             throw new Error("private semantic detail");
           }
-          return { models: [], commit() {}, rollback() {} };
+          return { registeredModels: [], availableModels: [], commit() {}, rollback() {} };
         },
+        currentAvailableModels: () => [],
       },
     });
     await live.start();
@@ -1938,7 +1961,7 @@ describe("web routes", () => {
     }
   });
 
-  it("recovers generation zero through real daemon auth and preserves accepted models across a rejected revision", async () => {
+  it("keeps recovery surfaces usable while isolating a malformed custom-model layer", async () => {
     const modelsPath = join(agentDir, "models.json");
     mkdirSync(join(agentDir, "agents"), { recursive: true });
     writeFileSync(modelsPath, "{ malformed models");
@@ -1958,7 +1981,9 @@ describe("web routes", () => {
       join(agentDir, "agents", "search.md"),
       "---\nname: search\ndescription: Search\n---\nSearch prompt\n",
     );
-    const createdRuntimes: Array<AuthModelRuntime & { dispose: ReturnType<typeof vi.fn> }> = [];
+    const createdRuntimes: Array<
+      AuthModelRuntime & RuntimeApiKeyModelRuntime & { dispose: ReturnType<typeof vi.fn> }
+    > = [];
     const createModelRuntime = vi.fn(async () => {
       let providers: Array<{ id: string; name: string; auth: Record<string, never> }> = [];
       let models: Array<{ provider: string; id: string; reasoning: boolean }> = [];
@@ -1984,14 +2009,16 @@ describe("web routes", () => {
           }
         },
         getError: () => undefined,
+        getModels: () => models,
         getAvailableSnapshot: () => models,
         getProviders: () => providers,
         getProvider: (providerId: string) => providers.find((provider) => provider.id === providerId),
         getProviderAuthStatus: () => ({ configured: false }),
+        setRuntimeApiKey: async () => {},
         checkAuth: async () => undefined,
         login: async () => ({ type: "api_key" as const, key: "unused" }),
         logout: async () => {},
-      } satisfies AuthModelRuntime & { dispose: ReturnType<typeof vi.fn> };
+      } satisfies AuthModelRuntime & RuntimeApiKeyModelRuntime & { dispose: ReturnType<typeof vi.fn> };
       createdRuntimes.push(runtime);
       return runtime;
     });
@@ -2069,24 +2096,10 @@ describe("web routes", () => {
       try {
         expect((await request("/api/status")).status).toBe(200);
         expect((await request("/api/config?scope=global")).status).toBe(200);
-        expect(await readSseEvent(reader)).toMatchObject({ type: "config.error", generation: 0 });
+        expect(await readSseEvent(reader)).toMatchObject({ type: "config.error", generation: 1 });
 
-        const blockedCreate = await request("/api/sessions", json("POST", { cwd: projectDir }));
-        expect(blockedCreate.status).toBe(503);
-
-        permitGenerationZeroFixture = true;
-        const fixtureSession = await request(
-          "/api/sessions/open",
-          json("POST", { path: "/agent/sessions/fixture.jsonl" }),
-        );
-        expect(fixtureSession.status).toBe(200);
-        const fixtureId = (await fixtureSession.json() as { id: string }).id;
-        permitGenerationZeroFixture = false;
-        const blockedPrompt = await request(
-          `/api/sessions/${fixtureId}/messages`,
-          json("POST", { message: "blocked" }),
-        );
-        expect(blockedPrompt.status).toBe(503);
+        const degradedCreate = await request("/api/sessions", json("POST", { cwd: projectDir }));
+        expect(degradedCreate.status).toBe(200);
 
         const acceptedModels = {
           providers: {
@@ -2100,10 +2113,12 @@ describe("web routes", () => {
         }))).status).toBe(200);
         expect(await readSseEvent(reader)).toEqual({
           type: "config.updated",
-          generation: 1,
-          agentsChanged: true,
+          generation: 2,
+          availabilityEpoch: 2,
+          availabilityChanged: true,
+          agentsChanged: false,
           modelsChanged: true,
-          skillsChanged: true,
+          skillsChanged: false,
           runtimeChanged: true,
         });
         expect(await (await request("/api/models")).json()).toEqual({
@@ -2111,51 +2126,47 @@ describe("web routes", () => {
             provider: "accepted-provider",
             id: "accepted-model",
             reasoning: false,
+            available: true,
+            authRequired: false,
           }],
         });
         const created = await request("/api/sessions", json("POST", { cwd: projectDir }));
         expect(created.status).toBe(200);
 
-        const rejectedModels = {
+        const recoveredModels = {
           providers: {
             "rejected-provider": { models: [{ id: "rejected-model", reasoning: true }] },
           },
         };
-        writeFileSync(modelsPath, JSON.stringify(rejectedModels));
-        expect(await (await request("/api/models")).json()).toEqual({
-          models: [{
-            provider: "accepted-provider",
-            id: "accepted-model",
-            reasoning: false,
-          }],
-        });
-        expect(await readSseEvent(reader)).toMatchObject({ type: "config.error", generation: 1 });
+        writeFileSync(modelsPath, "{ malformed later revision");
+        expect(await (await request("/api/models")).json()).toEqual({ models: [] });
+        expect(await readSseEvent(reader)).toMatchObject({ type: "config.updated", generation: 3 });
+        expect(await readSseEvent(reader)).toMatchObject({ type: "config.error", generation: 3 });
         const providers = await (await request("/api/auth/providers")).json() as {
           providers: Array<{ id: string; modelsJson: boolean }>;
         };
-        expect(providers.providers).toMatchObject([
-          { id: "accepted-provider", modelsJson: true },
-        ]);
-        expect((await request("/api/agents/search", json("PATCH", {
+        expect(providers.providers).toEqual([]);
+        const rejectedPatch = await request("/api/agents/search", json("PATCH", {
           model: "accepted-provider/accepted-model",
-        }))).status).toBe(200);
+        }));
+        expect(rejectedPatch.status).toBe(200);
+        const repairedPatch = await rejectedPatch.json();
+        expect(repairedPatch).not.toHaveProperty("model");
+        expect(repairedPatch).toMatchObject({
+          modelRepair: { requested: "accepted-provider/accepted-model", inherited: true },
+        });
 
         expect((await request("/api/config/file", json("PUT", {
           scope: "global",
-          path: "settings.json",
-          content: JSON.stringify({
-            easyresearch: {
-              agentDefaults: {
-                guard: { model: "rejected-provider/rejected-model" },
-                search: { model: "rejected-provider/rejected-model" },
-              },
-            },
-          }),
+          path: "models.json",
+          content: JSON.stringify(recoveredModels),
         }))).status).toBe(200);
         expect(await readSseEvent(reader)).toEqual({
           type: "config.updated",
-          generation: 2,
-          agentsChanged: true,
+          generation: 4,
+          availabilityEpoch: 4,
+          availabilityChanged: true,
+          agentsChanged: false,
           modelsChanged: true,
           skillsChanged: false,
           runtimeChanged: true,
@@ -2671,6 +2682,25 @@ describe("web routes", () => {
     });
   });
 
+  it.each<ModelRequestErrorCode>([
+    "MODEL_REQUIRED",
+    "MODEL_UNAVAILABLE",
+    "PROVIDER_AUTH_REQUIRED",
+  ])("returns typed safe model preflight failure %s", async (code) => {
+    setup();
+    const created = await registry.create({ cwd: projectDir });
+    vi.spyOn(registry, "prompt").mockRejectedValue(new ModelRequestError(code));
+
+    const response = await handler(new Request(`http://localhost/api/sessions/${created.id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "continue" }),
+    }));
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code });
+  });
+
   it("aborts, stops, and 404s restarting a stopped session", async () => {
     setup();
     const created = (await (
@@ -2844,7 +2874,7 @@ describe("web routes", () => {
     const target = join(agentDir, "agents", "search.md");
     writeFileSync(target, "---\nname: search\ndescription: Search\n---\nSearch prompt\n");
     const listModels = vi.fn(async () => [
-      { provider: "openai", id: "gpt-4o", reasoning: false },
+      { provider: "openai", id: "gpt-4o", reasoning: false, available: false, authRequired: true },
     ]);
     setup({
       listModels,
@@ -2878,7 +2908,7 @@ describe("web routes", () => {
     writeFileSync(target, "---\nname: search\ndescription: Search\n---\nSearch prompt\n");
     const before = readFileSync(target);
     const listModels = vi.fn(async () => [
-      { provider: "anthropic", id: "claude", reasoning: true },
+      { provider: "anthropic", id: "claude", reasoning: true, available: true, authRequired: false },
     ]);
     setup({
       listModels,
@@ -3094,22 +3124,22 @@ describe("web routes", () => {
     }
   });
 
-  it("lists available models with reasoning and thinking map metadata", async () => {
+  it("lists registered models with availability, reasoning, and thinking metadata", async () => {
     setup({
       listModels: async () =>
         ([
-          { provider: "openai", id: "gpt-4o", reasoning: false, thinkingLevelMap: { xhigh: null, max: null } },
-          { provider: "deepseek", id: "ds-v3", reasoning: true, thinkingLevelMap: { low: null, xhigh: null, max: null } },
-          { provider: "anthropic", id: "claude", reasoning: true, thinkingLevelMap: { xhigh: "xhigh", high: "high" } },
+          { provider: "openai", id: "gpt-4o", reasoning: false, available: true, authRequired: false, thinkingLevelMap: { xhigh: null, max: null } },
+          { provider: "deepseek", id: "ds-v3", reasoning: true, available: false, authRequired: true, thinkingLevelMap: { low: null, xhigh: null, max: null } },
+          { provider: "anthropic", id: "claude", reasoning: true, available: true, authRequired: false, thinkingLevelMap: { xhigh: "xhigh", high: "high" } },
         ] as ModelOptionDto[]),
     });
     const res = await handler(new Request("http://localhost/api/models"));
     expect(res.status).toBe(200);
     const body = (await res.json()) as { models: ModelOptionDto[] };
     expect(body.models).toEqual([
-      { provider: "openai", id: "gpt-4o", reasoning: false, thinkingLevelMap: { xhigh: null, max: null } },
-      { provider: "deepseek", id: "ds-v3", reasoning: true, thinkingLevelMap: { low: null, xhigh: null, max: null } },
-      { provider: "anthropic", id: "claude", reasoning: true, thinkingLevelMap: { xhigh: "xhigh", high: "high" } },
+      { provider: "openai", id: "gpt-4o", reasoning: false, available: true, authRequired: false, thinkingLevelMap: { xhigh: null, max: null } },
+      { provider: "deepseek", id: "ds-v3", reasoning: true, available: false, authRequired: true, thinkingLevelMap: { low: null, xhigh: null, max: null } },
+      { provider: "anthropic", id: "claude", reasoning: true, available: true, authRequired: false, thinkingLevelMap: { xhigh: "xhigh", high: "high" } },
     ]);
   });
 
@@ -3120,6 +3150,15 @@ describe("web routes", () => {
     const pi = await piImportModule.importPi();
     let gatewayModels = [{ provider: "openai", id: "gpt-4o", reasoning: false }];
     authGatewayMock.listModels.mockImplementation(async () => gatewayModels);
+    modelValidatorMock.prepareModelCatalog.mockImplementation(async () => ({
+      registeredModels: gatewayModels.map(({ provider, id }) => ({ provider, id })),
+      availableModels: gatewayModels.map(({ provider, id }) => ({ provider, id })),
+      commit() {},
+      rollback() {},
+    }));
+    modelValidatorMock.currentAvailableModels.mockImplementation(
+      () => gatewayModels.map(({ provider, id }) => ({ provider, id })),
+    );
     const createRuntime = vi.fn(async () => ({
       getAvailable: async () => [{ provider: "decoy", id: "separate-runtime", reasoning: false }],
     }));
@@ -3179,6 +3218,13 @@ describe("web routes", () => {
       if (originalBun === undefined) delete (globalThis as { Bun?: unknown }).Bun;
       else (globalThis as { Bun?: unknown }).Bun = originalBun;
       authGatewayMock.shutdown.mockClear();
+      modelValidatorMock.prepareModelCatalog.mockImplementation(async () => ({
+        registeredModels: [],
+        availableModels: [],
+        commit() {},
+        rollback() {},
+      }));
+      modelValidatorMock.currentAvailableModels.mockReturnValue([]);
     }
   });
 
@@ -3283,6 +3329,7 @@ describe("web routes", () => {
     };
     configuration.live.synchronize = async ({ projectCwds } = {}) => {
       projectLifecycle.push(`synchronize:${projectCwds?.[0]}:${readFileSync(projectDescriptor, "utf8")}`);
+      return { status: "unchanged", generation: 1, availabilityEpoch: 1, error: null };
     };
     const createLive = vi.spyOn(liveConfigurationModule, "createLiveConfiguration").mockReturnValue(configuration.live);
     const pi = await piImportModule.importPi();
@@ -3382,10 +3429,12 @@ describe("web routes", () => {
       unsubscribe();
       expect(events.at(-1)).toMatchObject({
         type: "config.updated",
-        generation: 2,
-        modelsChanged: true,
+        generation: 1,
+        availabilityEpoch: 2,
+        availabilityChanged: true,
+        modelsChanged: false,
         skillsChanged: false,
-        runtimeChanged: true,
+        runtimeChanged: false,
       });
     } finally {
       await server?.stop();
@@ -3687,10 +3736,12 @@ describe("web routes", () => {
       dispose: runtimeDispose,
       refresh: async () => ({ aborted: false, errors: new Map<string, Error>() }),
       getError: () => undefined,
+      getModels: () => [],
       getAvailableSnapshot: () => [],
       getProviders: () => [],
       getProvider: () => undefined,
       getProviderAuthStatus: () => ({ configured: false }),
+      setRuntimeApiKey: async () => {},
       checkAuth: async () => undefined,
       login: async () => ({ type: "api_key" as const, key: "unused" }),
       logout: async () => {},
@@ -3708,6 +3759,7 @@ describe("web routes", () => {
         },
         modelValidator: daemon.modelValidator,
         modelRuntime: daemon.modelRuntime,
+        noAuthProviderIds: daemon.noAuthProviderIds,
         dispose: async () => {
           order.push("models");
           await daemon.dispose();
@@ -3778,7 +3830,7 @@ describe("web routes", () => {
         "models",
         "server",
       ]);
-      expect(runtimeDispose).toHaveBeenCalledTimes(1);
+      expect(runtimeDispose).toHaveBeenCalledTimes(2);
     } finally {
       await server?.stop().catch(() => {});
       createLive.mockRestore();

@@ -111,6 +111,40 @@ describe("useConfigurationEvents", () => {
     expect(result.current).toMatchObject({ generation: 5, error: null });
   });
 
+  it("advances the frontend revision for availability without clearing a configuration error", () => {
+    const { result } = renderHook(() => useConfigurationEvents());
+    act(() => handlers.onEvent(updated(4)));
+    act(() =>
+      handlers.onEvent({
+        type: "config.error",
+        generation: 4,
+        availabilityEpoch: 1,
+        message: "Invalid Agent configuration",
+      }),
+    );
+    const revision = result.current.revision;
+
+    act(() =>
+      handlers.onEvent({
+        type: "config.updated",
+        generation: 4,
+        availabilityEpoch: 2,
+        availabilityChanged: true,
+        agentsChanged: false,
+        modelsChanged: false,
+        skillsChanged: false,
+        runtimeChanged: false,
+      }),
+    );
+
+    expect(result.current).toMatchObject({
+      generation: 4,
+      availabilityEpoch: 2,
+      revision: revision + 1,
+      error: "Invalid Agent configuration",
+    });
+  });
+
   it("acquires a lease from valid or error events and replays current intent on reconnect", () => {
     const { result } = renderHook(() => useConfigurationEvents());
 

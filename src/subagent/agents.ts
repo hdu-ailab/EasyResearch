@@ -222,7 +222,13 @@ export async function loadAgentCatalog(options: DiscoveryOptions = {}): Promise<
     const definition = loadCustom(options, name, parseFrontmatter, diagnostics);
     if (definition) definitions.push(definition);
   }
-  const defaults = await readGlobalAgentDefaults(options.agentDir ?? getAgentDir());
+  let defaults: AgentRuntimeDefaults = {};
+  try {
+    defaults = await readGlobalAgentDefaults(options.agentDir ?? getAgentDir());
+  } catch {
+    // LiveConfiguration owns the safe settings diagnostic and source token.
+    // Direct discovery still degrades to sparse defaults without rewriting.
+  }
   return { definitions, diagnostics, defaults };
 }
 

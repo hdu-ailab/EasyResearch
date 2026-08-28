@@ -289,8 +289,22 @@ describe("WorkPage", () => {
       },
     ]);
     vi.mocked(api.listModels).mockResolvedValue([
-      { provider: "openai", id: "gpt-4o", reasoning: true, thinkingLevelMap: {} },
-      { provider: "anthropic", id: "claude", reasoning: false, thinkingLevelMap: {} },
+      {
+        provider: "openai",
+        id: "gpt-4o",
+        reasoning: true,
+        thinkingLevelMap: {},
+        available: true,
+        authRequired: false,
+      },
+      {
+        provider: "anthropic",
+        id: "claude",
+        reasoning: false,
+        thinkingLevelMap: {},
+        available: true,
+        authRequired: false,
+      },
     ]);
     vi.mocked(api.patchAgent).mockImplementation(async (name, patch) => ({
       name,

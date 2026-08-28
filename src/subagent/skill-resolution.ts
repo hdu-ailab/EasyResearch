@@ -92,9 +92,12 @@ function materializeAcceptedDescriptors(
   root: string,
   descriptors: readonly AcceptedSkillDescriptor[],
 ): SkillDescriptor[] {
-  return descriptors.map(({ name, relativePath }) => {
-    const skillPath = join(root, ...relativePath.split("/"));
+  return descriptors.map((accepted) => {
+    const { name, relativePath } = accepted;
+    const originalSkillPath = join(root, ...relativePath.split("/"));
     const directFile = !relativePath.includes("/");
+    const originalPath = directFile ? originalSkillPath : join(originalSkillPath, "..");
+    const skillPath = accepted.snapshotPath ?? originalSkillPath;
     const path = directFile ? skillPath : join(skillPath, "..");
     return {
       name,
@@ -103,6 +106,9 @@ function materializeAcceptedDescriptors(
       skillPath,
       canonicalPath: path,
       canonicalSkillPath: skillPath,
+      originalPath,
+      originalSkillPath,
+      ...(accepted.baseDir ? { baseDir: accepted.baseDir } : {}),
     };
   });
 }
@@ -123,7 +129,8 @@ function acceptedControlledPath(target: string, deps: SkillResolverDeps): string
     if (!isWithin(root, target)) continue;
     if (descriptors === undefined) return null;
     const descriptor = materializeAcceptedDescriptors(root, descriptors).find((candidate) =>
-      resolve(candidate.path) === target || resolve(candidate.skillPath) === target
+      resolve(candidate.originalPath ?? candidate.path) === target
+      || resolve(candidate.originalSkillPath ?? candidate.skillPath) === target
     );
     return descriptor === undefined ? undefined : target;
   }

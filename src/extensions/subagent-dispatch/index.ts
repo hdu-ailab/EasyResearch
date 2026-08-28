@@ -1,6 +1,5 @@
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 import type { AgentRuntimeBinding } from "../../runtime/agent-runtime-binding";
-import type { LiveConfiguration } from "../../runtime/live-configuration";
 import type { SubagentCoordinator } from "../../subagent/coordinator";
 import {
   AgentConfigurationChangedError,
@@ -12,6 +11,7 @@ import {
   formatSubagentDescription,
 } from "../../subagent/tool";
 import type { SubagentSupervisor } from "../../subagent/supervisor";
+import type { CreateSubagentToolOptions } from "../../subagent/tool";
 
 /**
  * ADR-063: atomic extension registering the `subagent` dispatch tool for the
@@ -20,10 +20,7 @@ import type { SubagentSupervisor } from "../../subagent/supervisor";
  */
 export interface SubagentDispatchExtensionOptions {
   binding: AgentRuntimeBinding;
-  liveConfiguration: Pick<
-    LiveConfiguration,
-    "generation" | "synchronize" | "acquireProject" | "isCurrent" | "resolveAgents" | "subscribe"
-  >;
+  liveConfiguration: CreateSubagentToolOptions["liveConfiguration"];
   coordinator: SubagentCoordinator;
   supervisor: SubagentSupervisor;
 }

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ChokidarOptions } from "chokidar";
 import { readGlobalAgentDefaults } from "../subagent/agent-defaults";
@@ -21,6 +22,11 @@ import type {
   ConfigurationUpdatedEvent,
 } from "../web/contracts";
 import { parseGlobalApiUsageSettings } from "./api-usage-settings";
+import {
+  type AgentDefaultRepairResult,
+  type DanglingAgentModelRepair,
+  planDanglingAgentDefaultRepairs,
+} from "./agent-default-repair";
 import {
   type GlobalCompactionPolicy,
   parseGlobalCompactionPolicy,
@@ -46,6 +52,8 @@ const SAFE_CONFIGURATION_ERROR =
 const SAFE_CONFIGURATION_UNAVAILABLE =
   "No valid configuration is available. Fix the global Agent or model configuration and retry.";
 const SAFE_WATCHER_ERROR = "Configuration monitoring failed. Refresh to check for updates.";
+const SAFE_SETTINGS_DIAGNOSTIC =
+  "Configuration issue in global settings.json. Open settings.json in Config to repair it.";
 
 export interface ConfigurationFingerprint {
   value: string;
@@ -60,6 +68,13 @@ export interface ConfigurationFingerprint {
   homeSkills: string | null;
   globalSkillDescriptors: readonly AcceptedSkillDescriptor[];
   homeSkillDescriptors: readonly AcceptedSkillDescriptor[] | null;
+  diagnostic?: string;
+  invalidSettingsLayers?: {
+    agentDefaults?: true;
+    compaction?: true;
+    apiUsage?: true;
+    skillPolicy?: true;
+  };
 }
 
 export interface ModelCatalogEntry {
@@ -68,7 +83,10 @@ export interface ModelCatalogEntry {
 }
 
 export interface PreparedModelCatalog {
-  readonly models: readonly ModelCatalogEntry[];
+  readonly registeredModels: readonly ModelCatalogEntry[];
+  readonly availableModels: readonly ModelCatalogEntry[];
+  readonly fallbackModel?: ModelCatalogEntry;
+  readonly diagnostic?: string;
   /**
    * Atomically replace accepted model state. This must be synchronous and must
    * leave accepted state untouched if it throws.
@@ -81,6 +99,9 @@ export interface PreparedModelCatalog {
 export interface ModelCatalogValidator {
   /** Preparation must not mutate model state visible to runtime consumers. */
   prepareModelCatalog(): Promise<PreparedModelCatalog>;
+  /** Current credential-filtered availability from the accepted runtime. */
+  currentAvailableModels(): readonly ModelCatalogEntry[];
+  refreshAvailability?(): Promise<readonly ModelCatalogEntry[]>;
 }
 
 export type ConfigurationWatchImplementation = (
@@ -96,6 +117,7 @@ export interface ConfigurationChange {
   modelsChanged?: boolean;
   skillsChanged?: boolean;
   projectCwds?: readonly string[];
+  availabilityChanged?: boolean;
   force?: boolean;
 }
 
@@ -115,20 +137,25 @@ export interface LiveConfigurationOptions {
   ) => AgentDiscoveryResult;
   watch?: ConfigurationWatchImplementation;
   createWatcherManager?: (dependencies: WatcherDependencies) => ConfigurationWatcherManager;
+  skillSnapshotRoot?: string;
+  repairAgentDefaults?: (
+    repairs: readonly DanglingAgentModelRepair[],
+  ) => Promise<AgentDefaultRepairResult>;
 }
 
 export interface LiveConfiguration {
   readonly generation: number;
+  readonly availabilityEpoch: number;
   readonly error: string | null;
   readonly compactionPolicy: GlobalCompactionPolicy;
   readonly apiUsageSettings: ApiUsageSettingsDto;
   readonly skillPolicy: SkillResolutionPolicy;
   start(): Promise<void>;
-  synchronize(options?: { projectCwds?: readonly string[] }): Promise<void>;
+  synchronize(options?: { projectCwds?: readonly string[] }): Promise<ConfigurationSynchronizationOutcome>;
   acquireProject(cwd: string): Promise<ProjectWatchRegistration>;
-  /** True only for the latest validation-clean accepted generation. */
+  /** True only for the latest accepted generation, including retained last-good state. */
   isCurrent(generation: number): boolean;
-  notify(change: ConfigurationChange): Promise<void>;
+  notify(change: ConfigurationChange): Promise<ConfigurationSynchronizationOutcome>;
   resolveAgents(cwd?: string): Promise<AgentConfig[]>;
   subscribe(listener: (event: ConfigurationEvent) => void): () => void;
   close(): Promise<void>;
@@ -146,8 +173,10 @@ interface PendingSynchronization {
   modelsChanged: boolean;
   skillsChanged: boolean;
   projectCwds: Set<string>;
+  availabilityChanged: boolean;
+  structuralCheckRequested: boolean;
   force: boolean;
-  waiters: Array<() => void>;
+  waiters: Array<(outcome: ConfigurationSynchronizationOutcome) => void>;
 }
 
 interface SynchronizationRequest {
@@ -158,20 +187,40 @@ interface SynchronizationRequest {
   force: boolean;
 }
 
-type SynchronizationOutcome = "committed" | "unchanged" | "failed" | "closed";
+export type ConfigurationSynchronizationStatus =
+  | "committed"
+  | "unchanged"
+  | "repaired"
+  | "rejected"
+  | "superseded"
+  | "closed";
+
+export interface ConfigurationSynchronizationOutcome {
+  status: ConfigurationSynchronizationStatus;
+  generation: number;
+  availabilityEpoch: number;
+  error: string | null;
+}
 
 export function createLiveConfiguration(options: LiveConfigurationOptions): LiveConfiguration {
   const agentDir = resolve(options.agentDir ?? getAgentDir());
+  const ownsSkillSnapshotRoot = options.skillSnapshotRoot === undefined;
+  const skillSnapshotRoot = options.skillSnapshotRoot
+    ?? mkdtempSync(join(tmpdir(), "easyresearch-skill-snapshots-"));
   const catalogOptions = { ...options.catalogOptions };
   const homeDir = resolve(catalogOptions.homeDir ?? homedir());
-  const readFingerprint = options.fingerprint ?? ((path) => fingerprintConfiguration(path, homeDir));
+  const readFingerprint = options.fingerprint
+    ?? ((path) => fingerprintConfiguration(path, homeDir, skillSnapshotRoot));
   const loadCatalog = options.loadCatalog ?? ((discovery) => loadAgentCatalog(discovery));
   const resolveCatalog = options.resolveCatalog ?? resolveAgentCatalog;
   const createWatcherManager = options.createWatcherManager ?? createConfigurationWatcherManager;
   const listeners = new Set<(event: ConfigurationEvent) => void>();
 
   let currentGeneration = 0;
+  let currentAvailabilityEpoch = 0;
+  let currentAvailabilitySignature = "";
   let validationError: string | null = null;
+  let acceptedDiagnostic: string | null = null;
   let watcherError: string | null = null;
   let currentCatalog: AgentCatalogSnapshot | undefined;
   let currentFingerprint: ConfigurationFingerprint | undefined;
@@ -210,6 +259,7 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
     const event: ConfigurationErrorEvent = {
       type: "config.error",
       generation: currentGeneration,
+      availabilityEpoch: currentAvailabilityEpoch,
       message,
     };
     publish(event);
@@ -231,6 +281,40 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
     enableDotAgentsSkill: fingerprint?.homeSkills !== null && fingerprint !== undefined,
   });
   const acceptedSkillPolicy = (): SkillResolutionPolicy => skillPolicyFor(currentFingerprint);
+
+  const synchronizationOutcome = (
+    status: ConfigurationSynchronizationStatus,
+  ): ConfigurationSynchronizationOutcome => ({
+    status,
+    generation: currentGeneration,
+    availabilityEpoch: currentAvailabilityEpoch,
+    error: validationError ?? acceptedDiagnostic ?? watcherError,
+  });
+
+  const advanceAvailability = async (): Promise<ConfigurationSynchronizationOutcome> => {
+    if (closed) return synchronizationOutcome("closed");
+    try {
+      const models = options.modelValidator.refreshAvailability
+        ? await options.modelValidator.refreshAvailability()
+        : options.modelValidator.currentAvailableModels();
+      currentAvailabilitySignature = modelCatalogSignature(models);
+    } catch {
+      // Availability is recoverable provider state. The epoch notification
+      // still lets readers retry without invalidating structural configuration.
+    }
+    currentAvailabilityEpoch += 1;
+    publish({
+      type: "config.updated",
+      generation: currentGeneration,
+      availabilityEpoch: currentAvailabilityEpoch,
+      availabilityChanged: true,
+      agentsChanged: false,
+      modelsChanged: false,
+      skillsChanged: false,
+      runtimeChanged: false,
+    });
+    return synchronizationOutcome("committed");
+  };
 
   const alignHomeWatcher = async (): Promise<void> => {
     if (!watcherManagerAdmissionStarted || closed) return;
@@ -262,8 +346,12 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
     }
   };
 
-  const validateAndAdvance = async (change: SynchronizationRequest): Promise<SynchronizationOutcome> => {
+  const validateAndAdvance = async (
+    change: SynchronizationRequest,
+  ): Promise<ConfigurationSynchronizationStatus> => {
     let requiresRuntimeAlignment = false;
+    let repairedDuringValidation = false;
+    let supersededDuringValidation = false;
     for (;;) {
       let preparedProjects: PreparedProjectResourceChanges | undefined;
       let preparedModels: PreparedModelCatalog | undefined;
@@ -302,19 +390,39 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
           return "unchanged";
         }
 
-        const nextCatalog = await loadCatalog({
+        const loadedCatalog = await loadCatalog({
           ...catalogOptions,
           agentDir,
           cwd: undefined,
           enableDotAgentsSkill: skillPolicyFor(candidate).enableDotAgentsSkill,
         });
+        const nextCatalog = candidate.invalidSettingsLayers?.agentDefaults && currentCatalog
+          ? { ...loadedCatalog, defaults: currentCatalog.defaults }
+          : loadedCatalog;
         assertValidCatalog(nextCatalog);
         if (closed) {
           rollbackPreparedProjects();
           return "closed";
         }
         preparedModels = await options.modelValidator.prepareModelCatalog();
-        assertConfiguredModelsAvailable(nextCatalog, preparedModels.models);
+        const danglingRepairs = planDanglingAgentDefaultRepairs(
+          nextCatalog,
+          preparedModels.registeredModels,
+          preparedModels.fallbackModel,
+        );
+        if (danglingRepairs.length > 0) {
+          if (!options.repairAgentDefaults) throw new Error("Configured Agent model is unavailable");
+          const repairResult = await options.repairAgentDefaults(danglingRepairs);
+          await rollbackPreparedModels();
+          rollbackPreparedProjects();
+          const repairedFingerprint = await readFingerprint(agentDir);
+          if (repairResult.status === "unchanged" && sameFingerprint(candidate, repairedFingerprint)) {
+            throw new Error("Configured Agent model repair was superseded without a source change");
+          }
+          repairedDuringValidation ||= repairResult.status === "repaired";
+          requiresRuntimeAlignment = true;
+          continue;
+        }
         if (closed) {
           await rollbackPreparedModels();
           rollbackPreparedProjects();
@@ -322,10 +430,11 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
         }
 
         const confirmed = await readFingerprint(agentDir);
-        if (!sameFingerprint(candidate, confirmed)) {
+        if (!sameFingerprint(candidate, confirmed) || !(await preparedProjects.isCurrent())) {
           await rollbackPreparedModels();
           rollbackPreparedProjects();
           requiresRuntimeAlignment = true;
+          supersededDuringValidation = true;
           continue;
         }
         if (closed) {
@@ -336,7 +445,7 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
         if (!shouldCommit) {
           await rollbackPreparedModels();
           rollbackPreparedProjects();
-          return "unchanged";
+          return supersededDuringValidation ? "superseded" : "unchanged";
         }
 
         const agentsChanged =
@@ -361,6 +470,9 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
           || skillsChanged
           || currentFingerprint === undefined
           || candidate.compaction !== currentFingerprint.compaction;
+        const preparedAvailabilitySignature = modelCatalogSignature(preparedModels.availableModels);
+        const availabilityChanged = currentFingerprint !== undefined
+          && preparedAvailabilitySignature !== currentAvailabilitySignature;
         const event: ConfigurationUpdatedEvent = {
           type: "config.updated",
           generation: currentGeneration + 1,
@@ -368,27 +480,46 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
           modelsChanged,
           skillsChanged,
           runtimeChanged,
+          ...(availabilityChanged
+            ? {
+                availabilityEpoch: currentAvailabilityEpoch + 1,
+                availabilityChanged: true,
+              }
+            : {}),
           ...(apiUsageChanged ? { apiUsageChanged: true } : {}),
         };
 
+        const candidateDiagnostic = candidate.diagnostic
+          ?? preparedModels.diagnostic
+          ?? catalogDiagnostic(nextCatalog)
+          ?? null;
         preparedModels.commit();
         preparedModels = undefined;
         preparedProjects.commit();
         preparedProjects = undefined;
         currentCatalog = nextCatalog;
         currentFingerprint = candidate;
-        currentCompactionPolicy = candidate.compactionPolicy;
-        currentApiUsageSettings = candidate.apiUsageSettings;
+        currentCompactionPolicy = candidate.invalidSettingsLayers?.compaction && currentFingerprint
+          ? currentCompactionPolicy
+          : candidate.compactionPolicy;
+        currentApiUsageSettings = candidate.invalidSettingsLayers?.apiUsage && currentFingerprint
+          ? currentApiUsageSettings
+          : candidate.apiUsageSettings;
+        if (currentAvailabilityEpoch === 0) currentAvailabilityEpoch = 1;
+        else if (availabilityChanged) currentAvailabilityEpoch += 1;
+        currentAvailabilitySignature = preparedAvailabilitySignature;
         currentGeneration = event.generation;
         validationError = null;
+        acceptedDiagnostic = candidateDiagnostic;
         failedAgentsChanged = false;
         failedModelsChanged = false;
         failedSkillsChanged = false;
         failedProjectCwds.clear();
         publish(event);
+        if (acceptedDiagnostic) emitError(acceptedDiagnostic);
         if (watcherError) emitError(watcherError);
         await alignHomeWatcher();
-        return "committed";
+        return repairedDuringValidation ? "repaired" : "committed";
       } catch {
         try {
           await rollbackPreparedModels();
@@ -402,15 +533,15 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
         }
         if (closed) return "closed";
         publishValidationError();
-        return "failed";
+        return "rejected";
       }
     }
   };
 
-  const settlePending = (): void => {
+  const settlePending = (settled = synchronizationOutcome("closed")): void => {
     const batch = pending;
     pending = undefined;
-    for (const resolveWaiter of batch?.waiters ?? []) resolveWaiter();
+    for (const resolveWaiter of batch?.waiters ?? []) resolveWaiter(settled);
   };
 
   const drain = async (): Promise<void> => {
@@ -426,20 +557,37 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
           projectCwds: [...new Set([...failedProjectCwds, ...batch.projectCwds])],
           force: batch.force,
         };
-        let outcome: SynchronizationOutcome = "closed";
+        let settled = synchronizationOutcome("closed");
         try {
-          outcome = await validateAndAdvance(request);
+          const availabilityOnly =
+            batch.availabilityChanged
+            && !batch.structuralCheckRequested
+            && !batch.agentsChanged
+            && !batch.modelsChanged
+            && !batch.skillsChanged
+            && batch.projectCwds.size === 0
+            && !batch.force;
+          if (availabilityOnly) {
+            settled = await advanceAvailability();
+          } else {
+            settled = synchronizationOutcome(await validateAndAdvance(request));
+            if (batch.availabilityChanged && settled.status !== "closed") {
+              const structuralStatus = settled.status;
+              await advanceAvailability();
+              settled = synchronizationOutcome(structuralStatus);
+            }
+          }
         } catch {
           publishValidationError();
-          outcome = "failed";
+          settled = synchronizationOutcome("rejected");
         } finally {
-          if (outcome === "failed") {
+          if (settled.status === "rejected") {
             failedAgentsChanged ||= batch.agentsChanged;
             failedModelsChanged ||= batch.modelsChanged;
             failedSkillsChanged ||= batch.skillsChanged;
             for (const cwd of batch.projectCwds) failedProjectCwds.add(cwd);
           }
-          for (const resolveWaiter of batch.waiters) resolveWaiter();
+          for (const resolveWaiter of batch.waiters) resolveWaiter(settled);
         }
       }
     } finally {
@@ -464,14 +612,19 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
     });
   };
 
-  const requestSynchronization = (change: ConfigurationChange): Promise<void> => {
-    if (closed) return Promise.resolve();
-    return new Promise<void>((resolveWaiter) => {
+  const requestSynchronization = (
+    change: ConfigurationChange,
+    structuralCheckRequested = true,
+  ): Promise<ConfigurationSynchronizationOutcome> => {
+    if (closed) return Promise.resolve(synchronizationOutcome("closed"));
+    return new Promise<ConfigurationSynchronizationOutcome>((resolveWaiter) => {
       pending ??= {
         agentsChanged: false,
         modelsChanged: false,
         skillsChanged: false,
         projectCwds: new Set<string>(),
+        availabilityChanged: false,
+        structuralCheckRequested: false,
         force: false,
         waiters: [],
       };
@@ -479,34 +632,48 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
       pending.modelsChanged ||= change.modelsChanged === true;
       pending.skillsChanged ||= change.skillsChanged === true;
       for (const cwd of change.projectCwds ?? []) pending.projectCwds.add(cwd);
+      pending.availabilityChanged ||= change.availabilityChanged === true;
+      pending.structuralCheckRequested ||= structuralCheckRequested;
       pending.force ||= change.force === true;
       pending.waiters.push(resolveWaiter);
       scheduleDrain();
     });
   };
 
-  watcherManager = createWatcherManager({
-    agentDir,
-    homeDir,
-    watch: options.watch,
-    onChange(change) {
-      if (closed) return;
-      void requestSynchronization(change);
-    },
-    onError() {
-      publishWatcherError();
-    },
-    fingerprintProject(cwd) {
-      return fingerprintSkillRoot(join(cwd, ".easyresearch", "skills"), `project:${cwd}`);
-    },
-  });
+  try {
+    watcherManager = createWatcherManager({
+      agentDir,
+      homeDir,
+      watch: options.watch,
+      onChange(change) {
+        if (closed) return;
+        void requestSynchronization(change);
+      },
+      onError() {
+        publishWatcherError();
+      },
+      fingerprintProject(cwd) {
+        return fingerprintSkillRoot(
+          join(cwd, ".easyresearch", "skills"),
+          `project:${cwd}`,
+          skillSnapshotRoot,
+        );
+      },
+    });
+  } catch (error) {
+    if (ownsSkillSnapshotRoot) rmSync(skillSnapshotRoot, { recursive: true, force: true });
+    throw error;
+  }
 
   return {
     get generation() {
       return currentGeneration;
     },
+    get availabilityEpoch() {
+      return currentAvailabilityEpoch;
+    },
     get error() {
-      return validationError ?? watcherError;
+      return validationError ?? acceptedDiagnostic ?? watcherError;
     },
     get compactionPolicy() {
       return { ...currentCompactionPolicy };
@@ -552,14 +719,20 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
     isCurrent(generation) {
       return (
         !closed &&
-        validationError === null &&
         currentCatalog !== undefined &&
         currentFingerprint !== undefined &&
         generation === currentGeneration
       );
     },
     notify(change) {
-      return requestSynchronization(change);
+      const availabilityOnly =
+        change.availabilityChanged === true
+        && change.agentsChanged !== true
+        && change.modelsChanged !== true
+        && change.skillsChanged !== true
+        && (change.projectCwds?.length ?? 0) === 0
+        && change.force !== true;
+      return requestSynchronization(change, !availabilityOnly);
     },
     async resolveAgents(cwd) {
       const snapshot = currentCatalog;
@@ -583,8 +756,8 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
               : { project: projectSkillDescriptors }),
           },
         }).agents;
-      } catch {
-        throw new Error("Agent configuration could not be resolved.");
+      } catch (cause) {
+        throw new Error("Agent configuration could not be resolved.", { cause });
       }
     },
     subscribe(listener) {
@@ -614,6 +787,13 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
         } catch (error) {
           failures.push(error);
         }
+        if (ownsSkillSnapshotRoot) {
+          try {
+            rmSync(skillSnapshotRoot, { recursive: true, force: true });
+          } catch (error) {
+            failures.push(error);
+          }
+        }
         if (failures.length > 0) {
           throw new Error("Configuration monitoring could not close safely.");
         }
@@ -630,13 +810,44 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
 export async function fingerprintConfiguration(
   agentDir: string,
   homeDir: string = homedir(),
+  snapshotRoot?: string,
 ): Promise<ConfigurationFingerprint> {
   const settingsBytes = await readOptionalFile(join(agentDir, "settings.json"));
   let settings: unknown = {};
-  if (settingsBytes !== undefined) settings = JSON.parse(settingsBytes.toString("utf8")) as unknown;
-  const enableDotAgentsSkill = isDotAgentsSkillEnabled(settings);
-  const compactionPolicy = parseGlobalCompactionPolicy(settings);
-  const apiUsageSettings = parseGlobalApiUsageSettings(settings);
+  let diagnostic: string | undefined;
+  const invalidSettingsLayers: NonNullable<ConfigurationFingerprint["invalidSettingsLayers"]> = {};
+  if (settingsBytes !== undefined) {
+    try {
+      settings = JSON.parse(settingsBytes.toString("utf8")) as unknown;
+    } catch {
+      diagnostic = SAFE_SETTINGS_DIAGNOSTIC;
+      invalidSettingsLayers.agentDefaults = true;
+      invalidSettingsLayers.compaction = true;
+      invalidSettingsLayers.apiUsage = true;
+      invalidSettingsLayers.skillPolicy = true;
+    }
+  }
+  let enableDotAgentsSkill = false;
+  let compactionPolicy = parseGlobalCompactionPolicy({});
+  let apiUsageSettings = parseGlobalApiUsageSettings({});
+  try {
+    enableDotAgentsSkill = isDotAgentsSkillEnabled(settings);
+  } catch {
+    diagnostic = SAFE_SETTINGS_DIAGNOSTIC;
+    invalidSettingsLayers.skillPolicy = true;
+  }
+  try {
+    compactionPolicy = parseGlobalCompactionPolicy(settings);
+  } catch {
+    diagnostic = SAFE_SETTINGS_DIAGNOSTIC;
+    invalidSettingsLayers.compaction = true;
+  }
+  try {
+    apiUsageSettings = parseGlobalApiUsageSettings(settings);
+  } catch {
+    diagnostic = SAFE_SETTINGS_DIAGNOSTIC;
+    invalidSettingsLayers.apiUsage = true;
+  }
 
   const agentsDir = join(agentDir, "agents");
   const names = (await readDirectoryOrEmpty(agentsDir))
@@ -664,7 +875,14 @@ export async function fingerprintConfiguration(
 
   const defaultsHash = createHash("sha256");
   defaultsHash.update("easyresearch-agent-defaults-v1\0");
-  const defaults = await readGlobalAgentDefaults(agentDir);
+  let defaults: Awaited<ReturnType<typeof readGlobalAgentDefaults>> = {};
+  try {
+    defaults = await readGlobalAgentDefaults(agentDir);
+  } catch {
+    diagnostic = SAFE_SETTINGS_DIAGNOSTIC;
+    invalidSettingsLayers.agentDefaults = true;
+    if (settingsBytes !== undefined) updateHashField(defaultsHash, settingsBytes);
+  }
   for (const [name, entry] of Object.entries(defaults).sort(([left], [right]) => compareNames(left, right))) {
     updateHashField(defaultsHash, Buffer.from(name, "utf8"));
     updateHashField(defaultsHash, Buffer.from(entry.model ?? "", "utf8"));
@@ -689,6 +907,7 @@ export async function fingerprintConfiguration(
     agentDir,
     homeDir,
     enableDotAgentsSkill,
+    snapshotRoot,
   });
   const globalSkills = skillResources.globalSkills.value;
   const homeSkills = skillResources.homeSkills?.value ?? null;
@@ -703,6 +922,7 @@ export async function fingerprintConfiguration(
     .update(apiUsage)
     .update(globalSkills)
     .update(homeSkills ?? "disabled")
+    .update(diagnostic ?? "valid")
     .digest("hex");
   return {
     value,
@@ -717,12 +937,13 @@ export async function fingerprintConfiguration(
     homeSkills,
     globalSkillDescriptors,
     homeSkillDescriptors,
+    ...(diagnostic ? { diagnostic } : {}),
+    ...(Object.keys(invalidSettingsLayers).length > 0 ? { invalidSettingsLayers } : {}),
   };
 }
 
 function assertValidCatalog(snapshot: AgentCatalogSnapshot): void {
   if (
-    snapshot.diagnostics.length > 0 ||
     snapshot.definitions.length === 0 ||
     !snapshot.definitions.some((agent) => agent.name === RESEARCH_ASSISTANT_AGENT)
   ) {
@@ -730,17 +951,12 @@ function assertValidCatalog(snapshot: AgentCatalogSnapshot): void {
   }
 }
 
-function assertConfiguredModelsAvailable(
-  snapshot: AgentCatalogSnapshot,
-  availableModels: readonly ModelCatalogEntry[],
-): void {
-  const available = new Set(availableModels.map((model) => `${model.provider}/${model.id}`));
-  if (snapshot.definitions.some((agent) => {
-    const model = snapshot.defaults?.[agent.name]?.model;
-    return model !== undefined && !available.has(model);
-  })) {
-    throw new Error("Configured Agent model is unavailable");
-  }
+function catalogDiagnostic(snapshot: AgentCatalogSnapshot): string | undefined {
+  const diagnostic = snapshot.diagnostics[0];
+  if (!diagnostic) return undefined;
+  return diagnostic.source === "global"
+    ? `Agent configuration issue in global agents/${diagnostic.agent}.md. Open that file in Config to repair it.`
+    : `Agent configuration issue in bundled Agent ${diagnostic.agent}. Reinstall this EasyResearch version.`;
 }
 
 function sameFingerprint(left: ConfigurationFingerprint, right: ConfigurationFingerprint): boolean {
@@ -751,7 +967,8 @@ function sameFingerprint(left: ConfigurationFingerprint, right: ConfigurationFin
     left.compaction === right.compaction &&
     left.apiUsage === right.apiUsage &&
     left.globalSkills === right.globalSkills &&
-    left.homeSkills === right.homeSkills;
+    left.homeSkills === right.homeSkills &&
+    left.diagnostic === right.diagnostic;
 }
 
 function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
@@ -763,6 +980,13 @@ function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
 
 function compareNames(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function modelCatalogSignature(models: readonly ModelCatalogEntry[]): string {
+  return [...models]
+    .map((model) => `${model.provider}\0${model.id}`)
+    .sort(compareNames)
+    .join("\n");
 }
 
 function updateHashField(hash: ReturnType<typeof createHash>, bytes: Uint8Array): void {

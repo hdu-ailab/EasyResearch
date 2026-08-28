@@ -1,6 +1,5 @@
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 import type { AgentRuntimeBinding } from "../../runtime/agent-runtime-binding";
-import type { LiveConfiguration } from "../../runtime/live-configuration";
 import { createLogger } from "../../runtime/logger";
 import { mountPiEventLogger, type PiEventBus } from "../../runtime/pi-event-logger";
 import type { SubagentCoordinator } from "../../subagent/coordinator";
@@ -14,13 +13,11 @@ import {
   formatSubagentDescription,
 } from "../../subagent/tool";
 import type { SubagentSupervisor } from "../../subagent/supervisor";
+import type { CreateSubagentToolOptions } from "../../subagent/tool";
 
 export interface SubagentExtensionOptions {
   binding: AgentRuntimeBinding;
-  liveConfiguration: Pick<
-    LiveConfiguration,
-    "generation" | "synchronize" | "acquireProject" | "isCurrent" | "resolveAgents" | "subscribe"
-  >;
+  liveConfiguration: CreateSubagentToolOptions["liveConfiguration"];
   coordinator: SubagentCoordinator;
   supervisor: SubagentSupervisor;
 }

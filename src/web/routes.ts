@@ -40,6 +40,8 @@ import {
   ConfigurationUnavailableError,
   type LiveConfiguration,
 } from "../runtime/live-configuration";
+import { ModelRequestError } from "../runtime/model-request-error";
+import { ProviderDeletionError, type ProviderDeletionService } from "./provider-deletion";
 import { DAEMON_CONTROL_PATH, DAEMON_TOKEN_HEADER } from "../cli/server-process";
 import {
   rejectUnauthorizedDesktopRequest,
@@ -77,7 +79,9 @@ export interface RouteServices {
   config: ConfigFileService;
   subagentSessions: Pick<SubagentSessionService, "summaries" | "snapshot" | "statistics" | "trackUsage">;
   auth?: AuthGateway;
-  configuration: Pick<LiveConfiguration, "generation" | "error" | "skillPolicy" | "subscribe">;
+  providerDeletion?: ProviderDeletionService;
+  configuration: Pick<LiveConfiguration, "generation" | "error" | "skillPolicy" | "subscribe">
+    & Partial<Pick<LiveConfiguration, "availabilityEpoch">>;
   configurationProjectWatches: ConfigurationProjectWatches;
   logger: Logger;
   daemonControl?: DaemonControl;
@@ -415,8 +419,11 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
 
       if (path === "/api/config/file" && req.method === "PUT") {
         const body = await jsonBody<{ scope: ConfigScope; cwd?: string; path: string; content: string }>(req);
-        await services.config.write(body);
-        return jsonResponse({ ok: true });
+        const configuration = await services.config.write(body);
+        return jsonResponse({
+          ok: true,
+          ...(configuration && typeof configuration === "object" ? { configuration } : {}),
+        });
       }
 
       if (path === "/api/config/directory" && req.method === "POST") {
@@ -430,6 +437,13 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       }
 
       if (services.auth) {
+        const providerDeleteMatch = path.match(/^\/api\/auth\/providers\/([^/]+)$/);
+        if (req.method === "DELETE" && providerDeleteMatch) {
+          if (!services.providerDeletion) return errorResponse(404, "Not found");
+          const providerId = providerDeleteMatch[1];
+          if (!providerId) return errorResponse(404, "Not found");
+          return jsonResponse(await services.providerDeletion.delete(decodeURIComponent(providerId)));
+        }
         if (req.method === "GET" && path === "/api/auth/providers") {
           const providers = await services.auth.listProviders();
           return jsonResponse({ providers } satisfies AuthProvidersResponseDto);
@@ -543,6 +557,12 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       }
       if (error instanceof ConfigurationUnavailableError) {
         return configurationUnavailableResponse(error);
+      }
+      if (error instanceof ModelRequestError) {
+        return errorResponse(409, error.message, { code: error.code });
+      }
+      if (error instanceof ProviderDeletionError) {
+        return errorResponse(error.status, error.message);
       }
       if (error instanceof SessionStartError) {
         const cause = error.originalError;
@@ -816,7 +836,8 @@ function authFlowSse(services: RouteServices, flowId: string): Response {
 }
 
 function configurationEvents(
-  configuration: Pick<LiveConfiguration, "generation" | "error" | "subscribe">,
+  configuration: Pick<LiveConfiguration, "generation" | "error" | "subscribe">
+    & Partial<Pick<LiveConfiguration, "availabilityEpoch">>,
   projectWatches: ConfigurationProjectWatches,
 ): Response {
   const encoder = new TextEncoder();
@@ -844,6 +865,7 @@ function configurationEvents(
           send(controller, {
             type: "config.error",
             generation: configuration.generation,
+            availabilityEpoch: configuration.availabilityEpoch ?? 0,
             message: error,
             projectWatchLeaseId,
           });
@@ -851,6 +873,7 @@ function configurationEvents(
           send(controller, {
             type: "config.updated",
             generation: configuration.generation,
+            availabilityEpoch: configuration.availabilityEpoch ?? 0,
             agentsChanged: true,
             modelsChanged: true,
             skillsChanged: true,

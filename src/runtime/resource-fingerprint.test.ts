@@ -2,6 +2,7 @@ import {
   appendFileSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -267,6 +268,59 @@ describe("mutable Skill resource fingerprints", () => {
     expect(fingerprint.descriptors).toEqual(["alpha.md", "namespace/deep/SKILL.md"]);
   });
 
+  it("uses Pi frontmatter identity for effective descriptors while retaining malformed structural bytes", async () => {
+    const root = join(tempRoot(), "skills");
+    mkdirSync(join(root, "folder-name"), { recursive: true });
+    mkdirSync(join(root, "missing-description"), { recursive: true });
+    writeFileSync(
+      join(root, "folder-name", "SKILL.md"),
+      "---\nname: declared-name\ndescription: Valid\n---\nBody\n",
+      "utf8",
+    );
+    writeFileSync(
+      join(root, "missing-description", "SKILL.md"),
+      "---\nname: omitted\n---\nBody\n",
+      "utf8",
+    );
+
+    const fingerprint = await fingerprintSkillRoot(root, "global");
+
+    expect(fingerprint.descriptors).toEqual([
+      "folder-name/SKILL.md",
+      "missing-description/SKILL.md",
+    ]);
+    expect(fingerprint.skillDescriptors).toEqual([
+      { name: "declared-name", relativePath: "folder-name/SKILL.md" },
+    ]);
+  });
+
+  it("materializes immutable accepted descriptor bytes while preserving the original base directory", async () => {
+    const base = tempRoot();
+    const root = join(base, "skills");
+    const snapshotRoot = join(base, "snapshots");
+    const skillDir = join(root, "stable");
+    const descriptor = join(skillDir, "SKILL.md");
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(descriptor, "---\nname: stable\ndescription: Stable\n---\nBODY_V1\n", "utf8");
+
+    const fingerprint = await fingerprintSkillRoot(root, "global", snapshotRoot);
+    const accepted = fingerprint.skillDescriptors[0];
+    expect(accepted).toMatchObject({
+      name: "stable",
+      relativePath: "stable/SKILL.md",
+      baseDir: skillDir,
+    });
+    expect(accepted?.snapshotPath).not.toBe(descriptor);
+    expect(readFileSync(accepted!.snapshotPath!, "utf8")).toContain("BODY_V1");
+
+    writeFileSync(descriptor, "---\nname: stable\ndescription: Stable\n---\nBODY_V2\n", "utf8");
+    expect(readFileSync(accepted!.snapshotPath!, "utf8")).toContain("BODY_V1");
+    expect(resourceFingerprint.applySkillSnapshotBaseDirs({
+      skills: [{ filePath: accepted!.snapshotPath!, baseDir: join(snapshotRoot, "wrong") }],
+      diagnostics: [],
+    }).skills[0]?.baseDir).toBe(skillDir);
+  });
+
   it("changes for same-size edits, add/unlink, and atomic descriptor replacement", async () => {
     const root = join(tempRoot(), "skills");
     mkdirSync(root);
@@ -303,6 +357,45 @@ describe("mutable Skill resource fingerprints", () => {
     expect(await fingerprintSkillRoot(root, "global")).toEqual(before);
   });
 
+  it("excludes Pi-ignored auxiliary trees before applying traversal bounds", async () => {
+    const root = join(tempRoot(), "skills");
+    const visible = join(root, "visible");
+    mkdirSync(visible, { recursive: true });
+    writeFileSync(join(visible, "SKILL.md"), "visible", "utf8");
+    writeFileSync(join(root, ".gitignore"), "ignored-root/\n", "utf8");
+    mkdirSync(nestedDirectory(join(root, ".hidden"), EXPECTED_MAX_DEPTH + 1), { recursive: true });
+    mkdirSync(nestedDirectory(join(root, "node_modules"), EXPECTED_MAX_DEPTH + 1), { recursive: true });
+    mkdirSync(nestedDirectory(join(root, "ignored-root"), EXPECTED_MAX_DEPTH + 1), { recursive: true });
+
+    const namespace = join(root, "namespace");
+    mkdirSync(namespace, { recursive: true });
+    writeFileSync(join(namespace, ".ignore"), "generated/\n", "utf8");
+    mkdirSync(nestedDirectory(join(namespace, "generated"), EXPECTED_MAX_DEPTH + 1), { recursive: true });
+
+    expect((await fingerprintSkillRoot(root, "global")).descriptors).toEqual(["visible/SKILL.md"]);
+  });
+
+  it("keeps migration backup directories inert", async () => {
+    const root = join(tempRoot(), "skills");
+    mkdirSync(join(root, "retired.bak"), { recursive: true });
+    mkdirSync(join(root, "active"), { recursive: true });
+    writeFileSync(join(root, "retired.bak", "SKILL.md"), "retired", "utf8");
+    writeFileSync(join(root, "active", "SKILL.md"), "active", "utf8");
+
+    expect((await fingerprintSkillRoot(root, "global")).descriptors).toEqual(["active/SKILL.md"]);
+  });
+
+  it("does not follow an ignore control symlink outside the controlled root", async () => {
+    const root = join(tempRoot(), "skills");
+    const outside = join(tempRoot(), "outside.ignore");
+    mkdirSync(join(root, "visible"), { recursive: true });
+    writeFileSync(join(root, "visible", "SKILL.md"), "visible", "utf8");
+    writeFileSync(outside, "visible/\n", "utf8");
+    symlinkSync(outside, join(root, ".gitignore"), "file");
+
+    expect((await fingerprintSkillRoot(root, "global")).descriptors).toEqual(["visible/SKILL.md"]);
+  });
+
   it("orders normalized descriptor paths bytewise rather than by creation or locale order", async () => {
     const root = join(tempRoot(), "skills");
     mkdirSync(join(root, "z", "deep"), { recursive: true });
@@ -322,9 +415,18 @@ describe("mutable Skill resource fingerprints", () => {
     const agentDir = join(base, "agent");
     const homeDir = join(base, "home");
     mkdirSync(join(agentDir, "skills"), { recursive: true });
-    mkdirSync(join(homeDir, ".agents", "skills"), { recursive: true });
+    mkdirSync(join(homeDir, ".agents", "skills", "group"), { recursive: true });
     writeFileSync(join(agentDir, "skills", "global.md"), "global", "utf8");
-    writeFileSync(join(homeDir, ".agents", "skills", "home.md"), "home", "utf8");
+    writeFileSync(
+      join(homeDir, ".agents", "skills", "home.md"),
+      "---\nname: root-ignored\ndescription: ignored\n---\n",
+      "utf8",
+    );
+    writeFileSync(
+      join(homeDir, ".agents", "skills", "group", "home.md"),
+      "---\nname: home\ndescription: home\n---\n",
+      "utf8",
+    );
 
     const disabled = await fingerprintGlobalSkillResources({
       agentDir,
@@ -340,7 +442,10 @@ describe("mutable Skill resource fingerprints", () => {
     expect(disabled.globalSkills.descriptors).toEqual(["global.md"]);
     expect(disabled.homeSkills).toBeNull();
     expect(enabled.globalSkills).toEqual(disabled.globalSkills);
-    expect(enabled.homeSkills?.descriptors).toEqual(["home.md"]);
+    expect(enabled.homeSkills?.descriptors).toEqual(["group/home.md"]);
+    expect(enabled.homeSkills?.skillDescriptors).toEqual([
+      { name: "home", relativePath: "group/home.md" },
+    ]);
   });
 });
 

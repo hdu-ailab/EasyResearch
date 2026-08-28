@@ -41,6 +41,7 @@ function makeFlow(overrides: Partial<UseProviderAuthFlow> = {}): UseProviderAuth
   return {
     providers: [apiKeyProvider, dualProvider, ambientProvider],
     providersLoaded: true,
+    providersError: undefined,
     connectedCount: 0,
     view: "idle",
     pendingPrompt: null,
@@ -54,6 +55,7 @@ function makeFlow(overrides: Partial<UseProviderAuthFlow> = {}): UseProviderAuth
     cancel: vi.fn(async () => {}),
     backToList: vi.fn(),
     logout: vi.fn(async () => {}),
+    deleteProvider: vi.fn(async () => {}),
     refresh: vi.fn(async () => {}),
     ...overrides,
   };
@@ -123,6 +125,27 @@ describe("ProviderConnectModal", () => {
     expect(flow.start).not.toHaveBeenCalled();
     await user.click(screen.getByText("Disconnect Anthropic"));
     expect(flow.logout).toHaveBeenCalledWith("anthropic");
+  });
+
+  it("requires confirmation before deleting a models.json provider", async () => {
+    const custom = {
+      ...apiKeyProvider,
+      id: "custom",
+      name: "Custom",
+      modelsJson: true,
+      authStatus: { configured: true },
+    };
+    const flow = makeFlow({ providers: [custom] });
+    mockedUse.mockReturnValue(flow);
+    const user = userEvent.setup();
+    render(<ProviderConnectModal onClose={() => {}} />);
+
+    await user.click(screen.getByRole("button", { name: "Custom" }));
+    await user.click(screen.getByText("Delete provider Custom"));
+    expect(flow.deleteProvider).not.toHaveBeenCalled();
+    await user.click(screen.getByText("Confirm delete Custom"));
+
+    expect(flow.deleteProvider).toHaveBeenCalledWith("custom");
   });
 
   it("renders an auth_url notify with a link and a device_code with the code", () => {

@@ -47,12 +47,14 @@ export interface AuthGatewaySettings {
   modelsJsonProviderIds?: () => Promise<ReadonlySet<string>>;
   /** Provider ids captured by the same transaction as the accepted runtime. */
   acceptedModelsJsonProviderIds?: () => ReadonlySet<string>;
+  /** Explicit keyless custom providers captured with the accepted runtime. */
+  acceptedNoAuthProviderIds?: () => ReadonlySet<string>;
   /**
    * Daemon-owned accepted-catalog synchronization. When present, routine
    * readers must not refresh the accepted runtime in place.
    */
   synchronizeCatalog?: () => Promise<void>;
-  /** Force a daemon model generation after credentials change. */
+  /** Publish a daemon availability epoch after credentials change. */
   onModelsChanged?: () => Promise<void>;
 }
 
@@ -60,6 +62,12 @@ export interface AuthGatewaySettings {
 export interface AuthModelRuntime {
   getProviders(): readonly { id: string; name: string; auth?: any }[];
   getProvider(providerId: string): { id: string; name: string; auth?: any } | undefined;
+  getModels(): Iterable<{
+    provider: string;
+    id: string;
+    reasoning: boolean;
+    thinkingLevelMap?: Record<string, string | null>;
+  }>;
   getAvailableSnapshot(): readonly {
     provider: string;
     id: string;
@@ -120,6 +128,7 @@ export function createAuthGateway(
   const { logger } = settings;
   let refreshPromise: Promise<void> | undefined;
   let modelsJsonProviderIds: ReadonlySet<string> = new Set();
+  let noAuthProviderIds: ReadonlySet<string> = new Set();
   const activeOperations = new Set<Promise<unknown>>();
   let shuttingDown = false;
   let shutdownPromise: Promise<void> | undefined;
@@ -153,7 +162,6 @@ export function createAuthGateway(
       let synchronizedProviderIds: ReadonlySet<string>;
       if (settings.synchronizeCatalog) {
         await settings.synchronizeCatalog();
-        assertRuntimeHealthy();
         synchronizedProviderIds = settings.acceptedModelsJsonProviderIds?.() ?? new Set();
       } else {
         const result = await runtime.refresh({ allowNetwork: false });
@@ -164,6 +172,7 @@ export function createAuthGateway(
           : new Set();
       }
       modelsJsonProviderIds = synchronizedProviderIds;
+      noAuthProviderIds = settings.acceptedNoAuthProviderIds?.() ?? new Set();
     })()
       .finally(() => {
         refreshPromise = undefined;
@@ -174,6 +183,9 @@ export function createAuthGateway(
     if (shuttingDown) throw shutdownError();
     const provider = runtime.getProvider(req.providerId);
     if (!provider) throw new AuthGatewayError(404, `unknown provider: ${req.providerId}`);
+    if (noAuthProviderIds.has(req.providerId)) {
+      throw new AuthGatewayError(400, `provider ${req.providerId} is a no-auth endpoint`);
+    }
     const auth = provider.auth ?? {};
     const hasMethod =
       (req.type === "api_key" && auth.apiKey) || (req.type === "oauth" && auth.oauth);
@@ -309,11 +321,18 @@ export function createAuthGateway(
     refreshCatalog: () => ownOperation(refreshLocal),
     listModels: () => ownOperation(async () => {
       await refreshLocal();
-      return runtime.getAvailableSnapshot().map((model) => ({
+      const available = new Set(
+        runtime.getAvailableSnapshot().map((model) => `${model.provider}\0${model.id}`),
+      );
+      return [...runtime.getModels()].map((model) => ({
         provider: model.provider,
         id: model.id,
         reasoning: model.reasoning,
         thinkingLevelMap: model.thinkingLevelMap ? { ...model.thinkingLevelMap } : undefined,
+        available: available.has(`${model.provider}\0${model.id}`),
+        authRequired:
+          !available.has(`${model.provider}\0${model.id}`)
+          && !runtime.getProviderAuthStatus(model.provider).configured,
       }));
     }),
     listProviders: () => ownOperation(async () => {
@@ -321,6 +340,18 @@ export function createAuthGateway(
       const providers = runtime.getProviders();
       const out: AuthProviderInfoDto[] = [];
       for (const p of providers) {
+        if (noAuthProviderIds.has(p.id)) {
+          out.push({
+            ...assembleProviderInfo(
+              { ...p, auth: {} },
+              { configured: true, source: "no-auth endpoint" },
+              undefined,
+              modelsJsonProviderIds,
+            ),
+            noAuth: true,
+          });
+          continue;
+        }
         const status = runtime.getProviderAuthStatus(p.id);
         let authCheck: AuthCheck | undefined;
         try {
@@ -346,6 +377,7 @@ export function createAuthGateway(
       if (!runtime.getProvider(providerId)) {
         throw new AuthGatewayError(404, `unknown provider: ${providerId}`);
       }
+      if (noAuthProviderIds.has(providerId)) return;
       try {
         await runtime.logout(providerId);
       } catch (error) {

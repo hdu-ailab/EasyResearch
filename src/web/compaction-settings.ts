@@ -26,7 +26,9 @@ export interface CompactionSettingsService {
 
 export function createCompactionSettingsService(
   config: ConfigFileService,
-  live: Pick<LiveConfiguration, "compactionPolicy" | "synchronize">,
+  live: Omit<Pick<LiveConfiguration, "compactionPolicy" | "synchronize">, "synchronize"> & {
+    synchronize(): Promise<unknown>;
+  },
 ): CompactionSettingsService {
   const get = async (): Promise<CompactionSettingsDto> => {
     await live.synchronize();

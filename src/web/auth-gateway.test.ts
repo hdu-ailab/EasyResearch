@@ -22,11 +22,12 @@ const xaiProvider = {
 function fakeRuntime(
   providers: any[],
   loginImpl: any,
-  opts: { refresh?: any; logout?: any; getAvailableSnapshot?: any; getError?: any } = {},
+  opts: { refresh?: any; logout?: any; getAvailableSnapshot?: any; getModels?: any; getError?: any } = {},
 ) {
   return {
     getProviders: () => providers,
     getProvider: (id: string) => providers.find((p) => p.id === id),
+    getModels: opts.getModels ?? opts.getAvailableSnapshot ?? (() => []),
     getAvailableSnapshot: opts.getAvailableSnapshot ?? (() => []),
     getError: opts.getError ?? (() => undefined),
     getProviderAuthStatus: () => ({ configured: false }) as any,
@@ -61,6 +62,33 @@ async function runPreflightedFlow(
 }
 
 describe("AuthGateway.listProviders", () => {
+  it("projects an explicitly keyless models.json provider as no-auth and non-connectable", async () => {
+    const logout = vi.fn(async () => {});
+    const runtime = fakeRuntime([
+      {
+        id: "local",
+        name: "Local",
+        auth: { apiKey: { name: "API key", login: vi.fn() } },
+      },
+    ], vi.fn(), { logout });
+    const gateway = createAuthGateway(runtime, createAuthFlowStore(), {
+      timeoutMs: 600_000,
+      acceptedNoAuthProviderIds: () => new Set(["local"]),
+    });
+
+    await expect(gateway.listProviders()).resolves.toEqual([
+      expect.objectContaining({
+        id: "local",
+        authMethods: [],
+        connectable: false,
+        authStatus: { configured: true, source: "no-auth endpoint" },
+        noAuth: true,
+      }),
+    ]);
+    await gateway.logout("local");
+    expect(logout).not.toHaveBeenCalled();
+  });
+
   it("assembles provider infos with connectable mapping", async () => {
     const gw = createAuthGateway(
       fakeRuntime([anthropicProvider, vertexProvider] as any, vi.fn()),
@@ -124,7 +152,14 @@ describe("AuthGateway.listModels", () => {
     );
 
     expect(await gw.listModels()).toEqual([
-      { provider: "anthropic", id: "claude", reasoning: true, thinkingLevelMap: undefined },
+      {
+        provider: "anthropic",
+        id: "claude",
+        reasoning: true,
+        thinkingLevelMap: undefined,
+        available: true,
+        authRequired: false,
+      },
     ]);
     expect(refresh).toHaveBeenCalledWith({ allowNetwork: false });
   });

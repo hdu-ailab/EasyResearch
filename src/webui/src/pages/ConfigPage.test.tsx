@@ -55,7 +55,26 @@ describe("ConfigPage", () => {
         { name: "agents", path: "agents", type: "directory" },
       ]);
     vi.mocked(api.readConfigFile).mockReset().mockResolvedValue({ path: "notes.md", content: "# Notes\n" });
-    vi.mocked(api.writeConfigFile).mockReset().mockResolvedValue();
+    vi.mocked(api.writeConfigFile)
+      .mockReset()
+      .mockImplementation(async (scope, _cwd, path) => {
+        const normalized = path.replaceAll("\\", "/");
+        const parts = normalized.split("/");
+        const filename = parts.at(-1) ?? "";
+        const directMarkdown = parts.length === 2 && filename.endsWith(".md");
+        const live =
+          (scope === "global" &&
+            (normalized === "models.json" ||
+              normalized === "settings.json" ||
+              (parts[0] === "agents" && directMarkdown))) ||
+          (parts[0] === "skills" && (directMarkdown || filename === "SKILL.md"));
+        return live
+          ? {
+              ok: true,
+              configuration: { status: "unchanged", generation: 1, availabilityEpoch: 1, error: null },
+            }
+          : { ok: true };
+      });
     vi.mocked(api.createConfigDirectory).mockReset().mockResolvedValue();
     vi.mocked(api.refreshConfigurationResources).mockReset().mockResolvedValue({ generation: 1, error: null });
   });
@@ -204,7 +223,7 @@ describe("ConfigPage", () => {
     expect(screen.queryByText(/restart|automatically/i)).toBeNull();
   });
 
-  it("keeps Windows-native nested auxiliary Skill Markdown restart-bound", async () => {
+  it("keeps Windows-native nested auxiliary Skill Markdown as a plain save", async () => {
     const user = userEvent.setup();
     const path = String.raw`skills\reviewer\README.md`;
     vi.mocked(api.listConfig).mockResolvedValueOnce([{ name: "README.md", path, type: "file" }]);
@@ -214,8 +233,8 @@ describe("ConfigPage", () => {
     await user.click(screen.getByRole("button", { name: "README.md" }));
     await user.click(screen.getByRole("button", { name: /save/i }));
 
-    expect(await screen.findByText(/restart/i)).toBeVisible();
-    expect(screen.queryByText(/automatically/i)).toBeNull();
+    expect(await screen.findByText(/^Saved\.$/)).toBeVisible();
+    expect(screen.queryByText(/restart|automatically/i)).toBeNull();
   });
 
   it("does not claim that a project Agent save is live or restart-bound", async () => {
@@ -248,8 +267,8 @@ describe("ConfigPage", () => {
     await user.click(screen.getByRole("button", { name: "README.md" }));
     await user.click(screen.getByRole("button", { name: /save/i }));
 
-    expect(await screen.findByText(/restart/i)).toBeVisible();
-    expect(screen.queryByText(/automatically/i)).toBeNull();
+    expect(await screen.findByText(/^Saved\.$/)).toBeVisible();
+    expect(screen.queryByText(/restart|automatically/i)).toBeNull();
   });
 
   it("awaits selected-project synchronization before Refresh and preserves a safe refresh error", async () => {
@@ -306,7 +325,7 @@ describe("ConfigPage", () => {
     expect(api.listConfig).toHaveBeenCalledTimes(listCalls);
   });
 
-  it("keeps restart guidance for ordinary configuration saves", async () => {
+  it("uses the accepted outcome for global settings saves", async () => {
     const user = userEvent.setup();
     vi.mocked(api.readConfigFile).mockResolvedValueOnce({ path: "settings.json", content: "{}\n" });
     renderConfigPage();
@@ -314,7 +333,7 @@ describe("ConfigPage", () => {
     await user.click(screen.getByRole("button", { name: "settings.json" }));
     await user.click(screen.getByRole("button", { name: /save/i }));
 
-    expect(await screen.findByText(/restart/i)).toBeVisible();
+    expect(await screen.findByText(/appl.*automatically/i)).toBeVisible();
   });
 
   it("rejects malformed JSON while allowing other text", async () => {

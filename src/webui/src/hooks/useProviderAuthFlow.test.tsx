@@ -35,6 +35,12 @@ vi.mock("../api", async (importOriginal) => {
     startAuthFlow: vi.fn(async () => ({ flowId: "f1" })),
     respondAuthFlow: vi.fn(async () => {}),
     cancelAuthFlow: vi.fn(async () => {}),
+    deleteProvider: vi.fn(async () => ({
+      providerId: "custom",
+      credentialsRemoved: true,
+      cacheRemoved: true,
+      warnings: [],
+    })),
     logoutProvider: vi.fn(async () => {}),
     authFlowEventSource: vi.fn((_flowId: string, handlers: api.AuthFlowHandlers) => {
       handlersList.push(handlers);
@@ -128,6 +134,7 @@ describe("useProviderAuthFlow", () => {
 
     view.rerender({ generation: 2 });
     await waitFor(() => expect(api.listAuthProviders).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(view.result.current.providersError).toBe("provider list unavailable"));
 
     expect(view.result.current.connectedCount).toBe(1);
     expect(view.result.current.providersLoaded).toBe(true);
@@ -240,6 +247,16 @@ describe("useProviderAuthFlow", () => {
     });
     expect(api.logoutProvider).toHaveBeenCalledWith("xai");
     expect(api.listAuthProviders).toHaveBeenCalledTimes(2); // initial + refresh
+  });
+
+  it("deletes a custom provider and refreshes", async () => {
+    const { result } = renderHook(() => useProviderAuthFlow());
+    await waitFor(() => expect(result.current.providers).toHaveLength(3));
+    await act(async () => {
+      await result.current.deleteProvider("custom");
+    });
+    expect(api.deleteProvider).toHaveBeenCalledWith("custom");
+    expect(api.listAuthProviders).toHaveBeenCalledTimes(2);
   });
 
   it("ignores stale events from an earlier generation after backToList + restart", async () => {

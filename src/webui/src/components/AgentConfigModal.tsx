@@ -1,6 +1,7 @@
 import { AlertTriangle, Settings2, X } from "lucide-react";
 import { useRef } from "react";
 import type { AgentDto, AgentResourceDto } from "../../../web/contracts";
+import type { ModelOption } from "../api/parsers";
 import { useModalLayer } from "../hooks/useModalLayer";
 import { agentDisplayName } from "../i18n/agents";
 import { useI18n } from "../i18n/useI18n";
@@ -11,7 +12,7 @@ import { ThinkingLevelSelect } from "./ThinkingLevelSelect";
 export interface AgentConfigModalProps {
   agent: AgentDto;
   busy: boolean;
-  modelOptions: ReadonlyArray<{ provider: string; id: string }>;
+  modelOptions: readonly ModelOption[];
   modelValue: string;
   modelError?: string;
   thinkingValue: string;
@@ -53,6 +54,7 @@ export function AgentConfigModal({
   const name = agentDisplayName(t, agent.name);
   const tools = agent.effectiveTools ?? agent.tools ?? [];
   const skills = agent.effectiveSkills ?? agent.skills ?? [];
+  const selectedModel = modelOptions.find((model) => `${model.provider}/${model.id}` === modelValue);
   return (
     <div
       className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/30 p-0 min-[820px]:p-6"
@@ -121,7 +123,15 @@ export function AgentConfigModal({
               value={modelValue}
               options={[
                 ...(isResearchAssistant ? [] : [{ value: "", label: t("settings.agents.inherit") }]),
-                ...modelOptions.map((m) => ({ value: `${m.provider}/${m.id}`, label: `${m.provider}/${m.id}` })),
+                ...modelOptions.map((m) => {
+                  const reference = `${m.provider}/${m.id}`;
+                  const status = m.authRequired
+                    ? t("settings.agents.authenticationRequired")
+                    : !m.available
+                      ? t("settings.agents.modelUnavailable")
+                      : undefined;
+                  return { value: reference, label: status ? `${reference} · ${status}` : reference };
+                }),
               ]}
               placeholder={isResearchAssistant ? "" : t("settings.agents.inherit")}
               disabled={busy}
@@ -131,6 +141,13 @@ export function AgentConfigModal({
             {modelError && (
               <p role="alert" className="text-[12px] text-v2-status-error">
                 {modelError}
+              </p>
+            )}
+            {!modelError && selectedModel && !selectedModel.available && (
+              <p role="status" className="text-[12px] text-v2-status-warning">
+                {selectedModel.authRequired
+                  ? t("settings.agents.authenticationRequired")
+                  : t("settings.agents.modelUnavailable")}
               </p>
             )}
           </div>

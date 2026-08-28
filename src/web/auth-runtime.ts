@@ -13,13 +13,20 @@ import type { AuthModelRuntime } from "./auth-gateway";
 
 const DEFAULT_AUTH_FLOW_TIMEOUT_MS = 600_000;
 
-const SAFE_MODEL_CATALOG_ERROR = "Model catalog validation failed.";
+const SAFE_MODEL_CATALOG_ERROR =
+  "Model configuration issue in global models.json. Open models.json in Config to repair it.";
+const NO_AUTH_RUNTIME_KEY = "easyresearch-no-auth";
+
+export interface RuntimeApiKeyModelRuntime {
+  setRuntimeApiKey(providerId: string, apiKey: string): Promise<void>;
+}
 
 export interface AcceptedModelRuntime<T extends AuthModelRuntime = AuthModelRuntime>
   extends ModelCatalogValidator {
   /** Stable proxy delegated only to the last committed candidate runtime. */
   readonly runtime: T;
   getModelsJsonProviderIds(): ReadonlySet<string>;
+  getNoAuthProviderIds(): ReadonlySet<string>;
   dispose(): Promise<void>;
 }
 
@@ -27,15 +34,19 @@ export interface DaemonAuthRuntime {
   readonly auth: AuthGateway;
   readonly modelValidator: ModelCatalogValidator;
   readonly modelRuntime: AuthModelRuntime;
+  noAuthProviderIds(): ReadonlySet<string>;
   dispose(): Promise<void>;
 }
 
-export interface DaemonAuthRuntimeOptions<T extends AuthModelRuntime> {
+export interface DaemonAuthRuntimeOptions<T extends AuthModelRuntime & RuntimeApiKeyModelRuntime> {
   config: ConfigFileService;
   logger: Logger;
   createModelRuntime: () => Promise<T>;
   synchronizeCatalog: () => Promise<void>;
   onModelsChanged: () => Promise<void>;
+  resolveFallbackModel?: (
+    runtime: T,
+  ) => Promise<{ provider: string; id: string } | undefined>;
 }
 
 /**
@@ -46,35 +57,90 @@ export interface DaemonAuthRuntimeOptions<T extends AuthModelRuntime> {
 export function createAcceptedModelRuntime<T extends AuthModelRuntime>(
   createRuntime: () => Promise<T>,
   readProviderIds: () => Promise<ReadonlySet<string>> = async () => new Set(),
+  resolveFallbackModel?: (
+    runtime: T,
+  ) => Promise<{ provider: string; id: string } | undefined>,
+  readNoAuthProviderIds: () => Promise<ReadonlySet<string>> = async () => new Set(),
 ): AcceptedModelRuntime<T> {
   const transaction = createModelRuntimeTransaction(createRuntime);
   let acceptedProviderIds: ReadonlySet<string> = new Set();
+  let acceptedNoAuthProviderIds: ReadonlySet<string> = new Set();
 
   return {
     runtime: transaction.runtime,
+    currentAvailableModels() {
+      return transaction.runtime.getAvailableSnapshot().map((model) => ({
+        provider: model.provider,
+        id: model.id,
+      }));
+    },
+    async refreshAvailability() {
+      try {
+        await transaction.runtime.refresh({ allowNetwork: false });
+      } catch {
+        // Availability failures remain request/provider diagnostics, not host-config failures.
+      }
+      return transaction.runtime.getAvailableSnapshot().map((model) => ({
+        provider: model.provider,
+        id: model.id,
+      }));
+    },
     async prepareModelCatalog(): Promise<PreparedModelCatalog> {
       const candidate = await transaction.prepare();
       let owned = true;
       try {
-        const result = await candidate.runtime.refresh({ allowNetwork: false });
-        if (result.aborted || result.errors.size > 0) {
-          throw result.errors.values().next().value ?? new Error("Model catalog refresh aborted");
+        let diagnostic: string | undefined;
+        try {
+          const result = await candidate.runtime.refresh({ allowNetwork: false });
+          if (result.aborted || result.errors.size > 0 || candidate.runtime.getError()) {
+            diagnostic = SAFE_MODEL_CATALOG_ERROR;
+          }
+        } catch {
+          diagnostic = SAFE_MODEL_CATALOG_ERROR;
         }
-        const semanticError = candidate.runtime.getError();
-        if (semanticError) throw new Error("Model catalog refresh failed", { cause: semanticError });
-        const models = Object.freeze(
+        const registeredModels = Object.freeze(
+          [...candidate.runtime.getModels()].map(
+            (model): ModelCatalogEntry => Object.freeze({ provider: model.provider, id: model.id }),
+          ),
+        );
+        const availableModels = Object.freeze(
           candidate.runtime.getAvailableSnapshot().map(
             (model): ModelCatalogEntry => Object.freeze({ provider: model.provider, id: model.id }),
           ),
         );
-        const providerIds = new Set(await readProviderIds());
+        let resolvedFallback: { provider: string; id: string } | undefined;
+        try {
+          resolvedFallback = await resolveFallbackModel?.(candidate.runtime);
+        } catch {
+          // Fallback probing is recovery metadata; failure must not reject the
+          // complete registered catalog or disable Provider/Settings surfaces.
+        }
+        const availableReferences = new Set(
+          availableModels.map((model) => `${model.provider}/${model.id}`),
+        );
+        const fallbackModel = resolvedFallback
+          && availableReferences.has(`${resolvedFallback.provider}/${resolvedFallback.id}`)
+          ? Object.freeze({ provider: resolvedFallback.provider, id: resolvedFallback.id })
+          : undefined;
+        let providerIds: ReadonlySet<string> = new Set();
+        let noAuthProviderIds: ReadonlySet<string> = new Set();
+        try {
+          providerIds = new Set(await readProviderIds());
+          noAuthProviderIds = new Set(await readNoAuthProviderIds());
+        } catch {
+          diagnostic = SAFE_MODEL_CATALOG_ERROR;
+        }
 
         return {
-          models,
+          registeredModels,
+          availableModels,
+          ...(fallbackModel ? { fallbackModel } : {}),
+          ...(diagnostic ? { diagnostic } : {}),
           commit() {
             if (!owned) throw new Error("Model catalog candidate is already settled.");
             candidate.activate();
             acceptedProviderIds = providerIds;
+            acceptedNoAuthProviderIds = noAuthProviderIds;
             owned = false;
             void candidate.commit().catch(() => {
               // Retired runtime cleanup remains owned by the transaction.
@@ -99,22 +165,36 @@ export function createAcceptedModelRuntime<T extends AuthModelRuntime>(
       }
     },
     getModelsJsonProviderIds: () => new Set(acceptedProviderIds),
+    getNoAuthProviderIds: () => new Set(acceptedNoAuthProviderIds),
     dispose: () => transaction.dispose(),
   };
 }
 
-export async function createDaemonAuthRuntime<T extends AuthModelRuntime>(
+export async function createDaemonAuthRuntime<T extends AuthModelRuntime & RuntimeApiKeyModelRuntime>(
   options: DaemonAuthRuntimeOptions<T>,
 ): Promise<DaemonAuthRuntime> {
   const modelsPath = join(options.config.globalRoot, "models.json");
   const accepted = createAcceptedModelRuntime(
-    options.createModelRuntime,
+    async () => {
+      const runtime = await options.createModelRuntime();
+      try {
+        await configureNoAuthModelRuntime(runtime, modelsPath);
+      } catch {
+        // Pi's runtime keeps its built-in/default layer; candidate preparation
+        // reports the malformed custom layer as a safe degraded diagnostic.
+      }
+      return runtime;
+    },
     () => readModelsJsonProviderIds(modelsPath),
+    options.resolveFallbackModel,
+    () => readModelsJsonNoAuthProviderIds(modelsPath),
   );
+  (await accepted.prepareModelCatalog()).commit();
   const auth = createAuthGateway(accepted.runtime, undefined, {
     timeoutMs: await readAuthFlowTimeout(options.config),
     logger: options.logger,
     acceptedModelsJsonProviderIds: () => accepted.getModelsJsonProviderIds(),
+    acceptedNoAuthProviderIds: () => accepted.getNoAuthProviderIds(),
     synchronizeCatalog: options.synchronizeCatalog,
     onModelsChanged: options.onModelsChanged,
   });
@@ -122,6 +202,7 @@ export async function createDaemonAuthRuntime<T extends AuthModelRuntime>(
     auth,
     modelValidator: accepted,
     modelRuntime: accepted.runtime,
+    noAuthProviderIds: () => accepted.getNoAuthProviderIds(),
     dispose: () => accepted.dispose(),
   };
 }
@@ -136,24 +217,107 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * read, parse, and root-shape errors reject the catalog refresh.
  */
 export async function readModelsJsonProviderIds(modelsPath: string): Promise<ReadonlySet<string>> {
+  const root = await readModelsJsonRoot(modelsPath);
+  if (root === undefined) return new Set();
+  const providers = root.providers;
+  if (!isRecord(providers)) throw new Error('Invalid models.json: "providers" must be an object');
+  return new Set(Object.keys(providers));
+}
+
+export async function readModelsJsonNoAuthProviderIds(modelsPath: string): Promise<ReadonlySet<string>> {
+  const root = await readModelsJsonRoot(modelsPath);
+  if (root === undefined) return new Set();
+  const providers = root.providers;
+  if (!isRecord(providers)) throw new Error('Invalid models.json: "providers" must be an object');
+  return noAuthProviderIds(providers);
+}
+
+/**
+ * Pi requires an auth resolution even for keyless compatible endpoints. Give
+ * only complete, explicitly keyless custom providers a runtime-only key. The
+ * public ModelRuntime API keeps this overlay out of auth.json.
+ */
+export async function configureNoAuthModelRuntime(
+  runtime: RuntimeApiKeyModelRuntime,
+  modelsPath: string,
+): Promise<ReadonlySet<string>> {
+  const root = await readModelsJsonRoot(modelsPath);
+  if (root === undefined) return new Set();
+  const providers = root.providers;
+  if (!isRecord(providers)) throw new Error('Invalid models.json: "providers" must be an object');
+  const providerIds = noAuthProviderIds(providers);
+  for (const providerId of providerIds) {
+    await runtime.setRuntimeApiKey(providerId, NO_AUTH_RUNTIME_KEY);
+  }
+  return providerIds;
+}
+
+function noAuthProviderIds(providers: Record<string, unknown>): ReadonlySet<string> {
+  const providerIds = new Set<string>();
+  for (const [providerId, value] of Object.entries(providers)) {
+    const models = isRecord(value) && Array.isArray(value.models) ? value.models : [];
+    const hasProviderBaseUrl = isRecord(value)
+      && typeof value.baseUrl === "string"
+      && value.baseUrl.trim().length > 0;
+    const hasProviderApi = isRecord(value)
+      && typeof value.api === "string"
+      && value.api.trim().length > 0;
+    const modelsAreComplete = models.length > 0 && models.every((model) =>
+      isRecord(model)
+      && (hasProviderBaseUrl || (typeof model.baseUrl === "string" && model.baseUrl.trim().length > 0))
+      && (hasProviderApi || (typeof model.api === "string" && model.api.trim().length > 0))
+    );
+    if (
+      !isRecord(value)
+      || !modelsAreComplete
+      || Object.hasOwn(value, "apiKey")
+      || Object.hasOwn(value, "oauth")
+    ) continue;
+    providerIds.add(providerId);
+  }
+  return providerIds;
+}
+
+export async function createConfiguredModelRuntime<
+  T extends RuntimeApiKeyModelRuntime & { getError(): string | undefined },
+>(
+  createRuntime: (modelsPath: string | null) => Promise<T>,
+  modelsPath: string,
+): Promise<T> {
+  const runtime = await createRuntime(modelsPath);
+  if (runtime.getError()) return createRuntime(null);
+  try {
+    await configureNoAuthModelRuntime(runtime, modelsPath);
+  } catch {
+    return createRuntime(null);
+  }
+  return runtime.getError() ? createRuntime(null) : runtime;
+}
+
+async function readModelsJsonRoot(modelsPath: string): Promise<Record<string, unknown> | undefined> {
   let content: string;
   try {
     content = await readFile(modelsPath, "utf8");
   } catch (cause) {
-    if (isRecord(cause) && cause.code === "ENOENT") return new Set();
+    if (isRecord(cause) && cause.code === "ENOENT") return undefined;
     throw new Error("Unable to read models.json", { cause });
   }
 
   let root: unknown;
   try {
-    root = JSON.parse(stripPiJsonComments(content)) as unknown;
+    root = parsePiJsonObject(content);
   } catch (cause) {
     throw new Error("Unable to parse models.json", { cause });
   }
 
-  const providers = isRecord(root) ? root.providers : undefined;
-  if (!isRecord(providers)) throw new Error('Invalid models.json: "providers" must be an object');
-  return new Set(Object.keys(providers));
+  if (!isRecord(root)) throw new Error("Invalid models.json: root must be an object");
+  return root;
+}
+
+export function parsePiJsonObject(content: string): Record<string, unknown> {
+  const root = JSON.parse(stripPiJsonComments(content)) as unknown;
+  if (!isRecord(root)) throw new Error("JSON root must be an object");
+  return root;
 }
 
 /** Match pinned Pi's accepted JSON syntax without importing Pi before bootstrap. */

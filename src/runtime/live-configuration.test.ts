@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
@@ -12,6 +12,7 @@ import {
   resolveAgentCatalog,
 } from "../subagent/agents";
 import type { ConfigurationEvent } from "../web/contracts";
+import { ConfigFileService } from "../web/config-files";
 import type {
   ConfigurationWatcherManager,
   ProjectWatchRegistration,
@@ -19,6 +20,7 @@ import type {
   WatcherDependencies,
 } from "./configuration-watchers";
 import { createAgentRuntimeBinding } from "./agent-runtime-binding";
+import { repairDanglingAgentDefaults } from "./agent-default-repair";
 import {
   type ConfigurationFingerprint,
   ConfigurationUnavailableError,
@@ -162,6 +164,10 @@ function skillMarkdown(name: string, marker: string): string {
   ].join("\n");
 }
 
+function acceptedSkillPath() {
+  return expect.stringContaining("easyresearch-skill-snapshots-");
+}
+
 function droppedConfigurationWatch(): ConfigurationWatchImplementation {
   return (() => {
     const watcher = {
@@ -205,8 +211,9 @@ async function startRealConfiguration(options: {
     catalogOptions: { homeDir },
     modelValidator: {
       async prepareModelCatalog() {
-        return { models: [], commit() {}, rollback() {} };
+        return { registeredModels: [], availableModels: [], commit() {}, rollback() {} };
       },
+      currentAvailableModels: () => [],
     },
     ...(options.watch ? { watch: options.watch } : {}),
   });
@@ -370,6 +377,11 @@ function fakeResourceWatcherManager(options: { autoReady?: boolean } = {}) {
         changedCwds: entries
           .filter(({ record, value }) => record.baseline !== value)
           .map(({ cwd }) => cwd),
+        async isCurrent() {
+          return entries.every(({ cwd, record, value }) =>
+            projects.get(cwd) === record && projectValue(cwd) === value
+          );
+        },
         commit() {
           if (transaction.state !== "pending") return;
           transaction.state = "committed";
@@ -479,16 +491,20 @@ function harness(
       snapshot: AgentCatalogSnapshot,
       options: DiscoveryOptions,
     ) => AgentDiscoveryResult;
+    repairAgentDefaults?: Parameters<typeof createLiveConfiguration>[0]["repairAgentDefaults"];
   } = {},
 ) {
   let currentCatalog = initialCatalog;
   let currentFingerprint = fingerprint("agents-v1", "models-v1");
-  let availableModels = explicitModels(currentCatalog);
+  let registeredModels = explicitModels(currentCatalog);
+  let availableModels = [...registeredModels];
+  let availabilityError: Error | undefined;
   let acceptedModels: string[] = [];
   const loadCatalog = vi.fn(async (_discovery: DiscoveryOptions) => currentCatalog);
   const resolveCatalog = vi.fn(options.resolveCatalog ?? resolvedAgents);
   const preparedModelCatalogs: Array<{
-    models: ReturnType<typeof modelOption>[];
+    registeredModels: ReturnType<typeof modelOption>[];
+    availableModels: ReturnType<typeof modelOption>[];
     commit: ReturnType<typeof vi.fn>;
     rollback: ReturnType<typeof vi.fn>;
   }> = [];
@@ -504,24 +520,37 @@ function harness(
       if (settled) throw new Error("candidate already settled");
       settled = true;
     });
-    const candidate = { models, commit, rollback };
+    const candidate = { registeredModels: models, availableModels: models, commit, rollback };
     preparedModelCatalogs.push(candidate);
     return candidate;
   };
   const prepareModels = vi.fn(async () =>
-    prepareCandidate(availableModels.map((model) => `${model.provider}/${model.id}`))
+    (() => {
+      const candidate = prepareCandidate(registeredModels.map((model) => `${model.provider}/${model.id}`));
+      return {
+        ...candidate,
+        availableModels: availableModels.map((model) => ({ ...model })),
+      };
+    })()
   );
   const readFingerprint = vi.fn(async () => currentFingerprint);
   const watcher = fakeWatcher(options.autoReady);
   const live = createLiveConfiguration({
     agentDir: options.agentDir ?? "/global",
     catalogOptions: options.catalogOptions,
-    modelValidator: { prepareModelCatalog: prepareModels },
+    modelValidator: {
+      prepareModelCatalog: prepareModels,
+      currentAvailableModels: () => {
+        if (availabilityError) throw availabilityError;
+        return availableModels.map((model) => ({ ...model }));
+      },
+    },
     fingerprint: readFingerprint,
     loadCatalog,
     resolveCatalog,
     watch: options.watch ?? watcher.watch,
     createWatcherManager: options.createWatcherManager,
+    repairAgentDefaults: options.repairAgentDefaults,
   });
   return {
     live,
@@ -537,18 +566,375 @@ function harness(
     watcher,
     setCatalog(next: AgentCatalogSnapshot) {
       currentCatalog = next;
-      availableModels = explicitModels(next);
+      registeredModels = explicitModels(next);
+      availableModels = [...registeredModels];
     },
     setFingerprint(next: ConfigurationFingerprint) {
       currentFingerprint = next;
     },
     setModels(references: string[]) {
+      registeredModels = references.map(modelOption);
+      availableModels = [...registeredModels];
+    },
+    setAvailability(references: string[]) {
       availableModels = references.map(modelOption);
+    },
+    setAvailabilityError(error: Error | undefined) {
+      availabilityError = error;
     },
   };
 }
 
 describe("live configuration generations", () => {
+  it("accepts an explicit registered DeepSeek model with empty availability", async () => {
+    const deepseekCatalog = catalog("v1");
+    deepseekCatalog.defaults = {
+      "research-assistant": { model: "deepseek/deepseek-v4-flash", thinking: "high" },
+    };
+    const state = harness(deepseekCatalog);
+    state.setModels(["deepseek/deepseek-v4-flash"]);
+    state.setAvailability([]);
+
+    await state.live.start();
+
+    expect(state.live.generation).toBe(1);
+    expect(state.live.error).toBeNull();
+    await expect(state.live.resolveAgents()).resolves.toEqual([
+      expect.objectContaining({ model: "deepseek/deepseek-v4-flash", thinking: "high" }),
+    ]);
+  });
+
+  it("does not poison structural configuration when availability projection fails", async () => {
+    const state = harness();
+    await state.live.start();
+    state.setAvailabilityError(new Error("private malformed credential state"));
+
+    await expect(state.live.notify({ availabilityChanged: true })).resolves.toMatchObject({
+      status: "committed",
+      generation: 1,
+      availabilityEpoch: 2,
+      error: null,
+    });
+
+    expect(state.live.generation).toBe(1);
+    expect(state.live.isCurrent(1)).toBe(true);
+    expect(state.live.error).toBeNull();
+  });
+
+  it("keeps malformed settings bytes while starting from cold defaults", async () => {
+    const root = tempRoot();
+    const agentDir = join(root, "agent");
+    const homeDir = join(root, "home");
+    mkdirSync(agentDir);
+    mkdirSync(homeDir);
+    const settingsPath = join(agentDir, "settings.json");
+    writeFileSync(settingsPath, "{ malformed settings\n");
+    const before = readFileSync(settingsPath);
+    const live = createLiveConfiguration({
+      agentDir,
+      catalogOptions: { homeDir },
+      modelValidator: {
+        async prepareModelCatalog() {
+          return {
+            registeredModels: [],
+            availableModels: [],
+            commit() {},
+            rollback() {},
+          };
+        },
+        currentAvailableModels: () => [],
+      },
+      watch: droppedConfigurationWatch(),
+    });
+    realConfigurations.push(live);
+
+    await live.start();
+
+    expect(live.generation).toBe(1);
+    expect(live.isCurrent(1)).toBe(true);
+    expect(live.error).toMatch(/configuration/i);
+    await expect(live.resolveAgents()).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "research-assistant", model: undefined }),
+    ]));
+    expect(readFileSync(settingsPath)).toEqual(before);
+  });
+
+  it("retains last-good Agent defaults after a later malformed settings layer", async () => {
+    const state = harness();
+    await state.live.start();
+    state.setCatalog({ ...catalog("v1"), defaults: {} });
+    state.setModels(["provider/v1"]);
+    state.setFingerprint({
+      ...fingerprint("agents-v1", "models-v1", "defaults-invalid"),
+      diagnostic: "Configuration validation failed. Fix the global Agent or model configuration and retry.",
+      invalidSettingsLayers: { agentDefaults: true },
+    });
+
+    const outcome = await state.live.synchronize();
+
+    expect({ outcome, generation: state.live.generation }).toMatchObject({
+      outcome: { status: "committed" },
+      generation: 2,
+    });
+    expect(state.live.error).toMatch(/configuration/i);
+    await expect(state.live.resolveAgents()).resolves.toEqual([
+      expect.objectContaining({ model: "provider/v1", thinking: "high" }),
+    ]);
+  });
+
+
+  it("self-repairs the v0.0.75 dangling model on cold start and stays repaired after restart", async () => {
+    const root = tempRoot();
+    const agentDir = join(root, "agent");
+    const bundledRoot = join(root, "bundled");
+    const bundledAgents = join(bundledRoot, "agents");
+    mkdirSync(agentDir, { recursive: true });
+    mkdirSync(bundledAgents, { recursive: true });
+    writeFileSync(
+      join(bundledAgents, "research-assistant.md"),
+      agentMarkdown("research-assistant", "RA"),
+    );
+    writeFileSync(join(bundledAgents, "search.md"), agentMarkdown("search", "SEARCH"));
+    const dangling = "deepseek/deepseek-v4-flash";
+    const settingsPath = join(agentDir, "settings.json");
+    writeFileSync(settingsPath, `${JSON.stringify({
+      theme: "light",
+      easyresearch: {
+        keep: true,
+        agentDefaults: {
+          "research-assistant": { model: dangling, thinking: "max" },
+          search: { model: dangling, thinking: "high" },
+          dormant: { model: dangling, thinking: "low" },
+        },
+      },
+    }, null, 2)}\n`);
+    const config = new ConfigFileService(agentDir);
+    const repair = vi.fn((repairs) => repairDanglingAgentDefaults(config, repairs));
+    const prepareModelCatalog = vi.fn(async () => {
+        return {
+          registeredModels: [modelOption("openai/fallback")],
+          availableModels: [modelOption("openai/fallback")],
+          fallbackModel: modelOption("openai/fallback"),
+          commit() {},
+          rollback() {},
+        };
+      });
+    const modelValidator = {
+      prepareModelCatalog,
+      currentAvailableModels: () => [modelOption("openai/fallback")],
+    };
+    const create = () => createLiveConfiguration({
+      agentDir,
+      catalogOptions: { bundledAgentsDir: bundledRoot, homeDir: join(root, "home") },
+      modelValidator,
+      repairAgentDefaults: repair,
+      watch: droppedConfigurationWatch(),
+    });
+
+    const first = create();
+    realConfigurations.push(first);
+    await first.start();
+
+    expect({
+      generation: first.generation,
+      error: first.error,
+      prepareCalls: prepareModelCatalog.mock.calls.length,
+      repairCalls: repair.mock.calls.length,
+    }).toEqual({
+      generation: 1,
+      error: null,
+      prepareCalls: 2,
+      repairCalls: 1,
+    });
+    expect(await first.resolveAgents()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "research-assistant", model: "openai/fallback", thinking: "max" }),
+      expect.objectContaining({ name: "search", model: undefined, thinking: "high" }),
+    ]));
+    expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toMatchObject({
+      theme: "light",
+      easyresearch: {
+        keep: true,
+        agentDefaults: {
+          "research-assistant": { model: "openai/fallback", thinking: "max" },
+          search: { thinking: "high" },
+          dormant: { model: dangling, thinking: "low" },
+        },
+      },
+    });
+    await first.close();
+    realConfigurations.splice(realConfigurations.indexOf(first), 1);
+
+    repair.mockClear();
+    const restarted = create();
+    realConfigurations.push(restarted);
+    await restarted.start();
+
+    expect(restarted.generation).toBe(1);
+    expect(restarted.error).toBeNull();
+    expect(repair).not.toHaveBeenCalled();
+    expect(await restarted.resolveAgents()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "research-assistant", model: "openai/fallback" }),
+      expect.objectContaining({ name: "search", model: undefined }),
+    ]));
+  });
+
+  it("clears dangling discovered models without a fallback while keeping configuration usable", async () => {
+    const initial = catalog("v1");
+    initial.defaults = {
+      "research-assistant": { model: "removed/missing", thinking: "high" },
+    };
+    let current = initial;
+    let currentFingerprint = fingerprint("agents-v1", "models-v1", "defaults-v1");
+    const repair = vi.fn(async (repairs: Parameters<typeof repairDanglingAgentDefaults>[1]) => {
+      expect(repairs).toEqual([{
+        agentName: "research-assistant",
+        danglingModel: "removed/missing",
+      }]);
+      current = { ...current, defaults: { "research-assistant": { thinking: "high" } } };
+      currentFingerprint = fingerprint("agents-v1", "models-v1", "defaults-v2");
+      return { status: "repaired" as const, repairedAgents: ["research-assistant"] };
+    });
+    const prepareModelCatalog = vi.fn(async () => ({
+      registeredModels: [],
+      availableModels: [],
+      commit() {},
+      rollback() {},
+    }));
+    const live = createLiveConfiguration({
+      agentDir: "/global",
+      fingerprint: async () => currentFingerprint,
+      loadCatalog: async () => current,
+      resolveCatalog: resolvedAgents,
+      modelValidator: {
+        prepareModelCatalog,
+        currentAvailableModels: () => [],
+      },
+      repairAgentDefaults: repair,
+      createWatcherManager: fakeResourceWatcherManager().createManager,
+    });
+
+    await live.start();
+
+    expect({
+      generation: live.generation,
+      error: live.error,
+      prepareCalls: prepareModelCatalog.mock.calls.length,
+      repairCalls: repair.mock.calls.length,
+    }).toEqual({
+      generation: 1,
+      error: null,
+      prepareCalls: 2,
+      repairCalls: 1,
+    });
+    await expect(live.resolveAgents()).resolves.toEqual([
+      expect.objectContaining({ name: "research-assistant", model: undefined, thinking: "high" }),
+    ]);
+    await live.close();
+  });
+
+  it("returns truthful synchronization outcomes and advances auth availability separately", async () => {
+    const state = harness();
+    const events: ConfigurationEvent[] = [];
+    state.live.subscribe((event) => events.push(event));
+
+    await state.live.start();
+    expect(state.live.generation).toBe(1);
+    expect(state.live.availabilityEpoch).toBe(1);
+
+    await expect(state.live.synchronize()).resolves.toMatchObject({
+      status: "unchanged",
+      generation: 1,
+      availabilityEpoch: 1,
+    });
+
+    state.setAvailability([]);
+    await expect(state.live.notify({ availabilityChanged: true })).resolves.toMatchObject({
+      status: "committed",
+      generation: 1,
+      availabilityEpoch: 2,
+    });
+
+    expect(state.live.generation).toBe(1);
+    expect(events.at(-1)).toEqual({
+      type: "config.updated",
+      generation: 1,
+      availabilityEpoch: 2,
+      availabilityChanged: true,
+      agentsChanged: false,
+      modelsChanged: false,
+      skillsChanged: false,
+      runtimeChanged: false,
+    });
+
+    state.setFingerprint(fingerprint("broken-v2", "models-v1"));
+    state.setCatalog({ definitions: [], diagnostics: [] });
+    await expect(state.live.synchronize()).resolves.toMatchObject({ status: "rejected", generation: 1 });
+
+    state.setAvailability(["provider/recovered"]);
+    await expect(state.live.notify({ availabilityChanged: true })).resolves.toMatchObject({
+      status: "committed",
+      generation: 1,
+      availabilityEpoch: 3,
+      error: expect.stringMatching(/configuration/i),
+    });
+
+    await state.live.close();
+    await expect(state.live.synchronize()).resolves.toMatchObject({ status: "closed", generation: 1 });
+  });
+
+  it("reports a validation candidate superseded by a concurrent source reversion", async () => {
+    const state = harness();
+    await state.live.start();
+    state.setModels(["provider/v1", "provider/v2"]);
+    state.loadCatalog
+      .mockResolvedValueOnce(catalog("v2"))
+      .mockResolvedValueOnce(catalog("v1"));
+    state.readFingerprint
+      .mockResolvedValueOnce(fingerprint("agents-v2", "models-v2"))
+      .mockResolvedValueOnce(fingerprint("agents-v1", "models-v1"))
+      .mockResolvedValue(fingerprint("agents-v1", "models-v1"));
+
+    await expect(state.live.synchronize()).resolves.toMatchObject({
+      status: "superseded",
+      generation: 1,
+    });
+    expect(state.live.generation).toBe(1);
+    expect(state.live.error).toBeNull();
+  });
+
+  it("reports repaired only after the persisted CAS result is accepted", async () => {
+    let state!: ReturnType<typeof harness>;
+    const repair = vi.fn(async () => {
+      state.setCatalog({
+        ...catalog("fallback"),
+        defaults: { "research-assistant": { model: "provider/fallback", thinking: "high" } },
+      });
+      state.setFingerprint(fingerprint("agents-v2", "models-v2", "defaults-v3"));
+      return { status: "repaired" as const, repairedAgents: ["research-assistant"] };
+    });
+    state = harness(catalog("v1"), { repairAgentDefaults: repair });
+    await state.live.start();
+    state.setCatalog({
+      ...catalog("v2"),
+      defaults: { "research-assistant": { model: "removed/missing", thinking: "high" } },
+    });
+    state.setModels(["provider/fallback"]);
+    state.setFingerprint(fingerprint("agents-v2", "models-v2", "defaults-v2"));
+
+    const [synchronization, availability] = await Promise.all([
+      state.live.synchronize(),
+      state.live.notify({ availabilityChanged: true }),
+    ]);
+    expect(synchronization).toMatchObject({ status: "repaired", generation: 2 });
+    expect(availability).toMatchObject({ status: "repaired", generation: 2 });
+    expect(repair).toHaveBeenCalledOnce();
+    await expect(state.live.resolveAgents()).resolves.toEqual([
+      expect.objectContaining({ model: "provider/fallback", thinking: "high" }),
+    ]);
+  });
+
+
+
   it("publishes the accepted compaction policy with its generation", async () => {
     const state = harness();
     await state.live.start();
@@ -646,6 +1032,8 @@ describe("live configuration generations", () => {
     expect(events.at(-1)).toEqual({
       type: "config.updated",
       generation: 2,
+      availabilityEpoch: 2,
+      availabilityChanged: true,
       agentsChanged: true,
       modelsChanged: false,
       skillsChanged: true,
@@ -656,7 +1044,7 @@ describe("live configuration generations", () => {
     ]);
   });
 
-  it("asserts only a synchronized, validation-clean accepted generation as current", async () => {
+  it("keeps the last-good accepted generation current while a later candidate is rejected", async () => {
     const state = harness();
     await state.live.start();
     const acceptedGeneration = state.live.generation;
@@ -671,7 +1059,7 @@ describe("live configuration generations", () => {
     await state.live.synchronize();
 
     expect(state.live.generation).toBe(acceptedGeneration);
-    expect(state.live.isCurrent(acceptedGeneration)).toBe(false);
+    expect(state.live.isCurrent(acceptedGeneration)).toBe(true);
 
     state.setCatalog(catalog("v2"));
     await state.live.synchronize();
@@ -764,7 +1152,7 @@ describe("live configuration generations", () => {
     ]);
   });
 
-  it("rejects non-empty diagnostics even when the catalog contains a complete Research Assistant definition", async () => {
+  it("isolates an invalid custom Agent while keeping the Research Assistant snapshot usable", async () => {
     const state = harness({
       definitions: [definition("v1")],
       diagnostics: [{ agent: "search", source: "global", message: "Invalid Agent definition." }],
@@ -772,9 +1160,11 @@ describe("live configuration generations", () => {
 
     await state.live.start();
 
-    expect(state.live.generation).toBe(0);
+    expect(state.live.generation).toBe(1);
     expect(state.live.error).toMatch(/configuration/i);
-    await expect(state.live.resolveAgents("/paper")).rejects.toBeInstanceOf(ConfigurationUnavailableError);
+    await expect(state.live.resolveAgents("/paper")).resolves.toEqual([
+      expect.objectContaining({ name: "research-assistant" }),
+    ]);
   });
 
   it("reports component change flags and forces an auth-driven model revision without changed file bytes", async () => {
@@ -804,6 +1194,8 @@ describe("live configuration generations", () => {
       {
         type: "config.updated",
         generation: 2,
+        availabilityEpoch: 2,
+        availabilityChanged: true,
         agentsChanged: true,
         modelsChanged: false,
         skillsChanged: false,
@@ -1071,11 +1463,13 @@ describe("live configuration resource transactions", () => {
       modelValidator: {
         async prepareModelCatalog() {
           return {
-            models: [modelOption("provider/v1")],
+            registeredModels: [modelOption("provider/v1")],
+            availableModels: [modelOption("provider/v1")],
             commit() {},
             rollback() {},
           };
         },
+        currentAvailableModels: () => [modelOption("provider/v1")],
       },
       loadCatalog: async () => catalog("v1"),
       resolveCatalog: resolvedAgents,
@@ -1366,6 +1760,8 @@ describe("live configuration resource transactions", () => {
     expect(events.at(-1)).toEqual({
       type: "config.updated",
       generation: 2,
+      availabilityEpoch: 2,
+      availabilityChanged: true,
       agentsChanged: true,
       modelsChanged: false,
       skillsChanged: true,
@@ -1430,11 +1826,13 @@ describe("live configuration resource transactions", () => {
       modelValidator: {
         async prepareModelCatalog() {
           return {
-            models: [modelOption("provider/v1")],
+            registeredModels: [modelOption("provider/v1")],
+            availableModels: [modelOption("provider/v1")],
             commit() {},
             rollback() {},
           };
         },
+        currentAvailableModels: () => [modelOption("provider/v1")],
       },
       loadCatalog: async () => catalog("v1"),
       resolveCatalog: resolvedAgents,
@@ -1819,7 +2217,6 @@ describe("real filesystem configuration acceptance", () => {
     expect(configurationUpdates(state.events)).toHaveLength(baselineUpdates + 1);
     expect(configurationUpdates(state.events).at(-1)).toMatchObject({
       agentsChanged: true,
-      skillsChanged: false,
       runtimeChanged: true,
     });
   }, 15_000);
@@ -1847,7 +2244,7 @@ describe("real filesystem configuration acceptance", () => {
 
     const after = (await state.live.resolveAgents(state.project)).find((agent) => agent.name === "skill-consumer");
     expect(after).toMatchObject({ effectiveSkills: [skillName], missingSkills: [] });
-    expect(after?.effectiveSkillPaths).toEqual([join(state.agentDir, "skills", skillName)]);
+    expect(after?.effectiveSkillPaths).toEqual([acceptedSkillPath()]);
     expect(configurationUpdates(state.events).at(-1)).toMatchObject({
       agentsChanged: false,
       skillsChanged: true,
@@ -1944,9 +2341,7 @@ describe("real filesystem configuration acceptance", () => {
 
     expect(state.live.skillPolicy).toEqual({ enableDotAgentsSkill: true });
     const consumer = (await state.live.resolveAgents(state.project)).find((agent) => agent.name === "home-consumer");
-    expect(consumer?.effectiveSkillPaths).toEqual([
-      join(state.homeDir, ".agents", "skills", skillName),
-    ]);
+    expect(consumer?.effectiveSkillPaths).toEqual([acceptedSkillPath()]);
     expect(configurationUpdates(state.events).at(-1)).toMatchObject({
       agentsChanged: false,
       skillsChanged: true,
@@ -2016,9 +2411,7 @@ describe("real filesystem configuration acceptance", () => {
 
     const consumer = (await state.live.resolveAgents(state.project))
       .find((agent) => agent.name === "home-first-consumer");
-    expect(consumer?.effectiveSkillPaths).toEqual([
-      join(state.homeDir, ".agents", "skills", skillName),
-    ]);
+    expect(consumer?.effectiveSkillPaths).toEqual([acceptedSkillPath()]);
   }, 15_000);
 
   it("accepts first project Skill creation from an owned exact-cwd anchor", async () => {
@@ -2043,9 +2436,7 @@ describe("real filesystem configuration acceptance", () => {
 
       const consumer = (await state.live.resolveAgents(state.project))
         .find((agent) => agent.name === "project-consumer");
-      expect(consumer?.effectiveSkillPaths).toEqual([
-        join(state.project, ".easyresearch", "skills", skillName),
-      ]);
+      expect(consumer?.effectiveSkillPaths).toEqual([acceptedSkillPath()]);
       expect(configurationUpdates(state.events).at(-1)).toMatchObject({
         agentsChanged: false,
         skillsChanged: true,
@@ -2080,9 +2471,7 @@ describe("real filesystem configuration acceptance", () => {
       expect(state.live.generation).toBe(baseline);
       const consumer = (await state.live.resolveAgents(state.project))
         .find((agent) => agent.name === "project-reacquire-consumer");
-      expect(consumer?.effectiveSkillPaths).toEqual([
-        join(state.project, ".easyresearch", "skills", skillName),
-      ]);
+      expect(consumer?.effectiveSkillPaths).toEqual([acceptedSkillPath()]);
       expect(configurationUpdates(state.events)).toHaveLength(1);
     } finally {
       await second.release();
@@ -2097,7 +2486,7 @@ describe("real filesystem configuration acceptance", () => {
     { scope: "project", mutation: "add" },
     { scope: "project", mutation: "remove" },
   ] as const)(
-    "keeps accepted $scope Skill state during a blocked $mutation candidate",
+    "isolates a broken Agent while accepting an independent $scope Skill $mutation",
     async ({ scope, mutation }) => {
       const agentName = `accepted-${scope}-${mutation}`;
       const skillName = `accepted-skill-${scope}-${mutation}`;
@@ -2130,13 +2519,12 @@ describe("real filesystem configuration acceptance", () => {
       const registration = scope === "project" ? await state.live.acquireProject(state.project) : undefined;
       const agentPath = join(state.agentDir, "agents", `${agentName}.md`);
       const baselineGeneration = state.live.generation;
-      const expectedPath = join(descriptor, "..");
       try {
         const before = (await state.live.resolveAgents(state.project)).find((agent) => agent.name === agentName);
         expect(before).toMatchObject(
           mutation === "add"
             ? { effectiveSkills: [], effectiveSkillPaths: [], missingSkills: [skillName] }
-            : { effectiveSkills: [skillName], effectiveSkillPaths: [expectedPath], missingSkills: [] },
+            : { effectiveSkills: [skillName], effectiveSkillPaths: [acceptedSkillPath()], missingSkills: [] },
         );
 
         writeFileSync(agentPath, "---\nname: [\n---\nBROKEN_HOST\n", "utf8");
@@ -2150,25 +2538,21 @@ describe("real filesystem configuration acceptance", () => {
           scope === "project" ? { projectCwds: [state.project] } : undefined,
         );
 
-        expect(state.live.generation).toBe(baselineGeneration);
+        expect(state.live.generation).toBe(baselineGeneration + 1);
         expect(state.live.error).toMatch(/configuration/i);
         const blocked = (await state.live.resolveAgents(state.project)).find((agent) => agent.name === agentName);
-        expect(blocked).toMatchObject(
-          mutation === "add"
-            ? { effectiveSkills: [], effectiveSkillPaths: [], missingSkills: [skillName] }
-            : { effectiveSkills: [skillName], effectiveSkillPaths: [expectedPath], missingSkills: [] },
-        );
+        expect(blocked).toBeUndefined();
 
         writeFileSync(agentPath, agentMarkdown(agentName, "REPAIRED", [skillName]), "utf8");
         await state.live.synchronize(
           scope === "project" ? { projectCwds: [state.project] } : undefined,
         );
 
-        expect(state.live.generation).toBe(baselineGeneration + 1);
+        expect(state.live.generation).toBe(baselineGeneration + 2);
         const repaired = (await state.live.resolveAgents(state.project)).find((agent) => agent.name === agentName);
         expect(repaired).toMatchObject(
           mutation === "add"
-            ? { effectiveSkills: [skillName], effectiveSkillPaths: [expectedPath], missingSkills: [] }
+            ? { effectiveSkills: [skillName], effectiveSkillPaths: [acceptedSkillPath()], missingSkills: [] }
             : { effectiveSkills: [], effectiveSkillPaths: [], missingSkills: [skillName] },
         );
       } finally {
@@ -2178,7 +2562,7 @@ describe("real filesystem configuration acceptance", () => {
     20_000,
   );
 
-  it("keeps changed Skill bytes pending behind malformed Agent bytes and accepts both on repair", async () => {
+  it("accepts changed Skill bytes while isolating a malformed Agent, then restores the Agent", async () => {
     const agentName = "watch-transaction-reviewer";
     const skillName = "watch-transaction-skill";
     const state = await startRealConfiguration({
@@ -2202,16 +2586,17 @@ describe("real filesystem configuration acceptance", () => {
       timeout: 10_000,
       interval: 20,
     });
-    expect(state.live.generation).toBe(baseline);
+    expect(state.live.generation).toBe(baseline + 1);
+    expect((await state.live.resolveAgents()).find((agent) => agent.name === agentName)).toBeUndefined();
 
     writeFileSync(agentPath, agentMarkdown(agentName, "TX_V2", [skillName]), "utf8");
-    await waitForGeneration(state.live, baseline + 1);
+    await waitForGeneration(state.live, baseline + 2);
 
     expect(state.live.error).toBeNull();
-    expect(configurationUpdates(state.events)).toHaveLength(baselineUpdates + 1);
+    expect(configurationUpdates(state.events)).toHaveLength(baselineUpdates + 2);
     expect(configurationUpdates(state.events).at(-1)).toMatchObject({
       agentsChanged: true,
-      skillsChanged: true,
+      skillsChanged: false,
       runtimeChanged: true,
     });
     const reviewer = (await state.live.resolveAgents(state.project)).find((agent) => agent.name === agentName);
@@ -2238,6 +2623,9 @@ describe("missed watcher event recovery", () => {
     const runtimeModel = {
       async refresh() {},
       getModel: () => undefined,
+      getAvailableSnapshot: () => [],
+      getProvider: () => undefined,
+      getProviderAuthStatus: () => ({ configured: false }),
       getError: () => undefined,
     };
     const binding = createAgentRuntimeBinding({
@@ -2268,9 +2656,7 @@ describe("missed watcher event recovery", () => {
       expect(state.live.generation).toBe(baseline + 1);
       expect(binding.generation()).toBe(baseline + 1);
       expect(binding.current().systemPrompt).toContain("ROLE_DROPPED");
-      expect(binding.skillPaths()).toEqual([
-        join(state.project, ".easyresearch", "skills", skillName),
-      ]);
+      expect(binding.skillPaths()).toEqual([acceptedSkillPath()]);
       expect(configurationUpdates(state.events)).toHaveLength(baselineUpdates + 1);
       expect(configurationUpdates(state.events).at(-1)).toMatchObject({
         agentsChanged: true,
@@ -2376,18 +2762,22 @@ describe("configuration content fingerprint", () => {
     expect(after.value).not.toBe(before.value);
   });
 
-  it("rejects an invalid configured compaction percentage", async () => {
+  it("uses the cold compaction default for an invalid configured percentage", async () => {
     const root = tempRoot();
     mkdirSync(join(root, "agents"), { recursive: true });
     writeFileSync(join(root, "agents", "research-assistant.md"), "agent", "utf8");
     writeFileSync(join(root, "models.json"), "{}", "utf8");
+    const before = await fingerprintConfiguration(root);
     writeFileSync(
       join(root, "settings.json"),
       JSON.stringify({ easyresearch: { compaction: { triggerPercent: 91 } } }),
       "utf8",
     );
 
-    await expect(fingerprintConfiguration(root)).rejects.toThrow(/integer.*10.*90/i);
+    const result = await fingerprintConfiguration(root);
+    expect(result.compactionPolicy.triggerPercent).toBe(70);
+    expect(result.diagnostic).toMatch(/configuration/i);
+    expect(result.value).not.toBe(before.value);
   });
 
   it("accepts only the global API-usage boolean into the live configuration fingerprint", async () => {
@@ -2415,7 +2805,9 @@ describe("configuration content fingerprint", () => {
       JSON.stringify({ easyresearch: { web: { showApiUsageDetails: "true" } } }),
       "utf8",
     );
-    await expect(fingerprintConfiguration(root)).rejects.toThrow(/boolean/i);
+    const invalid = await fingerprintConfiguration(root);
+    expect(invalid.apiUsageSettings).toEqual({ showApiUsageDetails: false });
+    expect(invalid.diagnostic).toMatch(/configuration/i);
   });
 
   it("includes global Skill descriptors and candidate-enabled optional-home descriptors", async () => {
@@ -2424,14 +2816,14 @@ describe("configuration content fingerprint", () => {
     const home = join(base, "home");
     mkdirSync(join(root, "agents"), { recursive: true });
     mkdirSync(join(root, "skills", "nested"), { recursive: true });
-    mkdirSync(join(home, ".agents", "skills"), { recursive: true });
+    mkdirSync(join(home, ".agents", "skills", "group"), { recursive: true });
     writeFileSync(join(root, "agents", "research-assistant.md"), "agent", "utf8");
     writeFileSync(join(root, "models.json"), "{}", "utf8");
     writeFileSync(join(root, "skills", "nested", "SKILL.md"), "global-v1", "utf8");
-    writeFileSync(join(home, ".agents", "skills", "home.md"), "home-v1", "utf8");
+    writeFileSync(join(home, ".agents", "skills", "group", "home.md"), "home-v1", "utf8");
     const disabled = await fingerprintConfiguration(root, home);
 
-    writeFileSync(join(home, ".agents", "skills", "home.md"), "HOME-V1", "utf8");
+    writeFileSync(join(home, ".agents", "skills", "group", "home.md"), "HOME-V1", "utf8");
     expect(await fingerprintConfiguration(root, home)).toEqual(disabled);
 
     writeFileSync(
@@ -2444,7 +2836,7 @@ describe("configuration content fingerprint", () => {
     expect(enabled.homeSkills).not.toBeNull();
     expect(enabled.value).not.toBe(disabled.value);
 
-    writeFileSync(join(home, ".agents", "skills", "home.md"), "home-v2", "utf8");
+    writeFileSync(join(home, ".agents", "skills", "group", "home.md"), "home-v2", "utf8");
     const homeEdited = await fingerprintConfiguration(root, home);
     expect(homeEdited.homeSkills).not.toBe(enabled.homeSkills);
     expect(homeEdited.globalSkills).toBe(enabled.globalSkills);
@@ -2455,7 +2847,7 @@ describe("configuration content fingerprint", () => {
     expect(globalEdited.homeSkills).toBe(homeEdited.homeSkills);
   });
 
-  it("rejects invalid candidate settings before reading enabled optional-home descriptor bytes", async () => {
+  it("uses cold settings defaults before reading optional-home descriptor bytes", async () => {
     const base = tempRoot();
     const root = join(base, "agent");
     const home = join(base, "home");
@@ -2466,7 +2858,9 @@ describe("configuration content fingerprint", () => {
     writeFileSync(join(root, "settings.json"), "{ invalid JSON", "utf8");
     writeFileSync(join(home, ".agents", "skills", "home.md"), Buffer.alloc(1_048_577, 0x61));
 
-    await expect(fingerprintConfiguration(root, home)).rejects.toBeInstanceOf(SyntaxError);
+    const result = await fingerprintConfiguration(root, home);
+    expect(result.homeSkills).toBeNull();
+    expect(result.diagnostic).toMatch(/configuration/i);
   });
 
   it("excludes project files, sessions, logs, auth values, and unrelated global resources", async () => {

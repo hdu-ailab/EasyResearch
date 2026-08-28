@@ -272,6 +272,9 @@ describe("real stable-anchor resource watching", () => {
     mkdirSync(join(paths.agentDir, "bundled", "agents"), { recursive: true });
     mkdirSync(join(paths.agentDir, "bundled", "skills", "bundled"), { recursive: true });
     mkdirSync(globalSkills, { recursive: true });
+    mkdirSync(join(globalSkills, ".hidden"), { recursive: true });
+    mkdirSync(join(globalSkills, "node_modules", "dependency"), { recursive: true });
+    mkdirSync(join(globalSkills, "retired.bak"), { recursive: true });
     mkdirSync(join(paths.homeDir, ".agents", "skills"), { recursive: true });
     mkdirSync(acceptedDirectory, { recursive: true });
     mkdirSync(rejectedDirectory, { recursive: true });
@@ -292,7 +295,23 @@ describe("real stable-anchor resource watching", () => {
       writeFileSync(join(paths.homeDir, "home-note.md"), "inert", "utf8");
       writeFileSync(join(paths.project, ".easyresearch", "settings.json"), "{}", "utf8");
       writeFileSync(join(external, "SKILL.md"), "outside-two", "utf8");
+      writeFileSync(join(globalSkills, ".hidden", "SKILL.md"), "hidden", "utf8");
+      writeFileSync(join(globalSkills, "node_modules", "dependency", "SKILL.md"), "dependency", "utf8");
+      writeFileSync(join(globalSkills, "retired.bak", "SKILL.md"), "retired", "utf8");
     });
+
+    await expectObserved(
+      state.changes,
+      () => writeFileSync(join(paths.agentDir, "auth.json"), "{}", "utf8"),
+      (change) => change.availabilityChanged === true,
+      "an external credential change did not request availability refresh",
+    );
+    await expectObserved(
+      state.changes,
+      () => writeFileSync(join(paths.agentDir, "models-store.json"), "{}", "utf8"),
+      (change) => change.availabilityChanged === true,
+      "an external catalog-cache change did not request availability refresh",
+    );
 
     await expectObserved(
       state.changes,
@@ -388,6 +407,24 @@ describe("real stable-anchor resource watching", () => {
     expect(prepared.changedCwds).toEqual([]);
     prepared.rollback();
     await second.release();
+  }, 15_000);
+
+  it("detects a project descriptor change after a transaction was prepared", async () => {
+    const paths = workspace();
+    const descriptor = join(paths.project, ".easyresearch", "skills", "project.md");
+    const state = realHarness(paths);
+    await state.manager.start(false);
+    const registration = await state.manager.acquireProject(paths.project);
+    mkdirSync(join(descriptor, ".."), { recursive: true });
+    writeFileSync(descriptor, "one", "utf8");
+
+    const prepared = await state.manager.prepareProjectChanges([paths.project]);
+    expect(prepared.changedCwds).toEqual([paths.project]);
+    writeFileSync(descriptor, "two", "utf8");
+
+    await expect(prepared.isCurrent()).resolves.toBe(false);
+    prepared.rollback();
+    await registration.release();
   }, 15_000);
 
   it("observes first project Skill creation through a symlink-spelled exact cwd", async () => {

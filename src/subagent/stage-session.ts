@@ -18,7 +18,10 @@ import {
   type CompactionPolicySettingsManager,
 } from "../runtime/compaction-policy";
 import { resolvePiDefaultModel, type PiDefaultModelApi } from "../runtime/pi-default-model";
+import { applySkillSnapshotBaseDirs } from "../runtime/resource-fingerprint";
+import { assertModelRequestReady } from "../runtime/model-request-error";
 import { configureBatchedSteering, type RuntimeSteeringSession } from "../runtime/steering-mode";
+import { createConfiguredModelRuntime } from "../web/auth-runtime";
 import type { AgentConfig } from "./agents";
 import {
   AgentConfigurationChangedError,
@@ -71,10 +74,19 @@ export interface StageLaunchOptions {
   model?: string;
   thinking?: string;
   coordinator: SubagentCoordinator;
-  liveConfiguration: Pick<
+  liveConfiguration: Omit<Pick<
     LiveConfiguration,
-    "generation" | "synchronize" | "acquireProject" | "isCurrent" | "resolveAgents" | "subscribe"
-  > & Partial<Pick<LiveConfiguration, "compactionPolicy">>;
+    | "generation"
+    | "availabilityEpoch"
+    | "synchronize"
+    | "acquireProject"
+    | "isCurrent"
+    | "resolveAgents"
+    | "subscribe"
+  >, "availabilityEpoch" | "synchronize"> & {
+    readonly availabilityEpoch?: number;
+    synchronize(options?: { projectCwds?: readonly string[] }): Promise<unknown>;
+  } & Partial<Pick<LiveConfiguration, "compactionPolicy">>;
   signal?: AbortSignal;
 }
 
@@ -92,6 +104,7 @@ export interface StageLaunchHandle {
 export type StageSessionLauncher = (options: StageLaunchOptions) => Promise<StageLaunchHandle>;
 
 export interface StageAgentSession extends RuntimeSteeringSession {
+  agent: RuntimeSteeringSession["agent"] & { state: { model: Model<any> | undefined } };
   readonly sessionId: string;
   readonly sessionFile: string | undefined;
   readonly thinkingLevel: ThinkingLevel;
@@ -129,10 +142,19 @@ interface OpenedStageSessionManager {
 
 export interface StageExtensionRuntime {
   binding: AgentRuntimeBinding;
-  liveConfiguration: Pick<
+  liveConfiguration: Omit<Pick<
     LiveConfiguration,
-    "generation" | "synchronize" | "acquireProject" | "isCurrent" | "resolveAgents" | "subscribe"
-  > & Partial<Pick<LiveConfiguration, "compactionPolicy">>;
+    | "generation"
+    | "availabilityEpoch"
+    | "synchronize"
+    | "acquireProject"
+    | "isCurrent"
+    | "resolveAgents"
+    | "subscribe"
+  >, "availabilityEpoch" | "synchronize"> & {
+    readonly availabilityEpoch?: number;
+    synchronize(options?: { projectCwds?: readonly string[] }): Promise<unknown>;
+  } & Partial<Pick<LiveConfiguration, "compactionPolicy">>;
   coordinator: SubagentCoordinator;
   supervisor: SubagentSupervisor;
 }
@@ -150,6 +172,7 @@ export interface StageSessionDependencies {
     extensionFactories: unknown[];
     noSkills: boolean;
     additionalSkillPaths: string[];
+    skillsOverride: typeof applySkillSnapshotBaseDirs;
     appendSystemPromptOverride(base: string[]): string[];
   }): StageResourceLoader;
   createAgentSession(options: Record<string, unknown>): Promise<{ session: StageAgentSession }>;
@@ -348,6 +371,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         }),
         noSkills: true,
         additionalSkillPaths: [],
+        skillsOverride: applySkillSnapshotBaseDirs,
         appendSystemPromptOverride: (base) => binding!.appendSystemPrompt(base),
       });
       await resourceLoader.reload({ resolveProjectTrust: async () => true });
@@ -502,7 +526,9 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
           const operation = session!.abort();
           void operation.catch(() => {});
         },
-        setModel: (selectedModel) => session!.setModel(selectedModel),
+        rebindModel: (selectedModel) => {
+          session!.agent.state.model = selectedModel as Model<any>;
+        },
         setThinkingLevel: (level) => session!.setThinkingLevel(level),
       });
       session.setSessionName(sessionNameFor(currentAgent.name));
@@ -545,6 +571,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
               result.agentSource = boundAgent.source;
               const currentModel = binding!.model();
               if (currentModel) result.model = `${currentModel.provider}/${currentModel.id}`;
+              assertModelRequestReady(binding!.modelRuntime(), currentModel);
               throwIfAuthorizationAborted(options.signal);
               return { prompt: session!.prompt(`Task: ${options.task}`) };
             },
@@ -708,12 +735,17 @@ async function resolveDefaultStageSessionLauncher(): Promise<StageSessionLaunche
     createSessionManager: (cwd) => pi.SessionManager.create(cwd),
     openSessionManager: (path) => pi.SessionManager.open(path),
     createSettingsManager: (cwd, root) => pi.SettingsManager.create(cwd, root),
-    createModelRuntime: (root) =>
-      pi.ModelRuntime.create({
-        authPath: join(root, "auth.json"),
-        modelsPath: join(root, "models.json"),
-        refreshOnCreate: false,
-      }),
+    createModelRuntime: async (root) => {
+      const modelsPath = join(root, "models.json");
+      return createConfiguredModelRuntime(
+        (candidatePath) => pi.ModelRuntime.create({
+          authPath: join(root, "auth.json"),
+          modelsPath: candidatePath,
+          refreshOnCreate: false,
+        }),
+        modelsPath,
+      );
+    },
     createResourceLoader: (options) =>
       new pi.DefaultResourceLoader(options as ConstructorParameters<typeof pi.DefaultResourceLoader>[0]),
     createAgentSession: async (options) => {

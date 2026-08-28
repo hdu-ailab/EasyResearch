@@ -62,6 +62,7 @@ export const routes = {
   writeConfigFile: () => `${API_ROOT}/config/file`,
   createConfigDirectory: () => `${API_ROOT}/config/directory`,
   authProviders: () => `${API_ROOT}/auth/providers`,
+  authProvider: (providerId: string) => `${API_ROOT}/auth/providers/${encodeURIComponent(providerId)}`,
   authLogin: () => `${API_ROOT}/auth/login`,
   authFlowEvents: (flowId: string) => `${API_ROOT}/auth/flows/${encodeURIComponent(flowId)}/events`,
   authFlowRespond: (flowId: string) => `${API_ROOT}/auth/flows/${encodeURIComponent(flowId)}/respond`,

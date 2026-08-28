@@ -127,7 +127,7 @@ export function App() {
           key={`${session.id}:${workRevision}`}
           id={session.id}
           cwd={session.cwd}
-          configurationGeneration={configuration.generation}
+          configurationGeneration={configuration.revision}
           configurationError={configuration.error}
           onBack={() => navigate({ page: "home" })}
           onOpenSettings={() => openSettings(hostRoute)}
@@ -188,11 +188,12 @@ export function App() {
           onHome={() => navigate({ page: "home" })}
           onBackToSettings={() => returnToSettings(route)}
           onProjectInterestChange={onConfigProjectInterestChange}
+          configurationError={configuration.error}
         />
       )}
       {settingsOpen && (
         <SettingsModal
-          configurationGeneration={configuration.generation}
+          configurationGeneration={configuration.revision}
           configurationError={configuration.error}
           onClose={() => closeSettings(route)}
           onOpenConfig={() => openConfig(route)}

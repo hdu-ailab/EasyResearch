@@ -35,6 +35,9 @@ export function ProviderConnectModalContent({ onClose, flow: f }: ProviderConnec
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const [activeId, setActiveId] = useState<string | undefined>(undefined);
+  const [deleteConfirmation, setDeleteConfirmation] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionBusy, setActionBusy] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
 
@@ -59,8 +62,46 @@ export function ProviderConnectModalContent({ onClose, flow: f }: ProviderConnec
 
   const openProvider = (provider: AuthProviderInfoDto) => {
     setSelectedId(provider.id);
-    if (!provider.authStatus.configured && provider.authMethods.length === 1 && provider.authMethods[0]) {
+    setDeleteConfirmation(null);
+    setActionError(null);
+    if (
+      provider.connectable &&
+      !provider.authStatus.configured &&
+      provider.authMethods.length === 1 &&
+      provider.authMethods[0]
+    ) {
       void f.start(provider.id, provider.authMethods[0]);
+    }
+  };
+
+  const disconnectProvider = async (providerId: string) => {
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await f.logout(providerId);
+      setSelectedId(null);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const removeProvider = async (providerId: string) => {
+    if (deleteConfirmation !== providerId) {
+      setDeleteConfirmation(providerId);
+      return;
+    }
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await f.deleteProvider(providerId);
+      setSelectedId(null);
+      setDeleteConfirmation(null);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setActionBusy(false);
     }
   };
 
@@ -160,6 +201,20 @@ export function ProviderConnectModalContent({ onClose, flow: f }: ProviderConnec
                 />
               </div>
               <div ref={listRef} className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
+                {f.providersError && (
+                  <div className="mb-2 flex items-center justify-between gap-3 rounded-md border border-v2-status-error/30 px-3 py-2">
+                    <p role="alert" className="text-[12px] text-v2-status-error">
+                      {f.providersError}
+                    </p>
+                    <button
+                      type="button"
+                      className="shrink-0 text-[12px] text-v2-blue-600 hover:underline"
+                      onClick={() => void f.refresh()}
+                    >
+                      {t("providerConnect.retry")}
+                    </button>
+                  </div>
+                )}
                 {filtered.map((p) => (
                   <ProviderRow
                     key={p.id}
@@ -183,8 +238,16 @@ export function ProviderConnectModalContent({ onClose, flow: f }: ProviderConnec
             <ConnectionView
               provider={selected}
               onPickMethod={(type) => pickMethod(selected.id, type)}
-              onDisconnect={() => void f.logout(selected.id)}
-              onBack={() => setSelectedId(null)}
+              onDisconnect={() => void disconnectProvider(selected.id)}
+              onDelete={() => void removeProvider(selected.id)}
+              deleteConfirmation={deleteConfirmation === selected.id}
+              actionError={actionError}
+              busy={actionBusy}
+              onBack={() => {
+                setSelectedId(null);
+                setDeleteConfirmation(null);
+                setActionError(null);
+              }}
             />
           )}
 
@@ -309,11 +372,19 @@ function ConnectionView({
   provider,
   onPickMethod,
   onDisconnect,
+  onDelete,
+  deleteConfirmation,
+  actionError,
+  busy,
   onBack,
 }: {
   provider: AuthProviderInfoDto;
   onPickMethod: (type: "api_key" | "oauth") => void;
   onDisconnect: () => void;
+  onDelete: () => void;
+  deleteConfirmation: boolean;
+  actionError: string | null;
+  busy: boolean;
   onBack: () => void;
 }) {
   const { t } = useI18n();
@@ -359,15 +430,35 @@ function ConnectionView({
         </p>
       )}
 
-      {provider.authStatus.configured && (
-        <button
-          type="button"
-          className="mt-auto w-fit text-[12px] text-v2-status-error hover:underline"
-          onClick={onDisconnect}
-        >
-          {t("providerConnect.disconnectProvider").replace("{provider}", provider.name)}
-        </button>
-      )}
+      <div className="mt-auto flex flex-col items-start gap-2">
+        {provider.authStatus.configured && !provider.noAuth && (
+          <button
+            type="button"
+            disabled={busy}
+            className="w-fit text-[12px] text-v2-status-error hover:underline disabled:opacity-50"
+            onClick={onDisconnect}
+          >
+            {t("providerConnect.disconnectProvider").replace("{provider}", provider.name)}
+          </button>
+        )}
+        {provider.modelsJson && (
+          <button
+            type="button"
+            disabled={busy}
+            className="w-fit text-[12px] text-v2-status-error hover:underline disabled:opacity-50"
+            onClick={onDelete}
+          >
+            {deleteConfirmation
+              ? t("providerConnect.confirmDeleteProvider").replace("{provider}", provider.name)
+              : t("providerConnect.deleteProvider").replace("{provider}", provider.name)}
+          </button>
+        )}
+        {actionError && (
+          <p role="alert" className="text-[12px] text-v2-status-error">
+            {actionError}
+          </p>
+        )}
+      </div>
 
       <div className="flex items-center justify-between border-t border-v2-grey-200 pt-3">
         <button type="button" className="text-[12px] text-v2-text-text-muted hover:underline" onClick={onBack}>

@@ -51,6 +51,8 @@ export interface ModelOption {
   provider: string;
   id: string;
   reasoning: boolean;
+  available: boolean;
+  authRequired: boolean;
   thinkingLevelMap?: Record<string, string | null>;
 }
 
@@ -566,9 +568,14 @@ export function parseConfigurationEvent(value: unknown): ConfigurationEvent {
     throw new Error("Invalid API response: generation must be a non-negative integer");
   }
   const projectWatchLeaseId = optionalIdentityString(source, "projectWatchLeaseId");
+  const availabilityEpoch =
+    source.availabilityEpoch === undefined ? undefined : requiredSafeGeneration(source, "availabilityEpoch", 0);
   if (source.type === "config.updated") {
     if (source.apiUsageChanged !== undefined && source.apiUsageChanged !== true) {
       throw new Error("Invalid API response: apiUsageChanged must be true");
+    }
+    if (source.availabilityChanged !== undefined && source.availabilityChanged !== true) {
+      throw new Error("Invalid API response: availabilityChanged must be true");
     }
     return {
       type: "config.updated",
@@ -577,6 +584,8 @@ export function parseConfigurationEvent(value: unknown): ConfigurationEvent {
       modelsChanged: requiredBoolean(source, "modelsChanged"),
       skillsChanged: requiredBoolean(source, "skillsChanged"),
       runtimeChanged: requiredBoolean(source, "runtimeChanged"),
+      ...(availabilityEpoch === undefined ? {} : { availabilityEpoch }),
+      ...(source.availabilityChanged === true ? { availabilityChanged: true } : {}),
       ...(source.apiUsageChanged === true ? { apiUsageChanged: true } : {}),
       ...(projectWatchLeaseId === undefined ? {} : { projectWatchLeaseId }),
     };
@@ -585,6 +594,7 @@ export function parseConfigurationEvent(value: unknown): ConfigurationEvent {
     return {
       type: "config.error",
       generation,
+      ...(availabilityEpoch === undefined ? {} : { availabilityEpoch }),
       message: requiredString(source, "message"),
       ...(projectWatchLeaseId === undefined ? {} : { projectWatchLeaseId }),
     };
@@ -615,7 +625,20 @@ export function parseConfigurationRefreshResult(value: unknown): ConfigurationRe
 export function parseAgentResource(value: unknown): AgentResourceDto {
   const agent = parseAgent(value);
   const source = record(value, "agent resource");
-  return { ...agent, ...(typeof source.content === "string" ? { content: source.content } : {}) };
+  let modelRepair: AgentResourceDto["modelRepair"];
+  if (source.modelRepair !== undefined) {
+    const repair = record(source.modelRepair, "modelRepair");
+    modelRepair = {
+      requested: requiredString(repair, "requested"),
+      inherited: requiredBoolean(repair, "inherited"),
+      ...(typeof repair.applied === "string" ? { applied: repair.applied } : {}),
+    };
+  }
+  return {
+    ...agent,
+    ...(typeof source.content === "string" ? { content: source.content } : {}),
+    ...(modelRepair === undefined ? {} : { modelRepair }),
+  };
 }
 
 export function parseAgentResources(value: unknown): AgentResourceDto[] {
@@ -646,6 +669,8 @@ export function parseModels(value: unknown): ModelOption[] {
       provider: requiredString(model, "provider"),
       id: requiredString(model, "id"),
       reasoning: requiredBoolean(model, "reasoning"),
+      available: requiredBoolean(model, "available"),
+      authRequired: requiredBoolean(model, "authRequired"),
       ...(thinkingLevelMap !== undefined ? { thinkingLevelMap } : {}),
     };
   });

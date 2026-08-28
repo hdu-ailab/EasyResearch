@@ -5,10 +5,12 @@ import {
   type AgentConfig,
 } from "./agents";
 
-export type DispatchLiveConfiguration = Pick<
+export type DispatchLiveConfiguration = Omit<Pick<
   LiveConfiguration,
   "generation" | "synchronize" | "isCurrent" | "resolveAgents" | "subscribe"
->;
+>, "synchronize"> & {
+  synchronize(options?: { projectCwds?: readonly string[] }): Promise<unknown>;
+};
 
 export interface CurrentAgentCatalog {
   generation: number;

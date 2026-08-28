@@ -20,6 +20,9 @@ import {
   type CompactionPolicySettingsManager,
 } from "../runtime/compaction-policy";
 import { resolvePiDefaultModel, type PiDefaultModelApi } from "../runtime/pi-default-model";
+import { applySkillSnapshotBaseDirs } from "../runtime/resource-fingerprint";
+import { assertModelRequestReady } from "../runtime/model-request-error";
+import { createConfiguredModelRuntime } from "./auth-runtime";
 import {
   ConfigurationUnavailableError,
   type LiveConfiguration,
@@ -94,7 +97,9 @@ export interface SessionState {
 }
 
 export interface InProcessAgentSession extends RuntimeSteeringSession {
-  agent: RuntimeSteeringSession["agent"] & ManualCompactionSession["agent"];
+  agent: RuntimeSteeringSession["agent"] & ManualCompactionSession["agent"] & {
+    state: { model: Model<any> | undefined };
+  };
   readonly sessionFile: string | undefined;
   readonly sessionId: string;
   readonly sessionName: string | undefined;
@@ -107,6 +112,9 @@ export interface InProcessAgentSession extends RuntimeSteeringSession {
   readonly promptTemplates: ReadonlyArray<{ name: string; description?: string }>;
   readonly modelRuntime: {
     getModel(provider: string, modelId: string): Model<any> | undefined;
+    getAvailableSnapshot(): readonly { provider: string; id: string }[];
+    getProvider(providerId: string): unknown;
+    getProviderAuthStatus(providerId: string): { configured: boolean };
   };
   readonly resourceLoader: {
     getSkills(): {
@@ -280,7 +288,9 @@ function createBindingSession(session: BindableAgentSession): AgentRuntimeBindin
       const operation = session.abort();
       void operation.catch(() => {});
     },
-    setModel: (model) => session.setModel(model),
+    rebindModel: (model) => {
+      session.agent.state.model = model;
+    },
     setThinkingLevel: (level) => session.setThinkingLevel(level),
   };
 }
@@ -312,6 +322,7 @@ export interface PiRuntimeDependencies {
     extensionFactories: unknown[];
     noSkills: boolean;
     additionalSkillPaths: string[];
+    skillsOverride: typeof applySkillSnapshotBaseDirs;
     appendSystemPromptOverride(base: string[]): string[];
   }): ResourceLoaderLike;
   createAgentSession(options: Record<string, unknown>): Promise<{ session: BindableAgentSession }>;
@@ -366,6 +377,7 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
         extensionFactories,
         noSkills: true,
         additionalSkillPaths: [],
+        skillsOverride: applySkillSnapshotBaseDirs,
         appendSystemPromptOverride: (base) => binding.appendSystemPrompt(base),
       });
       await resourceLoader.reload({ resolveProjectTrust: async () => true });
@@ -515,12 +527,17 @@ export class PiSessionFactory implements SessionFactory {
         createResearchAssistantExtensions({ ...runtime, liveConfiguration })
           .map(({ name, factory }) => ({ name, factory })),
       createSettingsManager: (cwd, root) => pi.SettingsManager.create(cwd, root),
-      createModelRuntime: (root) =>
-        pi.ModelRuntime.create({
-          authPath: join(root, "auth.json"),
-          modelsPath: join(root, "models.json"),
-          refreshOnCreate: false,
-        }),
+      createModelRuntime: async (root) => {
+        const modelsPath = join(root, "models.json");
+        return createConfiguredModelRuntime(
+          (candidatePath) => pi.ModelRuntime.create({
+            authPath: join(root, "auth.json"),
+            modelsPath: candidatePath,
+            refreshOnCreate: false,
+          }),
+          modelsPath,
+        );
+      },
       createResourceLoader: (options) =>
         new pi.DefaultResourceLoader(options as ConstructorParameters<typeof pi.DefaultResourceLoader>[0]),
       createAgentSession: async (options) => {
@@ -802,6 +819,7 @@ class DirectSessionAdapter implements SessionAdapter {
       try {
         await binding.ensureCurrent();
         if (this.stopRequested) throw new Error("Session has stopped");
+        assertModelRequestReady(session.modelRuntime, session.model);
         if (/^\/web-tree(?:\s|$)/.test(message.trimStart())) {
           throw new Error("The /web-tree command is not available in chat.");
         }

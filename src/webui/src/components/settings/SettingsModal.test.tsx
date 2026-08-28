@@ -104,8 +104,22 @@ beforeEach(() => {
     },
   ]);
   vi.mocked(api.listModels).mockResolvedValue([
-    { provider: "openai", id: "gpt-4o", reasoning: true, thinkingLevelMap: {} },
-    { provider: "anthropic", id: "claude-sonnet-4", reasoning: false, thinkingLevelMap: {} },
+    {
+      provider: "openai",
+      id: "gpt-4o",
+      reasoning: true,
+      thinkingLevelMap: {},
+      available: true,
+      authRequired: false,
+    },
+    {
+      provider: "anthropic",
+      id: "claude-sonnet-4",
+      reasoning: false,
+      thinkingLevelMap: {},
+      available: true,
+      authRequired: false,
+    },
   ] as never);
   vi.mocked(api.patchAgent).mockImplementation(async (name, patch) => {
     const agent = (await api.listAgents()).find((item) => item.name === name)!;
@@ -710,7 +724,7 @@ describe("SettingsModal", () => {
     const searchModel = screen.getByRole("combobox", { name: "Select model for Search" });
     expect(searchModel).toHaveTextContent("custom/missing-model");
     await user.click(searchModel);
-    expect(screen.getByRole("option", { name: "custom/missing-model" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "custom/missing-model · Model unavailable" })).toBeTruthy();
   });
 
   it("localizes model select labels with localized agent names", async () => {
@@ -789,7 +803,15 @@ describe("SettingsModal", () => {
         missingSkills: [],
       },
     ]);
-    vi.mocked(api.listModels).mockResolvedValueOnce([{ provider: "deepseek", id: "deepseek-v4-pro", reasoning: true }]);
+    vi.mocked(api.listModels).mockResolvedValueOnce([
+      {
+        provider: "deepseek",
+        id: "deepseek-v4-pro",
+        reasoning: true,
+        available: true,
+        authRequired: false,
+      },
+    ]);
     renderSettings();
     await openAgentConfig(user, "Research Assistant");
     const combobox = screen.getByRole("combobox", { name: "Select model for Research Assistant" });
@@ -1015,7 +1037,7 @@ describe("SettingsModal", () => {
       ] as never);
     renderSettings();
     await selectCategory(user, "Model providers");
-    const providerAction = screen.getByRole("button", { name: "Connect providers" });
+    const providerAction = screen.getByRole("button", { name: /Connect providers/ });
 
     await user.click(providerAction);
 

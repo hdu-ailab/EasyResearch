@@ -18,6 +18,7 @@ export interface ConfigPageProps {
   onHome(): void;
   onBackToSettings(): void;
   onProjectInterestChange(cwd?: string): void;
+  configurationError?: string | null;
 }
 
 type Root = { kind: "home" } | { kind: "project"; cwd: string };
@@ -26,20 +27,7 @@ function rootScope(root: Root): { scope: ConfigScope; cwd?: string } {
   return root.kind === "home" ? { scope: "global" } : { scope: "project", cwd: root.cwd };
 }
 
-function savedMessage(root: Root, path: string): "config.saved" | "config.savedLive" | "config.savedRestart" {
-  const parts = path.split(/[\\/]/);
-  const filename = parts.at(-1) ?? "";
-  const directMarkdown = parts.length === 2 && filename.length > ".md".length && filename.endsWith(".md");
-  const agentMarkdown = parts[0] === "agents" && directMarkdown;
-  const skillDescriptor = parts[0] === "skills" && (directMarkdown || (parts.length > 2 && filename === "SKILL.md"));
-  if (skillDescriptor || (root.kind === "home" && (path === "models.json" || agentMarkdown))) {
-    return "config.savedLive";
-  }
-  if (root.kind === "project" && agentMarkdown) return "config.saved";
-  return "config.savedRestart";
-}
-
-export function ConfigPage({ onHome, onBackToSettings, onProjectInterestChange }: ConfigPageProps) {
+export function ConfigPage({ onHome, onBackToSettings, onProjectInterestChange, configurationError }: ConfigPageProps) {
   const { t } = useI18n();
   const [data, setData] = useState<ConfigProjectsDto | null>(null);
   const [selectedRoot, setSelectedRoot] = useState<Root | null>(null);
@@ -48,7 +36,7 @@ export function ConfigPage({ onHome, onBackToSettings, onProjectInterestChange }
   const [content, setContent] = useState("");
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
+  const [saved, setSaved] = useState<"config.saved" | "config.savedLive" | "config.savedRepaired" | null>(null);
   const [dialog, setDialog] = useState<"file" | "directory" | null>(null);
   const [name, setName] = useState("");
   const entryRequest = useRef(0);
@@ -127,7 +115,7 @@ export function ConfigPage({ onHome, onBackToSettings, onProjectInterestChange }
       if (request !== entryRequest.current) return;
       setSelectedFile(entry.path);
       setContent(file.content);
-      setSaved(false);
+      setSaved(null);
       setError(null);
     } catch (e) {
       if (request === entryRequest.current) setError(e instanceof Error ? e.message : String(e));
@@ -146,8 +134,14 @@ export function ConfigPage({ onHome, onBackToSettings, onProjectInterestChange }
     }
     try {
       const params = rootScope(selectedRoot);
-      await writeConfigFile(params.scope, params.cwd, selectedFile, content);
-      setSaved(true);
+      const result = await writeConfigFile(params.scope, params.cwd, selectedFile, content);
+      setSaved(
+        result.configuration?.status === "repaired"
+          ? "config.savedRepaired"
+          : result.configuration
+            ? "config.savedLive"
+            : "config.saved",
+      );
       setError(null);
       await loadEntries(selectedRoot, path);
     } catch (e) {
@@ -196,6 +190,14 @@ export function ConfigPage({ onHome, onBackToSettings, onProjectInterestChange }
         }
         center={<span className="truncate text-[13px] text-v2-text-text-muted">{t("config.browser")}</span>}
       />
+      {configurationError && (
+        <p
+          role="alert"
+          className="mx-4 mt-1 rounded-md border border-v2-status-error/30 px-3 py-2 text-[12px] text-v2-status-error"
+        >
+          {configurationError}
+        </p>
+      )}
       <div className="min-h-0 flex-1 px-4 pb-4 pt-[4px]">
         {!selectedRoot ? (
           <section className="mx-auto flex h-full w-full max-w-[980px] flex-col rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]">
@@ -314,7 +316,7 @@ export function ConfigPage({ onHome, onBackToSettings, onProjectInterestChange }
                       value={content}
                       onChange={(e) => {
                         setContent(e.target.value);
-                        setSaved(false);
+                        setSaved(null);
                       }}
                       spellCheck={false}
                     />
@@ -327,11 +329,7 @@ export function ConfigPage({ onHome, onBackToSettings, onProjectInterestChange }
                         <Save size={13} />
                         {t("config.save")}
                       </button>
-                      {saved && (
-                        <span className="text-[12px] text-v2-text-text-muted">
-                          {t(savedMessage(selectedRoot, selectedFile))}
-                        </span>
-                      )}
+                      {saved && <span className="text-[12px] text-v2-text-text-muted">{t(saved)}</span>}
                     </div>
                   </>
                 ) : (

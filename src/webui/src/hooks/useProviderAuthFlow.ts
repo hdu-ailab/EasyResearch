@@ -3,6 +3,7 @@ import type { AuthFlowEventDto, AuthProviderInfoDto } from "../../../web/contrac
 import {
   authFlowEventSource,
   cancelAuthFlow,
+  deleteProvider,
   listAuthProviders,
   logoutProvider,
   respondAuthFlow,
@@ -44,6 +45,7 @@ export type NotifyCard =
 export interface UseProviderAuthFlow {
   providers: AuthProviderInfoDto[];
   providersLoaded: boolean;
+  providersError?: string;
   connectedCount: number;
   view: FlowView;
   pendingPrompt: PendingPrompt | null;
@@ -57,6 +59,7 @@ export interface UseProviderAuthFlow {
   cancel(): Promise<void>;
   backToList(): void;
   logout(providerId: string): Promise<void>;
+  deleteProvider(providerId: string): Promise<void>;
   refresh(): Promise<void>;
 }
 
@@ -73,6 +76,7 @@ function sortProviders(providers: AuthProviderInfoDto[]): AuthProviderInfoDto[] 
 export function useProviderAuthFlow(configurationGeneration?: number): UseProviderAuthFlow {
   const [providers, setProviders] = useState<AuthProviderInfoDto[]>([]);
   const [providersLoaded, setProvidersLoaded] = useState(false);
+  const [providersError, setProvidersError] = useState<string | undefined>();
   const [view, setView] = useState<FlowView>("idle");
   const [pendingPrompt, setPendingPrompt] = useState<PendingPrompt | null>(null);
   const [notifies, setNotifies] = useState<NotifyCard[]>([]);
@@ -94,8 +98,11 @@ export function useProviderAuthFlow(configurationGeneration?: number): UseProvid
       if (request !== providerRequestRef.current) return;
       setProviders(next);
       setProvidersLoaded(true);
-    } catch {
-      // Provider metadata is observational. Keep the last complete list.
+      setProvidersError(undefined);
+    } catch (error) {
+      if (request !== providerRequestRef.current) return;
+      setProvidersLoaded(true);
+      setProvidersError(error instanceof Error ? error.message : String(error));
     }
   }, []);
 
@@ -258,11 +265,20 @@ export function useProviderAuthFlow(configurationGeneration?: number): UseProvid
     [refresh],
   );
 
+  const removeProvider = useCallback(
+    async (providerId: string) => {
+      await deleteProvider(providerId);
+      await refresh();
+    },
+    [refresh],
+  );
+
   const connectedCount = providers.filter((provider) => provider.authStatus?.configured).length;
 
   return {
     providers,
     providersLoaded,
+    providersError,
     connectedCount,
     view,
     pendingPrompt,
@@ -276,6 +292,7 @@ export function useProviderAuthFlow(configurationGeneration?: number): UseProvid
     cancel,
     backToList,
     logout,
+    deleteProvider: removeProvider,
     refresh,
   };
 }

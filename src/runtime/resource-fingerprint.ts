@@ -1,11 +1,15 @@
 import { createHash } from "node:crypto";
-import { lstatSync, readdirSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import createIgnore from "ignore";
 
 export const MAX_SKILL_DEPTH = 16;
 export const MAX_SKILL_DESCRIPTORS = 4096;
 export const MAX_SKILL_DESCRIPTOR_BYTES = 1_048_576;
+export const MAX_SKILL_IGNORE_BYTES = 1_048_576;
+const IGNORE_FILE_NAMES = [".gitignore", ".ignore", ".fdignore"] as const;
+const SNAPSHOT_BASE_DIR_FILE = ".easyresearch-skill-base-dir";
 
 export interface SkillScopeFingerprint {
   value: string;
@@ -16,12 +20,15 @@ export interface SkillScopeFingerprint {
 export interface AcceptedSkillDescriptor {
   name: string;
   relativePath: string;
+  snapshotPath?: string;
+  baseDir?: string;
 }
 
 export interface FingerprintResourceOptions {
   agentDir: string;
   homeDir: string;
   enableDotAgentsSkill: boolean;
+  snapshotRoot?: string;
 }
 
 export interface SkillDescriptor {
@@ -31,6 +38,9 @@ export interface SkillDescriptor {
   skillPath: string;
   canonicalPath: string;
   canonicalSkillPath: string;
+  originalPath?: string;
+  originalSkillPath?: string;
+  baseDir?: string;
 }
 
 export interface SelectedSkillDescriptor {
@@ -38,7 +48,12 @@ export interface SelectedSkillDescriptor {
   rootIndex: number;
 }
 
-export function isSkillDescriptorRelativePath(relativePath: string): boolean {
+export type SkillDiscoveryMode = "pi" | "agents";
+
+export function isSkillDescriptorRelativePath(
+  relativePath: string,
+  mode: SkillDiscoveryMode = "pi",
+): boolean {
   if (
     relativePath.length === 0 ||
     relativePath.includes("\0") ||
@@ -56,19 +71,25 @@ export function isSkillDescriptorRelativePath(relativePath: string): boolean {
   if (components.length === 1) {
     const filename = components[0];
     if (filename === undefined) return false;
-    return filename.length > ".md".length && filename.endsWith(".md");
+    return mode === "pi" && filename.length > ".md".length && filename.endsWith(".md");
   }
-  return components.at(-1) === "SKILL.md";
+  return components.at(-1) === "SKILL.md"
+    || (mode === "agents" && components.at(-1)?.endsWith(".md") === true);
 }
 
 type LocatedEntry = { kind: "directory" | "file" | "other"; realPath: string } | { kind: "outside" };
 
-export async function fingerprintSkillRoot(root: string, scope: string): Promise<SkillScopeFingerprint> {
+export async function fingerprintSkillRoot(
+  root: string,
+  scope: string,
+  snapshotRoot?: string,
+  mode: SkillDiscoveryMode = "pi",
+): Promise<SkillScopeFingerprint> {
   const hash = createHash("sha256");
   hash.update("easyresearch-skill-scope-v1\0");
   updateHashField(hash, Buffer.from(scope, "utf8"));
 
-  const candidates = enumerateSkillDescriptors(root);
+  const candidates = enumerateSkillDescriptors(root, mode);
   if (candidates.length === 0) {
     return { value: hash.digest("hex"), descriptors: [], skillDescriptors: [] };
   }
@@ -82,17 +103,38 @@ export async function fingerprintSkillRoot(root: string, scope: string): Promise
   }
   const realRootStats = await lstat(realRoot);
   if (!realRootStats.isDirectory()) throw new Error("Skill fingerprint root must be a directory.");
+  const { importPi } = await import("./pi-import");
+  const { parseFrontmatter } = await importPi();
+  const skillDescriptors: AcceptedSkillDescriptor[] = [];
 
   for (const candidate of candidates) {
     const bytes = await readDescriptor(candidate.skillPath, candidate.skillPath, root, realRoot, realRootStats);
     updateHashField(hash, Buffer.from(candidate.relativePath, "utf8"));
     updateHashField(hash, bytes);
+    try {
+      const { frontmatter } = parseFrontmatter<Record<string, unknown>>(bytes.toString("utf8"));
+      if (typeof frontmatter.description !== "string" || frontmatter.description.trim().length === 0) continue;
+      const name = typeof frontmatter.name === "string" && frontmatter.name.trim().length > 0
+        ? frontmatter.name
+        : candidate.name;
+      const baseDir = candidate.path === candidate.skillPath ? dirname(candidate.path) : candidate.path;
+      const snapshotPath = snapshotRoot
+        ? materializeSkillSnapshot(snapshotRoot, candidate, bytes, baseDir)
+        : undefined;
+      skillDescriptors.push({
+        name,
+        relativePath: candidate.relativePath,
+        ...(snapshotPath ? { snapshotPath, baseDir } : {}),
+      });
+    } catch {
+      // Structural bytes still participate in the generation; Pi owns the diagnostic.
+    }
   }
 
   return {
     value: hash.digest("hex"),
     descriptors: candidates.map((candidate) => candidate.relativePath),
-    skillDescriptors: candidates.map(({ name, relativePath }) => ({ name, relativePath })),
+    skillDescriptors,
   };
 }
 
@@ -113,14 +155,75 @@ export async function fingerprintGlobalSkillResources(options: FingerprintResour
   globalSkills: SkillScopeFingerprint;
   homeSkills: SkillScopeFingerprint | null;
 }> {
-  const globalSkills = await fingerprintSkillRoot(join(options.agentDir, "skills"), "global");
+  const globalSkills = await fingerprintSkillRoot(
+    join(options.agentDir, "skills"),
+    "global",
+    options.snapshotRoot,
+  );
   const homeSkills = options.enableDotAgentsSkill
-    ? await fingerprintSkillRoot(join(options.homeDir, ".agents", "skills"), "home")
+    ? await fingerprintSkillRoot(
+        join(options.homeDir, ".agents", "skills"),
+        "home",
+        options.snapshotRoot,
+        "agents",
+      )
     : null;
   return { globalSkills, homeSkills };
 }
 
-export function enumerateSkillDescriptors(root: string): SkillDescriptor[] {
+function materializeSkillSnapshot(
+  snapshotRoot: string,
+  descriptor: SkillDescriptor,
+  bytes: Buffer,
+  baseDir: string,
+): string {
+  const digest = createHash("sha256")
+    .update("easyresearch-skill-snapshot-v1\0")
+    .update(baseDir)
+    .update("\0")
+    .update(bytes)
+    .digest("hex");
+  const directory = join(snapshotRoot, digest);
+  const filename = descriptor.relativePath.endsWith("/SKILL.md")
+    ? "SKILL.md"
+    : descriptor.relativePath.split("/").at(-1)!;
+  const snapshotPath = join(directory, filename);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  writeSnapshotFile(snapshotPath, bytes);
+  writeSnapshotFile(join(directory, SNAPSHOT_BASE_DIR_FILE), Buffer.from(baseDir, "utf8"));
+  return snapshotPath;
+}
+
+function writeSnapshotFile(path: string, bytes: Buffer): void {
+  try {
+    writeFileSync(path, bytes, { flag: "wx", mode: 0o600 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code !== "EEXIST") throw error;
+    if (!readFileSync(path).equals(bytes)) throw new Error("Skill snapshot content collision.");
+  }
+}
+
+export function applySkillSnapshotBaseDirs<T extends {
+  skills: Array<{ filePath: string; baseDir: string }>;
+  diagnostics: unknown;
+}>(current: T): T {
+  return {
+    ...current,
+    skills: current.skills.map((skill) => {
+      try {
+        const baseDir = readFileSync(join(dirname(skill.filePath), SNAPSHOT_BASE_DIR_FILE), "utf8");
+        return { ...skill, baseDir };
+      } catch {
+        return skill;
+      }
+    }),
+  };
+}
+
+export function enumerateSkillDescriptors(
+  root: string,
+  mode: SkillDiscoveryMode = "pi",
+): SkillDescriptor[] {
   let realRoot: string;
   try {
     realRoot = realpathSync(root);
@@ -133,10 +236,12 @@ export function enumerateSkillDescriptors(root: string): SkillDescriptor[] {
 
   const candidates: SkillDescriptor[] = [];
   const visitedDirectories = new Set<string>();
+  const ignoreMatcher = createIgnore();
+  const ignoreBudget = { bytes: 0 };
 
   const addDescriptor = (logicalPath: string): void => {
     const relativePath = normalizeRelativePath(relative(root, logicalPath));
-    if (!isSkillDescriptorRelativePath(relativePath)) return;
+    if (!isSkillDescriptorRelativePath(relativePath, mode)) return;
     if (candidates.length >= MAX_SKILL_DESCRIPTORS) {
       throw new Error(`Skill fingerprint descriptor limit is ${MAX_SKILL_DESCRIPTORS}.`);
     }
@@ -179,6 +284,7 @@ export function enumerateSkillDescriptors(root: string): SkillDescriptor[] {
     }
     if (visitedDirectories.has(realDirectory)) return;
     visitedDirectories.add(realDirectory);
+    addIgnoreRules(ignoreMatcher, logicalDirectory, root, realRoot, ignoreBudget);
 
     const names = readdirSync(realDirectory);
     names.sort(compareBytes);
@@ -186,7 +292,8 @@ export function enumerateSkillDescriptors(root: string): SkillDescriptor[] {
     if (!isRoot && names.includes("SKILL.md")) {
       const descriptorPath = join(realDirectory, "SKILL.md");
       const descriptor = locateEntry(descriptorPath, realRoot);
-      if (descriptor?.kind === "file") {
+      const relativeDescriptor = normalizeRelativePath(relative(root, join(logicalDirectory, "SKILL.md")));
+      if (descriptor?.kind === "file" && !ignoreMatcher.ignores(relativeDescriptor)) {
         addDescriptor(join(logicalDirectory, "SKILL.md"));
         return;
       }
@@ -194,11 +301,18 @@ export function enumerateSkillDescriptors(root: string): SkillDescriptor[] {
     }
 
     for (const name of names) {
+      if (name.startsWith(".") || name === "node_modules" || (isRoot && name.endsWith(".bak"))) continue;
       const entryPath = join(realDirectory, name);
       const entry = locateEntry(entryPath, realRoot);
       if (entry === null || entry.kind === "outside" || entry.kind === "other") continue;
+      const relativeEntry = normalizeRelativePath(relative(root, join(logicalDirectory, name)));
+      const ignorePath = entry.kind === "directory" ? `${relativeEntry}/` : relativeEntry;
+      if (ignoreMatcher.ignores(ignorePath)) continue;
       if (entry.kind === "file") {
-        if (isRoot && name.endsWith(".md")) addDescriptor(join(logicalDirectory, name));
+        if (
+          (mode === "pi" && isRoot && name.endsWith(".md"))
+          || (mode === "agents" && !isRoot && name.endsWith(".md"))
+        ) addDescriptor(join(logicalDirectory, name));
         continue;
       }
       walk(join(logicalDirectory, name), entry.realPath, depth + 1, false);
@@ -208,6 +322,58 @@ export function enumerateSkillDescriptors(root: string): SkillDescriptor[] {
   walk(root, realRoot, 0, true);
   candidates.sort((left, right) => compareBytes(left.relativePath, right.relativePath));
   return candidates;
+}
+
+function addIgnoreRules(
+  ignoreMatcher: ReturnType<typeof createIgnore>,
+  directory: string,
+  root: string,
+  realRoot: string,
+  budget: { bytes: number },
+): void {
+  const relativeDirectory = normalizeRelativePath(relative(root, directory));
+  const prefix = relativeDirectory ? `${relativeDirectory}/` : "";
+  for (const filename of IGNORE_FILE_NAMES) {
+    const path = join(directory, filename);
+    if (!existsSync(path)) continue;
+    let content: string;
+    try {
+      const resolved = realpathSync(path);
+      if (!isInside(realRoot, resolved)) continue;
+      const stats = lstatSync(resolved);
+      if (!stats.isFile()) continue;
+      if (stats.size > MAX_SKILL_IGNORE_BYTES || budget.bytes + stats.size > MAX_SKILL_IGNORE_BYTES) {
+        throw new Error(`Skill ignore controls may not exceed ${MAX_SKILL_IGNORE_BYTES} bytes.`);
+      }
+      content = readFileSync(resolved, "utf8");
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("Skill ignore controls")) throw error;
+      // Match Pi: an unreadable ignore file does not make Skill discovery fail.
+      continue;
+    }
+    budget.bytes += Buffer.byteLength(content);
+    const patterns = content
+      .split(/\r?\n/u)
+      .map((line) => prefixIgnorePattern(line, prefix))
+      .filter((line): line is string => line !== null);
+    if (patterns.length > 0) ignoreMatcher.add(patterns);
+  }
+}
+
+function prefixIgnorePattern(line: string, prefix: string): string | null {
+  const trimmed = line.trim();
+  if (!trimmed || (trimmed.startsWith("#") && !trimmed.startsWith("\\#"))) return null;
+  let pattern = line;
+  let negated = false;
+  if (pattern.startsWith("!")) {
+    negated = true;
+    pattern = pattern.slice(1);
+  } else if (pattern.startsWith("\\!")) {
+    pattern = pattern.slice(1);
+  }
+  if (pattern.startsWith("/")) pattern = pattern.slice(1);
+  const prefixed = prefix ? `${prefix}${pattern}` : pattern;
+  return negated ? `!${prefixed}` : prefixed;
 }
 
 function locateEntry(path: string, realRoot: string): LocatedEntry | null {

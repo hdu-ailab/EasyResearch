@@ -5,7 +5,7 @@ import { createRouteHandler, type DaemonControl, type RouteServices } from "./ro
 import { ActiveSessionRegistry } from "./active-sessions";
 import { PiSessionFactory } from "./session-adapter";
 import { DirectoryService } from "./directories";
-import { ConfigFileService } from "./config-files";
+import { ConfigFileService, ConfigServiceError } from "./config-files";
 import { readWebSessionIdleTimeout } from "./session-settings";
 import type { AgentDto, SessionSummaryDto } from "./contracts";
 import type { AgentConfig } from "../subagent/agents";
@@ -27,6 +27,8 @@ import {
   createConfigurationProjectWatches,
   type ConfigurationProjectWatches,
 } from "./configuration-project-watches";
+import { repairDanglingAgentDefaults } from "../runtime/agent-default-repair";
+import { createProviderDeletionService } from "./provider-deletion";
 
 export interface Server {
   port: number;
@@ -135,14 +137,25 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
   const agentDir = getAgentDir();
   let liveConfiguration: LiveConfiguration | undefined;
   const config = new ConfigFileService(agentDir, {
-    onAuthoritativeWrite: (change) => liveConfiguration?.notify(change) ?? Promise.resolve(),
+    onAuthoritativeWrite: async (change) => {
+      if (!liveConfiguration) return;
+      const outcome = await liveConfiguration.notify(change);
+      if (outcome.status === "rejected" || outcome.status === "closed") {
+        throw new ConfigServiceError(
+          409,
+          "Configuration was saved but could not be accepted.",
+          "CONFIG_REJECTED",
+        );
+      }
+      return outcome;
+    },
     acquireProject: async (cwd) => {
       if (!liveConfiguration) throw new Error("Configuration monitoring is unavailable.");
       return liveConfiguration.acquireProject(cwd);
     },
     synchronizeProject: async (cwd) => {
       if (!liveConfiguration) throw new Error("Configuration monitoring is unavailable.");
-      await liveConfiguration.synchronize({ projectCwds: [cwd] });
+      return liveConfiguration.synchronize({ projectCwds: [cwd] });
     },
   });
   const authRuntime = await createDaemonAuthRuntime({
@@ -153,15 +166,30 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
       modelsPath: join(agentDir, "models.json"),
       refreshOnCreate: false,
     }),
-    synchronizeCatalog: () => liveConfiguration?.synchronize() ?? Promise.resolve(),
-    onModelsChanged: () =>
-      liveConfiguration?.notify({ modelsChanged: true, force: true }) ?? Promise.resolve(),
+    synchronizeCatalog: async () => {
+      await liveConfiguration?.synchronize();
+    },
+    onModelsChanged: async () => {
+      if (!liveConfiguration) return;
+      const outcome = await liveConfiguration.notify({ availabilityChanged: true });
+      if (outcome.status === "closed" || outcome.status === "rejected") {
+        throw new Error("Model availability could not be synchronized.");
+      }
+    },
+    resolveFallbackModel: async (modelRuntime) => resolvePiDefaultModel({
+      pi: pi as unknown as PiDefaultModelApi,
+      cwd: agentDir,
+      agentDir,
+      modelRuntime,
+      settingsManager: SettingsManager.create(agentDir, agentDir),
+    }),
   });
   const auth = authRuntime.auth;
   try {
     liveConfiguration = createLiveConfiguration({
       agentDir,
       modelValidator: authRuntime.modelValidator,
+      repairAgentDefaults: (repairs) => repairDanglingAgentDefaults(config, repairs),
     });
   } catch (error) {
     const failures: unknown[] = [error];
@@ -308,7 +336,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
     },
     listModels,
     checkForUpdate: () => checkNpmUpdate(packageVersion),
-    patchAgent: createAgentPatchService(config, listModels),
+    patchAgent: createAgentPatchService(config, listModels, { repairUnknownModels: true }),
     getCompactionSettings: () => compactionSettings.get(),
     patchCompactionSettings: (patch) => compactionSettings.patch(patch),
     getApiUsageSettings: () => apiUsageSettings.get(),
@@ -320,12 +348,21 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
     config,
     subagentSessions,
     auth,
+    providerDeletion: createProviderDeletionService(config),
     configuration: live,
     configurationProjectWatches: projectWatches,
     logger,
     daemonControl: options.daemonControl,
     desktopAccess: options.desktopAccess,
-    listAgents: async (cwd) => agentsToDtos(await live.resolveAgents(cwd), cwd ?? agentDir, resolveDefaultModel),
+    listAgents: async (cwd) => {
+      const registration = cwd ? await live.acquireProject(cwd) : undefined;
+      try {
+        if (cwd) await live.synchronize({ projectCwds: [cwd] });
+        return agentsToDtos(await live.resolveAgents(cwd), cwd ?? agentDir, resolveDefaultModel);
+      } finally {
+        await registration?.release();
+      }
+    },
   };
   const handler = createRouteHandler(services);
 

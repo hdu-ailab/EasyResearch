@@ -188,7 +188,10 @@ function liveFor(agent: AgentConfig = stageAgent): FakeLiveConfiguration {
 }
 
 class FakeStageSession implements StageAgentSession {
-  agent = { steeringMode: "one-at-a-time" as "all" | "one-at-a-time" };
+  agent = {
+    steeringMode: "one-at-a-time" as "all" | "one-at-a-time",
+    state: { model: undefined as Model<any> | undefined },
+  };
   thinkingLevel: ThinkingLevel = "high";
   model = { provider: "openai", id: "gpt-test" } as Model<any>;
   isStreaming = false;
@@ -218,7 +221,14 @@ class FakeStageSession implements StageAgentSession {
     readonly sessionId: string,
     readonly sessionFile: string,
     private readonly promptPromise: Promise<void>,
-  ) {}
+  ) {
+    Object.defineProperty(this.agent.state, "model", {
+      get: () => this.model,
+      set: (value: Model<any> | undefined) => {
+        this.model = value as Model<any>;
+      },
+    });
+  }
 
   subscribe(listener: (event: unknown) => void): () => void {
     this.listeners.add(listener);
@@ -390,6 +400,9 @@ function dependencyHarness(session: FakeStageSession): DependencyHarness {
         refresh: async () => ({ aborted: false, errors: new Map() }),
         getError: () => undefined,
         getModel: (provider: string, id: string) => provider === "openai" && id === "gpt-test" ? model() : undefined,
+        getAvailableSnapshot: () => [model()],
+        getProvider: (provider: string) => provider === "openai" ? { id: provider } : undefined,
+        getProviderAuthStatus: () => ({ configured: true }),
         dispose: async () => {
           bindingDisposals.push("binding");
         },
@@ -1066,6 +1079,9 @@ describe("createStageSessionLauncher", () => {
           getError: () => undefined,
           getModel: (provider: string, id: string) =>
             provider === selected.provider && id === selected.id ? selected : undefined,
+          getAvailableSnapshot: () => [selected],
+          getProvider: (provider: string) => provider === selected.provider ? { id: provider } : undefined,
+          getProviderAuthStatus: () => ({ configured: true }),
           dispose: async () => {
             disposedModels.push(selected.name);
           },

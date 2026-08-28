@@ -7,6 +7,7 @@ import type { SubagentLaunchDetails } from "./contracts";
 import type { AgentCatalog, ReservedDispatch, SubagentCoordinator } from "./coordinator";
 import {
   availableSubagentsForCaller,
+  type DispatchLiveConfiguration,
   withCurrentAgentCatalog,
 } from "./dispatch-authorization";
 import { RESEARCH_ASSISTANT_AGENT } from "./agents";
@@ -118,10 +119,7 @@ const SubagentParams = Type.Object({
 export interface CreateSubagentToolOptions {
   coordinator: SubagentCoordinator;
   supervisor: SubagentSupervisor;
-  liveConfiguration: Pick<
-    LiveConfiguration,
-    "generation" | "synchronize" | "acquireProject" | "isCurrent" | "resolveAgents" | "subscribe"
-  >;
+  liveConfiguration: DispatchLiveConfiguration & Pick<LiveConfiguration, "acquireProject">;
   callerAgent: string;
   description?: string;
 }

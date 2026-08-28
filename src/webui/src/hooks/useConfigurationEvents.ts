@@ -3,6 +3,8 @@ import { connectConfigurationEvents, replaceConfigurationProjectWatches } from "
 
 export interface ConfigurationState {
   generation: number;
+  availabilityEpoch: number;
+  revision: number;
   error: string | null;
   setProjectInterests(owner: string, cwds: readonly string[]): void;
 }
@@ -83,7 +85,12 @@ function sendProjectInterests(coordinator: ProjectInterestCoordinator, attempt =
 }
 
 export function useConfigurationEvents(): ConfigurationState {
-  const [state, setState] = useState({ generation: 0, error: null as string | null });
+  const [state, setState] = useState({
+    generation: 0,
+    availabilityEpoch: 0,
+    revision: 0,
+    error: null as string | null,
+  });
   const coordinatorRef = useRef<ProjectInterestCoordinator>({
     connection: null,
     lease: null,
@@ -127,10 +134,22 @@ export function useConfigurationEvents(): ConfigurationState {
           sendProjectInterests(coordinator);
         }
         setState((current) => {
-          if (event.generation < current.generation) return current;
-          return event.type === "config.updated"
-            ? { generation: event.generation, error: null }
-            : { generation: event.generation, error: event.message };
+          const nextGeneration = Math.max(current.generation, event.generation);
+          const nextAvailabilityEpoch = Math.max(
+            current.availabilityEpoch,
+            event.availabilityEpoch ?? current.availabilityEpoch,
+          );
+          const generationChanged = nextGeneration > current.generation;
+          const availabilityChanged = nextAvailabilityEpoch > current.availabilityEpoch;
+          if (event.generation < current.generation && (event.availabilityEpoch ?? 0) <= current.availabilityEpoch)
+            return current;
+          const availabilityOnly = event.type === "config.updated" && event.availabilityChanged === true;
+          return {
+            generation: nextGeneration,
+            availabilityEpoch: nextAvailabilityEpoch,
+            revision: current.revision + (generationChanged || availabilityChanged ? 1 : 0),
+            error: event.type === "config.error" ? event.message : availabilityOnly ? current.error : null,
+          };
         });
       },
       onError: () => {

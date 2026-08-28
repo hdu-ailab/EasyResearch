@@ -9,12 +9,14 @@ const WATCH_DEPTH = 18;
 const STABILITY_THRESHOLD_MS = 200;
 const WATCH_EVENTS = ["add", "change", "unlink", "addDir", "unlinkDir"] as const;
 const PROJECT_INSTALL_ATTEMPTS = 2;
+const SKILL_IGNORE_CONTROL_FILES = new Set([".gitignore", ".ignore", ".fdignore"]);
 
 export interface ResourceWatchChange {
   agentsChanged?: boolean;
   modelsChanged?: boolean;
   skillsChanged?: boolean;
   projectCwds?: readonly string[];
+  availabilityChanged?: boolean;
 }
 
 export interface WatcherDependencies {
@@ -33,6 +35,7 @@ export interface ProjectWatchRegistration {
 
 export interface PreparedProjectResourceChanges {
   readonly changedCwds: readonly string[];
+  isCurrent(): Promise<boolean>;
   commit(): void;
   rollback(): void;
 }
@@ -83,6 +86,8 @@ type WatchScope =
       readonly skillsDir: string;
       readonly settingsPath: string;
       readonly modelsPath: string;
+      readonly authPath: string;
+      readonly modelsStorePath: string;
     }
   | {
       readonly kind: "home";
@@ -108,6 +113,8 @@ export function createConfigurationWatcherManager(dependencies: WatcherDependenc
     skillsDir: join(agentDir, "skills"),
     settingsPath: join(agentDir, "settings.json"),
     modelsPath: join(agentDir, "models.json"),
+    authPath: join(agentDir, "auth.json"),
+    modelsStorePath: join(agentDir, "models-store.json"),
   };
   const homeScope: WatchScope = {
     kind: "home",
@@ -537,6 +544,15 @@ export function createConfigurationWatcherManager(dependencies: WatcherDependenc
     let settled = false;
     return {
       changedCwds,
+      async isCurrent() {
+        for (const entry of entries) {
+          const current = projects.get(entry.cwd);
+          if (current !== entry.record || current.baselineVersion !== entry.baselineVersion) return false;
+          const confirmed = await dependencies.fingerprintProject(entry.cwd);
+          if (confirmed.value !== entry.fingerprint.value) return false;
+        }
+        return true;
+      },
       commit() {
         if (settled) return;
         settled = true;
@@ -712,7 +728,12 @@ function isAllowedPath(scope: WatchScope, path: string): boolean {
     for (const anchor of watchAnchors(scope)) {
       const configurationDir = join(anchor, ".easyresearch");
       const skillsDir = join(configurationDir, "skills");
-      if (path === anchor || path === configurationDir || path === skillsDir || isWithin(skillsDir, path)) return true;
+      if (
+        path === anchor
+        || path === configurationDir
+        || path === skillsDir
+        || isDiscoverableSkillWatchPath(skillsDir, path)
+      ) return true;
     }
     return false;
   }
@@ -722,14 +743,18 @@ function isAllowedPath(scope: WatchScope, path: string): boolean {
     return (
       path === scope.settingsPath ||
       path === scope.modelsPath ||
+      path === scope.authPath ||
+      path === scope.modelsStorePath ||
       path === scope.agentsDir ||
       isDirectMarkdown(path, scope.agentsDir) ||
       path === scope.skillsDir ||
-      isWithin(scope.skillsDir, path)
+      isDiscoverableSkillWatchPath(scope.skillsDir, path)
     );
   }
   if (scope.kind === "home") {
-    return path === scope.dotAgentsDir || path === scope.skillsDir || isWithin(scope.skillsDir, path);
+    return path === scope.dotAgentsDir
+      || path === scope.skillsDir
+      || isDiscoverableSkillWatchPath(scope.skillsDir, path);
   }
   return false;
 }
@@ -739,6 +764,7 @@ function classifyPath(scope: WatchScope, path: string): ResourceWatchChange | un
   if (scope.kind === "global") {
     if (path === scope.settingsPath) return {};
     if (path === scope.modelsPath) return { modelsChanged: true };
+    if (path === scope.authPath || path === scope.modelsStorePath) return { availabilityChanged: true };
     if (path === scope.agentsDir || isDirectMarkdown(path, scope.agentsDir)) return { agentsChanged: true };
     if (path === scope.skillsDir || isWithin(scope.skillsDir, path)) return { skillsChanged: true };
     return undefined;
@@ -750,6 +776,18 @@ function classifyPath(scope: WatchScope, path: string): ResourceWatchChange | un
 function isDirectMarkdown(path: string, directory: string): boolean {
   const child = relative(directory, path);
   return child.length > 0 && !child.includes(sep) && child.endsWith(".md");
+}
+
+function isDiscoverableSkillWatchPath(root: string, target: string): boolean {
+  const child = relative(root, target);
+  if (child.length === 0 || !isWithin(root, target)) return child.length === 0;
+  const components = child.split(sep);
+  if (components[0]?.endsWith(".bak")) return false;
+  return components.every((component, index) => {
+    if (component === "node_modules") return false;
+    if (!component.startsWith(".")) return true;
+    return index === components.length - 1 && SKILL_IGNORE_CONTROL_FILES.has(component);
+  });
 }
 
 function isWithin(root: string, target: string): boolean {

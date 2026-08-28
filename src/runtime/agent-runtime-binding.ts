@@ -26,6 +26,9 @@ const SAFE_MISSING_AGENT = "The configured Agent is not available in the current
 export interface AgentRuntimeModelRuntime {
   refresh(options: { allowNetwork: false }): Promise<unknown>;
   getModel(provider: string, modelId: string): Model<any> | undefined;
+  getAvailableSnapshot(): readonly { provider: string; id: string }[];
+  getProvider(providerId: string): unknown;
+  getProviderAuthStatus(providerId: string): { configured: boolean };
   getError(): string | undefined;
 }
 
@@ -35,7 +38,7 @@ export interface AgentRuntimeBindingSession {
   readonly thinkingLevel: ThinkingLevel;
   reload(): Promise<void>;
   abort(): Promise<void>;
-  setModel(model: Model<any>): Promise<void>;
+  rebindModel(model: Model<any> | undefined): void;
   setThinkingLevel(level: ThinkingLevel): void;
 }
 
@@ -62,10 +65,19 @@ export interface AgentRuntimeBinding {
 }
 
 export interface AgentRuntimeBindingOptions {
-  live: Pick<
+  live: Omit<Pick<
     LiveConfiguration,
-    "generation" | "synchronize" | "acquireProject" | "isCurrent" | "resolveAgents" | "subscribe"
-  > & Partial<Pick<LiveConfiguration, "compactionPolicy">>;
+    | "generation"
+    | "availabilityEpoch"
+    | "synchronize"
+    | "acquireProject"
+    | "isCurrent"
+    | "resolveAgents"
+    | "subscribe"
+  >, "availabilityEpoch" | "synchronize"> & {
+    readonly availabilityEpoch?: number;
+    synchronize(options?: { projectCwds?: readonly string[] }): Promise<unknown>;
+  } & Partial<Pick<LiveConfiguration, "compactionPolicy">>;
   agentName: string;
   cwd: string;
   createModelRuntime(): Promise<AgentRuntimeModelRuntime>;
@@ -79,6 +91,7 @@ export interface AgentRuntimeBindingOptions {
 
 interface AppliedRuntimeState {
   generation: number;
+  availabilityEpoch: number;
   definition: AgentConfig;
   model: Model<any> | undefined;
   thinking: ThinkingLevel;
@@ -92,14 +105,12 @@ interface PreparedRuntimeState extends AppliedRuntimeState {
 
 type RuntimeBindingStatus = "clean" | "applying" | "restoring" | "poisoned";
 
-function modelRefreshFailed(result: unknown): boolean {
-  if (typeof result !== "object" || result === null) return false;
-  const refresh = result as { aborted?: unknown; errors?: { size?: unknown } };
-  return refresh.aborted === true || (
-    typeof refresh.errors === "object" &&
-    refresh.errors !== null &&
-    typeof refresh.errors.size === "number" &&
-    refresh.errors.size > 0
+function sameModel(left: Model<any> | undefined, right: Model<any> | undefined): boolean {
+  return left === right || (
+    left !== undefined &&
+    right !== undefined &&
+    left.provider === right.provider &&
+    left.id === right.id
   );
 }
 
@@ -190,9 +201,11 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
         await options.live.synchronize({ projectCwds: [options.cwd] });
         if (disposed) throw new Error("Agent runtime binding has been disposed.");
         const generation = options.live.generation;
+        const availabilityEpoch = options.live.availabilityEpoch ?? 0;
         if (
           applied &&
           generation <= applied.generation &&
+          availabilityEpoch <= applied.availabilityEpoch &&
           pendingRuntimeGeneration === undefined &&
           runtimeStatus !== "poisoned"
         ) return undefined;
@@ -205,9 +218,11 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
 
         modelRuntimeCandidate = await modelRuntimes.prepare();
         const candidateRuntime = modelRuntimeCandidate.runtime;
-        const refresh = await candidateRuntime.refresh({ allowNetwork: false });
-        if (modelRefreshFailed(refresh)) throw new Error(SAFE_APPLY_ERROR);
-        if (candidateRuntime.getError()) throw new Error(SAFE_APPLY_ERROR);
+        try {
+          await candidateRuntime.refresh({ allowNetwork: false });
+        } catch {
+          // Credential/availability refresh failures do not invalidate registered configuration.
+        }
         if (disposed) throw new Error("Agent runtime binding has been disposed.");
         if (generation !== options.live.generation) {
           await discardModelRuntimeCandidate();
@@ -255,6 +270,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
         }
         return {
           generation,
+          availabilityEpoch,
           definition,
           model: selectedModel,
           thinking: selectedThinking,
@@ -292,15 +308,13 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
     } catch {
       restored = false;
     }
-    if (previousModel) {
-      applyingRuntimeModel = true;
-      try {
-        await session.setModel(previousModel);
-      } catch {
-        restored = false;
-      } finally {
-        applyingRuntimeModel = false;
-      }
+    applyingRuntimeModel = true;
+    try {
+      session.rebindModel(previousModel);
+    } catch {
+      restored = false;
+    } finally {
+      applyingRuntimeModel = false;
     }
     try {
       session.setThinkingLevel(previousThinking);
@@ -347,6 +361,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
       }
       const previous = applied;
       const { modelRuntimeCandidate, ...next } = candidate;
+      const availabilityOnly = previous !== undefined && candidate.generation === previous.generation;
       modelRuntimeCandidate.activate();
       applied = next;
       runtimeStatus = "applying";
@@ -358,18 +373,22 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
       const previousModel = attached.model;
       const previousThinking = attached.thinkingLevel;
       try {
+        if (availabilityOnly) {
+          if (!sameModel(previousModel, candidate.model)) attached.rebindModel(candidate.model);
+          if (previousThinking !== candidate.thinking) attached.setThinkingLevel(candidate.thinking);
+          await modelRuntimeCandidate.commit();
+          markRuntimeApplied(candidate.generation);
+          return true;
+        }
         await attached.reload();
         if (disposed) throw new Error(SAFE_APPLY_ERROR);
-        if (candidate.model) {
-          // Always rebind, including equal provider/id metadata replacements.
-          applyingRuntimeModel = true;
-          try {
-            await attached.setModel(candidate.model);
-          } finally {
-            applyingRuntimeModel = false;
-          }
-        } else if (attached.model) {
-          throw new Error(SAFE_APPLY_ERROR);
+        // Host configuration rebinding is non-persisting and bypasses Pi's
+        // interactive auth gate. Request preflight remains authoritative.
+        applyingRuntimeModel = true;
+        try {
+          attached.rebindModel(candidate.model);
+        } finally {
+          applyingRuntimeModel = false;
         }
         attached.setThinkingLevel(candidate.thinking);
         await modelRuntimeCandidate.commit();
@@ -495,6 +514,18 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
       session = attached;
       unsubscribe = options.live.subscribe((event) => {
         if (event.type !== "config.updated") return;
+        if (
+          event.availabilityChanged
+          && event.availabilityEpoch !== undefined
+          && event.availabilityEpoch > (applied?.availabilityEpoch ?? 0)
+        ) {
+          if (applyPromise) eventApplyRequested = true;
+          if (!attached.isIdle) return;
+          void ensureCurrent().catch((error: unknown) => {
+            options.onError?.(error instanceof Error ? error : new Error(SAFE_APPLY_ERROR));
+          });
+          return;
+        }
         const appliedGeneration = applied?.generation ?? 0;
         if (event.runtimeChanged) {
           if (applyPromise) eventApplyRequested = true;

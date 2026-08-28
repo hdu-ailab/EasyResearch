@@ -53,7 +53,14 @@ beforeEach(() => {
   vi.mocked(api.listModels)
     .mockReset()
     .mockResolvedValue([
-      { provider: "openai", id: "gpt-4o", reasoning: true, thinkingLevelMap: { xhigh: null, max: null } },
+      {
+        provider: "openai",
+        id: "gpt-4o",
+        reasoning: true,
+        thinkingLevelMap: { xhigh: null, max: null },
+        available: true,
+        authRequired: false,
+      },
     ]);
   vi.mocked(api.patchAgent)
     .mockReset()

@@ -1,8 +1,9 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentConfigurationPatch } from "./contracts";
-import { patchGlobalAgent } from "./agent-configuration";
+import { createAgentPatchService, patchGlobalAgent } from "./agent-configuration";
+import { repairDanglingAgentDefaults } from "../runtime/agent-default-repair";
 import { readGlobalAgent } from "./agent-resources";
 import { ConfigFileService } from "./config-files";
 
@@ -189,6 +190,42 @@ describe("patchGlobalAgent", () => {
       { model: "openai/gpt-4o", thinking: "high" },
       () => false,
     );
+  });
+
+  it("returns the authoritative specialist inheritance repair for a truly unknown PATCH model", async () => {
+    writeAgent("search", SEARCH_WITH_DEFAULTS);
+    let repairAwareConfig!: ConfigFileService;
+    const onAuthoritativeWrite = vi.fn(async () => {
+      await repairDanglingAgentDefaults(repairAwareConfig, [{
+        agentName: "search",
+        danglingModel: "removed/missing-model",
+      }]);
+    });
+    repairAwareConfig = new ConfigFileService(agentDir, { onAuthoritativeWrite });
+    const patchAgent = createAgentPatchService(
+      repairAwareConfig,
+      async () => [],
+      { repairUnknownModels: true },
+    );
+
+    const saved = await patchAgent("search", {
+      model: "removed/missing-model",
+      thinking: "high",
+    });
+
+    expect(onAuthoritativeWrite).toHaveBeenCalledOnce();
+    expect(saved).toMatchObject({
+      name: "search",
+      model: undefined,
+      thinking: "high",
+      modelRepair: {
+        requested: "removed/missing-model",
+        inherited: true,
+      },
+    });
+    expect(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"))).toEqual({
+      easyresearch: { agentDefaults: { search: { thinking: "high" } } },
+    });
   });
 
   it("keeps unrelated Markdown bytes outside an Agent-default patch", async () => {

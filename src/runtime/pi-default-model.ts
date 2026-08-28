@@ -15,11 +15,15 @@ export interface PiDefaultModelApi {
   createAgentSession(options: Record<string, unknown>): Promise<{ session: DefaultModelProbeSession }>;
 }
 
+interface DefaultModelRuntime {
+  getAvailableSnapshot?(): readonly { provider: string; id: string }[];
+}
+
 export async function resolvePiDefaultModel(options: {
   pi: PiDefaultModelApi;
   cwd: string;
   agentDir: string;
-  modelRuntime: object;
+  modelRuntime: DefaultModelRuntime;
   settingsManager: object;
 }): Promise<Model<any> | undefined> {
   const resourceLoader = new options.pi.DefaultResourceLoader({
@@ -43,7 +47,13 @@ export async function resolvePiDefaultModel(options: {
     noTools: "all",
   });
   try {
-    return session.model;
+    const model = session.model;
+    if (!model || (model.provider === "unknown" && model.id === "unknown")) return undefined;
+    const available = options.modelRuntime.getAvailableSnapshot?.();
+    if (available && !available.some((candidate) =>
+      candidate.provider === model.provider && candidate.id === model.id
+    )) return undefined;
+    return model;
   } finally {
     session.dispose();
   }

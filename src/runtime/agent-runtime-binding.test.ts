@@ -55,6 +55,7 @@ function definition(version: string, overrides: Partial<AgentConfig> = {}): Agen
 
 class FakeLiveConfiguration {
   generation = 1;
+  availabilityEpoch = 1;
   error: string | null = null;
   compactionPolicy = { triggerPercent: 70, globalEnabled: true, globalKeepRecentTokens: 20_000 };
   synchronizeCalls = 0;
@@ -162,6 +163,21 @@ class FakeLiveConfiguration {
     for (const listener of [...this.listeners]) listener(event);
   }
 
+  publishAvailability(): void {
+    this.availabilityEpoch += 1;
+    const event: ConfigurationUpdatedEvent = {
+      type: "config.updated",
+      generation: this.generation,
+      availabilityEpoch: this.availabilityEpoch,
+      availabilityChanged: true,
+      agentsChanged: false,
+      modelsChanged: false,
+      skillsChanged: false,
+      runtimeChanged: false,
+    };
+    for (const listener of [...this.listeners]) listener(event);
+  }
+
   publishSkills(next: AgentConfig[]): void {
     this.agents = next;
     this.generation += 1;
@@ -184,9 +200,15 @@ class FakeModelRuntimeFactory {
   refreshResult: unknown;
   semanticError: string | undefined;
   disposeError: Error | undefined;
+  createError: Error | undefined;
   readonly runtimes: FakeModelRuntime[] = [];
 
   async create(): Promise<FakeModelRuntime> {
+    if (this.createError) {
+      const error = this.createError;
+      this.createError = undefined;
+      throw error;
+    }
     const runtime = new FakeModelRuntime(this);
     this.runtimes.push(runtime);
     return runtime;
@@ -214,6 +236,20 @@ class FakeModelRuntime {
     return this.current.get(`${provider}/${modelId}`);
   }
 
+  getAvailableSnapshot(): Model<any>[] {
+    return [...this.current.values()];
+  }
+
+  getProvider(providerId: string): { id: string } | undefined {
+    return [...this.current.values()].some((entry) => entry.provider === providerId)
+      ? { id: providerId }
+      : undefined;
+  }
+
+  getProviderAuthStatus(providerId: string): { configured: boolean } {
+    return { configured: this.getProvider(providerId) !== undefined };
+  }
+
   getError(): string | undefined {
     return this.factory.semanticError;
   }
@@ -230,7 +266,7 @@ class FakeSession implements AgentRuntimeBindingSession {
   model: Model<any> | undefined;
   thinkingLevel: ThinkingLevel = "off";
   reloadCalls = 0;
-  modelCalls: Model<any>[] = [];
+  modelCalls: Array<Model<any> | undefined> = [];
   thinkingCalls: ThinkingLevel[] = [];
   failNextReload: Error | undefined;
   failNextModel: Error | undefined;
@@ -258,7 +294,7 @@ class FakeSession implements AgentRuntimeBindingSession {
     this.onReload?.();
   }
 
-  async setModel(next: Model<any>): Promise<void> {
+  rebindModel(next: Model<any> | undefined): void {
     this.modelCalls.push(next);
     const error = this.failNextModel ?? this.modelFailures.shift();
     this.failNextModel = undefined;
@@ -289,7 +325,9 @@ function createHarness(
   const live = new FakeLiveConfiguration([initial]);
   const models = new FakeModelRuntimeFactory();
   models.setNext(initialModel);
-  const resolveAutomaticModel = vi.fn(async () => model("automatic", "automatic-model"));
+  const resolveAutomaticModel = vi.fn<() => Promise<Model<any> | undefined>>(
+    async () => model("automatic", "automatic-model"),
+  );
   const settings = SettingsManager.inMemory({
     compaction: { enabled: true, reserveTokens: 16_384, keepRecentTokens: 20_000 },
   });
@@ -352,7 +390,12 @@ async function attachHarness(state: ReturnType<typeof createHarness>) {
   return { session, observed: () => observed };
 }
 
-function attachPiSession(binding: AgentRuntimeBinding, session: AgentRuntimeBindingSession): Promise<void> {
+function attachPiSession(
+  binding: AgentRuntimeBinding,
+  session: Omit<AgentRuntimeBindingSession, "rebindModel"> & {
+    agent: { state: { model: Model<any> | undefined } };
+  },
+): Promise<void> {
   return binding.attach({
     get isIdle() {
       return session.isIdle;
@@ -368,12 +411,72 @@ function attachPiSession(binding: AgentRuntimeBinding, session: AgentRuntimeBind
       const operation = session.abort();
       void operation.catch(() => {});
     },
-    setModel: (selectedModel) => session.setModel(selectedModel),
+    rebindModel: (selectedModel) => {
+      session.agent.state.model = selectedModel as Model<any>;
+    },
     setThinkingLevel: (level) => session.setThinkingLevel(level),
   });
 }
 
 describe("AgentRuntimeBinding safe boundaries", () => {
+  it("refreshes availability without rebinding an unchanged explicit model", async () => {
+    const state = createHarness();
+    const attached = await attachHarness(state);
+    const refreshes = state.models.refreshCalls.length;
+    const modelRebinds = attached.session.modelCalls.length;
+    const reloads = attached.session.reloadCalls;
+
+    state.live.publishAvailability();
+    await vi.waitFor(() => expect(state.models.refreshCalls).toHaveLength(refreshes + 1));
+
+    expect(state.binding.generation()).toBe(1);
+    expect(attached.session.modelCalls).toHaveLength(modelRebinds);
+    expect(attached.session.reloadCalls).toBe(reloads);
+  });
+
+  it("resolves and binds an automatic model when availability appears", async () => {
+    const state = createHarness(definition("v1", { model: undefined }));
+    state.resolveAutomaticModel.mockResolvedValueOnce(undefined);
+    const attached = await attachHarness(state);
+    expect(attached.session.model).toBeUndefined();
+
+    const fallback = model("available-fallback", "fallback");
+    state.models.setNext(fallback);
+    state.resolveAutomaticModel.mockResolvedValueOnce(fallback);
+    state.live.publishAvailability();
+
+    await vi.waitFor(() => expect(attached.session.model).toBe(fallback));
+    expect(attached.session.modelCalls).toEqual([fallback]);
+    expect(state.binding.generation()).toBe(1);
+  });
+
+  it("clears an automatic model when no model remains available", async () => {
+    const state = createHarness(definition("v1", { model: undefined }));
+    const attached = await attachHarness(state);
+    expect(attached.session.model).toBeDefined();
+
+    state.models.setNext();
+    state.resolveAutomaticModel.mockResolvedValueOnce(undefined);
+    state.live.publishAvailability();
+
+    await vi.waitFor(() => expect(attached.session.model).toBeUndefined());
+    expect(attached.session.modelCalls).toEqual([undefined]);
+    expect(state.binding.generation()).toBe(1);
+  });
+
+  it("can clear the session model without invoking a persistence-writing model mutation", async () => {
+    const state = createHarness();
+    const attached = await attachHarness(state);
+    state.resolveAutomaticModel.mockResolvedValue(undefined);
+    state.models.setNext(model("metadata-v2"));
+
+    state.live.publish([definition("v2", { model: undefined })]);
+    await vi.waitFor(() => expect(state.binding.generation()).toBe(2));
+
+    expect(attached.session.model).toBeUndefined();
+    expect(attached.session.modelCalls).toEqual([undefined]);
+  });
+
   it("acquires the exact cwd before initial synchronization and releases it once", async () => {
     const state = createHarness();
 
@@ -1096,10 +1199,7 @@ describe("AgentRuntimeBinding safe boundaries", () => {
       attached.session.isIdle = false;
       state.models.setNext(model("metadata-v2"));
       if (failurePoint === "preparation") {
-        state.models.refreshResult = {
-          aborted: false,
-          errors: new Map([["test-provider", new Error("candidate refresh failed")]]),
-        };
+        state.models.createError = new Error("candidate creation failed");
       } else if (failurePoint === "reload") {
         attached.session.reloadFailures.push(new Error("candidate reload failed"));
       } else if (failurePoint === "restoration") {
@@ -1228,7 +1328,7 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     expect(candidate.disposeCalls).toBe(2);
   });
 
-  it("retains the prior generation when Pi reports a local model refresh error", async () => {
+  it("applies registered configuration when availability refresh reports an error", async () => {
     const state = createHarness();
     const attached = await attachHarness(state);
     attached.session.isIdle = false;
@@ -1239,18 +1339,10 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     };
     state.live.publish([definition("v2")]);
 
-    const failure = await state.binding.ensureCurrent({ activeBoundary: true }).catch((error) => error);
-
-    expect(failure).toBeInstanceOf(Error);
-    expect(failure.message).toMatch(/runtime configuration/i);
-    expect(failure.message).not.toContain("SECRET");
-    expect(state.binding.current().systemPrompt).toBe("Prompt v1");
-    expect(attached.session.reloadCalls).toBe(0);
-    expect(attached.session.abortCalls).toBe(1);
-
-    state.models.refreshResult = { aborted: false, errors: new Map() };
     await state.binding.ensureCurrent({ activeBoundary: true });
     expect(state.binding.current().systemPrompt).toBe("Prompt v2");
+    expect(attached.session.model?.name).toBe("metadata-v2");
+    expect(attached.session.abortCalls).toBe(0);
   });
 
   it("awaits direct session abort before rejecting an active-boundary failure", async () => {
@@ -1258,10 +1350,7 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     const attached = await attachHarness(state);
     attached.session.isIdle = false;
     state.models.setNext(model("metadata-v2"));
-    state.models.refreshResult = {
-      aborted: false,
-      errors: new Map([["test-provider", new Error("candidate refresh failed")]]),
-    };
+    state.models.createError = new Error("candidate creation failed");
     state.live.publish([definition("v2")]);
     let releaseAbort!: () => void;
     const abortGate = new Promise<void>((resolve) => {
@@ -1303,7 +1392,7 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     expect(state.onRuntimeCoherent).toHaveBeenCalledOnce();
   });
 
-  it("keeps the accepted model runtime unchanged when candidate refresh validation fails", async () => {
+  it("commits registered candidate metadata despite availability refresh failure", async () => {
     const state = createHarness();
     const attached = await attachHarness(state);
     attached.session.isIdle = false;
@@ -1314,13 +1403,13 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     };
     state.live.publish([definition("v2")]);
 
-    await expect(state.binding.ensureCurrent({ activeBoundary: true })).rejects.toThrow(/runtime configuration/i);
+    await state.binding.ensureCurrent({ activeBoundary: true });
 
-    expect(state.binding.modelRuntime().getModel("test-provider", "same-model")).toBe(state.initialModel);
-    expect(attached.session.model).toBe(state.initialModel);
+    expect(state.binding.modelRuntime().getModel("test-provider", "same-model")?.name).toBe("invalid-metadata");
+    expect(attached.session.model?.name).toBe("invalid-metadata");
   });
 
-  it("rejects a refreshed model catalog with a semantic runtime error", async () => {
+  it("does not treat a runtime availability diagnostic as structural configuration failure", async () => {
     const state = createHarness();
     const attached = await attachHarness(state);
     attached.session.isIdle = false;
@@ -1328,14 +1417,10 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     state.models.semanticError = "SECRET invalid provider at /private/models.json";
     state.live.publish([definition("v2")]);
 
-    const failure = await state.binding.ensureCurrent({ activeBoundary: true }).catch((error) => error);
+    await state.binding.ensureCurrent({ activeBoundary: true });
 
-    expect(failure).toBeInstanceOf(Error);
-    expect(failure.message).toMatch(/runtime configuration/i);
-    expect(failure.message).not.toContain("SECRET");
-    expect(failure.message).not.toContain("/private/models.json");
-    expect(state.binding.current().systemPrompt).toBe("Prompt v1");
-    expect(attached.session.reloadCalls).toBe(0);
+    expect(state.binding.current().systemPrompt).toBe("Prompt v2");
+    expect(attached.session.model?.name).toBe("metadata-v2");
   });
 
   it("delegates Automatic Research Assistant selection to the injected Pi-native resolver", async () => {
@@ -1484,12 +1569,13 @@ describe("AgentRuntimeBinding real Pi next-turn integration", () => {
         appendSystemPromptOverride: (base) => binding!.appendSystemPrompt(base),
       });
       await resourceLoader.reload({ resolveProjectTrust: async () => true });
+      const sessionManager = pi.SessionManager.create(cwd, join(root, "sessions"));
       const created = await pi.createAgentSession({
         cwd,
         agentDir,
         modelRuntime,
         settingsManager: settings,
-        sessionManager: pi.SessionManager.inMemory(cwd),
+        sessionManager,
         resourceLoader,
         model: binding.model(),
         thinkingLevel: binding.thinking(),
@@ -1520,6 +1606,8 @@ describe("AgentRuntimeBinding real Pi next-turn integration", () => {
         ],
       });
       session = created.session;
+      const persistedModelChangesBefore = sessionManager.getEntries()
+        .filter((entry) => entry.type === "model_change").length;
       await session.bindExtensions({
         mode: "rpc",
         commandContextActions: {
@@ -1546,6 +1634,9 @@ describe("AgentRuntimeBinding real Pi next-turn integration", () => {
       expect(secondRequests[0]?.systemPrompt).not.toContain("Prompt v1");
       expect(session.model).toBe(secondProvider.getModel("same-model"));
       expect(session.thinkingLevel).toBe("high");
+      expect(sessionManager.getEntries().filter((entry) => entry.type === "model_change")).toHaveLength(
+        persistedModelChangesBefore,
+      );
       await settings.flush();
       expect(readFileSync(join(agentDir, "settings.json"), "utf8")).toBe(before);
       expect(settings.getDefaultProvider()).toBe("preserved-provider");

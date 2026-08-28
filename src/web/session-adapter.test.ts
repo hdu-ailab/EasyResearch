@@ -28,8 +28,19 @@ const model = {
   contextWindow: 128_000,
 } as InProcessAgentSession["model"];
 
+function modelReadiness(selected: InProcessAgentSession["model"] = model) {
+  return {
+    getAvailableSnapshot: () => selected ? [selected] : [],
+    getProvider: (provider: string) => selected?.provider === provider ? { id: provider } : undefined,
+    getProviderAuthStatus: (provider: string) => ({ configured: selected?.provider === provider }),
+  };
+}
+
 class FakeAgentSession implements InProcessAgentSession {
-  agent: InProcessAgentSession["agent"] = { steeringMode: "one-at-a-time" };
+  agent: InProcessAgentSession["agent"] = {
+    steeringMode: "one-at-a-time",
+    state: { model },
+  };
   sessionFile = "/agent/sessions/--project--/session.jsonl";
   sessionId = "session-1";
   sessionName = "Paper";
@@ -76,6 +87,9 @@ class FakeAgentSession implements InProcessAgentSession {
       provider === "anthropic" && id === "claude-test"
         ? ({ provider, id } as InProcessAgentSession["model"])
         : undefined,
+    getAvailableSnapshot: () => this.model ? [this.model] : [],
+    getProvider: (provider: string) => ({ id: provider }),
+    getProviderAuthStatus: () => ({ configured: true }),
   };
 
   resourceLoader = {
@@ -1574,15 +1588,16 @@ function fakeSettingsManager<T extends object>(base: T): T & {
 function liveConfiguration(agent: AgentConfig = researchAssistant()): LiveConfiguration {
   return {
     generation: 1,
+    availabilityEpoch: 1,
     error: null,
     compactionPolicy: { triggerPercent: 70, globalEnabled: true, globalKeepRecentTokens: 20_000 },
     apiUsageSettings: { showApiUsageDetails: false },
     skillPolicy: { enableDotAgentsSkill: false },
     start: async () => {},
-    synchronize: async () => {},
+    synchronize: async () => ({ status: "unchanged", generation: 1, availabilityEpoch: 1, error: null }),
     acquireProject: async (cwd) => ({ cwd, release: async () => {} }),
     isCurrent: (generation) => generation === 1,
-    notify: async () => {},
+    notify: async () => ({ status: "unchanged", generation: 1, availabilityEpoch: 1, error: null }),
     resolveAgents: async () => [agent],
     subscribe: () => () => {},
     close: async () => {},
@@ -1727,6 +1742,7 @@ function retryableStartHarness(
       return {
         refresh: async () => {},
         getModel: () => model,
+        ...modelReadiness(model),
         getError: () => undefined,
         dispose: disposals[attempt - 1],
       };
@@ -1781,6 +1797,7 @@ describe("createPiAgentSessionCreator", () => {
     const modelRuntime = {
       refresh: async (options: unknown) => calls.push({ name: "model-refresh", value: options }),
       getModel: (provider: string, id: string) => provider === "openai" && id === "gpt-test" ? model : undefined,
+      ...modelReadiness(model),
       getError: () => undefined,
       dispose: async () => {
         calls.push({ name: "model-dispose" });
@@ -2306,6 +2323,7 @@ describe("createPiAgentSessionCreator", () => {
       createModelRuntime: async () => ({
         refresh: async () => {},
         getModel: () => undefined,
+        ...modelReadiness(undefined),
         getError: () => undefined,
       }),
       createResourceLoader,
@@ -2335,6 +2353,7 @@ describe("createPiAgentSessionCreator", () => {
       createModelRuntime: async () => ({
         refresh: async () => {},
         getModel: () => model,
+        ...modelReadiness(model),
         getError: () => undefined,
         dispose: disposeRuntime,
       }),
@@ -2361,14 +2380,15 @@ describe("createPiAgentSessionCreator", () => {
       get generation() {
         return generation;
       },
+      availabilityEpoch: 1,
       error: null,
       compactionPolicy: { triggerPercent: 70, globalEnabled: true, globalKeepRecentTokens: 20_000 },
       apiUsageSettings: { showApiUsageDetails: false },
       skillPolicy: { enableDotAgentsSkill: false },
       start: async () => {},
-      synchronize: async () => {},
+      synchronize: async () => ({ status: "unchanged", generation, availabilityEpoch: 1, error: null }),
       acquireProject: async (cwd) => ({ cwd, release: async () => {} }),
-      notify: async () => {},
+      notify: async () => ({ status: "unchanged", generation, availabilityEpoch: 1, error: null }),
       isCurrent: (candidate) => candidate === generation,
       resolveAgents: async () => [currentAgent],
       subscribe: () => () => {
@@ -2396,6 +2416,7 @@ describe("createPiAgentSessionCreator", () => {
       createModelRuntime: async () => ({
         refresh: async () => {},
         getModel: () => model,
+        ...modelReadiness(model),
         getError: () => undefined,
       }),
       createResourceLoader: () => ({ reload: async () => {} }),
@@ -2431,6 +2452,7 @@ describe("createPiAgentSessionCreator", () => {
       createModelRuntime: async () => ({
         refresh: async () => {},
         getModel: () => model,
+        ...modelReadiness(model),
         getError: () => undefined,
         dispose: () => {
           order.push("binding");
@@ -2454,14 +2476,15 @@ describe("createPiAgentSessionCreator", () => {
       get generation() {
         return generation;
       },
+      availabilityEpoch: 1,
       error: null,
       compactionPolicy: { triggerPercent: 70, globalEnabled: true, globalKeepRecentTokens: 20_000 },
       apiUsageSettings: { showApiUsageDetails: false },
       skillPolicy: { enableDotAgentsSkill: false },
       start: async () => {},
-      synchronize: async () => {},
+      synchronize: async () => ({ status: "unchanged", generation, availabilityEpoch: 1, error: null }),
       acquireProject: async (cwd) => ({ cwd, release: async () => {} }),
-      notify: async () => {},
+      notify: async () => ({ status: "unchanged", generation, availabilityEpoch: 1, error: null }),
       isCurrent: (candidate) => candidate === generation,
       resolveAgents: async () => [currentAgent],
       subscribe: () => () => {
@@ -2494,6 +2517,7 @@ describe("createPiAgentSessionCreator", () => {
       createModelRuntime: async () => ({
         refresh: async () => {},
         getModel: () => model,
+        ...modelReadiness(model),
         getError: () => undefined,
       }),
       createResourceLoader: () => ({ reload: async () => {} }),
@@ -2619,14 +2643,16 @@ describe("DirectSessionAdapter steer lifecycle (ADR-083)", () => {
     runGate.release();
   });
 
-  it("rejects the Web prompt when preflight fails (ADR-083)", async () => {
+  it("rejects the Web prompt with MODEL_REQUIRED before Pi preflight", async () => {
     const session = new FakeAgentSession();
-    session.promptError = new Error("no model selected");
+    session.model = undefined;
+    session.agent.state.model = undefined;
     const factory = new PiSessionFactory(async () => created(session));
     const adapter = factory.create({ cwd: "/project" });
     await adapter.start();
 
-    await expect(adapter.prompt("hello")).rejects.toThrow("no model selected");
+    await expect(adapter.prompt("hello")).rejects.toMatchObject({ code: "MODEL_REQUIRED" });
+    expect(session.promptCalls).toEqual([]);
   });
 
   it("cancels undelivered steers when the run is aborted (ADR-083)", async () => {

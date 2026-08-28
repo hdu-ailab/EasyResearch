@@ -1,6 +1,5 @@
 import type { ExtensionFactory, InlineExtension } from "@earendil-works/pi-coding-agent";
 import type { AgentRuntimeBinding } from "../runtime/agent-runtime-binding";
-import type { LiveConfiguration } from "../runtime/live-configuration";
 import { createResearchAssistantExtension } from "./research-assistant";
 import { createSubagentDispatchExtension } from "./subagent-dispatch";
 import { createWelcomeBannerExtension } from "./welcome-banner";
@@ -12,6 +11,7 @@ import { createWebTreeExtension } from "./web-tree";
 import { createSessionNameExtension } from "./session-name";
 import type { SubagentCoordinator } from "../subagent/coordinator";
 import type { SubagentSupervisor } from "../subagent/supervisor";
+import type { CreateSubagentToolOptions } from "../subagent/tool";
 import { createSshBashExtension } from "./ssh-bash";
 import {
   createManualCompactionExtension,
@@ -48,10 +48,7 @@ function requireExtensionFactory(extension: InlineExtension): ExtensionFactory {
 
 export interface ResearchAssistantExtensionRuntime {
   binding: AgentRuntimeBinding;
-  liveConfiguration: Pick<
-    LiveConfiguration,
-    "generation" | "synchronize" | "acquireProject" | "isCurrent" | "resolveAgents" | "subscribe"
-  >;
+  liveConfiguration: CreateSubagentToolOptions["liveConfiguration"];
   coordinator: SubagentCoordinator;
   supervisor: SubagentSupervisor;
   compaction: ManualCompactionController;

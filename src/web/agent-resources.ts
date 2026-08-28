@@ -4,7 +4,10 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { bundledSourceRoot } from "../runtime/bundled-assets";
 import { importPi } from "../runtime/pi-import";
-import { selectSkillDescriptors } from "../runtime/resource-fingerprint";
+import {
+  enumerateSkillDescriptors,
+  fingerprintSkillRoot,
+} from "../runtime/resource-fingerprint";
 import { discoverGlobalAgents, type AgentConfig } from "../subagent/agents";
 import type { AgentResourceDto, SkillResourceDto } from "./contracts";
 import type { ConfigFileService } from "./config-files";
@@ -132,6 +135,7 @@ export interface SkillResourceOptions {
 interface SkillResourceRoot {
   root: string;
   source: SkillResourceDto["source"];
+  mode?: "pi" | "agents";
 }
 
 interface DiscoveredSkillResource extends SkillResourceDto {
@@ -155,29 +159,44 @@ interface PathSnapshot {
 
 const skillWriteQueues = new WeakMap<ConfigFileService, Map<string, Promise<void>>>();
 
-function discoverGlobalSkills(
+async function discoverGlobalSkills(
   config: ConfigFileService,
   options: SkillResourceOptions,
-): DiscoveredSkillResource[] {
+): Promise<DiscoveredSkillResource[]> {
   const roots: SkillResourceRoot[] = [
     { root: join(config.globalRoot, "skills"), source: "global" },
     ...(options.skillPolicy.enableDotAgentsSkill
-      ? [{ root: join(options.homeDir ?? homedir(), ".agents", "skills"), source: "home" as const }]
+      ? [{
+          root: join(options.homeDir ?? homedir(), ".agents", "skills"),
+          source: "home" as const,
+          mode: "agents" as const,
+        }]
       : []),
     { root: options.bundledSkillsDir ?? join(bundledSourceRoot(), "skills"), source: "bundled" },
   ];
-  return selectSkillDescriptors(roots.map(({ root }) => root)).map(({ descriptor, rootIndex }) => {
-    const source = roots[rootIndex]?.source;
-    if (source === undefined) throw new Error("Skill resource root selection is invalid.");
-    return {
-      name: descriptor.name,
-      source,
-      path: descriptor.path,
-      skillPath: descriptor.skillPath,
-      canonicalPath: descriptor.canonicalPath,
-      canonicalSkillPath: descriptor.canonicalSkillPath,
-    };
-  });
+  const selected = new Map<string, DiscoveredSkillResource>();
+  for (const { root, source, mode = "pi" } of roots) {
+    const structural = new Map(
+      enumerateSkillDescriptors(root, mode).map((descriptor) => [descriptor.relativePath, descriptor]),
+    );
+    const accepted = await fingerprintSkillRoot(root, `web:${source}`, undefined, mode);
+    const effectiveNames = new Map(
+      accepted.skillDescriptors.map((descriptor) => [descriptor.relativePath, descriptor.name]),
+    );
+    for (const candidate of structural.values()) {
+      const name = effectiveNames.get(candidate.relativePath) ?? candidate.name;
+      if (selected.has(name)) continue;
+      selected.set(name, {
+        name,
+        source,
+        path: candidate.path,
+        skillPath: candidate.skillPath,
+        canonicalPath: candidate.canonicalPath,
+        canonicalSkillPath: candidate.canonicalSkillPath,
+      });
+    }
+  }
+  return [...selected.values()].sort((left, right) => left.name.localeCompare(right.name));
 }
 
 function publicSkillResource(skill: DiscoveredSkillResource): SkillResourceDto {
@@ -193,7 +212,7 @@ export async function listGlobalSkills(
   config: ConfigFileService,
   options: SkillResourceOptions,
 ): Promise<SkillResourceDto[]> {
-  return discoverGlobalSkills(config, options).map(publicSkillResource);
+  return (await discoverGlobalSkills(config, options)).map(publicSkillResource);
 }
 
 /**
@@ -206,7 +225,7 @@ export async function readGlobalSkill(
   name: string,
   options: SkillResourceOptions,
 ): Promise<SkillResourceDto> {
-  const skill = discoverGlobalSkills(config, options).find((item) => item.name === name);
+  const skill = (await discoverGlobalSkills(config, options)).find((item) => item.name === name);
   if (!skill) throw new ConfigServiceError(404, `unknown skill: ${name}`);
   const content = readFileSync(skill.skillPath, "utf8");
   return { ...publicSkillResource(skill), content };
@@ -224,7 +243,7 @@ export async function writeGlobalSkill(
   options: SkillResourceOptions,
 ): Promise<SkillResourceDto> {
   return serializeSkillWrite(config, name, async () => {
-    const skill = discoverGlobalSkills(config, options).find((item) => item.name === name);
+    const skill = (await discoverGlobalSkills(config, options)).find((item) => item.name === name);
     if (!skill) throw new ConfigServiceError(404, `unknown skill: ${name}`);
     let skillPath = skill.skillPath;
     let materialization: SkillAssetMaterialization | undefined;

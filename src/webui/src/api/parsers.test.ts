@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import * as parserModule from "./parsers";
 import {
   parseActiveSession,
+  parseAgentResource,
   parseAgents,
   parseApiUsageChangedEvent,
   parseApiUsageRecord,
@@ -206,8 +207,28 @@ describe("API response parsers", () => {
       },
     ]);
     expect(
-      parseModels({ models: [{ provider: "openai", id: "gpt-4o", reasoning: true, thinkingLevelMap: {} }] }),
-    ).toEqual([{ provider: "openai", id: "gpt-4o", reasoning: true, thinkingLevelMap: {} }]);
+      parseModels({
+        models: [
+          {
+            provider: "openai",
+            id: "gpt-4o",
+            reasoning: true,
+            thinkingLevelMap: {},
+            available: false,
+            authRequired: true,
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        provider: "openai",
+        id: "gpt-4o",
+        reasoning: true,
+        thinkingLevelMap: {},
+        available: false,
+        authRequired: true,
+      },
+    ]);
   });
 
   it("rejects malformed model rows and project Agent sources", () => {
@@ -248,6 +269,8 @@ describe("API response parsers", () => {
     const updated = {
       type: "config.updated",
       generation: 3,
+      availabilityEpoch: 5,
+      availabilityChanged: true,
       agentsChanged: true,
       modelsChanged: false,
       skillsChanged: true,
@@ -257,12 +280,37 @@ describe("API response parsers", () => {
     const error = {
       type: "config.error",
       generation: 3,
+      availabilityEpoch: 5,
       message: "Invalid configuration",
       projectWatchLeaseId: "project-watch-2",
     } as const;
 
     expect(parseConfigurationEvent(updated)).toEqual(updated);
     expect(parseConfigurationEvent(error)).toEqual(error);
+  });
+
+  it("preserves Agent model repair metadata", () => {
+    expect(
+      parseAgentResource({
+        name: "research-assistant",
+        description: "Research Assistant",
+        source: "bundled",
+        effectiveTools: [],
+        effectiveSkills: [],
+        missingSkills: [],
+        modelRepair: {
+          requested: "deleted/model",
+          applied: "openai/fallback",
+          inherited: false,
+        },
+      }),
+    ).toMatchObject({
+      modelRepair: {
+        requested: "deleted/model",
+        applied: "openai/fallback",
+        inherited: false,
+      },
+    });
   });
 
   it("preserves only the true API-usage display marker", () => {

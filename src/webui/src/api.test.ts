@@ -117,7 +117,16 @@ describe("api transport", () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          models: [{ provider: "openai", id: "gpt-4o", reasoning: true, thinkingLevelMap: { xhigh: null, max: null } }],
+          models: [
+            {
+              provider: "openai",
+              id: "gpt-4o",
+              reasoning: true,
+              thinkingLevelMap: { xhigh: null, max: null },
+              available: true,
+              authRequired: false,
+            },
+          ],
         }),
         { status: 200 },
       ),
@@ -569,6 +578,7 @@ describe("api transport", () => {
   });
 
   it("writeConfigFile PUTs content", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
     await writeConfigFile("project", "/p", "settings.json", '{"a":1}');
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("/api/config/file");

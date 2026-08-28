@@ -114,7 +114,7 @@ class ControlledLiveConfiguration {
     };
   }
 
-  async synchronize(options?: { projectCwds?: readonly string[] }): Promise<void> {
+  async synchronize(options?: { projectCwds?: readonly string[] }) {
     const projectCwds = [...(options?.projectCwds ?? [])];
     this.synchronizationProjectCwds.push(projectCwds);
     if (this.synchronizationFailure !== undefined) {
@@ -132,6 +132,12 @@ class ControlledLiveConfiguration {
       }
     }
     if (changed) this.generation += 1;
+    return {
+      status: changed ? "committed" as const : "unchanged" as const,
+      generation: this.generation,
+      availabilityEpoch: 1,
+      error: this.error,
+    };
   }
 }
 

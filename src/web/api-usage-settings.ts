@@ -47,7 +47,9 @@ export interface ApiUsageSettingsService {
 
 export function createApiUsageSettingsService(
   config: ConfigFileService,
-  live: Pick<LiveConfiguration, "apiUsageSettings" | "synchronize">,
+  live: Omit<Pick<LiveConfiguration, "apiUsageSettings" | "synchronize">, "synchronize"> & {
+    synchronize(): Promise<unknown>;
+  },
 ): ApiUsageSettingsService {
   const get = async (): Promise<ApiUsageSettingsDto> => {
     await live.synchronize();

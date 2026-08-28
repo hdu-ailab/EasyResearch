@@ -43,10 +43,15 @@ export async function patchGlobalAgent(
   name: string,
   patch: AgentConfigurationPatch,
   modelExists: ModelExists,
+  options: { repairUnknownModels?: boolean } = {},
 ): Promise<AgentResourceDto> {
   validatePatch(patch);
   const current = await readGlobalAgent(config, name);
-  if (typeof patch.model === "string" && !(await modelExists(patch.model))) {
+  if (
+    typeof patch.model === "string"
+    && !(await modelExists(patch.model))
+    && options.repairUnknownModels !== true
+  ) {
     invalidPatch(`Configured model is not available: ${patch.model}`);
   }
 
@@ -83,14 +88,31 @@ export async function patchGlobalAgent(
 export function createAgentPatchService(
   config: ConfigFileService,
   listModels: ListModels,
+  options: { repairUnknownModels?: boolean } = {},
 ): (name: string, patch: AgentConfigurationPatch) => Promise<AgentResourceDto> {
-  return (name, patch) => {
+  return async (name, patch) => {
     let modelReferences: Promise<Set<string>> | undefined;
-    return patchGlobalAgent(config, name, patch, async (reference) => {
+    let requestedModelKnown = true;
+    const saved = await patchGlobalAgent(config, name, patch, async (reference) => {
       modelReferences ??= listModels().then(
         (models) => new Set(models.map((model) => `${model.provider}/${model.id}`)),
       );
-      return (await modelReferences).has(reference);
-    });
+      requestedModelKnown = (await modelReferences).has(reference);
+      return requestedModelKnown;
+    }, options);
+    if (
+      options.repairUnknownModels === true
+      && typeof patch.model === "string"
+      && saved.model !== patch.model
+    ) {
+      return {
+        ...saved,
+        modelRepair: {
+          requested: patch.model,
+          ...(saved.model === undefined ? { inherited: true } : { applied: saved.model, inherited: false }),
+        },
+      };
+    }
+    return saved;
   };
 }

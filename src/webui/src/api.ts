@@ -156,6 +156,40 @@ export function listModels(): Promise<ModelOption[]> {
   return requestJson(routes.models(), parseModels);
 }
 
+export interface ProviderDeletionResult {
+  providerId: string;
+  credentialsRemoved: boolean;
+  cacheRemoved: boolean;
+  warnings: string[];
+}
+
+export function deleteProvider(providerId: string): Promise<ProviderDeletionResult> {
+  return requestJson(
+    routes.authProvider(providerId),
+    (value) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("Invalid API response: provider deletion");
+      }
+      const source = value as Record<string, unknown>;
+      if (
+        typeof source.providerId !== "string" ||
+        typeof source.credentialsRemoved !== "boolean" ||
+        typeof source.cacheRemoved !== "boolean" ||
+        !Array.isArray(source.warnings) ||
+        source.warnings.some((warning) => typeof warning !== "string")
+      )
+        throw new Error("Invalid API response: provider deletion");
+      return {
+        providerId: source.providerId,
+        credentialsRemoved: source.credentialsRemoved,
+        cacheRemoved: source.cacheRemoved,
+        warnings: source.warnings as string[],
+      };
+    },
+    { method: "DELETE" },
+  );
+}
+
 export function renameSession(id: string, name: string): Promise<void> {
   return requestVoid(routes.sessionName(id), json("PUT", { name }));
 }
@@ -291,8 +325,47 @@ export function writeConfigFile(
   cwd: string | undefined,
   path: string,
   content: string,
-): Promise<void> {
-  return requestVoid(routes.writeConfigFile(), json("PUT", { scope, cwd, path, content }));
+): Promise<{
+  ok: true;
+  configuration?: {
+    status: string;
+    generation: number;
+    availabilityEpoch: number;
+    error: string | null;
+  };
+}> {
+  return requestJson(
+    routes.writeConfigFile(),
+    (value) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("Invalid API response: config write");
+      }
+      const source = value as Record<string, unknown>;
+      if (source.ok !== true) throw new Error("Invalid API response: config write");
+      if (source.configuration === undefined) return { ok: true };
+      if (!source.configuration || typeof source.configuration !== "object" || Array.isArray(source.configuration)) {
+        throw new Error("Invalid API response: config write configuration");
+      }
+      const configuration = source.configuration as Record<string, unknown>;
+      if (
+        typeof configuration.status !== "string" ||
+        typeof configuration.generation !== "number" ||
+        typeof configuration.availabilityEpoch !== "number" ||
+        (configuration.error !== null && typeof configuration.error !== "string")
+      )
+        throw new Error("Invalid API response: config write configuration");
+      return {
+        ok: true,
+        configuration: {
+          status: configuration.status,
+          generation: configuration.generation,
+          availabilityEpoch: configuration.availabilityEpoch,
+          error: configuration.error,
+        },
+      };
+    },
+    json("PUT", { scope, cwd, path, content }),
+  );
 }
 
 export function createConfigDirectory(scope: ConfigScope, cwd: string | undefined, path: string): Promise<void> {

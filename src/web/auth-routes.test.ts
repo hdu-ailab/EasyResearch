@@ -72,6 +72,26 @@ describe("auth routes", () => {
     expect(body.providers).toEqual(providers);
   });
 
+  it("DELETE /api/auth/providers/:id returns the accepted deletion result", async () => {
+    const gw = { listProviders: vi.fn(async () => []) } as unknown as AuthGateway;
+    const services = makeServices(gw);
+    const result = {
+      providerId: "custom-provider",
+      configuration: { status: "repaired", generation: 4 },
+      credentialsRemoved: true,
+      cacheRemoved: true,
+      warnings: [],
+    };
+    services.providerDeletion = { delete: vi.fn(async () => result) };
+    const handler = createRouteHandler(services);
+
+    const response = await handler(new Request("http://l/api/auth/providers/custom-provider", { method: "DELETE" }));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual(result);
+    expect(services.providerDeletion.delete).toHaveBeenCalledWith("custom-provider");
+  });
+
   it("POST /api/auth/login with no active flow returns 202 with flowId", async () => {
     const gw = {
       activeFlow: () => null,
@@ -133,6 +153,7 @@ describe("auth routes", () => {
       {
         getProviders: () => [provider],
         getProvider: (id) => (id === provider.id ? provider : undefined),
+        getModels: () => [],
         getAvailableSnapshot: () => [],
         getError: () => undefined,
         getProviderAuthStatus: () => ({ configured: false }),
@@ -330,6 +351,7 @@ describe("auth routes", () => {
       {
         getProviders: () => [provider],
         getProvider: () => provider,
+        getModels: () => [],
         getAvailableSnapshot: () => [],
         getError: () => undefined,
         getProviderAuthStatus: () => ({ configured: true }),

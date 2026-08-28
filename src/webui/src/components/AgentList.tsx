@@ -234,10 +234,25 @@ function ModelRow({
   const { t } = useI18n();
   const current = name === RESEARCH_ASSISTANT_AGENT ? (model ?? effectiveModel ?? "") : (model ?? "");
   const slash = current.indexOf("/");
+  const selectable = models.filter((item) => item.available);
+  const configuredOption = models.find((item) => `${item.provider}/${item.id}` === current);
   const options =
-    current !== "" && slash > 0 && !models.some((item) => `${item.provider}/${item.id}` === current)
-      ? [{ provider: current.slice(0, slash), id: current.slice(slash + 1), reasoning: false }, ...models]
-      : models;
+    current === "" || slash <= 0
+      ? selectable
+      : configuredOption
+        ? configuredOption.available
+          ? selectable
+          : [configuredOption, ...selectable]
+        : [
+            {
+              provider: current.slice(0, slash),
+              id: current.slice(slash + 1),
+              reasoning: false,
+              available: false,
+              authRequired: false,
+            },
+            ...selectable,
+          ];
   const effectiveModelRef =
     effectiveModel ?? (current || (name === RESEARCH_ASSISTANT_AGENT ? undefined : researchAssistantModel));
   const effectiveModelOption = models.find((item) => `${item.provider}/${item.id}` === effectiveModelRef);
@@ -254,7 +269,12 @@ function ModelRow({
             ...(name === RESEARCH_ASSISTANT_AGENT ? [] : [{ value: "", label: emptyModelLabel }]),
             ...options.map((item) => {
               const key = `${item.provider}/${item.id}`;
-              return { value: key, label: key };
+              const status = item.authRequired
+                ? t("settings.agents.authenticationRequired")
+                : !item.available
+                  ? t("settings.agents.modelUnavailable")
+                  : undefined;
+              return { value: key, label: status ? `${key} · ${status}` : key };
             }),
           ]}
           placeholder={emptyModelLabel}
@@ -278,6 +298,13 @@ function ModelRow({
       {name === RESEARCH_ASSISTANT_AGENT && !effectiveModelRef && (
         <p role="alert" className="mt-1 text-[11px] text-v2-status-error">
           {t("settings.agents.defaultModelUnavailable")}
+        </p>
+      )}
+      {effectiveModelOption && !effectiveModelOption.available && (
+        <p role="status" className="mt-1 text-[11px] text-v2-status-warning">
+          {effectiveModelOption.authRequired
+            ? t("settings.agents.authenticationRequired")
+            : t("settings.agents.modelUnavailable")}
         </p>
       )}
     </div>

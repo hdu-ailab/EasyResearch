@@ -515,6 +515,30 @@ describe("ConfigFileService", () => {
     });
   });
 
+  it("retries a settings mutation when external bytes change after its read", async () => {
+    const settingsPath = join(agentDir, "settings.json");
+    writeFileSync(settingsPath, JSON.stringify({ theme: "dark" }));
+    let attempts = 0;
+
+    await service.mutateGlobalSettings((settings) => {
+      attempts += 1;
+      if (attempts === 1) {
+        writeFileSync(settingsPath, JSON.stringify({ theme: "light", external: { keep: true } }));
+      }
+      return {
+        settings: { ...settings, easyresearch: { agentDefaults: { search: { thinking: "high" } } } },
+        result: undefined,
+      };
+    });
+
+    expect(attempts).toBe(2);
+    expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual({
+      theme: "light",
+      external: { keep: true },
+      easyresearch: { agentDefaults: { search: { thinking: "high" } } },
+    });
+  });
+
   it("rejects malformed current global settings without overwriting their bytes", async () => {
     const settingsPath = join(agentDir, "settings.json");
     writeFileSync(settingsPath, "{malformed", "utf8");

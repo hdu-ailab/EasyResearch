@@ -296,6 +296,8 @@ export interface ConfigurationUpdatedEvent {
   modelsChanged: boolean;
   skillsChanged: boolean;
   runtimeChanged: boolean;
+  availabilityEpoch?: number;
+  availabilityChanged?: true;
   /** Present only when ADR-098 display state changed after startup. */
   apiUsageChanged?: true;
   projectWatchLeaseId?: string;
@@ -304,6 +306,7 @@ export interface ConfigurationUpdatedEvent {
 export interface ConfigurationErrorEvent {
   type: "config.error";
   generation: number;
+  availabilityEpoch?: number;
   message: string;
   projectWatchLeaseId?: string;
 }
@@ -339,6 +342,11 @@ export interface AgentDto {
 
 export interface AgentResourceDto extends AgentDto {
   content?: string;
+  modelRepair?: {
+    requested: string;
+    applied?: string;
+    inherited: boolean;
+  };
 }
 
 export type AgentConfigurationPatch = {
@@ -367,6 +375,8 @@ export interface ModelOptionDto {
   id: string;
   reasoning: boolean;
   thinkingLevelMap?: Record<string, string | null>;
+  available: boolean;
+  authRequired: boolean;
 }
 
 // ---- Provider auth gateway (ADR-065) --------------------------------------
@@ -381,6 +391,7 @@ export interface AuthProviderInfoDto {
   hint?: string;
   /** True when the provider is declared in `models.json` (custom provider). */
   modelsJson: boolean;
+  noAuth?: true;
 }
 
 export interface AuthProvidersResponseDto {

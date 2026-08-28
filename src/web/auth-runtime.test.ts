@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, expect, vi } from "vitest";
@@ -6,7 +6,9 @@ import { createAuthGateway } from "./auth-gateway";
 import { createAuthFlowStore } from "./auth-flow-store";
 import {
   createAcceptedModelRuntime,
+  createConfiguredModelRuntime,
   createDaemonAuthRuntime,
+  configureNoAuthModelRuntime,
   readModelsJsonProviderIds,
   resolveAuthFlowTimeout,
 } from "./auth-runtime";
@@ -22,6 +24,7 @@ function transactionRuntime(
   name: string,
   options: {
     models?: Array<{ provider: string; id: string; reasoning: boolean }>;
+    registeredModels?: Array<{ provider: string; id: string; reasoning: boolean }>;
     providers?: Array<{ id: string; name: string; auth?: Record<string, unknown> }>;
     refresh?: { aborted: boolean; errors: ReadonlyMap<string, Error> };
     semanticError?: string;
@@ -34,10 +37,12 @@ function transactionRuntime(
     dispose: vi.fn(),
     refresh: vi.fn(async () => options.refresh ?? { aborted: false, errors: new Map() }),
     getError: vi.fn(() => options.semanticError),
+    getModels: vi.fn(() => options.registeredModels ?? models),
     getAvailableSnapshot: vi.fn(() => models),
     getProviders: vi.fn(() => providers),
     getProvider: vi.fn((providerId: string) => providers.find((provider) => provider.id === providerId)),
     getProviderAuthStatus: vi.fn(() => ({ configured: false })),
+    setRuntimeApiKey: vi.fn(async () => {}),
     checkAuth: vi.fn(async () => undefined),
     login: vi.fn(async () => ({ type: "api_key" as const, key: "secret" })),
     logout: vi.fn(async () => {}),
@@ -45,6 +50,21 @@ function transactionRuntime(
 }
 
 describe("createAcceptedModelRuntime", () => {
+  it("publishes a degraded first catalog when no last-good runtime exists", async () => {
+    const runtime = transactionRuntime("builtin-fallback", {
+      semanticError: "private malformed models.json detail",
+    });
+    const accepted = createAcceptedModelRuntime(async () => runtime);
+
+    const prepared = await accepted.prepareModelCatalog();
+
+    expect(prepared.diagnostic).toContain("models.json");
+    expect(prepared.registeredModels).toEqual([{ provider: "provider", id: "builtin-fallback" }]);
+    prepared.commit();
+    expect(accepted.runtime.getModels()).toHaveLength(1);
+    await accepted.dispose();
+  });
+
   it("publishes fresh locally refreshed candidates only at synchronous commit", async () => {
     const first = transactionRuntime("v1");
     const discarded = transactionRuntime("discarded");
@@ -54,9 +74,10 @@ describe("createAcceptedModelRuntime", () => {
 
     const preparedFirst = await accepted.prepareModelCatalog();
     expect(first.refresh).toHaveBeenCalledWith({ allowNetwork: false });
-    expect(preparedFirst.models).toEqual([{ provider: "provider", id: "v1" }]);
-    expect(Object.isFrozen(preparedFirst.models)).toBe(true);
-    expect(Object.isFrozen(preparedFirst.models[0])).toBe(true);
+    expect(preparedFirst.registeredModels).toEqual([{ provider: "provider", id: "v1" }]);
+    expect(preparedFirst.availableModels).toEqual([{ provider: "provider", id: "v1" }]);
+    expect(Object.isFrozen(preparedFirst.registeredModels)).toBe(true);
+    expect(Object.isFrozen(preparedFirst.registeredModels[0])).toBe(true);
     expect(() => accepted.runtime.getAvailableSnapshot()).toThrow(/active/i);
 
     expect(preparedFirst.commit()).toBeUndefined();
@@ -79,6 +100,38 @@ describe("createAcceptedModelRuntime", () => {
     expect(second.dispose).toHaveBeenCalledTimes(1);
   });
 
+  it("validates configured references against registered models without exposing unauthenticated choices", async () => {
+    const unauthenticated = { provider: "deepseek", id: "deepseek-v4-flash", reasoning: true };
+    const runtime = transactionRuntime("ready", {
+      models: [],
+      registeredModels: [unauthenticated],
+    });
+    const accepted = createAcceptedModelRuntime(async () => runtime);
+
+    const prepared = await accepted.prepareModelCatalog();
+
+    expect(prepared.registeredModels).toEqual([
+      { provider: "deepseek", id: "deepseek-v4-flash" },
+    ]);
+    expect(prepared.availableModels).toEqual([]);
+    prepared.commit();
+    const gateway = createAuthGateway(accepted.runtime, createAuthFlowStore(), {
+      timeoutMs: 600_000,
+      synchronizeCatalog: async () => {},
+    });
+    await expect(gateway.listModels()).resolves.toEqual([
+      expect.objectContaining({
+        provider: "deepseek",
+        id: "deepseek-v4-flash",
+        reasoning: true,
+        available: false,
+        authRequired: true,
+      }),
+    ]);
+
+    await accepted.dispose();
+  });
+
   it.each([
     {
       name: "provider refresh errors",
@@ -96,18 +149,18 @@ describe("createAcceptedModelRuntime", () => {
       name: "Pi's semantic error channel",
       runtime: () => transactionRuntime("bad-semantic", { semanticError: "private models.json detail" }),
     },
-  ])("keeps the accepted runtime unchanged after $name", async ({ runtime }) => {
+  ])("publishes registered catalog state despite $name", async ({ runtime }) => {
     const first = transactionRuntime("accepted");
     const rejected = runtime();
     const runtimes = [first, rejected];
     const accepted = createAcceptedModelRuntime(async () => runtimes.shift()!);
     (await accepted.prepareModelCatalog()).commit();
 
-    await expect(accepted.prepareModelCatalog()).rejects.toThrow(/model catalog/i);
-
-    expect(accepted.runtime.getAvailableSnapshot()[0]?.id).toBe("accepted");
-    expect(rejected.getAvailableSnapshot).not.toHaveBeenCalled();
-    expect(rejected.dispose).toHaveBeenCalledTimes(1);
+    const degraded = await accepted.prepareModelCatalog();
+    expect(degraded.diagnostic).toContain("models.json");
+    expect(degraded.registeredModels).toEqual([{ provider: "provider", id: expect.stringMatching(/^bad-/) }]);
+    degraded.commit();
+    expect(accepted.runtime.getModels()[0]?.id).toMatch(/^bad-/);
     await accepted.dispose();
   });
 
@@ -164,13 +217,54 @@ describe("createAcceptedModelRuntime", () => {
 
     await accepted.dispose();
   });
+
+  it("captures the native no-history fallback from the same prepared runtime", async () => {
+    const fallback = { provider: "openai", id: "fallback", reasoning: false };
+    const runtime = transactionRuntime("fallback", { models: [fallback] });
+    const resolveFallbackModel = vi.fn(async (candidate: typeof runtime) => candidate.getModels()[0]);
+    const accepted = createAcceptedModelRuntime(
+      async () => runtime,
+      async () => new Set(),
+      resolveFallbackModel,
+    );
+
+    const prepared = await accepted.prepareModelCatalog();
+
+    expect(resolveFallbackModel).toHaveBeenCalledWith(runtime);
+    expect(prepared.fallbackModel).toEqual({ provider: "openai", id: "fallback" });
+    await prepared.rollback();
+    await accepted.dispose();
+  });
 });
 
 describe("createDaemonAuthRuntime", () => {
+  it("boots a recovery model authority before LiveConfiguration accepts an Agent snapshot", async () => {
+    const agentDir = mkdtempSync(join(tmpdir(), "easyresearch-daemon-recovery-auth-"));
+    const candidate = transactionRuntime("recovery-model");
+    const daemon = await createDaemonAuthRuntime({
+      config: new ConfigFileService(agentDir),
+      logger: { debug() {}, info() {}, warn() {}, error() {} },
+      createModelRuntime: async () => candidate,
+      synchronizeCatalog: async () => {},
+      onModelsChanged: async () => {},
+    });
+
+    try {
+      await expect(daemon.auth.listModels()).resolves.toEqual([
+        expect.objectContaining({ provider: "provider", id: "recovery-model" }),
+      ]);
+    } finally {
+      await daemon.dispose();
+      rmSync(agentDir, { recursive: true, force: true });
+    }
+  });
+
   it("shares one accepted transaction between LiveConfiguration validation and AuthGateway", async () => {
     const agentDir = mkdtempSync(join(tmpdir(), "easyresearch-daemon-auth-"));
-    const candidate = transactionRuntime("accepted");
-    const createModelRuntime = vi.fn(async () => candidate);
+    const bootCandidate = transactionRuntime("accepted");
+    const liveCandidate = transactionRuntime("accepted");
+    const candidates = [bootCandidate, liveCandidate];
+    const createModelRuntime = vi.fn(async () => candidates.shift()!);
     const synchronizeCatalog = vi.fn(async () => {});
     const onModelsChanged = vi.fn(async () => {});
     const daemon = await createDaemonAuthRuntime({
@@ -182,7 +276,7 @@ describe("createDaemonAuthRuntime", () => {
     });
 
     const prepared = await daemon.modelValidator.prepareModelCatalog();
-    expect(createModelRuntime).toHaveBeenCalledTimes(1);
+    expect(createModelRuntime).toHaveBeenCalledTimes(2);
     prepared.commit();
     await expect(daemon.auth.listModels()).resolves.toMatchObject([
       { provider: "provider", id: "accepted" },
@@ -190,8 +284,50 @@ describe("createDaemonAuthRuntime", () => {
     expect(synchronizeCatalog).toHaveBeenCalledTimes(1);
 
     await daemon.dispose();
-    expect(candidate.dispose).toHaveBeenCalledTimes(1);
+    expect(bootCandidate.dispose).toHaveBeenCalledTimes(1);
+    expect(liveCandidate.dispose).toHaveBeenCalledTimes(1);
     rmSync(agentDir, { recursive: true, force: true });
+  });
+
+  it("adapts keyless models.json providers before publishing a daemon candidate", async () => {
+    const agentDir = mkdtempSync(join(tmpdir(), "easyresearch-daemon-no-auth-"));
+    writeFileSync(join(agentDir, "models.json"), JSON.stringify({
+      providers: {
+        local: {
+          baseUrl: "http://127.0.0.1:1234/v1",
+          api: "openai-completions",
+          models: [{ id: "local-model" }],
+        },
+        modelScoped: {
+          models: [{
+            id: "model-scoped",
+            baseUrl: "http://127.0.0.1:3456/v1",
+            api: "openai-completions",
+          }],
+        },
+      },
+    }));
+    const candidate = transactionRuntime("local-model", {
+      models: [{ provider: "local", id: "local-model", reasoning: false }],
+      providers: [{ id: "local", name: "Local" }],
+    });
+    const daemon = await createDaemonAuthRuntime({
+      config: new ConfigFileService(agentDir),
+      logger: { debug() {}, info() {}, warn() {}, error() {} },
+      createModelRuntime: async () => candidate,
+      synchronizeCatalog: async () => {},
+      onModelsChanged: async () => {},
+    });
+
+    try {
+      (await daemon.modelValidator.prepareModelCatalog()).commit();
+      expect(candidate.setRuntimeApiKey).toHaveBeenCalledWith("local", expect.any(String));
+      expect(candidate.setRuntimeApiKey).toHaveBeenCalledWith("modelScoped", expect.any(String));
+      expect([...daemon.noAuthProviderIds()]).toEqual(["local", "modelScoped"]);
+    } finally {
+      await daemon.dispose();
+      rmSync(agentDir, { recursive: true, force: true });
+    }
   });
 
   it("keeps provider rows and pinning on the accepted candidate while current models.json is rejected", async () => {
@@ -215,7 +351,6 @@ describe("createDaemonAuthRuntime", () => {
       onModelsChanged: async () => {},
     });
 
-    (await daemon.modelValidator.prepareModelCatalog()).commit();
     writeFileSync(modelsPath, '{"providers":');
 
     await expect(daemon.auth.listModels()).resolves.toMatchObject([
@@ -310,6 +445,114 @@ describe("readModelsJsonProviderIds", () => {
 
     try {
       await expect(readModelsJsonProviderIds(modelsPath)).rejects.toThrow("Unable to read models.json");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("configureNoAuthModelRuntime", () => {
+  it("falls back to a custom-layer-free runtime when models.json is malformed", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "easyresearch-model-runtime-fallback-"));
+    const modelsPath = join(dir, "models.json");
+    writeFileSync(modelsPath, "{ malformed\n");
+    const malformed = {
+      getError: () => "private models.json parse detail",
+      setRuntimeApiKey: vi.fn(async () => {}),
+    };
+    const fallback = {
+      getError: () => undefined,
+      setRuntimeApiKey: vi.fn(async () => {}),
+    };
+    const createRuntime = vi.fn(async (path: string | null) => path === null ? fallback : malformed);
+
+    try {
+      await expect(createConfiguredModelRuntime(createRuntime, modelsPath)).resolves.toBe(fallback);
+      expect(createRuntime.mock.calls.map(([path]) => path)).toEqual([modelsPath, null]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("marks only complete explicitly keyless custom providers with runtime auth", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "easyresearch-no-auth-models-"));
+    const modelsPath = join(dir, "models.json");
+    writeFileSync(modelsPath, JSON.stringify({
+      providers: {
+        local: {
+          baseUrl: "http://127.0.0.1:1234/v1",
+          api: "openai-completions",
+          models: [{ id: "local-model" }],
+        },
+        modelScoped: {
+          models: [{
+            id: "model-scoped",
+            baseUrl: "http://127.0.0.1:3456/v1",
+            api: "openai-completions",
+          }],
+        },
+        keyed: {
+          baseUrl: "https://example.invalid/v1",
+          api: "openai-completions",
+          apiKey: "$KEYED_TOKEN",
+          models: [{ id: "keyed-model" }],
+        },
+        oauth: {
+          baseUrl: "https://example.invalid/v1",
+          api: "openai-completions",
+          oauth: "radius",
+          models: [{ id: "oauth-model" }],
+        },
+        incomplete: {
+          baseUrl: "http://127.0.0.1:2345/v1",
+          models: [{ id: "incomplete-model" }],
+        },
+      },
+    }));
+    const setRuntimeApiKey = vi.fn<(providerId: string, apiKey: string) => Promise<void>>(async () => {});
+
+    try {
+      const providerIds = await configureNoAuthModelRuntime({ setRuntimeApiKey }, modelsPath);
+
+      expect([...providerIds]).toEqual(["local", "modelScoped"]);
+      expect(setRuntimeApiKey).toHaveBeenCalledTimes(2);
+      expect(setRuntimeApiKey).toHaveBeenCalledWith("local", expect.any(String));
+      expect(setRuntimeApiKey.mock.calls[0]?.[1]).not.toBe("");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("makes a keyless custom model available to Pi requests without mutating auth.json", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "easyresearch-no-auth-runtime-"));
+    const modelsPath = join(dir, "models.json");
+    const authPath = join(dir, "auth.json");
+    writeFileSync(authPath, '{"existing":{"type":"api_key","key":"keep"}}\n');
+    const authBefore = readFileSync(authPath);
+    writeFileSync(modelsPath, JSON.stringify({
+      providers: {
+        local: {
+          baseUrl: "http://127.0.0.1:1234/v1",
+          api: "openai-completions",
+          models: [{ id: "local-model" }],
+        },
+      },
+    }));
+
+    try {
+      const { importPi } = await import("../runtime/pi-import");
+      const { ModelRuntime } = await importPi();
+      const runtime = await ModelRuntime.create({ authPath, modelsPath, refreshOnCreate: false });
+
+      await configureNoAuthModelRuntime(runtime, modelsPath);
+      const model = runtime.getModel("local", "local-model");
+
+      expect(model).toBeDefined();
+      expect(runtime.getAvailableSnapshot()).toContainEqual(model);
+      await expect(runtime.getAuth(model!)).resolves.toMatchObject({
+        auth: { apiKey: expect.any(String) },
+      });
+      expect(readFileSync(authPath)).toEqual(authBefore);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

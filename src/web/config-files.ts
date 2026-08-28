@@ -40,6 +40,7 @@ export interface AuthoritativeConfigChange {
   agentsChanged?: true;
   modelsChanged?: true;
   skillsChanged?: true;
+  availabilityChanged?: true;
 }
 
 export interface ProjectConfigRegistration {
@@ -48,20 +49,23 @@ export interface ProjectConfigRegistration {
 }
 
 export interface ConfigFileServiceOptions {
-  onAuthoritativeWrite?: (change: AuthoritativeConfigChange) => void | Promise<void>;
+  onAuthoritativeWrite?: (change: AuthoritativeConfigChange) => void | Promise<unknown>;
   acquireProject?: (cwd: string) => Promise<ProjectConfigRegistration>;
-  synchronizeProject?: (cwd: string) => Promise<void>;
+  synchronizeProject?: (cwd: string) => Promise<unknown>;
 }
 
 export interface GlobalSettingsMutation<T> {
   settings: Record<string, unknown>;
   result: T;
+  write?: boolean;
 }
 
 interface ProjectWriteContext {
   cwd: string;
   canonicalCwd: string;
 }
+
+class GlobalSettingsChangedError extends Error {}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -178,52 +182,73 @@ export class ConfigFileService {
     }
   }
 
-  async write(input: ConfigWriteInput): Promise<void> {
+  async write(input: ConfigWriteInput): Promise<unknown> {
     if (isGlobalSettingsWrite(input)) {
-      return this.enqueueGlobalSettingsMutation(() => this.writeNow(input));
+      await this.enqueueGlobalSettingsMutation(() => this.writeNow(input, undefined, { notify: false }));
+      return this.notifyPersistedWrite(input, false);
     }
     if (isProjectSkillDescriptorInput(input) && input.cwd && this.options.acquireProject) {
       const registration = await this.options.acquireProject(input.cwd);
       try {
-        await this.writeNow(input, this.projectWriteContext(input.cwd));
+        return await this.writeNow(input, this.projectWriteContext(input.cwd));
       } finally {
         await registration.release();
       }
-      return;
     }
     return this.writeNow(input);
   }
 
   async mutateGlobalSettings<T>(
     mutate: (settings: Record<string, unknown>) => GlobalSettingsMutation<T>,
+    options: { notify?: boolean } = {},
   ): Promise<T> {
-    return this.enqueueGlobalSettingsMutation(async () => {
+    let wrote = false;
+    const result = await this.enqueueGlobalSettingsMutation(async () => {
       const settingsPath = join(this.agentDir, "settings.json");
-      let settings: Record<string, unknown> = {};
-      if (fs.existsSync(settingsPath)) {
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(fs.readFileSync(settingsPath, "utf8")) as unknown;
-        } catch {
-          throw new ConfigServiceError(409, "Global settings.json is invalid", "CONFIG_INVALID");
+      for (;;) {
+        const sourceBytes = fs.existsSync(settingsPath) ? fs.readFileSync(settingsPath) : undefined;
+        let settings: Record<string, unknown> = {};
+        if (sourceBytes !== undefined) {
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(sourceBytes.toString("utf8")) as unknown;
+          } catch {
+            throw new ConfigServiceError(409, "Global settings.json is invalid", "CONFIG_INVALID");
+          }
+          if (!isRecord(parsed)) {
+            throw new ConfigServiceError(409, "Global settings.json must contain an object", "CONFIG_INVALID");
+          }
+          settings = parsed;
         }
-        if (!isRecord(parsed)) {
-          throw new ConfigServiceError(409, "Global settings.json must contain an object", "CONFIG_INVALID");
-        }
-        settings = parsed;
-      }
 
-      const next = mutate(settings);
-      await this.writeNow({
-        scope: "global",
-        path: "settings.json",
-        content: `${JSON.stringify(next.settings, null, 2)}\n`,
-      });
-      return next.result;
+        const next = mutate(settings);
+        if (next.write !== false) {
+          try {
+            await this.writeNow({
+              scope: "global",
+              path: "settings.json",
+              content: `${JSON.stringify(next.settings, null, 2)}\n`,
+            }, undefined, { notify: false, expectedPrevious: sourceBytes ?? null });
+          } catch (error) {
+            if (error instanceof GlobalSettingsChangedError) continue;
+            throw error;
+          }
+          wrote = true;
+        }
+        return next.result;
+      }
     });
+    if (wrote && options.notify !== false) {
+      await this.notifyPersistedWrite({ scope: "global", path: "settings.json", content: "" }, false);
+    }
+    return result;
   }
 
-  private async writeNow(input: ConfigWriteInput, projectContext?: ProjectWriteContext): Promise<void> {
+  private async writeNow(
+    input: ConfigWriteInput,
+    projectContext?: ProjectWriteContext,
+    options: { notify?: boolean; expectedPrevious?: Buffer | null } = {},
+  ): Promise<unknown> {
     const root = projectContext
       ? join(projectContext.canonicalCwd, ".easyresearch")
       : this.rootFor(input.scope, input.cwd);
@@ -246,6 +271,10 @@ export class ConfigFileService {
     const previous = fs.existsSync(target)
       ? { bytes: fs.readFileSync(target), mode: fs.statSync(target).mode }
       : undefined;
+    if (options.expectedPrevious !== undefined) {
+      const expected = options.expectedPrevious === null ? undefined : options.expectedPrevious;
+      if (!sameOptionalBytes(previous?.bytes, expected)) throw new GlobalSettingsChangedError();
+    }
     let persisted = false;
     try {
       fs.writeFileSync(tempPath, input.content, { mode: 0o600 });
@@ -264,10 +293,17 @@ export class ConfigFileService {
     } finally {
       fs.rmSync(tempPath, { force: true });
     }
-    if (!persisted) return;
+    if (!persisted || options.notify === false) return undefined;
+    return this.notifyPersistedWrite(input, skillDescriptor);
+  }
+
+  private async notifyPersistedWrite(input: ConfigWriteInput, skillDescriptor: boolean): Promise<unknown> {
     const change = authoritativeChange(input, skillDescriptor);
-    if (change) await this.options.onAuthoritativeWrite?.(change);
-    if (projectDescriptor && input.cwd) await this.options.synchronizeProject?.(input.cwd);
+    const authoritativeOutcome = change ? await this.options.onAuthoritativeWrite?.(change) : undefined;
+    if (input.scope === "project" && skillDescriptor && input.cwd) {
+      return await this.options.synchronizeProject?.(input.cwd) ?? authoritativeOutcome;
+    }
+    return authoritativeOutcome;
   }
 
   private projectWriteContext(cwd: string): ProjectWriteContext {
@@ -346,6 +382,11 @@ function isGlobalSettingsWrite(input: ConfigWriteInput): boolean {
   return input.scope === "global" && normalize(input.path) === "settings.json";
 }
 
+function sameOptionalBytes(left: Buffer | undefined, right: Buffer | undefined): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return left.equals(right);
+}
+
 function isProjectSkillDescriptorInput(input: ConfigWriteInput): boolean {
   if (input.scope !== "project" || !input.cwd) return false;
   const components = input.path.split(/[\\/]/);
@@ -360,6 +401,7 @@ function authoritativeChange(
   if (input.scope !== "global") return undefined;
   const path = normalize(input.path);
   if (path === "models.json") return { modelsChanged: true };
+  if (path === "auth.json" || path === "models-store.json") return { availabilityChanged: true };
   if (path === "settings.json") return {};
   if (dirname(path) === "agents" && basename(path).endsWith(".md")) {
     return { agentsChanged: true };

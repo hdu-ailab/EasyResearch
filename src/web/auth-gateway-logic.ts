@@ -32,6 +32,7 @@ export interface AuthProviderInfoDto {
   hint?: string;
   /** True when the provider is declared in `models.json` (custom provider). */
   modelsJson: boolean;
+  noAuth?: true;
 }
 
 /**

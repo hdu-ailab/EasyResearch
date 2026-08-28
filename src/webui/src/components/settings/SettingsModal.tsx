@@ -90,11 +90,23 @@ function SettingsLayerFrame({ dialogRef, layer, onBackdrop, children, nestedLaye
 }
 
 function withConfiguredModel(models: ModelOption[], configured?: string): ModelOption[] {
-  if (!configured || models.some((model) => `${model.provider}/${model.id}` === configured)) return models;
+  const selectable = models.filter((model) => model.available);
+  if (!configured) return selectable;
+  const configuredModel = models.find((model) => `${model.provider}/${model.id}` === configured);
+  if (configuredModel) return configuredModel.available ? selectable : [...selectable, configuredModel];
   const slash = configured.indexOf("/");
   return slash > 0
-    ? [...models, { provider: configured.slice(0, slash), id: configured.slice(slash + 1), reasoning: false }]
-    : models;
+    ? [
+        ...selectable,
+        {
+          provider: configured.slice(0, slash),
+          id: configured.slice(slash + 1),
+          reasoning: false,
+          available: false,
+          authRequired: false,
+        },
+      ]
+    : selectable;
 }
 
 function setEnableFrontmatter(content: string, enabled: boolean): string {
@@ -502,7 +514,7 @@ export function SettingsModal({
       <ProviderSettingsPanel
         connectedCount={providerFlow.providersLoaded ? providerFlow.connectedCount : null}
         onOpen={() => {
-          if (!providerFlow.providersLoaded) void providerFlow.refresh();
+          if (!providerFlow.providersLoaded || providerFlow.providersError) void providerFlow.refresh();
           setProviderConnectOpen(true);
         }}
       />
