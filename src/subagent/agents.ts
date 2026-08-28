@@ -68,7 +68,7 @@ const EXPERIMENT_TOOL_INVENTORY = [...CONTROLLED_TOOL_INVENTORY, "ssh-bash"] as 
 const BUILTIN_ALIASES: Record<string, string> = {
   [RESEARCH_ASSISTANT_AGENT]: "Research Assistant",
 };
-const BUILTIN_ORDER = [RESEARCH_ASSISTANT_AGENT, "search", "experiment", "writing", "figures"];
+const BUILTIN_ORDER = [RESEARCH_ASSISTANT_AGENT, "search", "experiment", "writing", "figures", "review"];
 
 export interface DiscoveryOptions {
   agentDir?: string;

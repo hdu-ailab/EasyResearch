@@ -990,7 +990,7 @@ describe("selectSmokeModelAction", () => {
   const scenario = scenarioFor("bash");
   const agentPromptMarker = scenario.agentPromptMarker;
   const childSystemPrompt = `${agentPromptMarker}\n${scenario.skillPromptMarker}`;
-  const oldSubagentDescription = "Available subagents: search, experiment, writing, figures.";
+  const oldSubagentDescription = "Available subagents: search, experiment, writing, figures, review.";
   const refreshedSubagentDescription = `${oldSubagentDescription.slice(0, -1)}, smoke-reviewer.`;
   const tool = (name: string, description?: string) => ({
     function: { name, ...(description === undefined ? {} : { description }) },

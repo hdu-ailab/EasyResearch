@@ -6,7 +6,8 @@ description: >-
   auth.json, extensions, prompts, themes, or .easyresearch config files. Also
   use when fixing EasyResearch agent/skill/config problems, adding or mounting
   skills on agents, or explaining how EasyResearch configuration works. Do not
-  use for paper pipeline work itself (search, experiments, writing, figures).
+  use for paper pipeline work itself (search, experiments, writing, figures,
+  review).
 ---
 
 # Customizing EasyResearch

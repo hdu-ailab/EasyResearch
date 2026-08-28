@@ -784,6 +784,20 @@ try {
   }
   const bundledDir = join(agentDir, "bundled");
   if (!existsSync(bundledDir)) throw new Error("CLI did not materialize bundled resources (did the CLI actually run?)");
+  for (const relativePath of [
+    "agents/review.md",
+    "skills/specialist-handoff/SKILL.md",
+    "skills/paper-lookup/SKILL.md",
+    "skills/scientific-visualization/SKILL.md",
+    "skills/hypothesis-generation/SKILL.md",
+    "skills/experimental-design/SKILL.md",
+    "skills/statistical-power/SKILL.md",
+    "skills/huggingface-datasets/SKILL.md",
+    "skills/peer-review/SKILL.md",
+  ]) {
+    const materializedPath = join(bundledDir, relativePath);
+    if (!existsSync(materializedPath)) throw new Error(`bundled ADR-102 resource missing: ${materializedPath}`);
+  }
   const daemonBinary = join(agentDir, "bin", target.os[0] === "win32" ? "easyresearch-daemon.exe" : "easyresearch-daemon");
   while (Date.now() < firstRunDeadline) {
     if (existsSync(daemonBinary)) break;
@@ -959,8 +973,36 @@ try {
   }
   const agents = await requireOk(
     await fetch(`${base}/api/agents?cwd=${encodeURIComponent(project)}`),
-    "custom Agent catalog probe",
+    "Agent catalog probe",
   );
+  const reviewAgent = Array.isArray(agents)
+    ? agents.find((agent: { name?: unknown }) => agent.name === "review")
+    : undefined;
+  if (
+    !reviewAgent
+    || reviewAgent.builtin !== true
+    || reviewAgent.source !== "bundled"
+    || reviewAgent.enabled !== true
+    || JSON.stringify(reviewAgent.effectiveTools) !== JSON.stringify([
+      "read",
+      smokeShellToolName,
+      "write",
+      "subagent",
+      "web-search",
+      "webfetch",
+    ])
+    || JSON.stringify(reviewAgent.effectiveSkills) !== JSON.stringify([
+      "peer-review",
+      "paper-lookup",
+      "arxiv",
+      "specialist-handoff",
+      "playwright-cli",
+    ])
+    || JSON.stringify(reviewAgent.missingSkills) !== JSON.stringify([])
+    || JSON.stringify(reviewAgent.subagents) !== JSON.stringify(["search"])
+  ) {
+    throw new Error(`bundled Review catalog row was not authoritative: ${JSON.stringify(reviewAgent)}`);
+  }
   const customAgent = Array.isArray(agents)
     ? agents.find((agent: { name?: unknown }) => agent.name === smokeAgentName)
     : undefined;

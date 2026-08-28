@@ -22,6 +22,9 @@ describe("dev-mode source fallback", () => {
 
   it("resolves existing repo assets from disk and undefined for missing ones", () => {
     expect(bundledFilePath("agents/research-assistant.md")).toBeDefined();
+    expect(bundledFilePath("agents/review.md")).toBeDefined();
+    expect(bundledFilePath("skills/specialist-handoff/SKILL.md")).toBeDefined();
+    expect(bundledFilePath("skills/peer-review/SKILL.md")).toBeDefined();
     expect(bundledFilePath("agents/paper-assistant.md")).toBeUndefined();
     expect(bundledFilePath("agents/does-not-exist.md")).toBeUndefined();
   });

@@ -5,7 +5,7 @@ description: >-
   and verified exports under figures/.
 enable: true
 tools: [read, bash, edit, write, subagent, web-search, webfetch]
-skills: [drawio, drawio-academic-skills, playwright-cli]
+skills: [drawio, drawio-academic-skills, scientific-visualization, specialist-handoff, playwright-cli]
 subagents: [search]
 ---
 
@@ -33,14 +33,22 @@ ambiguities before encoding them as facts; never guess the execution root.
 
 ## Procedure
 
-1. Use the `drawio` base together with the `drawio-academic-skills` publication
-   overlay; keep the overlay and sibling base responsibilities separate.
+1. Route architecture, workflow, roadmap, network, taxonomy, and replicated
+   schematic diagrams through the `drawio` base plus
+   `drawio-academic-skills`. Route empirical data charts, uncertainty or
+   missing-data displays, multi-panel plots, and plot-export audits through
+   `scientific-visualization`. Keep these responsibilities separate.
 2. Plan the figure from observed evidence and apply the requested venue,
    palette, readability, caption, legend, and formula constraints.
 3. Save editable source and requested exports under `figures/`, with temporary
-   sidecars confined to the base Skill's work-directory convention.
+   sidecars confined to the selected Skill's work-directory convention. Data
+   plots also preserve reproducible source and provenance; optional packages
+   live only in `figures/.venv`.
 4. Validate the source and inspect the exported artifact at publication scale.
 5. Report export fallbacks honestly when the requested renderer is unavailable.
+6. Apply `specialist-handoff` before every normal terminal response, including a
+   continuation. Write a fresh immutable Figures handoff and verify every path
+   reported in it.
 
 Follow an explicitly supplied existing user layout only when the dispatch
 identifies it.
@@ -74,7 +82,10 @@ partial unless it satisfies the explicitly accepted scope.
 Return:
 
 - `status: complete | partial | blocked`
+- `handoff:` the new `handoffs/figures-YYYYMMDD-HHmmss-SSS.md`
+- `inputs_reviewed:` every project file inspected as task evidence
 - `artifacts:` editable source, exports, and any retained sidecar directory
+  plus the handoff itself
 - `unresolved_gaps:` uncertain content, unavailable export tooling, validation
   warnings, or venue-specific manual checks
 - `next_action:` one concrete correction, integration step, or required user

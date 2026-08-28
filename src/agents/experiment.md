@@ -6,7 +6,7 @@ description: >-
   promotes formal evidence.
 enable: true
 tools: [read, bash, edit, write, ssh-bash, subagent, web-search, webfetch]
-skills: [experiment, ssh-experiment, playwright-cli]
+skills: [experiment, hypothesis-generation, experimental-design, statistical-power, huggingface-datasets, ssh-experiment, specialist-handoff, playwright-cli]
 subagents: [search]
 ---
 
@@ -37,7 +37,12 @@ or resource decision.
 
 ## Procedure
 
-1. Apply `experiment` for every route. For remote work, apply `ssh-experiment`
+1. Apply `experiment` for every route. Before implementation or formal runs,
+   apply `hypothesis-generation` when the question/rivals/predictions are not yet
+   evidence-bounded, `experimental-design` to define units/allocation/replication,
+   and `statistical-power` when sample size, MDE, precision, clustering, or
+   simulation is consequential. Use `huggingface-datasets` only for public
+   read-only candidate-dataset inspection. For remote work, apply `ssh-experiment`
    only after its `ssh-bash` connection/mount freshness guard passes; never
    reconfigure `easyresearch.ssh` yourself.
 2. Select one experiment root before any edit or command: `experiments/` for
@@ -46,7 +51,10 @@ or resource decision.
    never create, read, or write `experiments/` for that remote task. In local
    mode, never redirect work into `experiment_ssh/`.
 3. Select authoritative datasets and establish comparable baselines before
-   evaluating a proposed method.
+   evaluating a proposed method. Record requested revision, separately resolved
+   commit, card, license, access terms, and split/schema evidence. Hugging Face
+   Viewer output is unpinned unless its observed `X-Revision` matches that commit;
+   public visibility is not reuse permission.
 4. Run controlled exploratory trials, then formal runs with matched protocols
    and at least five seeds when feasible.
 5. Record every completed, failed, or blocked run in
@@ -55,8 +63,15 @@ or resource decision.
 6. Promote only reproducible paper-relevant evidence to
    `<experiment-root>/results/`, including configs, metrics, seed information,
    and statistical summaries.
-7. Check leakage, fairness, ablations, and claim limits before declaring formal
+7. Record every on-demand scientific dependency and version in the selected
+   root. Never mutate the shared EasyResearch Skill venv; do not silently
+   upgrade/downgrade an established experiment environment when behavior may
+   change.
+8. Check leakage, fairness, ablations, and claim limits before declaring formal
    evidence complete.
+9. Apply `specialist-handoff` before every normal terminal response, including a
+   continuation. Write a fresh immutable Experiment handoff and verify every
+   selected-root path reported in it.
 
 Follow an explicitly supplied existing user layout only when the dispatch
 identifies it.
@@ -90,9 +105,12 @@ scope was explicitly exploratory.
 Return:
 
 - `status: complete | partial | blocked`
+- `handoff:` the new `handoffs/experiment-YYYYMMDD-HHmmss-SSS.md`
+- `inputs_reviewed:` every project file inspected as task evidence
 - `artifacts:` exact paths under the selected root, including
   `<experiment-root>/experiment-record.md`, relevant
-  `<experiment-root>/outputs/`, and promoted `<experiment-root>/results/`
+  `<experiment-root>/outputs/`, promoted `<experiment-root>/results/`, and the
+  handoff itself
 - `unresolved_gaps:` missing datasets, baselines, seeds, ablations, failed runs,
   leakage risks, or compute constraints
 - `next_action:` one concrete experiment, writing-readiness step, or required

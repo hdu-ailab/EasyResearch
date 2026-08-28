@@ -790,6 +790,12 @@ describe("installed third-party closure", () => {
     expect(identities).toContain("axios@1.19.0");
     expect(identities).toContain("open-websearch@2.1.11");
     expect(identities).toContain("ssh2@1.17.0");
+    expect(identities).toContain(
+      "K-Dense-AI/scientific-agent-skills@36d8f13a1e754618794bf42f417884940077b4ae",
+    );
+    expect(identities).toContain(
+      "huggingface/skills@020194918dc4a27d5a5d9a154b6b56cc2bd21364",
+    );
     expect(identities).toContain("bcrypt-pbkdf@1.0.2");
     expect(identities).toContain("boolbase@1.0.0");
     expect(identities).toContain("saxes@6.0.0");
@@ -797,6 +803,7 @@ describe("installed third-party closure", () => {
     expect(identities).toContain("https-proxy-agent@5.0.1");
     expect(identities).toContain("agent-base@6.0.2");
     expect(first).toContain("Apache License");
+    expect(first).toContain("Copyright (c) 2025 K-Dense Inc.");
     const scopedIdentities = entries
       .filter((entry) => entry.name.startsWith("@"))
       .map((entry) => `${entry.name}@${entry.version}`);

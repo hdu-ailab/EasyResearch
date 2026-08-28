@@ -28,7 +28,13 @@ describe("bundled agent definitions", () => {
     expect(byName.search!.subagents).toEqual([]);
     expect(byName.experiment!.subagents).toEqual(["search"]);
     expect(byName.writing!.subagents).toEqual(["search", "figures"]);
+    expect(byName.review!.subagents).toEqual(["search"]);
     expect(byName.figures!.effectiveSkills).toEqual(expect.arrayContaining(["drawio", "drawio-academic-skills"]));
+    expect(byName.figures!.effectiveSkills).toContain("scientific-visualization");
+    for (const name of ["search", "experiment", "writing", "figures"]) {
+      expect(byName[name]!.effectiveSkills).toContain("specialist-handoff");
+    }
+    expect(byName["research-assistant"]!.effectiveSkills).not.toContain("specialist-handoff");
     expect(byName["research-assistant"]!.effectiveTools).toEqual(
       expect.arrayContaining(["read", "bash", "edit", "write", "subagent", "web-search", "webfetch"]),
     );
@@ -36,8 +42,15 @@ describe("bundled agent definitions", () => {
     expect(byName.experiment!.effectiveSkills).not.toContain("autoresearch");
     expect(byName["research-assistant"]!.effectiveSkills).toContain("remote-experiment-preflight");
     expect(byName.search!.effectiveSkills).toContain("paper-material-package");
+    expect(byName.search!.effectiveSkills).toContain("paper-lookup");
     expect(byName.writing!.effectiveSkills).toContain("survey-paper-writing");
     expect(byName.experiment!.effectiveSkills).toContain("ssh-experiment");
+    expect(byName.experiment!.effectiveSkills).toEqual(expect.arrayContaining([
+      "hypothesis-generation",
+      "experimental-design",
+      "statistical-power",
+      "huggingface-datasets",
+    ]));
     expect(byName.experiment!.effectiveSkills).not.toContain("remote-experiment-preflight");
     expect(byName["research-assistant"]!.effectiveSkills).not.toContain("ssh-experiment");
     expect(byName["research-assistant"]!.effectiveTools).toContain("ssh-bash");
@@ -45,6 +58,22 @@ describe("bundled agent definitions", () => {
     expect(byName.search!.effectiveTools).not.toContain("ssh-bash");
     expect(byName.writing!.effectiveTools).not.toContain("ssh-bash");
     expect(byName.figures!.effectiveTools).not.toContain("ssh-bash");
+    expect(byName.review!.effectiveTools).toEqual(expect.arrayContaining([
+      "read",
+      "bash",
+      "write",
+      "subagent",
+      "web-search",
+      "webfetch",
+    ]));
+    expect(byName.review!.effectiveTools).not.toEqual(expect.arrayContaining(["edit", "ssh-bash"]));
+    expect(byName.review!.effectiveSkills).toEqual(expect.arrayContaining([
+      "peer-review",
+      "paper-lookup",
+      "arxiv",
+      "specialist-handoff",
+      "playwright-cli",
+    ]));
   });
 
   it("gives every bundled agent web tools and the playwright-cli skill, and never grep/find/ls (ADR-068)", async () => {

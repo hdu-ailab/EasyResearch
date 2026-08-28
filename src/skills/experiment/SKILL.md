@@ -124,6 +124,22 @@ actual hardware and environment facts rather than assuming GPU models, indices,
 CUDA versions, usernames, or package locations.
 
 ## Paper-First Workflow
+Use the mounted methodology Skills before implementation when their trigger
+applies:
+
+- `hypothesis-generation` produces evidence-bounded candidates, rivals,
+  discriminating predictions, controls, operationalization, and a
+  preregistration-ready `formal-experiment-plan.md`;
+- `experimental-design` fixes experimental units, randomization, blocking,
+  independent replication, factors/interactions, and reproducible allocations;
+- `statistical-power` records sourced effect/variance assumptions, sample size,
+  MDE, sensitivity, clustering/attrition inflation, or bounded simulation;
+- `huggingface-datasets` provides public read-only Dataset Viewer evidence only.
+
+These Skills augment this experiment workflow. They do not create a second
+experiment root, replace baseline-first execution, turn planning scores into
+findings, or supersede the separate metric-bound `autoresearch` campaign.
+
 Before designing the proposed model:
 - Read multiple relevant papers, not only one. Prefer the last 3 years for current models and modules, while keeping older foundational baselines when needed.
 - Include both high-standard papers and lower-tier/application-oriented papers. Strong papers often provide baselines and rigorous protocols; lower-tier/application papers often contain practical modules and domain-specific tricks worth testing.
@@ -157,6 +173,12 @@ Both routes must eventually produce the same evidence chain: problem, combinatio
 
 ## Dataset Policy
 Use 2-5 authoritative datasets from the literature whenever feasible.
+
+For every accepted dataset, record an exact version/revision, resolved commit
+when available, card and citation, license/access terms, configurations/splits,
+preprocessing, and any sensitive or gated-data constraint. A public Hub preview
+is not permission to reuse data, and a Dataset Viewer observation is not
+commit-pinned unless its observed revision matches the resolved commit.
 
 Initial phase:
 - Select 1-2 complete authoritative datasets for baseline and model trial runs.
@@ -276,6 +298,9 @@ Record or save:
 - Environment changes and important package versions.
 - Output path and log path.
 - Promotion status: copied to `results/` or not promoted.
+- Method-plan and dependency evidence: `formal-experiment-plan.md`, exact direct
+  package versions added for design/power/analysis, and any helper source copied
+  into a verified remote root.
 
 Prefer storing configs under `outputs/<run-id>/`. If a run is promoted, copy the exact config into `results/<run-id>/`.
 

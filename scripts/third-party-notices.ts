@@ -18,6 +18,30 @@ export const THIRD_PARTY_NOTICE_ROOTS = [
   { name: "ssh2", version: "1.17.0" },
 ] as const;
 
+const ADAPTED_SKILL_NOTICE_SOURCES = [
+  {
+    name: "K-Dense-AI/scientific-agent-skills",
+    version: "36d8f13a1e754618794bf42f417884940077b4ae",
+    license: "MIT",
+    skillNames: [
+      "paper-lookup",
+      "hypothesis-generation",
+      "experimental-design",
+      "statistical-power",
+      "scientific-visualization",
+      "peer-review",
+    ],
+    source: "https://github.com/K-Dense-AI/scientific-agent-skills",
+  },
+  {
+    name: "huggingface/skills",
+    version: "020194918dc4a27d5a5d9a154b6b56cc2bd21364",
+    license: "Apache-2.0",
+    skillNames: ["huggingface-datasets"],
+    source: "https://github.com/huggingface/skills",
+  },
+] as const;
+
 export interface ThirdPartyTextFile {
   fileName: string;
   text: string;
@@ -473,17 +497,51 @@ function rootResolution(
   return { lockKey: root.name, packageDir, ancestors: [] };
 }
 
+function collectAdaptedSkillNoticeEntries(projectRoot: string): ThirdPartyNoticeEntry[] {
+  return ADAPTED_SKILL_NOTICE_SOURCES.map((source) => {
+    const licensePaths = source.skillNames.map((name) => join(projectRoot, "src", "skills", name, "LICENSE.upstream"));
+    const [canonicalPath, ...copies] = licensePaths;
+    if (!canonicalPath || !existsSync(canonicalPath)) {
+      throw new Error(`Missing adapted Skill license: ${canonicalPath ?? source.name}`);
+    }
+    const canonical = readTextFile(canonicalPath);
+    if (canonical.trim().length === 0) throw new Error(`Empty adapted Skill license: ${canonicalPath}`);
+    for (const copy of copies) {
+      if (!existsSync(copy)) throw new Error(`Missing adapted Skill license: ${copy}`);
+      if (readTextFile(copy) !== canonical) {
+        throw new Error(`Changed adapted Skill license: ${copy}`);
+      }
+    }
+    return {
+      name: source.name,
+      version: source.version,
+      license: source.license,
+      licenseTexts: [{ fileName: "LICENSE.upstream", text: canonical }],
+      noticeTexts: [{
+        fileName: "SOURCE",
+        text: [
+          `Source: ${source.source}`,
+          `Commit: ${source.version}`,
+          `Adapted Skills: ${source.skillNames.join(", ")}`,
+          "Modified and redistributed by EasyResearch; no upstream endorsement is implied.",
+        ].join("\n"),
+      }],
+    };
+  });
+}
+
 export function collectThirdPartyNoticeEntries(
   projectRoot: string,
-  roots: readonly { name: string; version: string }[] = THIRD_PARTY_NOTICE_ROOTS,
+  roots?: readonly { name: string; version: string }[],
 ): ThirdPartyNoticeEntry[] {
+  const selectedRoots = roots ?? THIRD_PARTY_NOTICE_ROOTS;
   const lock = parseLock(projectRoot);
   validateAxiosIdentities(lock);
   const projectManifest = parseJsonFile(join(projectRoot, "package.json")) as {
     dependencies?: Record<string, unknown>;
   };
   const projectDependencies = projectManifest.dependencies ?? {};
-  const queue = roots.map((root) =>
+  const queue = selectedRoots.map((root) =>
     rootResolution(projectRoot, lock, projectDependencies, root),
   );
   const visited = new Set<string>();
@@ -534,6 +592,12 @@ export function collectThirdPartyNoticeEntries(
       }
       const dependency = resolveDependency(projectRoot, lock, current, dependencyName);
       if (dependency) queue.push(dependency);
+    }
+  }
+
+  if (roots === undefined) {
+    for (const entry of collectAdaptedSkillNoticeEntries(projectRoot)) {
+      entries.set(`${entry.name}@${entry.version}`, entry);
     }
   }
 

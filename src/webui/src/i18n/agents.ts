@@ -1,6 +1,15 @@
 import { RESEARCH_ASSISTANT_AGENT } from "../agent-identity";
 import type { MessageKey } from "./messages";
 
+export const BUILTIN_AGENT_ORDER: readonly string[] = [
+  RESEARCH_ASSISTANT_AGENT,
+  "search",
+  "experiment",
+  "writing",
+  "figures",
+  "review",
+];
+
 /** Roster agent ids mapped to their localized display-name keys (ADR-035). */
 const AGENT_NAME_KEYS: Record<string, MessageKey> = {
   [RESEARCH_ASSISTANT_AGENT]: "agent.researchAssistant",
@@ -8,6 +17,7 @@ const AGENT_NAME_KEYS: Record<string, MessageKey> = {
   experiment: "agent.experiment",
   writing: "agent.writing",
   figures: "agent.figures",
+  review: "agent.review",
 };
 
 /** Roster agent ids mapped to their localized description keys (ADR-035). */
@@ -17,6 +27,7 @@ const AGENT_DESCRIPTION_KEYS: Record<string, MessageKey> = {
   experiment: "agentDesc.experiment",
   writing: "agentDesc.writing",
   figures: "agentDesc.figures",
+  review: "agentDesc.review",
 };
 
 export type Translate = (key: MessageKey) => string;

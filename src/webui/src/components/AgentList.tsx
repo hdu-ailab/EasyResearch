@@ -5,14 +5,12 @@ import type { AgentConfigurationPatch, AgentDto } from "../../../web/contracts";
 import { RESEARCH_ASSISTANT_AGENT } from "../agent-identity";
 import { listAgents, listModels, patchAgent, refreshConfigurationResources } from "../api";
 import type { ModelOption } from "../api/parsers";
-import { agentDescription, agentDisplayName, type Translate } from "../i18n/agents";
+import { agentDescription, agentDisplayName, BUILTIN_AGENT_ORDER, type Translate } from "../i18n/agents";
 import { useI18n } from "../i18n/useI18n";
 import { SearchableSelect } from "./SearchableSelect";
 import { ThinkingLevelSelect, thinkingLevelsForModel } from "./ThinkingLevelSelect";
 
 export type AgentStatus = "idle" | "working" | "error";
-
-const BUILTIN_ORDER = [RESEARCH_ASSISTANT_AGENT, "search", "experiment", "writing", "figures"];
 
 export interface AgentListProps {
   cwd: string;
@@ -97,7 +95,7 @@ export function AgentList({ cwd, statusByAgent, configurationGeneration, configu
     .filter((agent) => agent.name !== RESEARCH_ASSISTANT_AGENT)
     .sort((a, b) => {
       if (a.builtin !== b.builtin) return a.builtin ? -1 : 1;
-      if (a.builtin) return BUILTIN_ORDER.indexOf(a.name) - BUILTIN_ORDER.indexOf(b.name);
+      if (a.builtin) return BUILTIN_AGENT_ORDER.indexOf(a.name) - BUILTIN_AGENT_ORDER.indexOf(b.name);
       return a.name.localeCompare(b.name);
     });
   const visibleError = configurationError ?? loadError;

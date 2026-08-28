@@ -726,21 +726,27 @@ describe("SettingsModal", () => {
     expect(screen.getByRole("combobox", { name: "选择模型： 检索" })).toBeTruthy();
   });
 
-  it("pins the Research Assistant card to the first position regardless of API order", async () => {
+  it("uses the fixed six-agent built-in order regardless of API order", async () => {
     const user = userEvent.setup();
     vi.mocked(api.listAgents).mockResolvedValue([
-      { name: "writing", description: "Writes" },
-      { name: "research-assistant", description: "Coordinates" },
-      { name: "search", description: "Searches" },
+      { name: "review", description: "Reviews", builtin: true },
+      { name: "writing", description: "Writes", builtin: true },
+      { name: "figures", description: "Draws", builtin: true },
+      { name: "research-assistant", description: "Coordinates", builtin: true },
+      { name: "experiment", description: "Experiments", builtin: true },
+      { name: "search", description: "Searches", builtin: true },
     ] as never);
     renderSettings();
     await selectCategory(user, "Agents");
     await screen.findByRole("button", { name: "Configure Research Assistant" });
-    const assistantCard = screen.getByRole("button", { name: "Configure Research Assistant" });
-    const searchCard = screen.getByRole("button", { name: "Configure Search" });
-    expect(assistantCard.compareDocumentPosition(searchCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
-      Node.DOCUMENT_POSITION_FOLLOWING,
+    const cards = ["Research Assistant", "Search", "Experiment", "Writing", "Figures", "Review"].map((name) =>
+      screen.getByRole("button", { name: `Configure ${name}` }),
     );
+    for (let index = 0; index < cards.length - 1; index += 1) {
+      expect(cards[index]!.compareDocumentPosition(cards[index + 1]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+        Node.DOCUMENT_POSITION_FOLLOWING,
+      );
+    }
   });
 
   it("shows the configured Research Assistant default without any inherit option", async () => {

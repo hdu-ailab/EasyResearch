@@ -25,6 +25,8 @@ Those actions belong to Search, Experiment, Writing, and Figures. The only
 direct infrastructure exception is a user-selected remote empirical route: use
 the separate `remote-experiment-preflight` Skill for SSH/connectivity/compute/
 mount checks before dispatching Experiment.
+Independent source-based manuscript critique belongs to Review. This Skill may
+select and acceptance-route Review but never writes a review report itself.
 
 ## Classify The Route
 
@@ -38,7 +40,8 @@ Choose the smallest route that produces the requested outcome:
 - **Hybrid:** survey plus an explicitly requested original benchmark or
   evaluation. Search -> Experiment for only that empirical component -> Writing.
 - **Narrow task:** literature-only, experiment-only, readiness, revision,
-  citation audit, review, figure-only, or compilation. Dispatch only the owner.
+  citation audit, independent review, figure-only, or compilation. Dispatch only
+  the owner.
 
 Ask one focused route-deciding question only when the request and existing
 artifacts do not distinguish these routes. Do not turn every request into a
@@ -109,6 +112,9 @@ establish readiness.
 - Dispatch `writing` for survey planning/synthesis, empirical or survey
   readiness, authorized drafting/revision, citation verification, and PDF.
 - Dispatch `figures` for evidence-grounded publication figures or corrections.
+- Dispatch `review` for independent critique of accepted Markdown/TeX sources
+  against supplied material and experiment evidence. Never dispatch a PDF-only
+  review input.
 
 For remote empirical work, run `remote-experiment-preflight` first. Configure and
 test the project's single `easyresearch.ssh` object through `ssh-bash`, let that
@@ -128,6 +134,12 @@ Every task states:
 - completion criteria; and
 - the required `complete | partial | blocked` handoff.
 
+Every specialist task also requires a fresh immutable
+`handoffs/<role>-YYYYMMDD-HHmmss-SSS.md`, all inspected input paths, and every
+created or modified work-file path in both that file and final text. A
+continuation writes a new handoff and names the previous one. Runtime Error or
+Stop may have no file; never ask the runtime or another Agent to fabricate one.
+
 An Experiment task explicitly names `local` or `remote` execution. Local tasks
 use `experiments/`; remote tasks use only the accepted `experiment_ssh/` mount
 and require exact record/output/result paths under that root.
@@ -140,6 +152,12 @@ coverage target, not permission to omit additional selected papers. They also re
 `manuscript/manuscript.md`, citation verification, and complete-paper derived
 output unless the user limited scope. Writing tasks carry the exact drafting
 authority already supplied.
+
+A Review task carries source/material authority, exact Markdown/TeX source
+paths, relevant material/experiment/figure evidence, the preceding specialist
+handoff, and timestamped report/handoff completion criteria. After one Review,
+read both files and dispatch each finding to its artifact owner. Do not
+automatically re-review corrected work without an explicit user request.
 
 A `subagent` call returns only `<agent_id> is working.` after materialization.
 This is not terminal output. Continue useful non-overlapping orchestration while
@@ -154,6 +172,8 @@ passing its agent id as `agent`; never continue a running id. There is no
 On the hidden terminal status+handoff:
 
 1. Read the handoff and inspect the exact artifacts required by the dispatch.
+   The terminal text must name a timestamped disk handoff; read that file first
+   and verify its listed work paths.
 2. For `complete`, confirm paths, counts, required sections/fields, evidence
    support, disclosed failures, and next-stage inputs. Advance automatically when
    they satisfy the authorized outcome.
@@ -167,9 +187,14 @@ On the hidden terminal status+handoff:
 5. For one correctable failure class, continue the same completed child once
    with the observed failure and unchanged criteria. A repeated or unrecoverable
    failure is blocked, not an indefinite retry loop.
+6. After accepted Writing source artifacts, decide whether one independent
+   Review is warranted. Review completion means the critique was produced, not
+   that the paper passed. Route findings to Search, Experiment, Writing, or
+   Figures and keep final acceptance with the Research Assistant.
 
-This is routine acceptance against dispatch criteria. Perform deeper critique,
-risk analysis, or cross-cutting peer review only when the user asks for it.
+This is routine acceptance against dispatch criteria. Independent deeper
+critique is delegated to Review when the Research Assistant selects it or the
+user explicitly requests it.
 
 ## Completion
 

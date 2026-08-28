@@ -29,7 +29,7 @@ import type { ModelOption } from "../../api/parsers";
 import type { SettingsCloseGuard } from "../../hooks/useHashRoute";
 import { hasModalAbove, type ModalLayerResult, requestModalCloseAbove, useModalLayer } from "../../hooks/useModalLayer";
 import { useProviderAuthFlow } from "../../hooks/useProviderAuthFlow";
-import { agentDisplayName } from "../../i18n/agents";
+import { agentDisplayName, BUILTIN_AGENT_ORDER } from "../../i18n/agents";
 import { useI18n } from "../../i18n/useI18n";
 import { AgentConfigModal } from "../AgentConfigModal";
 import { AgentMarkdownEditor } from "../AgentMarkdownEditor";
@@ -464,8 +464,12 @@ export function SettingsModal({
 
   const roster = [...agents].sort((a, b) => {
     if (a.builtin !== b.builtin) return a.builtin ? -1 : 1;
-    if (a.name === RESEARCH_ASSISTANT_AGENT) return -1;
-    if (b.name === RESEARCH_ASSISTANT_AGENT) return 1;
+    if (a.builtin) {
+      const left = BUILTIN_AGENT_ORDER.indexOf(a.name);
+      const right = BUILTIN_AGENT_ORDER.indexOf(b.name);
+      if (left !== right)
+        return (left < 0 ? Number.MAX_SAFE_INTEGER : left) - (right < 0 ? Number.MAX_SAFE_INTEGER : right);
+    }
     return a.name.localeCompare(b.name);
   });
   const researchAssistant = roster.find((agent) => agent.name === RESEARCH_ASSISTANT_AGENT);

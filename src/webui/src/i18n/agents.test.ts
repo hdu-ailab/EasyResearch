@@ -14,6 +14,8 @@ describe("agentDisplayName", () => {
     expect(agentDisplayName(zh, "experiment")).toBe("实验");
     expect(agentDisplayName(zh, "writing")).toBe("写作");
     expect(agentDisplayName(zh, "figures")).toBe("图表");
+    expect(agentDisplayName(en, "review")).toBe("Review");
+    expect(agentDisplayName(zh, "review")).toBe("审稿");
   });
 
   it("matches the label casing agents arrive in", () => {
@@ -40,6 +42,7 @@ describe("agentDescription", () => {
     expect(agentDescription(zh, "experiment", "ignored")).toBe(messages["zh-CN"]["agentDesc.experiment"]);
     expect(agentDescription(zh, "writing", "ignored")).toBe(messages["zh-CN"]["agentDesc.writing"]);
     expect(agentDescription(zh, "figures", "ignored")).toBe(messages["zh-CN"]["agentDesc.figures"]);
+    expect(agentDescription(zh, "review", "ignored")).toBe(messages["zh-CN"]["agentDesc.review"]);
   });
 
   it("matches the casing agents arrive in", () => {
@@ -51,7 +54,7 @@ describe("agentDescription", () => {
   });
 
   it("keeps every localized description nonempty", () => {
-    const ids = ["research-assistant", "search", "experiment", "writing", "figures"];
+    const ids = ["research-assistant", "search", "experiment", "writing", "figures", "review"];
     for (const id of ids) {
       for (const lang of [en, zh]) {
         expect(agentDescription(lang, id, "")).not.toBe("");

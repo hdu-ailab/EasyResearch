@@ -282,6 +282,7 @@ export const en = {
   "agent.experiment": "Experiment",
   "agent.writing": "Writing",
   "agent.figures": "Figures",
+  "agent.review": "Review",
   "agentDesc.researchAssistant":
     "Research Assistant for the paper pipeline. Classifies survey, empirical, and hybrid routes, leads specialist agents, acceptance-reviews their artifacts, and advances automatically within existing authority. It can perform user-authorized SSH preflight and launch bounded auto-research, but never replaces specialist work or runs experiments itself.",
   "agentDesc.search":
@@ -291,7 +292,9 @@ export const en = {
   "agentDesc.writing":
     "Writing agent. Applies empirical or survey-specific readiness, builds survey taxonomy and coverage plans, drafts authoritative Markdown with verified claim support, and compiles the derived LaTeX/PDF. May dispatch Search for evidence and Figures for diagrams.",
   "agentDesc.figures":
-    "Figures agent. Creates publication-grade diagrams (architecture, workflow, results) with the drawio-academic-skills skill, saving editable sources and exported images under figures/. May dispatch the search agent to retrieve source material.",
+    "Figures agent. Creates evidence-grounded publication diagrams and data visualizations, saving reproducible editable sources, provenance, and exports under figures/. May dispatch Search for source material.",
+  "agentDesc.review":
+    "Independent source-based reviewer. Inspects accepted Markdown and TeX against literature and experiment evidence, writes immutable timestamped reports, and assigns findings to artifact owners without editing specialist sources.",
   "files.filter": "Filter files",
   "files.filterPlaceholder": "Filter…",
   "files.refresh": "Refresh listing",
@@ -661,6 +664,7 @@ export const zhCN: Record<MessageKey, string> = {
   "agent.experiment": "实验",
   "agent.writing": "写作",
   "agent.figures": "图表",
+  "agent.review": "审稿",
   "agentDesc.researchAssistant":
     "论文流水线的研究助手。判断综述、实验与混合路线，带领专业智能体，验收其真实产物，并在已有授权内自动推进。可执行用户授权的 SSH 预检和有边界的自动研究，但不替代专业智能体，也不亲自运行实验。",
   "agentDesc.search":
@@ -670,7 +674,9 @@ export const zhCN: Record<MessageKey, string> = {
   "agentDesc.writing":
     "写作智能体。采用实验论文或综述专用准备度标准，构建综述分类体系与覆盖计划，基于已核验证据起草权威 Markdown，并编译派生的 LaTeX/PDF。可分派检索智能体补充证据、图表智能体绘图。",
   "agentDesc.figures":
-    "图表智能体。使用 drawio-academic-skills 技能绘制出版级图表（架构、流程、结果），将可编辑源文件与导出的图片保存在 figures/ 下。可分派检索智能体获取素材。",
+    "图表智能体。创建基于证据的出版级示意图和数据可视化，将可复现的可编辑源文件、来源记录与导出文件保存在 figures/ 下。可分派检索智能体获取材料。",
+  "agentDesc.review":
+    "独立源文件审稿智能体。依据文献和实验材料检查已验收的 Markdown 与 TeX，写入不可覆盖的时间戳报告，并将问题分配给对应产物负责人，不修改专业 Agent 的源文件。",
   "files.filter": "过滤文件",
   "files.filterPlaceholder": "筛选…",
   "files.refresh": "刷新列表",

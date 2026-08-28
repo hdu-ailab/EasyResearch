@@ -81,11 +81,13 @@ describe("discoverAgents (Markdown layers)", () => {
   it("appends custom Markdown agents and keeps built-ins before them", async () => {
     writeAgent(bundledDir, "research-assistant");
     writeAgent(bundledDir, "search");
+    writeAgent(bundledDir, "review");
     writeAgent(agentDir, "审稿人", ["description: Custom reviewer"]);
     const { agents } = await discoverAgents(options());
 
-    expect(agents.map((agent) => agent.name)).toEqual(["research-assistant", "search", "审稿人"]);
-    expect(agents[2]).toMatchObject({ builtin: false, source: "global" });
+    expect(agents.map((agent) => agent.name)).toEqual(["research-assistant", "search", "review", "审稿人"]);
+    expect(agents[2]).toMatchObject({ builtin: true, source: "bundled" });
+    expect(agents[3]).toMatchObject({ builtin: false, source: "global" });
   });
 
   it("uses global agentDefaults for built-in and custom Agents while ignoring Markdown and project values", async () => {

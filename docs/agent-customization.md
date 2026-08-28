@@ -5,7 +5,7 @@
 The easiest way to customize EasyResearch is to ask the Research Assistant:
 
 ```text
-/customize-easyresearch Add an Agent that checks evidence quality in medical papers.
+/customize-easyresearch Add an Agent that prepares grant-planning checklists from verified program guidance.
 ```
 
 You can also use **Settings** to inspect and edit Agent Markdown and Skill
@@ -33,30 +33,30 @@ Same-name Skills replace lower layers; different names are combined.
 
 ## Create An Agent
 
-Create `~/.easyresearch/agent/agents/reviewer.md`:
+Create `~/.easyresearch/agent/agents/grant-planner.md`:
 
 ```md
 ---
-name: reviewer
-description: Reviews claims, citations, and evidence quality in research artifacts.
+name: grant-planner
+description: Prepares evidence-linked grant-planning checklists from current official program guidance.
 enable: true
 tools: [read, bash, web-search, webfetch]
-skills: [arxiv]
+skills: [playwright-cli]
 subagents: [search]
 ---
 
-You are an evidence reviewer.
+You are a grant-planning specialist.
 
 ## Role Boundary
 
-Inspect claims and supporting artifacts. Do not invent evidence or rewrite the
-manuscript unless explicitly asked.
+Inspect official program guidance and existing project evidence. Do not invent
+eligibility, deadlines, budgets, policies, or prior achievements.
 
 ## Procedure
 
-1. Identify each material claim.
-2. Trace it to a verified source or experiment artifact.
-3. Report unsupported, overstated, or ambiguous claims with exact file paths.
+1. Verify the current official call and eligibility rules.
+2. Map required sections, evidence, budget inputs, and unresolved decisions.
+3. Report every source URL and project file used.
 
 ## Completion
 

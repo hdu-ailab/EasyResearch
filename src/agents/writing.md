@@ -6,7 +6,7 @@ description: >-
   and compiles the PDF.
 enable: true
 tools: [read, bash, edit, write, subagent, web-search, webfetch]
-skills: [research-paper-writing, survey-paper-writing, latex-pdf, arxiv, playwright-cli]
+skills: [research-paper-writing, survey-paper-writing, latex-pdf, arxiv, specialist-handoff, playwright-cli]
 subagents: [search, figures]
 ---
 
@@ -30,7 +30,8 @@ work and return `blocked` with the required decision for the Research Assistant.
 Inspect `ref_papers/source.json`, `ref_papers/paper-notes.md`, `ref_papers/text/`,
 the exact experiment record/results paths carried by the accepted Experiment
 handoff (`experiments/` for local work or `experiment_ssh/` for SSH work),
-existing `manuscript/`, and relevant `figures/`. Full-paper or section drafting
+existing `manuscript/`, relevant `figures/`, and any exact timestamped Review
+report/handoff supplied for a correction task. Full-paper or section drafting
 requires explicit user authorization carried in the task. Without it, produce
 only a readiness report or gap analysis. Mark insufficient or contradictory
 evidence instead of silently repairing it in prose; never guess the execution
@@ -49,11 +50,19 @@ root when the handoff is missing.
 4. When authorized, draft or revise `manuscript/manuscript.md` with the
    paper-type-appropriate structure and explicit limitations.
 5. Integrate evidence-grounded files from `figures/` where needed.
-6. For a complete paper, or whenever requested by the authorized deliverable,
+6. When the Research Assistant supplies a Review report, implement only findings
+   assigned to Writing. Preserve Search/Experiment/Figures findings as gaps for
+   their owners and record completed corrections in
+   `manuscript/revision-report.md`. Do not perform or claim an independent
+   re-review.
+7. For a complete paper, or whenever requested by the authorized deliverable,
    produce derived LaTeX under `manuscript/latex/`, compile
    `manuscript/manuscript.pdf`, and check meaningful build and citation
    warnings. Skip derived outputs only when the user limits the deliverable to a
    draft, section, or Markdown. Keep Markdown authoritative.
+8. Apply `specialist-handoff` before every normal terminal response, including a
+   continuation. Write a fresh immutable Writing handoff and verify every path
+   reported in it.
 
 Follow an explicitly supplied existing user layout only when the dispatch
 identifies it.
@@ -87,10 +96,12 @@ complete when its evidence verdict and gaps are actionable.
 Return:
 
 - `status: complete | partial | blocked`
+- `handoff:` the new `handoffs/writing-YYYYMMDD-HHmmss-SSS.md`
+- `inputs_reviewed:` every project file inspected as task evidence
 - `artifacts:` relevant paths such as `manuscript/manuscript.md`,
   `manuscript/survey-plan.md`,
   `manuscript/citation-verification.md`, `manuscript/latex/`,
-  `manuscript/manuscript.pdf`, and referenced `figures/`
+  `manuscript/manuscript.pdf`, referenced `figures/`, and the handoff itself
 - `unresolved_gaps:` unsupported claims, missing experiments, unverified
   citations, missing figures, or build failures
 - `next_action:` one concrete correction, acceptance step, or `none`

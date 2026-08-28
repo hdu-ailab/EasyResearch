@@ -8,7 +8,7 @@
 
 > **From a research question to verifiable paper artifacts.**
 
-An AI research team that searches, experiments, writes, and draws. Start a
+An AI research team that searches, experiments, writes, draws, and reviews. Start a
 literature review or a bounded experiment campaign with one instruction; every
 step leaves sources, logs, results, and checkpoints you can inspect.
 
@@ -132,10 +132,12 @@ is split across specialists with explicit responsibility boundaries:
 | **Experiment** | Baselines, methods, controlled trials, records, and formal evidence | Draft the paper or invent results |
 | **Writing** | Empirical/survey readiness, survey taxonomy and coverage, citation verification, authorized drafting, LaTeX, and PDF | Run experiments or fill evidence gaps with guesses |
 | **Figures** | Editable publication figures grounded in sources and results | Invent claims or values |
+| **Review** | Independent source-based review reports over accepted Markdown/TeX and evidence | Edit manuscripts, run experiments, or decide acceptance |
 
 Fresh specialists run in isolated sessions and can work in parallel when their
-goals and output paths do not overlap. Background tasks persist their state and
-return artifact paths, unresolved gaps, and one recommended next action.
+goals and output paths do not overlap. Every normally terminating specialist
+writes a timestamped handoff listing its inputs, work files, findings, gaps, and
+next action.
 
 ## Research Pipeline
 
@@ -150,11 +152,16 @@ flowchart LR
     E --> F{RA acceptance review}
     F --> G
     G --> H[Citation verification]
-    H --> I[LaTeX and PDF]
+    H --> R{RA selects independent Review?}
+    R -->|Yes| V[Markdown/TeX review report]
+    V --> C2[Owner-specific corrections]
+    C2 --> I
+    R -->|No or corrected| I[LaTeX and PDF]
 ```
 
 The Research Assistant coordinates the flow, but Search, Experiment, Writing,
-and Figures remain the owners of their artifacts.
+Figures, and Review remain the owners of their artifacts. Review runs once by
+default when the Research Assistant selects it; another review is explicit.
 
 ## Inspect The Outputs
 
@@ -172,6 +179,8 @@ projects can keep an explicitly supplied layout.
 | `manuscript/citation-verification.md` | Which citations and claims were checked and which remain uncertain |
 | `manuscript/manuscript.md` | The authoritative manuscript source |
 | `figures/` | Editable evidence-grounded publication figures and exports |
+| `handoffs/<role>-<timestamp>.md` | One immutable specialist-run summary with every input and created/modified work-file path |
+| `reviews/review_report-<timestamp>.md` | Independent findings over the supplied Markdown/TeX sources and evidence |
 | `manuscript/manuscript.pdf` | The derived paper PDF |
 
 The actual files are the handoff between stages. A chat message is not treated

@@ -275,6 +275,18 @@ describe("WorkPage", () => {
         effectiveSkills: [],
         missingSkills: [],
       },
+      {
+        name: "review",
+        description: "Reviews source artifacts",
+        enabled: true,
+        builtin: true,
+        source: "bundled",
+        filePath: "review.md",
+        effectiveTools: [],
+        effectiveSkills: [],
+        missingSkills: [],
+        subagents: ["search"],
+      },
     ]);
     vi.mocked(api.listModels).mockResolvedValue([
       { provider: "openai", id: "gpt-4o", reasoning: true, thinkingLevelMap: {} },
@@ -2918,14 +2930,14 @@ describe("WorkPage", () => {
     expect(agentsRegion.className).toContain("min-[820px]:opacity-100");
   });
 
-  it("renders the full five-agent roster in the agents view", async () => {
+  it("renders the full six-agent roster in the agents view", async () => {
     const user = userEvent.setup();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
     await waitFor(() => {
-      for (const display of ["Research Assistant", "Search", "Experiment", "Writing", "Figures"]) {
+      for (const display of ["Research Assistant", "Search", "Experiment", "Writing", "Figures", "Review"]) {
         expect(within(region).getAllByText(display).length).toBeGreaterThan(0);
       }
     });
@@ -2960,7 +2972,7 @@ describe("WorkPage", () => {
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
     const combos = within(region).getAllByRole("combobox");
-    expect(combos.length).toBe(10);
+    expect(combos.length).toBe(12);
     expect(combos[0]!).toHaveTextContent("openai/gpt-4o");
     expect(combos[2]!).toHaveTextContent("anthropic/claude");
     expect(within(combos[4]!).getByText("inherit (Research Assistant's model)")).toBeTruthy();

@@ -16,6 +16,17 @@ describe("release asset collection", () => {
     expect(assets.some((rel) => rel.startsWith("pi/docs/"))).toBe(true);
     expect(assets.some((rel) => rel.startsWith("pi/examples/"))).toBe(true);
     expect(assets).toContain("pi/photon_rs_bg.wasm");
+    expect(assets).toEqual(expect.arrayContaining([
+      "agents/review.md",
+      "skills/specialist-handoff/SKILL.md",
+      "skills/paper-lookup/SKILL.md",
+      "skills/scientific-visualization/SKILL.md",
+      "skills/hypothesis-generation/SKILL.md",
+      "skills/experimental-design/SKILL.md",
+      "skills/statistical-power/SKILL.md",
+      "skills/huggingface-datasets/SKILL.md",
+      "skills/peer-review/SKILL.md",
+    ]));
     expect(assets.some((rel) => rel.startsWith("extensions/"))).toBe(false);
     expect(assets.some((rel) => rel.includes(".test."))).toBe(false);
   });
