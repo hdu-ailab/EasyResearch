@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, rmSync, statSync } from "node:fs";
 import { posix, win32 } from "node:path";
 import type { BuildArtifact } from "./build";
 import type { DesktopTargetName } from "./build-desktop";
 import { THIRD_PARTY_NOTICES_FILE } from "./third-party-notices";
+
+const TRANSIENT_DESKTOP_SMOKE_CLEANUP_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
 
 export interface NativeCommand {
   command: string;
@@ -29,6 +31,27 @@ export function combineDesktopSmokeFailures(
   const failures = primary ? [primary, ...cleanupFailures] : [...cleanupFailures];
   if (failures.length === 1) return failures[0];
   return new AggregateError(failures, "Desktop package smoke and cleanup failed.");
+}
+
+export async function removeDesktopSmokeRoot(
+  path: string,
+  options: {
+    remove?: (path: string) => void;
+    wait?: (delayMs: number) => Promise<void>;
+  } = {},
+): Promise<void> {
+  const remove = options.remove ?? ((target) => rmSync(target, { recursive: true, force: true }));
+  const wait = options.wait ?? ((delayMs) => new Promise<void>((resolveWait) => setTimeout(resolveWait, delayMs)));
+  for (let attempt = 1; attempt <= 20; attempt += 1) {
+    try {
+      remove(path);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (!TRANSIENT_DESKTOP_SMOKE_CLEANUP_CODES.has(code ?? "") || attempt === 20) throw error;
+      await wait(250);
+    }
+  }
 }
 
 export function verifyPackagedSidecar(

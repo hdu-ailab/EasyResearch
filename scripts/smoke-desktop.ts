@@ -5,7 +5,6 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -40,6 +39,7 @@ import {
   nsisInstallCommand,
   packagedApplicationPaths,
   readDesktopSmokeEvents,
+  removeDesktopSmokeRoot,
   reduceDesktopSmokeEvents,
   verifyDesktopSidecarIdentity,
   verifyPackagedNotice,
@@ -472,7 +472,7 @@ try {
   if (primaryError && cleanupFailures.length > 0) {
     console.error(`[desktop-smoke] preserved cleanup diagnostics root: ${root}`);
   }
-  if (!primaryError) rmSync(root, { recursive: true, force: true });
+  if (!primaryError) await removeDesktopSmokeRoot(root);
 }
 
 if (primaryError) throw primaryError;

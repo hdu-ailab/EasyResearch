@@ -11,6 +11,7 @@ import {
   nsisInstallCommand,
   packagedApplicationPaths,
   readDesktopSmokeEvents,
+  removeDesktopSmokeRoot,
   reduceDesktopSmokeEvents,
   verifyDesktopSidecarIdentity,
   verifyPackagedNotice,
@@ -100,6 +101,53 @@ describe("desktop smoke cleanup failures", () => {
       expect.objectContaining({ message: "package cleanup failed" }),
     ]);
     expect(combineDesktopSmokeFailures(undefined, [])).toBeUndefined();
+  });
+
+  it("retries transient Windows directory locks before removing diagnostics", async () => {
+    let attempts = 0;
+    const waits: number[] = [];
+    await removeDesktopSmokeRoot("C:\\Temp\\desktop-smoke", {
+      remove: () => {
+        attempts += 1;
+        if (attempts < 3) throw Object.assign(new Error("locked"), { code: "EBUSY" });
+      },
+      wait: async (delayMs) => { waits.push(delayMs); },
+    });
+
+    expect(attempts).toBe(3);
+    expect(waits).toEqual([250, 250]);
+  });
+
+  it("stops retrying a persistent directory lock after the bounded deadline", async () => {
+    const locked = Object.assign(new Error("still locked"), { code: "EBUSY" });
+    let attempts = 0;
+    let waits = 0;
+    const removal = removeDesktopSmokeRoot("C:\\Temp\\desktop-smoke", {
+      remove: () => {
+        attempts += 1;
+        throw locked;
+      },
+      wait: async () => { waits += 1; },
+    });
+
+    await expect(removal).rejects.toBe(locked);
+    expect(attempts).toBe(20);
+    expect(waits).toBe(19);
+  });
+
+  it("does not retry an unrelated cleanup error", async () => {
+    const unrelated = Object.assign(new Error("invalid path"), { code: "EINVAL" });
+    let attempts = 0;
+    const removal = removeDesktopSmokeRoot("C:\\Temp\\desktop-smoke", {
+      remove: () => {
+        attempts += 1;
+        throw unrelated;
+      },
+      wait: async () => { throw new Error("unexpected wait"); },
+    });
+
+    await expect(removal).rejects.toBe(unrelated);
+    expect(attempts).toBe(1);
   });
 });
 
