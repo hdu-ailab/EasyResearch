@@ -18,4 +18,15 @@ describe("compiled release command", () => {
     ]));
     expect(command).not.toContain("bun");
   });
+
+  it("externalizes SSH2's optional CPU addon from standalone executables", () => {
+    const target = TARGETS.find((candidate) => candidate.name === "linux-x64");
+    expect(target).toBeDefined();
+
+    const command = compileCommand(target!, "/release/easyresearch", "/tools/bun");
+    const externalIndex = command.indexOf("--external");
+
+    expect(externalIndex).toBeGreaterThan(-1);
+    expect(command[externalIndex + 1]).toBe("cpu-features");
+  });
 });

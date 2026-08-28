@@ -211,6 +211,8 @@ export function compileCommand(
     target.target,
     "--outfile",
     outfile,
+    "--external",
+    "cpu-features",
     "--minify",
   ];
 }
