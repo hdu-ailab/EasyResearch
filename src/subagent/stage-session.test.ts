@@ -723,6 +723,37 @@ describe("createStageSessionLauncher", () => {
     await handle.dispose();
   });
 
+  it("publishes the exact persisted usage entry after a stage Pi message_end", async () => {
+    const prompt = deferred<void>();
+    const session = new FakeStageSession("child-usage", join(root, "child-usage.jsonl"), prompt.promise);
+    const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
+    const handle = await createStageSessionLauncher(dependencyHarness(session).dependencies)(stageOptions(coordinator));
+    const events: JsonAgentSessionEvent[] = [];
+    handle.subscribe((event) => events.push(event));
+    const message = assistant("tracked child usage");
+    const entry = {
+      type: "message",
+      id: "persisted-child-assistant",
+      parentId: null,
+      timestamp: "2026-08-30T00:00:00.000Z",
+      message,
+    };
+
+    session.emit({ type: "message_end", message });
+    session.entries.push(entry);
+    writeFileSync(session.sessionFile, `${JSON.stringify({ type: "session", id: session.sessionId })}\n`);
+
+    await vi.waitFor(() => expect(events).toEqual([
+      { type: "message_end", message },
+      { type: "entry_appended", entry },
+    ]));
+
+    await handle.materialized;
+    prompt.resolve();
+    await handle.completion;
+    await handle.dispose();
+  });
+
   it("replays synchronous prompt-start events once to the first owner subscriber", async () => {
     const prompt = deferred<void>();
     const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);

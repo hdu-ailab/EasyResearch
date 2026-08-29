@@ -182,8 +182,6 @@ export class SubagentSessionService {
   }
 
   async statistics(parentSessionId: string): Promise<ApiUsageStatisticsDto> {
-    const cached = this.usageCache.get(parentSessionId);
-    if (cached) return cached.statistics;
     let parent: Awaited<ReturnType<SubagentSessionService["parent"]>>;
     try {
       parent = await this.parent(parentSessionId);

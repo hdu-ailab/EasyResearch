@@ -20,6 +20,7 @@ import {
   type CompactionPolicySettingsManager,
 } from "../runtime/compaction-policy";
 import { resolvePiDefaultModel, type PiDefaultModelApi } from "../runtime/pi-default-model";
+import { publishPersistedUsageEntry } from "../runtime/persisted-usage-event";
 import { applySkillSnapshotBaseDirs } from "../runtime/resource-fingerprint";
 import { assertModelRequestReady } from "../runtime/model-request-error";
 import { createConfiguredModelRuntime } from "./auth-runtime";
@@ -658,6 +659,9 @@ class DirectSessionAdapter implements SessionAdapter {
               ? { ...jsonEvent, steering: jsonEvent.steering.filter((message) => !isHiddenStatusContent(message)) }
               : jsonEvent;
           this.publishEvent(publicEvent);
+          publishPersistedUsageEntry(agentEvent, created.session.sessionManager, (persistedEvent) => {
+            this.publishEvent(persistedEvent);
+          });
         });
         const unsubscribeCompactionState = created.compaction.subscribe((state) => {
           this.publishEvent({ type: "compaction_state_changed", state });

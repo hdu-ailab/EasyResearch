@@ -411,6 +411,22 @@ describe("SubagentSessionService", () => {
     expect(files.map((path) => readFileSync(path, "utf8"))).toEqual(before);
   });
 
+  it("refreshes an earlier empty statistics projection from newly persisted usage", async () => {
+    const parent = createSession();
+    parent.appendMessage(user("start live session"));
+    const sessions = service();
+
+    await expect(sessions.statistics(parent.getSessionId())).resolves.toMatchObject({
+      total: { records: 0, totalTokens: 0 },
+    });
+
+    parent.appendMessage(assistantUsage(11, 3, 0.2, "live reply"));
+
+    await expect(sessions.statistics(parent.getSessionId())).resolves.toMatchObject({
+      total: { records: 1, input: 11, output: 3, totalTokens: 14 },
+    });
+  });
+
   it("uses the exact root-journal path mapping instead of authorizing a same-cwd UUID from the global listing", async () => {
     const parent = createSession();
     const requested = createSession();

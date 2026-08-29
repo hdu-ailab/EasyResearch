@@ -18,6 +18,7 @@ import {
   type CompactionPolicySettingsManager,
 } from "../runtime/compaction-policy";
 import { resolvePiDefaultModel, type PiDefaultModelApi } from "../runtime/pi-default-model";
+import { publishPersistedUsageEntry } from "../runtime/persisted-usage-event";
 import { applySkillSnapshotBaseDirs } from "../runtime/resource-fingerprint";
 import { assertModelRequestReady } from "../runtime/model-request-error";
 import { configureBatchedSteering, type RuntimeSteeringSession } from "../runtime/steering-mode";
@@ -111,6 +112,7 @@ export interface StageAgentSession extends RuntimeSteeringSession {
   readonly model: Model<any> | undefined;
   readonly isStreaming: boolean;
   readonly isIdle: boolean;
+  readonly sessionManager: { getEntries(): readonly unknown[] };
   subscribe(listener: (event: unknown) => void): () => void;
   bindExtensions(bindings: unknown): Promise<void>;
   setSessionName(name: string): void;
@@ -474,18 +476,25 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
           // Progress observers never control Pi persistence or stage ownership.
         }
       };
+      const publishOwnerEvent = (event: JsonAgentSessionEvent) => {
+        barrier!.observe(event);
+        collectMessageEvent(result, event);
+        if (!ownerSubscribed) pendingOwnerEvents.push(event);
+        else for (const listener of listeners) deliver(listener, event);
+      };
 
       unsubscribe = session.subscribe((rawEvent) => {
-        const event = toJsonSessionEvent(rawEvent as AgentSessionEvent);
+        const agentEvent = rawEvent as AgentSessionEvent;
+        const event = toJsonSessionEvent(agentEvent);
         if (abortRequested && !abortReapplied && event.type === "agent_start") {
           abortReapplied = true;
           reappliedSessionAbortRequired = true;
           void attemptAbort().catch(() => {});
         }
-        barrier!.observe(event);
-        collectMessageEvent(result, event);
-        if (!ownerSubscribed) pendingOwnerEvents.push(event);
-        else for (const listener of listeners) deliver(listener, event);
+        publishOwnerEvent(event);
+        publishPersistedUsageEntry(agentEvent, session!.sessionManager, (persistedEvent) => {
+          publishOwnerEvent(persistedEvent as JsonAgentSessionEvent);
+        });
       });
       supervisor.attach(session as unknown as SupervisableAgentSession, async () => {
         if (!session!.isIdle) await session!.waitForIdle();

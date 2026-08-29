@@ -1049,6 +1049,93 @@ describe("PiSessionFactory", () => {
     ]);
   });
 
+  it("publishes the exact persisted usage entry after a normal Pi message_end", async () => {
+    const session = new FakeAgentSession();
+    const adapter = new PiSessionFactory(async () => managed(session)).create({ cwd: "/project" });
+    await adapter.start();
+    const events: unknown[] = [];
+    adapter.onEvent((event) => events.push(event));
+    const message = {
+      role: "assistant" as const,
+      content: [{ type: "text" as const, text: "live usage" }],
+      api: "openai-completions" as const,
+      provider: "openai",
+      model: "test-model",
+      usage: {
+        input: 5,
+        output: 1,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 6,
+        cost: { input: 0.1, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.1 },
+      },
+      stopReason: "stop" as const,
+      timestamp: 42,
+    };
+    const entry = {
+      type: "message",
+      id: "persisted-assistant",
+      parentId: null,
+      timestamp: "2026-08-30T00:00:00.000Z",
+      message,
+    };
+
+    session.listeners.forEach((listener) => listener({ type: "message_end", message }));
+    session.entries.push(entry);
+
+    await vi.waitFor(() => expect(events).toEqual([
+      { type: "message_end", message },
+      { type: "entry_appended", entry },
+    ]));
+  });
+
+  it("publishes the exact persisted compaction usage entry", async () => {
+    const session = new FakeAgentSession();
+    const adapter = new PiSessionFactory(async () => managed(session)).create({ cwd: "/project" });
+    await adapter.start();
+    const events: unknown[] = [];
+    adapter.onEvent((event) => events.push(event));
+    const usage = {
+      input: 20,
+      output: 4,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 24,
+      cost: { input: 0.2, output: 0.1, cacheRead: 0, cacheWrite: 0, total: 0.3 },
+    };
+    const entry = {
+      type: "compaction",
+      id: "persisted-compaction",
+      parentId: null,
+      timestamp: "2026-08-30T00:00:00.000Z",
+      summary: "summary",
+      firstKeptEntryId: "kept",
+      tokensBefore: 100,
+      usage,
+    };
+    session.entries.push(entry);
+    const event = {
+      type: "compaction_end",
+      reason: "manual",
+      result: {
+        summary: "summary",
+        firstKeptEntryId: "kept",
+        tokensBefore: 100,
+        estimatedTokensAfter: 24,
+        usage,
+      },
+      aborted: false,
+      willRetry: false,
+    };
+
+    session.listeners.forEach((listener) => listener(event));
+
+    await vi.waitFor(() => expect(events).toEqual([
+      event,
+      { type: "entry_appended", entry },
+    ]));
+  });
+
   it("performs each public Stop as reusable cancellation and reserves terminal teardown for stop", async () => {
     const session = new FakeAgentSession();
     session.isStreaming = true;
