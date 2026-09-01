@@ -386,6 +386,64 @@ describe("useSessionConnection", () => {
     expect(result.current.view.isStreaming).toBe(false);
   });
 
+  it("keeps aggregate running when the root settles before active descendants", async () => {
+    vi.mocked(api.getSnapshot).mockResolvedValueOnce({
+      ...initialSnapshot,
+      session: { ...initialSnapshot.session, status: "running", isStreaming: true },
+    });
+    const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
+    await waitFor(() => expect(result.current.view.isStreaming).toBe(true));
+
+    emit({ type: "agent_settled" });
+    expect(result.current.view.isStreaming).toBe(false);
+    expect(result.current.status).toBe("running");
+
+    emit({ type: "session_activity_changed", status: "running", isStreaming: false });
+    expect(result.current.status).toBe("running");
+    emit({ type: "session_activity_changed", status: "ready", isStreaming: false });
+    expect(result.current.status).toBe("ready");
+  });
+
+  it("applies root streaming from authoritative activity replacements without raw lifecycle frames", async () => {
+    const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    emit({ type: "session_activity_changed", status: "running", isStreaming: true });
+    expect(result.current.status).toBe("running");
+    expect(result.current.view.isStreaming).toBe(true);
+    emit({ type: "message_start", message: { id: "replacement-row", role: "assistant", content: [] } });
+
+    emit({ type: "session_activity_changed", status: "running", isStreaming: false });
+    expect(result.current.status).toBe("running");
+    expect(result.current.view.isStreaming).toBe(false);
+    expect(result.current.view.activeMessageKey).toBeUndefined();
+  });
+
+  it("starts a normal root prompt while only descendants keep aggregate status running", async () => {
+    const pendingPrompt = deferred<void>();
+    vi.mocked(api.sendPrompt).mockReturnValueOnce(pendingPrompt.promise);
+    vi.mocked(api.getSnapshot).mockResolvedValueOnce({
+      ...initialSnapshot,
+      session: { ...initialSnapshot.session, status: "running", isStreaming: false },
+    });
+    const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
+    await waitFor(() => expect(result.current.status).toBe("running"));
+    expect(result.current.view.isStreaming).toBe(false);
+
+    let sending!: Promise<void>;
+    act(() => {
+      sending = result.current.send("new root turn");
+    });
+
+    await waitFor(() => expect(result.current.accepting).toBe(true));
+    expect(result.current.pendingOutput).toBe(true);
+    emit({ type: "session_activity_changed", status: "ready", isStreaming: false });
+    expect(result.current.accepting).toBe(true);
+    expect(result.current.pendingOutput).toBe(true);
+    pendingPrompt.resolve();
+    await act(async () => sending);
+  });
+
   it("reduces valid supervisor frames only for the current root and keeps root run state ready", async () => {
     const onSupervisorEvent = vi.fn();
     const { result } = renderHook(() =>
@@ -480,6 +538,7 @@ describe("useSessionConnection", () => {
     });
 
     emit({ type: "agent_settled" });
+    emit({ type: "session_activity_changed", status: "ready", isStreaming: false });
 
     expect(result.current.status).toBe("ready");
     expect(result.current.accepting).toBe(false);
@@ -788,9 +847,12 @@ describe("useSessionConnection", () => {
     expect(result.current.view.isStreaming).toBe(false);
     expect(result.current.view.activeMessageKey).toBeUndefined();
     expect(result.current.view.messages.at(-1)).toMatchObject({ streaming: false, isThinking: false });
-    expect(result.current.status).toBe("ready");
+    expect(result.current.status).toBe("running");
     expect(result.current.accepting).toBe(false);
     expect(result.current.pendingOutput).toBe(false);
+
+    emit({ type: "session_activity_changed", status: "ready", isStreaming: false });
+    expect(result.current.status).toBe("ready");
 
     emit({
       type: "message_update",
@@ -844,6 +906,8 @@ describe("useSessionConnection", () => {
 
     await act(async () => result.current.abort());
     expect(api.abortSession).toHaveBeenCalledTimes(2);
+    expect(result.current.status).toBe("running");
+    emit({ type: "session_activity_changed", status: "ready", isStreaming: false });
     expect(result.current.status).toBe("ready");
   });
 

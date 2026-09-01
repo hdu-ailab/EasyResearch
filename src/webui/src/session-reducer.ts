@@ -396,7 +396,7 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
     snapshot.session.sessionName !== undefined && snapshot.session.sessionName !== null
       ? snapshot.session.sessionName
       : undefined;
-  const isStreaming = snapshot.session.isStreaming || snapshot.session.status === "running";
+  const isStreaming = snapshot.session.isStreaming;
   const state: SessionViewState = {
     messages: [],
     tools: [],

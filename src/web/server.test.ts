@@ -183,6 +183,9 @@ class FakeAdapter implements SessionAdapter {
     return this.steeringResult;
   }
   backgroundWork = false;
+  isSupervisorActive(): boolean {
+    return false;
+  }
   hasBackgroundWork(): boolean {
     return this.backgroundWork;
   }
@@ -2391,7 +2394,9 @@ describe("web routes", () => {
         "snapshot",
         "file.watcher.updated",
         "agent_start",
+        "session_activity_changed",
         "agent_settled",
+        "session_activity_changed",
         "session_deactivated",
         "error",
         "subagent_supervisor",
@@ -2415,8 +2420,12 @@ describe("web routes", () => {
       expect(frames.filter((frame) => frame.type === "tool_execution_update")).toEqual([]);
       expect(frames.filter((frame) => frame.type === "subagent_supervisor").map((frame) => frame.launchId))
         .toEqual(["launch-before", "launch-after"]);
-      expect(frames[9]).toEqual(supervisorAfterAcquisition);
-      expect(JSON.stringify(frames[9])).not.toContain("partial");
+      expect(frames.filter((frame) => frame.type === "session_activity_changed")).toEqual([
+        { type: "session_activity_changed", status: "running", isStreaming: true },
+        { type: "session_activity_changed", status: "ready", isStreaming: false },
+      ]);
+      expect(frames[11]).toEqual(supervisorAfterAcquisition);
+      expect(JSON.stringify(frames[11])).not.toContain("partial");
 
       const supervisorAfterInit = {
         ...supervisorBefore,

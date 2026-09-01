@@ -180,6 +180,12 @@ export interface SessionStatsChangedEventDto {
   compactionPolicy: CompactionPolicyDto;
 }
 
+export interface SessionActivityChangedEventDto {
+  type: "session_activity_changed";
+  status: "ready" | "running";
+  isStreaming: boolean;
+}
+
 export interface RuntimeConfigurationAppliedEvent {
   type: "runtime_configuration_applied";
   generation: number;

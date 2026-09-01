@@ -33,6 +33,7 @@ import type {
   FileContentDto,
   FileEntryDto,
   RuntimeConfigurationAppliedEvent,
+  SessionActivityChangedEventDto,
   SessionSnapshotDto,
   SessionStatsChangedEventDto,
   SessionSummaryDto,
@@ -347,6 +348,19 @@ export function parseSessionStatsChangedEvent(value: unknown): SessionStatsChang
     ...(source.contextUsage !== undefined ? { contextUsage: parseContextUsage(source.contextUsage) } : {}),
     compactionPolicy: parseCompactionPolicy(source.compactionPolicy),
   };
+}
+
+export function parseSessionActivityChangedEvent(value: unknown): SessionActivityChangedEventDto {
+  const source = record(value, "session activity event");
+  if (source.type !== "session_activity_changed") {
+    throw new Error("Invalid API response: session activity event type is invalid");
+  }
+  const status = parseStatusValue(source.status);
+  const isStreaming = requiredBoolean(source, "isStreaming");
+  if ((status !== "ready" && status !== "running") || (status === "ready" && isStreaming)) {
+    throw new Error("Invalid API response: session activity state is inconsistent");
+  }
+  return { type: "session_activity_changed", status, isStreaming };
 }
 
 export function parseRuntimeConfigurationAppliedEvent(value: unknown): RuntimeConfigurationAppliedEvent {

@@ -143,6 +143,7 @@ export class SubagentSupervisor {
   private readonly schedule: (run: () => void) => void;
   private readonly children = new Map<string, OwnedChild>();
   private readonly quiescenceWaiters = new Set<QuiescenceWaiter>();
+  private readonly activityListeners = new Set<(active: boolean) => void>();
   private readonly cleanupFailures = new Map<string, unknown>();
   private readonly pendingAcknowledgementChecks = new Set<string>();
   private parent?: SupervisableAgentSession;
@@ -160,6 +161,7 @@ export class SubagentSupervisor {
   private stopPromise?: Promise<void>;
   private disposePromise?: Promise<void>;
   private stoppingBatchId?: string;
+  private active = false;
 
   constructor(options: {
     coordinator: SubagentCoordinator;
@@ -392,6 +394,11 @@ export class SubagentSupervisor {
 
   isQuiescent(): boolean {
     return !this.hasRunningChildren() && !this.sendPromise && !this.hasPendingNotifications();
+  }
+
+  subscribeActivity(listener: (active: boolean) => void): () => void {
+    this.activityListeners.add(listener);
+    return () => this.activityListeners.delete(listener);
   }
 
   waitForQuiescence(): Promise<void> {
@@ -1090,6 +1097,17 @@ export class SubagentSupervisor {
   }
 
   private stateChanged(): void {
+    const active = !this.isQuiescent();
+    if (active !== this.active) {
+      this.active = active;
+      for (const listener of this.activityListeners) {
+        try {
+          listener(active);
+        } catch {
+          // Activity projection is observational and never controls ownership.
+        }
+      }
+    }
     if (this.cleanupFailures.size > 0) {
       const failure = this.quiescenceFailure();
       for (const waiter of this.quiescenceWaiters) waiter.reject(failure);

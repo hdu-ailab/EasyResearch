@@ -74,6 +74,7 @@ class FakeAdapter implements SessionAdapter {
   compactionPolicy = { triggerPercent: 70, enabled: true };
   runtimeConfigurationGeneration = 0;
   backgroundWork = false;
+  supervisorActive = false;
   startImpl: () => Promise<void> = async () => {};
   stopImpl: () => Promise<void> = async () => {};
   abortImpl: () => Promise<void> = async () => {};
@@ -121,6 +122,9 @@ class FakeAdapter implements SessionAdapter {
   hasBackgroundWork(): boolean {
     return this.backgroundWork;
   }
+  isSupervisorActive(): boolean {
+    return this.supervisorActive;
+  }
   async getCommands(): Promise<WebSlashCommand[]> {
     return this.commandsResult;
   }
@@ -161,6 +165,7 @@ class FakeFactory implements SessionFactory {
   startError: Error | null = null;
   getStateError: Error | null = null;
   backgroundWork = false;
+  supervisorActive = false;
   startImpl: () => Promise<void> = async () => {};
   stopImpl: () => Promise<void> = async () => {};
   getStateImpl: (() => Promise<SessionState>) | undefined;
@@ -170,6 +175,7 @@ class FakeFactory implements SessionFactory {
     adapter.startError = this.startError;
     adapter.getStateError = this.getStateError;
     adapter.backgroundWork = this.backgroundWork;
+    adapter.supervisorActive = this.supervisorActive;
     adapter.startImpl = this.startImpl;
     adapter.stopImpl = this.stopImpl;
     adapter.getStateImpl = this.getStateImpl;
@@ -722,6 +728,21 @@ describe("ActiveSessionRegistry", () => {
     expect((await registry.snapshot(created.id)).runtimeConfigurationGeneration).toBe(7);
   });
 
+  it("does not let a stale state read overwrite a newer root activity edge", async () => {
+    const created = await registry.open({ cwd, sessionPath });
+    const adapter = factory.created[0]!;
+    const staleState = deferred<SessionState>();
+    adapter.getStateImpl = () => staleState.promise;
+
+    const snapshot = registry.snapshot(created.id);
+    adapter.events.forEach((listener) => listener({ type: "agent_start" }));
+    staleState.resolve({ ...fakeState, isStreaming: false });
+
+    await expect(snapshot).resolves.toMatchObject({
+      session: { status: "running", isStreaming: true },
+    });
+  });
+
   it("snapshot omits steering for non-live sessions (ADR-083)", async () => {
     const created = await registry.create({ cwd });
     const adapter = factory.created[0]!;
@@ -785,6 +806,116 @@ describe("ActiveSessionRegistry", () => {
     expect(registry.listActive().find((s) => s.id === created.id)?.status).toBe("ready");
     expect(factory.created[0]?.stats.stopped).toBe(0);
     expect(listener).not.toHaveBeenCalledWith({ type: "session_deactivated", sessionId: created.id });
+  });
+
+  it("keeps aggregate status running after the root settles while descendants remain active", async () => {
+    const created = await registry.create({ cwd });
+    const adapter = factory.created[0]!;
+
+    adapter.events.forEach((listener) => listener({ type: "agent_start" }));
+    adapter.backgroundWork = true;
+    adapter.events.forEach((listener) => listener({ type: "session_activity_changed", active: true }));
+    adapter.events.forEach((listener) => listener({ type: "agent_settled" }));
+
+    expect(registry.list().find((session) => session.id === created.id)).toMatchObject({
+      status: "running",
+      isStreaming: false,
+    });
+    expect((await registry.snapshot(created.id)).session).toMatchObject({
+      status: "running",
+      isStreaming: false,
+    });
+
+    adapter.backgroundWork = false;
+    adapter.events.forEach((listener) => listener({ type: "session_activity_changed", active: false }));
+
+    expect(registry.list().find((session) => session.id === created.id)).toMatchObject({
+      status: "ready",
+      isStreaming: false,
+    });
+  });
+
+  it("publishes authoritative activity replacements after every root and supervisor boundary", async () => {
+    const created = await registry.create({ cwd });
+    const adapter = factory.created[0]!;
+    const listener = vi.fn();
+    registry.subscribe(created.id, listener);
+
+    adapter.events.forEach((subscriber) => subscriber({ type: "agent_start" }));
+    adapter.supervisorActive = true;
+    adapter.backgroundWork = true;
+    adapter.events.forEach((subscriber) => subscriber({ type: "session_activity_changed", active: true }));
+    adapter.events.forEach((subscriber) => subscriber({ type: "agent_settled" }));
+    adapter.supervisorActive = false;
+    adapter.backgroundWork = false;
+    adapter.events.forEach((subscriber) => subscriber({ type: "session_activity_changed", active: false }));
+
+    expect(listener.mock.calls.map(([event]) => event)).toEqual([
+      { type: "agent_start" },
+      { type: "session_activity_changed", status: "running", isStreaming: true },
+      { type: "session_activity_changed", status: "running", isStreaming: true },
+      { type: "agent_settled" },
+      { type: "session_activity_changed", status: "running", isStreaming: false },
+      { type: "session_activity_changed", status: "ready", isStreaming: false },
+    ]);
+  });
+
+  it("launches with aggregate running status when recovered supervisor work already exists", async () => {
+    factory.supervisorActive = true;
+
+    const created = await registry.open({ cwd, sessionPath });
+
+    expect(created).toMatchObject({ status: "running", isStreaming: false });
+  });
+
+  it("owns root lifecycle events before sampling launch state", async () => {
+    let isStreaming = false;
+    factory.getStateImpl = async () => ({ ...fakeState, isStreaming });
+    factory.onEventHook = () => {
+      isStreaming = true;
+    };
+
+    const created = await registry.open({ cwd, sessionPath });
+
+    expect(created).toMatchObject({ status: "running", isStreaming: true });
+  });
+
+  it("replays launch-time root activity to listeners adopted by restart", async () => {
+    const created = await registry.open({ cwd, sessionPath });
+    const listener = vi.fn();
+    registry.subscribe(created.id, listener);
+    const stateGate = deferred<SessionState>();
+    factory.getStateImpl = () => stateGate.promise;
+
+    const restarting = registry.restart(created.id);
+    await vi.waitFor(() => expect(factory.created).toHaveLength(2));
+    const replacement = factory.created[1]!;
+    await vi.waitFor(() => expect(replacement.events.size).toBeGreaterThan(0));
+    replacement.events.forEach((subscriber) => subscriber({ type: "agent_start" }));
+    stateGate.resolve({ ...fakeState, isStreaming: false });
+    const restarted = await restarting;
+
+    expect(restarted).toMatchObject({ status: "running", isStreaming: true });
+    expect(listener.mock.calls.map(([event]) => event)).toEqual([
+      { type: "session_deactivated", sessionId: created.id },
+      { type: "agent_start" },
+      { type: "session_activity_changed", status: "running", isStreaming: true },
+    ]);
+  });
+
+  it("publishes sampled initial activity to listeners adopted by restart", async () => {
+    const created = await registry.open({ cwd, sessionPath });
+    const listener = vi.fn();
+    registry.subscribe(created.id, listener);
+    factory.getStateImpl = async () => ({ ...fakeState, isStreaming: true });
+
+    const restarted = await registry.restart(created.id);
+
+    expect(restarted).toMatchObject({ status: "running", isStreaming: true });
+    expect(listener.mock.calls.map(([event]) => event)).toEqual([
+      { type: "session_deactivated", sessionId: created.id },
+      { type: "session_activity_changed", status: "running", isStreaming: true },
+    ]);
   });
 
   it("expires an idle child after the configured timeout", async () => {

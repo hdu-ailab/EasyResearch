@@ -20,6 +20,7 @@ import {
   parseApiUsageChangedEvent,
   parseCompactionStateChangedEvent,
   parseRuntimeConfigurationAppliedEvent,
+  parseSessionActivityChangedEvent,
   parseSessionSnapshot,
   parseSessionStatsChangedEvent,
   parseSubagentSupervisorEvent,
@@ -141,9 +142,8 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
   const [view, setView] = useState<SessionViewState>(freshEmptyState);
   const viewRef = useRef(view);
   viewRef.current = view;
+  const rootStreamingRef = useRef(false);
   const [status, setStatus] = useState<ActiveSessionDto["status"]>("starting");
-  const statusRef = useRef<ActiveSessionDto["status"]>(status);
-  statusRef.current = status;
   const generationRef = useRef(1);
   const [connectionTarget, setConnectionTarget] = useState<ConnectionTarget>({
     sessionId: initialSessionId,
@@ -205,17 +205,14 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
     };
   }, [cancelOperation]);
 
-  const clearTerminalState = useCallback(
-    (nextStatus: ActiveSessionDto["status"]) => {
-      cancelOperation(sendOperationRef.current);
-      setAccepting(false);
-      setPendingOutput(false);
-      pendingBaseline.current = null;
-      setView((current) => terminateSessionRun(current));
-      setStatus(nextStatus);
-    },
-    [cancelOperation],
-  );
+  const clearRootRun = useCallback(() => {
+    rootStreamingRef.current = false;
+    cancelOperation(sendOperationRef.current);
+    setAccepting(false);
+    setPendingOutput(false);
+    pendingBaseline.current = null;
+    setView((current) => terminateSessionRun(current));
+  }, [cancelOperation]);
 
   useEffect(() => {
     const connectionToken: ConnectionToken = {
@@ -232,6 +229,7 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
         if (!isCurrentConnection()) return;
         updateSessionPath(snapshot.session.sessionFile ?? null);
         if (connectionToken.receivedStreamData) return;
+        rootStreamingRef.current = snapshot.session.isStreaming;
         setStatus(snapshot.session.status);
         setView(fromSnapshot(snapshot, viewRef.current.hydrationRevision + 1));
       })
@@ -246,6 +244,22 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
         const hadReceivedStreamData = connectionToken.receivedStreamData;
         connectionToken.receivedStreamData = true;
         setNotice((current) => (current === tRef.current("work.connectionLost") ? null : current));
+        if (eventType(event) === "session_activity_changed") {
+          try {
+            const activity = parseSessionActivityChangedEvent(event);
+            setStatus(activity.status);
+            if (activity.isStreaming && !rootStreamingRef.current) {
+              rootStreamingRef.current = true;
+              runGenerationRef.current += 1;
+              setView((current) => ({ ...current, isStreaming: true }));
+            } else if (!activity.isStreaming && rootStreamingRef.current) {
+              clearRootRun();
+            }
+          } catch {
+            connectionToken.receivedStreamData = hadReceivedStreamData;
+          }
+          return;
+        }
         if (eventType(event) === "subagent_supervisor") {
           let supervisorEvent: SubagentSupervisorEventDto;
           try {
@@ -332,6 +346,7 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
           }
           if (typeof snapshot.session.sessionFile === "string") updateSessionPath(snapshot.session.sessionFile);
           setFileWatchLeaseId(snapshot.fileWatchLeaseId ?? null);
+          rootStreamingRef.current = snapshot.session.isStreaming;
           setStatus(snapshot.session.status);
           setView((current) => mergeSnapshot(current, snapshot));
           return;
@@ -343,21 +358,24 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
             const error = (event as { error?: unknown }).error;
             rejectPendingStream(new Error(typeof error === "string" ? error : "Session stream failed"));
           }
-          clearTerminalState("error");
+          clearRootRun();
+          setStatus("error");
           return;
         }
         if (type === "session_deactivated") {
           setFileWatchLeaseId(null);
-          clearTerminalState("stopped");
+          clearRootRun();
+          setStatus("stopped");
           return;
         }
         if (isAgentSessionEvent(event)) {
           if (type === "agent_start") {
-            runGenerationRef.current += 1;
+            if (!rootStreamingRef.current) runGenerationRef.current += 1;
+            rootStreamingRef.current = true;
             setStatus("running");
           }
           if (type === "agent_settled") {
-            clearTerminalState("ready");
+            clearRootRun();
             return;
           }
           setView((current) => reduceSessionEvent(current, event));
@@ -381,14 +399,14 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
       }
       unsubscribe();
     };
-  }, [clearTerminalState, connectionTarget.generation, rejectPendingStream, sessionId, updateSessionPath]);
+  }, [clearRootRun, connectionTarget.generation, rejectPendingStream, sessionId, updateSessionPath]);
 
   const send = useCallback(
     async (text: string) => {
       // While a run is active, the message is queued as a steer (ADR-083):
       // POST with no accepting/pendingOutput lifecycle, since the run owns
       // the stream. When idle, run the full prompt lifecycle below.
-      if (statusRef.current === "running") {
+      if (rootStreamingRef.current) {
         try {
           setNotice(null);
           await sendPrompt(sessionId, text);
@@ -490,12 +508,12 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
     try {
       await abortSession(targetSessionId);
       if (!ownsAbort()) return;
-      clearTerminalState("ready");
+      clearRootRun();
     } catch (error: unknown) {
       if (!ownsAbort()) return;
       setNotice(error instanceof Error ? error.message : String(error));
     }
-  }, [cancelOperation, clearTerminalState]);
+  }, [cancelOperation, clearRootRun]);
 
   const navigateTree = useCallback(
     async (entryId: string, options: TreeNavigationOptionsDto = {}) => {
@@ -503,6 +521,7 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
       const snapshot = await getSnapshot(sessionIdRef.current);
       if (!mountedRef.current) return result;
       updateSessionPath(snapshot.session.sessionFile ?? null);
+      rootStreamingRef.current = snapshot.session.isStreaming;
       setStatus(snapshot.session.status);
       setView((current) => mergeSnapshot(current, snapshot));
       return result;

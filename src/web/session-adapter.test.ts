@@ -238,6 +238,8 @@ interface ManagedHarness {
     flushNotifications(options?: { triggerTurn?: boolean }): Promise<void>;
     waitForQuiescence(): Promise<void>;
     isQuiescent(): boolean;
+    subscribeActivity(listener: (active: boolean) => void): () => void;
+    emitActivity(active: boolean): void;
     dispose(): Promise<void>;
   };
 }
@@ -265,6 +267,7 @@ function managed(
   binding = new FakeRuntimeBinding(),
 ): ManagedHarness & ManagedAgentSession {
   const coordinatorListeners = new Set<(event: unknown) => void>();
+  const activityListeners = new Set<(active: boolean) => void>();
   const compaction = new ManualCompactionController();
   compaction.attach(session);
   const stats = new SessionStatsNotifier();
@@ -292,6 +295,13 @@ function managed(
       flushNotifications: overrides.supervisor?.flushNotifications ?? (async () => {}),
       waitForQuiescence: overrides.supervisor?.waitForQuiescence ?? (async () => {}),
       isQuiescent: overrides.supervisor?.isQuiescent ?? (() => true),
+      subscribeActivity(listener) {
+        activityListeners.add(listener);
+        return () => activityListeners.delete(listener);
+      },
+      emitActivity(active) {
+        for (const listener of activityListeners) listener(active);
+      },
       dispose: overrides.supervisor?.dispose ?? (async () => {}),
     },
     binding: binding as unknown as AgentRuntimeBinding,
@@ -391,6 +401,23 @@ describe("PiSessionFactory", () => {
       thinkingLevel: "medium",
       model,
     });
+  });
+
+  it("publishes supervisor activity edges through the session event stream", async () => {
+    const session = new FakeAgentSession();
+    const runtime = managed(session);
+    const adapter = new PiSessionFactory(async () => runtime).create({ cwd: "/project" });
+    const events: unknown[] = [];
+    adapter.onEvent((event) => events.push(event));
+    await adapter.start();
+
+    runtime.supervisor.emitActivity(true);
+    runtime.supervisor.emitActivity(false);
+
+    expect(events).toEqual([
+      { type: "session_activity_changed", active: true },
+      { type: "session_activity_changed", active: false },
+    ]);
   });
 
   it("uses direct AgentSession methods and event subscription", async () => {
@@ -1947,6 +1974,7 @@ function runtimeOwnerDeps() {
       abortAll: async () => {},
       flushNotifications: async () => {},
       isQuiescent: () => true,
+      subscribeActivity: () => () => {},
       dispose: async () => {},
     } as never),
   };

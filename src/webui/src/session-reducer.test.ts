@@ -526,7 +526,7 @@ describe("session reducer", () => {
     expect(updated.activeMessageKey).toBe(hydrated.messages.at(-1)?.key);
   });
 
-  it("restores run and assistant cursor state when status is running but isStreaming is false", () => {
+  it("does not restore a root cursor for child-only aggregate running status", () => {
     const hydrated = fromSnapshot({
       runtimeConfigurationGeneration: 0,
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "running" },
@@ -534,9 +534,9 @@ describe("session reducer", () => {
       messages: [userMessage("question"), assistantMessage("partial")],
     });
 
-    expect(hydrated.isStreaming).toBe(true);
-    expect(hydrated.activeMessageKey).toBe(hydrated.messages.at(-1)?.key);
-    expect(hydrated.messages.map((message) => message.streaming)).toEqual([false, true]);
+    expect(hydrated.isStreaming).toBe(false);
+    expect(hydrated.activeMessageKey).toBeUndefined();
+    expect(hydrated.messages.map((message) => message.streaming)).toEqual([false, false]);
   });
 
   it("does not fabricate an assistant cursor when a running snapshot ends in a user message", () => {

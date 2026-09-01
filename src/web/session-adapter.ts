@@ -209,12 +209,14 @@ function createRuntimeSetupCleanup(
   supervisor: Pick<SubagentSupervisor, "dispose"> | undefined,
   binding: Pick<AgentRuntimeBinding, "dispose">,
   coordinatorUnsubscribe?: () => void,
+  activityUnsubscribe?: () => void,
   compactionUnsubscribe?: () => void,
   sessionUnsubscribe?: () => void,
 ): () => Promise<void> {
   let compactionDisposed = compaction === undefined;
   let supervisorDisposed = supervisor === undefined;
   let coordinatorUnsubscribed = coordinatorUnsubscribe === undefined;
+  let activityUnsubscribed = activityUnsubscribe === undefined;
   let compactionUnsubscribed = compactionUnsubscribe === undefined;
   let sessionUnsubscribed = sessionUnsubscribe === undefined;
   let sessionDisposed = session === undefined;
@@ -235,6 +237,11 @@ function createRuntimeSetupCleanup(
         if (coordinatorUnsubscribed) return;
         coordinatorUnsubscribe!();
         coordinatorUnsubscribed = true;
+      },
+      () => {
+        if (activityUnsubscribed) return;
+        activityUnsubscribe!();
+        activityUnsubscribed = true;
       },
       () => {
         if (compactionUnsubscribed) return;
@@ -486,6 +493,7 @@ export interface SessionAdapter {
   getContextUsage(): ContextUsageDto | undefined;
   getRuntimeConfigurationGeneration(): number;
   getSteeringMessages(): readonly string[];
+  isSupervisorActive(): boolean;
   hasBackgroundWork(): boolean;
   onEvent(listener: (event: unknown) => void): () => void;
 }
@@ -595,6 +603,7 @@ class DirectSessionAdapter implements SessionAdapter {
   private startCleanup: (() => Promise<void>) | undefined;
   private unsubscribe: (() => void) | undefined;
   private coordinatorUnsubscribe: (() => void) | undefined;
+  private activityUnsubscribe: (() => void) | undefined;
   private compactionUnsubscribe: (() => void) | undefined;
   private startPending = false;
   private runCancellationPending = false;
@@ -613,6 +622,7 @@ class DirectSessionAdapter implements SessionAdapter {
   private supervisorDisposeComplete = false;
   private compactionDisposeComplete = false;
   private coordinatorUnsubscribeComplete = false;
+  private activityUnsubscribeComplete = false;
   private compactionUnsubscribeComplete = false;
   private unsubscribeComplete = false;
   private sessionDisposeComplete = false;
@@ -660,11 +670,15 @@ class DirectSessionAdapter implements SessionAdapter {
       this.binding = created.binding;
       this.lastCompactionPolicy = created.binding.compactionPolicy();
       let coordinatorUnsubscribe: (() => void) | undefined;
+      let activityUnsubscribe: (() => void) | undefined;
       let compactionUnsubscribe: (() => void) | undefined;
       let sessionUnsubscribe: (() => void) | undefined;
       try {
         coordinatorUnsubscribe = created.coordinator.subscribe((event) => {
           this.publishEvent(event);
+        });
+        activityUnsubscribe = created.supervisor.subscribeActivity((active) => {
+          this.publishEvent({ type: "session_activity_changed", active });
         });
         sessionUnsubscribe = created.session.subscribe((event) => {
           const agentEvent = event as AgentSessionEvent;
@@ -712,6 +726,7 @@ class DirectSessionAdapter implements SessionAdapter {
           created.supervisor,
           created.binding,
           coordinatorUnsubscribe,
+          activityUnsubscribe,
           compactionUnsubscribe,
           sessionUnsubscribe,
         );
@@ -727,6 +742,7 @@ class DirectSessionAdapter implements SessionAdapter {
         throw error;
       }
       this.coordinatorUnsubscribe = coordinatorUnsubscribe;
+      this.activityUnsubscribe = activityUnsubscribe;
       this.compactionUnsubscribe = compactionUnsubscribe;
       this.unsubscribe = sessionUnsubscribe;
     } finally {
@@ -769,6 +785,12 @@ class DirectSessionAdapter implements SessionAdapter {
         this.coordinatorUnsubscribe?.();
         this.coordinatorUnsubscribe = undefined;
         this.coordinatorUnsubscribeComplete = true;
+      },
+      () => {
+        if (this.activityUnsubscribeComplete) return;
+        this.activityUnsubscribe?.();
+        this.activityUnsubscribe = undefined;
+        this.activityUnsubscribeComplete = true;
       },
       () => {
         if (this.compactionUnsubscribeComplete) return;
@@ -1066,6 +1088,10 @@ class DirectSessionAdapter implements SessionAdapter {
       || this.stopPending
       || this.managed?.compaction.hasWork()
     ) return true;
+    return this.isSupervisorActive();
+  }
+
+  isSupervisorActive(): boolean {
     const supervisor = this.managed?.supervisor;
     if (!supervisor) return false;
     try {

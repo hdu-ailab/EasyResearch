@@ -324,6 +324,32 @@ describe("SubagentSupervisor ownership and launch ordering", () => {
     expect(stage.disposeCalls).toBe(1);
   });
 
+  it("publishes only supervisor activity edges across a child lifecycle", async () => {
+    const stage = new FakeStage("search_0", "child-0", "/sessions/child-0.jsonl");
+    const { coordinator, parent, supervisor } = makeHarness({
+      launchStage: async () => stage.handle,
+      autoAcknowledge: true,
+    });
+    const activity: boolean[] = [];
+    const subscribeActivity = (supervisor as unknown as {
+      subscribeActivity?: (listener: (active: boolean) => void) => () => void;
+    }).subscribeActivity;
+
+    expect(subscribeActivity).toBeTypeOf("function");
+    if (!subscribeActivity) return;
+    const unsubscribe = subscribeActivity.call(supervisor, (active) => activity.push(active));
+    const reservation = reserve(coordinator, "tool-activity");
+    const launching = supervisor.launch(reservation, options());
+    stage.materialization.resolve();
+    await launching;
+    parent.acknowledgeLaunch("tool-activity");
+    stage.completion.resolve(result());
+    await supervisor.waitForQuiescence();
+
+    expect(activity).toEqual([true, false]);
+    unsubscribe();
+  });
+
   it("holds a short child's terminal event until the parent launch tool ends", async () => {
     const stage = new FakeStage("search_0", "child-0", "/sessions/child-0.jsonl");
     const { coordinator, parent, supervisor } = makeHarness({

@@ -911,6 +911,7 @@ function isPreBarrierSupplement(event: unknown): boolean {
     value.type === "file.watcher.updated" ||
     value.type === "agent_start" ||
     value.type === "agent_settled" ||
+    value.type === "session_activity_changed" ||
     value.type === "session_deactivated" ||
     value.type === "api_usage_changed" ||
     value.type === "runtime_configuration_applied" ||

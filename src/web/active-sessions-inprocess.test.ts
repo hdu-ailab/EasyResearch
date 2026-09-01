@@ -38,6 +38,9 @@ class DirectAdapter implements SessionAdapter {
   getSteeringMessages(): readonly string[] {
     return [];
   }
+  isSupervisorActive(): boolean {
+    return false;
+  }
   hasBackgroundWork(): boolean {
     return false;
   }

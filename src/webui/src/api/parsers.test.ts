@@ -31,6 +31,32 @@ import {
 describe("API response parsers", () => {
   const compactionPolicy = { triggerPercent: 70, enabled: true };
 
+  it("parses only internally consistent session activity replacements", () => {
+    const parseSessionActivityChangedEvent = (
+      parserModule as unknown as {
+        parseSessionActivityChangedEvent?: (value: unknown) => unknown;
+      }
+    ).parseSessionActivityChangedEvent;
+
+    expect(parseSessionActivityChangedEvent).toBeTypeOf("function");
+    if (!parseSessionActivityChangedEvent) return;
+    for (const replacement of [
+      { type: "session_activity_changed", status: "running", isStreaming: true },
+      { type: "session_activity_changed", status: "running", isStreaming: false },
+      { type: "session_activity_changed", status: "ready", isStreaming: false },
+    ]) {
+      expect(parseSessionActivityChangedEvent(replacement)).toEqual(replacement);
+    }
+    for (const malformed of [
+      { type: "session_activity_changed", status: "ready", isStreaming: true },
+      { type: "session_activity_changed", active: true },
+      { type: "session_activity_changed", status: "stopped", isStreaming: false },
+      { type: "other", status: "ready", isStreaming: false },
+    ]) {
+      expect(() => parseSessionActivityChangedEvent(malformed)).toThrow();
+    }
+  });
+
   it("parses only positive safe root runtime-applied generation events", () => {
     const parseRuntimeConfigurationAppliedEvent = (
       parserModule as unknown as {

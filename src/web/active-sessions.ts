@@ -5,6 +5,7 @@ import type {
   CompactionPolicyDto,
   CompactionStateDto,
   ContextUsageDto,
+  SessionActivityChangedEventDto,
   TranscriptTimelineEntryDto,
 } from "./contracts";
 import type {
@@ -45,6 +46,8 @@ interface ActiveRecord {
   stopNotified: boolean;
   fileWatcherClosed: boolean;
   idleTimer: ReturnType<typeof setTimeout> | null;
+  supervisorActive: boolean;
+  rootActivityRevision: number;
 }
 
 type LaunchOptions = StartSessionOptions & { adoptListeners?: Set<(event: unknown) => void> };
@@ -478,11 +481,48 @@ export class ActiveSessionRegistry {
         stopNotified: false,
         fileWatcherClosed: false,
         idleTimer: null,
+        supervisorActive: false,
+        rootActivityRevision: 0,
       };
       pending.record = record;
       (this.logger ?? logger).info("session launch", { cwd: options.cwd, sessionPath: options.sessionPath ?? "" });
+      let eventsLive = false;
+      const launchEvents: unknown[] = [];
+      const publishOrBuffer = (event: unknown): void => {
+        if (eventsLive) this.publishEvent(record, event);
+        else launchEvents.push(event);
+      };
+      try {
+        record.fileWatcher = this.fileWatcherFactory.create({
+          cwd: record.cwd,
+          onEvent: (event) => {
+            publishOrBuffer(event);
+          },
+        });
+      } catch (error) {
+        (this.logger ?? logger).warn("file watcher unavailable", {
+          cwd: record.cwd,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+
+      let eventLogCancel = () => {};
+      const eventCancel = client.onEvent((event) => {
+        const activityChanged = this.syncDtoFromEvent(record, event);
+        if ((event as { type?: unknown }).type !== "session_activity_changed") {
+          publishOrBuffer(event);
+        }
+        const replacement = activityChanged ? this.activityReplacement(record) : undefined;
+        if (replacement) publishOrBuffer(replacement);
+      });
+      record.dispose = () => {
+        eventCancel();
+        eventLogCancel();
+      };
+
       await client.start();
       this.throwIfLaunchCancelled(pending);
+      const rootActivityRevision = record.rootActivityRevision;
       const state = await client.getState();
       this.throwIfLaunchCancelled(pending);
       dto.id = state.sessionId;
@@ -493,36 +533,26 @@ export class ActiveSessionRegistry {
         record.sessionPath = state.sessionFile;
       }
       if (state.sessionName) dto.sessionName = state.sessionName;
-      dto.isStreaming = state.isStreaming;
-      dto.status = state.isStreaming ? "running" : "ready";
-
-      try {
-        record.fileWatcher = this.fileWatcherFactory.create({
-          cwd: record.cwd,
-          onEvent: (event) => {
-            this.publishEvent(record, event);
-          },
-        });
-      } catch (error) {
-        (this.logger ?? logger).warn("file watcher unavailable", {
-          cwd: record.cwd,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-
-      const eventCancel = client.onEvent((event) => {
-        this.publishEvent(record, event);
-        this.syncDtoFromEvent(record, event);
-      });
-      const eventLogCancel = attachEventLogger(dto.id, record.cwd, client.onEvent.bind(client), this.logger ?? logger);
-      record.dispose = () => {
-        eventCancel();
-        eventLogCancel();
-      };
+      if (rootActivityRevision === record.rootActivityRevision) dto.isStreaming = state.isStreaming;
+      record.supervisorActive = client.isSupervisorActive();
+      this.syncActivityStatus(record);
+      const finalActivity = this.activityReplacement(record);
+      const lastLaunchEvent = launchEvents.at(-1) as Partial<SessionActivityChangedEventDto> | undefined;
+      if (
+        finalActivity
+        && (
+          lastLaunchEvent?.type !== finalActivity.type
+          || lastLaunchEvent.status !== finalActivity.status
+          || lastLaunchEvent.isStreaming !== finalActivity.isStreaming
+        )
+      ) launchEvents.push(finalActivity);
+      eventLogCancel = attachEventLogger(dto.id, record.cwd, client.onEvent.bind(client), this.logger ?? logger);
 
       this.throwIfLaunchCancelled(pending);
       this.records.set(dto.id, record);
+      eventsLive = true;
       this.releasePendingReservation(pending);
+      for (const event of launchEvents) this.publishEvent(record, event);
       this.scheduleIdleStop(record);
     } catch (error) {
       (this.logger ?? logger).error("session runtime launch failed", {
@@ -612,35 +642,54 @@ export class ActiveSessionRegistry {
   }
 
   /**
-   * The DTO status must reflect an actual agent run, never user focus,
-   * session launch, or a prompt send. `agent_start`/`agent_settled` are Pi's
-   * authoritative run boundaries: a run that fails preflight emits neither,
-   * so the session stays `ready` instead of being marked `running`. Message
-   * events are intentionally ignored here — `message_start` fires for user
-   * and queued messages too, which would mark the session running while no
-   * agent is active.
+   * Root streaming and supervisor activity are independent inputs. Aggregate
+   * status stays running until both are idle, while `isStreaming` remains the
+   * root AgentSession's state for composer and cursor behavior.
    */
-  private syncDtoFromEvent(record: ActiveRecord, event: unknown): void {
+  private syncDtoFromEvent(record: ActiveRecord, event: unknown): boolean {
     const type = (event as { type?: string }).type;
+    let activityChanged = false;
     if (type === "agent_start") {
       this.clearIdleTimer(record);
       record.dto.isStreaming = true;
-      if (record.dto.status !== "stopped" && record.dto.status !== "error") {
-        record.dto.status = "running";
-      }
+      record.rootActivityRevision += 1;
+      activityChanged = true;
+      this.syncActivityStatus(record);
     }
     if (type === "agent_settled") {
       record.dto.isStreaming = false;
-      if (record.dto.status !== "stopped" && record.dto.status !== "error") {
-        record.dto.status = "ready";
-        this.scheduleIdleStop(record);
+      record.rootActivityRevision += 1;
+      activityChanged = true;
+      this.syncActivityStatus(record);
+    }
+    if (type === "session_activity_changed") {
+      const active = (event as { active?: unknown }).active;
+      if (typeof active === "boolean") {
+        record.supervisorActive = active;
+        activityChanged = true;
+        this.syncActivityStatus(record);
       }
     }
     if (type === "session_info_changed") {
       const name = (event as { name?: unknown }).name;
       record.dto.sessionName = typeof name === "string" ? name : undefined;
     }
-    if (type !== "agent_start" && type !== "agent_settled") this.reconcileIdleLease(record);
+    this.reconcileIdleLease(record);
+    return activityChanged;
+  }
+
+  private syncActivityStatus(record: ActiveRecord): void {
+    if (record.dto.status === "stopped" || record.dto.status === "error") return;
+    record.dto.status = record.dto.isStreaming || record.supervisorActive ? "running" : "ready";
+  }
+
+  private activityReplacement(record: ActiveRecord): SessionActivityChangedEventDto | undefined {
+    if (record.dto.status !== "ready" && record.dto.status !== "running") return undefined;
+    return {
+      type: "session_activity_changed",
+      status: record.dto.status,
+      isStreaming: record.dto.isStreaming,
+    };
   }
 
   private clearIdleTimer(record: ActiveRecord): void {
@@ -686,10 +735,11 @@ export class ActiveSessionRegistry {
 
   private async refreshFromClient(record: ActiveRecord): Promise<void> {
     try {
+      const rootActivityRevision = record.rootActivityRevision;
       const state = await record.client.getState();
-      record.dto.isStreaming = state.isStreaming;
-      if (record.dto.status !== "stopped" && record.dto.status !== "error") {
-        record.dto.status = state.isStreaming ? "running" : "ready";
+      if (rootActivityRevision === record.rootActivityRevision) {
+        record.dto.isStreaming = state.isStreaming;
+        this.syncActivityStatus(record);
       }
       if (state.sessionFile) record.dto.sessionFile = state.sessionFile;
       if (state.sessionName) record.dto.sessionName = state.sessionName;
