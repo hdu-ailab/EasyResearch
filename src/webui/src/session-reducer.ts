@@ -9,6 +9,7 @@ import type {
   SessionSnapshotDto,
   SubagentSessionSummaryDto,
   SubagentSupervisorEventDto,
+  TimelineEntryAppendedEventDto,
 } from "../../web/contracts";
 import { RESEARCH_ASSISTANT_AGENT } from "./agent-identity";
 
@@ -88,9 +89,19 @@ export interface SessionMessageView {
   usageOnly?: boolean;
 }
 
+export interface SessionSummaryView {
+  key: string;
+  entryId: string;
+  kind: "compaction" | "branch-summary";
+  summary?: string;
+  order: number;
+  apiUsage?: ApiUsageRecordDto;
+}
+
 export interface SessionViewState {
   messages: SessionMessageView[];
   tools: ToolView[];
+  summaries: SessionSummaryView[];
   /** Increments whenever an authoritative snapshot seeds transcript history. */
   hydrationRevision: number;
   /** True while an agent run is active, independently of message streaming. */
@@ -141,6 +152,7 @@ const SUBAGENT_SESSION_PREFIX = "easyresearch:";
 const emptyState: SessionViewState = {
   messages: [],
   tools: [],
+  summaries: [],
   hydrationRevision: 0,
   isStreaming: false,
   error: null,
@@ -388,6 +400,7 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
   const state: SessionViewState = {
     messages: [],
     tools: [],
+    summaries: [],
     hydrationRevision,
     isStreaming,
     error: null,
@@ -406,8 +419,20 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
   };
   const next = () => state.nextOrder++;
   let cursorCandidate: SessionMessageView | undefined;
-  snapshot.messages.forEach((message, index) => {
+  snapshot.timeline.forEach((timelineEntry, index) => {
     cursorCandidate = undefined;
+    if (timelineEntry.kind !== "message") {
+      state.summaries.push({
+        key: `summary:${timelineEntry.entryId}`,
+        entryId: timelineEntry.entryId,
+        kind: timelineEntry.kind,
+        ...(timelineEntry.summary === undefined ? {} : { summary: timelineEntry.summary }),
+        order: next(),
+      });
+      return;
+    }
+    const messageIdentity = identityFor(timelineEntry.message as UnknownMessage);
+    const message = { ...timelineEntry.message, id: timelineEntry.entryId };
     if (isDirectBashExecution(message as UnknownMessage)) return;
     if (isAgentStatusMessage(message as UnknownMessage)) return;
     if (message.role === "toolResult") {
@@ -454,11 +479,9 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
       : [];
     const order = next();
     const nextMessage: SessionMessageView = {
-      key: keyFor(message, index),
-      ...(identityFor(message) !== undefined ? { identity: identityFor(message) } : {}),
-      ...(typeof (message as UnknownMessage).id === "string"
-        ? { entryId: (message as UnknownMessage).id as string }
-        : {}),
+      key: timelineEntry.entryId,
+      identity: messageIdentity ?? timelineEntry.entryId,
+      entryId: timelineEntry.entryId,
       role,
       text,
       isThinking: false,
@@ -521,8 +544,15 @@ function applyInlineUsage(state: SessionViewState, records: readonly ApiUsageRec
   if (additions.length === 0) return state;
   let messages = state.messages.map((message) => ({ ...message }));
   let tools = state.tools.map((tool) => ({ ...tool }));
+  let summaries = state.summaries.map((summary) => ({ ...summary }));
   let nextOrder = state.nextOrder;
   for (const record of additions) {
+    const summaryIndex = summaries.findIndex((summary) => summary.entryId === record.id);
+    if (summaryIndex >= 0) {
+      const summary = summaries[summaryIndex];
+      if (summary) summaries[summaryIndex] = { ...summary, apiUsage: record };
+      continue;
+    }
     const anchor = record.anchor;
     if (anchor.kind === "message") {
       const index = messages.findIndex(
@@ -581,15 +611,18 @@ function applyInlineUsage(state: SessionViewState, records: readonly ApiUsageRec
   const ordered = [
     ...messages.map((value) => ({ kind: "message" as const, value })),
     ...tools.map((value) => ({ kind: "tool" as const, value })),
+    ...summaries.map((value) => ({ kind: "summary" as const, value })),
   ]
     .sort((left, right) => left.value.order - right.value.order)
     .map((entry, order) => ({ ...entry, value: { ...entry.value, order } }));
   messages = ordered.filter((entry) => entry.kind === "message").map((entry) => entry.value as SessionMessageView);
   tools = ordered.filter((entry) => entry.kind === "tool").map((entry) => entry.value as ToolView);
+  summaries = ordered.filter((entry) => entry.kind === "summary").map((entry) => entry.value as SessionSummaryView);
   return {
     ...state,
     messages,
     tools,
+    summaries,
     nextOrder: ordered.length,
     inlineUsage: [...(state.inlineUsage ?? []), ...additions],
   };
@@ -602,6 +635,24 @@ export function replaceApiUsageStatistics(state: SessionViewState, apiUsage: Api
 function attachPersistedEntryId(state: SessionViewState, value: unknown): SessionViewState {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return state;
   const entry = value as { id?: unknown; type?: unknown; message?: unknown };
+  if ((entry.type === "compaction" || entry.type === "branch_summary") && typeof entry.id === "string") {
+    if (state.summaries.some((summary) => summary.entryId === entry.id)) return state;
+    const summary = value as { summary?: unknown };
+    return {
+      ...state,
+      summaries: [
+        ...state.summaries,
+        {
+          key: `summary:${entry.id}`,
+          entryId: entry.id,
+          kind: entry.type === "compaction" ? "compaction" : "branch-summary",
+          ...(typeof summary.summary === "string" ? { summary: summary.summary } : {}),
+          order: state.nextOrder,
+        },
+      ],
+      nextOrder: state.nextOrder + 1,
+    };
+  }
   if (
     entry.type !== "message" ||
     typeof entry.id !== "string" ||
@@ -984,7 +1035,7 @@ export function terminateSessionRun(state: SessionViewState, clearError = false)
  */
 export function reduceSessionEvent(
   state: SessionViewState,
-  event: AgentSessionEvent | RuntimeConfigurationAppliedEvent,
+  event: AgentSessionEvent | RuntimeConfigurationAppliedEvent | TimelineEntryAppendedEventDto,
 ): SessionViewState {
   switch (event.type) {
     case "runtime_configuration_applied":
@@ -998,6 +1049,37 @@ export function reduceSessionEvent(
       let next = attachPersistedEntryId(state, appended.entry);
       if (appended.apiUsageRecord !== undefined) next = applyInlineUsage(next, [appended.apiUsageRecord]);
       return next;
+    }
+    case "timeline_entry_appended": {
+      const appended = event as unknown as {
+        entry?: { kind?: unknown; entryId?: unknown; summary?: unknown };
+        apiUsageRecord?: ApiUsageRecordDto;
+      };
+      const entry = appended.entry;
+      if (
+        !entry ||
+        (entry.kind !== "compaction" && entry.kind !== "branch-summary") ||
+        typeof entry.entryId !== "string"
+      )
+        return state;
+      let next = state;
+      if (!state.summaries.some((summary) => summary.entryId === entry.entryId)) {
+        next = {
+          ...state,
+          summaries: [
+            ...state.summaries,
+            {
+              key: `summary:${entry.entryId}`,
+              entryId: entry.entryId,
+              kind: entry.kind,
+              ...(typeof entry.summary === "string" ? { summary: entry.summary } : {}),
+              order: state.nextOrder,
+            },
+          ],
+          nextOrder: state.nextOrder + 1,
+        };
+      }
+      return appended.apiUsageRecord === undefined ? next : applyInlineUsage(next, [appended.apiUsageRecord]);
     }
     case "message_start": {
       const message = event.message as UnknownMessage;

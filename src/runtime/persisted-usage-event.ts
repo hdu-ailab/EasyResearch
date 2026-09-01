@@ -21,13 +21,6 @@ export function publishPersistedUsageEntry(
       || !isRecord(message.usage)
     ) return;
     matches = (candidate) => candidate.type === "message" && candidate.message === message;
-  } else if (
-    event.type === "compaction_end"
-    && isRecord(event.result)
-    && isRecord(event.result.usage)
-  ) {
-    const usage = event.result.usage;
-    matches = (candidate) => candidate.type === "compaction" && candidate.usage === usage;
   } else {
     return;
   }

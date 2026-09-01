@@ -1,6 +1,12 @@
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionTreeNode } from "@earendil-works/pi-coding-agent";
-import type { ActiveSessionDto, ApiUsageRecordDto, CompactionPolicyDto, CompactionStateDto, ContextUsageDto } from "./contracts";
+import type {
+  ActiveSessionDto,
+  ApiUsageRecordDto,
+  CompactionPolicyDto,
+  CompactionStateDto,
+  ContextUsageDto,
+  TranscriptTimelineEntryDto,
+} from "./contracts";
 import type {
   SessionAdapter,
   SessionFactory,
@@ -143,7 +149,7 @@ export class ActiveSessionRegistry {
     onMessagesAcquired?: () => void,
   ): Promise<{
     session: ActiveSessionDto;
-    messages: AgentMessage[];
+    timeline: TranscriptTimelineEntryDto[];
     inlineUsage: ApiUsageRecordDto[];
     steering: string[];
     runtimeConfigurationGeneration: number;
@@ -157,14 +163,16 @@ export class ActiveSessionRegistry {
         record.dto.status === "starting" ||
         record.dto.status === "ready" ||
         record.dto.status === "running";
-      const messages = live ? await record.client.getMessages() : [];
+      const transcript = live
+        ? await record.client.getTranscriptSnapshot()
+        : { timeline: [], inlineUsage: [] };
       const contextUsage = live ? record.client.getContextUsage() : undefined;
       const runtimeConfigurationGeneration = record.client.getRuntimeConfigurationGeneration();
       onMessagesAcquired?.();
       return {
         session: { ...record.dto },
-        messages,
-        inlineUsage: live ? record.client.getInlineUsage() : [],
+        timeline: transcript.timeline,
+        inlineUsage: transcript.inlineUsage,
         steering: live ? [...record.client.getSteeringMessages()] : [],
         runtimeConfigurationGeneration,
         ...(contextUsage !== undefined ? { contextUsage } : {}),

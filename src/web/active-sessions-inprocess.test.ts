@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionTreeNode } from "@earendil-works/pi-coding-agent";
 import { ActiveSessionRegistry } from "./active-sessions";
 import type {
@@ -33,11 +32,8 @@ class DirectAdapter implements SessionAdapter {
       messageCount: 0,
     };
   }
-  async getMessages(): Promise<AgentMessage[]> {
-    return [];
-  }
-  getInlineUsage() {
-    return [];
+  async getTranscriptSnapshot() {
+    return { timeline: [], inlineUsage: [] };
   }
   getSteeringMessages(): readonly string[] {
     return [];

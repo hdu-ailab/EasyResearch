@@ -45,12 +45,13 @@ vi.mock("../api", async (importOriginal) => {
   };
 });
 
+const snapshotMessages = [
+  { role: "user", content: [{ type: "text", text: "write a paper" }] },
+  { role: "assistant", content: [{ type: "text", text: "starting research" }] },
+];
 const snapshotValue = {
   session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready", sessionFile: "/agent/sessions/--p--/a.jsonl" },
-  messages: [
-    { role: "user", content: [{ type: "text", text: "write a paper" }] },
-    { role: "assistant", content: [{ type: "text", text: "starting research" }] },
-  ],
+  timeline: snapshotMessages.map((message, index) => ({ kind: "message", entryId: `snapshot-${index}`, message })),
 };
 const snapshot = snapshotValue as never;
 
@@ -68,10 +69,24 @@ function stubEvents() {
 
 function emit(event: unknown) {
   if (event && typeof event === "object" && (event as { type?: unknown }).type === "snapshot") {
+    const value = event as Record<string, unknown>;
+    const messages = Array.isArray(value.messages) ? value.messages : undefined;
     latestHandlers?.onEvent({
       runtimeConfigurationGeneration: 0,
       compactionPolicy: { triggerPercent: 70, enabled: true },
-      ...(event as Record<string, unknown>),
+      ...value,
+      ...(value.timeline === undefined && messages !== undefined
+        ? {
+            timeline: messages.map((message, index) => ({
+              kind: "message",
+              entryId:
+                message && typeof message === "object" && typeof (message as { id?: unknown }).id === "string"
+                  ? (message as { id: string }).id
+                  : `event-${index}`,
+              message,
+            })),
+          }
+        : {}),
     });
     return;
   }
@@ -137,7 +152,34 @@ function subagentSummary(
   };
 }
 
+function normalizeTimelineSnapshot<T>(value: T): T {
+  if (!value || typeof value !== "object") return value;
+  const snapshot = value as Record<string, unknown>;
+  if (Array.isArray(snapshot.timeline) || !Array.isArray(snapshot.messages)) return value;
+  return {
+    ...snapshot,
+    timeline: snapshot.messages.map((message, index) => ({
+      kind: "message",
+      entryId:
+        message && typeof message === "object" && typeof (message as { id?: unknown }).id === "string"
+          ? (message as { id: string }).id
+          : message && typeof message === "object" && (message as { timestamp?: unknown }).timestamp !== undefined
+            ? `${typeof (message as { role?: unknown }).role === "string" ? (message as { role: string }).role : "message"}:${String((message as { timestamp: unknown }).timestamp)}`
+            : `snapshot:${index}`,
+      message,
+    })),
+  } as T;
+}
+
+function normalizeSnapshotMock(mock: ReturnType<typeof vi.fn>) {
+  const implementation = mock.getMockImplementation() as ((...args: unknown[]) => unknown) | undefined;
+  if (!implementation) return;
+  mock.mockImplementation(async (...args: unknown[]) => normalizeTimelineSnapshot(await implementation(...args)));
+}
+
 function render(ui: ReactElement) {
+  normalizeSnapshotMock(vi.mocked(api.getSnapshot) as ReturnType<typeof vi.fn>);
+  normalizeSnapshotMock(vi.mocked(api.getChildSnapshot) as ReturnType<typeof vi.fn>);
   const result = renderWithTestingLibrary(ui, {
     wrapper: ({ children }: { children: ReactNode }) => (
       <PreferencesProvider>
@@ -324,7 +366,7 @@ describe("WorkPage", () => {
     vi.mocked(api.getSnapshot).mockResolvedValue(snapshot);
     vi.mocked(api.getChildSnapshot).mockResolvedValue({
       session: { id: "child-default", cwd: "/p", sessionName: "easyresearch:search" },
-      messages: [],
+      timeline: [],
       subagents: [],
     });
     vi.mocked(api.listEntries).mockResolvedValue([{ kind: "file", name: "notes.md", path: "/p/notes.md" }]);
@@ -413,7 +455,10 @@ describe("WorkPage", () => {
     };
     vi.mocked(api.getSnapshot).mockResolvedValue({
       ...snapshotValue,
-      messages: [snapshotValue.messages[0], { ...snapshotValue.messages[1], id: "assistant-entry" }],
+      timeline: [
+        { kind: "message", entryId: "user-entry", message: snapshotMessages[0] },
+        { kind: "message", entryId: "assistant-entry", message: snapshotMessages[1] },
+      ],
       inlineUsage: [
         {
           id: "assistant-entry",
@@ -432,6 +477,75 @@ describe("WorkPage", () => {
 
     expect(await screen.findByLabelText("API usage details")).toHaveTextContent("test-model");
     expect(api.getApiUsageSettings).toHaveBeenCalled();
+  });
+
+  it("renders a persisted compaction disclosure from the root snapshot timeline", async () => {
+    vi.mocked(api.getSnapshot).mockResolvedValue({
+      ...snapshotValue,
+      timeline: [
+        {
+          kind: "message",
+          entryId: "user-1",
+          message: snapshotMessages[0],
+        },
+        {
+          kind: "message",
+          entryId: "assistant-1",
+          message: snapshotMessages[1],
+        },
+        {
+          kind: "compaction",
+          entryId: "compact-1",
+          timestamp: "2026-09-01T00:00:00.000Z",
+          summary: "Persisted compacted context",
+        },
+      ],
+    } as never);
+
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+
+    expect(await screen.findByRole("button", { name: "Session compacted" })).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("renders persisted compaction disclosures in retained child tabs", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getSnapshot).mockResolvedValue({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      subagents: [subagentSummary("child-tool", "child-compacted")],
+      timeline: [
+        {
+          kind: "message",
+          entryId: "parent-tool-call",
+          message: {
+            role: "assistant",
+            content: [{ type: "toolCall", id: "child-tool", name: "subagent", arguments: '{"agent":"search"}' }],
+          },
+        },
+      ],
+    } as never);
+    vi.mocked(api.getChildSnapshot).mockResolvedValue({
+      session: { id: "child-compacted", cwd: "/p", sessionName: "easyresearch:search" },
+      timeline: [
+        {
+          kind: "message",
+          entryId: "child-answer",
+          message: { role: "assistant", content: [{ type: "text", text: "child answer" }] },
+        },
+        {
+          kind: "compaction",
+          entryId: "child-compaction",
+          timestamp: "2026-09-01T00:00:00.000Z",
+          summary: "Child compressed context",
+        },
+      ],
+      subagents: [],
+    } as never);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+
+    await user.click(await screen.findByRole("button", { name: "View details" }));
+
+    expect(await screen.findByText("child answer")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Session compacted" })).toHaveAttribute("aria-expanded", "false");
   });
 
   it("refetches commands only for increasing root-applied generations and rebases on a lower reconnect snapshot", async () => {
@@ -482,7 +596,7 @@ describe("WorkPage", () => {
       type: "snapshot",
       runtimeConfigurationGeneration: 2,
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
-      messages: snapshotValue.messages,
+      messages: snapshotMessages,
       subagents: [],
     });
     await act(async () => {});
@@ -520,7 +634,7 @@ describe("WorkPage", () => {
       type: "snapshot",
       runtimeConfigurationGeneration: 2,
       session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
-      messages: snapshotValue.messages,
+      messages: snapshotMessages,
       subagents: [],
     });
 
@@ -1166,7 +1280,7 @@ describe("WorkPage", () => {
       latestMessage: "linked",
     });
     await user.click(await screen.findByRole("button", { name: /agent search/i }));
-    expect(await screen.findByRole("button", { name: /Close agent tab:/ })).toBeVisible();
+    expect(await screen.findByRole("button", { name: /Stop and close agent:/ })).toBeVisible();
     emitSupervisor({
       toolCallId: "sub-promote",
       agent: "search",
@@ -1205,7 +1319,7 @@ describe("WorkPage", () => {
     const promoted = await screen.findByRole("button", { name: /agent search/i });
     expect(promoted).toHaveAttribute("aria-pressed", "true");
     expect(promoted).toHaveFocus();
-    expect(screen.getByRole("button", { name: /Close agent tab:/ })).toBeVisible();
+    expect(screen.getByRole("button", { name: /Stop and close agent:/ })).toBeVisible();
   });
 
   it("renders mapped live child output in a retained temporary tab after its tool row disappears", async () => {
@@ -1306,7 +1420,7 @@ describe("WorkPage", () => {
     expect(within(conversation).queryByRole("button", { name: "View details" })).toBeNull();
   });
 
-  it("reduces nested child deltas and tools in order, then closes without abort and reopens from its card", async () => {
+  it("reduces nested child deltas and tools in order, then stops and closes before reopening from its card", async () => {
     const user = userEvent.setup();
     let resolveChild!: (value: Awaited<ReturnType<typeof api.getChildSnapshot>>) => void;
     vi.mocked(api.getSnapshot).mockResolvedValue({
@@ -1418,8 +1532,8 @@ describe("WorkPage", () => {
       rows.findIndex((row) => row.includes("bash")),
     );
 
-    await user.click(screen.getByRole("button", { name: /Close agent tab:/ }));
-    expect(api.abortSession).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: /Stop and close agent:/ }));
+    await waitFor(() => expect(api.abortSession).toHaveBeenCalledWith("s1"));
     expect(await screen.findByRole("button", { name: "View details" })).toBeVisible();
     await user.click(screen.getByRole("button", { name: "View details" }));
     expect(await screen.findByText("live tokens")).toBeVisible();
@@ -1628,18 +1742,22 @@ describe("WorkPage", () => {
       ],
     } as never);
     vi.mocked(api.getChildSnapshot)
-      .mockResolvedValueOnce({
-        session: { id: "child-refresh", cwd: "/p", sessionName: "easyresearch:search" },
-        messages: [{ id: "child-message", role: "assistant", content: [{ type: "text", text: "before reconnect" }] }],
-        subagents: [],
-      } as never)
-      .mockResolvedValueOnce({
-        session: { id: "child-refresh", cwd: "/p", sessionName: "easyresearch:search" },
-        messages: [
-          { id: "child-message", role: "assistant", content: [{ type: "text", text: "recovered from JSONL" }] },
-        ],
-        subagents: [],
-      } as never);
+      .mockResolvedValueOnce(
+        normalizeTimelineSnapshot({
+          session: { id: "child-refresh", cwd: "/p", sessionName: "easyresearch:search" },
+          messages: [{ id: "child-message", role: "assistant", content: [{ type: "text", text: "before reconnect" }] }],
+          subagents: [],
+        } as never),
+      )
+      .mockResolvedValueOnce(
+        normalizeTimelineSnapshot({
+          session: { id: "child-refresh", cwd: "/p", sessionName: "easyresearch:search" },
+          messages: [
+            { id: "child-message", role: "assistant", content: [{ type: "text", text: "recovered from JSONL" }] },
+          ],
+          subagents: [],
+        } as never),
+      );
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await user.click(await screen.findByRole("button", { name: "View details" }));
     expect(await screen.findByText("before reconnect")).toBeVisible();
@@ -1680,13 +1798,15 @@ describe("WorkPage", () => {
             resolveInitial = resolve;
           }),
       )
-      .mockResolvedValueOnce({
-        session: { id: "child-overlap", cwd: "/p", sessionName: "easyresearch:search" },
-        messages: [
-          { id: "child-message", role: "assistant", content: [{ type: "text", text: "recovered after overlap" }] },
-        ],
-        subagents: [],
-      } as never);
+      .mockResolvedValueOnce(
+        normalizeTimelineSnapshot({
+          session: { id: "child-overlap", cwd: "/p", sessionName: "easyresearch:search" },
+          messages: [
+            { id: "child-message", role: "assistant", content: [{ type: "text", text: "recovered after overlap" }] },
+          ],
+          subagents: [],
+        } as never),
+      );
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await user.click(await screen.findByRole("button", { name: "View details" }));
     expect(api.getChildSnapshot).toHaveBeenCalledTimes(1);
@@ -1703,13 +1823,15 @@ describe("WorkPage", () => {
       ],
     });
     act(() =>
-      resolveInitial({
-        session: { id: "child-overlap", cwd: "/p", sessionName: "easyresearch:search" },
-        messages: [
-          { id: "child-message", role: "assistant", content: [{ type: "text", text: "stale in-flight response" }] },
-        ],
-        subagents: [],
-      } as never),
+      resolveInitial(
+        normalizeTimelineSnapshot({
+          session: { id: "child-overlap", cwd: "/p", sessionName: "easyresearch:search" },
+          messages: [
+            { id: "child-message", role: "assistant", content: [{ type: "text", text: "stale in-flight response" }] },
+          ],
+          subagents: [],
+        } as never),
+      ),
     );
 
     expect(await screen.findByText("recovered after overlap")).toBeVisible();
@@ -1786,15 +1908,35 @@ describe("WorkPage", () => {
       },
     });
     expect(await screen.findByText("new nested output")).toBeVisible();
+    emitSupervisorChildEvent({
+      toolCallId: "sub-race",
+      agent: "search",
+      agentId: "search_0",
+      childSessionId: "child-race",
+      event: {
+        type: "entry_appended",
+        entry: {
+          type: "message",
+          id: "persisted-200",
+          parentId: null,
+          timestamp: "2026-09-01T00:00:00.000Z",
+          message: { role: "assistant", content: [{ type: "text", text: "new nested output" }], timestamp: 200 },
+        },
+      } as never,
+    });
 
     act(() =>
       resolveRefresh({
         session: { id: "child-race", cwd: "/p", sessionName: "easyresearch:search" },
-        messages: [
+        timeline: [
           {
-            role: "assistant",
-            timestamp: 200,
-            content: [{ type: "text", text: "stale refresh output" }],
+            kind: "message",
+            entryId: "persisted-200",
+            message: {
+              role: "assistant",
+              timestamp: 200,
+              content: [{ type: "text", text: "stale refresh output" }],
+            },
           },
         ],
         subagents: [],
@@ -1809,31 +1951,35 @@ describe("WorkPage", () => {
     const user = userEvent.setup();
     let resolveOld!: (value: Awaited<ReturnType<typeof api.getChildSnapshot>>) => void;
     vi.mocked(api.getSnapshot)
-      .mockResolvedValueOnce({
-        session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
-        subagents: [subagentSummary("old-tool", "shared-child")],
-        messages: [
-          {
-            role: "assistant",
-            content: [{ type: "toolCall", id: "old-tool", name: "subagent", arguments: '{"agent":"search"}' }],
-          },
-        ],
-      } as never)
-      .mockResolvedValueOnce({
-        session: { id: "s2", cwd: "/p", isStreaming: false, status: "ready" },
-        subagents: [
-          subagentSummary("new-tool", "shared-child", "writing", {
-            ownerSessionId: "s2",
-            agentId: "writing_0",
-          }),
-        ],
-        messages: [
-          {
-            role: "assistant",
-            content: [{ type: "toolCall", id: "new-tool", name: "subagent", arguments: '{"agent":"writing"}' }],
-          },
-        ],
-      } as never);
+      .mockResolvedValueOnce(
+        normalizeTimelineSnapshot({
+          session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+          subagents: [subagentSummary("old-tool", "shared-child")],
+          messages: [
+            {
+              role: "assistant",
+              content: [{ type: "toolCall", id: "old-tool", name: "subagent", arguments: '{"agent":"search"}' }],
+            },
+          ],
+        } as never),
+      )
+      .mockResolvedValueOnce(
+        normalizeTimelineSnapshot({
+          session: { id: "s2", cwd: "/p", isStreaming: false, status: "ready" },
+          subagents: [
+            subagentSummary("new-tool", "shared-child", "writing", {
+              ownerSessionId: "s2",
+              agentId: "writing_0",
+            }),
+          ],
+          messages: [
+            {
+              role: "assistant",
+              content: [{ type: "toolCall", id: "new-tool", name: "subagent", arguments: '{"agent":"writing"}' }],
+            },
+          ],
+        } as never),
+      );
     vi.mocked(api.getChildSnapshot)
       .mockImplementationOnce(
         () =>
@@ -1841,11 +1987,13 @@ describe("WorkPage", () => {
             resolveOld = resolve;
           }),
       )
-      .mockResolvedValueOnce({
-        session: { id: "shared-child", cwd: "/p", sessionName: "easyresearch:writing" },
-        messages: [{ role: "assistant", content: [{ type: "text", text: "new parent child" }] }],
-        subagents: [],
-      } as never);
+      .mockResolvedValueOnce(
+        normalizeTimelineSnapshot({
+          session: { id: "shared-child", cwd: "/p", sessionName: "easyresearch:writing" },
+          messages: [{ role: "assistant", content: [{ type: "text", text: "new parent child" }] }],
+          subagents: [],
+        } as never),
+      );
     const { rerender, container } = render(
       <WorkPage key="s1" id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />,
     );
@@ -1856,11 +2004,13 @@ describe("WorkPage", () => {
     await user.click(await screen.findByRole("button", { name: "View details" }));
     expect(await screen.findByText("new parent child")).toBeVisible();
     act(() =>
-      resolveOld({
-        session: { id: "shared-child", cwd: "/p", sessionName: "easyresearch:search" },
-        messages: [{ role: "assistant", content: [{ type: "text", text: "old parent child" }] }],
-        subagents: [],
-      } as never),
+      resolveOld(
+        normalizeTimelineSnapshot({
+          session: { id: "shared-child", cwd: "/p", sessionName: "easyresearch:search" },
+          messages: [{ role: "assistant", content: [{ type: "text", text: "old parent child" }] }],
+          subagents: [],
+        } as never),
+      ),
     );
 
     await Promise.resolve();
@@ -1888,11 +2038,13 @@ describe("WorkPage", () => {
             rejectFirst = reject;
           }),
       )
-      .mockResolvedValueOnce({
-        session: { id: "child-retry", cwd: "/p", sessionName: "easyresearch:search" },
-        messages: [{ role: "assistant", content: [{ type: "text", text: "retry recovered" }] }],
-        subagents: [],
-      } as never);
+      .mockResolvedValueOnce(
+        normalizeTimelineSnapshot({
+          session: { id: "child-retry", cwd: "/p", sessionName: "easyresearch:search" },
+          messages: [{ role: "assistant", content: [{ type: "text", text: "retry recovered" }] }],
+          subagents: [],
+        } as never),
+      );
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     const details = await screen.findByRole("button", { name: "View details" });
     act(() => {
@@ -3071,22 +3223,24 @@ describe("WorkPage", () => {
   it("preserves retained child tabs when the same persisted session reopens under a new runtime id", async () => {
     const user = userEvent.setup();
     vi.mocked(api.getSnapshot)
-      .mockResolvedValueOnce({
-        session: {
-          id: "s1",
-          cwd: "/p",
-          isStreaming: false,
-          status: "ready",
-          sessionFile: "/agent/sessions/--p--/a.jsonl",
-        },
-        subagents: [subagentSummary("retained-child", "child-retained", "search", { agentId: "search_0" })],
-        messages: [
-          {
-            role: "assistant",
-            content: [{ type: "toolCall", id: "retained-child", name: "subagent", arguments: '{"agent":"search"}' }],
+      .mockResolvedValueOnce(
+        normalizeTimelineSnapshot({
+          session: {
+            id: "s1",
+            cwd: "/p",
+            isStreaming: false,
+            status: "ready",
+            sessionFile: "/agent/sessions/--p--/a.jsonl",
           },
-        ],
-      } as never)
+          subagents: [subagentSummary("retained-child", "child-retained", "search", { agentId: "search_0" })],
+          messages: [
+            {
+              role: "assistant",
+              content: [{ type: "toolCall", id: "retained-child", name: "subagent", arguments: '{"agent":"search"}' }],
+            },
+          ],
+        } as never),
+      )
       .mockResolvedValue({
         session: { id: "s2", cwd: "/p", isStreaming: false, status: "ready" },
         messages: [{ role: "user", content: [{ type: "text", text: "continue please" }] }],
@@ -3129,6 +3283,35 @@ describe("WorkPage", () => {
     expect(screen.getByRole("button", { name: /Close agent tab:/ })).toBeVisible();
   });
 
+  it("uses one retained-running X to stop the tree and close the child tab", async () => {
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+    emitInAct({
+      type: "tool_execution_start",
+      toolCallId: "sub-combined",
+      toolName: "subagent",
+      args: { agent: "experiment", task: "run benchmark" },
+    });
+    emitSupervisor({
+      toolCallId: "sub-combined",
+      agent: "experiment",
+      agentId: "experiment_0",
+      childSessionId: "child-combined",
+      latestMessage: "benchmark running",
+    });
+    await user.click(await screen.findByRole("button", { name: "Agent experiment_0" }));
+
+    const action = screen.getByRole("button", { name: "Stop and close agent: experiment_0" });
+    expect(screen.queryByRole("button", { name: "Stop agent: experiment_0" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Close agent tab: experiment_0" })).toBeNull();
+    await user.click(action);
+
+    await waitFor(() => expect(api.abortSession).toHaveBeenCalledWith("s1"));
+    expect(screen.queryByRole("button", { name: "Agent experiment_0" })).toBeNull();
+    expect(screen.getByRole("button", { name: /agent research assistant/i })).toHaveAttribute("aria-pressed", "true");
+  });
+
   it("waits for the reopened SSE subscription before sending the prompt", async () => {
     const user = userEvent.setup();
     let connections = 0;
@@ -3142,7 +3325,13 @@ describe("WorkPage", () => {
           runtimeConfigurationGeneration: 0,
           compactionPolicy: { triggerPercent: 70, enabled: true },
           session: { id: "s2", cwd: "/p", isStreaming: false, status: "ready" },
-          messages: [{ role: "user", content: [{ type: "text", text: "continue please" }] }],
+          timeline: [
+            {
+              kind: "message",
+              entryId: "continue-user",
+              message: { role: "user", content: [{ type: "text", text: "continue please" }] },
+            },
+          ],
           subagents: [],
         });
       }

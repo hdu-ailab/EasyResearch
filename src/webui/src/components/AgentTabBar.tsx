@@ -78,6 +78,11 @@ export function AgentTabBar({
                 : `${localizedAgent}${rawLabel.slice(tab.agent.length)}`;
           const closeLabel = `${t("work.closeAgentTab")}: ${label}`;
           const stopLabel = `${t("work.stopAgent")}: ${label}`;
+          const actionLabel = tab.running
+            ? tab.retained
+              ? `${t("work.stopAndCloseAgent")}: ${label}`
+              : stopLabel
+            : closeLabel;
           const invocation = JSON.stringify([tab.ownerSessionId, tab.toolCallId, tab.step]);
           return (
             <div
@@ -105,30 +110,21 @@ export function AgentTabBar({
                 <span className="truncate">{label}</span>
                 {tab.error ? <span className="text-v2-status-warning">{t("work.error")}</span> : null}
               </button>
-              {tab.sessionId ? (
+              {tab.running || tab.retained ? (
                 <button
                   type="button"
-                  aria-label={closeLabel}
-                  title={closeLabel}
-                  onClick={() => onClose(tab.key)}
+                  aria-label={actionLabel}
+                  title={actionLabel}
+                  onClick={() => {
+                    if (tab.running) onStop(tab.toolCallId);
+                    if (tab.retained) onClose(tab.key);
+                  }}
                   onFocus={() => {
                     focusedInvocation.current = null;
                   }}
-                  className="mr-1 flex size-5 shrink-0 items-center justify-center rounded-full text-v2-text-text-faint hover:bg-v2-grey-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-v2-blue-600"
-                >
-                  <X size={11} aria-hidden />
-                </button>
-              ) : null}
-              {tab.running ? (
-                <button
-                  type="button"
-                  aria-label={stopLabel}
-                  title={stopLabel}
-                  onClick={() => onStop(tab.toolCallId)}
-                  onFocus={() => {
-                    focusedInvocation.current = null;
-                  }}
-                  className="mr-1 flex size-5 shrink-0 items-center justify-center rounded-full text-v2-text-text-faint hover:bg-v2-grey-200 hover:text-v2-status-error focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-v2-blue-600"
+                  className={`mr-1 flex size-5 shrink-0 items-center justify-center rounded-full text-v2-text-text-faint hover:bg-v2-grey-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-v2-blue-600 ${
+                    tab.running ? "hover:text-v2-status-error" : ""
+                  }`}
                 >
                   <X size={11} aria-hidden />
                 </button>

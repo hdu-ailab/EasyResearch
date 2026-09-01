@@ -41,6 +41,7 @@ import type {
   StatusDto,
   SubagentSessionSummaryDto,
   SubagentSupervisorEventDto,
+  TranscriptTimelineEntryDto,
   TreeNavigationResultDto,
   UpdateCheckDto,
   WebTreeEntryDto,
@@ -493,11 +494,26 @@ export function parseSubagentSupervisorEvent(value: unknown): SubagentSupervisor
   };
 }
 
-function parseMessages(value: unknown): AgentMessage[] {
-  if (!Array.isArray(value) || value.some((item) => item === null || typeof item !== "object" || Array.isArray(item))) {
-    throw new Error("Invalid API response: messages must be an array of objects");
-  }
-  return value as AgentMessage[];
+function parseTimeline(value: unknown): TranscriptTimelineEntryDto[] {
+  return arrayOf(value, "transcript timeline", (item) => {
+    const source = record(item, "transcript timeline entry");
+    const entryId = requiredIdentityString(source, "entryId");
+    if (source.kind === "message") {
+      const message = record(source.message, "transcript message");
+      requiredIdentityString(message, "role");
+      return { kind: "message", entryId, message: message as unknown as AgentMessage };
+    }
+    if (source.kind !== "compaction" && source.kind !== "branch-summary") {
+      throw new Error("Invalid API response: transcript timeline entry kind is invalid");
+    }
+    const summary = optionalString(source, "summary");
+    return {
+      kind: source.kind,
+      entryId,
+      timestamp: requiredString(source, "timestamp"),
+      ...(summary === undefined ? {} : { summary }),
+    };
+  });
 }
 
 export function parseAgent(value: unknown): AgentDto {
@@ -733,7 +749,7 @@ export function parseSessionSnapshot(value: unknown): SessionSnapshotDto {
   return {
     session: parseActiveSessionValue(source.session),
     runtimeConfigurationGeneration: requiredSafeGeneration(source, "runtimeConfigurationGeneration", 0),
-    messages: parseMessages(source.messages),
+    timeline: parseTimeline(source.timeline),
     subagents: arrayOf(source.subagents, "subagents", parseSubagentSummary),
     ...(inlineUsage === undefined
       ? {}
@@ -757,7 +773,7 @@ export function parseChildSnapshot(value: unknown): ChildSessionSnapshotDto {
       cwd: requiredString(session, "cwd"),
       ...(sessionName !== undefined ? { sessionName } : {}),
     },
-    messages: parseMessages(source.messages),
+    timeline: parseTimeline(source.timeline),
     ...(source.inlineUsage === undefined
       ? {}
       : { inlineUsage: arrayOf(source.inlineUsage, "inline API usage", parseApiUsageRecord) }),

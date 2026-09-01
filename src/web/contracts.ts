@@ -40,7 +40,7 @@ export interface ActiveSessionDto {
 export interface SessionSnapshotDto {
   session: ActiveSessionDto;
   runtimeConfigurationGeneration: number;
-  messages: AgentMessage[];
+  timeline: TranscriptTimelineEntryDto[];
   subagents: SubagentSessionSummaryDto[];
   /** Present only on an SSE snapshot; scoped to that exact EventSource. */
   fileWatchLeaseId?: string;
@@ -52,6 +52,17 @@ export interface SessionSnapshotDto {
   /** Pending steer messages not yet delivered into the agent context
    * (ADR-083); omitted or empty for historical/stopped sessions. */
   steering?: string[];
+}
+
+export type TranscriptTimelineEntryDto =
+  | { kind: "message"; entryId: string; message: AgentMessage }
+  | { kind: "compaction"; entryId: string; timestamp: string; summary?: string }
+  | { kind: "branch-summary"; entryId: string; timestamp: string; summary?: string };
+
+export interface TimelineEntryAppendedEventDto {
+  type: "timeline_entry_appended";
+  entry: Exclude<TranscriptTimelineEntryDto, { kind: "message" }>;
+  apiUsageRecord?: ApiUsageRecordDto;
 }
 
 export interface ContextUsageDto {
@@ -263,7 +274,7 @@ export interface ChildSessionSnapshotDto {
     cwd: string;
     sessionName?: string;
   };
-  messages: AgentMessage[];
+  timeline: TranscriptTimelineEntryDto[];
   inlineUsage?: ApiUsageRecordDto[];
   subagents: SubagentSessionSummaryDto[];
 }

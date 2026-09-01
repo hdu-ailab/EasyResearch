@@ -137,7 +137,7 @@ class FakeAdapter implements SessionAdapter {
   setModels: Array<{ provider: string; modelId: string }> = [];
   setThinkingLevels: string[] = [];
   messages: AgentMessage[] = [];
-  getMessagesPromise: Promise<AgentMessage[]> | null = null;
+  timelinePromise: Promise<Awaited<ReturnType<SessionAdapter["getTranscriptSnapshot"]>>["timeline"]> | null = null;
   constructor(public options: StartSessionOptions) {
     FakeAdapter.all.push(this);
   }
@@ -167,13 +167,17 @@ class FakeAdapter implements SessionAdapter {
       messageCount: 0,
     };
   }
-  async getMessages(): Promise<AgentMessage[]> {
-    return this.getMessagesPromise ?? this.messages;
+  async getTranscriptSnapshot() {
+    const timeline = this.timelinePromise
+      ? await this.timelinePromise
+      : this.messages.map((message, index) => ({
+      kind: "message" as const,
+      entryId: `entry-${index}`,
+      message,
+        }));
+    return { timeline, inlineUsage: this.inlineUsageResult };
   }
-  inlineUsageResult: ReturnType<SessionAdapter["getInlineUsage"]> = [];
-  getInlineUsage() {
-    return this.inlineUsageResult;
-  }
+  inlineUsageResult: Awaited<ReturnType<SessionAdapter["getTranscriptSnapshot"]>>["inlineUsage"] = [];
   steeringResult: string[] = [];
   getSteeringMessages(): readonly string[] {
     return this.steeringResult;
@@ -1093,13 +1097,13 @@ describe("web routes", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       session: { id: string };
-      messages: unknown[];
+      timeline: unknown[];
       inlineUsage: unknown[];
       apiUsage: { rootSessionId: string };
       runtimeConfigurationGeneration: number;
     };
     expect(body.session.id).toBe(created.id);
-    expect(body.messages).toEqual([]);
+    expect(body.timeline).toEqual([]);
     expect(body.inlineUsage).toHaveLength(1);
     expect(body.apiUsage.rootSessionId).toBe(created.id);
     expect(body.runtimeConfigurationGeneration).toBe(4);
@@ -1249,7 +1253,10 @@ describe("web routes", () => {
   it("returns a complete read-only child snapshot", async () => {
     const childSnapshot = {
       session: { id: "child-1", cwd: projectDir, sessionName: "easyresearch:search" },
-      messages: [userMessage("dispatch"), assistant("complete child reply")],
+      timeline: [
+        { kind: "message" as const, entryId: "child-user", message: userMessage("dispatch") },
+        { kind: "message" as const, entryId: "child-assistant", message: assistant("complete child reply") },
+      ],
       subagents: [{
         ownerSessionId: "child-1",
         toolCallId: "nested-tool",
@@ -1289,7 +1296,11 @@ describe("web routes", () => {
         summaries: async () => [],
         snapshot: async () => ({
           session: { id: "child-1", cwd: projectDir },
-          messages: [assistant("complete child reply")],
+          timeline: [{
+            kind: "message" as const,
+            entryId: "child-assistant",
+            message: assistant("complete child reply"),
+          }],
           subagents: [],
         }),
       },
@@ -1309,7 +1320,11 @@ describe("web routes", () => {
         summaries: async () => [],
         snapshot: async () => ({
           session: { id: "child-1", cwd: projectDir },
-          messages: [assistant("persisted child reply")],
+          timeline: [{
+            kind: "message" as const,
+            entryId: "child-assistant",
+            message: assistant("persisted child reply"),
+          }],
           subagents: [],
         }),
       },
@@ -1321,7 +1336,9 @@ describe("web routes", () => {
     const res = await handler(new Request(`http://localhost/api/sessions/${parent.id}/subagents/child-1/snapshot`));
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ messages: [{ role: "assistant" }] });
+    expect(await res.json()).toMatchObject({
+      timeline: [{ kind: "message", message: { role: "assistant" } }],
+    });
   });
 
   it("streams snapshot and forwarded RPC events over SSE", async () => {
@@ -1416,6 +1433,55 @@ describe("web routes", () => {
       statistics: { rootSessionId: created.id, total: { records: 1, totalTokens: 6 } },
     });
     expect(statistics).toHaveBeenCalledTimes(2);
+    await reader.cancel();
+  });
+
+  it("sanitizes a persisted compaction into one public timeline entry", async () => {
+    setup();
+    const created = await registry.create({ cwd: projectDir });
+    const response = await handler(new Request(`http://localhost/api/sessions/${created.id}/events`));
+    const reader = response.body!.getReader();
+    expect((await readSseEvent(reader)).type).toBe("snapshot");
+    const adapter = factory.created[0]!;
+    adapter.events.forEach((listener) => listener({
+      type: "entry_appended",
+      entry: {
+        type: "compaction",
+        id: "compact-live",
+        parentId: "assistant-1",
+        timestamp: "2026-09-01T00:00:00.000Z",
+        summary: "Compressed context",
+        firstKeptEntryId: "user-2",
+        tokensBefore: 100,
+        details: { privatePath: "/private/project/file.md" },
+        usage: {
+          input: 10,
+          output: 2,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 12,
+          cost: { input: 0.2, output: 0.1, cacheRead: 0, cacheWrite: 0, total: 0.3 },
+        },
+      },
+    }));
+
+    const event = await readSseEvent(reader);
+    expect(event).toMatchObject({
+      type: "timeline_entry_appended",
+      entry: {
+        kind: "compaction",
+        entryId: "compact-live",
+        timestamp: "2026-09-01T00:00:00.000Z",
+        summary: "Compressed context",
+      },
+      apiUsageRecord: {
+        id: "compact-live",
+        sessionId: created.id,
+        source: "compaction",
+      },
+    });
+    expect(JSON.stringify(event)).not.toContain("privatePath");
+    expect(JSON.stringify(event)).not.toContain("/private/project/file.md");
     await reader.cancel();
   });
 
@@ -2194,8 +2260,8 @@ describe("web routes", () => {
   });
 
   it("applies the acquisition barrier before enrichment and preserves only stable pre-barrier supplements", async () => {
-    const messages = deferred<AgentMessage[]>();
-    const messagesRequested = deferred<void>();
+    const timeline = deferred<Awaited<ReturnType<SessionAdapter["getTranscriptSnapshot"]>>["timeline"]>();
+    const timelineRequested = deferred<void>();
     const summaries = deferred<SubagentSessionSummaryDto[]>();
     const summariesRequested = deferred<void>();
     const barrierCrossed = deferred<void>();
@@ -2212,11 +2278,11 @@ describe("web routes", () => {
     });
     const created = await registry.create({ cwd: projectDir });
     const adapter = factory.created[0]!;
-    adapter.getMessagesPromise = messages.promise;
-    const getMessages = adapter.getMessages.bind(adapter);
-    vi.spyOn(adapter, "getMessages").mockImplementation(() => {
-      messagesRequested.resolve();
-      return getMessages();
+    adapter.timelinePromise = timeline.promise;
+    const getTranscriptSnapshot = adapter.getTranscriptSnapshot.bind(adapter);
+    vi.spyOn(adapter, "getTranscriptSnapshot").mockImplementation(async () => {
+      timelineRequested.resolve();
+      return getTranscriptSnapshot();
     });
     const snapshot = registry.snapshot.bind(registry);
     vi.spyOn(registry, "snapshot").mockImplementation((id, onAcquired) =>
@@ -2231,7 +2297,7 @@ describe("web routes", () => {
 
     try {
       const firstRead = reader.read();
-      await Promise.all([messagesRequested.promise, summariesRequested.promise]);
+      await Promise.all([timelineRequested.promise, summariesRequested.promise]);
       const emit = (event: unknown) => adapter.events.forEach((listener) => listener(event as never));
       const supervisorBefore = {
         type: "subagent_supervisor",
@@ -2291,7 +2357,11 @@ describe("web routes", () => {
         launchId: "",
       });
 
-      messages.resolve([assistant("committed")]);
+      timeline.resolve([{
+        kind: "message",
+        entryId: "entry-0",
+        message: assistant("committed"),
+      }]);
       await barrierCrossed.promise;
       adapter.runtimeConfigurationGeneration = 3;
       emit({ type: "runtime_configuration_applied", generation: 3 });
@@ -2304,7 +2374,7 @@ describe("web routes", () => {
       emit({ type: "queue_update", steering: [], followUp: [] });
       summaries.resolve([]);
 
-      const frames: Array<Record<string, unknown> & { type: string; messages?: AgentMessage[] }> = [];
+      const frames: Array<Record<string, unknown> & { type: string }> = [];
       let body = "";
       while (!frames.some((frame) => frame.type === "queue_update")) {
         const { done, value } = await (frames.length === 0 ? firstRead : reader.read());
@@ -2332,7 +2402,11 @@ describe("web routes", () => {
         "tool_execution_start",
         "queue_update",
       ]);
-      expect(frames[0]?.messages).toEqual([assistant("committed")]);
+      expect(frames[0]?.timeline).toEqual([{
+        kind: "message",
+        entryId: "entry-0",
+        message: assistant("committed"),
+      }]);
       expect(frames[0]?.runtimeConfigurationGeneration).toBe(2);
       expect(frames.filter((frame) => frame.type === "runtime_configuration_applied")).toEqual([
         { type: "runtime_configuration_applied", generation: 2 },

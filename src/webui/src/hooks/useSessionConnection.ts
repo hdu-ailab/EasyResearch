@@ -91,7 +91,7 @@ type SnapshotEvent = Omit<SessionSnapshotDto, "subagents"> & {
 function isSnapshotEvent(event: unknown): event is SnapshotEvent {
   if (!event || typeof event !== "object") return false;
   const value = event as Partial<SnapshotEvent>;
-  return value.type === "snapshot" && Boolean(value.session) && Array.isArray(value.messages);
+  return value.type === "snapshot" && Boolean(value.session) && Array.isArray(value.timeline);
 }
 
 function eventType(event: unknown): string | undefined {
@@ -114,6 +114,8 @@ function isAgentSessionEvent(event: unknown): event is AgentSessionEvent {
     "auto_retry_start",
     "auto_retry_end",
     "session_info_changed",
+    "entry_appended",
+    "timeline_entry_appended",
   ].includes(eventType(event) ?? "");
 }
 

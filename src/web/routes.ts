@@ -48,6 +48,7 @@ import {
   type DesktopAccessControl,
 } from "./desktop-access";
 import { projectApiUsageRecord } from "./api-usage";
+import { projectSessionTimeline } from "./session-timeline";
 import {
   ConfigurationProjectWatchRequestError,
   type ConfigurationProjectWatches,
@@ -713,11 +714,11 @@ function sessionEvents(services: RouteServices, id: string): Response {
   try {
     unsubscribe = registry.subscribe(id, (event) => {
       if (cancelled) return;
-      const publicEvent = publicSessionEvent(event);
+      const enrichedPrivateEvent = withApiUsageRecord(event, id);
+      const publicEvent = publicSessionEvent(enrichedPrivateEvent);
       if (publicEvent === undefined) return;
-      const enrichedEvent = withApiUsageRecord(publicEvent, id);
-      publishOrQueue(enrichedEvent);
-      const usageRecord = trackedUsageRecord(enrichedEvent);
+      publishOrQueue(publicEvent);
+      const usageRecord = trackedUsageRecord(publicEvent);
       if (usageRecord !== undefined) refreshUsage(usageRecord);
     });
     fileWatchLeaseId = registry.acquireFileWatchLease(id);
@@ -764,12 +765,16 @@ function sessionEvents(services: RouteServices, id: string): Response {
 
 function trackedUsageRecord(event: unknown): ApiUsageRecordDto | undefined {
   if (!isObject(event)) return undefined;
-  if (event.type === "entry_appended" && isObject(event.apiUsageRecord)) {
+  if (
+    (event.type === "entry_appended" || event.type === "timeline_entry_appended")
+    && isObject(event.apiUsageRecord)
+  ) {
     return event.apiUsageRecord as unknown as ApiUsageRecordDto;
   }
   if (event.type !== "subagent_supervisor" || !isObject(event.event)) return undefined;
   const childEvent = event.event;
-  return childEvent.type === "entry_appended" && isObject(childEvent.apiUsageRecord)
+  return (childEvent.type === "entry_appended" || childEvent.type === "timeline_entry_appended")
+    && isObject(childEvent.apiUsageRecord)
     ? childEvent.apiUsageRecord as unknown as ApiUsageRecordDto
     : undefined;
 }
@@ -909,7 +914,8 @@ function isPreBarrierSupplement(event: unknown): boolean {
     value.type === "session_deactivated" ||
     value.type === "api_usage_changed" ||
     value.type === "runtime_configuration_applied" ||
-    value.type === "error"
+    value.type === "error" ||
+    value.type === "timeline_entry_appended"
   ) {
     return true;
   }
@@ -917,11 +923,22 @@ function isPreBarrierSupplement(event: unknown): boolean {
 }
 
 function publicSessionEvent(event: unknown): unknown | undefined {
+  if (isObject(event) && event.type === "entry_appended") {
+    const timelineEntry = projectSessionTimeline([event.entry])[0];
+    if (timelineEntry && timelineEntry.kind !== "message") {
+      return {
+        type: "timeline_entry_appended",
+        entry: timelineEntry,
+        ...(isObject(event.apiUsageRecord) ? { apiUsageRecord: event.apiUsageRecord } : {}),
+      };
+    }
+  }
   if (!event || typeof event !== "object" || (event as { type?: unknown }).type !== "subagent_supervisor") {
     return event;
   }
   if (!isSubagentSupervisorEvent(event)) return undefined;
   const value = event as Record<string, unknown>;
+  const nestedEvent = isObject(value.event) ? publicSessionEvent(value.event) : undefined;
   return {
     type: "subagent_supervisor",
     launchId: value.launchId,
@@ -932,7 +949,7 @@ function publicSessionEvent(event: unknown): unknown | undefined {
     childSessionId: value.childSessionId,
     status: value.status,
     ...(typeof value.latestMessage === "string" ? { latestMessage: value.latestMessage } : {}),
-    ...(isObject(value.event) ? { event: value.event } : {}),
+    ...(nestedEvent === undefined ? {} : { event: nestedEvent }),
   };
 }
 

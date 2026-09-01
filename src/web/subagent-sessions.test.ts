@@ -234,9 +234,17 @@ describe("SubagentSessionService", () => {
         cwd,
         sessionName: "easyresearch:search",
       },
-      messages: [
-        { role: "user", id: expect.any(String) },
-        { role: "assistant", id: expect.any(String) },
+      timeline: [
+        {
+          kind: "message",
+          entryId: expect.any(String),
+          message: { role: "user" },
+        },
+        {
+          kind: "message",
+          entryId: expect.any(String),
+          message: { role: "assistant" },
+        },
       ],
       inlineUsage: [
         {
@@ -337,7 +345,8 @@ describe("SubagentSessionService", () => {
       },
     ]);
     const retained = await service().snapshot(parent.getSessionId(), owner.getSessionId());
-    expect(retained.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+    expect(retained.timeline.map((entry) => entry.kind === "message" ? entry.message.role : entry.kind))
+      .toEqual(["user", "assistant"]);
     expect(retained.subagents).toEqual([summaries[2]]);
 
     const serialized = JSON.stringify({ summaries, retained });
@@ -620,7 +629,7 @@ describe("SubagentSessionService", () => {
       .rejects.toBeInstanceOf(SubagentSessionNotFoundError);
   });
 
-  it("keeps messages before a compaction checkpoint in branch order", async () => {
+  it("keeps messages and the compaction disclosure in complete branch order", async () => {
     const parent = createSession();
     const child = createSession();
     appendParentMessage(parent);
@@ -632,13 +641,13 @@ describe("SubagentSessionService", () => {
     link(parent, child);
 
     const snapshot = await service().snapshot(parent.getSessionId(), child.getSessionId());
-    expect(snapshot.messages.map((message) => message.role)).toEqual([
-      "user",
-      "assistant",
-      "user",
-      "assistant",
+    expect((snapshot as unknown as { timeline?: unknown[] }).timeline).toEqual([
+      expect.objectContaining({ kind: "message", message: expect.objectContaining({ content: "before compaction" }) }),
+      expect.objectContaining({ kind: "message", message: expect.objectContaining({ role: "assistant" }) }),
+      expect.objectContaining({ kind: "compaction", summary: "summary" }),
+      expect.objectContaining({ kind: "message", message: expect.objectContaining({ content: "after compaction" }) }),
+      expect.objectContaining({ kind: "message", message: expect.objectContaining({ role: "assistant" }) }),
     ]);
-    expect(snapshot.messages[0]).toMatchObject({ content: "before compaction" });
   });
 
   it("inspects only an exact readable Pi path and returns its UUID, cwd, and latest assistant text", async () => {

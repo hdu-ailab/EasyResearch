@@ -20,6 +20,7 @@ import type {
   ChildSessionSnapshotDto,
   SubagentSessionSummaryDto,
 } from "./contracts";
+import { projectSessionTimeline } from "./session-timeline";
 
 interface ReadonlySubagentSession {
   getEntries(): unknown[];
@@ -175,7 +176,7 @@ export class SubagentSessionService {
         cwd: child.getCwd(),
         ...(sessionName === undefined ? {} : { sessionName }),
       },
-      messages: branchMessagesFromEntries(branch),
+      timeline: projectSessionTimeline(branch),
       inlineUsage: projectSessionUsage(childSessionId, child.getEntries(), branch).inlineUsage,
       subagents: folded.summaries.filter((summary) => summary.ownerSessionId === childSessionId),
     };

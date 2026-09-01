@@ -183,19 +183,18 @@ describe("ManualCompactionController", () => {
 
 it("registers an awaited agent-end handler for the safe compaction boundary", async () => {
   const onAgentEnd = vi.fn(async () => {});
-  const notifyStatsChanged = vi.fn();
   const handlers = new Map<string, () => Promise<void>>();
-  const extension = createManualCompactionExtension({ onAgentEnd, notifyStatsChanged });
+  const extension = createManualCompactionExtension({ onAgentEnd });
   extension({
     on: (event: string, handler: () => Promise<void>) => handlers.set(event, handler),
   } as never);
 
   await handlers.get("agent_end")?.();
-  await handlers.get("agent_settled")?.();
-  await handlers.get("session_tree")?.();
-  await handlers.get("session_compact")?.();
 
   expect(onAgentEnd).toHaveBeenCalledOnce();
+  expect(handlers.has("turn_end")).toBe(false);
+  expect(handlers.has("agent_settled")).toBe(false);
+  expect(handlers.has("session_tree")).toBe(false);
+  expect(handlers.has("session_compact")).toBe(false);
   expect(handlers.has("model_select")).toBe(false);
-  expect(notifyStatsChanged).toHaveBeenCalledTimes(3);
 });

@@ -20,6 +20,7 @@ import {
   type SteerPromptOptions,
 } from "./session-adapter";
 import { ManualCompactionController } from "./manual-compaction";
+import { SessionStatsNotifier } from "./session-stats";
 
 const model = {
   provider: "openai",
@@ -221,6 +222,7 @@ interface ManagedHarness {
   session: FakeAgentSession;
   binding: AgentRuntimeBinding;
   compaction: ManualCompactionController;
+  stats: SessionStatsNotifier;
   coordinator: {
     label: string;
     beginCancellation(): void;
@@ -265,9 +267,11 @@ function managed(
   const coordinatorListeners = new Set<(event: unknown) => void>();
   const compaction = new ManualCompactionController();
   compaction.attach(session);
+  const stats = new SessionStatsNotifier();
   const harness: ManagedHarness = {
     session,
     compaction,
+    stats,
     coordinator: {
       label,
       beginCancellation: overrides.coordinator?.beginCancellation ?? (() => {}),
@@ -509,7 +513,7 @@ describe("PiSessionFactory", () => {
     adapter.onEvent((event) => events.push(event));
     await adapter.start();
 
-    runtime.compaction.notifyStatsChanged();
+    runtime.stats.notify();
 
     expect(events).toContainEqual({
       type: "session_stats_changed",
@@ -1002,9 +1006,13 @@ describe("PiSessionFactory", () => {
         messages: [{ role: "assistant", content: [{ type: "text", text: "visible" }], timestamp: 3 }],
       },
     ]);
-    await expect(adapter.getMessages()).resolves.toEqual([session.messages[0]]);
+    expect((await adapter.getTranscriptSnapshot()).timeline).toEqual([]);
     expect(adapter.getSteeringMessages()).toEqual(["visible user steer"]);
-    expect(JSON.stringify({ events, messages: await adapter.getMessages(), steering: adapter.getSteeringMessages() }))
+    expect(JSON.stringify({
+      events,
+      transcript: await adapter.getTranscriptSnapshot(),
+      steering: adapter.getSteeringMessages(),
+    }))
       .not.toContain("/private/child.jsonl");
   });
 
@@ -1038,8 +1046,12 @@ describe("PiSessionFactory", () => {
     const adapter = new PiSessionFactory(async () => managed(session)).create({ cwd: "/project" });
     await adapter.start();
 
-    await expect(adapter.getMessages()).resolves.toEqual([{ ...message, id: "entry-assistant" }]);
-    expect(adapter.getInlineUsage()).toEqual([
+    expect((await adapter.getTranscriptSnapshot()).timeline).toEqual([{
+      kind: "message",
+      entryId: "entry-assistant",
+      message,
+    }]);
+    expect((await adapter.getTranscriptSnapshot()).inlineUsage).toEqual([
       expect.objectContaining({
         id: "entry-assistant",
         sessionId: "session-1",
@@ -1047,6 +1059,138 @@ describe("PiSessionFactory", () => {
         anchor: { kind: "message", messageEntryId: "entry-assistant" },
       }),
     ]);
+  });
+
+  it("restores the complete active-branch timeline and inline usage across compaction", async () => {
+    const session = new FakeAgentSession();
+    const assistantMessage = (text: string, timestamp: number) => ({
+      role: "assistant" as const,
+      content: [{ type: "text" as const, text }],
+      api: "openai-completions" as const,
+      provider: "openai",
+      model: "test-model",
+      usage: {
+        input: 5,
+        output: 1,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 6,
+        cost: { input: 0.1, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.1 },
+      },
+      stopReason: "stop" as const,
+      timestamp,
+    });
+    const oldMessage = assistantMessage("compacted away", 1);
+    const keptMessage = assistantMessage("still visible", 2);
+    const oldEntry = {
+      type: "message",
+      id: "old-assistant",
+      parentId: null,
+      timestamp: "2026-08-25T00:00:00.000Z",
+      message: oldMessage,
+    };
+    const keptEntry = {
+      type: "message",
+      id: "kept-assistant",
+      parentId: "old-assistant",
+      timestamp: "2026-08-25T00:00:01.000Z",
+      message: keptMessage,
+    };
+    const compactionEntry = {
+      type: "compaction",
+      id: "compaction-entry",
+      parentId: "kept-assistant",
+      timestamp: "2026-08-25T00:00:02.000Z",
+      summary: "Earlier context",
+      firstKeptEntryId: "kept-assistant",
+      tokensBefore: 100,
+      usage: {
+        input: 10,
+        output: 2,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 12,
+        cost: { input: 0.2, output: 0.1, cacheRead: 0, cacheWrite: 0, total: 0.3 },
+      },
+    };
+    const laterMessage = assistantMessage("after compaction", 4);
+    const laterEntry = {
+      type: "message",
+      id: "later-assistant",
+      parentId: "compaction-entry",
+      timestamp: "2026-08-25T00:00:03.000Z",
+      message: laterMessage,
+    };
+    session.entries = [oldEntry, keptEntry, compactionEntry, laterEntry];
+    session.messages = [
+      {
+        role: "custom",
+        customType: "compactionSummary",
+        content: "Earlier context",
+        display: true,
+        timestamp: 3,
+      },
+      keptMessage,
+      laterMessage,
+    ] as AgentMessage[];
+    const adapter = new PiSessionFactory(async () => managed(session)).create({ cwd: "/project" });
+    await adapter.start();
+
+    expect((await adapter.getTranscriptSnapshot()).timeline).toEqual([
+      { kind: "message", entryId: "old-assistant", message: oldMessage },
+      { kind: "message", entryId: "kept-assistant", message: keptMessage },
+      {
+        kind: "compaction",
+        entryId: "compaction-entry",
+        timestamp: "2026-08-25T00:00:02.000Z",
+        summary: "Earlier context",
+      },
+      { kind: "message", entryId: "later-assistant", message: laterMessage },
+    ]);
+    expect((await adapter.getTranscriptSnapshot()).inlineUsage.map((record) => record.id)).toEqual([
+      "old-assistant",
+      "kept-assistant",
+      "compaction-entry",
+      "later-assistant",
+    ]);
+  });
+
+  it("projects timeline and inline usage from one active-branch read", async () => {
+    const session = new FakeAgentSession();
+    const message = {
+      role: "assistant" as const,
+      content: [{ type: "text" as const, text: "one branch" }],
+      api: "openai-completions" as const,
+      provider: "openai",
+      model: "test-model",
+      usage: {
+        input: 5,
+        output: 1,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 6,
+        cost: { input: 0.1, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.1 },
+      },
+      stopReason: "stop" as const,
+      timestamp: 1,
+    };
+    const branch = [{
+      type: "message",
+      id: "assistant-one",
+      parentId: null,
+      timestamp: "2026-09-01T00:00:00.000Z",
+      message,
+    }];
+    session.entries = branch;
+    const getBranch = vi.fn(() => branch);
+    session.sessionManager.getBranch = getBranch;
+    const adapter = new PiSessionFactory(async () => managed(session)).create({ cwd: "/project" });
+    await adapter.start();
+    await expect(adapter.getTranscriptSnapshot()).resolves.toMatchObject({
+      timeline: [{ kind: "message", entryId: "assistant-one" }],
+      inlineUsage: [{ id: "assistant-one" }],
+    });
+    expect(getBranch).toHaveBeenCalledOnce();
   });
 
   it("publishes the exact persisted usage entry after a normal Pi message_end", async () => {
@@ -1089,7 +1233,7 @@ describe("PiSessionFactory", () => {
     ]));
   });
 
-  it("publishes the exact persisted compaction usage entry", async () => {
+  it("leaves persisted compaction publication to the session-timeline extension", async () => {
     const session = new FakeAgentSession();
     const adapter = new PiSessionFactory(async () => managed(session)).create({ cwd: "/project" });
     await adapter.start();
@@ -1130,10 +1274,8 @@ describe("PiSessionFactory", () => {
 
     session.listeners.forEach((listener) => listener(event));
 
-    await vi.waitFor(() => expect(events).toEqual([
-      event,
-      { type: "entry_appended", entry },
-    ]));
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    expect(events).toEqual([event]);
   });
 
   it("performs each public Stop as reusable cancellation and reserves terminal teardown for stop", async () => {
@@ -1854,7 +1996,13 @@ describe("createPiAgentSessionCreator", () => {
   function creatorHarness() {
     const calls: Array<{ name: string; value?: unknown }> = [];
     const createdOptions: Record<string, unknown>[] = [];
-    const extensionRuntimes: Array<{ coordinator: unknown; supervisor: unknown; binding: AgentRuntimeBinding }> = [];
+    const extensionRuntimes: Array<{
+      coordinator: unknown;
+      supervisor: unknown;
+      binding: AgentRuntimeBinding;
+      stats: SessionStatsNotifier;
+      publishTimelineEntry: (entry: unknown) => void;
+    }> = [];
     const coordinators: Array<{
       manager: unknown;
       bindResearchAssistantState: ReturnType<typeof vi.fn>;
@@ -1959,6 +2107,8 @@ describe("createPiAgentSessionCreator", () => {
         coordinator: unknown;
         supervisor: unknown;
         binding: AgentRuntimeBinding;
+        stats: SessionStatsNotifier;
+        publishTimelineEntry: (entry: unknown) => void;
       }) => {
         extensionRuntimes.push(runtime);
         calls.push({ name: "extensions", value: runtime });
@@ -2324,20 +2474,25 @@ describe("createPiAgentSessionCreator", () => {
     expect(first.coordinator).not.toBe(second.coordinator);
     expect(first.supervisor).not.toBe(second.supervisor);
     expect(first.compaction).not.toBe(second.compaction);
+    expect(first.stats).not.toBe(second.stats);
     expect(harness.extensionRuntimes).toEqual([
-      {
+      expect.objectContaining({
         coordinator: first.coordinator,
         supervisor: first.supervisor,
         binding: first.binding,
         compaction: first.compaction,
-      },
-      {
+        stats: first.stats,
+      }),
+      expect.objectContaining({
         coordinator: second.coordinator,
         supervisor: second.supervisor,
         binding: second.binding,
         compaction: second.compaction,
-      },
+        stats: second.stats,
+      }),
     ]);
+    expect(harness.extensionRuntimes[0]?.publishTimelineEntry)
+      .not.toBe(harness.extensionRuntimes[1]?.publishTimelineEntry);
   });
 
   it("disposes the unbound supervisor when extension construction fails", async () => {

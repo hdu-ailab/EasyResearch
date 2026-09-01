@@ -459,7 +459,13 @@ describe("API response parsers", () => {
       parseSessionSnapshot({
         session,
         runtimeConfigurationGeneration: 2,
-        messages: [{ role: "assistant", content: [] }],
+        timeline: [
+          {
+            kind: "message",
+            entryId: "assistant-1",
+            message: { role: "assistant", content: [] },
+          },
+        ],
         subagents: [
           {
             ownerSessionId: "s1",
@@ -476,7 +482,7 @@ describe("API response parsers", () => {
       }),
     ).toMatchObject({
       session,
-      messages: [{ role: "assistant" }],
+      timeline: [{ kind: "message", entryId: "assistant-1", message: { role: "assistant" } }],
       runtimeConfigurationGeneration: 2,
       contextUsage: { tokens: null, contextWindow: 128_000, percent: null },
       compactionState: "queued",
@@ -486,7 +492,7 @@ describe("API response parsers", () => {
     expect(
       parseChildSnapshot({
         session: { id: "child-1", cwd: "/p", sessionName: "easyresearch:search" },
-        messages: [],
+        timeline: [],
         subagents: [],
       }).session,
     ).toEqual({ id: "child-1", cwd: "/p", sessionName: "easyresearch:search" });
@@ -495,17 +501,17 @@ describe("API response parsers", () => {
       parseSessionSnapshot({
         session,
         runtimeConfigurationGeneration: 2,
-        messages: {},
+        timeline: {},
         subagents: [],
         compactionPolicy,
       }),
     ).toThrow();
-    expect(() => parseSessionSnapshot({ session, messages: [], subagents: [], compactionPolicy })).toThrow();
+    expect(() => parseSessionSnapshot({ session, timeline: [], subagents: [], compactionPolicy })).toThrow();
     expect(() =>
       parseSessionSnapshot({
         session,
         runtimeConfigurationGeneration: 2,
-        messages: [],
+        timeline: [],
         subagents: [],
       }),
     ).toThrow();
@@ -513,7 +519,7 @@ describe("API response parsers", () => {
       parseSessionSnapshot({
         session,
         runtimeConfigurationGeneration: 2,
-        messages: [],
+        timeline: [],
         subagents: [],
         compactionPolicy,
         fileWatchLeaseId: 1,
@@ -524,7 +530,7 @@ describe("API response parsers", () => {
         parseSessionSnapshot({
           session,
           runtimeConfigurationGeneration,
-          messages: [],
+          timeline: [],
           subagents: [],
           compactionPolicy,
         }),
@@ -534,13 +540,52 @@ describe("API response parsers", () => {
       parseSessionSnapshot({
         session,
         runtimeConfigurationGeneration: 2,
-        messages: [],
+        timeline: [],
         subagents: [],
         compactionPolicy,
         contextUsage: { tokens: 10, contextWindow: 100, percent: "10" },
       }),
     ).toThrow();
-    expect(() => parseChildSnapshot({ session: { id: "child-1", cwd: "/p" }, messages: [] })).toThrow();
+    expect(() => parseChildSnapshot({ session: { id: "child-1", cwd: "/p" }, timeline: [] })).toThrow();
+  });
+
+  it("parses persisted transcript timeline entries with stable identities", () => {
+    const timeline = [
+      {
+        kind: "message",
+        entryId: "assistant-1",
+        message: { role: "assistant", content: [{ type: "text", text: "answer" }] },
+      },
+      {
+        kind: "compaction",
+        entryId: "compact-1",
+        timestamp: "2026-09-01T00:00:00.000Z",
+        summary: "Compressed **Markdown**",
+      },
+      {
+        kind: "branch-summary",
+        entryId: "branch-1",
+        timestamp: "2026-09-01T00:01:00.000Z",
+      },
+    ];
+    const parsed = parseSessionSnapshot({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      runtimeConfigurationGeneration: 0,
+      timeline,
+      subagents: [],
+      compactionPolicy,
+    });
+
+    expect((parsed as unknown as { timeline?: unknown[] }).timeline).toEqual(timeline);
+    expect(() =>
+      parseSessionSnapshot({
+        session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+        runtimeConfigurationGeneration: 0,
+        timeline: [{ kind: "unknown", entryId: "x" }],
+        subagents: [],
+        compactionPolicy,
+      }),
+    ).toThrow();
   });
 
   describe("subagent supervisor payloads", () => {
@@ -666,7 +711,7 @@ describe("API response parsers", () => {
         parseSessionSnapshot({
           session,
           runtimeConfigurationGeneration: 2,
-          messages: [],
+          timeline: [],
           subagents: [summary],
           compactionPolicy,
         }).subagents,
@@ -682,7 +727,7 @@ describe("API response parsers", () => {
         parseSessionSnapshot({
           session,
           runtimeConfigurationGeneration: 2,
-          messages: [],
+          timeline: [],
           subagents: [legacy],
           compactionPolicy,
         }).subagents,
@@ -691,7 +736,7 @@ describe("API response parsers", () => {
         parseSessionSnapshot({
           session,
           runtimeConfigurationGeneration: 2,
-          messages: [],
+          timeline: [],
           subagents: [{ ...summary, sessionPath: "/private/a.jsonl" }],
           compactionPolicy,
         }),
@@ -700,7 +745,7 @@ describe("API response parsers", () => {
         parseSessionSnapshot({
           session,
           runtimeConfigurationGeneration: 2,
-          messages: [],
+          timeline: [],
           subagents: [{ ...summary, session_path: "/private/a.jsonl" }],
           compactionPolicy,
         }),
@@ -709,7 +754,7 @@ describe("API response parsers", () => {
         parseSessionSnapshot({
           session,
           runtimeConfigurationGeneration: 2,
-          messages: [],
+          timeline: [],
           subagents: [{ ...summary, ownerSessionId: undefined }],
           compactionPolicy,
         }),
@@ -718,7 +763,7 @@ describe("API response parsers", () => {
         parseSessionSnapshot({
           session,
           runtimeConfigurationGeneration: 2,
-          messages: [],
+          timeline: [],
           subagents: [{ ...summary, status: "queued" }],
           compactionPolicy,
         }),
@@ -736,7 +781,7 @@ describe("API response parsers", () => {
       expect(
         parseChildSnapshot({
           session: { id: "child-0", cwd: "/p" },
-          messages: [],
+          timeline: [],
           subagents: [subagent],
         }).subagents,
       ).toEqual([subagent]);

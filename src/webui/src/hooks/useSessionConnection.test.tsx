@@ -27,7 +27,13 @@ const initialSnapshot: SessionSnapshotDto = {
     isStreaming: false,
     status: "ready",
   },
-  messages: [{ role: "assistant", content: [{ type: "text", text: "snapshot text" }] }],
+  timeline: [
+    {
+      kind: "message",
+      entryId: "snapshot-assistant",
+      message: { role: "assistant", content: [{ type: "text", text: "snapshot text" }] },
+    },
+  ],
   subagents: [],
   compactionPolicy: { triggerPercent: 70, enabled: true },
 } as never;
@@ -38,11 +44,25 @@ function emit(event: unknown, index = handlers.length - 1) {
   let complete = event;
   if (event && typeof event === "object") {
     const source = event as Record<string, unknown>;
+    const messages = Array.isArray(source.messages) ? source.messages : undefined;
+    if (source.type === "snapshot" && source.timeline === undefined && messages !== undefined) {
+      complete = {
+        ...source,
+        timeline: messages.map((message, messageIndex) => ({
+          kind: "message",
+          entryId:
+            message && typeof message === "object" && typeof (message as { id?: unknown }).id === "string"
+              ? (message as { id: string }).id
+              : `event-${messageIndex}`,
+          message,
+        })),
+      };
+    }
     if (
       (source.type === "snapshot" || source.type === "session_stats_changed") &&
       source.compactionPolicy === undefined
     ) {
-      complete = { ...source, compactionPolicy: { triggerPercent: 70, enabled: true } };
+      complete = { ...(complete as Record<string, unknown>), compactionPolicy: { triggerPercent: 70, enabled: true } };
     }
   }
   act(() => handlers[index]?.onEvent(complete));
@@ -496,7 +516,7 @@ describe("useSessionConnection", () => {
       .mockResolvedValue({
         runtimeConfigurationGeneration: 1,
         session: { id: "s2", cwd: "/paper", isStreaming: false, status: "ready" },
-        messages: [],
+        timeline: [],
         subagents: [],
       } as never);
     const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
@@ -873,7 +893,13 @@ describe("useSessionConnection", () => {
         isStreaming: false,
         status: "ready",
       },
-      messages: [{ role: "user", content: [{ type: "text", text: "edited" }] }],
+      timeline: [
+        {
+          kind: "message",
+          entryId: "edited-user",
+          message: { role: "user", content: [{ type: "text", text: "edited" }] },
+        },
+      ],
       subagents: [],
     } as never;
     vi.mocked(api.getSnapshot).mockResolvedValueOnce(branched);
@@ -905,7 +931,7 @@ describe("useSessionConnection", () => {
     vi.mocked(api.getSnapshot).mockResolvedValueOnce({
       runtimeConfigurationGeneration: 1,
       session: { id: "s1", cwd: "/paper", isStreaming: true, status: "running" },
-      messages: [],
+      timeline: [],
       subagents: [],
     } as never);
     const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
@@ -923,7 +949,7 @@ describe("useSessionConnection", () => {
     vi.mocked(api.getSnapshot).mockResolvedValueOnce({
       runtimeConfigurationGeneration: 1,
       session: { id: "s1", cwd: "/paper", isStreaming: true, status: "running" },
-      messages: [],
+      timeline: [],
       subagents: [],
       steering: ["note one"],
     } as never);
@@ -933,5 +959,43 @@ describe("useSessionConnection", () => {
     emit({ type: "agent_settled" });
 
     expect(result.current.view.steers).toEqual([]);
+  });
+
+  it("keeps nested child events isolated from root context usage while root stats continue updating", async () => {
+    vi.mocked(api.getSnapshot).mockResolvedValueOnce({
+      ...initialSnapshot,
+      session: { ...initialSnapshot.session, isStreaming: true, status: "running" },
+      contextUsage: { tokens: 10_000, contextWindow: 1_000_000, percent: 1 },
+    });
+    const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
+    await waitFor(() => expect(result.current.view.contextUsage?.tokens).toBe(10_000));
+
+    emit(
+      supervisorEvent({
+        event: {
+          type: "message_end",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "child output" }],
+            usage: {
+              input: 900_000,
+              output: 1,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: 900_001,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            },
+          },
+        } as never,
+      }),
+    );
+    expect(result.current.view.contextUsage?.tokens).toBe(10_000);
+
+    emit({
+      type: "session_stats_changed",
+      contextUsage: { tokens: 20_000, contextWindow: 1_000_000, percent: 2 },
+      compactionPolicy: { triggerPercent: 70, enabled: true },
+    });
+    expect(result.current.view.contextUsage?.tokens).toBe(20_000);
   });
 });

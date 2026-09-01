@@ -11,7 +11,7 @@ import type { MessageKey } from "../i18n/messages";
 import { useI18n } from "../i18n/useI18n";
 import type { SessionMessageMeta } from "../message-tree";
 import { usePreferences } from "../preferences/PreferencesProvider";
-import type { SessionMessageView, SteerView, ToolView } from "../session-reducer";
+import type { SessionMessageView, SessionSummaryView, SteerView, ToolView } from "../session-reducer";
 import { ApiUsageLine } from "./ApiUsageLine";
 import { MarkdownBlock } from "./MarkdownBlock";
 import { SubagentToolCard } from "./SubagentToolCard";
@@ -19,6 +19,7 @@ import { SubagentToolCard } from "./SubagentToolCard";
 export interface ChatTranscriptProps {
   messages: SessionMessageView[];
   tools: ToolView[];
+  summaries?: SessionSummaryView[];
   hydrationRevision?: number;
   hydrationScope?: string;
   emptyHint?: string;
@@ -48,7 +49,7 @@ export interface ChatTranscriptHandle {
 }
 
 type PendingRow = { kind: "pending" };
-type TranscriptEntry = SessionMessageView | ToolView | PendingRow;
+type TranscriptEntry = SessionMessageView | ToolView | SessionSummaryView | PendingRow;
 
 const ROLE_LABELS: Record<string, MessageKey> = {
   user: "transcript.you",
@@ -116,6 +117,60 @@ function ReasoningBlock({
         </div>
       )}
     </div>
+  );
+}
+
+function SummaryRow({
+  entry,
+  open,
+  onToggle,
+  showApiUsageDetails,
+}: {
+  entry: SessionSummaryView;
+  open: boolean;
+  onToggle: (open: boolean) => void;
+  showApiUsageDetails: boolean;
+}) {
+  const { t } = useI18n();
+  const { mounted, phase } = useExpandable(open);
+  const label = entry.kind === "compaction" ? t("transcript.sessionCompacted") : t("usage.internalSummary");
+  const content =
+    entry.summary?.trim() ||
+    t(entry.kind === "compaction" ? "transcript.compactionSummaryUnavailable" : "transcript.branchSummaryUnavailable");
+  return (
+    <li className="flex w-full flex-col gap-1.5 py-1">
+      <button
+        type="button"
+        className="flex w-full min-w-0 items-center gap-2 text-[12px] font-medium text-v2-text-text-faint transition-colors hover:text-v2-text-text-muted"
+        aria-expanded={open}
+        onClick={() => onToggle(!open)}
+      >
+        <span className="h-px min-w-4 flex-1 bg-v2-grey-200" aria-hidden />
+        {open ? (
+          <ChevronDown size={14} className="shrink-0" aria-hidden />
+        ) : (
+          <ChevronRight size={14} className="shrink-0" aria-hidden />
+        )}
+        <span className="shrink-0">{label}</span>
+        <span className="h-px min-w-4 flex-1 bg-v2-grey-200" aria-hidden />
+      </button>
+      {mounted ? (
+        <div
+          className={`mx-auto w-full max-w-[920px] border-l-2 border-v2-blue-200 pl-3 ${
+            phase === "enter" ? "animate-v2-expand-down" : "animate-v2-collapse-up"
+          } motion-reduce:animate-none`}
+        >
+          <div className="v2-md text-[12.5px] font-normal text-v2-text-text-muted">
+            <MarkdownBlock text={content} />
+          </div>
+        </div>
+      ) : null}
+      {showApiUsageDetails && entry.apiUsage ? (
+        <div className="flex justify-center">
+          <ApiUsageLine record={entry.apiUsage} />
+        </div>
+      ) : null}
+    </li>
   );
 }
 
@@ -423,6 +478,7 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
   {
     messages,
     tools,
+    summaries = [],
     hydrationRevision = 0,
     hydrationScope = "default",
     emptyHint,
@@ -447,12 +503,15 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
   const [draft, setDraft] = useState("");
 
   const entries = useMemo<TranscriptEntry[]>(() => {
-    const base = [...messages, ...tools].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    const base = [...messages, ...tools, ...summaries].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
     if (!pending) return base;
     return [...base, { kind: "pending" }];
-  }, [messages, tools, pending]);
+  }, [messages, tools, summaries, pending]);
   const entryKeys = useMemo(
-    () => entries.map((entry, index) => ("kind" in entry ? "pending" : (entry.key ?? `removed:${index}`))),
+    () =>
+      entries.map((entry, index) =>
+        "kind" in entry && entry.kind === "pending" ? "pending" : (entry.key ?? `removed:${index}`),
+      ),
     [entries],
   );
   const seenRowKeys = useRef<Set<string> | null>(null);
@@ -527,7 +586,7 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
 
   const rowKey = useCallback((entry: TranscriptEntry | undefined, index: number) => {
     if (!entry) return `removed:${index}`;
-    return "kind" in entry ? "pending" : entry.key;
+    return "kind" in entry && entry.kind === "pending" ? "pending" : entry.key;
   }, []);
 
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
@@ -748,8 +807,15 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
                     // oversized rows and giant gaps between messages.
                     style={{ paddingBottom: ROW_GAP_PX }}
                   >
-                    {"kind" in entry ? (
+                    {"kind" in entry && entry.kind === "pending" ? (
                       <PendingRow />
+                    ) : "kind" in entry ? (
+                      <SummaryRow
+                        entry={entry}
+                        open={openByKey[key] ?? false}
+                        onToggle={(next) => setOpenByKey((current) => ({ ...current, [key]: next }))}
+                        showApiUsageDetails={showApiUsageDetails}
+                      />
                     ) : "name" in entry ? (
                       entry.name === "subagent" ? (
                         <SubagentToolCard

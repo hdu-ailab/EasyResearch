@@ -31,8 +31,15 @@ import {
 import type { CoordinatorSessionManager, SubagentCoordinator } from "../subagent/coordinator";
 import { AGENT_STATUS_TYPE } from "../subagent/notifications";
 import type { SubagentSupervisor, SupervisableAgentSession } from "../subagent/supervisor";
-import type { ApiUsageRecordDto, CompactionPolicyDto, ContextUsageDto } from "./contracts";
-import { attachMessageEntryIds, projectSessionUsage } from "./api-usage";
+import type {
+  ApiUsageRecordDto,
+  CompactionPolicyDto,
+  ContextUsageDto,
+  TranscriptTimelineEntryDto,
+} from "./contracts";
+import { projectSessionUsage } from "./api-usage";
+import { projectSessionTimeline } from "./session-timeline";
+import { SessionStatsNotifier } from "./session-stats";
 import {
   ManualCompactionController,
   type ManualCompactionAcceptedState,
@@ -187,11 +194,13 @@ export interface ManagedAgentSession {
   supervisor: SubagentSupervisor;
   binding: AgentRuntimeBinding;
   compaction: ManualCompactionController;
+  stats: SessionStatsNotifier;
 }
 
 export type AgentSessionCreator = (
   options: StartSessionOptions,
   onApplied?: (generation: number) => void,
+  publishTimelineEntry?: (entry: unknown) => void,
 ) => Promise<ManagedAgentSession>;
 
 function createRuntimeSetupCleanup(
@@ -313,6 +322,8 @@ export interface PiRuntimeDependencies {
     supervisor: SubagentSupervisor;
     binding: AgentRuntimeBinding;
     compaction: ManualCompactionController;
+    stats: SessionStatsNotifier;
+    publishTimelineEntry: (entry: unknown) => void;
   }): unknown[];
   createSettingsManager(cwd: string, agentDir: string): unknown;
   createModelRuntime(agentDir: string): Promise<AgentRuntimeModelRuntime>;
@@ -336,7 +347,7 @@ export interface PiRuntimeDependencies {
 }
 
 export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentSessionCreator {
-  return async (options, onApplied) => {
+  return async (options, onApplied, publishTimelineEntry = () => {}) => {
     const sessionManager = options.sessionPath
       ? deps.openSessionManager(options.sessionPath)
       : deps.createSessionManager(options.cwd);
@@ -346,6 +357,7 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
       settingsManager as CompactionPolicySettingsManager,
     );
     const compaction = new ManualCompactionController();
+    const stats = new SessionStatsNotifier();
     const binding = createAgentRuntimeBinding({
       live: deps.liveConfiguration,
       agentName: "research-assistant",
@@ -359,7 +371,7 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
         settingsManager,
       }),
       compaction: automaticCompaction,
-      onCompactionPolicyChanged: () => compaction.notifyStatsChanged(),
+      onCompactionPolicyChanged: stats.notify,
       onRuntimeCoherent: () => supervisor?.runtimeBecameCoherent(),
       onApplied,
     });
@@ -370,7 +382,14 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
       await deps.recoverSubagentTree({ coordinator, expectedCwd: options.cwd });
       supervisor = deps.createDirectChildSupervisor(coordinator);
       const modelRuntime = binding.modelRuntime();
-      const extensionFactories = deps.createExtensionFactories({ coordinator, supervisor, binding, compaction });
+      const extensionFactories = deps.createExtensionFactories({
+        coordinator,
+        supervisor,
+        binding,
+        compaction,
+        stats,
+        publishTimelineEntry,
+      });
       const resourceLoader = deps.createResourceLoader({
         cwd: options.cwd,
         agentDir: deps.agentDir,
@@ -424,7 +443,7 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
         },
       });
       await binding.attach(createBindingSession(session));
-      return { session, coordinator, supervisor, binding, compaction };
+      return { session, coordinator, supervisor, binding, compaction, stats };
     } catch (error) {
       const retryCleanup = createRuntimeSetupCleanup(session, compaction, supervisor, binding);
       try {
@@ -449,8 +468,10 @@ export interface SessionAdapter {
   setModel(provider: string, modelId: string): Promise<void>;
   setThinkingLevel(level: string): Promise<void>;
   getState(): Promise<SessionState>;
-  getMessages(): Promise<AgentMessage[]>;
-  getInlineUsage(): ApiUsageRecordDto[];
+  getTranscriptSnapshot(): Promise<{
+    timeline: TranscriptTimelineEntryDto[];
+    inlineUsage: ApiUsageRecordDto[];
+  }>;
   getCommands(): Promise<WebSlashCommand[]>;
   getTree(): Promise<{
     tree: SessionTreeNode[];
@@ -625,6 +646,7 @@ class DirectSessionAdapter implements SessionAdapter {
         created = await this.createAgentSession(
           this.options,
           (generation) => this.applyRuntimeConfigurationGeneration(generation),
+          (entry) => this.publishEvent({ type: "entry_appended", entry }),
         );
       } catch (error) {
         if (error instanceof RetryableAgentSessionCreationError) {
@@ -666,7 +688,7 @@ class DirectSessionAdapter implements SessionAdapter {
         const unsubscribeCompactionState = created.compaction.subscribe((state) => {
           this.publishEvent({ type: "compaction_state_changed", state });
         });
-        const unsubscribeStats = created.compaction.subscribeStats(() => {
+        const unsubscribeStats = created.stats.subscribe(() => {
           const contextUsage = created.session.getSessionStats().contextUsage;
           this.lastCompactionPolicy = created.binding.compactionPolicy();
           const event = {
@@ -945,21 +967,20 @@ class DirectSessionAdapter implements SessionAdapter {
     };
   }
 
-  async getMessages(): Promise<AgentMessage[]> {
+  async getTranscriptSnapshot(): Promise<{
+    timeline: TranscriptTimelineEntryDto[];
+    inlineUsage: ApiUsageRecordDto[];
+  }> {
     const session = this.requiredSession();
-    return attachMessageEntryIds(
-      session.messages.filter((message) => !isHiddenStatusMessage(message)),
-      session.sessionManager.getBranch(),
-    );
-  }
-
-  getInlineUsage(): ApiUsageRecordDto[] {
-    const session = this.requiredSession();
-    return projectSessionUsage(
-      session.sessionId,
-      session.sessionManager.getEntries(),
-      session.sessionManager.getBranch(),
-    ).inlineUsage;
+    const branch = session.sessionManager.getBranch();
+    return {
+      timeline: projectSessionTimeline(branch),
+      inlineUsage: projectSessionUsage(
+        session.sessionId,
+        session.sessionManager.getEntries(),
+        branch,
+      ).inlineUsage,
+    };
   }
 
   async getCommands(): Promise<WebSlashCommand[]> {

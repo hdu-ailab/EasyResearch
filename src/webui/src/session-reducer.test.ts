@@ -2,8 +2,8 @@ import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import type { SubagentSupervisorEventDto } from "../../web/contracts";
 import {
-  fromSnapshot,
-  mergeSnapshot,
+  fromSnapshot as fromSnapshotRuntime,
+  mergeSnapshot as mergeSnapshotRuntime,
   parseSkillInvocation,
   reduceSessionEvent,
   reduceSubagentSupervisorEvent,
@@ -12,9 +12,37 @@ import {
   terminateSessionRun,
 } from "./session-reducer";
 
+function withTimeline(snapshot: Record<string, unknown>) {
+  if (Array.isArray(snapshot.timeline)) return snapshot;
+  const messages = Array.isArray(snapshot.messages) ? snapshot.messages : [];
+  const { messages: _messages, ...rest } = snapshot;
+  return {
+    ...rest,
+    timeline: messages.map((message: Record<string, unknown>, index: number) => ({
+      kind: "message",
+      entryId:
+        typeof message.id === "string"
+          ? message.id
+          : message.timestamp !== undefined
+            ? `${typeof message.role === "string" ? message.role : "message"}:${String(message.timestamp)}`
+            : `test:${index}`,
+      message,
+    })),
+  };
+}
+
+function fromSnapshot(snapshot: Record<string, unknown>, hydrationRevision?: number) {
+  return fromSnapshotRuntime(withTimeline(snapshot) as never, hydrationRevision);
+}
+
+function mergeSnapshot(state: SessionViewState, snapshot: Record<string, unknown>) {
+  return mergeSnapshotRuntime(state, withTimeline(snapshot) as never);
+}
+
 const emptyState: SessionViewState = {
   messages: [],
   tools: [],
+  summaries: [],
   hydrationRevision: 0,
   isStreaming: false,
   error: null,
@@ -249,6 +277,102 @@ describe("session reducer", () => {
     ]);
   });
 
+  it("hydrates complete messages and compaction usage in persisted timeline order", () => {
+    const usage = {
+      input: 4,
+      output: 1,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 5,
+      cacheHitRate: 0,
+      cost: { input: 0.1, output: 0.1, cacheRead: 0, cacheWrite: 0, total: 0.2 },
+    };
+    const oldMessage = {
+      id: "old-assistant",
+      role: "assistant",
+      content: [{ type: "text", text: "old answer" }],
+    };
+    const laterMessage = {
+      id: "later-assistant",
+      role: "assistant",
+      content: [{ type: "text", text: "later answer" }],
+    };
+    const state = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      messages: [oldMessage, laterMessage],
+      timeline: [
+        { kind: "message", entryId: "old-assistant", message: oldMessage },
+        {
+          kind: "compaction",
+          entryId: "compact-1",
+          timestamp: "2026-09-01T00:00:00.000Z",
+          summary: "Compressed **Markdown**",
+        },
+        { kind: "message", entryId: "later-assistant", message: laterMessage },
+      ],
+      subagents: [],
+      inlineUsage: [
+        {
+          id: "old-assistant",
+          sessionId: "s1",
+          source: "assistant",
+          timestamp: "2026-09-01T00:00:00.000Z",
+          anchor: { kind: "message", messageEntryId: "old-assistant" },
+          model: "test-model",
+          usage,
+        },
+        {
+          id: "compact-1",
+          sessionId: "s1",
+          source: "compaction",
+          timestamp: "2026-09-01T00:00:01.000Z",
+          anchor: { kind: "standalone", afterEntryId: "old-assistant" },
+          usage,
+        },
+        {
+          id: "later-assistant",
+          sessionId: "s1",
+          source: "assistant",
+          timestamp: "2026-09-01T00:00:02.000Z",
+          anchor: { kind: "message", messageEntryId: "later-assistant" },
+          model: "test-model",
+          usage,
+        },
+      ],
+    } as never);
+    const summaries = (
+      state as typeof state & {
+        summaries?: Array<{ entryId: string; summary?: string; apiUsage?: unknown; order: number }>;
+      }
+    ).summaries;
+
+    expect(summaries).toEqual([
+      expect.objectContaining({
+        entryId: "compact-1",
+        summary: "Compressed **Markdown**",
+        apiUsage: expect.objectContaining({ id: "compact-1" }),
+      }),
+    ]);
+    expect(
+      [
+        ...state.messages.map((entry) => ({ kind: "message", id: entry.entryId, order: entry.order })),
+        ...(summaries ?? []).map((entry) => ({ kind: "compaction", id: entry.entryId, order: entry.order })),
+      ].sort((left, right) => left.order - right.order),
+    ).toEqual([
+      { kind: "message", id: "old-assistant", order: 0 },
+      { kind: "compaction", id: "compact-1", order: 1 },
+      { kind: "message", id: "later-assistant", order: 2 },
+    ]);
+    expect(state.messages).toEqual([
+      expect.objectContaining({ entryId: "old-assistant", apiUsage: expect.objectContaining({ id: "old-assistant" }) }),
+      expect.objectContaining({
+        entryId: "later-assistant",
+        apiUsage: expect.objectContaining({ id: "later-assistant" }),
+      }),
+    ]);
+  });
+
   it("adds a live persisted usage record once and replaces recursive statistics", () => {
     const record = {
       id: "entry-live",
@@ -332,6 +456,46 @@ describe("session reducer", () => {
     expect(persisted.messages).toHaveLength(1);
     expect(persisted.messages[0]).toMatchObject({ text: "answer", entryId: "entry-answer", apiUsage: record });
     expect(persisted.messages[0]?.usageOnly).not.toBe(true);
+  });
+
+  it("adds one live compaction timeline entry and reconciles its usage by persisted id", () => {
+    const record = {
+      id: "compact-live",
+      sessionId: "s1",
+      source: "compaction" as const,
+      timestamp: "2026-09-01T00:00:00.000Z",
+      anchor: { kind: "standalone" as const, afterEntryId: "assistant-1" },
+      usage: {
+        input: 10,
+        output: 2,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 12,
+        cacheHitRate: 0,
+        cost: { input: 0.2, output: 0.1, cacheRead: 0, cacheWrite: 0, total: 0.3 },
+      },
+    };
+    const event = {
+      type: "timeline_entry_appended",
+      entry: {
+        kind: "compaction",
+        entryId: "compact-live",
+        timestamp: "2026-09-01T00:00:00.000Z",
+        summary: "Live summary",
+      },
+      apiUsageRecord: record,
+    };
+
+    const added = reduceSessionEvent(emptyState, event as never);
+    const duplicate = reduceSessionEvent(added, event as never);
+
+    expect(duplicate.summaries).toEqual([
+      expect.objectContaining({
+        entryId: "compact-live",
+        summary: "Live summary",
+        apiUsage: record,
+      }),
+    ]);
   });
 
   it("hydrates native context usage and queued compaction state without estimating tokens", () => {

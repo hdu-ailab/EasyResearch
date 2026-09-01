@@ -754,6 +754,42 @@ describe("createStageSessionLauncher", () => {
     await handle.dispose();
   });
 
+  it("routes persisted timeline entries from stage extensions through the owner event stream", async () => {
+    const prompt = deferred<void>();
+    const session = new FakeStageSession("child-timeline", join(root, "child-timeline.jsonl"), prompt.promise);
+    const harness = dependencyHarness(session);
+    let publishTimelineEntry: ((entry: unknown) => void) | undefined;
+    harness.dependencies.createExtensionFactories = (runtime) => {
+      publishTimelineEntry = (runtime as typeof runtime & {
+        publishTimelineEntry?: (entry: unknown) => void;
+      }).publishTimelineEntry;
+      return [];
+    };
+    const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
+    const handle = await createStageSessionLauncher(harness.dependencies)(stageOptions(coordinator));
+    const events: JsonAgentSessionEvent[] = [];
+    handle.subscribe((event) => events.push(event));
+    const entry = {
+      type: "compaction",
+      id: "compact-child",
+      parentId: "assistant-child",
+      timestamp: "2026-09-01T00:00:00.000Z",
+      summary: "Child summary",
+      firstKeptEntryId: "user-child",
+      tokensBefore: 100,
+    };
+
+    expect(publishTimelineEntry).toBeTypeOf("function");
+    publishTimelineEntry?.(entry);
+    expect(events).toContainEqual({ type: "entry_appended", entry });
+
+    session.emitAssistantEndAndPersist();
+    await handle.materialized;
+    prompt.resolve();
+    await handle.completion;
+    await handle.dispose();
+  });
+
   it("replays synchronous prompt-start events once to the first owner subscriber", async () => {
     const prompt = deferred<void>();
     const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);

@@ -66,6 +66,7 @@ type Panel = "files" | "agents" | null;
 const emptyView: SessionViewState = {
   messages: [],
   tools: [],
+  summaries: [],
   hydrationRevision: 0,
   isStreaming: false,
   error: null,
@@ -107,19 +108,34 @@ function mergeChildView(snapshot: SessionViewState, live: SessionViewState): Ses
   const entries = [
     ...snapshot.messages.map((value) => ({ kind: "message" as const, value })),
     ...snapshot.tools.map((value) => ({ kind: "tool" as const, value })),
+    ...snapshot.summaries.map((value) => ({ kind: "summary" as const, value })),
   ].sort((a, b) => a.value.order - b.value.order);
-  const positions = new Map(entries.map((entry, index) => [`${entry.kind}:${entry.value.key}`, index]));
+  const identityKeys = (entry: (typeof entries)[number]): string[] => [
+    `${entry.kind}:key:${entry.value.key}`,
+    ...(entry.kind === "message" && "entryId" in entry.value && entry.value.entryId
+      ? [`message:entry:${entry.value.entryId}`]
+      : []),
+    ...(entry.kind === "message" && "identity" in entry.value && entry.value.identity
+      ? [`message:identity:${entry.value.identity}`]
+      : []),
+  ];
+  const positions = new Map<string, number>();
+  for (const [index, entry] of entries.entries()) {
+    for (const key of identityKeys(entry)) positions.set(key, index);
+  }
   for (const entry of [
     ...live.messages.map((value) => ({ kind: "message" as const, value })),
     ...live.tools.map((value) => ({ kind: "tool" as const, value })),
+    ...live.summaries.map((value) => ({ kind: "summary" as const, value })),
   ].sort((a, b) => a.value.order - b.value.order)) {
-    const key = `${entry.kind}:${entry.value.key}`;
-    const position = positions.get(key);
+    const keys = identityKeys(entry);
+    const position = keys.map((key) => positions.get(key)).find((value) => value !== undefined);
     if (position === undefined) {
-      positions.set(key, entries.length);
+      for (const key of keys) positions.set(key, entries.length);
       entries.push(entry);
     } else {
       entries[position] = entry;
+      for (const key of keys) positions.set(key, position);
     }
   }
   const ordered = entries.map((entry, order) => ({ kind: entry.kind, value: { ...entry.value, order } }));
@@ -131,6 +147,9 @@ function mergeChildView(snapshot: SessionViewState, live: SessionViewState): Ses
     tools: ordered
       .filter((entry) => entry.kind === "tool")
       .map((entry) => entry.value as SessionViewState["tools"][number]),
+    summaries: ordered
+      .filter((entry) => entry.kind === "summary")
+      .map((entry) => entry.value as SessionViewState["summaries"][number]),
     isStreaming: live.isStreaming,
     error: live.error,
     retry: live.retry,
@@ -537,6 +556,8 @@ export function WorkPage({
   const activeMessages = activeTab === RESEARCH_ASSISTANT_AGENT ? sessionView.messages : (activeView?.messages ?? []);
   const activeTools =
     activeTab === RESEARCH_ASSISTANT_AGENT ? sessionView.tools : activeChildId ? (activeView?.tools ?? []) : [];
+  const activeSummaries =
+    activeTab === RESEARCH_ASSISTANT_AGENT ? sessionView.summaries : (activeView?.summaries ?? []);
   const statusPriority: Record<AgentStatus, number> = { idle: 0, error: 1, working: 2 };
   const supervisedTools = [sessionView, ...Object.values(childViews)].flatMap((view) =>
     view.tools.filter((tool) => tool.name === "subagent"),
@@ -585,7 +606,7 @@ export function WorkPage({
               isStreaming: false,
               status: "ready",
             },
-            messages: snapshot.messages,
+            timeline: snapshot.timeline,
             subagents: snapshot.subagents,
             inlineUsage: snapshot.inlineUsage,
           });
@@ -1061,6 +1082,7 @@ export function WorkPage({
             ref={transcriptRef}
             messages={activeMessages}
             tools={activeTools}
+            summaries={activeSummaries}
             emptyHint={activeTab === RESEARCH_ASSISTANT_AGENT ? undefined : t("work.noMessagesYet")}
             pending={pendingOutput && activeTab === RESEARCH_ASSISTANT_AGENT}
             onViewDetails={openSubagentTool}

@@ -2582,6 +2582,7 @@ describe("real filesystem configuration acceptance", () => {
 
     writeFileSync(agentPath, "---\nname: [\n---\nBROKEN_HOST\n", "utf8");
     writeFileSync(skillPath, skillMarkdown(skillName, "TX_SKILL_V2"), "utf8");
+    await state.live.synchronize();
     await vi.waitFor(() => expect(state.live.error).toMatch(/configuration/i), {
       timeout: 10_000,
       interval: 20,
@@ -2590,6 +2591,7 @@ describe("real filesystem configuration acceptance", () => {
     expect((await state.live.resolveAgents()).find((agent) => agent.name === agentName)).toBeUndefined();
 
     writeFileSync(agentPath, agentMarkdown(agentName, "TX_V2", [skillName]), "utf8");
+    await state.live.synchronize();
     await waitForGeneration(state.live, baseline + 2);
 
     expect(state.live.error).toBeNull();

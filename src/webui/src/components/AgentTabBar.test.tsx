@@ -45,7 +45,7 @@ describe("AgentTabBar", () => {
     expect(props.onSelect).not.toHaveBeenCalled();
   });
 
-  it("renders separate Close and Stop controls for a running retained UUID tab", async () => {
+  it("renders one X that stops and closes a running retained UUID tab", async () => {
     const retained = tab({
       key: "session:child-uuid",
       sessionId: "child-uuid",
@@ -55,19 +55,16 @@ describe("AgentTabBar", () => {
     const { props } = renderTabs([retained], retained.key);
 
     const select = screen.getByRole("button", { name: "Agent search job #4" });
-    const close = screen.getByRole("button", { name: "Close agent tab: search job #4" });
-    const stop = screen.getByRole("button", { name: "Stop agent: search job #4" });
-    expect(select.contains(close)).toBe(false);
-    expect(select.contains(stop)).toBe(false);
-    expect(select.parentElement).toBe(close.parentElement);
-    expect(select.parentElement).toBe(stop.parentElement);
+    const action = screen.getByRole("button", { name: "Stop and close agent: search job #4" });
+    expect(select.contains(action)).toBe(false);
+    expect(select.parentElement).toBe(action.parentElement);
+    expect(screen.queryByRole("button", { name: "Close agent tab: search job #4" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Stop agent: search job #4" })).toBeNull();
 
     const user = userEvent.setup();
-    await user.click(close);
-    expect(props.onClose).toHaveBeenCalledWith("session:child-uuid");
-    expect(props.onStop).not.toHaveBeenCalled();
-    await user.click(stop);
+    await user.click(action);
     expect(props.onStop).toHaveBeenCalledWith("call-1");
+    expect(props.onClose).toHaveBeenCalledWith("session:child-uuid");
   });
 
   it("uses opaque Agent ids unchanged for unique accessible labels", () => {
@@ -84,8 +81,8 @@ describe("AgentTabBar", () => {
 
     expect(screen.getByRole("button", { name: "Agent opaque::alpha/1" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Agent opaque::beta 2" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Close agent tab: opaque::alpha/1" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Stop agent: opaque::beta 2" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Stop and close agent: opaque::alpha/1" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Stop and close agent: opaque::beta 2" })).toBeVisible();
   });
 
   it("shows terminal Error text and warning dot without a Stop control", () => {

@@ -52,9 +52,17 @@ vi.mock("./api", async (importOriginal) => {
 
 const workSnapshot = {
   session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready", sessionFile: "/store/s1.jsonl" },
-  messages: [
-    { role: "user", content: [{ type: "text", text: "write a paper" }] },
-    { role: "assistant", content: [{ type: "text", text: "starting research" }] },
+  timeline: [
+    {
+      kind: "message",
+      entryId: "user-1",
+      message: { role: "user", content: [{ type: "text", text: "write a paper" }] },
+    },
+    {
+      kind: "message",
+      entryId: "assistant-1",
+      message: { role: "assistant", content: [{ type: "text", text: "starting research" }] },
+    },
   ],
 } as never;
 

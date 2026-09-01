@@ -5,6 +5,7 @@ import type { LiveConfiguration } from "../runtime/live-configuration";
 import type { SubagentCoordinator } from "../subagent/coordinator";
 import type { SubagentSupervisor } from "../subagent/supervisor";
 import { ManualCompactionController } from "../web/manual-compaction";
+import { SessionStatsNotifier } from "../web/session-stats";
 import { createResearchAssistantExtensions, type ResearchAssistantExtensionRuntime } from "./index";
 
 function binding(tools: string[]): AgentRuntimeBinding {
@@ -22,6 +23,8 @@ function runtime(label: string, tools = ["read"]): ResearchAssistantExtensionRun
     coordinator: { label } as unknown as SubagentCoordinator,
     supervisor: { label } as unknown as SubagentSupervisor,
     compaction: new ManualCompactionController(),
+    stats: new SessionStatsNotifier(),
+    publishTimelineEntry: vi.fn(),
   };
 }
 
@@ -32,6 +35,7 @@ describe("bundled extension runtime builder", () => {
     expect(extensions.length).toBeGreaterThan(0);
     expect(extensions.map(({ name }) => name)).not.toContain("agent-status");
     expect(extensions.map(({ name }) => name)).toContain("ssh-bash");
+    expect(extensions.map(({ name }) => name)).toContain("session-stats");
     for (const extension of extensions) {
       expect(extension.name.length).toBeGreaterThan(0);
       expect(typeof extension.factory).toBe("function");
@@ -58,6 +62,51 @@ describe("bundled extension runtime builder", () => {
     await loading;
     expect(registerTool).toHaveBeenCalledTimes(1);
     expect(registerTool.mock.calls[0]?.[0].name).toBe("web-search");
+  });
+
+  it("forwards exact persisted summary entries without appending plugin state", async () => {
+    const owner = runtime("root-a") as ResearchAssistantExtensionRuntime & {
+      publishTimelineEntry: ReturnType<typeof vi.fn>;
+    };
+    const extension = createResearchAssistantExtensions(owner)
+      .find((entry) => entry.name === "session-timeline");
+
+    expect(extension).toBeDefined();
+    if (!extension) return;
+
+    const handlers = new Map<string, (event: any) => void>();
+    const appendEntry = vi.fn();
+    await extension.factory({
+      on: vi.fn((event: string, handler: (value: any) => void) => handlers.set(event, handler)),
+      appendEntry,
+    } as never);
+    const compactionEntry = {
+      type: "compaction",
+      id: "compact-1",
+      parentId: "assistant-2",
+      timestamp: "2026-09-01T00:00:00.000Z",
+      summary: "Compressed context",
+      firstKeptEntryId: "user-2",
+      tokensBefore: 100,
+    };
+    const branchSummaryEntry = {
+      type: "branch_summary",
+      id: "branch-1",
+      parentId: "user-3",
+      timestamp: "2026-09-01T00:01:00.000Z",
+      fromId: "assistant-side",
+      summary: "Abandoned branch",
+    };
+
+    handlers.get("session_compact")?.({ type: "session_compact", compactionEntry });
+    handlers.get("session_tree")?.({ type: "session_tree", summaryEntry: branchSummaryEntry });
+    handlers.get("session_tree")?.({ type: "session_tree" });
+
+    expect(owner.publishTimelineEntry.mock.calls).toEqual([
+      [compactionEntry],
+      [branchSummaryEntry],
+    ]);
+    expect(appendEntry).not.toHaveBeenCalled();
   });
 
   it("applies the binding supplied to that registry instance", async () => {

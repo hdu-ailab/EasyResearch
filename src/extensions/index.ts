@@ -9,6 +9,8 @@ import webSearchExtension from "./web-search";
 import webFetchExtension from "./webfetch";
 import { createWebTreeExtension } from "./web-tree";
 import { createSessionNameExtension } from "./session-name";
+import { createSessionTimelineExtension } from "./session-timeline";
+import { createSessionStatsExtension } from "./session-stats";
 import type { SubagentCoordinator } from "../subagent/coordinator";
 import type { SubagentSupervisor } from "../subagent/supervisor";
 import type { CreateSubagentToolOptions } from "../subagent/tool";
@@ -17,6 +19,7 @@ import {
   createManualCompactionExtension,
   type ManualCompactionController,
 } from "../web/manual-compaction";
+import type { SessionStatsNotifier } from "../web/session-stats";
 
 /**
  * Bundled extensions mounted as named inline factories in Research Assistant
@@ -26,9 +29,10 @@ import {
  * are never loaded from runtime filesystem paths (ADR-073).
  *
  * ADR-063: the former monolithic research-assistant extension is atomized. Each
- * entry below owns exactly one responsibility (definition application, subagent
- * dispatch, welcome banner, event logger, project trust, or Web tools). Agent
- * status transport is owned by the runtime supervisor (ADR-087).
+ * entry below owns exactly one responsibility (definition application,
+ * subagent dispatch, timeline publication, welcome banner, event logger,
+ * project trust, or Web tools). Agent status transport is owned by the runtime
+ * supervisor (ADR-087).
  *
  * Stage factories are assembled lazily by `subagent/stage-session.ts` to avoid
  * a static cycle through the dispatch tool.
@@ -52,6 +56,8 @@ export interface ResearchAssistantExtensionRuntime {
   coordinator: SubagentCoordinator;
   supervisor: SubagentSupervisor;
   compaction: ManualCompactionController;
+  stats: SessionStatsNotifier;
+  publishTimelineEntry: (entry: unknown) => void;
 }
 
 export function createResearchAssistantExtensions(runtime: ResearchAssistantExtensionRuntime): BundledExtension[] {
@@ -67,6 +73,14 @@ export function createResearchAssistantExtensions(runtime: ResearchAssistantExte
     {
       name: "manual-compaction",
       factory: createManualCompactionExtension(runtime.compaction),
+    },
+    {
+      name: "session-stats",
+      factory: createSessionStatsExtension(runtime.stats),
+    },
+    {
+      name: "session-timeline",
+      factory: createSessionTimelineExtension(runtime.publishTimelineEntry),
     },
     {
       name: "subagent-dispatch",

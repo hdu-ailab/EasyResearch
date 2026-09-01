@@ -33,7 +33,6 @@ export class ManualCompactionController {
   private installedStopAfterTurn: StopAfterTurn | undefined;
   private disposed = false;
   private readonly listeners = new Set<(state: ManualCompactionState) => void>();
-  private readonly statsListeners = new Set<() => void>();
 
   attach(session: ManualCompactionSession): void {
     if (this.disposed) throw new Error("Manual compaction controller has been disposed");
@@ -103,15 +102,6 @@ export class ManualCompactionController {
     return () => this.listeners.delete(listener);
   }
 
-  subscribeStats(listener: () => void): () => void {
-    this.statsListeners.add(listener);
-    return () => this.statsListeners.delete(listener);
-  }
-
-  notifyStatsChanged(): void {
-    for (const listener of this.statsListeners) listener();
-  }
-
   async cancel(): Promise<void> {
     const session = this.session;
     const hadPending = this.pending !== undefined;
@@ -132,7 +122,6 @@ export class ManualCompactionController {
       session.agent.shouldStopAfterTurn = this.previousStopAfterTurn;
     }
     this.listeners.clear();
-    this.statsListeners.clear();
     this.session = undefined;
     this.disposed = true;
   }
@@ -214,15 +203,11 @@ export class ManualCompactionController {
 }
 
 export function createManualCompactionExtension(
-  controller: Pick<ManualCompactionController, "onAgentEnd" | "notifyStatsChanged">,
+  controller: Pick<ManualCompactionController, "onAgentEnd">,
 ): ExtensionFactory {
   return (pi: ExtensionAPI) => {
     pi.on("agent_end", async () => {
       await controller.onAgentEnd();
     });
-    const notifyStatsChanged = () => controller.notifyStatsChanged();
-    pi.on("agent_settled", notifyStatsChanged);
-    pi.on("session_tree", notifyStatsChanged);
-    pi.on("session_compact", notifyStatsChanged);
   };
 }

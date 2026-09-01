@@ -4,7 +4,7 @@ import { createRef, type ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { STORAGE_KEY, type WebUiPreferences, writePreferences } from "../preferences";
 import { PreferencesProvider } from "../preferences/PreferencesProvider";
-import type { SessionMessageView, ToolView } from "../session-reducer";
+import type { SessionMessageView, SessionSummaryView, ToolView } from "../session-reducer";
 import {
   fireTranscriptGrowth,
   hydrateTranscript,
@@ -168,6 +168,80 @@ describe("ChatTranscript", () => {
       expect(details).not.toHaveTextContent(/Reasoning/i);
       expect(details).not.toHaveTextContent(/tokens|tracked records/i);
     }
+  });
+
+  it("keeps a compaction disclosure in timeline order and reveals its Markdown independently from usage", async () => {
+    const user = userEvent.setup();
+    const record = {
+      id: "compact-1",
+      sessionId: "s1",
+      source: "compaction" as const,
+      timestamp: "2026-09-01T00:00:00.000Z",
+      anchor: { kind: "standalone" as const, afterEntryId: "before" },
+      usage: {
+        input: 10,
+        output: 2,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 12,
+        cacheHitRate: 0,
+        cost: { input: 0.2, output: 0.1, cacheRead: 0, cacheWrite: 0, total: 0.3 },
+      },
+    };
+    const messages = [
+      msg({ key: "before", entryId: "before", text: "before answer", order: 0 }),
+      msg({ key: "after", entryId: "after", text: "after answer", order: 2 }),
+    ];
+    const summaries: SessionSummaryView[] = [
+      {
+        key: "summary:compact-1",
+        entryId: "compact-1",
+        kind: "compaction",
+        summary: "Compressed **Markdown**",
+        apiUsage: record,
+        order: 1,
+      },
+    ];
+    const view = renderTranscript(
+      <ChatTranscript messages={messages} tools={[]} summaries={summaries} showApiUsageDetails={false} />,
+    );
+
+    const disclosure = screen.getByRole("button", { name: "Session compacted" });
+    expect(disclosure).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("Markdown")).toBeNull();
+    expect(screen.queryByLabelText("API usage details")).toBeNull();
+    const transcriptText = screen.getByLabelText("Conversation").textContent ?? "";
+    expect(transcriptText.indexOf("before answer")).toBeLessThan(transcriptText.indexOf("Session compacted"));
+    expect(transcriptText.indexOf("Session compacted")).toBeLessThan(transcriptText.indexOf("after answer"));
+
+    await user.click(disclosure);
+    expect(screen.getByText("Markdown")).toBeVisible();
+    expect(disclosure).toHaveAttribute("aria-expanded", "true");
+
+    view.rerender(<ChatTranscript messages={messages} tools={[]} summaries={summaries} showApiUsageDetails />);
+    expect(screen.getByLabelText("API usage details")).toHaveTextContent("$0.3000");
+  });
+
+  it("keeps a malformed compaction marker expandable with an unavailable summary state", async () => {
+    const user = userEvent.setup();
+    renderTranscript(
+      <ChatTranscript
+        messages={[]}
+        tools={[]}
+        summaries={[
+          {
+            key: "summary:malformed",
+            entryId: "malformed",
+            kind: "compaction",
+            order: 0,
+          },
+        ]}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Session compacted" }));
+
+    expect(screen.getByText("Compaction summary unavailable")).toBeVisible();
   });
 
   it("does not pin the measured row height so content shrink re-measures", () => {

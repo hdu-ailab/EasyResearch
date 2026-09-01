@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionTreeNode } from "@earendil-works/pi-coding-agent";
 import { ActiveSessionRegistry, UnknownSessionError } from "./active-sessions";
 import { assertSafeExtensionSources } from "../runtime/extensions-guard";
@@ -69,6 +68,7 @@ class FakeAdapter implements SessionAdapter {
   };
   navigateCalls: string[] = [];
   steeringResult: string[] = [];
+  timelineResult: Awaited<ReturnType<SessionAdapter["getTranscriptSnapshot"]>>["timeline"] = [];
   contextUsage: { tokens: number | null; contextWindow: number; percent: number | null } | undefined;
   compactionState: "idle" | "queued" | "running" = "idle";
   compactionPolicy = { triggerPercent: 70, enabled: true };
@@ -112,11 +112,8 @@ class FakeAdapter implements SessionAdapter {
     if (this.getStateImpl) return this.getStateImpl();
     return { ...fakeState, ...this.stateOverrides, sessionId: `sess-${++FakeAdapter.nextId}`, sessionFile: this.options.sessionPath ?? sessionPath };
   }
-  async getMessages(): Promise<AgentMessage[]> {
-    return [];
-  }
-  getInlineUsage() {
-    return [];
+  async getTranscriptSnapshot() {
+    return { timeline: this.timelineResult, inlineUsage: [] };
   }
   getSteeringMessages(): readonly string[] {
     return this.steeringResult;
@@ -745,16 +742,16 @@ describe("ActiveSessionRegistry", () => {
     await expect(registry.snapshot(created.id)).rejects.toThrow(UnknownSessionError);
   });
 
-  it("snapshots an errored session without reading messages after state fails", async () => {
+  it("snapshots an errored session without reading the timeline after state fails", async () => {
     const created = await registry.create({ cwd });
     const adapter = factory.created[0]!;
-    const broken = vi.spyOn(adapter, "getMessages");
+    const broken = vi.spyOn(adapter, "getTranscriptSnapshot");
     adapter.getStateError = new Error("state unavailable");
     const snapshot = await registry.snapshot(created.id);
     expect(broken).not.toHaveBeenCalled();
     expect(snapshot.session.status).toBe("error");
     expect(snapshot.session.error).toBe("state unavailable");
-    expect(snapshot.messages).toEqual([]);
+    expect(snapshot.timeline).toEqual([]);
   });
 
   it("restarts with the same session path in a replacement adapter", async () => {

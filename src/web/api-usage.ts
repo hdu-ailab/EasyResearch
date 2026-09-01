@@ -201,32 +201,6 @@ export function projectSessionUsage(
   };
 }
 
-export function attachMessageEntryIds<T extends { role?: unknown; timestamp?: unknown }>(
-  messages: readonly T[],
-  branchEntries: readonly unknown[],
-): T[] {
-  const candidates = branchEntries.filter((entry): entry is { id: string; message: T } =>
-    isRecord(entry)
-    && entry.type === "message"
-    && typeof entry.id === "string"
-    && isRecord(entry.message));
-  const used = new Set<number>();
-  return messages.map((message) => {
-    let index = candidates.findIndex((entry, candidateIndex) =>
-      !used.has(candidateIndex) && entry.message === message);
-    if (index < 0) {
-      index = candidates.findIndex((entry, candidateIndex) =>
-        !used.has(candidateIndex)
-        && entry.message.role === message.role
-        && entry.message.timestamp === message.timestamp);
-    }
-    if (index < 0) return message;
-    used.add(index);
-    const candidate = candidates[index];
-    return candidate ? { ...message, id: candidate.id } : message;
-  });
-}
-
 function copyTotals(source: ApiUsageTotalsDto): ApiUsageTotalsDto {
   return { ...source, cost: { ...source.cost } };
 }

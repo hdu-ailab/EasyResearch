@@ -159,6 +159,7 @@ export interface StageExtensionRuntime {
   } & Partial<Pick<LiveConfiguration, "compactionPolicy">>;
   coordinator: SubagentCoordinator;
   supervisor: SubagentSupervisor;
+  publishTimelineEntry: (entry: unknown) => void;
 }
 
 export interface StageSessionDependencies {
@@ -272,6 +273,10 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
     let setupSupervisorDisposed = false;
     let setupSessionDisposed = false;
     let setupBindingDisposed = false;
+    const pendingTimelineEntries: unknown[] = [];
+    let publishTimelineEntry: (entry: unknown) => void = (entry) => {
+      pendingTimelineEntries.push(entry);
+    };
 
     const retrySetupCleanup = async (): Promise<void> => {
       await runCleanupSteps([
@@ -370,6 +375,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
           liveConfiguration: options.liveConfiguration,
           coordinator: options.coordinator,
           supervisor,
+          publishTimelineEntry: (entry) => publishTimelineEntry(entry),
         }),
         noSkills: true,
         additionalSkillPaths: [],
@@ -482,6 +488,10 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         if (!ownerSubscribed) pendingOwnerEvents.push(event);
         else for (const listener of listeners) deliver(listener, event);
       };
+      publishTimelineEntry = (entry) => {
+        publishOwnerEvent({ type: "entry_appended", entry } as JsonAgentSessionEvent);
+      };
+      for (const entry of pendingTimelineEntries.splice(0)) publishTimelineEntry(entry);
 
       unsubscribe = session.subscribe((rawEvent) => {
         const agentEvent = rawEvent as AgentSessionEvent;
@@ -737,6 +747,7 @@ async function resolveDefaultStageSessionLauncher(): Promise<StageSessionLaunche
   const { default: webSearchExtension } = await import("../extensions/web-search");
   const { default: webFetchExtension } = await import("../extensions/webfetch");
   const { createSshBashExtension } = await import("../extensions/ssh-bash");
+  const { createSessionTimelineExtension } = await import("../extensions/session-timeline");
   const { SubagentSupervisor } = await import("./supervisor");
   const agentDir = getAgentDir();
   return createStageSessionLauncher({
@@ -765,7 +776,13 @@ async function resolveDefaultStageSessionLauncher(): Promise<StageSessionLaunche
       coordinator,
       launchStage: launchStageSession,
     }),
-    createExtensionFactories: ({ binding, liveConfiguration, coordinator, supervisor }) => [
+    createExtensionFactories: ({
+      binding,
+      liveConfiguration,
+      coordinator,
+      supervisor,
+      publishTimelineEntry,
+    }) => [
       ...(binding.current().name === "experiment"
         ? [{ name: "ssh-bash", factory: createSshBashExtension({ allowConfigure: false }) }]
         : []),
@@ -782,6 +799,7 @@ async function resolveDefaultStageSessionLauncher(): Promise<StageSessionLaunche
           supervisor,
         }),
       },
+      { name: "session-timeline", factory: createSessionTimelineExtension(publishTimelineEntry) },
       { name: "web-search", factory: webSearchExtension },
       { name: "webfetch", factory: webFetchExtension },
     ],

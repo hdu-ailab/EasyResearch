@@ -443,7 +443,7 @@ describe("api transport", () => {
         JSON.stringify({
           session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
           runtimeConfigurationGeneration: 1,
-          messages: [],
+          timeline: [],
           subagents: [],
           compactionPolicy: { triggerPercent: 70, enabled: true },
         }),
