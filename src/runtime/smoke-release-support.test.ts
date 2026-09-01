@@ -8,13 +8,18 @@ import {
   assertPathFreeSessionEvent,
   buildWindowsShutdownLauncherScript,
   buildWindowsShutdownScript,
+  captureSmokeCompletionActivityBaseline,
   collectLaunchOutput,
   createCompiledChildEnv,
   fetchSessionEventsBeforeDeadline,
   finishSmokeCleanup,
+  isSmokeSessionReadyAfter,
   parseRecordedPid,
+  parseSmokeInitialSessionSnapshot,
   readTextFileWithRetry,
   recordSmokeAcceptanceMilestone,
+  recordSmokeSessionActivityReplacement,
+  requestSmokeJsonBeforeDeadline,
   requireZeroProcessStatus,
   resolveSmokePowerShell,
   resolveSmokePython,
@@ -23,6 +28,7 @@ import {
   selectSmokeModelAction,
   type SmokeModelScenario,
   type SmokeModelState,
+  type SmokeSessionActivityTracker,
   settleProcess,
   skillVenvPython,
   validateFirstRunVenv,
@@ -84,6 +90,204 @@ describe("assertPathFreeSessionEvent", () => {
       path: "/project/paper.md",
     })).toContain('"sessionFile":"/sessions/root.jsonl"');
   });
+
+  it.each([
+    {
+      type: "subagent_supervisor",
+      event: { type: "session_activity_changed", active: true },
+    },
+    {
+      type: "subagent_supervisor",
+      event: {
+        type: "subagent_supervisor",
+        event: { type: "session_activity_changed", status: "ready", isStreaming: true },
+      },
+    },
+    {
+      type: "subagent_supervisor",
+      event: { type: "session_activity_changed", status: "running", isStreaming: "true" },
+    },
+  ])("rejects a private or malformed nested activity frame: %j", (event) => {
+    expect(() => assertPathFreeSessionEvent(event)).toThrow(/activity|private/i);
+  });
+
+  it("accepts valid nested activity without treating its wrapper as a root replacement", () => {
+    const event = {
+      type: "subagent_supervisor",
+      event: {
+        type: "subagent_supervisor",
+        event: { type: "session_activity_changed", status: "running", isStreaming: false },
+      },
+    };
+    expect(() => assertPathFreeSessionEvent(event)).not.toThrow();
+    const state: SmokeSessionActivityTracker = { sequence: 4 };
+    expect(() => recordSmokeSessionActivityReplacement(state, event)).toThrow(/replacement.*type/i);
+    expect(state.sequence).toBe(4);
+  });
+});
+
+describe("native smoke public session activity", () => {
+  it("accepts a timeline snapshot with a valid public session state", () => {
+    expect(parseSmokeInitialSessionSnapshot({
+      type: "snapshot",
+      session: { id: "root", status: "ready", isStreaming: false },
+      timeline: [],
+    })).toEqual({ status: "ready", isStreaming: false });
+    expect(parseSmokeInitialSessionSnapshot({
+      type: "snapshot",
+      session: { id: "root", status: "running", isStreaming: true },
+      timeline: [
+        {
+          kind: "message",
+          entryId: "user-entry",
+          message: { role: "user", content: "hello" },
+        },
+        {
+          kind: "compaction",
+          entryId: "compaction-entry",
+          timestamp: "2026-09-01T00:00:00.000Z",
+          summary: "Earlier context",
+        },
+        {
+          kind: "branch-summary",
+          entryId: "branch-entry",
+          timestamp: "2026-09-01T00:01:00.000Z",
+        },
+      ],
+    })).toEqual({ status: "running", isStreaming: true });
+  });
+
+  it("rejects legacy messages and malformed initial snapshot state", () => {
+    expect(() => parseSmokeInitialSessionSnapshot({
+      type: "snapshot",
+      session: { status: "ready", isStreaming: false },
+      messages: [],
+    })).toThrow(/timeline/i);
+    expect(() => parseSmokeInitialSessionSnapshot({
+      type: "snapshot",
+      session: { status: "ready", isStreaming: false },
+      timeline: [],
+      messages: [],
+    })).toThrow(/legacy messages/i);
+    expect(() => parseSmokeInitialSessionSnapshot({
+      type: "snapshot",
+      session: { status: "ready", isStreaming: true },
+      timeline: [],
+    })).toThrow(/activity|streaming/i);
+  });
+
+  it.each([
+    { kind: "message", message: { role: "user" } },
+    { kind: "message", entryId: "", message: { role: "user" } },
+    { kind: "message", entryId: "message", message: null },
+    { kind: "message", entryId: "message", message: {} },
+    { kind: "message", entryId: "message", message: { role: "" } },
+    { kind: "message", entryId: "message", message: { role: 1 } },
+    { kind: "compaction", entryId: "compaction", timestamp: "" },
+    { kind: "compaction", entryId: "compaction", timestamp: "not-a-date" },
+    {
+      kind: "compaction",
+      entryId: "compaction",
+      timestamp: "2026-09-01T00:00:00.000Z",
+      summary: 42,
+    },
+    { kind: "branch-summary", entryId: "", timestamp: "2026-09-01T00:00:00.000Z" },
+    { kind: "branch-summary", entryId: "branch" },
+    { kind: "unknown", entryId: "unknown" },
+  ])("rejects a malformed initial timeline entry: %j", (entry) => {
+    expect(() => parseSmokeInitialSessionSnapshot({
+      type: "snapshot",
+      session: { status: "ready", isStreaming: false },
+      timeline: [entry],
+    })).toThrow(/timeline/i);
+  });
+
+  it("tracks ordered public replacements and requires a post-baseline ready pair", () => {
+    let state: SmokeSessionActivityTracker = {
+      sequence: 0,
+      latest: { status: "ready", isStreaming: false },
+    };
+
+    state = recordSmokeSessionActivityReplacement(state, {
+      type: "session_activity_changed",
+      status: "running",
+      isStreaming: true,
+    });
+    const baseline = state.sequence;
+    expect(isSmokeSessionReadyAfter(state, baseline)).toBe(false);
+
+    state = recordSmokeSessionActivityReplacement(state, {
+      type: "session_activity_changed",
+      status: "running",
+      isStreaming: false,
+    });
+    expect(isSmokeSessionReadyAfter(state, baseline)).toBe(false);
+
+    state = recordSmokeSessionActivityReplacement(state, {
+      type: "session_activity_changed",
+      status: "ready",
+      isStreaming: false,
+    });
+    expect(state).toEqual({
+      sequence: baseline + 2,
+      latest: { status: "ready", isStreaming: false },
+    });
+    expect(isSmokeSessionReadyAfter(state, baseline)).toBe(true);
+  });
+
+  it("captures completion after an early ready and requires a later ready replacement", () => {
+    let state: SmokeSessionActivityTracker = { sequence: 0 };
+    state = recordSmokeSessionActivityReplacement(state, {
+      type: "session_activity_changed",
+      status: "running",
+      isStreaming: true,
+    });
+    const dispatchBaseline = state.sequence;
+    state = recordSmokeSessionActivityReplacement(state, {
+      type: "session_activity_changed",
+      status: "ready",
+      isStreaming: false,
+    });
+    expect(isSmokeSessionReadyAfter(state, dispatchBaseline)).toBe(true);
+
+    let completionBaseline = captureSmokeCompletionActivityBaseline({
+      baseline: undefined,
+      activitySequence: state.sequence,
+      milestonesComplete: false,
+    });
+    expect(completionBaseline).toBeUndefined();
+    completionBaseline = captureSmokeCompletionActivityBaseline({
+      baseline: completionBaseline,
+      activitySequence: state.sequence,
+      milestonesComplete: true,
+    });
+    expect(completionBaseline).toBe(state.sequence);
+    expect(isSmokeSessionReadyAfter(state, completionBaseline!)).toBe(false);
+
+    state = recordSmokeSessionActivityReplacement(state, {
+      type: "session_activity_changed",
+      status: "ready",
+      isStreaming: false,
+    });
+    expect(captureSmokeCompletionActivityBaseline({
+      baseline: completionBaseline,
+      activitySequence: state.sequence,
+      milestonesComplete: true,
+    })).toBe(completionBaseline);
+    expect(isSmokeSessionReadyAfter(state, completionBaseline!)).toBe(true);
+  });
+
+  it.each([
+    { type: "session_activity_changed", active: true },
+    { type: "session_activity_changed", active: false, status: "ready", isStreaming: false },
+    { type: "session_activity_changed", status: "ready", isStreaming: true },
+    { type: "session_activity_changed", status: "ready" },
+    { type: "session_activity_changed", status: "running", isStreaming: "true" },
+    { type: "session_activity_changed", status: "stopped", isStreaming: false },
+  ])("rejects a private or malformed activity replacement: %j", (event) => {
+    expect(() => recordSmokeSessionActivityReplacement({ sequence: 0 }, event))
+      .toThrow(/activity|private|replacement/i);
+  });
 });
 
 describe("fetchSessionEventsBeforeDeadline", () => {
@@ -102,6 +306,92 @@ describe("fetchSessionEventsBeforeDeadline", () => {
 
     await expect(pending).rejects.toThrow("session SSE subscription did not finish before the native smoke deadline");
     expect(observedSignal?.aborted).toBe(true);
+  });
+
+  it("bounds a stalled final dispatch POST with its request inputs and deadline message", async () => {
+    let observedInit: RequestInit | undefined;
+    let observedSignal: AbortSignal | undefined;
+    const timeoutMessage = "post-reload custom Agent dispatch did not finish before the native smoke deadline";
+    const pending = fetchSessionEventsBeforeDeadline({
+      url: "http://127.0.0.1:3000/api/sessions/root/messages",
+      deadline: Date.now() + 20,
+      init: {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "launch smoke-reviewer" }),
+      },
+      timeoutMessage,
+      fetch: async (_input, init) => {
+        observedInit = init;
+        observedSignal = init?.signal instanceof AbortSignal ? init.signal : undefined;
+        return await new Promise<Response>((_resolve, reject) => {
+          observedSignal?.addEventListener("abort", () => reject(observedSignal?.reason), { once: true });
+        });
+      },
+    });
+
+    await expect(pending).rejects.toThrow(timeoutMessage);
+    expect(observedInit).toMatchObject({
+      method: "POST",
+      body: JSON.stringify({ message: "launch smoke-reviewer" }),
+    });
+    expect(new Headers(observedInit?.headers).get("Content-Type")).toBe("application/json");
+    expect(observedSignal?.aborted).toBe(true);
+  });
+});
+
+describe("requestSmokeJsonBeforeDeadline", () => {
+  it("aborts and rejects when headers arrive but the response body never completes", async () => {
+    let observedSignal: AbortSignal | undefined;
+    const pending = requestSmokeJsonBeforeDeadline({
+      url: "http://127.0.0.1:3000/api/sessions/root/messages",
+      deadline: Date.now() + 20,
+      label: "post-reload custom Agent dispatch",
+      init: { method: "POST", body: "{}" },
+      fetch: async (_input, init) => {
+        observedSignal = init?.signal instanceof AbortSignal ? init.signal : undefined;
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("{"));
+          },
+        });
+        return new Response(body, {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    });
+
+    await expect(pending).rejects.toThrow(
+      "post-reload custom Agent dispatch did not finish before the native smoke deadline",
+    );
+    expect(observedSignal?.aborted).toBe(true);
+  });
+
+  it("parses a successful JSON body and accepts an empty success body", async () => {
+    await expect(requestSmokeJsonBeforeDeadline({
+      url: "http://127.0.0.1:3000/json",
+      deadline: Date.now() + 1_000,
+      label: "JSON smoke request",
+      fetch: async () => new Response(JSON.stringify({ ok: true }), { status: 200 }),
+    })).resolves.toEqual({ ok: true });
+    await expect(requestSmokeJsonBeforeDeadline({
+      url: "http://127.0.0.1:3000/empty",
+      deadline: Date.now() + 1_000,
+      label: "empty smoke request",
+      fetch: async () => new Response(null, { status: 204 }),
+    })).resolves.toBeUndefined();
+  });
+
+  it("retains labeled HTTP status and body diagnostics", async () => {
+    await expect(requestSmokeJsonBeforeDeadline({
+      url: "http://127.0.0.1:3000/failure",
+      deadline: Date.now() + 1_000,
+      label: "post-reload custom Agent dispatch",
+      fetch: async () => new Response("preflight rejected", { status: 503 }),
+    })).rejects.toThrow(
+      "post-reload custom Agent dispatch failed (503): preflight rejected",
+    );
   });
 });
 

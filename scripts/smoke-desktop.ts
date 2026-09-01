@@ -38,6 +38,7 @@ import {
   dmgDetachCommand,
   nsisInstallCommand,
   packagedApplicationPaths,
+  readyPersistedSessionPath,
   readDesktopSmokeEvents,
   removeDesktopSmokeRoot,
   reduceDesktopSmokeEvents,
@@ -55,6 +56,10 @@ const target = desktopTarget(targetArgument);
 const targetName: DesktopTargetName = target.name;
 assertNativeDesktopHost(targetName);
 const version = repoPackageVersion();
+const persistedHistorySentinels = {
+  user: "desktop smoke persisted history",
+  assistant: "desktop smoke persisted response",
+};
 const root = mkdtempSync(join(tmpdir(), "easyresearch-desktop-smoke-"));
 const home = join(root, "home");
 const agentDir = join(root, "agent");
@@ -108,8 +113,8 @@ const modelServer = Bun.serve({
   async fetch(request) {
     const payload = await request.json() as { messages?: unknown };
     const serializedMessages = JSON.stringify(payload.messages ?? []);
-    if (serializedMessages.includes("desktop smoke persisted history")) {
-      return completedModelResponse("desktop smoke persisted response");
+    if (serializedMessages.includes(persistedHistorySentinels.user)) {
+      return completedModelResponse(persistedHistorySentinels.assistant);
     }
     if (!serializedMessages.includes("Keep this deterministic desktop smoke request active")) {
       return new Response("Unexpected desktop smoke model request.", { status: 400 });
@@ -251,7 +256,7 @@ try {
   await requestJson(cliOrigin, `/api/sessions/${encodeURIComponent(created.id)}/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message: "desktop smoke persisted history" }),
+    body: JSON.stringify({ message: persistedHistorySentinels.user }),
   });
   let expectedSessionPath: string | undefined;
   await waitFor("CLI-created persisted session", async () => {
@@ -259,21 +264,11 @@ try {
       const snapshot = await requestJson(
         cliOrigin,
         `/api/sessions/${encodeURIComponent(created.id as string)}/snapshot`,
-      ) as {
-        session?: { sessionFile?: unknown; status?: unknown; isStreaming?: unknown };
-        messages?: unknown[];
-      };
-      if (
-        snapshot.session?.status !== "ready"
-        || snapshot.session.isStreaming !== false
-        || typeof snapshot.session.sessionFile !== "string"
-        || !Array.isArray(snapshot.messages)
-        || snapshot.messages.length < 2
-      ) {
-        return false;
-      }
-      expectedSessionPath = snapshot.session.sessionFile;
-      return existsSync(expectedSessionPath);
+      );
+      const sessionPath = readyPersistedSessionPath(snapshot, persistedHistorySentinels);
+      if (!sessionPath || !existsSync(sessionPath)) return false;
+      expectedSessionPath = sessionPath;
+      return true;
     } catch {
       return false;
     }
@@ -307,15 +302,10 @@ try {
 
   let runningState: ReturnType<typeof reduceDesktopSmokeEvents> | undefined;
   await waitFor("packaged desktop active Agent and hidden window", () => {
-    try {
-      const eventsPath = join(smokeDir, "events.jsonl");
-      if (!existsSync(eventsPath)) return false;
-      const state = reduceDesktopSmokeEvents(readDesktopSmokeEvents(eventsPath));
-      if (state.hidden && state.agentRunning && state.stateVisible) runningState = state;
-      return runningState !== undefined && modelRequestActive;
-    } catch {
-      return false;
-    }
+    const state = currentDesktopSmokeState(join(smokeDir, "events.jsonl"));
+    if (!state) return false;
+    if (state.hidden && state.agentRunning && state.stateVisible) runningState = state;
+    return runningState !== undefined && modelRequestActive;
   }, 120_000);
   const origin = runningState?.origin;
   if (!origin) throw new Error("Packaged desktop smoke did not report its origin.");
@@ -393,12 +383,8 @@ try {
     throw new Error(`Packaged desktop exited ${desktopExitCode}.\n${desktopStdout}\n${desktopStderr}`);
   }
   await waitFor("terminal desktop milestones", () => {
-    try {
-      const state = reduceDesktopSmokeEvents(readDesktopSmokeEvents(join(smokeDir, "events.jsonl")));
-      return state.stopped;
-    } catch {
-      return false;
-    }
+    const state = currentDesktopSmokeState(join(smokeDir, "events.jsonl"));
+    return state?.stopped ?? false;
   }, 30_000);
   await waitFor("model request cancellation", () => modelRequestAborted, 30_000);
   if (existsSync(join(agentDir, "server.lease"))) {
@@ -614,6 +600,22 @@ async function waitFor(
     await Bun.sleep(100);
   }
   throw new Error(`${label} did not complete within ${timeoutMs}ms.`);
+}
+
+function currentDesktopSmokeState(
+  eventsPath: string,
+): ReturnType<typeof reduceDesktopSmokeEvents> | undefined {
+  if (!existsSync(eventsPath)) return undefined;
+  let state: ReturnType<typeof reduceDesktopSmokeEvents>;
+  try {
+    state = reduceDesktopSmokeEvents(readDesktopSmokeEvents(eventsPath));
+  } catch {
+    return undefined;
+  }
+  if (state.failure) {
+    throw new Error(`Packaged desktop host reported failure: ${state.failure}`);
+  }
+  return state;
 }
 
 function isProcessAlive(pid: number): boolean {

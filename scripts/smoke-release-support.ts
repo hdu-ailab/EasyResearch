@@ -170,6 +170,7 @@ const VENV_SENTINEL = "easyresearch-venv-ok";
 const STAGE_COMPLETION = "complete\nArtifacts: none\nGaps: none\nNext action: none";
 
 export function assertPathFreeSessionEvent(event: unknown): string {
+  validateSmokeSessionActivityFrames(event);
   const serialized = JSON.stringify(event);
   if (serialized === undefined) throw new Error("session SSE emitted an unserializable empty frame");
   if (serialized.includes("<agent_handoff>")) {
@@ -181,25 +182,246 @@ export function assertPathFreeSessionEvent(event: unknown): string {
   return serialized;
 }
 
+export function validateSmokeSessionActivityFrames(event: unknown): void {
+  if (!event || typeof event !== "object" || Array.isArray(event)) return;
+  const value = event as { type?: unknown; event?: unknown };
+  if (value.type === "session_activity_changed") {
+    parseSmokeSessionActivity(value);
+    return;
+  }
+  if (value.type === "subagent_supervisor") {
+    validateSmokeSessionActivityFrames(value.event);
+  }
+}
+
+export interface SmokeSessionActivity {
+  status: "ready" | "running";
+  isStreaming: boolean;
+}
+
+export interface SmokeSessionActivityTracker {
+  sequence: number;
+  latest?: SmokeSessionActivity;
+}
+
+export function captureSmokeCompletionActivityBaseline(options: {
+  baseline: number | undefined;
+  activitySequence: number;
+  milestonesComplete: boolean;
+}): number | undefined {
+  if (!Number.isSafeInteger(options.activitySequence) || options.activitySequence < 0) {
+    throw new Error("native smoke completion activity sequence is invalid");
+  }
+  if (
+    options.baseline !== undefined
+    && (
+      !Number.isSafeInteger(options.baseline)
+      || options.baseline < 0
+      || options.baseline > options.activitySequence
+    )
+  ) {
+    throw new Error("native smoke completion activity baseline is invalid");
+  }
+  if (options.baseline !== undefined) return options.baseline;
+  return options.milestonesComplete ? options.activitySequence : undefined;
+}
+
+export function parseSmokeInitialSessionSnapshot(snapshot: unknown): SmokeSessionActivity {
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+    throw new Error("native smoke initial session snapshot was not an object");
+  }
+  const value = snapshot as {
+    type?: unknown;
+    session?: unknown;
+    timeline?: unknown;
+    messages?: unknown;
+  };
+  if (value.type !== "snapshot") {
+    throw new Error("native smoke initial session snapshot had an invalid type");
+  }
+  if (!Array.isArray(value.timeline)) {
+    throw new Error("native smoke initial session snapshot did not expose timeline");
+  }
+  if (Object.hasOwn(value, "messages")) {
+    throw new Error("native smoke initial session snapshot exposed legacy messages");
+  }
+  validateSmokeInitialTimeline(value.timeline);
+  return parseSmokeSessionActivity(value.session);
+}
+
+function validateSmokeInitialTimeline(timeline: readonly unknown[]): void {
+  for (let index = 0; index < timeline.length; index += 1) {
+    const entry = timeline[index];
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error(`native smoke initial timeline entry ${index} was not an object`);
+    }
+    const value = entry as {
+      kind?: unknown;
+      entryId?: unknown;
+      message?: unknown;
+      timestamp?: unknown;
+      summary?: unknown;
+    };
+    if (typeof value.entryId !== "string" || value.entryId.trim().length === 0) {
+      throw new Error(`native smoke initial timeline entry ${index} had an invalid entryId`);
+    }
+    if (value.kind === "message") {
+      if (!value.message || typeof value.message !== "object" || Array.isArray(value.message)) {
+        throw new Error(`native smoke initial timeline message ${index} was invalid`);
+      }
+      const role = (value.message as { role?: unknown }).role;
+      if (typeof role !== "string" || role.trim().length === 0) {
+        throw new Error(`native smoke initial timeline message ${index} had an invalid role`);
+      }
+      continue;
+    }
+    if (value.kind !== "compaction" && value.kind !== "branch-summary") {
+      throw new Error(`native smoke initial timeline entry ${index} had an invalid kind`);
+    }
+    if (
+      typeof value.timestamp !== "string"
+      || value.timestamp.length === 0
+      || !Number.isFinite(Date.parse(value.timestamp))
+    ) {
+      throw new Error(`native smoke initial timeline summary ${index} had an invalid timestamp`);
+    }
+    if (Object.hasOwn(value, "summary") && typeof value.summary !== "string") {
+      throw new Error(`native smoke initial timeline summary ${index} had an invalid summary`);
+    }
+  }
+}
+
+export function recordSmokeSessionActivityReplacement(
+  state: SmokeSessionActivityTracker,
+  event: unknown,
+): SmokeSessionActivityTracker {
+  if (!Number.isSafeInteger(state.sequence) || state.sequence < 0) {
+    throw new Error("native smoke session activity sequence is invalid");
+  }
+  if (!event || typeof event !== "object" || Array.isArray(event)) {
+    throw new Error("native smoke session activity replacement was not an object");
+  }
+  const value = event as { type?: unknown; active?: unknown };
+  if (value.type !== "session_activity_changed") {
+    throw new Error("native smoke session activity replacement had an invalid type");
+  }
+  if (Object.hasOwn(value, "active")) {
+    throw new Error("native smoke session activity replacement leaked private active state");
+  }
+  return {
+    sequence: state.sequence + 1,
+    latest: parseSmokeSessionActivity(value),
+  };
+}
+
+export function isSmokeSessionReadyAfter(
+  state: SmokeSessionActivityTracker,
+  baseline: number,
+): boolean {
+  if (!Number.isSafeInteger(baseline) || baseline < 0 || baseline > state.sequence) {
+    throw new Error("native smoke session activity baseline is invalid");
+  }
+  return state.sequence > baseline
+    && state.latest?.status === "ready"
+    && state.latest.isStreaming === false;
+}
+
+function parseSmokeSessionActivity(value: unknown): SmokeSessionActivity {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("native smoke session activity was not an object");
+  }
+  const activity = value as { status?: unknown; isStreaming?: unknown; active?: unknown };
+  if (Object.hasOwn(activity, "active")) {
+    throw new Error("native smoke session activity leaked private active state");
+  }
+  if (
+    (activity.status !== "ready" && activity.status !== "running")
+    || typeof activity.isStreaming !== "boolean"
+    || (activity.status === "ready" && activity.isStreaming)
+  ) {
+    throw new Error(
+      `native smoke session activity pair was invalid: ${JSON.stringify({
+        status: activity.status,
+        isStreaming: activity.isStreaming,
+      })}`,
+    );
+  }
+  return { status: activity.status, isStreaming: activity.isStreaming };
+}
+
 export async function fetchSessionEventsBeforeDeadline(options: {
   url: string;
   deadline: number;
+  init?: Omit<RequestInit, "signal">;
+  timeoutMessage?: string;
   fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
   now?: () => number;
 }): Promise<Response> {
   const remaining = options.deadline - (options.now ?? Date.now)();
-  const timeoutMessage = "session SSE subscription did not finish before the native smoke deadline";
+  const timeoutMessage = options.timeoutMessage
+    ?? "session SSE subscription did not finish before the native smoke deadline";
   if (remaining <= 0) throw new Error(timeoutMessage);
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), remaining);
   try {
-    return await (options.fetch ?? globalThis.fetch)(options.url, { signal: controller.signal });
+    return await (options.fetch ?? globalThis.fetch)(options.url, {
+      ...options.init,
+      signal: controller.signal,
+    });
   } catch (error) {
     if (controller.signal.aborted) throw new Error(timeoutMessage, { cause: error });
     throw error;
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+export async function requestSmokeJsonBeforeDeadline(options: {
+  url: string;
+  deadline: number;
+  label: string;
+  init?: Omit<RequestInit, "signal">;
+  fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+  now?: () => number;
+}): Promise<unknown> {
+  const remaining = options.deadline - (options.now ?? Date.now)();
+  const timeoutMessage = `${options.label} did not finish before the native smoke deadline`;
+  if (remaining <= 0) throw new Error(timeoutMessage);
+
+  const controller = new AbortController();
+  let response: Response | undefined;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const operation = async (): Promise<unknown> => {
+    response = await (options.fetch ?? globalThis.fetch)(options.url, {
+      ...options.init,
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      throw new Error(`${options.label} failed (${response.status}): ${text}`);
+    }
+    return text ? JSON.parse(text) as unknown : undefined;
+  };
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort();
+      try {
+        void response?.body?.cancel().catch(() => {});
+      } catch {
+        // A response reader may already own the body; the deadline race remains authoritative.
+      }
+      reject(new Error(timeoutMessage));
+    }, remaining);
+  });
+
+  try {
+    return await Promise.race([operation(), deadline]);
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error(timeoutMessage, { cause: error });
+    throw error;
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
 }
 

@@ -11,13 +11,18 @@ import {
   assertPathFreeSessionEvent,
   buildWindowsShutdownLauncherScript,
   buildWindowsShutdownScript,
+  captureSmokeCompletionActivityBaseline,
   collectLaunchOutput,
   createCompiledChildEnv,
   fetchSessionEventsBeforeDeadline,
   finishSmokeCleanup,
+  isSmokeSessionReadyAfter,
   parseRecordedPid,
+  parseSmokeInitialSessionSnapshot,
   readTextFileWithRetry,
   recordSmokeAcceptanceMilestone,
+  recordSmokeSessionActivityReplacement,
+  requestSmokeJsonBeforeDeadline,
   requireZeroProcessStatus,
   resolveSmokePowerShell,
   resolveSmokePython,
@@ -25,6 +30,7 @@ import {
   selectSmokeModelAction,
   type SmokeModelScenario,
   type SmokeModelState,
+  type SmokeSessionActivityTracker,
   skillVenvPython,
   settleProcess,
   validateFirstRunVenv,
@@ -144,6 +150,9 @@ let smokeModelState: SmokeModelState = {
 };
 let sessionSnapshotObserved = false;
 let observedSupervisorTerminal = false;
+let sessionActivityState: SmokeSessionActivityTracker = { sequence: 0 };
+let dispatchActivityBaseline: number | undefined;
+let completionActivityBaseline: number | undefined;
 let sessionEventError: Error | undefined;
 let sessionEventReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 let sessionEventTask: Promise<void> | undefined;
@@ -158,6 +167,27 @@ let configurationEventReader: ReadableStreamDefaultReader<Uint8Array> | undefine
 let configurationEventTask: Promise<void> | undefined;
 let configurationEventsStopping = false;
 const recentConfigurationEvents: string[] = [];
+
+function smokeCompletionMilestonesSatisfied(): boolean {
+  return smokeModelState.complete
+    && smokeModelState.customDispatchIssued
+    && smokeModelState.childSkillObserved
+    && smokeModelState.stageShellIssued
+    && smokeModelState.venvValidated
+    && smokeModelState.stageCompleted
+    && smokeModelState.terminalHandoffObserved
+    && venvToolResults === 1
+    && observedSupervisorTerminal;
+}
+
+function captureCompletionActivityBaseline(): void {
+  completionActivityBaseline = captureSmokeCompletionActivityBaseline({
+    baseline: completionActivityBaseline,
+    activitySequence: sessionActivityState.sequence,
+    milestonesComplete: smokeCompletionMilestonesSatisfied(),
+  });
+}
+
 const modelServer = Bun.serve({
   port: 0,
   async fetch(request) {
@@ -174,6 +204,7 @@ const modelServer = Bun.serve({
     );
     smokeModelState = transition.state;
     if (transition.validatedVenvResult) venvToolResults += 1;
+    captureCompletionActivityBaseline();
     const action = transition.action;
     return action.kind === "tool"
       ? openAiStream({ toolCall: { id: action.id, name: action.name, arguments: action.arguments } })
@@ -499,12 +530,17 @@ function smokeProgressDiagnostics(): string {
     recentConfigurationEvents,
     sessionSnapshotObserved,
     observedSupervisorTerminal,
+    sessionActivitySequence: sessionActivityState.sequence,
+    latestSessionActivity: sessionActivityState.latest,
+    dispatchActivityBaseline,
+    completionActivityBaseline,
     sessionEventError: sessionEventError?.message,
     recentSessionEvents,
   }, null, 2);
 }
 
 function observeSessionEvent(event: unknown): void {
+  captureCompletionActivityBaseline();
   const serialized = assertPathFreeSessionEvent(event);
   recentSessionEvents.push(serialized.slice(0, 1_000));
   if (recentSessionEvents.length > 12) recentSessionEvents.shift();
@@ -517,12 +553,19 @@ function observeSessionEvent(event: unknown): void {
     runtimeConfigurationGeneration?: unknown;
   };
   if (value.type === "snapshot") {
+    sessionActivityState = {
+      ...sessionActivityState,
+      latest: parseSmokeInitialSessionSnapshot(event),
+    };
     const generation = value.runtimeConfigurationGeneration;
     if (!Number.isSafeInteger(generation) || (generation as number) < 1) {
       throw new Error(`root session snapshot had an invalid runtime configuration generation: ${serialized}`);
     }
     snapshotConfigurationGeneration = generation as number;
     sessionSnapshotObserved = true;
+  }
+  if (value.type === "session_activity_changed") {
+    sessionActivityState = recordSmokeSessionActivityReplacement(sessionActivityState, event);
   }
   if (value.type === "runtime_configuration_applied") {
     const generation = value.generation;
@@ -533,7 +576,10 @@ function observeSessionEvent(event: unknown): void {
   }
   if (value.type !== "subagent_supervisor" || value.agentId !== `${smokeAgentName}_0`) return;
   if (value.status === "error") throw new Error(`${smokeAgentName}_0 supervisor reported error: ${serialized}`);
-  if (value.status === "complete") observedSupervisorTerminal = true;
+  if (value.status === "complete") {
+    observedSupervisorTerminal = true;
+    captureCompletionActivityBaseline();
+  }
 }
 
 function observeConfigurationEvent(event: unknown): void {
@@ -950,20 +996,26 @@ try {
     generation: observedRootAppliedGeneration,
   });
 
-  await requireOk(await fetch(`${base}/api/sessions/${created.id}/messages`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      message: `Launch the externally loaded ${smokeAgentName} and require its referenced ${smokeSkillName} resource plus deterministic ${smokeShellToolName} venv-validation tool call.`,
-    }),
-  }), "post-reload custom Agent dispatch");
+  dispatchActivityBaseline = sessionActivityState.sequence;
+  await requestSmokeJsonBeforeDeadline({
+    url: `${base}/api/sessions/${created.id}/messages`,
+    deadline: firstRunDeadline,
+    label: "post-reload custom Agent dispatch",
+    init: {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: `Launch the externally loaded ${smokeAgentName} and require its referenced ${smokeSkillName} resource plus deterministic ${smokeShellToolName} venv-validation tool call.`,
+      }),
+    },
+  });
   await waitForSmokeCondition(
     "background custom-stage completion",
-    () => smokeModelState.complete
-      && smokeModelState.customDispatchIssued
-      && smokeModelState.childSkillObserved
-      && venvToolResults === 1
-      && observedSupervisorTerminal,
+    () => smokeCompletionMilestonesSatisfied()
+      && dispatchActivityBaseline !== undefined
+      && completionActivityBaseline !== undefined
+      && completionActivityBaseline >= dispatchActivityBaseline
+      && isSmokeSessionReadyAfter(sessionActivityState, completionActivityBaseline),
   );
   if (!existsSync(smokeAgentPath) || readFileSync(smokeAgentPath, "utf8") !== smokeAgentContent) {
     throw new Error(`global custom Agent changed after external creation at ${smokeAgentPath}`);

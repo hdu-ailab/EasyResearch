@@ -268,9 +268,22 @@ jobs:
       - name: Publish verified packages
         run: bun scripts/release.ts --skip-build
 
+  verify-installed-npm-package:
+    name: Verify installed npm package
+    needs: publish-npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Install and run exact published package
+        run: node scripts/verify-installed-npm-package.mjs
+
   publish-github-release:
     name: Publish GitHub Release
-    needs: publish-npm
+    needs: verify-installed-npm-package
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

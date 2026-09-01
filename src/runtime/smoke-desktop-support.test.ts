@@ -10,6 +10,7 @@ import {
   dmgDetachCommand,
   nsisInstallCommand,
   packagedApplicationPaths,
+  readyPersistedSessionPath,
   readDesktopSmokeEvents,
   removeDesktopSmokeRoot,
   reduceDesktopSmokeEvents,
@@ -187,6 +188,139 @@ describe("native package commands and paths", () => {
 });
 
 describe("desktop smoke milestones", () => {
+  const persistedHistorySentinels = {
+    user: "desktop smoke persisted history",
+    assistant: "desktop smoke persisted response",
+  };
+  const persistedSession = {
+    sessionFile: "/sessions/persisted.jsonl",
+    status: "ready",
+    isStreaming: false,
+  };
+  const message = (role: string, content: unknown) => ({
+    kind: "message",
+    entryId: `${role}-entry`,
+    message: { role, content },
+  });
+
+  it("accepts an ordered sentinel pair in realistic Pi message content shapes", () => {
+    expect(readyPersistedSessionPath({
+      session: persistedSession,
+      timeline: [
+        message("user", persistedHistorySentinels.user),
+        message("custom", "unrelated visible timeline note"),
+        message("assistant", [{ type: "text", text: persistedHistorySentinels.assistant }]),
+      ],
+    }, persistedHistorySentinels)).toBe("/sessions/persisted.jsonl");
+
+    expect(readyPersistedSessionPath({
+      session: persistedSession,
+      timeline: [
+        message("user", [{ type: "text", text: persistedHistorySentinels.user }]),
+        message("assistant", [{ type: "text", text: persistedHistorySentinels.assistant }]),
+      ],
+    }, persistedHistorySentinels)).toBe("/sessions/persisted.jsonl");
+  });
+
+  it("rejects legacy or summary-only evidence for persisted history", () => {
+    expect(readyPersistedSessionPath({
+      session: persistedSession,
+      messages: [
+        { role: "user", content: persistedHistorySentinels.user },
+        { role: "assistant", content: persistedHistorySentinels.assistant },
+      ],
+    }, persistedHistorySentinels)).toBeUndefined();
+    expect(readyPersistedSessionPath({
+      session: persistedSession,
+      timeline: [
+        message("user", persistedHistorySentinels.user),
+        message("assistant", [{ type: "text", text: persistedHistorySentinels.assistant }]),
+      ],
+      messages: [],
+    }, persistedHistorySentinels)).toBeUndefined();
+    expect(readyPersistedSessionPath({
+      session: persistedSession,
+      timeline: [
+        { kind: "compaction", entryId: "compact", summary: persistedHistorySentinels.user },
+        { kind: "branch-summary", entryId: "summary", summary: persistedHistorySentinels.assistant },
+      ],
+    }, persistedHistorySentinels)).toBeUndefined();
+    expect(readyPersistedSessionPath({
+      session: persistedSession,
+      timeline: [
+        message("user", persistedHistorySentinels.user),
+        { kind: "branch-summary", entryId: "summary", summary: persistedHistorySentinels.assistant },
+      ],
+    }, persistedHistorySentinels)).toBeUndefined();
+  });
+
+  it("rejects malformed, mismatched, or out-of-order persisted messages", () => {
+    const snapshots = [
+      {
+        session: persistedSession,
+        timeline: [
+          message("user", persistedHistorySentinels.user),
+          message("assistant", [{ type: "text", text: persistedHistorySentinels.assistant }]),
+          { kind: "message", entryId: "malformed-after", message: null },
+        ],
+      },
+      {
+        session: persistedSession,
+        timeline: [
+          { kind: "message", entryId: "malformed", message: null },
+          message("user", persistedHistorySentinels.user),
+          message("assistant", [{ type: "text", text: persistedHistorySentinels.assistant }]),
+        ],
+      },
+      {
+        session: persistedSession,
+        timeline: [
+          message("assistant", [{ type: "text", text: persistedHistorySentinels.assistant }]),
+          message("user", persistedHistorySentinels.user),
+        ],
+      },
+      {
+        session: persistedSession,
+        timeline: [
+          message("assistant", [{ type: "text", text: persistedHistorySentinels.user }]),
+          message("user", persistedHistorySentinels.assistant),
+        ],
+      },
+      {
+        session: persistedSession,
+        timeline: [
+          message("user", "wrong user text"),
+          message("assistant", [{ type: "text", text: persistedHistorySentinels.assistant }]),
+        ],
+      },
+      {
+        session: persistedSession,
+        timeline: [
+          message("user", persistedHistorySentinels.user),
+          message("assistant", [{ type: "text", text: "wrong assistant text" }]),
+        ],
+      },
+    ];
+
+    for (const snapshot of snapshots) {
+      expect(readyPersistedSessionPath(snapshot, persistedHistorySentinels)).toBeUndefined();
+    }
+    expect(readyPersistedSessionPath({
+      session: { ...persistedSession, status: "running" },
+      timeline: [
+        message("user", persistedHistorySentinels.user),
+        message("assistant", [{ type: "text", text: persistedHistorySentinels.assistant }]),
+      ],
+    }, persistedHistorySentinels)).toBeUndefined();
+  });
+
+  it("does not accept generic timeline length as completed persisted history", () => {
+    expect(readyPersistedSessionPath({
+      session: persistedSession,
+      timeline: [{ kind: "message" }, { kind: "message" }],
+    }, persistedHistorySentinels)).toBeUndefined();
+  });
+
   it("recognizes the complete ordered lifecycle", () => {
     expect(reduceDesktopSmokeEvents([
       { type: "desktop-smoke.sidecar-ready", origin: "http://127.0.0.1:43123" },
@@ -222,6 +356,27 @@ describe("desktop smoke milestones", () => {
       { type: "desktop-smoke.agent-running" },
       { type: "desktop-smoke.window-hidden", hidden: true, sidecarPid: 0 },
     ])).toThrow(/sidecar process/i);
+  });
+
+  it("preserves a host failure immediately without requiring later lifecycle milestones", () => {
+    expect(reduceDesktopSmokeEvents([
+      { type: "desktop-smoke.sidecar-ready", origin: "http://127.0.0.1:43123" },
+      { type: "desktop-smoke.window-loaded" },
+      { type: "desktop-smoke.failure", message: "root activity message POST timed out" },
+      { type: "desktop-smoke.exit-started" },
+      { type: "desktop-smoke.sidecar-stopped" },
+    ])).toMatchObject({
+      origin: "http://127.0.0.1:43123",
+      loaded: true,
+      failure: "root activity message POST timed out",
+      agentRunning: false,
+    });
+  });
+
+  it.each([undefined, "", 42])("rejects a malformed desktop host failure message: %j", (message) => {
+    expect(() => reduceDesktopSmokeEvents([
+      { type: "desktop-smoke.failure", message },
+    ])).toThrow(/failure message/i);
   });
 
   it("reads complete JSONL events and rejects a partial trailing record", () => {

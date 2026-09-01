@@ -14,6 +14,7 @@ export interface NativeCommand {
 
 export interface DesktopSmokeState {
   origin?: string;
+  failure?: string;
   loaded: boolean;
   stateVisible: boolean;
   agentRunning: boolean;
@@ -21,6 +22,75 @@ export interface DesktopSmokeState {
   sidecarPid?: number;
   exitStarted: boolean;
   stopped: boolean;
+}
+
+export function readyPersistedSessionPath(
+  snapshot: unknown,
+  sentinels: { user: string; assistant: string },
+): string | undefined {
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return undefined;
+  const value = snapshot as { session?: unknown; timeline?: unknown; messages?: unknown };
+  if (!value.session || typeof value.session !== "object" || Array.isArray(value.session)) return undefined;
+  const session = value.session as {
+    sessionFile?: unknown;
+    status?: unknown;
+    isStreaming?: unknown;
+  };
+  if (
+    session.status !== "ready"
+    || session.isStreaming !== false
+    || typeof session.sessionFile !== "string"
+    || !session.sessionFile
+    || typeof sentinels.user !== "string"
+    || !sentinels.user
+    || typeof sentinels.assistant !== "string"
+    || !sentinels.assistant
+    || Object.hasOwn(value, "messages")
+    || !Array.isArray(value.timeline)
+  ) return undefined;
+
+  let userObserved = false;
+  let pairObserved = false;
+  for (const entry of value.timeline) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return undefined;
+    const timelineEntry = entry as { kind?: unknown; message?: unknown };
+    if (timelineEntry.kind === "compaction" || timelineEntry.kind === "branch-summary") continue;
+    if (
+      timelineEntry.kind !== "message"
+      || !timelineEntry.message
+      || typeof timelineEntry.message !== "object"
+      || Array.isArray(timelineEntry.message)
+    ) return undefined;
+
+    const message = timelineEntry.message as { role?: unknown; content?: unknown };
+    if (typeof message.role !== "string") return undefined;
+    if (message.role !== "user" && message.role !== "assistant") continue;
+    const text = persistedMessageText(message.role, message.content);
+    if (text === undefined) return undefined;
+    if (message.role === "user" && text === sentinels.user) {
+      userObserved = true;
+    } else if (message.role === "assistant" && userObserved && text === sentinels.assistant) {
+      pairObserved = true;
+    }
+  }
+  return pairObserved ? session.sessionFile : undefined;
+}
+
+function persistedMessageText(role: "user" | "assistant", content: unknown): string | undefined {
+  if (role === "user" && typeof content === "string") return content;
+  if (!Array.isArray(content) || content.length === 0) return undefined;
+  let text = "";
+  for (const block of content) {
+    if (
+      !block
+      || typeof block !== "object"
+      || Array.isArray(block)
+      || (block as { type?: unknown }).type !== "text"
+      || typeof (block as { text?: unknown }).text !== "string"
+    ) return undefined;
+    text += (block as { text: string }).text;
+  }
+  return text;
 }
 
 export function combineDesktopSmokeFailures(
@@ -193,6 +263,12 @@ export function reduceDesktopSmokeEvents(
         requireMilestone(state.stateVisible, "Agent started before shared state validation.");
         state.agentRunning = true;
         break;
+      case "desktop-smoke.failure":
+        if (typeof event.message !== "string" || event.message.trim().length === 0) {
+          throw new Error("Invalid desktop smoke failure message.");
+        }
+        state.failure = event.message;
+        return state;
       case "desktop-smoke.window-hidden":
         requireMilestone(state.agentRunning, "Window hid before an Agent was running.");
         requireMilestone(event.hidden === true, "Desktop close did not hide the window.");
