@@ -10,7 +10,10 @@ import {
   normalizePartialFailures,
   normalizeSearchResults,
 } from "./normalization";
-import { withSearchRequestDeadline } from "./request-context";
+import {
+  type SearchRequestRouting,
+  withSearchRequestDeadline,
+} from "./request-context";
 
 const DEFAULT_RESULT_COUNT = 10;
 const supportedEngines = new Set<string>(WEB_SEARCH_ENGINES);
@@ -18,6 +21,12 @@ let searchTail: Promise<void> = Promise.resolve();
 
 export interface WebSearchAdapter {
   search(input: WebSearchInput, signal?: AbortSignal): Promise<WebSearchExecution>;
+}
+
+export interface WebSearchAdapterOptions {
+  requestRouting?: SearchRequestRouting;
+  sanitizeError?: (error: unknown) => string;
+  timeoutMs?: number;
 }
 
 export function createAbortError(message = "Search cancelled"): Error {
@@ -52,11 +61,19 @@ export function serializeWebSearch<T>(
   operation: () => Promise<T>,
   signal?: AbortSignal,
 ): Promise<T> {
-  const run = searchTail.then(async () => {
+  const started = searchTail.then(() => {
     if (signal?.aborted) throw createAbortError();
-    return operation();
+    const result = operation() as Promise<T> & { settled?: Promise<void> };
+    return {
+      result,
+      settled: result.settled ?? result.then(() => undefined, () => undefined),
+    };
   });
-  searchTail = run.then(() => undefined, () => undefined);
+  const run = started.then(({ result }) => result);
+  searchTail = started.then(
+    ({ settled }) => settled,
+    () => undefined,
+  ).then(() => undefined, () => undefined);
   return raceWithAbort(run, signal);
 }
 
@@ -88,13 +105,16 @@ function validateInput(input: WebSearchInput): {
   };
 }
 
-export function createWebSearchAdapter(service: OpenWebSearchService): WebSearchAdapter {
+export function createWebSearchAdapter(
+  service: OpenWebSearchService,
+  options: WebSearchAdapterOptions = {},
+): WebSearchAdapter {
   return {
     async search(input, signal) {
       const { engines, effectiveQuery, limit } = validateInput(input);
-      return serializeWebSearch(async () => {
-        try {
-          const { value: response, timedOut } = await withSearchRequestDeadline(
+      try {
+        const deadlineResult = await serializeWebSearch(
+          () => withSearchRequestDeadline(
             signal,
             () => service.execute({
               query: effectiveQuery,
@@ -102,25 +122,35 @@ export function createWebSearchAdapter(service: OpenWebSearchService): WebSearch
               limit,
               searchMode: "request",
             }),
-          );
-          if (signal?.aborted) throw createAbortError();
-          const results = normalizeSearchResults(response.results, engines, limit);
-          let partialFailures = normalizePartialFailures(response.partialFailures, engines);
-          if (timedOut) {
-            partialFailures = addOperationTimeoutFailures(results, partialFailures, engines);
-          }
-          return {
-            engines: [...engines],
-            effectiveQuery,
-            results,
-            partialFailures,
-            allEnginesFailed: results.length === 0 && partialFailures.length === engines.length,
-          };
-        } catch (error) {
-          if (signal?.aborted) throw createAbortError();
-          throw error;
+            {
+              requestRouting: options.requestRouting,
+              sanitizeConsoleError: options.sanitizeError,
+              timeoutMs: options.timeoutMs,
+            },
+          ),
+          signal,
+        );
+        if (signal?.aborted) throw createAbortError();
+        const results = deadlineResult.timedOut
+          ? []
+          : normalizeSearchResults(deadlineResult.value.results, engines, limit);
+        let partialFailures = deadlineResult.timedOut
+          ? []
+          : normalizePartialFailures(deadlineResult.value.partialFailures, engines);
+        if (deadlineResult.timedOut) {
+          partialFailures = addOperationTimeoutFailures(results, partialFailures, engines);
         }
-      }, signal);
+        return {
+          engines: [...engines],
+          effectiveQuery,
+          results,
+          partialFailures,
+          allEnginesFailed: results.length === 0 && partialFailures.length === engines.length,
+        };
+      } catch (error) {
+        if (signal?.aborted) throw createAbortError();
+        throw error;
+      }
     },
   };
 }

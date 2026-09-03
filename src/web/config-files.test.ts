@@ -113,6 +113,22 @@ describe("ConfigFileService", () => {
     expect(await service.read({ scope: "project", cwd, path: "settings.json" })).toContain("defaultModel");
   });
 
+  it("validates BOM-prefixed global and project settings while preserving submitted text", async () => {
+    const content = '\uFEFF{\n  "defaultModel": "x"\n}\n';
+
+    await service.write({ scope: "global", path: "settings.json", content });
+    await service.write({ scope: "project", cwd, path: "settings.json", content });
+
+    expect(await service.read({ scope: "global", path: "settings.json" })).toBe(content);
+    expect(await service.read({ scope: "project", cwd, path: "settings.json" })).toBe(content);
+  });
+
+  it("does not extend settings BOM compatibility to other JSON files", async () => {
+    await expect(
+      service.write({ scope: "global", path: "models.json", content: '\uFEFF{"providers":{}}' }),
+    ).rejects.toThrow(/Invalid JSON/);
+  });
+
   it("returns 404 when reading a missing settings.json", async () => {
     await expect(service.read({ scope: "project", cwd, path: "settings.json" })).rejects.toThrow(ConfigServiceError);
     try {
@@ -515,9 +531,23 @@ describe("ConfigFileService", () => {
     });
   });
 
-  it("retries a settings mutation when external bytes change after its read", async () => {
+  it("mutates BOM-prefixed global settings with the existing formatted output", async () => {
     const settingsPath = join(agentDir, "settings.json");
-    writeFileSync(settingsPath, JSON.stringify({ theme: "dark" }));
+    writeFileSync(settingsPath, '\uFEFF{"theme":"dark","future":{"keep":true}}', "utf8");
+
+    await service.mutateGlobalSettings((settings) => ({
+      settings: { ...settings, easyresearch: { compaction: { triggerPercent: 80 } } },
+      result: undefined,
+    }));
+
+    expect(readFileSync(settingsPath, "utf8")).toBe(
+      '{\n  "theme": "dark",\n  "future": {\n    "keep": true\n  },\n  "easyresearch": {\n    "compaction": {\n      "triggerPercent": 80\n    }\n  }\n}\n',
+    );
+  });
+
+  it("retries a settings mutation when BOM-prefixed source bytes change after its read", async () => {
+    const settingsPath = join(agentDir, "settings.json");
+    writeFileSync(settingsPath, `\uFEFF${JSON.stringify({ theme: "dark" })}`);
     let attempts = 0;
 
     await service.mutateGlobalSettings((settings) => {

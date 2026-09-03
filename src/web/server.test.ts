@@ -49,6 +49,16 @@ import {
   type ConfigurationProjectWatches,
 } from "./configuration-project-watches";
 import * as configurationProjectWatchesModule from "./configuration-project-watches";
+import {
+  captureInheritedProxyEnvironment,
+  parseNetworkProxySettings,
+  resolveNetworkPolicy,
+  type NetworkPolicy,
+} from "../runtime/network-policy";
+import type { InstalledNetworkRouter } from "../runtime/network-routing";
+import * as networkRoutingModule from "../runtime/network-routing";
+import { createNetworkProxyProbe } from "./network-proxy-probe";
+import { NetworkProxySettingsService } from "./network-proxy-settings";
 
 const [loggerMock, createLoggerMock] = vi.hoisted(() => {
   const mockLogger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
@@ -65,7 +75,11 @@ vi.mock("../runtime/extensions-guard", () => ({
 }));
 
 const [authGatewayMock, createDaemonAuthRuntimeMock, modelValidatorMock, disposeModelsMock] = vi.hoisted(() => {
-  const gateway = { listModels: vi.fn(async () => [] as any[]), shutdown: vi.fn() };
+  const gateway = {
+    listModels: vi.fn(async () => [] as any[]),
+    activeFlow: vi.fn<() => string | null>(() => null),
+    shutdown: vi.fn(),
+  };
   const modelValidator = {
     prepareModelCatalog: vi.fn<() => Promise<PreparedModelCatalog>>(async () => ({
       registeredModels: [],
@@ -96,6 +110,36 @@ vi.mock("./auth-runtime", () => ({
 }));
 
 const noopLogger: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} };
+
+function directNetworkPolicy(): NetworkPolicy {
+  return resolveNetworkPolicy(
+    parseNetworkProxySettings({}),
+    captureInheritedProxyEnvironment({}),
+  );
+}
+
+function fakeNetworkRouter(options: {
+  fetch?: typeof fetch;
+  decorateModelRuntime?: InstalledNetworkRouter["decorateModelRuntime"];
+  restore?: () => void;
+} = {}): InstalledNetworkRouter {
+  return {
+    fetch: options.fetch ?? globalThis.fetch,
+    appliedSearchRoute: networkRoutingModule.createAppliedSearchRoute(directNetworkPolicy()),
+    withScope: (_scope, operation) => operation(),
+    providerEnv: () => ({}),
+    decorateModelRuntime: options.decorateModelRuntime ?? ((runtime) => runtime),
+    restore: options.restore ?? (() => {}),
+  };
+}
+
+function responseFetch(body: string): typeof fetch {
+  return Object.assign(
+    async (_input: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]) =>
+      new Response(body),
+    { preconnect: globalThis.fetch.preconnect },
+  );
+}
 
 function fakeLogger(): Logger & { calls: Array<[level: string, msg: string, fields?: Record<string, unknown>]> } {
   const calls: Array<[string, string, Record<string, unknown> | undefined]> = [];
@@ -423,6 +467,7 @@ describe("web routes", () => {
     configService = new ConfigFileService(agentDir);
     historySessions = [];
     authGatewayMock.listModels.mockReset().mockResolvedValue([]);
+    authGatewayMock.activeFlow.mockReset().mockReturnValue(null);
     authGatewayMock.shutdown.mockReset();
     modelValidatorMock.prepareModelCatalog.mockClear();
     disposeModelsMock.mockReset();
@@ -469,6 +514,7 @@ describe("web routes", () => {
       },
     };
     const services: RouteServices = {
+      bootId: "boot-route",
       webuiDist,
       listAllSessions: async () => historySessions,
       listModels: async () => [],
@@ -490,6 +536,21 @@ describe("web routes", () => {
       patchCompactionSettings: async ({ triggerPercent }) => ({ triggerPercent, globalEnabled: true }),
       getApiUsageSettings: async () => ({ showApiUsageDetails: false }),
       patchApiUsageSettings: async ({ showApiUsageDetails }) => ({ showApiUsageDetails }),
+      getNetworkProxySettings: async () => ({
+        configured: {},
+        appliedConfigured: {},
+        sources: { all: "direct", llm: "direct", search: "direct" },
+        errors: [],
+        restartRequired: false,
+      }),
+      patchNetworkProxySettings: async () => ({
+        configured: {},
+        appliedConfigured: {},
+        sources: { all: "direct", llm: "direct", search: "direct" },
+        errors: [],
+        restartRequired: false,
+      }),
+      testNetworkProxy: async () => ({ ok: true, outcome: "success", status: 204, elapsedMs: 0 }),
       subagentSessions: {
         ...defaultSubagentSessions,
         ...subagentOverrides,
@@ -544,6 +605,129 @@ describe("web routes", () => {
     await expect(patch.json()).resolves.toEqual({ showApiUsageDetails: true });
     expect(patchApiUsageSettings).toHaveBeenCalledWith({ showApiUsageDetails: true });
     expect(getApiUsageSettings).toHaveBeenCalledOnce();
+  });
+
+  it("reads and patches the exact focused network-proxy route", async () => {
+    const current = {
+      configured: { all: "http://current.example" },
+      appliedConfigured: {},
+      sources: { all: "direct" as const, llm: "direct" as const, search: "direct" as const },
+      errors: [],
+      restartRequired: true,
+    };
+    const changed = {
+      ...current,
+      configured: { all: "http://next.example", search: "http://search.example" },
+    };
+    const getNetworkProxySettings = vi.fn(async () => current);
+    const patchNetworkProxySettings = vi.fn(async () => changed);
+    setup({ getNetworkProxySettings, patchNetworkProxySettings });
+
+    const read = await handler(new Request("http://localhost/api/settings/network-proxy"));
+    expect(read.status).toBe(200);
+    await expect(read.json()).resolves.toEqual(current);
+
+    const body = { all: "http://next.example", llm: null, search: "http://search.example" };
+    const patch = await handler(new Request("http://localhost/api/settings/network-proxy", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }));
+    expect(patch.status).toBe(200);
+    await expect(patch.json()).resolves.toEqual(changed);
+    expect(patchNetworkProxySettings).toHaveBeenCalledWith(body);
+
+    const nearMiss = await handler(new Request("http://localhost/api/settings/network-proxy/"));
+    expect(nearMiss.status).toBe(404);
+    expect(getNetworkProxySettings).toHaveBeenCalledOnce();
+  });
+
+  it("tests an exact unsaved candidate body and returns invalid configuration as safe 200", async () => {
+    const candidateFetch = vi.fn(async () => new Response(null, { status: 204 })) as unknown as typeof fetch;
+    const probe = createNetworkProxyProbe(candidateFetch);
+    const patchNetworkProxySettings = vi.fn();
+    setup({
+      patchNetworkProxySettings,
+      testNetworkProxy: (body, signal) => probe.test(body, signal),
+    });
+
+    const invalid = await handler(new Request("http://localhost/api/settings/network-proxy/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope: "llm", proxyUrl: "http://user:secret@proxy.example" }),
+    }));
+    expect(invalid.status).toBe(200);
+    await expect(invalid.json()).resolves.toEqual({
+      ok: false,
+      outcome: "invalid-config",
+      elapsedMs: expect.any(Number),
+    });
+
+    const malformed = await handler(new Request("http://localhost/api/settings/network-proxy/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope: "all", proxyUrl: "http://proxy.example", extra: true }),
+    }));
+    expect(malformed.status).toBe(400);
+    await expect(malformed.json()).resolves.toEqual({
+      error: "Network proxy test request must contain only scope and proxyUrl",
+    });
+
+    const valid = await handler(new Request("http://localhost/api/settings/network-proxy/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope: "search", proxyUrl: "http://proxy.example" }),
+    }));
+    expect(valid.status).toBe(200);
+    await expect(valid.json()).resolves.toMatchObject({ ok: true, outcome: "success", status: 204 });
+    expect(candidateFetch).toHaveBeenCalledOnce();
+    expect(patchNetworkProxySettings).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [400, undefined],
+    [409, "CONFIG_INVALID"],
+  ] as const)("preserves typed ConfigService %i handling for network PATCH", async (status, code) => {
+    setup({
+      patchNetworkProxySettings: async () => {
+        throw new ConfigServiceError(status, "Safe network settings failure", code);
+      },
+    });
+
+    const response = await handler(new Request("http://localhost/api/settings/network-proxy", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ all: "http://proxy.example" }),
+    }));
+
+    expect(response.status).toBe(status);
+    await expect(response.json()).resolves.toEqual({
+      error: "Safe network settings failure",
+      ...(code ? { code } : {}),
+    });
+  });
+
+  it("persists network PATCH without advancing authoritative configuration notification", async () => {
+    const notify = vi.fn();
+    const notifyingConfig = new ConfigFileService(agentDir, { onAuthoritativeWrite: notify });
+    const networkSettings = new NetworkProxySettingsService(notifyingConfig, directNetworkPolicy());
+    setup({
+      config: notifyingConfig,
+      getNetworkProxySettings: () => networkSettings.get(),
+      patchNetworkProxySettings: (patch) => networkSettings.patch(patch),
+    });
+
+    const response = await handler(new Request("http://localhost/api/settings/network-proxy", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ all: "http://proxy.example" }),
+    }));
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"))).toEqual({
+      httpProxy: "http://proxy.example",
+    });
+    expect(notify).not.toHaveBeenCalled();
   });
 
   it("returns backend-owned recursive session statistics", async () => {
@@ -639,11 +823,140 @@ describe("web routes", () => {
     setup();
     const res = await handler(new Request("http://localhost/api/status"));
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { agentDir: string; homeDir: string; sessions: unknown[]; activeSessions: unknown[] };
+    const body = (await res.json()) as {
+      bootId: string;
+      agentDir: string;
+      homeDir: string;
+      sessions: unknown[];
+      activeSessions: unknown[];
+    };
+    expect(body.bootId).toBe("boot-route");
     expect(body.agentDir).toBe(agentDir);
     expect(body.homeDir).toBe(homeDir);
     expect(body.sessions).toHaveLength(1);
     expect(body.activeSessions).toEqual([]);
+  });
+
+  it("marks API JSON snapshots no-store without changing static asset cache policy", async () => {
+    setup();
+
+    for (const path of [
+      "/api/status",
+      "/api/settings/api-usage",
+      "/api/settings/network-proxy",
+      "/api/config/projects",
+    ]) {
+      const response = await handler(new Request(`http://localhost${path}`));
+      expect(response.status, path).toBe(200);
+      expect(response.headers.get("Cache-Control"), path).toBe("no-store");
+      await response.body?.cancel();
+    }
+
+    const malformed = await handler(new Request("http://localhost/api/runtime/restart", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    }));
+    expect(malformed.status).toBe(400);
+    expect(malformed.headers.get("Cache-Control")).toBe("no-store");
+
+    const asset = await handler(new Request("http://localhost/"));
+    expect(asset.status).toBe(200);
+    expect(asset.headers.get("Cache-Control")).toBeNull();
+  });
+
+  it("rejects a cross-origin no-cors text/plain runtime restart before dispatch", async () => {
+    const requestRestart = vi.fn(async () => ({ accepted: true as const, bootId: "boot-route" }));
+    setup({ runtimeRestart: { request: requestRestart } });
+
+    const response = await handler(new Request("http://127.0.0.1:3000/api/runtime/restart", {
+      method: "POST",
+      mode: "no-cors",
+      headers: {
+        "Content-Type": "text/plain",
+        Origin: "https://attacker.example",
+      },
+      body: JSON.stringify({ force: true }),
+    }));
+
+    expect(response.status).toBe(415);
+    expect(await response.json()).toEqual({ error: "Content-Type must be application/json" });
+    expect(requestRestart).not.toHaveBeenCalled();
+  });
+
+  it("accepts only the exact runtime restart request body", async () => {
+    const requestRestart = vi.fn(async () => ({ accepted: true as const, bootId: "boot-route" }));
+    setup({ runtimeRestart: { request: requestRestart } });
+    const bodies: Array<{ raw: string; contentType?: string }> = [
+      { raw: "{" },
+      { raw: "null", contentType: "application/json" },
+      { raw: "[]", contentType: "application/json" },
+      { raw: "{}", contentType: "application/json" },
+      { raw: JSON.stringify({ force: "false" }), contentType: "application/json" },
+      { raw: JSON.stringify({ force: false, extra: true }), contentType: "application/json" },
+    ];
+
+    for (const fixture of bodies) {
+      const response = await handler(new Request("http://localhost/api/runtime/restart", {
+        method: "POST",
+        headers: { "Content-Type": fixture.contentType ?? "application/json" },
+        body: fixture.raw,
+      }));
+      expect(response.status, fixture.raw).toBe(400);
+    }
+    expect(requestRestart).not.toHaveBeenCalled();
+  });
+
+  it("returns the exact accepted restart DTO with status 202", async () => {
+    const requestRestart = vi.fn(async () => ({ accepted: true as const, bootId: "boot-route" }));
+    setup({ runtimeRestart: { request: requestRestart } });
+
+    const response = await handler(new Request("http://localhost/api/runtime/restart", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ force: false }),
+    }));
+
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({ accepted: true, bootId: "boot-route" });
+    expect(requestRestart).toHaveBeenCalledWith({ force: false });
+  });
+
+  it.each([
+    [
+      { code: "RUNTIME_BUSY" as const, activeSessions: 2, authFlowActive: true },
+      { code: "RUNTIME_BUSY", activeSessions: 2, authFlowActive: true },
+    ],
+    [
+      { code: "RUNTIME_RESTARTING" as const },
+      { code: "RUNTIME_RESTARTING" },
+    ],
+  ])("returns an exact restart conflict DTO", async (result, expected) => {
+    setup({
+      runtimeRestart: { request: vi.fn(async () => result) },
+    });
+
+    const response = await handler(new Request("http://localhost/api/runtime/restart", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ force: false }),
+    }));
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual(expected);
+  });
+
+  it("fails closed when runtime restart support is unavailable", async () => {
+    setup();
+
+    const response = await handler(new Request("http://localhost/api/runtime/restart", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ force: true }),
+    }));
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ code: "RUNTIME_RESTARTING" });
   });
 
   it("returns the informational package update result", async () => {
@@ -701,6 +1014,18 @@ describe("web routes", () => {
       { path: "/", status: 200 },
       { path: "/assets/app.js", status: 200 },
       { path: "/api/status", status: 200 },
+      {
+        path: "/api/settings/network-proxy/test",
+        method: "POST",
+        body: { scope: "all", proxyUrl: "http://proxy.example" },
+        status: 200,
+      },
+      {
+        path: "/api/runtime/restart",
+        method: "POST",
+        body: { force: false },
+        status: 409,
+      },
       { path: "/api/config/events", status: 200, contentType: "text/event-stream" },
       {
         path: `/api/file/raw?path=${encodeURIComponent(rawFile)}`,
@@ -712,15 +1037,20 @@ describe("web routes", () => {
 
     for (const fixture of cases) {
       const denied = await handler(new Request(`http://127.0.0.1${fixture.path}`, {
+        method: fixture.method,
         headers: fixture.headers,
+        ...(fixture.body === undefined ? {} : { body: JSON.stringify(fixture.body) }),
       }));
       expect(denied.status, fixture.path).toBe(401);
 
       const accepted = await handler(new Request(`http://127.0.0.1${fixture.path}`, {
+        method: fixture.method,
         headers: {
           ...fixture.headers,
+          ...(fixture.body === undefined ? {} : { "Content-Type": "application/json" }),
           "x-easyresearch-desktop-token": "renderer-secret",
         },
+        ...(fixture.body === undefined ? {} : { body: JSON.stringify(fixture.body) }),
       }));
       expect(accepted.status, fixture.path).toBe(fixture.status);
       if (fixture.contentType) {
@@ -1207,6 +1537,7 @@ describe("web routes", () => {
     const res = await handler(
       new Request(`http://localhost/api/sessions/${created.id}/compact`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ customInstructions: "Keep experiment decisions" }),
       }),
     );
@@ -1505,6 +1836,7 @@ describe("web routes", () => {
       const initial = await readSseEvent(reader);
       expect(initial).toEqual({
         type: "config.updated",
+        bootId: "boot-route",
         generation: 1,
         availabilityEpoch: 1,
         agentsChanged: true,
@@ -1535,6 +1867,7 @@ describe("web routes", () => {
       });
       expect(await readSseEvent(reader)).toEqual({
         type: "config.updated",
+        bootId: "boot-route",
         generation: 2,
         agentsChanged: true,
         modelsChanged: false,
@@ -1543,6 +1876,7 @@ describe("web routes", () => {
       });
       expect(await readSseEvent(reader)).toEqual({
         type: "config.updated",
+        bootId: "boot-route",
         generation: 3,
         agentsChanged: false,
         modelsChanged: true,
@@ -1605,6 +1939,7 @@ describe("web routes", () => {
       const initial = await readSseEvent(reader);
       expect(initial).toEqual({
         type: "config.error",
+        bootId: "boot-route",
         generation: 0,
         availabilityEpoch: 0,
         message: safeError,
@@ -1624,6 +1959,7 @@ describe("web routes", () => {
       });
       expect(await readSseEvent(reader)).toEqual({
         type: "config.updated",
+        bootId: "boot-route",
         generation: 1,
         agentsChanged: true,
         modelsChanged: true,
@@ -1967,7 +2303,7 @@ describe("web routes", () => {
       expect((await handler(new Request("http://localhost/api/status"))).status).toBe(200);
       expect((await handler(new Request("http://localhost/api/config?scope=global"))).status).toBe(200);
       const startupEvent = await readSseEvent(reader);
-      expect(startupEvent).toMatchObject({ type: "config.error", generation: 0 });
+      expect(startupEvent).toMatchObject({ type: "config.error", bootId: "boot-route", generation: 0 });
       expect(JSON.stringify(startupEvent)).not.toContain("private semantic detail");
       expect(JSON.stringify(startupEvent)).not.toContain(agentDir);
 
@@ -1990,6 +2326,7 @@ describe("web routes", () => {
       expect(repaired.status).toBe(200);
       expect(await readSseEvent(reader)).toEqual({
         type: "config.updated",
+        bootId: "boot-route",
         generation: 1,
         agentsChanged: true,
         modelsChanged: true,
@@ -2017,6 +2354,7 @@ describe("web routes", () => {
       );
       expect(await readSseEvent(reader)).toMatchObject({
         type: "config.updated",
+        bootId: "boot-route",
         generation: 2,
         agentsChanged: true,
         modelsChanged: false,
@@ -2152,7 +2490,7 @@ describe("web routes", () => {
     let server: Awaited<ReturnType<typeof startServer>> | undefined;
 
     try {
-      server = await startServer({ host: "127.0.0.1", port: 0 });
+      server = await startServer({ host: "127.0.0.1", port: 0, networkPolicy: directNetworkPolicy() });
       const request = (path: string, init?: RequestInit) =>
         productionHandler!(new Request(`http://127.0.0.1:${server!.port}${path}`, init));
       const json = (method: string, body: unknown): RequestInit => ({
@@ -2165,7 +2503,11 @@ describe("web routes", () => {
       try {
         expect((await request("/api/status")).status).toBe(200);
         expect((await request("/api/config?scope=global")).status).toBe(200);
-        expect(await readSseEvent(reader)).toMatchObject({ type: "config.error", generation: 1 });
+        expect(await readSseEvent(reader)).toMatchObject({
+          type: "config.error",
+          bootId: expect.any(String),
+          generation: 1,
+        });
 
         const degradedCreate = await request("/api/sessions", json("POST", { cwd: projectDir }));
         expect(degradedCreate.status).toBe(200);
@@ -2182,6 +2524,7 @@ describe("web routes", () => {
         }))).status).toBe(200);
         expect(await readSseEvent(reader)).toEqual({
           type: "config.updated",
+          bootId: expect.any(String),
           generation: 2,
           availabilityEpoch: 2,
           availabilityChanged: true,
@@ -2209,8 +2552,16 @@ describe("web routes", () => {
         };
         writeFileSync(modelsPath, "{ malformed later revision");
         expect(await (await request("/api/models")).json()).toEqual({ models: [] });
-        expect(await readSseEvent(reader)).toMatchObject({ type: "config.updated", generation: 3 });
-        expect(await readSseEvent(reader)).toMatchObject({ type: "config.error", generation: 3 });
+        expect(await readSseEvent(reader)).toMatchObject({
+          type: "config.updated",
+          bootId: expect.any(String),
+          generation: 3,
+        });
+        expect(await readSseEvent(reader)).toMatchObject({
+          type: "config.error",
+          bootId: expect.any(String),
+          generation: 3,
+        });
         const providers = await (await request("/api/auth/providers")).json() as {
           providers: Array<{ id: string; modelsJson: boolean }>;
         };
@@ -2232,6 +2583,7 @@ describe("web routes", () => {
         }))).status).toBe(200);
         expect(await readSseEvent(reader)).toEqual({
           type: "config.updated",
+          bootId: expect.any(String),
           generation: 4,
           availabilityEpoch: 4,
           availabilityChanged: true,
@@ -3263,7 +3615,7 @@ describe("web routes", () => {
     let server: Awaited<ReturnType<typeof startServer>> | undefined;
 
     try {
-      server = await startServer({ host: "127.0.0.1", port: 0 });
+      server = await startServer({ host: "127.0.0.1", port: 0, networkPolicy: directNetworkPolicy() });
       const request = (path: string, init?: RequestInit) =>
         productionHandler!(new Request(`http://127.0.0.1:${server!.port}${path}`, init));
       const firstModels = await request("/api/models");
@@ -3374,7 +3726,7 @@ describe("web routes", () => {
     let server: Awaited<ReturnType<typeof startServer>> | undefined;
 
     try {
-      server = await startServer({ host: "127.0.0.1", port: 0 });
+      server = await startServer({ host: "127.0.0.1", port: 0, networkPolicy: directNetworkPolicy() });
       const response = await productionHandler!(new Request(`http://127.0.0.1:${server.port}/api/agents`));
       expect(response.status).toBe(200);
       const agents = (await response.json()) as AgentDto[];
@@ -3433,7 +3785,7 @@ describe("web routes", () => {
     let server: Awaited<ReturnType<typeof startServer>> | undefined;
 
     try {
-      server = await startServer({ host: "127.0.0.1", port: 0 });
+      server = await startServer({ host: "127.0.0.1", port: 0, networkPolicy: directNetworkPolicy() });
       const writeConfig = (body: unknown) => productionHandler!(new Request(
         `http://127.0.0.1:${server!.port}/api/config/file`,
         {
@@ -3493,11 +3845,11 @@ describe("web routes", () => {
     let server: Awaited<ReturnType<typeof startServer>> | undefined;
 
     try {
-      server = await startServer({ host: "127.0.0.1", port: 0 });
+      server = await startServer({ host: "127.0.0.1", port: 0, networkPolicy: directNetworkPolicy() });
       expect(createDaemonAuthRuntimeMock).toHaveBeenCalledTimes(1);
       expect(injected).toBeDefined();
       expect(injected?.generation).toBe(1);
-      expect(resolveFactory).toHaveBeenCalledWith(injected);
+      expect(resolveFactory).toHaveBeenCalledWith(injected, expect.any(Object));
       const daemonOptions = createDaemonAuthRuntimeMock.mock.calls[0]![0];
       await daemonOptions.createModelRuntime();
       expect(createModelRuntime).toHaveBeenCalledWith({
@@ -3528,8 +3880,338 @@ describe("web routes", () => {
     }
   });
 
+  it("requires the host-applied network policy before importing Pi", async () => {
+    const importPi = vi.spyOn(piImportModule, "importPi")
+      .mockRejectedValue(new Error("Pi must not load without host policy"));
+    try {
+      await expect(startServer({ host: "127.0.0.1", port: 0 } as never))
+        .rejects.toThrow(/network policy/i);
+      expect(importPi).not.toHaveBeenCalled();
+    } finally {
+      importPi.mockRestore();
+    }
+  });
+
+  it("rejects a browser JSON request whose Host is rebound while TCP connects to loopback", async () => {
+    const configuration = fakeConfiguration().live;
+    const createLive = vi.spyOn(liveConfigurationModule, "createLiveConfiguration")
+      .mockReturnValue(configuration);
+    const pi = await piImportModule.importPi();
+    const importPi = vi.spyOn(piImportModule, "importPi").mockResolvedValue({
+      ...pi,
+      getAgentDir: () => agentDir,
+      SessionManager: { listAll: async () => [], open: vi.fn() },
+    } as never);
+    const resolveFactory = vi.spyOn(PiSessionFactory, "resolve")
+      .mockResolvedValue(new FakeFactory() as never);
+    const installRouter = vi.spyOn(networkRoutingModule, "installNetworkRouter")
+      .mockReturnValue(fakeNetworkRouter());
+    const testNetworkProxy = vi.fn(async () => ({
+      ok: true as const,
+      outcome: "success" as const,
+      status: 204,
+      elapsedMs: 0,
+    }));
+    const requestShutdown = vi.fn();
+    const originalBun = (globalThis as { Bun?: unknown }).Bun;
+    let productionHandler: ((request: Request) => Promise<Response>) | undefined;
+    (globalThis as { Bun?: unknown }).Bun = {
+      serve: ({ fetch: handler }: { fetch: (request: Request) => Promise<Response> }) => {
+        productionHandler = handler;
+        return { hostname: "127.0.0.1", port: 43224, stop: vi.fn() };
+      },
+    };
+    let server: Awaited<ReturnType<typeof startServer>> | undefined;
+
+    try {
+      server = await startServer({
+        host: "127.0.0.1",
+        port: 0,
+        networkPolicy: directNetworkPolicy(),
+        networkProxyProbe: { test: testNetworkProxy },
+        desktopAccess: { token: "renderer-token" },
+        daemonControl: {
+          token: "daemon-token",
+          runtimeId: "runtime-current",
+          requestShutdown,
+        },
+      });
+      const attackerOrigin = `http://attacker.example:${server.port}`;
+      const attackerHeaders = {
+        Host: `attacker.example:${server.port}`,
+        Origin: attackerOrigin,
+        "x-easyresearch-daemon-token": "daemon-token",
+        "x-easyresearch-desktop-token": "renderer-token",
+      };
+
+      const response = await productionHandler!(new Request(
+        `http://127.0.0.1:${server.port}/api/settings/network-proxy/test`,
+        {
+          method: "POST",
+          headers: {
+            ...attackerHeaders,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ scope: "all", proxyUrl: null }),
+        },
+      ));
+
+      expect(response.status).toBe(403);
+      expect(testNetworkProxy).not.toHaveBeenCalled();
+
+      for (const path of [
+        "/",
+        "/assets/app.js",
+        "/api/file/raw?path=%2Ftmp%2Frebound.pdf",
+        "/api/config/events",
+        "/api/internal/daemon",
+      ]) {
+        const denied = await productionHandler!(new Request(
+          `http://127.0.0.1:${server.port}${path}`,
+          { headers: attackerHeaders },
+        ));
+        expect(denied.status, path).toBe(403);
+        expect(denied.headers.get("Cache-Control"), path).toBe("no-store");
+      }
+
+      const legitimateOrigin = `http://localhost:${server.port}`;
+      const legitimateDesktop = await productionHandler!(new Request(
+        `http://127.0.0.1:${server.port}/api/status`,
+        {
+          headers: {
+            Host: `localhost:${server.port}`,
+            Origin: legitimateOrigin,
+            "x-easyresearch-desktop-token": "renderer-token",
+          },
+        },
+      ));
+      expect(legitimateDesktop.status).toBe(200);
+
+      const missingDesktopToken = await productionHandler!(new Request(
+        `http://127.0.0.1:${server.port}/api/status`,
+      ));
+      expect(missingDesktopToken.status).toBe(401);
+
+      const nativeControl = await productionHandler!(new Request(
+        `http://127.0.0.1:${server.port}/api/internal/daemon`,
+        { headers: { "x-easyresearch-daemon-token": "daemon-token" } },
+      ));
+      expect(nativeControl.status).toBe(200);
+      await expect(nativeControl.json()).resolves.toEqual({ runtimeId: "runtime-current" });
+      expect(requestShutdown).not.toHaveBeenCalled();
+    } finally {
+      await server?.stop();
+      installRouter.mockRestore();
+      createLive.mockRestore();
+      resolveFactory.mockRestore();
+      importPi.mockRestore();
+      if (originalBun === undefined) delete (globalThis as { Bun?: unknown }).Bun;
+      else (globalThis as { Bun?: unknown }).Bun = originalBun;
+    }
+  });
+
+  it("imports Pi before one router install and routes the auth candidate and root factory through it", async () => {
+    const order: string[] = [];
+    const policy = directNetworkPolicy();
+    const rawRuntime = { route: "raw" };
+    const routedRuntime = { route: "llm" };
+    const router = fakeNetworkRouter({
+      decorateModelRuntime: <T extends object>(runtime: T): T => {
+        order.push("decorate");
+        expect(runtime).toBe(rawRuntime);
+        return routedRuntime as T;
+      },
+    });
+    const installRouter = vi.spyOn(networkRoutingModule, "installNetworkRouter")
+      .mockImplementation((installedPolicy) => {
+        order.push("router");
+        expect(installedPolicy).toBe(policy);
+        return router;
+      });
+    const configuration = fakeConfiguration().live;
+    const createLive = vi.spyOn(liveConfigurationModule, "createLiveConfiguration").mockReturnValue(configuration);
+    const pi = await piImportModule.importPi();
+    const createModelRuntime = vi.fn(async () => {
+      order.push("model-runtime");
+      return rawRuntime;
+    });
+    const importPi = vi.spyOn(piImportModule, "importPi").mockImplementation(async () => {
+      order.push("pi");
+      return {
+        ...pi,
+        getAgentDir: () => agentDir,
+        ModelRuntime: { create: createModelRuntime },
+        SessionManager: { listAll: async () => [], open: vi.fn() },
+      } as never;
+    });
+    createDaemonAuthRuntimeMock.mockImplementationOnce(async (options) => {
+      order.push("auth");
+      const candidate = await options.createModelRuntime();
+      expect(candidate).toBe(routedRuntime);
+      return {
+        auth: authGatewayMock,
+        modelValidator: modelValidatorMock,
+        modelRuntime: candidate,
+        dispose: disposeModelsMock,
+      } as unknown as DaemonAuthRuntime;
+    });
+    let rootRouter: unknown;
+    const resolveFactory = vi.spyOn(PiSessionFactory, "resolve").mockImplementation(async (_live, candidateRouter) => {
+      rootRouter = candidateRouter;
+      return new FakeFactory() as never;
+    });
+    const originalBun = (globalThis as { Bun?: unknown }).Bun;
+    (globalThis as { Bun?: unknown }).Bun = {
+      serve: () => ({ port: 43222, stop: vi.fn() }),
+    };
+    let server: Awaited<ReturnType<typeof startServer>> | undefined;
+
+    try {
+      server = await startServer({ host: "127.0.0.1", port: 0, networkPolicy: policy });
+
+      expect(order).toEqual(["pi", "router", "auth", "model-runtime", "decorate"]);
+      expect(installRouter).toHaveBeenCalledOnce();
+      expect(rootRouter).toBe(router);
+    } finally {
+      await server?.stop();
+      installRouter.mockRestore();
+      createLive.mockRestore();
+      resolveFactory.mockRestore();
+      importPi.mockRestore();
+      if (originalBun === undefined) delete (globalThis as { Bun?: unknown }).Bun;
+      else (globalThis as { Bun?: unknown }).Bun = originalBun;
+    }
+  });
+
+  it("wires network settings and an isolated candidate-probe transport", async () => {
+    const appliedPolicy = resolveNetworkPolicy(
+      parseNetworkProxySettings({ httpProxy: "http://applied.example" }),
+      captureInheritedProxyEnvironment({}),
+    );
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({
+      httpProxy: "http://configured.example",
+      unrelated: { keep: true },
+    }));
+    const actualFetch = globalThis.fetch;
+    const fetchBeforeRouterMock = vi.fn(async (
+      _input: Parameters<typeof fetch>[0],
+      _init?: Parameters<typeof fetch>[1],
+    ) => new Response(null, { status: 204 }));
+    const fetchBeforeRouter = Object.assign(
+      fetchBeforeRouterMock,
+      { preconnect: actualFetch.preconnect },
+    ) as typeof fetch;
+    const routedFetch = responseFetch("routed response must not be used by the probe");
+    globalThis.fetch = fetchBeforeRouter;
+    const restoreRouter = vi.fn(() => {
+      globalThis.fetch = fetchBeforeRouter;
+    });
+    const installRouter = vi.spyOn(networkRoutingModule, "installNetworkRouter")
+      .mockImplementation(() => {
+        globalThis.fetch = routedFetch;
+        return fakeNetworkRouter({ fetch: routedFetch, restore: restoreRouter });
+      });
+    const configuration = fakeConfiguration();
+    const createLive = vi.spyOn(liveConfigurationModule, "createLiveConfiguration")
+      .mockReturnValue(configuration.live);
+    const pi = await piImportModule.importPi();
+    const importPi = vi.spyOn(piImportModule, "importPi").mockResolvedValue({
+      ...pi,
+      getAgentDir: () => agentDir,
+      SessionManager: { listAll: async () => [], open: vi.fn() },
+    } as never);
+    const resolveFactory = vi.spyOn(PiSessionFactory, "resolve")
+      .mockResolvedValue(new FakeFactory() as never);
+    const originalBun = (globalThis as { Bun?: unknown }).Bun;
+    let productionHandler: ((request: Request) => Promise<Response>) | undefined;
+    (globalThis as { Bun?: unknown }).Bun = {
+      serve: ({ fetch }: { fetch: (request: Request) => Promise<Response> }) => {
+        productionHandler = fetch;
+        return { port: 43223, stop: vi.fn() };
+      },
+    };
+    let server: Awaited<ReturnType<typeof startServer>> | undefined;
+
+    try {
+      server = await startServer({
+        host: "127.0.0.1",
+        port: 0,
+        networkPolicy: appliedPolicy,
+        networkProxyProbe: createNetworkProxyProbe(fetchBeforeRouter),
+      });
+
+      const read = await productionHandler!(new Request(
+        `http://127.0.0.1:${server.port}/api/settings/network-proxy`,
+      ));
+      expect(read.status).toBe(200);
+      await expect(read.json()).resolves.toEqual({
+        configured: { all: "http://configured.example" },
+        appliedConfigured: { all: "http://applied.example" },
+        sources: { all: "configured", llm: "all", search: "all" },
+        errors: [],
+        restartRequired: true,
+      });
+
+      const tested = await productionHandler!(new Request(
+        `http://127.0.0.1:${server.port}/api/settings/network-proxy/test`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ scope: "llm", proxyUrl: "http://candidate.example" }),
+        },
+      ));
+      expect(tested.status).toBe(200);
+      await expect(tested.json()).resolves.toMatchObject({
+        ok: true,
+        outcome: "success",
+        status: 204,
+      });
+      expect(fetchBeforeRouterMock).toHaveBeenCalledOnce();
+      const [target, init] = fetchBeforeRouterMock.mock.calls[0]!;
+      expect(target).toBe("https://auth.openai.com/.well-known/openid-configuration");
+      expect(init).toMatchObject({ proxy: "http://candidate.example", redirect: "manual" });
+      expect(globalThis.fetch).toBe(routedFetch);
+
+      const patched = await productionHandler!(new Request(
+        `http://127.0.0.1:${server.port}/api/settings/network-proxy`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ all: "http://saved.example", search: null }),
+        },
+      ));
+      expect(patched.status).toBe(200);
+      expect(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"))).toEqual({
+        httpProxy: "http://saved.example",
+        unrelated: { keep: true },
+      });
+      expect(configuration.notifications).toEqual([]);
+    } finally {
+      await server?.stop();
+      globalThis.fetch = actualFetch;
+      installRouter.mockRestore();
+      createLive.mockRestore();
+      resolveFactory.mockRestore();
+      importPi.mockRestore();
+      if (originalBun === undefined) delete (globalThis as { Bun?: unknown }).Bun;
+      else (globalThis as { Bun?: unknown }).Bun = originalBun;
+    }
+  });
+
   it("shuts down sessions, configuration, auth, models, and server in dependency order", async () => {
     const order: string[] = [];
+    const listenerStop = deferred<void>();
+    const originalFetch = globalThis.fetch;
+    const routedFetch = responseFetch("routed");
+    const restoreRouter = vi.fn(() => {
+      order.push("router");
+      globalThis.fetch = originalFetch;
+    });
+    const installRouter = vi.spyOn(networkRoutingModule, "installNetworkRouter")
+      .mockImplementation(() => {
+        globalThis.fetch = routedFetch;
+        return fakeNetworkRouter({ fetch: routedFetch, restore: restoreRouter });
+      });
     let releaseAuth!: () => void;
     const authCleanup = new Promise<void>((resolve) => {
       releaseAuth = resolve;
@@ -3575,20 +4257,36 @@ describe("web routes", () => {
     (globalThis as { Bun?: unknown }).Bun = {
       serve: () => ({
         port: 43212,
-        stop: () => {
-          order.push("server");
+        stop: async () => {
+          order.push("server-start");
+          await listenerStop.promise;
+          order.push("server-done");
         },
       }),
     };
     let server: Awaited<ReturnType<typeof startServer>> | undefined;
 
     try {
-      server = await startServer({ host: "127.0.0.1", port: 0 });
+      server = await startServer({ host: "127.0.0.1", port: 0, networkPolicy: directNetworkPolicy() });
+      expect(globalThis.fetch).toBe(routedFetch);
       const stopping = server.stop();
       await vi.waitFor(() => {
         expect(order).toEqual(["sessions", "project-watches", "configuration", "auth-start"]);
       });
       releaseAuth();
+      await vi.waitFor(() => expect(order).toContain("server-start"));
+      expect(order).toEqual([
+        "sessions",
+        "project-watches",
+        "configuration",
+        "auth-start",
+        "auth-done",
+        "models",
+        "server-start",
+      ]);
+      expect(restoreRouter).not.toHaveBeenCalled();
+      expect(globalThis.fetch).toBe(routedFetch);
+      listenerStop.resolve();
       await stopping;
       expect(order).toEqual([
         "sessions",
@@ -3597,12 +4295,203 @@ describe("web routes", () => {
         "auth-start",
         "auth-done",
         "models",
-        "server",
+        "server-start",
+        "server-done",
+        "router",
       ]);
+      expect(globalThis.fetch).toBe(originalFetch);
+      await server.stop();
+      expect(restoreRouter).toHaveBeenCalledOnce();
     } finally {
+      globalThis.fetch = originalFetch;
+      installRouter.mockRestore();
       createLive.mockRestore();
       createProjectWatches.mockRestore();
       shutdown.mockRestore();
+      resolveFactory.mockRestore();
+      importPi.mockRestore();
+      if (originalBun === undefined) delete (globalThis as { Bun?: unknown }).Bun;
+      else (globalThis as { Bun?: unknown }).Bun = originalBun;
+    }
+  });
+
+  it("retains a rejected Bun listener stop for retry without an unhandled rejection", async () => {
+    const listenerError = new Error("listener stop rejected");
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    const originalFetch = globalThis.fetch;
+    const routedFetch = responseFetch("routed");
+    const restoreRouter = vi.fn(() => {
+      globalThis.fetch = originalFetch;
+    });
+    const installRouter = vi.spyOn(networkRoutingModule, "installNetworkRouter")
+      .mockImplementation(() => {
+        globalThis.fetch = routedFetch;
+        return fakeNetworkRouter({ fetch: routedFetch, restore: restoreRouter });
+      });
+    const configuration = fakeConfiguration().live;
+    const createLive = vi.spyOn(liveConfigurationModule, "createLiveConfiguration")
+      .mockReturnValue(configuration);
+    const pi = await piImportModule.importPi();
+    const importPi = vi.spyOn(piImportModule, "importPi").mockResolvedValue({
+      ...pi,
+      getAgentDir: () => agentDir,
+      SessionManager: { listAll: async () => [], open: vi.fn() },
+    } as never);
+    const resolveFactory = vi.spyOn(PiSessionFactory, "resolve")
+      .mockResolvedValue(new FakeFactory() as never);
+    const listenerStop = vi.fn()
+      .mockRejectedValueOnce(listenerError)
+      .mockResolvedValueOnce(undefined);
+    const originalBun = (globalThis as { Bun?: unknown }).Bun;
+    (globalThis as { Bun?: unknown }).Bun = {
+      serve: () => ({ port: 43217, stop: listenerStop }),
+    };
+    let server: Awaited<ReturnType<typeof startServer>> | undefined;
+
+    try {
+      server = await startServer({
+        host: "127.0.0.1",
+        port: 0,
+        networkPolicy: directNetworkPolicy(),
+      });
+
+      await expect(server.stop()).rejects.toBe(listenerError);
+      await Promise.resolve();
+      expect(unhandled).not.toHaveBeenCalled();
+      expect(listenerStop).toHaveBeenCalledOnce();
+      expect(restoreRouter).not.toHaveBeenCalled();
+      expect(globalThis.fetch).toBe(routedFetch);
+
+      await expect(server.stop()).resolves.toBeUndefined();
+      expect(listenerStop).toHaveBeenCalledTimes(2);
+      expect(restoreRouter).toHaveBeenCalledOnce();
+      expect(globalThis.fetch).toBe(originalFetch);
+    } finally {
+      process.removeListener("unhandledRejection", unhandled);
+      await server?.stop().catch(() => {});
+      globalThis.fetch = originalFetch;
+      installRouter.mockRestore();
+      createLive.mockRestore();
+      resolveFactory.mockRestore();
+      importPi.mockRestore();
+      if (originalBun === undefined) delete (globalThis as { Bun?: unknown }).Bun;
+      else (globalThis as { Bun?: unknown }).Bun = originalBun;
+    }
+  });
+
+  it("wires one boot-scoped restart coordinator to live registry and auth ownership", async () => {
+    const actualFetch = globalThis.fetch;
+    const installRouter = vi.spyOn(networkRoutingModule, "installNetworkRouter")
+      .mockReturnValue(fakeNetworkRouter());
+    const configuration = fakeConfiguration().live;
+    const createLive = vi.spyOn(liveConfigurationModule, "createLiveConfiguration")
+      .mockReturnValue(configuration);
+    const pi = await piImportModule.importPi();
+    const importPi = vi.spyOn(piImportModule, "importPi").mockResolvedValue({
+      ...pi,
+      getAgentDir: () => agentDir,
+      SessionManager: { listAll: async () => [], open: vi.fn() },
+    } as never);
+    const sessionFactory = new FakeFactory();
+    const resolveFactory = vi.spyOn(PiSessionFactory, "resolve").mockResolvedValue(sessionFactory as never);
+    const originalBun = (globalThis as { Bun?: unknown }).Bun;
+    let productionHandler: ((request: Request) => Promise<Response>) | undefined;
+    const stopBun = vi.fn();
+    (globalThis as { Bun?: unknown }).Bun = {
+      serve: ({ fetch }: { fetch: (request: Request) => Promise<Response> }) => {
+        productionHandler = fetch;
+        return { port: 43221, stop: stopBun };
+      },
+    };
+    let authShutdownEffects = 0;
+    let authShutdown: Promise<void> | undefined;
+    authGatewayMock.shutdown.mockImplementation(() => {
+      if (!authShutdown) {
+        authShutdownEffects += 1;
+        authShutdown = Promise.resolve();
+      }
+      return authShutdown;
+    });
+    authGatewayMock.activeFlow.mockReturnValue("flow-active");
+    const commit = vi.fn();
+    const release = vi.fn(() => true);
+    const reserveRestart = vi.fn(async () => ({ commit, release }));
+    let server: Awaited<ReturnType<typeof startServer>> | undefined;
+
+    try {
+      server = await startServer({
+        host: "127.0.0.1",
+        port: 0,
+        bootId: "boot-server",
+        networkPolicy: directNetworkPolicy(),
+        daemonControl: {
+          token: "daemon-token",
+          runtimeId: "runtime-current",
+          requestShutdown: vi.fn(),
+          reserveRestart,
+        },
+      });
+      const request = async (path: string, body?: unknown) => {
+        if (!productionHandler) throw new Error("Bun handler was not captured");
+        return productionHandler(new Request(`http://127.0.0.1:${server!.port}${path}`, body === undefined
+          ? undefined
+          : {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          }));
+      };
+
+      await expect((await request("/api/status")).json()).resolves.toMatchObject({ bootId: "boot-server" });
+      await expect((await request("/api/status")).json()).resolves.toMatchObject({ bootId: "boot-server" });
+
+      const authBusy = await request("/api/runtime/restart", { force: false });
+      expect(authBusy.status).toBe(409);
+      await expect(authBusy.json()).resolves.toEqual({
+        code: "RUNTIME_BUSY",
+        activeSessions: 0,
+        authFlowActive: true,
+      });
+      expect(reserveRestart).not.toHaveBeenCalled();
+
+      authGatewayMock.activeFlow.mockReturnValue(null);
+      const createdResponse = await request("/api/sessions", { cwd: projectDir });
+      expect(createdResponse.status).toBe(200);
+      const adapter = sessionFactory.created[0]!;
+      adapter.events.forEach((listener) => listener({ type: "agent_start" }));
+
+      const sessionBusy = await request("/api/runtime/restart", { force: false });
+      expect(sessionBusy.status).toBe(409);
+      await expect(sessionBusy.json()).resolves.toEqual({
+        code: "RUNTIME_BUSY",
+        activeSessions: 1,
+        authFlowActive: false,
+      });
+      expect(reserveRestart).not.toHaveBeenCalled();
+
+      const accepted = await request("/api/runtime/restart", { force: true });
+      expect(accepted.status).toBe(202);
+      await expect(accepted.json()).resolves.toEqual({ accepted: true, bootId: "boot-server" });
+      expect(reserveRestart).toHaveBeenCalledOnce();
+      expect(commit).toHaveBeenCalledOnce();
+      expect(release).not.toHaveBeenCalled();
+      expect(authShutdownEffects).toBe(1);
+
+      const repeated = await request("/api/runtime/restart", { force: true });
+      expect(repeated.status).toBe(409);
+      await expect(repeated.json()).resolves.toEqual({ code: "RUNTIME_RESTARTING" });
+
+      await server.stop();
+      await server.stop();
+      expect(adapter.stopped).toBe(1);
+      expect(authShutdownEffects).toBe(1);
+      expect(stopBun).toHaveBeenCalledOnce();
+    } finally {
+      await server?.stop().catch(() => {});
+      globalThis.fetch = actualFetch;
+      installRouter.mockRestore();
+      createLive.mockRestore();
       resolveFactory.mockRestore();
       importPi.mockRestore();
       if (originalBun === undefined) delete (globalThis as { Bun?: unknown }).Bun;
@@ -3624,7 +4513,11 @@ describe("web routes", () => {
     } as never);
 
     try {
-      await expect(startServer({ host: "127.0.0.1", port: 0 })).rejects.toBe(constructionError);
+      await expect(startServer({
+        host: "127.0.0.1",
+        port: 0,
+        networkPolicy: directNetworkPolicy(),
+      })).rejects.toBe(constructionError);
       expect(authGatewayMock.shutdown).toHaveBeenCalledTimes(1);
       expect(disposeModelsMock).toHaveBeenCalledTimes(1);
     } finally {
@@ -3674,7 +4567,7 @@ describe("web routes", () => {
     let server: Awaited<ReturnType<typeof startServer>> | undefined;
 
     try {
-      server = await startServer({ host: "127.0.0.1", port: 0 });
+      server = await startServer({ host: "127.0.0.1", port: 0, networkPolicy: directNetworkPolicy() });
       await expect(server.stop()).rejects.toThrow("session cleanup failed");
       expect(order).toEqual(["sessions-failed"]);
       await server.stop();
@@ -3734,7 +4627,7 @@ describe("web routes", () => {
     let server: Awaited<ReturnType<typeof startServer>> | undefined;
 
     try {
-      server = await startServer({ host: "127.0.0.1", port: 0 });
+      server = await startServer({ host: "127.0.0.1", port: 0, networkPolicy: directNetworkPolicy() });
       await expect(server.stop()).rejects.toThrow("configuration close failed");
       expect(order).toEqual(["configuration-failed"]);
 
@@ -3757,13 +4650,30 @@ describe("web routes", () => {
 
   it("retries transient configuration cleanup during failed startup before releasing dependencies", async () => {
     const startupError = new Error("configuration startup failed");
+    const order: string[] = [];
+    const originalFetch = globalThis.fetch;
+    const routedFetch = responseFetch("routed");
+    const restoreRouter = vi.fn(() => {
+      order.push("router");
+      globalThis.fetch = originalFetch;
+    });
+    const installRouter = vi.spyOn(networkRoutingModule, "installNetworkRouter")
+      .mockImplementation(() => {
+        globalThis.fetch = routedFetch;
+        return fakeNetworkRouter({ fetch: routedFetch, restore: restoreRouter });
+      });
     const configuration = fakeConfiguration().live;
     configuration.start = vi.fn(async () => {
       throw startupError;
     });
     configuration.close = vi.fn()
-      .mockRejectedValueOnce(new Error("configuration close failed"))
-      .mockResolvedValueOnce(undefined);
+      .mockImplementationOnce(async () => {
+        order.push("configuration-failed");
+        throw new Error("configuration close failed");
+      })
+      .mockImplementationOnce(async () => {
+        order.push("configuration-retried");
+      });
     const createLive = vi.spyOn(liveConfigurationModule, "createLiveConfiguration").mockReturnValue(configuration);
     const pi = await piImportModule.importPi();
     const importPi = vi.spyOn(piImportModule, "importPi").mockResolvedValue({
@@ -3773,13 +4683,110 @@ describe("web routes", () => {
     } as never);
 
     try {
-      await expect(startServer({ host: "127.0.0.1", port: 0 })).rejects.toBe(startupError);
+      await expect(startServer({
+        host: "127.0.0.1",
+        port: 0,
+        networkPolicy: directNetworkPolicy(),
+      })).rejects.toBe(startupError);
       expect(configuration.close).toHaveBeenCalledTimes(2);
       expect(authGatewayMock.shutdown).toHaveBeenCalledTimes(1);
       expect(disposeModelsMock).toHaveBeenCalledTimes(1);
+      expect(restoreRouter).toHaveBeenCalledOnce();
+      expect(order).toEqual(["configuration-failed", "configuration-retried", "router"]);
+      expect(globalThis.fetch).toBe(originalFetch);
     } finally {
+      globalThis.fetch = originalFetch;
+      installRouter.mockRestore();
       createLive.mockRestore();
       importPi.mockRestore();
+    }
+  });
+
+  it("restores the router when auth runtime construction fails before server bind", async () => {
+    const startupError = new Error("auth runtime failed");
+    const originalFetch = globalThis.fetch;
+    const routedFetch = responseFetch("routed");
+    const restoreRouter = vi.fn(() => {
+      globalThis.fetch = originalFetch;
+    });
+    const installRouter = vi.spyOn(networkRoutingModule, "installNetworkRouter")
+      .mockImplementation(() => {
+        globalThis.fetch = routedFetch;
+        return fakeNetworkRouter({ fetch: routedFetch, restore: restoreRouter });
+      });
+    createDaemonAuthRuntimeMock.mockRejectedValueOnce(startupError);
+    const pi = await piImportModule.importPi();
+    const importPi = vi.spyOn(piImportModule, "importPi").mockResolvedValue({
+      ...pi,
+      getAgentDir: () => agentDir,
+    } as never);
+
+    try {
+      await expect(startServer({
+        host: "127.0.0.1",
+        port: 0,
+        networkPolicy: directNetworkPolicy(),
+      })).rejects.toBe(startupError);
+      expect(restoreRouter).toHaveBeenCalledOnce();
+      expect(globalThis.fetch).toBe(originalFetch);
+    } finally {
+      globalThis.fetch = originalFetch;
+      installRouter.mockRestore();
+      importPi.mockRestore();
+    }
+  });
+
+  it("runs startup cleanup when route services fail after session factory creation", async () => {
+    const startupError = new Error("route services failed");
+    const originalFetch = globalThis.fetch;
+    const routedFetch = responseFetch("routed");
+    const restoreRouter = vi.fn(() => {
+      globalThis.fetch = originalFetch;
+    });
+    const installRouter = vi.spyOn(networkRoutingModule, "installNetworkRouter")
+      .mockImplementation(() => {
+        globalThis.fetch = routedFetch;
+        return fakeNetworkRouter({ fetch: routedFetch, restore: restoreRouter });
+      });
+    const configuration = fakeConfiguration().live;
+    const createLive = vi.spyOn(liveConfigurationModule, "createLiveConfiguration").mockReturnValue(configuration);
+    const createProjectWatches = vi.spyOn(
+      configurationProjectWatchesModule,
+      "createConfigurationProjectWatches",
+    ).mockImplementation(() => {
+      throw startupError;
+    });
+    const pi = await piImportModule.importPi();
+    const importPi = vi.spyOn(piImportModule, "importPi").mockResolvedValue({
+      ...pi,
+      getAgentDir: () => agentDir,
+      SessionManager: { listAll: async () => [], open: vi.fn() },
+    } as never);
+    const resolveFactory = vi.spyOn(PiSessionFactory, "resolve").mockResolvedValue(new FakeFactory() as never);
+    const serve = vi.fn();
+    const originalBun = (globalThis as { Bun?: unknown }).Bun;
+    (globalThis as { Bun?: unknown }).Bun = { serve };
+
+    try {
+      await expect(startServer({
+        host: "127.0.0.1",
+        port: 0,
+        networkPolicy: directNetworkPolicy(),
+      })).rejects.toBe(startupError);
+      expect(serve).not.toHaveBeenCalled();
+      expect(authGatewayMock.shutdown).toHaveBeenCalledOnce();
+      expect(disposeModelsMock).toHaveBeenCalledOnce();
+      expect(restoreRouter).toHaveBeenCalledOnce();
+      expect(globalThis.fetch).toBe(originalFetch);
+    } finally {
+      globalThis.fetch = originalFetch;
+      installRouter.mockRestore();
+      createLive.mockRestore();
+      createProjectWatches.mockRestore();
+      resolveFactory.mockRestore();
+      importPi.mockRestore();
+      if (originalBun === undefined) delete (globalThis as { Bun?: unknown }).Bun;
+      else (globalThis as { Bun?: unknown }).Bun = originalBun;
     }
   });
 
@@ -3886,7 +4893,7 @@ describe("web routes", () => {
     let server: Awaited<ReturnType<typeof startServer>> | undefined;
 
     try {
-      server = await startServer({ host: "127.0.0.1", port: 0 });
+      server = await startServer({ host: "127.0.0.1", port: 0, networkPolicy: directNetworkPolicy() });
       const launch = productionHandler!(new Request(`http://127.0.0.1:${server.port}/api/sessions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

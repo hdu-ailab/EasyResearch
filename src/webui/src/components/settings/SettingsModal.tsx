@@ -37,6 +37,9 @@ import { AgentResourceDetailsDialog } from "../AgentResourceDetailsDialog";
 import { ProviderConnectModalContent } from "../ProviderConnectModal";
 import { SkillResourceEditor } from "../SkillResourceEditor";
 import { thinkingLevelsForModel } from "../ThinkingLevelSelect";
+import { NetworkSettingsPanel } from "./NetworkSettingsPanel";
+import { RuntimeRestartDialog } from "./RuntimeRestartDialog";
+import { SettingsDiscardDialog } from "./SettingsDiscardDialog";
 import { type SettingsCategory, SettingsNavigation } from "./SettingsNavigation";
 import {
   AgentSettingsPanel,
@@ -54,6 +57,7 @@ export interface SettingsModalProps {
   onOpenConfig(): void;
   onProjectInterestChange(cwd?: string): void;
   registerRouteCloseGuard(guard: SettingsCloseGuard): () => void;
+  onRuntimeRestartAccepted(oldBootId: string): void;
 }
 
 interface SettingsLayerFrameProps {
@@ -123,6 +127,8 @@ function messageFrom(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
+type SettingsExitAction = "close" | "config";
+
 export function SettingsModal({
   configurationGeneration,
   configurationError,
@@ -130,6 +136,7 @@ export function SettingsModal({
   onOpenConfig,
   onProjectInterestChange,
   registerRouteCloseGuard,
+  onRuntimeRestartAccepted,
 }: SettingsModalProps) {
   const { t } = useI18n();
   const providerFlow = useProviderAuthFlow(configurationGeneration);
@@ -140,7 +147,6 @@ export function SettingsModal({
   const focusMobileIndex = useRef(false);
   const focusDesktopTab = useRef(false);
   const initialFocusSet = useRef(false);
-  const layer = useModalLayer(onClose, dialogRef);
   const [active, setActive] = useState<SettingsCategory>("general");
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < 820);
   const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
@@ -168,6 +174,39 @@ export function SettingsModal({
   const [detailsAgent, setDetailsAgent] = useState<AgentDto | null>(null);
   const [addAgentOpen, setAddAgentOpen] = useState(false);
   const [newAgentName, setNewAgentName] = useState("");
+  const [restartDialogOpen, setRestartDialogOpen] = useState(false);
+  const [pendingExit, setPendingExit] = useState<SettingsExitAction | null>(null);
+  const networkDirtyRef = useRef(false);
+  const networkSavingRef = useRef(false);
+  const onNetworkDirtyChange = useCallback((dirty: boolean) => {
+    networkDirtyRef.current = dirty;
+  }, []);
+  const onNetworkSavingChange = useCallback((saving: boolean) => {
+    networkSavingRef.current = saving;
+  }, []);
+  const onNetworkRestartRequired = useCallback(() => setRestartDialogOpen(true), []);
+  const performExit = useCallback(
+    (action: SettingsExitAction) => {
+      if (action === "close") onClose();
+      else onOpenConfig();
+    },
+    [onClose, onOpenConfig],
+  );
+  const requestExit = useCallback(
+    (action: SettingsExitAction) => {
+      if (requestModalCloseAbove(dialogRef.current)) return;
+      if (networkSavingRef.current) return;
+      if (networkDirtyRef.current) {
+        setPendingExit(action);
+        return;
+      }
+      performExit(action);
+    },
+    [performExit],
+  );
+  const requestClose = useCallback(() => requestExit("close"), [requestExit]);
+  const requestConfig = useCallback(() => requestExit("config"), [requestExit]);
+  const layer = useModalLayer(requestClose, dialogRef);
 
   const setCategoryError = useCallback((category: SettingsCategory, cause: unknown | null) => {
     setCategoryErrors((current) => {
@@ -296,12 +335,10 @@ export function SettingsModal({
   useEffect(
     () =>
       registerRouteCloseGuard({
-        shouldBlock: () => hasModalAbove(dialogRef.current),
-        requestClose: () => {
-          requestModalCloseAbove(dialogRef.current);
-        },
+        shouldBlock: () => hasModalAbove(dialogRef.current) || networkSavingRef.current || networkDirtyRef.current,
+        requestClose,
       }),
-    [registerRouteCloseGuard],
+    [registerRouteCloseGuard, requestClose],
   );
 
   useLayoutEffect(() => {
@@ -509,6 +546,14 @@ export function SettingsModal({
 
   const panels: Record<SettingsCategory, ReactNode> = {
     general: <GeneralSettingsPanel />,
+    network: (
+      <NetworkSettingsPanel
+        onDirtyChange={onNetworkDirtyChange}
+        onSavingChange={onNetworkSavingChange}
+        onSavedRestartRequired={onNetworkRestartRequired}
+        onOpenConfig={requestConfig}
+      />
+    ),
     conversation: <ConversationSettingsPanel configurationGeneration={configurationGeneration} />,
     providers: (
       <ProviderSettingsPanel
@@ -542,7 +587,14 @@ export function SettingsModal({
       />
     ),
   };
-  const panelCategories: readonly SettingsCategory[] = ["general", "conversation", "providers", "agents", "resources"];
+  const panelCategories: readonly SettingsCategory[] = [
+    "general",
+    "network",
+    "conversation",
+    "providers",
+    "agents",
+    "resources",
+  ];
   const panelLayers = panelCategories.map((category) => {
     const visible = category === active && (!isMobile || mobileDetailOpen);
     return (
@@ -601,6 +653,26 @@ export function SettingsModal({
           onNameChange={setNewAgentName}
           onCreate={() => void addAgent()}
           onCancel={() => setAddAgentOpen(false)}
+        />
+      )}
+      {restartDialogOpen && (
+        <RuntimeRestartDialog
+          onLater={() => setRestartDialogOpen(false)}
+          onAccepted={(oldBootId) => {
+            setRestartDialogOpen(false);
+            onRuntimeRestartAccepted(oldBootId);
+          }}
+        />
+      )}
+      {pendingExit && (
+        <SettingsDiscardDialog
+          onCancel={() => setPendingExit(null)}
+          onConfirm={() => {
+            const action = pendingExit;
+            networkDirtyRef.current = false;
+            setPendingExit(null);
+            performExit(action);
+          }}
         />
       )}
       {skillEditor && (
@@ -688,7 +760,7 @@ export function SettingsModal({
   );
 
   const onBackdrop = (event: MouseEvent<HTMLDivElement>) => {
-    if (window.innerWidth >= 820 && event.target === event.currentTarget) onClose();
+    if (window.innerWidth >= 820 && event.target === event.currentTarget) requestClose();
   };
 
   return (
@@ -717,7 +789,7 @@ export function SettingsModal({
         </h1>
         <button
           type="button"
-          onClick={onClose}
+          onClick={requestClose}
           className="flex h-8 items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100 focus:outline-2 focus:outline-offset-2 focus:outline-v2-blue-600"
         >
           <X size={14} aria-hidden />
@@ -729,7 +801,7 @@ export function SettingsModal({
           active={active}
           mobileDetailOpen={mobileDetailOpen}
           onSelect={selectCategory}
-          onOpenConfig={onOpenConfig}
+          onOpenConfig={requestConfig}
           registerMobileButton={(category, element) => {
             mobileButtons.current[category] = element;
           }}

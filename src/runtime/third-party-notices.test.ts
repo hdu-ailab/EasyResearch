@@ -779,7 +779,7 @@ z license
 });
 
 describe("installed third-party closure", () => {
-  it("collects the complete locked Web-search, Axios, and SSH production closure", () => {
+  it("collects the complete locked Google auth, proxy transport, Web-search, Axios, and SSH production closure", () => {
     const entries = collectThirdPartyNoticeEntries(PROJECT_ROOT);
     const identities = entries.map((entry) => `${entry.name}@${entry.version}`);
     const first = generateThirdPartyNotices(PROJECT_ROOT);
@@ -788,8 +788,10 @@ describe("installed third-party closure", () => {
     expect(first).toBe(second);
     expect(first.endsWith("\n")).toBe(true);
     expect(identities).toContain("axios@1.19.0");
+    expect(identities).toContain("google-auth-library@10.9.1");
     expect(identities).toContain("open-websearch@2.1.11");
     expect(identities).toContain("ssh2@1.17.0");
+    expect(identities).toContain("undici@8.9.0");
     expect(identities).toContain(
       "K-Dense-AI/scientific-agent-skills@36d8f13a1e754618794bf42f417884940077b4ae",
     );
@@ -811,5 +813,38 @@ describe("installed third-party closure", () => {
     expect(
       scopedIdentities.every((identity) => first.includes(`\n${identity}\n`)),
     ).toBe(true);
+  });
+
+  it("walks the exact locked google-auth-library production closure", () => {
+    const identities = collectThirdPartyNoticeEntries(PROJECT_ROOT, [{
+      name: "google-auth-library",
+      version: "10.9.1",
+    }]).map((entry) => `${entry.name}@${entry.version}`);
+
+    expect(identities).toEqual([
+      "agent-base@7.1.4",
+      "base64-js@1.5.1",
+      "bignumber.js@9.3.1",
+      "buffer-equal-constant-time@1.0.1",
+      "data-uri-to-buffer@4.0.1",
+      "debug@4.4.3",
+      "ecdsa-sig-formatter@1.0.11",
+      "extend@3.0.2",
+      "fetch-blob@3.2.0",
+      "formdata-polyfill@4.0.10",
+      "gaxios@7.3.0",
+      "gcp-metadata@8.1.2",
+      "google-auth-library@10.9.1",
+      "google-logging-utils@1.1.3",
+      "https-proxy-agent@7.0.6",
+      "json-bigint@1.0.0",
+      "jwa@2.0.1",
+      "jws@4.0.1",
+      "ms@2.1.3",
+      "node-domexception@1.0.0",
+      "node-fetch@3.3.2",
+      "safe-buffer@5.2.1",
+      "web-streams-polyfill@3.3.3",
+    ]);
   });
 });

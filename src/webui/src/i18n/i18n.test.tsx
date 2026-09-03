@@ -143,4 +143,13 @@ describe("i18n", () => {
       "API 调用失败，正在重试 2/3",
     );
   });
+
+  it("keeps the approved Network scope copy exact in both languages", () => {
+    expect(messages.en["settings.network.all.description"]).toBe(
+      "Proxies the EasyResearch daemon and local shell, Python, and npm processes started by Agents. SSH and the external system browser are not affected.",
+    );
+    expect(messages["zh-CN"]["settings.network.all.description"]).toBe(
+      "代理 EasyResearch daemon 以及 Agent 启动的本地 shell、Python 和 npm 进程。SSH 与系统外部浏览器不受影响。",
+    );
+  });
 });

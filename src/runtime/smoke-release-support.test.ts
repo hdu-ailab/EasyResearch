@@ -1,23 +1,32 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, request as httpRequest, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import { connect as connectTcp, type AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   FIRST_RUN_CEILING_MS,
+  assertSmokeRuntimeReplacement,
   assertPathFreeSessionEvent,
   buildWindowsShutdownLauncherScript,
   buildWindowsShutdownScript,
   captureSmokeCompletionActivityBaseline,
+  classifySmokeProxyRoutes,
   collectLaunchOutput,
   createCompiledChildEnv,
   fetchSessionEventsBeforeDeadline,
   finishSmokeCleanup,
+  formatSmokeProxyDiagnostics,
+  isSmokeFirstRunPipRecord,
   isSmokeSessionReadyAfter,
+  observeFirstRunStartup,
+  parseSmokeDaemonIdentity,
   parseRecordedPid,
   parseSmokeInitialSessionSnapshot,
   readTextFileWithRetry,
   recordSmokeAcceptanceMilestone,
+  recordSmokeNetworkMilestone,
   recordSmokeSessionActivityReplacement,
   requestSmokeJsonBeforeDeadline,
   requireZeroProcessStatus,
@@ -26,20 +35,27 @@ import {
   resolveSmokeWindowsSystem32,
   runVenvValidation,
   selectSmokeModelAction,
+  selectSmokeWebFetchAction,
   type SmokeModelScenario,
   type SmokeModelState,
+  type SmokeNetworkState,
+  type SmokeProxyRecord,
   type SmokeSessionActivityTracker,
+  type SmokeWebFetchScenario,
+  type SmokeWebFetchState,
   settleProcess,
   skillVenvPython,
-  validateFirstRunVenv,
+  startRecordingHttpProxy,
   venvToolCommand,
   writeVenvValidationScript,
 } from "../../scripts/smoke-release-support";
 import type { NativeLocalShellTool } from "./platform-tools";
 
 const tempDirs: string[] = [];
+const asyncCleanups: Array<() => void | Promise<void>> = [];
 
-afterEach(() => {
+afterEach(async () => {
+  for (const cleanup of asyncCleanups.splice(0).reverse()) await cleanup();
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -62,11 +78,542 @@ function findPythonOnPath(): string | undefined {
 
 const systemPython = findPythonOnPath();
 
+async function listen(server: Server): Promise<string> {
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  asyncCleanups.push(() => new Promise<void>((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  }));
+  const address = server.address() as AddressInfo;
+  return `http://127.0.0.1:${address.port}`;
+}
+
+async function requestViaProxy(proxyUrl: string, targetUrl: string): Promise<{
+  status: number;
+  body: string;
+}> {
+  const proxy = new URL(proxyUrl);
+  const target = new URL(targetUrl);
+  return new Promise((resolve, reject) => {
+    const request = httpRequest({
+      hostname: proxy.hostname,
+      port: proxy.port,
+      method: "GET",
+      path: targetUrl,
+      headers: { Host: target.host },
+    }, (response) => {
+      const chunks: Buffer[] = [];
+      response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+      response.once("error", reject);
+      response.once("end", () => resolve({
+        status: response.statusCode ?? 0,
+        body: Buffer.concat(chunks).toString("utf8"),
+      }));
+    });
+    request.once("error", reject);
+    request.end();
+  });
+}
+
+async function requestThroughConnect(proxyUrl: string, targetUrl: string): Promise<{
+  connectStatus: number;
+  body: string;
+}> {
+  const proxy = new URL(proxyUrl);
+  const target = new URL(targetUrl);
+  return new Promise((resolve, reject) => {
+    const socket = connectTcp({ host: proxy.hostname, port: Number(proxy.port) });
+    let response = "";
+    socket.setEncoding("utf8");
+    socket.once("connect", () => {
+      socket.write(`CONNECT ${target.host} HTTP/1.1\r\nHost: ${target.host}\r\nConnection: close\r\n\r\n`);
+    });
+    socket.on("data", (chunk) => {
+      response += chunk;
+      if (!response.includes("\r\n\r\n")) return;
+      const status = Number.parseInt(response.match(/^HTTP\/1\.1\s+(\d{3})/u)?.[1] ?? "0", 10);
+      socket.destroy();
+      resolve({ connectStatus: status, body: "" });
+    });
+    socket.once("error", reject);
+  });
+}
+
 describe("parseRecordedPid", () => {
   it("accepts both legacy numeric files and structured daemon records", () => {
     expect(parseRecordedPid("4242\n")).toBe(4242);
     expect(parseRecordedPid(`${JSON.stringify({ schema: 1, pid: 5151 })}\n`)).toBe(5151);
     expect(parseRecordedPid("not-a-record")).toBeUndefined();
+  });
+});
+
+describe("native smoke recording proxy", () => {
+  it("notifies an observer when proxy evidence is recorded", async () => {
+    const observed: SmokeProxyRecord[] = [];
+    const proxy = await startRecordingHttpProxy({
+      name: "all",
+      onRecord: (record) => observed.push(record),
+    });
+    asyncCleanups.push(() => proxy.close());
+
+    await requestViaProxy(proxy.url, "http://localhost:1/evidence");
+
+    expect(observed).toEqual(proxy.records());
+  });
+
+  it("serves a fake-public HTTP target without DNS and records only its safe classification", async () => {
+    const upstream = createServer((request, response) => {
+      response.writeHead(200, { "Content-Type": "text/plain" });
+      response.end(`fake target ${request.url}`);
+    });
+    const upstreamUrl = await listen(upstream);
+    const proxy = await startRecordingHttpProxy({
+      name: "llm",
+      fakeTargets: { "llm.native-smoke.invalid": upstreamUrl },
+    });
+    asyncCleanups.push(() => proxy.close());
+
+    const result = await requestViaProxy(
+      proxy.url,
+      "http://llm.native-smoke.invalid/v1/chat/completions?token=MODEL_SECRET",
+    );
+
+    expect(result).toEqual({
+      status: 200,
+      body: "fake target /v1/chat/completions?token=MODEL_SECRET",
+    });
+    expect(proxy.records()).toEqual([{
+      sequence: 1,
+      proxy: "llm",
+      kind: "fake-target",
+      method: "GET",
+      host: "llm.native-smoke.invalid",
+      port: 80,
+    }]);
+    expect(formatSmokeProxyDiagnostics(proxy.records())).not.toContain("MODEL_SECRET");
+  });
+
+  it("forwards ordinary HTTP and CONNECT traffic needed by first-run installers", async () => {
+    const upstream = createServer((_request, response) => {
+      response.writeHead(200, { "Content-Type": "text/plain" });
+      response.end("forwarded-ok");
+    });
+    const upstreamUrl = await listen(upstream);
+    const proxy = await startRecordingHttpProxy({ name: "all" });
+    asyncCleanups.push(() => proxy.close());
+
+    await expect(requestViaProxy(proxy.url, `${upstreamUrl}/plain`)).resolves.toEqual({
+      status: 200,
+      body: "forwarded-ok",
+    });
+    const tunnel = await requestThroughConnect(proxy.url, `${upstreamUrl}/tunnel`);
+    expect(tunnel.connectStatus).toBe(200);
+    expect(proxy.records().map((record) => record.kind)).toEqual([
+      "forward",
+      "connect-forward",
+    ]);
+  });
+
+  it("records and rejects a selected CONNECT host without contacting it", async () => {
+    const proxy = await startRecordingHttpProxy({
+      name: "llm",
+      blockedConnectHosts: ["auth.openai.com"],
+    });
+    asyncCleanups.push(() => proxy.close());
+
+    const result = await requestThroughConnect(proxy.url, "https://auth.openai.com/device");
+
+    expect(result).toEqual({ connectStatus: 502, body: "" });
+    expect(proxy.records()).toEqual([{
+      sequence: 1,
+      proxy: "llm",
+      kind: "connect-blocked",
+      method: "CONNECT",
+      host: "auth.openai.com",
+      port: 443,
+    }]);
+  });
+
+  it("redacts URLs, userinfo, authorization values, and explicit secrets from diagnostics", () => {
+    const records: SmokeProxyRecord[] = [{
+      sequence: 1,
+      proxy: "llm",
+      kind: "connect-blocked",
+      method: "CONNECT",
+      host: "auth.openai.com",
+      port: 443,
+    }];
+    const diagnostics = formatSmokeProxyDiagnostics(records, [
+      new Error(
+        "proxy http://alice:URL_PASSWORD@127.0.0.1:9000/path?token=QUERY_SECRET "
+        + "Authorization: Bearer ACCESS_SECRET proxy-authorization=PROXY_SECRET "
+        + "api_key=API_KEY_SECRET password=PLAIN_PASSWORD detail=EXPLICIT_SECRET "
+        + "payload={\"token\":\"JSON_TOKEN_SECRET\"}",
+      ),
+    ], ["EXPLICIT_SECRET"]);
+
+    expect(diagnostics).toContain("auth.openai.com");
+    for (const secret of [
+      "alice",
+      "URL_PASSWORD",
+      "QUERY_SECRET",
+      "ACCESS_SECRET",
+      "PROXY_SECRET",
+      "API_KEY_SECRET",
+      "PLAIN_PASSWORD",
+      "JSON_TOKEN_SECRET",
+      "EXPLICIT_SECRET",
+      "http://",
+    ]) {
+      expect(diagnostics).not.toContain(secret);
+    }
+  });
+});
+
+describe("native smoke proxy route acceptance", () => {
+  const expected = {
+    allHost: "child.native-smoke.invalid",
+    gaxiosHost: "gaxios.native-smoke.invalid",
+    llmHost: "llm.native-smoke.invalid",
+    searchHost: "search.native-smoke.invalid",
+    oauthHost: "auth.openai.com",
+    candidateHost: "example.com",
+  };
+  const loopbackEvidence = {
+    firstRunAllProxyBaselineSequence: 0,
+    gaxiosRequests: 1,
+    ipv6Requests: 1,
+    ipv6Supported: true,
+    providerRequests: 1,
+    searchRequests: 1,
+    directRequests: 1,
+  };
+  const record = (
+    proxy: string,
+    host: string,
+    kind: SmokeProxyRecord["kind"] = "fake-target",
+  ): SmokeProxyRecord => ({
+    sequence: 1,
+    proxy,
+    kind,
+    method: kind.startsWith("connect-") ? "CONNECT" : "GET",
+    host,
+    port: kind.startsWith("connect-") ? 443 : 80,
+  });
+
+  it("classifies distinct All, LLM, Search, OAuth, candidate, and loopback-bypass evidence", () => {
+    expect(classifySmokeProxyRoutes([
+      record("all", "pypi.org", "connect-forward"),
+      record("all", expected.allHost),
+      record("llm", expected.gaxiosHost),
+      record("llm", expected.llmHost),
+      record("llm", expected.oauthHost, "connect-blocked"),
+      record("search", expected.searchHost),
+      record("candidate", expected.candidateHost, "connect-blocked"),
+    ], expected, loopbackEvidence)).toEqual({
+      allTarget: true,
+      firstRunPipTarget: true,
+      gaxiosTarget: true,
+      llmTarget: true,
+      searchTarget: true,
+      oauthTarget: true,
+      candidateTarget: true,
+      loopbackBypassed: true,
+      routesSeparated: true,
+    });
+  });
+
+  it("accepts first-run pip evidence only from a new outbound All-proxy request", () => {
+    const beforeBaseline = { ...record("all", "pypi.org", "connect-forward"), sequence: 4 };
+    const afterBaseline = { ...record("all", "files.pythonhosted.org", "connect-forward"), sequence: 6 };
+    const evidence = { ...loopbackEvidence, firstRunAllProxyBaselineSequence: 4 };
+
+    expect(classifySmokeProxyRoutes([
+      beforeBaseline,
+      { ...record("llm", "pypi.org", "connect-forward"), sequence: 5 },
+      { ...record("all", "127.0.0.1", "connect-forward"), sequence: 5 },
+      { ...record("all", expected.allHost), sequence: 5 },
+    ], expected, evidence).firstRunPipTarget).toBe(false);
+    expect(classifySmokeProxyRoutes([
+      beforeBaseline,
+      afterBaseline,
+    ], expected, evidence).firstRunPipTarget).toBe(true);
+  });
+
+  it("identifies only post-baseline public All-proxy installer records", () => {
+    expect(isSmokeFirstRunPipRecord({
+      ...record("all", "pypi.org", "connect-forward"),
+      sequence: 6,
+    }, 5)).toBe(true);
+    for (const candidate of [
+      { ...record("all", "pypi.org", "connect-forward"), sequence: 5 },
+      { ...record("llm", "pypi.org", "connect-forward"), sequence: 6 },
+      { ...record("all", "pypi.org"), sequence: 6 },
+      { ...record("all", "localhost." , "forward"), sequence: 6 },
+      { ...record("all", "[::1]", "connect-forward"), sequence: 6 },
+    ]) {
+      expect(isSmokeFirstRunPipRecord(candidate, 5)).toBe(false);
+    }
+  });
+
+  it("does not infer Google/Gaxios routing without a real recorded request", () => {
+    expect(classifySmokeProxyRoutes([
+      record("all", expected.allHost),
+      record("llm", expected.llmHost),
+      record("search", expected.searchHost),
+    ], expected, { ...loopbackEvidence, gaxiosRequests: 0 }).gaxiosTarget).toBe(false);
+  });
+
+  it("requires a real IPv6 request only when the host can bind IPv6 loopback", () => {
+    const records = [
+      record("all", "pypi.org", "connect-forward"),
+      record("all", expected.allHost),
+      record("llm", expected.gaxiosHost),
+      record("llm", expected.llmHost),
+      record("search", expected.searchHost),
+    ];
+
+    expect(classifySmokeProxyRoutes(records, expected, {
+      ...loopbackEvidence,
+      ipv6Requests: 0,
+      ipv6Supported: true,
+    }).loopbackBypassed).toBe(false);
+    expect(classifySmokeProxyRoutes(records, expected, {
+      ...loopbackEvidence,
+      ipv6Requests: 0,
+      ipv6Supported: false,
+    }).loopbackBypassed).toBe(true);
+  });
+
+  it.each([
+    ["provider", 0, 1, 1],
+    ["Search", 1, 0, 1],
+    ["direct child", 1, 1, 0],
+  ] as const)(
+    "does not infer loopback bypass without a real %s request",
+    (_transport, providerRequests, searchRequests, directRequests) => {
+      expect(classifySmokeProxyRoutes([
+        record("all", expected.allHost),
+        record("llm", expected.llmHost),
+        record("search", expected.searchHost),
+      ], expected, {
+        ...loopbackEvidence,
+        providerRequests,
+        searchRequests,
+        directRequests,
+      }).loopbackBypassed).toBe(false);
+    },
+  );
+
+  it("rejects cross-routed fake targets and any loopback proxy record", () => {
+    expect(classifySmokeProxyRoutes([
+      record("search", expected.llmHost),
+      record("all", "127.0.0.1", "forward"),
+    ], expected, loopbackEvidence)).toMatchObject({
+      loopbackBypassed: false,
+      routesSeparated: false,
+    });
+  });
+
+  it("does not accept forwarding or an unblocked CONNECT as deterministic target evidence", () => {
+    expect(classifySmokeProxyRoutes([
+      record("all", expected.allHost, "forward"),
+      record("llm", expected.llmHost, "forward"),
+      record("search", expected.searchHost, "forward"),
+      record("llm", expected.oauthHost, "connect-forward"),
+    ], expected, loopbackEvidence)).toMatchObject({
+      allTarget: false,
+      llmTarget: false,
+      searchTarget: false,
+      oauthTarget: false,
+      routesSeparated: false,
+    });
+  });
+});
+
+describe("native smoke first-run observation", () => {
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((accept) => { resolve = accept; });
+    return { promise, resolve };
+  }
+
+  it("starts both watches and accepts proxy evidence observed before authenticated readiness", async () => {
+    const pip = deferred<{ host: string }>();
+    const readiness = deferred<{ bootId: string }>();
+    let pipStarted = false;
+    let readinessStarted = false;
+    const result = observeFirstRunStartup({
+      observeSetupPip: () => {
+        pipStarted = true;
+        return pip.promise;
+      },
+      observeAuthenticatedReadiness: () => {
+        readinessStarted = true;
+        return readiness.promise;
+      },
+    });
+
+    await Promise.resolve();
+    expect(pipStarted).toBe(true);
+    expect(readinessStarted).toBe(true);
+    pip.resolve({ host: "pypi.org" });
+    await Promise.resolve();
+    readiness.resolve({ bootId: "boot-a" });
+
+    await expect(result).resolves.toEqual({
+      setupPip: { host: "pypi.org" },
+      authenticatedReadiness: { bootId: "boot-a" },
+    });
+  });
+
+  it("rejects authenticated readiness observed before first-run pip evidence", async () => {
+    const pip = deferred<{ host: string }>();
+    const readiness = deferred<{ bootId: string }>();
+    const result = observeFirstRunStartup({
+      observeSetupPip: () => pip.promise,
+      observeAuthenticatedReadiness: () => readiness.promise,
+    });
+
+    readiness.resolve({ bootId: "boot-a" });
+    await expect(Promise.race([
+      result,
+      new Promise((resolve) => setTimeout(() => resolve("still pending"), 25)),
+    ])).rejects.toThrow(/pip.*before.*authenticated readiness/i);
+    pip.resolve({ host: "pypi.org" });
+  });
+});
+
+describe("native smoke runtime replacement", () => {
+  const record = (overrides: Record<string, unknown> = {}) => JSON.stringify({
+    schema: 1,
+    pid: 101,
+    host: "127.0.0.1",
+    port: 3210,
+    token: "token-old",
+    runtimeId: "runtime-stamp",
+    owner: "cli",
+    ...overrides,
+  });
+
+  it("accepts only a fresh boot, token, and PID on the same CLI endpoint/runtime", () => {
+    const before = parseSmokeDaemonIdentity(record());
+    const after = parseSmokeDaemonIdentity(record({ pid: 202, token: "token-new" }));
+
+    expect(assertSmokeRuntimeReplacement({
+      before,
+      after,
+      oldBootId: "boot-old",
+      newBootId: "boot-new",
+    })).toEqual({
+      oldBootId: "boot-old",
+      newBootId: "boot-new",
+      host: "127.0.0.1",
+      port: 3210,
+      runtimeId: "runtime-stamp",
+    });
+  });
+
+  it.each([
+    ["boot id", {}, "boot-old"],
+    ["ownership token", { pid: 202 }, "boot-new"],
+    ["PID", { token: "token-new" }, "boot-new"],
+    ["endpoint", { pid: 202, token: "token-new", port: 3211 }, "boot-new"],
+    ["runtime", { pid: 202, token: "token-new", runtimeId: "other" }, "boot-new"],
+  ])("rejects a replacement without a fresh matching %s", (_name, afterOverrides, newBootId) => {
+    expect(() => assertSmokeRuntimeReplacement({
+      before: parseSmokeDaemonIdentity(record()),
+      after: parseSmokeDaemonIdentity(record(afterOverrides)),
+      oldBootId: "boot-old",
+      newBootId,
+    })).toThrow(/successor|replacement|fresh|endpoint|runtime/i);
+  });
+
+  it("never includes a malformed ownership token in parser diagnostics", () => {
+    const secret = "OWNERSHIP_TOKEN_SECRET";
+    expect(() => parseSmokeDaemonIdentity(JSON.stringify({ token: secret }))).toThrow();
+    try {
+      parseSmokeDaemonIdentity(JSON.stringify({ token: secret }));
+    } catch (error) {
+      expect(String(error)).not.toContain(secret);
+    }
+  });
+});
+
+describe("native smoke network milestone order", () => {
+  const initial = (): SmokeNetworkState => ({
+    setupPipObserved: false,
+    initialBootId: undefined,
+    routesObserved: false,
+    oauthObserved: false,
+    restartAccepted: false,
+    successorBootId: undefined,
+    successorSessionReady: false,
+    invalidSearchRejected: false,
+    invalidLlmRejected: false,
+  });
+
+  it("requires route and OAuth evidence before restart, then both fail-closed probes", () => {
+    let state = recordSmokeNetworkMilestone(initial(), { kind: "setup-pip-observed" });
+    state = recordSmokeNetworkMilestone(state, { kind: "initial-ready", bootId: "boot-a" });
+    state = recordSmokeNetworkMilestone(state, { kind: "routes-observed" });
+    state = recordSmokeNetworkMilestone(state, { kind: "oauth-observed" });
+    state = recordSmokeNetworkMilestone(state, { kind: "restart-accepted", bootId: "boot-a" });
+    state = recordSmokeNetworkMilestone(state, { kind: "successor-ready", bootId: "boot-b" });
+    state = recordSmokeNetworkMilestone(state, { kind: "successor-session-ready" });
+    state = recordSmokeNetworkMilestone(state, { kind: "invalid-search-rejected" });
+    state = recordSmokeNetworkMilestone(state, { kind: "invalid-llm-rejected" });
+
+    expect(state).toEqual({
+      setupPipObserved: true,
+      initialBootId: "boot-a",
+      routesObserved: true,
+      oauthObserved: true,
+      restartAccepted: true,
+      successorBootId: "boot-b",
+      successorSessionReady: true,
+      invalidSearchRejected: true,
+      invalidLlmRejected: true,
+    });
+  });
+
+  it("requires first-run pip proxy evidence before daemon readiness and rejects late evidence", () => {
+    expect(() => recordSmokeNetworkMilestone(initial(), {
+      kind: "initial-ready",
+      bootId: "boot-a",
+    })).toThrow(/pip|setup|before/i);
+
+    let state = recordSmokeNetworkMilestone(initial(), { kind: "setup-pip-observed" });
+    state = recordSmokeNetworkMilestone(state, { kind: "initial-ready", bootId: "boot-a" });
+    expect(() => recordSmokeNetworkMilestone(state, { kind: "setup-pip-observed" }))
+      .toThrow(/pip|setup|order|duplicate/i);
+  });
+
+  it.each([
+    { kind: "routes-observed" },
+    { kind: "restart-accepted", bootId: "boot-a" },
+    { kind: "successor-ready", bootId: "boot-b" },
+    { kind: "invalid-search-rejected" },
+    { kind: "invalid-llm-rejected" },
+  ] as const)("rejects an out-of-order $kind milestone", (milestone) => {
+    expect(() => recordSmokeNetworkMilestone(initial(), milestone)).toThrow(/order|before|initial/i);
+  });
+
+  it("rejects a successor with the initial boot id", () => {
+    let state = recordSmokeNetworkMilestone(initial(), { kind: "setup-pip-observed" });
+    state = recordSmokeNetworkMilestone(state, { kind: "initial-ready", bootId: "boot-a" });
+    state = recordSmokeNetworkMilestone(state, { kind: "routes-observed" });
+    state = recordSmokeNetworkMilestone(state, { kind: "oauth-observed" });
+    state = recordSmokeNetworkMilestone(state, { kind: "restart-accepted", bootId: "boot-a" });
+    expect(() => recordSmokeNetworkMilestone(state, {
+      kind: "successor-ready",
+      bootId: "boot-a",
+    })).toThrow(/fresh|boot/i);
   });
 });
 
@@ -510,6 +1057,7 @@ describe("createCompiledChildEnv", () => {
       expect(env.PATH).toBe("/toolcache/python/bin");
       expect(env.PIP_RETRIES).toBe("3");
       expect(env.PIP_DEFAULT_TIMEOUT).toBe("30");
+      expect(env.PIP_NO_CACHE_DIR).toBe("1");
       expect(env.PATH).not.toContain("node");
       expect(env.PATH).not.toContain("bun");
       expect(env.SECRET).toBe("kept");
@@ -704,57 +1252,6 @@ describe("runVenvValidation", () => {
   });
 });
 
-describe("validateFirstRunVenv", () => {
-  function passingValidationSpawn() {
-    return vi.fn(() => ({ status: 0, stdout: "easyresearch-venv-ok\n", stderr: "" }));
-  }
-
-  it("rejects success:false setup evidence even when import validation would pass", () => {
-    const resultPath = join(tempDir(), "setup-result.json");
-    writeFileSync(resultPath, JSON.stringify({ runId: "current-run", success: false }));
-    const spawn = passingValidationSpawn();
-
-    expect(() => validateFirstRunVenv({
-      setupResultPath: resultPath,
-      setupRunId: "current-run",
-      python: "/agent/venv/bin/python",
-      script: "/tmp/validate.py",
-      spawn,
-    })).toThrow("success:false");
-    expect(spawn).not.toHaveBeenCalled();
-  });
-
-  it("rejects stale success evidence from a different first-run invocation", () => {
-    const resultPath = join(tempDir(), "setup-result.json");
-    writeFileSync(resultPath, JSON.stringify({ runId: "old-run", success: true }));
-    const spawn = passingValidationSpawn();
-
-    expect(() => validateFirstRunVenv({
-      setupResultPath: resultPath,
-      setupRunId: "new-run",
-      python: "/agent/venv/bin/python",
-      script: "/tmp/validate.py",
-      spawn,
-    })).toThrow("does not match the current run");
-    expect(spawn).not.toHaveBeenCalled();
-  });
-
-  it("accepts matching success evidence before validating imports", () => {
-    const resultPath = join(tempDir(), "setup-result.json");
-    writeFileSync(resultPath, JSON.stringify({ runId: "current-run", success: true }));
-    const spawn = passingValidationSpawn();
-
-    expect(validateFirstRunVenv({
-      setupResultPath: resultPath,
-      setupRunId: "current-run",
-      python: "/agent/venv/bin/python",
-      script: "/tmp/validate.py",
-      spawn,
-    }).stdout).toContain("easyresearch-venv-ok");
-    expect(spawn).toHaveBeenCalledOnce();
-  });
-});
-
 it("validates an isolated release venv without a search package", () => {
   const script = join(tempDir(), "validate.py");
   writeVenvValidationScript(script);
@@ -850,6 +1347,160 @@ describe.skipIf(systemPython === undefined)(
 
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain("wrong venv prefix");
+    });
+
+    it("validates npm-visible proxy variables, Playwright Search variables, and a real Python All-route request", async () => {
+      let loopbackRequests = 0;
+      const upstream = createServer((_request, response) => {
+        if (_request.url === "/loopback") loopbackRequests += 1;
+        response.writeHead(200, { "Content-Type": "text/plain" });
+        response.end(_request.url === "/loopback" ? "python-loopback-route-ok" : "python-child-route-ok");
+      });
+      const upstreamUrl = await listen(upstream);
+      const proxy = await startRecordingHttpProxy({
+        name: "all",
+        fakeTargets: { "child.native-smoke.invalid": upstreamUrl },
+      });
+      asyncCleanups.push(() => proxy.close());
+      const root = tempDir();
+      for (const module of ["arxiv", "markitdown"]) writeFileSync(join(root, `${module}.py`), "");
+      const prefixResult = spawnSync(systemPython!, ["-c", "import sys; print(sys.prefix)"], { encoding: "utf8" });
+      expect(prefixResult.status, prefixResult.stderr).toBe(0);
+      const script = join(root, "validate-network.py");
+      const searchProxy = "http://127.0.0.1:45678";
+      const requiredBypass = "localhost,127.0.0.1,::1";
+      const actualBypass = "internal.example,localhost,127.0.0.1,::1,localhost.,[::1]";
+      writeVenvValidationScript(script, {
+        allProxy: proxy.url,
+        searchProxy,
+        bypass: requiredBypass,
+        targetUrl: "http://child.native-smoke.invalid/probe?credential=DO_NOT_RECORD",
+        targetSentinel: "python-child-route-ok",
+        loopbackTargetUrl: `${upstreamUrl}/loopback`,
+        loopbackTargetSentinel: "python-loopback-route-ok",
+      });
+      const child = spawn(systemPython!, [script], {
+        env: {
+          ...process.env,
+          EASYRESEARCH_VENV: prefixResult.stdout.trim(),
+          PYTHONPATH: root,
+          HTTP_PROXY: proxy.url,
+          http_proxy: proxy.url,
+          HTTPS_PROXY: proxy.url,
+          https_proxy: proxy.url,
+          ALL_PROXY: proxy.url,
+          all_proxy: proxy.url,
+          PIP_PROXY: proxy.url,
+          NO_PROXY: actualBypass,
+          no_proxy: actualBypass,
+          PLAYWRIGHT_MCP_PROXY_SERVER: searchProxy,
+          PLAYWRIGHT_MCP_PROXY_BYPASS: actualBypass,
+          npm_config_proxy: proxy.url,
+          NPM_CONFIG_PROXY: proxy.url,
+          npm_config_https_proxy: proxy.url,
+          NPM_CONFIG_HTTPS_PROXY: proxy.url,
+          npm_config_noproxy: actualBypass,
+          NPM_CONFIG_NOPROXY: actualBypass,
+        },
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout?.setEncoding("utf8");
+      child.stderr?.setEncoding("utf8");
+      child.stdout?.on("data", (chunk) => { stdout += chunk; });
+      child.stderr?.on("data", (chunk) => { stderr += chunk; });
+      const status = await new Promise<number | null>((resolve, reject) => {
+        child.once("error", reject);
+        child.once("close", resolve);
+      });
+
+      expect(status, stderr).toBe(0);
+      expect(stdout).toContain("easyresearch-venv-ok");
+      expect(stdout).toContain("easyresearch-network-route-ok");
+      expect(loopbackRequests).toBe(1);
+      expect(proxy.records()).toEqual([{
+        sequence: 1,
+        proxy: "all",
+        kind: "fake-target",
+        method: "GET",
+        host: "child.native-smoke.invalid",
+        port: 80,
+      }]);
+      expect(formatSmokeProxyDiagnostics(proxy.records())).not.toContain("DO_NOT_RECORD");
+
+      const wrongNpmRoute = spawn(systemPython!, [script], {
+        env: {
+          ...process.env,
+          EASYRESEARCH_VENV: prefixResult.stdout.trim(),
+          PYTHONPATH: root,
+          HTTP_PROXY: proxy.url,
+          http_proxy: proxy.url,
+          HTTPS_PROXY: proxy.url,
+          https_proxy: proxy.url,
+          ALL_PROXY: proxy.url,
+          all_proxy: proxy.url,
+          PIP_PROXY: proxy.url,
+          NO_PROXY: actualBypass,
+          no_proxy: actualBypass,
+          PLAYWRIGHT_MCP_PROXY_SERVER: searchProxy,
+          PLAYWRIGHT_MCP_PROXY_BYPASS: actualBypass,
+          npm_config_proxy: "http://wrong-npm-route.invalid",
+          NPM_CONFIG_PROXY: proxy.url,
+          npm_config_https_proxy: proxy.url,
+          NPM_CONFIG_HTTPS_PROXY: proxy.url,
+          npm_config_noproxy: actualBypass,
+          NPM_CONFIG_NOPROXY: actualBypass,
+        },
+      });
+      let wrongNpmStdout = "";
+      let wrongNpmStderr = "";
+      wrongNpmRoute.stdout?.setEncoding("utf8");
+      wrongNpmRoute.stderr?.setEncoding("utf8");
+      wrongNpmRoute.stdout?.on("data", (chunk) => { wrongNpmStdout += chunk; });
+      wrongNpmRoute.stderr?.on("data", (chunk) => { wrongNpmStderr += chunk; });
+      const wrongNpmStatus = await new Promise<number | null>((resolve, reject) => {
+        wrongNpmRoute.once("error", reject);
+        wrongNpmRoute.once("close", resolve);
+      });
+      expect(wrongNpmStatus, wrongNpmStdout).not.toBe(0);
+      expect(wrongNpmStderr).toContain("wrong npm_config_proxy proxy route");
+
+      const wrongPipRoute = spawn(systemPython!, [script], {
+        env: {
+          ...process.env,
+          EASYRESEARCH_VENV: prefixResult.stdout.trim(),
+          PYTHONPATH: root,
+          HTTP_PROXY: proxy.url,
+          http_proxy: proxy.url,
+          HTTPS_PROXY: proxy.url,
+          https_proxy: proxy.url,
+          ALL_PROXY: proxy.url,
+          all_proxy: proxy.url,
+          PIP_PROXY: "http://wrong-pip-route.invalid",
+          NO_PROXY: actualBypass,
+          no_proxy: actualBypass,
+          PLAYWRIGHT_MCP_PROXY_SERVER: searchProxy,
+          PLAYWRIGHT_MCP_PROXY_BYPASS: actualBypass,
+          npm_config_proxy: proxy.url,
+          NPM_CONFIG_PROXY: proxy.url,
+          npm_config_https_proxy: proxy.url,
+          NPM_CONFIG_HTTPS_PROXY: proxy.url,
+          npm_config_noproxy: actualBypass,
+          NPM_CONFIG_NOPROXY: actualBypass,
+        },
+      });
+      let wrongPipStdout = "";
+      let wrongPipStderr = "";
+      wrongPipRoute.stdout?.setEncoding("utf8");
+      wrongPipRoute.stderr?.setEncoding("utf8");
+      wrongPipRoute.stdout?.on("data", (chunk) => { wrongPipStdout += chunk; });
+      wrongPipRoute.stderr?.on("data", (chunk) => { wrongPipStderr += chunk; });
+      const wrongPipStatus = await new Promise<number | null>((resolve, reject) => {
+        wrongPipRoute.once("error", reject);
+        wrongPipRoute.once("close", resolve);
+      });
+      expect(wrongPipStatus, wrongPipStdout).not.toBe(0);
+      expect(wrongPipStderr).toContain("wrong PIP_PROXY proxy route");
     });
   },
 );
@@ -1236,6 +1887,130 @@ describe("recordSmokeAcceptanceMilestone", () => {
       kind: "root-applied-generation",
       generation: 7,
     })).toThrow(/greater than.*baseline/i);
+  });
+});
+
+describe("selectSmokeWebFetchAction", () => {
+  const scenario: SmokeWebFetchScenario = {
+    targetUrl: "http://search.native-smoke.invalid/article",
+    expectedResultText: "deterministic-search-result",
+    completionText: "Search route complete.",
+    forbiddenResultText: ["http://127.0.0.1:9876", "SEARCH_PROXY_SECRET"],
+  };
+  const initial = (): SmokeWebFetchState => ({
+    toolIssued: false,
+    resultObserved: false,
+    completedRequests: 0,
+  });
+  const request = (...messages: Array<{ role: string; tool_call_id?: string; content: unknown }>) => ({
+    tools: [{ function: { name: "webfetch" } }],
+    messages,
+  });
+
+  it("issues one deterministic webfetch and completes only after its correlated result", () => {
+    const issued = selectSmokeWebFetchAction(request(), scenario, initial());
+    const completed = selectSmokeWebFetchAction(request({
+      role: "tool",
+      tool_call_id: "call_native_webfetch",
+      content: "source\ndeterministic-search-result\n",
+    }), scenario, issued.state);
+
+    expect(issued).toEqual({
+      action: {
+        kind: "tool",
+        id: "call_native_webfetch",
+        name: "webfetch",
+        arguments: JSON.stringify({
+          url: "http://search.native-smoke.invalid/article",
+          format: "text",
+          timeout: 30,
+        }),
+      },
+      state: { toolIssued: true, resultObserved: false, completedRequests: 1 },
+    });
+    expect(completed).toEqual({
+      action: { kind: "text", text: "Search route complete." },
+      state: { toolIssued: true, resultObserved: true, completedRequests: 2 },
+    });
+  });
+
+  it("uses the same strict transition for a fail-closed bundled web-search probe", () => {
+    const searchScenario: SmokeWebFetchScenario = {
+      ...scenario,
+      toolName: "web-search",
+      toolCallId: "call_native_invalid_search",
+      toolArguments: {
+        query: "native smoke fail closed",
+        engines: ["duckduckgo"],
+        limit: 1,
+      },
+      expectedResultText: "NETWORK_PROXY_INVALID",
+      completionText: "Invalid Search route failed closed.",
+    };
+    const issued = selectSmokeWebFetchAction({
+      tools: [{ function: { name: "web-search" } }],
+      messages: [],
+    }, searchScenario, initial());
+    const completed = selectSmokeWebFetchAction({
+      tools: [{ function: { name: "web-search" } }],
+      messages: [
+        {
+          role: "tool",
+          tool_call_id: "call_native_webfetch",
+          content: "prior resumed-session result",
+        },
+        {
+          role: "tool",
+          tool_call_id: "call_native_invalid_search",
+          content: "Search failed: NETWORK_PROXY_INVALID",
+        },
+      ],
+    }, searchScenario, issued.state);
+
+    expect(issued.action).toEqual({
+      kind: "tool",
+      id: "call_native_invalid_search",
+      name: "web-search",
+      arguments: JSON.stringify(searchScenario.toolArguments),
+    });
+    expect(completed.action).toEqual({
+      kind: "text",
+      text: "Invalid Search route failed closed.",
+    });
+  });
+
+  it("rejects missing, duplicate, unexpected, or sensitive tool results", () => {
+    const issued = { ...initial(), toolIssued: true };
+    expect(() => selectSmokeWebFetchAction(request(), scenario, issued)).toThrow(/exactly one/i);
+    expect(() => selectSmokeWebFetchAction(request(
+      { role: "tool", tool_call_id: "call_native_webfetch", content: "deterministic-search-result" },
+      { role: "tool", tool_call_id: "call_native_webfetch", content: "deterministic-search-result" },
+    ), scenario, issued)).toThrow(/exactly one/i);
+    expect(() => selectSmokeWebFetchAction(request({
+      role: "tool",
+      tool_call_id: "call_native_webfetch",
+      content: "wrong result",
+    }), scenario, issued)).toThrow(/expected result/i);
+    expect(() => selectSmokeWebFetchAction(request({
+      role: "tool",
+      tool_call_id: "call_native_webfetch",
+      content: "deterministic-search-result http://127.0.0.1:9876",
+    }), scenario, issued)).toThrow(/sensitive/i);
+  });
+
+  it("rejects a missing tool, an out-of-order state, or a request after completion", () => {
+    expect(() => selectSmokeWebFetchAction({ tools: [], messages: [] }, scenario, initial()))
+      .toThrow(/exactly one webfetch/i);
+    expect(() => selectSmokeWebFetchAction(request(), scenario, {
+      toolIssued: false,
+      resultObserved: true,
+      completedRequests: 1,
+    })).toThrow(/state|order/i);
+    expect(() => selectSmokeWebFetchAction(request(), scenario, {
+      toolIssued: true,
+      resultObserved: true,
+      completedRequests: 2,
+    })).toThrow(/complete/i);
   });
 });
 

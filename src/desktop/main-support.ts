@@ -1,5 +1,10 @@
 import type { DesktopLifecycleState } from "./lifecycle";
 import { handleWindowClose } from "./lifecycle";
+import {
+  parseHashRoute,
+  routeToHash,
+  withoutSettings,
+} from "../webui/src/router";
 
 export const DESKTOP_PREFERENCES_READ_CHANNEL = "desktop:preferences:read";
 export const DESKTOP_PREFERENCES_WRITE_CHANNEL = "desktop:preferences:write";
@@ -54,7 +59,40 @@ export function isCurrentDesktopDocument(
   hasRenderedRoot: boolean,
   authenticatedStatus: boolean,
 ): boolean {
-  return hasRenderedRoot && authenticatedStatus && documentUrl === `${readyOrigin}/`;
+  if (!hasRenderedRoot || !authenticatedStatus) return false;
+  try {
+    const document = new URL(documentUrl);
+    return document.origin === new URL(readyOrigin).origin
+      && document.username === ""
+      && document.password === ""
+      && document.pathname === "/"
+      && document.search === "";
+  } catch {
+    return false;
+  }
+}
+
+export function captureDesktopRestartHash(documentUrl: string, readyOrigin: string): string {
+  try {
+    const document = new URL(documentUrl);
+    if (
+      document.origin !== new URL(readyOrigin).origin
+      || document.username !== ""
+      || document.password !== ""
+      || document.pathname !== "/"
+      || document.search !== ""
+    ) {
+      return "#/";
+    }
+    const route = parseHashRoute(document.hash);
+    if (!route) return "#/";
+    if (route.page === "config") {
+      return route.returnTo ? routeToHash(withoutSettings(route.returnTo)) : "#/";
+    }
+    return routeToHash(withoutSettings(route));
+  } catch {
+    return "#/";
+  }
 }
 
 export function handleMainWindowClose(

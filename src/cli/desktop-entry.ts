@@ -12,6 +12,13 @@ import { acquireTransitionLease, type RuntimeLease } from "./runtime-lease";
 import { runServe, type ServeOptions } from "./commands/serve";
 import { createLogger } from "../runtime/logger";
 import {
+  loadNetworkPolicy,
+  restoreBunSandboxEnvironment,
+  withTemporaryNetworkPolicyEnvironment,
+  type BunSandboxEnvironmentOptions,
+  type EnvironmentMap,
+} from "../runtime/network-policy";
+import {
   DESKTOP_CONTROL_TOKEN_ENV,
   DESKTOP_EVENT_PREFIX,
   DESKTOP_LAUNCH_ENV,
@@ -35,12 +42,16 @@ export interface DesktopServeRequest {
 }
 
 interface ParentLifeEmitter {
+  readonly destroyed?: boolean;
+  readonly readableEnded?: boolean;
   once(event: "end" | "close" | "error", listener: () => void): unknown;
   removeListener(event: "end" | "close" | "error", listener: () => void): unknown;
   resume?: () => unknown;
 }
 
 interface DesktopServeDependencies {
+  environment?: EnvironmentMap;
+  environmentRestore?: BunSandboxEnvironmentOptions;
   agentDir?: () => string;
   runtimeId?: () => string;
   acquireTransition?: (agentDir: string) => Promise<RuntimeLease>;
@@ -112,6 +123,7 @@ export function bindParentLife(
   parentLife.once("close", onEnd);
   parentLife.once("error", onEnd);
   parentLife.resume?.();
+  if (parentLife.readableEnded || parentLife.destroyed) onEnd();
   return () => {
     parentLife.removeListener("end", onEnd);
     parentLife.removeListener("close", onEnd);
@@ -123,6 +135,11 @@ export async function runDesktopServe(
   request: DesktopServeRequest,
   dependencies: DesktopServeDependencies = {},
 ): Promise<number> {
+  const environment = dependencies.environment ?? process.env;
+  restoreBunSandboxEnvironment(environment, dependencies.environmentRestore);
+  delete environment[DESKTOP_LAUNCH_ENV];
+  delete environment[DESKTOP_CONTROL_TOKEN_ENV];
+  delete environment[DESKTOP_RENDERER_TOKEN_ENV];
   const agentDir = (dependencies.agentDir ?? defaultAgentDir)();
   const runtimeId = (dependencies.runtimeId ?? desktopRuntimeId)();
   const emit = dependencies.emit ?? emitDesktopSidecarEvent;
@@ -134,6 +151,13 @@ export async function runDesktopServe(
   });
   let transition: RuntimeLease | undefined;
   let transitionReleased = false;
+  let parentShutdownRequested = false;
+  let activeServeShutdown: (() => void) | undefined;
+  const parentLife = dependencies.parentLife ?? (process.stdin as unknown as EventEmitter);
+  const unbindParentLife = bindParentLife(parentLife, () => {
+    parentShutdownRequested = true;
+    activeServeShutdown?.();
+  });
   const releaseTransition = (): void => {
     if (!transition || transitionReleased) return;
     if (!transition.release()) {
@@ -143,8 +167,10 @@ export async function runDesktopServe(
   };
 
   try {
+    if (parentShutdownRequested) return 0;
     transition = await (dependencies.acquireTransition
       ?? ((root) => acquireTransitionLease(root, "desktop")))(agentDir);
+    if (parentShutdownRequested) return 0;
     const background = await (dependencies.inspectBackground
       ?? ((root, currentRuntimeId) =>
         inspectServerProcess(root, currentRuntimeId, request.host, request.port)))(agentDir, runtimeId);
@@ -156,14 +182,22 @@ export async function runDesktopServe(
       await (dependencies.stopCliOwner
         ?? ((root) => stopServerProcess(root, { expectedOwner: "cli" })))(agentDir);
     }
+    if (parentShutdownRequested) return 0;
 
     const setupLog = (message: string): void => emit({
       type: "desktop.setup",
       message: (message || "Preparing EasyResearch resources...").slice(0, 4_096),
     });
     try {
-      if (dependencies.setup) dependencies.setup(agentDir, setupLog);
-      else performFirstRunSetup(agentDir, { log: setupLog });
+      const { baseline, policy } = loadNetworkPolicy(
+        agentDir,
+        environment,
+        dependencies.environmentRestore,
+      );
+      withTemporaryNetworkPolicyEnvironment(policy, baseline, environment, () => {
+        if (dependencies.setup) dependencies.setup(agentDir, setupLog);
+        else performFirstRunSetup(agentDir, { log: setupLog });
+      });
     } catch (error) {
       logError("setup", error);
       emit(desktopError(
@@ -174,26 +208,45 @@ export async function runDesktopServe(
       ));
       return 1;
     }
+    if (parentShutdownRequested) return 0;
 
-    const parentLife = dependencies.parentLife ?? (process.stdin as unknown as EventEmitter);
     let ready = false;
+    let readyBootId: string | undefined;
+    let restartRequested = false;
     const exitCode = await (dependencies.serve ?? runServe)(request.host, request.port, {
       owner: "desktop",
       token: request.controlToken,
       runtimeId,
       rendererToken: request.rendererToken,
-      registerShutdownTrigger: (requestShutdown) => bindParentLife(parentLife, requestShutdown),
-      onReady: ({ port, logPath: readyLogPath }) => {
+      registerShutdownTrigger: (requestShutdown) => {
+        activeServeShutdown = requestShutdown;
+        if (parentShutdownRequested) requestShutdown();
+        return () => {
+          if (activeServeShutdown === requestShutdown) activeServeShutdown = undefined;
+        };
+      },
+      onReady: ({ port, logPath: readyLogPath, bootId }) => {
         ready = true;
+        readyBootId = bootId;
         emit({
           type: "desktop.ready",
           origin: `http://${request.host}:${port}`,
           owner: "desktop",
           pid: process.pid,
           logPath: resolve(readyLogPath),
+          bootId,
         });
         releaseTransition();
       },
+      onExpectedRestart: (bootId) => {
+        if (!readyBootId || bootId !== readyBootId || restartRequested) {
+          throw new Error("EasyResearch desktop restart identity did not match its ready event.");
+        }
+        restartRequested = true;
+        emit({ type: "desktop.restart-requested", bootId });
+      },
+      environment,
+      environmentRestore: dependencies.environmentRestore,
     });
     if (exitCode !== 0) {
       emit(desktopError(
@@ -206,7 +259,7 @@ export async function runDesktopServe(
       ));
       return exitCode;
     }
-    emit({ type: "desktop.stopped" });
+    if (ready && !restartRequested) emit({ type: "desktop.stopped" });
     return 0;
   } catch (error) {
     logError("ownership", error);
@@ -218,6 +271,7 @@ export async function runDesktopServe(
     ));
     return 1;
   } finally {
+    unbindParentLife();
     if (transition && !transitionReleased) {
       try {
         releaseTransition();

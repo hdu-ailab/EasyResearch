@@ -23,6 +23,7 @@ import { resolvePiDefaultModel, type PiDefaultModelApi } from "../runtime/pi-def
 import { publishPersistedUsageEntry } from "../runtime/persisted-usage-event";
 import { applySkillSnapshotBaseDirs } from "../runtime/resource-fingerprint";
 import { assertModelRequestReady } from "../runtime/model-request-error";
+import type { AgentSessionNetworkRouter } from "../runtime/network-routing";
 import { createConfiguredModelRuntime } from "./auth-runtime";
 import {
   ConfigurationUnavailableError,
@@ -319,6 +320,7 @@ interface ResourceLoaderLike {
 export interface PiRuntimeDependencies {
   agentDir: string;
   liveConfiguration: LiveConfiguration;
+  networkRouter?: AgentSessionNetworkRouter;
   createSessionManager(cwd: string): CoordinatorSessionManager;
   openSessionManager(path: string): CoordinatorSessionManager;
   createCoordinator(sessionManager: CoordinatorSessionManager): SubagentCoordinator;
@@ -328,6 +330,7 @@ export interface PiRuntimeDependencies {
     coordinator: SubagentCoordinator;
     supervisor: SubagentSupervisor;
     binding: AgentRuntimeBinding;
+    networkRouter?: AgentSessionNetworkRouter;
     compaction: ManualCompactionController;
     stats: SessionStatsNotifier;
     publishTimelineEntry: (entry: unknown) => void;
@@ -369,8 +372,10 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
       live: deps.liveConfiguration,
       agentName: "research-assistant",
       cwd: options.cwd,
-      createModelRuntime: async () =>
-        await deps.createModelRuntime(deps.agentDir) as AgentRuntimeModelRuntime,
+      createModelRuntime: async () => {
+        const runtime = await deps.createModelRuntime(deps.agentDir);
+        return deps.networkRouter?.decorateModelRuntime(runtime) ?? runtime;
+      },
       resolveAutomaticModel: (modelRuntime) => deps.resolveAutomaticModel({
         cwd: options.cwd,
         agentDir: deps.agentDir,
@@ -393,6 +398,7 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
         coordinator,
         supervisor,
         binding,
+        networkRouter: deps.networkRouter,
         compaction,
         stats,
         publishTimelineEntry,
@@ -515,7 +521,10 @@ const THINKING_LEVELS = new Set<ThinkingLevel>([
 export class PiSessionFactory implements SessionFactory {
   constructor(private readonly createAgentSession: AgentSessionCreator) {}
 
-  static async resolve(liveConfiguration?: LiveConfiguration): Promise<PiSessionFactory> {
+  static async resolve(
+    liveConfiguration?: LiveConfiguration,
+    networkRouter?: AgentSessionNetworkRouter,
+  ): Promise<PiSessionFactory> {
     if (!liveConfiguration) {
       return new PiSessionFactory(async () => {
         throw new ConfigurationUnavailableError();
@@ -530,12 +539,14 @@ export class PiSessionFactory implements SessionFactory {
     const { SubagentCoordinator } = await import("../subagent/coordinator");
     const { recoverSubagentTree } = await import("../subagent/recovery");
     const { SubagentSupervisor } = await import("../subagent/supervisor");
-    const { launchStageSession } = await import("../subagent/stage-session");
+    const { createDefaultStageSessionLauncher } = await import("../subagent/stage-session");
     const { createSubagentRecoverySessionStore } = await import("./subagent-sessions");
     const agentDir = getAgentDir();
+    const launchStage = await createDefaultStageSessionLauncher(networkRouter);
     const creator = createPiAgentSessionCreator({
       agentDir,
       liveConfiguration,
+      networkRouter,
       createSessionManager: (cwd) => pi.SessionManager.create(cwd),
       openSessionManager: (path) => pi.SessionManager.open(path),
       createCoordinator: (sessionManager) => new SubagentCoordinator(sessionManager),
@@ -551,7 +562,7 @@ export class PiSessionFactory implements SessionFactory {
       },
       createDirectChildSupervisor: (coordinator) => new SubagentSupervisor({
         coordinator,
-        launchStage: launchStageSession,
+        launchStage,
       }),
       createExtensionFactories: (runtime) =>
         createResearchAssistantExtensions({ ...runtime, liveConfiguration })
@@ -566,6 +577,7 @@ export class PiSessionFactory implements SessionFactory {
             refreshOnCreate: false,
           }),
           modelsPath,
+          (runtime) => networkRouter?.decorateModelRuntime(runtime) ?? runtime,
         );
       },
       createResourceLoader: (options) =>

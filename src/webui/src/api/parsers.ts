@@ -26,13 +26,20 @@ import type {
   CompactionStateChangedEventDto,
   CompactionStateDto,
   ConfigEntryDto,
-  ConfigurationEvent,
   ContextUsageDto,
   DirectoryEntryDto,
   DirectoryListingDto,
   FileContentDto,
   FileEntryDto,
+  NetworkProxySettingsDto,
+  NetworkProxySettingsErrorDto,
+  NetworkProxySettingsSourceDto,
+  NetworkProxyTestOutcomeDto,
+  NetworkProxyTestResultDto,
+  NetworkProxyValuesDto,
+  PublicConfigurationEvent,
   RuntimeConfigurationAppliedEvent,
+  RuntimeRestartAcceptedDto,
   SessionActivityChangedEventDto,
   SessionSnapshotDto,
   SessionStatsChangedEventDto,
@@ -190,6 +197,122 @@ export function parseCompactionRequestResult(value: unknown): CompactionRequestR
 export function parseApiUsageSettings(value: unknown): ApiUsageSettingsDto {
   const source = record(value, "API usage settings");
   return { showApiUsageDetails: requiredBoolean(source, "showApiUsageDetails") };
+}
+
+const networkProxyFields = ["all", "llm", "search"] as const;
+
+function onlyKeys(source: RecordValue, keys: readonly string[], label: string): void {
+  const allowed = new Set(keys);
+  if (Object.keys(source).some((key) => !allowed.has(key))) {
+    throw new Error(`Invalid API response: ${label} contains an unknown field`);
+  }
+}
+
+function parseNetworkProxyValues(value: unknown, label: string): NetworkProxyValuesDto {
+  const source = record(value, label);
+  onlyKeys(source, networkProxyFields, label);
+  const result: NetworkProxyValuesDto = {};
+  for (const field of networkProxyFields) {
+    if (source[field] !== undefined) result[field] = requiredIdentityString(source, field);
+  }
+  return result;
+}
+
+function parseNetworkProxySource(
+  value: unknown,
+  field: (typeof networkProxyFields)[number],
+): NetworkProxySettingsSourceDto {
+  if (value === "configured" || value === "environment" || value === "direct" || (field !== "all" && value === "all")) {
+    return value;
+  }
+  throw new Error(`Invalid API response: ${field} network proxy source is invalid`);
+}
+
+function parseNetworkProxyError(value: unknown): NetworkProxySettingsErrorDto {
+  const source = record(value, "network proxy settings error");
+  onlyKeys(source, ["code", "field"], "network proxy settings error");
+  if (source.code !== "NETWORK_PROXY_INVALID") {
+    throw new Error("Invalid API response: network proxy settings error code is invalid");
+  }
+  if (
+    source.field !== "settings" &&
+    !networkProxyFields.includes(source.field as (typeof networkProxyFields)[number])
+  ) {
+    throw new Error("Invalid API response: network proxy settings error field is invalid");
+  }
+  return {
+    code: "NETWORK_PROXY_INVALID",
+    field: source.field as NetworkProxySettingsErrorDto["field"],
+  };
+}
+
+export function parseNetworkProxySettings(value: unknown): NetworkProxySettingsDto {
+  const source = record(value, "network proxy settings");
+  onlyKeys(
+    source,
+    ["configured", "appliedConfigured", "sources", "errors", "restartRequired"],
+    "network proxy settings",
+  );
+  const rawSources = record(source.sources, "network proxy settings sources");
+  onlyKeys(rawSources, networkProxyFields, "network proxy settings sources");
+  return {
+    configured: parseNetworkProxyValues(source.configured, "configured network proxy values"),
+    appliedConfigured: parseNetworkProxyValues(source.appliedConfigured, "applied network proxy values"),
+    sources: {
+      all: parseNetworkProxySource(rawSources.all, "all") as NetworkProxySettingsDto["sources"]["all"],
+      llm: parseNetworkProxySource(rawSources.llm, "llm"),
+      search: parseNetworkProxySource(rawSources.search, "search"),
+    },
+    errors: arrayOf(source.errors, "network proxy settings errors", parseNetworkProxyError),
+    restartRequired: requiredBoolean(source, "restartRequired"),
+  };
+}
+
+function parseNetworkProxyTestOutcome(value: unknown): NetworkProxyTestOutcomeDto {
+  if (
+    value === "success" ||
+    value === "invalid-config" ||
+    value === "cancelled" ||
+    value === "timeout" ||
+    value === "tls" ||
+    value === "proxy-connect" ||
+    value === "proxy-response" ||
+    value === "target-response"
+  ) {
+    return value;
+  }
+  throw new Error("Invalid API response: network proxy test outcome is invalid");
+}
+
+export function parseNetworkProxyTestResult(value: unknown): NetworkProxyTestResultDto {
+  const source = record(value, "network proxy test result");
+  onlyKeys(source, ["ok", "outcome", "status", "elapsedMs"], "network proxy test result");
+  const ok = requiredBoolean(source, "ok");
+  const outcome = parseNetworkProxyTestOutcome(source.outcome);
+  if (ok !== (outcome === "success")) {
+    throw new Error("Invalid API response: network proxy test success state is inconsistent");
+  }
+  const status = optionalNumber(source, "status");
+  if (status !== undefined && (!Number.isSafeInteger(status) || status < 100 || status > 599)) {
+    throw new Error("Invalid API response: network proxy test status is invalid");
+  }
+  const elapsedMs = requiredNumber(source, "elapsedMs");
+  if (elapsedMs < 0) throw new Error("Invalid API response: network proxy test elapsedMs is invalid");
+  return {
+    ok,
+    outcome,
+    ...(status === undefined ? {} : { status }),
+    elapsedMs,
+  };
+}
+
+export function parseRuntimeRestartAccepted(value: unknown): RuntimeRestartAcceptedDto {
+  const source = record(value, "runtime restart acceptance");
+  onlyKeys(source, ["accepted", "bootId"], "runtime restart acceptance");
+  if (source.accepted !== true) {
+    throw new Error("Invalid API response: runtime restart was not accepted");
+  }
+  return { accepted: true, bootId: requiredIdentityString(source, "bootId") };
 }
 
 function parseApiUsage(value: unknown): ApiUsageDto {
@@ -571,6 +694,7 @@ export function parseAgent(value: unknown): AgentDto {
 export function parseStatus(value: unknown): StatusDto {
   const source = record(value, "status");
   return {
+    bootId: requiredIdentityString(source, "bootId"),
     agentDir: requiredString(source, "agentDir"),
     homeDir: requiredString(source, "homeDir"),
     sessions: arrayOf(source.sessions, "sessions", parseSessionSummary),
@@ -591,8 +715,9 @@ export function parseAgents(value: unknown): AgentDto[] {
   return arrayOf(value, "agents", parseAgent);
 }
 
-export function parseConfigurationEvent(value: unknown): ConfigurationEvent {
+export function parseConfigurationEvent(value: unknown): PublicConfigurationEvent {
   const source = record(value, "configuration event");
+  const bootId = requiredIdentityString(source, "bootId");
   const generation = requiredNumber(source, "generation");
   if (!Number.isSafeInteger(generation) || generation < 0) {
     throw new Error("Invalid API response: generation must be a non-negative integer");
@@ -609,6 +734,7 @@ export function parseConfigurationEvent(value: unknown): ConfigurationEvent {
     }
     return {
       type: "config.updated",
+      bootId,
       generation,
       agentsChanged: requiredBoolean(source, "agentsChanged"),
       modelsChanged: requiredBoolean(source, "modelsChanged"),
@@ -623,6 +749,7 @@ export function parseConfigurationEvent(value: unknown): ConfigurationEvent {
   if (source.type === "config.error") {
     return {
       type: "config.error",
+      bootId,
       generation,
       ...(availabilityEpoch === undefined ? {} : { availabilityEpoch }),
       message: requiredString(source, "message"),

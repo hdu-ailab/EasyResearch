@@ -4,6 +4,7 @@ import { createAuthGateway, type AuthGateway } from "./auth-gateway";
 import { ConfigFileService } from "./config-files";
 import type { Logger } from "../runtime/logger";
 import { createModelRuntimeTransaction } from "../runtime/model-runtime-transaction";
+import { parsePiSettingsJson } from "../runtime/pi-settings-json";
 import type {
   ModelCatalogValidator,
   ModelCatalogEntry,
@@ -283,15 +284,18 @@ export async function createConfiguredModelRuntime<
 >(
   createRuntime: (modelsPath: string | null) => Promise<T>,
   modelsPath: string,
+  decorateRuntime: (runtime: T) => T,
 ): Promise<T> {
-  const runtime = await createRuntime(modelsPath);
-  if (runtime.getError()) return createRuntime(null);
+  const createCandidate = async (candidatePath: string | null): Promise<T> =>
+    decorateRuntime(await createRuntime(candidatePath));
+  const runtime = await createCandidate(modelsPath);
+  if (runtime.getError()) return createCandidate(null);
   try {
     await configureNoAuthModelRuntime(runtime, modelsPath);
   } catch {
-    return createRuntime(null);
+    return createCandidate(null);
   }
-  return runtime.getError() ? createRuntime(null) : runtime;
+  return runtime.getError() ? createCandidate(null) : runtime;
 }
 
 async function readModelsJsonRoot(modelsPath: string): Promise<Record<string, unknown> | undefined> {
@@ -346,7 +350,7 @@ export function resolveAuthFlowTimeout(settings: unknown): number {
 async function readAuthFlowTimeout(config: ConfigFileService): Promise<number> {
   try {
     const content = await config.read({ scope: "global", path: "settings.json" });
-    return resolveAuthFlowTimeout(JSON.parse(content) as unknown);
+    return resolveAuthFlowTimeout(parsePiSettingsJson(content));
   } catch {
     return DEFAULT_AUTH_FLOW_TIMEOUT_MS;
   }

@@ -99,6 +99,18 @@ describe("primeChangelogSeenVersion (ADR-024)", () => {
     rmSync(agentDir, { recursive: true, force: true });
   });
 
+  it("updates BOM-prefixed settings accepted by Pi with the existing output format", async () => {
+    const agentDir = tempAgentDir();
+    const path = join(agentDir, "settings.json");
+    writeFileSync(path, '\uFEFF{"lastChangelogVersion":"0.1.0","theme":"dark"}', "utf8");
+
+    const wrote = await primeChangelogSeenVersion({ agentDir, upstreamVersion: "0.83.0" });
+
+    expect(wrote).toBe(true);
+    expect(readFileSync(path, "utf8")).toBe(`{\n  "lastChangelogVersion": "0.83.0",\n  "theme": "dark"\n}`);
+    rmSync(agentDir, { recursive: true, force: true });
+  });
+
   it("creates the settings file when it does not exist", async () => {
     const agentDir = tempAgentDir();
     const wrote = await primeChangelogSeenVersion({ agentDir, upstreamVersion: "0.83.0" });

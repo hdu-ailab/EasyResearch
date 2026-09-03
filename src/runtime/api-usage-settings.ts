@@ -22,5 +22,5 @@ export function parseGlobalApiUsageSettings(settings: unknown): ApiUsageSettings
   if (configured !== undefined && typeof configured !== "boolean") {
     throw new ApiUsageSettingsError("showApiUsageDetails must be a boolean");
   }
-  return { showApiUsageDetails: configured ?? false };
+  return { showApiUsageDetails: configured ?? true };
 }

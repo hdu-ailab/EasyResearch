@@ -19,6 +19,9 @@ import {
   parseEntries,
   parseFileContent,
   parseModels,
+  parseNetworkProxySettings,
+  parseNetworkProxyTestResult,
+  parseRuntimeRestartAccepted,
   parseSessionSnapshot,
   parseSessionStatsChangedEvent,
   parseSessionTree,
@@ -172,19 +175,151 @@ describe("API response parsers", () => {
     ).toThrow();
     expect(() => parseApiUsageChangedEvent({ type: "api_usage_changed", statistics: {} })).toThrow();
   });
+
+  it("strictly parses configured, applied, source, and diagnostic network settings", () => {
+    const value = {
+      configured: {
+        all: "http://all.example:8080",
+        llm: "https://llm.example",
+      },
+      appliedConfigured: {
+        all: "http://old-all.example",
+        search: "https://old-search.example:8443",
+      },
+      sources: {
+        all: "configured",
+        llm: "all",
+        search: "environment",
+      },
+      errors: [
+        { code: "NETWORK_PROXY_INVALID", field: "settings" },
+        { code: "NETWORK_PROXY_INVALID", field: "all" },
+        { code: "NETWORK_PROXY_INVALID", field: "llm" },
+        { code: "NETWORK_PROXY_INVALID", field: "search" },
+      ],
+      restartRequired: true,
+    };
+
+    expect(parseNetworkProxySettings(value)).toEqual(value);
+    for (const source of ["configured", "environment", "direct"]) {
+      expect(
+        parseNetworkProxySettings({
+          ...value,
+          sources: { ...value.sources, all: source },
+        }),
+      ).toMatchObject({ sources: { all: source } });
+    }
+    for (const source of ["configured", "all", "environment", "direct"]) {
+      expect(
+        parseNetworkProxySettings({
+          ...value,
+          sources: { ...value.sources, llm: source, search: source },
+        }),
+      ).toMatchObject({ sources: { llm: source, search: source } });
+    }
+  });
+
+  it("rejects malformed network value, source, and diagnostic DTO members", () => {
+    const valid = {
+      configured: {},
+      appliedConfigured: {},
+      sources: { all: "direct", llm: "direct", search: "direct" },
+      errors: [],
+      restartRequired: false,
+    };
+    for (const malformed of [
+      { ...valid, configured: { all: null } },
+      { ...valid, appliedConfigured: { search: 42 } },
+      { ...valid, sources: { ...valid.sources, all: "all" } },
+      { ...valid, sources: { ...valid.sources, llm: "proxy" } },
+      { ...valid, errors: [{ code: "OTHER", field: "all" }] },
+      { ...valid, errors: [{ code: "NETWORK_PROXY_INVALID", field: "proxy" }] },
+      { ...valid, restartRequired: "yes" },
+      { ...valid, inheritedUrl: "http://user:secret@inherited.example" },
+      { ...valid, sources: { ...valid.sources, inheritedUrl: "http://inherited.example" } },
+    ]) {
+      expect(() => parseNetworkProxySettings(malformed)).toThrow();
+    }
+  });
+
+  it("strictly parses every safe network probe outcome and restart acceptance", () => {
+    for (const outcome of [
+      "invalid-config",
+      "cancelled",
+      "timeout",
+      "tls",
+      "proxy-connect",
+      "proxy-response",
+      "target-response",
+    ]) {
+      expect(parseNetworkProxyTestResult({ ok: false, outcome, elapsedMs: 12 })).toEqual({
+        ok: false,
+        outcome,
+        elapsedMs: 12,
+      });
+    }
+    expect(parseNetworkProxyTestResult({ ok: true, outcome: "success", status: 204, elapsedMs: 3.5 })).toEqual({
+      ok: true,
+      outcome: "success",
+      status: 204,
+      elapsedMs: 3.5,
+    });
+    expect(parseRuntimeRestartAccepted({ accepted: true, bootId: "boot-next" })).toEqual({
+      accepted: true,
+      bootId: "boot-next",
+    });
+  });
+
+  it("rejects inconsistent or unsafe network probe and restart results", () => {
+    for (const malformed of [
+      { ok: true, outcome: "timeout", elapsedMs: 1 },
+      { ok: false, outcome: "success", elapsedMs: 1 },
+      { ok: false, outcome: "unknown", elapsedMs: 1 },
+      { ok: false, outcome: "timeout", status: 99, elapsedMs: 1 },
+      { ok: false, outcome: "timeout", status: 204.5, elapsedMs: 1 },
+      { ok: false, outcome: "timeout", elapsedMs: -1 },
+      { ok: false, outcome: "timeout", elapsedMs: Number.POSITIVE_INFINITY },
+      { ok: false, outcome: "timeout", elapsedMs: 1, target: "https://fixed-target.example" },
+      { ok: false, outcome: "timeout", elapsedMs: 1, body: "private response" },
+      { ok: false, outcome: "timeout", elapsedMs: 1, ip: "203.0.113.8" },
+    ]) {
+      expect(() => parseNetworkProxyTestResult(malformed)).toThrow();
+    }
+    for (const malformed of [
+      { accepted: false, bootId: "boot-next" },
+      { accepted: true, bootId: "" },
+      { accepted: true },
+    ]) {
+      expect(() => parseRuntimeRestartAccepted(malformed)).toThrow();
+    }
+  });
+
   it("rejects a status payload with a missing homeDir", () => {
-    expect(() => parseStatus({ agentDir: "/a", sessions: [], activeSessions: [] })).toThrow();
+    expect(() => parseStatus({ bootId: "boot-a", agentDir: "/a", sessions: [], activeSessions: [] })).toThrow();
   });
 
   it("preserves the DTO values needed by the Home page", () => {
     expect(
       parseStatus({
+        bootId: "boot-a",
         agentDir: "/a",
         homeDir: "/home/user",
         sessions: [],
         activeSessions: [],
-      }).homeDir,
-    ).toBe("/home/user");
+      }),
+    ).toMatchObject({ bootId: "boot-a", homeDir: "/home/user" });
+  });
+
+  it.each([undefined, "", "  "])("rejects a missing or blank status boot id %#", (bootId) => {
+    expect(() =>
+      parseStatus({
+        ...(bootId === undefined ? {} : { bootId }),
+        agentDir: "/a",
+        homeDir: "/home/user",
+        sessions: [],
+        activeSessions: [],
+      }),
+    ).toThrow(/bootId/);
   });
 
   it("accepts only a string or null update version", () => {
@@ -294,6 +429,7 @@ describe("API response parsers", () => {
   it("parses complete configuration events with optional project-watch leases", () => {
     const updated = {
       type: "config.updated",
+      bootId: "boot-a",
       generation: 3,
       availabilityEpoch: 5,
       availabilityChanged: true,
@@ -305,6 +441,7 @@ describe("API response parsers", () => {
     } as const;
     const error = {
       type: "config.error",
+      bootId: "boot-a",
       generation: 3,
       availabilityEpoch: 5,
       message: "Invalid configuration",
@@ -342,6 +479,7 @@ describe("API response parsers", () => {
   it("preserves only the true API-usage display marker", () => {
     const displayOnly = {
       type: "config.updated",
+      bootId: "boot-a",
       generation: 4,
       agentsChanged: false,
       modelsChanged: false,
@@ -359,6 +497,7 @@ describe("API response parsers", () => {
     (field) => {
       const event: Record<string, unknown> = {
         type: "config.updated",
+        bootId: "boot-a",
         generation: 3,
         agentsChanged: true,
         modelsChanged: false,
@@ -377,6 +516,7 @@ describe("API response parsers", () => {
       expect(() =>
         parseConfigurationEvent({
           type: "config.error",
+          bootId: "boot-a",
           generation,
           message: "Invalid configuration",
         }),
@@ -389,17 +529,32 @@ describe("API response parsers", () => {
       type === "config.updated"
         ? {
             type,
+            bootId: "boot-a",
             generation: 3,
             agentsChanged: true,
             modelsChanged: false,
             skillsChanged: true,
             runtimeChanged: true,
           }
-        : { type, generation: 3, message: "Invalid configuration" };
+        : { type, bootId: "boot-a", generation: 3, message: "Invalid configuration" };
 
     for (const projectWatchLeaseId of ["", "  ", 42]) {
       expect(() => parseConfigurationEvent({ ...event, projectWatchLeaseId })).toThrow();
     }
+  });
+
+  it.each([undefined, "", "  "])("rejects a missing or blank configuration boot id %#", (bootId) => {
+    expect(() =>
+      parseConfigurationEvent({
+        type: "config.updated",
+        ...(bootId === undefined ? {} : { bootId }),
+        generation: 3,
+        agentsChanged: true,
+        modelsChanged: false,
+        skillsChanged: false,
+        runtimeChanged: true,
+      }),
+    ).toThrow(/bootId/);
   });
 
   it("parses project-watch replacement and configuration refresh results", () => {

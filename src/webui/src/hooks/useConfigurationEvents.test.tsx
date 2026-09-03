@@ -1,6 +1,6 @@
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ConfigurationEvent } from "../../../web/contracts";
+import type { PublicConfigurationEvent } from "../../../web/contracts";
 import * as api from "../api";
 import { useConfigurationEvents } from "./useConfigurationEvents";
 
@@ -29,12 +29,13 @@ const configurationApi = api as typeof api & {
   replaceConfigurationProjectWatches: ReplaceConfigurationProjectWatches;
 };
 
-let handlers: { onEvent: (event: ConfigurationEvent) => void; onError: () => void };
+let handlers: { onEvent: (event: PublicConfigurationEvent) => void; onError: () => void };
 let disconnect: () => void;
 
-function updated(generation: number, projectWatchLeaseId?: string): ConfigurationEvent {
+function updated(generation: number, projectWatchLeaseId?: string, bootId = "boot-a"): PublicConfigurationEvent {
   return {
     type: "config.updated",
+    bootId,
     generation,
     agentsChanged: true,
     modelsChanged: false,
@@ -79,13 +80,20 @@ describe("useConfigurationEvents", () => {
   it("owns one connection, keeps generations monotonic, and clears errors on recovery", () => {
     const view = renderHook(() => useConfigurationEvents());
     expect(api.connectConfigurationEvents).toHaveBeenCalledOnce();
-    expect(view.result.current.generation).toBe(0);
+    expect(view.result.current).toMatchObject({ bootId: null, generation: 0, runtimeReplaced: false });
     expect(view.result.current.error).toBeNull();
 
     act(() => handlers.onEvent(updated(2)));
     expect(view.result.current).toMatchObject({ generation: 2, error: null });
 
-    act(() => handlers.onEvent({ type: "config.error", generation: 2, message: "Invalid Agent configuration" }));
+    act(() =>
+      handlers.onEvent({
+        type: "config.error",
+        bootId: "boot-a",
+        generation: 2,
+        message: "Invalid Agent configuration",
+      }),
+    );
     expect(view.result.current).toMatchObject({ generation: 2, error: "Invalid Agent configuration" });
 
     act(() => handlers.onEvent(updated(1)));
@@ -117,6 +125,7 @@ describe("useConfigurationEvents", () => {
     act(() =>
       handlers.onEvent({
         type: "config.error",
+        bootId: "boot-a",
         generation: 4,
         availabilityEpoch: 1,
         message: "Invalid Agent configuration",
@@ -127,6 +136,7 @@ describe("useConfigurationEvents", () => {
     act(() =>
       handlers.onEvent({
         type: "config.updated",
+        bootId: "boot-a",
         generation: 4,
         availabilityEpoch: 2,
         availabilityChanged: true,
@@ -144,6 +154,43 @@ describe("useConfigurationEvents", () => {
       error: "Invalid Agent configuration",
     });
   });
+
+  it.each([
+    [5, 4, "equal generation with stale availability"],
+    [6, 4, "advanced generation with stale availability"],
+    [4, 6, "stale generation with advanced availability"],
+  ] as const)(
+    "rejects a same-boot event when either counter regresses: %s/%s (%s)",
+    (generation, availabilityEpoch, _description) => {
+      const { result } = renderHook(() => useConfigurationEvents());
+      act(() =>
+        handlers.onEvent({
+          type: "config.updated",
+          bootId: "boot-a",
+          generation: 5,
+          availabilityEpoch: 5,
+          availabilityChanged: true,
+          agentsChanged: true,
+          modelsChanged: true,
+          skillsChanged: true,
+          runtimeChanged: true,
+        }),
+      );
+      const accepted = result.current;
+
+      act(() =>
+        handlers.onEvent({
+          type: "config.error",
+          bootId: "boot-a",
+          generation,
+          availabilityEpoch,
+          message: "Stale state must not replace the accepted snapshot",
+        }),
+      );
+
+      expect(result.current).toBe(accepted);
+    },
+  );
 
   it("acquires a lease from valid or error events and replays current intent on reconnect", () => {
     const { result } = renderHook(() => useConfigurationEvents());
@@ -164,6 +211,7 @@ describe("useConfigurationEvents", () => {
     act(() =>
       handlers.onEvent({
         type: "config.error",
+        bootId: "boot-a",
         generation: 4,
         message: "Stale reconnect error",
         projectWatchLeaseId: "lease/second",
@@ -175,6 +223,64 @@ describe("useConfigurationEvents", () => {
     });
     expect(result.current).toMatchObject({ generation: 5, error: null });
     expect(api.connectConfigurationEvents).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [1, "lower"],
+    [100, "equal"],
+    [101, "higher"],
+  ] as const)("signals one runtime replacement for a different boot with %s counters (%s)", (generation, _label) => {
+    const { result } = renderHook(() => useConfigurationEvents());
+    act(() => handlers.onEvent(updated(100, "lease-a", "boot-a")));
+    const revision = result.current.revision;
+    const replacementCalls = vi.mocked(configurationApi.replaceConfigurationProjectWatches).mock.calls.length;
+
+    act(() =>
+      handlers.onEvent({
+        type: "config.error",
+        bootId: "boot-b",
+        generation,
+        availabilityEpoch: generation,
+        message: "Successor state must not enter the old page",
+        projectWatchLeaseId: "lease-b",
+      }),
+    );
+
+    expect(result.current).toMatchObject({
+      bootId: "boot-a",
+      generation: 100,
+      revision,
+      error: null,
+      runtimeReplaced: true,
+    });
+    expect(configurationApi.replaceConfigurationProjectWatches).toHaveBeenCalledTimes(replacementCalls);
+    const replacedState = result.current;
+
+    act(() => {
+      handlers.onEvent(updated(generation + 1, "lease-b-next", "boot-b"));
+      handlers.onEvent(updated(generation + 2, "lease-c", "boot-c"));
+      handlers.onError();
+    });
+
+    expect(result.current).toBe(replacedState);
+    expect(configurationApi.replaceConfigurationProjectWatches).toHaveBeenCalledTimes(replacementCalls);
+  });
+
+  it("establishes a fresh successor boot as the baseline without a replacement loop", () => {
+    const { result } = renderHook(() => useConfigurationEvents());
+
+    act(() => handlers.onEvent(updated(1, "lease-b", "boot-b")));
+
+    expect(result.current).toMatchObject({
+      bootId: "boot-b",
+      generation: 1,
+      revision: 1,
+      runtimeReplaced: false,
+    });
+    expect(configurationApi.replaceConfigurationProjectWatches).toHaveBeenCalledWith("lease-b", {
+      revision: 0,
+      cwds: [],
+    });
   });
 
   it("sends each exact-string owner-union change once and removes empty owners", () => {

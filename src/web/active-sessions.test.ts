@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionTreeNode } from "@earendil-works/pi-coding-agent";
-import { ActiveSessionRegistry, UnknownSessionError } from "./active-sessions";
+import {
+  ActiveSessionRegistry,
+  SessionRegistryShuttingDownError,
+  UnknownSessionError,
+} from "./active-sessions";
 import { assertSafeExtensionSources } from "../runtime/extensions-guard";
 import type {
   SessionAdapter,
@@ -1279,6 +1283,94 @@ describe("ActiveSessionRegistry", () => {
     expect(watcherFactory.created[0]?.close).toHaveBeenCalledTimes(1);
     await registry.shutdown();
     expect(factory.created[0]?.stats.stopped).toBe(2);
+  });
+
+  it("counts a launch pending before adapter construction exactly once", async () => {
+    const thinking = deferred<string | undefined>();
+    const pendingRegistry = new ActiveSessionRegistry(
+      factory,
+      noopLogger,
+      { idleTimeoutMs: -1, resolveLaunchThinking: () => thinking.promise },
+      watcherFactory,
+    );
+
+    const launch = pendingRegistry.create({ cwd });
+    await vi.waitFor(() => expect(pendingRegistry.activeWorkCount()).toBe(1));
+
+    expect(factory.created).toHaveLength(0);
+    thinking.resolve(undefined);
+    await launch;
+    expect(pendingRegistry.activeWorkCount()).toBe(0);
+    await pendingRegistry.shutdown();
+  });
+
+  it("counts an adapter launch blocked in start exactly once", async () => {
+    const start = deferred<void>();
+    factory.startImpl = () => start.promise;
+
+    const launch = registry.create({ cwd });
+    await vi.waitFor(() => expect(factory.created).toHaveLength(1));
+
+    expect(registry.activeWorkCount()).toBe(1);
+    start.resolve();
+    await launch;
+    expect(registry.activeWorkCount()).toBe(0);
+  });
+
+  it("counts running root work but not an idle ready record", async () => {
+    const created = await registry.create({ cwd });
+    const adapter = factory.created[0]!;
+
+    expect(registry.activeWorkCount()).toBe(0);
+    adapter.events.forEach((listener) => listener({ type: "agent_start" }));
+    expect(registry.activeWorkCount()).toBe(1);
+    adapter.events.forEach((listener) => listener({ type: "agent_settled" }));
+    expect(registry.activeWorkCount()).toBe(0);
+    expect(registry.has(created.id)).toBe(true);
+  });
+
+  it("counts child-only background work even when the connected DTO is still ready", async () => {
+    await registry.create({ cwd });
+    const adapter = factory.created[0]!;
+
+    adapter.backgroundWork = true;
+
+    expect(registry.list()[0]).toMatchObject({ status: "ready", isStreaming: false });
+    expect(registry.activeWorkCount()).toBe(1);
+  });
+
+  it("beginShutdown synchronously rejects prompt, create, and open admission", async () => {
+    const created = await registry.create({ cwd });
+
+    registry.beginShutdown();
+
+    await expect(registry.prompt(created.id, "late prompt")).rejects.toBeInstanceOf(
+      SessionRegistryShuttingDownError,
+    );
+    await expect(registry.create({ cwd: "/late/create" })).rejects.toBeInstanceOf(
+      SessionRegistryShuttingDownError,
+    );
+    await expect(registry.open({ cwd, sessionPath })).rejects.toBeInstanceOf(
+      SessionRegistryShuttingDownError,
+    );
+    expect(factory.created[0]?.stats.prompts).toEqual([]);
+    expect(factory.created).toHaveLength(1);
+    await registry.shutdown();
+  });
+
+  it("beginShutdown is idempotent and cancels an already pending launch", async () => {
+    const start = deferred<void>();
+    factory.startImpl = () => start.promise;
+    const launch = registry.create({ cwd });
+    await vi.waitFor(() => expect(factory.created).toHaveLength(1));
+
+    registry.beginShutdown();
+    registry.beginShutdown();
+    start.resolve();
+
+    await expect(launch).rejects.toBeInstanceOf(SessionRegistryShuttingDownError);
+    await registry.shutdown();
+    expect(factory.created[0]?.stats.stopped).toBe(1);
   });
 
   it("reserves a restart before stopping the old client so shutdown cannot admit a replacement", async () => {

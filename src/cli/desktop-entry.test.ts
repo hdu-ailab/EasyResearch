@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -15,6 +15,8 @@ import {
   runDesktopServe,
   type DesktopServeRequest,
 } from "./desktop-entry";
+import type { ServeOptions } from "./commands/serve";
+import type { RuntimeLease } from "./runtime-lease";
 
 const validEnv = () => ({
   [DESKTOP_LAUNCH_ENV]: "1",
@@ -31,13 +33,73 @@ const request: DesktopServeRequest = {
 
 let root: string;
 
+const NETWORK_ENV_KEYS = [
+  "HTTP_PROXY",
+  "http_proxy",
+  "HTTPS_PROXY",
+  "https_proxy",
+  "ALL_PROXY",
+  "all_proxy",
+  "NO_PROXY",
+  "no_proxy",
+  "PLAYWRIGHT_MCP_PROXY_SERVER",
+  "PLAYWRIGHT_MCP_PROXY_BYPASS",
+] as const;
+let networkEnvSnapshot: Partial<Record<(typeof NETWORK_ENV_KEYS)[number], string>>;
+
+function fakeTransitionLease(releaseOwner: () => boolean = () => true): RuntimeLease {
+  let held = true;
+  return {
+    path: "transition",
+    token: "transition",
+    get held() {
+      return held;
+    },
+    reserveHandoff: vi.fn((token: string) => ({
+      token,
+      transferred: false,
+      commit: vi.fn(),
+      cancel: vi.fn(() => true),
+      relinquish: vi.fn(() => {
+        held = false;
+      }),
+    })),
+    release: () => {
+      if (!held) return false;
+      const released = releaseOwner();
+      if (released) held = false;
+      return released;
+    },
+  };
+}
+
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "easyresearch-desktop-entry-"));
+  networkEnvSnapshot = {};
+  for (const key of NETWORK_ENV_KEYS) {
+    const value = process.env[key];
+    if (value !== undefined) networkEnvSnapshot[key] = value;
+    delete process.env[key];
+  }
 });
 
 afterEach(() => {
+  for (const key of NETWORK_ENV_KEYS) {
+    const value = networkEnvSnapshot[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
   rmSync(root, { recursive: true, force: true });
 });
+
+function readNetworkEnvironment(): Partial<Record<(typeof NETWORK_ENV_KEYS)[number], string>> {
+  const values: Partial<Record<(typeof NETWORK_ENV_KEYS)[number], string>> = {};
+  for (const key of NETWORK_ENV_KEYS) {
+    const value = process.env[key];
+    if (value !== undefined) values[key] = value;
+  }
+  return values;
+}
 
 describe("desktop entry validation", () => {
   it.each([
@@ -86,11 +148,11 @@ describe("desktop entry validation", () => {
     return runDesktopServe(request, {
       agentDir: () => root,
       runtimeId: () => "desktop-runtime",
-      acquireTransition: async () => ({ path: "transition", token: "transition", release: () => true }),
+      acquireTransition: async () => fakeTransitionLease(),
       inspectBackground: async () => "none",
       setup: (_agentDir, log) => log("x".repeat(5_000)),
-      serve: async (_host, _port, options) => {
-        options.onReady?.({ port: 43123, logPath: join(root, "server.log") });
+      serve: async (_host: string, _port: number, options: ServeOptions) => {
+        options.onReady?.({ port: 43123, logPath: join(root, "server.log"), bootId: "boot-ready" });
         return 0;
       },
       emit: (event) => events.push(event),
@@ -104,6 +166,137 @@ describe("desktop entry validation", () => {
 });
 
 describe("desktop takeover", () => {
+  it("owns parent EOF during setup and never starts an orphanable server", async () => {
+    const parentLife = new EventEmitter();
+    const release = vi.fn(() => true);
+    const serve = vi.fn(async () => 0);
+    const events: string[] = [];
+
+    expect(await runDesktopServe(request, {
+      agentDir: () => root,
+      runtimeId: () => "desktop-runtime",
+      acquireTransition: async () => fakeTransitionLease(release),
+      inspectBackground: async () => "none",
+      setup: () => {
+        parentLife.emit("end");
+      },
+      serve,
+      emit: (event) => events.push(event.type),
+      parentLife,
+    })).toBe(0);
+
+    expect(serve).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledOnce();
+    expect(events).toEqual([]);
+    expect(parentLife.listenerCount("end")).toBe(0);
+    expect(parentLife.listenerCount("close")).toBe(0);
+    expect(parentLife.listenerCount("error")).toBe(0);
+  });
+
+  it("does not acquire runtime ownership after the parent stream already ended", async () => {
+    const parentLife = Object.assign(new EventEmitter(), { readableEnded: true });
+    const acquireTransition = vi.fn(async () => fakeTransitionLease());
+
+    expect(await runDesktopServe(request, {
+      agentDir: () => root,
+      runtimeId: () => "desktop-runtime",
+      acquireTransition,
+      inspectBackground: vi.fn(),
+      setup: vi.fn(),
+      serve: vi.fn(),
+      emit: vi.fn(),
+      parentLife,
+    })).toBe(0);
+
+    expect(acquireTransition).not.toHaveBeenCalled();
+  });
+
+  it("restores and consumes desktop launch credentials before direct startup reads runtime ownership", async () => {
+    const environment: Record<string, string | undefined> = {};
+    const readEnviron = vi.fn(() => [
+      `${DESKTOP_LAUNCH_ENV}=1`,
+      `${DESKTOP_CONTROL_TOKEN_ENV}=${request.controlToken}`,
+      `${DESKTOP_RENDERER_TOKEN_ENV}=${request.rendererToken}`,
+      "HTTPS_PROXY=http://desktop-sandbox.proxy:8443",
+    ].join("\0"));
+    let environmentAtAgentDir: Record<string, string | undefined> | undefined;
+
+    expect(await runDesktopServe(request, {
+      agentDir: () => {
+        environmentAtAgentDir = { ...environment };
+        return root;
+      },
+      runtimeId: () => "desktop-runtime",
+      acquireTransition: async () => fakeTransitionLease(),
+      inspectBackground: async () => "none",
+      setup: () => {},
+      serve: async (_host: string, _port: number, options: ServeOptions) => {
+        options.onReady?.({ port: 43123, logPath: join(root, "server.log"), bootId: "boot-ready" });
+        return 0;
+      },
+      emit: vi.fn(),
+      parentLife: new EventEmitter(),
+      environment,
+      environmentRestore: { isBun: true, readEnviron },
+    } as never)).toBe(0);
+
+    expect(environmentAtAgentDir).toMatchObject({ HTTPS_PROXY: "http://desktop-sandbox.proxy:8443" });
+    expect(environmentAtAgentDir).not.toHaveProperty(DESKTOP_LAUNCH_ENV);
+    expect(environmentAtAgentDir).not.toHaveProperty(DESKTOP_CONTROL_TOKEN_ENV);
+    expect(environmentAtAgentDir).not.toHaveProperty(DESKTOP_RENDERER_TOKEN_ENV);
+    expect(environment).not.toHaveProperty(DESKTOP_LAUNCH_ENV);
+    expect(environment).not.toHaveProperty(DESKTOP_CONTROL_TOKEN_ENV);
+    expect(environment).not.toHaveProperty(DESKTOP_RENDERER_TOKEN_ENV);
+    expect(readEnviron).toHaveBeenCalledOnce();
+  });
+
+  it("applies All traffic only during setup before entering serve", async () => {
+    writeFileSync(join(root, "settings.json"), JSON.stringify({
+      httpProxy: " HTTPS://DESKTOP-PROXY.EXAMPLE:443/ ",
+    }));
+    const baseline = {
+      HTTPS_PROXY: "http://ambient.example:8080",
+      NO_PROXY: "desktop.internal",
+      PLAYWRIGHT_MCP_PROXY_SERVER: "socks5://ambient-browser.example:1080",
+      PLAYWRIGHT_MCP_PROXY_BYPASS: "browser.internal",
+    };
+    Object.assign(process.env, baseline);
+    let setupEnvironment: ReturnType<typeof readNetworkEnvironment> | undefined;
+    let serveEnvironment: ReturnType<typeof readNetworkEnvironment> | undefined;
+
+    expect(await runDesktopServe(request, {
+      agentDir: () => root,
+      runtimeId: () => "desktop-runtime",
+      acquireTransition: async () => fakeTransitionLease(),
+      inspectBackground: async () => "none",
+      setup: () => {
+        setupEnvironment = readNetworkEnvironment();
+      },
+      serve: async (_host, _port, options) => {
+        serveEnvironment = readNetworkEnvironment();
+        options.onReady?.({ port: 43123, logPath: join(root, "server.log"), bootId: "boot-ready" });
+        return 0;
+      },
+      emit: vi.fn(),
+      parentLife: new EventEmitter(),
+    })).toBe(0);
+
+    expect(setupEnvironment).toEqual({
+      HTTP_PROXY: "https://desktop-proxy.example",
+      http_proxy: "https://desktop-proxy.example",
+      HTTPS_PROXY: "https://desktop-proxy.example",
+      https_proxy: "https://desktop-proxy.example",
+      ALL_PROXY: "https://desktop-proxy.example",
+      all_proxy: "https://desktop-proxy.example",
+      NO_PROXY: "desktop.internal,localhost,127.0.0.1,::1,localhost.,[::1]",
+      no_proxy: "desktop.internal,localhost,127.0.0.1,::1,localhost.,[::1]",
+      PLAYWRIGHT_MCP_PROXY_SERVER: "https://desktop-proxy.example",
+      PLAYWRIGHT_MCP_PROXY_BYPASS: "desktop.internal,localhost,127.0.0.1,::1,localhost.,[::1]",
+    });
+    expect(serveEnvironment).toEqual(baseline);
+    expect(readNetworkEnvironment()).toEqual(baseline);
+  });
+
   it("stops a CLI owner before setup and desktop bind", async () => {
     const order: string[] = [];
     const emitted: string[] = [];
@@ -115,7 +308,7 @@ describe("desktop takeover", () => {
     expect(await runDesktopServe(request, {
       agentDir: () => root,
       runtimeId: () => "desktop-runtime",
-      acquireTransition: async () => ({ path: "transition", token: "transition", release }),
+      acquireTransition: async () => fakeTransitionLease(release),
       inspectBackground: async () => "stale",
       stopCliOwner: async () => {
         order.push("cli-stopped");
@@ -134,7 +327,7 @@ describe("desktop takeover", () => {
           runtimeId: "desktop-runtime",
         });
         order.push("serve");
-        options.onReady?.({ port: 43123, logPath: join(root, "server.log") });
+        options.onReady?.({ port: 43123, logPath: join(root, "server.log"), bootId: "boot-ready" });
         return 0;
       },
       emit: (event) => {
@@ -155,6 +348,41 @@ describe("desktop takeover", () => {
     expect(release).toHaveBeenCalledOnce();
   });
 
+  it("emits a committed expected restart instead of an ordinary stopped event", async () => {
+    const events: Array<Record<string, unknown>> = [];
+
+    expect(await runDesktopServe(request, {
+      agentDir: () => root,
+      runtimeId: () => "desktop-runtime",
+      acquireTransition: async () => fakeTransitionLease(),
+      inspectBackground: async () => "none",
+      setup: () => {},
+      serve: async (_host, _port, options) => {
+        options.onReady?.({
+          port: 43123,
+          logPath: join(root, "server.log"),
+          bootId: "boot-ready",
+        });
+        options.onExpectedRestart?.("boot-ready");
+        return 0;
+      },
+      emit: (event) => events.push(event),
+      parentLife: new EventEmitter(),
+    })).toBe(0);
+
+    expect(events).toEqual([
+      {
+        type: "desktop.ready",
+        origin: "http://127.0.0.1:43123",
+        owner: "desktop",
+        pid: process.pid,
+        logPath: join(root, "server.log"),
+        bootId: "boot-ready",
+      },
+      { type: "desktop.restart-requested", bootId: "boot-ready" },
+    ]);
+  });
+
   it("rejects another desktop owner without setup or bind", async () => {
     const setup = vi.fn();
     const serve = vi.fn();
@@ -163,7 +391,7 @@ describe("desktop takeover", () => {
     expect(await runDesktopServe(request, {
       agentDir: () => root,
       runtimeId: () => "desktop-runtime",
-      acquireTransition: async () => ({ path: "transition", token: "transition", release: () => true }),
+      acquireTransition: async () => fakeTransitionLease(),
       inspectBackground: async () => "desktop",
       stopCliOwner: vi.fn(),
       setup,
@@ -187,7 +415,7 @@ describe("desktop takeover", () => {
     expect(await runDesktopServe(request, {
       agentDir: () => root,
       runtimeId: () => "desktop-runtime",
-      acquireTransition: async () => ({ path: "transition", token: "transition", release: () => true }),
+      acquireTransition: async () => fakeTransitionLease(),
       inspectBackground: async () => "none",
       setup: () => { throw failure; },
       serve: vi.fn(),
@@ -205,6 +433,16 @@ describe("desktop takeover", () => {
 });
 
 describe("parent-life signal", () => {
+  it("requests shutdown when binding after the parent stream has already ended", () => {
+    const parentLife = Object.assign(new EventEmitter(), { readableEnded: true });
+    const requestShutdown = vi.fn();
+
+    const unbind = bindParentLife(parentLife, requestShutdown);
+
+    expect(requestShutdown).toHaveBeenCalledOnce();
+    unbind();
+  });
+
   it("requests shutdown once when stdin reaches EOF and cleans up listeners", () => {
     const parentLife = new EventEmitter();
     const requestShutdown = vi.fn();

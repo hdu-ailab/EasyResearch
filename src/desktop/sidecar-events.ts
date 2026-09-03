@@ -20,12 +20,17 @@ export function parseDesktopSidecarLine(line: string): DesktopSidecarEvent | und
   if (!isRecord(parsed) || typeof parsed.type !== "string") {
     throw new Error("Desktop sidecar emitted an invalid machine event.");
   }
-  if (parsed.type === "desktop.setup" && isBoundedString(parsed.message, 4_096)) {
+  if (
+    parsed.type === "desktop.setup"
+    && hasExactKeys(parsed, ["type", "message"])
+    && isBoundedString(parsed.message, 4_096)
+  ) {
     return { type: "desktop.setup", message: parsed.message };
   }
   if (parsed.type === "desktop.ready") return parseReadyEvent(parsed);
   if (
     parsed.type === "desktop.error"
+    && hasExactKeys(parsed, ["type", "phase", "code", "message", "logPath"])
     && typeof parsed.phase === "string"
     && PHASES.has(parsed.phase)
     && typeof parsed.code === "string"
@@ -41,17 +46,28 @@ export function parseDesktopSidecarLine(line: string): DesktopSidecarEvent | und
       logPath: parsed.logPath as string,
     };
   }
-  if (parsed.type === "desktop.stopped") return { type: "desktop.stopped" };
+  if (
+    parsed.type === "desktop.restart-requested"
+    && hasExactKeys(parsed, ["type", "bootId"])
+    && isIdentityString(parsed.bootId)
+  ) {
+    return { type: "desktop.restart-requested", bootId: parsed.bootId };
+  }
+  if (parsed.type === "desktop.stopped" && hasExactKeys(parsed, ["type"])) {
+    return { type: "desktop.stopped" };
+  }
   throw new Error("Desktop sidecar emitted an invalid machine event.");
 }
 
 function parseReadyEvent(value: Record<string, unknown>): DesktopReadyEvent {
   if (
-    value.owner !== "desktop"
+    !hasExactKeys(value, ["type", "origin", "owner", "pid", "logPath", "bootId"])
+    || value.owner !== "desktop"
     || !Number.isSafeInteger(value.pid)
     || (value.pid as number) <= 0
     || !isAbsoluteOnEitherPlatform(value.logPath)
     || typeof value.origin !== "string"
+    || !isIdentityString(value.bootId)
   ) {
     throw new Error("Desktop sidecar emitted an invalid ready event.");
   }
@@ -82,6 +98,7 @@ function parseReadyEvent(value: Record<string, unknown>): DesktopReadyEvent {
     owner: "desktop",
     pid: value.pid as number,
     logPath: value.logPath as string,
+    bootId: value.bootId,
   };
 }
 
@@ -91,6 +108,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isBoundedString(value: unknown, maximum: number): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= maximum;
+}
+
+function isIdentityString(value: unknown): value is string {
+  return isBoundedString(value, 256) && value.trim().length > 0;
+}
+
+function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const keys = Object.keys(value);
+  return keys.length === expected.length && expected.every((key) => Object.hasOwn(value, key));
 }
 
 function isAbsoluteOnEitherPlatform(value: unknown): value is string {

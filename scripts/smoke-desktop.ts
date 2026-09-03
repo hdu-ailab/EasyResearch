@@ -43,6 +43,7 @@ import {
   removeDesktopSmokeRoot,
   reduceDesktopSmokeEvents,
   verifyDesktopSidecarIdentity,
+  verifyDesktopOwnershipSuccessor,
   verifyPackagedNotice,
   verifyPackagedSidecar,
   type NativeCommand,
@@ -66,11 +67,13 @@ const agentDir = join(root, "agent");
 const project = join(root, "project");
 const smokeDir = join(root, "smoke-control");
 const electronUserData = join(root, "electron-user-data");
+const desktopLogPath = join(electronUserData, "logs", "desktop.log");
 const installRoot = join(root, "installed");
 const mountRoot = join(root, "mounted");
-for (const path of [home, agentDir, project, smokeDir, electronUserData, installRoot, mountRoot]) {
+for (const path of [home, agentDir, project, electronUserData, installRoot, mountRoot]) {
   mkdirSync(path, { recursive: true });
 }
+mkdirSync(smokeDir, { recursive: true, mode: 0o700 });
 
 const desktopManifest = JSON.parse(readFileSync(
   join(releaseDir(), `desktop-manifest-${targetName}.json`),
@@ -288,6 +291,7 @@ try {
     EASYRESEARCH_DESKTOP_SMOKE_PROJECT: project,
     EASYRESEARCH_DESKTOP_SMOKE_SESSION_PATH: expectedSessionPath,
     EASYRESEARCH_DESKTOP_SMOKE_AGENT: smokeAgent,
+    EASYRESEARCH_DESKTOP_SMOKE_PROXY: `http://127.0.0.1:${modelServer.port}`,
     [DESKTOP_SMOKE_USER_DATA_ENV]: electronUserData,
   };
   desktopProcess = Bun.spawn([appPaths.executable], {
@@ -301,10 +305,10 @@ try {
   const stderrTask = streamText(desktopProcess.stderr).then((value) => { desktopStderr = value; });
 
   let runningState: ReturnType<typeof reduceDesktopSmokeEvents> | undefined;
-  await waitFor("packaged desktop active Agent and hidden window", () => {
+  await waitFor("packaged desktop active Agent before restart", () => {
     const state = currentDesktopSmokeState(join(smokeDir, "events.jsonl"));
     if (!state) return false;
-    if (state.hidden && state.agentRunning && state.stateVisible) runningState = state;
+    if (state.agentRunning && state.stateVisible && !state.restartAccepted) runningState = state;
     return runningState !== undefined && modelRequestActive;
   }, 120_000);
   const origin = runningState?.origin;
@@ -334,11 +338,11 @@ try {
     throw new Error("Packaged app did not publish matching desktop ownership.");
   }
   if (
-    runningState?.sidecarPid !== desktopRecord.pid
+    runningState?.initialSidecarPid !== desktopRecord.pid
     || !isProcessAlive(desktopRecord.pid as number)
     || modelRequestAborted
   ) {
-    throw new Error("Desktop close did not preserve its live sidecar and active model request.");
+    throw new Error("Desktop pre-restart smoke did not preserve its live sidecar and active model request.");
   }
   const unauthorized = await fetch(`${origin}/api/status`);
   if (unauthorized.status !== 401) {
@@ -371,12 +375,94 @@ try {
     throw new Error("CLI refusal disturbed the active desktop Agent or sidecar.");
   }
 
+  writeFileSync(join(smokeDir, "successor-start-failure-request"), "fail-once\n", {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  writeFileSync(join(smokeDir, "restart-request"), "restart\n", {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  await waitFor("packaged desktop successor failure recovery", () => {
+    const state = currentDesktopSmokeState(join(smokeDir, "events.jsonl"));
+    return state?.successorStartFailed === true
+      && state.restartRecoveryVisible === true
+      && state.restartRecoveryLogged === true
+      && state.successorRetryRequested === false
+      && state.successorOrigin === undefined;
+  }, 120_000);
+  if (!desktopProcess || !isProcessAlive(desktopProcess.pid)) {
+    throw new Error("Packaged desktop host exited before successor failure recovery could be retried.");
+  }
+  if (existsSync(join(agentDir, "server.pid")) || existsSync(join(agentDir, "server.lease"))) {
+    throw new Error("Desktop successor failure recovery retained an old or partial runtime owner.");
+  }
+  writeFileSync(join(smokeDir, "successor-retry-request"), "retry\n", {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  let successorState: ReturnType<typeof reduceDesktopSmokeEvents> | undefined;
+  await waitFor("packaged desktop expected restart and hidden successor", () => {
+    const state = currentDesktopSmokeState(join(smokeDir, "events.jsonl"));
+    if (!state) return false;
+    if (
+      state.restartAccepted
+      && state.restartRequested
+      && state.oldSidecarExited
+      && state.successorVisible
+      && state.hidden
+    ) {
+      successorState = state;
+    }
+    return successorState !== undefined;
+  }, 120_000);
+  const acceptedSuccessorState = successorState;
+  const successorOrigin = acceptedSuccessorState?.successorOrigin;
+  if (!acceptedSuccessorState || !successorOrigin) {
+    throw new Error("Packaged desktop smoke did not report its successor origin.");
+  }
+  await waitFor("forced active model request cancellation", () => modelRequestAborted, 30_000);
+  const successorRecord = JSON.parse(readFileSync(join(agentDir, "server.pid"), "utf8")) as {
+    schema?: number;
+    pid?: number;
+    host?: string;
+    owner?: string;
+    port?: number;
+    token?: string;
+    runtimeId?: string;
+  };
+  verifyDesktopOwnershipSuccessor(desktopRecord, successorRecord, origin, successorOrigin);
+  verifyPackagedSidecar(appPaths.sidecar, nativeArtifact, version);
+  if (
+    acceptedSuccessorState.successorSidecarPid !== successorRecord.pid
+    || acceptedSuccessorState.sidecarPid !== successorRecord.pid
+    || !isProcessAlive(successorRecord.pid as number)
+  ) {
+    throw new Error("Desktop successor close did not preserve its live owned sidecar.");
+  }
+  const successorUnauthorized = await fetch(`${successorOrigin}/api/status`);
+  if (successorUnauthorized.status !== 401) {
+    throw new Error(
+      `Unauthenticated desktop successor request returned HTTP ${successorUnauthorized.status}, expected 401.`,
+    );
+  }
+  const eventsPath = join(smokeDir, "events.jsonl");
+  const eventCountBeforeQuietWindow = readDesktopSmokeEvents(eventsPath).length;
+  await Bun.sleep(500);
+  const eventsAfterQuietWindow = readDesktopSmokeEvents(eventsPath);
+  reduceDesktopSmokeEvents(eventsAfterQuietWindow, {
+    desktopLog: existsSync(desktopLogPath) ? readFileSync(desktopLogPath, "utf8") : "",
+  });
+  if (eventsAfterQuietWindow.length !== eventCountBeforeQuietWindow) {
+    throw new Error("Desktop expected restart did not stabilize after one successor.");
+  }
+
   const successorToken = `desktop-smoke-successor-${Date.now()}`;
   writeFileSync(join(agentDir, "server.pid"), `${JSON.stringify({
-    ...desktopRecord,
+    ...successorRecord,
     token: successorToken,
   })}\n`, { encoding: "utf8", mode: 0o600 });
-  writeFileSync(join(smokeDir, "exit-request"), "exit\n");
+  writeFileSync(join(smokeDir, "exit-request"), "exit\n", { encoding: "utf8", mode: 0o600 });
   const desktopExitCode = await waitForProcess(desktopProcess, 60_000);
   await Promise.all([stdoutTask, stderrTask]);
   if (desktopExitCode !== 0) {
@@ -386,7 +472,6 @@ try {
     const state = currentDesktopSmokeState(join(smokeDir, "events.jsonl"));
     return state?.stopped ?? false;
   }, 30_000);
-  await waitFor("model request cancellation", () => modelRequestAborted, 30_000);
   if (existsSync(join(agentDir, "server.lease"))) {
     throw new Error("Desktop Exit left its live-server lease behind.");
   }
@@ -397,7 +482,7 @@ try {
     throw new Error("Desktop Exit erased a successor ownership token during cleanup.");
   }
   try {
-    await fetch(`${origin}/api/status`, { signal: AbortSignal.timeout(1_000) });
+    await fetch(`${successorOrigin}/api/status`, { signal: AbortSignal.timeout(1_000) });
     throw new Error("Desktop origin remained reachable after terminal Exit.");
   } catch (error) {
     if (error instanceof Error && error.message === "Desktop origin remained reachable after terminal Exit.") throw error;
@@ -608,7 +693,9 @@ function currentDesktopSmokeState(
   if (!existsSync(eventsPath)) return undefined;
   let state: ReturnType<typeof reduceDesktopSmokeEvents>;
   try {
-    state = reduceDesktopSmokeEvents(readDesktopSmokeEvents(eventsPath));
+    state = reduceDesktopSmokeEvents(readDesktopSmokeEvents(eventsPath), {
+      desktopLog: existsSync(desktopLogPath) ? readFileSync(desktopLogPath, "utf8") : "",
+    });
   } catch {
     return undefined;
   }

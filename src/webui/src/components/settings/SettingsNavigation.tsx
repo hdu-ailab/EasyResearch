@@ -3,7 +3,7 @@ import { type KeyboardEvent, useRef } from "react";
 import type { MessageKey } from "../../i18n/messages";
 import { useI18n } from "../../i18n/useI18n";
 
-export type SettingsCategory = "general" | "conversation" | "providers" | "agents" | "resources";
+export type SettingsCategory = "general" | "network" | "conversation" | "providers" | "agents" | "resources";
 
 export interface SettingsNavigationProps {
   active: SettingsCategory;
@@ -15,6 +15,7 @@ export interface SettingsNavigationProps {
 
 const categories: readonly { id: SettingsCategory; label: MessageKey }[] = [
   { id: "general", label: "settings.category.general" },
+  { id: "network", label: "settings.category.network" },
   { id: "conversation", label: "settings.category.conversation" },
   { id: "providers", label: "settings.category.providers" },
   { id: "agents", label: "settings.category.agents" },

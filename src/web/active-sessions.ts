@@ -108,6 +108,7 @@ export class ActiveSessionRegistry {
   }
 
   open(input: OpenSessionInput): Promise<ActiveSessionDto> {
+    if (this.shuttingDown) return Promise.reject(new SessionRegistryShuttingDownError());
     for (const record of this.records.values()) {
       if (
         record.cwd === input.cwd &&
@@ -145,6 +146,27 @@ export class ActiveSessionRegistry {
     return [...this.records.values()]
       .filter((record) => isConnectedStatus(record.dto.status))
       .map((record) => ({ ...record.dto }));
+  }
+
+  activeWorkCount(): number {
+    let count = this.pendingLaunches.size;
+    for (const record of this.records.values()) {
+      if (!isConnectedStatus(record.dto.status)) continue;
+      if (
+        record.dto.status === "starting"
+        || record.dto.status === "running"
+        || record.dto.isStreaming
+        || record.supervisorActive
+        || record.client.hasBackgroundWork()
+      ) count += 1;
+    }
+    return count;
+  }
+
+  beginShutdown(): void {
+    if (this.shuttingDown) return;
+    this.shuttingDown = true;
+    for (const launch of this.pendingLaunches) launch.cancelled = true;
   }
 
   async snapshot(
@@ -194,6 +216,7 @@ export class ActiveSessionRegistry {
    * pre-marking `running` here would leave an idle session stuck `running`.
    */
   async prompt(id: string, message: string): Promise<void> {
+    if (this.shuttingDown) throw new SessionRegistryShuttingDownError();
     return this.withRecord(id, async (record) => {
       this.clearIdleTimer(record);
       try {
@@ -398,9 +421,8 @@ export class ActiveSessionRegistry {
   }
 
   async shutdown(): Promise<void> {
-    this.shuttingDown = true;
+    this.beginShutdown();
     const pending = [...this.pendingLaunches];
-    for (const launch of pending) launch.cancelled = true;
     const outcomes = await Promise.allSettled(
       [
         ...[...this.records.values()].map((record) => this.stop(record.dto.id)),

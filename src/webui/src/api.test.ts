@@ -9,6 +9,7 @@ import {
   createConfigDirectory,
   createSession,
   getCompactionSettings,
+  getNetworkProxySettings,
   getSessionCommands,
   getSessionTree,
   getSnapshot,
@@ -22,11 +23,14 @@ import {
   openSession,
   patchAgent,
   patchCompactionSettings,
+  patchNetworkProxySettings,
   readConfigFile,
   replaceFileWatchDirectories,
+  restartRuntime,
   restartSession,
   sendPrompt,
   stopSession,
+  testNetworkProxy,
   touchSession,
   writeConfigFile,
 } from "./api";
@@ -45,6 +49,20 @@ type RefreshConfigurationResources = (request?: { projectCwds?: string[] }) => P
   generation: number;
   error: string | null;
 }>;
+type NetworkProxySettings = {
+  configured: { all?: string; llm?: string; search?: string };
+  appliedConfigured: { all?: string; llm?: string; search?: string };
+  sources: {
+    all: "configured" | "environment" | "direct";
+    llm: "configured" | "all" | "environment" | "direct";
+    search: "configured" | "all" | "environment" | "direct";
+  };
+  errors: Array<{
+    code: "NETWORK_PROXY_INVALID";
+    field: "settings" | "all" | "llm" | "search";
+  }>;
+  restartRequired: boolean;
+};
 
 function rawByteReader(): RawByteReader {
   const reader = (apiModule as typeof apiModule & { readRawFileBytes?: RawByteReader }).readRawFileBytes;
@@ -97,13 +115,41 @@ describe("api transport", () => {
 
   it("listStatus GETs /api/status", async () => {
     fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ agentDir: "/a", homeDir: "/home/user", sessions: [], activeSessions: [] }), {
-        status: 200,
-      }),
+      new Response(
+        JSON.stringify({
+          bootId: "boot-a",
+          agentDir: "/a",
+          homeDir: "/home/user",
+          sessions: [],
+          activeSessions: [],
+        }),
+        {
+          status: 200,
+        },
+      ),
     );
     const result = await listStatus();
     expect(fetchMock).toHaveBeenCalledWith("/api/status", expect.objectContaining({ method: "GET" }));
+    expect(result.bootId).toBe("boot-a");
     expect(result.agentDir).toBe("/a");
+  });
+
+  it("listStatus bypasses caches and forwards the expected-restart abort signal", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ bootId: "boot-a", agentDir: "/a", homeDir: "/home/user", sessions: [], activeSessions: [] }),
+        { status: 200 },
+      ),
+    );
+    const controller = new AbortController();
+
+    await listStatus({ signal: controller.signal });
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/status", {
+      method: "GET",
+      cache: "no-store",
+      signal: controller.signal,
+    });
   });
 
   it("checkForUpdate GETs the same-origin update endpoint", async () => {
@@ -228,6 +274,124 @@ describe("api transport", () => {
     expect(patchUrl).toBe("/api/settings/api-usage");
     expect(JSON.parse(patchInit.body as string)).toEqual({ showApiUsageDetails: true });
     expect(fetchMock.mock.calls[2]?.[0]).toBe("/api/sessions/root%2F1/statistics");
+  });
+
+  it("bypasses HTTP caches when hydrating API-usage visibility", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ showApiUsageDetails: true }), { status: 200 }));
+
+    await expect(apiUsageMethods().getApiUsageSettings()).resolves.toEqual({ showApiUsageDetails: true });
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/settings/api-usage", {
+      method: "GET",
+      cache: "no-store",
+    });
+  });
+
+  it("uses the exact typed Network settings, candidate-test, and runtime-restart routes", async () => {
+    const current: NetworkProxySettings = {
+      configured: { all: "http://all.example" },
+      appliedConfigured: {},
+      sources: { all: "configured", llm: "all", search: "all" },
+      errors: [],
+      restartRequired: true,
+    };
+    const saved: NetworkProxySettings = {
+      ...current,
+      configured: { all: "http://next.example", search: "https://search.example" },
+    };
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify(current), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(saved), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: false, outcome: "target-response", status: 503, elapsedMs: 42 }), {
+          status: 200,
+        }),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ accepted: true, bootId: "boot-current" }), { status: 202 }));
+    await expect(getNetworkProxySettings()).resolves.toEqual(current);
+    await expect(
+      patchNetworkProxySettings({
+        all: "http://next.example",
+        llm: null,
+        search: "https://search.example",
+      }),
+    ).resolves.toEqual(saved);
+    await expect(testNetworkProxy({ scope: "search", proxyUrl: "https://search.example" })).resolves.toEqual({
+      ok: false,
+      outcome: "target-response",
+      status: 503,
+      elapsedMs: 42,
+    });
+    await expect(restartRuntime(false)).resolves.toEqual({ accepted: true, bootId: "boot-current" });
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/settings/network-proxy");
+    const [patchUrl, patchInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(patchUrl).toBe("/api/settings/network-proxy");
+    expect(patchInit.method).toBe("PATCH");
+    expect(JSON.parse(patchInit.body as string)).toEqual({
+      all: "http://next.example",
+      llm: null,
+      search: "https://search.example",
+    });
+    const [testUrl, testInit] = fetchMock.mock.calls[2] as [string, RequestInit];
+    expect(testUrl).toBe("/api/settings/network-proxy/test");
+    expect(testInit.method).toBe("POST");
+    expect(JSON.parse(testInit.body as string)).toEqual({
+      scope: "search",
+      proxyUrl: "https://search.example",
+    });
+    const [restartUrl, restartInit] = fetchMock.mock.calls[3] as [string, RequestInit];
+    expect(restartUrl).toBe("/api/runtime/restart");
+    expect(restartInit.method).toBe("POST");
+    expect(JSON.parse(restartInit.body as string)).toEqual({ force: false });
+  });
+
+  it("keeps typed runtime restart conflicts available through ApiError", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ code: "RUNTIME_BUSY", activeSessions: 2, authFlowActive: true }), { status: 409 }),
+    );
+
+    const error = await restartRuntime(false).catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({
+      status: 409,
+      details: { code: "RUNTIME_BUSY", activeSessions: 2, authFlowActive: true },
+    });
+  });
+
+  it("accepts only a strict RUNTIME_BUSY ApiError detail object", () => {
+    const parseBusy = (
+      apiModule as typeof apiModule & {
+        parseRuntimeBusyError?: (error: unknown) => {
+          code: "RUNTIME_BUSY";
+          activeSessions: number;
+          authFlowActive: boolean;
+        } | null;
+      }
+    ).parseRuntimeBusyError;
+    expect(parseBusy).toBeTypeOf("function");
+    if (!parseBusy) return;
+
+    expect(parseBusy(new ApiError(409, { code: "RUNTIME_BUSY", activeSessions: 2, authFlowActive: true }))).toEqual({
+      code: "RUNTIME_BUSY",
+      activeSessions: 2,
+      authFlowActive: true,
+    });
+
+    for (const error of [
+      new ApiError(500, { code: "RUNTIME_BUSY", activeSessions: 2, authFlowActive: true }),
+      new ApiError(409, { code: "RUNTIME_RESTARTING" }),
+      new ApiError(409, { code: "RUNTIME_BUSY", activeSessions: -1, authFlowActive: true }),
+      new ApiError(409, { code: "RUNTIME_BUSY", activeSessions: 1.5, authFlowActive: true }),
+      new ApiError(409, { code: "RUNTIME_BUSY", activeSessions: "2", authFlowActive: true }),
+      new ApiError(409, { code: "RUNTIME_BUSY", activeSessions: 2, authFlowActive: "yes" }),
+      new ApiError(409, { code: "RUNTIME_BUSY", activeSessions: 2, authFlowActive: true, detail: "raw" }),
+      new ApiError(409, null),
+      new Error("RUNTIME_BUSY"),
+    ]) {
+      expect(parseBusy(error)).toBeNull();
+    }
   });
 
   it("listDirectories GETs /api/directories with path", async () => {
@@ -704,6 +868,7 @@ describe("connectConfigurationEvents", () => {
     source.onmessage?.({
       data: JSON.stringify({
         type: "config.updated",
+        bootId: "boot-a",
         generation: 2,
         agentsChanged: true,
         modelsChanged: false,
@@ -714,6 +879,7 @@ describe("connectConfigurationEvents", () => {
     } as MessageEvent);
     expect(handlers.onEvent).toHaveBeenCalledWith({
       type: "config.updated",
+      bootId: "boot-a",
       generation: 2,
       agentsChanged: true,
       modelsChanged: false,
@@ -725,6 +891,7 @@ describe("connectConfigurationEvents", () => {
     source.onmessage?.({
       data: JSON.stringify({
         type: "config.updated",
+        bootId: "boot-a",
         generation: "2",
         agentsChanged: true,
         modelsChanged: false,
@@ -735,8 +902,21 @@ describe("connectConfigurationEvents", () => {
     expect(handlers.onEvent).toHaveBeenCalledTimes(1);
     expect(handlers.onError).toHaveBeenCalledTimes(1);
 
-    source.onerror?.();
+    source.onmessage?.({
+      data: JSON.stringify({
+        type: "config.updated",
+        generation: 3,
+        agentsChanged: true,
+        modelsChanged: false,
+        skillsChanged: false,
+        runtimeChanged: true,
+      }),
+    } as MessageEvent);
+    expect(handlers.onEvent).toHaveBeenCalledTimes(1);
     expect(handlers.onError).toHaveBeenCalledTimes(2);
+
+    source.onerror?.();
+    expect(handlers.onError).toHaveBeenCalledTimes(3);
     const close = vi.spyOn(source, "close");
     disconnect();
     expect(close).toHaveBeenCalledOnce();

@@ -7,21 +7,68 @@ import { dayStamp } from "../runtime/logger";
 import { runCli, waitForReady, type CliDependencies, type CliOptions } from "./index";
 import * as cliModule from "./index";
 import { readServerPid, serverPidPath, writeServerPid } from "./server-process";
+import type { RuntimeLease } from "./runtime-lease";
 
 let root: string;
 
+const NETWORK_ENV_KEYS = [
+  "HTTP_PROXY",
+  "http_proxy",
+  "HTTPS_PROXY",
+  "https_proxy",
+  "ALL_PROXY",
+  "all_proxy",
+  "NO_PROXY",
+  "no_proxy",
+  "PLAYWRIGHT_MCP_PROXY_SERVER",
+  "PLAYWRIGHT_MCP_PROXY_BYPASS",
+  "EASYRESEARCH_NETWORK_TEST_KEEP",
+] as const;
+let networkEnvSnapshot: Partial<Record<(typeof NETWORK_ENV_KEYS)[number], string>>;
+
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "cli-index-"));
+  networkEnvSnapshot = {};
+  for (const key of NETWORK_ENV_KEYS) {
+    const value = process.env[key];
+    if (value !== undefined) networkEnvSnapshot[key] = value;
+    delete process.env[key];
+  }
 });
 
-afterEach(() => rmSync(root, { recursive: true, force: true }));
+afterEach(() => {
+  for (const key of NETWORK_ENV_KEYS) {
+    const value = networkEnvSnapshot[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  rmSync(root, { recursive: true, force: true });
+});
+
+function readNetworkEnvironment(
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): Partial<Record<(typeof NETWORK_ENV_KEYS)[number], string>> {
+  const values: Partial<Record<(typeof NETWORK_ENV_KEYS)[number], string>> = {};
+  for (const key of NETWORK_ENV_KEYS) {
+    const value = environment[key];
+    if (value !== undefined) values[key] = value;
+  }
+  return values;
+}
 
 function makeDeps(overrides: Partial<CliDependencies> = {}): CliDependencies {
   return {
     serve: vi.fn(async () => 0),
     openBrowser: vi.fn(async () => true),
     waitForReady: vi.fn(async () => true),
-    withRuntimeTransition: async (_agentDir, operation) => operation(),
+    withRuntimeTransition: async (_agentDir, operation) => {
+      const lease = testTransitionLease();
+      try {
+        return await (operation as (lease: RuntimeLease) => Promise<unknown>)(lease);
+      } finally {
+        if (lease.held) lease.release();
+      }
+    },
     spawnBackground: vi.fn(),
     inspectBackground: vi.fn(async (agentDir: string) =>
       readServerPid(agentDir) === undefined ? "none" : "current"),
@@ -30,31 +77,110 @@ function makeDeps(overrides: Partial<CliDependencies> = {}): CliDependencies {
   } as CliDependencies;
 }
 
+function testTransitionLease(): RuntimeLease {
+  let held = true;
+  return {
+    path: join(root, "server.transition.lease"),
+    token: "transition-token",
+    get held() {
+      return held;
+    },
+    reserveHandoff: vi.fn((token: string) => {
+      let transferred = false;
+      return {
+        token,
+        get transferred() {
+          return transferred;
+        },
+        commit: vi.fn(() => {
+          transferred = true;
+        }),
+        cancel: vi.fn(() => true),
+        relinquish: vi.fn(() => {
+          if (!transferred) throw new Error("handoff was not committed");
+          held = false;
+        }),
+      };
+    }),
+    release: vi.fn(() => {
+      if (!held) return false;
+      held = false;
+      return true;
+    }),
+  } as RuntimeLease;
+}
+
 /** runCli with first-run setup stubbed out (tests must not touch real venvs). */
 function runTestCli(argv: string[], deps: CliDependencies, options: Partial<CliOptions> = {}) {
   return runCli(argv, deps, { setup: vi.fn(), ...options });
 }
 
 describe("runCli argument parsing", () => {
+  it("restores an empty Bun environment before resolving the agent directory and loads it only once", async () => {
+    const environment: Record<string, string | undefined> = {};
+    const readEnviron = vi.fn(() => [
+      `EASYRESEARCH_CODING_AGENT_DIR=${root}`,
+      "HTTPS_PROXY=http://sandbox.proxy:8443",
+      "NO_PROXY=sandbox.internal",
+    ].join("\0"));
+    let environmentAtAgentDir: Record<string, string | undefined> | undefined;
+    const options = {
+      get agentDir() {
+        environmentAtAgentDir = { ...environment };
+        return root;
+      },
+      setup: vi.fn(),
+      environment,
+      environmentRestore: { isBun: true, readEnviron },
+    } as CliOptions & {
+      environment: Record<string, string | undefined>;
+      environmentRestore: { isBun: boolean; readEnviron: () => string };
+    };
+
+    expect(await runCli(["--no-open"], makeDeps(), options)).toBe(0);
+
+    expect(environmentAtAgentDir).toMatchObject({
+      EASYRESEARCH_CODING_AGENT_DIR: root,
+      HTTPS_PROXY: "http://sandbox.proxy:8443",
+      NO_PROXY: "sandbox.internal",
+    });
+    expect(readEnviron).toHaveBeenCalledOnce();
+  });
+
   it("starts a background server with defaults for an empty argv", async () => {
     const deps = makeDeps();
     expect(await runTestCli([], deps, { agentDir: root })).toBe(0);
-    expect(deps.spawnBackground).toHaveBeenCalledWith("127.0.0.1", 3000);
+    expect(deps.spawnBackground).toHaveBeenCalledWith(
+      "127.0.0.1",
+      3000,
+      expect.any(Object),
+      expect.any(Object),
+    );
     expect(deps.openBrowser).toHaveBeenCalledWith("http://127.0.0.1:3000");
   });
 
   it("parses -p port and --host", async () => {
     const deps = makeDeps();
     await runTestCli(["-p", "4000", "--host", "0.0.0.0"], deps, { agentDir: root });
-    expect(deps.spawnBackground).toHaveBeenCalledWith("0.0.0.0", 4000);
-    expect(deps.waitForReady).toHaveBeenCalledWith("0.0.0.0", 4000);
+    expect(deps.spawnBackground).toHaveBeenCalledWith(
+      "0.0.0.0",
+      4000,
+      expect.any(Object),
+      expect.any(Object),
+    );
+    expect(deps.waitForReady).not.toHaveBeenCalled();
     expect(deps.openBrowser).not.toHaveBeenCalled();
   });
 
   it("skips opening the browser with --no-open", async () => {
     const deps = makeDeps();
     await runTestCli(["--no-open"], deps, { agentDir: root });
-    expect(deps.spawnBackground).toHaveBeenCalledWith("127.0.0.1", 3000);
+    expect(deps.spawnBackground).toHaveBeenCalledWith(
+      "127.0.0.1",
+      3000,
+      expect.any(Object),
+      expect.any(Object),
+    );
     expect(deps.openBrowser).not.toHaveBeenCalled();
   });
 
@@ -80,8 +206,13 @@ describe("runCli argument parsing", () => {
     expect(await runTestCli([], deps, { agentDir: root })).toBe(0);
 
     expect(stopBackground).toHaveBeenCalledOnce();
-    expect(deps.spawnBackground).toHaveBeenCalledWith("127.0.0.1", 3000);
-    expect(deps.waitForReady).toHaveBeenCalledOnce();
+    expect(deps.spawnBackground).toHaveBeenCalledWith(
+      "127.0.0.1",
+      3000,
+      expect.any(Object),
+      expect.any(Object),
+    );
+    expect(deps.waitForReady).not.toHaveBeenCalled();
     expect(deps.openBrowser).toHaveBeenCalledWith("http://127.0.0.1:3000");
   });
 
@@ -167,8 +298,9 @@ describe("runCli argument parsing", () => {
     const order: string[] = [];
     const deps = makeDeps({
       withRuntimeTransition: async (_agentDir, operation) => {
+        const lease = testTransitionLease();
         order.push("lease-acquired");
-        const result = await operation();
+        const result = await operation(lease);
         order.push("lease-released");
         return result;
       },
@@ -176,7 +308,9 @@ describe("runCli argument parsing", () => {
         order.push("inspected");
         return "none" as const;
       }),
-      spawnBackground: vi.fn(() => order.push("spawned")),
+      spawnBackground: vi.fn(() => {
+        order.push("spawned");
+      }),
       waitForReady: vi.fn(async () => {
         order.push("ready");
         return true;
@@ -193,9 +327,50 @@ describe("runCli argument parsing", () => {
       "inspected",
       "setup",
       "spawned",
-      "ready",
       "lease-released",
     ]);
+  });
+
+  it("does not accept a separate unauthenticated status-only probe after initial owned startup", async () => {
+    const waitForReady = vi.fn(async () => true);
+    const spawnBackground = vi.fn(async () => {});
+    const deps = makeDeps({ waitForReady, spawnBackground });
+
+    await expect(runTestCli(["--no-open"], deps, { agentDir: root })).resolves.toBe(0);
+
+    expect(spawnBackground).toHaveBeenCalledOnce();
+    expect(waitForReady).not.toHaveBeenCalled();
+  });
+
+  it("does not release initial transition ownership after a spawned child takes fail-closed custody", async () => {
+    const transition = testTransitionLease();
+    const release = vi.spyOn(transition, "release");
+    const reserveHandoff = vi.spyOn(transition, "reserveHandoff");
+    const deps = makeDeps({
+      withRuntimeTransition: async (_agentDir, operation) => {
+        try {
+          return await operation(transition);
+        } finally {
+          if (transition.held) transition.release();
+        }
+      },
+      spawnBackground: vi.fn(async (_host, _port, _environment, lease: RuntimeLease) => {
+        const handoff = lease.reserveHandoff("surviving-child-token");
+        handoff.commit(222);
+        handoff.relinquish();
+        throw new Error("child survived forced cleanup");
+      }) as never,
+    });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await expect(runTestCli(["--no-open"], deps, { agentDir: root })).resolves.toBe(1);
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    expect(reserveHandoff).toHaveBeenCalledWith("surviving-child-token");
+    expect(release).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -230,7 +405,11 @@ describe("runCli argument parsing", () => {
   });
 
   it("points the failure hint at the real web-server log file", async () => {
-    const deps = makeDeps({ waitForReady: vi.fn(async () => false) });
+    const deps = makeDeps({
+      spawnBackground: vi.fn(async () => {
+        throw new Error("authenticated initial readiness failed");
+      }),
+    });
     const messages: string[] = [];
     const errorSpy = vi.spyOn(console, "error").mockImplementation((msg: unknown) => {
       messages.push(String(msg));
@@ -244,15 +423,48 @@ describe("runCli argument parsing", () => {
     expect(messages.join("\n")).toContain(expected);
   });
 
-  it("probes readiness on the bound host", async () => {
+  it("passes the bound host to owned authenticated startup", async () => {
     const deps = makeDeps();
     await runTestCli(["--host", "192.168.1.5"], deps, { agentDir: root });
-    expect(deps.spawnBackground).toHaveBeenCalledWith("192.168.1.5", 3000);
-    expect(deps.waitForReady).toHaveBeenCalledWith("192.168.1.5", 3000);
+    expect(deps.spawnBackground).toHaveBeenCalledWith(
+      "192.168.1.5",
+      3000,
+      expect.any(Object),
+      expect.any(Object),
+    );
+    expect(deps.waitForReady).not.toHaveBeenCalled();
   });
 });
 
 describe("waitForReady", () => {
+  it("uses the direct local transport instead of the configured global fetch router", async () => {
+    const targetRequests: string[] = [];
+    const server = createServer((request, response) => {
+      targetRequests.push(request.url ?? "");
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ bootId: "boot-ready" }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as { port: number }).port;
+    const originalFetch = globalThis.fetch;
+    const proxyRecords: string[] = [];
+    globalThis.fetch = Object.assign(async (input: string | URL | Request) => {
+      proxyRecords.push(String(input));
+      return Response.json({ bootId: "proxy-boot" });
+    }, { preconnect: originalFetch.preconnect }) as typeof fetch;
+
+    try {
+      await expect(waitForReady("127.0.0.1", port, 2_000)).resolves.toBe(true);
+      expect(targetRequests).toEqual(["/api/status"]);
+      expect(proxyRecords).toEqual([]);
+    } finally {
+      globalThis.fetch = originalFetch;
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve());
+      });
+    }
+  });
+
   it("probes the given host", async () => {
     const server = createServer((_req, res) => {
       res.writeHead(200);
@@ -350,6 +562,28 @@ describe("help output", () => {
     }
   });
 
+  it("keeps direct help pure without reading the Bun proc environment", async () => {
+    const readEnviron = vi.fn(() => "PRIVATE_HELP_VALUE=must-not-load\0");
+    const environment: Record<string, string | undefined> = {};
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      expect(await runCli(["--help"], makeDeps(), {
+        agentDir: root,
+        setup: vi.fn(),
+        environment,
+        environmentRestore: { isBun: true, readEnviron },
+      } as CliOptions & {
+        environment: Record<string, string | undefined>;
+        environmentRestore: { isBun: boolean; readEnviron: () => string };
+      })).toBe(0);
+    } finally {
+      logSpy.mockRestore();
+    }
+
+    expect(readEnviron).not.toHaveBeenCalled();
+    expect(environment).toEqual({});
+  });
+
   it("prints help from any argument position and never starts a daemon", async () => {
     const deps = makeDeps();
     const writes: string[] = [];
@@ -375,6 +609,127 @@ describe("help output", () => {
 });
 
 describe("first-run setup", () => {
+  it("loads All traffic after ownership inspection and confines it to setup", async () => {
+    const baseline = {
+      HTTP_PROXY: "http://ambient-http.example:8080",
+      https_proxy: "http://ambient-https.example:8443",
+      NO_PROXY: "ambient.internal",
+      PLAYWRIGHT_MCP_PROXY_SERVER: "socks5://ambient-browser.example:1080",
+      PLAYWRIGHT_MCP_PROXY_BYPASS: "browser.internal",
+      EASYRESEARCH_NETWORK_TEST_KEEP: "retained",
+    };
+    Object.assign(process.env, baseline);
+    const order: string[] = [];
+    let setupEnvironment: ReturnType<typeof readNetworkEnvironment> | undefined;
+    let spawnProcessEnvironment: ReturnType<typeof readNetworkEnvironment> | undefined;
+    let childEnvironment: Record<string, string | undefined> | undefined;
+    let browserEnvironment: ReturnType<typeof readNetworkEnvironment> | undefined;
+    const deps = makeDeps({
+      inspectBackground: vi.fn(async () => {
+        order.push("inspected");
+        writeFileSync(join(root, "settings.json"), JSON.stringify({
+          httpProxy: " HTTP://CONFIGURED.EXAMPLE:80/ ",
+        }));
+        return "none" as const;
+      }),
+      spawnBackground: vi.fn((...args: unknown[]) => {
+        order.push("spawned");
+        spawnProcessEnvironment = readNetworkEnvironment();
+        childEnvironment = args[2] as Record<string, string | undefined> | undefined;
+      }),
+      openBrowser: vi.fn(async () => {
+        order.push("browser");
+        browserEnvironment = readNetworkEnvironment();
+        return true;
+      }),
+    });
+
+    expect(await runCli([], deps, {
+      agentDir: root,
+      setup: () => {
+        order.push("setup");
+        setupEnvironment = readNetworkEnvironment();
+      },
+    })).toBe(0);
+
+    expect(order).toEqual(["inspected", "setup", "spawned", "browser"]);
+    expect(setupEnvironment).toEqual({
+      HTTP_PROXY: "http://configured.example",
+      http_proxy: "http://configured.example",
+      HTTPS_PROXY: "http://configured.example",
+      https_proxy: "http://configured.example",
+      ALL_PROXY: "http://configured.example",
+      all_proxy: "http://configured.example",
+      NO_PROXY: "ambient.internal,localhost,127.0.0.1,::1,localhost.,[::1]",
+      no_proxy: "ambient.internal,localhost,127.0.0.1,::1,localhost.,[::1]",
+      PLAYWRIGHT_MCP_PROXY_SERVER: "http://configured.example",
+      PLAYWRIGHT_MCP_PROXY_BYPASS: "ambient.internal,localhost,127.0.0.1,::1,localhost.,[::1]",
+      EASYRESEARCH_NETWORK_TEST_KEEP: "retained",
+    });
+    expect(spawnProcessEnvironment).toEqual(baseline);
+    expect(browserEnvironment).toEqual(baseline);
+    expect(readNetworkEnvironment(childEnvironment ?? {})).toEqual(baseline);
+  });
+
+  it.each([
+    ["help", ["--help"]],
+    ["exit", ["exit"]],
+  ])("keeps the launch network environment untouched for %s", async (_name, argv) => {
+    writeFileSync(join(root, "settings.json"), JSON.stringify({
+      httpProxy: "http://configured.example:7890",
+    }));
+    const baseline = {
+      HTTPS_PROXY: "http://ambient.example:8080",
+      PLAYWRIGHT_MCP_PROXY_SERVER: "socks5://ambient-browser.example:1080",
+    };
+    Object.assign(process.env, baseline);
+    const deps = makeDeps();
+    const setup = vi.fn();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      expect(await runCli(argv, deps, { agentDir: root, setup })).toBe(0);
+    } finally {
+      logSpy.mockRestore();
+    }
+
+    expect(setup).not.toHaveBeenCalled();
+    expect(deps.spawnBackground).not.toHaveBeenCalled();
+    expect(deps.openBrowser).not.toHaveBeenCalled();
+    expect(readNetworkEnvironment()).toEqual(baseline);
+  });
+
+  it("restores the launch network environment when setup fails", async () => {
+    writeFileSync(join(root, "settings.json"), JSON.stringify({
+      httpProxy: "http://configured.example:7890",
+    }));
+    const baseline = {
+      HTTP_PROXY: "http://ambient.example:8080",
+      NO_PROXY: "ambient.internal",
+      PLAYWRIGHT_MCP_PROXY_SERVER: "socks5://ambient-browser.example:1080",
+      PLAYWRIGHT_MCP_PROXY_BYPASS: "browser.internal",
+    };
+    Object.assign(process.env, baseline);
+    let setupEnvironment: ReturnType<typeof readNetworkEnvironment> | undefined;
+    const deps = makeDeps();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(await runCli([], deps, {
+        agentDir: root,
+        setup: () => {
+          setupEnvironment = readNetworkEnvironment();
+          throw new Error("setup failed");
+        },
+      })).toBe(1);
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    expect(setupEnvironment?.HTTPS_PROXY).toBe("http://configured.example:7890");
+    expect(readNetworkEnvironment()).toEqual(baseline);
+    expect(deps.spawnBackground).not.toHaveBeenCalled();
+    expect(deps.openBrowser).not.toHaveBeenCalled();
+  });
+
   it("runs injected setup on normal start", async () => {
     const setup = vi.fn();
     const deps = makeDeps();

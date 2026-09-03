@@ -14,9 +14,22 @@ import {
 export const THIRD_PARTY_NOTICES_FILE = "THIRD_PARTY_NOTICES.txt";
 export const THIRD_PARTY_NOTICE_ROOTS = [
   { name: "axios", version: "1.19.0" },
+  { name: "google-auth-library", version: "10.9.1" },
   { name: "open-websearch", version: "2.1.11" },
   { name: "ssh2", version: "1.17.0" },
+  { name: "undici", version: "8.9.0" },
 ] as const;
+
+const THIRD_PARTY_NOTICE_LICENSE_OVERRIDES: Readonly<
+  Record<string, ThirdPartyLicenseOverride>
+> = {
+  ...THIRD_PARTY_LICENSE_OVERRIDES,
+  "data-uri-to-buffer@4.0.1": {
+    license: "MIT",
+    readmeFile: "README.md",
+    heading: "License\n-------",
+  },
+};
 
 const ADAPTED_SKILL_NOTICE_SOURCES = [
   {
@@ -368,7 +381,7 @@ function collectPackageEntry(
     );
   }
 
-  const override = THIRD_PARTY_LICENSE_OVERRIDES[lockPackage.identity];
+  const override = THIRD_PARTY_NOTICE_LICENSE_OVERRIDES[lockPackage.identity];
   const declaredLicense = packageLicense(manifest);
   if (!declaredLicense && !override) {
     throw new Error(`Missing license metadata for ${lockPackage.identity}`);

@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { getAgentDir } from "./pi-import";
+import { parsePiSettingsJson } from "./pi-settings-json";
 
 /**
  * ADR-032: EasyResearch relies on Pi's native extension auto-discovery, which
@@ -73,7 +74,7 @@ function foreignPiExtensions(settings: unknown, label: string): string[] {
 
 function readFileSafe(path: string): unknown {
   try {
-    return JSON.parse(readFileSync(path, "utf8"));
+    return parsePiSettingsJson(readFileSync(path, "utf8"));
   } catch {
     return null;
   }

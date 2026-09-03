@@ -41,6 +41,14 @@ function makeServices(auth: AuthGateway | undefined): RouteServices {
   } as unknown as RouteServices;
 }
 
+function postJson(url: string, body: unknown): Request {
+  return new Request(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 function fakeStore(records: Record<string, Partial<AuthFlowRecord>> = {}): AuthFlowStore {
   return {
     create: vi.fn((flowId: string) => ({ ...flowRecordStub(), flowId, ...records[flowId] })) as any,
@@ -101,12 +109,10 @@ describe("auth routes", () => {
     } as unknown as AuthGateway;
     const services = makeServices(gw);
     const handler = createRouteHandler(services);
-    const res = await handler(
-      new Request("http://l/api/auth/login", {
-        method: "POST",
-        body: JSON.stringify({ providerId: "anthropic", type: "api_key" }),
-      }),
-    );
+    const res = await handler(postJson("http://l/api/auth/login", {
+      providerId: "anthropic",
+      type: "api_key",
+    }));
     expect(res.status).toBe(202);
     const body = (await res.json()) as { flowId: string };
     expect(body.flowId).toBeTruthy();
@@ -125,12 +131,10 @@ describe("auth routes", () => {
       store: () => fakeStore(),
     } as unknown as AuthGateway;
     const handler = createRouteHandler(makeServices(gw));
-    const res = await handler(
-      new Request("http://l/api/auth/login", {
-        method: "POST",
-        body: JSON.stringify({ providerId: "anthropic", type: "api_key" }),
-      }),
-    );
+    const res = await handler(postJson("http://l/api/auth/login", {
+      providerId: "anthropic",
+      type: "api_key",
+    }));
     expect(res.status).toBe(202);
     await Promise.resolve();
     expect((gw.runFlow as any)).toHaveBeenCalled();
@@ -169,12 +173,10 @@ describe("auth routes", () => {
       { timeoutMs: 600_000 },
     );
     const handler = createRouteHandler(makeServices(gateway));
-    const login = () => handler(
-      new Request("http://l/api/auth/login", {
-        method: "POST",
-        body: JSON.stringify({ providerId: "anthropic", type: "api_key" }),
-      }),
-    );
+    const login = () => handler(postJson("http://l/api/auth/login", {
+      providerId: "anthropic",
+      type: "api_key",
+    }));
 
     const requests = [login(), login()];
     await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
@@ -207,12 +209,10 @@ describe("auth routes", () => {
       store: () => fakeStore(),
     } as unknown as AuthGateway;
     const handler = createRouteHandler(makeServices(gw));
-    const res = await handler(
-      new Request("http://l/api/auth/login", {
-        method: "POST",
-        body: JSON.stringify({ providerId: "anthropic", type: "api_key" }),
-      }),
-    );
+    const res = await handler(postJson("http://l/api/auth/login", {
+      providerId: "anthropic",
+      type: "api_key",
+    }));
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(body.activeFlowId).toBe("f-active");
@@ -228,21 +228,17 @@ describe("auth routes", () => {
       store: () => fakeStore(),
     } as unknown as AuthGateway;
     const handler = createRouteHandler(makeServices(gw));
-    const res = await handler(
-      new Request("http://l/api/auth/login", {
-        method: "POST",
-        body: JSON.stringify({ providerId: "nope", type: "api_key" }),
-      }),
-    );
+    const res = await handler(postJson("http://l/api/auth/login", {
+      providerId: "nope",
+      type: "api_key",
+    }));
     expect(res.status).toBe(404);
   });
 
   it("POST /api/auth/login returns 400 for a malformed body", async () => {
     const gw = { activeFlow: () => null, preflight: vi.fn() } as unknown as AuthGateway;
     const handler = createRouteHandler(makeServices(gw));
-    const res = await handler(
-      new Request("http://l/api/auth/login", { method: "POST", body: JSON.stringify({ providerId: "x" }) }),
-    );
+    const res = await handler(postJson("http://l/api/auth/login", { providerId: "x" }));
     expect(res.status).toBe(400);
     expect((gw.preflight as any)).not.toHaveBeenCalled();
   });
@@ -251,12 +247,7 @@ describe("auth routes", () => {
     const store = fakeStore({ f1: { pendingPrompt: null } });
     const gw = { store: () => store } as unknown as AuthGateway;
     const handler = createRouteHandler(makeServices(gw));
-    const res = await handler(
-      new Request("http://l/api/auth/flows/f1/respond", {
-        method: "POST",
-        body: JSON.stringify({ value: "x" }),
-      }),
-    );
+    const res = await handler(postJson("http://l/api/auth/flows/f1/respond", { value: "x" }));
     expect(res.status).toBe(409);
   });
 
@@ -264,12 +255,7 @@ describe("auth routes", () => {
     const store = fakeStore({ f1: { terminated: true } });
     const gw = { store: () => store } as unknown as AuthGateway;
     const handler = createRouteHandler(makeServices(gw));
-    const res = await handler(
-      new Request("http://l/api/auth/flows/f1/respond", {
-        method: "POST",
-        body: JSON.stringify({ value: "x" }),
-      }),
-    );
+    const res = await handler(postJson("http://l/api/auth/flows/f1/respond", { value: "x" }));
     expect(res.status).toBe(410);
   });
 
@@ -278,12 +264,7 @@ describe("auth routes", () => {
     (store.resolveRespond as any) = vi.fn(() => true);
     const gw = { store: () => store } as unknown as AuthGateway;
     const handler = createRouteHandler(makeServices(gw));
-    const res = await handler(
-      new Request("http://l/api/auth/flows/f1/respond", {
-        method: "POST",
-        body: JSON.stringify({ value: "sk-abc" }),
-      }),
-    );
+    const res = await handler(postJson("http://l/api/auth/flows/f1/respond", { value: "sk-abc" }));
     expect(res.status).toBe(200);
     expect((store.resolveRespond as any)).toHaveBeenCalledWith("f1", "sk-abc");
   });
@@ -309,12 +290,7 @@ describe("auth routes", () => {
     const logout = vi.fn(async () => {});
     const gw = { logout } as unknown as AuthGateway;
     const handler = createRouteHandler(makeServices(gw));
-    const res = await handler(
-      new Request("http://l/api/auth/logout", {
-        method: "POST",
-        body: JSON.stringify({ providerId: "anthropic" }),
-      }),
-    );
+    const res = await handler(postJson("http://l/api/auth/logout", { providerId: "anthropic" }));
     expect(res.status).toBe(200);
     expect(logout).toHaveBeenCalledWith("anthropic");
   });
@@ -326,12 +302,7 @@ describe("auth routes", () => {
       },
     } as unknown as AuthGateway;
     const handler = createRouteHandler(makeServices(gw));
-    const res = await handler(
-      new Request("http://l/api/auth/logout", {
-        method: "POST",
-        body: JSON.stringify({ providerId: "nope" }),
-      }),
-    );
+    const res = await handler(postJson("http://l/api/auth/logout", { providerId: "nope" }));
     expect(res.status).toBe(404);
   });
 
@@ -367,12 +338,7 @@ describe("auth routes", () => {
     );
     const handler = createRouteHandler(makeServices(gw));
 
-    const res = await handler(
-      new Request("http://l/api/auth/logout", {
-        method: "POST",
-        body: JSON.stringify({ providerId: "anthropic" }),
-      }),
-    );
+    const res = await handler(postJson("http://l/api/auth/logout", { providerId: "anthropic" }));
 
     expect(res.status).toBe(500);
     expect(await res.json()).toEqual({

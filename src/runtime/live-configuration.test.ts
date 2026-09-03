@@ -2764,6 +2764,34 @@ describe("configuration content fingerprint", () => {
     expect(after.value).not.toBe(before.value);
   });
 
+  it("accepts BOM-prefixed global settings without degrading configuration layers", async () => {
+    const root = tempRoot();
+    mkdirSync(join(root, "agents"), { recursive: true });
+    writeFileSync(join(root, "agents", "research-assistant.md"), "agent", "utf8");
+    writeFileSync(join(root, "models.json"), "{}", "utf8");
+    const settings = JSON.stringify({
+      compaction: { enabled: false, keepRecentTokens: 8_000 },
+      easyresearch: {
+        agentDefaults: { search: { model: "openai/search-model" } },
+        compaction: { triggerPercent: 75 },
+        web: { showApiUsageDetails: false },
+      },
+    });
+    writeFileSync(join(root, "settings.json"), `\uFEFF${settings}`, "utf8");
+
+    const fingerprint = await fingerprintConfiguration(root);
+
+    expect(fingerprint.diagnostic).toBeUndefined();
+    expect(fingerprint.invalidSettingsLayers).toBeUndefined();
+    expect(fingerprint.compactionPolicy).toEqual({
+      triggerPercent: 75,
+      globalEnabled: false,
+      globalKeepRecentTokens: 8_000,
+    });
+    expect(fingerprint.apiUsageSettings).toEqual({ showApiUsageDetails: false });
+    expect(readFileSync(join(root, "settings.json"), "utf8")).toBe(`\uFEFF${settings}`);
+  });
+
   it("uses the cold compaction default for an invalid configured percentage", async () => {
     const root = tempRoot();
     mkdirSync(join(root, "agents"), { recursive: true });
@@ -2782,22 +2810,23 @@ describe("configuration content fingerprint", () => {
     expect(result.value).not.toBe(before.value);
   });
 
-  it("accepts only the global API-usage boolean into the live configuration fingerprint", async () => {
+  it("defaults missing API-usage state on without writing and accepts explicit global false", async () => {
     const root = tempRoot();
     mkdirSync(join(root, "agents"), { recursive: true });
     writeFileSync(join(root, "agents", "research-assistant.md"), "agent", "utf8");
     writeFileSync(join(root, "models.json"), "{}", "utf8");
     const before = await fingerprintConfiguration(root);
+    expect(() => readFileSync(join(root, "settings.json"))).toThrow();
 
     writeFileSync(
       join(root, "settings.json"),
-      JSON.stringify({ easyresearch: { web: { showApiUsageDetails: true } } }),
+      JSON.stringify({ easyresearch: { web: { showApiUsageDetails: false } } }),
       "utf8",
     );
     const after = await fingerprintConfiguration(root);
 
-    expect(before.apiUsageSettings).toEqual({ showApiUsageDetails: false });
-    expect(after.apiUsageSettings).toEqual({ showApiUsageDetails: true });
+    expect(before.apiUsageSettings).toEqual({ showApiUsageDetails: true });
+    expect(after.apiUsageSettings).toEqual({ showApiUsageDetails: false });
     expect(after.apiUsage).not.toBe(before.apiUsage);
     expect(after.compaction).toBe(before.compaction);
     expect(after.value).not.toBe(before.value);
@@ -2808,7 +2837,7 @@ describe("configuration content fingerprint", () => {
       "utf8",
     );
     const invalid = await fingerprintConfiguration(root);
-    expect(invalid.apiUsageSettings).toEqual({ showApiUsageDetails: false });
+    expect(invalid.apiUsageSettings).toEqual({ showApiUsageDetails: true });
     expect(invalid.diagnostic).toMatch(/configuration/i);
   });
 

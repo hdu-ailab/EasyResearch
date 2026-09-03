@@ -1,12 +1,592 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  createServer,
+  request as requestHttp,
+  type IncomingHttpHeaders,
+  type Server as HttpServer,
+} from "node:http";
+import { request as requestHttps } from "node:https";
+import { connect as connectTcp, type AddressInfo, type Socket } from "node:net";
 import { isAbsolute, posix, win32 } from "node:path";
-import { readFirstRunSetupEvidence } from "../src/runtime/first-run-setup-evidence";
 import type { NativeLocalShellTool } from "../src/runtime/platform-tools";
 
 export const FIRST_RUN_CEILING_MS = 720_000;
 
 const PYTHON_CONTAMINATION_KEYS = new Set(["PYTHONPATH", "PYTHONHOME", "PYTHONUSERBASE"]);
+
+export type SmokeProxyRecordKind =
+  | "fake-target"
+  | "forward"
+  | "connect-forward"
+  | "connect-blocked";
+
+export interface SmokeProxyRecord {
+  readonly sequence: number;
+  readonly proxy: string;
+  readonly kind: SmokeProxyRecordKind;
+  readonly method: string;
+  readonly host: string;
+  readonly port: number;
+}
+
+export interface RecordingHttpProxy {
+  readonly url: string;
+  records(): readonly SmokeProxyRecord[];
+  close(): Promise<void>;
+}
+
+function normalizeSmokeHost(host: string): string {
+  let normalized = host.trim().toLowerCase();
+  if (normalized.startsWith("[") && normalized.endsWith("]")) {
+    normalized = normalized.slice(1, -1);
+  }
+  if (normalized.endsWith(".")) normalized = normalized.slice(0, -1);
+  return normalized;
+}
+
+function urlPort(url: URL): number {
+  if (url.port) return Number.parseInt(url.port, 10);
+  return url.protocol === "https:" ? 443 : 80;
+}
+
+function sanitizedForwardHeaders(headers: IncomingHttpHeaders, host: string): IncomingHttpHeaders {
+  const forwarded: IncomingHttpHeaders = { ...headers, host };
+  delete forwarded["proxy-authorization"];
+  delete forwarded["proxy-connection"];
+  return forwarded;
+}
+
+function endProxyFailure(response: import("node:http").ServerResponse): void {
+  if (response.headersSent) {
+    response.destroy();
+    return;
+  }
+  response.writeHead(502, {
+    "Content-Type": "text/plain; charset=utf-8",
+    "Content-Length": "24",
+    Connection: "close",
+  });
+  response.end("Proxy forwarding failed.");
+}
+
+function parseConnectTarget(authority: string): { host: string; port: number } | undefined {
+  try {
+    const url = new URL(`http://${authority}`);
+    const host = normalizeSmokeHost(url.hostname);
+    const port = url.port ? Number.parseInt(url.port, 10) : 443;
+    if (!host || !Number.isInteger(port) || port < 1 || port > 65_535) return undefined;
+    return { host, port };
+  } catch {
+    return undefined;
+  }
+}
+
+function listenOnLoopback(server: HttpServer): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const onError = (error: Error): void => reject(error);
+    server.once("error", onError);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", onError);
+      resolve((server.address() as AddressInfo).port);
+    });
+  });
+}
+
+/**
+ * Starts a local HTTP proxy for native release acceptance. It records only safe
+ * host-level classifications, rewrites selected fake-public hosts to local
+ * servers, and transparently forwards all other HTTP and CONNECT traffic.
+ */
+export async function startRecordingHttpProxy(options: {
+  name: string;
+  fakeTargets?: Readonly<Record<string, string>>;
+  blockedConnectHosts?: readonly string[];
+  onRecord?: (record: SmokeProxyRecord) => void;
+}): Promise<RecordingHttpProxy> {
+  if (!options.name.trim()) throw new Error("Recording proxy requires a non-empty name.");
+  const fakeTargets = new Map<string, URL>();
+  for (const [host, origin] of Object.entries(options.fakeTargets ?? {})) {
+    const normalizedHost = normalizeSmokeHost(host);
+    const target = new URL(origin);
+    if (!normalizedHost || (target.protocol !== "http:" && target.protocol !== "https:")) {
+      throw new Error("Recording proxy fake targets require HTTP(S) origins and non-empty hosts.");
+    }
+    fakeTargets.set(normalizedHost, target);
+  }
+  const blockedConnectHosts = new Set(
+    (options.blockedConnectHosts ?? []).map(normalizeSmokeHost).filter(Boolean),
+  );
+  const records: SmokeProxyRecord[] = [];
+  const sockets = new Set<Socket>();
+  let sequence = 0;
+  let closed = false;
+  const record = (
+    kind: SmokeProxyRecordKind,
+    method: string,
+    host: string,
+    port: number,
+  ): void => {
+    const entry = Object.freeze({
+      sequence: ++sequence,
+      proxy: options.name,
+      kind,
+      method,
+      host,
+      port,
+    });
+    records.push(entry);
+    options.onRecord?.(entry);
+  };
+
+  const server = createServer((request, response) => {
+    let requested: URL;
+    try {
+      requested = new URL(request.url ?? "");
+    } catch {
+      response.writeHead(400, { Connection: "close" });
+      response.end();
+      return;
+    }
+    if (requested.protocol !== "http:" && requested.protocol !== "https:") {
+      response.writeHead(400, { Connection: "close" });
+      response.end();
+      return;
+    }
+
+    const requestedHost = normalizeSmokeHost(requested.hostname);
+    const fakeTarget = fakeTargets.get(requestedHost);
+    const target = fakeTarget
+      ? new URL(`${requested.pathname}${requested.search}`, fakeTarget)
+      : requested;
+    record(
+      fakeTarget ? "fake-target" : "forward",
+      request.method ?? "GET",
+      requestedHost,
+      urlPort(requested),
+    );
+    const send = target.protocol === "https:" ? requestHttps : requestHttp;
+    const upstream = send({
+      protocol: target.protocol,
+      hostname: normalizeSmokeHost(target.hostname),
+      port: urlPort(target),
+      method: request.method,
+      path: `${target.pathname}${target.search}`,
+      headers: sanitizedForwardHeaders(request.headers, target.host),
+    }, (upstreamResponse) => {
+      response.writeHead(
+        upstreamResponse.statusCode ?? 502,
+        upstreamResponse.statusMessage,
+        upstreamResponse.headers,
+      );
+      upstreamResponse.pipe(response);
+    });
+    upstream.once("error", () => endProxyFailure(response));
+    request.once("aborted", () => upstream.destroy());
+    request.pipe(upstream);
+  });
+
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+  });
+  server.on("connect", (request, client, head) => {
+    const target = parseConnectTarget(request.url ?? "");
+    if (!target) {
+      client.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+      return;
+    }
+    if (blockedConnectHosts.has(target.host)) {
+      record("connect-blocked", "CONNECT", target.host, target.port);
+      client.end("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+      return;
+    }
+
+    record("connect-forward", "CONNECT", target.host, target.port);
+    const upstream = connectTcp({ host: target.host, port: target.port });
+    sockets.add(upstream);
+    upstream.once("close", () => sockets.delete(upstream));
+    upstream.once("connect", () => {
+      client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      if (head.length > 0) upstream.write(head);
+      upstream.pipe(client);
+      client.pipe(upstream);
+    });
+    upstream.once("error", () => {
+      if (!client.destroyed) {
+        client.end("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+      }
+    });
+    client.once("error", () => upstream.destroy());
+  });
+
+  const port = await listenOnLoopback(server);
+  return Object.freeze({
+    url: `http://127.0.0.1:${port}`,
+    records: () => Object.freeze(records.map((entry) => ({ ...entry }))),
+    async close(): Promise<void> {
+      if (closed) return;
+      closed = true;
+      for (const socket of sockets) socket.destroy();
+      if (!server.listening) return;
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve());
+      });
+    },
+  });
+}
+
+function replaceAllLiteral(input: string, value: string, replacement: string): string {
+  return value ? input.split(value).join(replacement) : input;
+}
+
+export function redactSmokeDiagnostic(value: unknown, secrets: readonly string[] = []): string {
+  let text: string;
+  try {
+    text = value instanceof Error ? value.message : String(value);
+  } catch {
+    return "[unavailable diagnostic]";
+  }
+  for (const secret of [...new Set(secrets)].sort((left, right) => right.length - left.length)) {
+    text = replaceAllLiteral(text, secret, "[redacted]");
+  }
+  text = text.replace(/\bhttps?:\/\/[^\s"'<>]+/giu, "[redacted url]");
+  text = text.replace(
+    /\b(proxy-authorization|authorization)\s*[:=]\s*(?:bearer\s+)?[^\s,;]+/giu,
+    "$1=[redacted]",
+  );
+  text = text.replace(
+    /["'](api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|token)["']\s*:\s*["'][^"']*["']/giu,
+    '"$1":"[redacted]"',
+  );
+  text = text.replace(
+    /\b(api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|token)\s*[:=]\s*[^\s,;]+/giu,
+    "$1=[redacted]",
+  );
+  return text;
+}
+
+export function formatSmokeProxyDiagnostics(
+  records: readonly SmokeProxyRecord[],
+  errors: readonly unknown[] = [],
+  secrets: readonly string[] = [],
+): string {
+  return JSON.stringify({
+    records: records.map((record) => ({ ...record })),
+    errors: errors.map((error) => redactSmokeDiagnostic(error, secrets)),
+  });
+}
+
+export interface SmokeProxyRouteExpectations {
+  readonly allHost: string;
+  readonly gaxiosHost: string;
+  readonly llmHost: string;
+  readonly searchHost: string;
+  readonly oauthHost: string;
+  readonly candidateHost: string;
+}
+
+export interface SmokeLoopbackEvidence {
+  readonly firstRunAllProxyBaselineSequence: number;
+  readonly gaxiosRequests: number;
+  readonly ipv6Requests: number;
+  readonly ipv6Supported: boolean;
+  readonly providerRequests: number;
+  readonly searchRequests: number;
+  readonly directRequests: number;
+}
+
+export interface SmokeProxyRouteClassification {
+  readonly allTarget: boolean;
+  readonly firstRunPipTarget: boolean;
+  readonly gaxiosTarget: boolean;
+  readonly llmTarget: boolean;
+  readonly searchTarget: boolean;
+  readonly oauthTarget: boolean;
+  readonly candidateTarget: boolean;
+  readonly loopbackBypassed: boolean;
+  readonly routesSeparated: boolean;
+}
+
+export function isSmokeFirstRunPipRecord(
+  record: SmokeProxyRecord,
+  baselineSequence: number,
+): boolean {
+  if (!Number.isSafeInteger(baselineSequence) || baselineSequence < 0) return false;
+  const host = normalizeSmokeHost(record.host);
+  return record.proxy === "all"
+    && record.sequence > baselineSequence
+    && (record.kind === "forward" || record.kind === "connect-forward")
+    && host !== "localhost"
+    && host !== "127.0.0.1"
+    && host !== "::1";
+}
+
+export function classifySmokeProxyRoutes(
+  records: readonly SmokeProxyRecord[],
+  expected: SmokeProxyRouteExpectations,
+  loopbackEvidence: SmokeLoopbackEvidence,
+): SmokeProxyRouteClassification {
+  const hosts = {
+    all: normalizeSmokeHost(expected.allHost),
+    gaxios: normalizeSmokeHost(expected.gaxiosHost),
+    llm: normalizeSmokeHost(expected.llmHost),
+    search: normalizeSmokeHost(expected.searchHost),
+    oauth: normalizeSmokeHost(expected.oauthHost),
+    candidate: normalizeSmokeHost(expected.candidateHost),
+  };
+  const observed = (proxy: string, host: string, kind: SmokeProxyRecordKind): boolean => records.some(
+    (record) => record.proxy === proxy
+      && record.kind === kind
+      && normalizeSmokeHost(record.host) === host,
+  );
+  const expectedProxy = new Map([
+    [hosts.all, { proxy: "all", kind: "fake-target" }],
+    [hosts.gaxios, { proxy: "llm", kind: "fake-target" }],
+    [hosts.llm, { proxy: "llm", kind: "fake-target" }],
+    [hosts.search, { proxy: "search", kind: "fake-target" }],
+    [hosts.oauth, { proxy: "llm", kind: "connect-blocked" }],
+    [hosts.candidate, { proxy: "candidate", kind: "connect-blocked" }],
+  ]);
+  const routesSeparated = records.every((record) => {
+    const expectedRecord = expectedProxy.get(normalizeSmokeHost(record.host));
+    return expectedRecord === undefined
+      || (expectedRecord.proxy === record.proxy && expectedRecord.kind === record.kind);
+  });
+  const firstRunPipTarget = records.some((record) => isSmokeFirstRunPipRecord(
+    record,
+    loopbackEvidence.firstRunAllProxyBaselineSequence,
+  ));
+  return {
+    allTarget: observed("all", hosts.all, "fake-target"),
+    firstRunPipTarget,
+    gaxiosTarget:
+      loopbackEvidence.gaxiosRequests > 0
+      && observed("llm", hosts.gaxios, "fake-target"),
+    llmTarget: observed("llm", hosts.llm, "fake-target"),
+    searchTarget: observed("search", hosts.search, "fake-target"),
+    oauthTarget: observed("llm", hosts.oauth, "connect-blocked"),
+    candidateTarget: observed("candidate", hosts.candidate, "connect-blocked"),
+    loopbackBypassed:
+      loopbackEvidence.providerRequests > 0
+      && loopbackEvidence.searchRequests > 0
+      && loopbackEvidence.directRequests > 0
+      && (!loopbackEvidence.ipv6Supported || loopbackEvidence.ipv6Requests > 0)
+      && records.every((record) => {
+        const host = normalizeSmokeHost(record.host);
+        return host !== "localhost" && host !== "127.0.0.1" && host !== "::1";
+      }),
+    routesSeparated,
+  };
+}
+
+export async function observeFirstRunStartup<SetupPip, AuthenticatedReadiness>(options: {
+  observeSetupPip: () => Promise<SetupPip>;
+  observeAuthenticatedReadiness: () => Promise<AuthenticatedReadiness>;
+}): Promise<{
+  setupPip: SetupPip;
+  authenticatedReadiness: AuthenticatedReadiness;
+}> {
+  let observationSequence = 0;
+  let setupPipSequence: number | undefined;
+  let authenticatedReadinessSequence: number | undefined;
+  const setupPip = Promise.resolve()
+    .then(options.observeSetupPip)
+    .then((value) => {
+      setupPipSequence = ++observationSequence;
+      return value;
+    });
+  const authenticatedReadiness = Promise.resolve()
+    .then(options.observeAuthenticatedReadiness)
+    .then((value) => {
+      authenticatedReadinessSequence = ++observationSequence;
+      if (setupPipSequence === undefined) {
+        throw new Error(
+          "Native smoke must observe first-run pip All-proxy evidence before authenticated readiness.",
+        );
+      }
+      return value;
+    });
+  const [setupPipValue, authenticatedReadinessValue] = await Promise.all([
+    setupPip,
+    authenticatedReadiness,
+  ]);
+  if (
+    setupPipSequence === undefined
+    || authenticatedReadinessSequence === undefined
+    || setupPipSequence >= authenticatedReadinessSequence
+  ) {
+    throw new Error(
+      "Native smoke must observe first-run pip All-proxy evidence before authenticated readiness.",
+    );
+  }
+  return {
+    setupPip: setupPipValue,
+    authenticatedReadiness: authenticatedReadinessValue,
+  };
+}
+
+export interface SmokeDaemonIdentity {
+  readonly pid: number;
+  readonly host: string;
+  readonly port: number;
+  readonly token: string;
+  readonly runtimeId: string;
+  readonly owner: "cli";
+}
+
+export function parseSmokeDaemonIdentity(content: string): SmokeDaemonIdentity {
+  try {
+    const value = JSON.parse(content.trim()) as Partial<SmokeDaemonIdentity> & {
+      schema?: unknown;
+      owner?: unknown;
+    };
+    const owner = value.owner ?? "cli";
+    if (
+      value.schema !== 1
+      || !Number.isSafeInteger(value.pid)
+      || (value.pid ?? 0) < 1
+      || typeof value.host !== "string"
+      || !value.host
+      || !Number.isSafeInteger(value.port)
+      || (value.port ?? 0) < 1
+      || (value.port ?? 0) > 65_535
+      || typeof value.token !== "string"
+      || !value.token
+      || typeof value.runtimeId !== "string"
+      || !value.runtimeId
+      || owner !== "cli"
+    ) {
+      throw new Error("invalid");
+    }
+    return Object.freeze({
+      pid: value.pid,
+      host: value.host,
+      port: value.port,
+      token: value.token,
+      runtimeId: value.runtimeId,
+      owner,
+    }) as SmokeDaemonIdentity;
+  } catch {
+    throw new Error("Native smoke daemon ownership record was invalid.");
+  }
+}
+
+export function assertSmokeRuntimeReplacement(options: {
+  before: SmokeDaemonIdentity;
+  after: SmokeDaemonIdentity;
+  oldBootId: string;
+  newBootId: string;
+}): {
+  oldBootId: string;
+  newBootId: string;
+  host: string;
+  port: number;
+  runtimeId: string;
+} {
+  const { before, after } = options;
+  if (!options.oldBootId || !options.newBootId || options.oldBootId === options.newBootId) {
+    throw new Error("Native smoke successor requires a fresh boot id.");
+  }
+  if (before.token === after.token) {
+    throw new Error("Native smoke successor requires a fresh ownership token.");
+  }
+  if (before.pid === after.pid) {
+    throw new Error("Native smoke successor requires a fresh daemon PID.");
+  }
+  if (before.host !== after.host || before.port !== after.port) {
+    throw new Error("Native smoke successor changed the CLI endpoint.");
+  }
+  if (before.runtimeId !== after.runtimeId) {
+    throw new Error("Native smoke successor changed the accepted runtime identity.");
+  }
+  return {
+    oldBootId: options.oldBootId,
+    newBootId: options.newBootId,
+    host: after.host,
+    port: after.port,
+    runtimeId: after.runtimeId,
+  };
+}
+
+export interface SmokeNetworkState {
+  readonly setupPipObserved: boolean;
+  readonly initialBootId: string | undefined;
+  readonly routesObserved: boolean;
+  readonly oauthObserved: boolean;
+  readonly restartAccepted: boolean;
+  readonly successorBootId: string | undefined;
+  readonly successorSessionReady: boolean;
+  readonly invalidSearchRejected: boolean;
+  readonly invalidLlmRejected: boolean;
+}
+
+export type SmokeNetworkMilestone =
+  | { kind: "setup-pip-observed" }
+  | { kind: "initial-ready"; bootId: string }
+  | { kind: "routes-observed" }
+  | { kind: "oauth-observed" }
+  | { kind: "restart-accepted"; bootId: string }
+  | { kind: "successor-ready"; bootId: string }
+  | { kind: "successor-session-ready" }
+  | { kind: "invalid-search-rejected" }
+  | { kind: "invalid-llm-rejected" };
+
+export function recordSmokeNetworkMilestone(
+  state: SmokeNetworkState,
+  milestone: SmokeNetworkMilestone,
+): SmokeNetworkState {
+  const fail = (message: string): never => {
+    throw new Error(`Native smoke network milestone order is invalid: ${message}`);
+  };
+  if (milestone.kind === "setup-pip-observed") {
+    if (state.setupPipObserved || state.initialBootId !== undefined) {
+      fail("first-run setup pip evidence was duplicated or observed after readiness");
+    }
+    return { ...state, setupPipObserved: true };
+  }
+  if (milestone.kind === "initial-ready") {
+    if (!state.setupPipObserved) fail("first-run setup pip evidence must be recorded before readiness");
+    if (!milestone.bootId.trim() || state.initialBootId !== undefined) fail("initial readiness was duplicated");
+    return { ...state, initialBootId: milestone.bootId };
+  }
+  if (state.initialBootId === undefined) fail("initial readiness must be recorded before network evidence");
+  if (milestone.kind === "routes-observed") {
+    if (state.routesObserved || state.oauthObserved || state.restartAccepted) fail("route evidence was out of order");
+    return { ...state, routesObserved: true };
+  }
+  if (milestone.kind === "oauth-observed") {
+    if (!state.routesObserved || state.oauthObserved || state.restartAccepted) fail("OAuth evidence requires route evidence first");
+    return { ...state, oauthObserved: true };
+  }
+  if (milestone.kind === "restart-accepted") {
+    if (!state.oauthObserved || state.restartAccepted || milestone.bootId !== state.initialBootId) {
+      fail("restart acceptance requires the initial boot after OAuth evidence");
+    }
+    return { ...state, restartAccepted: true };
+  }
+  if (milestone.kind === "successor-ready") {
+    if (!state.restartAccepted || state.successorBootId !== undefined) fail("successor readiness was out of order");
+    if (!milestone.bootId.trim() || milestone.bootId === state.initialBootId) {
+      throw new Error("Native smoke successor requires a fresh boot id.");
+    }
+    return { ...state, successorBootId: milestone.bootId };
+  }
+  if (milestone.kind === "successor-session-ready") {
+    if (state.successorBootId === undefined || state.successorSessionReady) fail("successor session readiness was out of order");
+    return { ...state, successorSessionReady: true };
+  }
+  if (milestone.kind === "invalid-search-rejected") {
+    if (!state.successorSessionReady || state.invalidSearchRejected || state.invalidLlmRejected) {
+      fail("invalid Search rejection was out of order");
+    }
+    return { ...state, invalidSearchRejected: true };
+  }
+  if (!state.invalidSearchRejected || state.invalidLlmRejected) {
+    fail("invalid LLM rejection requires invalid Search rejection first");
+  }
+  return { ...state, invalidLlmRejected: true };
+}
 
 export function parseRecordedPid(content: string): number | undefined {
   const value = content.trim();
@@ -127,6 +707,7 @@ export function createCompiledChildEnv(options: {
     : pythonDir;
   env.PIP_RETRIES = "3";
   env.PIP_DEFAULT_TIMEOUT = "30";
+  env.PIP_NO_CACHE_DIR = "1";
   return env;
 }
 
@@ -139,10 +720,70 @@ export function skillVenvPython(
     : posix.join(agentDir, "venv", "bin", "python");
 }
 
-export function writeVenvValidationScript(path: string): void {
+export interface VenvNetworkValidationOptions {
+  allProxy: string;
+  searchProxy: string;
+  bypass: string;
+  targetUrl: string;
+  targetSentinel: string;
+  loopbackTargetUrl: string;
+  loopbackTargetSentinel: string;
+}
+
+export function writeVenvValidationScript(
+  path: string,
+  network?: VenvNetworkValidationOptions,
+): void {
+  const networkValidation = network
+    ? `
+proxy_keys = ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"]
+expected_all_proxy = ${JSON.stringify(network.allProxy)}
+for key in proxy_keys:
+    if os.environ.get(key) != expected_all_proxy:
+        raise RuntimeError(f"wrong {key} proxy route")
+if os.environ.get("PIP_PROXY") != expected_all_proxy:
+    raise RuntimeError("wrong PIP_PROXY proxy route")
+
+actual_bypass = os.environ.get("NO_PROXY", "")
+if os.environ.get("no_proxy") != actual_bypass:
+    raise RuntimeError("NO_PROXY aliases differ")
+required_bypass = {entry.strip().lower() for entry in ${JSON.stringify(network.bypass)}.split(",") if entry.strip()}
+actual_bypass_entries = {entry.strip().lower() for entry in actual_bypass.replace(" ", ",").split(",") if entry.strip()}
+if not required_bypass.issubset(actual_bypass_entries):
+    raise RuntimeError("mandatory loopback bypass is missing")
+if "[::1]" not in actual_bypass_entries:
+    raise RuntimeError("Bun IPv6 loopback bypass is missing")
+if "localhost." not in actual_bypass_entries:
+    raise RuntimeError("Bun localhost-dot bypass is missing")
+if os.environ.get("PLAYWRIGHT_MCP_PROXY_SERVER") != ${JSON.stringify(network.searchProxy)}:
+    raise RuntimeError("wrong Playwright Search proxy route")
+if os.environ.get("PLAYWRIGHT_MCP_PROXY_BYPASS") != actual_bypass:
+    raise RuntimeError("Playwright bypass differs from process bypass")
+
+npm_proxy_keys = ["npm_config_proxy", "NPM_CONFIG_PROXY", "npm_config_https_proxy", "NPM_CONFIG_HTTPS_PROXY"]
+for key in npm_proxy_keys:
+    if os.environ.get(key) != expected_all_proxy:
+        raise RuntimeError(f"wrong {key} proxy route")
+for key in ["npm_config_noproxy", "NPM_CONFIG_NOPROXY"]:
+    if os.environ.get(key) != actual_bypass:
+        raise RuntimeError(f"wrong {key} bypass")
+
+with urllib.request.urlopen(${JSON.stringify(network.targetUrl)}, timeout=15) as response:
+    body = response.read().decode("utf-8")
+if body.strip() != ${JSON.stringify(network.targetSentinel)}:
+    raise RuntimeError("unexpected deterministic child target response")
+
+with urllib.request.urlopen(${JSON.stringify(network.loopbackTargetUrl)}, timeout=15) as response:
+    loopback_body = response.read().decode("utf-8")
+if loopback_body.strip() != ${JSON.stringify(network.loopbackTargetSentinel)}:
+    raise RuntimeError("unexpected deterministic child loopback response")
+print("easyresearch-network-route-ok")
+`
+    : "";
   writeFileSync(path, `import os
 import pathlib
 import sys
+import urllib.request
 import arxiv
 import markitdown
 
@@ -150,6 +791,7 @@ expected = pathlib.Path(os.environ["EASYRESEARCH_VENV"]).resolve()
 actual = pathlib.Path(sys.prefix).resolve()
 if actual != expected:
     raise RuntimeError(f"wrong venv prefix: {actual} != {expected}")
+${networkValidation}
 print("easyresearch-venv-ok")
 `);
 }
@@ -457,30 +1099,6 @@ export function runVenvValidation(options: {
   return { stdout, stderr };
 }
 
-export function validateFirstRunVenv(options: {
-  setupResultPath: string;
-  setupRunId: string;
-  python: string;
-  script: string;
-  readSetupResult?: (path: string) => string;
-  exists?: (path: string) => boolean;
-  spawn?: (
-    command: string,
-    args: readonly string[],
-    options: { encoding: "utf8"; timeout: number },
-  ) => ValidationSpawnResult;
-}): VenvValidationResult {
-  const evidence = readFirstRunSetupEvidence({
-    path: options.setupResultPath,
-    runId: options.setupRunId,
-    read: options.readSetupResult,
-  });
-  if (!evidence.success) {
-    throw new Error(`first-run skill venv setup returned success:false for run ${options.setupRunId}`);
-  }
-  return runVenvValidation(options);
-}
-
 /** Ensures the first-run writer exits before returning or reporting its deadline failure. */
 export async function settleProcess(options: {
   pid: number;
@@ -699,8 +1317,86 @@ export function venvToolCommand(platform: NodeJS.Platform, scriptPath: string): 
 }
 
 export type SmokeModelAction =
-  | { kind: "tool"; id: string; name: "subagent" | NativeLocalShellTool; arguments: string }
+  | { kind: "tool"; id: string; name: "subagent" | "web-search" | "webfetch" | NativeLocalShellTool; arguments: string }
   | { kind: "text"; text: string };
+
+export interface SmokeWebFetchScenario {
+  targetUrl: string;
+  expectedResultText: string;
+  completionText: string;
+  forbiddenResultText?: readonly string[];
+  toolName?: "web-search" | "webfetch";
+  toolCallId?: string;
+  toolArguments?: Record<string, unknown>;
+}
+
+export interface SmokeWebFetchState {
+  toolIssued: boolean;
+  resultObserved: boolean;
+  completedRequests: number;
+}
+
+export interface SmokeWebFetchTransition {
+  action: SmokeModelAction;
+  state: SmokeWebFetchState;
+}
+
+export function selectSmokeWebFetchAction(
+  request: {
+    tools?: Array<{ function?: { name?: string } }>;
+    messages?: Array<{ role?: string; content?: unknown; tool_call_id?: string }>;
+  },
+  scenario: SmokeWebFetchScenario,
+  state: SmokeWebFetchState,
+): SmokeWebFetchTransition {
+  const toolName = scenario.toolName ?? "webfetch";
+  const toolCallId = scenario.toolCallId ?? "call_native_webfetch";
+  const matchingTools = request.tools?.filter((tool) => tool.function?.name === toolName) ?? [];
+  if (matchingTools.length !== 1) {
+    throw new Error(`native smoke expected exactly one ${toolName} tool, received ${matchingTools.length}`);
+  }
+  if (state.resultObserved && !state.toolIssued) {
+    throw new Error("native smoke webfetch state is out of order");
+  }
+  if (state.resultObserved) throw new Error("native smoke webfetch sequence is already complete");
+  if (!state.toolIssued) {
+    return {
+      action: {
+        kind: "tool",
+        id: toolCallId,
+        name: toolName,
+        arguments: JSON.stringify(scenario.toolArguments ?? {
+          url: scenario.targetUrl,
+          format: "text",
+          timeout: 30,
+        }),
+      },
+      state: { ...state, toolIssued: true, completedRequests: state.completedRequests + 1 },
+    };
+  }
+
+  const results = request.messages?.filter(
+    (message) => message.role === "tool" && message.tool_call_id === toolCallId,
+  ) ?? [];
+  if (results.length !== 1) {
+    throw new Error(`native smoke expected exactly one ${toolName} result, received ${results.length}`);
+  }
+  const result = messageContentText(results[0]!.content);
+  if (!result.includes(scenario.expectedResultText)) {
+    throw new Error(`native smoke ${toolName} result did not contain the expected result marker`);
+  }
+  if (scenario.forbiddenResultText?.some((value) => value && result.includes(value))) {
+    throw new Error(`native smoke ${toolName} result exposed sensitive route data`);
+  }
+  return {
+    action: { kind: "text", text: scenario.completionText },
+    state: {
+      ...state,
+      resultObserved: true,
+      completedRequests: state.completedRequests + 1,
+    },
+  };
+}
 
 export interface SmokeModelScenario {
   shellToolName: NativeLocalShellTool;

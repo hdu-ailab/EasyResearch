@@ -1,4 +1,4 @@
-import { act, fireEvent, render as renderWithTestingLibrary, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render as renderWithTestingLibrary, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -27,6 +27,11 @@ vi.mock("./api", async (importOriginal) => {
     getSessionCommands: vi.fn().mockResolvedValue([]),
     getSessionTree: vi.fn().mockResolvedValue({ tree: [], leafId: null }),
     navigateSessionTree: vi.fn().mockResolvedValue(undefined),
+    getApiUsageSettings: vi.fn(),
+    getNetworkProxySettings: vi.fn(),
+    patchNetworkProxySettings: vi.fn(),
+    testNetworkProxy: vi.fn(),
+    restartRuntime: vi.fn(),
     listEntries: vi.fn().mockResolvedValue([]),
     readFileContent: vi.fn(),
     listConfig: vi.fn().mockResolvedValue([]),
@@ -67,6 +72,7 @@ const workSnapshot = {
 } as never;
 
 const persisted = {
+  bootId: "boot-a",
   agentDir: "/tmp/agent",
   homeDir: "/tmp",
   sessions: [
@@ -129,8 +135,8 @@ const workspace = () => screen.getByRole("region", { name: /research workspace/i
  * resolve mounts WorkPage after the initial render, so the transcript's
  * ResizeObserver may not be registered yet when the tabpanel first appears.
  */
-async function renderWork() {
-  const result = render(<App />);
+async function renderWork(app: ReactElement = <App />) {
+  const result = render(app);
   await screen.findByRole("tabpanel", { name: /^chat$/i });
   await waitFor(() => {
     hydrateTranscript(result.container);
@@ -149,6 +155,7 @@ function simulateBrowserBackTo(hash: string): void {
 describe("App routing", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    delete window.easyresearchDesktop;
     window.history.replaceState(null, "", "#/");
   });
 
@@ -158,6 +165,19 @@ describe("App routing", () => {
     vi.mocked(api.checkForUpdate).mockReset().mockResolvedValue({ latestVersion: null });
     vi.mocked(api.openSession).mockReset();
     vi.mocked(api.getSnapshot).mockReset();
+    vi.mocked(api.getApiUsageSettings).mockReset().mockResolvedValue({ showApiUsageDetails: false });
+    vi.mocked(api.getNetworkProxySettings)
+      .mockReset()
+      .mockResolvedValue({
+        configured: {},
+        appliedConfigured: {},
+        sources: { all: "direct", llm: "direct", search: "direct" },
+        errors: [],
+        restartRequired: false,
+      });
+    vi.mocked(api.patchNetworkProxySettings).mockReset();
+    vi.mocked(api.testNetworkProxy).mockReset();
+    vi.mocked(api.restartRuntime).mockReset();
     vi.mocked(api.connectSessionEvents).mockReset();
     vi.mocked(api.connectConfigurationEvents).mockReset();
     vi.mocked(configurationApi.replaceConfigurationProjectWatches)
@@ -171,6 +191,7 @@ describe("App routing", () => {
     vi.mocked(api.readAgentResource).mockReset();
     vi.mocked(api.refreshConfigurationResources).mockReset().mockResolvedValue({ generation: 0, error: null });
     vi.mocked(api.listStatus).mockResolvedValue({
+      bootId: "boot-a",
       agentDir: "/tmp/agent",
       homeDir: "/tmp",
       sessions: [],
@@ -241,6 +262,30 @@ describe("App routing", () => {
     expect(screen.getByRole("tab", { name: "General" })).toHaveFocus();
   });
 
+  it("restores browser Back to Settings until a dirty Network draft is discarded", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await workspace();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("tab", { name: "Network" }));
+    const draft = await screen.findByRole("textbox", { name: "All traffic proxy" });
+    await user.type(draft, "http://draft.example");
+
+    simulateBrowserBackTo("#/");
+
+    expect(await screen.findByRole("dialog", { name: "Discard network changes?" })).toBeVisible();
+    expect(window.location.hash).toBe("#/?settings=1");
+    await user.click(screen.getByRole("button", { name: "Keep editing" }));
+    expect(draft).toHaveValue("http://draft.example");
+    expect(screen.getByRole("tab", { name: "Network" })).toHaveAttribute("aria-selected", "true");
+
+    simulateBrowserBackTo("#/");
+    await user.click(await screen.findByRole("button", { name: "Discard changes" }));
+
+    await waitFor(() => expect(window.location.hash).toBe("#/"));
+    expect(screen.queryByRole("dialog", { name: "Settings" })).toBeNull();
+  });
+
   it("owns one configuration EventSource across page navigation and closes it on unmount", async () => {
     const user = userEvent.setup();
     const view = render(<App />);
@@ -250,6 +295,7 @@ describe("App routing", () => {
     act(() =>
       configurationHandlers.onEvent({
         type: "config.updated",
+        bootId: "boot-a",
         generation: 1,
         agentsChanged: true,
         modelsChanged: true,
@@ -291,6 +337,7 @@ describe("App routing", () => {
     act(() =>
       configurationHandlers.onEvent({
         type: "config.updated",
+        bootId: "boot-a",
         generation: 1,
         agentsChanged: true,
         modelsChanged: true,
@@ -394,6 +441,7 @@ describe("App routing", () => {
     act(() =>
       configurationHandlers.onEvent({
         type: "config.updated",
+        bootId: "boot-a",
         generation: 2,
         agentsChanged: true,
         modelsChanged: false,
@@ -409,6 +457,318 @@ describe("App routing", () => {
     expect(workSessionContent).toBeInTheDocument();
     expect(api.connectConfigurationEvents).toHaveBeenCalledOnce();
     expect(api.connectSessionEvents).toHaveBeenCalledOnce();
+  });
+
+  it("reloads a successor boot once and remounts Work with successor API-usage settings", async () => {
+    const usage = {
+      input: 5,
+      output: 2,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 7,
+      cacheHitRate: 0,
+      cost: { input: 0.1, output: 0.1, cacheRead: 0, cacheWrite: 0, total: 0.2 },
+    };
+    vi.mocked(api.listStatus).mockResolvedValue(persisted);
+    vi.mocked(api.getSnapshot).mockResolvedValue({
+      ...(workSnapshot as unknown as Record<string, unknown>),
+      inlineUsage: [
+        {
+          id: "assistant-1",
+          sessionId: "s1",
+          source: "assistant",
+          timestamp: "2026-08-25T00:00:00.000Z",
+          anchor: { kind: "message", messageEntryId: "assistant-1" },
+          provider: "openai",
+          model: "successor-model",
+          usage,
+        },
+      ],
+    } as never);
+    const reload = vi.fn();
+    const runtimeReplacementBrowser = {
+      history: window.history,
+      location: window.location,
+      reload,
+    };
+    window.location.hash = "#/work/s1?cwd=%2Fp";
+    const oldPage = await renderWork(<App runtimeReplacementBrowser={runtimeReplacementBrowser} />);
+    await waitFor(() => expect(api.getApiUsageSettings).toHaveBeenCalledOnce());
+    expect(screen.queryByLabelText("API usage details")).toBeNull();
+
+    act(() =>
+      configurationHandlers.onEvent({
+        type: "config.updated",
+        bootId: "boot-a",
+        generation: 100,
+        agentsChanged: true,
+        modelsChanged: true,
+        skillsChanged: true,
+        runtimeChanged: true,
+        projectWatchLeaseId: "lease-a",
+      }),
+    );
+    const usageReadsBeforeReplacement = vi.mocked(api.getApiUsageSettings).mock.calls.length;
+    act(() =>
+      configurationHandlers.onEvent({
+        type: "config.updated",
+        bootId: "boot-b",
+        generation: 1,
+        agentsChanged: true,
+        modelsChanged: true,
+        skillsChanged: true,
+        runtimeChanged: true,
+        projectWatchLeaseId: "lease-b",
+      }),
+    );
+
+    await waitFor(() => expect(reload).toHaveBeenCalledOnce());
+    expect(window.location.hash).toBe("#/work/s1?cwd=%2Fp");
+    expect(api.getApiUsageSettings).toHaveBeenCalledTimes(usageReadsBeforeReplacement);
+    expect(configurationApi.replaceConfigurationProjectWatches).not.toHaveBeenCalledWith("lease-b", expect.anything());
+
+    act(() => {
+      configurationHandlers.onEvent({
+        type: "config.updated",
+        bootId: "boot-b",
+        generation: 100,
+        agentsChanged: true,
+        modelsChanged: true,
+        skillsChanged: true,
+        runtimeChanged: true,
+      });
+      configurationHandlers.onEvent({
+        type: "config.updated",
+        bootId: "boot-c",
+        generation: 101,
+        agentsChanged: true,
+        modelsChanged: true,
+        skillsChanged: true,
+        runtimeChanged: true,
+      });
+    });
+    expect(reload).toHaveBeenCalledOnce();
+
+    oldPage.unmount();
+    vi.mocked(api.getApiUsageSettings).mockReset().mockResolvedValue({ showApiUsageDetails: true });
+    await renderWork(<App runtimeReplacementBrowser={runtimeReplacementBrowser} />);
+    act(() =>
+      configurationHandlers.onEvent({
+        type: "config.updated",
+        bootId: "boot-b",
+        generation: 1,
+        agentsChanged: true,
+        modelsChanged: true,
+        skillsChanged: true,
+        runtimeChanged: true,
+        projectWatchLeaseId: "lease-b-fresh",
+      }),
+    );
+
+    expect(await screen.findByLabelText("API usage details")).toHaveTextContent("successor-model");
+    expect(api.getApiUsageSettings).toHaveBeenCalledTimes(2);
+    expect(reload).toHaveBeenCalledOnce();
+  });
+
+  it("owns an accepted npm restart, blocks Home, and reloads after a changed status boot id", async () => {
+    const user = userEvent.setup();
+    const reload = vi.fn();
+    const runtimeReplacementBrowser = {
+      history: window.history,
+      location: window.location,
+      reload,
+    };
+    vi.mocked(api.getNetworkProxySettings).mockResolvedValue({
+      configured: { all: "http://saved.example" },
+      appliedConfigured: {},
+      sources: { all: "configured", llm: "all", search: "all" },
+      errors: [],
+      restartRequired: true,
+    });
+    vi.mocked(api.restartRuntime).mockResolvedValue({ accepted: true, bootId: "boot-old" });
+    vi.mocked(api.listStatus).mockImplementation(async (options = {}) =>
+      options.signal ? { ...persisted, bootId: "boot-new" } : { ...persisted, sessions: [], activeSessions: [] },
+    );
+    render(<App runtimeReplacementBrowser={runtimeReplacementBrowser} />);
+    const homeWorkspace = await workspace();
+    const baseSurface = homeWorkspace.closest("[data-app-surface]");
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("tab", { name: "Network" }));
+    await user.click(await screen.findByRole("button", { name: "Restart required" }));
+
+    await user.click(screen.getByRole("button", { name: "Restart now" }));
+
+    const overlay = await screen.findByRole("dialog", { name: "Restarting EasyResearch" });
+    expect(overlay).toHaveAttribute("aria-modal", "true");
+    expect(overlay).toHaveTextContent("Waiting for the new runtime");
+    expect(baseSurface).toHaveAttribute("inert");
+    expect(baseSurface).toHaveAttribute("aria-hidden", "true");
+    await waitFor(() => expect(window.location.hash).toBe("#/"));
+    await waitFor(() => expect(reload).toHaveBeenCalledOnce());
+    expect(api.restartRuntime).toHaveBeenCalledOnce();
+    expect(api.restartRuntime).toHaveBeenCalledWith(false);
+    expect(vi.mocked(api.listStatus).mock.calls.some(([options]) => options?.signal instanceof AbortSignal)).toBe(true);
+  });
+
+  it("retries only successor polling after timeout and never posts restart twice", async () => {
+    const firstPoll = deferred<"timed-out">();
+    const secondPoll = deferred<"cancelled">();
+    const poller = vi.fn().mockReturnValueOnce(firstPoll.promise).mockReturnValueOnce(secondPoll.promise);
+    vi.mocked(api.getNetworkProxySettings).mockResolvedValue({
+      configured: { all: "http://saved.example" },
+      appliedConfigured: {},
+      sources: { all: "configured", llm: "all", search: "all" },
+      errors: [],
+      restartRequired: true,
+    });
+    vi.mocked(api.restartRuntime).mockResolvedValue({ accepted: true, bootId: "boot-old" });
+    const user = userEvent.setup();
+    render(<App runtimeReplacementPoller={poller} />);
+    await workspace();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("tab", { name: "Network" }));
+    await user.click(await screen.findByRole("button", { name: "Restart required" }));
+    await user.click(screen.getByRole("button", { name: "Restart now" }));
+    await screen.findByRole("dialog", { name: "Restarting EasyResearch" });
+
+    await act(async () => {
+      firstPoll.resolve("timed-out");
+      await firstPoll.promise;
+    });
+
+    const timeout = await screen.findByRole("dialog", { name: "Restart is taking longer than expected" });
+    expect(timeout).toHaveTextContent("launch EasyResearch manually");
+    expect(timeout).toHaveTextContent("logs");
+    await user.click(within(timeout).getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => expect(poller).toHaveBeenCalledTimes(2));
+    expect(api.restartRuntime).toHaveBeenCalledOnce();
+    expect(screen.getByRole("dialog", { name: "Restarting EasyResearch" })).toBeVisible();
+    secondPoll.resolve("cancelled");
+  });
+
+  it("waits for Desktop replacement without starting same-origin polling", async () => {
+    window.easyresearchDesktop = {
+      platform: "darwin",
+      version: "0.0.79",
+      persistWebUiPreferences: vi.fn(),
+    };
+    const poller = vi.fn();
+    vi.mocked(api.getNetworkProxySettings).mockResolvedValue({
+      configured: { all: "http://saved.example" },
+      appliedConfigured: {},
+      sources: { all: "configured", llm: "all", search: "all" },
+      errors: [],
+      restartRequired: true,
+    });
+    vi.mocked(api.restartRuntime).mockResolvedValue({ accepted: true, bootId: "boot-old" });
+    const user = userEvent.setup();
+    render(<App runtimeReplacementPoller={poller} />);
+    await workspace();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("tab", { name: "Network" }));
+    await user.click(await screen.findByRole("button", { name: "Restart required" }));
+
+    await user.click(screen.getByRole("button", { name: "Restart now" }));
+
+    const overlay = await screen.findByRole("dialog", { name: "Restarting EasyResearch" });
+    expect(overlay).toHaveTextContent("The desktop app is replacing the runtime");
+    expect(poller).not.toHaveBeenCalled();
+  });
+
+  it("uses one reload boundary when Work receives SSE replacement before expected-restart polling settles", async () => {
+    const user = userEvent.setup();
+    const poll = deferred<"replaced">();
+    let pollSignal: AbortSignal | null = null;
+    const poller = vi.fn().mockImplementation((_oldBootId, dependencies) => {
+      pollSignal = dependencies.signal;
+      return poll.promise;
+    });
+    const reload = vi.fn();
+    const runtimeReplacementBrowser = {
+      history: window.history,
+      location: window.location,
+      reload,
+    };
+    vi.mocked(api.listStatus).mockResolvedValue(persisted);
+    vi.mocked(api.getNetworkProxySettings).mockResolvedValue({
+      configured: { all: "http://saved.example" },
+      appliedConfigured: {},
+      sources: { all: "configured", llm: "all", search: "all" },
+      errors: [],
+      restartRequired: true,
+    });
+    vi.mocked(api.restartRuntime).mockResolvedValue({ accepted: true, bootId: "boot-old" });
+    window.location.hash = "#/work/s1?cwd=%2Fp";
+    await renderWork(<App runtimeReplacementBrowser={runtimeReplacementBrowser} runtimeReplacementPoller={poller} />);
+    act(() =>
+      configurationHandlers.onEvent({
+        type: "config.updated",
+        bootId: "boot-old",
+        generation: 1,
+        agentsChanged: false,
+        modelsChanged: false,
+        skillsChanged: false,
+        runtimeChanged: false,
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("tab", { name: "Network" }));
+    await user.click(await screen.findByRole("button", { name: "Restart required" }));
+    await user.click(screen.getByRole("button", { name: "Restart now" }));
+
+    await waitFor(() => expect(window.location.hash).toBe("#/work/s1?cwd=%2Fp"));
+    expect(screen.getByRole("dialog", { name: "Restarting EasyResearch" })).toBeVisible();
+    act(() =>
+      configurationHandlers.onEvent({
+        type: "config.updated",
+        bootId: "boot-new",
+        generation: 0,
+        agentsChanged: true,
+        modelsChanged: true,
+        skillsChanged: true,
+        runtimeChanged: true,
+      }),
+    );
+    await waitFor(() => expect(reload).toHaveBeenCalledOnce());
+    expect(pollSignal).not.toBeNull();
+    expect(pollSignal!.aborted).toBe(true);
+    expect(window.location.hash).toBe("#/work/s1?cwd=%2Fp");
+
+    await act(async () => {
+      poll.resolve("replaced");
+      await poll.promise;
+    });
+    expect(reload).toHaveBeenCalledOnce();
+  });
+
+  it("aborts expected-restart polling when App unmounts", async () => {
+    let pollSignal: AbortSignal | null = null;
+    const poller = vi.fn().mockImplementation((_oldBootId, dependencies) => {
+      pollSignal = dependencies.signal;
+      return new Promise<"cancelled">(() => {});
+    });
+    vi.mocked(api.getNetworkProxySettings).mockResolvedValue({
+      configured: { all: "http://saved.example" },
+      appliedConfigured: {},
+      sources: { all: "configured", llm: "all", search: "all" },
+      errors: [],
+      restartRequired: true,
+    });
+    vi.mocked(api.restartRuntime).mockResolvedValue({ accepted: true, bootId: "boot-old" });
+    const user = userEvent.setup();
+    const view = render(<App runtimeReplacementPoller={poller} />);
+    await workspace();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("tab", { name: "Network" }));
+    await user.click(await screen.findByRole("button", { name: "Restart required" }));
+    await user.click(screen.getByRole("button", { name: "Restart now" }));
+    await waitFor(() => expect(poller).toHaveBeenCalledOnce());
+
+    view.unmount();
+
+    expect(pollSignal).not.toBeNull();
+    expect(pollSignal!.aborted).toBe(true);
   });
 
   it("restores a work route by opening the persisted session on refresh", async () => {

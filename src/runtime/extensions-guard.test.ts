@@ -59,6 +59,22 @@ describe("assertSafeExtensionSources (ADR-032)", () => {
     expect(() => assertSafeExtensionSources({})).not.toThrow();
   });
 
+  it("guards BOM-prefixed global and project settings accepted by Pi", () => {
+    mkdirSync(join(cwd, ".easyresearch"), { recursive: true });
+    writeFileSync(
+      join(agentDir, "settings.json"),
+      `\uFEFF${JSON.stringify({ packages: ["npm:global"] })}`,
+    );
+    writeFileSync(
+      join(cwd, ".easyresearch", "settings.json"),
+      `\uFEFF${JSON.stringify({ packages: ["git:project"] })}`,
+    );
+
+    const guarded = () => assertSafeExtensionSources({ cwd });
+    expect(guarded).toThrow(/packages array in global settings\.json/);
+    expect(guarded).toThrow(/packages array in project settings\.json/);
+  });
+
   it("refuses an extensions array entry inside the foreign ~/.pi tree (absolute)", () => {
     const piExtension = join(homedir(), ".pi", "agent", "extensions", "e.ts");
     writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ extensions: [piExtension] }));

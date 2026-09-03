@@ -22,6 +22,7 @@ import { publishPersistedUsageEntry } from "../runtime/persisted-usage-event";
 import { applySkillSnapshotBaseDirs } from "../runtime/resource-fingerprint";
 import { assertModelRequestReady } from "../runtime/model-request-error";
 import { configureBatchedSteering, type RuntimeSteeringSession } from "../runtime/steering-mode";
+import type { AgentSessionNetworkRouter } from "../runtime/network-routing";
 import { createConfiguredModelRuntime } from "../web/auth-runtime";
 import type { AgentConfig } from "./agents";
 import {
@@ -144,6 +145,7 @@ interface OpenedStageSessionManager {
 
 export interface StageExtensionRuntime {
   binding: AgentRuntimeBinding;
+  networkRouter?: AgentSessionNetworkRouter;
   liveConfiguration: Omit<Pick<
     LiveConfiguration,
     | "generation"
@@ -164,6 +166,8 @@ export interface StageExtensionRuntime {
 
 export interface StageSessionDependencies {
   agentDir: string;
+  networkRouter?: AgentSessionNetworkRouter;
+  beforeLaunch?(options: StageLaunchOptions): void | Promise<void>;
   createSessionManager(cwd: string): unknown;
   openSessionManager(path: string): OpenedStageSessionManager;
   createSettingsManager(cwd: string, agentDir: string): unknown;
@@ -179,7 +183,10 @@ export interface StageSessionDependencies {
     appendSystemPromptOverride(base: string[]): string[];
   }): StageResourceLoader;
   createAgentSession(options: Record<string, unknown>): Promise<{ session: StageAgentSession }>;
-  createDirectChildSupervisor(coordinator: SubagentCoordinator): SubagentSupervisor;
+  createDirectChildSupervisor(
+    coordinator: SubagentCoordinator,
+    launchStage: StageSessionLauncher,
+  ): SubagentSupervisor;
   createExtensionFactories(runtime: StageExtensionRuntime): unknown[];
   resolveAutomaticModel(options: {
     cwd: string;
@@ -247,7 +254,8 @@ function validateContinuation(
 }
 
 export function createStageSessionLauncher(deps: StageSessionDependencies): StageSessionLauncher {
-  return async (options) => {
+  const launchStage: StageSessionLauncher = async (options) => {
+    await deps.beforeLaunch?.(options);
     const result: StageRunResult = {
       agent: options.agent.name,
       agentSource: options.agent.source,
@@ -348,7 +356,10 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         live: options.liveConfiguration,
         agentName: options.agent.name,
         cwd: options.cwd,
-        createModelRuntime: () => deps.createModelRuntime(deps.agentDir),
+        createModelRuntime: async () => {
+          const runtime = await deps.createModelRuntime(deps.agentDir);
+          return deps.networkRouter?.decorateModelRuntime(runtime) ?? runtime;
+        },
         resolveAutomaticModel: (modelRuntime) => deps.resolveAutomaticModel({
           cwd: options.cwd,
           agentDir: deps.agentDir,
@@ -365,13 +376,14 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
       }
       result.agentSource = currentAgent.source;
       const modelRuntime = binding.modelRuntime();
-      supervisor = deps.createDirectChildSupervisor(options.coordinator);
+      supervisor = deps.createDirectChildSupervisor(options.coordinator, launchStage);
       const resourceLoader = deps.createResourceLoader({
         cwd: options.cwd,
         agentDir: deps.agentDir,
         settingsManager,
         extensionFactories: deps.createExtensionFactories({
           binding,
+          networkRouter: deps.networkRouter,
           liveConfiguration: options.liveConfiguration,
           coordinator: options.coordinator,
           supervisor,
@@ -727,31 +739,31 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
       throw error;
     }
   };
+  return launchStage;
 }
-
-let defaultLauncher: Promise<StageSessionLauncher> | undefined;
 
 export async function launchStageSession(options: StageLaunchOptions): Promise<StageLaunchHandle> {
-  const { assertSafeExtensionSources } = await import("../runtime/extensions-guard");
-  assertSafeExtensionSources({ cwd: options.cwd });
-  defaultLauncher ??= resolveDefaultStageSessionLauncher();
-  return (await defaultLauncher)(options);
+  return (await createDefaultStageSessionLauncher())(options);
 }
 
-async function resolveDefaultStageSessionLauncher(): Promise<StageSessionLauncher> {
+export async function createDefaultStageSessionLauncher(
+  networkRouter?: AgentSessionNetworkRouter,
+): Promise<StageSessionLauncher> {
   const { join } = await import("node:path");
   const { importPi, getAgentDir } = await import("../runtime/pi-import");
   const pi = await importPi();
+  const { assertSafeExtensionSources } = await import("../runtime/extensions-guard");
+  const { createSearchExtensions } = await import("../extensions");
   const { createAgentDefinitionExtension } = await import("../extensions/agent-definition");
   const { createSubagentExtension } = await import("../extensions/subagent");
-  const { default: webSearchExtension } = await import("../extensions/web-search");
-  const { default: webFetchExtension } = await import("../extensions/webfetch");
   const { createSshBashExtension } = await import("../extensions/ssh-bash");
   const { createSessionTimelineExtension } = await import("../extensions/session-timeline");
   const { SubagentSupervisor } = await import("./supervisor");
   const agentDir = getAgentDir();
   return createStageSessionLauncher({
     agentDir,
+    networkRouter,
+    beforeLaunch: ({ cwd }) => assertSafeExtensionSources({ cwd }),
     createSessionManager: (cwd) => pi.SessionManager.create(cwd),
     openSessionManager: (path) => pi.SessionManager.open(path),
     createSettingsManager: (cwd, root) => pi.SettingsManager.create(cwd, root),
@@ -764,6 +776,7 @@ async function resolveDefaultStageSessionLauncher(): Promise<StageSessionLaunche
           refreshOnCreate: false,
         }),
         modelsPath,
+        (runtime) => networkRouter?.decorateModelRuntime(runtime) ?? runtime,
       );
     },
     createResourceLoader: (options) =>
@@ -772,12 +785,13 @@ async function resolveDefaultStageSessionLauncher(): Promise<StageSessionLaunche
       const created = await pi.createAgentSession(options as Parameters<typeof pi.createAgentSession>[0]);
       return { session: created.session as unknown as StageAgentSession };
     },
-    createDirectChildSupervisor: (coordinator) => new SubagentSupervisor({
+    createDirectChildSupervisor: (coordinator, launchStage) => new SubagentSupervisor({
       coordinator,
-      launchStage: launchStageSession,
+      launchStage,
     }),
     createExtensionFactories: ({
       binding,
+      networkRouter: runtimeNetworkRouter,
       liveConfiguration,
       coordinator,
       supervisor,
@@ -800,8 +814,7 @@ async function resolveDefaultStageSessionLauncher(): Promise<StageSessionLaunche
         }),
       },
       { name: "session-timeline", factory: createSessionTimelineExtension(publishTimelineEntry) },
-      { name: "web-search", factory: webSearchExtension },
-      { name: "webfetch", factory: webFetchExtension },
+      ...createSearchExtensions(runtimeNetworkRouter),
     ],
     resolveAutomaticModel: async ({ cwd, modelRuntime, settingsManager }) => {
       return resolvePiDefaultModel({

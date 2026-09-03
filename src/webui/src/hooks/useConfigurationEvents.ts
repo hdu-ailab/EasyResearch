@@ -2,10 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { connectConfigurationEvents, replaceConfigurationProjectWatches } from "../api";
 
 export interface ConfigurationState {
+  bootId: string | null;
   generation: number;
   availabilityEpoch: number;
   revision: number;
   error: string | null;
+  runtimeReplaced: boolean;
   setProjectInterests(owner: string, cwds: readonly string[]): void;
 }
 
@@ -27,6 +29,8 @@ interface LeaseToken {
 interface ProjectInterestCoordinator {
   connection: ConnectionToken | null;
   lease: LeaseToken | null;
+  bootId: string | null;
+  runtimeReplaced: boolean;
   nextRevision: number;
   intentVersion: number;
   owners: Map<ProjectInterestOwner, Set<string>>;
@@ -86,14 +90,18 @@ function sendProjectInterests(coordinator: ProjectInterestCoordinator, attempt =
 
 export function useConfigurationEvents(): ConfigurationState {
   const [state, setState] = useState({
+    bootId: null as string | null,
     generation: 0,
     availabilityEpoch: 0,
     revision: 0,
     error: null as string | null,
+    runtimeReplaced: false,
   });
   const coordinatorRef = useRef<ProjectInterestCoordinator>({
     connection: null,
     lease: null,
+    bootId: null,
+    runtimeReplaced: false,
     nextRevision: 0,
     intentVersion: 0,
     owners: new Map(),
@@ -129,11 +137,25 @@ export function useConfigurationEvents(): ConfigurationState {
     const disconnect = connectConfigurationEvents({
       onEvent: (event) => {
         if (!connection.active || coordinator.connection !== connection) return;
+        if (coordinator.runtimeReplaced) return;
+        if (coordinator.bootId === null) {
+          coordinator.bootId = event.bootId;
+        } else if (event.bootId !== coordinator.bootId) {
+          coordinator.runtimeReplaced = true;
+          coordinator.lease = null;
+          setState((current) => (current.runtimeReplaced ? current : { ...current, runtimeReplaced: true }));
+          return;
+        }
         if (event.projectWatchLeaseId !== undefined && event.projectWatchLeaseId !== coordinator.lease?.id) {
           coordinator.lease = { id: event.projectWatchLeaseId, serverRevision: -1 };
           sendProjectInterests(coordinator);
         }
         setState((current) => {
+          if (
+            event.generation < current.generation ||
+            (event.availabilityEpoch !== undefined && event.availabilityEpoch < current.availabilityEpoch)
+          )
+            return current;
           const nextGeneration = Math.max(current.generation, event.generation);
           const nextAvailabilityEpoch = Math.max(
             current.availabilityEpoch,
@@ -141,19 +163,20 @@ export function useConfigurationEvents(): ConfigurationState {
           );
           const generationChanged = nextGeneration > current.generation;
           const availabilityChanged = nextAvailabilityEpoch > current.availabilityEpoch;
-          if (event.generation < current.generation && (event.availabilityEpoch ?? 0) <= current.availabilityEpoch)
-            return current;
           const availabilityOnly = event.type === "config.updated" && event.availabilityChanged === true;
           return {
+            bootId: coordinator.bootId,
             generation: nextGeneration,
             availabilityEpoch: nextAvailabilityEpoch,
             revision: current.revision + (generationChanged || availabilityChanged ? 1 : 0),
             error: event.type === "config.error" ? event.message : availabilityOnly ? current.error : null,
+            runtimeReplaced: false,
           };
         });
       },
       onError: () => {
         if (!connection.active || coordinator.connection !== connection) return;
+        if (coordinator.runtimeReplaced) return;
         setState((current) => ({ ...current, error: RECONNECTING_ERROR }));
       },
     });

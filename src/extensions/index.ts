@@ -1,12 +1,13 @@
 import type { ExtensionFactory, InlineExtension } from "@earendil-works/pi-coding-agent";
 import type { AgentRuntimeBinding } from "../runtime/agent-runtime-binding";
+import type { AgentSessionNetworkRouter } from "../runtime/network-routing";
 import { createResearchAssistantExtension } from "./research-assistant";
 import { createSubagentDispatchExtension } from "./subagent-dispatch";
 import { createWelcomeBannerExtension } from "./welcome-banner";
 import { createEventLoggerExtension } from "./event-logger";
 import { createProjectTrustExtension } from "./project-trust";
-import webSearchExtension from "./web-search";
-import webFetchExtension from "./webfetch";
+import webSearchExtension, { createWebSearchExtension } from "./web-search";
+import webFetchExtension, { createWebFetchExtension } from "./webfetch";
 import { createWebTreeExtension } from "./web-tree";
 import { createSessionNameExtension } from "./session-name";
 import { createSessionTimelineExtension } from "./session-timeline";
@@ -52,12 +53,32 @@ function requireExtensionFactory(extension: InlineExtension): ExtensionFactory {
 
 export interface ResearchAssistantExtensionRuntime {
   binding: AgentRuntimeBinding;
+  networkRouter?: AgentSessionNetworkRouter;
   liveConfiguration: CreateSubagentToolOptions["liveConfiguration"];
   coordinator: SubagentCoordinator;
   supervisor: SubagentSupervisor;
   compaction: ManualCompactionController;
   stats: SessionStatsNotifier;
   publishTimelineEntry: (entry: unknown) => void;
+}
+
+export function createSearchExtensions(networkRouter?: AgentSessionNetworkRouter): BundledExtension[] {
+  return [
+    {
+      name: "web-search",
+      factory: networkRouter
+        ? createWebSearchExtension({ appliedSearchRoute: networkRouter.appliedSearchRoute })
+        : webSearchExtension,
+    },
+    {
+      name: "webfetch",
+      factory: networkRouter
+        ? createWebFetchExtension({
+            runRequest: (operation) => networkRouter.withScope("search", operation),
+          })
+        : webFetchExtension,
+    },
+  ];
 }
 
 export function createResearchAssistantExtensions(runtime: ResearchAssistantExtensionRuntime): BundledExtension[] {
@@ -98,14 +119,7 @@ export function createResearchAssistantExtensions(runtime: ResearchAssistantExte
       name: "project-trust",
       factory: requireExtensionFactory(createProjectTrustExtension()),
     },
-    {
-      name: "web-search",
-      factory: webSearchExtension,
-    },
-    {
-      name: "webfetch",
-      factory: webFetchExtension,
-    },
+    ...createSearchExtensions(runtime.networkRouter),
     {
       name: "web-tree",
       factory: requireExtensionFactory(createWebTreeExtension()),

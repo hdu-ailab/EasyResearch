@@ -29,7 +29,7 @@ export interface HashRouter {
   route: AppRoute;
   navigate(next: AppRoute): void;
   openSettings(host: HomeRoute | WorkRoute): void;
-  closeSettings(settings: SettingsHostRoute): void;
+  closeSettings(settings: SettingsHostRoute, options?: { replace?: boolean }): void;
   openConfig(returnTo: SettingsHostRoute): void;
   returnToSettings(config: ConfigRoute): void;
   registerSettingsCloseGuard(guard: SettingsCloseGuard): () => void;
@@ -194,7 +194,13 @@ export function useHashRoute(): HashRouter {
   );
 
   const closeSettings = useCallback(
-    (settings: SettingsHostRoute) => {
+    (settings: SettingsHostRoute, options: { replace?: boolean } = {}) => {
+      if (options.replace) {
+        const base = withoutSettings(settings);
+        window.history.replaceState(clearMarker(window.history.state), "", routeToHash(base));
+        publishRoute(base);
+        return;
+      }
       if (window.location.hash === routeToHash(settings) && hasSettingsMarker(settings)) {
         window.history.back();
         return;

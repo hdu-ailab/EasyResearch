@@ -3,6 +3,10 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionFactory, SessionTreeNode } from "@earendil-works/pi-coding-agent";
 import { createAgentDefinitionExtension } from "../extensions/agent-definition";
 import type { AgentRuntimeBinding } from "../runtime/agent-runtime-binding";
+import type {
+  AgentSessionNetworkRouter,
+  SearchProxyConfiguration,
+} from "../runtime/network-routing";
 import { excludedLocalShellTools } from "../runtime/platform-tools";
 import type { AgentConfig } from "../subagent/agents";
 import { SubagentCoordinator, type CoordinatorSessionManager } from "../subagent/coordinator";
@@ -2028,6 +2032,7 @@ describe("createPiAgentSessionCreator", () => {
       coordinator: unknown;
       supervisor: unknown;
       binding: AgentRuntimeBinding;
+      networkRouter?: AgentSessionNetworkRouter;
       stats: SessionStatsNotifier;
       publishTimelineEntry: (entry: unknown) => void;
     }> = [];
@@ -2135,6 +2140,7 @@ describe("createPiAgentSessionCreator", () => {
         coordinator: unknown;
         supervisor: unknown;
         binding: AgentRuntimeBinding;
+        networkRouter?: AgentSessionNetworkRouter;
         stats: SessionStatsNotifier;
         publishTimelineEntry: (entry: unknown) => void;
       }) => {
@@ -2263,6 +2269,86 @@ describe("createPiAgentSessionCreator", () => {
       { deliverAs: "steer", triggerTurn: true },
     );
     expect((managedRoot.session as FakeAgentSession).wakeSystemPrompts).toEqual([["Project Research Assistant body"]]);
+  });
+
+  it("passes the exact session network router to the root extension runtime", async () => {
+    const harness = creatorHarness();
+    const router: AgentSessionNetworkRouter = {
+      appliedSearchRoute: Object.freeze({
+        policyFingerprint: "opaque-search-route",
+        applyProxyConfiguration: (target: SearchProxyConfiguration) => {
+          target.useProxy = false;
+        },
+        invalidError: () => undefined,
+        sanitizeError: (error: unknown) => error instanceof Error ? error.message : String(error),
+      }),
+      decorateModelRuntime: (runtime) => runtime,
+      withScope: (_scope, operation) => operation(),
+    };
+    Object.assign(harness.deps, { networkRouter: router });
+
+    await createPiAgentSessionCreator(harness.deps as never)({ cwd: "/project" });
+
+    expect(harness.extensionRuntimes[0]?.networkRouter).toBe(router);
+  });
+
+  it("decorates initial and safe-boundary root runtime candidates before model selection", async () => {
+    const harness = creatorHarness();
+    const state = mutableLiveConfiguration(researchAssistant({ systemPrompt: "Root generation one." }));
+    harness.deps.liveConfiguration = state.live;
+    let runtimeSequence = 0;
+    harness.deps.createModelRuntime = async () => {
+      const selected = {
+        ...model!,
+        name: `raw-root-${++runtimeSequence}`,
+      } as NonNullable<InProcessAgentSession["model"]> & { name: string };
+      return {
+        refresh: async (_options: unknown) => 0,
+        getModel: (provider: string, id: string) =>
+          provider === selected.provider && id === selected.id ? selected : undefined,
+        ...modelReadiness(selected),
+        getError: () => undefined,
+        dispose: async () => {},
+      };
+    };
+    Object.assign(harness.deps, {
+      networkRouter: {
+        appliedSearchRoute: Object.freeze({
+          policyFingerprint: "direct",
+          applyProxyConfiguration(target: SearchProxyConfiguration) {
+            target.useProxy = false;
+          },
+          invalidError: () => undefined,
+          sanitizeError: (error: unknown) => error instanceof Error ? error.message : String(error),
+        }),
+        withScope: (_scope: "llm" | "search", operation: () => unknown) => operation(),
+        decorateModelRuntime<T extends object>(runtime: T): T {
+          const candidate = runtime as T & {
+            getModel(provider: string, id: string): (typeof model & { name: string }) | undefined;
+          };
+          return {
+            ...runtime,
+            getModel(provider: string, id: string) {
+              const selected = candidate.getModel(provider, id);
+              return selected ? { ...selected, name: `routed-${selected.name}` } : undefined;
+            },
+          } as T;
+        },
+      },
+    });
+
+    const managedRoot = await createPiAgentSessionCreator(harness.deps as never)({ cwd: "/project" });
+
+    expect(harness.createdOptions[0]?.model).toMatchObject({ name: "routed-raw-root-1" });
+
+    state.publishSkills(researchAssistant({ systemPrompt: "Root generation two." }));
+
+    await vi.waitFor(() => {
+      expect((managedRoot.session.agent.state.model as typeof model & { name?: string }).name)
+        .toBe("routed-raw-root-2");
+    });
+    expect(runtimeSequence).toBe(2);
+    await managedRoot.binding.dispose();
   });
 
   it("forwards committed root binding generations to its per-runtime projection callback", async () => {

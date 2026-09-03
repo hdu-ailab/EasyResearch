@@ -1,6 +1,7 @@
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir } from "./pi-import";
+import { parsePiSettingsJson } from "./pi-settings-json";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -36,7 +37,7 @@ export function resolveLogConfig(agentDir: string): LogConfig {
   let settings: { level?: unknown; keepDays?: unknown; logDir?: unknown } = {};
   try {
     const raw = readFileSync(join(agentDir, "settings.json"), "utf8");
-    const parsed = JSON.parse(raw) as { easyresearch?: { logging?: { level?: unknown; keepDays?: unknown; logDir?: unknown } } };
+    const parsed = parsePiSettingsJson(raw) as { easyresearch?: { logging?: { level?: unknown; keepDays?: unknown; logDir?: unknown } } };
     settings = parsed?.easyresearch?.logging ?? {};
   } catch {
     // missing/malformed global settings: defaults apply
@@ -155,7 +156,7 @@ function rawConfiguredLevel(agentDir: string): string | undefined {
   if (envLevel !== undefined) return envLevel;
   try {
     const raw = readFileSync(join(agentDir, "settings.json"), "utf8");
-    const parsed = JSON.parse(raw) as { easyresearch?: { logging?: { level?: unknown } } };
+    const parsed = parsePiSettingsJson(raw) as { easyresearch?: { logging?: { level?: unknown } } };
     const level = parsed?.easyresearch?.logging?.level;
     return typeof level === "string" ? level : undefined;
   } catch {

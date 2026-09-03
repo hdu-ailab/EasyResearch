@@ -18,9 +18,12 @@ describe("API usage settings", () => {
 
   afterEach(() => rmSync(agentDir, { recursive: true, force: true }));
 
-  it("defaults missing global state to hidden and ignores project-shaped input", () => {
-    expect(parseGlobalApiUsageSettings({})).toEqual({ showApiUsageDetails: false });
-    expect(parseGlobalApiUsageSettings({ easyresearch: { web: {} } })).toEqual({ showApiUsageDetails: false });
+  it("defaults missing global state to visible and preserves explicit false", () => {
+    expect(parseGlobalApiUsageSettings({})).toEqual({ showApiUsageDetails: true });
+    expect(parseGlobalApiUsageSettings({ easyresearch: { web: {} } })).toEqual({ showApiUsageDetails: true });
+    expect(parseGlobalApiUsageSettings({
+      easyresearch: { web: { showApiUsageDetails: false } },
+    })).toEqual({ showApiUsageDetails: false });
   });
 
   it("preserves unrelated global settings while enabling details", async () => {

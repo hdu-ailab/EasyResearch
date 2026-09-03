@@ -147,6 +147,41 @@ describe("ssh-bash runtime", () => {
     expect(requests.map((request) => request.command)).toEqual(["nvidia-smi", "hostname"]);
   });
 
+  it("loads SSH configuration from BOM-prefixed project settings accepted by Pi", async () => {
+    const root = tempRoot();
+    const project = join(root, "project");
+    const passwordFile = join(root, "password.txt");
+    mkdirSync(join(project, ".easyresearch"), { recursive: true });
+    writeFileSync(passwordFile, "secret\n", { mode: 0o600 });
+    const config: SshConnectionConfig = {
+      host: "bom.example.org",
+      port: 22,
+      username: "researcher",
+      hostFingerprint: `SHA256:${"A".repeat(43)}`,
+      authType: "password",
+      credentialFile: passwordFile,
+      remoteExperimentRoot: "paper/",
+      localMountPath: join(project, "experiment_ssh"),
+    };
+    writeFileSync(
+      join(project, ".easyresearch", "settings.json"),
+      `\uFEFF${JSON.stringify({ easyresearch: { ssh: config } })}`,
+      "utf8",
+    );
+    const requests: SshExecutionRequest[] = [];
+    const runtime = createSshBashRuntime({
+      execute: async (request) => {
+        requests.push(request);
+        return { stdout: "ok\n", stderr: "", exitCode: 0 };
+      },
+    });
+
+    await runtime.run(project, "hostname", 30, AbortSignal.timeout(1_000));
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ config, command: "hostname", password: "secret" });
+  });
+
   it("rejects malformed multi-server and project-secret settings", async () => {
     const root = tempRoot();
     const project = join(root, "project");

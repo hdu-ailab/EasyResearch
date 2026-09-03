@@ -16,11 +16,36 @@ export interface SessionSummaryDto {
 }
 
 export interface StatusDto {
+  bootId: string;
   agentDir: string;
   homeDir: string;
   sessions: SessionSummaryDto[];
   activeSessions: ActiveSessionDto[];
 }
+
+export interface RuntimeRestartRequestDto {
+  force: boolean;
+}
+
+export interface RuntimeRestartAcceptedDto {
+  accepted: true;
+  bootId: string;
+}
+
+export interface RuntimeRestartBusyDto {
+  code: "RUNTIME_BUSY";
+  activeSessions: number;
+  authFlowActive: boolean;
+}
+
+export interface RuntimeRestartingDto {
+  code: "RUNTIME_RESTARTING";
+}
+
+export type RuntimeRestartResultDto =
+  | RuntimeRestartAcceptedDto
+  | RuntimeRestartBusyDto
+  | RuntimeRestartingDto;
 
 export interface UpdateCheckDto {
   /** Non-null only when npm's latest dist-tag is newer than this build. */
@@ -169,6 +194,63 @@ export interface ApiUsageSettingsDto {
 }
 
 export type ApiUsageSettingsPatchDto = ApiUsageSettingsDto;
+
+export type NetworkProxyScopeDto = "all" | "llm" | "search";
+export type NetworkProxySettingsFieldDto = "settings" | NetworkProxyScopeDto;
+export type NetworkProxySettingsSourceDto = "configured" | "all" | "environment" | "direct";
+
+export interface NetworkProxyValuesDto {
+  all?: string;
+  llm?: string;
+  search?: string;
+}
+
+export interface NetworkProxySourcesDto {
+  all: Exclude<NetworkProxySettingsSourceDto, "all">;
+  llm: NetworkProxySettingsSourceDto;
+  search: NetworkProxySettingsSourceDto;
+}
+
+export interface NetworkProxySettingsErrorDto {
+  code: "NETWORK_PROXY_INVALID";
+  field: NetworkProxySettingsFieldDto;
+}
+
+export interface NetworkProxySettingsDto {
+  configured: NetworkProxyValuesDto;
+  appliedConfigured: NetworkProxyValuesDto;
+  sources: NetworkProxySourcesDto;
+  errors: NetworkProxySettingsErrorDto[];
+  restartRequired: boolean;
+}
+
+export interface NetworkProxySettingsPatchDto {
+  all?: string | null;
+  llm?: string | null;
+  search?: string | null;
+}
+
+export interface NetworkProxyTestRequestDto {
+  scope: NetworkProxyScopeDto;
+  proxyUrl: string;
+}
+
+export type NetworkProxyTestOutcomeDto =
+  | "success"
+  | "invalid-config"
+  | "cancelled"
+  | "timeout"
+  | "tls"
+  | "proxy-connect"
+  | "proxy-response"
+  | "target-response";
+
+export interface NetworkProxyTestResultDto {
+  ok: boolean;
+  outcome: NetworkProxyTestOutcomeDto;
+  status?: number;
+  elapsedMs: number;
+}
 
 export interface CompactionRequestResultDto {
   state: "queued" | "running";
@@ -329,6 +411,17 @@ export interface ConfigurationErrorEvent {
 }
 
 export type ConfigurationEvent = ConfigurationUpdatedEvent | ConfigurationErrorEvent;
+
+export interface PublicConfigurationUpdatedEvent extends ConfigurationUpdatedEvent {
+  bootId: string;
+}
+
+export interface PublicConfigurationErrorEvent extends ConfigurationErrorEvent {
+  bootId: string;
+}
+
+/** Public `/api/config/events` envelope; internal configuration events remain boot-agnostic. */
+export type PublicConfigurationEvent = PublicConfigurationUpdatedEvent | PublicConfigurationErrorEvent;
 
 export interface FileContentDto {
   path: string;

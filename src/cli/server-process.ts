@@ -1,6 +1,8 @@
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dayStamp, resolveLogConfig } from "../runtime/logger";
+import { directLocalHttpFetch, type LocalHttpFetch } from "./local-http";
+import { serverLeaseTokenState, type RuntimeLease } from "./runtime-lease";
 export { DAEMON_CONTROL_PATH, DAEMON_TOKEN_HEADER } from "./daemon-control";
 import { DAEMON_CONTROL_PATH, DAEMON_TOKEN_HEADER } from "./daemon-control";
 
@@ -23,12 +25,13 @@ export interface ServerProcessRecord {
 }
 
 export interface ServerProcessOptions {
-  fetch?: typeof fetch;
+  fetch?: LocalHttpFetch;
   isAlive?: (pid: number) => boolean;
   wait?: (milliseconds: number) => Promise<void>;
   now?: () => number;
   timeoutMs?: number;
   expectedOwner?: ServerOwner;
+  expectedToken?: string;
 }
 
 export type ServerProcessEntry =
@@ -88,15 +91,32 @@ function writeServerProcessFile(agentDir: string, content: string): void {
   renameSync(tmp, path);
 }
 
-export function removeServerPid(agentDir: string, expectedToken?: string): boolean {
+export function removeServerPid(
+  agentDir: string,
+  expectedToken: string,
+  serverLease?: RuntimeLease,
+): boolean {
+  if (
+    !serverLease
+    || !serverLease.held
+    || serverLease.token !== expectedToken
+    || serverLease.path !== join(agentDir, "server.lease")
+  ) {
+    return false;
+  }
   const path = serverPidPath(agentDir);
   if (!existsSync(path)) return false;
-  if (expectedToken !== undefined) {
-    const entry = readServerProcess(agentDir);
-    if (entry.kind !== "owned" || entry.record.token !== expectedToken) return false;
+  const entry = readServerProcessFile(path);
+  if (entry.kind !== "owned" || entry.record.token !== expectedToken) return false;
+  try {
+    // The matching non-empty server lease prevents any legitimate replacement
+    // publisher until this exact record has been removed.
+    unlinkSync(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
   }
-  unlinkSync(path);
-  return true;
 }
 
 export async function inspectServerProcess(
@@ -109,22 +129,17 @@ export async function inspectServerProcess(
   const entry = readServerProcess(agentDir);
   if (entry.kind === "missing") return "none";
   if (entry.kind === "invalid") {
-    removeServerPid(agentDir);
-    return "none";
+    throw unverifiedDaemonError("malformed server.pid record");
   }
 
   const isAlive = options.isAlive ?? isProcessAlive;
   if (entry.kind === "legacy") {
-    if (!isAlive(entry.pid)) {
-      removeServerPid(agentDir);
-      return "none";
-    }
     throw unverifiedDaemonError(`legacy PID ${entry.pid}`);
   }
 
   const { record } = entry;
   try {
-    const runningRuntimeId = await probeServerProcess(record, options.fetch ?? fetch);
+    const runningRuntimeId = await probeServerProcess(record, options.fetch ?? directLocalHttpFetch);
     if (serverOwner(record) === "desktop") return "desktop";
     return runningRuntimeId === currentRuntimeId
         && record.host === requestedHost
@@ -133,7 +148,6 @@ export async function inspectServerProcess(
       : "stale";
   } catch (error) {
     if (!isAlive(record.pid)) {
-      removeServerPid(agentDir, record.token);
       return "none";
     }
     throw unverifiedDaemonError(`PID ${record.pid}`, error);
@@ -146,17 +160,18 @@ export async function stopServerProcess(
 ): Promise<boolean> {
   const entry = readServerProcess(agentDir);
   if (entry.kind === "missing") return false;
-  if (entry.kind === "invalid") {
-    removeServerPid(agentDir);
+  if (
+    options.expectedToken !== undefined
+    && (entry.kind !== "owned" || entry.record.token !== options.expectedToken)
+  ) {
     return false;
+  }
+  if (entry.kind === "invalid") {
+    throw unverifiedDaemonError("malformed server.pid record");
   }
 
   const isAlive = options.isAlive ?? isProcessAlive;
   if (entry.kind === "legacy") {
-    if (!isAlive(entry.pid)) {
-      removeServerPid(agentDir);
-      return false;
-    }
     throw unverifiedDaemonError(`legacy PID ${entry.pid}`);
   }
 
@@ -169,7 +184,7 @@ export async function stopServerProcess(
     }
     throw new Error(`EasyResearch ${actualOwner} owns the shared runtime; expected ${expectedOwner}.`);
   }
-  const fetchControl = options.fetch ?? fetch;
+  const fetchControl = options.fetch ?? directLocalHttpFetch;
   let response: Response;
   try {
     response = await fetchControl(serverControlUrl(record), {
@@ -180,7 +195,6 @@ export async function stopServerProcess(
     });
   } catch (error) {
     if (!isAlive(record.pid)) {
-      removeServerPid(agentDir, record.token);
       return false;
     }
     throw unverifiedDaemonError(`PID ${record.pid}`, error);
@@ -190,21 +204,27 @@ export async function stopServerProcess(
   const now = options.now ?? Date.now;
   const wait = options.wait ?? ((milliseconds: number) =>
     new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
-  const deadline = now() + (options.timeoutMs ?? 5_000);
-  while (now() < deadline) {
+  const timeoutMs = options.timeoutMs ?? 5_000;
+  const deadline = now() + timeoutMs;
+  while (true) {
     const current = readServerProcess(agentDir);
-    if (current.kind !== "owned" || current.record.token !== record.token) {
+    const recordReleased = current.kind !== "owned" || current.record.token !== record.token;
+    if (recordReleased && serverLeaseTokenState(agentDir, record.token) === "released") {
       return true;
     }
+    if (now() >= deadline) break;
     await wait(100);
   }
   throw new Error(
-    `EasyResearch daemon PID ${record.pid} accepted shutdown but did not release its ownership record within ${options.timeoutMs ?? 5_000}ms.`,
+    `EasyResearch daemon PID ${record.pid} accepted shutdown but did not release its ownership record and server lease within ${timeoutMs}ms.`,
   );
 }
 
 export function readServerProcess(agentDir: string): ServerProcessEntry {
-  const path = serverPidPath(agentDir);
+  return readServerProcessFile(serverPidPath(agentDir));
+}
+
+function readServerProcessFile(path: string): ServerProcessEntry {
   if (!existsSync(path)) return { kind: "missing" };
   let value: string;
   try {
@@ -246,7 +266,7 @@ function isServerProcessRecord(value: unknown): value is ServerProcessRecord {
 
 async function probeServerProcess(
   record: ServerProcessRecord,
-  fetchControl: typeof fetch,
+  fetchControl: LocalHttpFetch,
 ): Promise<string> {
   const response = await fetchControl(serverControlUrl(record), {
     method: "GET",

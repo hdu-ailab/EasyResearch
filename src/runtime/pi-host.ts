@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { importPi } from "./pi-import";
+import { parsePiSettingsJson } from "./pi-settings-json";
 
 /** Pi's documented switch for the automatic version update check. */
 export const VERSION_CHECK_ENV = "PI_SKIP_VERSION_CHECK";
@@ -86,7 +87,7 @@ export async function primeChangelogSeenVersion(
   let stored: string | undefined;
   try {
     if (existsSync(settingsPath)) {
-      settings = JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, unknown>;
+      settings = parsePiSettingsJson(readFileSync(settingsPath, "utf8")) as Record<string, unknown>;
       const value = settings.lastChangelogVersion;
       stored = typeof value === "string" ? value : undefined;
     }

@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative } from "node:path";
+import { parsePiSettingsJson } from "../../runtime/pi-settings-json";
 
 export type SshAuthType = "password" | "private-key";
 
@@ -168,7 +169,7 @@ function readSettings(cwd: string, configDirName: string): Record<string, unknow
   if (!existsSync(path)) return {};
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(path, "utf8"));
+    parsed = parsePiSettingsJson(readFileSync(path, "utf8"));
   } catch {
     throw new Error(`Cannot read valid project settings at ${path}`);
   }

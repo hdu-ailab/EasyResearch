@@ -16,14 +16,19 @@ import {
   existsSync,
   mkdirSync,
   statSync,
+  unlinkSync,
 } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import {
   beginDesktopExit,
+  createDesktopSidecarOwnership,
   createDesktopLifecycleState,
+  monitorDesktopSidecarLifecycle,
+  prepareDesktopSidecarLaunch,
   type DesktopLifecycleState,
 } from "./lifecycle";
 import {
+  captureDesktopRestartHash,
   createTrayMenuTemplate,
   DESKTOP_HOST_VERSION_CHANNEL,
   DESKTOP_PREFERENCES_READ_CHANNEL,
@@ -50,9 +55,18 @@ import {
 import {
   startDesktopSidecar,
   type DesktopSidecarHandle,
+  type DesktopSidecarProcessHandle,
 } from "./sidecar";
 import { checkDesktopUpdate, type DesktopReleaseUpdate } from "./update";
-import { prepareDesktopSmokeWork } from "./smoke-host";
+import {
+  desktopSmokeSidecarReadyEvent,
+  desktopSmokeRestartFailureEvent,
+  desktopSmokeWorkHash,
+  isDesktopSmokeRestoredWorkDocument,
+  prepareDesktopSmokeWork,
+  requestDesktopSmokeRestart,
+  verifyDesktopSmokeSuccessor,
+} from "./smoke-host";
 import { DESKTOP_SMOKE_USER_DATA_ENV } from "./contracts";
 
 configureSmokeUserData();
@@ -61,11 +75,18 @@ let mainWindow: BrowserWindow | undefined;
 let loadingWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
 let sidecar: DesktopSidecarHandle | undefined;
+const sidecarOwnership = createDesktopSidecarOwnership();
 let lifecycle: DesktopLifecycleState = createDesktopLifecycleState();
-let startAttempt: Promise<void> | undefined;
+let startAttempt: Promise<boolean> | undefined;
 let exitAttempt: Promise<void> | undefined;
 let allowQuit = false;
 let smokeTimer: ReturnType<typeof setInterval> | undefined;
+let smokeRestartContext: {
+  bootId: string;
+  rendererToken: string;
+  workHash: string;
+} | undefined;
+let smokeSuccessorFailureInjected = false;
 
 if (!hasSingleInstanceLock) {
   app.quit();
@@ -85,7 +106,7 @@ if (!hasSingleInstanceLock) {
     installPreferenceIpc();
     createTray();
     showLoading("Preparing the local research workspace...");
-    await startApplication();
+    await startApplicationWithRecovery();
   }).catch((error) => {
     writeDesktopLog(`Desktop host initialization failed: ${errorMessage(error)}`);
     dialog.showErrorBox(
@@ -120,50 +141,84 @@ function isTrustedRenderer(event: IpcMainEvent): boolean {
   return mainWindow !== undefined && event.sender === mainWindow.webContents;
 }
 
-async function startApplication(): Promise<void> {
+async function startApplication(hash = "#/"): Promise<boolean> {
+  if (lifecycle.exiting || !sidecarOwnership.acceptingLaunches) return false;
   if (startAttempt) return startAttempt;
-  let failed = false;
-  const current = (async () => {
+  const current = (async (): Promise<boolean> => {
+    let launchedSidecar: DesktopSidecarProcessHandle | undefined;
     try {
+      try {
+        if (!await prepareDesktopSidecarLaunch(sidecarOwnership)) return false;
+      } catch (error) {
+        writeDesktopLog(`Existing sidecar cleanup failed: ${errorMessage(error)}`);
+        return false;
+      }
+      sidecar = undefined;
+      if (lifecycle.exiting || !sidecarOwnership.acceptingLaunches) return false;
+      if (smokeRestartContext && consumeSmokeRequest("successor-start-failure-request")) {
+        smokeSuccessorFailureInjected = true;
+        emitSmokeEvent(desktopSmokeRestartFailureEvent("successor-start-failed", hash));
+        writeDesktopLog("Desktop smoke injected one successor startup failure.");
+        return false;
+      }
       showLoading("Preparing the local research workspace...");
       const environment = resolveDesktopEnvironment(process.env, process.platform, {
         warn: writeDesktopLog,
       });
+      if (lifecycle.exiting || !sidecarOwnership.acceptingLaunches) return false;
       const handle = await startDesktopSidecar({
         sidecarPath: resolvePackagedSidecar(process.resourcesPath, process.platform),
         baseEnv: environment,
         onSetup: showLoading,
+        onSpawned: (handle) => {
+          launchedSidecar = handle;
+          sidecarOwnership.retain(handle);
+        },
         log: writeDesktopLog,
       });
       if (lifecycle.exiting) {
         await handle.shutdown();
-        return;
+        return false;
       }
       sidecar = handle;
-      emitSmokeEvent({ type: "desktop-smoke.sidecar-ready", origin: handle.ready.origin });
+      emitSmokeEvent(desktopSmokeSidecarReadyEvent({
+        origin: handle.ready.origin,
+        bootId: handle.ready.bootId,
+        sidecarPid: handle.pid,
+        rendererToken: handle.rendererToken,
+      }, smokeRestartContext ? {
+        bootId: smokeRestartContext.bootId,
+        rendererToken: smokeRestartContext.rendererToken,
+      } : undefined));
       monitorSidecar(handle);
-      await createMainWindow(handle);
+      await createMainWindow(handle, hash);
       void checkForUpdates(false);
+      return true;
     } catch (error) {
-      failed = true;
       writeDesktopLog(`Desktop startup failed: ${errorMessage(error)}`);
       const failedSidecar = sidecar;
       sidecar = undefined;
+      const failedProcess = launchedSidecar ?? failedSidecar;
       try {
-        await failedSidecar?.shutdown();
+        await failedProcess?.shutdown();
       } catch (shutdownError) {
         writeDesktopLog(`Failed startup sidecar cleanup: ${errorMessage(shutdownError)}`);
-        failedSidecar?.forceTerminate();
       }
+      return false;
     }
   })();
   startAttempt = current;
   try {
-    await current;
+    return await current;
   } finally {
     if (startAttempt === current) startAttempt = undefined;
   }
-  if (failed && !lifecycle.exiting) await showStartupFailure();
+}
+
+async function startApplicationWithRecovery(hash = "#/"): Promise<void> {
+  if (!await startApplication(hash) && !lifecycle.exiting) {
+    await showStartupFailure(hash);
+  }
 }
 
 function showLoading(status: string): void {
@@ -195,7 +250,7 @@ function showLoading(status: string): void {
   loadingWindow.show();
 }
 
-async function createMainWindow(handle: DesktopSidecarHandle): Promise<void> {
+async function createMainWindow(handle: DesktopSidecarHandle, hash: string): Promise<void> {
   mainWindow?.destroy();
   const preload = join(__dirname, "preload.cjs");
   const window = new BrowserWindow(
@@ -241,7 +296,7 @@ async function createMainWindow(handle: DesktopSidecarHandle): Promise<void> {
     window.focus();
     void installSmokeLifecycle(window, handle);
   });
-  await window.loadURL(handle.ready.origin);
+  await window.loadURL(`${handle.ready.origin}/${hash}`);
 }
 
 function createTray(): void {
@@ -273,18 +328,75 @@ function openExternal(url: string): void {
 }
 
 function monitorSidecar(handle: DesktopSidecarHandle): void {
-  void handle.exited.then(() => {
-    if (sidecar !== handle || lifecycle.exiting) return;
-    sidecar = undefined;
-    mainWindow?.hide();
-    void showUnexpectedExit(handle.ready.logPath).catch((error) => {
-      writeDesktopLog(`Unexpected-exit recovery failed: ${errorMessage(error)}`);
-      void terminalExit();
+  if (smokeDirectory()) {
+    void handle.restartRequested.then((event) => {
+      emitSmokeEvent({ type: "desktop-smoke.restart-requested", bootId: event.bootId });
     });
+    void handle.exited.then((exit) => {
+      if (
+        exit.code === 0
+        && exit.signal === null
+        && !exit.protocolError
+        && exit.expectedRestart?.bootId === handle.ready.bootId
+      ) {
+        emitSmokeEvent({
+          type: "desktop-smoke.old-sidecar-exited",
+          bootId: handle.ready.bootId,
+          clean: true,
+        });
+      }
+    });
+  }
+  void monitorDesktopSidecarLifecycle(handle, {
+    isCurrent: () => sidecar === handle,
+    isExiting: () => lifecycle.exiting,
+    captureRoute: () => captureDesktopRestartHash(
+      mainWindow?.webContents.getURL() ?? "",
+      handle.ready.origin,
+    ),
+    showRestarting: () => {
+      mainWindow?.hide();
+      showLoading("Restarting the local research workspace...");
+    },
+    clearCurrent: () => {
+      if (sidecar === handle) sidecar = undefined;
+    },
+    startSuccessor: (hash) => startApplication(hash),
+    showStartupFailure,
+    showUnexpectedExit: async (logPath) => {
+      emitSmokeEvent({
+        type: "desktop-smoke.unexpected-exit",
+        bootId: handle.ready.bootId,
+      });
+      mainWindow?.hide();
+      await showUnexpectedExit(logPath);
+    },
+    onCleanupError: (error) => {
+      writeDesktopLog(`Desktop sidecar force termination failed: ${errorMessage(error)}`);
+    },
+  }).catch((error) => {
+    writeDesktopLog(`Sidecar lifecycle recovery failed: ${errorMessage(error)}`);
+    void terminalExit();
   });
 }
 
-async function showStartupFailure(): Promise<void> {
+async function showStartupFailure(hash = "#/"): Promise<void> {
+  const directory = smokeDirectory();
+  if (directory && smokeRestartContext && smokeSuccessorFailureInjected) {
+    emitSmokeEvent(desktopSmokeRestartFailureEvent("restart-recovery-visible", hash));
+    armSmokeRequest(directory, "successor-retry-request", async () => {
+      smokeSuccessorFailureInjected = false;
+      emitSmokeEvent(desktopSmokeRestartFailureEvent("successor-retry-requested", hash));
+      if (!await startApplication(hash) && !lifecycle.exiting) {
+        emitSmokeEvent({
+          type: "desktop-smoke.failure",
+          message: "Desktop smoke successor retry failed.",
+        });
+        await terminalExit();
+      }
+    });
+    return;
+  }
   const result = await showDesktopMessage(loadingWindow, {
     type: "error",
     title: "EasyResearch could not start",
@@ -296,7 +408,7 @@ async function showStartupFailure(): Promise<void> {
     noLink: true,
   });
   if (result.response === 0 && !lifecycle.exiting) {
-    await startApplication();
+    await startApplicationWithRecovery(hash);
   } else {
     await terminalExit();
   }
@@ -316,7 +428,7 @@ async function showUnexpectedExit(sidecarLogPath: string): Promise<void> {
     });
     if (result.response === 0) {
       showLoading("Restarting the local research workspace...");
-      await startApplication();
+      await startApplicationWithRecovery();
       return;
     }
     if (result.response === 1) {
@@ -369,16 +481,21 @@ async function showUpdate(update: DesktopReleaseUpdate): Promise<void> {
 function terminalExit(): Promise<void> {
   if (exitAttempt) return exitAttempt;
   lifecycle = beginDesktopExit(lifecycle);
+  sidecarOwnership.closeLaunchAdmission();
   const current = (async () => {
     if (smokeTimer) clearInterval(smokeTimer);
     emitSmokeEvent({ type: "desktop-smoke.exit-started" });
-    const ownedSidecar = sidecar;
     sidecar = undefined;
     try {
-      await ownedSidecar?.shutdown();
+      await sidecarOwnership.shutdownAll();
     } catch (error) {
       writeDesktopLog(`Desktop sidecar shutdown failed: ${errorMessage(error)}`);
-      ownedSidecar?.forceTerminate();
+      dialog.showErrorBox(
+        "EasyResearch could not exit",
+        `A local sidecar process has not exited. Retry Exit after reviewing ${desktopLogPath()}`,
+      );
+      exitAttempt = undefined;
+      return;
     }
     emitSmokeEvent({ type: "desktop-smoke.sidecar-stopped" });
     tray?.destroy();
@@ -401,23 +518,83 @@ async function installSmokeLifecycle(
   const project = process.env.EASYRESEARCH_DESKTOP_SMOKE_PROJECT;
   const expectedSessionPath = process.env.EASYRESEARCH_DESKTOP_SMOKE_SESSION_PATH;
   const expectedAgent = process.env.EASYRESEARCH_DESKTOP_SMOKE_AGENT;
-  if (!project || !isAbsolute(project) || !expectedSessionPath || !expectedAgent) {
+  const proxyUrl = process.env.EASYRESEARCH_DESKTOP_SMOKE_PROXY;
+  if (!project || !isAbsolute(project) || !expectedSessionPath || !expectedAgent || !proxyUrl) {
     emitSmokeEvent({ type: "desktop-smoke.failure", message: "Desktop smoke inputs are invalid." });
     await terminalExit();
     return;
   }
   try {
     await waitForCurrentWebUi(window, handle.ready.origin);
-    emitSmokeEvent({ type: "desktop-smoke.window-loaded" });
-    await prepareDesktopSmokeWork({
+    if (!smokeRestartContext) {
+      emitSmokeEvent({ type: "desktop-smoke.window-loaded" });
+      const prepared = await prepareDesktopSmokeWork({
+        origin: handle.ready.origin,
+        rendererToken: handle.rendererToken,
+        project,
+        expectedSessionPath,
+        expectedAgent,
+        onStateVisible: () => emitSmokeEvent({ type: "desktop-smoke.state-visible" }),
+      });
+      if (prepared.bootId !== handle.ready.bootId) {
+        throw new Error("Desktop smoke authenticated status did not match sidecar readiness.");
+      }
+      emitSmokeEvent({ type: "desktop-smoke.agent-running" });
+
+      const workHash = desktopSmokeWorkHash(prepared.sessionId, project);
+      await window.loadURL(`${handle.ready.origin}/${workHash}`);
+      await waitForCurrentWebUi(window, handle.ready.origin);
+      if (!isDesktopSmokeRestoredWorkDocument(
+        window.webContents.getURL(),
+        handle.ready.origin,
+        workHash,
+      )) {
+        throw new Error("Desktop smoke could not establish the canonical Work route before restart.");
+      }
+      smokeRestartContext = {
+        bootId: prepared.bootId,
+        rendererToken: handle.rendererToken,
+        workHash,
+      };
+      armSmokeRequest(directory, "restart-request", async () => {
+        const restarted = await requestDesktopSmokeRestart({
+          origin: handle.ready.origin,
+          rendererToken: handle.rendererToken,
+          oldBootId: prepared.bootId,
+          proxyUrl,
+        });
+        emitSmokeEvent({
+          type: "desktop-smoke.restart-api-accepted",
+          bootId: restarted.bootId,
+          hash: workHash,
+        });
+      });
+      return;
+    }
+
+    if (!isDesktopSmokeRestoredWorkDocument(
+      window.webContents.getURL(),
+      handle.ready.origin,
+      smokeRestartContext.workHash,
+    )) {
+      throw new Error("Desktop smoke successor did not restore the canonical Work route.");
+    }
+    const successor = await verifyDesktopSmokeSuccessor({
       origin: handle.ready.origin,
       rendererToken: handle.rendererToken,
-      project,
+      oldBootId: smokeRestartContext.bootId,
       expectedSessionPath,
-      expectedAgent,
-      onStateVisible: () => emitSmokeEvent({ type: "desktop-smoke.state-visible" }),
     });
-    emitSmokeEvent({ type: "desktop-smoke.agent-running" });
+    if (successor.bootId !== handle.ready.bootId) {
+      throw new Error("Desktop smoke successor status did not match sidecar readiness.");
+    }
+    emitSmokeEvent({
+      type: "desktop-smoke.successor-visible",
+      bootId: successor.bootId,
+      hash: smokeRestartContext.workHash,
+      authenticated: true,
+      persistedSessionVisible: true,
+    });
   } catch (error) {
     const message = errorMessage(error);
     writeDesktopLog(`Desktop smoke preflight failed: ${message}`);
@@ -434,12 +611,37 @@ async function installSmokeLifecycle(
       hidden: !window.isVisible(),
     });
   }, 100);
+  armSmokeRequest(directory, "exit-request", terminalExit);
+}
+
+function armSmokeRequest(
+  directory: string,
+  fileName: "restart-request" | "successor-retry-request" | "exit-request",
+  action: () => Promise<unknown>,
+): void {
+  if (smokeTimer) clearInterval(smokeTimer);
+  let started = false;
   smokeTimer = setInterval(() => {
-    if (!existsSync(join(directory, "exit-request"))) return;
+    if (started || !existsSync(join(directory, fileName))) return;
+    started = true;
     if (smokeTimer) clearInterval(smokeTimer);
     smokeTimer = undefined;
-    void terminalExit();
+    void action().catch(async (error) => {
+      const message = errorMessage(error);
+      writeDesktopLog(`Desktop smoke ${fileName} failed: ${message}`);
+      emitSmokeEvent({ type: "desktop-smoke.failure", message });
+      await terminalExit();
+    });
   }, 100);
+}
+
+function consumeSmokeRequest(fileName: "successor-start-failure-request"): boolean {
+  const directory = smokeDirectory();
+  if (!directory) return false;
+  const path = join(directory, fileName);
+  if (!existsSync(path)) return false;
+  unlinkSync(path);
+  return true;
 }
 
 async function waitForCurrentWebUi(window: BrowserWindow, readyOrigin: string): Promise<void> {

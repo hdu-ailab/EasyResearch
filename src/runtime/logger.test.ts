@@ -49,6 +49,18 @@ describe("resolveLogConfig", () => {
     expect(resolveLogConfig(agentDir)).toEqual({ level: "debug", keepDays: 3, logDir: "/tmp/alt-logs" });
   });
 
+  it("reads logging configuration from BOM-prefixed settings accepted by Pi", () => {
+    const agentDir = makeAgentDir();
+    writeFileSync(
+      join(agentDir, "settings.json"),
+      `\uFEFF${JSON.stringify({
+        easyresearch: { logging: { level: "debug", keepDays: 5, logDir: "/tmp/bom-logs" } },
+      })}`,
+    );
+
+    expect(resolveLogConfig(agentDir)).toEqual({ level: "debug", keepDays: 5, logDir: "/tmp/bom-logs" });
+  });
+
   it("env EASYRESEARCH_LOG_LEVEL wins over settings", () => {
     const agentDir = makeAgentDir();
     writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ easyresearch: { logging: { level: "debug" } } }));
@@ -110,6 +122,22 @@ describe("invalid-level warning (spec 5)", () => {
       warn.mockRestore();
       if (previous === undefined) delete process.env.EASYRESEARCH_LOG_LEVEL;
       else process.env.EASYRESEARCH_LOG_LEVEL = previous;
+    }
+  });
+
+  it("warns for an invalid level read from BOM-prefixed settings", () => {
+    const agentDir = makeAgentDir();
+    writeFileSync(
+      join(agentDir, "settings.json"),
+      `\uFEFF${JSON.stringify({ easyresearch: { logging: { level: "verbose" } } })}`,
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      createLogger("bom", { agentDir });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toContain('invalid log level "verbose"');
+    } finally {
+      warn.mockRestore();
     }
   });
 });

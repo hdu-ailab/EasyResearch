@@ -15,11 +15,16 @@ import type {
   ApiUsageSettingsDto,
   ApiUsageSettingsPatchDto,
   ApiUsageRecordDto,
-  ConfigurationEvent,
   CompactionSettingsDto,
   CompactionSettingsPatchDto,
   ConfigScope,
   ModelOptionDto,
+  NetworkProxySettingsDto,
+  NetworkProxySettingsPatchDto,
+  NetworkProxyTestRequestDto,
+  NetworkProxyTestResultDto,
+  PublicConfigurationEvent,
+  RuntimeRestartRequestDto,
   SessionSummaryDto,
   UpdateCheckDto,
 } from "./contracts";
@@ -55,14 +60,20 @@ import {
   type ConfigurationRefreshRequest,
   type ProjectWatchReplacement,
 } from "./configuration-project-watches";
+import type {
+  RuntimeRestartCoordinator,
+  RuntimeRestartReservation,
+} from "./runtime-restart";
 
 export interface DaemonControl {
   token: string;
   runtimeId: string;
   requestShutdown: () => void;
+  reserveRestart?(): Promise<RuntimeRestartReservation>;
 }
 
 export interface RouteServices {
+  bootId: string;
   webuiDist: string;
   listAllSessions: () => Promise<SessionSummaryDto[]>;
   listAgents: (cwd?: string) => Promise<AgentDto[]>;
@@ -71,6 +82,12 @@ export interface RouteServices {
   patchCompactionSettings: (patch: CompactionSettingsPatchDto) => Promise<CompactionSettingsDto>;
   getApiUsageSettings: () => Promise<ApiUsageSettingsDto>;
   patchApiUsageSettings: (patch: ApiUsageSettingsPatchDto) => Promise<ApiUsageSettingsDto>;
+  getNetworkProxySettings: () => Promise<NetworkProxySettingsDto>;
+  patchNetworkProxySettings: (patch: NetworkProxySettingsPatchDto) => Promise<NetworkProxySettingsDto>;
+  testNetworkProxy: (
+    request: NetworkProxyTestRequestDto,
+    callerSignal?: AbortSignal,
+  ) => Promise<NetworkProxyTestResultDto>;
   listModels: () => Promise<ModelOptionDto[]>;
   checkForUpdate: () => Promise<UpdateCheckDto>;
   renameSession: (sessionId: string, name: string) => Promise<void>;
@@ -86,6 +103,7 @@ export interface RouteServices {
   configurationProjectWatches: ConfigurationProjectWatches;
   logger: Logger;
   daemonControl?: DaemonControl;
+  runtimeRestart?: Pick<RuntimeRestartCoordinator, "request">;
   desktopAccess?: DesktopAccessControl;
 }
 
@@ -122,11 +140,21 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
 
       if (req.method === "GET" && path === "/api/status") {
         return jsonResponse({
+          bootId: services.bootId,
           agentDir: services.config.globalRoot,
           homeDir: services.directories.homeDir,
           sessions: await services.listAllSessions(),
           activeSessions: services.registry.listActive(),
         });
+      }
+
+      if (req.method === "POST" && path === "/api/runtime/restart") {
+        const body = runtimeRestartBody(await jsonBody<unknown>(req));
+        if (!services.runtimeRestart) {
+          return jsonResponse({ code: "RUNTIME_RESTARTING" }, 409);
+        }
+        const result = await services.runtimeRestart.request(body);
+        return jsonResponse(result, "accepted" in result ? 202 : 409);
       }
 
       if (req.method === "GET" && path === "/api/update-check") {
@@ -151,6 +179,20 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       if (req.method === "PATCH" && path === "/api/settings/api-usage") {
         return jsonResponse(await services.patchApiUsageSettings(
           await jsonBody<ApiUsageSettingsPatchDto>(req),
+        ));
+      }
+      if (req.method === "GET" && path === "/api/settings/network-proxy") {
+        return jsonResponse(await services.getNetworkProxySettings());
+      }
+      if (req.method === "PATCH" && path === "/api/settings/network-proxy") {
+        return jsonResponse(await services.patchNetworkProxySettings(
+          await jsonBody<NetworkProxySettingsPatchDto>(req),
+        ));
+      }
+      if (req.method === "POST" && path === "/api/settings/network-proxy/test") {
+        return jsonResponse(await services.testNetworkProxy(
+          await jsonBody<NetworkProxyTestRequestDto>(req),
+          req.signal,
         ));
       }
 
@@ -391,7 +433,7 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       }
 
       if (path === "/api/config/events" && req.method === "GET") {
-        return configurationEvents(services.configuration, services.configurationProjectWatches);
+        return configurationEvents(services.bootId, services.configuration, services.configurationProjectWatches);
       }
 
       const projectWatchMatch = path.match(/^\/api\/config\/project-watches\/([^/]+)$/);
@@ -552,7 +594,7 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       if (error instanceof UnknownFileWatchLeaseError) return errorResponse(404, error.message);
       if (error instanceof FileWatchPathError) return errorResponse(400, error.message);
       if (error instanceof SubagentSessionNotFoundError) return errorResponse(404, error.message);
-      if (error instanceof BodyError) return errorResponse(400, error.message);
+      if (error instanceof BodyError) return errorResponse(error.status, error.message);
       if (error instanceof ConfigurationProjectWatchRequestError) {
         return errorResponse(error.status, error.message);
       }
@@ -659,6 +701,7 @@ function rangeErrorResponse(descriptor: RawFileDescriptor): Response {
     headers: {
       "Content-Type": "application/json; charset=utf-8",
       "Content-Range": `bytes */${descriptor.size}`,
+      "Cache-Control": "no-store",
     },
   });
 }
@@ -841,6 +884,7 @@ function authFlowSse(services: RouteServices, flowId: string): Response {
 }
 
 function configurationEvents(
+  bootId: string,
   configuration: Pick<LiveConfiguration, "generation" | "error" | "subscribe">
     & Partial<Pick<LiveConfiguration, "availabilityEpoch">>,
   projectWatches: ConfigurationProjectWatches,
@@ -852,7 +896,7 @@ function configurationEvents(
   let cancelled = false;
   const send = (
     controller: ReadableStreamDefaultController<Uint8Array>,
-    event: ConfigurationEvent,
+    event: PublicConfigurationEvent,
   ): void => {
     controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
   };
@@ -861,14 +905,14 @@ function configurationEvents(
       try {
         unsubscribe = configuration.subscribe((event) => {
           if (cancelled || !initialized) return;
-          const laterEvent: ConfigurationEvent = { ...event };
-          delete laterEvent.projectWatchLeaseId;
-          send(controller, laterEvent);
+          const { projectWatchLeaseId: _projectWatchLeaseId, ...sourceEvent } = event;
+          send(controller, { ...sourceEvent, bootId });
         });
         const error = configuration.error;
         if (error !== null) {
           send(controller, {
             type: "config.error",
+            bootId,
             generation: configuration.generation,
             availabilityEpoch: configuration.availabilityEpoch ?? 0,
             message: error,
@@ -877,6 +921,7 @@ function configurationEvents(
         } else {
           send(controller, {
             type: "config.updated",
+            bootId,
             generation: configuration.generation,
             availabilityEpoch: configuration.availabilityEpoch ?? 0,
             agentsChanged: true,
@@ -971,6 +1016,17 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function runtimeRestartBody(value: unknown): RuntimeRestartRequestDto {
+  if (
+    !isObject(value)
+    || Object.keys(value).length !== 1
+    || typeof value.force !== "boolean"
+  ) {
+    throw new BodyError("Runtime restart request must contain only boolean force");
+  }
+  return { force: value.force };
+}
+
 function configFileParams(url: URL): { scope: ConfigScope; cwd?: string; path?: string } {
   const scope = (url.searchParams.get("scope") ?? "global") as ConfigScope;
   const cwd = url.searchParams.get("cwd") ?? undefined;
@@ -978,7 +1034,11 @@ function configFileParams(url: URL): { scope: ConfigScope; cwd?: string; path?: 
   return { scope, cwd, path };
 }
 
-class BodyError extends Error {}
+class BodyError extends Error {
+  constructor(message: string, readonly status = 400) {
+    super(message);
+  }
+}
 
 function requireQuery(url: URL, name: string): string {
   const value = url.searchParams.get(name);
@@ -987,6 +1047,10 @@ function requireQuery(url: URL, name: string): string {
 }
 
 async function jsonBody<T>(req: Request): Promise<T> {
+  const mediaType = req.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (mediaType !== "application/json") {
+    throw new BodyError("Content-Type must be application/json", 415);
+  }
   let body: unknown;
   try {
     body = await req.json();
@@ -1000,14 +1064,20 @@ async function jsonBody<T>(req: Request): Promise<T> {
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json; charset=utf-8" },
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
   });
 }
 
 function errorResponse(status: number, message: string, extra: Record<string, unknown> = {}): Response {
   return new Response(JSON.stringify({ error: message, ...extra }), {
     status,
-    headers: { "Content-Type": "application/json; charset=utf-8" },
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
   });
 }
 

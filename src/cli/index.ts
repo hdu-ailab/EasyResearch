@@ -1,8 +1,7 @@
 #!/usr/bin/env bun
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir } from "../runtime/pi-import";
 import {
@@ -13,9 +12,6 @@ import {
 } from "../runtime/bundled-assets";
 import type { SetupResult } from "../setup-venv";
 import {
-  DAEMON_RUNTIME_ID_ENV,
-  DAEMON_TOKEN_ENV,
-  DAEMON_OWNER_ENV,
   DESKTOP_OWNS_RUNTIME_MESSAGE,
   inspectServerProcess,
   serverLogFile,
@@ -23,15 +19,33 @@ import {
 } from "./server-process";
 import { runServe } from "./commands/serve";
 import { performFirstRunSetup } from "./first-run";
-import { acquireTransitionLease } from "./runtime-lease";
+import { acquireTransitionLease, type RuntimeLease } from "./runtime-lease";
 import { consumeDesktopServeRequest, runDesktopServe } from "./desktop-entry";
+import {
+  loadNetworkPolicy,
+  reconstructChildEnvironment,
+  restoreBunSandboxEnvironment,
+  withTemporaryNetworkPolicyEnvironment,
+  type BunSandboxEnvironmentOptions,
+  type EnvironmentMap,
+} from "../runtime/network-policy";
+import { startCliDaemon } from "./daemon-spawn";
+import { directLocalHttpFetch } from "./local-http";
 
 export interface CliDependencies {
   serve: (host: string, port: number) => Promise<number>;
   openBrowser: (url: string) => Promise<boolean>;
   waitForReady: (host: string, port: number, timeoutMs?: number) => Promise<boolean>;
-  withRuntimeTransition: <T>(agentDir: string, operation: () => Promise<T>) => Promise<T>;
-  spawnBackground: (host: string, port: number) => void;
+  withRuntimeTransition: <T>(
+    agentDir: string,
+    operation: (lease: RuntimeLease) => Promise<T>,
+  ) => Promise<T>;
+  spawnBackground: (
+    host: string,
+    port: number,
+    environment: EnvironmentMap,
+    transitionLease: RuntimeLease,
+  ) => void | Promise<void>;
   inspectBackground: (
     agentDir: string,
     host: string,
@@ -42,6 +56,9 @@ export interface CliDependencies {
 
 export interface CliOptions {
   agentDir?: string;
+  /** Startup environment seam for compiled-sandbox tests. */
+  environment?: EnvironmentMap;
+  environmentRestore?: BunSandboxEnvironmentOptions;
   /** First-run bootstrap, injectable for tests. Defaults to ensureFirstRunSetup. */
   setup?: (agentDir: string, log: (msg: string) => void) => SetupResult | void;
   /** Non-mutating skipped-setup lookup, injectable for tests. */
@@ -167,7 +184,7 @@ export async function waitForReady(
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(`http://${probeHost}:${port}/api/status`, {
+      const response = await directLocalHttpFetch(`http://${probeHost}:${port}/api/status`, {
         signal: AbortSignal.timeout(2_000),
       });
       if (response.ok) return true;
@@ -189,13 +206,15 @@ export async function runCli(
   deps: CliDependencies,
   options: CliOptions = {},
 ): Promise<number> {
+  if (hasHelpFlag(argv)) {
+    writeHelpOutput();
+    return 0;
+  }
+  const environment = options.environment ?? process.env;
+  restoreBunSandboxEnvironment(environment, options.environmentRestore);
   const agentDir = options.agentDir ?? getAgentDir();
 
   try {
-    if (hasHelpFlag(argv)) {
-      writeHelpOutput();
-      return 0;
-    }
     if (argv.length === 1 && argv[0] === "exit") {
       return await deps.withRuntimeTransition(agentDir, async () => {
         const background = await deps.inspectBackground(agentDir, DEFAULT_HOST, DEFAULT_PORT);
@@ -236,14 +255,17 @@ export async function runCli(
       }
     }
 
-    return await deps.withRuntimeTransition(agentDir, async () => {
+    return await deps.withRuntimeTransition(agentDir, async (transitionLease) => {
       const background = await deps.inspectBackground(agentDir, host, port);
       if (background === "desktop") throw new DesktopOwnsRuntimeError();
 
-      performFirstRunSetup(agentDir, {
-        setup: options.setup,
-        useExistingSetup: options.useExistingSetup,
-        log: (message) => console.log(`[easyresearch] ${message}`),
+      const { baseline, policy } = loadNetworkPolicy(agentDir, environment, options.environmentRestore);
+      withTemporaryNetworkPolicyEnvironment(policy, baseline, environment, () => {
+        performFirstRunSetup(agentDir, {
+          setup: options.setup,
+          useExistingSetup: options.useExistingSetup,
+          log: (message) => console.log(`[easyresearch] ${message}`),
+        });
       });
 
       if (background === "current") {
@@ -262,23 +284,19 @@ export async function runCli(
         await deps.stopBackground(agentDir);
       }
 
-      deps.spawnBackground(host, port);
       try {
-        writeFileSync(join(agentDir, "ready-marker-before.txt"), "1");
-      } catch {
-        // diagnostics only
+        await deps.spawnBackground(
+          host,
+          port,
+          reconstructChildEnvironment(environment, baseline),
+          transitionLease,
+        );
+      } catch (error) {
+        throw new Error(
+          `EasyResearch failed authenticated startup within ${READY_TIMEOUT_MS}ms. See ${serverLogFile(agentDir)}.`,
+          { cause: error },
+        );
       }
-      const ready = await deps.waitForReady(host, port);
-      try {
-        writeFileSync(join(agentDir, "ready-marker-after.txt"), "1");
-      } catch {
-        // diagnostics only
-      }
-      if (!ready) {
-        console.error(`EasyResearch failed to start within ${READY_TIMEOUT_MS}ms. See ${serverLogFile(agentDir)}.`);
-        return 1;
-      }
-
       const url = `http://${host}:${port}`;
       console.log(`EasyResearch: ${url}`);
       if (!isLoopbackHost(host)) {
@@ -308,6 +326,7 @@ class DesktopOwnsRuntimeError extends Error {
 }
 
 async function runRuntimeEntry(args: string[]): Promise<void> {
+  restoreBunSandboxEnvironment(process.env);
   let desktopRequest: ReturnType<typeof consumeDesktopServeRequest> | undefined;
   if (args[0] === "--desktop-serve") {
     try {
@@ -351,9 +370,9 @@ async function runRuntimeEntry(args: string[]): Promise<void> {
     withRuntimeTransition: async (agentDir, operation) => {
       const lease = await acquireTransitionLease(agentDir, "cli");
       try {
-        return await operation();
+        return await operation(lease);
       } finally {
-        if (!lease.release()) {
+        if (lease.held && !lease.release()) {
           throw new Error("EasyResearch lost ownership of its runtime transition lease.");
         }
       }
@@ -361,47 +380,22 @@ async function runRuntimeEntry(args: string[]): Promise<void> {
     inspectBackground: (agentDir, host, port) =>
       inspectServerProcess(agentDir, runtimeId, host, port),
     stopBackground: stopServerProcess,
-    spawnBackground: (host, port) => {
+    spawnBackground: async (host, port, environment, transitionLease) => {
       const agentDir = defaultAgentDir();
       const daemon = daemonBinaryPath(agentDir);
-      const daemonEnv = {
-        ...process.env,
-        [DAEMON_TOKEN_ENV]: randomUUID(),
-        [DAEMON_RUNTIME_ID_ENV]: runtimeId,
-        [DAEMON_OWNER_ENV]: "cli",
-      };
-      const stderrPath = join(agentDir, "logs", "daemon-stderr.log");
-      mkdirSync(dirname(stderrPath), { recursive: true });
-      const stderrFd = openSync(stderrPath, "a");
-      if (isEmbeddedBuild() && process.platform === "win32") {
-        // Bun's Windows `child_process.spawn` does not release the child
-        // handle on unref, so the CLI would never exit while the daemon lives.
-        // Bun's native spawn detaches the daemon correctly.
-        Bun.spawn([daemon, "--serve", host, String(port)], {
-          detached: true,
-          stdin: "ignore",
-          stdout: "ignore",
-          stderr: "ignore",
-          env: daemonEnv,
-        }).unref();
-        return;
-      }
-      const options: Parameters<typeof spawn>[2] = {
-        detached: true,
-        stdio: ["ignore", "ignore", stderrFd],
-        env: daemonEnv,
-      };
-      const child = isEmbeddedBuild()
-        ? spawn(daemon, ["--serve", host, String(port)], options)
-        : spawn(process.execPath, [fileURLToPath(import.meta.url), "--serve", host, String(port)], options);
-      child.on("error", (error) => {
-        try {
-          writeFileSync(stderrPath, `[daemon spawn error] ${error.message}\n`, { flag: "a" });
-        } catch {
-          // Best-effort diagnostics only.
-        }
+      await startCliDaemon({
+        agentDir,
+        daemonExecutable: daemon,
+        sourceExecutable: process.execPath,
+        sourceEntry: fileURLToPath(import.meta.url),
+        embedded: isEmbeddedBuild(),
+        platform: process.platform,
+        host,
+        port,
+        runtimeId,
+        environment,
+        transitionLease,
       });
-      child.unref();
     },
   });
 }

@@ -1,7 +1,16 @@
 import { readFileSync } from "node:fs";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  captureInheritedProxyEnvironment,
+  parseNetworkProxySettings,
+  resolveNetworkPolicy,
+} from "../../runtime/network-policy";
+import {
+  createAppliedSearchRoute,
+  type AppliedSearchRoute,
+} from "../../runtime/network-routing";
 import type { WebSearchAdapter } from "./adapter";
 import { createAbortError, createWebSearchAdapter } from "./adapter";
 import type {
@@ -25,10 +34,32 @@ import {
   FIXED_OPEN_WEBSEARCH_CONFIG,
   type InitializedOpenWebSearchRuntime,
 } from "./runtime";
+import type { SearchRequestRouting } from "./request-context";
+
+const loggerError = vi.hoisted(() => vi.fn());
+
+const directRequestRouting: SearchRequestRouting = Object.freeze({
+  bypasses: () => false,
+  directAgentsFor: () => undefined,
+});
 
 vi.mock("../../runtime/logger", () => ({
-  createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
+  createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: loggerError }),
 }));
+
+afterEach(() => {
+  loggerError.mockClear();
+});
+
+function appliedSearchRoute(
+  settings: unknown = {},
+  environment: Record<string, string | undefined> = {},
+): AppliedSearchRoute {
+  return createAppliedSearchRoute(resolveNetworkPolicy(
+    parseNetworkProxySettings(settings),
+    captureInheritedProxyEnvironment(environment),
+  ));
+}
 
 const result: WebSearchResult = {
   title: "Fixture title",
@@ -329,10 +360,218 @@ describe("web-search async extension", () => {
 
     const pending = factory({ registerTool } as never);
     expect(registerTool).not.toHaveBeenCalled();
-    resolve({ config: FIXED_OPEN_WEBSEARCH_CONFIG, search: fakeService });
+    resolve({
+      config: FIXED_OPEN_WEBSEARCH_CONFIG,
+      requestRouting: directRequestRouting,
+      search: fakeService,
+    });
     await pending;
 
     expect(registerTool).toHaveBeenCalledTimes(1);
     expect(registerTool.mock.calls[0]?.[0].name).toBe("web-search");
+  });
+
+  it("registers the normal tool for invalid Search policy and fails safely only on execute", async () => {
+    const initializeRuntime = vi.fn(async () => {
+      throw new Error("Open-WebSearch must not initialize");
+    });
+    const registerTool = vi.fn();
+    const factory: ExtensionFactory = createWebSearchExtension({
+      appliedSearchRoute: appliedSearchRoute({
+        httpProxy: "http://all.proxy:8000",
+        easyresearch: { network: { searchProxy: "not-a-proxy" } },
+      }),
+      initializeRuntime,
+    });
+
+    await expect(factory({ registerTool } as never)).resolves.toBeUndefined();
+
+    expect(initializeRuntime).not.toHaveBeenCalled();
+    expect(registerTool).toHaveBeenCalledTimes(1);
+    const tool = registerTool.mock.calls[0]?.[0];
+    expect(tool.name).toBe("web-search");
+    const output = await tool.execute(
+      "call",
+      { query: "fixture", engines: ["duckduckgo"] },
+      undefined,
+      undefined,
+      {} as never,
+    );
+    expect(textContent(output)).toContain("NETWORK_PROXY_INVALID");
+    expect(output.details).toMatchObject({ error: expect.stringContaining("NETWORK_PROXY_INVALID") });
+  });
+
+  it("retains construction rejection for ordinary Open-WebSearch initialization failures", async () => {
+    const initializationError = new Error("Open-WebSearch package exploded");
+    const registerTool = vi.fn();
+    const factory: ExtensionFactory = createWebSearchExtension({
+      appliedSearchRoute: appliedSearchRoute(),
+      initializeRuntime: vi.fn(async () => {
+        throw initializationError;
+      }),
+    });
+
+    await expect(factory({ registerTool } as never)).rejects.toBe(initializationError);
+    expect(registerTool).not.toHaveBeenCalled();
+  });
+
+  it("redacts configured and inherited proxy URLs plus userinfo from tool and log errors", async () => {
+    const configuredProxy = "http://configured.proxy:8001";
+    const inheritedProxy = "http://ambient-user:ambient-secret@ambient.proxy:9000";
+    const arbitraryProxy = "https://other-user:other-secret@other.proxy/path";
+    const fakeService: OpenWebSearchService = {
+      execute: vi.fn(async () => {
+        throw new Error(`connect ${configuredProxy} via ${inheritedProxy}; fallback ${arbitraryProxy}`);
+      }),
+    };
+    const registerTool = vi.fn();
+    const factory: ExtensionFactory = createWebSearchExtension({
+      appliedSearchRoute: appliedSearchRoute({
+        easyresearch: { network: { searchProxy: configuredProxy } },
+      }, {
+        HTTPS_PROXY: inheritedProxy,
+      }),
+      initializeRuntime: vi.fn(async () => ({
+        config: FIXED_OPEN_WEBSEARCH_CONFIG,
+        requestRouting: directRequestRouting,
+        search: fakeService,
+      })),
+    });
+    await factory({ registerTool } as never);
+
+    const output = await registerTool.mock.calls[0]?.[0].execute(
+      "call",
+      { query: "fixture", engines: ["duckduckgo"] },
+      undefined,
+      undefined,
+      {} as never,
+    );
+    const visible = `${textContent(output)}\n${JSON.stringify(output.details)}\n${JSON.stringify(loggerError.mock.calls)}`;
+
+    expect(visible).toContain("Search failed:");
+    expect(visible).not.toContain(configuredProxy);
+    expect(visible).not.toContain(inheritedProxy);
+    expect(visible).not.toContain("ambient-user");
+    expect(visible).not.toContain("ambient-secret");
+    expect(visible).not.toContain("other-user");
+    expect(visible).not.toContain("other-secret");
+  });
+
+  it("redacts proxy URLs and userinfo from partial engine failures", async () => {
+    const configuredProxy = "http://configured.proxy:8001";
+    const inheritedProxy = "http://ambient-user:ambient-secret@ambient.proxy:9000";
+    const route = appliedSearchRoute({
+      easyresearch: { network: { searchProxy: configuredProxy } },
+    }, {
+      HTTPS_PROXY: inheritedProxy,
+    });
+    const tool = createWebSearchTool(adapter(execution({
+      partialFailures: [{
+        engine: "bing",
+        code: "engine_error",
+        message: `failed through ${configuredProxy} and ${inheritedProxy}`,
+        engineReliability: "high",
+      }],
+    })), { sanitizeError: (error) => route.sanitizeError(error) });
+
+    const output = await tool.execute(
+      "call",
+      { query: "fixture", engines: ["duckduckgo", "bing"] },
+      undefined,
+      undefined,
+      {} as never,
+    );
+    const visible = `${textContent(output)}\n${JSON.stringify(output.details)}`;
+
+    expect(visible).toContain("engine_error");
+    expect(visible).not.toContain(configuredProxy);
+    expect(visible).not.toContain(inheritedProxy);
+    expect(visible).not.toContain("ambient-user");
+    expect(visible).not.toContain("ambient-secret");
+  });
+
+  it("sanitizes package console errors without changing concurrent daemon diagnostics", async () => {
+    const inheritedProxy = "http://ambient-user:ambient-secret@ambient.proxy:9000";
+    const arbitraryProxy = "https://other-user:other-secret@other.proxy/path";
+    let markPackageLog!: () => void;
+    let releasePackage!: () => void;
+    const packageLogged = new Promise<void>((resolve) => {
+      markPackageLog = resolve;
+    });
+    const packageGate = new Promise<void>((resolve) => {
+      releasePackage = resolve;
+    });
+    const fakeService: OpenWebSearchService = {
+      execute: vi.fn(async (input) => {
+        console.error(
+          "Open-WebSearch engine failed:",
+          new Error(`connect through ${inheritedProxy}; fallback ${arbitraryProxy}`),
+        );
+        markPackageLog();
+        await packageGate;
+        return {
+          query: input.query,
+          engines: input.engines,
+          totalResults: 0,
+          results: [],
+          partialFailures: [{
+            engine: "duckduckgo",
+            code: "engine_error",
+            message: `connect through ${inheritedProxy}`,
+          }],
+        };
+      }),
+    };
+    const route = appliedSearchRoute({}, { HTTPS_PROXY: inheritedProxy });
+    const registerTool = vi.fn();
+    const factory: ExtensionFactory = createWebSearchExtension({
+      appliedSearchRoute: route,
+      initializeRuntime: vi.fn(async () => ({
+        config: FIXED_OPEN_WEBSEARCH_CONFIG,
+        requestRouting: directRequestRouting,
+        search: fakeService,
+      })),
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await factory({ registerTool } as never);
+      const pending = registerTool.mock.calls[0]?.[0].execute(
+        "call",
+        { query: "fixture", engines: ["duckduckgo"] },
+        undefined,
+        undefined,
+        {} as never,
+      );
+      await packageLogged;
+      const concurrentDiagnostic = { status: 418 };
+      console.error("Concurrent daemon diagnostic", concurrentDiagnostic);
+      releasePackage();
+      const output = await pending;
+
+      const packageCall = consoleError.mock.calls.find(([message]) => (
+        message === "Open-WebSearch engine failed:"
+      ));
+      const concurrentCall = consoleError.mock.calls.find(([message]) => (
+        message === "Concurrent daemon diagnostic"
+      ));
+      const packageVisible = packageCall?.map((value) => (
+        value instanceof Error ? `${String(value)}\n${value.stack ?? ""}` : String(value)
+      )).join("\n") ?? "";
+      const outputVisible = `${textContent(output)}\n${JSON.stringify(output.details)}`;
+
+      expect(packageVisible).toContain("connect through");
+      expect(packageVisible).not.toContain(inheritedProxy);
+      expect(packageVisible).not.toContain("ambient-user");
+      expect(packageVisible).not.toContain("ambient-secret");
+      expect(packageVisible).not.toContain("other-user");
+      expect(packageVisible).not.toContain("other-secret");
+      expect(concurrentCall).toEqual(["Concurrent daemon diagnostic", concurrentDiagnostic]);
+      expect(outputVisible).not.toContain(inheritedProxy);
+      expect(outputVisible).not.toContain("ambient-secret");
+    } finally {
+      releasePackage();
+      consoleError.mockRestore();
+    }
   });
 });

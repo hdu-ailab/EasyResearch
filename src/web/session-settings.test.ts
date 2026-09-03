@@ -42,6 +42,14 @@ describe("readWebSessionIdleTimeout", () => {
     expect(read).toHaveBeenCalledWith({ scope: "global", path: "settings.json" });
   });
 
+  it("reads a timeout from BOM-prefixed settings accepted by Pi", async () => {
+    const read = vi.fn().mockResolvedValue(
+      `\uFEFF${JSON.stringify({ easyresearch: { web: { sessionIdleTimeoutMs: 5432 } } })}`,
+    );
+
+    await expect(readWebSessionIdleTimeout({ read } as never)).resolves.toBe(5432);
+  });
+
   it("uses the default when the global settings file is missing", async () => {
     const read = vi.fn().mockRejectedValue(new ConfigServiceError(404, "does not exist"));
     await expect(readWebSessionIdleTimeout({ read } as never)).resolves.toBe(DEFAULT_TIMEOUT);

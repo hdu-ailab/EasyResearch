@@ -19,11 +19,17 @@ import type {
   CompactionSettingsPatchDto,
   ConfigEntryDto,
   ConfigScope,
-  ConfigurationEvent,
   DirectoryEntryDto,
   DirectoryListingDto,
   FileContentDto,
   FileEntryDto,
+  NetworkProxySettingsDto,
+  NetworkProxySettingsPatchDto,
+  NetworkProxyTestRequestDto,
+  NetworkProxyTestResultDto,
+  PublicConfigurationEvent,
+  RuntimeRestartAcceptedDto,
+  RuntimeRestartBusyDto,
   SessionSnapshotDto,
   SessionTreeDto,
   SkillCommandDto,
@@ -55,7 +61,10 @@ import {
   parseEntries,
   parseFileContent,
   parseModels,
+  parseNetworkProxySettings,
+  parseNetworkProxyTestResult,
   parseProjectWatchReplacementResult,
+  parseRuntimeRestartAccepted,
   parseSessionSnapshot,
   parseSessionTree,
   parseSkillCommands,
@@ -98,8 +107,12 @@ function json(method: "POST" | "PUT" | "PATCH", body: unknown): RequestInit {
   };
 }
 
-export function listStatus(): Promise<StatusDto> {
-  return requestJson(routes.status(), parseStatus);
+export function listStatus(options: { signal?: AbortSignal } = {}): Promise<StatusDto> {
+  return requestJson(routes.status(), parseStatus, {
+    method: "GET",
+    cache: "no-store",
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  });
 }
 
 export function checkForUpdate(): Promise<UpdateCheckDto> {
@@ -123,11 +136,51 @@ export function patchCompactionSettings(patch: CompactionSettingsPatchDto): Prom
 }
 
 export function getApiUsageSettings(): Promise<ApiUsageSettingsDto> {
-  return requestJson(routes.apiUsageSettings(), parseApiUsageSettings);
+  return requestJson(routes.apiUsageSettings(), parseApiUsageSettings, {
+    method: "GET",
+    cache: "no-store",
+  });
 }
 
 export function patchApiUsageSettings(patch: ApiUsageSettingsPatchDto): Promise<ApiUsageSettingsDto> {
   return requestJson(routes.apiUsageSettings(), parseApiUsageSettings, json("PATCH", patch));
+}
+
+export function getNetworkProxySettings(): Promise<NetworkProxySettingsDto> {
+  return requestJson(routes.networkProxySettings(), parseNetworkProxySettings);
+}
+
+export function patchNetworkProxySettings(patch: NetworkProxySettingsPatchDto): Promise<NetworkProxySettingsDto> {
+  return requestJson(routes.networkProxySettings(), parseNetworkProxySettings, json("PATCH", patch));
+}
+
+export function testNetworkProxy(request: NetworkProxyTestRequestDto): Promise<NetworkProxyTestResultDto> {
+  return requestJson(routes.networkProxyTest(), parseNetworkProxyTestResult, json("POST", request));
+}
+
+export function restartRuntime(force: boolean): Promise<RuntimeRestartAcceptedDto> {
+  return requestJson(routes.runtimeRestart(), parseRuntimeRestartAccepted, json("POST", { force }));
+}
+
+export function parseRuntimeBusyError(error: unknown): RuntimeRestartBusyDto | null {
+  if (!(error instanceof ApiError) || error.status !== 409) return null;
+  const details = error.details;
+  if (details === null || typeof details !== "object" || Array.isArray(details)) return null;
+  const source = details as Record<string, unknown>;
+  if (
+    Object.keys(source).length !== 3 ||
+    source.code !== "RUNTIME_BUSY" ||
+    !Number.isSafeInteger(source.activeSessions) ||
+    (source.activeSessions as number) < 0 ||
+    typeof source.authFlowActive !== "boolean"
+  ) {
+    return null;
+  }
+  return {
+    code: "RUNTIME_BUSY",
+    activeSessions: source.activeSessions as number,
+    authFlowActive: source.authFlowActive,
+  };
 }
 
 export function listAgentResources(): Promise<AgentResourceDto[]> {
@@ -377,7 +430,7 @@ export function connectSessionEvents(id: string, handlers: SessionEventHandlers)
 }
 
 export interface ConfigurationEventHandlers {
-  onEvent: (event: ConfigurationEvent) => void;
+  onEvent: (event: PublicConfigurationEvent) => void;
   onError: () => void;
 }
 

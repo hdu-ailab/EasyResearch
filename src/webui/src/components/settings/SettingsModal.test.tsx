@@ -16,6 +16,10 @@ vi.mock("../../api", async (importOriginal) => {
     patchCompactionSettings: vi.fn(),
     getApiUsageSettings: vi.fn(),
     patchApiUsageSettings: vi.fn(),
+    getNetworkProxySettings: vi.fn(),
+    patchNetworkProxySettings: vi.fn(),
+    testNetworkProxy: vi.fn(),
+    restartRuntime: vi.fn(),
     listAgents: vi.fn(),
     listModels: vi.fn(),
     listAgentResources: vi.fn(),
@@ -50,6 +54,18 @@ beforeEach(() => {
   vi.mocked(api.patchApiUsageSettings)
     .mockReset()
     .mockImplementation(async ({ showApiUsageDetails }) => ({ showApiUsageDetails }));
+  vi.mocked(api.getNetworkProxySettings)
+    .mockReset()
+    .mockResolvedValue({
+      configured: {},
+      appliedConfigured: {},
+      sources: { all: "direct", llm: "direct", search: "direct" },
+      errors: [],
+      restartRequired: false,
+    });
+  vi.mocked(api.patchNetworkProxySettings).mockReset();
+  vi.mocked(api.testNetworkProxy).mockReset();
+  vi.mocked(api.restartRuntime).mockReset();
   vi.mocked(api.listAgents).mockReset();
   vi.mocked(api.listModels).mockReset();
   vi.mocked(api.listAgentResources).mockReset();
@@ -208,6 +224,7 @@ const defaultModalProps: SettingsModalProps = {
   onOpenConfig: vi.fn(),
   onProjectInterestChange: vi.fn(),
   registerRouteCloseGuard: () => () => {},
+  onRuntimeRestartAccepted: vi.fn(),
 };
 
 function settingsElement(
@@ -225,6 +242,7 @@ function settingsElement(
           onOpenConfig={onOpenConfig}
           onProjectInterestChange={onProjectInterestChange}
           registerRouteCloseGuard={defaultModalProps.registerRouteCloseGuard}
+          onRuntimeRestartAccepted={defaultModalProps.onRuntimeRestartAccepted}
           configurationGeneration={configurationGeneration}
           configurationError={configurationError}
         />
@@ -265,14 +283,593 @@ function deferred<T>() {
 }
 
 describe("SettingsModal", () => {
+  it("renders the Network panel from the desktop category rail", async () => {
+    const user = userEvent.setup();
+    renderSettings();
+
+    await user.click(screen.getByRole("tab", { name: "Network" }));
+
+    expect(await screen.findByRole("form", { name: "Network" })).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "All traffic proxy" })).toBeVisible();
+  });
+
+  it("opens Network on mobile and internal Back preserves its draft without closing Settings", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    vi.stubGlobal("innerWidth", 390);
+    renderSettings(() => {}, onClose);
+
+    await user.click(screen.getByRole("button", { name: "Network" }));
+    const allProxy = await screen.findByRole("textbox", { name: "All traffic proxy" });
+    await user.type(allProxy, "http://draft.example");
+    await user.click(screen.getByRole("button", { name: "Back to settings" }));
+
+    expect(onClose).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Network" }));
+    expect(screen.getByRole("textbox", { name: "All traffic proxy" })).toHaveValue("http://draft.example");
+  });
+
+  it("opens a stacked restart choice after Save and Later preserves the persistent action", async () => {
+    vi.mocked(api.patchNetworkProxySettings).mockResolvedValue({
+      configured: { all: "http://saved.example" },
+      appliedConfigured: {},
+      sources: { all: "configured", llm: "all", search: "all" },
+      errors: [],
+      restartRequired: true,
+    });
+    const user = userEvent.setup();
+    renderSettings();
+    await user.click(screen.getByRole("tab", { name: "Network" }));
+    await user.type(await screen.findByRole("textbox", { name: "All traffic proxy" }), "http://saved.example");
+
+    await user.click(screen.getByRole("button", { name: "Save network settings" }));
+
+    const restartDialog = await screen.findByRole("dialog", { name: "Restart EasyResearch?" });
+    const settingsDialog = document.querySelector<HTMLElement>(
+      '[role="dialog"][aria-labelledby="settings-dialog-title"]',
+    );
+    expect(restartDialog).toHaveAttribute("aria-modal", "true");
+    expect(settingsDialog).toHaveAttribute("inert");
+    expect(settingsDialog).toHaveAttribute("aria-hidden", "true");
+
+    await user.click(within(restartDialog).getByRole("button", { name: "Later" }));
+
+    expect(screen.queryByRole("dialog", { name: "Restart EasyResearch?" })).toBeNull();
+    const persistentAction = screen.getByRole("button", { name: "Restart required" });
+    expect(persistentAction).toBeVisible();
+    expect(persistentAction).toBeEnabled();
+    await user.click(persistentAction);
+    expect(await screen.findByRole("dialog", { name: "Restart EasyResearch?" })).toBeVisible();
+  });
+
+  it.each([
+    ["changed draft", false],
+    ["diagnostics-only repair", true],
+  ] as const)("blocks exit and discard while a %s Save is in flight", async (_scenario, repairOnly) => {
+    vi.mocked(api.getNetworkProxySettings).mockResolvedValue({
+      configured: {},
+      appliedConfigured: {},
+      sources: { all: "direct", llm: "direct", search: "direct" },
+      errors: repairOnly ? [{ code: "NETWORK_PROXY_INVALID", field: "all" }] : [],
+      restartRequired: true,
+    });
+    const pending = deferred<Awaited<ReturnType<typeof api.patchNetworkProxySettings>>>();
+    vi.mocked(api.patchNetworkProxySettings).mockReturnValue(pending.promise);
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    renderSettings(() => {}, onClose);
+    await user.click(screen.getByRole("tab", { name: "Network" }));
+    const all = await screen.findByRole("textbox", { name: "All traffic proxy" });
+    if (!repairOnly) await user.type(all, "http://draft.example");
+
+    await user.click(screen.getByRole("button", { name: "Save network settings" }));
+    expect(api.patchNetworkProxySettings).toHaveBeenCalledOnce();
+    await user.click(screen.getByRole("button", { name: "Close" }));
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog", { name: "Discard network changes?" })).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Settings" })).toBeVisible();
+
+    await act(async () => {
+      pending.resolve({
+        configured: repairOnly ? {} : { all: "http://draft.example" },
+        appliedConfigured: {},
+        sources: repairOnly
+          ? { all: "direct", llm: "direct", search: "direct" }
+          : { all: "configured", llm: "all", search: "all" },
+        errors: [],
+        restartRequired: true,
+      });
+      await pending.promise;
+    });
+
+    expect(await screen.findByRole("dialog", { name: "Restart EasyResearch?" })).toBeVisible();
+  });
+
+  it("does not let persistent restart discard a draft or race its atomic PATCH", async () => {
+    vi.mocked(api.getNetworkProxySettings).mockResolvedValue({
+      configured: { all: "http://saved.example" },
+      appliedConfigured: {},
+      sources: { all: "configured", llm: "all", search: "all" },
+      errors: [],
+      restartRequired: true,
+    });
+    const pending = deferred<Awaited<ReturnType<typeof api.patchNetworkProxySettings>>>();
+    vi.mocked(api.patchNetworkProxySettings).mockReturnValue(pending.promise);
+    vi.mocked(api.restartRuntime).mockResolvedValue({ accepted: true, bootId: "boot-old" });
+    const user = userEvent.setup();
+    renderSettings();
+    await user.click(screen.getByRole("tab", { name: "Network" }));
+    const draft = await screen.findByRole("textbox", { name: "All traffic proxy" });
+    await user.clear(draft);
+    await user.type(draft, "http://draft.example");
+
+    const restart = screen.getByRole("button", { name: "Restart required" });
+    expect(restart).toBeDisabled();
+    fireEvent.click(restart);
+    expect(screen.queryByRole("dialog", { name: "Restart EasyResearch?" })).toBeNull();
+    expect(draft).toHaveValue("http://draft.example");
+
+    await user.click(screen.getByRole("button", { name: "Save network settings" }));
+    expect(api.patchNetworkProxySettings).toHaveBeenCalledOnce();
+    expect(restart).toBeDisabled();
+    fireEvent.click(restart);
+    expect(api.restartRuntime).not.toHaveBeenCalled();
+    expect(draft).toHaveValue("http://draft.example");
+
+    await act(async () => {
+      pending.resolve({
+        configured: { all: "http://draft.example" },
+        appliedConfigured: {},
+        sources: { all: "configured", llm: "all", search: "all" },
+        errors: [],
+        restartRequired: true,
+      });
+      await pending.promise;
+    });
+
+    const choice = await screen.findByRole("dialog", { name: "Restart EasyResearch?" });
+    expect(draft).toHaveValue("http://draft.example");
+    await user.click(within(choice).getByRole("button", { name: "Later" }));
+    expect(restart).toBeEnabled();
+    await user.click(restart);
+    await user.click(screen.getByRole("button", { name: "Restart now" }));
+    await waitFor(() => expect(api.restartRuntime).toHaveBeenCalledOnce());
+  });
+
+  it("requests an idle restart and reports the accepted old boot id", async () => {
+    vi.mocked(api.getNetworkProxySettings).mockResolvedValue({
+      configured: { all: "http://saved.example" },
+      appliedConfigured: {},
+      sources: { all: "configured", llm: "all", search: "all" },
+      errors: [],
+      restartRequired: true,
+    });
+    vi.mocked(api.restartRuntime).mockResolvedValue({ accepted: true, bootId: "boot-old" });
+    const onRuntimeRestartAccepted = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <PreferencesProvider>
+        <I18nProvider>
+          <SettingsModal {...defaultModalProps} onRuntimeRestartAccepted={onRuntimeRestartAccepted} />
+        </I18nProvider>
+      </PreferencesProvider>,
+    );
+    await user.click(screen.getByRole("tab", { name: "Network" }));
+    await user.click(await screen.findByRole("button", { name: "Restart required" }));
+
+    await user.click(screen.getByRole("button", { name: "Restart now" }));
+
+    await waitFor(() => expect(onRuntimeRestartAccepted).toHaveBeenCalledWith("boot-old"));
+    expect(api.restartRuntime).toHaveBeenCalledOnce();
+    expect(api.restartRuntime).toHaveBeenCalledWith(false);
+  });
+
+  it("requires a stacked destructive confirmation before forcing a busy restart", async () => {
+    vi.mocked(api.getNetworkProxySettings).mockResolvedValue({
+      configured: { all: "http://saved.example" },
+      appliedConfigured: {},
+      sources: { all: "configured", llm: "all", search: "all" },
+      errors: [],
+      restartRequired: true,
+    });
+    vi.mocked(api.restartRuntime)
+      .mockRejectedValueOnce(new api.ApiError(409, { code: "RUNTIME_BUSY", activeSessions: 2, authFlowActive: true }))
+      .mockResolvedValueOnce({ accepted: true, bootId: "boot-old" });
+    const onRuntimeRestartAccepted = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <PreferencesProvider>
+        <I18nProvider>
+          <SettingsModal {...defaultModalProps} onRuntimeRestartAccepted={onRuntimeRestartAccepted} />
+        </I18nProvider>
+      </PreferencesProvider>,
+    );
+    await user.click(screen.getByRole("tab", { name: "Network" }));
+    await user.click(await screen.findByRole("button", { name: "Restart required" }));
+    const choice = screen.getByRole("dialog", { name: "Restart EasyResearch?" });
+
+    await user.click(within(choice).getByRole("button", { name: "Restart now" }));
+
+    const busy = await screen.findByRole("dialog", { name: "Stop active work and restart?" });
+    expect(busy).toHaveTextContent("2 active sessions will stop");
+    expect(busy).toHaveTextContent("The active provider login will be cancelled");
+    expect(choice).toHaveAttribute("inert");
+    expect(choice).toHaveAttribute("aria-hidden", "true");
+
+    await user.click(within(busy).getByRole("button", { name: "Stop work and restart" }));
+
+    await waitFor(() => expect(onRuntimeRestartAccepted).toHaveBeenCalledWith("boot-old"));
+    expect(api.restartRuntime).toHaveBeenNthCalledWith(1, false);
+    expect(api.restartRuntime).toHaveBeenNthCalledWith(2, true);
+  });
+
+  it("cancels the busy confirmation back to the restart choice", async () => {
+    vi.mocked(api.getNetworkProxySettings).mockResolvedValue({
+      configured: { all: "http://saved.example" },
+      appliedConfigured: {},
+      sources: { all: "configured", llm: "all", search: "all" },
+      errors: [],
+      restartRequired: true,
+    });
+    vi.mocked(api.restartRuntime).mockRejectedValueOnce(
+      new api.ApiError(409, { code: "RUNTIME_BUSY", activeSessions: 1, authFlowActive: false }),
+    );
+    const user = userEvent.setup();
+    renderSettings();
+    await user.click(screen.getByRole("tab", { name: "Network" }));
+    await user.click(await screen.findByRole("button", { name: "Restart required" }));
+    await user.click(screen.getByRole("button", { name: "Restart now" }));
+    const busy = await screen.findByRole("dialog", { name: "Stop active work and restart?" });
+
+    await user.click(within(busy).getByRole("button", { name: "Cancel" }));
+
+    expect(screen.queryByRole("dialog", { name: "Stop active work and restart?" })).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Restart EasyResearch?" })).toHaveAttribute("aria-modal", "true");
+    expect(api.restartRuntime).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    new api.ApiError(409, { code: "RUNTIME_RESTARTING", raw: "private restart detail" }),
+    new Error("private transport detail"),
+  ])("keeps a safe restart error visible and retries the same non-force request", async (failure) => {
+    vi.mocked(api.getNetworkProxySettings).mockResolvedValue({
+      configured: { all: "http://saved.example" },
+      appliedConfigured: {},
+      sources: { all: "configured", llm: "all", search: "all" },
+      errors: [],
+      restartRequired: true,
+    });
+    vi.mocked(api.restartRuntime)
+      .mockRejectedValueOnce(failure)
+      .mockResolvedValueOnce({ accepted: true, bootId: "boot-old" });
+    const onRuntimeRestartAccepted = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <PreferencesProvider>
+        <I18nProvider>
+          <SettingsModal {...defaultModalProps} onRuntimeRestartAccepted={onRuntimeRestartAccepted} />
+        </I18nProvider>
+      </PreferencesProvider>,
+    );
+    await user.click(screen.getByRole("tab", { name: "Network" }));
+    await user.click(await screen.findByRole("button", { name: "Restart required" }));
+
+    await user.click(screen.getByRole("button", { name: "Restart now" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Could not start the restart.");
+    expect(alert).not.toHaveTextContent(/private|RUNTIME_RESTARTING/);
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(onRuntimeRestartAccepted).toHaveBeenCalledWith("boot-old"));
+    expect(api.restartRuntime).toHaveBeenNthCalledWith(1, false);
+    expect(api.restartRuntime).toHaveBeenNthCalledWith(2, false);
+  });
+
+  it("guards the Close button and retains the exact Network draft when discard is cancelled", async () => {
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    renderSettings(() => {}, onClose);
+    await user.click(screen.getByRole("tab", { name: "Network" }));
+    const draft = await screen.findByRole("textbox", { name: "All traffic proxy" });
+    await user.type(draft, "http://draft.example");
+
+    await user.click(screen.getByRole("button", { name: "Close" }));
+
+    const discard = screen.getByRole("dialog", { name: "Discard network changes?" });
+    expect(discard).toHaveAttribute("aria-modal", "true");
+    expect(onClose).not.toHaveBeenCalled();
+    await user.click(within(discard).getByRole("button", { name: "Keep editing" }));
+
+    expect(screen.queryByRole("dialog", { name: "Discard network changes?" })).toBeNull();
+    expect(screen.getByRole("tab", { name: "Network" })).toHaveAttribute("aria-selected", "true");
+    expect(draft).toHaveValue("http://draft.example");
+    expect(onClose).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    await user.click(screen.getByRole("button", { name: "Discard changes" }));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("guards a direct desktop backdrop dismissal when Network has a draft", async () => {
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    renderSettings(() => {}, onClose);
+    await user.click(screen.getByRole("tab", { name: "Network" }));
+    await user.type(await screen.findByRole("textbox", { name: "All traffic proxy" }), "http://draft.example");
+    const settings = document.querySelector<HTMLElement>('[role="dialog"][aria-labelledby="settings-dialog-title"]')!;
+
+    fireEvent.mouseDown(settings.parentElement!);
+
+    expect(screen.getByRole("dialog", { name: "Discard network changes?" })).toBeVisible();
+    expect(onClose).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Discard changes" }));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("guards Config entry and performs that original action only after discard confirmation", async () => {
+    const onOpenConfig = vi.fn();
+    const user = userEvent.setup();
+    renderSettings(onOpenConfig);
+    await user.click(screen.getByRole("tab", { name: "Network" }));
+    const draft = await screen.findByRole("textbox", { name: "All traffic proxy" });
+    await user.type(draft, "http://draft.example");
+
+    await user.click(screen.getByRole("button", { name: /open config browser/i }));
+    const discard = screen.getByRole("dialog", { name: "Discard network changes?" });
+    expect(onOpenConfig).not.toHaveBeenCalled();
+    await user.click(within(discard).getByRole("button", { name: "Keep editing" }));
+    expect(draft).toHaveValue("http://draft.example");
+
+    await user.click(screen.getByRole("button", { name: /open config browser/i }));
+    await user.click(screen.getByRole("button", { name: "Discard changes" }));
+    expect(onOpenConfig).toHaveBeenCalledOnce();
+  });
+
+  it("guards a browser-route close request with the same discard layer", async () => {
+    let guard: Parameters<SettingsModalProps["registerRouteCloseGuard"]>[0] | null = null;
+    const registerRouteCloseGuard: SettingsModalProps["registerRouteCloseGuard"] = (next) => {
+      guard = next;
+      return () => {
+        guard = null;
+      };
+    };
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <PreferencesProvider>
+        <I18nProvider>
+          <SettingsModal {...defaultModalProps} onClose={onClose} registerRouteCloseGuard={registerRouteCloseGuard} />
+        </I18nProvider>
+      </PreferencesProvider>,
+    );
+    await user.click(screen.getByRole("tab", { name: "Network" }));
+    const draft = await screen.findByRole("textbox", { name: "All traffic proxy" });
+    await user.type(draft, "http://draft.example");
+    expect(guard).not.toBeNull();
+    expect(guard!.shouldBlock()).toBe(true);
+
+    act(() => guard!.requestClose());
+
+    const discard = screen.getByRole("dialog", { name: "Discard network changes?" });
+    expect(onClose).not.toHaveBeenCalled();
+    await user.click(within(discard).getByRole("button", { name: "Keep editing" }));
+    expect(draft).toHaveValue("http://draft.example");
+    expect(guard!.shouldBlock()).toBe(true);
+
+    act(() => guard!.requestClose());
+    await user.click(screen.getByRole("button", { name: "Discard changes" }));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("gives an existing nested modal first refusal before guarding the dirty Network draft", async () => {
+    let guard: Parameters<SettingsModalProps["registerRouteCloseGuard"]>[0] | null = null;
+    const registerRouteCloseGuard: SettingsModalProps["registerRouteCloseGuard"] = (next) => {
+      guard = next;
+      return () => {
+        guard = null;
+      };
+    };
+    const user = userEvent.setup();
+    render(
+      <PreferencesProvider>
+        <I18nProvider>
+          <SettingsModal {...defaultModalProps} registerRouteCloseGuard={registerRouteCloseGuard} />
+        </I18nProvider>
+      </PreferencesProvider>,
+    );
+    await user.click(screen.getByRole("tab", { name: "Network" }));
+    await user.type(await screen.findByRole("textbox", { name: "All traffic proxy" }), "http://draft.example");
+    await user.click(screen.getByRole("tab", { name: "Model providers" }));
+    await user.click(screen.getByRole("button", { name: /^Connect providers/ }));
+    expect(screen.getByRole("dialog", { name: "Connect providers" })).toBeVisible();
+
+    act(() => guard!.requestClose());
+
+    expect(screen.queryByRole("dialog", { name: "Connect providers" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Discard network changes?" })).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Settings" })).toBeVisible();
+
+    act(() => guard!.requestClose());
+    expect(screen.getByRole("dialog", { name: "Discard network changes?" })).toBeVisible();
+  });
+
+  it("does not guard Close, browser Back, or Config for persisted leaf diagnostics alone", async () => {
+    vi.mocked(api.getNetworkProxySettings).mockResolvedValue({
+      configured: {},
+      appliedConfigured: {},
+      sources: { all: "direct", llm: "direct", search: "direct" },
+      errors: [{ code: "NETWORK_PROXY_INVALID", field: "all" }],
+      restartRequired: true,
+    });
+    let guard: Parameters<SettingsModalProps["registerRouteCloseGuard"]>[0] | null = null;
+    const registerRouteCloseGuard: SettingsModalProps["registerRouteCloseGuard"] = (next) => {
+      guard = next;
+      return () => {
+        guard = null;
+      };
+    };
+    const onClose = vi.fn();
+    const onOpenConfig = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <PreferencesProvider>
+        <I18nProvider>
+          <SettingsModal
+            {...defaultModalProps}
+            onClose={onClose}
+            onOpenConfig={onOpenConfig}
+            registerRouteCloseGuard={registerRouteCloseGuard}
+          />
+        </I18nProvider>
+      </PreferencesProvider>,
+    );
+    await user.click(screen.getByRole("tab", { name: "Network" }));
+    await screen.findByText("The stored All traffic proxy is invalid. Replace it or save empty to clear it.");
+
+    expect(guard).not.toBeNull();
+    expect(guard!.shouldBlock()).toBe(false);
+    await user.click(screen.getByRole("button", { name: /open config browser/i }));
+    expect(onOpenConfig).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("dialog", { name: "Discard network changes?" })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("dialog", { name: "Discard network changes?" })).toBeNull();
+
+    act(() => guard!.requestClose());
+    expect(onClose).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("dialog", { name: "Discard network changes?" })).toBeNull();
+  });
+
+  it("directs malformed settings ancestors to Config without claiming Save can repair them", async () => {
+    vi.mocked(api.getNetworkProxySettings).mockResolvedValue({
+      configured: {},
+      appliedConfigured: {},
+      sources: { all: "direct", llm: "direct", search: "direct" },
+      errors: [{ code: "NETWORK_PROXY_INVALID", field: "settings" }],
+      restartRequired: true,
+    });
+    const onOpenConfig = vi.fn();
+    const user = userEvent.setup();
+    renderSettings(onOpenConfig);
+    await user.click(screen.getByRole("tab", { name: "Network" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("The stored Network settings are invalid");
+    expect(screen.getByRole("button", { name: "Save network settings" })).toBeDisabled();
+    await user.click(within(alert).getByRole("button", { name: /open config browser/i }));
+
+    expect(onOpenConfig).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("dialog", { name: "Discard network changes?" })).toBeNull();
+  });
+
+  it("uses inset-free mobile geometry for restart choice, busy confirmation, and discard", async () => {
+    vi.stubGlobal("innerWidth", 390);
+    vi.mocked(api.getNetworkProxySettings).mockResolvedValue({
+      configured: {},
+      appliedConfigured: {},
+      sources: { all: "direct", llm: "direct", search: "direct" },
+      errors: [],
+      restartRequired: true,
+    });
+    vi.mocked(api.restartRuntime).mockRejectedValueOnce(
+      new api.ApiError(409, { code: "RUNTIME_BUSY", activeSessions: 1, authFlowActive: false }),
+    );
+    const user = userEvent.setup();
+    renderSettings();
+    await user.click(screen.getByRole("button", { name: "Network" }));
+    await user.click(await screen.findByRole("button", { name: "Restart required" }));
+
+    const choice = screen.getByRole("dialog", { name: "Restart EasyResearch?" });
+    expect(choice.parentElement).toHaveClass("p-0", "min-[820px]:p-4");
+    expect(choice).toHaveClass(
+      "h-full",
+      "w-full",
+      "min-[820px]:h-auto",
+      "min-[820px]:max-w-[420px]",
+      "min-[820px]:rounded-[10px]",
+    );
+    expect(choice).not.toHaveClass("max-w-[420px]", "rounded-[10px]");
+    await user.click(within(choice).getByRole("button", { name: "Restart now" }));
+
+    const busy = await screen.findByRole("dialog", { name: "Stop active work and restart?" });
+    expect(busy.parentElement).toHaveClass("p-0", "min-[820px]:p-4");
+    expect(busy).toHaveClass(
+      "h-full",
+      "w-full",
+      "min-[820px]:h-auto",
+      "min-[820px]:max-w-[440px]",
+      "min-[820px]:rounded-[10px]",
+    );
+    expect(busy).not.toHaveClass("max-w-[440px]", "rounded-[10px]");
+    await user.click(within(busy).getByRole("button", { name: "Cancel" }));
+    await user.click(within(choice).getByRole("button", { name: "Later" }));
+
+    const draft = screen.getByRole("textbox", { name: "All traffic proxy" });
+    await user.type(draft, "http://draft.example");
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    const discard = screen.getByRole("dialog", { name: "Discard network changes?" });
+    expect(discard.parentElement).toHaveClass("p-0", "min-[820px]:p-4");
+    expect(discard).toHaveClass(
+      "h-full",
+      "w-full",
+      "min-[820px]:h-auto",
+      "min-[820px]:max-w-[400px]",
+      "min-[820px]:rounded-[10px]",
+    );
+    expect(discard).not.toHaveClass("max-w-[400px]", "rounded-[10px]");
+  });
+
+  it("localizes critical discard and forced-restart consequences in Chinese", async () => {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ language: "zh-CN" }));
+    vi.mocked(api.getNetworkProxySettings).mockResolvedValue({
+      configured: {},
+      appliedConfigured: {},
+      sources: { all: "direct", llm: "direct", search: "direct" },
+      errors: [],
+      restartRequired: true,
+    });
+    vi.mocked(api.restartRuntime).mockRejectedValueOnce(
+      new api.ApiError(409, { code: "RUNTIME_BUSY", activeSessions: 3, authFlowActive: true }),
+    );
+    const user = userEvent.setup();
+    renderSettings();
+    await user.click(screen.getByRole("tab", { name: "网络" }));
+    const draft = await screen.findByRole("textbox", { name: "全部代理" });
+    await user.type(draft, "http://draft.example");
+
+    await user.click(screen.getByRole("button", { name: "关闭" }));
+    const discard = screen.getByRole("dialog", { name: "放弃网络更改？" });
+    expect(discard).toHaveTextContent("未保存的网络设置将丢失");
+    expect(within(discard).getByRole("button", { name: "继续编辑" })).toBeVisible();
+    await user.click(within(discard).getByRole("button", { name: "继续编辑" }));
+    await user.clear(draft);
+
+    await user.click(screen.getByRole("button", { name: "需要重启" }));
+    const choice = screen.getByRole("dialog", { name: "重启 EasyResearch？" });
+    expect(within(choice).getByRole("button", { name: "立即重启" })).toBeVisible();
+    expect(within(choice).getByRole("button", { name: "稍后" })).toBeVisible();
+    await user.click(within(choice).getByRole("button", { name: "立即重启" }));
+
+    const busy = await screen.findByRole("dialog", { name: "停止活动任务并重启？" });
+    expect(busy).toHaveTextContent("将停止 3 个活动会话");
+    expect(busy).toHaveTextContent("活动的提供商登录将被取消");
+    expect(within(busy).getByRole("button", { name: "停止任务并重启" })).toBeVisible();
+  });
+
   it("uses an automatically activating vertical tablist on desktop", async () => {
     const user = userEvent.setup();
     renderSettings();
     const tabs = screen.getByRole("tablist", { name: "Settings" });
     expect(tabs).toHaveAttribute("aria-orientation", "vertical");
     const general = screen.getByRole("tab", { name: "General" });
+    const network = screen.getByRole("tab", { name: "Network" });
     const conversation = screen.getByRole("tab", { name: "Conversation" });
     general.focus();
+    await user.keyboard("{ArrowDown}");
+    expect(network).toHaveFocus();
+    expect(network).toHaveAttribute("aria-selected", "true");
     await user.keyboard("{ArrowDown}");
     expect(conversation).toHaveFocus();
     expect(conversation).toHaveAttribute("aria-selected", "true");

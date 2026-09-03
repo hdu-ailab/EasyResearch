@@ -1,12 +1,23 @@
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentRuntimeBinding } from "../runtime/agent-runtime-binding";
 import type { LiveConfiguration } from "../runtime/live-configuration";
+import type {
+  AgentSessionNetworkRouter,
+  AppliedSearchRoute,
+  SearchProxyConfiguration,
+} from "../runtime/network-routing";
 import type { SubagentCoordinator } from "../subagent/coordinator";
 import type { SubagentSupervisor } from "../subagent/supervisor";
 import { ManualCompactionController } from "../web/manual-compaction";
 import { SessionStatsNotifier } from "../web/session-stats";
 import { createResearchAssistantExtensions, type ResearchAssistantExtensionRuntime } from "./index";
+
+const platformFetch = globalThis.fetch;
+
+afterEach(() => {
+  globalThis.fetch = platformFetch;
+});
 
 function binding(tools: string[]): AgentRuntimeBinding {
   return {
@@ -25,6 +36,20 @@ function runtime(label: string, tools = ["read"]): ResearchAssistantExtensionRun
     compaction: new ManualCompactionController(),
     stats: new SessionStatsNotifier(),
     publishTimelineEntry: vi.fn(),
+  };
+}
+
+function networkRouter(
+  appliedSearchRoute: AppliedSearchRoute,
+  scopes: string[] = [],
+): AgentSessionNetworkRouter {
+  return {
+    appliedSearchRoute,
+    decorateModelRuntime: (candidate) => candidate,
+    withScope(scope, operation) {
+      scopes.push(scope);
+      return operation();
+    },
   };
 }
 
@@ -62,6 +87,73 @@ describe("bundled extension runtime builder", () => {
     await loading;
     expect(registerTool).toHaveBeenCalledTimes(1);
     expect(registerTool.mock.calls[0]?.[0].name).toBe("web-search");
+  });
+
+  it("registers a safe root web-search tool when the applied Search route is invalid", async () => {
+    const invalid = Object.assign(new Error("invalid Search route"), {
+      code: "NETWORK_PROXY_INVALID" as const,
+    });
+    const invalidError = vi.fn(() => invalid);
+    const appliedSearchRoute: AppliedSearchRoute = Object.freeze({
+      policyFingerprint: "invalid:search",
+      applyProxyConfiguration: vi.fn(() => {
+        throw invalid;
+      }),
+      invalidError,
+      sanitizeError: (error: unknown) => error instanceof Error ? error.message : String(error),
+    });
+    const owner = {
+      ...runtime("root-routed"),
+      networkRouter: networkRouter(appliedSearchRoute),
+    } as ResearchAssistantExtensionRuntime;
+    const extension = createResearchAssistantExtensions(owner)
+      .find(({ name }) => name === "web-search")!;
+    const registerTool = vi.fn();
+
+    await expect(extension.factory({ registerTool } as never)).resolves.toBeUndefined();
+
+    expect(invalidError).toHaveBeenCalledOnce();
+    expect(registerTool).toHaveBeenCalledOnce();
+    const tool = registerTool.mock.calls[0]![0];
+    const result = await tool.execute("search-call", {
+      query: "routing test",
+      engines: ["duckduckgo"],
+    }, undefined, undefined, {} as never);
+    expect(result.details.error).toContain("NETWORK_PROXY_INVALID");
+  });
+
+  it("runs the root webfetch request through the bound Search scope", async () => {
+    const scopes: string[] = [];
+    const appliedSearchRoute: AppliedSearchRoute = Object.freeze({
+      policyFingerprint: "direct",
+      applyProxyConfiguration: (target: SearchProxyConfiguration) => {
+        target.useProxy = false;
+      },
+      invalidError: () => undefined,
+      sanitizeError: (error: unknown) => error instanceof Error ? error.message : String(error),
+    });
+    const owner = {
+      ...runtime("root-routed"),
+      networkRouter: networkRouter(appliedSearchRoute, scopes),
+    } as ResearchAssistantExtensionRuntime;
+    const extension = createResearchAssistantExtensions(owner)
+      .find(({ name }) => name === "webfetch")!;
+    const registerTool = vi.fn();
+    globalThis.fetch = Object.assign(
+      async () => new Response("root fetch", {
+        headers: { "content-type": "text/plain" },
+      }),
+      { preconnect: platformFetch.preconnect },
+    );
+
+    await extension.factory({ registerTool } as never);
+    const result = await registerTool.mock.calls[0]![0].execute("fetch-call", {
+      url: "https://root-search.example/",
+      format: "text",
+    }, undefined, undefined, {} as never);
+
+    expect(result.content).toEqual([{ type: "text", text: "root fetch" }]);
+    expect(scopes).toEqual(["search"]);
   });
 
   it("forwards exact persisted summary entries without appending plugin state", async () => {

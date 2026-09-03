@@ -126,6 +126,59 @@ describe("web-search adapter outcomes", () => {
     await expect(pending).rejects.toMatchObject({ name: "AbortError" });
     await new Promise((resolve) => setTimeout(resolve, 15));
   });
+
+  it("returns timeout failures on schedule without overlapping the still-settling package operation", async () => {
+    vi.useFakeTimers();
+    const events: string[] = [];
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const adapter = createWebSearchAdapter(service(async (input) => {
+      if (input.query === "first") {
+        events.push("first:start");
+        await firstGate;
+        events.push("first:end");
+      } else {
+        events.push("second:start");
+      }
+      return emptyResponse(input);
+    }), { timeoutMs: 25 });
+    const first = adapter.search({ query: "first", engines: ["duckduckgo"] });
+    let firstOutcome: unknown = "pending";
+    void first.then(
+      (value) => {
+        firstOutcome = value;
+      },
+      (error) => {
+        firstOutcome = error;
+      },
+    );
+    let second: Promise<unknown> | undefined;
+
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(events).toEqual(["first:start"]);
+      second = adapter.search({ query: "second", engines: ["bing"] });
+
+      await vi.advanceTimersByTimeAsync(25);
+
+      expect(firstOutcome).toMatchObject({
+        results: [],
+        partialFailures: [{ engine: "duckduckgo", code: "operation_timeout" }],
+        allEnginesFailed: true,
+      });
+      expect(events).toEqual(["first:start"]);
+
+      releaseFirst();
+      await expect(second).resolves.toMatchObject({ results: [], partialFailures: [] });
+      expect(events).toEqual(["first:start", "first:end", "second:start"]);
+    } finally {
+      releaseFirst();
+      await Promise.allSettled([first, ...(second ? [second] : [])]);
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("web-search serialization", () => {

@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { isThinkingLevel } from "../thinking-levels";
 import { createRouteHandler, type DaemonControl, type RouteServices } from "./routes";
 import { ActiveSessionRegistry } from "./active-sessions";
@@ -29,6 +30,12 @@ import {
 } from "./configuration-project-watches";
 import { repairDanglingAgentDefaults } from "../runtime/agent-default-repair";
 import { createProviderDeletionService } from "./provider-deletion";
+import type { NetworkPolicy } from "../runtime/network-policy";
+import type { InstalledNetworkRouter } from "../runtime/network-routing";
+import { NetworkProxySettingsService } from "./network-proxy-settings";
+import { createNetworkProxyProbe, type NetworkProxyProbe } from "./network-proxy-probe";
+import { RuntimeRestartCoordinator } from "./runtime-restart";
+import { localInterfaceIpAddresses, rejectDisallowedWebRequest } from "./request-admission";
 
 export interface Server {
   port: number;
@@ -38,8 +45,11 @@ export interface Server {
 export interface StartServerOptions {
   host?: string;
   port?: number;
+  bootId?: string;
   daemonControl?: DaemonControl;
   desktopAccess?: { token: string };
+  networkPolicy: NetworkPolicy;
+  networkProxyProbe?: NetworkProxyProbe;
 }
 
 const WEBUI_DIST = join(fileURLToPath(new URL("..", import.meta.url)), "webui", "dist");
@@ -125,16 +135,20 @@ export function toUserSessionSummaries(sessions: readonly SessionInfoLike[]): Se
  * The server owns the active session registry and disposes every Pi
  * AgentSession on shutdown.
  */
-export async function startServer(options: StartServerOptions = {}): Promise<Server> {
+export async function startServer(options: StartServerOptions): Promise<Server> {
+  if (!options?.networkPolicy || !Object.isFrozen(options.networkPolicy)) {
+    throw new TypeError("An immutable host-applied network policy is required.");
+  }
   const host = options.host ?? "127.0.0.1";
   const port = options.port ?? 3000;
+  const bootId = options.bootId ?? randomUUID();
   const { importPi } = await import("../runtime/pi-import");
-  const { assertSafeExtensionSources } = await import("../runtime/extensions-guard");
-  assertSafeExtensionSources();
   const logger = createLogger("web-server");
   const pi = await importPi();
   const { ModelRuntime, SessionManager, SettingsManager, getAgentDir } = pi;
   const agentDir = getAgentDir();
+  const { assertSafeExtensionSources } = await import("../runtime/extensions-guard");
+  assertSafeExtensionSources();
   let liveConfiguration: LiveConfiguration | undefined;
   const config = new ConfigFileService(agentDir, {
     onAuthoritativeWrite: async (change) => {
@@ -158,32 +172,60 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
       return liveConfiguration.synchronize({ projectCwds: [cwd] });
     },
   });
-  const authRuntime = await createDaemonAuthRuntime({
-    config,
-    logger,
-    createModelRuntime: () => ModelRuntime.create({
-      authPath: join(agentDir, "auth.json"),
-      modelsPath: join(agentDir, "models.json"),
-      refreshOnCreate: false,
-    }),
-    synchronizeCatalog: async () => {
-      await liveConfiguration?.synchronize();
-    },
-    onModelsChanged: async () => {
-      if (!liveConfiguration) return;
-      const outcome = await liveConfiguration.notify({ availabilityChanged: true });
-      if (outcome.status === "closed" || outcome.status === "rejected") {
-        throw new Error("Model availability could not be synchronized.");
-      }
-    },
-    resolveFallbackModel: async (modelRuntime) => resolvePiDefaultModel({
-      pi: pi as unknown as PiDefaultModelApi,
-      cwd: agentDir,
-      agentDir,
-      modelRuntime,
-      settingsManager: SettingsManager.create(agentDir, agentDir),
-    }),
-  });
+  const networkPolicy = options.networkPolicy;
+  const { installNetworkRouter } = await import("../runtime/network-routing");
+  const fetchBeforeRouter = globalThis.fetch;
+  const networkProxySettings = new NetworkProxySettingsService(config, networkPolicy);
+  const networkProxyProbe = options.networkProxyProbe ?? createNetworkProxyProbe();
+  let networkRouter: InstalledNetworkRouter;
+  try {
+    networkRouter = installNetworkRouter(networkPolicy);
+  } catch (error) {
+    if (globalThis.fetch !== fetchBeforeRouter) globalThis.fetch = fetchBeforeRouter;
+    throw error;
+  }
+  let routerRestored = false;
+  const restoreNetworkRouter = (): void => {
+    if (routerRestored) return;
+    networkRouter.restore();
+    routerRestored = true;
+  };
+  let authRuntime: Awaited<ReturnType<typeof createDaemonAuthRuntime>>;
+  try {
+    authRuntime = await createDaemonAuthRuntime({
+      config,
+      logger,
+      createModelRuntime: async () => networkRouter.decorateModelRuntime(await ModelRuntime.create({
+        authPath: join(agentDir, "auth.json"),
+        modelsPath: join(agentDir, "models.json"),
+        refreshOnCreate: false,
+      })),
+      synchronizeCatalog: async () => {
+        await liveConfiguration?.synchronize();
+      },
+      onModelsChanged: async () => {
+        if (!liveConfiguration) return;
+        const outcome = await liveConfiguration.notify({ availabilityChanged: true });
+        if (outcome.status === "closed" || outcome.status === "rejected") {
+          throw new Error("Model availability could not be synchronized.");
+        }
+      },
+      resolveFallbackModel: async (modelRuntime) => resolvePiDefaultModel({
+        pi: pi as unknown as PiDefaultModelApi,
+        cwd: agentDir,
+        agentDir,
+        modelRuntime,
+        settingsManager: SettingsManager.create(agentDir, agentDir),
+      }),
+    });
+  } catch (error) {
+    try {
+      restoreNetworkRouter();
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], "Web server startup cleanup failed");
+    }
+    throw error;
+  }
   const auth = authRuntime.auth;
   try {
     liveConfiguration = createLiveConfiguration({
@@ -200,6 +242,11 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
     }
     try {
       await authRuntime.dispose();
+    } catch (cleanupError) {
+      failures.push(cleanupError);
+    }
+    try {
+      restoreNetworkRouter();
     } catch (cleanupError) {
       failures.push(cleanupError);
     }
@@ -241,9 +288,10 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
       modelsDisposed = true;
     }
     if (server && !serverStopped) {
-      server.stop(true);
+      await server.stop(true);
       serverStopped = true;
     }
+    restoreNetworkRouter();
   };
 
   const failStartupAfterCleanup = async (startupError: unknown): Promise<never> => {
@@ -270,7 +318,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
     await live.start();
     const idleTimeoutMs = await readWebSessionIdleTimeout(config);
     registry = new ActiveSessionRegistry(
-      await PiSessionFactory.resolve(live),
+      await PiSessionFactory.resolve(live, networkRouter),
       logger,
       {
         idleTimeoutMs,
@@ -279,105 +327,126 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
       },
       createFileWatcherFactory(logger),
     );
-  } catch (error) {
-    return failStartupAfterCleanup(error);
-  }
-  const activeRegistry = registry;
-  const listConfigProjects = async () => {
-    const sessions = await SessionManager.listAll(undefined);
-    const cwds = [...new Set(sessions.map((session) => session.cwd).filter(Boolean))];
-    return { home: agentDir, projects: cwds.map((cwd) => ({ cwd })) };
-  };
-  configurationProjectWatches = createConfigurationProjectWatches({
-    live,
-    isKnownCwd: async (cwd) => {
-      if (activeRegistry.hasConnectedCwd(cwd)) return true;
-      const { projects } = await listConfigProjects();
-      return projects.some((project) => project.cwd === cwd);
-    },
-  });
-  const projectWatches = configurationProjectWatches;
-  const subagentSessions = new SubagentSessionService({
-    open: (path) => SessionManager.open(path),
-    listAll: async () => {
+    const activeRegistry = registry;
+    const listConfigProjects = async () => {
       const sessions = await SessionManager.listAll(undefined);
-      return sessions.map(({ id, path, cwd }) => ({ id, path, cwd }));
-    },
-  });
-  const renameSessions = resolveRenameSessionService({
-    isConnected: (id) => Promise.resolve(activeRegistry.has(id)),
-    setConnectedName: (id, name) => activeRegistry.prompt(id, `/name ${name}`),
-    listAll: async () => {
-      const sessions = await SessionManager.listAll(undefined);
-      return toUserSessionSummaries(sessions);
-    },
-    openSessionManager: async (path) => SessionManager.open(path),
-  });
-  const listModels = () => auth.listModels();
-  const compactionSettings = createCompactionSettingsService(config, live);
-  const apiUsageSettings = createApiUsageSettingsService(config, live);
-  const resolveDefaultModel = async (cwd: string): Promise<string | undefined> => {
-    const settingsManager = SettingsManager.create(cwd, agentDir);
-    const model = await resolvePiDefaultModel({
-      pi: pi as unknown as PiDefaultModelApi,
-      cwd,
-      agentDir,
-      modelRuntime: authRuntime.modelRuntime,
-      settingsManager,
+      const cwds = [...new Set(sessions.map((session) => session.cwd).filter(Boolean))];
+      return { home: agentDir, projects: cwds.map((cwd) => ({ cwd })) };
+    };
+    configurationProjectWatches = createConfigurationProjectWatches({
+      live,
+      isKnownCwd: async (cwd) => {
+        if (activeRegistry.hasConnectedCwd(cwd)) return true;
+        const { projects } = await listConfigProjects();
+        return projects.some((project) => project.cwd === cwd);
+      },
     });
-    return model ? `${model.provider}/${model.id}` : undefined;
-  };
-  const packageVersion = embeddedPackageVersion();
-  const services: RouteServices = {
-    webuiDist: WEBUI_DIST,
-    listAllSessions: async () => {
-      const sessions = await SessionManager.listAll(undefined);
-      return toUserSessionSummaries(sessions);
-    },
-    listModels,
-    checkForUpdate: () => checkNpmUpdate(packageVersion),
-    patchAgent: createAgentPatchService(config, listModels, { repairUnknownModels: true }),
-    getCompactionSettings: () => compactionSettings.get(),
-    patchCompactionSettings: (patch) => compactionSettings.patch(patch),
-    getApiUsageSettings: () => apiUsageSettings.get(),
-    patchApiUsageSettings: (patch) => apiUsageSettings.patch(patch),
-    renameSession: (sessionId, name) => renameSessions.rename(sessionId, name),
-    listConfigProjects,
-    directories: new DirectoryService(),
-    registry: activeRegistry,
-    config,
-    subagentSessions,
-    auth,
-    providerDeletion: createProviderDeletionService(config),
-    configuration: live,
-    configurationProjectWatches: projectWatches,
-    logger,
-    daemonControl: options.daemonControl,
-    desktopAccess: options.desktopAccess,
-    listAgents: async (cwd) => {
-      const registration = cwd ? await live.acquireProject(cwd) : undefined;
-      try {
-        if (cwd) await live.synchronize({ projectCwds: [cwd] });
-        return agentsToDtos(await live.resolveAgents(cwd), cwd ?? agentDir, resolveDefaultModel);
-      } finally {
-        await registration?.release();
-      }
-    },
-  };
-  const handler = createRouteHandler(services);
-
-  try {
+    const projectWatches = configurationProjectWatches;
+    const subagentSessions = new SubagentSessionService({
+      open: (path) => SessionManager.open(path),
+      listAll: async () => {
+        const sessions = await SessionManager.listAll(undefined);
+        return sessions.map(({ id, path, cwd }) => ({ id, path, cwd }));
+      },
+    });
+    const renameSessions = resolveRenameSessionService({
+      isConnected: (id) => Promise.resolve(activeRegistry.has(id)),
+      setConnectedName: (id, name) => activeRegistry.prompt(id, `/name ${name}`),
+      listAll: async () => {
+        const sessions = await SessionManager.listAll(undefined);
+        return toUserSessionSummaries(sessions);
+      },
+      openSessionManager: async (path) => SessionManager.open(path),
+    });
+    const listModels = () => auth.listModels();
+    const compactionSettings = createCompactionSettingsService(config, live);
+    const apiUsageSettings = createApiUsageSettingsService(config, live);
+    const resolveDefaultModel = async (cwd: string): Promise<string | undefined> => {
+      const settingsManager = SettingsManager.create(cwd, agentDir);
+      const model = await resolvePiDefaultModel({
+        pi: pi as unknown as PiDefaultModelApi,
+        cwd,
+        agentDir,
+        modelRuntime: authRuntime.modelRuntime,
+        settingsManager,
+      });
+      return model ? `${model.provider}/${model.id}` : undefined;
+    };
+    const packageVersion = embeddedPackageVersion();
+    const reserveOwnerTransition = options.daemonControl?.reserveRestart?.bind(options.daemonControl);
+    const runtimeRestart = reserveOwnerTransition
+      ? new RuntimeRestartCoordinator({
+        bootId,
+        activeWorkCount: () => activeRegistry.activeWorkCount(),
+        beginSessionShutdown: () => activeRegistry.beginShutdown(),
+        activeAuthFlow: () => auth.activeFlow() !== null,
+        beginAuthShutdown: () => auth.shutdown(),
+        reserveOwnerTransition,
+      })
+      : undefined;
+    const services: RouteServices = {
+      bootId,
+      webuiDist: WEBUI_DIST,
+      listAllSessions: async () => {
+        const sessions = await SessionManager.listAll(undefined);
+        return toUserSessionSummaries(sessions);
+      },
+      listModels,
+      checkForUpdate: () => checkNpmUpdate(packageVersion),
+      patchAgent: createAgentPatchService(config, listModels, { repairUnknownModels: true }),
+      getCompactionSettings: () => compactionSettings.get(),
+      patchCompactionSettings: (patch) => compactionSettings.patch(patch),
+      getApiUsageSettings: () => apiUsageSettings.get(),
+      patchApiUsageSettings: (patch) => apiUsageSettings.patch(patch),
+      getNetworkProxySettings: () => networkProxySettings.get(),
+      patchNetworkProxySettings: (patch) => networkProxySettings.patch(patch),
+      testNetworkProxy: (request, signal) => networkProxyProbe.test(request, signal),
+      renameSession: (sessionId, name) => renameSessions.rename(sessionId, name),
+      listConfigProjects,
+      directories: new DirectoryService(),
+      registry: activeRegistry,
+      config,
+      subagentSessions,
+      auth,
+      providerDeletion: createProviderDeletionService(config),
+      configuration: live,
+      configurationProjectWatches: projectWatches,
+      logger,
+      daemonControl: options.daemonControl,
+      runtimeRestart,
+      desktopAccess: options.desktopAccess,
+      listAgents: async (cwd) => {
+        const registration = cwd ? await live.acquireProject(cwd) : undefined;
+        try {
+          if (cwd) await live.synchronize({ projectCwds: [cwd] });
+          return agentsToDtos(await live.resolveAgents(cwd), cwd ?? agentDir, resolveDefaultModel);
+        } finally {
+          await registration?.release();
+        }
+      },
+    };
+    const routeHandler = createRouteHandler(services);
+    const localInterfaceAddresses = localInterfaceIpAddresses();
+    const handler = (request: Request): Promise<Response> => {
+      const actualPort = server?.port ?? port;
+      const rejection = rejectDisallowedWebRequest(request, {
+        host,
+        port: actualPort,
+        localInterfaceAddresses,
+      });
+      if (rejection) return Promise.resolve(rejection);
+      return routeHandler(request);
+    };
     server = Bun.serve({
       hostname: host,
       port,
       fetch: handler,
       idleTimeout: 0,
     });
+    logger.info("web server started", { host, port: server.port ?? port });
   } catch (error) {
     return failStartupAfterCleanup(error);
   }
-
-  logger.info("web server started", { host, port: server.port ?? port });
 
   return {
     port: server.port ?? port,

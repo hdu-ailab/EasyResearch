@@ -15,6 +15,7 @@ import {
   removeDesktopSmokeRoot,
   reduceDesktopSmokeEvents,
   verifyDesktopSidecarIdentity,
+  verifyDesktopOwnershipSuccessor,
   verifyPackagedNotice,
   verifyPackagedSidecar,
 } from "../../scripts/smoke-desktop-support";
@@ -203,6 +204,101 @@ describe("desktop smoke milestones", () => {
     message: { role, content },
   });
 
+  it("rejects a successor that reuses the old lifecycle credential", () => {
+    const initial = {
+      schema: 1,
+      owner: "desktop",
+      host: "127.0.0.1",
+      pid: 41,
+      port: 43123,
+      token: "lifecycle-old",
+      runtimeId: "desktop:1.2.3:accepted",
+    };
+    expect(() => verifyDesktopOwnershipSuccessor(
+      initial,
+      { ...initial, pid: 42 },
+      "http://127.0.0.1:43123",
+      "http://127.0.0.1:43123",
+    )).toThrow(/fresh lifecycle credential/i);
+  });
+
+  it("rejects a successor ownership record from a different packaged runtime", () => {
+    expect(() => verifyDesktopOwnershipSuccessor(
+      {
+        schema: 1,
+        owner: "desktop",
+        pid: 41,
+        port: 43123,
+        token: "lifecycle-old",
+        runtimeId: "desktop:1.2.3:accepted",
+      },
+      {
+        schema: 1,
+        owner: "desktop",
+        pid: 42,
+        port: 43123,
+        token: "lifecycle-new",
+        runtimeId: "desktop:1.2.3:other",
+      },
+      "http://127.0.0.1:43123",
+      "http://127.0.0.1:43123",
+    )).toThrow(/same accepted packaged runtime/i);
+  });
+
+  it("binds both desktop ownership records to their reported loopback origins", () => {
+    const initial = {
+      schema: 1,
+      owner: "desktop",
+      host: "127.0.0.1",
+      pid: 41,
+      port: 43123,
+      token: "lifecycle-old",
+      runtimeId: "desktop:1.2.3:accepted",
+    };
+    expect(() => verifyDesktopOwnershipSuccessor(
+      initial,
+      { ...initial, pid: 42, token: "lifecycle-new" },
+      "http://127.0.0.1:43123",
+      "http://127.0.0.1:43124",
+    )).toThrow(/ownership.*origin/i);
+  });
+
+  it("rejects a non-loopback host in a successor ownership record", () => {
+    const initial = {
+      schema: 1,
+      owner: "desktop",
+      host: "127.0.0.1",
+      pid: 41,
+      port: 43123,
+      token: "lifecycle-old",
+      runtimeId: "desktop:1.2.3:accepted",
+    };
+    expect(() => verifyDesktopOwnershipSuccessor(
+      initial,
+      { ...initial, host: "0.0.0.0", pid: 42, port: 43124, token: "lifecycle-new" },
+      "http://127.0.0.1:43123",
+      "http://127.0.0.1:43124",
+    )).toThrow(/ownership.*origin/i);
+  });
+
+  it("accepts OS reuse of the ephemeral port when lifecycle identity is fresh", () => {
+    const initial = {
+      schema: 1,
+      owner: "desktop",
+      host: "127.0.0.1",
+      pid: 41,
+      port: 43123,
+      token: "lifecycle-old",
+      runtimeId: "desktop:1.2.3:accepted",
+    };
+    expect(() => verifyDesktopOwnershipSuccessor(
+      initial,
+      { ...initial, pid: 42, token: "lifecycle-new" },
+      "http://127.0.0.1:43123",
+      "http://127.0.0.1:43123",
+    )).not.toThrow();
+  });
+
   it("accepts an ordered sentinel pair in realistic Pi message content shapes", () => {
     expect(readyPersistedSessionPath({
       session: persistedSession,
@@ -322,24 +418,129 @@ describe("desktop smoke milestones", () => {
   });
 
   it("recognizes the complete ordered lifecycle", () => {
+    const workHash = "#/work/active-session?cwd=%2Fpaper";
     expect(reduceDesktopSmokeEvents([
-      { type: "desktop-smoke.sidecar-ready", origin: "http://127.0.0.1:43123" },
+      {
+        type: "desktop-smoke.sidecar-ready",
+        origin: "http://127.0.0.1:43123",
+        bootId: "boot-old",
+        sidecarPid: 41,
+      },
       { type: "desktop-smoke.window-loaded" },
       { type: "desktop-smoke.state-visible" },
       { type: "desktop-smoke.agent-running" },
+      { type: "desktop-smoke.restart-api-accepted", bootId: "boot-old", hash: workHash },
+      { type: "desktop-smoke.restart-requested", bootId: "boot-old" },
+      { type: "desktop-smoke.old-sidecar-exited", bootId: "boot-old", clean: true },
+      {
+        type: "desktop-smoke.sidecar-ready",
+        origin: "http://127.0.0.1:43123",
+        bootId: "boot-new",
+        sidecarPid: 42,
+        rendererCredentialFresh: true,
+      },
+      {
+        type: "desktop-smoke.successor-visible",
+        bootId: "boot-new",
+        hash: workHash,
+        authenticated: true,
+        persistedSessionVisible: true,
+      },
       { type: "desktop-smoke.window-hidden", hidden: true, sidecarPid: 42 },
       { type: "desktop-smoke.exit-started" },
       { type: "desktop-smoke.sidecar-stopped" },
     ])).toMatchObject({
       origin: "http://127.0.0.1:43123",
+      initialBootId: "boot-old",
       loaded: true,
       stateVisible: true,
       agentRunning: true,
+      restartAccepted: true,
+      restartRequested: true,
+      oldSidecarExited: true,
+      successorOrigin: "http://127.0.0.1:43123",
+      successorBootId: "boot-new",
+      rendererCredentialFresh: true,
+      successorVisible: true,
+      restoredHash: workHash,
       hidden: true,
       sidecarPid: 42,
       exitStarted: true,
       stopped: true,
     });
+  });
+
+  it("accepts one deterministic successor-start failure, recovery retry, and no-loop successor", () => {
+    const workHash = "#/work/active-session?cwd=%2Fpaper";
+    const prefix = [
+      {
+        type: "desktop-smoke.sidecar-ready",
+        origin: "http://127.0.0.1:43123",
+        bootId: "boot-old",
+        sidecarPid: 41,
+      },
+      { type: "desktop-smoke.window-loaded" },
+      { type: "desktop-smoke.state-visible" },
+      { type: "desktop-smoke.agent-running" },
+      { type: "desktop-smoke.restart-api-accepted", bootId: "boot-old", hash: workHash },
+      { type: "desktop-smoke.restart-requested", bootId: "boot-old" },
+      { type: "desktop-smoke.old-sidecar-exited", bootId: "boot-old", clean: true },
+      { type: "desktop-smoke.successor-start-failed", hash: workHash },
+      { type: "desktop-smoke.restart-recovery-visible", hash: workHash },
+      { type: "desktop-smoke.successor-retry-requested", hash: workHash },
+    ];
+    const successor = {
+      type: "desktop-smoke.sidecar-ready",
+      origin: "http://127.0.0.1:43124",
+      bootId: "boot-new",
+      sidecarPid: 42,
+      rendererCredentialFresh: true,
+    };
+    const evidence = {
+      desktopLog: "[2026-09-03T00:00:00.000Z] Desktop smoke injected one successor startup failure.\n",
+    };
+
+    expect(() => reduceDesktopSmokeEvents([...prefix, successor])).toThrow(/desktop log|failure evidence/i);
+    expect(reduceDesktopSmokeEvents([...prefix, successor], evidence)).toMatchObject({
+      successorStartFailed: true,
+      restartRecoveryVisible: true,
+      restartRecoveryLogged: true,
+      successorRetryRequested: true,
+      successorBootId: "boot-new",
+    });
+    expect(() => reduceDesktopSmokeEvents([
+      ...prefix,
+      { type: "desktop-smoke.successor-retry-requested", hash: workHash },
+      successor,
+    ], evidence)).toThrow(/duplicate.*retry|restart loop/i);
+  });
+
+  it.each([
+    ["missing", ""],
+    [
+      "duplicated",
+      "Desktop smoke injected one successor startup failure.\nDesktop smoke injected one successor startup failure.\n",
+    ],
+  ])("rejects %s packaged-host successor failure log evidence", (_scenario, desktopLog) => {
+    const workHash = "#/work/active-session?cwd=%2Fpaper";
+    const events = [
+      {
+        type: "desktop-smoke.sidecar-ready",
+        origin: "http://127.0.0.1:43123",
+        bootId: "boot-old",
+        sidecarPid: 41,
+      },
+      { type: "desktop-smoke.window-loaded" },
+      { type: "desktop-smoke.state-visible" },
+      { type: "desktop-smoke.agent-running" },
+      { type: "desktop-smoke.restart-api-accepted", bootId: "boot-old", hash: workHash },
+      { type: "desktop-smoke.restart-requested", bootId: "boot-old" },
+      { type: "desktop-smoke.old-sidecar-exited", bootId: "boot-old", clean: true },
+      { type: "desktop-smoke.successor-start-failed", hash: workHash },
+      { type: "desktop-smoke.restart-recovery-visible", hash: workHash },
+    ];
+
+    expect(() => reduceDesktopSmokeEvents(events, { desktopLog })).toThrow(/desktop log|failure evidence/i);
   });
 
   it("rejects out-of-order or malformed milestones", () => {
@@ -350,7 +551,12 @@ describe("desktop smoke milestones", () => {
       { type: "desktop-smoke.sidecar-ready", origin: "http://0.0.0.0:3000" },
     ])).toThrow(/loopback origin/i);
     expect(() => reduceDesktopSmokeEvents([
-      { type: "desktop-smoke.sidecar-ready", origin: "http://127.0.0.1:43123" },
+      {
+        type: "desktop-smoke.sidecar-ready",
+        origin: "http://127.0.0.1:43123",
+        bootId: "boot-old",
+        sidecarPid: 41,
+      },
       { type: "desktop-smoke.window-loaded" },
       { type: "desktop-smoke.state-visible" },
       { type: "desktop-smoke.agent-running" },
@@ -358,9 +564,246 @@ describe("desktop smoke milestones", () => {
     ])).toThrow(/sidecar process/i);
   });
 
+  it("rejects readiness without a boot identity and owned sidecar process", () => {
+    expect(() => reduceDesktopSmokeEvents([
+      { type: "desktop-smoke.sidecar-ready", origin: "http://127.0.0.1:43123" },
+    ])).toThrow(/boot identity|sidecar process/i);
+  });
+
+  it("rejects a second restart request before creating another successor", () => {
+    const workHash = "#/work/active-session?cwd=%2Fpaper";
+    expect(() => reduceDesktopSmokeEvents([
+      {
+        type: "desktop-smoke.sidecar-ready",
+        origin: "http://127.0.0.1:43123",
+        bootId: "boot-old",
+        sidecarPid: 41,
+      },
+      { type: "desktop-smoke.window-loaded" },
+      { type: "desktop-smoke.state-visible" },
+      { type: "desktop-smoke.agent-running" },
+      { type: "desktop-smoke.restart-api-accepted", bootId: "boot-old", hash: workHash },
+      { type: "desktop-smoke.restart-api-accepted", bootId: "boot-old", hash: workHash },
+    ])).toThrow(/duplicate.*restart API/i);
+  });
+
+  it("rejects duplicate validated sidecar restart events", () => {
+    const workHash = "#/work/active-session?cwd=%2Fpaper";
+    expect(() => reduceDesktopSmokeEvents([
+      {
+        type: "desktop-smoke.sidecar-ready",
+        origin: "http://127.0.0.1:43123",
+        bootId: "boot-old",
+        sidecarPid: 41,
+      },
+      { type: "desktop-smoke.window-loaded" },
+      { type: "desktop-smoke.state-visible" },
+      { type: "desktop-smoke.agent-running" },
+      { type: "desktop-smoke.restart-api-accepted", bootId: "boot-old", hash: workHash },
+      { type: "desktop-smoke.restart-requested", bootId: "boot-old" },
+      { type: "desktop-smoke.restart-requested", bootId: "boot-old" },
+    ])).toThrow(/duplicate.*restart event/i);
+  });
+
+  it("accepts validated machine restart before API response consumption", () => {
+    const workHash = "#/work/active-session?cwd=%2Fpaper";
+    expect(reduceDesktopSmokeEvents([
+      {
+        type: "desktop-smoke.sidecar-ready",
+        origin: "http://127.0.0.1:43123",
+        bootId: "boot-old",
+        sidecarPid: 41,
+      },
+      { type: "desktop-smoke.window-loaded" },
+      { type: "desktop-smoke.state-visible" },
+      { type: "desktop-smoke.agent-running" },
+      { type: "desktop-smoke.restart-requested", bootId: "boot-old" },
+      { type: "desktop-smoke.restart-api-accepted", bootId: "boot-old", hash: workHash },
+      { type: "desktop-smoke.old-sidecar-exited", bootId: "boot-old", clean: true },
+    ])).toMatchObject({
+      restartAccepted: true,
+      restartRequested: true,
+      oldSidecarExited: true,
+    });
+  });
+
+  it("accepts clean old exit before delayed API response consumption", () => {
+    const workHash = "#/work/active-session?cwd=%2Fpaper";
+    expect(reduceDesktopSmokeEvents([
+      {
+        type: "desktop-smoke.sidecar-ready",
+        origin: "http://127.0.0.1:43123",
+        bootId: "boot-old",
+        sidecarPid: 41,
+      },
+      { type: "desktop-smoke.window-loaded" },
+      { type: "desktop-smoke.state-visible" },
+      { type: "desktop-smoke.agent-running" },
+      { type: "desktop-smoke.restart-requested", bootId: "boot-old" },
+      { type: "desktop-smoke.old-sidecar-exited", bootId: "boot-old", clean: true },
+      { type: "desktop-smoke.restart-api-accepted", bootId: "boot-old", hash: workHash },
+      {
+        type: "desktop-smoke.sidecar-ready",
+        origin: "http://127.0.0.1:43123",
+        bootId: "boot-new",
+        sidecarPid: 42,
+        rendererCredentialFresh: true,
+      },
+    ])).toMatchObject({
+      restartAccepted: true,
+      restartRequested: true,
+      oldSidecarExited: true,
+      successorBootId: "boot-new",
+    });
+  });
+
+  it("accepts successor readiness before delayed API response consumption", () => {
+    const workHash = "#/work/active-session?cwd=%2Fpaper";
+    expect(reduceDesktopSmokeEvents([
+      {
+        type: "desktop-smoke.sidecar-ready",
+        origin: "http://127.0.0.1:43123",
+        bootId: "boot-old",
+        sidecarPid: 41,
+      },
+      { type: "desktop-smoke.window-loaded" },
+      { type: "desktop-smoke.state-visible" },
+      { type: "desktop-smoke.agent-running" },
+      { type: "desktop-smoke.restart-requested", bootId: "boot-old" },
+      { type: "desktop-smoke.old-sidecar-exited", bootId: "boot-old", clean: true },
+      {
+        type: "desktop-smoke.sidecar-ready",
+        origin: "http://127.0.0.1:43123",
+        bootId: "boot-new",
+        sidecarPid: 42,
+        rendererCredentialFresh: true,
+      },
+      { type: "desktop-smoke.restart-api-accepted", bootId: "boot-old", hash: workHash },
+      {
+        type: "desktop-smoke.successor-visible",
+        bootId: "boot-new",
+        hash: workHash,
+        authenticated: true,
+        persistedSessionVisible: true,
+      },
+    ])).toMatchObject({
+      restartAccepted: true,
+      oldSidecarExited: true,
+      successorVisible: true,
+    });
+  });
+
+  it("accepts authenticated successor visibility before delayed API response consumption", () => {
+    const workHash = "#/work/active-session?cwd=%2Fpaper";
+    expect(reduceDesktopSmokeEvents([
+      {
+        type: "desktop-smoke.sidecar-ready",
+        origin: "http://127.0.0.1:43123",
+        bootId: "boot-old",
+        sidecarPid: 41,
+      },
+      { type: "desktop-smoke.window-loaded" },
+      { type: "desktop-smoke.state-visible" },
+      { type: "desktop-smoke.agent-running" },
+      { type: "desktop-smoke.restart-requested", bootId: "boot-old" },
+      { type: "desktop-smoke.old-sidecar-exited", bootId: "boot-old", clean: true },
+      {
+        type: "desktop-smoke.sidecar-ready",
+        origin: "http://127.0.0.1:43123",
+        bootId: "boot-new",
+        sidecarPid: 42,
+        rendererCredentialFresh: true,
+      },
+      {
+        type: "desktop-smoke.successor-visible",
+        bootId: "boot-new",
+        hash: workHash,
+        authenticated: true,
+        persistedSessionVisible: true,
+      },
+      { type: "desktop-smoke.restart-api-accepted", bootId: "boot-old", hash: workHash },
+    ])).toMatchObject({
+      restartAccepted: true,
+      successorVisible: true,
+      restoredHash: workHash,
+    });
+  });
+
+  it("rejects a successor that restores a different Work hash", () => {
+    expect(() => reduceDesktopSmokeEvents([
+      {
+        type: "desktop-smoke.sidecar-ready",
+        origin: "http://127.0.0.1:43123",
+        bootId: "boot-old",
+        sidecarPid: 41,
+      },
+      { type: "desktop-smoke.window-loaded" },
+      { type: "desktop-smoke.state-visible" },
+      { type: "desktop-smoke.agent-running" },
+      {
+        type: "desktop-smoke.restart-api-accepted",
+        bootId: "boot-old",
+        hash: "#/work/expected?cwd=%2Fpaper",
+      },
+      { type: "desktop-smoke.restart-requested", bootId: "boot-old" },
+      { type: "desktop-smoke.old-sidecar-exited", bootId: "boot-old", clean: true },
+      {
+        type: "desktop-smoke.sidecar-ready",
+        origin: "http://127.0.0.1:43123",
+        bootId: "boot-new",
+        sidecarPid: 42,
+        rendererCredentialFresh: true,
+      },
+      {
+        type: "desktop-smoke.successor-visible",
+        bootId: "boot-new",
+        hash: "#/work/wrong?cwd=%2Fpaper",
+        authenticated: true,
+        persistedSessionVisible: true,
+      },
+    ])).toThrow(/Work hashes did not match/i);
+  });
+
+  it("rejects a third ready sidecar as a restart loop", () => {
+    const workHash = "#/work/active-session?cwd=%2Fpaper";
+    expect(() => reduceDesktopSmokeEvents([
+      {
+        type: "desktop-smoke.sidecar-ready",
+        origin: "http://127.0.0.1:43123",
+        bootId: "boot-old",
+        sidecarPid: 41,
+      },
+      { type: "desktop-smoke.window-loaded" },
+      { type: "desktop-smoke.state-visible" },
+      { type: "desktop-smoke.agent-running" },
+      { type: "desktop-smoke.restart-api-accepted", bootId: "boot-old", hash: workHash },
+      { type: "desktop-smoke.restart-requested", bootId: "boot-old" },
+      { type: "desktop-smoke.old-sidecar-exited", bootId: "boot-old", clean: true },
+      {
+        type: "desktop-smoke.sidecar-ready",
+        origin: "http://127.0.0.1:43123",
+        bootId: "boot-new",
+        sidecarPid: 42,
+        rendererCredentialFresh: true,
+      },
+      {
+        type: "desktop-smoke.sidecar-ready",
+        origin: "http://127.0.0.1:43124",
+        bootId: "boot-loop",
+        sidecarPid: 43,
+        rendererCredentialFresh: true,
+      },
+    ])).toThrow(/restart loop|duplicate.*readiness/i);
+  });
+
   it("preserves a host failure immediately without requiring later lifecycle milestones", () => {
     expect(reduceDesktopSmokeEvents([
-      { type: "desktop-smoke.sidecar-ready", origin: "http://127.0.0.1:43123" },
+      {
+        type: "desktop-smoke.sidecar-ready",
+        origin: "http://127.0.0.1:43123",
+        bootId: "boot-old",
+        sidecarPid: 41,
+      },
       { type: "desktop-smoke.window-loaded" },
       { type: "desktop-smoke.failure", message: "root activity message POST timed out" },
       { type: "desktop-smoke.exit-started" },
@@ -370,6 +813,48 @@ describe("desktop smoke milestones", () => {
       loaded: true,
       failure: "root activity message POST timed out",
       agentRunning: false,
+    });
+  });
+
+  it("turns the unexpected-exit recovery path into an immediate smoke failure", () => {
+    expect(reduceDesktopSmokeEvents([
+      {
+        type: "desktop-smoke.sidecar-ready",
+        origin: "http://127.0.0.1:43123",
+        bootId: "boot-old",
+        sidecarPid: 41,
+      },
+      { type: "desktop-smoke.unexpected-exit", bootId: "boot-old" },
+    ])).toMatchObject({
+      failure: "Desktop smoke entered the unexpected-exit recovery path.",
+    });
+  });
+
+  it("turns a successor unexpected-exit path into an immediate smoke failure", () => {
+    const workHash = "#/work/active-session?cwd=%2Fpaper";
+    expect(reduceDesktopSmokeEvents([
+      {
+        type: "desktop-smoke.sidecar-ready",
+        origin: "http://127.0.0.1:43123",
+        bootId: "boot-old",
+        sidecarPid: 41,
+      },
+      { type: "desktop-smoke.window-loaded" },
+      { type: "desktop-smoke.state-visible" },
+      { type: "desktop-smoke.agent-running" },
+      { type: "desktop-smoke.restart-api-accepted", bootId: "boot-old", hash: workHash },
+      { type: "desktop-smoke.restart-requested", bootId: "boot-old" },
+      { type: "desktop-smoke.old-sidecar-exited", bootId: "boot-old", clean: true },
+      {
+        type: "desktop-smoke.sidecar-ready",
+        origin: "http://127.0.0.1:43123",
+        bootId: "boot-new",
+        sidecarPid: 42,
+        rendererCredentialFresh: true,
+      },
+      { type: "desktop-smoke.unexpected-exit", bootId: "boot-new" },
+    ])).toMatchObject({
+      failure: "Desktop smoke entered the unexpected-exit recovery path.",
     });
   });
 

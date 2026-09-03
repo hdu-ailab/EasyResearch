@@ -7,6 +7,10 @@ import type { ExtensionFactory, JsonAgentSessionEvent } from "@earendil-works/pi
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAgentDefinitionExtension } from "../extensions/agent-definition";
 import type { AgentRuntimeBinding } from "../runtime/agent-runtime-binding";
+import type {
+  AgentSessionNetworkRouter,
+  SearchProxyConfiguration,
+} from "../runtime/network-routing";
 import { excludedLocalShellTools } from "../runtime/platform-tools";
 import type { AgentConfig } from "./agents";
 import {
@@ -19,6 +23,7 @@ import {
   RetryableStageSessionCreationError,
   type StageAgentSession,
   type StageLaunchOptions,
+  type StageSessionLauncher,
   type StageSessionDependencies,
 } from "./stage-session";
 import { SubagentSupervisor, type SupervisableAgentSession } from "./supervisor";
@@ -596,6 +601,114 @@ describe("createStageSessionLauncher", () => {
     expect(live.projectReleaseCalls).toBe(1);
   });
 
+  it("binds nested supervisors to their own stage launcher without cross-factory state", async () => {
+    const firstPrompt = deferred<void>();
+    const secondPrompt = deferred<void>();
+    const firstSession = new FakeStageSession("child-a", join(root, "child-a.jsonl"), firstPrompt.promise);
+    const secondSession = new FakeStageSession("child-b", join(root, "child-b.jsonl"), secondPrompt.promise);
+    const firstHarness = dependencyHarness(firstSession);
+    const secondHarness = dependencyHarness(secondSession);
+    let firstNestedLauncher: StageSessionLauncher | undefined;
+    let secondNestedLauncher: StageSessionLauncher | undefined;
+    const firstSupervisorFactory = firstHarness.dependencies.createDirectChildSupervisor;
+    const secondSupervisorFactory = secondHarness.dependencies.createDirectChildSupervisor;
+    firstHarness.dependencies.createDirectChildSupervisor = (coordinator, nestedLauncher?: StageSessionLauncher) => {
+      firstNestedLauncher = nestedLauncher;
+      return firstSupervisorFactory(coordinator, nestedLauncher!);
+    };
+    secondHarness.dependencies.createDirectChildSupervisor = (coordinator, nestedLauncher?: StageSessionLauncher) => {
+      secondNestedLauncher = nestedLauncher;
+      return secondSupervisorFactory(coordinator, nestedLauncher!);
+    };
+    const firstLauncher = createStageSessionLauncher(firstHarness.dependencies);
+    const secondLauncher = createStageSessionLauncher(secondHarness.dependencies);
+    const firstCoordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
+    const secondCoordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
+
+    const [firstHandle, secondHandle] = await Promise.all([
+      firstLauncher(stageOptions(firstCoordinator)),
+      secondLauncher(stageOptions(secondCoordinator)),
+    ]);
+    firstSession.emitAssistantEndAndPersist();
+    secondSession.emitAssistantEndAndPersist();
+    await Promise.all([firstHandle.materialized, secondHandle.materialized]);
+    firstPrompt.resolve();
+    secondPrompt.resolve();
+    await Promise.all([firstHandle.completion, secondHandle.completion]);
+    await Promise.all([firstHandle.dispose(), secondHandle.dispose()]);
+
+    expect(firstNestedLauncher).toBe(firstLauncher);
+    expect(secondNestedLauncher).toBe(secondLauncher);
+    expect(firstNestedLauncher).not.toBe(secondNestedLauncher);
+  });
+
+  it("passes one opaque Search route through outer and nested stage extension runtimes", async () => {
+    const outerPrompt = deferred<void>();
+    const nestedPrompt = deferred<void>();
+    const outerSession = new FakeStageSession("outer-child", join(root, "outer-child.jsonl"), outerPrompt.promise);
+    const nestedSession = new FakeStageSession("nested-child", join(root, "nested-child.jsonl"), nestedPrompt.promise);
+    const sessions = [outerSession, nestedSession];
+    const harness = dependencyHarness(outerSession);
+    const appliedSearchRoute = Object.freeze({
+      policyFingerprint: "opaque-search-route",
+      applyProxyConfiguration: (target: { useProxy: boolean }) => {
+        target.useProxy = false;
+      },
+      invalidError: () => undefined,
+      sanitizeError: (error: unknown) => error instanceof Error ? error.message : String(error),
+    });
+    const router: AgentSessionNetworkRouter = {
+      appliedSearchRoute,
+      decorateModelRuntime: (runtime) => runtime,
+      withScope: (_scope, operation) => operation(),
+    };
+    harness.dependencies.networkRouter = router;
+    harness.dependencies.createAgentSession = async (options) => {
+      const session = sessions.shift();
+      if (!session) throw new Error("Unexpected extra stage session.");
+      session.model = options.model as Model<any>;
+      session.thinkingLevel = options.thinkingLevel as ThinkingLevel;
+      return { session };
+    };
+    const extensionRouters: Array<AgentSessionNetworkRouter | undefined> = [];
+    harness.dependencies.createExtensionFactories = (runtime) => {
+      extensionRouters.push((runtime as { networkRouter?: AgentSessionNetworkRouter }).networkRouter);
+      return [];
+    };
+    let nestedLauncher: StageSessionLauncher | undefined;
+    const createSupervisor = harness.dependencies.createDirectChildSupervisor;
+    harness.dependencies.createDirectChildSupervisor = (coordinator, launchStage) => {
+      nestedLauncher = launchStage;
+      return createSupervisor(coordinator, launchStage);
+    };
+    const launcher = createStageSessionLauncher(harness.dependencies);
+    const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
+    const live = liveFor();
+
+    const outerHandle = await launcher(stageOptions(coordinator, live));
+    expect(nestedLauncher).toBe(launcher);
+    const nestedHandle = await nestedLauncher!({
+      ...stageOptions(coordinator, live),
+      reservation: {
+        ...freshReservation(),
+        launchId: "launch-2",
+        toolCallId: "tool-2",
+        agentId: "search_1",
+      },
+    });
+    outerSession.emitAssistantEndAndPersist();
+    nestedSession.emitAssistantEndAndPersist();
+    await Promise.all([outerHandle.materialized, nestedHandle.materialized]);
+    outerPrompt.resolve();
+    nestedPrompt.resolve();
+    await Promise.all([outerHandle.completion, nestedHandle.completion]);
+    await Promise.all([outerHandle.dispose(), nestedHandle.dispose()]);
+
+    expect(extensionRouters).toEqual([router, router]);
+    expect(extensionRouters.map((candidate) => candidate?.appliedSearchRoute))
+      .toEqual([appliedSearchRoute, appliedSearchRoute]);
+  });
+
   it("lets the real stage wake guard recover a transient triggered batch on its bounded retry", async () => {
     const prompt = deferred<void>();
     const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
@@ -1126,11 +1239,37 @@ describe("createStageSessionLauncher", () => {
     let modelGeneration = 0;
     let reloadCallsBeforeBoundary = -1;
     let initialSkillPaths: string[] = [];
+    let initialModelName: string | undefined;
     const disposedModels: string[] = [];
     const supervisor = new FakeDirectChildSupervisor();
     const policySettings = fakeSettingsManager({ getGlobalSettings: () => ({}) });
-    const dependencies: StageSessionDependencies = {
+    const dependencies: StageSessionDependencies & {
+      networkRouter: AgentSessionNetworkRouter;
+    } = {
       agentDir: "/agent",
+      networkRouter: {
+        appliedSearchRoute: Object.freeze({
+          policyFingerprint: "direct",
+          applyProxyConfiguration(target: SearchProxyConfiguration) {
+            target.useProxy = false;
+          },
+          invalidError: () => undefined,
+          sanitizeError: (error: unknown) => error instanceof Error ? error.message : String(error),
+        }),
+        withScope: (_scope, operation) => operation(),
+        decorateModelRuntime<T extends object>(runtime: T): T {
+          const candidate = runtime as T & {
+            getModel(provider: string, id: string): (Model<any> & { name: string }) | undefined;
+          };
+          return {
+            ...runtime,
+            getModel(provider: string, id: string) {
+              const selected = candidate.getModel(provider, id);
+              return selected ? { ...selected, name: `routed-${selected.name}` } : undefined;
+            },
+          } as T;
+        },
+      },
       createSessionManager: () => ({ kind: "new" }),
       openSessionManager: () => ({
         getSessionId: () => session.sessionId,
@@ -1184,6 +1323,7 @@ describe("createStageSessionLauncher", () => {
     session.promptStart = () => {
       session.isIdle = false;
       if (!resourceHost) throw new Error("Stage resource host was not constructed.");
+      initialModelName = session.model?.name;
       initialSkillPaths = [...resourceHost.skillPaths];
       live.publish(
         [paper, stageV2, reviewer],
@@ -1208,11 +1348,12 @@ describe("createStageSessionLauncher", () => {
     expect(session.reloadCalls).toBe(1);
     expect(reloadCallsBeforeBoundary).toBe(0);
     expect(initialSkillPaths).toEqual(["/project/.easyresearch/skills/paper"]);
+    expect(initialModelName).toBe("routed-metadata-v1");
     expect(resourceHost!.prompt).toEqual(["Pi base", "Search generation two."]);
     expect(session.activeTools.at(-1)).toEqual(["web-search", "subagent"]);
     expect(resourceHost!.skillPaths).toEqual(["/agent/skills/paper"]);
     expect(runtimeBinding!.current().subagents).toEqual(["reviewer"]);
-    expect(session.model?.name).toBe("metadata-v2");
+    expect(session.model?.name).toBe("routed-metadata-v2");
     expect(session.thinkingLevel).toBe("high");
     expect(policySettings.getCompactionSettings()).toMatchObject({
       reserveTokens: 25_600,

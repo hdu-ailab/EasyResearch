@@ -1,4 +1,5 @@
 import { ConfigPathError, ConfigServiceError, type ConfigFileService } from "./config-files";
+import { parsePiSettingsJson } from "../runtime/pi-settings-json";
 
 export const DEFAULT_WEB_SESSION_IDLE_TIMEOUT_MS = 3_600_000;
 
@@ -20,7 +21,7 @@ export function resolveWebSessionIdleTimeout(settings: unknown): number {
 export async function readWebSessionIdleTimeout(config: ConfigFileService): Promise<number> {
   try {
     const content = await config.read({ scope: "global", path: "settings.json" });
-    return resolveWebSessionIdleTimeout(JSON.parse(content) as unknown);
+    return resolveWebSessionIdleTimeout(parsePiSettingsJson(content));
   } catch (error) {
     if (error instanceof SyntaxError) return DEFAULT_WEB_SESSION_IDLE_TIMEOUT_MS;
     if (error instanceof ConfigPathError) return DEFAULT_WEB_SESSION_IDLE_TIMEOUT_MS;

@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Type } from "typebox";
 import { createLogger } from "../../runtime/logger";
+import type { AppliedSearchRoute } from "../../runtime/network-routing";
 import { createAbortError, createWebSearchAdapter, type WebSearchAdapter } from "./adapter";
 import {
   WEB_SEARCH_ENGINES,
@@ -22,6 +23,7 @@ import {
 } from "./contracts";
 import {
   initializeOpenWebSearchRuntime,
+  initializeOpenWebSearchRuntimeForRoute,
   type InitializedOpenWebSearchRuntime,
 } from "./runtime";
 
@@ -98,7 +100,48 @@ function detailsFor(
   };
 }
 
-export function createWebSearchTool(adapter: WebSearchAdapter) {
+export interface WebSearchToolOptions {
+  sanitizeError?: (error: unknown) => string;
+}
+
+function rawErrorMessage(error: unknown): string {
+  try {
+    const message = error instanceof Error ? error.message : String(error);
+    return message || "Search failed.";
+  } catch {
+    return "Search failed.";
+  }
+}
+
+function redactUrlUserinfo(message: string): string {
+  return message.replace(
+    /\b(https?):\/\/[^\s/?#@]+@/giu,
+    "$1://[redacted userinfo]@",
+  );
+}
+
+function safeSearchErrorMessage(
+  error: unknown,
+  sanitizeError?: (error: unknown) => string,
+): string {
+  let message: string;
+  try {
+    message = sanitizeError ? sanitizeError(error) : rawErrorMessage(error);
+  } catch {
+    message = "Search failed.";
+  }
+  const redacted = redactUrlUserinfo(message || "Search failed.");
+  const code = error && typeof error === "object" && "code" in error
+    && error.code === "NETWORK_PROXY_INVALID"
+    ? "NETWORK_PROXY_INVALID"
+    : undefined;
+  return code && !redacted.includes(code) ? `${code}: ${redacted}` : redacted;
+}
+
+export function createWebSearchTool(
+  adapter: WebSearchAdapter,
+  options: WebSearchToolOptions = {},
+) {
   return defineTool({
     name: "web-search",
     label: "Web Search",
@@ -171,37 +214,41 @@ export function createWebSearchTool(adapter: WebSearchAdapter) {
           num: params.num,
           site: params.site,
         }, signal);
+        const partialFailures = execution.partialFailures.map((failure) => ({
+          ...failure,
+          message: safeSearchErrorMessage(failure.message, options.sanitizeError),
+        }));
         if (execution.allEnginesFailed) {
           const message = "Every selected search engine failed.";
           return {
             content: [{
               type: "text",
-              text: `${message}\n\n${formatPartialFailures(execution.partialFailures)}`,
+              text: `${message}\n\n${formatPartialFailures(partialFailures)}`,
             }],
             details: detailsFor(
               execution.engines,
               [],
-              execution.partialFailures,
+              partialFailures,
               { error: message },
             ),
           };
         }
         if (execution.results.length === 0) {
-          const message = execution.partialFailures.length > 0
+          const message = partialFailures.length > 0
             ? "Search was inconclusive: some engines failed and the remaining engines returned no usable results."
             : "Search was inconclusive: selected engines returned no usable results, which may indicate throttling.";
           return {
             content: [{
               type: "text",
-              text: [message, formatPartialFailures(execution.partialFailures)].filter(Boolean).join("\n\n"),
+              text: [message, formatPartialFailures(partialFailures)].filter(Boolean).join("\n\n"),
             }],
-            details: detailsFor(execution.engines, [], execution.partialFailures),
+            details: detailsFor(execution.engines, [], partialFailures),
           };
         }
 
         const formatted = [
           formatResults(execution.results),
-          formatPartialFailures(execution.partialFailures),
+          formatPartialFailures(partialFailures),
         ].filter(Boolean).join("\n\n");
         const output = await truncateOutput(formatted);
         return {
@@ -209,14 +256,14 @@ export function createWebSearchTool(adapter: WebSearchAdapter) {
           details: detailsFor(
             execution.engines,
             execution.results,
-            execution.partialFailures,
+            partialFailures,
             { fullOutputPath: output.fullOutputPath },
           ),
         };
       } catch (error) {
         if (error instanceof Error && error.name === "AbortError") throw error;
         if (signal?.aborted) throw createAbortError();
-        const message = error instanceof Error ? error.message : String(error);
+        const message = safeSearchErrorMessage(error, options.sanitizeError);
         logger.error("search failed", { query: params.query, engines: params.engines, error: message });
         return {
           content: [{
@@ -232,14 +279,35 @@ export function createWebSearchTool(adapter: WebSearchAdapter) {
 
 export interface WebSearchExtensionDependencies {
   initializeRuntime?: () => Promise<InitializedOpenWebSearchRuntime>;
+  appliedSearchRoute?: AppliedSearchRoute;
 }
 
 export function createWebSearchExtension(
   dependencies: WebSearchExtensionDependencies = {},
 ): ExtensionFactory {
   return async (pi) => {
-    const runtime = await (dependencies.initializeRuntime ?? initializeOpenWebSearchRuntime)();
-    pi.registerTool(createWebSearchTool(createWebSearchAdapter(runtime.search)));
+    const route = dependencies.appliedSearchRoute;
+    const toolOptions: WebSearchToolOptions = route
+      ? { sanitizeError: (error) => route.sanitizeError(error) }
+      : {};
+    const invalid = route?.invalidError();
+    if (invalid) {
+      pi.registerTool(createWebSearchTool({
+        search: async () => {
+          throw invalid;
+        },
+      }, toolOptions));
+      return;
+    }
+    const initializeRuntime = dependencies.initializeRuntime
+      ?? (route
+        ? () => initializeOpenWebSearchRuntimeForRoute(route)
+        : initializeOpenWebSearchRuntime);
+    const runtime = await initializeRuntime();
+    pi.registerTool(createWebSearchTool(createWebSearchAdapter(runtime.search, {
+      ...toolOptions,
+      requestRouting: runtime.requestRouting,
+    }), toolOptions));
   };
 }
 

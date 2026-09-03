@@ -1,6 +1,7 @@
 import { Settings } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listStatus, openSession } from "./api";
+import { RuntimeRestartOverlay } from "./components/RuntimeRestartOverlay";
 import { SettingsModal } from "./components/settings/SettingsModal";
 import { TopbarIconButton } from "./components/Topbar";
 import { useConfigurationEvents } from "./hooks/useConfigurationEvents";
@@ -10,6 +11,45 @@ import { ConfigPage } from "./pages/ConfigPage";
 import { HomePage } from "./pages/HomePage";
 import { WorkPage } from "./pages/WorkPage";
 import { isSettingsHostRoute, resolveWorkSession, type WorkSession } from "./router";
+import {
+  pollForRuntimeReplacement,
+  type RuntimeReplacementBrowser,
+  type RuntimeReplacementPollDependencies,
+  type RuntimeReplacementPollResult,
+  reloadForRuntimeReplacement,
+} from "./runtime-replacement";
+
+const RUNTIME_RESTART_POLL_INTERVAL_MS = 500;
+const RUNTIME_RESTART_TIMEOUT_MS = 30_000;
+
+export type RuntimeReplacementPoller = (
+  oldBootId: string,
+  dependencies: RuntimeReplacementPollDependencies,
+) => Promise<RuntimeReplacementPollResult>;
+
+interface ExpectedRuntimeRestart {
+  oldBootId: string;
+  phase: "waiting" | "timed-out";
+  attempt: number;
+}
+
+function waitForNextRuntimePoll(signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException("aborted", "AbortError"));
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, RUNTIME_RESTART_POLL_INTERVAL_MS);
+    const onAbort = () => {
+      window.clearTimeout(timer);
+      reject(new DOMException("aborted", "AbortError"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
 
 /**
  * Hash-routed page shell (ADR-076): the URL keeps the current page across
@@ -19,7 +59,13 @@ import { isSettingsHostRoute, resolveWorkSession, type WorkSession } from "./rou
  * completed resolve remounts WorkPage so its connection attaches after the
  * resume.
  */
-export function App() {
+export function App({
+  runtimeReplacementBrowser,
+  runtimeReplacementPoller = pollForRuntimeReplacement,
+}: {
+  runtimeReplacementBrowser?: RuntimeReplacementBrowser;
+  runtimeReplacementPoller?: RuntimeReplacementPoller;
+} = {}) {
   const { t } = useI18n();
   const configuration = useConfigurationEvents();
   const { route, navigate, openSettings, closeSettings, openConfig, returnToSettings, registerSettingsCloseGuard } =
@@ -35,6 +81,11 @@ export function App() {
   const configOpen = route.page === "config";
   const hostRoute = configOpen ? route.returnTo : route;
   const previousSettingsOpen = useRef(settingsOpen);
+  const runtimeReplacementHandled = useRef(false);
+  const runtimePollAbort = useRef<AbortController | null>(null);
+  const routeRef = useRef(route);
+  routeRef.current = route;
+  const [expectedRuntimeRestart, setExpectedRuntimeRestart] = useState<ExpectedRuntimeRestart | null>(null);
   const routeWorkId = hostRoute?.page === "work" ? hostRoute.session.id : null;
   const routeWorkCwd = hostRoute?.page === "work" ? hostRoute.session.cwd : null;
   const resolvedWorkSession =
@@ -45,6 +96,63 @@ export function App() {
       : null;
   const mountedWorkCwd = resolvedWorkSession?.cwd;
   const setProjectInterests = configuration.setProjectInterests;
+
+  const reloadRuntime = useCallback(() => {
+    if (runtimeReplacementHandled.current) return;
+    runtimeReplacementHandled.current = true;
+    runtimePollAbort.current?.abort();
+    reloadForRuntimeReplacement(routeRef.current, runtimeReplacementBrowser);
+  }, [runtimeReplacementBrowser]);
+
+  useLayoutEffect(() => {
+    if (configuration.runtimeReplaced) reloadRuntime();
+  }, [configuration.runtimeReplaced, reloadRuntime]);
+
+  const onRuntimeRestartAccepted = useCallback(
+    (oldBootId: string) => {
+      if (runtimeReplacementHandled.current) return;
+      setExpectedRuntimeRestart({ oldBootId, phase: "waiting", attempt: 0 });
+      const current = routeRef.current;
+      if (isSettingsHostRoute(current)) closeSettings(current, { replace: true });
+    },
+    [closeSettings],
+  );
+
+  useEffect(() => {
+    if (expectedRuntimeRestart?.phase !== "waiting" || window.easyresearchDesktop) return;
+    const controller = new AbortController();
+    runtimePollAbort.current?.abort();
+    runtimePollAbort.current = controller;
+    let active = true;
+    let timedOut = false;
+    const timeout = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, RUNTIME_RESTART_TIMEOUT_MS);
+
+    void runtimeReplacementPoller(expectedRuntimeRestart.oldBootId, {
+      readStatus: (signal) => listStatus({ signal }),
+      waitForNextAttempt: waitForNextRuntimePoll,
+      signal: controller.signal,
+      timedOut: () => timedOut,
+    }).then((result) => {
+      if (!active) return;
+      if (result === "replaced") {
+        reloadRuntime();
+      } else if (result === "timed-out") {
+        setExpectedRuntimeRestart((current) =>
+          current?.attempt === expectedRuntimeRestart.attempt ? { ...current, phase: "timed-out" } : current,
+        );
+      }
+    });
+
+    return () => {
+      active = false;
+      window.clearTimeout(timeout);
+      controller.abort();
+      if (runtimePollAbort.current === controller) runtimePollAbort.current = null;
+    };
+  }, [expectedRuntimeRestart, reloadRuntime, runtimeReplacementPoller]);
 
   const onSettingsProjectInterestChange = useCallback(
     (cwd?: string) => setProjectInterests("settings", cwd === undefined ? [] : [cwd]),
@@ -177,19 +285,25 @@ export function App() {
           data-app-surface
           className="h-full"
           hidden={configOpen}
-          inert={settingsOpen || configOpen ? true : undefined}
-          aria-hidden={settingsOpen || configOpen ? "true" : undefined}
+          inert={settingsOpen || configOpen || expectedRuntimeRestart ? true : undefined}
+          aria-hidden={settingsOpen || configOpen || expectedRuntimeRestart ? "true" : undefined}
         >
           {baseSurface}
         </div>
       )}
       {configOpen && (
-        <ConfigPage
-          onHome={() => navigate({ page: "home" })}
-          onBackToSettings={() => returnToSettings(route)}
-          onProjectInterestChange={onConfigProjectInterestChange}
-          configurationError={configuration.error}
-        />
+        <div
+          className="h-full"
+          inert={expectedRuntimeRestart ? true : undefined}
+          aria-hidden={expectedRuntimeRestart ? "true" : undefined}
+        >
+          <ConfigPage
+            onHome={() => navigate({ page: "home" })}
+            onBackToSettings={() => returnToSettings(route)}
+            onProjectInterestChange={onConfigProjectInterestChange}
+            configurationError={configuration.error}
+          />
+        </div>
       )}
       {settingsOpen && (
         <SettingsModal
@@ -199,6 +313,18 @@ export function App() {
           onOpenConfig={() => openConfig(route)}
           onProjectInterestChange={onSettingsProjectInterestChange}
           registerRouteCloseGuard={registerSettingsCloseGuard}
+          onRuntimeRestartAccepted={onRuntimeRestartAccepted}
+        />
+      )}
+      {expectedRuntimeRestart && (
+        <RuntimeRestartOverlay
+          phase={expectedRuntimeRestart.phase}
+          desktop={window.easyresearchDesktop !== undefined}
+          onRetry={() =>
+            setExpectedRuntimeRestart((current) =>
+              current ? { ...current, phase: "waiting", attempt: current.attempt + 1 } : current,
+            )
+          }
         />
       )}
     </>

@@ -289,6 +289,62 @@ describe("createDaemonAuthRuntime", () => {
     rmSync(agentDir, { recursive: true, force: true });
   });
 
+  it("applies an auth-flow timeout from BOM-prefixed settings accepted by Pi", async () => {
+    vi.useFakeTimers();
+    const agentDir = mkdtempSync(join(tmpdir(), "easyresearch-daemon-auth-timeout-"));
+    writeFileSync(
+      join(agentDir, "settings.json"),
+      `\uFEFF${JSON.stringify({ easyresearch: { web: { authFlowTimeoutMs: 25 } } })}`,
+      "utf8",
+    );
+    const candidate = {
+      ...transactionRuntime("timeout", { providers: [anthropicProvider] }),
+      login: vi.fn(async (
+        _providerId: string,
+        _type: "api_key" | "oauth",
+        interaction: { signal?: AbortSignal },
+      ) => {
+        const signal = interaction.signal;
+        if (!signal) throw new Error("auth interaction signal is required");
+        await new Promise<never>((_resolve, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => reject(new DOMException("aborted", "AbortError")),
+            { once: true },
+          );
+        });
+        throw new Error("unreachable");
+      }),
+    };
+    const daemon = await createDaemonAuthRuntime({
+      config: new ConfigFileService(agentDir),
+      logger: { debug() {}, info() {}, warn() {}, error() {} },
+      createModelRuntime: async () => candidate,
+      synchronizeCatalog: async () => {},
+      onModelsChanged: async () => {},
+    });
+    const request = { flowId: "bom-timeout", providerId: "anthropic", type: "api_key" as const };
+    let running: Promise<void> | undefined;
+
+    try {
+      await daemon.auth.preflight(request);
+      running = daemon.auth.runFlow(request);
+      await vi.advanceTimersByTimeAsync(25);
+
+      expect(daemon.auth.store().get(request.flowId)?.terminalEvent).toMatchObject({
+        type: "error",
+        reason: "timeout",
+      });
+      await expect(running).resolves.toBeUndefined();
+    } finally {
+      await daemon.auth.shutdown();
+      await running;
+      await daemon.dispose();
+      rmSync(agentDir, { recursive: true, force: true });
+      vi.useRealTimers();
+    }
+  });
+
   it("adapts keyless models.json providers before publishing a daemon candidate", async () => {
     const agentDir = mkdtempSync(join(tmpdir(), "easyresearch-daemon-no-auth-"));
     writeFileSync(join(agentDir, "models.json"), JSON.stringify({
@@ -452,6 +508,62 @@ describe("readModelsJsonProviderIds", () => {
 });
 
 describe("configureNoAuthModelRuntime", () => {
+  it("decorates each raw candidate before semantic checks and no-auth configuration", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "easyresearch-routed-model-runtime-"));
+    const modelsPath = join(dir, "models.json");
+    writeFileSync(modelsPath, JSON.stringify({
+      providers: {
+        local: {
+          baseUrl: "http://127.0.0.1:1234/v1",
+          api: "openai-completions",
+          models: [{ id: "local-model" }],
+        },
+      },
+    }));
+    const order: string[] = [];
+    const raw = {
+      getError() {
+        order.push("raw:getError");
+        return undefined;
+      },
+      async setRuntimeApiKey(providerId: string) {
+        order.push(`raw:setRuntimeApiKey:${providerId}`);
+      },
+    };
+    const createRuntime = vi.fn(async () => {
+      order.push("create");
+      return raw;
+    });
+    const decorate = vi.fn((runtime: typeof raw) => new Proxy(runtime, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if (typeof value !== "function") return value;
+        return (...args: unknown[]) => {
+          order.push(`decorated:${String(property)}`);
+          return Reflect.apply(value, target, args);
+        };
+      },
+    }));
+
+    try {
+      await expect(createConfiguredModelRuntime(createRuntime, modelsPath, decorate)).resolves.toBeDefined();
+
+      expect(order).toEqual([
+        "create",
+        "decorated:getError",
+        "raw:getError",
+        "decorated:setRuntimeApiKey",
+        "raw:setRuntimeApiKey:local",
+        "decorated:getError",
+        "raw:getError",
+      ]);
+      expect(decorate).toHaveBeenCalledOnce();
+      expect(decorate).toHaveBeenCalledWith(raw);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("falls back to a custom-layer-free runtime when models.json is malformed", async () => {
     const dir = mkdtempSync(join(tmpdir(), "easyresearch-model-runtime-fallback-"));
     const modelsPath = join(dir, "models.json");
@@ -467,7 +579,7 @@ describe("configureNoAuthModelRuntime", () => {
     const createRuntime = vi.fn(async (path: string | null) => path === null ? fallback : malformed);
 
     try {
-      await expect(createConfiguredModelRuntime(createRuntime, modelsPath)).resolves.toBe(fallback);
+      await expect(createConfiguredModelRuntime(createRuntime, modelsPath, (runtime) => runtime)).resolves.toBe(fallback);
       expect(createRuntime.mock.calls.map(([path]) => path)).toEqual([modelsPath, null]);
     } finally {
       rmSync(dir, { recursive: true, force: true });

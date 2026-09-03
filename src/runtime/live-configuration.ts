@@ -39,6 +39,7 @@ import {
   type WatcherDependencies,
 } from "./configuration-watchers";
 import { getAgentDir } from "./pi-import";
+import { parsePiSettingsJson } from "./pi-settings-json";
 import {
   fingerprintGlobalSkillResources,
   fingerprintSkillRoot,
@@ -818,7 +819,7 @@ export async function fingerprintConfiguration(
   const invalidSettingsLayers: NonNullable<ConfigurationFingerprint["invalidSettingsLayers"]> = {};
   if (settingsBytes !== undefined) {
     try {
-      settings = JSON.parse(settingsBytes.toString("utf8")) as unknown;
+      settings = parsePiSettingsJson(settingsBytes.toString("utf8"));
     } catch {
       diagnostic = SAFE_SETTINGS_DIAGNOSTIC;
       invalidSettingsLayers.agentDefaults = true;

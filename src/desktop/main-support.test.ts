@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  captureDesktopRestartHash,
   createTrayMenuTemplate,
   desktopWindowOptions,
   handleMainWindowClose,
@@ -32,6 +33,12 @@ describe("desktop BrowserWindow options", () => {
   it("accepts only the exact rendered Web UI document", () => {
     const origin = "http://127.0.0.1:43123";
     expect(isCurrentDesktopDocument(`${origin}/`, origin, true, true)).toBe(true);
+    expect(isCurrentDesktopDocument(
+      `${origin}/#/work/s-1?cwd=%2Fpaper%20one`,
+      origin,
+      true,
+      true,
+    )).toBe(true);
     expect(isCurrentDesktopDocument(`${origin}/`, origin, false, true)).toBe(false);
     expect(isCurrentDesktopDocument(`${origin}/`, origin, true, false)).toBe(false);
     expect(isCurrentDesktopDocument(`${origin}/unauthorized`, origin, true, true)).toBe(false);
@@ -45,6 +52,32 @@ describe("desktop loading document", () => {
     expect(html).toContain("default-src 'none'");
     expect(html).toContain("&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;");
     expect(html).not.toContain('<script>alert("x")</script>');
+  });
+});
+
+describe("desktop restart route capture", () => {
+  const origin = "http://127.0.0.1:43123";
+
+  it.each([
+    ["foreign origin", "http://127.0.0.1:43124/#/work/s-1?cwd=%2Fpaper", "#/"],
+    ["credentialed URL", "http://user@127.0.0.1:43123/#/work/s-1?cwd=%2Fpaper", "#/"],
+    ["malformed hash", `${origin}/#/work/s-1?cwd=`, "#/"],
+    ["legacy Settings", `${origin}/#/settings`, "#/"],
+    ["Home Settings", `${origin}/#/?settings=1`, "#/"],
+    [
+      "Work Settings",
+      `${origin}/#/work/session%20one?cwd=%2Fpaper%20one%3Fset%3D1%26part%3D2&settings=1`,
+      "#/work/session%20one?cwd=%2Fpaper%20one%3Fset%3D1%26part%3D2",
+    ],
+    ["Config without return", `${origin}/#/config`, "#/"],
+    ["Config with malformed return", `${origin}/#/config?returnTo=%23%2Fsettings`, "#/"],
+    [
+      "Config with Work return",
+      `${origin}/#/config?returnTo=%23%2Fwork%2Fsession%2520one%3Fcwd%3D%252Fpaper%2520one%26settings%3D1`,
+      "#/work/session%20one?cwd=%2Fpaper%20one",
+    ],
+  ])("normalizes $0 to its canonical Home or Work host", (_name, documentUrl, expected) => {
+    expect(captureDesktopRestartHash(documentUrl, origin)).toBe(expected);
   });
 });
 

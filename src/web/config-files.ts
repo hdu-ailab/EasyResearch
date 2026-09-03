@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, join, normalize, relative, sep } from "node:path";
 import type { ConfigEntryDto, ConfigScope } from "./contracts";
 import { getAgentDir } from "../runtime/pi-import";
+import { parsePiSettingsJson } from "../runtime/pi-settings-json";
 import { isSkillDescriptorRelativePath } from "../runtime/resource-fingerprint";
 
 export class ConfigPathError extends Error {}
@@ -211,7 +212,7 @@ export class ConfigFileService {
         if (sourceBytes !== undefined) {
           let parsed: unknown;
           try {
-            parsed = JSON.parse(sourceBytes.toString("utf8")) as unknown;
+            parsed = parsePiSettingsJson(sourceBytes.toString("utf8"));
           } catch {
             throw new ConfigServiceError(409, "Global settings.json is invalid", "CONFIG_INVALID");
           }
@@ -254,7 +255,8 @@ export class ConfigFileService {
       : this.rootFor(input.scope, input.cwd);
     if (input.path.endsWith(".json")) {
       try {
-        JSON.parse(input.content);
+        if (isPiSettingsWrite(input)) parsePiSettingsJson(input.content);
+        else JSON.parse(input.content);
       } catch {
         throw new ConfigServiceError(400, "Invalid JSON");
       }
@@ -379,7 +381,11 @@ export class ConfigFileService {
 }
 
 function isGlobalSettingsWrite(input: ConfigWriteInput): boolean {
-  return input.scope === "global" && normalize(input.path) === "settings.json";
+  return input.scope === "global" && isPiSettingsWrite(input);
+}
+
+function isPiSettingsWrite(input: ConfigWriteInput): boolean {
+  return normalize(input.path) === "settings.json";
 }
 
 function sameOptionalBytes(left: Buffer | undefined, right: Buffer | undefined): boolean {
