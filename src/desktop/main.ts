@@ -186,17 +186,21 @@ async function startApplication(
         baseEnv: environment,
         agentDir: defaultAgentDir(),
         transitionLease,
-        onSetup: showLoading,
+        onSetup: (message) => {
+          writeDesktopLog(`Desktop sidecar setup: ${message}`);
+          showLoading(message);
+        },
         onSpawned: (handle) => {
           launchedSidecar = handle;
           sidecarOwnership.retain(handle);
+          writeDesktopLog(`Desktop sidecar spawned (pid ${handle.pid ?? "unknown"}).`);
         },
         onTransitionCommitted: () => {
           if (smokeRestartContext && consumeSmokeRequest("successor-start-failure-request")) {
             smokeSuccessorFailureInjected = true;
             emitSmokeEvent(desktopSmokeRestartFailureEvent("successor-start-failed", hash));
             writeDesktopLog("Desktop smoke injected one successor startup failure.");
-            throw new Error("Desktop smoke injected one successor startup failure.");
+            throw new Error("Desktop smoke post-commit failure injection.");
           }
         },
         log: writeDesktopLog,

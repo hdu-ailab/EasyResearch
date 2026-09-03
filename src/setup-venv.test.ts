@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   detectPython,
   ensureSkillVenv,
@@ -146,6 +146,38 @@ describe("ensureSkillVenv", () => {
       stderr: "",
     });
   }
+
+  it("streams setup output without passing the host lifecycle stdin to Python", async () => {
+    const actualChildProcess = await vi.importActual<typeof import("node:child_process")>(
+      "node:child_process",
+    );
+    const spawn = vi.fn(() => ({ status: 0, stdout: null, stderr: null }));
+    vi.doMock("node:child_process", () => ({
+      ...actualChildProcess,
+      spawnSync: spawn,
+    }));
+    vi.resetModules();
+    try {
+      const setupVenv = await import("./setup-venv");
+      const agentDir = tempAgentDir();
+      const python = setupVenv.venvPythonPath(join(agentDir, "venv"));
+      mkdirSync(dirname(python), { recursive: true });
+      writeFileSync(python, "fake", "utf8");
+
+      expect(setupVenv.ensureSkillVenv(agentDir, { stream: true }).success).toBe(true);
+      expect(spawn).toHaveBeenCalledWith(
+        python,
+        ["-c", "import markitdown, arxiv"],
+        {
+          stdio: ["ignore", "inherit", "inherit"],
+          timeout: 600_000,
+        },
+      );
+    } finally {
+      vi.doUnmock("node:child_process");
+      vi.resetModules();
+    }
+  });
 
   it("reuses an existing healthy venv without reinstalling", () => {
     const agentDir = tempAgentDir();

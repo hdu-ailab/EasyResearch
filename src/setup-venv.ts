@@ -95,7 +95,10 @@ function realRun(command: string, args: string[]): { status: number; stdout: str
 }
 
 function streamingRun(command: string, args: string[]): { status: number; stdout: string; stderr: string } {
-  const result = spawnSync(command, args, { stdio: "inherit", timeout: 600_000 });
+  const result = spawnSync(command, args, {
+    stdio: ["ignore", "inherit", "inherit"],
+    timeout: 600_000,
+  });
   return { status: result.status ?? 1, stdout: "", stderr: "" };
 }
 
