@@ -94,17 +94,41 @@ Not ready / Ready with caveats / Ready
 ## Default Output Format
 Unless the user explicitly asks for LaTeX or a venue template, write the paper draft in Markdown.
 
-Default files:
-- `manuscript/manuscript.md`
-- `manuscript/citation-verification.md`
-- `manuscript/writing-readiness-report.md` when needed
-- `manuscript/revision-report.md` after revision or audit passes
-- `manuscript/latex/` for derived LaTeX
-- `manuscript/manuscript.pdf` for the compiled PDF
+Keep outputs separated by audience:
+
+- Submission-facing source: `manuscript/manuscript.md`.
+- Internal evidence and workflow records:
+  `manuscript/citation-verification.md`,
+  `manuscript/writing-readiness-report.md` when needed,
+  `manuscript/revision-report.md` after revision or audit passes, and the
+  immutable timestamped Writing handoff.
+- Derived submission files: `manuscript/latex/` and
+  `manuscript/manuscript.pdf`.
 
 Create `manuscript/` only when an authorized deliverable or readiness report needs it. Keep `manuscript/manuscript.md` authoritative and LaTeX/PDF derived.
 
 Markdown drafts may contain LaTeX math blocks for formulas. Do not convert to a conference LaTeX template unless the user asks.
+
+## Manuscript And Internal Records
+
+The submission-facing manuscript contains the title and supplied or venue-
+required author metadata, abstract, scholarly sections, figures/tables and
+captions, acknowledgments only when appropriate for the submission phase, and
+the verified references actually cited by the paper.
+
+Internal records contain readiness verdicts, evidence inventories, exact local
+experiment/result/log paths, commands, `note_key` values, unresolved-reference
+queues, changed-file lists, audit findings, correction ownership, and workflow
+status. Put those details in the dedicated internal files and Writing handoff,
+not in the title page, abstract, body, captions, acknowledgments, appendices, or
+references.
+
+Write manuscript limitations as scholarly limits of the method, evidence, or
+external validity. Do not expose internal TODOs, missing-artifact checklists,
+draft/readiness labels, or instructions to the user as paper content. A
+reproducibility section or appendix describes the protocol and may name a real
+public repository, DOI, archive, or submission supplement supplied for readers;
+it never points readers to EasyResearch-local project paths.
 
 ## Manuscript Structure
 For a standard empirical ML/AI paper, use this default Markdown structure:
@@ -129,8 +153,6 @@ For a standard empirical ML/AI paper, use this default Markdown structure:
 ## 7. Conclusion
 
 ## References
-
-## References To Verify Manually
 ```
 
 Adjust the structure only when the target venue, paper type, or user request requires it.
@@ -205,9 +227,12 @@ Include:
 - Main comparison table.
 - Ablation table or ablation summary.
 - Negative or weak cases when they exist.
-- Reproducibility details pointing to the selected
-  `<experiment-root>/results/` and
-  `<experiment-root>/experiment-record.md`.
+- Reproducibility details needed by readers: data and split definitions,
+  preprocessing, model/training configuration, seeds, hardware/software, and
+  code/data/supplement availability when a real reader-accessible location
+  exists. Record the selected `<experiment-root>/results/` and
+  `<experiment-root>/experiment-record.md` paths only in internal records and
+  the Writing handoff.
 
 Do not hide failed or underperforming settings if they are relevant to the claim.
 
@@ -240,17 +265,23 @@ For each cited work, verify at least:
 - Venue or source.
 - Stable URL, DOI, arXiv ID, OpenReview URL, or ACL Anthology URL.
 
-If a citation cannot be verified, do not silently include it as a normal reference. Add it to a dedicated manual-verification list:
+If a citation cannot be verified, do not silently include it as a normal
+reference. Record it in `manuscript/citation-verification.md`, not in the
+submission-facing manuscript:
 
 ```markdown
-## References To Verify Manually
+## References Requiring Manual Verification
 
-| Candidate | Reason verification failed | Needed action |
+| Candidate | Reason verification failed | Evidence needed |
 |---|---|---|
-| <title or description> | <missing DOI, conflicting metadata, inaccessible page, etc.> | User should verify or provide source |
+| <title or description> | <missing DOI, conflicting metadata, inaccessible page, etc.> | <stable metadata or source needed> |
 ```
 
-If the user does not want to manually verify uncertain references, remove those references from the manuscript and rewrite the surrounding claim so it only depends on verified citations.
+Omit every unresolved candidate from manuscript citations and references and
+rewrite the surrounding claim so it depends only on verified evidence. If the
+authorized scope depends on that candidate, return `partial` or `blocked` and
+put the required evidence in the Writing handoff rather than addressing the
+user inside the paper.
 
 Do not leave fake BibTeX entries, placeholder venues, or invented author lists in the draft.
 
@@ -277,6 +308,10 @@ Follow this order:
 - Draft Introduction after the contribution and evidence are clear.
 - Draft Abstract last or revise it last.
 - Run a self-review pass for overclaiming, missing formulas, missing citations, and result mismatches.
+- Compare `manuscript/manuscript.md` against the internal reports and handoff.
+  Move any workflow status, local path inventory, unresolved-reference queue,
+  changed-file list, audit finding, or user instruction out of the manuscript
+  before deriving LaTeX/PDF.
 
 Do not spend large token budgets writing polished prose before the readiness gate passes.
 
@@ -288,9 +323,12 @@ Before calling a draft usable, check:
 - Results are copied from actual experiment artifacts.
 - Baseline comparison is fair and uses the same protocol.
 - Ablations support the component-combination story.
-- Unverified citations are isolated in `References To Verify Manually`.
+- Unverified citations are isolated in `citation-verification.md` and omitted
+  from the manuscript.
 - Claims in Abstract and Introduction are supported by Results.
 - Limitations include weak datasets, failed settings, incomplete ablations, and external validity limits.
+- The manuscript contains no workflow status, local project paths, internal
+  verification queues, revision log, or instructions to the user.
 
 ## LaTeX And Venue Templates
 Use LaTeX only when the user explicitly asks for it or when preparing a venue submission.
@@ -313,7 +351,11 @@ Load reference files only when needed:
 
 ## Do Not Do
 - **Do not draft the full manuscript or any complete section without explicit user consent.** Write readiness reports and gap analyses unless the user explicitly says "write the paper", "draft the manuscript", "start writing", or equivalent.
-- Do not write full paper prose from incomplete toy experiments. If the user explicitly requests writing despite incomplete evidence, produce a readiness report alongside the draft and mark all gaps.
+- Do not write full paper prose from incomplete toy experiments. If the user
+  explicitly requests writing despite incomplete evidence, record every
+  readiness gap in `writing-readiness-report.md` and the Writing handoff. Include
+  only evidence-backed scholarly limitations in the manuscript; do not insert
+  TODOs, missing-artifact notes, or workflow status.
 - Do not treat exploratory runs in `outputs/` as formal evidence unless promoted or clearly justified.
 - Do not use `This paper ...` as the default voice.
 - Do not produce a prose-only Method section for a model paper.

@@ -9,8 +9,11 @@ A near-complete empirical research manuscript needs an iterative revision and au
 ## Workflow
 
 1. **Preserve prior drafts**
-   - Create a new revision file rather than overwriting the previous draft.
-   - Write a changelog or revision report listing changed files, main structural edits, figure/table reductions, and unresolved caveats.
+   - Keep `manuscript/manuscript.md` as the one authoritative source. Preserve a
+     prior snapshot only when the task explicitly requires one; never leave an
+     ambiguous alternate final manuscript.
+   - Write changed files, main structural edits, figure/table reductions, and
+     unresolved caveats to `manuscript/revision-report.md`, not into the paper.
 
 2. **Verify references mechanically**
    - Parse reference IDs and check the reference list sequence is continuous.
@@ -41,7 +44,18 @@ A near-complete empirical research manuscript needs an iterative revision and au
 6. **Verify final artifacts**
    - Confirm referenced figure/table files exist.
    - Re-run a quick script to list body figure count, body table order, method equation count, missing citations/references, broken known URLs, and terminology consistency.
-   - Save the audit output as a review report with a clear verdict and remaining formatting-only caveats.
+   - Save the Writing-owned audit output in `manuscript/revision-report.md` with
+     a clear verdict and remaining formatting-only caveats. An independent
+     Review report remains owned by the Review Agent under `reviews/`.
+
+## Artifact Boundary
+
+The revised manuscript contains only submission-facing scholarly content. Keep
+the changed-file inventory, audit checklist/results, local artifact paths,
+unresolved-verification queue, correction ownership, and readiness verdict in
+`manuscript/revision-report.md` and the Writing handoff. Resolve unsupported
+paper claims, omit them, or express their evidence-backed scientific limitation;
+never convert an internal audit note or TODO into manuscript prose.
 
 ## Useful checks
 
