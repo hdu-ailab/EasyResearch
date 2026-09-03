@@ -16,8 +16,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   acquireServerLease,
   acquireTransitionLease,
+  adoptTransitionLease,
+  assertTransitionLeaseOwnership,
   serverLeasePath,
   transitionLeasePath,
+  waitForTransitionLeaseOwnership,
 } from "./runtime-lease";
 
 let root: string;
@@ -298,6 +301,112 @@ describe("runtime leases", () => {
 
     expect(waits).toBe(0);
     expect(first.release()).toBe(true);
+  });
+
+  it("adopts only the exact transferred transition owner without changing persisted custody", async () => {
+    const parent = await acquireTransitionLease(root, "desktop");
+    const handoff = parent.reserveHandoff("electron-transition-token");
+    handoff.commit(5151);
+    handoff.relinquish();
+
+    expect(() => assertTransitionLeaseOwnership(
+      root,
+      "desktop",
+      5151,
+      "electron-transition-token",
+    )).not.toThrow();
+    const adopted = adoptTransitionLease(
+      root,
+      "desktop",
+      5151,
+      "electron-transition-token",
+    );
+
+    expect(adopted.held).toBe(true);
+    expect(readOnlyLeaseRecord(transitionLeasePath(root))).toEqual({
+      schema: 1,
+      kind: "transition",
+      owner: "desktop",
+      pid: 5151,
+      token: "electron-transition-token",
+    });
+    expect(adopted.release()).toBe(true);
+    expect(existsSync(transitionLeasePath(root))).toBe(false);
+  });
+
+  it("waits through the pre-spawn handoff guard until exact child custody is committed", async () => {
+    const parent = await acquireTransitionLease(root, "desktop");
+    const handoff = parent.reserveHandoff("replacement-control-token");
+    let now = 0;
+    let waits = 0;
+
+    await expect(waitForTransitionLeaseOwnership(
+      root,
+      "desktop",
+      6262,
+      "replacement-control-token",
+      {
+        timeoutMs: 100,
+        now: () => now,
+        wait: async () => {
+          waits += 1;
+          now += 10;
+          handoff.commit(6262);
+        },
+      },
+    )).resolves.toBeUndefined();
+
+    expect(waits).toBe(1);
+    expect(readOnlyLeaseRecord(transitionLeasePath(root))).toMatchObject({
+      pid: 6262,
+      token: "replacement-control-token",
+    });
+    expect(parent.release()).toBe(true);
+  });
+
+  it("fails closed when expected inherited transition custody never appears", async () => {
+    const parent = await acquireTransitionLease(root, "desktop");
+    let now = 0;
+
+    await expect(waitForTransitionLeaseOwnership(
+      root,
+      "desktop",
+      6262,
+      "replacement-control-token",
+      {
+        timeoutMs: 20,
+        now: () => now,
+        wait: async () => {
+          now += 10;
+        },
+      },
+    )).rejects.toThrow(/did not receive transition custody/i);
+
+    expect(parent.held).toBe(true);
+    expect(parent.release()).toBe(true);
+  });
+
+  it.each([
+    ["wrong owner", "cli" as const, 5151, "electron-transition-token"],
+    ["wrong pid", "desktop" as const, 5252, "electron-transition-token"],
+    ["wrong token", "desktop" as const, 5151, "other-transition-token"],
+  ])("rejects an adopted transition with $0 and preserves the current record", async (
+    _name,
+    owner,
+    pid,
+    token,
+  ) => {
+    const current = await acquireTransitionLease(root, "desktop");
+    const handoff = current.reserveHandoff("electron-transition-token");
+    handoff.commit(5151);
+    handoff.relinquish();
+
+    expect(() => adoptTransitionLease(root, owner, pid, token)).toThrow(/cannot adopt/i);
+    expect(readOnlyLeaseRecord(transitionLeasePath(root))).toMatchObject({
+      owner: "desktop",
+      pid: 5151,
+      token: "electron-transition-token",
+    });
   });
 
   it("reserves fail-closed handoff custody before publishing a child pid", async () => {

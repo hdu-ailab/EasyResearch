@@ -4,11 +4,15 @@ import { PassThrough } from "node:stream";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
 import { DAEMON_CONTROL_PATH, DAEMON_TOKEN_HEADER } from "../cli/daemon-control";
+import type { RuntimeLease } from "../cli/runtime-lease";
 import {
   DESKTOP_ACCESS_HEADER,
   DESKTOP_CONTROL_TOKEN_ENV,
+  DESKTOP_HOST_PID_ENV,
+  DESKTOP_HOST_TRANSITION_TOKEN_ENV,
   DESKTOP_LAUNCH_ENV,
   DESKTOP_RENDERER_TOKEN_ENV,
+  DESKTOP_TRANSITION_HANDOFF_ENV,
 } from "./contracts";
 import { startDesktopSidecar } from "./sidecar";
 
@@ -44,7 +48,412 @@ function fakeChild(pid = 4242): FakeSidecarChild {
   return new FakeSidecarChild(pid);
 }
 
+function fakeRuntimeLease(
+  order: string[] = [],
+  options: { commitError?: Error } = {},
+): RuntimeLease {
+  let held = true;
+  let token = "host-transition-owner";
+  let active = false;
+  return {
+    path: "/tmp/server.transition.lease",
+    get token() {
+      return token;
+    },
+    get held() {
+      return held;
+    },
+    reserveHandoff: vi.fn((nextToken: string) => {
+      order.push(`reserve:${nextToken}`);
+      active = true;
+      let transferred = false;
+      return {
+        token: nextToken,
+        get transferred() {
+          return transferred;
+        },
+        commit: vi.fn((pid: number) => {
+          order.push(`commit:${pid}`);
+          if (options.commitError) throw options.commitError;
+          token = nextToken;
+          transferred = true;
+          active = false;
+        }),
+        cancel: vi.fn(() => {
+          order.push("cancel");
+          active = false;
+          return true;
+        }),
+        relinquish: vi.fn(() => {
+          order.push("relinquish");
+          held = false;
+        }),
+      };
+    }),
+    release: vi.fn(() => {
+      order.push("release");
+      if (!held || active) return false;
+      held = false;
+      return true;
+    }),
+  };
+}
+
 describe("desktop sidecar client", () => {
+  it("holds replacement transition custody from before spawn through authenticated health", async () => {
+    const child = fakeChild();
+    const order: string[] = [];
+    const transitionLease = fakeRuntimeLease(order);
+    let resolveHealth!: (response: Response) => void;
+    const health = new Promise<Response>((resolve) => {
+      resolveHealth = resolve;
+    });
+    let childEnv: NodeJS.ProcessEnv = {};
+
+    const starting = startDesktopSidecar({
+      sidecarPath: "/app/sidecar/easyresearch",
+      baseEnv: {},
+      agentDir: "/tmp/easyresearch-agent",
+      transitionLease,
+      hostPid: 5151,
+      createHostTransitionToken: () => "h".repeat(43),
+      spawn: ((_command: string, _args: readonly string[], options: { env: NodeJS.ProcessEnv }) => {
+        order.push("spawn");
+        childEnv = options.env;
+        queueMicrotask(() => child.stdout.write(
+          '@easyresearch-desktop {"type":"desktop.ready","origin":"http://127.0.0.1:43123","owner":"desktop","pid":4242,"logPath":"/tmp/log","bootId":"boot-ready"}\n',
+        ));
+        return child;
+      }) as never,
+      fetch: async () => health,
+      createToken: (() => {
+        const tokens = ["c".repeat(43), "r".repeat(43)];
+        return () => tokens.shift()!;
+      })(),
+      startupTimeoutMs: 1_000,
+    });
+
+    await vi.waitFor(() => expect(order).toEqual([
+      `reserve:${"c".repeat(43)}`,
+      "spawn",
+      "commit:4242",
+    ]));
+    expect(transitionLease.held).toBe(true);
+    expect(childEnv).toMatchObject({
+      [DESKTOP_HOST_PID_ENV]: "5151",
+      [DESKTOP_HOST_TRANSITION_TOKEN_ENV]: "h".repeat(43),
+      [DESKTOP_TRANSITION_HANDOFF_ENV]: "1",
+    });
+
+    resolveHealth(Response.json({ ok: true }));
+    await expect(starting).resolves.toMatchObject({ pid: 4242 });
+    expect(order).toEqual([
+      `reserve:${"c".repeat(43)}`,
+      "spawn",
+      "commit:4242",
+      "release",
+    ]);
+  });
+
+  it("adopts initial transition custody after ready and releases it only after health", async () => {
+    const child = fakeChild();
+    const transitionLease = fakeRuntimeLease();
+    const adoptTransition = vi.fn(() => transitionLease);
+    let resolveHealth!: (response: Response) => void;
+    const health = new Promise<Response>((resolve) => {
+      resolveHealth = resolve;
+    });
+
+    const starting = startDesktopSidecar({
+      sidecarPath: "/app/sidecar/easyresearch",
+      baseEnv: {},
+      agentDir: "/tmp/easyresearch-agent",
+      hostPid: 5151,
+      createHostTransitionToken: () => "h".repeat(43),
+      adoptTransition,
+      spawn: (() => child) as never,
+      fetch: async () => health,
+      createToken: (() => {
+        const tokens = ["c".repeat(43), "r".repeat(43)];
+        return () => tokens.shift()!;
+      })(),
+      startupTimeoutMs: 1_000,
+    });
+    child.stdout.write(
+      '@easyresearch-desktop {"type":"desktop.ready","origin":"http://127.0.0.1:43123","owner":"desktop","pid":4242,"logPath":"/tmp/log","bootId":"boot-ready"}\n',
+    );
+
+    await vi.waitFor(() => expect(adoptTransition).toHaveBeenCalledWith(
+      "/tmp/easyresearch-agent",
+      "desktop",
+      5151,
+      "h".repeat(43),
+    ));
+    expect(transitionLease.held).toBe(true);
+    resolveHealth(Response.json({ ok: true }));
+    await starting;
+    expect(transitionLease.held).toBe(false);
+  });
+
+  it("adopts restart custody before exposing the validated restart event", async () => {
+    const child = fakeChild();
+    const startupLease = fakeRuntimeLease();
+    const restartLease = fakeRuntimeLease();
+    const adoptTransition = vi.fn()
+      .mockReturnValueOnce(startupLease)
+      .mockReturnValueOnce(restartLease);
+    const handlePromise = startDesktopSidecar({
+      sidecarPath: "/app/sidecar/easyresearch",
+      baseEnv: {},
+      agentDir: "/tmp/easyresearch-agent",
+      hostPid: 5151,
+      createHostTransitionToken: () => "h".repeat(43),
+      adoptTransition,
+      spawn: (() => child) as never,
+      fetch: async () => Response.json({ ok: true }),
+      createToken: (() => {
+        const tokens = ["c".repeat(43), "r".repeat(43)];
+        return () => tokens.shift()!;
+      })(),
+      startupTimeoutMs: 1_000,
+    });
+    child.stdout.write(
+      '@easyresearch-desktop {"type":"desktop.ready","origin":"http://127.0.0.1:43123","owner":"desktop","pid":4242,"logPath":"/tmp/log","bootId":"boot-ready"}\n',
+    );
+    const handle = await handlePromise;
+    adoptTransition.mockClear();
+
+    child.stdout.write(
+      '@easyresearch-desktop {"type":"desktop.restart-requested","bootId":"boot-ready"}\n',
+    );
+    await expect(handle.restartRequested).resolves.toMatchObject({ bootId: "boot-ready" });
+
+    expect(adoptTransition).toHaveBeenCalledWith(
+      "/tmp/easyresearch-agent",
+      "desktop",
+      5151,
+      "h".repeat(43),
+    );
+    expect(restartLease.held).toBe(true);
+    expect(handle.takeRestartTransition()).toBe(restartLease);
+    expect(() => handle.takeRestartTransition()).toThrow(/already claimed/i);
+    child.emitExit();
+  });
+
+  it("releases replacement custody only after health-failure cleanup proves child exit", async () => {
+    const child = fakeChild();
+    const order: string[] = [];
+    const transitionLease = fakeRuntimeLease(order);
+    child.stdin.once("finish", () => {
+      order.push("child-exit");
+      child.emitExit();
+    });
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response("unavailable", { status: 503 }))
+      .mockResolvedValueOnce(Response.json({ ok: true }));
+
+    const starting = startDesktopSidecar({
+      sidecarPath: "/app/sidecar/easyresearch",
+      baseEnv: {},
+      agentDir: "/tmp/easyresearch-agent",
+      transitionLease,
+      createHostTransitionToken: () => "h".repeat(43),
+      spawn: (() => child) as never,
+      fetch,
+      createToken: (() => {
+        const tokens = ["c".repeat(43), "r".repeat(43)];
+        return () => tokens.shift()!;
+      })(),
+      startupTimeoutMs: 1_000,
+      shutdownTimeoutMs: 100,
+    });
+    child.stdout.write(
+      '@easyresearch-desktop {"type":"desktop.ready","origin":"http://127.0.0.1:43123","owner":"desktop","pid":4242,"logPath":"/tmp/log","bootId":"boot-ready"}\n',
+    );
+
+    await expect(starting).rejects.toThrow(/HTTP 503/i);
+    expect(order.slice(-2)).toEqual(["child-exit", "release"]);
+    expect(transitionLease.held).toBe(false);
+  });
+
+  it("cleans an owned child before releasing custody when the post-commit host callback fails", async () => {
+    const child = fakeChild();
+    const order: string[] = [];
+    const transitionLease = fakeRuntimeLease(order);
+    child.stdin.once("finish", () => {
+      order.push("child-exit");
+      child.emitExit();
+    });
+
+    await expect(startDesktopSidecar({
+      sidecarPath: "/app/sidecar/easyresearch",
+      baseEnv: {},
+      agentDir: "/tmp/easyresearch-agent",
+      transitionLease,
+      createHostTransitionToken: () => "h".repeat(43),
+      spawn: (() => child) as never,
+      fetch: async () => Response.json({ ok: true }),
+      createToken: (() => {
+        const tokens = ["c".repeat(43), "r".repeat(43)];
+        return () => tokens.shift()!;
+      })(),
+      onTransitionCommitted: () => {
+        throw new Error("injected successor startup failure");
+      },
+      startupTimeoutMs: 1_000,
+      shutdownTimeoutMs: 100,
+    })).rejects.toThrow("injected successor startup failure");
+
+    expect(order.slice(-2)).toEqual(["child-exit", "release"]);
+    expect(transitionLease.held).toBe(false);
+  });
+
+  it("owns and settles a spawned child before cancelling a failed transition commit", async () => {
+    const child = fakeChild();
+    const order: string[] = [];
+    const transitionLease = fakeRuntimeLease(order, {
+      commitError: new Error("transition commit denied"),
+    });
+    const onSpawned = vi.fn();
+    child.stdin.once("finish", () => {
+      order.push("child-exit");
+      child.emitExit();
+    });
+
+    await expect(startDesktopSidecar({
+      sidecarPath: "/app/sidecar/easyresearch",
+      baseEnv: {},
+      agentDir: "/tmp/easyresearch-agent",
+      transitionLease,
+      createHostTransitionToken: () => "h".repeat(43),
+      spawn: (() => child) as never,
+      createToken: (() => {
+        const tokens = ["c".repeat(43), "r".repeat(43)];
+        return () => tokens.shift()!;
+      })(),
+      onSpawned,
+      startupTimeoutMs: 1_000,
+      shutdownTimeoutMs: 100,
+    })).rejects.toThrow("transition commit denied");
+
+    expect(onSpawned).toHaveBeenCalledOnce();
+    expect(order).toEqual([
+      `reserve:${"c".repeat(43)}`,
+      "commit:4242",
+      "child-exit",
+      "cancel",
+      "release",
+    ]);
+    expect(transitionLease.held).toBe(false);
+  });
+
+  it("leaves fail-closed custody with a replacement child that survives forced cleanup", async () => {
+    const child = fakeChild();
+    const order: string[] = [];
+    const transitionLease = fakeRuntimeLease(order);
+
+    await expect(startDesktopSidecar({
+      sidecarPath: "/app/sidecar/easyresearch",
+      baseEnv: {},
+      agentDir: "/tmp/easyresearch-agent",
+      transitionLease,
+      createHostTransitionToken: () => "h".repeat(43),
+      spawn: (() => child) as never,
+      createToken: (() => {
+        const tokens = ["c".repeat(43), "r".repeat(43)];
+        return () => tokens.shift()!;
+      })(),
+      onSpawned: () => {
+        throw new Error("injected successor startup failure");
+      },
+      startupTimeoutMs: 1_000,
+      shutdownTimeoutMs: 0,
+      forcedShutdownTimeoutMs: 0,
+    })).rejects.toThrow(/owned-child cleanup failed/i);
+
+    expect(child.kill).toHaveBeenCalledWith("SIGKILL");
+    expect(order).toEqual([
+      `reserve:${"c".repeat(43)}`,
+      "commit:4242",
+      "relinquish",
+    ]);
+    expect(transitionLease.held).toBe(false);
+    expect(transitionLease.release).not.toHaveBeenCalled();
+    child.emitExit(null, "SIGKILL");
+  });
+
+  it("recovers a startup lease transferred before a lost ready event", async () => {
+    const child = fakeChild();
+    const transitionLease = fakeRuntimeLease();
+    const adoptTransition = vi.fn(() => transitionLease);
+    child.stdin.once("finish", () => child.emitExit(1));
+    const starting = startDesktopSidecar({
+      sidecarPath: "/app/sidecar/easyresearch",
+      baseEnv: {},
+      agentDir: "/tmp/easyresearch-agent",
+      hostPid: 5151,
+      createHostTransitionToken: () => "h".repeat(43),
+      adoptTransition,
+      spawn: (() => child) as never,
+      createToken: (() => {
+        const tokens = ["c".repeat(43), "r".repeat(43)];
+        return () => tokens.shift()!;
+      })(),
+      startupTimeoutMs: 1_000,
+      shutdownTimeoutMs: 100,
+    });
+    child.stdout.write(
+      '@easyresearch-desktop {"type":"desktop.error","phase":"server","code":"READY_PIPE_LOST","message":"ready event was lost","logPath":"/tmp/log"}\n',
+    );
+
+    await expect(starting).rejects.toThrow(/ready event was lost/i);
+    expect(adoptTransition).toHaveBeenCalledWith(
+      "/tmp/easyresearch-agent",
+      "desktop",
+      5151,
+      "h".repeat(43),
+    );
+    expect(transitionLease.held).toBe(false);
+  });
+
+  it("recovers restart custody lazily when the machine restart event is lost", async () => {
+    const child = fakeChild();
+    const startupLease = fakeRuntimeLease();
+    const restartLease = fakeRuntimeLease();
+    const adoptTransition = vi.fn()
+      .mockReturnValueOnce(startupLease)
+      .mockReturnValueOnce(restartLease);
+    const handlePromise = startDesktopSidecar({
+      sidecarPath: "/app/sidecar/easyresearch",
+      baseEnv: {},
+      agentDir: "/tmp/easyresearch-agent",
+      hostPid: 5151,
+      createHostTransitionToken: () => "h".repeat(43),
+      adoptTransition,
+      spawn: (() => child) as never,
+      fetch: async () => Response.json({ ok: true }),
+      createToken: (() => {
+        const tokens = ["c".repeat(43), "r".repeat(43)];
+        return () => tokens.shift()!;
+      })(),
+      startupTimeoutMs: 1_000,
+    });
+    child.stdout.write(
+      '@easyresearch-desktop {"type":"desktop.ready","origin":"http://127.0.0.1:43123","owner":"desktop","pid":4242,"logPath":"/tmp/log","bootId":"boot-ready"}\n',
+    );
+    const handle = await handlePromise;
+    child.emitExit(1);
+    await handle.exited;
+
+    expect(handle.takeRestartTransition()).toBe(restartLease);
+    expect(adoptTransition).toHaveBeenLastCalledWith(
+      "/tmp/easyresearch-agent",
+      "desktop",
+      5151,
+      "h".repeat(43),
+    );
+  });
+
   it("exposes a stoppable owned child immediately after spawn and before readiness", async () => {
     const child = fakeChild();
     child.stdin.once("finish", () => child.emitExit());
@@ -406,6 +815,7 @@ describe("desktop sidecar client", () => {
 
   it("rejects an early safe sidecar error", async () => {
     const child = fakeChild();
+    child.stdin.once("finish", () => child.emitExit(1));
     const start = startDesktopSidecar({
       sidecarPath: "/app/sidecar/easyresearch",
       baseEnv: {},
@@ -424,6 +834,7 @@ describe("desktop sidecar client", () => {
 
   it("reports a child spawn error without waiting for the startup deadline", async () => {
     const child = fakeChild();
+    child.stdin.once("finish", () => child.emitExit(1));
     const start = startDesktopSidecar({
       sidecarPath: "/app/sidecar/easyresearch",
       baseEnv: {},
@@ -444,6 +855,7 @@ describe("desktop sidecar client", () => {
 
   it("listens for spawn errors before requiring the child process id", async () => {
     const child = fakeChild(0);
+    child.stdin.once("finish", () => child.emitExit(1));
     const start = startDesktopSidecar({
       sidecarPath: "/app/sidecar/easyresearch",
       baseEnv: {},
@@ -508,6 +920,7 @@ describe("desktop sidecar client", () => {
     const handle = await handlePromise;
 
     child.stdout.write('@easyresearch-desktop {"type":"desktop.restart-requested","bootId":"boot-ready"}\n');
+    expect(child.stdin.writableEnded).toBe(true);
     child.emitExit();
 
     expect(restarts).toEqual([{ type: "desktop.restart-requested", bootId: "boot-ready" }]);
@@ -628,6 +1041,7 @@ describe("desktop sidecar client", () => {
   it("waits for stdout protocol bytes after process exit before classifying the exit", async () => {
     const child = fakeChild();
     const onRestartRequested = vi.fn();
+    const logs: string[] = [];
     const handlePromise = startDesktopSidecar({
       sidecarPath: "/app/sidecar/easyresearch",
       baseEnv: {},
@@ -638,6 +1052,7 @@ describe("desktop sidecar client", () => {
         return () => tokens.shift()!;
       })(),
       onRestartRequested,
+      log: (line) => logs.push(line),
       startupTimeoutMs: 1_000,
     });
     child.stdout.write('@easyresearch-desktop {"type":"desktop.ready","origin":"http://127.0.0.1:43123","owner":"desktop","pid":4242,"logPath":"/tmp/log","bootId":"boot-ready"}\n');
@@ -650,6 +1065,7 @@ describe("desktop sidecar client", () => {
     });
     await Promise.resolve();
     expect(classified).toBe(false);
+    expect(logs).toContain("Desktop sidecar process exited (code 0, signal none); waiting for stdio close.");
     child.stdout.write('@easyresearch-desktop {"type":"desktop.restart-requested","bootId":"boot-ready"}');
     child.emit("close", 0, null);
 
@@ -689,6 +1105,10 @@ describe("desktop sidecar client", () => {
 
   it("times out instead of leaving an unowned child", async () => {
     const child = fakeChild();
+    child.kill.mockImplementation(() => {
+      queueMicrotask(() => child.emitExit(null, "SIGKILL"));
+      return true;
+    });
     await expect(startDesktopSidecar({
       sidecarPath: "/app/sidecar/easyresearch",
       baseEnv: {},
@@ -699,6 +1119,8 @@ describe("desktop sidecar client", () => {
         return () => tokens.shift()!;
       })(),
       startupTimeoutMs: 10,
+      shutdownTimeoutMs: 0,
+      forcedShutdownTimeoutMs: 100,
     })).rejects.toThrow(/timed out/i);
     expect(child.kill).toHaveBeenCalled();
   });
@@ -816,6 +1238,51 @@ describe("desktop sidecar client", () => {
         | undefined;
       expect(timeout?.timeout).toBeGreaterThan(0);
       child.emitExit(1);
+      await handle.exited;
+    } finally {
+      vi.doUnmock("node:child_process");
+      vi.resetModules();
+    }
+  });
+
+  it("force-terminates the Windows process tree after its leader exits but descendants retain pipes", async () => {
+    const actualChildProcess = await vi.importActual<typeof import("node:child_process")>(
+      "node:child_process",
+    );
+    const taskkill = vi.fn(() => ({ status: 0, signal: null, error: undefined }));
+    vi.doMock("node:child_process", () => ({
+      ...actualChildProcess,
+      spawnSync: taskkill,
+    }));
+    vi.resetModules();
+    try {
+      const sidecar = await import("./sidecar");
+      const child = fakeChild();
+      const handlePromise = sidecar.startDesktopSidecar({
+        sidecarPath: "/app/sidecar/easyresearch.exe",
+        baseEnv: {},
+        spawn: (() => child) as never,
+        fetch: async () => Response.json({ ok: true }),
+        createToken: (() => {
+          const tokens = ["c".repeat(43), "r".repeat(43)];
+          return () => tokens.shift()!;
+        })(),
+        startupTimeoutMs: 1_000,
+        platform: "win32",
+        systemRoot: "C:\\Windows",
+      });
+      child.stdout.write('@easyresearch-desktop {"type":"desktop.ready","origin":"http://127.0.0.1:43123","owner":"desktop","pid":4242,"logPath":"C:\\\\tmp\\\\log","bootId":"boot-ready"}\n');
+      const handle = await handlePromise;
+      child.emitProcessExit(0);
+
+      handle.forceTerminate();
+
+      expect(taskkill).toHaveBeenCalledWith(
+        "C:\\Windows\\System32\\taskkill.exe",
+        ["/PID", "4242", "/T", "/F"],
+        expect.any(Object),
+      );
+      child.emitClose(0);
       await handle.exited;
     } finally {
       vi.doUnmock("node:child_process");

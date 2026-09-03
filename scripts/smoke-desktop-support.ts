@@ -1,6 +1,15 @@
 import { createHash } from "node:crypto";
-import { readFileSync, rmSync, statSync } from "node:fs";
-import { posix, win32 } from "node:path";
+import {
+  closeSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  readSync,
+  readdirSync,
+  rmSync,
+  statSync,
+} from "node:fs";
+import { join, posix, win32 } from "node:path";
 import type { BuildArtifact } from "./build";
 import type { DesktopTargetName } from "./build-desktop";
 import { THIRD_PARTY_NOTICES_FILE } from "./third-party-notices";
@@ -95,6 +104,29 @@ export interface DesktopSmokeEvidence {
   desktopLog?: string;
 }
 
+export interface PackagedDesktopProcessState {
+  pid: number;
+  exited: boolean;
+  exitCode?: number;
+  signal?: string;
+}
+
+export interface DesktopSmokeDiagnosticOptions {
+  target: DesktopTargetName;
+  phase: string;
+  process?: PackagedDesktopProcessState;
+  eventsPath: string;
+  desktopLogPath: string;
+  serverLogPath: string;
+  agentDir: string;
+  stdout: string;
+  stderr: string;
+  modelRequestActive: boolean;
+  modelRequestAborted: boolean;
+  maxTextCharacters?: number;
+  isAlive?: (pid: number) => boolean;
+}
+
 export function readyPersistedSessionPath(
   snapshot: unknown,
   sentinels: { user: string; assistant: string },
@@ -172,6 +204,68 @@ export function combineDesktopSmokeFailures(
   const failures = primary ? [primary, ...cleanupFailures] : [...cleanupFailures];
   if (failures.length === 1) return failures[0];
   return new AggregateError(failures, "Desktop package smoke and cleanup failed.");
+}
+
+export function appendBoundedDiagnosticText(
+  current: string,
+  chunk: string,
+  maxCharacters = 32_768,
+): string {
+  if (!Number.isSafeInteger(maxCharacters) || maxCharacters <= 0) return "";
+  const combined = `${current}${chunk}`;
+  return combined.length <= maxCharacters ? combined : combined.slice(-maxCharacters);
+}
+
+export function assertPackagedDesktopRunning(
+  phase: string,
+  processState: PackagedDesktopProcessState,
+  events: readonly Record<string, unknown>[],
+): void {
+  if (!processState.exited) return;
+  const lastType = events.length > 0 && typeof events.at(-1)?.type === "string"
+    ? events.at(-1)!.type
+    : "none";
+  throw new Error(
+    `Packaged desktop exited during ${phase} (pid ${processState.pid}, code ${processState.exitCode ?? "unknown"}, signal ${processState.signal ?? "none"}, ${events.length} events, last ${lastType}).`,
+  );
+}
+
+export function createDesktopSmokeDiagnosticReport(
+  options: DesktopSmokeDiagnosticOptions,
+): string {
+  const isAlive = options.isAlive ?? defaultIsAlive;
+  const maxTextCharacters = Math.min(options.maxTextCharacters ?? 8_192, 32_768);
+  const events = safeEventEvidence(options.eventsPath);
+  const serverRecord = safeRecordEvidence(join(options.agentDir, "server.pid"), isAlive);
+  const serverLease = safeLeaseEvidence(join(options.agentDir, "server.lease"), isAlive);
+  const transitionLease = safeLeaseEvidence(
+    join(options.agentDir, "server.transition.lease"),
+    isAlive,
+  );
+  return `${JSON.stringify({
+    target: options.target,
+    phase: options.phase,
+    process: options.process
+      ? { ...options.process, alive: isAlive(options.process.pid) }
+      : { state: "not-started" },
+    events,
+    ownership: {
+      serverRecord: serverRecord.summary,
+      serverLease: serverLease.summary,
+      transitionLease: transitionLease.summary,
+      serverRecordTokenMatches: Boolean(
+        serverRecord.token
+        && serverLease.token
+        && serverRecord.token === serverLease.token
+      ),
+    },
+    modelRequestActive: options.modelRequestActive,
+    modelRequestAborted: options.modelRequestAborted,
+    desktopLog: safeTextEvidence(options.desktopLogPath, maxTextCharacters),
+    serverLog: safeTextEvidence(options.serverLogPath, maxTextCharacters),
+    stdout: redactDiagnosticText(appendBoundedDiagnosticText("", options.stdout, maxTextCharacters)),
+    stderr: redactDiagnosticText(appendBoundedDiagnosticText("", options.stderr, maxTextCharacters)),
+  }, null, 2)}\n`;
 }
 
 export async function removeDesktopSmokeRoot(
@@ -288,6 +382,36 @@ export function readDesktopSmokeEvents(path: string): Array<Record<string, unkno
   const content = readFileSync(path, "utf8");
   if (!content) return [];
   if (!content.endsWith("\n")) throw new Error("Invalid desktop smoke event: partial JSONL record.");
+  return parseDesktopSmokeEventContent(content);
+}
+
+export function pollDesktopSmokeEvents(path: string): {
+  status: "missing" | "partial" | "complete";
+  events: Array<Record<string, unknown>>;
+} {
+  let content: string;
+  try {
+    content = readFileSync(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { status: "missing", events: [] };
+    }
+    throw error;
+  }
+  if (content && !content.endsWith("\n")) {
+    const completeEnd = content.lastIndexOf("\n");
+    return {
+      status: "partial",
+      events: completeEnd < 0
+        ? []
+        : parseDesktopSmokeEventContent(content.slice(0, completeEnd + 1)),
+    };
+  }
+  return { status: "complete", events: parseDesktopSmokeEventContent(content) };
+}
+
+function parseDesktopSmokeEventContent(content: string): Array<Record<string, unknown>> {
+  if (!content) return [];
   return content
     .split(/\r?\n/u)
     .filter(Boolean)
@@ -300,6 +424,144 @@ export function readDesktopSmokeEvents(path: string): Array<Record<string, unkno
         throw new Error("Invalid desktop smoke event JSON.", { cause: error });
       }
     });
+}
+
+function safeEventEvidence(path: string): Record<string, unknown> {
+  try {
+    const result = pollDesktopSmokeEvents(path);
+    return {
+      status: result.status,
+      count: result.events.length,
+      lastType: typeof result.events.at(-1)?.type === "string"
+        ? result.events.at(-1)!.type
+        : undefined,
+    };
+  } catch (error) {
+    return {
+      status: "invalid",
+      error: error instanceof Error ? error.message : "unknown event read failure",
+    };
+  }
+}
+
+function safeRecordEvidence(
+  path: string,
+  isAlive: (pid: number) => boolean,
+): { summary: Record<string, unknown>; token?: string } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { summary: { status: "missing" } };
+    }
+    return { summary: { status: "invalid" } };
+  }
+  return summarizeOwnershipRecord(parsed, "file", isAlive);
+}
+
+function safeLeaseEvidence(
+  path: string,
+  isAlive: (pid: number) => boolean,
+): { summary: Record<string, unknown>; token?: string } {
+  let stat;
+  try {
+    stat = lstatSync(path);
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT"
+      ? { summary: { status: "missing" } }
+      : { summary: { status: "invalid" } };
+  }
+  if (stat.isFile()) {
+    const record = safeRecordEvidence(path, isAlive);
+    return { ...record, summary: { ...record.summary, status: "legacy-file" } };
+  }
+  if (!stat.isDirectory()) return { summary: { status: "invalid" } };
+  let entries: string[];
+  try {
+    entries = readdirSync(path);
+  } catch {
+    return { summary: { status: "invalid" } };
+  }
+  if (entries.length === 0) return { summary: { status: "empty-directory" } };
+  if (entries.length !== 1) return { summary: { status: "invalid-directory" } };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(join(path, entries[0]!), "utf8"));
+  } catch {
+    return { summary: { status: "invalid-directory" } };
+  }
+  return summarizeOwnershipRecord(parsed, "directory", isAlive);
+}
+
+function summarizeOwnershipRecord(
+  value: unknown,
+  status: string,
+  isAlive: (pid: number) => boolean,
+): { summary: Record<string, unknown>; token?: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { summary: { status: "invalid" } };
+  }
+  const record = value as DesktopSmokeOwnershipRecord & { kind?: unknown };
+  const pid = Number.isSafeInteger(record.pid) && (record.pid as number) > 0
+    ? record.pid as number
+    : undefined;
+  const token = typeof record.token === "string" && record.token ? record.token : undefined;
+  return {
+    summary: {
+      status,
+      schema: Number.isSafeInteger(record.schema) ? record.schema : "invalid",
+      ...(record.kind === "server" || record.kind === "transition" ? { kind: record.kind } : {}),
+      owner: record.owner === "cli" || record.owner === "desktop" ? record.owner : "invalid",
+      pid,
+      ...(pid ? { pidAlive: isAlive(pid) } : {}),
+      ...(record.host === "127.0.0.1" ? { host: record.host } : {}),
+      ...(Number.isSafeInteger(record.port) ? { port: record.port } : {}),
+      runtimeIdPresent: typeof record.runtimeId === "string" && record.runtimeId.length > 0,
+      tokenPresent: token !== undefined,
+    },
+    token,
+  };
+}
+
+function safeTextEvidence(path: string, maxCharacters: number): Record<string, unknown> {
+  let fd: number | undefined;
+  try {
+    const size = statSync(path).size;
+    const maxBytes = Math.max(4, maxCharacters * 4);
+    const offset = Math.max(0, size - maxBytes);
+    const buffer = Buffer.alloc(Math.min(size, maxBytes));
+    fd = openSync(path, "r");
+    const bytesRead = readSync(fd, buffer, 0, buffer.byteLength, offset);
+    const content = buffer.subarray(0, bytesRead).toString("utf8");
+    return {
+      status: "present",
+      bytes: size,
+      tail: redactDiagnosticText(appendBoundedDiagnosticText("", content, maxCharacters)),
+    };
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT"
+      ? { status: "missing" }
+      : { status: "unreadable" };
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+function redactDiagnosticText(value: string): string {
+  return value
+    .replace(/("[^"\r\n]*token[^"\r\n]*"\s*:\s*)"[^"\r\n]*"/giu, "$1\"[REDACTED]\"")
+    .replace(/\b(token|authorization|x-easyresearch-[a-z-]+)=([^\s]+)/giu, "$1=[REDACTED]")
+    .replace(/(https?:\/\/)[^\s/@:]+:[^\s/@]+@/giu, "$1[REDACTED]@");
+}
+
+function defaultIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
 }
 
 export function reduceDesktopSmokeEvents(

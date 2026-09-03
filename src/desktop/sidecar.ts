@@ -8,10 +8,18 @@ import { isAbsolute } from "node:path";
 import { DAEMON_CONTROL_PATH, DAEMON_TOKEN_HEADER } from "../cli/daemon-control";
 import { createDirectLocalHttpFetch, type LocalHttpFetch } from "../cli/local-http";
 import {
+  adoptTransitionLease,
+  type RuntimeLease,
+  type RuntimeLeaseHandoff,
+} from "../cli/runtime-lease";
+import {
   DESKTOP_ACCESS_HEADER,
   DESKTOP_CONTROL_TOKEN_ENV,
+  DESKTOP_HOST_PID_ENV,
+  DESKTOP_HOST_TRANSITION_TOKEN_ENV,
   DESKTOP_LAUNCH_ENV,
   DESKTOP_RENDERER_TOKEN_ENV,
+  DESKTOP_TRANSITION_HANDOFF_ENV,
   type DesktopReadyEvent,
   type DesktopRestartRequestedEvent,
 } from "./contracts";
@@ -37,12 +45,19 @@ interface DesktopSidecarStartOptions {
   ) => ChildProcessWithoutNullStreams;
   fetch?: FetchLike;
   createToken?: () => string;
+  createHostTransitionToken?: () => string;
+  hostPid?: number;
+  agentDir?: string;
+  transitionLease?: RuntimeLease;
+  adoptTransition?: typeof adoptTransitionLease;
   onSetup?: (message: string) => void;
   onSpawned?: (handle: DesktopSidecarProcessHandle) => void;
+  onTransitionCommitted?: (handle: DesktopSidecarProcessHandle) => void;
   onRestartRequested?: (event: DesktopRestartRequestedEvent) => void;
   log?: (line: string) => void;
   startupTimeoutMs?: number;
   shutdownTimeoutMs?: number;
+  forcedShutdownTimeoutMs?: number;
   platform?: NodeJS.Platform;
   systemRoot?: string;
   killProcess?: (pid: number, signal: NodeJS.Signals) => unknown;
@@ -69,6 +84,7 @@ export interface DesktopSidecarHandle extends DesktopSidecarProcessHandle {
   readonly rendererToken: string;
   readonly pid: number;
   readonly restartRequested: Promise<DesktopRestartRequestedEvent>;
+  takeRestartTransition(): RuntimeLease;
 }
 
 export async function startDesktopSidecar(
@@ -80,39 +96,87 @@ export async function startDesktopSidecar(
   const createToken = options.createToken ?? (() => randomBytes(32).toString("base64url"));
   const controlToken = createToken();
   const rendererToken = createToken();
-  if (controlToken.length < 32 || rendererToken.length < 32 || controlToken === rendererToken) {
+  const hostTransitionToken = (options.createHostTransitionToken
+    ?? (() => randomBytes(32).toString("base64url")))();
+  const hostPid = options.hostPid ?? process.pid;
+  if (
+    controlToken.length < 32
+    || rendererToken.length < 32
+    || hostTransitionToken.length < 32
+    || new Set([controlToken, rendererToken, hostTransitionToken]).size !== 3
+  ) {
     throw new Error("Desktop sidecar credentials must be distinct and at least 32 characters.");
+  }
+  if (!Number.isSafeInteger(hostPid) || hostPid <= 0) {
+    throw new Error("Desktop sidecar requires a valid host process identity.");
+  }
+  if (options.transitionLease && !options.agentDir) {
+    throw new Error("Desktop replacement transition custody requires an agent directory.");
   }
   const childEnv = {
     ...options.baseEnv,
     [DESKTOP_LAUNCH_ENV]: "1",
     [DESKTOP_CONTROL_TOKEN_ENV]: controlToken,
     [DESKTOP_RENDERER_TOKEN_ENV]: rendererToken,
+    [DESKTOP_HOST_PID_ENV]: String(hostPid),
+    [DESKTOP_HOST_TRANSITION_TOKEN_ENV]: hostTransitionToken,
+    ...(options.transitionLease ? { [DESKTOP_TRANSITION_HANDOFF_ENV]: "1" } : {}),
   };
   const spawn = options.spawn ?? ((command, args, spawnOptions) =>
     nodeSpawn(command, [...args], spawnOptions));
   const platform = options.platform ?? process.platform;
-  const child = spawn(
-    options.sidecarPath,
-    ["--desktop-serve", "127.0.0.1", "0"],
-    {
-      env: childEnv,
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-      ...(platform === "darwin" ? { detached: true } : {}),
-    },
-  );
+  let transitionHandoff: RuntimeLeaseHandoff | undefined;
+  try {
+    transitionHandoff = options.transitionLease?.reserveHandoff(controlToken);
+  } catch (error) {
+    if (options.transitionLease?.held) options.transitionLease.release();
+    throw error;
+  }
+  let child: ChildProcessWithoutNullStreams;
+  try {
+    child = spawn(
+      options.sidecarPath,
+      ["--desktop-serve", "127.0.0.1", "0"],
+      {
+        env: childEnv,
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+        ...(platform === "darwin" ? { detached: true } : {}),
+      },
+    );
+  } catch (error) {
+    transitionHandoff?.cancel();
+    if (options.transitionLease?.held) options.transitionLease.release();
+    throw error;
+  }
   // The group remains owned after its leader exits while descendants keep the pipes open.
   let childClosed = false;
   child.once("close", () => {
     childClosed = true;
   });
   const forceTerminate = (): void => forceTerminateChild(child, options, childClosed);
+  const closeParentLife = (): void => {
+    if (!child.stdin.writableEnded && !child.stdin.destroyed) child.stdin.end();
+  };
+  let startupTransition = options.transitionLease;
+  let restartTransition: RuntimeLease | undefined;
+  let restartTransitionClaimed = false;
 
   const protocol = monitorSidecarProtocol(child, {
     timeoutMs: options.startupTimeoutMs ?? 15 * 60_000,
     onSetup: options.onSetup,
-    onRestartRequested: options.onRestartRequested,
+    onRestartRequested: (event) => {
+      if (options.agentDir) {
+        restartTransition = (options.adoptTransition ?? adoptTransitionLease)(
+          options.agentDir,
+          "desktop",
+          hostPid,
+          hostTransitionToken,
+        );
+      }
+      closeParentLife();
+      options.onRestartRequested?.(event);
+    },
     log: options.log,
     onProtocolViolation: forceTerminate,
   });
@@ -134,11 +198,11 @@ export async function startDesktopSidecar(
           // Closing stdin below is the independent parent-life shutdown signal.
         }
       }
-      child.stdin.end();
+      closeParentLife();
       const clean = await settlesBefore(protocol.exited, options.shutdownTimeoutMs ?? 15_000);
       if (clean) return;
       forceTerminate();
-      if (!await settlesBefore(protocol.exited, 5_000)) {
+      if (!await settlesBefore(protocol.exited, options.forcedShutdownTimeoutMs ?? 5_000)) {
         throw new Error("Desktop sidecar did not exit after forced termination.");
       }
     })();
@@ -148,51 +212,133 @@ export async function startDesktopSidecar(
     });
     return current;
   };
-  options.onSpawned?.({
+  const spawnedHandle: DesktopSidecarProcessHandle = {
     pid: child.pid,
     exited: protocol.exited,
     shutdown,
     forceTerminate,
-  });
-  const ready = await protocol.ready.catch((error) => {
-    forceTerminate();
-    throw error;
-  });
-  acceptedReady = ready;
-  const childPid = child.pid;
-  if (!childPid) {
-    forceTerminate();
-    throw new Error("EasyResearch desktop sidecar did not report a process id.");
-  }
-  if (ready.pid !== childPid) {
-    forceTerminate();
-    throw new Error("Desktop sidecar ready event did not match the owned child process.");
-  }
-  let health: Response;
-  try {
-    health = await fetchImpl(`${ready.origin}/api/status`, {
-      headers: { [DESKTOP_ACCESS_HEADER]: rendererToken },
-      redirect: "error",
-      signal: AbortSignal.timeout(5_000),
-    });
-  } catch (error) {
-    forceTerminate();
-    throw new Error("Desktop sidecar health check failed.", { cause: error });
-  }
-  if (!health.ok) {
-    forceTerminate();
-    throw new Error(`Desktop sidecar health check returned HTTP ${health.status}.`);
-  }
-
-  return {
-    ready,
-    rendererToken,
-    pid: childPid,
-    restartRequested: protocol.restartRequested,
-    exited: protocol.exited,
-    shutdown,
-    forceTerminate,
   };
+  const releaseStartupTransition = (): void => {
+    if (!startupTransition?.held) return;
+    if (!startupTransition.release()) {
+      throw new Error("Desktop host lost transition custody before authenticated readiness.");
+    }
+  };
+  const leaveStartupTransitionWithSurvivingChild = (): void => {
+    if (!startupTransition?.held) return;
+    if (transitionHandoff) {
+      if (!transitionHandoff.transferred) transitionHandoff.commit(child.pid!);
+      transitionHandoff.relinquish();
+      return;
+    }
+    const survivorHandoff = startupTransition.reserveHandoff(controlToken);
+    survivorHandoff.commit(child.pid!);
+    survivorHandoff.relinquish();
+  };
+  const failStartup = async (error: unknown): Promise<never> => {
+    const cleanupErrors: unknown[] = [];
+    try {
+      await shutdown();
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError);
+    }
+    if (!startupTransition && options.agentDir) {
+      try {
+        startupTransition = (options.adoptTransition ?? adoptTransitionLease)(
+          options.agentDir,
+          "desktop",
+          hostPid,
+          hostTransitionToken,
+        );
+      } catch {
+        // The child may have failed before transferring its startup lease.
+      }
+    }
+    try {
+      if (childClosed) {
+        if (transitionHandoff && !transitionHandoff.transferred) transitionHandoff.cancel();
+        releaseStartupTransition();
+      }
+      else leaveStartupTransitionWithSurvivingChild();
+    } catch (custodyError) {
+      cleanupErrors.push(custodyError);
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(
+        [error, ...cleanupErrors],
+        "Desktop sidecar startup and owned-child cleanup failed.",
+      );
+    }
+    throw error;
+  };
+
+  // A host callback may reject before this function awaits readiness.
+  void protocol.ready.catch(() => {});
+  try {
+    options.onSpawned?.(spawnedHandle);
+    if (child.pid) transitionHandoff?.commit(child.pid);
+    if (transitionHandoff?.transferred) options.onTransitionCommitted?.(spawnedHandle);
+    const ready = await protocol.ready;
+    acceptedReady = ready;
+    if (!startupTransition && options.agentDir) {
+      startupTransition = (options.adoptTransition ?? adoptTransitionLease)(
+        options.agentDir,
+        "desktop",
+        hostPid,
+        hostTransitionToken,
+      );
+    }
+    const childPid = child.pid;
+    if (!childPid) {
+      throw new Error("EasyResearch desktop sidecar did not report a process id.");
+    }
+    if (ready.pid !== childPid) {
+      throw new Error("Desktop sidecar ready event did not match the owned child process.");
+    }
+    let health: Response;
+    try {
+      health = await fetchImpl(`${ready.origin}/api/status`, {
+        headers: { [DESKTOP_ACCESS_HEADER]: rendererToken },
+        redirect: "error",
+        signal: AbortSignal.timeout(5_000),
+      });
+    } catch (error) {
+      throw new Error("Desktop sidecar health check failed.", { cause: error });
+    }
+    if (!health.ok) {
+      throw new Error(`Desktop sidecar health check returned HTTP ${health.status}.`);
+    }
+    releaseStartupTransition();
+
+    return {
+      ready,
+      rendererToken,
+      pid: childPid,
+      restartRequested: protocol.restartRequested,
+      exited: protocol.exited,
+      shutdown,
+      forceTerminate,
+      takeRestartTransition() {
+        if (!restartTransition && !restartTransitionClaimed && options.agentDir) {
+          restartTransition = (options.adoptTransition ?? adoptTransitionLease)(
+            options.agentDir,
+            "desktop",
+            hostPid,
+            hostTransitionToken,
+          );
+        }
+        if (!restartTransition) {
+          throw new Error("Desktop restart transition was already claimed or never transferred.");
+        }
+        const claimed = restartTransition;
+        restartTransition = undefined;
+        restartTransitionClaimed = true;
+        return claimed;
+      },
+    };
+  } catch (error) {
+    return failStartup(error);
+  }
 }
 
 function monitorSidecarProtocol(
@@ -369,6 +515,9 @@ function monitorSidecarProtocol(
     processExited = true;
     exitCode = code;
     exitSignal = signal;
+    options.log?.(
+      `Desktop sidecar process exited (code ${code ?? "none"}, signal ${signal ?? "none"}); waiting for stdio close.`,
+    );
   };
   const onClose = (code: number | null, signal: NodeJS.Signals | null): void => {
     if (processClosed) return;
@@ -425,8 +574,8 @@ function forceTerminateChild(
     if (!childClosed) (options.killProcess ?? process.kill)(-child.pid, "SIGKILL");
     return;
   }
-  if (child.exitCode !== null || child.signalCode !== null) return;
   if (platform === "win32") {
+    if (childClosed) return;
     const command = windowsTaskkillCommand(
       options.systemRoot ?? process.env.SystemRoot ?? "C:\\Windows",
       child.pid,
@@ -456,6 +605,7 @@ function forceTerminateChild(
     }
     return;
   }
+  if (child.exitCode !== null || child.signalCode !== null) return;
   child.kill("SIGKILL");
 }
 

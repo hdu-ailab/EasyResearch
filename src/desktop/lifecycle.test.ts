@@ -48,7 +48,15 @@ describe("desktop window lifecycle", () => {
 
 describe("desktop sidecar lifecycle", () => {
   function fixture() {
-    const restartRequested = deferred<{ type: "desktop.restart-requested"; bootId: string }>();
+    const restartSignal = deferred<{ type: "desktop.restart-requested"; bootId: string }>();
+    let transitionAvailable = false;
+    const restartRequested = {
+      promise: restartSignal.promise,
+      resolve(event: { type: "desktop.restart-requested"; bootId: string }) {
+        transitionAvailable = true;
+        restartSignal.resolve(event);
+      },
+    };
     const exited = deferred<{
       code: number | null;
       signal: NodeJS.Signals | null;
@@ -58,6 +66,20 @@ describe("desktop sidecar lifecycle", () => {
     let current = true;
     let exiting = false;
     const order: string[] = [];
+    let transitionHeld = true;
+    const restartTransition = {
+      path: "/tmp/server.transition.lease",
+      token: "electron-transition-token",
+      get held() {
+        return transitionHeld;
+      },
+      reserveHandoff: vi.fn(),
+      release: vi.fn(() => {
+        if (!transitionHeld) return false;
+        transitionHeld = false;
+        return true;
+      }),
+    };
     const options = {
       isCurrent: () => current,
       isExiting: () => exiting,
@@ -70,8 +92,10 @@ describe("desktop sidecar lifecycle", () => {
         current = false;
         order.push("clear-current");
       },
-      startSuccessor: vi.fn(async (hash: string) => {
+      startSuccessor: vi.fn(async (hash: string, transition: typeof restartTransition) => {
+        expect(transition).toBe(restartTransition);
         order.push(`start:${hash}`);
+        transition.release();
         return true;
       }),
       showStartupFailure: vi.fn(async (hash: string) => {
@@ -86,6 +110,11 @@ describe("desktop sidecar lifecycle", () => {
       restartRequested: restartRequested.promise,
       exited: exited.promise,
       forceTerminate: vi.fn(),
+      takeRestartTransition: vi.fn(() => {
+        if (!transitionAvailable) throw new Error("no transferred transition");
+        transitionAvailable = false;
+        return restartTransition;
+      }),
     };
     return {
       handle,
@@ -93,6 +122,10 @@ describe("desktop sidecar lifecycle", () => {
       exited,
       options,
       order,
+      restartTransition,
+      makeTransitionAvailable() {
+        transitionAvailable = true;
+      },
       setCurrent(value: boolean) {
         current = value;
       },
@@ -124,7 +157,13 @@ describe("desktop sidecar lifecycle", () => {
       "start:#/work/session%20one?cwd=%2Fpaper%20one",
     ]);
     expect(f.options.startSuccessor).toHaveBeenCalledOnce();
+    expect(f.options.startSuccessor).toHaveBeenCalledWith(
+      "#/work/session%20one?cwd=%2Fpaper%20one",
+      f.restartTransition,
+    );
+    expect(f.restartTransition.held).toBe(false);
     expect(f.options.showUnexpectedExit).not.toHaveBeenCalled();
+    expect(f.restartTransition.release).toHaveBeenCalledOnce();
     expect(f.options.showStartupFailure).not.toHaveBeenCalled();
   });
 
@@ -147,6 +186,8 @@ describe("desktop sidecar lifecycle", () => {
       "#/work/session%20one?cwd=%2Fpaper%20one",
     );
     expect(f.options.showUnexpectedExit).not.toHaveBeenCalled();
+    expect(f.restartTransition.held).toBe(false);
+    expect(f.restartTransition.release).toHaveBeenCalledOnce();
   });
 
   it("force-terminates a stalled expected restart and reaches recovery after a second bounded wait", async () => {
@@ -241,6 +282,7 @@ describe("desktop sidecar lifecycle", () => {
     expect(f.options.startSuccessor).not.toHaveBeenCalled();
     expect(f.options.showStartupFailure).not.toHaveBeenCalled();
     expect(f.options.showUnexpectedExit).not.toHaveBeenCalled();
+    expect(f.restartTransition.held).toBe(true);
   });
 
   it("suppresses replacement and dialogs once terminal Exit begins", async () => {
@@ -290,6 +332,19 @@ describe("desktop sidecar lifecycle", () => {
     expect(f.options.startSuccessor).not.toHaveBeenCalled();
     expect(f.options.showStartupFailure).not.toHaveBeenCalled();
     expect(f.options.showUnexpectedExit).toHaveBeenCalledWith("/tmp/sidecar.log");
+  });
+
+  it("releases lazily recovered transition custody after an exit whose restart event was lost", async () => {
+    const f = fixture();
+    f.makeTransitionAvailable();
+    const monitored = monitorDesktopSidecarLifecycle(f.handle, f.options);
+
+    f.exited.resolve({ code: 1, signal: null });
+    await expect(monitored).resolves.toBe("unexpected");
+
+    expect(f.handle.takeRestartTransition).toHaveBeenCalledOnce();
+    expect(f.restartTransition.release).toHaveBeenCalledOnce();
+    expect(f.restartTransition.held).toBe(false);
   });
 
   it("ignores an old sidecar exit after ownership has moved", async () => {

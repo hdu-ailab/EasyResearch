@@ -1,15 +1,19 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { BuildArtifact } from "../../scripts/build";
 import {
   combineDesktopSmokeFailures,
+  appendBoundedDiagnosticText,
+  assertPackagedDesktopRunning,
+  createDesktopSmokeDiagnosticReport,
   dmgAttachCommand,
   dmgDetachCommand,
   nsisInstallCommand,
   packagedApplicationPaths,
+  pollDesktopSmokeEvents,
   readyPersistedSessionPath,
   readDesktopSmokeEvents,
   removeDesktopSmokeRoot,
@@ -150,6 +154,100 @@ describe("desktop smoke cleanup failures", () => {
 
     await expect(removal).rejects.toBe(unrelated);
     expect(attempts).toBe(1);
+  });
+});
+
+describe("desktop smoke failure diagnostics", () => {
+  it("fails immediately when the packaged host exits before an expected milestone", () => {
+    expect(() => assertPackagedDesktopRunning("active Agent", {
+      pid: 5151,
+      exited: true,
+      exitCode: 7,
+    }, [
+      { type: "desktop-smoke.sidecar-ready" },
+      { type: "desktop-smoke.window-loaded" },
+    ])).toThrow(/active Agent.*pid 5151.*code 7.*2 events.*window-loaded/is);
+
+    expect(() => assertPackagedDesktopRunning("active Agent", {
+      pid: 5151,
+      exited: false,
+    }, [])).not.toThrow();
+  });
+
+  it("keeps only the bounded tail of incrementally captured output", () => {
+    expect(appendBoundedDiagnosticText("12345", "67890", 7)).toBe("4567890");
+    expect(appendBoundedDiagnosticText("", "short", 7)).toBe("short");
+  });
+
+  it("distinguishes retryable absent and partial events from invalid complete JSON", () => {
+    const path = join(root, "events.jsonl");
+    expect(pollDesktopSmokeEvents(path)).toEqual({ status: "missing", events: [] });
+
+    writeFileSync(path, '{"type":"desktop-smoke.sidecar-ready"');
+    expect(pollDesktopSmokeEvents(path)).toEqual({ status: "partial", events: [] });
+
+    writeFileSync(path, "not-json\n");
+    expect(() => pollDesktopSmokeEvents(path)).toThrow(/event JSON/i);
+  });
+
+  it("reports ownership and lease evidence without exposing tokens or unbounded logs", () => {
+    const agentDir = join(root, "agent");
+    const desktopLogPath = join(root, "desktop.log");
+    const serverLogPath = join(root, "server.log");
+    const eventsPath = join(root, "events.jsonl");
+    const serverToken = "server-secret-token";
+    const transitionToken = "transition-secret-token";
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(join(agentDir, "server.pid"), JSON.stringify({
+      schema: 1,
+      owner: "desktop",
+      pid: 6262,
+      host: "127.0.0.1",
+      port: 43123,
+      token: serverToken,
+      runtimeId: "desktop:0.0.81:accepted",
+    }));
+    for (const [name, kind, token, pid] of [
+      ["server.lease", "server", serverToken, 6262],
+      ["server.transition.lease", "transition", transitionToken, 7373],
+    ] as const) {
+      const directory = join(agentDir, name);
+      mkdirSync(directory);
+      writeFileSync(join(directory, "owner-redacted.json"), JSON.stringify({
+        schema: 1,
+        kind,
+        owner: "desktop",
+        pid,
+        token,
+      }));
+    }
+    writeFileSync(desktopLogPath, `prefix ${"x".repeat(100)} token=${transitionToken}\n`);
+    writeFileSync(serverLogPath, `server {"token":"${serverToken}"}\n`);
+    writeFileSync(eventsPath, '{"type":"desktop-smoke.sidecar-ready"}\n');
+
+    const report = createDesktopSmokeDiagnosticReport({
+      target: "windows-x64",
+      phase: "active Agent",
+      process: { pid: 5151, exited: false },
+      eventsPath,
+      desktopLogPath,
+      serverLogPath,
+      agentDir,
+      stdout: `stdout token=${serverToken}`,
+      stderr: "stderr-safe",
+      modelRequestActive: false,
+      modelRequestAborted: false,
+      maxTextCharacters: 80,
+      isAlive: (pid) => pid === 5151 || pid === 6262 || pid === 7373,
+    });
+
+    expect(report).toContain('"tokenPresent": true');
+    expect(report).toContain('"serverRecordTokenMatches": true');
+    expect(report).toContain('"kind": "transition"');
+    expect(report).toContain("[REDACTED]");
+    expect(report).not.toContain(serverToken);
+    expect(report).not.toContain(transitionToken);
+    expect(report.length).toBeLessThan(4_000);
   });
 });
 

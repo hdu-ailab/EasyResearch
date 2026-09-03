@@ -8,7 +8,11 @@ import {
   serverLogFile,
   stopServerProcess,
 } from "./server-process";
-import { acquireTransitionLease, type RuntimeLease } from "./runtime-lease";
+import {
+  acquireTransitionLease,
+  type RuntimeLease,
+  waitForTransitionLeaseOwnership,
+} from "./runtime-lease";
 import { runServe, type ServeOptions } from "./commands/serve";
 import { createLogger } from "../runtime/logger";
 import {
@@ -21,16 +25,22 @@ import {
 import {
   DESKTOP_CONTROL_TOKEN_ENV,
   DESKTOP_EVENT_PREFIX,
+  DESKTOP_HOST_PID_ENV,
+  DESKTOP_HOST_TRANSITION_TOKEN_ENV,
   DESKTOP_LAUNCH_ENV,
   DESKTOP_RENDERER_TOKEN_ENV,
+  DESKTOP_TRANSITION_HANDOFF_ENV,
   type DesktopSidecarEvent,
 } from "../desktop/contracts";
 
 export {
   DESKTOP_CONTROL_TOKEN_ENV,
   DESKTOP_EVENT_PREFIX,
+  DESKTOP_HOST_PID_ENV,
+  DESKTOP_HOST_TRANSITION_TOKEN_ENV,
   DESKTOP_LAUNCH_ENV,
   DESKTOP_RENDERER_TOKEN_ENV,
+  DESKTOP_TRANSITION_HANDOFF_ENV,
 };
 export type { DesktopSidecarEvent };
 
@@ -39,6 +49,9 @@ export interface DesktopServeRequest {
   port: 0;
   controlToken: string;
   rendererToken: string;
+  hostPid: number;
+  hostTransitionToken: string;
+  inheritedTransition: boolean;
 }
 
 interface ParentLifeEmitter {
@@ -55,6 +68,12 @@ interface DesktopServeDependencies {
   agentDir?: () => string;
   runtimeId?: () => string;
   acquireTransition?: (agentDir: string) => Promise<RuntimeLease>;
+  waitForInheritedTransition?: (
+    agentDir: string,
+    owner: "desktop",
+    pid: number,
+    token: string,
+  ) => Promise<void>;
   inspectBackground?: (
     agentDir: string,
     runtimeId: string,
@@ -82,13 +101,40 @@ export function parseDesktopServeRequest(
   }
   const controlToken = env[DESKTOP_CONTROL_TOKEN_ENV];
   const rendererToken = env[DESKTOP_RENDERER_TOKEN_ENV];
-  if (!controlToken || controlToken.length < 32 || !rendererToken || rendererToken.length < 32) {
+  const hostTransitionToken = env[DESKTOP_HOST_TRANSITION_TOKEN_ENV];
+  const hostPidValue = env[DESKTOP_HOST_PID_ENV];
+  const hostPid = hostPidValue && /^[1-9]\d*$/u.test(hostPidValue)
+    ? Number(hostPidValue)
+    : Number.NaN;
+  const inheritedTransitionValue = env[DESKTOP_TRANSITION_HANDOFF_ENV];
+  if (
+    !controlToken
+    || controlToken.length < 32
+    || !rendererToken
+    || rendererToken.length < 32
+    || !hostTransitionToken
+    || hostTransitionToken.length < 32
+  ) {
     throw new Error("Invalid EasyResearch desktop launch credentials.");
   }
-  if (controlToken === rendererToken) {
+  if (new Set([controlToken, rendererToken, hostTransitionToken]).size !== 3) {
     throw new Error("EasyResearch desktop launch credentials must be distinct.");
   }
-  return { host: "127.0.0.1", port: 0, controlToken, rendererToken };
+  if (!Number.isSafeInteger(hostPid) || hostPid <= 0) {
+    throw new Error("Invalid EasyResearch desktop host process identity.");
+  }
+  if (inheritedTransitionValue !== undefined && inheritedTransitionValue !== "1") {
+    throw new Error("Invalid EasyResearch desktop transition handoff.");
+  }
+  return {
+    host: "127.0.0.1",
+    port: 0,
+    controlToken,
+    rendererToken,
+    hostPid,
+    hostTransitionToken,
+    inheritedTransition: inheritedTransitionValue === "1",
+  };
 }
 
 export function consumeDesktopServeRequest(
@@ -99,6 +145,9 @@ export function consumeDesktopServeRequest(
   delete env[DESKTOP_LAUNCH_ENV];
   delete env[DESKTOP_CONTROL_TOKEN_ENV];
   delete env[DESKTOP_RENDERER_TOKEN_ENV];
+  delete env[DESKTOP_HOST_PID_ENV];
+  delete env[DESKTOP_HOST_TRANSITION_TOKEN_ENV];
+  delete env[DESKTOP_TRANSITION_HANDOFF_ENV];
   return request;
 }
 
@@ -140,6 +189,9 @@ export async function runDesktopServe(
   delete environment[DESKTOP_LAUNCH_ENV];
   delete environment[DESKTOP_CONTROL_TOKEN_ENV];
   delete environment[DESKTOP_RENDERER_TOKEN_ENV];
+  delete environment[DESKTOP_HOST_PID_ENV];
+  delete environment[DESKTOP_HOST_TRANSITION_TOKEN_ENV];
+  delete environment[DESKTOP_TRANSITION_HANDOFF_ENV];
   const agentDir = (dependencies.agentDir ?? defaultAgentDir)();
   const runtimeId = (dependencies.runtimeId ?? desktopRuntimeId)();
   const emit = dependencies.emit ?? emitDesktopSidecarEvent;
@@ -165,11 +217,41 @@ export async function runDesktopServe(
     }
     transitionReleased = true;
   };
+  const handoffTransitionToHost = (lease: RuntimeLease): void => {
+    const handoff = lease.reserveHandoff(request.hostTransitionToken);
+    try {
+      handoff.commit(request.hostPid);
+      handoff.relinquish();
+    } catch (error) {
+      if (!handoff.transferred) {
+        try {
+          handoff.cancel();
+        } catch (cancelError) {
+          throw new AggregateError(
+            [error, cancelError],
+            "EasyResearch desktop transition handoff cleanup failed.",
+          );
+        }
+      }
+      throw error;
+    }
+    if (lease === transition) transitionReleased = true;
+  };
 
   try {
     if (parentShutdownRequested) return 0;
-    transition = await (dependencies.acquireTransition
-      ?? ((root) => acquireTransitionLease(root, "desktop")))(agentDir);
+    if (request.inheritedTransition) {
+      await (dependencies.waitForInheritedTransition ?? waitForTransitionLeaseOwnership)(
+        agentDir,
+        "desktop",
+        process.pid,
+        request.controlToken,
+      );
+      transitionReleased = true;
+    } else {
+      transition = await (dependencies.acquireTransition
+        ?? ((root) => acquireTransitionLease(root, "desktop")))(agentDir);
+    }
     if (parentShutdownRequested) return 0;
     const background = await (dependencies.inspectBackground
       ?? ((root, currentRuntimeId) =>
@@ -226,6 +308,7 @@ export async function runDesktopServe(
         };
       },
       onReady: ({ port, logPath: readyLogPath, bootId }) => {
+        if (transition?.held) handoffTransitionToHost(transition);
         ready = true;
         readyBootId = bootId;
         emit({
@@ -236,12 +319,12 @@ export async function runDesktopServe(
           logPath: resolve(readyLogPath),
           bootId,
         });
-        releaseTransition();
       },
-      onExpectedRestart: (bootId) => {
+      onExpectedRestart: (bootId, restartTransition) => {
         if (!readyBootId || bootId !== readyBootId || restartRequested) {
           throw new Error("EasyResearch desktop restart identity did not match its ready event.");
         }
+        handoffTransitionToHost(restartTransition);
         restartRequested = true;
         emit({ type: "desktop.restart-requested", bootId });
       },

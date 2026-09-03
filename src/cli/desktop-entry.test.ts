@@ -6,8 +6,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DESKTOP_CONTROL_TOKEN_ENV,
   DESKTOP_EVENT_PREFIX,
+  DESKTOP_HOST_PID_ENV,
+  DESKTOP_HOST_TRANSITION_TOKEN_ENV,
   DESKTOP_LAUNCH_ENV,
   DESKTOP_RENDERER_TOKEN_ENV,
+  DESKTOP_TRANSITION_HANDOFF_ENV,
   bindParentLife,
   consumeDesktopServeRequest,
   emitDesktopSidecarEvent,
@@ -22,6 +25,8 @@ const validEnv = () => ({
   [DESKTOP_LAUNCH_ENV]: "1",
   [DESKTOP_CONTROL_TOKEN_ENV]: "c".repeat(43),
   [DESKTOP_RENDERER_TOKEN_ENV]: "r".repeat(43),
+  [DESKTOP_HOST_PID_ENV]: "5151",
+  [DESKTOP_HOST_TRANSITION_TOKEN_ENV]: "h".repeat(43),
 });
 
 const request: DesktopServeRequest = {
@@ -29,6 +34,9 @@ const request: DesktopServeRequest = {
   port: 0,
   controlToken: "c".repeat(43),
   rendererToken: "r".repeat(43),
+  hostPid: 5151,
+  hostTransitionToken: "h".repeat(43),
+  inheritedTransition: false,
 };
 
 let root: string;
@@ -70,6 +78,49 @@ function fakeTransitionLease(releaseOwner: () => boolean = () => true): RuntimeL
       if (released) held = false;
       return released;
     },
+  };
+}
+
+function orderedTransitionLease(label: string, order: string[]): RuntimeLease {
+  let held = true;
+  let token = `${label}-owner`;
+  return {
+    path: `${label}.lease`,
+    get token() {
+      return token;
+    },
+    get held() {
+      return held;
+    },
+    reserveHandoff: vi.fn((nextToken: string) => {
+      order.push(`${label}:reserve:${nextToken}`);
+      let transferred = false;
+      return {
+        token: nextToken,
+        get transferred() {
+          return transferred;
+        },
+        commit: vi.fn((pid: number) => {
+          order.push(`${label}:commit:${pid}`);
+          token = nextToken;
+          transferred = true;
+        }),
+        cancel: vi.fn(() => {
+          order.push(`${label}:cancel`);
+          return true;
+        }),
+        relinquish: vi.fn(() => {
+          order.push(`${label}:relinquish`);
+          held = false;
+        }),
+      };
+    }),
+    release: vi.fn(() => {
+      order.push(`${label}:release`);
+      if (!held) return false;
+      held = false;
+      return true;
+    }),
   };
 }
 
@@ -120,8 +171,33 @@ describe("desktop entry validation", () => {
         [DESKTOP_LAUNCH_ENV]: "1",
         [DESKTOP_CONTROL_TOKEN_ENV]: same,
         [DESKTOP_RENDERER_TOKEN_ENV]: same,
+        [DESKTOP_HOST_PID_ENV]: "5151",
+        [DESKTOP_HOST_TRANSITION_TOKEN_ENV]: "h".repeat(43),
       },
     )).toThrow(/distinct/i);
+  });
+
+  it.each([
+    ["missing host pid", { [DESKTOP_HOST_PID_ENV]: undefined }],
+    ["invalid host pid", { [DESKTOP_HOST_PID_ENV]: "0" }],
+    ["weak host transition token", { [DESKTOP_HOST_TRANSITION_TOKEN_ENV]: "short" }],
+    ["reused host transition token", { [DESKTOP_HOST_TRANSITION_TOKEN_ENV]: "c".repeat(43) }],
+    ["invalid inherited marker", { [DESKTOP_TRANSITION_HANDOFF_ENV]: "true" }],
+  ])("rejects $0", (_name, override) => {
+    expect(() => parseDesktopServeRequest(
+      ["--desktop-serve", "127.0.0.1", "0"],
+      { ...validEnv(), ...override },
+    )).toThrow(/desktop (launch|host)|credential|transition/i);
+  });
+
+  it("accepts and consumes one explicit inherited transition marker", () => {
+    const env = { ...validEnv(), [DESKTOP_TRANSITION_HANDOFF_ENV]: "1" };
+
+    expect(consumeDesktopServeRequest(
+      ["--desktop-serve", "127.0.0.1", "0"],
+      env,
+    )).toEqual({ ...request, inheritedTransition: true });
+    expect(env).toEqual({});
   });
 
   it("consumes credentials before runtime construction", () => {
@@ -166,6 +242,95 @@ describe("desktop entry validation", () => {
 });
 
 describe("desktop takeover", () => {
+  it("hands startup transition custody to Electron before publishing readiness", async () => {
+    const order: string[] = [];
+    const transition = orderedTransitionLease("startup", order);
+
+    expect(await runDesktopServe(request, {
+      agentDir: () => root,
+      runtimeId: () => "desktop-runtime",
+      acquireTransition: async () => transition,
+      inspectBackground: async () => "none",
+      setup: () => {},
+      serve: async (_host, _port, options) => {
+        options.onReady?.({ port: 43123, logPath: join(root, "server.log"), bootId: "boot-ready" });
+        return 0;
+      },
+      emit: (event) => {
+        if (event.type === "desktop.ready") order.push("ready");
+      },
+      parentLife: new EventEmitter(),
+    })).toBe(0);
+
+    expect(order).toEqual([
+      `startup:reserve:${request.hostTransitionToken}`,
+      `startup:commit:${request.hostPid}`,
+      "startup:relinquish",
+      "ready",
+    ]);
+    expect(transition.held).toBe(false);
+    expect(transition.release).not.toHaveBeenCalled();
+  });
+
+  it("accepts inherited child custody without competing for another transition", async () => {
+    const acquireTransition = vi.fn(async () => fakeTransitionLease());
+    const waitForInheritedTransition = vi.fn(async () => {});
+
+    expect(await runDesktopServe({ ...request, inheritedTransition: true }, {
+      agentDir: () => root,
+      runtimeId: () => "desktop-runtime",
+      acquireTransition,
+      waitForInheritedTransition,
+      inspectBackground: async () => "none",
+      setup: () => {},
+      serve: async (_host, _port, options) => {
+        options.onReady?.({ port: 43123, logPath: join(root, "server.log"), bootId: "boot-ready" });
+        return 0;
+      },
+      emit: vi.fn(),
+      parentLife: new EventEmitter(),
+    })).toBe(0);
+
+    expect(waitForInheritedTransition).toHaveBeenCalledWith(
+      root,
+      "desktop",
+      process.pid,
+      request.controlToken,
+    );
+    expect(acquireTransition).not.toHaveBeenCalled();
+  });
+
+  it("hands restart custody to Electron before publishing the restart event", async () => {
+    const order: string[] = [];
+    const startup = orderedTransitionLease("startup", order);
+    const restart = orderedTransitionLease("restart", order);
+
+    expect(await runDesktopServe(request, {
+      agentDir: () => root,
+      runtimeId: () => "desktop-runtime",
+      acquireTransition: async () => startup,
+      inspectBackground: async () => "none",
+      setup: () => {},
+      serve: async (_host, _port, options) => {
+        options.onReady?.({ port: 43123, logPath: join(root, "server.log"), bootId: "boot-ready" });
+        options.onExpectedRestart?.("boot-ready", restart);
+        return 0;
+      },
+      emit: (event) => {
+        if (event.type === "desktop.restart-requested") order.push("restart-event");
+      },
+      parentLife: new EventEmitter(),
+    })).toBe(0);
+
+    expect(order.slice(-4)).toEqual([
+      `restart:reserve:${request.hostTransitionToken}`,
+      `restart:commit:${request.hostPid}`,
+      "restart:relinquish",
+      "restart-event",
+    ]);
+    expect(restart.held).toBe(false);
+  });
+
   it("owns parent EOF during setup and never starts an orphanable server", async () => {
     const parentLife = new EventEmitter();
     const release = vi.fn(() => true);
@@ -342,14 +507,14 @@ describe("desktop takeover", () => {
       "setup",
       "serve",
       "ready",
-      "transition-released",
     ]);
     expect(emitted).toEqual(["desktop.setup", "desktop.ready", "desktop.stopped"]);
-    expect(release).toHaveBeenCalledOnce();
+    expect(release).not.toHaveBeenCalled();
   });
 
   it("emits a committed expected restart instead of an ordinary stopped event", async () => {
     const events: Array<Record<string, unknown>> = [];
+    const restartTransition = fakeTransitionLease();
 
     expect(await runDesktopServe(request, {
       agentDir: () => root,
@@ -363,7 +528,7 @@ describe("desktop takeover", () => {
           logPath: join(root, "server.log"),
           bootId: "boot-ready",
         });
-        options.onExpectedRestart?.("boot-ready");
+        options.onExpectedRestart?.("boot-ready", restartTransition);
         return 0;
       },
       emit: (event) => events.push(event),
@@ -381,6 +546,7 @@ describe("desktop takeover", () => {
       },
       { type: "desktop.restart-requested", bootId: "boot-ready" },
     ]);
+    expect(restartTransition.held).toBe(false);
   });
 
   it("rejects another desktop owner without setup or bind", async () => {

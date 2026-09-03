@@ -19,6 +19,8 @@ import {
   unlinkSync,
 } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
+import { defaultAgentDir } from "../runtime/bundled-assets";
+import type { RuntimeLease } from "../cli/runtime-lease";
 import {
   beginDesktopExit,
   createDesktopSidecarOwnership,
@@ -89,6 +91,10 @@ let smokeRestartContext: {
 let smokeSuccessorFailureInjected = false;
 
 if (!hasSingleInstanceLock) {
+  emitSmokeEvent({
+    type: "desktop-smoke.failure",
+    message: "Desktop smoke could not acquire the packaged host instance lock.",
+  });
   app.quit();
 } else {
   app.on("second-instance", () => restoreMainWindow());
@@ -109,6 +115,10 @@ if (!hasSingleInstanceLock) {
     await startApplicationWithRecovery();
   }).catch((error) => {
     writeDesktopLog(`Desktop host initialization failed: ${errorMessage(error)}`);
+    emitSmokeEvent({
+      type: "desktop-smoke.failure",
+      message: "Desktop smoke host initialization failed.",
+    });
     dialog.showErrorBox(
       "EasyResearch could not start",
       `The desktop host could not initialize. Review ${desktopLogPath()}`,
@@ -141,9 +151,20 @@ function isTrustedRenderer(event: IpcMainEvent): boolean {
   return mainWindow !== undefined && event.sender === mainWindow.webContents;
 }
 
-async function startApplication(hash = "#/"): Promise<boolean> {
-  if (lifecycle.exiting || !sidecarOwnership.acceptingLaunches) return false;
-  if (startAttempt) return startAttempt;
+async function startApplication(
+  hash = "#/",
+  transitionLease?: RuntimeLease,
+): Promise<boolean> {
+  if (lifecycle.exiting || !sidecarOwnership.acceptingLaunches) {
+    if (transitionLease?.held && !transitionLease.release()) {
+      throw new Error("Desktop host could not release cancelled successor transition custody.");
+    }
+    return false;
+  }
+  if (startAttempt) {
+    if (transitionLease) throw new Error("Desktop successor launch is already active.");
+    return startAttempt;
+  }
   const current = (async (): Promise<boolean> => {
     let launchedSidecar: DesktopSidecarProcessHandle | undefined;
     try {
@@ -155,12 +176,6 @@ async function startApplication(hash = "#/"): Promise<boolean> {
       }
       sidecar = undefined;
       if (lifecycle.exiting || !sidecarOwnership.acceptingLaunches) return false;
-      if (smokeRestartContext && consumeSmokeRequest("successor-start-failure-request")) {
-        smokeSuccessorFailureInjected = true;
-        emitSmokeEvent(desktopSmokeRestartFailureEvent("successor-start-failed", hash));
-        writeDesktopLog("Desktop smoke injected one successor startup failure.");
-        return false;
-      }
       showLoading("Preparing the local research workspace...");
       const environment = resolveDesktopEnvironment(process.env, process.platform, {
         warn: writeDesktopLog,
@@ -169,10 +184,20 @@ async function startApplication(hash = "#/"): Promise<boolean> {
       const handle = await startDesktopSidecar({
         sidecarPath: resolvePackagedSidecar(process.resourcesPath, process.platform),
         baseEnv: environment,
+        agentDir: defaultAgentDir(),
+        transitionLease,
         onSetup: showLoading,
         onSpawned: (handle) => {
           launchedSidecar = handle;
           sidecarOwnership.retain(handle);
+        },
+        onTransitionCommitted: () => {
+          if (smokeRestartContext && consumeSmokeRequest("successor-start-failure-request")) {
+            smokeSuccessorFailureInjected = true;
+            emitSmokeEvent(desktopSmokeRestartFailureEvent("successor-start-failed", hash));
+            writeDesktopLog("Desktop smoke injected one successor startup failure.");
+            throw new Error("Desktop smoke injected one successor startup failure.");
+          }
         },
         log: writeDesktopLog,
       });
@@ -204,7 +229,17 @@ async function startApplication(hash = "#/"): Promise<boolean> {
       } catch (shutdownError) {
         writeDesktopLog(`Failed startup sidecar cleanup: ${errorMessage(shutdownError)}`);
       }
+      if (smokeDirectory() && !smokeSuccessorFailureInjected) {
+        emitSmokeEvent({
+          type: "desktop-smoke.failure",
+          message: "Desktop smoke sidecar startup failed.",
+        });
+      }
       return false;
+    } finally {
+      if (transitionLease?.held && !transitionLease.release()) {
+        throw new Error("Desktop host could not release unused successor transition custody.");
+      }
     }
   })();
   startAttempt = current;
@@ -361,7 +396,7 @@ function monitorSidecar(handle: DesktopSidecarHandle): void {
     clearCurrent: () => {
       if (sidecar === handle) sidecar = undefined;
     },
-    startSuccessor: (hash) => startApplication(hash),
+    startSuccessor: (hash, transitionLease) => startApplication(hash, transitionLease),
     showStartupFailure,
     showUnexpectedExit: async (logPath) => {
       emitSmokeEvent({

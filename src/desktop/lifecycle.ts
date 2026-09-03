@@ -2,6 +2,7 @@ import type {
   DesktopReadyEvent,
   DesktopRestartRequestedEvent,
 } from "./contracts";
+import type { RuntimeLease } from "../cli/runtime-lease";
 import type { DesktopSidecarExit, DesktopSidecarProcessHandle } from "./sidecar";
 
 export interface DesktopLifecycleState {
@@ -28,6 +29,7 @@ export interface DesktopSidecarLifecycleHandle {
   readonly restartRequested: Promise<DesktopRestartRequestedEvent>;
   readonly exited: Promise<DesktopSidecarExit>;
   forceTerminate(): void;
+  takeRestartTransition(): RuntimeLease;
 }
 
 export interface DesktopLifecycleDeadline {
@@ -41,7 +43,7 @@ export interface DesktopSidecarLifecycleOptions {
   captureRoute(): string;
   showRestarting(hash: string): void;
   clearCurrent(): void;
-  startSuccessor(hash: string): Promise<boolean>;
+  startSuccessor(hash: string, transitionLease: RuntimeLease): Promise<boolean>;
   showStartupFailure(hash: string): Promise<void>;
   showUnexpectedExit(logPath: string): Promise<void>;
   onCleanupError?(error: unknown): void;
@@ -64,6 +66,32 @@ export async function monitorDesktopSidecarLifecycle(
   options: DesktopSidecarLifecycleOptions,
 ): Promise<DesktopSidecarDisposition> {
   let retainedHash: string | undefined;
+  let restartTransition: RuntimeLease | undefined;
+  const releaseRestartTransition = (): void => {
+    if (!restartTransition?.held) {
+      restartTransition = undefined;
+      return;
+    }
+    try {
+      if (!restartTransition.release()) {
+        throw new Error("EasyResearch Desktop lost restart transition custody.");
+      }
+      restartTransition = undefined;
+    } catch (error) {
+      options.onCleanupError?.(error);
+    }
+  };
+  const releaseRestartTransitionAfterExit = (): void => {
+    void handle.exited.then(() => releaseRestartTransition());
+  };
+  const recoverTransferredTransition = (): void => {
+    if (restartTransition) return;
+    try {
+      restartTransition = handle.takeRestartTransition();
+    } catch {
+      // An ordinary crash has no transferred restart lease to recover.
+    }
+  };
   const prepareExpectedRestart = (): boolean => {
     if (retainedHash !== undefined) return true;
     if (!options.isCurrent() || options.isExiting()) return false;
@@ -76,9 +104,19 @@ export async function monitorDesktopSidecarLifecycle(
     resolveExpectedRestart = resolve;
   });
   void handle.restartRequested.then((event) => {
+    if (!restartTransition) {
+      try {
+        restartTransition = handle.takeRestartTransition();
+      } catch (error) {
+        options.onCleanupError?.(error);
+        return;
+      }
+    }
     if (event.bootId === handle.ready.bootId && prepareExpectedRestart()) {
       resolveExpectedRestart();
+      return;
     }
+    releaseRestartTransitionAfterExit();
   });
 
   const first = await Promise.race([
@@ -94,7 +132,10 @@ export async function monitorDesktopSidecarLifecycle(
       createDeadline,
     );
     if (!graceful.settled) {
-      if (!options.isCurrent() || options.isExiting()) return "ignored";
+      if (!options.isCurrent() || options.isExiting()) {
+        releaseRestartTransitionAfterExit();
+        return "ignored";
+      }
       try {
         handle.forceTerminate();
       } catch (error) {
@@ -105,8 +146,17 @@ export async function monitorDesktopSidecarLifecycle(
         options.forcedRestartExitTimeoutMs ?? FORCED_RESTART_EXIT_TIMEOUT_MS,
         createDeadline,
       );
-      if (!options.isCurrent() || options.isExiting()) return "ignored";
-      if (forced.settled) options.clearCurrent();
+      if (!options.isCurrent() || options.isExiting()) {
+        if (forced.settled) releaseRestartTransition();
+        else releaseRestartTransitionAfterExit();
+        return "ignored";
+      }
+      if (forced.settled) {
+        options.clearCurrent();
+        releaseRestartTransition();
+      } else {
+        releaseRestartTransitionAfterExit();
+      }
       await options.showStartupFailure(retainedHash!);
       return "restart-failed";
     }
@@ -114,7 +164,11 @@ export async function monitorDesktopSidecarLifecycle(
   } else {
     exit = first.exit;
   }
-  if (!options.isCurrent() || options.isExiting()) return "ignored";
+  recoverTransferredTransition();
+  if (!options.isCurrent() || options.isExiting()) {
+    releaseRestartTransition();
+    return "ignored";
+  }
 
   if (
     exit.code === 0
@@ -124,18 +178,24 @@ export async function monitorDesktopSidecarLifecycle(
   ) {
     if (!prepareExpectedRestart()) return "ignored";
     const hash = retainedHash!;
+    if (!restartTransition) {
+      await options.showStartupFailure(hash);
+      return "restart-failed";
+    }
     options.clearCurrent();
     let started = false;
     try {
-      started = await options.startSuccessor(hash);
+      started = await options.startSuccessor(hash, restartTransition);
     } catch {
       // The existing startup recovery surface owns safe diagnostics and Retry.
     }
     if (started) return "restarted";
+    releaseRestartTransition();
     if (!options.isExiting()) await options.showStartupFailure(hash);
     return "restart-failed";
   }
 
+  releaseRestartTransition();
   options.clearCurrent();
   await options.showUnexpectedExit(handle.ready.logPath);
   return "unexpected";

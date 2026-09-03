@@ -90,6 +90,68 @@ export function acquireServerLease(
   );
 }
 
+export function assertTransitionLeaseOwnership(
+  agentDir: string,
+  owner: ServerOwner,
+  pid: number,
+  token: string,
+): void {
+  if (!Number.isSafeInteger(pid) || pid <= 0 || !token) {
+    throw new Error("EasyResearch cannot adopt invalid transition ownership.");
+  }
+  const expected: RuntimeLeaseRecord = {
+    schema: 1,
+    kind: "transition",
+    owner,
+    pid,
+    token,
+  };
+  const current = readLease(transitionLeasePath(agentDir));
+  if (current.kind !== "directory" || !sameLeaseRecord(current.record, expected)) {
+    throw new Error("EasyResearch cannot adopt transition ownership that does not exactly match disk state.");
+  }
+}
+
+export function adoptTransitionLease(
+  agentDir: string,
+  owner: ServerOwner,
+  pid: number,
+  token: string,
+): RuntimeLease {
+  assertTransitionLeaseOwnership(agentDir, owner, pid, token);
+  return createLeaseHandle(transitionLeasePath(agentDir), {
+    schema: 1,
+    kind: "transition",
+    owner,
+    pid,
+    token,
+  });
+}
+
+export async function waitForTransitionLeaseOwnership(
+  agentDir: string,
+  owner: ServerOwner,
+  pid: number,
+  token: string,
+  options: Pick<RuntimeLeaseOptions, "wait" | "now" | "timeoutMs" | "pollIntervalMs"> = {},
+): Promise<void> {
+  const wait = options.wait ?? ((milliseconds: number) =>
+    new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
+  const now = options.now ?? Date.now;
+  const deadline = now() + (options.timeoutMs ?? 10_000);
+  while (true) {
+    try {
+      assertTransitionLeaseOwnership(agentDir, owner, pid, token);
+      return;
+    } catch {
+      if (now() >= deadline) {
+        throw new Error("EasyResearch replacement sidecar did not receive transition custody.");
+      }
+    }
+    await wait(Math.min(options.pollIntervalMs ?? 10, Math.max(0, deadline - now())));
+  }
+}
+
 async function acquireRuntimeLease(
   path: string,
   desired: RuntimeLeaseRecord,

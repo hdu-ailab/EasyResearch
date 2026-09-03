@@ -35,7 +35,7 @@ export interface ServeOptions {
   rendererToken?: string;
   registerShutdownTrigger?: (requestShutdown: () => void) => (() => void);
   onReady?: (ready: { port: number; logPath: string; bootId: string }) => void;
-  onExpectedRestart?: (bootId: string) => void;
+  onExpectedRestart?: (bootId: string, transitionLease: RuntimeLease) => void;
   /** Startup environment seam for compiled-sandbox tests. */
   environment?: EnvironmentMap;
   environmentRestore?: BunSandboxEnvironmentOptions;
@@ -191,7 +191,10 @@ export async function runServe(
     }
     leaseReleased = true;
     if (restartWasCommitted() && !terminalShutdownRequested) {
-      options.onExpectedRestart?.(bootId);
+      if (!restartTransition) {
+        throw new Error("EasyResearch restart transition ownership was not committed.");
+      }
+      options.onExpectedRestart?.(bootId, restartTransition);
     }
     if (restartWasCommitted() && owner === "cli" && !terminalShutdownRequested) {
       if (!restartTransition) {

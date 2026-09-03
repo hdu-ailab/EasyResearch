@@ -33,11 +33,15 @@ import {
 import { DESKTOP_SMOKE_USER_DATA_ENV } from "../src/desktop/contracts";
 import { THIRD_PARTY_NOTICES_FILE } from "./third-party-notices";
 import {
+  appendBoundedDiagnosticText,
+  assertPackagedDesktopRunning,
   combineDesktopSmokeFailures,
+  createDesktopSmokeDiagnosticReport,
   dmgAttachCommand,
   dmgDetachCommand,
   nsisInstallCommand,
   packagedApplicationPaths,
+  pollDesktopSmokeEvents,
   readyPersistedSessionPath,
   readDesktopSmokeEvents,
   removeDesktopSmokeRoot,
@@ -48,6 +52,7 @@ import {
   verifyPackagedSidecar,
   type NativeCommand,
 } from "./smoke-desktop-support";
+import { serverLogFile } from "../src/cli/server-process";
 
 const targetArgument = process.argv[2];
 if (!targetArgument || process.argv.length !== 3) {
@@ -106,6 +111,10 @@ let installed = false;
 let desktopProcess: ReturnType<typeof Bun.spawn> | undefined;
 let desktopStdout = "";
 let desktopStderr = "";
+let desktopExited = false;
+let desktopExitCode: number | undefined;
+let desktopOutputTasks: Promise<void>[] = [];
+let smokePhase = "package preparation";
 let cliPort = 0;
 let modelRequestActive = false;
 let modelRequestAborted = false;
@@ -301,8 +310,17 @@ try {
     stdout: "pipe",
     stderr: "pipe",
   });
-  const stdoutTask = streamText(desktopProcess.stdout).then((value) => { desktopStdout = value; });
-  const stderrTask = streamText(desktopProcess.stderr).then((value) => { desktopStderr = value; });
+  void desktopProcess.exited.then((code) => {
+    desktopExited = true;
+    desktopExitCode = code;
+  });
+  const stdoutTask = captureStreamText(desktopProcess.stdout, (chunk) => {
+    desktopStdout = appendBoundedDiagnosticText(desktopStdout, chunk);
+  });
+  const stderrTask = captureStreamText(desktopProcess.stderr, (chunk) => {
+    desktopStderr = appendBoundedDiagnosticText(desktopStderr, chunk);
+  });
+  desktopOutputTasks = [stdoutTask, stderrTask];
 
   let runningState: ReturnType<typeof reduceDesktopSmokeEvents> | undefined;
   await waitFor("packaged desktop active Agent before restart", () => {
@@ -394,7 +412,11 @@ try {
   if (!desktopProcess || !isProcessAlive(desktopProcess.pid)) {
     throw new Error("Packaged desktop host exited before successor failure recovery could be retried.");
   }
-  if (existsSync(join(agentDir, "server.pid")) || existsSync(join(agentDir, "server.lease"))) {
+  if (
+    existsSync(join(agentDir, "server.pid"))
+    || existsSync(join(agentDir, "server.lease"))
+    || existsSync(join(agentDir, "server.transition.lease"))
+  ) {
     throw new Error("Desktop successor failure recovery retained an old or partial runtime owner.");
   }
   writeFileSync(join(smokeDir, "successor-retry-request"), "retry\n", {
@@ -463,15 +485,17 @@ try {
     token: successorToken,
   })}\n`, { encoding: "utf8", mode: 0o600 });
   writeFileSync(join(smokeDir, "exit-request"), "exit\n", { encoding: "utf8", mode: 0o600 });
-  const desktopExitCode = await waitForProcess(desktopProcess, 60_000);
-  await Promise.all([stdoutTask, stderrTask]);
-  if (desktopExitCode !== 0) {
-    throw new Error(`Packaged desktop exited ${desktopExitCode}.\n${desktopStdout}\n${desktopStderr}`);
+  const finalDesktopExitCode = await waitForProcess(desktopProcess, 60_000);
+  if (!await outputTasksSettle([stdoutTask, stderrTask], 2_000)) {
+    throw new Error("Packaged desktop stdio remained open after host exit.");
+  }
+  if (finalDesktopExitCode !== 0) {
+    throw new Error(`Packaged desktop exited ${finalDesktopExitCode}.\n${desktopStdout}\n${desktopStderr}`);
   }
   await waitFor("terminal desktop milestones", () => {
     const state = currentDesktopSmokeState(join(smokeDir, "events.jsonl"));
     return state?.stopped ?? false;
-  }, 30_000);
+  }, 30_000, { allowDesktopExit: true });
   if (existsSync(join(agentDir, "server.lease"))) {
     throw new Error("Desktop Exit left its live-server lease behind.");
   }
@@ -491,11 +515,34 @@ try {
 } catch (error) {
   primaryError = error instanceof Error ? error : new Error(String(error));
   console.error(`[desktop-smoke] failure: ${primaryError.stack ?? primaryError.message}`);
-  console.error(`[desktop-smoke] preserved diagnostics root: ${root}`);
-  if (desktopStdout) console.error(`[desktop-smoke] desktop stdout:\n${desktopStdout}`);
-  if (desktopStderr) console.error(`[desktop-smoke] desktop stderr:\n${desktopStderr}`);
-  const eventsPath = join(smokeDir, "events.jsonl");
-  if (existsSync(eventsPath)) console.error(`[desktop-smoke] events:\n${readFileSync(eventsPath, "utf8")}`);
+  try {
+    const report = createDesktopSmokeDiagnosticReport({
+      target: targetName,
+      phase: smokePhase,
+      process: desktopProcess ? {
+        pid: desktopProcess.pid,
+        exited: desktopExited,
+        ...(desktopExitCode !== undefined ? { exitCode: desktopExitCode } : {}),
+      } : undefined,
+      eventsPath: join(smokeDir, "events.jsonl"),
+      desktopLogPath,
+      serverLogPath: serverLogFile(agentDir),
+      agentDir,
+      stdout: desktopStdout,
+      stderr: desktopStderr,
+      modelRequestActive,
+      modelRequestAborted,
+    });
+    const diagnosticsDirectory = join(releaseDir(), "desktop-smoke-diagnostics");
+    mkdirSync(diagnosticsDirectory, { recursive: true });
+    const reportPath = join(diagnosticsDirectory, `${targetName}.json`);
+    writeFileSync(reportPath, report, { encoding: "utf8", mode: 0o600 });
+    console.error(`[desktop-smoke] sanitized diagnostics: ${reportPath}\n${report}`);
+  } catch (diagnosticError) {
+    console.error(
+      `[desktop-smoke] sanitized diagnostic collection failed: ${diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError)}`,
+    );
+  }
 } finally {
   const cleanupFailures: Error[] = [];
   try {
@@ -510,6 +557,12 @@ try {
     } catch (error) {
       cleanupFailures.push(new Error("Packaged desktop process cleanup failed.", { cause: error }));
     }
+  }
+  if (desktopOutputTasks.length > 0) {
+    await Promise.race([
+      Promise.allSettled(desktopOutputTasks),
+      Bun.sleep(1_000),
+    ]);
   }
   if (cliPort > 0) {
     try {
@@ -674,35 +727,83 @@ async function streamText(stream: ReadableStream<Uint8Array> | number | undefine
   return stream instanceof ReadableStream ? new Response(stream).text() : "";
 }
 
+async function captureStreamText(
+  stream: ReadableStream<Uint8Array> | number | undefined,
+  receive: (chunk: string) => void,
+): Promise<void> {
+  if (!(stream instanceof ReadableStream)) return;
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const text = decoder.decode(value, { stream: true });
+      if (text) receive(text);
+    }
+    const trailing = decoder.decode();
+    if (trailing) receive(trailing);
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+async function outputTasksSettle(
+  tasks: readonly Promise<void>[],
+  timeoutMs: number,
+): Promise<boolean> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      Promise.all(tasks).then(() => true),
+      new Promise<boolean>((resolve) => {
+        timeout = setTimeout(() => resolve(false), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
 async function waitFor(
   label: string,
   condition: () => boolean | Promise<boolean>,
   timeoutMs: number,
+  options: { allowDesktopExit?: boolean } = {},
 ): Promise<void> {
+  smokePhase = label;
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    if (!options.allowDesktopExit) assertCurrentDesktopProcess(label);
     if (await condition()) return;
     await Bun.sleep(100);
   }
+  if (!options.allowDesktopExit) assertCurrentDesktopProcess(label);
   throw new Error(`${label} did not complete within ${timeoutMs}ms.`);
 }
 
 function currentDesktopSmokeState(
   eventsPath: string,
 ): ReturnType<typeof reduceDesktopSmokeEvents> | undefined {
-  if (!existsSync(eventsPath)) return undefined;
-  let state: ReturnType<typeof reduceDesktopSmokeEvents>;
-  try {
-    state = reduceDesktopSmokeEvents(readDesktopSmokeEvents(eventsPath), {
-      desktopLog: existsSync(desktopLogPath) ? readFileSync(desktopLogPath, "utf8") : "",
-    });
-  } catch {
-    return undefined;
-  }
+  const polled = pollDesktopSmokeEvents(eventsPath);
+  if (polled.status !== "complete") return undefined;
+  const state = reduceDesktopSmokeEvents(polled.events, {
+    desktopLog: existsSync(desktopLogPath) ? readFileSync(desktopLogPath, "utf8") : "",
+  });
   if (state.failure) {
     throw new Error(`Packaged desktop host reported failure: ${state.failure}`);
   }
   return state;
+}
+
+function assertCurrentDesktopProcess(label: string): void {
+  if (!desktopProcess) return;
+  const polled = pollDesktopSmokeEvents(join(smokeDir, "events.jsonl"));
+  assertPackagedDesktopRunning(label, {
+    pid: desktopProcess.pid,
+    exited: desktopExited,
+    ...(desktopExitCode !== undefined ? { exitCode: desktopExitCode } : {}),
+  }, polled.events);
 }
 
 function isProcessAlive(pid: number): boolean {

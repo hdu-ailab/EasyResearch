@@ -11,6 +11,7 @@ import {
   serverOwner,
   writeServerProcess,
 } from "../server-process";
+import type { RuntimeLease } from "../runtime-lease";
 
 const [loggerMock, createLoggerMock] = vi.hoisted(() => {
   const mockLogger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
@@ -433,8 +434,12 @@ describe("runServe startup failure", () => {
       expect(args).toEqual([root, "desktop", { timeoutMs: 0 }]);
       return transitionLeaseMock;
     });
-    const onExpectedRestart = vi.fn((bootId: string) => {
+    const onExpectedRestart = vi.fn((bootId: string, transition: RuntimeLease) => {
       expect(bootId).toBe((startServerMock.mock.calls[0]?.[0] as { bootId: string }).bootId);
+      expect(transition).toBe(transitionLeaseMock);
+      const handoff = transition.reserveHandoff("desktop-host-transition-token");
+      handoff.commit(5151);
+      handoff.relinquish();
       order.push("expected-restart");
     });
 
@@ -458,7 +463,9 @@ describe("runServe startup failure", () => {
     expect(order).toEqual(["reserve", "stop", "expected-restart"]);
     expect(onExpectedRestart).toHaveBeenCalledOnce();
     expect(startCliDaemonSuccessorMock).not.toHaveBeenCalled();
-    expect(transitionLeaseMock.release).toHaveBeenCalledOnce();
+    expect(transitionLeaseMock.release).not.toHaveBeenCalled();
+    expect(transitionHandoffMock.commit).toHaveBeenCalledWith(5151);
+    expect(transitionHandoffMock.relinquish).toHaveBeenCalledOnce();
     expect(readServerProcess(root)).toEqual({ kind: "missing" });
   });
 
