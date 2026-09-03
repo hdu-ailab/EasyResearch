@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, request as httpRequest, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -36,6 +36,7 @@ import {
   runVenvValidation,
   selectSmokeModelAction,
   selectSmokeWebFetchAction,
+  smokeSessionCwdMatches,
   type SmokeModelScenario,
   type SmokeModelState,
   type SmokeNetworkState,
@@ -149,6 +150,18 @@ describe("parseRecordedPid", () => {
     expect(parseRecordedPid("4242\n")).toBe(4242);
     expect(parseRecordedPid(`${JSON.stringify({ schema: 1, pid: 5151 })}\n`)).toBe(5151);
     expect(parseRecordedPid("not-a-record")).toBeUndefined();
+  });
+});
+
+describe("smokeSessionCwdMatches", () => {
+  it.runIf(process.platform !== "win32")("accepts different aliases of the same physical cwd", () => {
+    const root = tempDir();
+    const physical = join(root, "physical-project");
+    const alias = join(root, "project-alias");
+    mkdirSync(physical);
+    symlinkSync(physical, alias, "dir");
+
+    expect(smokeSessionCwdMatches(alias, physical)).toBe(true);
   });
 });
 

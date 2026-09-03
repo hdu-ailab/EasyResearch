@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import {
   createServer,
   request as requestHttp,
@@ -601,6 +601,15 @@ export function parseRecordedPid(content: string): number | undefined {
       : undefined;
   } catch {
     return undefined;
+  }
+}
+
+export function smokeSessionCwdMatches(expected: string, actual: unknown): boolean {
+  if (typeof actual !== "string") return false;
+  try {
+    return realpathSync(actual) === realpathSync(expected);
+  } catch {
+    return false;
   }
 }
 

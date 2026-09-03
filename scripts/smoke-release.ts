@@ -38,6 +38,7 @@ import {
   runVenvValidation,
   selectSmokeModelAction,
   selectSmokeWebFetchAction,
+  smokeSessionCwdMatches,
   type RecordingHttpProxy,
   type SmokeDaemonIdentity,
   type SmokeModelScenario,
@@ -2247,7 +2248,7 @@ try {
       body: JSON.stringify({ path: originalSessionPath }),
     },
   }) as { id?: unknown; cwd?: unknown };
-  if (typeof reopened.id !== "string" || reopened.cwd !== project) {
+  if (typeof reopened.id !== "string" || !smokeSessionCwdMatches(project, reopened.cwd)) {
     throw new Error("successor did not resume the original session");
   }
   await requestSmokeJsonBeforeDeadline({
