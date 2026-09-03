@@ -44,6 +44,7 @@ import {
   pollDesktopSmokeEvents,
   readyPersistedSessionPath,
   readDesktopSmokeEvents,
+  removePreservedDesktopSmokeRecord,
   removeDesktopSmokeRoot,
   reduceDesktopSmokeEvents,
   verifyDesktopSidecarIdentity,
@@ -511,6 +512,7 @@ try {
   } catch (error) {
     if (error instanceof Error && error.message === "Desktop origin remained reachable after terminal Exit.") throw error;
   }
+  removePreservedDesktopSmokeRecord(agentDir, successorToken);
   console.log(`[desktop-smoke] ${targetName} passed`);
 } catch (error) {
   primaryError = error instanceof Error ? error : new Error(String(error));

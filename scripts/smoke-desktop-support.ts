@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   closeSync,
+  existsSync,
   lstatSync,
   openSync,
   readFileSync,
@@ -8,6 +9,7 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  unlinkSync,
 } from "node:fs";
 import { join, posix, win32 } from "node:path";
 import type { BuildArtifact } from "./build";
@@ -287,6 +289,29 @@ export async function removeDesktopSmokeRoot(
       await wait(250);
     }
   }
+}
+
+export function removePreservedDesktopSmokeRecord(
+  agentDir: string,
+  expectedToken: string,
+): void {
+  if (
+    existsSync(join(agentDir, "server.lease"))
+    || existsSync(join(agentDir, "server.transition.lease"))
+  ) {
+    throw new Error("Desktop smoke cannot remove its ownership fixture while a runtime lease remains.");
+  }
+  const recordPath = join(agentDir, "server.pid");
+  let record: DesktopSmokeOwnershipRecord;
+  try {
+    record = JSON.parse(readFileSync(recordPath, "utf8")) as DesktopSmokeOwnershipRecord;
+  } catch (error) {
+    throw new Error("Desktop smoke could not verify its preserved ownership fixture.", { cause: error });
+  }
+  if (record.schema !== 1 || record.owner !== "desktop" || record.token !== expectedToken) {
+    throw new Error("Desktop smoke refused to remove a mismatched ownership fixture.");
+  }
+  unlinkSync(recordPath);
 }
 
 export function verifyPackagedSidecar(

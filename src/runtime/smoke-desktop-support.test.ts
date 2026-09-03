@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -16,6 +16,7 @@ import {
   pollDesktopSmokeEvents,
   readyPersistedSessionPath,
   readDesktopSmokeEvents,
+  removePreservedDesktopSmokeRecord,
   removeDesktopSmokeRoot,
   reduceDesktopSmokeEvents,
   verifyDesktopSidecarIdentity,
@@ -154,6 +155,47 @@ describe("desktop smoke cleanup failures", () => {
 
     await expect(removal).rejects.toBe(unrelated);
     expect(attempts).toBe(1);
+  });
+
+  it("removes only the exact lease-free ownership fixture after preservation is proven", () => {
+    const agentDir = join(root, "agent");
+    mkdirSync(agentDir);
+    const recordPath = join(agentDir, "server.pid");
+    writeFileSync(recordPath, JSON.stringify({
+      schema: 1,
+      owner: "desktop",
+      pid: 4242,
+      host: "127.0.0.1",
+      port: 43123,
+      token: "preserved-fixture-token",
+      runtimeId: "desktop:0.0.81:accepted",
+    }));
+
+    expect(() => removePreservedDesktopSmokeRecord(agentDir, "wrong-token"))
+      .toThrow(/ownership fixture/i);
+    expect(existsSync(recordPath)).toBe(true);
+
+    removePreservedDesktopSmokeRecord(agentDir, "preserved-fixture-token");
+    expect(existsSync(recordPath)).toBe(false);
+  });
+
+  it("does not remove a preserved ownership fixture while any runtime lease remains", () => {
+    const agentDir = join(root, "agent");
+    mkdirSync(agentDir);
+    writeFileSync(join(agentDir, "server.pid"), JSON.stringify({
+      schema: 1,
+      owner: "desktop",
+      pid: 4242,
+      host: "127.0.0.1",
+      port: 43123,
+      token: "preserved-fixture-token",
+      runtimeId: "desktop:0.0.81:accepted",
+    }));
+    mkdirSync(join(agentDir, "server.transition.lease"));
+
+    expect(() => removePreservedDesktopSmokeRecord(agentDir, "preserved-fixture-token"))
+      .toThrow(/runtime lease/i);
+    expect(existsSync(join(agentDir, "server.pid"))).toBe(true);
   });
 });
 
