@@ -62,19 +62,62 @@ blocking gaps, a targeted Search request, and the drafting scope currently safe.
 
 ## Review Orientation
 
-Infer the orientation from the request and evidence:
+Select the orientation from the requested deliverable and any verified target-
+venue instructions. A material package containing search logs, screening counts,
+or other audit evidence does not by itself make the requested paper a systematic
+or scoping review. When neither the request nor the target venue selects another
+orientation, use a technical/narrative survey.
 
 - **Technical/narrative survey:** emphasize taxonomy, mechanisms, comparisons,
   development history, limitations, and open problems.
-- **Systematic/scoping review:** additionally preserve reproducible queries,
-  sources, dates, deduplication, inclusion/exclusion rules, screening counts,
-  and reasons for exclusion. Do not claim PRISMA or another reporting standard
-  unless its required records actually exist.
+- **Systematic/scoping review:** preserve reproducible queries, sources, dates,
+  deduplication, inclusion/exclusion rules, screening counts, and reasons for
+  exclusion in the Writing handoff. Add a concise review-method account to the
+  manuscript only when verified instructions for the target venue require it,
+  and include only the fields those instructions require. Do not claim PRISMA
+  or another reporting standard unless its required records actually exist.
 - **Tutorial survey:** add a pedagogical progression, formal background,
   implementation guidance, and worked examples supported by sources.
 - **Hybrid survey with benchmark:** keep literature synthesis and original
   experiment evidence separate; apply the empirical readiness requirements from
   `research-paper-writing` only to benchmark-derived claims.
+
+## Manuscript And Audit Outputs
+
+Produce two distinct outputs with different audiences.
+
+The submission-facing `manuscript/manuscript.md` contains:
+
+- the paper title, followed only by real author/affiliation metadata supplied by
+  the user or the exact anonymization form required by the target venue;
+- a single-paragraph abstract of four to six sentences that states the research
+  context and scope, organizing taxonomy or analytical lens, principal cross-
+  paper findings or tradeoffs, and the resulting conclusion or research
+  implications; follow a different length or structured-abstract form only when
+  the target venue requires it;
+- scholarly sections that synthesize the field, plus only references actually
+  cited and verified for the manuscript.
+
+The immutable timestamped Writing handoff contains the operational audit:
+
+- review orientation and the target-venue rule used to decide whether any
+  review-method details belong in the manuscript;
+- retrieval or audit cutoff, databases/sources and queries when available;
+- candidate, retrieved, deduplicated, screened, included, readable-full-text,
+  and excluded counts when available;
+- inclusion/exclusion rules and exclusion reasons;
+- evidence, metadata, citation-verification, and coverage gaps;
+- inspected and produced artifact paths and the manuscript readiness status.
+
+Keep workflow labels such as `working draft`, `not submission-ready`, audit
+cutoff subtitles, local artifact paths, `note_key` values, source-processing
+logs, screening arithmetic, and unresolved-reference queues out of the title
+page, abstract, body, keywords, captions, and references. If author metadata is
+missing and no venue anonymity form is supplied, omit the author block rather
+than inventing an anonymous-draft label. Keep unresolved references in
+`citation-verification.md` and the handoff, omit them from manuscript references,
+and return `partial` when they prevent the authorized manuscript from being
+complete.
 
 ## Durable Survey Plan
 
@@ -84,10 +127,12 @@ Before drafting, create or update `manuscript/survey-plan.md`:
 # Survey Plan
 
 ## Scope And Orientation
-Topic, audience, review type, date/source bounds, included and excluded areas.
+Topic, audience, review type, intended publication-year/source scope, included
+and excluded areas. Keep the retrieval/audit execution date in the handoff.
 
 ## Material Readiness
-Requested/selected/complete counts, source coverage, accepted gaps.
+Coverage sufficiency across the taxonomy, time range, and stated scope; accepted
+gaps. Put operational retrieval and screening counts in the Writing handoff.
 
 ## Candidate Taxonomies
 ### Candidate A
@@ -121,8 +166,8 @@ fixed before drafting.
 
 The included set is every selected `source.json` entry that satisfies the
 accepted review scope. Do not silently omit a selected paper to shrink the
-coverage matrix; record an explicit exclusion with its reason or return the
-coverage incomplete.
+coverage matrix; record an explicit exclusion with its reason in the Writing
+handoff or return the coverage incomplete.
 
 ## Drafting Workflow
 
@@ -144,30 +189,39 @@ coverage incomplete.
    repetition and abrupt transitions.
 8. Recheck recent coverage before final delivery when the search period extends
    to the present.
+9. Compare the submission-facing manuscript with the Writing handoff. Move any
+   workflow status, retrieval/screening audit, artifact-path inventory, or
+   unresolved-verification queue out of the manuscript and into the handoff or
+   internal verification artifact before deriving LaTeX/PDF.
 
 Do not impose arbitrary subsection word counts. Length follows the evidence,
 venue, audience, and user request.
 
 ## Default Manuscript Structure
 
-Adapt this structure to the selected orientation:
+For a technical/narrative survey, adapt this submission-facing structure to the
+topic, audience, and target venue:
 
 ```markdown
 # Title
 
 ## Abstract
+## Keywords
 ## 1. Introduction
-## 2. Scope And Review Method
-## 3. Background And Problem Formulation
-## 4. Taxonomy Overview
-## 5-N. Category Synthesis
+## 2. Background And Problem Formulation
+## 3. Taxonomy Overview
+## 4-N. Category Synthesis
 ## Cross-Category Comparison And Discussion
 ## Open Problems And Research Directions
 ## Limitations Of This Survey
 ## Conclusion
 ## References
-## References To Verify Manually
 ```
+
+For another orientation, change the scholarly sections required by the request
+or target venue. Add `Scope And Review Method` only when verified target-venue
+instructions require review-method reporting. The operational audit remains in
+the Writing handoff even when a concise methods section is present.
 
 For a technical field, include notation and equations when they materially
 clarify shared assumptions or method differences. A survey does not need a
@@ -186,8 +240,9 @@ Maintain `manuscript/citation-verification.md`:
 
 Verdicts are `supported`, `partially-supported`, `unsupported`, or
 `metadata-only`. Resolve every `unsupported` item before completion. Keep
-unresolvable candidates under `References To Verify Manually`; do not include
-them as ordinary support.
+unresolvable candidates in `citation-verification.md` and the Writing handoff;
+do not expose an internal manual-verification queue as a manuscript section and
+do not include those candidates as ordinary support.
 
 ## Figures, LaTeX, And PDF
 
@@ -206,6 +261,8 @@ Complete when the authorized survey scope has:
 - a readiness-supported `survey-plan.md` with meaningful candidate taxonomies,
   complete coverage matrix, final outline, and claim-source plan;
 - an authoritative manuscript that synthesizes rather than lists papers;
+- a submission-facing title, abstract, body, and references free of workflow
+  status and operational audit content not required by verified venue guidance;
 - verified citation metadata and claim support, with uncertainty isolated;
 - explicit survey coverage limitations and no hidden partial-source claims; and
 - every requested derived LaTeX/PDF or figure deliverable verified.
