@@ -26,6 +26,7 @@ import {
   parseSubagentSupervisorEvent,
 } from "../api/parsers";
 import { useI18n } from "../i18n/useI18n";
+import { createSessionEventFrame } from "../session-event-frame";
 import {
   emptyState,
   fromSnapshot,
@@ -224,6 +225,14 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
     setFileWatchLeaseId(null);
     const isCurrentConnection = () =>
       mountedRef.current && connectionToken.active && connectionTokenRef.current === connectionToken;
+    const eventFrame = createSessionEventFrame({
+      schedule: (callback) => requestAnimationFrame(callback),
+      cancel: (frame) => cancelAnimationFrame(frame),
+      apply: (events) => {
+        if (!isCurrentConnection()) return;
+        setView((current) => events.reduce((next, event) => reduceSessionEvent(next, event), current));
+      },
+    });
     getSnapshot(sessionId)
       .then((snapshot) => {
         if (!isCurrentConnection()) return;
@@ -244,6 +253,8 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
         const hadReceivedStreamData = connectionToken.receivedStreamData;
         connectionToken.receivedStreamData = true;
         setNotice((current) => (current === tRef.current("work.connectionLost") ? null : current));
+        if (eventFrame.enqueue(event)) return;
+        eventFrame.flush();
         if (eventType(event) === "session_activity_changed") {
           try {
             const activity = parseSessionActivityChangedEvent(event);
@@ -393,6 +404,7 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
     });
     return () => {
       connectionToken.active = false;
+      eventFrame.discard();
       if (connectionTokenRef.current === connectionToken) connectionTokenRef.current = null;
       if (pendingStreamReadyRef.current?.connectionGeneration === connectionToken.generation) {
         rejectPendingStream(OPERATION_CANCELLED);

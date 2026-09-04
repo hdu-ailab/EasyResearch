@@ -1,0 +1,16 @@
+@import "../src/index.css";
+@source "../src";
+@source "./";
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  width: 100%;
+}
+
+[data-benchmark-shell] > * {
+  flex: 1 1 0%;
+  min-width: 0;
+}

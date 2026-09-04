@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { FileContentDto, FileEntryDto, FileWatcherEvent } from "../../../web/contracts";
 import { readFileContent } from "../api";
 import { parentPath } from "../file-watcher";
@@ -24,7 +24,7 @@ export interface FileBrowserProps {
  * tab; PDF previews stream the raw bytes and never fetch the bounded text
  * route.
  */
-export function FileBrowser({
+export const FileBrowser = memo(function FileBrowser({
   root,
   loadEnabled = true,
   sessionId,
@@ -160,4 +160,4 @@ export function FileBrowser({
       </div>
     </div>
   );
-}
+});

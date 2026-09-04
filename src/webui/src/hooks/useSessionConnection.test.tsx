@@ -359,7 +359,7 @@ describe("useSessionConnection", () => {
     delayedSend.resolve();
     await act(async () => sending);
 
-    expect(result.current.view.messages.at(-1)?.text).toBe("after replay");
+    await waitFor(() => expect(result.current.view.messages.at(-1)?.text).toBe("after replay"));
     expect(api.sendPrompt).toHaveBeenCalledWith("s1", "continue");
   });
 

@@ -44,6 +44,7 @@ const emptyState: SessionViewState = {
   tools: [],
   summaries: [],
   hydrationRevision: 0,
+  messageStructureRevision: 0,
   isStreaming: false,
   error: null,
   retry: null,
@@ -766,6 +767,32 @@ describe("session reducer", () => {
     const second = reduceSessionEvent(first, assistantEvent("message_update", "deltas"));
     expect(second.messages).toHaveLength(1);
     expect(second.messages[0]!.text).toBe("two deltas");
+  });
+
+  it("changes message structure revision only when visible message rows change", () => {
+    const started = reduceSessionEvent(emptyState, assistantEvent("message_start", ""));
+    const updated = reduceSessionEvent(started, assistantEvent("message_update", "token"));
+    expect(started.messageStructureRevision).toBe(emptyState.messageStructureRevision + 1);
+    expect(updated.messageStructureRevision).toBe(started.messageStructureRevision);
+    const removed = reduceSessionEvent(updated, {
+      type: "message_end",
+      message: {
+        id: "assistant",
+        role: "assistant",
+        content: [{ type: "toolCall", id: "tool", name: "bash", arguments: {} }],
+      },
+    } as never);
+    expect(removed.messageStructureRevision).toBe(updated.messageStructureRevision + 1);
+  });
+
+  it("starts hydrated message structure at a positive revision", () => {
+    const state = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
+      session: { id: "s", status: "ready", isStreaming: false },
+      messages: [assistantMessage("history")],
+      subagents: [],
+    });
+    expect(state.messageStructureRevision).toBeGreaterThan(0);
   });
 
   it("tracks live thinking until thinking ends and keeps text deltas on the same assistant row", () => {

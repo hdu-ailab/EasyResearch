@@ -6,11 +6,27 @@ export interface SessionMessageMeta {
   version?: { index: number; count: number };
 }
 
-function subtreeLeaf(tree: WebTreeEntryDto[], entryId: string): string {
+interface TreeIndex {
+  byId: Map<string, WebTreeEntryDto>;
+  childrenByParent: Map<string | null, WebTreeEntryDto[]>;
+}
+
+function indexTree(tree: WebTreeEntryDto[]): TreeIndex {
+  const byId = new Map<string, WebTreeEntryDto>();
+  const childrenByParent = new Map<string | null, WebTreeEntryDto[]>();
+  for (const entry of tree) {
+    byId.set(entry.id, entry);
+    const children = childrenByParent.get(entry.parentId);
+    if (children) children.push(entry);
+    else childrenByParent.set(entry.parentId, [entry]);
+  }
+  return { byId, childrenByParent };
+}
+
+function subtreeLeaf(index: TreeIndex, entryId: string): string {
   let current = entryId;
   for (;;) {
-    const children = tree.filter((candidate) => candidate.parentId === current);
-    const last = children.at(-1);
+    const last = index.childrenByParent.get(current)?.at(-1);
     if (!last) return current;
     current = last.id;
   }
@@ -28,9 +44,10 @@ function contextPath(byId: Map<string, WebTreeEntryDto>, leafId: string | null):
   while (current !== null) {
     const entry = byId.get(current);
     if (!entry) break;
-    pathIds.unshift(current);
+    pathIds.push(current);
     current = entry.parentId;
   }
+  pathIds.reverse();
   const compaction = pathIds.map((id) => byId.get(id)).find((candidate) => candidate?.firstKeptEntryId !== undefined);
   if (!compaction?.firstKeptEntryId) return pathIds;
   const compactionIdx = pathIds.indexOf(compaction.id);
@@ -56,11 +73,13 @@ export function buildMessageTreeMeta(
   tree: WebTreeEntryDto[],
   leafId: string | null,
 ): Record<string, SessionMessageMeta> {
-  const byId = new Map(tree.map((candidate) => [candidate.id, candidate]));
-  const pathEntries = contextPath(byId, leafId)
-    .map((id) => byId.get(id))
+  const index = indexTree(tree);
+  const pathEntries = contextPath(index.byId, leafId)
+    .map((id) => index.byId.get(id))
     .filter((candidate) => candidate?.role === "user" || candidate?.role === "assistant");
-  const viewMessages = messages.filter((message) => message.role === "user" || message.role === "assistant");
+  const viewMessages = messages.filter(
+    (message) => !message.usageOnly && (message.role === "user" || message.role === "assistant"),
+  );
   const meta: Record<string, SessionMessageMeta> = {};
   for (let i = 0; i < Math.min(pathEntries.length, viewMessages.length); i++) {
     const entry = pathEntries[i];
@@ -68,7 +87,7 @@ export function buildMessageTreeMeta(
     if (!entry || !view) break;
     const entryMeta: SessionMessageMeta = { entryId: entry.id };
     if (entry.role === "user") {
-      const group = tree.filter((candidate) => candidate.parentId === entry.parentId && candidate.role === "user");
+      const group = (index.childrenByParent.get(entry.parentId) ?? []).filter((candidate) => candidate.role === "user");
       if (group.length > 1) {
         const index = group.findIndex((candidate) => candidate.id === entry.id);
         if (index >= 0) entryMeta.version = { index: index + 1, count: group.length };
@@ -81,13 +100,13 @@ export function buildMessageTreeMeta(
 
 /** Target entry for switching to the previous/next version of a user message. */
 export function versionTarget(tree: WebTreeEntryDto[], fromEntryId: string, direction: -1 | 1): string | undefined {
-  const byId = new Map(tree.map((candidate) => [candidate.id, candidate]));
-  const entry = byId.get(fromEntryId);
+  const treeIndex = indexTree(tree);
+  const entry = treeIndex.byId.get(fromEntryId);
   if (entry?.role !== "user") return undefined;
-  const group = tree.filter((candidate) => candidate.parentId === entry.parentId && candidate.role === "user");
-  const index = group.findIndex((candidate) => candidate.id === fromEntryId);
-  if (index < 0) return undefined;
-  const neighbor = group[index + direction];
+  const group = (treeIndex.childrenByParent.get(entry.parentId) ?? []).filter((candidate) => candidate.role === "user");
+  const position = group.findIndex((candidate) => candidate.id === fromEntryId);
+  if (position < 0) return undefined;
+  const neighbor = group[position + direction];
   if (!neighbor) return undefined;
-  return subtreeLeaf(tree, neighbor.id);
+  return subtreeLeaf(treeIndex, neighbor.id);
 }

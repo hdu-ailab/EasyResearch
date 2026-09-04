@@ -1,5 +1,5 @@
 import { Bot, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { isThinkingLevel } from "../../../thinking-levels";
 import type { AgentConfigurationPatch, AgentDto } from "../../../web/contracts";
 import { RESEARCH_ASSISTANT_AGENT } from "../agent-identity";
@@ -23,7 +23,12 @@ function dotClass(status: AgentStatus): string {
   return status === "working" ? "bg-v2-status-success" : status === "error" ? "bg-v2-status-warning" : "bg-v2-grey-400";
 }
 
-export function AgentList({ cwd, statusByAgent, configurationGeneration, configurationError }: AgentListProps) {
+export const AgentList = memo(function AgentList({
+  cwd,
+  statusByAgent,
+  configurationGeneration,
+  configurationError,
+}: AgentListProps) {
   const { t } = useI18n();
   const [roster, setRoster] = useState<AgentDto[] | null>(null);
   const [models, setModels] = useState<ModelOption[]>([]);
@@ -148,7 +153,7 @@ export function AgentList({ cwd, statusByAgent, configurationGeneration, configu
       </div>
     </div>
   );
-}
+});
 
 interface AgentCardProps {
   agent: AgentDto | undefined;

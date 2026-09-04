@@ -104,6 +104,14 @@ describe("buildMessageTreeMeta", () => {
     expect(meta.k3).toEqual({ entryId: "m2" });
     expect(meta.k4).toEqual({ entryId: "a2" });
   });
+
+  it("does not let standalone usage rows shift message ancestry", () => {
+    const messages = [view("k1", "user"), { ...view("usage", "assistant"), usageOnly: true }, view("k2", "assistant")];
+    const meta = buildMessageTreeMeta(messages, [entry("m1", null, "user"), entry("a1", "m1", "assistant")], "a1");
+    expect(meta.k1).toEqual({ entryId: "m1" });
+    expect(meta.k2).toEqual({ entryId: "a1" });
+    expect(meta.usage).toBeUndefined();
+  });
 });
 
 describe("versionTarget", () => {

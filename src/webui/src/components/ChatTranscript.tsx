@@ -1,7 +1,7 @@
 import { elementScroll, useVirtualizer } from "@tanstack/react-virtual";
 import { AlertTriangle, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Pencil, Zap } from "lucide-react";
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
-import type { ApiUsageStatisticsDto } from "../../../web/contracts";
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import type { ApiUsageStatisticsDto, ApiUsageTotalsDto } from "../../../web/contracts";
 import { isScrollKeyTarget, normalizeWheelDelta, scrollKey, scrollKeyOwner } from "../hooks/scrollGesture";
 import { useAutoScroll } from "../hooks/useAutoScroll";
 import { useExpandable } from "../hooks/useExpandable";
@@ -12,6 +12,7 @@ import { useI18n } from "../i18n/useI18n";
 import type { SessionMessageMeta } from "../message-tree";
 import { usePreferences } from "../preferences/PreferencesProvider";
 import type { SessionMessageView, SessionSummaryView, SteerView, ToolView } from "../session-reducer";
+import { indexSubtreeUsage, mergeTranscriptEntries, type TranscriptEntry } from "../transcript-entries";
 import { ApiUsageLine } from "./ApiUsageLine";
 import { MarkdownBlock } from "./MarkdownBlock";
 import { SubagentToolCard } from "./SubagentToolCard";
@@ -48,9 +49,6 @@ export interface ChatTranscriptHandle {
   endResizeSnapshot(): void;
 }
 
-type PendingRow = { kind: "pending" };
-type TranscriptEntry = SessionMessageView | ToolView | SessionSummaryView | PendingRow;
-
 const ROLE_LABELS: Record<string, MessageKey> = {
   user: "transcript.you",
   assistant: "transcript.researchAssistant",
@@ -65,11 +63,17 @@ function ReasoningBlock({
   open,
   onToggle,
   active,
+  markdownScope,
+  markdownKey,
+  onRendered,
 }: {
   text: string;
   open: boolean;
   onToggle: (open: boolean) => void;
   active: boolean;
+  markdownScope: string;
+  markdownKey: string;
+  onRendered: () => void;
 }) {
   const { t } = useI18n();
   const { mounted, phase } = useExpandable(open);
@@ -112,7 +116,13 @@ function ReasoningBlock({
           } motion-reduce:animate-none`}
         >
           <div className="v2-md text-[12.5px] font-normal text-v2-text-text-muted">
-            <MarkdownBlock text={text} />
+            <MarkdownBlock
+              text={text}
+              scope={markdownScope}
+              cacheKey={markdownKey}
+              streaming={active}
+              onRendered={onRendered}
+            />
           </div>
         </div>
       )}
@@ -125,11 +135,17 @@ function SummaryRow({
   open,
   onToggle,
   showApiUsageDetails,
+  markdownScope,
+  markdownKey,
+  onRendered,
 }: {
   entry: SessionSummaryView;
   open: boolean;
   onToggle: (open: boolean) => void;
   showApiUsageDetails: boolean;
+  markdownScope: string;
+  markdownKey: string;
+  onRendered: () => void;
 }) {
   const { t } = useI18n();
   const { mounted, phase } = useExpandable(open);
@@ -161,7 +177,7 @@ function SummaryRow({
           } motion-reduce:animate-none`}
         >
           <div className="v2-md text-[12.5px] font-normal text-v2-text-text-muted">
-            <MarkdownBlock text={content} />
+            <MarkdownBlock text={content} scope={markdownScope} cacheKey={markdownKey} onRendered={onRendered} />
           </div>
         </div>
       ) : null}
@@ -332,6 +348,8 @@ function MessageRow({
   onSubmitEdit,
   onSwitchBranch,
   showApiUsageDetails,
+  markdownScope,
+  onRendered,
 }: {
   message: SessionMessageView;
   open: boolean;
@@ -345,6 +363,8 @@ function MessageRow({
   onSubmitEdit: (text: string) => void;
   onSwitchBranch?: (entryId: string, direction: -1 | 1) => void;
   showApiUsageDetails: boolean;
+  markdownScope: string;
+  onRendered: () => void;
 }) {
   const { t } = useI18n();
   const roleKey = ROLE_LABELS[message.role];
@@ -362,7 +382,15 @@ function MessageRow({
     <li className={`group flex flex-col gap-1 ${isYou ? "items-end" : "items-start"}`}>
       <span className="text-[11px] font-medium uppercase tracking-wide text-v2-text-text-faint">{label}</span>
       {message.reasoning ? (
-        <ReasoningBlock text={message.reasoning} open={open} onToggle={onToggle} active={Boolean(message.isThinking)} />
+        <ReasoningBlock
+          text={message.reasoning}
+          open={open}
+          onToggle={onToggle}
+          active={Boolean(message.isThinking)}
+          markdownScope={markdownScope}
+          markdownKey={`${message.key}:reasoning`}
+          onRendered={onRendered}
+        />
       ) : message.isThinking ? (
         <span className="text-[12px] font-medium text-v2-text-text-faint">{t("transcript.thinking")}</span>
       ) : null}
@@ -382,7 +410,13 @@ function MessageRow({
           {message.skillInvocation ? (
             <SkillInvocationContent invocation={message.skillInvocation} />
           ) : (
-            <MarkdownBlock text={message.text} />
+            <MarkdownBlock
+              text={message.text}
+              scope={markdownScope}
+              cacheKey={`${message.key}:text`}
+              streaming={message.streaming}
+              onRendered={onRendered}
+            />
           )}
         </div>
       ) : hasBody ? (
@@ -465,6 +499,144 @@ function PendingRow() {
   );
 }
 
+interface TranscriptVirtualRowProps {
+  entry: TranscriptEntry;
+  index: number;
+  start: number;
+  rowKey: string;
+  open: boolean;
+  editing: boolean;
+  draft: string;
+  messageMeta?: SessionMessageMeta;
+  subtreeUsage?: ApiUsageTotalsDto;
+  showApiUsageDetails: boolean;
+  markdownScope: string;
+  animate: boolean;
+  onMeasure: (element: HTMLDivElement | null) => void;
+  onToggle: (key: string, open: boolean) => void;
+  onStartEdit: (key: string, text: string) => void;
+  onCancelEdit: () => void;
+  onDraftChange: (text: string) => void;
+  onSubmitEdit: (key: string, text: string) => void;
+  onAnimationEnd: (key: string) => void;
+  onSwitchBranch?: (entryId: string, direction: -1 | 1) => void;
+  onViewDetails?: (toolCallId: string, step?: number) => void;
+}
+
+const TranscriptVirtualRow = memo(function TranscriptVirtualRow({
+  entry,
+  index,
+  start,
+  rowKey,
+  open,
+  editing,
+  draft,
+  messageMeta,
+  subtreeUsage,
+  showApiUsageDetails,
+  markdownScope,
+  animate,
+  onMeasure,
+  onToggle,
+  onStartEdit,
+  onCancelEdit,
+  onDraftChange,
+  onSubmitEdit,
+  onAnimationEnd,
+  onSwitchBranch,
+  onViewDetails,
+}: TranscriptVirtualRowProps) {
+  const element = useRef<HTMLDivElement | null>(null);
+  const measureFrame = useRef<number | null>(null);
+  const bindMeasure = useCallback(
+    (node: HTMLDivElement | null) => {
+      element.current = node;
+      if (measureFrame.current !== null) cancelAnimationFrame(measureFrame.current);
+      measureFrame.current = null;
+      if (!node) return;
+      measureFrame.current = requestAnimationFrame(() => {
+        measureFrame.current = null;
+        if (element.current === node) onMeasure(node);
+      });
+    },
+    [onMeasure],
+  );
+  const remeasure = useCallback(() => onMeasure(element.current), [onMeasure]);
+  useEffect(
+    () => () => {
+      if (measureFrame.current !== null) cancelAnimationFrame(measureFrame.current);
+    },
+    [],
+  );
+
+  return (
+    <div style={{ position: "absolute", top: `${start}px`, left: 0, width: "100%" }}>
+      <div
+        data-index={index}
+        data-row-key={rowKey}
+        data-testid={`transcript-row-${rowKey}`}
+        ref={bindMeasure}
+        className={`px-4 ${animate ? "v2-transcript-row-enter" : ""}`}
+        onAnimationEnd={() => onAnimationEnd(rowKey)}
+        style={{ paddingBottom: ROW_GAP_PX }}
+      >
+        {"kind" in entry && entry.kind === "pending" ? (
+          <PendingRow />
+        ) : "kind" in entry ? (
+          <SummaryRow
+            entry={entry}
+            open={open}
+            onToggle={(next) => onToggle(rowKey, next)}
+            showApiUsageDetails={showApiUsageDetails}
+            markdownScope={markdownScope}
+            markdownKey={`${rowKey}:summary`}
+            onRendered={remeasure}
+          />
+        ) : "name" in entry ? (
+          entry.name === "subagent" ? (
+            <SubagentToolCard
+              tool={entry}
+              open={open}
+              initialOpen={open}
+              onToggle={(next) => onToggle(rowKey, next)}
+              onViewDetails={onViewDetails}
+              subtreeUsage={subtreeUsage}
+              showApiUsageDetails={showApiUsageDetails}
+              markdownScope={markdownScope}
+              markdownCacheKey={`${rowKey}:subagent`}
+              onMarkdownRendered={remeasure}
+            />
+          ) : (
+            <ToolRow
+              tool={entry}
+              open={open}
+              onToggle={(next) => onToggle(rowKey, next)}
+              showApiUsageDetails={showApiUsageDetails}
+            />
+          )
+        ) : (
+          <MessageRow
+            message={entry}
+            open={open}
+            onToggle={(next) => onToggle(rowKey, next)}
+            meta={messageMeta}
+            editing={editing}
+            draft={draft}
+            onStartEdit={() => onStartEdit(rowKey, entry.text)}
+            onCancelEdit={onCancelEdit}
+            onDraftChange={onDraftChange}
+            onSubmitEdit={(text) => onSubmitEdit(rowKey, text)}
+            onSwitchBranch={onSwitchBranch}
+            showApiUsageDetails={showApiUsageDetails}
+            markdownScope={markdownScope}
+            onRendered={remeasure}
+          />
+        )}
+      </div>
+    </div>
+  );
+});
+
 /**
  * Streaming chat transcript, virtualized with @tanstack/react-virtual and
  * following behavior ported from opencode (ADR-064): messages and tool rows
@@ -502,11 +674,11 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
 
-  const entries = useMemo<TranscriptEntry[]>(() => {
-    const base = [...messages, ...tools, ...summaries].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-    if (!pending) return base;
-    return [...base, { kind: "pending" }];
-  }, [messages, tools, summaries, pending]);
+  const entries = useMemo(
+    () => mergeTranscriptEntries(messages, tools, summaries, pending),
+    [messages, tools, summaries, pending],
+  );
+  const subtreeUsage = useMemo(() => indexSubtreeUsage(apiUsage), [apiUsage]);
   const entryKeys = useMemo(
     () =>
       entries.map((entry, index) =>
@@ -613,6 +785,40 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
     const first = virtualizer.range?.startIndex;
     return first !== undefined && item.index < first;
   };
+
+  const measureRow = useCallback(
+    (element: HTMLDivElement | null) => {
+      if (element) virtualizer.measureElement(element);
+    },
+    [virtualizer],
+  );
+  const toggleRow = useCallback((key: string, next: boolean) => {
+    setOpenByKey((current) => ({ ...current, [key]: next }));
+  }, []);
+  const startEdit = useCallback((key: string, text: string) => {
+    setEditingKey(key);
+    setDraft(text);
+  }, []);
+  const cancelEdit = useCallback(() => setEditingKey(null), []);
+  const submitEdit = useCallback(
+    (key: string, text: string) => {
+      const meta = messageMeta?.[key];
+      if (meta) onEditMessage?.(meta.entryId, text);
+      setEditingKey(null);
+    },
+    [messageMeta, onEditMessage],
+  );
+  const finishEntrance = useCallback(
+    (key: string) => {
+      setEntrance((current) => {
+        if (current.identity !== hydrationIdentity || !current.keys.has(key)) return current;
+        const next = new Set(current.keys);
+        next.delete(key);
+        return { identity: current.identity, keys: next };
+      });
+    },
+    [hydrationIdentity],
+  );
 
   const resumeScroll = useCallback(() => {
     autoScrollResume();
@@ -786,84 +992,44 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
               const entry = entries[virtualRow.index];
               if (!entry) return null;
               const key = rowKey(entry, virtualRow.index);
+              const open =
+                openByKey[key] ??
+                ("kind" in entry
+                  ? false
+                  : "name" in entry
+                    ? entry.name === "subagent"
+                      ? preferences.expandSubagentOutput
+                      : preferences.autoExpandTools
+                    : preferences.autoExpandThinking);
               return (
-                <div key={key} style={{ position: "absolute", top: `${virtualRow.start}px`, left: 0, width: "100%" }}>
-                  <div
-                    data-index={virtualRow.index}
-                    data-row-key={key}
-                    ref={virtualizer.measureElement}
-                    className={`px-4 ${entrance.identity === hydrationIdentity && entrance.keys.has(key) ? "v2-transcript-row-enter" : ""}`}
-                    onAnimationEnd={() => {
-                      setEntrance((current) => {
-                        if (current.identity !== hydrationIdentity || !current.keys.has(key)) return current;
-                        const next = new Set(current.keys);
-                        next.delete(key);
-                        return { identity: current.identity, keys: next };
-                      });
-                    }}
-                    // No min-height here: pinning the measured element at
-                    // `virtualRow.size` makes ResizeObserver silent when content
-                    // shrinks (window resize, collapsed bodies), leaving stale
-                    // oversized rows and giant gaps between messages.
-                    style={{ paddingBottom: ROW_GAP_PX }}
-                  >
-                    {"kind" in entry && entry.kind === "pending" ? (
-                      <PendingRow />
-                    ) : "kind" in entry ? (
-                      <SummaryRow
-                        entry={entry}
-                        open={openByKey[key] ?? false}
-                        onToggle={(next) => setOpenByKey((current) => ({ ...current, [key]: next }))}
-                        showApiUsageDetails={showApiUsageDetails}
-                      />
-                    ) : "name" in entry ? (
-                      entry.name === "subagent" ? (
-                        <SubagentToolCard
-                          tool={entry}
-                          open={openByKey[key] ?? preferences.expandSubagentOutput}
-                          initialOpen={openByKey[key] ?? preferences.expandSubagentOutput}
-                          onToggle={(next) => setOpenByKey((current) => ({ ...current, [key]: next }))}
-                          onViewDetails={onViewDetails}
-                          subtreeUsage={
-                            entry.sessionId
-                              ? apiUsage?.sessions.find((session) => session.sessionId === entry.sessionId)?.subtree
-                              : undefined
-                          }
-                          showApiUsageDetails={showApiUsageDetails}
-                        />
-                      ) : (
-                        <ToolRow
-                          tool={entry}
-                          open={openByKey[key] ?? preferences.autoExpandTools}
-                          onToggle={(next) => setOpenByKey((current) => ({ ...current, [key]: next }))}
-                          showApiUsageDetails={showApiUsageDetails}
-                        />
-                      )
-                    ) : (
-                      <MessageRow
-                        message={entry}
-                        open={openByKey[key] ?? preferences.autoExpandThinking}
-                        onToggle={(next) => setOpenByKey((current) => ({ ...current, [key]: next }))}
-                        meta={messageMeta?.[entry.key]}
-                        editing={editingKey === entry.key}
-                        draft={draft}
-                        onStartEdit={() => {
-                          setEditingKey(entry.key);
-                          setDraft(entry.text);
-                        }}
-                        onCancelEdit={() => setEditingKey(null)}
-                        onDraftChange={setDraft}
-                        onSubmitEdit={(text) => {
-                          const meta = messageMeta?.[entry.key];
-                          if (meta) onEditMessage?.(meta.entryId, text);
-                          setEditingKey(null);
-                        }}
-                        onSwitchBranch={onSwitchBranch}
-                        showApiUsageDetails={showApiUsageDetails}
-                      />
-                    )}
-                  </div>
-                </div>
+                <TranscriptVirtualRow
+                  key={key}
+                  entry={entry}
+                  index={virtualRow.index}
+                  start={virtualRow.start}
+                  rowKey={key}
+                  open={open}
+                  editing={!("kind" in entry) && !("name" in entry) && editingKey === entry.key}
+                  draft={!("kind" in entry) && !("name" in entry) && editingKey === entry.key ? draft : ""}
+                  messageMeta={!("kind" in entry) && !("name" in entry) ? messageMeta?.[entry.key] : undefined}
+                  subtreeUsage={
+                    !("kind" in entry) && "name" in entry && entry.sessionId
+                      ? subtreeUsage.get(entry.sessionId)
+                      : undefined
+                  }
+                  showApiUsageDetails={showApiUsageDetails}
+                  markdownScope={hydrationIdentity}
+                  animate={entrance.identity === hydrationIdentity && entrance.keys.has(key)}
+                  onMeasure={measureRow}
+                  onToggle={toggleRow}
+                  onStartEdit={startEdit}
+                  onCancelEdit={cancelEdit}
+                  onDraftChange={setDraft}
+                  onSubmitEdit={submitEdit}
+                  onAnimationEnd={finishEntrance}
+                  onSwitchBranch={onSwitchBranch}
+                  onViewDetails={onViewDetails}
+                />
               );
             })}
           </div>

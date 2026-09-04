@@ -68,6 +68,7 @@ const emptyView: SessionViewState = {
   tools: [],
   summaries: [],
   hydrationRevision: 0,
+  messageStructureRevision: 0,
   isStreaming: false,
   error: null,
   retry: null,
@@ -155,6 +156,7 @@ function mergeChildView(snapshot: SessionViewState, live: SessionViewState): Ses
     retry: live.retry,
     nextOrder: ordered.length,
     activeMessageKey: live.activeMessageKey,
+    messageStructureRevision: Math.max(snapshot.messageStructureRevision, live.messageStructureRevision) + 1,
   };
 }
 
@@ -228,6 +230,7 @@ export function WorkPage({
   const resizeSettleFrame = useRef<number | null>(null);
   const rowRef = useRef<HTMLDivElement>(null);
   const previousPanel = useRef(panel);
+  const structuredMessages = useRef({ revision: -1, messages: emptyView.messages });
 
   const handleWorkEvent = useCallback(
     (event: unknown) => {
@@ -302,6 +305,12 @@ export function WorkPage({
     onSupervisorEvent: handleSupervisorEvent,
   });
   const sessionView = connection.view;
+  if (structuredMessages.current.revision !== sessionView.messageStructureRevision) {
+    structuredMessages.current = {
+      revision: sessionView.messageStructureRevision,
+      messages: sessionView.messages,
+    };
+  }
   const sessionId = connection.sessionId;
   const runtimeConfigurationGeneration = sessionView.runtimeConfigurationGeneration;
   const hydrationRevision = sessionView.hydrationRevision;
@@ -558,22 +567,25 @@ export function WorkPage({
     activeTab === RESEARCH_ASSISTANT_AGENT ? sessionView.tools : activeChildId ? (activeView?.tools ?? []) : [];
   const activeSummaries =
     activeTab === RESEARCH_ASSISTANT_AGENT ? sessionView.summaries : (activeView?.summaries ?? []);
-  const statusPriority: Record<AgentStatus, number> = { idle: 0, error: 1, working: 2 };
-  const supervisedTools = [sessionView, ...Object.values(childViews)].flatMap((view) =>
-    view.tools.filter((tool) => tool.name === "subagent"),
-  );
-  const statusByAgent = supervisedTools.reduce<Record<string, AgentStatus>>(
-    (byAgent, tool) => {
-      const agent = tool.agentName ?? "subagent";
-      const next: AgentStatus = tool.running ? "working" : tool.error ? "error" : "idle";
-      const current = byAgent[agent];
-      if (current === undefined || statusPriority[next] > statusPriority[current]) byAgent[agent] = next;
-      return byAgent;
-    },
-    {
-      [RESEARCH_ASSISTANT_AGENT]: sessionView.error !== null ? "error" : sessionView.isStreaming ? "working" : "idle",
-    },
-  );
+  const rootAgentStatus: AgentStatus =
+    sessionView.error !== null ? "error" : sessionView.isStreaming ? "working" : "idle";
+  const rootTools = sessionView.tools;
+  const statusByAgent = useMemo(() => {
+    const statusPriority: Record<AgentStatus, number> = { idle: 0, error: 1, working: 2 };
+    const supervisedTools = [rootTools, ...Object.values(childViews).map((view) => view.tools)]
+      .flat()
+      .filter((tool) => tool.name === "subagent");
+    return supervisedTools.reduce<Record<string, AgentStatus>>(
+      (byAgent, tool) => {
+        const agent = tool.agentName ?? "subagent";
+        const next: AgentStatus = tool.running ? "working" : tool.error ? "error" : "idle";
+        const current = byAgent[agent];
+        if (current === undefined || statusPriority[next] > statusPriority[current]) byAgent[agent] = next;
+        return byAgent;
+      },
+      { [RESEARCH_ASSISTANT_AGENT]: rootAgentStatus },
+    );
+  }, [childViews, rootAgentStatus, rootTools]);
   const projectName = filesystemPathName(cwd);
   const chatHidden = isMobile && mobileView !== "chat";
   const filesHidden = isMobile ? mobileView !== "files" : panel !== "files";
@@ -930,9 +942,10 @@ export function WorkPage({
     [connection.setView, refreshTree, send, sessionId, sessionView.sessionName],
   );
 
+  const messageStructure = structuredMessages.current.messages;
   const messageMeta = useMemo(
-    () => buildMessageTreeMeta(sessionView.messages, tree?.tree ?? [], tree?.leafId ?? null),
-    [sessionView.messages, tree],
+    () => buildMessageTreeMeta(messageStructure, tree?.tree ?? [], tree?.leafId ?? null),
+    [messageStructure, tree],
   );
 
   const onEditMessage = useCallback(

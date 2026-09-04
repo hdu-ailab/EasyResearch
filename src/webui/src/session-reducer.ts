@@ -104,6 +104,8 @@ export interface SessionViewState {
   summaries: SessionSummaryView[];
   /** Increments whenever an authoritative snapshot seeds transcript history. */
   hydrationRevision: number;
+  /** Changes only when the visible message-row structure changes. */
+  messageStructureRevision: number;
   /** True while an agent run is active, independently of message streaming. */
   isStreaming: boolean;
   error: string | null;
@@ -154,6 +156,7 @@ const emptyState: SessionViewState = {
   tools: [],
   summaries: [],
   hydrationRevision: 0,
+  messageStructureRevision: 0,
   isStreaming: false,
   error: null,
   retry: null,
@@ -402,6 +405,7 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
     tools: [],
     summaries: [],
     hydrationRevision,
+    messageStructureRevision: Math.max(1, hydrationRevision),
     isStreaming,
     error: null,
     retry: null,
@@ -623,6 +627,7 @@ function applyInlineUsage(state: SessionViewState, records: readonly ApiUsageRec
     messages,
     tools,
     summaries,
+    messageStructureRevision: state.messageStructureRevision + (messages.length === state.messages.length ? 0 : 1),
     nextOrder: ordered.length,
     inlineUsage: [...(state.inlineUsage ?? []), ...additions],
   };
@@ -1094,6 +1099,7 @@ export function reduceSessionEvent(
         ...state,
         error: typeof errorMessage === "string" && errorMessage ? errorMessage : null,
         nextOrder: state.nextOrder + 1,
+        messageStructureRevision: state.messageStructureRevision + 1,
       };
       const view: SessionMessageView = {
         key,
@@ -1128,6 +1134,7 @@ export function reduceSessionEvent(
           ...currentState,
           activeMessageKey: key,
           nextOrder: currentState.nextOrder + 1,
+          messageStructureRevision: currentState.messageStructureRevision + 1,
           messages: [
             ...currentState.messages,
             {
@@ -1268,6 +1275,8 @@ export function reduceSessionEvent(
       return {
         ...state,
         messages: nextMessages,
+        messageStructureRevision:
+          state.messageStructureRevision + (nextMessages.length === state.messages.length ? 0 : 1),
         nextOrder: nextMessages.length > state.messages.length ? state.nextOrder + 1 : state.nextOrder,
         activeMessageKey: undefined,
       };

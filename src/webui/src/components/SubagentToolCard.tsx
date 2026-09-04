@@ -39,6 +39,9 @@ export function SubagentToolCard({
   onViewDetails,
   subtreeUsage,
   showApiUsageDetails = false,
+  markdownScope,
+  markdownCacheKey,
+  onMarkdownRendered,
 }: {
   tool: ToolView;
   initialOpen: boolean;
@@ -49,6 +52,9 @@ export function SubagentToolCard({
   onViewDetails?: (toolCallId: string, step?: number) => void;
   subtreeUsage?: ApiUsageTotalsDto;
   showApiUsageDetails?: boolean;
+  markdownScope?: string;
+  markdownCacheKey?: string;
+  onMarkdownRendered?: () => void;
 }) {
   const { t } = useI18n();
   const [internalOpen, setInternalOpen] = useState(initialOpen);
@@ -146,7 +152,13 @@ export function SubagentToolCard({
                 isToolActivity ? (
                   message
                 ) : (
-                  <MarkdownBlock text={message} />
+                  <MarkdownBlock
+                    text={message}
+                    scope={markdownScope}
+                    cacheKey={markdownCacheKey}
+                    streaming={running && activity?.kind === "text"}
+                    onRendered={onMarkdownRendered}
+                  />
                 )
               ) : (
                 <p className="text-v2-text-text-faint">{emptyMessage}</p>
