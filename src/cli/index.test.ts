@@ -72,6 +72,7 @@ function makeDeps(overrides: Partial<CliDependencies> = {}): CliDependencies {
     spawnBackground: vi.fn(),
     inspectBackground: vi.fn(async (agentDir: string) =>
       readServerPid(agentDir) === undefined ? "none" : "current"),
+    archiveDeadLegacyCliOwner: vi.fn(() => false),
     stopBackground: vi.fn(async () => false),
     ...overrides,
   } as CliDependencies;
@@ -157,6 +158,35 @@ describe("runCli argument parsing", () => {
       expect.any(Object),
     );
     expect(deps.openBrowser).toHaveBeenCalledWith("http://127.0.0.1:3000");
+  });
+
+  it("archives a dead legacy CLI owner before starting the replacement daemon", async () => {
+    const order: string[] = [];
+    const archiveDeadLegacyCliOwner = vi.fn(() => {
+      order.push("archive");
+      return true;
+    });
+    const deps = makeDeps({
+      inspectBackground: vi.fn(async () => {
+        order.push("inspect");
+        return "none" as const;
+      }),
+      archiveDeadLegacyCliOwner,
+      spawnBackground: vi.fn(async () => {
+        order.push("spawn");
+      }),
+    });
+
+    expect(await runTestCli(["--no-open"], deps, {
+      agentDir: root,
+      setup: () => {
+        order.push("setup");
+      },
+    })).toBe(0);
+
+    expect(order).toEqual(["inspect", "archive", "setup", "spawn"]);
+    expect(archiveDeadLegacyCliOwner).toHaveBeenCalledWith(root);
+    expect(deps.stopBackground).not.toHaveBeenCalled();
   });
 
   it("parses -p port and --host", async () => {

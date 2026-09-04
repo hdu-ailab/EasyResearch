@@ -1,4 +1,12 @@
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer } from "node:http";
 import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { dayStamp } from "../runtime/logger";
 import { acquireServerLease, type RuntimeLease } from "./runtime-lease";
 import {
+  archiveDeadLegacyCliOwner,
   inspectServerProcess,
   isProcessAlive,
   readServerPid,
@@ -198,6 +207,71 @@ describe("isProcessAlive", () => {
   it("returns true for the current process and false for a dead pid", () => {
     expect(isProcessAlive(process.pid)).toBe(true);
     expect(isProcessAlive(99999999)).toBe(false);
+  });
+});
+
+describe("dead legacy CLI ownership recovery", () => {
+  function writeLegacyLease(owner: "cli" | "desktop", token = "owned-token"): void {
+    writeFileSync(join(root, "server.lease"), `${JSON.stringify({
+      schema: 1,
+      kind: "server",
+      owner,
+      pid: 4242,
+      token,
+    })}\n`, "utf8");
+  }
+
+  it("archives an exactly matching dead CLI record and legacy file lease", () => {
+    const recordBytes = `${JSON.stringify({ ...ownedRecord(), owner: "cli" })}\n`;
+    const leaseBytes = `${JSON.stringify({
+      schema: 1,
+      kind: "server",
+      owner: "cli",
+      pid: 4242,
+      token: "owned-token",
+    })}\n`;
+    writeFileSync(serverPidPath(root), recordBytes, "utf8");
+    writeFileSync(join(root, "server.lease"), leaseBytes, "utf8");
+
+    expect(archiveDeadLegacyCliOwner(root, {
+      isAlive: () => false,
+      createArchiveSuffix: () => "upgrade-test",
+    })).toBe(true);
+
+    expect(existsSync(serverPidPath(root))).toBe(false);
+    expect(existsSync(join(root, "server.lease"))).toBe(false);
+    expect(readFileSync(join(root, "server.pid.stale-upgrade-test"), "utf8")).toBe(recordBytes);
+    expect(readFileSync(join(root, "server.lease.stale-upgrade-test"), "utf8")).toBe(leaseBytes);
+  });
+
+  it.each([
+    ["live CLI", { owner: "cli" as const, token: "owned-token", alive: true }],
+    ["Desktop owner", { owner: "desktop" as const, token: "owned-token", alive: false }],
+    ["token mismatch", { owner: "cli" as const, token: "other-token", alive: false }],
+  ])("keeps $0 legacy ownership fail-closed", (_name, scenario) => {
+    writeOwnedRecord({ ...ownedRecord(), owner: scenario.owner });
+    writeLegacyLease(scenario.owner, scenario.token);
+
+    expect(archiveDeadLegacyCliOwner(root, {
+      isAlive: () => scenario.alive,
+      createArchiveSuffix: () => "must-not-archive",
+    })).toBe(false);
+
+    expect(readServerProcess(root)).toMatchObject({ kind: "owned" });
+    expect(existsSync(join(root, "server.lease"))).toBe(true);
+    expect(readdirSync(root)).not.toContain("server.pid.stale-must-not-archive");
+  });
+
+  it("keeps malformed legacy lease state fail-closed", () => {
+    writeOwnedRecord({ ...ownedRecord(), owner: "cli" });
+    writeFileSync(join(root, "server.lease"), "not-json\n", "utf8");
+
+    expect(archiveDeadLegacyCliOwner(root, {
+      isAlive: () => false,
+      createArchiveSuffix: () => "must-not-archive",
+    })).toBe(false);
+    expect(existsSync(serverPidPath(root))).toBe(true);
+    expect(readFileSync(join(root, "server.lease"), "utf8")).toBe("not-json\n");
   });
 });
 

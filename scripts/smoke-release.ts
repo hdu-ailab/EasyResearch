@@ -1610,6 +1610,26 @@ try {
   requireCommandUnavailable("bun");
   const version = repoPackageVersion();
   if (!versionVerifiedByRunner) validateNativeVersionOutput(0, runVersion(), version, target.name);
+  const deadLegacyPid = 2_147_483_647;
+  const deadLegacyToken = `native-smoke-dead-legacy-${setupRunId}`;
+  const deadLegacyRecord = `${JSON.stringify({
+    schema: 1,
+    owner: "cli",
+    pid: deadLegacyPid,
+    host: "127.0.0.1",
+    port,
+    token: deadLegacyToken,
+    runtimeId: "0.0.0:legacy-runtime",
+  })}\n`;
+  const deadLegacyLease = `${JSON.stringify({
+    schema: 1,
+    kind: "server",
+    owner: "cli",
+    pid: deadLegacyPid,
+    token: deadLegacyToken,
+  })}\n`;
+  writeFileSync(daemonPidPath, deadLegacyRecord, { encoding: "utf8", mode: 0o600 });
+  writeFileSync(join(agentDir, "server.lease"), deadLegacyLease, { encoding: "utf8", mode: 0o600 });
   const treeBefore = treeFiles(root);
   firstRunDeadline = Date.now() + FIRST_RUN_CEILING_MS;
   firstRunLaunchAttempted = true;
@@ -1657,6 +1677,17 @@ try {
   daemonPid = initialIdentity.pid;
   if (initialIdentity.host !== "127.0.0.1" || initialIdentity.port !== port) {
     throw new Error("initial compiled daemon ownership endpoint was invalid");
+  }
+  const recoveredEntries = readdirSync(agentDir);
+  const recoveredPidRecord = recoveredEntries.find((entry) => entry.startsWith("server.pid.stale-"));
+  const recoveredLeaseRecord = recoveredEntries.find((entry) => entry.startsWith("server.lease.stale-"));
+  if (
+    !recoveredPidRecord
+    || !recoveredLeaseRecord
+    || readFileSync(join(agentDir, recoveredPidRecord), "utf8") !== deadLegacyRecord
+    || readFileSync(join(agentDir, recoveredLeaseRecord), "utf8") !== deadLegacyLease
+  ) {
+    throw new Error("compiled startup did not archive the exact dead legacy CLI ownership pair");
   }
   smokeNetworkState = recordSmokeNetworkMilestone(smokeNetworkState, {
     kind: "initial-ready",

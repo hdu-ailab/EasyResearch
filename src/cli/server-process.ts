@@ -1,8 +1,14 @@
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dayStamp, resolveLogConfig } from "../runtime/logger";
 import { directLocalHttpFetch, type LocalHttpFetch } from "./local-http";
-import { serverLeaseTokenState, type RuntimeLease } from "./runtime-lease";
+import {
+  readLegacyServerLeaseRecord,
+  serverLeasePath,
+  serverLeaseTokenState,
+  type RuntimeLease,
+} from "./runtime-lease";
 export { DAEMON_CONTROL_PATH, DAEMON_TOKEN_HEADER } from "./daemon-control";
 import { DAEMON_CONTROL_PATH, DAEMON_TOKEN_HEADER } from "./daemon-control";
 
@@ -32,6 +38,11 @@ export interface ServerProcessOptions {
   timeoutMs?: number;
   expectedOwner?: ServerOwner;
   expectedToken?: string;
+}
+
+interface LegacyCliRecoveryOptions {
+  isAlive?: (pid: number) => boolean;
+  createArchiveSuffix?: () => string;
 }
 
 export type ServerProcessEntry =
@@ -73,6 +84,55 @@ export function isProcessAlive(pid: number): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "EPERM";
   }
+}
+
+export function archiveDeadLegacyCliOwner(
+  agentDir: string,
+  options: LegacyCliRecoveryOptions = {},
+): boolean {
+  const entry = readServerProcess(agentDir);
+  if (entry.kind !== "owned" || serverOwner(entry.record) !== "cli") return false;
+  const isAlive = options.isAlive ?? isProcessAlive;
+  if (isAlive(entry.record.pid)) return false;
+  const lease = readLegacyServerLeaseRecord(agentDir);
+  if (
+    !lease
+    || lease.owner !== "cli"
+    || lease.pid !== entry.record.pid
+    || lease.token !== entry.record.token
+  ) return false;
+
+  const suffix = (options.createArchiveSuffix
+    ?? (() => `${Date.now()}-${randomUUID()}`))();
+  if (!/^[A-Za-z0-9._-]+$/u.test(suffix)) {
+    throw new Error("Invalid EasyResearch stale ownership archive suffix.");
+  }
+  const pidPath = serverPidPath(agentDir);
+  const leasePath = serverLeasePath(agentDir);
+  const pidArchive = `${pidPath}.stale-${suffix}`;
+  const leaseArchive = `${leasePath}.stale-${suffix}`;
+
+  const current = readServerProcess(agentDir);
+  const currentLease = readLegacyServerLeaseRecord(agentDir);
+  if (
+    current.kind !== "owned"
+    || serverOwner(current.record) !== "cli"
+    || current.record.pid !== entry.record.pid
+    || current.record.token !== entry.record.token
+    || !currentLease
+    || currentLease.owner !== "cli"
+    || currentLease.pid !== entry.record.pid
+    || currentLease.token !== entry.record.token
+  ) return false;
+
+  renameSync(pidPath, pidArchive);
+  try {
+    renameSync(leasePath, leaseArchive);
+  } catch (error) {
+    if (!existsSync(pidPath) && existsSync(pidArchive)) renameSync(pidArchive, pidPath);
+    throw error;
+  }
+  return true;
 }
 
 export function writeServerPid(agentDir: string, pid: number): void {

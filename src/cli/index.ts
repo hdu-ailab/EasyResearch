@@ -13,6 +13,7 @@ import {
 import type { SetupResult } from "../setup-venv";
 import {
   DESKTOP_OWNS_RUNTIME_MESSAGE,
+  archiveDeadLegacyCliOwner,
   inspectServerProcess,
   serverLogFile,
   stopServerProcess,
@@ -51,6 +52,7 @@ export interface CliDependencies {
     host: string,
     port: number,
   ) => Promise<"none" | "current" | "stale" | "desktop">;
+  archiveDeadLegacyCliOwner: (agentDir: string) => boolean;
   stopBackground: (agentDir: string) => Promise<boolean>;
 }
 
@@ -258,6 +260,9 @@ export async function runCli(
     return await deps.withRuntimeTransition(agentDir, async (transitionLease) => {
       const background = await deps.inspectBackground(agentDir, host, port);
       if (background === "desktop") throw new DesktopOwnsRuntimeError();
+      if (background === "none" && deps.archiveDeadLegacyCliOwner(agentDir)) {
+        console.log("[easyresearch] Archived a dead legacy daemon owner before upgrade startup.");
+      }
 
       const { baseline, policy } = loadNetworkPolicy(agentDir, environment, options.environmentRestore);
       withTemporaryNetworkPolicyEnvironment(policy, baseline, environment, () => {
@@ -379,6 +384,7 @@ async function runRuntimeEntry(args: string[]): Promise<void> {
     },
     inspectBackground: (agentDir, host, port) =>
       inspectServerProcess(agentDir, runtimeId, host, port),
+    archiveDeadLegacyCliOwner,
     stopBackground: stopServerProcess,
     spawnBackground: async (host, port, environment, transitionLease) => {
       const agentDir = defaultAgentDir();

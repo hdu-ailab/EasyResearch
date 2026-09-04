@@ -64,6 +64,15 @@ export function serverLeasePath(agentDir: string): string {
   return join(agentDir, "server.lease");
 }
 
+export function readLegacyServerLeaseRecord(
+  agentDir: string,
+): RuntimeLeaseRecord | undefined {
+  const current = readLease(serverLeasePath(agentDir));
+  return current.kind === "legacy-file" && current.record.kind === "server"
+    ? current.record
+    : undefined;
+}
+
 export function acquireTransitionLease(
   agentDir: string,
   owner: ServerOwner,
