@@ -7,7 +7,7 @@ import { App } from "./App";
 import * as api from "./api";
 import { I18nProvider } from "./i18n/I18nProvider";
 import { PreferencesProvider } from "./preferences/PreferencesProvider";
-import { hydrateTranscript } from "./testing/transcriptTest";
+import { hydrateTranscript, observerFor } from "./testing/transcriptTest";
 
 vi.mock("./api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./api")>();
@@ -28,6 +28,7 @@ vi.mock("./api", async (importOriginal) => {
     getSessionTree: vi.fn().mockResolvedValue({ tree: [], leafId: null }),
     navigateSessionTree: vi.fn().mockResolvedValue(undefined),
     getApiUsageSettings: vi.fn(),
+    getCompactionSettings: vi.fn(),
     getNetworkProxySettings: vi.fn(),
     patchNetworkProxySettings: vi.fn(),
     testNetworkProxy: vi.fn(),
@@ -129,19 +130,24 @@ function render(ui: ReactElement) {
 
 const workspace = () => screen.getByRole("region", { name: /research workspace/i });
 
-/**
- * Renders the app, waits for the Work page chat tabpanel, then retries
- * transcript hydration until the virtualized rows render. The async route
- * resolve mounts WorkPage after the initial render, so the transcript's
- * ResizeObserver may not be registered yet when the tabpanel first appears.
- */
+async function hydrateResolvedWork(container: HTMLElement) {
+  await waitFor(
+    () => {
+      const conversation = container.querySelector<HTMLElement>('[aria-label="Conversation"]');
+      expect(conversation).not.toBeNull();
+      expect(observerFor(conversation!)).toBeDefined();
+    },
+    { container },
+  );
+  hydrateTranscript(container);
+  await within(container).findByText("starting research");
+}
+
+// Async route resolution must register its observer before the one hydration.
 async function renderWork(app: ReactElement = <App />) {
   const result = render(app);
   await screen.findByRole("tabpanel", { name: /^chat$/i });
-  await waitFor(() => {
-    hydrateTranscript(result.container);
-    expect(screen.queryByText("starting research")).toBeTruthy();
-  });
+  await hydrateResolvedWork(result.container);
   return result;
 }
 
@@ -166,6 +172,7 @@ describe("App routing", () => {
     vi.mocked(api.openSession).mockReset();
     vi.mocked(api.getSnapshot).mockReset();
     vi.mocked(api.getApiUsageSettings).mockReset().mockResolvedValue({ showApiUsageDetails: false });
+    vi.mocked(api.getCompactionSettings).mockReset().mockResolvedValue({ triggerPercent: 70, globalEnabled: true });
     vi.mocked(api.getNetworkProxySettings)
       .mockReset()
       .mockResolvedValue({
@@ -261,7 +268,9 @@ describe("App routing", () => {
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(screen.getByRole("tab", { name: "Network" }));
     const draft = await screen.findByRole("textbox", { name: "All traffic proxy" });
-    await user.type(draft, "http://draft.example");
+    expect(draft).toBeVisible();
+    expect(draft).toBeEnabled();
+    fireEvent.change(draft, { target: { value: "http://draft.example" } });
 
     simulateBrowserBackTo("#/");
 
@@ -1030,10 +1039,7 @@ describe("App routing", () => {
     });
     const general = await screen.findByRole("tab", { name: "General" });
     expect(general).toHaveFocus();
-    await waitFor(() => {
-      hydrateTranscript(result.container);
-      expect(screen.queryByText("starting research")).toBeTruthy();
-    });
+    await hydrateResolvedWork(result.container);
 
     await user.click(screen.getByRole("button", { name: "Close" }));
     await waitFor(() => expect(window.location.hash).toBe("#/work/s1?cwd=%2Fp"));
@@ -1062,10 +1068,7 @@ describe("App routing", () => {
     window.location.hash = "#/work/s1?cwd=%2Fp";
     fireEvent(window, new HashChangeEvent("hashchange"));
     await screen.findByRole("tabpanel", { name: /^chat$/i });
-    await waitFor(() => {
-      hydrateTranscript(result.container);
-      expect(screen.queryByText("starting research")).toBeTruthy();
-    });
+    await hydrateResolvedWork(result.container);
     expect(vi.mocked(api.openSession)).toHaveBeenCalledWith("/store/s1.jsonl");
   });
 

@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { afterEach } from "vitest";
+import { afterEach, beforeEach } from "vitest";
 
 if (typeof window !== "undefined") {
   // TanStack virtual-core's offset observer schedules a debounced setTimeout
@@ -57,4 +57,8 @@ if (typeof globalThis.ResizeObserver === "undefined") {
   globalThis.ResizeObserver = FakeResizeObserver as unknown as typeof ResizeObserver;
   (globalThis as unknown as { FakeResizeObserver: typeof FakeResizeObserver }).FakeResizeObserver =
     FakeResizeObserver;
+  // Drop prior test DOM/callback references without affecting observer reuse within a test.
+  beforeEach(() => {
+    FakeResizeObserver.instances.length = 0;
+  });
 }

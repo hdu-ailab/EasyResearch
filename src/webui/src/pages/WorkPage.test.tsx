@@ -209,8 +209,7 @@ function render(ui: ReactElement) {
   return result;
 }
 
-function panelObserver() {
-  const panel = screen.getByRole("region", { name: /file browser/i });
+function panelObserver(panel = screen.getByRole("region", { name: /file browser/i })) {
   const observer = observerFor(panel.parentElement as HTMLElement);
   expect(observer).toBeTruthy();
   return observer as unknown as { __fire: (n: number) => void };
@@ -452,7 +451,15 @@ describe("WorkPage", () => {
       input.focus();
       input.setSelectionRange(start, end);
       fireEvent.select(input);
-      if (filtered) await user.type(screen.getByRole("textbox", { name: "Filter files" }), "notes");
+      if (filtered) {
+        const filter = within(screen.getByRole("region", { name: /file browser/i })).getByRole("textbox", {
+          name: "Filter files",
+        });
+        expect(filter).toBeVisible();
+        expect(filter).toBeEnabled();
+        await user.click(filter);
+        fireEvent.change(filter, { target: { value: "notes" } });
+      }
       const file = await screen.findByRole("treeitem", { name: /notes.md/ });
       expect(file).toHaveAttribute("draggable", "true");
       const dataTransfer = dragTransfer();
@@ -1115,7 +1122,10 @@ describe("WorkPage", () => {
     stubEvents();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
-    await user.type(screen.getByRole("textbox", { name: /message/i }), "continue please");
+    const input = screen.getByRole("textbox", { name: /message/i });
+    expect(input).toBeVisible();
+    expect(input).toBeEnabled();
+    fireEvent.change(input, { target: { value: "continue please" } });
     await user.click(screen.getByRole("button", { name: /send/i }));
     expect(await screen.findByLabelText("Working")).toBeTruthy();
     emit({
@@ -1136,7 +1146,10 @@ describe("WorkPage", () => {
     stubEvents();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
-    await user.type(screen.getByRole("textbox", { name: /message/i }), "inspect files");
+    const input = screen.getByRole("textbox", { name: /message/i });
+    expect(input).toBeVisible();
+    expect(input).toBeEnabled();
+    fireEvent.change(input, { target: { value: "inspect files" } });
     await user.click(screen.getByRole("button", { name: /send/i }));
     expect(await screen.findByLabelText("Working")).toBeTruthy();
 
@@ -1168,7 +1181,10 @@ describe("WorkPage", () => {
     el.scrollTop = 100;
     fireEvent.scroll(el);
 
-    await user.type(screen.getByRole("textbox", { name: /message/i }), "continue please");
+    const input = screen.getByRole("textbox", { name: /message/i });
+    expect(input).toBeVisible();
+    expect(input).toBeEnabled();
+    fireEvent.change(input, { target: { value: "continue please" } });
     await user.click(screen.getByRole("button", { name: /send/i }));
     flushFrame?.(0);
 
@@ -1197,14 +1213,19 @@ describe("WorkPage", () => {
 
     el.scrollTop = 100;
     fireEvent.scroll(el);
-    await user.type(screen.getByRole("textbox", { name: /message/i }), "first prompt");
+    const input = screen.getByRole("textbox", { name: /message/i });
+    expect(input).toBeVisible();
+    expect(input).toBeEnabled();
+    fireEvent.change(input, { target: { value: "first prompt" } });
     await user.click(screen.getByRole("button", { name: /send/i }));
     flushCapturedFrame();
     expect(el.scrollTop).toBe(400);
 
     el.scrollTop = 100;
     fireEvent.scroll(el);
-    await user.type(screen.getByRole("textbox", { name: /message/i }), "second prompt");
+    expect(input).toBeVisible();
+    expect(input).toBeEnabled();
+    fireEvent.change(input, { target: { value: "second prompt" } });
     await user.click(screen.getByRole("button", { name: /send/i }));
     flushCapturedFrame();
 
@@ -1287,6 +1308,7 @@ describe("WorkPage", () => {
     } as never);
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     expect(await screen.findByText("parent answer")).toBeTruthy();
+    const tabs = within(screen.getByTestId("agent-tab-group"));
     const el = screen.getByLabelText("Conversation") as HTMLDivElement;
     Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => 400 });
     Object.defineProperty(el, "clientHeight", { configurable: true, get: () => 200 });
@@ -1304,19 +1326,19 @@ describe("WorkPage", () => {
       agentId: "search_0",
       childSessionId: "child-loaded",
     });
-    await user.click(await screen.findByRole("button", { name: /agent search/i }));
+    await user.click(await tabs.findByRole("button", { name: /agent search/i }));
     expect(await screen.findByText("child answer loaded")).toBeTruthy();
     flushCapturedFrame();
 
     el.scrollTop = 100;
     fireEvent.scroll(el);
-    await user.click(screen.getByRole("button", { name: /agent research assistant/i }));
+    await user.click(tabs.getByRole("button", { name: /agent research assistant/i }));
     flushCapturedFrame();
     expect(el.scrollTop).toBe(400);
 
     el.scrollTop = 100;
     fireEvent.scroll(el);
-    await user.click(screen.getByRole("button", { name: /agent search/i }));
+    await user.click(tabs.getByRole("button", { name: /agent search/i }));
     flushCapturedFrame();
     expect(el.scrollTop).toBe(400);
   });
@@ -1327,7 +1349,10 @@ describe("WorkPage", () => {
     vi.mocked(api.sendPrompt).mockRejectedValue(new Error("boom"));
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
-    await user.type(screen.getByRole("textbox", { name: /message/i }), "continue please");
+    const input = screen.getByRole("textbox", { name: /message/i });
+    expect(input).toBeVisible();
+    expect(input).toBeEnabled();
+    fireEvent.change(input, { target: { value: "continue please" } });
     await user.click(screen.getByRole("button", { name: /send/i }));
     await waitFor(() => expect(screen.queryByLabelText("Working")).toBeNull());
     expect(screen.getByText("boom")).toBeTruthy();
@@ -1450,6 +1475,7 @@ describe("WorkPage", () => {
     const user = userEvent.setup();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
+    const tabs = within(screen.getByTestId("agent-tab-group"));
     emitInAct({
       type: "tool_execution_start",
       toolCallId: "sub-promote",
@@ -1463,8 +1489,8 @@ describe("WorkPage", () => {
       childSessionId: "child-promoted",
       latestMessage: "linked",
     });
-    await user.click(await screen.findByRole("button", { name: /agent search/i }));
-    expect(await screen.findByRole("button", { name: /Stop and close agent:/ })).toBeVisible();
+    await user.click(await tabs.findByRole("button", { name: /agent search/i }));
+    expect(await tabs.findByRole("button", { name: /Stop and close agent:/ })).toBeVisible();
     emitSupervisor({
       toolCallId: "sub-promote",
       agent: "search",
@@ -1474,8 +1500,8 @@ describe("WorkPage", () => {
       latestMessage: "done",
     });
 
-    expect(await screen.findByRole("button", { name: /agent search/i })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: /Close agent tab:/ })).toBeVisible();
+    expect(await tabs.findByRole("button", { name: /agent search/i })).toHaveAttribute("aria-pressed", "true");
+    expect(tabs.getByRole("button", { name: /Close agent tab:/ })).toBeVisible();
   });
 
   it("keeps a selected temporary tab focused when its supervisor frame promotes the UUID", async () => {
@@ -1639,7 +1665,9 @@ describe("WorkPage", () => {
       }),
     );
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
-    await user.click(await screen.findByRole("button", { name: "View details" }));
+    const conversation = within(screen.getByLabelText("Conversation"));
+    const tabs = within(screen.getByTestId("agent-tab-group"));
+    await user.click(await conversation.findByRole("button", { name: "View details" }));
     emitSupervisorChildEvent({
       toolCallId: "sub-live",
       agent: "search",
@@ -1714,7 +1742,7 @@ describe("WorkPage", () => {
         subagents: [],
       } as never),
     );
-    expect(screen.getByRole("button", { name: "Agent search_0" })).toHaveAttribute("aria-pressed", "true");
+    expect(tabs.getByRole("button", { name: "Agent search_0" })).toHaveAttribute("aria-pressed", "true");
     expect(await screen.findByText("older task")).toBeVisible();
     expect(screen.getByText("live tokens")).toBeVisible();
     const rows = [...screen.getByLabelText("Conversation").querySelectorAll("li")].map((row) => row.textContent ?? "");
@@ -1722,10 +1750,10 @@ describe("WorkPage", () => {
       rows.findIndex((row) => row.includes("bash")),
     );
 
-    await user.click(screen.getByRole("button", { name: /Stop and close agent:/ }));
+    await user.click(tabs.getByRole("button", { name: /Stop and close agent:/ }));
     await waitFor(() => expect(api.abortSession).toHaveBeenCalledWith("s1"));
-    expect(await screen.findByRole("button", { name: "View details" })).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "View details" }));
+    expect(await conversation.findByRole("button", { name: "View details" })).toBeVisible();
+    await user.click(conversation.getByRole("button", { name: "View details" }));
     expect(await screen.findByText("live tokens")).toBeVisible();
     expect(api.getChildSnapshot).toHaveBeenCalledTimes(1);
   });
@@ -1774,15 +1802,18 @@ describe("WorkPage", () => {
       } as never;
     });
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    const tabs = within(screen.getByTestId("agent-tab-group"));
 
-    await user.click(await screen.findByRole("button", { name: "View details" }));
+    await user.click(
+      await within(screen.getByLabelText("Conversation")).findByRole("button", { name: "View details" }),
+    );
     const nestedCard = (await screen.findByText("nested working")).closest("article");
     expect(nestedCard).not.toBeNull();
     expect(within(nestedCard as HTMLElement).getByText("Running…")).toBeVisible();
 
-    await user.click(await screen.findByRole("button", { name: "Agent search_nested" }));
+    await user.click(await tabs.findByRole("button", { name: "Agent search_nested" }));
     await waitFor(() => expect(api.getChildSnapshot).toHaveBeenCalledWith("s1", "grandchild-search"));
-    await user.click(screen.getByRole("button", { name: "Agent writing_0" }));
+    await user.click(tabs.getByRole("button", { name: "Agent writing_0" }));
 
     emitSupervisor({
       ownerSessionId: "child-writing",
@@ -1799,9 +1830,9 @@ describe("WorkPage", () => {
       } as never,
     });
 
-    await user.click(screen.getByRole("button", { name: "Agent search_nested" }));
+    await user.click(tabs.getByRole("button", { name: "Agent search_nested" }));
     expect(await screen.findByText("grandchild live")).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "Agent writing_0" }));
+    await user.click(tabs.getByRole("button", { name: "Agent writing_0" }));
 
     emitSupervisor({
       ownerSessionId: "child-writing",
@@ -1817,8 +1848,8 @@ describe("WorkPage", () => {
     const failedNestedCard = (await screen.findByText("nested failed")).closest("article");
     expect(failedNestedCard).not.toBeNull();
     expect(within(failedNestedCard as HTMLElement).getByText("Failed")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Agent search_nested" })).toHaveTextContent("Error");
-    await user.click(screen.getByRole("button", { name: /agent research assistant/i }));
+    expect(tabs.getByRole("button", { name: "Agent search_nested" })).toHaveTextContent("Error");
+    await user.click(tabs.getByRole("button", { name: /agent research assistant/i }));
     const rootCard = screen.getByText("writing complete").closest("article");
     expect(within(rootCard as HTMLElement).getByText("Completed")).toBeVisible();
     expect(within(rootCard as HTMLElement).queryByText("nested failed")).toBeNull();
@@ -2236,7 +2267,9 @@ describe("WorkPage", () => {
         } as never),
       );
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
-    const details = await screen.findByRole("button", { name: "View details" });
+    const conversation = within(screen.getByLabelText("Conversation"));
+    const tabs = within(screen.getByTestId("agent-tab-group"));
+    const details = await conversation.findByRole("button", { name: "View details" });
     act(() => {
       details.click();
       details.click();
@@ -2245,8 +2278,8 @@ describe("WorkPage", () => {
     act(() => rejectFirst(new api.ApiError(404, { error: "temporarily missing" })));
     expect(await screen.findByText("Child session unavailable.")).toBeVisible();
 
-    await user.click(screen.getByRole("button", { name: /Close agent tab:/ }));
-    await user.click(await screen.findByRole("button", { name: "View details" }));
+    await user.click(tabs.getByRole("button", { name: /Close agent tab:/ }));
+    await user.click(await conversation.findByRole("button", { name: "View details" }));
     expect(await screen.findByText("retry recovered")).toBeVisible();
     expect(api.getChildSnapshot).toHaveBeenCalledTimes(2);
   });
@@ -2383,11 +2416,13 @@ describe("WorkPage", () => {
         }) as never,
     );
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    const conversation = within(screen.getByLabelText("Conversation"));
+    const tabs = within(screen.getByTestId("agent-tab-group"));
 
-    await user.click(await screen.findByRole("button", { name: "View details: Step 1" }));
+    await user.click(await conversation.findByRole("button", { name: "View details: Step 1" }));
     expect(await screen.findByText("history for child-history-search")).toBeVisible();
-    await user.click(screen.getByRole("button", { name: /agent research assistant/i }));
-    await user.click(screen.getByRole("button", { name: "View details: Step 2" }));
+    await user.click(tabs.getByRole("button", { name: /agent research assistant/i }));
+    await user.click(conversation.getByRole("button", { name: "View details: Step 2" }));
 
     expect(await screen.findByText("history for child-history-writing")).toBeVisible();
     expect(screen.getByRole("button", { name: /agent search/i })).toBeVisible();
@@ -2504,10 +2539,11 @@ describe("WorkPage", () => {
     });
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
+    const files = within(screen.getByRole("region", { name: /file browser/i }));
     expect(await screen.findByText("folder")).toBeVisible();
     expect(screen.queryByLabelText("Loading folder")).toBeNull();
-    expect(screen.getByRole("button", { name: "Expand folder" })).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "Expand folder" }));
+    expect(files.getByRole("button", { name: "Expand folder" })).toBeVisible();
+    await user.click(files.getByRole("button", { name: "Expand folder" }));
     expect(screen.getByLabelText("Loading folder")).toBeVisible();
   });
 
@@ -2838,13 +2874,12 @@ describe("WorkPage", () => {
   it("resizes the panel within min/max while dragging", async () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
-    const observer = panelObserver();
+    const panel = screen.getByRole("region", { name: /file browser/i });
+    const observer = panelObserver(panel);
     expect(observer).toBeTruthy();
-    observer!.__fire(1200);
-    await waitFor(() =>
-      expect(screen.getByRole("region", { name: /file browser/i }).getAttribute("style")).toMatch(/--panel-w:\s*600px/),
-    );
-    const handle = screen.getByRole("separator", { name: /resize panel/i });
+    act(() => observer.__fire(1200));
+    await waitFor(() => expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*600px/));
+    const handle = within(panel).getByRole("separator", { name: /resize panel/i });
     const row = screen.getByText("starting research").closest("section")?.parentElement;
     expect(row).toBeTruthy();
     vi.spyOn(row!, "getBoundingClientRect").mockReturnValue({
@@ -2858,7 +2893,6 @@ describe("WorkPage", () => {
       y: 0,
       toJSON: () => ({}),
     } as DOMRect);
-    const panel = screen.getByRole("region", { name: /file browser/i });
     fireEvent.pointerDown(handle, { clientX: 880, clientY: 100, pointerId: 1 });
     fireEvent.pointerMove(document, { clientX: 820, clientY: 100, pointerId: 1 });
     fireEvent.pointerUp(document, { clientX: 820, clientY: 100, pointerId: 1 });
@@ -3111,12 +3145,11 @@ describe("WorkPage", () => {
   it("remembers the dragged width for the session after the first drag", async () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
-    const observer = panelObserver();
-    observer!.__fire(1200);
-    await waitFor(() =>
-      expect(screen.getByRole("region", { name: /file browser/i }).getAttribute("style")).toMatch(/--panel-w:\s*600px/),
-    );
-    const handle = screen.getByRole("separator", { name: /resize panel/i });
+    const panel = screen.getByRole("region", { name: /file browser/i });
+    const observer = panelObserver(panel);
+    act(() => observer.__fire(1200));
+    await waitFor(() => expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*600px/));
+    const handle = within(panel).getByRole("separator", { name: /resize panel/i });
     const row = screen.getByText("starting research").closest("section")?.parentElement;
     vi.spyOn(row!, "getBoundingClientRect").mockReturnValue({
       right: 1200,
@@ -3129,24 +3162,22 @@ describe("WorkPage", () => {
       y: 0,
       toJSON: () => ({}),
     } as DOMRect);
-    const panel = screen.getByRole("region", { name: /file browser/i });
     fireEvent.pointerDown(handle, { clientX: 880, clientY: 100, pointerId: 1 });
     fireEvent.pointerMove(document, { clientX: 820, clientY: 100, pointerId: 1 });
     fireEvent.pointerUp(document, { clientX: 820, clientY: 100, pointerId: 1 });
     expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*660px/);
-    observer!.__fire(1600);
+    act(() => observer.__fire(1600));
     await waitFor(() => expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*660px/));
   });
 
   it("never lets the drag shrink the panel below one third of the screen", async () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
-    const observer = panelObserver();
-    observer!.__fire(1200);
-    await waitFor(() =>
-      expect(screen.getByRole("region", { name: /file browser/i }).getAttribute("style")).toMatch(/--panel-w:\s*600px/),
-    );
-    const handle = screen.getByRole("separator", { name: /resize panel/i });
+    const panel = screen.getByRole("region", { name: /file browser/i });
+    const observer = panelObserver(panel);
+    act(() => observer.__fire(1200));
+    await waitFor(() => expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*600px/));
+    const handle = within(panel).getByRole("separator", { name: /resize panel/i });
     const row = screen.getByText("starting research").closest("section")?.parentElement;
     vi.spyOn(row!, "getBoundingClientRect").mockReturnValue({
       right: 1200,
@@ -3159,7 +3190,6 @@ describe("WorkPage", () => {
       y: 0,
       toJSON: () => ({}),
     } as DOMRect);
-    const panel = screen.getByRole("region", { name: /file browser/i });
     fireEvent.pointerDown(handle, { clientX: 880, clientY: 100, pointerId: 1 });
     fireEvent.pointerMove(document, { clientX: 1880, clientY: 100, pointerId: 1 });
     fireEvent.pointerUp(document, { clientX: 1880, clientY: 100, pointerId: 1 });
@@ -3180,7 +3210,9 @@ describe("WorkPage", () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await user.click(await screen.findByRole("tab", { name: /files/i }));
     const filter = screen.getByRole("textbox", { name: /filter files/i });
-    await user.type(filter, "notes");
+    expect(filter).toBeVisible();
+    expect(filter).toBeEnabled();
+    fireEvent.change(filter, { target: { value: "notes" } });
     await user.click(screen.getByRole("tab", { name: /chat/i }));
     await user.click(screen.getByRole("tab", { name: /files/i }));
     expect(screen.getByRole("textbox", { name: /filter files/i })).toHaveValue("notes");
@@ -3356,7 +3388,10 @@ describe("WorkPage", () => {
       } as never);
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
-    await user.type(screen.getByRole("textbox", { name: /message/i }), "continue please");
+    const input = screen.getByRole("textbox", { name: /message/i });
+    expect(input).toBeVisible();
+    expect(input).toBeEnabled();
+    fireEvent.change(input, { target: { value: "continue please" } });
     await user.click(screen.getByRole("button", { name: /send/i }));
     await waitFor(() => expect(api.openSession).toHaveBeenCalledWith("/agent/sessions/--p--/a.jsonl"));
     await waitFor(() => expect(api.connectSessionEvents).toHaveBeenCalledTimes(2));
@@ -3418,13 +3453,19 @@ describe("WorkPage", () => {
       status: "ready",
     } as never);
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
-    await user.click(await screen.findByRole("button", { name: "View details" }));
+    const tabs = within(screen.getByTestId("agent-tab-group"));
+    await user.click(
+      await within(screen.getByLabelText("Conversation")).findByRole("button", { name: "View details" }),
+    );
     expect(await screen.findByText("retained child history")).toBeVisible();
     expect(screen.getByRole("button", { name: "Agent search_0" })).toBeVisible();
-    await user.click(screen.getByRole("button", { name: /agent research assistant/i }));
+    await user.click(tabs.getByRole("button", { name: /agent research assistant/i }));
 
     emitInAct({ type: "session_deactivated", sessionId: "s1" });
-    await user.type(screen.getByRole("textbox", { name: /message/i }), "continue please");
+    const input = screen.getByRole("textbox", { name: /message/i });
+    expect(input).toBeVisible();
+    expect(input).toBeEnabled();
+    fireEvent.change(input, { target: { value: "continue please" } });
     await user.click(screen.getByRole("button", { name: /send/i }));
     await waitFor(() => expect(api.connectSessionEvents).toHaveBeenCalledTimes(2));
     emitInAct({
@@ -3489,7 +3530,10 @@ describe("WorkPage", () => {
       } as never);
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
-    await user.type(screen.getByRole("textbox", { name: /message/i }), "continue please");
+    const input = screen.getByRole("textbox", { name: /message/i });
+    expect(input).toBeVisible();
+    expect(input).toBeEnabled();
+    fireEvent.change(input, { target: { value: "continue please" } });
     await user.click(screen.getByRole("button", { name: /send/i }));
     await waitFor(() => expect(api.openSession).toHaveBeenCalledWith("/agent/sessions/--p--/a.jsonl"));
     await waitFor(() => expect(api.connectSessionEvents).toHaveBeenCalledTimes(2));
@@ -3516,7 +3560,10 @@ describe("WorkPage", () => {
     vi.mocked(api.sendPrompt).mockRejectedValue(new api.ApiError(500, { error: "server exploded" }));
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
-    await user.type(screen.getByRole("textbox", { name: /message/i }), "continue please");
+    const input = screen.getByRole("textbox", { name: /message/i });
+    expect(input).toBeVisible();
+    expect(input).toBeEnabled();
+    fireEvent.change(input, { target: { value: "continue please" } });
     await user.click(screen.getByRole("button", { name: /send/i }));
     expect(await screen.findByRole("alert")).toHaveTextContent("server exploded");
     expect(api.openSession).not.toHaveBeenCalled();
@@ -3531,7 +3578,10 @@ describe("WorkPage", () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
 
-    await user.type(screen.getByRole("textbox", { name: /message/i }), "continue please");
+    const input = screen.getByRole("textbox", { name: /message/i });
+    expect(input).toBeVisible();
+    expect(input).toBeEnabled();
+    fireEvent.change(input, { target: { value: "continue please" } });
     await user.click(screen.getByRole("button", { name: /send/i }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Session file can no longer be reopened");
@@ -3637,9 +3687,10 @@ describe("WorkPage", () => {
 
       await user.click(screen.getByRole("button", { name: /edit/i }));
       const textarea = screen.getByRole("textbox", { name: /edit/i });
-      await user.clear(textarea);
-      await user.type(textarea, "rewrite the paper");
-      const sendButtons = screen.getAllByRole("button", { name: /send/i });
+      expect(textarea).toBeVisible();
+      expect(textarea).toBeEnabled();
+      fireEvent.change(textarea, { target: { value: "rewrite the paper" } });
+      const sendButtons = within(screen.getByLabelText("Conversation")).getAllByRole("button", { name: /send/i });
       await user.click(sendButtons.find((button) => button.textContent === "Send")!);
 
       await waitFor(() => expect(api.navigateSessionTree).toHaveBeenCalledWith("s1", "m2", {}));

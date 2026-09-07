@@ -262,14 +262,20 @@ async function selectCategory(user: ReturnType<typeof userEvent.setup>, name: st
 
 async function openAgentConfig(user: ReturnType<typeof userEvent.setup>, name: string) {
   await selectCategory(user, "Agents");
-  await user.click(await screen.findByRole("button", { name: `Configure ${name}` }));
+  const panel = screen.getByRole("tabpanel", { name: "Agents" });
+  await user.click(await within(panel).findByRole("button", { name: `Configure ${name}` }));
   return screen.getByRole("dialog", { name: "Agents" });
 }
 
-async function selectModelOption(user: ReturnType<typeof userEvent.setup>, agentName: string, optionName: string) {
-  const trigger = screen.getByRole("combobox", { name: `Select model for ${agentName}` });
+async function selectModelOption(
+  user: ReturnType<typeof userEvent.setup>,
+  dialog: HTMLElement,
+  agentName: string,
+  optionName: string,
+) {
+  const trigger = within(dialog).getByRole("combobox", { name: `Select model for ${agentName}` });
   await user.click(trigger);
-  await user.click(within(screen.getByRole("listbox")).getByRole("option", { name: optionName }));
+  await user.click(within(within(dialog).getByRole("listbox")).getByRole("option", { name: optionName }));
 }
 
 function deferred<T>() {
@@ -301,7 +307,9 @@ describe("SettingsModal", () => {
 
     await user.click(screen.getByRole("button", { name: "Network" }));
     const allProxy = await screen.findByRole("textbox", { name: "All traffic proxy" });
-    await user.type(allProxy, "http://draft.example");
+    expect(allProxy).toBeVisible();
+    expect(allProxy).toBeEnabled();
+    fireEvent.change(allProxy, { target: { value: "http://draft.example" } });
     await user.click(screen.getByRole("button", { name: "Back to settings" }));
 
     expect(onClose).not.toHaveBeenCalled();
@@ -320,9 +328,13 @@ describe("SettingsModal", () => {
     const user = userEvent.setup();
     renderSettings();
     await user.click(screen.getByRole("tab", { name: "Network" }));
-    await user.type(await screen.findByRole("textbox", { name: "All traffic proxy" }), "http://saved.example");
+    const panel = screen.getByRole("tabpanel", { name: "Network" });
+    const allProxy = await within(panel).findByRole("textbox", { name: "All traffic proxy" });
+    expect(allProxy).toBeVisible();
+    expect(allProxy).toBeEnabled();
+    fireEvent.change(allProxy, { target: { value: "http://saved.example" } });
 
-    await user.click(screen.getByRole("button", { name: "Save network settings" }));
+    await user.click(within(panel).getByRole("button", { name: "Save network settings" }));
 
     const restartDialog = await screen.findByRole("dialog", { name: "Restart EasyResearch?" });
     const settingsDialog = document.querySelector<HTMLElement>(
@@ -335,7 +347,7 @@ describe("SettingsModal", () => {
     await user.click(within(restartDialog).getByRole("button", { name: "Later" }));
 
     expect(screen.queryByRole("dialog", { name: "Restart EasyResearch?" })).toBeNull();
-    const persistentAction = screen.getByRole("button", { name: "Restart required" });
+    const persistentAction = within(panel).getByRole("button", { name: "Restart required" });
     expect(persistentAction).toBeVisible();
     expect(persistentAction).toBeEnabled();
     await user.click(persistentAction);
@@ -359,10 +371,15 @@ describe("SettingsModal", () => {
     const user = userEvent.setup();
     renderSettings(() => {}, onClose);
     await user.click(screen.getByRole("tab", { name: "Network" }));
-    const all = await screen.findByRole("textbox", { name: "All traffic proxy" });
-    if (!repairOnly) await user.type(all, "http://draft.example");
+    const panel = screen.getByRole("tabpanel", { name: "Network" });
+    const all = await within(panel).findByRole("textbox", { name: "All traffic proxy" });
+    if (!repairOnly) {
+      expect(all).toBeVisible();
+      expect(all).toBeEnabled();
+      fireEvent.change(all, { target: { value: "http://draft.example" } });
+    }
 
-    await user.click(screen.getByRole("button", { name: "Save network settings" }));
+    await user.click(within(panel).getByRole("button", { name: "Save network settings" }));
     expect(api.patchNetworkProxySettings).toHaveBeenCalledOnce();
     await user.click(screen.getByRole("button", { name: "Close" }));
 
@@ -400,17 +417,19 @@ describe("SettingsModal", () => {
     const user = userEvent.setup();
     renderSettings();
     await user.click(screen.getByRole("tab", { name: "Network" }));
-    const draft = await screen.findByRole("textbox", { name: "All traffic proxy" });
-    await user.clear(draft);
-    await user.type(draft, "http://draft.example");
+    const panel = screen.getByRole("tabpanel", { name: "Network" });
+    const draft = await within(panel).findByRole("textbox", { name: "All traffic proxy" });
+    expect(draft).toBeVisible();
+    expect(draft).toBeEnabled();
+    fireEvent.change(draft, { target: { value: "http://draft.example" } });
 
-    const restart = screen.getByRole("button", { name: "Restart required" });
+    const restart = within(panel).getByRole("button", { name: "Restart required" });
     expect(restart).toBeDisabled();
     fireEvent.click(restart);
     expect(screen.queryByRole("dialog", { name: "Restart EasyResearch?" })).toBeNull();
     expect(draft).toHaveValue("http://draft.example");
 
-    await user.click(screen.getByRole("button", { name: "Save network settings" }));
+    await user.click(within(panel).getByRole("button", { name: "Save network settings" }));
     expect(api.patchNetworkProxySettings).toHaveBeenCalledOnce();
     expect(restart).toBeDisabled();
     fireEvent.click(restart);
@@ -433,7 +452,8 @@ describe("SettingsModal", () => {
     await user.click(within(choice).getByRole("button", { name: "Later" }));
     expect(restart).toBeEnabled();
     await user.click(restart);
-    await user.click(screen.getByRole("button", { name: "Restart now" }));
+    const reopenedChoice = screen.getByRole("dialog", { name: "Restart EasyResearch?" });
+    await user.click(within(reopenedChoice).getByRole("button", { name: "Restart now" }));
     await waitFor(() => expect(api.restartRuntime).toHaveBeenCalledOnce());
   });
 
@@ -456,9 +476,11 @@ describe("SettingsModal", () => {
       </PreferencesProvider>,
     );
     await user.click(screen.getByRole("tab", { name: "Network" }));
-    await user.click(await screen.findByRole("button", { name: "Restart required" }));
+    const panel = screen.getByRole("tabpanel", { name: "Network" });
+    await user.click(await within(panel).findByRole("button", { name: "Restart required" }));
+    const choice = screen.getByRole("dialog", { name: "Restart EasyResearch?" });
 
-    await user.click(screen.getByRole("button", { name: "Restart now" }));
+    await user.click(within(choice).getByRole("button", { name: "Restart now" }));
 
     await waitFor(() => expect(onRuntimeRestartAccepted).toHaveBeenCalledWith("boot-old"));
     expect(api.restartRuntime).toHaveBeenCalledOnce();
@@ -486,7 +508,8 @@ describe("SettingsModal", () => {
       </PreferencesProvider>,
     );
     await user.click(screen.getByRole("tab", { name: "Network" }));
-    await user.click(await screen.findByRole("button", { name: "Restart required" }));
+    const panel = screen.getByRole("tabpanel", { name: "Network" });
+    await user.click(await within(panel).findByRole("button", { name: "Restart required" }));
     const choice = screen.getByRole("dialog", { name: "Restart EasyResearch?" });
 
     await user.click(within(choice).getByRole("button", { name: "Restart now" }));
@@ -518,8 +541,10 @@ describe("SettingsModal", () => {
     const user = userEvent.setup();
     renderSettings();
     await user.click(screen.getByRole("tab", { name: "Network" }));
-    await user.click(await screen.findByRole("button", { name: "Restart required" }));
-    await user.click(screen.getByRole("button", { name: "Restart now" }));
+    const panel = screen.getByRole("tabpanel", { name: "Network" });
+    await user.click(await within(panel).findByRole("button", { name: "Restart required" }));
+    const choice = screen.getByRole("dialog", { name: "Restart EasyResearch?" });
+    await user.click(within(choice).getByRole("button", { name: "Restart now" }));
     const busy = await screen.findByRole("dialog", { name: "Stop active work and restart?" });
 
     await user.click(within(busy).getByRole("button", { name: "Cancel" }));
@@ -553,14 +578,16 @@ describe("SettingsModal", () => {
       </PreferencesProvider>,
     );
     await user.click(screen.getByRole("tab", { name: "Network" }));
-    await user.click(await screen.findByRole("button", { name: "Restart required" }));
+    const panel = screen.getByRole("tabpanel", { name: "Network" });
+    await user.click(await within(panel).findByRole("button", { name: "Restart required" }));
+    const choice = screen.getByRole("dialog", { name: "Restart EasyResearch?" });
 
-    await user.click(screen.getByRole("button", { name: "Restart now" }));
+    await user.click(within(choice).getByRole("button", { name: "Restart now" }));
 
-    const alert = await screen.findByRole("alert");
+    const alert = await within(choice).findByRole("alert");
     expect(alert).toHaveTextContent("Could not start the restart.");
     expect(alert).not.toHaveTextContent(/private|RUNTIME_RESTARTING/);
-    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await user.click(within(choice).getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(onRuntimeRestartAccepted).toHaveBeenCalledWith("boot-old"));
     expect(api.restartRuntime).toHaveBeenNthCalledWith(1, false);
     expect(api.restartRuntime).toHaveBeenNthCalledWith(2, false);
@@ -572,7 +599,9 @@ describe("SettingsModal", () => {
     renderSettings(() => {}, onClose);
     await user.click(screen.getByRole("tab", { name: "Network" }));
     const draft = await screen.findByRole("textbox", { name: "All traffic proxy" });
-    await user.type(draft, "http://draft.example");
+    expect(draft).toBeVisible();
+    expect(draft).toBeEnabled();
+    fireEvent.change(draft, { target: { value: "http://draft.example" } });
 
     await user.click(screen.getByRole("button", { name: "Close" }));
 
@@ -587,7 +616,8 @@ describe("SettingsModal", () => {
     expect(onClose).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: "Close" }));
-    await user.click(screen.getByRole("button", { name: "Discard changes" }));
+    const reopenedDiscard = screen.getByRole("dialog", { name: "Discard network changes?" });
+    await user.click(within(reopenedDiscard).getByRole("button", { name: "Discard changes" }));
     expect(onClose).toHaveBeenCalledOnce();
   });
 
@@ -596,14 +626,18 @@ describe("SettingsModal", () => {
     const user = userEvent.setup();
     renderSettings(() => {}, onClose);
     await user.click(screen.getByRole("tab", { name: "Network" }));
-    await user.type(await screen.findByRole("textbox", { name: "All traffic proxy" }), "http://draft.example");
+    const draft = await screen.findByRole("textbox", { name: "All traffic proxy" });
+    expect(draft).toBeVisible();
+    expect(draft).toBeEnabled();
+    fireEvent.change(draft, { target: { value: "http://draft.example" } });
     const settings = document.querySelector<HTMLElement>('[role="dialog"][aria-labelledby="settings-dialog-title"]')!;
 
     fireEvent.mouseDown(settings.parentElement!);
 
-    expect(screen.getByRole("dialog", { name: "Discard network changes?" })).toBeVisible();
+    const discard = screen.getByRole("dialog", { name: "Discard network changes?" });
+    expect(discard).toBeVisible();
     expect(onClose).not.toHaveBeenCalled();
-    await user.click(screen.getByRole("button", { name: "Discard changes" }));
+    await user.click(within(discard).getByRole("button", { name: "Discard changes" }));
     expect(onClose).toHaveBeenCalledOnce();
   });
 
@@ -613,7 +647,9 @@ describe("SettingsModal", () => {
     renderSettings(onOpenConfig);
     await user.click(screen.getByRole("tab", { name: "Network" }));
     const draft = await screen.findByRole("textbox", { name: "All traffic proxy" });
-    await user.type(draft, "http://draft.example");
+    expect(draft).toBeVisible();
+    expect(draft).toBeEnabled();
+    fireEvent.change(draft, { target: { value: "http://draft.example" } });
 
     await user.click(screen.getByRole("button", { name: /open config browser/i }));
     const discard = screen.getByRole("dialog", { name: "Discard network changes?" });
@@ -622,7 +658,8 @@ describe("SettingsModal", () => {
     expect(draft).toHaveValue("http://draft.example");
 
     await user.click(screen.getByRole("button", { name: /open config browser/i }));
-    await user.click(screen.getByRole("button", { name: "Discard changes" }));
+    const reopenedDiscard = screen.getByRole("dialog", { name: "Discard network changes?" });
+    await user.click(within(reopenedDiscard).getByRole("button", { name: "Discard changes" }));
     expect(onOpenConfig).toHaveBeenCalledOnce();
   });
 
@@ -645,7 +682,9 @@ describe("SettingsModal", () => {
     );
     await user.click(screen.getByRole("tab", { name: "Network" }));
     const draft = await screen.findByRole("textbox", { name: "All traffic proxy" });
-    await user.type(draft, "http://draft.example");
+    expect(draft).toBeVisible();
+    expect(draft).toBeEnabled();
+    fireEvent.change(draft, { target: { value: "http://draft.example" } });
     expect(guard).not.toBeNull();
     expect(guard!.shouldBlock()).toBe(true);
 
@@ -658,7 +697,8 @@ describe("SettingsModal", () => {
     expect(guard!.shouldBlock()).toBe(true);
 
     act(() => guard!.requestClose());
-    await user.click(screen.getByRole("button", { name: "Discard changes" }));
+    const reopenedDiscard = screen.getByRole("dialog", { name: "Discard network changes?" });
+    await user.click(within(reopenedDiscard).getByRole("button", { name: "Discard changes" }));
     expect(onClose).toHaveBeenCalledOnce();
   });
 
@@ -679,7 +719,10 @@ describe("SettingsModal", () => {
       </PreferencesProvider>,
     );
     await user.click(screen.getByRole("tab", { name: "Network" }));
-    await user.type(await screen.findByRole("textbox", { name: "All traffic proxy" }), "http://draft.example");
+    const draft = await screen.findByRole("textbox", { name: "All traffic proxy" });
+    expect(draft).toBeVisible();
+    expect(draft).toBeEnabled();
+    fireEvent.change(draft, { target: { value: "http://draft.example" } });
     await user.click(screen.getByRole("tab", { name: "Model providers" }));
     await user.click(screen.getByRole("button", { name: /^Connect providers/ }));
     expect(screen.getByRole("dialog", { name: "Connect providers" })).toBeVisible();
@@ -755,9 +798,10 @@ describe("SettingsModal", () => {
     renderSettings(onOpenConfig);
     await user.click(screen.getByRole("tab", { name: "Network" }));
 
-    const alert = await screen.findByRole("alert");
+    const panel = screen.getByRole("tabpanel", { name: "Network" });
+    const alert = await within(panel).findByRole("alert");
     expect(alert).toHaveTextContent("The stored Network settings are invalid");
-    expect(screen.getByRole("button", { name: "Save network settings" })).toBeDisabled();
+    expect(within(panel).getByRole("button", { name: "Save network settings" })).toBeDisabled();
     await user.click(within(alert).getByRole("button", { name: /open config browser/i }));
 
     expect(onOpenConfig).toHaveBeenCalledOnce();
@@ -807,7 +851,9 @@ describe("SettingsModal", () => {
     await user.click(within(choice).getByRole("button", { name: "Later" }));
 
     const draft = screen.getByRole("textbox", { name: "All traffic proxy" });
-    await user.type(draft, "http://draft.example");
+    expect(draft).toBeVisible();
+    expect(draft).toBeEnabled();
+    fireEvent.change(draft, { target: { value: "http://draft.example" } });
     await user.click(screen.getByRole("button", { name: "Close" }));
     const discard = screen.getByRole("dialog", { name: "Discard network changes?" });
     expect(discard.parentElement).toHaveClass("p-0", "min-[820px]:p-4");
@@ -837,7 +883,9 @@ describe("SettingsModal", () => {
     renderSettings();
     await user.click(screen.getByRole("tab", { name: "网络" }));
     const draft = await screen.findByRole("textbox", { name: "全部代理" });
-    await user.type(draft, "http://draft.example");
+    expect(draft).toBeVisible();
+    expect(draft).toBeEnabled();
+    fireEvent.change(draft, { target: { value: "http://draft.example" } });
 
     await user.click(screen.getByRole("button", { name: "关闭" }));
     const discard = screen.getByRole("dialog", { name: "放弃网络更改？" });
@@ -1256,17 +1304,19 @@ describe("SettingsModal", () => {
   it("shows stage agents with their configured model while the Research Assistant has no disable switch", async () => {
     const user = userEvent.setup();
     renderSettings();
-    await openAgentConfig(user, "Search");
-    expect(screen.getByRole("combobox", { name: "Select model for Search" })).toHaveTextContent("openai/gpt-4o");
-    expect(screen.getByRole("switch", { name: "Enable Search" })).toBeTruthy();
-    await user.click(screen.getByRole("button", { name: "Close editor" }));
-    await openAgentConfig(user, "Writing");
-    expect(screen.getByRole("combobox", { name: "Select model for Writing" })).toHaveTextContent(
+    const search = await openAgentConfig(user, "Search");
+    expect(within(search).getByRole("combobox", { name: "Select model for Search" })).toHaveTextContent(
+      "openai/gpt-4o",
+    );
+    expect(within(search).getByRole("switch", { name: "Enable Search" })).toBeTruthy();
+    await user.click(within(search).getByRole("button", { name: "Close editor" }));
+    const writing = await openAgentConfig(user, "Writing");
+    expect(within(writing).getByRole("combobox", { name: "Select model for Writing" })).toHaveTextContent(
       "inherit (Research Assistant's model)",
     );
-    await user.click(screen.getByRole("button", { name: "Close editor" }));
-    await openAgentConfig(user, "Research Assistant");
-    expect(screen.getByRole("combobox", { name: "Select model for Research Assistant" })).toHaveTextContent(
+    await user.click(within(writing).getByRole("button", { name: "Close editor" }));
+    const assistant = await openAgentConfig(user, "Research Assistant");
+    expect(within(assistant).getByRole("combobox", { name: "Select model for Research Assistant" })).toHaveTextContent(
       "openai/gpt-4o",
     );
     expect(screen.queryByRole("switch", { name: "Enable Research Assistant" })).toBeNull();
@@ -1290,8 +1340,8 @@ describe("SettingsModal", () => {
     ]);
     renderSettings();
 
-    await openAgentConfig(user, "Search");
-    const searchModel = screen.getByRole("combobox", { name: "Select model for Search" });
+    const dialog = await openAgentConfig(user, "Search");
+    const searchModel = within(dialog).getByRole("combobox", { name: "Select model for Search" });
     expect(searchModel).toHaveTextContent("custom/missing-model");
     await user.click(searchModel);
     expect(screen.getByRole("option", { name: "custom/missing-model · Model unavailable" })).toBeTruthy();
@@ -1350,8 +1400,8 @@ describe("SettingsModal", () => {
       },
     ]);
     renderSettings();
-    await openAgentConfig(user, "Research Assistant");
-    const combobox = screen.getByRole("combobox", { name: "Select model for Research Assistant" });
+    const dialog = await openAgentConfig(user, "Research Assistant");
+    const combobox = within(dialog).getByRole("combobox", { name: "Select model for Research Assistant" });
     expect(combobox).toHaveTextContent("openai/gpt-4o");
     await user.click(combobox);
     expect(screen.queryAllByRole("option", { name: /inherit/i })).toHaveLength(0);
@@ -1383,8 +1433,8 @@ describe("SettingsModal", () => {
       },
     ]);
     renderSettings();
-    await openAgentConfig(user, "Research Assistant");
-    const combobox = screen.getByRole("combobox", { name: "Select model for Research Assistant" });
+    const dialog = await openAgentConfig(user, "Research Assistant");
+    const combobox = within(dialog).getByRole("combobox", { name: "Select model for Research Assistant" });
     expect(combobox).toHaveTextContent("deepseek/deepseek-v4-pro");
     await user.click(combobox);
     expect(screen.getAllByRole("option", { name: "deepseek/deepseek-v4-pro" })).toHaveLength(1);
@@ -1409,14 +1459,14 @@ describe("SettingsModal", () => {
       },
     ]);
     renderSettings();
-    await openAgentConfig(user, "Research Assistant");
-    const combobox = screen.getByRole("combobox", { name: "Select model for Research Assistant" });
+    const dialog = await openAgentConfig(user, "Research Assistant");
+    const combobox = within(dialog).getByRole("combobox", { name: "Select model for Research Assistant" });
     expect(combobox).not.toHaveTextContent("openai/gpt-4o");
     expect(screen.queryByText("Automatic (Pi default)")).toBeNull();
-    expect(screen.getByRole("alert")).toHaveTextContent(
+    expect(within(dialog).getByRole("alert")).toHaveTextContent(
       "Could not resolve a default model. Configure a model or credentials.",
     );
-    expect(screen.getByRole("dialog", { name: "Agents" })).not.toHaveTextContent(/\bPi\b/);
+    expect(dialog).not.toHaveTextContent(/\bPi\b/);
   });
 
   it("sets the Research Assistant model through the global Agent patch", async () => {
@@ -1426,12 +1476,12 @@ describe("SettingsModal", () => {
       model: "anthropic/claude-sonnet-4",
     });
     renderSettings();
-    await openAgentConfig(user, "Research Assistant");
-    await selectModelOption(user, "Research Assistant", "anthropic/claude-sonnet-4");
+    const dialog = await openAgentConfig(user, "Research Assistant");
+    await selectModelOption(user, dialog, "Research Assistant", "anthropic/claude-sonnet-4");
     await waitFor(() =>
       expect(api.patchAgent).toHaveBeenCalledWith("research-assistant", { model: "anthropic/claude-sonnet-4" }),
     );
-    expect(screen.getByRole("combobox", { name: "Select model for Research Assistant" })).toHaveTextContent(
+    expect(within(dialog).getByRole("combobox", { name: "Select model for Research Assistant" })).toHaveTextContent(
       "anthropic/claude-sonnet-4",
     );
   });
@@ -1443,8 +1493,8 @@ describe("SettingsModal", () => {
       model: "anthropic/claude-sonnet-4",
     });
     renderSettings();
-    await openAgentConfig(user, "Writing");
-    await selectModelOption(user, "Writing", "anthropic/claude-sonnet-4");
+    const dialog = await openAgentConfig(user, "Writing");
+    await selectModelOption(user, dialog, "Writing", "anthropic/claude-sonnet-4");
     await waitFor(() => expect(api.patchAgent).toHaveBeenCalledWith("writing", { model: "anthropic/claude-sonnet-4" }));
   });
 
@@ -1452,8 +1502,8 @@ describe("SettingsModal", () => {
     const user = userEvent.setup();
     vi.mocked(api.patchAgent).mockResolvedValueOnce({ ...(await api.listAgents())[1]!, thinking: "low" });
     renderSettings();
-    await openAgentConfig(user, "Search");
-    const searchThinking = screen.getByRole("combobox", { name: "Select thinking for Search" });
+    const dialog = await openAgentConfig(user, "Search");
+    const searchThinking = within(dialog).getByRole("combobox", { name: "Select thinking for Search" });
     expect(searchThinking).toHaveValue("high");
     await user.selectOptions(searchThinking, "low");
     await waitFor(() => expect(api.patchAgent).toHaveBeenCalledWith("search", { thinking: "low" }));
@@ -1463,8 +1513,8 @@ describe("SettingsModal", () => {
     const user = userEvent.setup();
     vi.mocked(api.patchAgent).mockResolvedValueOnce({ ...(await api.listAgents())[1]!, thinking: undefined });
     renderSettings();
-    await openAgentConfig(user, "Search");
-    const searchThinking = screen.getByRole("combobox", { name: "Select thinking for Search" });
+    const dialog = await openAgentConfig(user, "Search");
+    const searchThinking = within(dialog).getByRole("combobox", { name: "Select thinking for Search" });
     await user.selectOptions(searchThinking, "");
     await waitFor(() => expect(api.patchAgent).toHaveBeenCalledWith("search", { thinking: null }));
   });
@@ -1472,12 +1522,14 @@ describe("SettingsModal", () => {
   it("labels empty thinking as highest-supported for Research Assistant and inherited for stages", async () => {
     const user = userEvent.setup();
     renderSettings();
-    await openAgentConfig(user, "Search");
-    const searchThinking = screen.getByRole("combobox", { name: "Select thinking for Search" });
+    const search = await openAgentConfig(user, "Search");
+    const searchThinking = within(search).getByRole("combobox", { name: "Select thinking for Search" });
     expect(within(searchThinking).getByText("inherit (Research Assistant's thinking)")).toBeTruthy();
-    await user.click(screen.getByRole("button", { name: "Close editor" }));
-    await openAgentConfig(user, "Research Assistant");
-    const assistantThinking = screen.getByRole("combobox", { name: "Select thinking for Research Assistant" });
+    await user.click(within(search).getByRole("button", { name: "Close editor" }));
+    const assistant = await openAgentConfig(user, "Research Assistant");
+    const assistantThinking = within(assistant).getByRole("combobox", {
+      name: "Select thinking for Research Assistant",
+    });
     expect(within(assistantThinking).getByText("Automatic (highest supported)")).toBeTruthy();
     expect(within(assistantThinking).getByRole("option", { name: "high" })).toBeTruthy();
     expect(within(assistantThinking).queryByRole("option", { name: "max" })).toBeNull();
@@ -1488,8 +1540,8 @@ describe("SettingsModal", () => {
     const user = userEvent.setup();
     vi.mocked(api.patchAgent).mockRejectedValueOnce(new Error("boom"));
     renderSettings();
-    await openAgentConfig(user, "Search");
-    await selectModelOption(user, "Search", "inherit (Research Assistant's model)");
+    const dialog = await openAgentConfig(user, "Search");
+    await selectModelOption(user, dialog, "Search", "inherit (Research Assistant's model)");
     expect(await screen.findByText(/boom/)).toBeTruthy();
   });
 
@@ -1983,12 +2035,16 @@ describe("SettingsModal", () => {
   it("opens and saves a complete agent Markdown definition", async () => {
     const user = userEvent.setup();
     renderSettings();
-    await openAgentConfig(user, "Search");
-    await user.click(screen.getByRole("button", { name: "Edit Search" }));
-    const editor = await screen.findByRole("textbox", { name: /agent markdown/i });
-    await user.clear(editor);
-    await user.type(editor, "---\nname: search\ndescription: Updated\nenable: true\n---\nNew prompt\n");
-    await user.click(screen.getByRole("button", { name: /save agent/i }));
+    const config = await openAgentConfig(user, "Search");
+    await user.click(within(config).getByRole("button", { name: "Edit Search" }));
+    const dialog = await screen.findByRole("dialog", { name: "search" });
+    const editor = within(dialog).getByRole("textbox", { name: /agent markdown/i });
+    expect(editor).toBeVisible();
+    expect(editor).toBeEnabled();
+    fireEvent.change(editor, {
+      target: { value: "---\nname: search\ndescription: Updated\nenable: true\n---\nNew prompt\n" },
+    });
+    await user.click(within(dialog).getByRole("button", { name: /save agent/i }));
     expect(api.writeAgentResource).toHaveBeenCalledWith(
       "search",
       "---\nname: search\ndescription: Updated\nenable: true\n---\nNew prompt\n",
@@ -2014,10 +2070,12 @@ describe("SettingsModal", () => {
     renderSettings();
     await selectCategory(user, "Skills and tools");
     await user.click(await screen.findByRole("button", { name: /edit skill.*paper-search/i }));
-    const editor = await screen.findByRole("textbox", { name: /skill markdown/i });
-    await user.clear(editor);
-    await user.type(editor, "# Updated skill\n");
-    await user.click(screen.getByRole("button", { name: /save skill/i }));
+    const dialog = await screen.findByRole("dialog", { name: "paper-search" });
+    const editor = within(dialog).getByRole("textbox", { name: /skill markdown/i });
+    expect(editor).toBeVisible();
+    expect(editor).toBeEnabled();
+    fireEvent.change(editor, { target: { value: "# Updated skill\n" } });
+    await user.click(within(dialog).getByRole("button", { name: /save skill/i }));
     expect(api.writeSkillResource).toHaveBeenCalledWith("paper-search", "# Updated skill\n");
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "paper-search" })).toBeNull());
   });
