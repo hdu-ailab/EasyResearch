@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { WebTreeEntryDto } from "../../web/contracts";
 import { buildMessageTreeMeta, versionTarget } from "./message-tree";
-import type { SessionMessageView } from "./session-reducer";
+import { fromSnapshot, type SessionMessageView } from "./session-reducer";
 
 const entry = (id: string, parentId: string | null, role: "user" | "assistant", text = ""): WebTreeEntryDto => ({
   id,
@@ -17,8 +17,9 @@ const otherEntry = (
   extra: Partial<Pick<WebTreeEntryDto, "firstKeptEntryId" | "text">> = {},
 ): WebTreeEntryDto => ({ id, parentId, role: "other", kind: "other", text: "", ...extra });
 
-const view = (key: string, role: "user" | "assistant"): SessionMessageView => ({
+const view = (key: string, role: "user" | "assistant", entryId?: string): SessionMessageView => ({
   key,
+  ...(entryId === undefined ? {} : { entryId }),
   role,
   text: "",
   streaming: false,
@@ -27,6 +28,95 @@ const view = (key: string, role: "user" | "assistant"): SessionMessageView => ({
 });
 
 describe("buildMessageTreeMeta", () => {
+  it.each([false, true])("keeps persisted ancestry after tool-only messages (usage: %s)", (withUsage) => {
+    const state = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
+      session: { id: "s", status: "ready", isStreaming: false },
+      subagents: [],
+      timeline: [
+        { kind: "message", entryId: "u1", message: { role: "user", content: "Question" } },
+        {
+          kind: "message",
+          entryId: "call",
+          message: { role: "assistant", content: [{ type: "toolCall", id: "tool", name: "bash", arguments: {} }] },
+        },
+        { kind: "message", entryId: "result", message: { role: "toolResult", toolCallId: "tool", content: "result" } },
+        { kind: "message", entryId: "answer", message: { role: "assistant", content: "Answer" } },
+        { kind: "message", entryId: "u2", message: { role: "user", content: "Follow-up" } },
+      ],
+      inlineUsage: withUsage
+        ? [
+            {
+              id: "call",
+              sessionId: "s",
+              source: "assistant",
+              timestamp: "2026-09-07T00:00:00Z",
+              anchor: { kind: "message", messageEntryId: "call" },
+              usage: {
+                input: 1,
+                output: 1,
+                cacheRead: 0,
+                cacheWrite: 0,
+                totalTokens: 2,
+                cacheHitRate: 0,
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+              },
+            },
+          ]
+        : [],
+    } as never);
+    const tree = [
+      entry("u1", null, "user"),
+      entry("call", "u1", "assistant"),
+      otherEntry("result", "call"),
+      entry("answer", "result", "assistant"),
+      entry("u2-old", "answer", "user"),
+      entry("u2", "answer", "user"),
+    ];
+    const meta = buildMessageTreeMeta(state.messages, tree, "u2");
+    expect(meta.u1).toEqual({ entryId: "u1" });
+    expect(meta.answer).toEqual({ entryId: "answer" });
+    expect(meta.u2).toEqual({ entryId: "u2", version: { index: 2, count: 2 } });
+    expect(meta["usage:call"]).toBeUndefined();
+  });
+
+  it("keeps the full persisted active branch editable across compaction", () => {
+    const tree = [
+      entry("u1", null, "user"),
+      entry("a1", "u1", "assistant"),
+      entry("u2", "a1", "user"),
+      otherEntry("compact", "u2", { firstKeptEntryId: "u2" }),
+      entry("a2", "compact", "assistant"),
+    ];
+    const messages = [view("u1", "user"), view("a1", "assistant"), view("u2", "user"), view("a2", "assistant")].map(
+      (message) => ({ ...message, entryId: message.key }),
+    );
+    const meta = buildMessageTreeMeta(messages, tree, "a2");
+    for (const message of messages) expect(meta[message.key]?.entryId).toBe(message.entryId);
+  });
+
+  it("does not guess ancestry for persisted ids absent from the active branch", () => {
+    const meta = buildMessageTreeMeta(
+      [{ ...view("old", "user"), entryId: "old" }],
+      [entry("old", null, "user"), entry("current", null, "user")],
+      "current",
+    );
+    expect(meta.old).toBeUndefined();
+  });
+
+  it("keeps live user ancestry independent of hidden assistant tool calls", () => {
+    const messages = [view("live-u1", "user"), view("live-answer", "assistant"), view("live-u2", "user")];
+    const tree = [
+      entry("u1", null, "user"),
+      entry("call", "u1", "assistant"),
+      entry("answer", "call", "assistant"),
+      entry("u2", "answer", "user"),
+    ];
+    const meta = buildMessageTreeMeta(messages, tree, "u2");
+    expect(meta["live-u1"]).toEqual({ entryId: "u1" });
+    expect(meta["live-u2"]).toEqual({ entryId: "u2" });
+  });
+
   // root has two version siblings: m1(user) -> a1(assistant) and
   // m2(user, edited) -> a2(assistant). The leaf determines which version
   // appears in the transcript.
@@ -37,15 +127,15 @@ describe("buildMessageTreeMeta", () => {
     entry("a2", "m2", "assistant", "r2"),
   ];
 
-  it("zips leaf-path entries with view messages and computes version groups", () => {
-    const messages = [view("k1", "user"), view("k2", "assistant")];
+  it("joins active leaf-path entries with view messages and computes version groups", () => {
+    const messages = [view("k1", "user", "m2"), view("k2", "assistant", "a2")];
     const meta = buildMessageTreeMeta(messages, tree, "a2");
     expect(meta.k1).toEqual({ entryId: "m2", version: { index: 2, count: 2 } });
     expect(meta.k2).toEqual({ entryId: "a2" });
   });
 
   it("reflects the active version when the older branch is the leaf", () => {
-    const messages = [view("k1", "user"), view("k2", "assistant")];
+    const messages = [view("k1", "user", "m1"), view("k2", "assistant", "a1")];
     const meta = buildMessageTreeMeta(messages, tree, "a1");
     expect(meta.k1).toEqual({ entryId: "m1", version: { index: 1, count: 2 } });
     expect(meta.k2).toEqual({ entryId: "a1" });
@@ -66,7 +156,12 @@ describe("buildMessageTreeMeta", () => {
       entry("m2", "t2", "user"),
       entry("a2", "m2", "assistant"),
     ];
-    const messages = [view("k1", "user"), view("k2", "assistant"), view("k3", "user"), view("k4", "assistant")];
+    const messages = [
+      view("k1", "user", "m1"),
+      view("k2", "assistant", "a1"),
+      view("k3", "user", "m2"),
+      view("k4", "assistant", "a2"),
+    ];
     const meta = buildMessageTreeMeta(messages, tree, "a2");
     expect(meta.k1).toEqual({ entryId: "m1" });
     expect(meta.k2).toEqual({ entryId: "a1" });
@@ -74,7 +169,7 @@ describe("buildMessageTreeMeta", () => {
     expect(meta.k4).toEqual({ entryId: "a2" });
   });
 
-  it("mirrors pi compaction semantics (summarized entries omitted)", () => {
+  it("maps persisted ids even when only part of the branch has visible bubbles", () => {
     const tree = [
       entry("m1", null, "user"),
       entry("a1", "m1", "assistant"),
@@ -82,8 +177,7 @@ describe("buildMessageTreeMeta", () => {
       entry("m2", "c1", "user"),
       entry("a2", "m2", "assistant"),
     ];
-    // transcript context: [compaction summary (system), m2, a2] -> zip sees [m2, a2]
-    const messages = [view("k1", "user"), view("k2", "assistant")];
+    const messages = [view("k1", "user", "m2"), view("k2", "assistant", "a2")];
     const meta = buildMessageTreeMeta(messages, tree, "a2");
     expect(meta.k1).toEqual({ entryId: "m2" });
     expect(meta.k2).toEqual({ entryId: "a2" });
@@ -97,7 +191,12 @@ describe("buildMessageTreeMeta", () => {
       entry("m2", "tr1", "user"),
       entry("a2", "m2", "assistant"),
     ];
-    const messages = [view("k1", "user"), view("k2", "assistant"), view("k3", "user"), view("k4", "assistant")];
+    const messages = [
+      view("k1", "user", "m1"),
+      view("k2", "assistant", "a1"),
+      view("k3", "user", "m2"),
+      view("k4", "assistant", "a2"),
+    ];
     const meta = buildMessageTreeMeta(messages, tree, "a2");
     expect(meta.k1).toEqual({ entryId: "m1" });
     expect(meta.k2).toEqual({ entryId: "a1" });
@@ -106,7 +205,11 @@ describe("buildMessageTreeMeta", () => {
   });
 
   it("does not let standalone usage rows shift message ancestry", () => {
-    const messages = [view("k1", "user"), { ...view("usage", "assistant"), usageOnly: true }, view("k2", "assistant")];
+    const messages = [
+      view("k1", "user", "m1"),
+      { ...view("usage", "assistant"), usageOnly: true },
+      view("k2", "assistant", "a1"),
+    ];
     const meta = buildMessageTreeMeta(messages, [entry("m1", null, "user"), entry("a1", "m1", "assistant")], "a1");
     expect(meta.k1).toEqual({ entryId: "m1" });
     expect(meta.k2).toEqual({ entryId: "a1" });

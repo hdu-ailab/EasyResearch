@@ -9,7 +9,8 @@ describe("parseMarkdownBlocks", () => {
     expect(second).toEqual(first);
     expect(first.every((block) => /^[a-f0-9]{64}$/.test(block.signature))).toBe(true);
     expect(JSON.stringify(first)).toContain("katex");
-    expect(JSON.stringify(first)).not.toContain("script");
+    expect(JSON.stringify(first)).not.toContain('"type":"raw"');
+    expect(JSON.stringify(first)).not.toContain('"tagName":"script"');
   });
 
   it("keeps mermaid as a language-marked code node", async () => {

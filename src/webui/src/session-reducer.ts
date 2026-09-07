@@ -104,7 +104,7 @@ export interface SessionViewState {
   summaries: SessionSummaryView[];
   /** Increments whenever an authoritative snapshot seeds transcript history. */
   hydrationRevision: number;
-  /** Changes only when the visible message-row structure changes. */
+  /** Changes when message rows or their persisted ancestry change within a hydration. */
   messageStructureRevision: number;
   /** True while an agent run is active, independently of message streaming. */
   isStreaming: boolean;
@@ -670,10 +670,11 @@ function attachPersistedEntryId(state: SessionViewState, value: unknown): Sessio
   const identity = identityFor(message);
   let changed = false;
   const messages = state.messages.map((candidate) => {
-    if (identity === undefined || candidate.identity !== identity) return candidate;
+    if (identity === undefined || candidate.identity !== identity || candidate.entryId === entry.id) return candidate;
     changed = true;
     return { ...candidate, entryId: entry.id as string };
   });
+  const messageStructureRevision = state.messageStructureRevision + (changed ? 1 : 0);
   let tools = state.tools;
   const content = message.content;
   if (message.role === "assistant" && Array.isArray(content)) {
@@ -703,7 +704,7 @@ function attachPersistedEntryId(state: SessionViewState, value: unknown): Sessio
       return { ...tool, resultEntryId: entry.id as string };
     });
   }
-  return changed ? { ...state, messages, tools } : state;
+  return changed ? { ...state, messages, tools, messageStructureRevision } : state;
 }
 
 export function applySubagentSummaries(

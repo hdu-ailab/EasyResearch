@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MarkdownBlock } from "./MarkdownBlock";
 import {
@@ -40,6 +40,23 @@ class ParsingWorker implements MarkdownWorkerLike {
   terminate() {}
 }
 
+class DelayedWorker extends ParsingWorker {
+  pending: MarkdownParseRequest[] = [];
+
+  override postMessage(request: MarkdownParseRequest) {
+    this.pending.push(request);
+  }
+
+  async respond() {
+    await Promise.resolve();
+    const request = this.pending.shift();
+    if (!request) throw new Error("No pending Markdown parse");
+    const blocks = await parseMarkdownBlocks(request.source);
+    const response: MarkdownWorkerResponse = { ...request, type: "parsed", blocks };
+    for (const listener of this.message) listener({ data: response } as MessageEvent<unknown>);
+  }
+}
+
 describe("MarkdownBlock", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -71,5 +88,49 @@ describe("MarkdownBlock", () => {
     render(<MarkdownBlock scope="session" cacheKey="message" text="**cached**" />);
     expect(await screen.findByText("cached")).toBeTruthy();
     expect(worker.requests).toBe(1);
+  });
+
+  it("shows every unparsed streaming suffix while preserving blocks and rejecting stale results", async () => {
+    const worker = new DelayedWorker();
+    configureMarkdownWorkerFactoryForTests(() => worker);
+    const { container, rerender } = render(
+      <MarkdownBlock scope="session" cacheKey="message" text="**seed**" streaming />,
+    );
+    await act(() => worker.respond());
+    const seed = container.querySelector("strong");
+    expect(seed?.textContent).toBe("seed");
+    let suffix = "\n\none";
+    const update = () =>
+      rerender(<MarkdownBlock scope="session" cacheKey="message" text={`**seed**${suffix}`} streaming />);
+    update();
+    for (const token of [" two", " three", " <img src=x onerror=alert(1)>"]) {
+      suffix += token;
+      update();
+      // Complete the previous request only after a newer source is already queued.
+      await act(() => worker.respond());
+      expect(container.textContent).toBe(`seed${suffix}`);
+      expect(container.querySelector("strong")).toBe(seed);
+      expect(container.querySelector("img")).toBeNull();
+    }
+    await act(() => worker.respond());
+    expect(container.querySelector("[data-markdown-source-length]")?.getAttribute("data-markdown-source-length")).toBe(
+      String(`**seed**${suffix}`.length),
+    );
+    expect(container.querySelector("strong")).toBe(seed);
+    expect(container.textContent).toContain("one two three");
+  });
+
+  it("does not retain a parsed prefix when the source is replaced", async () => {
+    const worker = new DelayedWorker();
+    configureMarkdownWorkerFactoryForTests(() => worker);
+    const { container, rerender } = render(
+      <MarkdownBlock scope="session" cacheKey="message" text="**old**" streaming />,
+    );
+    await act(() => worker.respond());
+    rerender(<MarkdownBlock scope="session" cacheKey="message" text="**replacement**" streaming />);
+    expect(container.textContent).toBe("**replacement**");
+    expect(container.querySelector("strong")).toBeNull();
+    await act(() => worker.respond());
+    expect(container.querySelector("strong")?.textContent).toBe("replacement");
   });
 });

@@ -8,7 +8,15 @@ import { unified } from "unified";
 import { removePosition } from "unist-util-remove-position";
 import type { MarkdownWorkerBlock } from "./protocol";
 
-const processor = unified().use(remarkParse).use(remarkGfm).use(remarkMath).use(remarkRehype).use(rehypeKatex);
+const processor = unified()
+  .use(remarkParse)
+  .use(remarkGfm)
+  .use(remarkMath)
+  .use(remarkRehype, {
+    // ReactMarkdown displays raw HTML as text without executing or dropping it.
+    handlers: { html: (_state, node) => ({ type: "text", value: node.value }) },
+  })
+  .use(rehypeKatex);
 
 function hexadecimal(bytes: ArrayBuffer): string {
   return [...new Uint8Array(bytes)].map((value) => value.toString(16).padStart(2, "0")).join("");

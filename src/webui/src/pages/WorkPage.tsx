@@ -230,7 +230,7 @@ export function WorkPage({
   const resizeSettleFrame = useRef<number | null>(null);
   const rowRef = useRef<HTMLDivElement>(null);
   const previousPanel = useRef(panel);
-  const structuredMessages = useRef({ revision: -1, messages: emptyView.messages });
+  const structuredMessages = useRef({ revision: -1, hydration: -1, messages: emptyView.messages });
 
   const handleWorkEvent = useCallback(
     (event: unknown) => {
@@ -305,9 +305,13 @@ export function WorkPage({
     onSupervisorEvent: handleSupervisorEvent,
   });
   const sessionView = connection.view;
-  if (structuredMessages.current.revision !== sessionView.messageStructureRevision) {
+  if (
+    structuredMessages.current.revision !== sessionView.messageStructureRevision ||
+    structuredMessages.current.hydration !== sessionView.hydrationRevision
+  ) {
     structuredMessages.current = {
       revision: sessionView.messageStructureRevision,
+      hydration: sessionView.hydrationRevision,
       messages: sessionView.messages,
     };
   }

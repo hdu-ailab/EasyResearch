@@ -795,6 +795,16 @@ describe("session reducer", () => {
     expect(state.messageStructureRevision).toBeGreaterThan(0);
   });
 
+  it("invalidates ancestry metadata when a live message receives its persisted entry id", () => {
+    const message = { role: "user", timestamp: 42, content: "Question" };
+    const started = reduceSessionEvent(emptyState, { type: "message_start", message } as never);
+    const appended = { type: "entry_appended", entry: { type: "message", id: "entry-user", message } } as never;
+    const persisted = reduceSessionEvent(started, appended);
+    expect(persisted.messageStructureRevision).not.toBe(started.messageStructureRevision);
+    expect(persisted.messages[0]?.entryId).toBe("entry-user");
+    expect(reduceSessionEvent(persisted, appended).messageStructureRevision).toBe(persisted.messageStructureRevision);
+  });
+
   it("tracks live thinking until thinking ends and keeps text deltas on the same assistant row", () => {
     let state = reduceSessionEvent(emptyState, assistantEvent("message_start", ""));
     state = reduceSessionEvent(state, {

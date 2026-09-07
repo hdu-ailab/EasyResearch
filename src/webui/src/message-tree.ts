@@ -32,13 +32,8 @@ function subtreeLeaf(index: TreeIndex, entryId: string): string {
   }
 }
 
-/**
- * The transcript message list is the session context, which pi builds from
- * the leaf path with compaction semantics (summarized entries before the
- * latest compaction's `firstKeptEntryId` are omitted). Mirror that here so
- * tree entries zip 1:1 onto transcript bubbles (ADR-066).
- */
-function contextPath(byId: Map<string, WebTreeEntryDto>, leafId: string | null): string[] {
+/** ADR-098 displays the complete branch, not Pi's compacted LLM context. */
+function branchPath(byId: Map<string, WebTreeEntryDto>, leafId: string | null): string[] {
   const pathIds: string[] = [];
   let current: string | null = leafId;
   while (current !== null) {
@@ -47,44 +42,27 @@ function contextPath(byId: Map<string, WebTreeEntryDto>, leafId: string | null):
     pathIds.push(current);
     current = entry.parentId;
   }
-  pathIds.reverse();
-  const compaction = pathIds.map((id) => byId.get(id)).find((candidate) => candidate?.firstKeptEntryId !== undefined);
-  if (!compaction?.firstKeptEntryId) return pathIds;
-  const compactionIdx = pathIds.indexOf(compaction.id);
-  const contextIds = [compaction.id];
-  let foundFirstKept = false;
-  for (const id of pathIds.slice(0, compactionIdx)) {
-    if (id === compaction.firstKeptEntryId) foundFirstKept = true;
-    if (foundFirstKept) contextIds.push(id);
-  }
-  contextIds.push(...pathIds.slice(compactionIdx + 1));
-  return contextIds;
+  return pathIds.reverse();
 }
 
-/**
- * Zip the session context (leaf-path) tree entries onto the session view's
- * user/assistant messages (same order) and attach version-group info to user
- * messages (ADR-066). The transcript messages are exactly the active path,
- * so every zipped message corresponds to the currently active version of its
- * group.
- */
+/** Join persisted bubbles by id; only live user rows need an ordered fallback. */
 export function buildMessageTreeMeta(
   messages: SessionMessageView[],
   tree: WebTreeEntryDto[],
   leafId: string | null,
 ): Record<string, SessionMessageMeta> {
   const index = indexTree(tree);
-  const pathEntries = contextPath(index.byId, leafId)
-    .map((id) => index.byId.get(id))
-    .filter((candidate) => candidate?.role === "user" || candidate?.role === "assistant");
-  const viewMessages = messages.filter(
-    (message) => !message.usageOnly && (message.role === "user" || message.role === "assistant"),
-  );
+  const path = branchPath(index.byId, leafId);
+  const activeIds = new Set(path);
+  const userEntries = path.map((id) => index.byId.get(id)).filter((entry) => entry?.role === "user");
   const meta: Record<string, SessionMessageMeta> = {};
-  for (let i = 0; i < Math.min(pathEntries.length, viewMessages.length); i++) {
-    const entry = pathEntries[i];
-    const view = viewMessages[i];
-    if (!entry || !view) break;
+  let userIndex = 0;
+  for (const view of messages) {
+    if (view.usageOnly || (view.role !== "user" && view.role !== "assistant")) continue;
+    // Tool-only assistant turns have no bubble; they must not shift user edits.
+    const liveUserEntry = view.role === "user" ? userEntries[userIndex++] : undefined;
+    const entry = view.entryId === undefined ? liveUserEntry : index.byId.get(view.entryId);
+    if (!entry || !activeIds.has(entry.id) || entry.role !== view.role) continue;
     const entryMeta: SessionMessageMeta = { entryId: entry.id };
     if (entry.role === "user") {
       const group = (index.childrenByParent.get(entry.parentId) ?? []).filter((candidate) => candidate.role === "user");

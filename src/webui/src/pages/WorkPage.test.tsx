@@ -3453,6 +3453,35 @@ describe("WorkPage", () => {
   });
 
   describe("skill slash commands and message branching (ADR-066)", () => {
+    it("rebuilds message metadata when a replacement snapshot has the same structure counter", async () => {
+      vi.mocked(api.getSnapshot).mockResolvedValue({
+        ...snapshotValue,
+        timeline: [{ kind: "message", entryId: "old", message: { role: "user", content: "Old question" } }],
+      } as never);
+      vi.mocked(api.getSessionTree).mockResolvedValue({
+        tree: [
+          { id: "old", parentId: null, role: "user", kind: "user", text: "Old question" },
+          { id: "new", parentId: null, role: "user", kind: "user", text: "Replacement question" },
+        ],
+        leafId: "new",
+        filterMode: "default",
+        skipBranchSummaryPrompt: false,
+      });
+      render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+      await screen.findByText("Old question");
+      emitInAct({ type: "message_start", message: { role: "user", timestamp: 42, content: "Live question" } });
+      await screen.findByText("Live question");
+      emitInAct({
+        type: "snapshot",
+        session: snapshotValue.session,
+        subagents: [],
+        timeline: [{ kind: "message", entryId: "new", message: { role: "user", content: "Replacement question" } }],
+      });
+      await screen.findByText("Replacement question");
+      expect(await screen.findByRole("button", { name: /previous version/i })).toBeEnabled();
+      expect(screen.getByText("2/2")).toBeTruthy();
+    });
+
     const branchingTree = {
       leafId: "a2",
       tree: [
@@ -3462,6 +3491,17 @@ describe("WorkPage", () => {
         { id: "a2", parentId: "m2", role: "assistant", text: "research restarted" },
       ],
     };
+
+    beforeEach(() => {
+      vi.mocked(api.getSnapshot).mockResolvedValue({
+        ...snapshotValue,
+        timeline: snapshotMessages.map((message, index) => ({
+          kind: "message",
+          entryId: index === 0 ? "m2" : "a2",
+          message,
+        })),
+      } as never);
+    });
 
     it("opens the skill popover and sends the inserted friendly command", async () => {
       const user = userEvent.setup();

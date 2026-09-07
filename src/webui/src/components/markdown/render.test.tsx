@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import ReactMarkdown from "react-markdown";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { parseMarkdownBlocks } from "./parse";
 import { clearCompletedMarkdownCacheForTests, prepareMarkdownBlocks } from "./render";
@@ -13,6 +14,26 @@ vi.mock("mermaid", () => ({
 beforeEach(() => clearCompletedMarkdownCacheForTests());
 
 describe("prepareMarkdownBlocks", () => {
+  it.each([
+    "Use <placeholder> here.",
+    "<div>Important result: accuracy 92%</div>",
+    "<script>alert(1)</script>",
+    '<img src="x" onerror="alert(1)">',
+  ])("preserves raw HTML as inert text like the synchronous renderer: %s", async (source) => {
+    const blocks = prepareMarkdownBlocks(await parseMarkdownBlocks(source));
+    const { container } = render(
+      <>
+        <section data-testid="synchronous">
+          <ReactMarkdown>{source}</ReactMarkdown>
+        </section>
+        <section data-testid="worker">{blocks.map((block) => block.node)}</section>
+      </>,
+    );
+    expect(screen.getByTestId("worker").textContent).toBe(source);
+    expect(screen.getByTestId("worker").textContent).toBe(screen.getByTestId("synchronous").textContent);
+    expect(container.querySelector("script, img, placeholder")).toBeNull();
+  });
+
   it("renders safe GFM, KaTeX, inert links, and Mermaid", async () => {
     const source =
       "|a|b|\n|-|-|\n|1|2|\n\n$e^{i\\pi}+1=0$\n\n[link](https://example.com)\n\n```mermaid\ngraph TD; A-->B\n```";

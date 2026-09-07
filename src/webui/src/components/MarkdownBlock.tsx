@@ -109,9 +109,11 @@ function MarkdownBlockComponent({
     return <SynchronousMarkdown text={text} className={className} />;
   }
   const canReuse = rendered && (rendered.source === text || (streaming && text.startsWith(rendered.source)));
+  const pendingText = canReuse ? text.slice(rendered.source.length) : text;
   return (
     <div className={className} data-markdown-root data-markdown-source-length={canReuse ? rendered.source.length : 0}>
-      {canReuse ? rendered.blocks.map((block) => block.node) : <div className="whitespace-pre-wrap">{text}</div>}
+      {canReuse ? rendered.blocks.map((block) => block.node) : null}
+      {pendingText ? <div className="whitespace-pre-wrap">{pendingText}</div> : null}
     </div>
   );
 }
