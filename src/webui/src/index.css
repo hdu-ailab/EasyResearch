@@ -92,6 +92,15 @@ body {
   }
 }
 
+/* Prevent iOS input-focus zoom without restricting user/pinch zoom. */
+@media (width < 820px), (any-pointer: coarse) {
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
+}
+
 :where(button, a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])):focus-visible {
   outline: 2px solid var(--color-v2-blue-600);
   outline-offset: 2px;
