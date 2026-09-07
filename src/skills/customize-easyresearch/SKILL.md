@@ -1,401 +1,159 @@
 ---
 name: customize-easyresearch
 description: >-
-  Use ONLY when editing or creating EasyResearch's own configuration: agent
-  Markdown definitions, skills (SKILL.md), settings.json, models.json,
-  auth.json, extensions, prompts, themes, or .easyresearch config files. Also
-  use when fixing EasyResearch agent/skill/config problems, adding or mounting
-  skills on agents, or explaining how EasyResearch configuration works. Do not
-  use for paper pipeline work itself (search, experiments, writing, figures,
-  review).
+  Use when editing or troubleshooting EasyResearch's own agents, skills,
+  settings.json, models.json, auth.json, extensions, prompts, themes, or
+  .easyresearch configuration; also when mounting skills or explaining config
+  scope and precedence. Not for paper research, experiments, writing, figures,
+  or review themselves.
 ---
 
 # Customizing EasyResearch
 
-EasyResearch is a Pi-based paper pipeline. Its configuration is Markdown agent
-definitions plus Pi settings/resources under a `.easyresearch` config root.
-This skill covers where config lives, how it is layered, and how to edit it
-safely.
+Inspect the effective configuration, change the smallest relevant layer, and
+preserve unrelated fields. Prefer Agent/Skill Markdown for behavior changes;
+use extensions only when configuration cannot express the requested behavior.
 
-## Core rules
+## Configuration location and precedence
 
-- EasyResearch never reads `~/.pi`, `.lazypaper`, or a legacy `config.json`.
-  Never migrate legacy data. The config root is always `.easyresearch` —
-  global `~/.easyresearch/agent` or project `<exact-session-cwd>/.easyresearch`.
-- The exact session cwd is the project boundary. Never walk parent directories
-  to find `.easyresearch`.
-- Agent definitions live only in `~/.easyresearch/agent/agents/` over bundled
-  fallbacks. `<cwd>/.easyresearch/agents/` is ignored; do not create or edit it
-  as EasyResearch configuration.
-- Valid global Agent Markdown, `easyresearch.agentDefaults`, and `models.json`
-  edits automatically update open Settings/Work surfaces. Running Agents finish
-  the current response and tool batch, then use the new prompt, tools, Skills,
-  subagents, model, and thinking before their next LLM request.
-- Settings and Work edit the same global `easyresearch.agentDefaults` entries.
-  Project settings do not override them. There are no per-session Agent
-  overrides or Follow global mode.
-- General settings, Skills, extensions, prompts, and themes retain their
-  documented new/restarted-session behavior unless their own contract says
-  otherwise.
-- Editing a bundled Agent or Skill in Web Settings first copies it into the
-  corresponding global `agents/` or `skills/` root (copy-on-edit).
-- Prefer agent/skill Markdown over new code for behavior changes (lowest
-  footprint). Only write extensions or runtime code when Markdown cannot
-  express the change.
+Global root: `~/.easyresearch/agent/`. Project root:
+`<exact-session-cwd>/.easyresearch/`. Paths below are relative to those roots.
 
-## Where files live
-
-| Scope | Path |
+| Configuration | Location and precedence |
 | --- | --- |
-| Global config root | `~/.easyresearch/agent/` |
-| Global agent definitions | `~/.easyresearch/agent/agents/<name>.md` |
-| Global skills | `~/.easyresearch/agent/skills/<name>/SKILL.md` |
-| Global extensions | `~/.easyresearch/agent/extensions/*.ts` (or `*/index.ts`) |
-| Project config root | `<cwd>/.easyresearch/` |
-| Project skills | `<cwd>/.easyresearch/skills/<name>/SKILL.md` |
-| Project extensions | `<cwd>/.easyresearch/extensions/*.ts` |
-| Bundled agents (fallback) | `src/agents/<name>.md` in the package |
-| Bundled skills (fallback) | `src/skills/<name>/` in the package |
-| Sessions | `~/.easyresearch/agent/sessions/--<cwd>--/` |
-| Logs | `~/.easyresearch/agent/logs/easyresearch-YYYY-MM-DD.log` |
+| Agent definitions | Global `agents/<id>.md` over bundled Agents; project `agents/` is ignored |
+| Agent model/thinking | Global `settings.json`: `easyresearch.agentDefaults.<id>` only |
+| Skills | Project `skills/` > global `skills/` > optional home `~/.agents/skills/` > bundled Skills |
+| General settings | Project `settings.json` deep-merges over global, except global-only policies |
+| Models and credentials | Global `models.json` and `auth.json` |
+| Extensions, prompts, themes | Respective global/project directories and Pi settings resource entries |
 
-Global files: `settings.json`, `models.json`, `models-store.json`, `auth.json`,
-`trust.json` (never read/written by EasyResearch), `sessions/`, `agents/`,
-`skills/`, `extensions/`, `prompts/`, `themes/`, `logs/`.
+Same-name Agent/Skill resources replace lower layers completely; distinct names
+append. The optional home Skill layer requires global
+`easyresearch.enable_dot_agents_skill: true` (default false).
+`Research Assistant.md` aliases `research-assistant.md`; the primary filename
+wins if both exist. Other built-ins use their primary filenames.
 
-Project files: `settings.json`, `skills/`, `extensions/`, `prompts/`, `themes/`.
-An existing project `agents/` directory is an ordinary inert directory.
+Never search ancestor directories, read `~/.pi` or `.lazypaper`, migrate legacy
+data, or create a separate `config.json`. EasyResearch does not read or write
+`trust.json`. Bundled resources are fallbacks, not user edit targets: Web
+Settings copies an Agent file or complete Skill directory into the global root
+on edit. Preserve existing user copies.
 
-## Layering and precedence
+For less common settings, extension authoring, Web APIs, or diagnostics, read
+[Configuration reference](references/configuration.md) only as needed.
 
-Agents resolve global → bundled. Same-name files completely replace the bundled
-fallback; global-only files append. Project Agent files never participate.
-`Research Assistant.md` is an alias for `research-assistant.md`; either global filename
-overrides the same built-in and never creates a duplicate. Other built-ins use
-their primary filenames.
+## Editing Agents and Skills
 
-Skills resolve in this order:
+### Agent definitions
 
-1. `<cwd>/.easyresearch/skills/<name>`
-2. `~/.easyresearch/agent/skills/<name>`
-3. `~/.agents/skills/<name>` — only when global `easyresearch.enable_dot_agents_skill` is `true`
-4. bundled `src/skills/<name>`
-
-Same-name skills replace lower layers; different names append.
-
-## Agent definitions (Markdown)
-
-Each agent is one complete Markdown file; frontmatter owns role/capability
-config and the body is the system prompt.
+Each Agent is a complete Markdown file: frontmatter configures capabilities;
+the body supplies the system prompt. Keep the name aligned with the file stem
+and provide a meaningful description. Example custom leaf Agent:
 
 ```md
 ---
-name: search
-description: Web research agent
+name: literature-helper
+description: Retrieve and verify paper metadata
 enable: true
-tools:
-  - bash
-  - read
-skills:
-  - paper-search
-subagents:
-  - search
+tools: [read, write, bash, web-search, webfetch]
+skills: [paper-search, arxiv]
+subagents: []
 ---
 
-System prompt body.
+Verify candidate metadata against source pages. Report verified findings,
+source URLs, unresolved gaps, and complete, partial, or blocked status.
 ```
 
-- `name` is required (lowercase, hyphen-separated, matches the filename stem).
-- `description` is effectively required — it drives agent selection.
-- `enable` defaults to true; only literal `enable: false` disables an agent.
-- Residual `model` and `thinking` frontmatter is accepted but ignored. Never use
-  it to configure an Agent and never migrate it into settings.
-- `tools`: missing/YAML-empty/`[]` loads all controlled tools; non-empty is a
-  strict Pi-native allowlist (`read`, `bash`, `edit`, `write`, `subagent`,
-  `web-search`, `webfetch`).
-- `skills`: missing/YAML-empty/`[]` loads every skill in the controlled layers;
-  non-empty is a strict resolved-name allowlist. Unresolved names are ignored
-  at runtime and reported only in Web Settings.
-- `subagents`: omitted allows all enabled agents; `[]` makes it a leaf agent.
-- The body is the system prompt — bundled prompts state role/boundary, inputs,
-  procedure, dispatch, completion, and a final handoff
-  (`complete | partial | blocked`).
-- Unknown frontmatter fields are silently routed into options.
+| Field | Meaning |
+| --- | --- |
+| `enable` | Defaults true; literal false disables specialist/custom selection |
+| `tools` | Missing, YAML-empty, or `[]`: all controlled tools; non-empty: strict allowlist |
+| `skills` | Missing, YAML-empty, or `[]`: all controlled Skills; non-empty: resolved-name allowlist |
+| `subagents` | Omitted: all eligible enabled Agents; `[]`: leaf; non-empty: allowlist |
+| `model`, `thinking` | Ignored in Markdown; do not migrate these fields into settings |
 
-The Research Assistant and every stage/custom runtime consume the same effective
-global-over-bundled definition. Exact cwd affects project Skills and other Pi
-resources, never Agent selection or Agent model/thinking.
+Only one local shell is exposed: `powershell` on Windows, `bash` on Linux/macOS.
+Exact `bash`/`powershell` allowlist entries normalize to that native name;
+`ssh-bash` is a separate remote tool. Use native shell syntax.
+Unresolved Skills are skipped at runtime and diagnosed only in Settings.
+For bundled Agents, retain role boundaries, inputs, procedure, dispatch targets,
+completion criteria, and the specialist handoff contract.
 
-## Agent runtime defaults (global settings)
+### Agent runtime defaults
 
-The sole model/thinking source is the sparse global
-`~/.easyresearch/agent/settings.json` object:
+Settings and Work both edit this sparse global settings object:
 
 ```json
 {
   "easyresearch": {
     "agentDefaults": {
       "research-assistant": { "model": "provider/model-id", "thinking": "high" },
-      "reviewer": { "thinking": "medium" }
+      "review": { "thinking": "medium" }
     }
   }
 }
 ```
 
-- Keys are built-in or custom Agent ids; a missing Agent id is inert and
-  preserved until a matching custom Agent exists.
-- A Research Assistant without `model` uses Pi's exact native default resolution.
-  Web selects that concrete existing model option without writing it to
-  settings or adding an Automatic pseudo-option. Other Agents without `model`
-  inherit the Research Assistant's effective model.
-- A Research Assistant without `thinking` uses its model's highest supported
-  strength. Other Agents without `thinking` inherit that effective strength;
-  every value is constrained to the effective model's supported levels.
-- Web controls should use `PATCH /api/agents/:name`; direct edits must preserve
-  unrelated Pi settings. `null` clears a property and restores fallback.
+No project/session Agent overrides or Follow global mode exist. With no model,
+the Research Assistant uses Pi's native resolution without persisting a default;
+other Agents inherit its effective model. With no thinking setting, the
+Research Assistant uses its model's highest supported level; other Agents
+inherit that level, constrained by their model. Remove a property to restore
+fallback; preserve entries for currently absent custom Agent ids.
 
-## Skills
+### Skill resources
 
-A skill is a directory containing `SKILL.md` (name + description frontmatter,
-then Markdown instructions), optionally with `scripts/`, `references/`,
-`assets/`. Use relative paths from the skill directory.
+Use `<name>/SKILL.md` with `name` and a trigger-oriented `description` in YAML
+frontmatter, followed by instructions. Keep optional `scripts/`, `references/`,
+and `assets/` relative to the Skill directory; link references with when-to-read
+guidance. Optional metadata includes `license`, `compatibility`, `metadata`,
+`allowed-tools`, and `disable-model-invocation`.
 
-```md
----
-name: my-skill
-description: One sentence covering what it does AND when to trigger it.
----
+Create the Skill in the chosen scope and add its resolved name to the Agent's
+explicit `skills` list. If the Agent already loads all Skills, no list edit is
+needed. A project Skill can override content without creating a project Agent.
 
-# My Skill
+## Model configuration
 
-(instructions)
-```
+1. Inspect the existing provider entry, then probe its model catalog and consult
+   provider documentation for context size, input modalities, and reasoning.
+   Ask the user only for facts still missing, not questions already answered.
+2. Set `contextWindow` from verified context metadata and
+   **`maxTokens = floor(contextWindow / 2)`**, recomputing when the window changes.
+   For example, `131072` gives `65536`. Resolve an unknown window before saving.
+   Provider output limits are diagnostic, not replacement values: if the half
+   window exceeds a declared limit, disclose possible rejection without silently
+   clamping the budget or using a fixed fallback.
+3. Set `input` to verified text/image support. For reasoning, distinguish no
+   support, fixed strength, and configurable strength. Set `reasoning: true`
+   only for supported models; add `thinkingLevelMap` for configurable levels.
+   Map verified strengths onto Pi's ordered levels
+   `off < minimal < low < medium < high < xhigh < max`, preserving stated names
+   where possible and using a contiguous run for unnamed levels. Set unsupported
+   levels to `null`; mandatory reasoning also requires `"off": null`.
+4. Read [Model reference](references/models.md) when probing a catalog, writing
+   a provider entry, or configuring thinking/compatibility fields. Show the
+   proposed entry with secrets redacted and confirm before saving.
 
-- `description` is effectively required — skills without one are not loaded.
-- Frontmatter may also carry `license`, `compatibility`, `metadata`,
-  `allowed-tools`, `disable-model-invocation`.
-- Bundled skills are final-fallback templates. When a user explicitly edits a
-  bundled skill in Web Settings, EasyResearch first copies the complete
-  directory into `~/.easyresearch/agent/skills/`. Existing global or project
-  skill directories are never overwritten automatically.
-- Mount a skill on an agent by adding its name to that agent's `skills` list;
-  the name must resolve in one of the four layers above, or it is reported as
-  missing in Settings.
+Credentials belong in `auth.json`, a provider `apiKey` field, or a supported
+environment reference, never Agent/Skill Markdown or `settings.json`. Do not
+echo secrets in diagnostics or proposed diffs. Catalog metadata is a provider
+claim, not proof that a real request honors it.
 
-## settings.json
+## Saving and verifying
 
-Project settings deep-merge over global settings (nested objects merge).
-Preserve unknown Pi settings — do not sanitize through a narrowed schema.
-EasyResearch-specific settings live under a top-level `easyresearch` object:
-
-```json
-{
-  "easyresearch": {
-    "web": {
-      "sessionIdleTimeoutMs": 3600000,
-      "authFlowTimeoutMs": 120000
-    },
-    "enable_dot_agents_skill": false,
-    "logging": { "level": "info", "keepDays": 7 }
-  }
-}
-```
-
-- `easyresearch.web.sessionIdleTimeoutMs`: connected Web-session idle
-  retention. `3600000` default; `0` = immediate idle disconnect; `-1` = never.
-- `easyresearch.enable_dot_agents_skill`: global-only boolean, `false` by
-  default. Only `true` enables the home `~/.agents/skills` layer. Project
-  settings cannot enable it.
-- `easyresearch.logging`: `level` (`debug|info|warn|error`, default `info`),
-  `keepDays` (default 7), optional `logDir`.
-- UI preferences (font sizes, language) live in browser localStorage under
-  `easyresearch.webui.preferences`, never in settings.json.
-- Other Pi settings (`theme`, `defaultProvider`, `defaultModel`, `compaction`,
-  `retry`, `skills`, `packages`, …) keep Pi semantics; see
-  `.docs/pi/docs/settings.md` in the project.
-
-## models.json and auth.json
-
-`~/.easyresearch/agent/models.json` registers providers and models (Ollama,
-vLLM, OpenAI-compatible proxies, etc.). Credentials go in
-`~/.easyresearch/agent/auth.json`, an environment variable, or the provider's
-`apiKey` field.
-
-### Reading model capabilities from the API (probe first)
-
-Before interviewing the user, probe the provider's OpenAI-compatible model
-endpoint — it usually answers the questions directly (context window, max
-output, modalities, reasoning). Example: OpenRouter's public catalog
-(`https://openrouter.ai/api/v1/models`, no auth needed for the catalog):
-
-```bash
-curl -s https://openrouter.ai/api/v1/models | python3 -c "
-import json, sys
-for m in json.load(sys.stdin)['data']:
-    tp = m.get('top_provider', {})
-    r = m.get('reasoning', {})
-    print(m['id'],
-          '| ctx:', m.get('context_length') or tp.get('context_length'),
-          '| maxOut:', tp.get('max_completion_tokens'),
-          '| vision:', 'image' in m.get('architecture', {}).get('input_modalities', []),
-          '| reasoning:', bool(r), '| efforts:', r.get('supported_efforts'))
-"
-```
-
-Sample output:
-
-```
-deepseek/deepseek-v4-pro-0813 | ctx: 1048576 | maxOut: 384000 | vision: False | reasoning: True | efforts: ['max', 'high', 'low']
-google/gemini-3.7-flash | ctx: 1048576 | maxOut: 65536 | vision: True | reasoning: True | efforts: ['max', 'high', 'low']
-```
-
-Map results to the Pi model entry:
-
-- `context_length` / `top_provider.max_completion_tokens` → `contextWindow` / `maxTokens`
-- image in `architecture.input_modalities` → `input: ["text", "image"]`
-- `reasoning` present → `reasoning: true`
-- `reasoning.supported_efforts` → the levels for `thinkingLevelMap`; `reasoning.mandatory: true` → `"off": null`
-- For proxies with a distinct thinking style, `compat.thinkingFormat` (e.g. `deepseek`, `zai`, `qwen`) matches the server's expected `thinkingFormat`
-
-Caveats:
-
-- The values are the route's claim about its upstream — usable for compaction
-  and budget math, but a probe is not proof the API honors them in practice.
-- `top_provider.max_completion_tokens` is sometimes `null`; fall back to a
-  documented value or a safe default like 16384 rather than omitting maxTokens.
-- If the endpoint requires auth, pass the key the provider will use:
-  `curl -s -H "Authorization: Bearer $KEY" <baseUrl>/v1/models`.
-
-### Adding a model — interview the user first
-
-When the user wants to add a model, do not guess the reasoning fields. Ask, in
-order:
-
-1. **Does the model support thinking/reasoning at all?** (e.g. a reasoner like
-   o-series/DeepSeek-R1 vs. a plain fast model). This maps to the `reasoning`
-   boolean. If the user does not know, ask whether the model's provider docs
-   mention "reasoning", "thinking", or "extended thinking"; default to `false`.
-2. **If yes: does the model expose configurable reasoning strength?** (an
-   effort/thinking-level knob). Some reasoners think at a fixed strength and
-   cannot be tuned — then set `reasoning: true` without a `thinkingLevelMap`.
-3. **If yes: how many strength levels does it expose?** Count the actual
-   discrete levels the provider accepts (e.g. "low/medium/high" = 3, "5
-   levels" = 5). Ask what the level names are if the user can state them.
-
-Then build the model entry from the answers:
-
-- No thinking → `{ "id": "...", "name": "..." }`, no `reasoning` field.
-- Fixed-strength reasoning → add `"reasoning": true`.
-- Tunable reasoning → add `"reasoning": true` plus a `thinkingLevelMap` that
-  maps the user's levels onto Pi's levels. Pi's level order is
-  `off < minimal < low < medium < high < xhigh < max`. Map the user's N levels
-  onto a contiguous run of N levels from that order, matching the user's own
-  naming when they stated one; put `null` on every other Pi level so
-  unsupported strengths disappear from the UI. A model whose thinking cannot
-  be disabled also gets `"off": null`.
-
-```json
-{
-  "providers": {
-    "acme-llm": {
-      "baseUrl": "https://llm.acme.example/v1",
-      "api": "openai-completions",
-      "apiKey": "sk-acme",
-      "models": [
-        { "id": "acme-fast-1", "name": "Acme Fast 1" },
-        {
-          "id": "acme-reasoner-3",
-          "name": "Acme Reasoner 3 (3 levels)",
-          "reasoning": true,
-          "thinkingLevelMap": {
-            "minimal": null,
-            "low": "low",
-            "medium": "medium",
-            "high": "high",
-            "xhigh": null,
-            "max": null
-          }
-        }
-      ]
-    }
-  }
-}
-```
-
-`thinkingLevelMap` keys are Pi thinking levels: `off`, `minimal`, `low`,
-`medium`, `high`, `xhigh`, `max`. A string value is what is sent to the
-provider; `null` marks the level unsupported and hidden from the UI; omitted
-keys mean standard levels through `high` use the provider's default mapping.
-Older `compat.reasoningEffortMap` configs should be migrated to
-model-level `thinkingLevelMap`. Show the user the resulting entry and confirm
-before saving. A valid `models.json` edit advances the daemon configuration
-generation automatically; open Web surfaces refresh and active Agents apply it
-before their next safe LLM request.
-
-Other model fields: `input` (`["text"]` / `["text","image"]`), `contextWindow`,
-`maxTokens`, `samplingParams`, `cost`, `compat`. For servers that do not
-understand the `developer` role or `reasoning_effort`, set
-`compat.supportsDeveloperRole: false` / `compat.supportsReasoningEffort: false`.
-
-Auth:
-
-```json
-{ "my-openai": { "type": "api_key", "key": "sk-..." } }
-```
-
-Models, auth, trust, and sessions are global; project settings may select
-defaults from the global model catalog.
-
-## Extensions
-
-Extensions are TypeScript modules that extend Pi's behavior (custom tools,
-events, commands). They run with full system permissions — review before use.
-
-- Auto-discovered from `~/.easyresearch/agent/extensions/` (global) and
-  `<cwd>/.easyresearch/extensions/` (project), plus the `extensions` array in
-  settings.json.
-- Shape: a file `*.ts` or a directory `*/index.ts` exporting
-  `export default function (pi: ExtensionAPI) { ... }`.
-- Startup refuses to proceed when a non-empty `packages` array exists or an
-  `extensions` entry resolves inside the foreign `~/.pi` tree.
-- See `.docs/pi/docs/extensions.md` and project `src/extensions/` for the API
-  and bundled examples (research-assistant-config, subagent, web-search, …).
-
-## Web configuration surface
-
-- Settings page: edits global Agent defaults plus Agent Markdown (enable, tools,
-  skills), and shows effective/missing skills per Agent. Editing a bundled
-  Agent/Skill Markdown resource copies it to the global root first.
-- Config browser / homepage config page: reads and writes files below the
-  global `~/.easyresearch/agent/` or a project `<cwd>/.easyresearch/` root
-  (Global/Project switch).
-- JSON files are validated before saving; Markdown and other text are saved
-  verbatim, all through atomic replacement. Canonicalize paths and reject
-  traversal outside the allowed roots.
-- Valid global Agent Markdown, `easyresearch.agentDefaults`, and `models.json`
-  changes apply automatically. Other configuration follows its documented
-  new/restarted-session behavior.
-
-## Escape hatches
-
-- `EASYRESEARCH_LOG_LEVEL=debug|info|warn|error`: override logging level.
-- `DEBUG_AGENT_DISCOVERY=1`: log agent parse/discovery errors to stdout.
-- `PI_SKIP_VERSION_CHECK=1`: disable Pi update check (EasyResearch sets this).
-- `PI_OFFLINE=1`: disable all startup network operations.
-- `EASYRESEARCH_CODING_AGENT_DIR`: internal runtime identity override (do not
-  set manually outside isolated development or test environments).
-
-## When proposing edits
-
-- Validate against the actual shape above before writing; check the project's
-  `.docs/` (agents.md, architecture.md, skills-templates.md) and
-  `.docs/pi/docs/` when unsure.
-- Preserve existing fields the user did not ask to change, including unknown
-  Pi settings.
-- Prefer layered files for role/resources, but put Agent model/thinking only in
-  global `easyresearch.agentDefaults`.
-- Never write secrets into agent Markdown or settings.json — credentials go to
-  `auth.json`, an env var, or the provider `apiKey` field.
-- State the correct application boundary after saving: global Agent Markdown,
-  `easyresearch.agentDefaults`, and `models.json` are live; recommend a
-  restart/new session only for resources whose contract requires it.
+- Recheck scope, preserve unknown Pi fields, validate JSON/frontmatter, and avoid
+  overwriting concurrent changes. Web Config validates JSON and writes atomically
+  within its selected root; do not bypass its path boundary.
+- Valid global Agent definitions, `agentDefaults`, `models.json`, and controlled
+  mutable Skill descriptor edits refresh Settings/Work automatically. Idle
+  runtimes reload; running Agents finish the current response/tool batch and
+  apply changes before the next LLM request. Use Settings Refresh for recovery,
+  not a routine restart. This covers global, enabled home, and owned exact-cwd
+  project Skills, not automatic re-reading of every auxiliary reference file.
+- Other settings/resources retain their documented new-session/restart behavior;
+  network proxy changes require a daemon restart. Do not promise universal hot
+  reload. Check the configuration reference for the affected setting.
+- Report changed paths, effective scope, remaining warnings, and any necessary
+  next action. Distinguish saved configuration from verified API/tool behavior.
