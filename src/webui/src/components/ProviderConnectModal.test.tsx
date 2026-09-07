@@ -1,9 +1,12 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuthProviderInfoDto } from "../../../web/contracts";
+import { listModels } from "../api";
 import { type UseProviderAuthFlow, useProviderAuthFlow } from "../hooks/useProviderAuthFlow";
-import { ProviderConnectModal } from "./ProviderConnectModal";
+import { ProviderConnectModal, ProviderConnectModalContent } from "./ProviderConnectModal";
+
+vi.mock("../api", () => ({ listModels: vi.fn() }));
 
 vi.mock("../hooks/useProviderAuthFlow", () => ({
   useProviderAuthFlow: vi.fn(),
@@ -62,6 +65,130 @@ function makeFlow(overrides: Partial<UseProviderAuthFlow> = {}): UseProviderAuth
 }
 
 describe("ProviderConnectModal", () => {
+  beforeEach(() => {
+    vi.mocked(listModels).mockReset().mockResolvedValue([]);
+  });
+
+  it("loads all catalog models only on disclosure and searches within the selected provider", async () => {
+    const user = userEvent.setup();
+    mockedUse.mockReturnValue(makeFlow());
+    vi.mocked(listModels).mockResolvedValue([
+      { provider: "xai", id: "standard", reasoning: false, available: true, authRequired: false },
+      { provider: "xai", id: "CUSTOM/Reasoner", reasoning: true, available: false, authRequired: true },
+      { provider: "anthropic", id: "other-provider-model", reasoning: false, available: true, authRequired: false },
+    ]);
+    render(<ProviderConnectModal onClose={() => {}} />);
+    await user.click(screen.getByRole("button", { name: "xAI" }));
+    const disclosure = screen.getByRole("button", { name: "View all models" });
+    expect(disclosure).toHaveAttribute("aria-expanded", "false");
+    expect(listModels).not.toHaveBeenCalled();
+    await user.click(disclosure);
+    expect(await screen.findByText("CUSTOM/Reasoner")).toBeVisible();
+    expect(screen.getByText("standard")).toBeVisible();
+    expect(screen.queryByText("other-provider-model")).toBeNull();
+    expect(screen.getByText("2 models")).toBeVisible();
+    const search = screen.getByRole("searchbox", { name: "Search models" });
+    await user.click(search);
+    await user.tab();
+    expect(screen.getByRole("list", { name: "View all models" })).toHaveFocus();
+    await user.type(search, " reasonER ");
+    expect(screen.getByText("CUSTOM/Reasoner")).toBeVisible();
+    expect(screen.queryByText("standard")).toBeNull();
+    await user.clear(search);
+    await user.type(search, "missing");
+    expect(screen.getByText("No models match your search.")).toBeVisible();
+    await user.click(disclosure);
+    expect(screen.queryByRole("searchbox", { name: "Search models" })).toBeNull();
+    expect(listModels).toHaveBeenCalledOnce();
+  });
+
+  it("shows loading and retry instead of an empty catalog on failure", async () => {
+    const user = userEvent.setup();
+    mockedUse.mockReturnValue(makeFlow());
+    let reject!: (error: Error) => void;
+    vi.mocked(listModels).mockReturnValueOnce(
+      new Promise((_resolve, rejectPromise) => {
+        reject = rejectPromise;
+      }),
+    );
+    render(<ProviderConnectModal onClose={() => {}} />);
+    await user.click(screen.getByRole("button", { name: "xAI" }));
+    await user.click(screen.getByRole("button", { name: "View all models" }));
+    expect(screen.getByRole("status")).toHaveTextContent("Loading");
+    await act(async () => reject(new Error("Catalog unavailable")));
+    expect(screen.getByRole("alert")).toHaveTextContent("Catalog unavailable");
+    expect(screen.queryByText("No models in this provider's catalog.")).toBeNull();
+    expect(screen.getByText("Use subscription")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("No models in this provider's catalog.")).toBeVisible();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("discards a pending catalog after closing or switching the provider", async () => {
+    const user = userEvent.setup();
+    mockedUse.mockReturnValue(makeFlow());
+    const model = (provider: string, id: string) => ({
+      provider,
+      id,
+      reasoning: false,
+      available: true,
+      authRequired: false,
+    });
+    let resolve!: (models: Awaited<ReturnType<typeof listModels>>) => void;
+    vi.mocked(listModels).mockReturnValueOnce(
+      new Promise((resolvePromise) => {
+        resolve = resolvePromise;
+      }),
+    );
+    render(<ProviderConnectModal onClose={() => {}} />);
+    await user.click(screen.getByRole("button", { name: "xAI" }));
+    await user.click(screen.getByRole("button", { name: "View all models" }));
+    await user.click(screen.getByRole("button", { name: "View all models" }));
+    vi.mocked(listModels).mockResolvedValue([model("xai", "new-xai"), model("google-vertex", "vertex-model")]);
+    await user.click(screen.getByRole("button", { name: "View all models" }));
+    expect(await screen.findByText("new-xai")).toBeVisible();
+    await user.type(screen.getByRole("searchbox", { name: "Search models" }), "new-xai");
+    await user.click(screen.getByRole("button", { name: "Back to list" }));
+    await user.click(screen.getByRole("button", { name: /Google Vertex AI/ }));
+    expect(screen.getByRole("button", { name: "View all models" })).toHaveAttribute("aria-expanded", "false");
+    await user.click(screen.getByRole("button", { name: "View all models" }));
+    expect(await screen.findByText("vertex-model")).toBeVisible();
+    expect(screen.getByRole("searchbox", { name: "Search models" })).toHaveValue("");
+    await act(async () => resolve([model("xai", "obsolete-xai")]));
+    expect(screen.queryByText("obsolete-xai")).toBeNull();
+    expect(screen.queryByText("new-xai")).toBeNull();
+    expect(screen.getByText("vertex-model")).toBeVisible();
+  });
+
+  it("refreshes an open catalog, retains last-good models on failure, and ignores obsolete responses", async () => {
+    const user = userEvent.setup();
+    const flow = makeFlow();
+    const model = (id: string) => ({ provider: "xai", id, reasoning: false, available: true, authRequired: false });
+    vi.mocked(listModels).mockResolvedValue([model("original")]);
+    const view = render(<ProviderConnectModalContent flow={flow} onClose={() => {}} configurationGeneration={1} />);
+    await user.click(screen.getByRole("button", { name: "xAI" }));
+    await user.click(screen.getByRole("button", { name: "View all models" }));
+    expect(await screen.findByText("original")).toBeVisible();
+    let resolve!: (models: Awaited<ReturnType<typeof listModels>>) => void;
+    vi.mocked(listModels).mockReturnValueOnce(
+      new Promise((resolvePromise) => {
+        resolve = resolvePromise;
+      }),
+    );
+    view.rerender(<ProviderConnectModalContent flow={flow} onClose={() => {}} configurationGeneration={2} />);
+    await waitFor(() => expect(listModels).toHaveBeenCalledTimes(2));
+    vi.mocked(listModels).mockResolvedValueOnce([model("newest")]);
+    view.rerender(<ProviderConnectModalContent flow={flow} onClose={() => {}} configurationGeneration={3} />);
+    expect(await screen.findByText("newest")).toBeVisible();
+    await act(async () => resolve([model("obsolete")]));
+    expect(screen.queryByText("obsolete")).toBeNull();
+    expect(screen.queryByText("original")).toBeNull();
+    vi.mocked(listModels).mockRejectedValueOnce(new Error("Refresh failed"));
+    view.rerender(<ProviderConnectModalContent flow={flow} onClose={() => {}} configurationGeneration={4} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Refresh failed");
+    expect(screen.getByText("newest")).toBeVisible();
+  });
+
   it("uses the full mobile viewport and keeps its desktop bounds at 820px", () => {
     mockedUse.mockReturnValue(makeFlow());
     render(<ProviderConnectModal onClose={() => {}} />);

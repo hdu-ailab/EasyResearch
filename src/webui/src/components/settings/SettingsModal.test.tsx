@@ -1572,6 +1572,75 @@ describe("SettingsModal", () => {
     view.rerender(settingsElement(undefined, undefined, 2));
 
     expect(await screen.findByText("2 providers connected")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Anthropic" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "xAI" })).toBeVisible();
+  });
+
+  it("lists only connected providers and opens their details directly with a working model disclosure", async () => {
+    const user = userEvent.setup();
+    renderSettings();
+    await selectCategory(user, "Model providers");
+    const provider = await screen.findByRole("button", { name: "Anthropic" });
+    expect(screen.queryByRole("button", { name: "xAI" })).toBeNull();
+    expect(provider).toHaveTextContent("Connected");
+    await user.click(provider);
+    const dialog = screen.getByRole("dialog", { name: "Connect providers" });
+    expect(within(dialog).getByRole("button", { name: "Disconnect Anthropic" })).toBeVisible();
+    expect(within(dialog).queryByRole("searchbox", { name: "Search providers" })).toBeNull();
+    await user.click(within(dialog).getByRole("button", { name: "View all models" }));
+    expect(await within(dialog).findByText("claude-sonnet-4")).toBeVisible();
+    expect(within(dialog).queryByText("gpt-4o")).toBeNull();
+    await user.keyboard("{Escape}");
+    expect(provider).toHaveFocus();
+  });
+
+  it("keeps provider and model browsing independent of failed Agent metadata", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listAgentResources).mockRejectedValue(new Error("Agent metadata unavailable"));
+    vi.mocked(api.listAuthProviders).mockResolvedValue([
+      {
+        id: "local",
+        name: "Local endpoint",
+        authMethods: [],
+        connectable: false,
+        noAuth: true,
+        modelsJson: true,
+        authStatus: { configured: true },
+      },
+      {
+        id: "unconfigured",
+        name: "Unconfigured custom",
+        authMethods: ["api_key"],
+        connectable: true,
+        modelsJson: true,
+        authStatus: { configured: false },
+      },
+    ]);
+    vi.mocked(api.listModels).mockResolvedValue([
+      { provider: "local", id: "local-model", reasoning: false, available: false, authRequired: false },
+    ]);
+    renderSettings();
+    await selectCategory(user, "Model providers");
+    expect(screen.queryByRole("button", { name: "Unconfigured custom" })).toBeNull();
+    await user.click(await screen.findByRole("button", { name: "Local endpoint" }));
+    await user.click(screen.getByRole("button", { name: "View all models" }));
+    expect(await screen.findByText("local-model")).toBeVisible();
+  });
+
+  it("retains connected rows on refresh failure and retries in the Settings panel", async () => {
+    const user = userEvent.setup();
+    const view = renderSettings();
+    await selectCategory(user, "Model providers");
+    expect(await screen.findByRole("button", { name: "Anthropic" })).toBeVisible();
+    vi.mocked(api.listAuthProviders).mockRejectedValueOnce(new Error("Provider refresh failed"));
+    view.rerender(settingsElement(undefined, undefined, 2));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Provider refresh failed");
+    expect(screen.getByRole("button", { name: "Anthropic" })).toBeVisible();
+    vi.mocked(api.listAuthProviders).mockResolvedValueOnce([]);
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("No connected providers.")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Anthropic" })).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("refreshes Provider count independently when unrelated Settings metadata fails", async () => {
@@ -1673,6 +1742,7 @@ describe("SettingsModal", () => {
     await user.click(within(dialog).getByRole("button", { name: "Close editor" }));
 
     expect(await screen.findByText("0 providers connected")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Anthropic" })).toBeNull();
   });
 
   it("refreshes Skill rows and the selected project diagnostics independently of slow metadata", async () => {

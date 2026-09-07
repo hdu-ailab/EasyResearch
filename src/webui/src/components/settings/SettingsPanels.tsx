@@ -1,12 +1,13 @@
-import { Activity, KeyRound, Languages, Minus, Plus, RefreshCw, UserPlus } from "lucide-react";
+import { Activity, ChevronRight, KeyRound, Languages, Minus, Plus, RefreshCw, UserPlus } from "lucide-react";
 import { useId } from "react";
-import type { AgentDto, SkillResourceDto } from "../../../../web/contracts";
+import type { AgentDto, AuthProviderInfoDto, SkillResourceDto } from "../../../../web/contracts";
 import { agentDisplayName, type Translate } from "../../i18n/agents";
 import { useI18n } from "../../i18n/useI18n";
 import { CHAT_FONT_MAX, CHAT_FONT_MIN, FILES_FONT_MAX, FILES_FONT_MIN } from "../../preferences";
 import { usePreferences } from "../../preferences/PreferencesProvider";
 import { ApiUsageDetailsSetting } from "../ApiUsageDetailsSetting";
 import { CompactionThresholdSetting } from "../CompactionThresholdSetting";
+import { ProviderIcon } from "../ProviderIcon";
 
 const sectionClass = "rounded-[10px] border border-v2-grey-200 bg-v2-background-bg-base";
 const buttonClass =
@@ -232,11 +233,20 @@ export function ConversationSettingsPanel({ configurationGeneration }: Conversat
 }
 
 export interface ProviderSettingsPanelProps {
+  providers: readonly AuthProviderInfoDto[];
   connectedCount: number | null;
-  onOpen(): void;
+  error?: string;
+  onOpen(providerId?: string): void;
+  onRetry(): void;
 }
 
-export function ProviderSettingsPanel({ connectedCount, onOpen }: ProviderSettingsPanelProps) {
+export function ProviderSettingsPanel({
+  providers,
+  connectedCount,
+  error,
+  onOpen,
+  onRetry,
+}: ProviderSettingsPanelProps) {
   const { t } = useI18n();
   const labelId = useId();
   const countId = useId();
@@ -248,7 +258,7 @@ export function ProviderSettingsPanel({ connectedCount, onOpen }: ProviderSettin
           type="button"
           aria-labelledby={connectedCount === null ? labelId : `${labelId} ${countId}`}
           className="flex min-h-10 w-full items-center gap-2 rounded-[10px] px-4 py-2 text-[13px] font-medium text-v2-text-text-base transition-colors hover:bg-v2-grey-100"
-          onClick={onOpen}
+          onClick={() => onOpen()}
         >
           <KeyRound size={14} className="text-v2-text-text-muted" aria-hidden />
           <span id={labelId} className="min-w-0">
@@ -261,6 +271,51 @@ export function ProviderSettingsPanel({ connectedCount, onOpen }: ProviderSettin
           )}
         </button>
       </section>
+      {error && (
+        <div className="flex items-center justify-between gap-3 rounded-md border border-v2-status-error/30 px-3 py-2">
+          <p role="alert" className="text-[12px] text-v2-status-error">
+            {error}
+          </p>
+          <button type="button" onClick={onRetry} className="shrink-0 text-[12px] text-v2-blue-600 hover:underline">
+            {t("dialog.retry")}
+          </button>
+        </div>
+      )}
+      {connectedCount === null ? (
+        <p role="status" className="text-[12px] text-v2-text-text-muted">
+          {t("dialog.loading")}
+        </p>
+      ) : connectedCount === 0 && !error ? (
+        <p className="text-[12px] text-v2-text-text-muted">{t("providerConnect.noConnected")}</p>
+      ) : null}
+      {providers.some((provider) => provider.authStatus.configured) && (
+        <div className={`${sectionClass} flex flex-col gap-1 p-2`}>
+          {providers
+            .filter((provider) => provider.authStatus.configured)
+            .map((provider) => (
+              <button
+                key={provider.id}
+                type="button"
+                aria-label={provider.name}
+                onClick={() => onOpen(provider.id)}
+                className="flex min-h-11 w-full items-center gap-3 rounded-md px-3 py-2 text-left transition-colors hover:bg-v2-grey-100"
+              >
+                <ProviderIcon id={provider.id} className="size-5 shrink-0 text-v2-icon-icon-base" />
+                <span
+                  className="min-w-0 flex-1 truncate text-[13px] font-medium text-v2-text-text-base"
+                  title={provider.name}
+                >
+                  {provider.name}
+                </span>
+                <span className="flex shrink-0 items-center gap-1.5 text-[12px] text-v2-text-text-muted">
+                  <span className="size-1.5 rounded-full bg-v2-status-success" aria-hidden />
+                  {t("providerConnect.done")}
+                </span>
+                <ChevronRight size={14} className="shrink-0 text-v2-icon-icon-muted" aria-hidden />
+              </button>
+            ))}
+        </div>
+      )}
     </div>
   );
 }

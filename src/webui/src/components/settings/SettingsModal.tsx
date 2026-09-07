@@ -164,6 +164,7 @@ export function SettingsModal({
   const [diagnosticError, setDiagnosticError] = useState<string | null>(null);
   const [projects, setProjects] = useState<Array<{ cwd: string }>>([]);
   const [providerConnectOpen, setProviderConnectOpen] = useState(false);
+  const [initialProviderId, setInitialProviderId] = useState<string | undefined>();
   const [agentModal, setAgentModal] = useState<AgentDto | null>(null);
   const diagnosticRequest = useRef(0);
   const configurationRequest = useRef(0);
@@ -557,9 +558,13 @@ export function SettingsModal({
     conversation: <ConversationSettingsPanel configurationGeneration={configurationGeneration} />,
     providers: (
       <ProviderSettingsPanel
+        providers={providerFlow.providers}
         connectedCount={providerFlow.providersLoaded ? providerFlow.connectedCount : null}
-        onOpen={() => {
+        error={providerFlow.providersError}
+        onRetry={() => void providerFlow.refresh()}
+        onOpen={(providerId) => {
           if (!providerFlow.providersLoaded || providerFlow.providersError) void providerFlow.refresh();
+          setInitialProviderId(providerId);
           setProviderConnectOpen(true);
         }}
       />
@@ -694,6 +699,8 @@ export function SettingsModal({
       {providerConnectOpen && (
         <ProviderConnectModalContent
           flow={providerFlow}
+          initialProviderId={initialProviderId}
+          configurationGeneration={configurationGeneration}
           onClose={() => {
             providerFlow.backToList();
             setProviderConnectOpen(false);

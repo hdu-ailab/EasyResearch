@@ -1,5 +1,5 @@
-import { AlertTriangle, CheckCircle2, ExternalLink, KeyRound, Search, ShieldCheck, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, CheckCircle2, ChevronDown, ExternalLink, KeyRound, Search, ShieldCheck, X } from "lucide-react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { AuthProviderInfoDto } from "../../../web/contracts";
 import { useModalLayer } from "../hooks/useModalLayer";
 import {
@@ -10,6 +10,7 @@ import {
 } from "../hooks/useProviderAuthFlow";
 import { useI18n } from "../i18n/useI18n";
 import { ProviderIcon } from "./ProviderIcon";
+import { ProviderModelsList } from "./ProviderModelsList";
 
 export interface ProviderConnectModalProps {
   onClose: () => void;
@@ -17,6 +18,8 @@ export interface ProviderConnectModalProps {
 
 export interface ProviderConnectModalContentProps extends ProviderConnectModalProps {
   flow: UseProviderAuthFlow;
+  initialProviderId?: string;
+  configurationGeneration?: number;
 }
 
 function statusDot(configured: boolean): string {
@@ -28,11 +31,17 @@ export function ProviderConnectModal({ onClose }: ProviderConnectModalProps) {
   return <ProviderConnectModalContent flow={flow} onClose={onClose} />;
 }
 
-export function ProviderConnectModalContent({ onClose, flow: f }: ProviderConnectModalContentProps) {
+export function ProviderConnectModalContent({
+  onClose,
+  flow: f,
+  initialProviderId,
+  configurationGeneration,
+}: ProviderConnectModalContentProps) {
   const { t } = useI18n();
   const dialogRef = useRef<HTMLDivElement>(null);
   const { zIndex, dialogProps } = useModalLayer(onClose, dialogRef);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(initialProviderId ?? null);
+  const previousView = useRef(f.view);
   const [filter, setFilter] = useState("");
   const [activeId, setActiveId] = useState<string | undefined>(undefined);
   const [deleteConfirmation, setDeleteConfirmation] = useState<string | null>(null);
@@ -50,8 +59,8 @@ export function ProviderConnectModalContent({ onClose, flow: f }: ProviderConnec
   // Leaving flow (abort/error/done/back) clears the selected provider so the
   // list is the resting view.
   useEffect(() => {
-    if (f.view !== "flow" && f.view !== "idle") return;
-    if (f.view === "idle") setSelectedId(null);
+    if (f.view === "idle" && previousView.current !== "idle") setSelectedId(null);
+    previousView.current = f.view;
   }, [f.view]);
 
   const filtered = useMemo(() => {
@@ -236,7 +245,9 @@ export function ProviderConnectModalContent({ onClose, flow: f }: ProviderConnec
 
           {f.view === "idle" && selected && (
             <ConnectionView
+              key={selected.id}
               provider={selected}
+              configurationGeneration={configurationGeneration}
               onPickMethod={(type) => pickMethod(selected.id, type)}
               onDisconnect={() => void disconnectProvider(selected.id)}
               onDelete={() => void removeProvider(selected.id)}
@@ -370,6 +381,7 @@ function ProviderRow({
 
 function ConnectionView({
   provider,
+  configurationGeneration,
   onPickMethod,
   onDisconnect,
   onDelete,
@@ -379,6 +391,7 @@ function ConnectionView({
   onBack,
 }: {
   provider: AuthProviderInfoDto;
+  configurationGeneration?: number;
   onPickMethod: (type: "api_key" | "oauth") => void;
   onDisconnect: () => void;
   onDelete: () => void;
@@ -388,6 +401,8 @@ function ConnectionView({
   onBack: () => void;
 }) {
   const { t } = useI18n();
+  const [modelsOpen, setModelsOpen] = useState(false);
+  const modelsId = useId();
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4">
       <div className="flex items-center gap-3">
@@ -429,6 +444,24 @@ function ConnectionView({
           {t("providerConnect.ambientLong").replace("{provider}", provider.name)}
         </p>
       )}
+
+      <section className="min-w-0 rounded-md border border-v2-grey-200">
+        <button
+          type="button"
+          aria-expanded={modelsOpen}
+          aria-controls={modelsId}
+          onClick={() => setModelsOpen((open) => !open)}
+          className="flex min-h-9 w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left text-[13px] font-medium text-v2-text-text-base hover:bg-v2-grey-100"
+        >
+          {t("providerConnect.viewModels")}
+          <ChevronDown size={14} aria-hidden className={`shrink-0 ${modelsOpen ? "rotate-180" : ""}`} />
+        </button>
+        <div id={modelsId} hidden={!modelsOpen}>
+          {modelsOpen && (
+            <ProviderModelsList providerId={provider.id} configurationGeneration={configurationGeneration} />
+          )}
+        </div>
+      </section>
 
       <div className="mt-auto flex flex-col items-start gap-2">
         {provider.authStatus.configured && !provider.noAuth && (
