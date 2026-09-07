@@ -105,6 +105,24 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+function dragTransfer() {
+  const values = new Map<string, string>();
+  return {
+    effectAllowed: "uninitialized",
+    dropEffect: "none",
+    protected: false,
+    get types() {
+      return [...values.keys()];
+    },
+    setData(type: string, value: string) {
+      values.set(type, value);
+    },
+    getData(type: string) {
+      return this.protected ? "" : (values.get(type) ?? "");
+    },
+  };
+}
+
 function supervisorEvent(
   overrides: Partial<SubagentSupervisorEventDto> & Pick<SubagentSupervisorEventDto, "toolCallId">,
 ): SubagentSupervisorEventDto {
@@ -371,6 +389,172 @@ describe("WorkPage", () => {
     });
     vi.mocked(api.listEntries).mockResolvedValue([{ kind: "file", name: "notes.md", path: "/p/notes.md" }]);
     stubEvents();
+  });
+
+  it.each([
+    {
+      cwd: "/p",
+      path: "/p/notes.md",
+      filtered: false,
+      target: "transcript",
+      draft: "",
+      start: 0,
+      end: 0,
+      expected: "/p/notes.md ",
+      streaming: false,
+    },
+    {
+      cwd: "/p",
+      path: "/p/notes.md",
+      filtered: true,
+      target: "input",
+      draft: "Read OLD please",
+      start: 5,
+      end: 8,
+      expected: "Read /p/notes.md please",
+      streaming: false,
+    },
+    {
+      cwd: String.raw`D:\papers`,
+      path: String.raw`D:\papers\paper notes.md`,
+      filtered: false,
+      target: "transcript",
+      draft: "Readthis",
+      start: 4,
+      end: 4,
+      expected: String.raw`Read D:\papers\paper notes.md this`,
+      streaming: false,
+    },
+    {
+      cwd: "/p",
+      path: "/p/notes.md",
+      filtered: false,
+      target: "input",
+      draft: "Read\n",
+      start: 5,
+      end: 5,
+      expected: "Read\n/p/notes.md ",
+      streaming: true,
+    },
+  ])(
+    "inserts a tree path into $target (filtered=$filtered, cwd=$cwd, streaming=$streaming) without reading or sending",
+    async ({ cwd, path, filtered, target, draft, start, end, expected, streaming }) => {
+      const user = userEvent.setup();
+      vi.mocked(api.listEntries).mockResolvedValue([{ kind: "file", name: "notes.md", path }]);
+      vi.mocked(api.getSnapshot).mockResolvedValue({
+        ...snapshotValue,
+        session: { ...snapshotValue.session, cwd, isStreaming: streaming, status: streaming ? "running" : "ready" },
+      } as never);
+      render(<WorkPage id="s1" cwd={cwd} onBack={() => {}} onOpenSettings={() => {}} />);
+      await screen.findByText("starting research");
+      const input = screen.getByRole("textbox", { name: /message/i }) as HTMLTextAreaElement;
+      fireEvent.change(input, { target: { value: draft } });
+      input.focus();
+      input.setSelectionRange(start, end);
+      fireEvent.select(input);
+      if (filtered) await user.type(screen.getByRole("textbox", { name: "Filter files" }), "notes");
+      const file = await screen.findByRole("treeitem", { name: /notes.md/ });
+      expect(file).toHaveAttribute("draggable", "true");
+      const dataTransfer = dragTransfer();
+      fireEvent.dragStart(file, { dataTransfer });
+      const surface = target === "input" ? input : screen.getByLabelText("Conversation");
+      dataTransfer.protected = true;
+      fireEvent.dragEnter(surface, { dataTransfer });
+      expect(fireEvent.dragOver(surface, { dataTransfer })).toBe(false);
+      expect(screen.getByText("Drop to insert file path")).toBeVisible();
+      dataTransfer.protected = false;
+      fireEvent.drop(surface, { dataTransfer });
+      expect(input.value).toBe(expected);
+      await waitFor(() => expect(input).toHaveFocus());
+      expect(input.selectionStart).toBe(
+        expected.indexOf(path) + path.length + (draft.slice(end).startsWith(" ") ? 0 : 1),
+      );
+      expect(input.selectionEnd).toBe(input.selectionStart);
+      expect(screen.queryByText("Drop to insert file path")).toBeNull();
+      expect(api.sendPrompt).not.toHaveBeenCalled();
+      expect(api.readFileContent).not.toHaveBeenCalled();
+      fireEvent.dragStart(file, { dataTransfer });
+      fireEvent.drop(surface, { dataTransfer });
+      expect(input.value.match(/notes\.md/g)).toHaveLength(2);
+    },
+  );
+
+  it("clears drag feedback on nested leave, cancellation, and leaving the chat", async () => {
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    const file = await screen.findByRole("treeitem", { name: /notes.md/ });
+    const chat = screen.getByRole("tabpanel", { name: /^chat$/i });
+    const input = screen.getByRole("textbox", { name: /message/i });
+    const dataTransfer = dragTransfer();
+    fireEvent.dragStart(file, { dataTransfer });
+    fireEvent.dragEnter(chat, { dataTransfer });
+    fireEvent.dragEnter(input, { dataTransfer });
+    fireEvent.dragLeave(chat, { dataTransfer });
+    expect(screen.getByText("Drop to insert file path")).toBeVisible();
+    fireEvent.dragLeave(input, { dataTransfer });
+    expect(screen.queryByText("Drop to insert file path")).toBeNull();
+    fireEvent.dragEnter(chat, { dataTransfer });
+    fireEvent.dragEnd(file, { dataTransfer });
+    expect(screen.queryByText("Drop to insert file path")).toBeNull();
+    expect(input).toHaveValue("");
+  });
+
+  it("rejects directories and external file drops without navigating or changing the draft", async () => {
+    vi.mocked(api.listEntries).mockResolvedValue([{ kind: "directory", name: "papers", path: "/p/papers" }]);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    const directory = await screen.findByRole("treeitem", { name: /papers/ });
+    expect(directory).not.toHaveAttribute("draggable", "true");
+    const dataTransfer = dragTransfer();
+    fireEvent.dragStart(directory, { dataTransfer });
+    expect(dataTransfer.types).toEqual([]);
+    dataTransfer.setData("Files", "external.pdf");
+    const input = screen.getByRole("textbox", { name: /message/i });
+    fireEvent.change(input, { target: { value: "keep draft" } });
+    expect(fireEvent.drop(input, { dataTransfer })).toBe(false);
+    expect(input).toHaveValue("keep draft");
+    expect(screen.queryByText("Drop to insert file path")).toBeNull();
+  });
+
+  it("rejects a drop if prompt acceptance disables the composer during the drag", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<void>();
+    vi.mocked(api.sendPrompt).mockReturnValue(pending.promise);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    const file = await screen.findByRole("treeitem", { name: /notes.md/ });
+    const input = screen.getByRole("textbox", { name: /message/i });
+    await user.type(input, "send this");
+    const dataTransfer = dragTransfer();
+    fireEvent.dragStart(file, { dataTransfer });
+    fireEvent.dragEnter(input, { dataTransfer });
+    expect(screen.getByText("Drop to insert file path")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(input).toBeDisabled();
+    expect(screen.queryByText("Drop to insert file path")).toBeNull();
+    fireEvent.drop(input, { dataTransfer });
+    expect(input).toHaveValue("");
+    await act(async () => pending.resolve());
+  });
+
+  it.each(["malformed", "foreign-root", "outside-root"])("rejects a %s internal path payload", async (mode) => {
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    const file = await screen.findByRole("treeitem", { name: /notes.md/ });
+    const dataTransfer = dragTransfer();
+    fireEvent.dragStart(file, { dataTransfer });
+    expect(dataTransfer.types.length).toBeGreaterThan(0);
+    const type = dataTransfer.types[0]!;
+    const payload = JSON.parse(dataTransfer.getData(type));
+    dataTransfer.setData(
+      type,
+      mode === "malformed"
+        ? "not json"
+        : JSON.stringify({
+            ...payload,
+            ...(mode === "foreign-root" ? { root: "/other" } : { path: "/p/../other/notes.md" }),
+          }),
+    );
+    const input = screen.getByRole("textbox", { name: /message/i });
+    fireEvent.drop(input, { dataTransfer });
+    expect(input).toHaveValue("");
+    expect(api.sendPrompt).not.toHaveBeenCalled();
   });
 
   it("keeps Home first and places the workspace 4px below the topbar", async () => {
@@ -1417,6 +1601,12 @@ describe("WorkPage", () => {
     expect(conversation).toHaveTextContent("Research Assistant");
     expect(conversation).toHaveTextContent("Search");
     expect(screen.getByRole("textbox", { name: /message/i })).toBeDisabled();
+    const dataTransfer = dragTransfer();
+    fireEvent.dragStart(await screen.findByRole("treeitem", { name: /notes.md/ }), { dataTransfer });
+    fireEvent.dragEnter(conversation, { dataTransfer });
+    fireEvent.drop(screen.getByRole("textbox", { name: /message/i }), { dataTransfer });
+    expect(screen.getByRole("textbox", { name: /message/i })).toHaveValue("");
+    expect(screen.queryByText("Drop to insert file path")).toBeNull();
     expect(within(conversation).queryByRole("button", { name: "View details" })).toBeNull();
   });
 

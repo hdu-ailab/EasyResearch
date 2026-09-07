@@ -1,5 +1,5 @@
 import { Square } from "lucide-react";
-import { forwardRef, useEffect, useId, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { forwardRef, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { SkillCommandDto } from "../../../web/contracts";
 import { useI18n } from "../i18n/useI18n";
 
@@ -16,6 +16,7 @@ export interface ChatComposerProps {
 
 export interface ChatComposerHandle {
   setDraft(text: string): void;
+  insertPath(path: string): void;
   focus(): void;
 }
 
@@ -39,6 +40,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
    * (re)enabled, covering the disable-then-enable send cycle (ADR-083). */
   const [pendingFocus, setPendingFocus] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const insertedCaret = useRef<number | null>(null);
   const commandListId = `composer-commands-${useId().replaceAll(":", "")}`;
 
   useImperativeHandle(
@@ -56,9 +58,28 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
       focus() {
         textareaRef.current?.focus();
       },
+      insertPath(path: string) {
+        const textarea = textareaRef.current;
+        if (disabled || !textarea) return;
+        const before = textarea.value.slice(0, textarea.selectionStart);
+        const after = textarea.value.slice(textarea.selectionEnd);
+        const insertion = `${before && !/\s$/.test(before) ? " " : ""}${path}${/^\s/.test(after) ? "" : " "}`;
+        insertedCaret.current = before.length + insertion.length;
+        setText(before + insertion + after);
+        setSelectionStart(insertedCaret.current);
+        setActiveIndex(0);
+      },
     }),
-    [],
+    [disabled],
   );
+
+  useLayoutEffect(() => {
+    if (insertedCaret.current === null) return;
+    const caret = insertedCaret.current;
+    insertedCaret.current = null;
+    textareaRef.current?.focus();
+    textareaRef.current?.setSelectionRange(caret, caret);
+  });
 
   useEffect(() => {
     if (!pendingFocus || disabled) return;
