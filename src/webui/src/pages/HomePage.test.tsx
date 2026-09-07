@@ -316,6 +316,8 @@ describe("HomePage", () => {
   });
 
   it("renames a session from the row button and refreshes the status", async () => {
+    // The renamed row must come from Save's refresh, never the monitor poll.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     vi.mocked(api.renameSession).mockResolvedValue(undefined);
     const user = userEvent.setup();
     renderHome();
@@ -326,10 +328,19 @@ describe("HomePage", () => {
     const input = screen.getByRole("textbox", { name: /session name/i });
     await user.clear(input);
     await user.type(input, "Renamed paper");
+    vi.mocked(api.listStatus).mockResolvedValue({
+      bootId: "boot-a",
+      agentDir: "/agent",
+      homeDir: "/home/user",
+      sessions: [{ ...history[0]!, name: "Renamed paper" }],
+      activeSessions: [{ ...active[0]!, status: "running" }],
+    });
     await user.click(screen.getByRole("button", { name: /save/i }));
 
     await waitFor(() => expect(api.renameSession).toHaveBeenCalledWith("h1", "Renamed paper"));
-    expect(api.listStatus).toHaveBeenCalled();
+    expect(await screen.findByText("Renamed paper")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Rename session: Renamed paper" })).toBeVisible();
+    expect(screen.queryByText("Fault diagnosis")).toBeNull();
   });
 
   it("keeps controls usable while loading", () => {

@@ -210,7 +210,6 @@ describe("real stable-anchor resource watching", () => {
     );
 
     writeFileSync(skill, "skill-three", "utf8");
-    await clearStableEvents(state.changes);
     await expectObserved(
       state.changes,
       () => rmSync(skillDirectory, { recursive: true }),
@@ -220,7 +219,6 @@ describe("real stable-anchor resource watching", () => {
 
     mkdirSync(skillDirectory);
     writeFileSync(skill, "skill-four", "utf8");
-    await clearStableEvents(state.changes);
     const skillReplacement = join(paths.root, "replacement-skill.md");
     writeFileSync(skillReplacement, "skill-five", "utf8");
     await expectObserved(

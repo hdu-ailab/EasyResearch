@@ -170,7 +170,7 @@ afterEach(() => {
 });
 
 describe("third-party notice collection", () => {
-  it("walks production edges, nested lock keys, installed optionals, and required peers", () => {
+  it("walks production edges, nested versions, installed optionals, and required peers", () => {
     const project = createNoticeFixture({
       roots: ["root-a@1.0.0", "root-b@2.0.0"],
       packages: {
@@ -192,8 +192,13 @@ describe("third-party notice collection", () => {
         "root-a/nested/leaf": { identity: "leaf@1.0.0" },
         "root-b": {
           identity: "root-b@2.0.0",
-          dependencies: { shared: "^1" },
+          dependencies: { shared: "^1", nested: "^2" },
         },
+        "root-b/nested": {
+          identity: "nested@2.0.0",
+          dependencies: { leaf: "^2" },
+        },
+        "root-b/nested/leaf": { identity: "leaf@2.0.0" },
         shared: { identity: "shared@1.0.0" },
         "optional-installed": { identity: "optional-installed@1.0.0" },
         "optional-absent": { identity: "optional-absent@1.0.0" },
@@ -212,7 +217,9 @@ describe("third-party notice collection", () => {
 
     expect(entries.map((entry) => `${entry.name}@${entry.version}`)).toEqual([
       "leaf@1.0.0",
+      "leaf@2.0.0",
       "nested@1.0.0",
+      "nested@2.0.0",
       "optional-installed@1.0.0",
       "peer@1.0.0",
       "root-a@1.0.0",
@@ -782,7 +789,7 @@ describe("installed third-party closure", () => {
   it("collects the complete locked Google auth, proxy transport, Web-search, Axios, and SSH production closure", () => {
     const entries = collectThirdPartyNoticeEntries(PROJECT_ROOT);
     const identities = entries.map((entry) => `${entry.name}@${entry.version}`);
-    const first = generateThirdPartyNotices(PROJECT_ROOT);
+    const first = renderThirdPartyNotices([...entries].reverse());
     const second = generateThirdPartyNotices(PROJECT_ROOT);
 
     expect(first).toBe(second);
@@ -806,45 +813,14 @@ describe("installed third-party closure", () => {
     expect(identities).toContain("agent-base@6.0.2");
     expect(first).toContain("Apache License");
     expect(first).toContain("Copyright (c) 2025 K-Dense Inc.");
-    const scopedIdentities = entries
-      .filter((entry) => entry.name.startsWith("@"))
-      .map((entry) => `${entry.name}@${entry.version}`);
-    expect(scopedIdentities.length).toBeGreaterThan(0);
-    expect(
-      scopedIdentities.every((identity) => first.includes(`\n${identity}\n`)),
-    ).toBe(true);
-  });
-
-  it("walks the exact locked google-auth-library production closure", () => {
-    const identities = collectThirdPartyNoticeEntries(PROJECT_ROOT, [{
-      name: "google-auth-library",
-      version: "10.9.1",
-    }]).map((entry) => `${entry.name}@${entry.version}`);
-
-    expect(identities).toEqual([
-      "agent-base@7.1.4",
-      "base64-js@1.5.1",
-      "bignumber.js@9.3.1",
-      "buffer-equal-constant-time@1.0.1",
-      "data-uri-to-buffer@4.0.1",
-      "debug@4.4.3",
-      "ecdsa-sig-formatter@1.0.11",
-      "extend@3.0.2",
-      "fetch-blob@3.2.0",
-      "formdata-polyfill@4.0.10",
-      "gaxios@7.3.0",
-      "gcp-metadata@8.1.2",
-      "google-auth-library@10.9.1",
-      "google-logging-utils@1.1.3",
-      "https-proxy-agent@7.0.6",
-      "json-bigint@1.0.0",
-      "jwa@2.0.1",
-      "jws@4.0.1",
-      "ms@2.1.3",
-      "node-domexception@1.0.0",
-      "node-fetch@3.3.2",
-      "safe-buffer@5.2.1",
-      "web-streams-polyfill@3.3.3",
-    ]);
+    expect(entries.some((entry) => entry.name.startsWith("@"))).toBe(true);
+    for (const entry of entries) {
+      expect(second).toContain(`\n${entry.name}@${entry.version}\n`);
+      expect(entry.licenseTexts.length).toBeGreaterThan(0);
+      for (const license of entry.licenseTexts) {
+        expect(license.text.trim().length).toBeGreaterThan(0);
+        expect(second).toContain(license.text.trimEnd());
+      }
+    }
   });
 });

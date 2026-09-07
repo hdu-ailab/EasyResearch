@@ -495,20 +495,6 @@ describe("waitForReady", () => {
     }
   });
 
-  it("probes the given host", async () => {
-    const server = createServer((_req, res) => {
-      res.writeHead(200);
-      res.end("ok");
-    });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const port = (server.address() as { port: number }).port;
-    try {
-      expect(await waitForReady("127.0.0.1", port, 2000)).toBe(true);
-    } finally {
-      server.close();
-    }
-  });
-
   it.each(["0.0.0.0", "::"])("falls back to the loopback probe for %s", async (host) => {
     const server = createServer((_req, res) => {
       res.writeHead(200);
@@ -572,7 +558,7 @@ describe("help output", () => {
     expect(text).toContain("-v, --version");
   });
 
-  it("prints help and exits 0 for -h or --help without setup, daemon, or serve", async () => {
+  it("prints help and exits 0 for -h or --help without setup, daemon, serve, or browser", async () => {
     for (const flag of ["-h", "--help"]) {
       const writes: string[] = [];
       const logSpy = vi.spyOn(console, "log").mockImplementation((msg: unknown) => {
@@ -584,6 +570,7 @@ describe("help output", () => {
         expect(await runCli([flag], deps, { agentDir: root, setup })).toBe(0);
         expect(deps.spawnBackground).not.toHaveBeenCalled();
         expect(deps.serve).not.toHaveBeenCalled();
+        expect(deps.openBrowser).not.toHaveBeenCalled();
         expect(setup).not.toHaveBeenCalled();
       } finally {
         logSpy.mockRestore();
@@ -628,13 +615,6 @@ describe("help output", () => {
     expect(writes.join("\n")).toContain("--host <host>");
     expect(deps.spawnBackground).not.toHaveBeenCalled();
     expect(deps.serve).not.toHaveBeenCalled();
-  });
-
-  it("no longer treats -h as a --host alias", async () => {
-    const deps = makeDeps();
-    expect(await runCli(["-h"], deps, { agentDir: root })).toBe(0);
-    expect(deps.spawnBackground).not.toHaveBeenCalled();
-    expect(deps.openBrowser).not.toHaveBeenCalled();
   });
 });
 

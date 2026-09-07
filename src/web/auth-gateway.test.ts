@@ -609,26 +609,6 @@ describe("AuthGateway.logout", () => {
 });
 
 describe("AuthGateway.shutdown", () => {
-  it("aborts active flows so runFlow resolves", async () => {
-    const loginImpl = vi.fn(async (_id: string, _type: string, interaction: any) => {
-      try {
-        await interaction.prompt({ type: "secret", message: "API key" });
-      } catch (e) {
-        throw e;
-      }
-      return { type: "api_key", key: "sk" };
-    });
-    const store = createAuthFlowStore();
-    const gw = createAuthGateway(fakeRuntime([anthropicProvider] as any, loginImpl as any), store, {
-      timeoutMs: 600_000,
-    });
-    const flow = runPreflightedFlow(gw, { flowId: "f1", providerId: "anthropic", type: "api_key" });
-    await vi.waitFor(() => expect(store.pendingKind("f1")).toBe("secret"));
-    gw.shutdown();
-    await expect(flow).resolves.toBeUndefined();
-    expect(gw.activeFlow()).toBeNull();
-  });
-
   it("waits for every aborted auth flow to settle before releasing runtime ownership", async () => {
     let releaseCleanup!: () => void;
     const cleanup = new Promise<void>((resolve) => {
@@ -664,8 +644,9 @@ describe("AuthGateway.shutdown", () => {
 
     releaseCleanup();
     await shutdown;
-    await flow;
+    await expect(flow).resolves.toBeUndefined();
     expect(gw.activeFlow()).toBeNull();
+    expect(store.get("f1")?.terminated).toBe(true);
   });
 
   it("waits for active catalog work and prevents a preflight reservation after shutdown starts", async () => {

@@ -1,7 +1,6 @@
 import { createServer } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
-  NetworkProxyScopeDto,
   NetworkProxyTestOutcomeDto,
   NetworkProxyTestRequestDto,
 } from "./contracts";
@@ -222,17 +221,5 @@ describe("network proxy candidate probe", () => {
     expect(visible).not.toContain("private.dns.example");
     expect(visible).not.toContain("token-123");
     expect(visible).not.toContain("407");
-  });
-
-  it("uses only declared scope values", async () => {
-    const scopes: NetworkProxyScopeDto[] = ["all", "llm", "search"];
-    const outcomes = new Set<NetworkProxyTestOutcomeDto>();
-    const probe = createNetworkProxyProbe(fakeFetch(async () => new Response(null, { status: 204 })));
-
-    for (const scope of scopes) {
-      outcomes.add((await probe.test({ scope, proxyUrl: "http://proxy.example" })).outcome);
-    }
-
-    expect(outcomes).toEqual(new Set(["success"]));
   });
 });

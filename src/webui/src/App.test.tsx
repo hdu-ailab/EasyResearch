@@ -218,7 +218,7 @@ describe("App routing", () => {
     expect(await screen.findByRole("region", { name: /research workspace/i })).toBeTruthy();
   });
 
-  it("keeps the Home version and context mounted behind Settings", async () => {
+  it("opens canonical Settings over the still-mounted, inert Home context", async () => {
     const user = userEvent.setup();
     render(<App />);
     await workspace();
@@ -227,7 +227,9 @@ describe("App routing", () => {
     expect(versionNode).toBeVisible();
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
+    expect(window.location.hash).toBe("#/?settings=1");
     expect(await screen.findByRole("dialog", { name: "Settings" })).toBeVisible();
+    expect(screen.getByRole("tab", { name: "General" })).toHaveFocus();
     expect(versionNode).toBeInTheDocument();
     const baseSurface = versionNode.closest("[data-app-surface]");
     expect(baseSurface).not.toBeNull();
@@ -250,16 +252,6 @@ describe("App routing", () => {
     window.location.hash = "#/bogus";
     render(<App />);
     expect(await screen.findByRole("region", { name: /research workspace/i })).toBeTruthy();
-  });
-
-  it("opens Settings over Home with the canonical marked overlay route", async () => {
-    const user = userEvent.setup();
-    render(<App />);
-    await workspace();
-    await user.click(screen.getByRole("button", { name: "Settings" }));
-    expect(window.location.hash).toBe("#/?settings=1");
-    expect(await screen.findByRole("dialog", { name: "Settings" })).toBeVisible();
-    expect(screen.getByRole("tab", { name: "General" })).toHaveFocus();
   });
 
   it("restores browser Back to Settings until a dirty Network draft is discarded", async () => {

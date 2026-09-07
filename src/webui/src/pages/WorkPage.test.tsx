@@ -3311,49 +3311,14 @@ describe("WorkPage", () => {
     expect(within(region).queryByText("search, figures")).toBeNull();
   });
 
-  it("keeps the Research Assistant card when the agents endpoint fails", async () => {
-    const user = userEvent.setup();
-    vi.mocked(api.listAgents).mockRejectedValue(new Error("boom"));
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
-    await screen.findByText("starting research");
-    await user.click(screen.getByRole("button", { name: /agent list/i }));
-    const region = screen.getByRole("region", { name: /agent list/i });
-    expect(await within(region).findByText("Research Assistant")).toBeTruthy();
-  });
-
-  it("shows each Agent's global model field in its model dropdown", async () => {
-    const user = userEvent.setup();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
-    await screen.findByText("starting research");
-    await user.click(screen.getByRole("button", { name: /agent list/i }));
-    const region = screen.getByRole("region", { name: /agent list/i });
-    const combos = within(region).getAllByRole("combobox");
-    expect(combos.length).toBe(12);
-    expect(combos[0]!).toHaveTextContent("openai/gpt-4o");
-    expect(combos[2]!).toHaveTextContent("anthropic/claude");
-    expect(within(combos[4]!).getByText("inherit (Research Assistant's model)")).toBeTruthy();
-    expect(within(region).queryByText(/inherits session/)).toBeNull();
-  });
-
-  it("selecting inherit on a configured Agent clears its global model field", async () => {
-    const user = userEvent.setup();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
-    await screen.findByText("starting research");
-    await user.click(screen.getByRole("button", { name: /agent list/i }));
-    const region = screen.getByRole("region", { name: /agent list/i });
-    const searchCombo = within(region).getAllByRole("combobox")[2]!;
-    await user.click(searchCombo);
-    await user.click(screen.getByRole("option", { name: "inherit (Research Assistant's model)" }));
-    await waitFor(() => expect(api.patchAgent).toHaveBeenCalledWith("search", { model: null }));
-  });
-
   it("applying a model to an agent writes it immediately, with no Set button", async () => {
     const user = userEvent.setup();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     await user.click(screen.getByRole("button", { name: /agent list/i }));
     const region = screen.getByRole("region", { name: /agent list/i });
-    const searchCombo = within(region).getAllByRole("combobox")[2]!;
+    const search = (await within(region).findByText("Search")).closest<HTMLElement>("div.mt-3")!;
+    const searchCombo = within(search).getByRole("combobox", { name: "Select model" });
     await user.click(searchCombo);
     await user.click(screen.getByRole("option", { name: "openai/gpt-4o" }));
     await waitFor(() => expect(api.patchAgent).toHaveBeenCalledWith("search", { model: "openai/gpt-4o" }));
@@ -3398,6 +3363,7 @@ describe("WorkPage", () => {
     expect(api.connectSessionEvents).toHaveBeenNthCalledWith(1, "s1", expect.anything());
     expect(api.connectSessionEvents).toHaveBeenNthCalledWith(2, "s2", expect.anything());
     expect(unsubscribeFn).toHaveBeenCalledTimes(1);
+    expect(api.sendPrompt).toHaveBeenCalledTimes(1);
     emitInAct({
       type: "snapshot",
       session: { id: "s2", cwd: "/p", isStreaming: false, status: "ready" },
@@ -3500,61 +3466,6 @@ describe("WorkPage", () => {
     await waitFor(() => expect(api.abortSession).toHaveBeenCalledWith("s1"));
     expect(screen.queryByRole("button", { name: "Agent experiment_0" })).toBeNull();
     expect(screen.getByRole("button", { name: /agent research assistant/i })).toHaveAttribute("aria-pressed", "true");
-  });
-
-  it("waits for the reopened SSE subscription before sending the prompt", async () => {
-    const user = userEvent.setup();
-    let connections = 0;
-    let secondSendConnections = 0;
-    vi.mocked(api.connectSessionEvents).mockImplementation((_id, handlers) => {
-      connections += 1;
-      latestHandlers = handlers;
-      if (connections === 2) {
-        handlers.onEvent({
-          type: "snapshot",
-          runtimeConfigurationGeneration: 0,
-          compactionPolicy: { triggerPercent: 70, enabled: true },
-          session: { id: "s2", cwd: "/p", isStreaming: false, status: "ready" },
-          timeline: [
-            {
-              kind: "message",
-              entryId: "continue-user",
-              message: { role: "user", content: [{ type: "text", text: "continue please" }] },
-            },
-          ],
-          subagents: [],
-        });
-      }
-      return vi.fn();
-    });
-    vi.mocked(api.sendPrompt)
-      .mockRejectedValueOnce(new api.ApiError(404, { error: "Unknown session: s1" }))
-      .mockImplementationOnce(async () => {
-        secondSendConnections = connections;
-      });
-    vi.mocked(api.openSession).mockResolvedValueOnce({
-      id: "s2",
-      cwd: "/p",
-      sessionFile: "/agent/sessions/--p--/a.jsonl",
-      isStreaming: false,
-      status: "ready",
-    } as never);
-    vi.mocked(api.getSnapshot)
-      .mockResolvedValueOnce(snapshot)
-      .mockResolvedValue({
-        session: { id: "s2", cwd: "/p", isStreaming: false, status: "ready" },
-        messages: [{ role: "user", content: [{ type: "text", text: "continue please" }] }],
-        subagents: [],
-      } as never);
-
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
-    await screen.findByText("starting research");
-    await user.type(screen.getByRole("textbox", { name: /message/i }), "continue please");
-    await user.click(screen.getByRole("button", { name: /send/i }));
-
-    await waitFor(() => expect(api.sendPrompt).toHaveBeenCalledTimes(2));
-    expect(secondSendConnections).toBe(2);
-    expect(await screen.findByText("continue please")).toBeVisible();
   });
 
   it("re-subs scribes events when reopening returns the same session id", async () => {

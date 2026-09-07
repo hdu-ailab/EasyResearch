@@ -1,7 +1,7 @@
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, parse } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionTreeNode } from "@earendil-works/pi-coding-agent";
 import type { RouteServices } from "./routes";
@@ -453,11 +453,10 @@ describe("web routes", () => {
   let handler: (request: Request) => Promise<Response>;
 
   beforeEach(() => {
-    webuiDist = mkdtempSync(join(tmpdir(), "lazy-webui-dist-"));
     homeDir = mkdtempSync(join(tmpdir(), "lazy-home-"));
     agentDir = mkdtempSync(join(tmpdir(), "lazy-agent-"));
     projectDir = mkdtempSync(join(tmpdir(), "lazy-project-"));
-    writeFileSync(join(webuiDist, "index.html"), "<div id=\"root\"></div>", "utf-8");
+    webuiDist = join(homeDir, "webui-dist");
     FakeAdapter.all = [];
     FakeAdapter.nextId = 0;
     factory = new FakeFactory();
@@ -478,6 +477,12 @@ describe("web routes", () => {
       dispose: disposeModelsMock,
     } as unknown as DaemonAuthRuntime);
   });
+
+  function setupStaticAssets(): void {
+    mkdirSync(webuiDist, { recursive: true });
+    onTestFinished(() => rmSync(webuiDist, { recursive: true, force: true }));
+    writeFileSync(join(webuiDist, "index.html"), "<div id=\"root\"></div>", "utf-8");
+  }
 
   function setup(
     overrides: Partial<Omit<RouteServices, "subagentSessions">> & {
@@ -838,6 +843,7 @@ describe("web routes", () => {
   });
 
   it("marks API JSON snapshots no-store without changing static asset cache policy", async () => {
+    setupStaticAssets();
     setup();
 
     for (const path of [
@@ -1004,6 +1010,7 @@ describe("web routes", () => {
   });
 
   it("requires desktop renderer access across document, asset, API, SSE, and raw-file routes", async () => {
+    setupStaticAssets();
     const assetDir = join(webuiDist, "assets");
     mkdirSync(assetDir, { recursive: true });
     writeFileSync(join(assetDir, "app.js"), "export {};", "utf8");
@@ -1146,38 +1153,42 @@ describe("web routes", () => {
     expect(res.headers.get("content-range")).toBe("bytes */5");
   });
 
-  it("streams full and ranged raw bodies instead of buffering the file", async () => {
+  it.each([
+    ["full", undefined, null],
+    ["ranged", "bytes=1-3", { start: 1, end: 3 }],
+  ] as const)("delivers %s raw headers and a chunk before source EOF, and forwards cancellation", async (_name, rangeHeader, range) => {
     const pdf = join(homeDir, "raw.pdf");
     writeFileSync(pdf, Buffer.from([0, 1, 2, 3, 4]));
+    let source!: ReadableStreamDefaultController<Uint8Array>;
+    const cancel = vi.fn();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) { source = controller; },
+      cancel,
+    });
+    const readFileStream = vi.spyOn(directoryService, "readFileStream").mockReturnValue(stream);
     setup();
-
-    const full = await handler(new Request(`http://localhost/api/file/raw?path=${encodeURIComponent(pdf)}`));
-    expect(full.status).toBe(200);
-    expect(full.body).toBeInstanceOf(ReadableStream);
-    const fullReader = full.body!.getReader();
-    const fullChunks: number[] = [];
-    for (;;) {
-      const { done, value } = await fullReader.read();
-      if (done) break;
-      fullChunks.push(...value);
-    }
-    expect(fullChunks).toEqual([0, 1, 2, 3, 4]);
-
-    const ranged = await handler(
+    let response: Response | undefined;
+    const request = handler(
       new Request(`http://localhost/api/file/raw?path=${encodeURIComponent(pdf)}`, {
-        headers: { Range: "bytes=1-3" },
+        headers: rangeHeader ? { Range: rangeHeader } : {},
       }),
-    );
-    expect(ranged.status).toBe(206);
-    expect(ranged.body).toBeInstanceOf(ReadableStream);
-    const rangedReader = ranged.body!.getReader();
-    const rangedChunks: number[] = [];
-    for (;;) {
-      const { done, value } = await rangedReader.read();
-      if (done) break;
-      rangedChunks.push(...value);
+    ).then((res) => { response = res; return res; });
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    try {
+      await vi.waitFor(() => expect(response).toBeDefined());
+      expect(readFileStream).toHaveBeenCalledExactlyOnceWith(pdf, range);
+      reader = response!.body!.getReader();
+      source.enqueue(Uint8Array.of(1));
+      await expect(reader.read()).resolves.toEqual({ done: false, value: Uint8Array.of(1) });
+
+      await reader.cancel("preview closed");
+      expect(cancel).toHaveBeenCalledExactlyOnceWith("preview closed");
+    } finally {
+      if (cancel.mock.calls.length === 0) source.close();
+      if (reader) await reader.cancel();
+      else await (await request).body?.cancel();
+      readFileStream.mockRestore();
     }
-    expect(rangedChunks).toEqual([1, 2, 3]);
   });
 
   it("serves a small range of a large raw file through the streaming body", async () => {
@@ -3254,6 +3265,7 @@ describe("web routes", () => {
   });
 
   it("serves static assets and 404s unknown paths", async () => {
+    setupStaticAssets();
     setup();
     const index = await handler(new Request("http://localhost/"));
     expect(index.status).toBe(200);
@@ -3262,6 +3274,7 @@ describe("web routes", () => {
   });
 
   it("serves .mjs modules with a JavaScript MIME type so PDF workers can load", async () => {
+    setupStaticAssets();
     writeFileSync(join(webuiDist, "pdf.worker.min.mjs"), "self.streamSink", "utf-8");
     setup();
     const worker = await handler(new Request("http://localhost/pdf.worker.min.mjs"));
@@ -3339,8 +3352,18 @@ describe("web routes", () => {
 
   it("PATCH /api/agents/:name rejects a model missing from the injected current catalog", async () => {
     mkdirSync(join(agentDir, "agents"), { recursive: true });
-    const target = join(agentDir, "agents", "search.md");
-    writeFileSync(target, "---\nname: search\ndescription: Search\n---\nSearch prompt\n");
+    writeFileSync(join(agentDir, "agents", "search.md"), "---\nname: search\ndescription: Search\n---\nSearch prompt\n");
+    const target = join(agentDir, "settings.json");
+    writeFileSync(target, JSON.stringify({
+      theme: "dark",
+      easyresearch: {
+        enable_dot_agents_skill: true,
+        agentDefaults: {
+          search: { model: "anthropic/claude", thinking: "low" },
+          writing: { thinking: "medium" },
+        },
+      },
+    }, null, 2) + "\n");
     const before = readFileSync(target);
     const listModels = vi.fn(async () => [
       { provider: "anthropic", id: "claude", reasoning: true, available: true, authRequired: false },
@@ -3354,7 +3377,7 @@ describe("web routes", () => {
       new Request("http://localhost/api/agents/search", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "openai/gpt-4o" }),
+        body: JSON.stringify({ model: "openai/gpt-4o", thinking: "high" }),
       }),
     );
 
@@ -3365,8 +3388,18 @@ describe("web routes", () => {
 
   it("PATCH /api/agents/:name rejects unknown keys without changing persisted bytes", async () => {
     mkdirSync(join(agentDir, "agents"), { recursive: true });
-    const target = join(agentDir, "agents", "search.md");
-    writeFileSync(target, "---\nname: search\ndescription: Search\n---\nSearch prompt\n");
+    writeFileSync(join(agentDir, "agents", "search.md"), "---\nname: search\ndescription: Search\n---\nSearch prompt\n");
+    const target = join(agentDir, "settings.json");
+    writeFileSync(target, JSON.stringify({
+      theme: "dark",
+      easyresearch: {
+        enable_dot_agents_skill: true,
+        agentDefaults: {
+          search: { model: "old/model", thinking: "low" },
+          writing: { thinking: "medium" },
+        },
+      },
+    }, null, 2) + "\n");
     const before = readFileSync(target);
     setup();
 
@@ -3380,45 +3413,6 @@ describe("web routes", () => {
 
     expect(response.status).toBe(400);
     expect(readFileSync(target)).toEqual(before);
-  });
-
-  it("maps a discovered AgentConfig into the roster DTO without private fields", () => {
-    expect(
-      agentToDto({
-        name: "search",
-        description: "Finds papers",
-        enabled: true,
-        builtin: true,
-        tools: ["bash"],
-        effectiveTools: ["bash"],
-        subagents: ["experiment"],
-        skills: ["paper-search", "missing-skill"],
-        effectiveSkills: ["paper-search"],
-        effectiveSkillPaths: ["/private/skills/paper-search"],
-        missingSkills: ["missing-skill"],
-        model: "deepseek/ds-v3",
-        thinking: "medium",
-        systemPrompt: "SECRET PROMPT",
-        source: "global",
-        filePath: "/agent/agents/search.md",
-      }),
-    ).toEqual({
-      name: "search",
-      description: "Finds papers",
-      enabled: true,
-      builtin: true,
-      source: "global",
-      filePath: "/agent/agents/search.md",
-      model: "deepseek/ds-v3",
-      effectiveModel: "deepseek/ds-v3",
-      thinking: "medium",
-      tools: ["bash"],
-      effectiveTools: ["bash"],
-      subagents: ["experiment"],
-      skills: ["paper-search", "missing-skill"],
-      effectiveSkills: ["paper-search"],
-      missingSkills: ["missing-skill"],
-    });
   });
 
   it("keeps an unset model sparse while exposing Pi's resolved default as the effective model", async () => {
@@ -5023,6 +5017,47 @@ describe("web routes", () => {
     const res = await handler(new Request("http://localhost/api/config/projects"));
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ home: agentDir, projects: [{ cwd: projectDir }] });
+  });
+});
+
+describe("agentToDto", () => {
+  it("maps a discovered AgentConfig into the roster DTO without private fields", () => {
+    expect(
+      agentToDto({
+        name: "search",
+        description: "Finds papers",
+        enabled: true,
+        builtin: true,
+        tools: ["bash"],
+        effectiveTools: ["bash"],
+        subagents: ["experiment"],
+        skills: ["paper-search", "missing-skill"],
+        effectiveSkills: ["paper-search"],
+        effectiveSkillPaths: ["/private/skills/paper-search"],
+        missingSkills: ["missing-skill"],
+        model: "deepseek/ds-v3",
+        thinking: "medium",
+        systemPrompt: "SECRET PROMPT",
+        source: "global",
+        filePath: "/agent/agents/search.md",
+      }),
+    ).toEqual({
+      name: "search",
+      description: "Finds papers",
+      enabled: true,
+      builtin: true,
+      source: "global",
+      filePath: "/agent/agents/search.md",
+      model: "deepseek/ds-v3",
+      effectiveModel: "deepseek/ds-v3",
+      thinking: "medium",
+      tools: ["bash"],
+      effectiveTools: ["bash"],
+      subagents: ["experiment"],
+      skills: ["paper-search", "missing-skill"],
+      effectiveSkills: ["paper-search"],
+      missingSkills: ["missing-skill"],
+    });
   });
 });
 

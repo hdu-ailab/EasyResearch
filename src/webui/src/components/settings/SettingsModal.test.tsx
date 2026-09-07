@@ -1043,29 +1043,6 @@ describe("SettingsModal", () => {
     expect(guard!.shouldBlock()).toBe(true);
   });
 
-  it("opens provider management from its category with the connected count", async () => {
-    const user = userEvent.setup();
-    renderSettings();
-    await selectCategory(user, "Model providers");
-
-    const providerAction = (await screen.findByText("1 providers connected")).closest("button");
-    expect(providerAction).not.toBeNull();
-    expect(providerAction).toHaveAccessibleName("Connect providers 1 providers connected");
-    await user.click(providerAction!);
-    expect(screen.getByRole("dialog", { name: "Connect providers" })).toBeVisible();
-  });
-
-  it("renders localized category and route-control copy", async () => {
-    const user = userEvent.setup();
-    renderSettings();
-    await user.click(screen.getByRole("button", { name: "简体中文" }));
-
-    expect(screen.getByRole("tab", { name: "常规" })).toBeVisible();
-    expect(screen.getByRole("tab", { name: "模型提供商" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "打开配置浏览器…" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "关闭" })).toBeVisible();
-  });
-
   it("renders default font sizes with steppers and a preview", async () => {
     renderSettings();
     expect(screen.getByText("Chat font size")).toBeTruthy();
@@ -1129,16 +1106,6 @@ describe("SettingsModal", () => {
     });
   });
 
-  it("shows the global automatic compaction threshold with conversation preferences", async () => {
-    const user = userEvent.setup();
-    renderSettings();
-    await selectCategory(user, "Conversation");
-
-    const input = await screen.findByRole("spinbutton", { name: /automatic compaction/i });
-    expect(input).toHaveValue(70);
-    expect(api.getCompactionSettings).toHaveBeenCalledOnce();
-  });
-
   it("retains an in-flight compaction failure and its Retry target across category switches", async () => {
     const user = userEvent.setup();
     const failedSave = deferred<Awaited<ReturnType<typeof api.patchCompactionSettings>>>();
@@ -1148,6 +1115,8 @@ describe("SettingsModal", () => {
     renderSettings();
     await selectCategory(user, "Conversation");
     const input = await screen.findByRole("spinbutton", { name: /automatic compaction/i });
+    expect(input).toHaveValue(70);
+    expect(api.getCompactionSettings).toHaveBeenCalledOnce();
 
     await user.clear(input);
     await user.type(input, "80");
@@ -1276,6 +1245,10 @@ describe("SettingsModal", () => {
     await user.click(screen.getByRole("button", { name: "简体中文" }));
     expect(screen.getByText("外观")).toBeTruthy();
     expect(screen.getByText("语言")).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "常规" })).toBeVisible();
+    expect(screen.getByRole("tab", { name: "模型提供商" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "打开配置浏览器…" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "关闭" })).toBeVisible();
     expect(document.documentElement.lang).toBe("zh-CN");
     expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}")).toMatchObject({ language: "zh-CN" });
   });
@@ -1677,10 +1650,10 @@ describe("SettingsModal", () => {
     const user = userEvent.setup();
     renderSettings();
     await selectCategory(user, "Model providers");
-    const providerAction = (await screen.findByText("1 providers connected")).closest("button");
+    const providerAction = await screen.findByRole("button", { name: "Connect providers 1 providers connected" });
     expect(api.listAuthProviders).toHaveBeenCalledOnce();
 
-    await user.click(providerAction!);
+    await user.click(providerAction);
     expect(screen.getByRole("dialog", { name: "Connect providers" })).toBeVisible();
     await act(async () => {});
 

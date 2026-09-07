@@ -58,13 +58,33 @@ describe("patchGlobalAgent", () => {
     name: string,
     patch: AgentConfigurationPatch,
     modelExists: (model: string) => boolean = () => true,
+    status = 400,
   ): Promise<void> {
     writeAgent("search", SEARCH_WITH_DEFAULTS);
     writeAgent("writing", WRITING_AGENT);
     const before = agentBytes();
+    const settingsPath = join(agentDir, "settings.json");
+    writeFileSync(settingsPath, JSON.stringify({
+      theme: "dark",
+      easyresearch: {
+        enable_dot_agents_skill: true,
+        agentDefaults: {
+          search: { model: "old/model", thinking: "low" },
+          writing: { model: "other/model", thinking: "medium" },
+        },
+      },
+    }, null, 2) + "\n");
+    const settingsBefore = readFileSync(settingsPath);
 
-    await expect(patchGlobalAgent(config, name, patch, modelExists)).rejects.toMatchObject({ status: 400 });
+    await expect(patchGlobalAgent(config, name, patch, modelExists)).rejects.toMatchObject({ status });
 
+    expect(readFileSync(settingsPath)).toEqual(settingsBefore);
+    expect(agentBytes()).toEqual(before);
+
+    rmSync(settingsPath);
+    await expect(patchGlobalAgent(config, name, patch, modelExists)).rejects.toMatchObject({ status });
+
+    expect(existsSync(settingsPath)).toBe(false);
     expect(agentBytes()).toEqual(before);
   }
 
@@ -149,16 +169,8 @@ describe("patchGlobalAgent", () => {
     expect(readFileSync(join(agentDir, "agents", "reviewer.md"))).toEqual(reviewerBefore);
   });
 
-  it("rejects an unknown Agent without changing any Agent file", async () => {
-    writeAgent("search", SEARCH_WITH_DEFAULTS);
-    writeAgent("writing", WRITING_AGENT);
-    const before = agentBytes();
-
-    await expect(
-      patchGlobalAgent(config, "no-such-agent", { thinking: "high" }, () => true),
-    ).rejects.toMatchObject({ status: 404 });
-
-    expect(agentBytes()).toEqual(before);
+  it("rejects an unknown Agent without changing or creating settings", async () => {
+    await expectRejectedWithoutWrites("no-such-agent", { thinking: "high" }, () => true, 404);
   });
 
   it("rejects unknown patch keys before changing either requested field", async () => {

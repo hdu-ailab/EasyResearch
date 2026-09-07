@@ -83,6 +83,7 @@ describe("AgentList", () => {
     expect(await screen.findByText("Research Assistant")).toBeVisible();
     expect(api.listAgents).toHaveBeenCalledWith("/p");
     expect(screen.queryByRole("button", { name: /follow global/i })).toBeNull();
+    expect(screen.queryByText(/inherits session/)).toBeNull();
     const search = screen.getByText("Search").closest<HTMLElement>("div.mt-3")!;
     expect(within(search).getByRole("combobox", { name: "Select model" })).toHaveTextContent("custom/model");
     expect(within(search).getByRole("combobox", { name: /select thinking/i })).toHaveValue("low");
@@ -136,6 +137,9 @@ describe("AgentList", () => {
 
     const assistant = (await screen.findByText("Research Assistant")).closest<HTMLElement>("div.mt-3")!;
     const search = screen.getByText("Search").closest<HTMLElement>("div.mt-3")!;
+    expect(within(search).getByRole("combobox", { name: "Select model" })).toHaveTextContent(
+      "inherit (Research Assistant's model)",
+    );
     expect(within(assistant).getByRole("combobox", { name: /select thinking/i })).toHaveTextContent(
       "Automatic (highest supported)",
     );

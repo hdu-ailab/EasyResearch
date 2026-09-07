@@ -385,19 +385,6 @@ describe("createSubagentTool asynchronous launch contract", () => {
     expect(onUpdate).not.toHaveBeenCalled();
   });
 
-  it("allows two same-role calls to overlap", async () => {
-    const harness = toolHarness();
-    const first = harness.tool.execute("t0", { agent: "search", task: "a" }, undefined, undefined, harness.context);
-    const second = harness.tool.execute("t1", { agent: "search", task: "b" }, undefined, undefined, harness.context);
-    harness.materializeAll();
-
-    await expect(Promise.all([first, second])).resolves.toMatchObject([
-      { content: [{ text: "search_0 is working." }] },
-      { content: [{ text: "search_1 is working." }] },
-    ]);
-    expect(harness.stages).toHaveLength(2);
-  });
-
   it("does not impose an application concurrency cap", async () => {
     const harness = toolHarness();
     const calls = Array.from({ length: 12 }, (_, index) =>

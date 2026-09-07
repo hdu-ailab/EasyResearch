@@ -100,44 +100,37 @@ describe("auth routes", () => {
     expect(services.providerDeletion.delete).toHaveBeenCalledWith("custom-provider");
   });
 
-  it("POST /api/auth/login with no active flow returns 202 with flowId", async () => {
+  it("POST /api/auth/login returns 202 with the preflighted flowId before the flow completes", async () => {
+    let finishFlow!: () => void;
+    const flow = new Promise<void>((resolve) => { finishFlow = resolve; });
+    const preflight = vi.fn();
+    const runFlow = vi.fn(() => flow);
     const gw = {
       activeFlow: () => null,
-      preflight: vi.fn(),
-      runFlow: vi.fn(async () => {}),
-      store: () => fakeStore(),
-    } as unknown as AuthGateway;
-    const services = makeServices(gw);
-    const handler = createRouteHandler(services);
-    const res = await handler(postJson("http://l/api/auth/login", {
-      providerId: "anthropic",
-      type: "api_key",
-    }));
-    expect(res.status).toBe(202);
-    const body = (await res.json()) as { flowId: string };
-    expect(body.flowId).toBeTruthy();
-    expect((gw.preflight as any)).toHaveBeenCalledWith({
-      flowId: body.flowId,
-      providerId: "anthropic",
-      type: "api_key",
-    });
-  });
-
-  it("POST /api/auth/login runs the flow fire-and-forget after preflight", async () => {
-    const gw = {
-      activeFlow: () => null,
-      preflight: vi.fn(),
-      runFlow: vi.fn(async () => {}),
+      preflight,
+      runFlow,
       store: () => fakeStore(),
     } as unknown as AuthGateway;
     const handler = createRouteHandler(makeServices(gw));
-    const res = await handler(postJson("http://l/api/auth/login", {
+    let response: Response | undefined;
+    const request = handler(postJson("http://l/api/auth/login", {
       providerId: "anthropic",
       type: "api_key",
-    }));
-    expect(res.status).toBe(202);
-    await Promise.resolve();
-    expect((gw.runFlow as any)).toHaveBeenCalled();
+    })).then((res) => { response = res; });
+    try {
+      await vi.waitFor(() => expect(response).toBeDefined());
+      expect(response!.status).toBe(202);
+      const body = (await response!.json()) as { flowId: string };
+      expect(body.flowId).toBeTruthy();
+      const input = { flowId: body.flowId, providerId: "anthropic", type: "api_key" };
+      expect(preflight).toHaveBeenCalledExactlyOnceWith(input);
+      expect(runFlow).toHaveBeenCalledExactlyOnceWith(input);
+      expect(preflight.mock.invocationCallOrder[0]).toBeLessThan(runFlow.mock.invocationCallOrder[0]!);
+    } finally {
+      finishFlow();
+      await flow;
+      await request;
+    }
   });
 
   it("accepts only one concurrent login and exposes a registered flow before 202", async () => {

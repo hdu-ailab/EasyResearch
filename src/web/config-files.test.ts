@@ -29,6 +29,7 @@ function freshDir(): string {
 afterEach(() => {
   renameSyncMock.mockReset();
   renameSyncMock.mockImplementation(realRenameSync.impl);
+  for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
 describe("resolveAllowedConfigPath", () => {

@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MarkdownBlock } from "./MarkdownBlock";
 import {
@@ -64,9 +64,12 @@ describe("MarkdownBlock", () => {
     clearCompletedMarkdownCacheForTests();
   });
 
-  it("renders math via KaTeX", () => {
-    render(<MarkdownBlock text={"Euler: $e^{i\\pi} + 1 = 0$"} />);
-    expect(screen.getByText(/e\^\{i\\pi\}/)).toBeTruthy();
+  it("renders math via KaTeX rather than leaving the source unparsed", async () => {
+    const { container } = render(<MarkdownBlock text={"Euler: $e^{i\\pi} + 1 = 0$"} />);
+    await waitFor(() => expect(container.querySelector(".katex .katex-html")).toBeInTheDocument());
+    expect(container.querySelector(".katex math")).not.toBeNull();
+    expect(container.querySelector(".katex annotation")?.textContent).toBe("e^{i\\pi} + 1 = 0");
+    expect(container).not.toHaveTextContent("$e^{i\\pi} + 1 = 0$");
   });
 
   it("renders mermaid fences through MermaidDiagram", async () => {

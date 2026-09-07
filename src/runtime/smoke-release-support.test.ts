@@ -1265,35 +1265,15 @@ describe("runVenvValidation", () => {
   });
 });
 
-it("validates an isolated release venv without a search package", () => {
-  const script = join(tempDir(), "validate.py");
-  writeVenvValidationScript(script);
-  const text = readFileSync(script, "utf8");
-  expect(text).toContain("import arxiv");
-  expect(text).toContain("import markitdown");
-  expect(text).not.toContain("import ddgr");
-});
-
 describe.skipIf(systemPython === undefined)(
   "writeVenvValidationScript (skipped: no Python interpreter on PATH)",
   () => {
-    it("imports the skill packages and emits the sentinel for the expected prefix", () => {
+    it("imports both skill packages without ddgr but rejects ambient PYTHONPATH in isolated validation", () => {
       const fixture = validationFixture(systemPython!);
-      const result = spawnSync(fixture.python, [fixture.script], {
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          EASYRESEARCH_VENV: fixture.prefix,
-          PYTHONPATH: fixture.root,
-        },
-      });
-
-      expect(result.status, result.stderr).toBe(0);
-      expect(result.stdout).toContain("easyresearch-venv-ok");
-    });
-
-    it("rejects packages supplied only through ambient PYTHONPATH", () => {
-      const fixture = validationFixture(systemPython!);
+      for (const module of ["arxiv", "markitdown"]) {
+        writeFileSync(join(fixture.root, `${module}.py`), `print("imported ${module}")\n`);
+      }
+      writeFileSync(join(fixture.root, "ddgr.py"), 'raise RuntimeError("ddgr must not be imported")\n');
       const contaminatedEnv = {
         ...process.env,
         EASYRESEARCH_VENV: fixture.prefix,
@@ -1304,6 +1284,9 @@ describe.skipIf(systemPython === undefined)(
         env: contaminatedEnv,
       });
       expect(ambientResult.status, ambientResult.stderr).toBe(0);
+      expect(ambientResult.stdout).toContain("imported arxiv");
+      expect(ambientResult.stdout).toContain("imported markitdown");
+      expect(ambientResult.stdout).toContain("easyresearch-venv-ok");
 
       expect(() => runVenvValidation({
         python: fixture.python,

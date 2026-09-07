@@ -451,21 +451,17 @@ describe("mutable Skill resource fingerprints", () => {
 
 describe("bounded Skill descriptor traversal", () => {
   it.each([
-    { anchor: "global regular", prefix: ["agent", "skills"], symlinkDescriptor: false },
-    { anchor: "global symlink", prefix: ["agent", "skills"], symlinkDescriptor: true },
-    { anchor: "optional-home regular", prefix: ["home", ".agents", "skills"], symlinkDescriptor: false },
-    { anchor: "optional-home symlink", prefix: ["home", ".agents", "skills"], symlinkDescriptor: true },
-    { anchor: "project regular", prefix: ["paper", ".easyresearch", "skills"], symlinkDescriptor: false },
-    { anchor: "project symlink", prefix: ["paper", ".easyresearch", "skills"], symlinkDescriptor: true },
-  ])("accepts depth 16 and rejects depth 17 from the $anchor anchor", async ({ prefix, symlinkDescriptor }) => {
-    const acceptedRoot = join(tempRoot(), ...prefix);
+    { descriptor: "regular", symlinkDescriptor: false },
+    { descriptor: "symlink", symlinkDescriptor: true },
+  ])("accepts depth 16 and rejects depth 17 for a $descriptor descriptor", async ({ symlinkDescriptor }) => {
+    const acceptedRoot = join(tempRoot(), "skills");
     createDeepDescriptor(acceptedRoot, EXPECTED_MAX_DEPTH, symlinkDescriptor);
     const accepted = await fingerprintSkillRoot(acceptedRoot, "global");
     expect(accepted.descriptors).toEqual([
       `${Array.from({ length: EXPECTED_MAX_DEPTH }, (_, index) => `level-${String(index + 1).padStart(2, "0")}`).join("/")}/SKILL.md`,
     ]);
 
-    const rejectedRoot = join(tempRoot(), ...prefix);
+    const rejectedRoot = join(tempRoot(), "skills");
     createDeepDescriptor(rejectedRoot, EXPECTED_MAX_DEPTH + 1, symlinkDescriptor);
     await expect(fingerprintSkillRoot(rejectedRoot, "global")).rejects.toThrow(/depth/i);
   });
