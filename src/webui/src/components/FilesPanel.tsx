@@ -1,7 +1,8 @@
 import { ChevronRight, File as FileIcon, Folder, FolderOpen, RefreshCw, Search } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type DragEvent, useEffect, useMemo, useRef, useState } from "react";
 import type { FileEntryDto, FileWatcherEvent } from "../../../web/contracts";
 import { listEntries, replaceFileWatchDirectories } from "../api";
+import { FILE_PATH_DRAG_TYPE } from "../file-path-drag";
 import { parentPath } from "../file-watcher";
 import { relativeFilesystemPath } from "../filesystem-path";
 import { useLazyTree } from "../hooks/useLazyTree";
@@ -36,6 +37,12 @@ export function FilesPanel({
   const handledEvent = useRef<FileWatcherEvent | null>(null);
   const watchRevision = useRef({ key: "", revision: 0 });
   const rowRefs = useRef(new Map<string, HTMLElement>());
+
+  const startFileDrag = (event: DragEvent, entry: FileEntryDto) => {
+    if (entry.kind !== "file") return;
+    event.dataTransfer.effectAllowed = "copy";
+    event.dataTransfer.setData(FILE_PATH_DRAG_TYPE, JSON.stringify({ root, kind: entry.kind, path: entry.path }));
+  };
 
   useEffect(() => {
     if (!fileEvent || handledEvent.current === fileEvent) return;
@@ -211,6 +218,8 @@ export function FilesPanel({
                   }}
                   type="button"
                   role="treeitem"
+                  draggable={entry.kind === "file"}
+                  onDragStart={(event) => startFileDrag(event, entry)}
                   aria-level={1}
                   aria-expanded={entry.kind === "directory" ? tree.expanded.has(entry.path) : undefined}
                   tabIndex={rovingPath === entry.path ? 0 : -1}
@@ -255,6 +264,8 @@ export function FilesPanel({
                     else rowRefs.current.delete(entry.path);
                   }}
                   role="treeitem"
+                  draggable={!isDirectory}
+                  onDragStart={(event) => startFileDrag(event, entry)}
                   aria-level={depth + 1}
                   aria-expanded={isDirectory ? isExpanded : undefined}
                   tabIndex={rovingPath === entry.path ? 0 : -1}

@@ -28,6 +28,7 @@ import { RetryBanner } from "../components/RetryBanner";
 import { SessionHistoryDialog } from "../components/SessionHistoryDialog";
 import { ProductMark, Topbar, TopbarIconButton } from "../components/Topbar";
 import { WorkMobileTabs, type WorkView } from "../components/WorkMobileTabs";
+import { FILE_PATH_DRAG_TYPE, readFilePathDrop } from "../file-path-drag";
 import { parseFileWatcherEvent } from "../file-watcher";
 import { filesystemPathName } from "../filesystem-path";
 import { usePanelTransition } from "../hooks/usePanelTransition";
@@ -207,6 +208,8 @@ export function WorkPage({
   const [commandError, setCommandError] = useState<string | null>(null);
   const transcriptRef = useRef<ChatTranscriptHandle>(null);
   const composerRef = useRef<ChatComposerHandle>(null);
+  const [fileDragOver, setFileDragOver] = useState(false);
+  const fileDragDepth = useRef(0);
   const tabsStateRef = useRef(tabsState);
   const childSessionByInvocation = useRef(new Map<string, string>());
   const childLoaded = useRef(new Set<string>());
@@ -592,6 +595,23 @@ export function WorkPage({
   }, [childViews, rootAgentStatus, rootTools]);
   const projectName = filesystemPathName(cwd);
   const chatHidden = isMobile && mobileView !== "chat";
+  const composerDisabled =
+    accepting || activeTab !== RESEARCH_ASSISTANT_AGENT || sessionView.subagentName !== undefined;
+
+  useEffect(() => {
+    const clearDrag = () => {
+      fileDragDepth.current = 0;
+      setFileDragOver(false);
+    };
+    clearDrag();
+    if (composerDisabled || chatHidden) return;
+    window.addEventListener("dragend", clearDrag);
+    window.addEventListener("drop", clearDrag);
+    return () => {
+      window.removeEventListener("dragend", clearDrag);
+      window.removeEventListener("drop", clearDrag);
+    };
+  }, [composerDisabled, chatHidden]);
   const filesHidden = isMobile ? mobileView !== "files" : panel !== "files";
   const agentsHidden = isMobile ? mobileView !== "agents" : panel !== "agents";
   const panelViewChanged = panel !== null && previousPanel.current !== null && panel !== previousPanel.current;
@@ -1071,8 +1091,44 @@ export function WorkPage({
           role="tabpanel"
           aria-labelledby="work-tab-chat"
           hidden={chatHidden}
-          className="flex h-full min-w-0 flex-1 flex-col overflow-hidden rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]"
+          className="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]"
+          onDragEnter={(event) => {
+            if (composerDisabled || !event.dataTransfer.types.includes(FILE_PATH_DRAG_TYPE)) return;
+            event.preventDefault();
+            fileDragDepth.current += 1;
+            setFileDragOver(true);
+          }}
+          onDragOver={(event) => {
+            const internal = event.dataTransfer.types.includes(FILE_PATH_DRAG_TYPE);
+            if (!internal && !event.dataTransfer.types.includes("Files")) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = internal && !composerDisabled ? "copy" : "none";
+          }}
+          onDragLeave={() => {
+            fileDragDepth.current = Math.max(0, fileDragDepth.current - 1);
+            if (fileDragDepth.current === 0) setFileDragOver(false);
+          }}
+          onDrop={(event) => {
+            const internal = event.dataTransfer.types.includes(FILE_PATH_DRAG_TYPE);
+            if (!internal && !event.dataTransfer.types.includes("Files")) return;
+            event.preventDefault();
+            fileDragDepth.current = 0;
+            setFileDragOver(false);
+            if (composerDisabled || !internal) return;
+            const path = readFilePathDrop(event.dataTransfer, cwd);
+            if (path !== null) composerRef.current?.insertPath(path);
+          }}
         >
+          {fileDragOver && !composerDisabled ? (
+            <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center rounded-[10px] border-2 border-dashed border-v2-blue-600 bg-v2-blue-100/60">
+              <span
+                role="status"
+                className="rounded-lg bg-v2-background-bg-base px-4 py-2 text-[13px] font-medium text-v2-blue-600 shadow-sm"
+              >
+                {t("composer.dropFilePath")}
+              </span>
+            </div>
+          ) : null}
           <AgentTabBar
             tabs={tabsState.tabs}
             activeKey={activeTab}
@@ -1126,7 +1182,7 @@ export function WorkPage({
             ) : null}
             <ChatComposer
               ref={composerRef}
-              disabled={accepting || activeTab !== RESEARCH_ASSISTANT_AGENT || sessionView.subagentName !== undefined}
+              disabled={composerDisabled}
               streaming={activeTab === RESEARCH_ASSISTANT_AGENT && sessionView.isStreaming}
               onSend={send}
               onCommand={executeCommand}
