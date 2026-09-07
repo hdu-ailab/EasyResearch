@@ -1999,6 +1999,52 @@ describe("WorkPage", () => {
     expect(api.getChildSnapshot).toHaveBeenCalledTimes(2);
   });
 
+  it.each(["event", "reconnect"])(
+    "keeps the current child tool live across history refresh and settles it at child termination (%s)",
+    async (terminal) => {
+      const user = userEvent.setup();
+      const parent = {
+        session: { id: "s1", cwd: "/p", isStreaming: false, status: "running" },
+        subagents: [subagentSummary("sub-tool", "child-tool", "search", { status: "working" })],
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "toolCall", id: "sub-tool", name: "subagent", arguments: { agent: "search" } }],
+          },
+        ],
+      };
+      vi.mocked(api.getSnapshot).mockResolvedValue(parent as never);
+      vi.mocked(api.getChildSnapshot).mockResolvedValue({
+        session: { id: "child-tool", cwd: "/p", sessionName: "easyresearch:search" },
+        subagents: [],
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "toolCall", id: "child-bash", name: "bash", arguments: { command: "sleep 60" } }],
+          },
+        ],
+      } as never);
+      render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+      await user.click(await screen.findByRole("button", { name: "View details" }));
+      expect(await screen.findByRole("button", { name: /Running tool: bash/ })).toBeVisible();
+      emitInAct({ type: "snapshot", ...parent });
+      await waitFor(() => expect(api.getChildSnapshot).toHaveBeenCalledTimes(2));
+      expect(screen.getByRole("button", { name: /Running tool: bash/ })).toBeVisible();
+      if (terminal === "event") {
+        emitSupervisor({ toolCallId: "sub-tool", childSessionId: "child-tool", status: "error" });
+      } else {
+        emitInAct({
+          type: "snapshot",
+          ...parent,
+          session: { ...parent.session, status: "ready" },
+          subagents: [subagentSummary("sub-tool", "child-tool", "search", { status: "error" })],
+        });
+      }
+      expect(await screen.findByRole("button", { name: /Interrupted: bash/ })).toBeVisible();
+      expect(screen.queryByRole("button", { name: /Running tool: bash/ })).toBeNull();
+    },
+  );
+
   it("queues one reconnect refresh when the child snapshot is already in flight", async () => {
     const user = userEvent.setup();
     let resolveInitial!: (value: Awaited<ReturnType<typeof api.getChildSnapshot>>) => void;
@@ -2058,6 +2104,93 @@ describe("WorkPage", () => {
     expect(await screen.findByText("recovered after overlap")).toBeVisible();
     expect(api.getChildSnapshot).toHaveBeenCalledTimes(2);
   });
+
+  it("does not let an older completed child link interrupt a working continuation on reconnect", async () => {
+    const user = userEvent.setup();
+    const parent = {
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "running" },
+      subagents: [
+        subagentSummary("current", "continued-child", "search", { status: "working" }),
+        subagentSummary("old", "continued-child", "search", {
+          status: "complete",
+          launchId: undefined,
+          agentId: undefined,
+        }),
+      ],
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            { type: "toolCall", id: "old", name: "subagent", arguments: { agent: "search" } },
+            { type: "toolCall", id: "current", name: "subagent", arguments: { agent: "search_current" } },
+          ],
+        },
+      ],
+    };
+    vi.mocked(api.getSnapshot).mockResolvedValue(parent as never);
+    vi.mocked(api.getChildSnapshot).mockResolvedValue({
+      session: { id: "continued-child", cwd: "/p", sessionName: "easyresearch:search" },
+      subagents: [],
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "continued-bash", name: "bash", arguments: { command: "sleep 60" } }],
+        },
+      ],
+    } as never);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    const details = await screen.findAllByRole("button", { name: "View details" });
+    await user.click(details[details.length - 1]!);
+    expect(await screen.findByRole("button", { name: /Running tool: bash/ })).toBeVisible();
+    emitInAct({ type: "snapshot", ...parent });
+    await waitFor(() => expect(api.getChildSnapshot).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("button", { name: /Running tool: bash/ })).toBeVisible();
+    expect(screen.queryByRole("button", { name: /Interrupted: bash/ })).toBeNull();
+  });
+
+  it.each([false, true])(
+    "does not revive a child tool when termination races history resolution (refresh=%s)",
+    async (refresh) => {
+      const user = userEvent.setup();
+      const parent = {
+        session: { id: "s1", cwd: "/p", isStreaming: false, status: "running" },
+        subagents: [subagentSummary("sub-race-tool", "child-race-tool", "search", { status: "working" })],
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "toolCall", id: "sub-race-tool", name: "subagent", arguments: { agent: "search" } }],
+          },
+        ],
+      };
+      const child = normalizeTimelineSnapshot({
+        session: { id: "child-race-tool", cwd: "/p", sessionName: "easyresearch:search" },
+        subagents: [],
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "toolCall", id: "racing-bash", name: "bash", arguments: { command: "sleep 60" } }],
+          },
+        ],
+      });
+      const pending = deferred<Awaited<ReturnType<typeof api.getChildSnapshot>>>();
+      vi.mocked(api.getSnapshot).mockResolvedValue(parent as never);
+      if (refresh) vi.mocked(api.getChildSnapshot).mockResolvedValueOnce(child as never);
+      vi.mocked(api.getChildSnapshot).mockReturnValueOnce(pending.promise);
+      render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+      await user.click(await screen.findByRole("button", { name: "View details" }));
+      if (refresh) {
+        expect(await screen.findByRole("button", { name: /Running tool: bash/ })).toBeVisible();
+        emitInAct({ type: "snapshot", ...parent });
+      }
+      await waitFor(() => expect(api.getChildSnapshot).toHaveBeenCalledTimes(refresh ? 2 : 1));
+      await act(async () => {
+        emit(supervisorEvent({ toolCallId: "sub-race-tool", childSessionId: "child-race-tool", status: "error" }));
+        pending.resolve(child as never);
+      });
+      expect(await screen.findByRole("button", { name: /Interrupted: bash/ })).toBeVisible();
+      expect(screen.queryByRole("button", { name: /Running tool: bash/ })).toBeNull();
+    },
+  );
 
   it("preserves nested child output that arrives after a refresh request begins", async () => {
     const user = userEvent.setup();

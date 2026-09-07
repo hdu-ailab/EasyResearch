@@ -20,8 +20,12 @@ function toJsonAssistantMessageEvent(
   return deltaEvent;
 }
 
-/** Convert direct SDK events to Pi's delta-only JSON/RPC wire shape. */
+/** Normalize direct SDK events for the shared Web/subagent JSON boundary. */
 export function toJsonSessionEvent(event: AgentSessionEvent): JsonAgentSessionEvent {
+  if (event.type === "message_start" && event.message.role === "assistant") {
+    // Pi's mutable partial can already contain later deltas when start reaches us.
+    return { ...event, message: { ...event.message, content: [] } };
+  }
   if (event.type !== "message_update") return event;
   if (event.message.role !== "assistant") {
     throw new Error("message_update message is not an assistant message");

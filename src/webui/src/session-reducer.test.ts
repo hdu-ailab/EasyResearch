@@ -1003,8 +1003,9 @@ describe("session reducer", () => {
       expect.objectContaining({
         key: "generic",
         running: false,
-        done: false,
-        error: false,
+        done: true,
+        error: true,
+        interrupted: true,
         output: "partial output",
       }),
       expect.objectContaining({
@@ -2102,7 +2103,203 @@ describe("session reducer", () => {
     });
 
     expect(streaming.tools[0]).toMatchObject({ running: true, done: false });
-    expect(settled.tools[0]).toMatchObject({ running: false, done: false });
+    expect(settled.tools[0]).toMatchObject({ running: false, done: true, error: true, interrupted: true });
+  });
+
+  it.each(["aborted", "error"])("never revives tool fragments from a %s response", (stopReason) => {
+    const snapshot = {
+      runtimeConfigurationGeneration: 0,
+      session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
+      subagents: [],
+      messages: [
+        {
+          role: "assistant",
+          stopReason,
+          errorMessage: "Request was aborted",
+          content: [
+            { type: "toolCall", id: "old-command", name: "bash", arguments: { command: "sleep 60" } },
+            { type: "toolCall", id: "partial-command", name: "bash", arguments: {} },
+          ],
+        },
+      ],
+    };
+    const prior = fromSnapshot(snapshot);
+    expect(prior.tools).toHaveLength(2);
+    for (const tool of prior.tools) {
+      expect(tool).toMatchObject({ running: false, done: true, error: true, interrupted: true });
+    }
+    const resumed = mergeSnapshot(prior, {
+      ...snapshot,
+      messages: [...snapshot.messages, userMessage("continue"), assistantMessage("Checking again")],
+    });
+    expect(resumed.tools).toEqual(prior.tools);
+  });
+
+  it("limits unresolved running tools to the current batch while preserving real results", () => {
+    const hydrated = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
+      session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
+      subagents: [],
+      messages: [
+        { role: "assistant", content: [{ type: "toolCall", id: "orphan", name: "bash", arguments: {} }] },
+        userMessage("continue"),
+        {
+          role: "assistant",
+          content: [
+            { type: "toolCall", id: "finished", name: "bash", arguments: {} },
+            { type: "toolCall", id: "current", name: "bash", arguments: {} },
+          ],
+        },
+        {
+          role: "toolResult",
+          toolCallId: "finished",
+          toolName: "bash",
+          isError: false,
+          content: [{ type: "text", text: "actual result" }],
+        },
+      ],
+    });
+    expect(hydrated.tools).toEqual([
+      expect.objectContaining({ key: "orphan", running: false, done: true, error: true, interrupted: true }),
+      expect.objectContaining({ key: "finished", running: false, done: true, error: false, output: "actual result" }),
+      expect.objectContaining({ key: "current", running: true, done: false, error: false }),
+    ]);
+    const ended = terminateSessionRun(hydrated);
+    expect(ended.tools[1]).toEqual(hydrated.tools[1]);
+    expect(ended.tools[2]).toMatchObject({ running: false, done: true, error: true, interrupted: true });
+    expect(reduceSessionEvent(ended, { type: "agent_start" } as never).tools).toEqual(ended.tools);
+  });
+
+  it("does not revive an orphan batch when a hidden supervisor steer starts the next turn", () => {
+    const state = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
+      session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
+      subagents: [],
+      messages: [
+        { role: "assistant", content: [{ type: "toolCall", id: "orphan", name: "bash", arguments: {} }] },
+        {
+          role: "custom",
+          customType: "easyresearch:agent_status",
+          display: false,
+          content: "<agent_status>terminal child</agent_status>",
+        },
+      ],
+    });
+    expect(state.tools[0]).toMatchObject({ running: false, done: true, interrupted: true });
+    expect(state.messages).toEqual([]);
+  });
+
+  it("renders unexecuted partial calls from a live failed message as interrupted", () => {
+    const ended = reduceSessionEvent(emptyState, {
+      type: "message_end",
+      message: {
+        role: "assistant",
+        stopReason: "aborted",
+        errorMessage: "Request was aborted",
+        content: [{ type: "toolCall", id: "fragment", name: "bash", arguments: {} }],
+      },
+    } as never);
+    expect(ended.tools).toEqual([
+      expect.objectContaining({ key: "fragment", running: false, done: true, error: true, interrupted: true }),
+    ]);
+  });
+
+  it("keeps partial output on interruption and lets a real result replace the inferred outcome", () => {
+    let state = reduceSessionEvent(emptyState, toolEvent("tool_execution_start"));
+    state = reduceSessionEvent(state, {
+      type: "tool_execution_update",
+      toolCallId: "t1",
+      partialResult: { content: [{ type: "text", text: "partial output" }] },
+    } as never);
+    state = terminateSessionRun(state);
+    expect(state.tools[0]).toMatchObject({ interrupted: true, output: "partial output", error: true, done: true });
+    state = reduceSessionEvent(state, {
+      type: "tool_execution_end",
+      toolCallId: "t1",
+      toolName: "bash",
+      isError: true,
+      result: { content: [{ type: "text", text: "Command aborted" }] },
+    } as never);
+    expect(state.tools[0]).toMatchObject({ running: false, done: true, error: true, output: "Command aborted" });
+    expect(state.tools[0]?.interrupted).not.toBe(true);
+  });
+
+  it("accepts a real tool start after an inconclusive history projection", () => {
+    const snapshot = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      subagents: [],
+      messages: [{ role: "assistant", content: [{ type: "toolCall", id: "t1", name: "bash", arguments: {} }] }],
+    });
+    const started = reduceSessionEvent(snapshot, toolEvent("tool_execution_start"));
+    expect(started.tools).toHaveLength(1);
+    expect(started.tools[0]).toMatchObject({ running: true, done: false, error: false });
+    expect(started.tools[0]?.interrupted).not.toBe(true);
+  });
+
+  it("recovers a parallel tool result whose execution-end event preceded reconnect", () => {
+    let state = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
+      session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
+      subagents: [],
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            { type: "toolCall", id: "fast", name: "bash", arguments: {} },
+            { type: "toolCall", id: "slow", name: "bash", arguments: {} },
+          ],
+        },
+      ],
+    });
+    const message = {
+      role: "toolResult",
+      toolCallId: "fast",
+      toolName: "bash",
+      isError: false,
+      content: [{ type: "text", text: "real successful output" }],
+    };
+    state = reduceSessionEvent(state, { type: "message_end", message } as never);
+    state = reduceSessionEvent(state, {
+      type: "entry_appended",
+      entry: { type: "message", id: "fast-result", message },
+    } as never);
+    state = terminateSessionRun(state);
+    expect(state.tools[0]).toMatchObject({
+      done: true,
+      running: false,
+      error: false,
+      resultEntryId: "fast-result",
+      output: "real successful output",
+    });
+    expect(state.tools[0]?.interrupted).not.toBe(true);
+    expect(state.tools[1]).toMatchObject({ interrupted: true });
+    expect(state.messages).toEqual([]);
+  });
+
+  it("does not replace supervised progress with a delayed launch result message", () => {
+    let state = reduceSessionEvent(emptyState, toolEvent("tool_execution_start", "child", "subagent"));
+    const end = launchToolEnd({ toolCallId: "child" }, "child");
+    state = reduceSessionEvent(state, end);
+    state = reduceSubagentSupervisorEvent(
+      state,
+      supervisorEvent({
+        toolCallId: "child",
+        latestMessage: "child progress",
+      }),
+    );
+    const tool = state.tools[0];
+    state = reduceSessionEvent(state, {
+      type: "message_end",
+      message: {
+        role: "toolResult",
+        toolCallId: "child",
+        toolName: "subagent",
+        isError: false,
+        ...(end as unknown as { result: object }).result,
+      },
+    } as never);
+    expect(state.tools[0]).toEqual(tool);
   });
 
   it("resolves message_update deltas by the message_start key, even without ids", () => {

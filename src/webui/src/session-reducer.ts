@@ -26,6 +26,8 @@ export interface ToolView {
   running: boolean;
   done: boolean;
   error: boolean;
+  /** Display-only missing result after interruption, never a synthetic Pi result. */
+  interrupted?: boolean;
   /** Session that owns this supervised launch. */
   ownerSessionId?: string;
   /** Stable supervisor launch identity. */
@@ -169,6 +171,8 @@ const emptyState: SessionViewState = {
 
 type SessionSnapshotInput = Omit<SessionSnapshotDto, "compactionPolicy"> & {
   compactionPolicy?: CompactionPolicyDto;
+  /** Child history has no live run flag; its supervisor supplies tool ownership. */
+  toolRunActive?: boolean;
 };
 
 type UnknownMessage = {
@@ -177,6 +181,7 @@ type UnknownMessage = {
   timestamp?: unknown;
   content?: unknown;
   errorMessage?: unknown;
+  stopReason?: unknown;
   agentId?: unknown;
   customType?: unknown;
 };
@@ -393,6 +398,14 @@ function isAgentStatusMessage(message: UnknownMessage): boolean {
   return message.role === "custom" && message.customType === AGENT_STATUS_CUSTOM_TYPE;
 }
 
+function failedAssistant(message: UnknownMessage): boolean {
+  return message.stopReason === "aborted" || message.stopReason === "error" || Boolean(message.errorMessage);
+}
+
+function interruptTool(tool: ToolView): ToolView {
+  return { ...tool, running: false, done: true, error: true, interrupted: true };
+}
+
 export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision = 1): SessionViewState {
   const subagentName = subagentNameOf(snapshot);
   const sessionName =
@@ -423,9 +436,11 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
   };
   const next = () => state.nextOrder++;
   let cursorCandidate: SessionMessageView | undefined;
+  const currentBatch = new Set<string>();
   snapshot.timeline.forEach((timelineEntry, index) => {
     cursorCandidate = undefined;
     if (timelineEntry.kind !== "message") {
+      currentBatch.clear();
       state.summaries.push({
         key: `summary:${timelineEntry.entryId}`,
         entryId: timelineEntry.entryId,
@@ -438,7 +453,10 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
     const messageIdentity = identityFor(timelineEntry.message as UnknownMessage);
     const message = { ...timelineEntry.message, id: timelineEntry.entryId };
     if (isDirectBashExecution(message as UnknownMessage)) return;
-    if (isAgentStatusMessage(message as UnknownMessage)) return;
+    if (isAgentStatusMessage(message as UnknownMessage)) {
+      currentBatch.clear();
+      return;
+    }
     if (message.role === "toolResult") {
       const toolMessage = message as unknown as { toolCallId?: unknown; toolName?: unknown; isError?: unknown };
       const tool = state.tools.find((t) => t.key === String(toolMessage.toolCallId));
@@ -474,6 +492,7 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
       return;
     }
     const role = message.role === "user" || message.role === "assistant" ? message.role : "system";
+    if (role === "assistant" || role === "user") currentBatch.clear();
     const { text, reasoning } = splitContent(message as UnknownMessage);
     const content = (message as { content?: unknown }).content;
     const toolCallBlocks = Array.isArray(content)
@@ -490,7 +509,7 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
       text,
       isThinking: false,
       streaming: false,
-      error: Boolean((message as { errorMessage?: string }).errorMessage),
+      error: failedAssistant(message),
       agentId:
         typeof (message as { agentId?: unknown }).agentId === "string"
           ? ((message as { agentId?: unknown }).agentId as string)
@@ -507,11 +526,12 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
     // A message made only of tool calls renders as tool rows, not a bubble.
     if (text || reasoning || nextMessage.error || toolCallBlocks.length === 0) {
       state.messages.push(nextMessage);
-      if (role === "assistant" && toolCallBlocks.length === 0) cursorCandidate = nextMessage;
+      if (role === "assistant" && !nextMessage.error && toolCallBlocks.length === 0) cursorCandidate = nextMessage;
     }
     if (role === "assistant") {
       for (const b of toolCallBlocks) {
         const toolCallId = typeof b.id === "string" && b.id ? b.id : undefined;
+        if (!failedAssistant(message)) currentBatch.add(String(b.id ?? b.name ?? index));
         state.tools.push({
           key: String(b.id ?? b.name ?? index),
           ...(toolCallId ? { toolCallId } : {}),
@@ -528,10 +548,13 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
       }
     }
   });
-  state.tools = state.tools.map((tool) => ({
-    ...tool,
-    running: tool.done ? false : isStreaming,
-  }));
+  state.tools = state.tools.map((tool) =>
+    tool.done
+      ? tool
+      : (snapshot.toolRunActive ?? isStreaming) && currentBatch.has(tool.key)
+        ? { ...tool, running: true }
+        : interruptTool(tool),
+  );
   if (isStreaming && cursorCandidate) {
     state.activeMessageKey = cursorCandidate.key;
     cursorCandidate.streaming = true;
@@ -737,6 +760,7 @@ export function applySubagentSummaries(
       running: !terminal,
       done: terminal,
       error: summary.status === "error",
+      interrupted: undefined,
       agentName: summary.agent,
       sessionId: summary.childSessionId,
       sessionLinks: links,
@@ -812,6 +836,49 @@ function subagentLaunchIdentity(result: unknown, expectedToolCallId: string): Su
   };
 }
 
+function applyToolResult(
+  state: SessionViewState,
+  toolCallId: string,
+  isError: boolean,
+  result: unknown,
+): SessionViewState {
+  return {
+    ...state,
+    tools: state.tools.map((tool) => {
+      if (tool.key !== toolCallId) return tool;
+      const launch = tool.name === "subagent" && !isError ? subagentLaunchIdentity(result, toolCallId) : undefined;
+      if (launch) {
+        if (tool.supervised) return tool;
+        return {
+          ...tool,
+          ownerSessionId: launch.ownerSessionId,
+          launchId: launch.launchId,
+          agentId: launch.agentId,
+          supervised: true,
+          running: true,
+          done: false,
+          error: false,
+          interrupted: undefined,
+          agentName: launch.agent,
+          sessionId: launch.childSessionId,
+          latestMessage: undefined,
+          latestActivity: undefined,
+        };
+      }
+      const finalText = usableText(outputText(result));
+      const output = compactOutput(result);
+      return {
+        ...tool,
+        running: false,
+        done: true,
+        error: isError,
+        interrupted: undefined,
+        ...(tool.name === "subagent" ? (finalText ? { latestMessage: finalText } : {}) : output ? { output } : {}),
+      };
+    }),
+  };
+}
+
 function childMessageText(message: unknown): string {
   const content = (message as { content?: unknown }).content;
   const parts: unknown[] = typeof content === "string" ? [content] : Array.isArray(content) ? content : [];
@@ -858,7 +925,9 @@ function applySubagentEventActivity(
     }
     case "message_start":
     case "message_end": {
-      const text = childMessageText((event as { message?: unknown }).message);
+      const message = (event as { message?: { role?: string } }).message;
+      const text = childMessageText(message);
+      if (!text && event.type === "message_start" && message?.role === "assistant") return undefined;
       return text ? { kind: "text", text } : current;
     }
     case "message_update": {
@@ -903,6 +972,7 @@ export function reduceSubagentSupervisorEvent(
       running: !terminal,
       done: terminal,
       error: event.status === "error",
+      interrupted: undefined,
       agentName: event.agent,
       sessionId: event.childSessionId,
       latestMessage: latestMessage ?? tool.latestMessage,
@@ -1029,7 +1099,7 @@ export function terminateSessionRun(state: SessionViewState, clearError = false)
     retry: null,
     activeMessageKey: undefined,
     messages: state.messages.map((message) => ({ ...message, isThinking: false, streaming: false })),
-    tools: state.tools.map((tool) => (tool.supervised && !tool.done ? tool : { ...tool, running: false })),
+    tools: state.tools.map((tool) => (tool.supervised || tool.done ? tool : interruptTool(tool))),
     steers: [],
   };
 }
@@ -1214,7 +1284,12 @@ export function reduceSessionEvent(
     }
     case "message_end": {
       const message = event.message as UnknownMessage;
-      if (isDirectBashExecution(message) || isToolResultMessage(message) || isAgentStatusMessage(message)) return state;
+      if (isDirectBashExecution(message) || isAgentStatusMessage(message)) return state;
+      if (isToolResultMessage(message)) {
+        // Parallel results can be persisted after reconnect missed execution_end.
+        const result = event.message as { toolCallId: string; isError: boolean };
+        return applyToolResult(state, result.toolCallId, result.isError, result);
+      }
       const identity = identityFor(message);
       const key =
         state.activeMessageKey ??
@@ -1228,7 +1303,7 @@ export function reduceSessionEvent(
             (block) => block && typeof block === "object" && (block as { type?: string }).type === "toolCall",
           )
         : false;
-      const error = typeof message.errorMessage === "string" && Boolean(message.errorMessage);
+      const error = failedAssistant(message);
       const omitToolCallOnlyRow = message.role === "assistant" && hasToolCall && !text && !reasoning && !error;
       let nextMessages = omitToolCallOnlyRow
         ? key === undefined
@@ -1273,12 +1348,41 @@ export function reduceSessionEvent(
             ? nextMessages.map((candidate, index) => (index === existingIndex ? finalMessage : candidate))
             : [...nextMessages, finalMessage];
       }
+      let nextOrder = nextMessages.length > state.messages.length ? state.nextOrder + 1 : state.nextOrder;
+      let tools = state.tools;
+      if (message.role === "assistant" && error && Array.isArray(content)) {
+        tools = [...tools];
+        for (const block of content) {
+          if (block?.type !== "toolCall" || typeof block.id !== "string") continue;
+          const existing = tools.findIndex((tool) => tool.toolCallId === block.id);
+          const tool = tools[existing];
+          if (tool) {
+            if (!tool.done && !tool.supervised) tools[existing] = interruptTool(tool);
+          } else {
+            tools.push(
+              interruptTool({
+                key: block.id,
+                toolCallId: block.id,
+                name: typeof block.name === "string" ? block.name : "tool",
+                args: compactArgs(block.arguments),
+                skillName: block.name === "read" ? readSkillName(block.arguments) : undefined,
+                agentName: block.name === "subagent" ? agentNameOfToolCall(block.arguments) : undefined,
+                running: false,
+                done: false,
+                error: false,
+                order: nextOrder++,
+              }),
+            );
+          }
+        }
+      }
       return {
         ...state,
         messages: nextMessages,
+        tools,
         messageStructureRevision:
           state.messageStructureRevision + (nextMessages.length === state.messages.length ? 0 : 1),
-        nextOrder: nextMessages.length > state.messages.length ? state.nextOrder + 1 : state.nextOrder,
+        nextOrder,
         activeMessageKey: undefined,
       };
     }
@@ -1306,7 +1410,25 @@ export function reduceSessionEvent(
         toolName: string;
         args?: unknown;
       };
-      if (state.tools.some((tool) => tool.key === toolCallId)) return state;
+      const existing = state.tools.find((tool) => tool.key === toolCallId);
+      if (existing) {
+        if (!existing.interrupted || existing.supervised) return state;
+        return {
+          ...state,
+          tools: state.tools.map((tool) =>
+            tool === existing
+              ? {
+                  ...tool,
+                  running: true,
+                  done: false,
+                  error: false,
+                  interrupted: undefined,
+                  args: compactArgs(args) ?? tool.args,
+                }
+              : tool,
+          ),
+        };
+      }
       return {
         ...state,
         nextOrder: state.nextOrder + 1,
@@ -1333,40 +1455,7 @@ export function reduceSessionEvent(
         isError?: boolean;
         result?: unknown;
       };
-      return {
-        ...state,
-        tools: state.tools.map((tool) => {
-          if (tool.key !== toolCallId) return tool;
-          const launch = tool.name === "subagent" && !isError ? subagentLaunchIdentity(result, toolCallId) : undefined;
-          if (launch) {
-            if (tool.supervised && tool.done) return tool;
-            return {
-              ...tool,
-              ownerSessionId: launch.ownerSessionId,
-              launchId: launch.launchId,
-              agentId: launch.agentId,
-              supervised: true,
-              running: true,
-              done: false,
-              error: false,
-              agentName: launch.agent,
-              sessionId: launch.childSessionId,
-              latestMessage: undefined,
-              latestActivity: undefined,
-            };
-          }
-          const text = outputText(result);
-          const finalText = usableText(text);
-          const output = compactOutput(result);
-          return {
-            ...tool,
-            running: false,
-            done: true,
-            error: Boolean(isError),
-            ...(tool.name === "subagent" ? (finalText ? { latestMessage: finalText } : {}) : output ? { output } : {}),
-          };
-        }),
-      };
+      return applyToolResult(state, toolCallId, Boolean(isError), result);
     }
     case "tool_execution_update": {
       const { toolCallId, partialResult } = event as unknown as {

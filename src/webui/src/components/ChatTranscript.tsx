@@ -209,7 +209,7 @@ function ToolRow({
       : "border-v2-grey-200 text-v2-text-text-muted hover:bg-v2-grey-100"
     : "border-v2-blue-200 text-v2-blue-600 hover:bg-v2-blue-100/50";
 
-  if (tool.skillName) {
+  if (tool.skillName && !tool.error) {
     return (
       <li className="flex flex-col gap-1 items-start">
         <div className="flex items-center gap-1.5 rounded-md border border-v2-blue-200 bg-v2-blue-100/40 px-2 py-1 text-[12px]">
@@ -233,7 +233,7 @@ function ToolRow({
         {tool.done && !tool.error ? <Check size={13} aria-hidden /> : null}
         {tool.error ? <AlertTriangle size={13} aria-hidden /> : null}
         <span className="truncate">
-          {tool.running ? t("transcript.runningTool") : ""}
+          {tool.interrupted ? t("transcript.interruptedTool") : tool.running ? t("transcript.runningTool") : ""}
           {tool.name}
           {tool.args ? <span className="text-v2-text-text-faint"> {tool.args}</span> : null}
         </span>
@@ -247,15 +247,18 @@ function ToolRow({
             phase === "enter" ? "animate-v2-expand-down" : "animate-v2-collapse-up"
           } motion-reduce:animate-none`}
         >
+          {tool.interrupted ? (
+            <p className="text-[12px] text-v2-status-error">{t("transcript.interruptedToolDetails")}</p>
+          ) : null}
           {tool.output ? (
             <pre className="whitespace-pre-wrap font-mono text-[length:var(--v2-chat-font-size)] leading-relaxed text-v2-text-text-muted">
               {tool.output}
             </pre>
           ) : tool.running ? (
             <p className="text-[12px] text-v2-text-text-muted">{t("transcript.running")}</p>
-          ) : (
+          ) : !tool.interrupted ? (
             <p className="text-[12px] text-v2-text-text-faint">{t("transcript.noOutput")}</p>
-          )}
+          ) : null}
         </div>
       )}
     </li>

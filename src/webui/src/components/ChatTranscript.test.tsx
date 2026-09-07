@@ -106,6 +106,33 @@ describe("ChatTranscript", () => {
     expect(screen.queryByText("Send a message to start.")).toBeNull();
   });
 
+  it.each([undefined, "arxiv"])(
+    "shows interrupted tools including Skill reads without a running or success indicator (%s)",
+    async (skillName) => {
+      const user = userEvent.setup();
+      renderTranscript(
+        <ChatTranscript
+          messages={[]}
+          tools={[
+            tool({
+              name: skillName ? "read" : "bash",
+              skillName,
+              interrupted: true,
+              error: true,
+              output: "partial output before interruption",
+            }),
+          ]}
+        />,
+      );
+      const row = screen.getByRole("button", { name: /Interrupted:/ });
+      expect(row.querySelector(".v2-spinner")).toBeNull();
+      expect(row.querySelector(".lucide-check")).toBeNull();
+      await user.click(row);
+      expect(screen.getByText(/No final result was recorded/)).toBeVisible();
+      expect(screen.getByText("partial output before interruption")).toBeVisible();
+    },
+  );
+
   it("shows every inline API usage placement only when the global display flag is enabled", () => {
     const usage = {
       input: 10,

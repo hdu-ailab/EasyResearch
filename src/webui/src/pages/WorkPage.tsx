@@ -16,6 +16,7 @@ import {
   getSessionTree,
   renameSession,
 } from "../api";
+import { parseSessionSnapshot } from "../api/parsers";
 import { AgentList, type AgentStatus } from "../components/AgentList";
 import { AgentTabBar } from "../components/AgentTabBar";
 import { ApiUsageStatisticsDialog } from "../components/ApiUsageStatisticsDialog";
@@ -42,6 +43,7 @@ import {
   reduceSubagentSupervisorEvent,
   type SessionViewState,
   type ToolView,
+  terminateSessionRun,
 } from "../session-reducer";
 import {
   closeSubagentTab,
@@ -216,6 +218,7 @@ export function WorkPage({
   const childRequests = useRef(new Map<string, Promise<void>>());
   const childRefreshPending = useRef(new Set<string>());
   const childRevisions = useRef(new Map<string, number>());
+  const childWorking = useRef(new Map<string, boolean>());
   const pendingSupervisorEvents = useRef(new Map<string, SubagentSupervisorEventDto>());
   const parentOwner = useRef({ id, generation: 1 });
   const loadChildRef = useRef<(childId: string, refresh?: boolean) => Promise<void>>(async () => {});
@@ -243,6 +246,18 @@ export function WorkPage({
         return true;
       }
       if (event && typeof event === "object" && (event as { type?: unknown }).type === "snapshot") {
+        try {
+          const snapshot = parseSessionSnapshot(event);
+          childWorking.current.clear();
+          for (const child of snapshot.subagents) {
+            childWorking.current.set(
+              child.childSessionId,
+              child.status === "working" || childWorking.current.get(child.childSessionId) === true,
+            );
+          }
+        } catch {
+          return false;
+        }
         childLoaded.current.clear();
         for (const requestKey of childRequests.current.keys()) childRefreshPending.current.add(requestKey);
         for (const tab of tabsStateRef.current.tabs) {
@@ -263,9 +278,8 @@ export function WorkPage({
     if (event.ownerSessionId !== rootSessionId) {
       childRevisions.current.set(event.ownerSessionId, (childRevisions.current.get(event.ownerSessionId) ?? 0) + 1);
     }
-    if (event.event) {
-      childRevisions.current.set(childSessionId, (childRevisions.current.get(childSessionId) ?? 0) + 1);
-    }
+    childWorking.current.set(childSessionId, event.status === "working");
+    childRevisions.current.set(childSessionId, (childRevisions.current.get(childSessionId) ?? 0) + 1);
 
     setChildViews((current) => {
       let next = current;
@@ -297,6 +311,9 @@ export function WorkPage({
             event.event as Parameters<typeof reduceSessionEvent>[1],
           ),
         };
+      }
+      if (event.status !== "working" && next[childSessionId]) {
+        next = { ...next, [childSessionId]: terminateSessionRun(next[childSessionId]) };
       }
       return next;
     });
@@ -370,6 +387,7 @@ export function WorkPage({
     childRequests.current.clear();
     childRefreshPending.current.clear();
     childRevisions.current.clear();
+    childWorking.current.clear();
     pendingSupervisorEvents.current.clear();
   }, [sessionId]);
 
@@ -637,6 +655,9 @@ export function WorkPage({
           if (!ownsRequest()) return;
           let hydrated = fromSnapshot({
             runtimeConfigurationGeneration: 0,
+            toolRunActive:
+              childWorking.current.get(childId) ??
+              tabsStateRef.current.tabs.some((tab) => tab.sessionId === childId && tab.running),
             session: {
               ...snapshot.session,
               isStreaming: false,
@@ -665,13 +686,14 @@ export function WorkPage({
               ...hydrated,
               hydrationRevision: (current[childId]?.hydrationRevision ?? 0) + 1,
             };
-            const merged = current[childId]
+            let merged = current[childId]
               ? refresh
                 ? (childRevisions.current.get(childId) ?? 0) > startRevision
                   ? mergeChildView(seeded, current[childId])
                   : mergeChildView(current[childId], seeded)
                 : mergeChildView(seeded, current[childId])
               : seeded;
+            if (childWorking.current.get(childId) === false) merged = terminateSessionRun(merged);
             return {
               ...current,
               [childId]: { ...merged, hydrationRevision: seeded.hydrationRevision },

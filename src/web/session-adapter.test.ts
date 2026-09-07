@@ -911,7 +911,7 @@ describe("PiSessionFactory", () => {
     expect(binding.disposeCalls).toBe(1);
   });
 
-  it("forwards delta-only message updates to Web listeners", async () => {
+  it("forwards assistant start shells and delta-only message updates to Web listeners", async () => {
     const session = new FakeAgentSession();
     const factory = new PiSessionFactory(async () => created(session));
     const adapter = factory.create({ cwd: "/project" });
@@ -936,6 +936,7 @@ describe("PiSessionFactory", () => {
     adapter.onEvent((event) => events.push(event));
     await adapter.start();
 
+    session.listeners.forEach((listener) => listener({ type: "message_start", message: assistant }));
     session.listeners.forEach((listener) =>
       listener({
         type: "message_update",
@@ -950,6 +951,7 @@ describe("PiSessionFactory", () => {
     );
 
     expect(events).toEqual([
+      { type: "message_start", message: { ...assistant, content: [] } },
       {
         type: "message_update",
         usage: assistant.usage,

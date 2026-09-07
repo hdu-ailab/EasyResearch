@@ -907,16 +907,19 @@ describe("createStageSessionLauncher", () => {
     const prompt = deferred<void>();
     const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
     const completeAssistant = assistant("all early tokens");
-    session.promptStart = () => session.emit({
-      type: "message_update",
-      message: completeAssistant,
-      assistantMessageEvent: {
-        type: "text_delta",
-        contentIndex: 0,
-        delta: "early token",
-        partial: completeAssistant,
-      },
-    });
+    session.promptStart = () => {
+      session.emit({ type: "message_start", message: completeAssistant });
+      session.emit({
+        type: "message_update",
+        message: completeAssistant,
+        assistantMessageEvent: {
+          type: "text_delta",
+          contentIndex: 0,
+          delta: "early token",
+          partial: completeAssistant,
+        },
+      });
+    };
     const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
     const handle = await createStageSessionLauncher(dependencyHarness(session).dependencies)(stageOptions(coordinator));
     const first: JsonAgentSessionEvent[] = [];
@@ -925,11 +928,14 @@ describe("createStageSessionLauncher", () => {
     handle.subscribe((event) => first.push(event));
     handle.subscribe((event) => second.push(event));
 
-    expect(first).toEqual([{
-      type: "message_update",
-      usage: completeAssistant.usage,
-      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "early token" },
-    }]);
+    expect(first).toEqual([
+      { type: "message_start", message: { ...completeAssistant, content: [] } },
+      {
+        type: "message_update",
+        usage: completeAssistant.usage,
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "early token" },
+      },
+    ]);
     expect(second).toEqual([]);
     session.emitAssistantEndAndPersist();
     await handle.materialized;
