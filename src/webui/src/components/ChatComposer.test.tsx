@@ -1,10 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import { createRef, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../i18n/I18nProvider";
 import { PreferencesProvider } from "../preferences/PreferencesProvider";
-import { ChatComposer } from "./ChatComposer";
+import { ChatComposer, type ChatComposerHandle } from "./ChatComposer";
 
 const commands = [
   { name: "arxiv", description: "arXiv metadata", source: "skill" as const },
@@ -209,6 +209,33 @@ describe("ChatComposer slash popover", () => {
     await user.keyboard("write a summary");
     await user.keyboard("{Enter}");
     expect(onSend).toHaveBeenCalledWith("write a summary");
+  });
+});
+
+describe("ChatComposer sizing", () => {
+  it("remeasures typed, restored and inserted drafts, then shrinks after submit", async () => {
+    const ref = createRef<ChatComposerHandle>();
+    await renderComposer({ ref });
+    const input = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+    // jsdom has no layout: provide the browser's content measurement, including
+    // the current height floor so shrinking requires resetting height first.
+    Object.defineProperties(input, {
+      clientWidth: { configurable: true, value: 300 },
+      scrollHeight: {
+        configurable: true,
+        get: () => Math.max(52 + input.value.length, Number.parseFloat(input.style.height) || 0),
+      },
+    });
+    fireEvent.change(input, { target: { value: "typed draft" } });
+    expect(input).toHaveStyle({ height: "63px" });
+    act(() => ref.current?.setDraft("restored draft\nwith another line"));
+    expect(input).toHaveStyle({ height: "84px" });
+    input.setSelectionRange(input.value.length, input.value.length);
+    act(() => ref.current?.insertPath("/paper.md"));
+    expect(input).toHaveStyle({ height: "95px" });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(input).toHaveValue("");
+    expect(input).toHaveStyle({ height: "52px" });
   });
 });
 

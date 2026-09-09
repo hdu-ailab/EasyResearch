@@ -75,6 +75,27 @@ describe("SearchableSelect", () => {
     expect(screen.queryByRole("option", { name: "openai/gpt-4o" })).not.toBeInTheDocument();
   });
 
+  it("keeps the focused search outside the options list it controls", async () => {
+    const user = userEvent.setup();
+    const options = Array.from({ length: 180 }, (_, index) => ({
+      value: `provider/model-${index}`,
+      label: `provider/model-${index}`,
+    }));
+    const { onSelect } = renderSelect({ options, value: options.at(-1)!.value });
+    await user.click(screen.getByRole("combobox"));
+    const search = screen.getByRole("searchbox");
+    const listbox = screen.getByRole("listbox");
+    expect(search).toHaveFocus();
+    expect(search).toHaveAttribute("aria-controls", listbox.id);
+    expect(listbox).not.toContainElement(search);
+
+    await user.type(search, "MODEL-42");
+    expect(screen.getAllByRole("option")).toHaveLength(1);
+    await user.keyboard("{Enter}");
+    expect(onSelect).toHaveBeenCalledWith("provider/model-42");
+    expect(screen.getByRole("combobox")).toHaveFocus();
+  });
+
   it("shows the empty message when the query matches nothing", async () => {
     const user = userEvent.setup();
     renderSelect();

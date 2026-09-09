@@ -44,6 +44,28 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
   const insertedCaret = useRef<number | null>(null);
   const commandListId = `composer-commands-${useId().replaceAll(":", "")}`;
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Remeasure the committed DOM whenever the controlled draft changes.
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const resize = () => {
+      if (textarea.clientWidth === 0) return;
+      // Reset first so deleting text can shrink; CSS owns the height limits.
+      textarea.style.height = "auto";
+      textarea.style.height = `${textarea.scrollHeight}px`;
+    };
+    resize();
+    let width = textarea.clientWidth;
+    const observer = new ResizeObserver(() => {
+      const nextWidth = textarea.clientWidth;
+      if (nextWidth === width) return;
+      width = nextWidth;
+      resize();
+    });
+    observer.observe(textarea);
+    return () => observer.disconnect();
+  }, [text]);
+
   useImperativeHandle(
     ref,
     () => ({
@@ -161,7 +183,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
 
   return (
     <form
-      className="relative mx-auto flex w-full max-w-[1000px] items-end gap-2 md:max-w-200 2xl:max-w-[1000px]"
+      className="relative mx-auto flex w-full max-w-[1000px] items-center gap-2 md:max-w-200 2xl:max-w-[1000px]"
       onSubmit={(e) => {
         e.preventDefault();
         submit();

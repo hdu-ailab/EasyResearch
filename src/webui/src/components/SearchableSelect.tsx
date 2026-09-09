@@ -141,9 +141,6 @@ export function SearchableSelect({
       {open && triggerRect ? (
         <div
           ref={panelRef}
-          id={panelId}
-          role="listbox"
-          aria-label={ariaLabel}
           style={{
             position: "fixed",
             width: triggerRect.width,
@@ -151,9 +148,9 @@ export function SearchableSelect({
             bottom: direction === "up" ? window.innerHeight - triggerRect.top + 4 : undefined,
             left: triggerRect.left,
           }}
-          className="z-50 max-h-[168px] overflow-y-auto rounded-md bg-v2-background-bg-base p-1 shadow-[var(--v2-elevation-raised)]"
+          className="z-50 flex max-h-[168px] flex-col rounded-md bg-v2-background-bg-base p-1 shadow-[var(--v2-elevation-raised)]"
         >
-          <div className="relative mb-1 flex items-center">
+          <div className="relative mb-1 flex shrink-0 items-center">
             <Search size={12} className="pointer-events-none absolute left-2 text-v2-icon-icon-muted" aria-hidden />
             <input
               ref={inputRef}
@@ -198,29 +195,31 @@ export function SearchableSelect({
               className="h-6 w-full rounded-md border border-v2-grey-200 bg-v2-background-bg-base pl-6 pr-2 text-[12px] text-v2-text-text-base outline-none focus:border-v2-blue-600"
             />
           </div>
-          {shown.length === 0 ? (
-            <p className="px-2 py-1 text-[12px] text-v2-text-text-faint">{emptyMessage ?? "No matches"}</p>
-          ) : (
-            shown.map((option, index) => (
-              <div
-                key={option.value}
-                id={`${panelId}-option-${index}`}
-                role="option"
-                tabIndex={-1}
-                aria-selected={activeIndex === index}
-                className={`cursor-pointer rounded-md px-2 py-1 text-[12px] text-v2-text-text-base ${
-                  activeIndex === index ? "bg-v2-blue-100" : ""
-                }`}
-                onMouseEnter={() => setActiveIndex(index)}
-                onMouseDown={(event) => {
-                  event.preventDefault();
-                  choose(option);
-                }}
-              >
-                {option.label}
-              </div>
-            ))
-          )}
+          <div id={panelId} role="listbox" aria-label={ariaLabel} className="min-h-0 overflow-y-auto">
+            {shown.length === 0 ? (
+              <p className="px-2 py-1 text-[12px] text-v2-text-text-faint">{emptyMessage ?? "No matches"}</p>
+            ) : (
+              shown.map((option, index) => (
+                <div
+                  key={option.value}
+                  id={`${panelId}-option-${index}`}
+                  role="option"
+                  tabIndex={-1}
+                  aria-selected={activeIndex === index}
+                  className={`cursor-pointer rounded-md px-2 py-1 text-[12px] text-v2-text-text-base ${
+                    activeIndex === index ? "bg-v2-blue-100" : ""
+                  }`}
+                  onMouseEnter={() => setActiveIndex(index)}
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    choose(option);
+                  }}
+                >
+                  {option.label}
+                </div>
+              ))
+            )}
+          </div>
         </div>
       ) : null}
     </div>
