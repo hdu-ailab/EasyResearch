@@ -141,7 +141,7 @@ describe("FilePreview markdown dispatch", () => {
     expect(link).toHaveAttribute("rel", "noreferrer noopener");
   });
 
-  it("keeps same-document anchors as same-tab links", async () => {
+  it("keeps same-document anchors on their preview target without changing the route", async () => {
     const user = userEvent.setup();
     const onOpenFile = vi.fn();
     const dto: FileContentDto = {
@@ -153,10 +153,14 @@ describe("FilePreview markdown dispatch", () => {
     };
     render(<FilePreview path="/p/paper.md" textFile={dto} onOpenFile={onOpenFile} />);
     const link = screen.getByRole("link", { name: "jump" });
-    expect(link).toHaveAttribute("href", "#section");
+    const heading = screen.getByRole("heading", { name: "Section" });
+    expect(heading.id).not.toBe("");
+    expect(decodeURIComponent(link.getAttribute("href")!.slice(1))).toBe(heading.id);
     expect(link).not.toHaveAttribute("target");
     expect(link).not.toHaveAttribute("rel");
+    const route = window.location.hash;
     await user.click(link);
+    expect(window.location.hash).toBe(route);
     expect(onOpenFile).not.toHaveBeenCalled();
   });
 

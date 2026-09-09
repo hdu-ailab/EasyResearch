@@ -80,6 +80,85 @@ describe("subagentMessagePreview", () => {
 });
 
 describe("SubagentToolCard", () => {
+  it.each([false, true])("shows current thinking across tool-only turns (expanded=%s)", (initialOpen) => {
+    let state = { ...emptyState, tools: [subagentTool({ latestMessage: "older assistant prose" })] };
+    const { rerender } = render(<SubagentToolCard tool={state.tools[0]!} initialOpen={initialOpen} />);
+    const progress = (event: Record<string, unknown>) => {
+      state = reduceSubagentSupervisorEvent(state, {
+        type: "subagent_supervisor",
+        launchId: "launch-0",
+        ownerSessionId: "root",
+        toolCallId: "sub-1",
+        agent: "search",
+        agentId: "search_0",
+        childSessionId: "child-0",
+        status: "working",
+        event: event as never,
+      });
+      rerender(<SubagentToolCard tool={state.tools[0]!} initialOpen={initialOpen} />);
+    };
+
+    for (const paragraph of ["Checking the evidence", "Reconsidering the result"]) {
+      progress({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: { path: "notes.md" } });
+      expect(screen.getByText("read notes.md")).toBeVisible();
+      progress({ type: "message_start", message: { role: "assistant", content: [] } });
+      progress({ type: "message_update", assistantMessageEvent: { type: "thinking_start", contentIndex: 0 } });
+      expect(screen.getByText("Thinking")).toBeVisible();
+      expect(screen.queryByText(/waiting for the first/i)).toBeNull();
+      expect(screen.queryByText("older assistant prose")).toBeNull();
+      progress({
+        type: "message_update",
+        assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: `First line\r\n\r\n ${paragraph}` },
+      });
+      progress({
+        type: "message_update",
+        assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: " now\n \t\n" },
+      });
+      expect(screen.getByText(`${paragraph} now`, { exact: !initialOpen })).toBeVisible();
+      if (initialOpen) expect(screen.getByRole("article")).toHaveTextContent("First line");
+      else expect(screen.getByText(`${paragraph} now`)).toHaveClass("truncate");
+      expect(state.tools[0]?.latestMessage).toBe("older assistant prose");
+    }
+
+    progress({ type: "message_update", assistantMessageEvent: { type: "text_start", contentIndex: 1 } });
+    expect(screen.queryByText(/^Thinking:/)).toBeNull();
+    progress({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: "Current answer" },
+    });
+    expect(screen.getByText("Current answer")).toBeVisible();
+    expect(screen.queryByText(/Reconsidering the result/)).toBeNull();
+  });
+
+  it.each(["complete", "error"] as const)("clears thinking on a %s outcome without assistant prose", (status) => {
+    const base = {
+      type: "subagent_supervisor" as const,
+      launchId: "launch-0",
+      ownerSessionId: "root",
+      toolCallId: "sub-1",
+      agent: "search",
+      agentId: "search_0",
+      childSessionId: "child-0",
+    };
+    const thinking = reduceSubagentSupervisorEvent(
+      { ...emptyState, tools: [subagentTool()] },
+      {
+        ...base,
+        status: "working",
+        event: {
+          type: "message_update",
+          assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "Live thought" },
+        } as never,
+      },
+    );
+    const { rerender } = render(<SubagentToolCard tool={thinking.tools[0]!} initialOpen={false} />);
+    expect(screen.getByText("Live thought")).toBeVisible();
+    const settled = reduceSubagentSupervisorEvent(thinking, { ...base, status });
+    rerender(<SubagentToolCard tool={settled.tools[0]!} initialOpen={false} />);
+    expect(screen.getByText("No progress was saved before this run ended.")).toBeVisible();
+    expect(screen.queryByText(/Thinking|Live thought|waiting/i)).toBeNull();
+  });
+
   it("shows only the server-calculated subtree total when API usage details are enabled", () => {
     const totals = {
       records: 3,

@@ -1,10 +1,12 @@
 import { join } from "node:path";
 import { readFile } from "node:fs/promises";
-import { createAuthGateway, type AuthGateway } from "./auth-gateway";
+import { createAuthGateway, type AuthGateway, type AuthOperationRuntime } from "./auth-gateway";
 import { ConfigFileService } from "./config-files";
 import type { Logger } from "../runtime/logger";
-import { createModelRuntimeTransaction } from "../runtime/model-runtime-transaction";
+import { createModelRuntimeTransaction, type ModelRuntimeLease } from "../runtime/model-runtime-transaction";
 import { parsePiSettingsJson } from "../runtime/pi-settings-json";
+import { importPiAuthStorage } from "../runtime/pi-import";
+import type { Provider } from "@earendil-works/pi-ai";
 import type {
   ModelCatalogValidator,
   ModelCatalogEntry,
@@ -26,6 +28,7 @@ export interface AcceptedModelRuntime<T extends AuthModelRuntime = AuthModelRunt
   extends ModelCatalogValidator {
   /** Stable proxy delegated only to the last committed candidate runtime. */
   readonly runtime: T;
+  acquire(): ModelRuntimeLease<T>;
   getModelsJsonProviderIds(): ReadonlySet<string>;
   getNoAuthProviderIds(): ReadonlySet<string>;
   dispose(): Promise<void>;
@@ -43,6 +46,7 @@ export interface DaemonAuthRuntimeOptions<T extends AuthModelRuntime & RuntimeAp
   config: ConfigFileService;
   logger: Logger;
   createModelRuntime: () => Promise<T>;
+  decorateAuthRuntime?: <R extends object>(runtime: R) => R;
   synchronizeCatalog: () => Promise<void>;
   onModelsChanged: () => Promise<void>;
   resolveFallbackModel?: (
@@ -69,6 +73,7 @@ export function createAcceptedModelRuntime<T extends AuthModelRuntime>(
 
   return {
     runtime: transaction.runtime,
+    acquire: () => transaction.acquire(),
     currentAvailableModels() {
       return transaction.runtime.getAvailableSnapshot().map((model) => ({
         provider: model.provider,
@@ -77,7 +82,8 @@ export function createAcceptedModelRuntime<T extends AuthModelRuntime>(
     },
     async refreshAvailability() {
       try {
-        await transaction.runtime.refresh({ allowNetwork: false });
+        // Pi getAvailable() refreshes credential snapshots without reloading models.json.
+        await transaction.runtime.getAvailable();
       } catch {
         // Availability failures remain request/provider diagnostics, not host-config failures.
       }
@@ -198,14 +204,48 @@ export async function createDaemonAuthRuntime<T extends AuthModelRuntime & Runti
     acceptedNoAuthProviderIds: () => accepted.getNoAuthProviderIds(),
     synchronizeCatalog: options.synchronizeCatalog,
     onModelsChanged: options.onModelsChanged,
+    createAuthRuntime: async (providerId) => {
+      const lease = accepted.acquire();
+      try {
+        const provider = lease.runtime.getProvider(providerId);
+        if (!provider) throw new Error(`unknown provider: ${providerId}`);
+        const operation = await createNativeAuthRuntime(provider, join(options.config.globalRoot, "auth.json"), options.decorateAuthRuntime);
+        return {
+          runtime: operation.runtime,
+          async dispose() {
+            try { await operation.dispose(); } finally { lease.release(); }
+          },
+        };
+      } catch (error) {
+        lease.release();
+        throw error;
+      }
+    },
   });
   return {
     auth,
     modelValidator: accepted,
     modelRuntime: accepted.runtime,
     noAuthProviderIds: () => accepted.getNoAuthProviderIds(),
-    dispose: () => accepted.dispose(),
+    async dispose() {
+      await auth.shutdown();
+      await accepted.dispose();
+    },
   };
+}
+
+export async function createNativeAuthRuntime(
+  provider: NonNullable<ReturnType<AuthModelRuntime["getProvider"]>>,
+  authPath: string,
+  decorate?: <R extends object>(runtime: R) => R,
+): Promise<AuthOperationRuntime> {
+  const { AuthStorage } = await importPiAuthStorage();
+  const { createModels } = await import("@earendil-works/pi-ai");
+  const models = createModels({ credentials: AuthStorage.create(authPath) });
+  // The gateway exposes a thin metadata type, but Pi supplies the full effective
+  // Provider. Native Models auth uses its methods without refreshing its catalog.
+  models.setProvider(provider as Provider);
+  return { runtime: decorate ? decorate(models) : models, dispose: () => models.clearProviders() };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

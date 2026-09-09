@@ -16,6 +16,34 @@ class FakeRuntime {
 }
 
 describe("createModelRuntimeTransaction", () => {
+  it("keeps an acquired owner alive across replacement and waits for its release on disposal", async () => {
+    const first = new FakeRuntime("first");
+    const second = new FakeRuntime("second");
+    const candidates = [first, second];
+    const transaction = createModelRuntimeTransaction(async () => candidates.shift()!);
+    const initial = await transaction.prepare();
+    initial.activate();
+    await initial.commit();
+    const lease = transaction.acquire();
+    const next = await transaction.prepare();
+    next.activate();
+    const committing = next.commit();
+    let disposed = false;
+    const disposing = transaction.dispose().then(() => { disposed = true; });
+    try {
+      await Promise.resolve();
+      expect(first.disposeCalls).toBe(0);
+      expect(lease.runtime.currentName()).toBe("first");
+      expect(disposed).toBe(false);
+    } finally {
+      lease.release();
+      lease.release();
+      await Promise.all([committing, disposing]);
+    }
+    expect(first.disposeCalls).toBe(1);
+    expect(second.disposeCalls).toBe(1);
+  });
+
   it("commits and rolls back isolated candidates without double-disposing runtimes", async () => {
     const first = new FakeRuntime("first");
     const rolledBack = new FakeRuntime("rolled-back");

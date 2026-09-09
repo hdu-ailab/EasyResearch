@@ -28,6 +28,11 @@ let networkEnvSnapshot: Partial<Record<(typeof NETWORK_ENV_KEYS)[number], string
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "cli-index-"));
+  vi.stubEnv("EASYRESEARCH_CODING_AGENT_DIR", root);
+  vi.stubEnv("EASYRESEARCH_VENV", undefined);
+  vi.stubEnv("EASYRESEARCH_SKIP_SETUP", undefined);
+  vi.stubEnv("EASYRESEARCH_SMOKE_SETUP_RESULT_PATH", undefined);
+  vi.stubEnv("EASYRESEARCH_SMOKE_SETUP_RUN_ID", undefined);
   networkEnvSnapshot = {};
   for (const key of NETWORK_ENV_KEYS) {
     const value = process.env[key];
@@ -43,6 +48,7 @@ afterEach(() => {
     else process.env[key] = value;
   }
   rmSync(root, { recursive: true, force: true });
+  vi.unstubAllEnvs();
 });
 
 function readNetworkEnvironment(
@@ -221,6 +227,12 @@ describe("runCli argument parsing", () => {
     expect(deps.spawnBackground).not.toHaveBeenCalled();
     expect(deps.waitForReady).toHaveBeenCalledWith("127.0.0.1", 3000);
     expect(deps.openBrowser).toHaveBeenCalledWith("http://127.0.0.1:3000");
+  });
+
+  it.each(["none", "current", "stale"] as const)("uses an IPv6 authority for browser launch with a %s daemon", async (background) => {
+    const deps = makeDeps({ inspectBackground: async () => background });
+    expect(await runTestCli(["--host", "::1", "-p", "4000"], deps, { agentDir: root })).toBe(0);
+    expect(deps.openBrowser).toHaveBeenCalledWith("http://[::1]:4000");
   });
 
   it("restarts an existing daemon when its copied runtime is stale", async () => {
@@ -467,6 +479,33 @@ describe("runCli argument parsing", () => {
 });
 
 describe("waitForReady", () => {
+  it("reaches an explicit IPv6 loopback listener", async (context) => {
+    const requests: string[] = [];
+    const server = createServer((request, response) => {
+      requests.push(request.headers.host ?? "");
+      response.end("ok");
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "::1", resolve);
+      });
+    } catch (error) {
+      if (["EAFNOSUPPORT", "EADDRNOTAVAIL"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+        context.skip("IPv6 loopback is unavailable on this host");
+        return;
+      }
+      throw error;
+    }
+    const port = (server.address() as { port: number }).port;
+    try {
+      expect(await waitForReady("::1", port, 300)).toBe(true);
+      expect(requests).toEqual([`[::1]:${port}`]);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
   it("uses the direct local transport instead of the configured global fetch router", async () => {
     const targetRequests: string[] = [];
     const server = createServer((request, response) => {

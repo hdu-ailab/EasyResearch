@@ -9,8 +9,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative, resolve } from "node:path";
-import type { ChokidarOptions } from "chokidar";
+import { basename, join, relative, resolve } from "node:path";
+import { type ChokidarOptions, type FSWatcher, watch } from "chokidar";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   type ConfigurationWatcherManager,
@@ -19,6 +19,7 @@ import {
 } from "./configuration-watchers";
 import type { ConfigurationWatchImplementation } from "./live-configuration";
 import { fingerprintSkillRoot, type SkillScopeFingerprint } from "./resource-fingerprint";
+import { importPi } from "./pi-import";
 
 const STABLE_EVENT_WAIT_MS = 450;
 const tempRoots: string[] = [];
@@ -63,6 +64,7 @@ interface RealHarness {
   changes: ResourceWatchChange[];
   errors: { count: number };
   fingerprintCalls: string[];
+  watchers: FSWatcher[];
 }
 
 function realHarness(
@@ -73,9 +75,15 @@ function realHarness(
   const changes: ResourceWatchChange[] = [];
   const errors = { count: 0 };
   const fingerprintCalls: string[] = [];
+  const watchers: FSWatcher[] = [];
   const manager = createConfigurationWatcherManager({
     agentDir: paths.agentDir,
     homeDir: paths.homeDir,
+    watch(paths, options) {
+      const watcher = watch(paths, options);
+      watchers.push(watcher);
+      return watcher;
+    },
     onChange(change) {
       changes.push({
         ...change,
@@ -91,7 +99,7 @@ function realHarness(
     },
   });
   managers.push(manager);
-  return { manager, changes, errors, fingerprintCalls };
+  return { manager, changes, errors, fingerprintCalls, watchers };
 }
 
 async function clearStableEvents(changes: ResourceWatchChange[]): Promise<void> {
@@ -135,6 +143,211 @@ function sameFilesystemPath(left: string, right: string): boolean {
 }
 
 describe("real stable-anchor resource watching", () => {
+  it.each(["global", "home", "project"] as const)("refreshes %s dependencies after an intermediate link is atomically retargeted", async (scope) => {
+    const paths = workspace();
+    const root = scope === "global" ? join(paths.agentDir, "skills")
+      : scope === "home" ? join(paths.homeDir, ".agents", "skills")
+      : join(paths.project, ".easyresearch", "skills");
+    const source = join(root, "aaa-source");
+    const descriptor = join(root, "zzz-group", "nested", "link", "SKILL.md");
+    mkdirSync(join(source, "noise"), { recursive: true });
+    mkdirSync(join(descriptor, ".."), { recursive: true });
+    const skill = (body: string) => `---\nname: multi-hop\ndescription: fixture\n---\n${body}\n`;
+    writeFileSync(join(source, "one.txt"), skill("one"));
+    writeFileSync(join(source, "two.txt"), skill("two"));
+    writeFileSync(join(source, "noise", "payload.txt"), "noise");
+    writeFileSync(join(root, ".gitignore"), "aaa-source/\n");
+    symlinkSync("one.txt", join(source, "current.txt"), "file");
+    symlinkSync("../../../aaa-source/current.txt", descriptor, "file");
+    const state = realHarness(paths);
+    await state.manager.start(scope === "home");
+    const registration = scope === "project" ? await state.manager.acquireProject(paths.project) : undefined;
+    const before = await fingerprintSkillRoot(root, scope, undefined, scope === "home" ? "agents" : "pi");
+    expect(before.skillDescriptors).toEqual([{ name: "multi-hop", relativePath: "zzz-group/nested/link/SKILL.md" }]);
+    await clearStableEvents(state.changes);
+    const replacement = join(paths.root, "current-next");
+    symlinkSync("two.txt", replacement, "file");
+    renameSync(replacement, join(source, "current.txt"));
+    expect((await fingerprintSkillRoot(root, scope, undefined, scope === "home" ? "agents" : "pi")).value).not.toBe(before.value);
+    await waitFor(() => state.changes.some((change) => change.skillsChanged), "intermediate retarget did not request a scan");
+
+    const sourceEntries = () => new Set(state.watchers.filter((watcher) => !watcher.closed)
+      .flatMap((watcher) => watcher.getWatched()[source] ?? []).map((path) => basename(path)));
+    // Chokidar admits the replacement target and intermediate link asynchronously.
+    await waitFor(() => {
+      const entries = sourceEntries();
+      return entries.has("current.txt") && entries.has("two.txt") && !entries.has("one.txt");
+    }, "retarget did not replace the physical dependency watches");
+    expect(sourceEntries()).toEqual(new Set(["current.txt", "two.txt"]));
+    await expectObserved(state.changes, () => writeFileSync(join(source, "two.txt"), skill("two edited")),
+      (change) => change.skillsChanged === true, "new target bytes were not observed");
+    await expectUnobserved(state.changes, () => {
+      writeFileSync(join(source, "one.txt"), skill("old target edited"));
+      writeFileSync(join(source, "noise", "payload.txt"), "noise edited");
+    });
+    expect(state.watchers.filter((watcher) => !watcher.closed).flatMap((watcher) => Object.keys(watcher.getWatched()))).not.toContain(join(source, "noise"));
+    expect(state.errors.count).toBe(0);
+    await registration?.release();
+  }, 20_000);
+
+  it.each(["global", "home"] as const)("observes a linked ordinary Markdown descriptor in %s discovery mode", async (scope) => {
+    const paths = workspace();
+    const root = scope === "global" ? join(paths.agentDir, "skills") : join(paths.homeDir, ".agents", "skills");
+    const target = join(root, ".source", "descriptor.txt");
+    const descriptor = scope === "global" ? join(root, "linked.md") : join(root, "group", "linked.md");
+    mkdirSync(join(target, ".."), { recursive: true });
+    mkdirSync(join(descriptor, ".."), { recursive: true });
+    writeFileSync(target, "---\nname: linked-markdown\ndescription: fixture\n---\nbefore\n");
+    writeFileSync(join(root, ".source", "noise.txt"), "noise");
+    symlinkSync(relative(join(descriptor, ".."), target), descriptor, "file");
+    const state = realHarness(paths);
+    await state.manager.start(scope === "home");
+
+    await expectObserved(state.changes, () => writeFileSync(target, "after"),
+      (change) => change.skillsChanged === true, "linked Markdown descriptor bytes were not watched");
+    await expectUnobserved(state.changes, () => writeFileSync(join(root, ".source", "noise.txt"), "noise again"));
+  }, 15_000);
+
+  it.each(["global", "home", "project"] as const)("restores a pruned %s target when its referencing descriptor is discovered later", async (scope) => {
+    const paths = workspace();
+    const root = scope === "global" ? join(paths.agentDir, "skills")
+      : scope === "home" ? join(paths.homeDir, ".agents", "skills")
+      : join(paths.project, ".easyresearch", "skills");
+    const source = join(root, "aaa-source");
+    const target = join(source, "descriptor.txt");
+    const descriptor = join(root, "zzz-group", "nested", "link", "SKILL.md");
+    mkdirSync(source, { recursive: true });
+    mkdirSync(join(descriptor, ".."), { recursive: true });
+    writeFileSync(target, "---\nname: late-link\ndescription: fixture\n---\nbefore\n");
+    writeFileSync(join(source, "unrelated.txt"), "unrelated");
+    mkdirSync(join(source, "unrelated-tree"));
+    writeFileSync(join(source, "unrelated-tree", "payload.txt"), "unrelated");
+    writeFileSync(join(root, ".gitignore"), "aaa-source/\n");
+    symlinkSync("../../../aaa-source/descriptor.txt", descriptor, "file");
+    const state = realHarness(paths);
+    await state.manager.start(scope === "home");
+    const registration = scope === "project" ? await state.manager.acquireProject(paths.project) : undefined;
+    const sourceEntries = () => state.watchers.filter((watcher) => !watcher.closed)
+      .flatMap((watcher) => watcher.getWatched()[source] ?? []);
+    expect(sourceEntries()).toEqual(["descriptor.txt"]);
+    const before = await fingerprintSkillRoot(root, scope, undefined, scope === "home" ? "agents" : "pi");
+    const pi = await importPi();
+    expect(before.skillDescriptors).toEqual([{ name: "late-link", relativePath: "zzz-group/nested/link/SKILL.md" }]);
+    expect(pi.loadSkillsFromDir({ dir: root, source: "user" }).skills.map((skill) => skill.filePath)).toEqual([descriptor]);
+    await clearStableEvents(state.changes);
+    writeFileSync(target, "---\nname: late-link\ndescription: fixture\n---\nafter\n");
+    expect((await fingerprintSkillRoot(root, scope, undefined, scope === "home" ? "agents" : "pi")).value).not.toBe(before.value);
+    await waitFor(() => state.changes.some((change) => change.skillsChanged), "late-discovered descriptor target did not request a scan");
+
+    await waitFor(() => sourceEntries().includes("descriptor.txt"), "referenced target watcher was not retained");
+    expect(sourceEntries()).toEqual(["descriptor.txt"]);
+    await expectUnobserved(state.changes, () => writeFileSync(join(source, "unrelated.txt"), "still unrelated"));
+    const replacement = join(paths.root, "replacement-descriptor");
+    writeFileSync(replacement, "replacement");
+    await expectObserved(state.changes, () => renameSync(replacement, target),
+      (change) => change.skillsChanged === true, "atomic target replacement was not observed");
+    await expectObserved(state.changes, () => unlinkSync(descriptor),
+      (change) => change.skillsChanged === true, "descriptor removal was not observed");
+    await expectUnobserved(state.changes, () => writeFileSync(target, "unreferenced now"));
+    expect(sourceEntries()).toEqual([]);
+    expect(state.errors.count).toBe(0);
+    await registration?.release();
+  }, 20_000);
+
+  it("reapplies ignore controls when their in-root symlink target changes", async () => {
+    const paths = workspace();
+    const root = join(paths.agentDir, "skills");
+    const descriptor = join(root, "generated", "SKILL.md");
+    mkdirSync(join(descriptor, ".."), { recursive: true });
+    writeFileSync(descriptor, "initial");
+    const policy = join(root, "policy.txt");
+    writeFileSync(policy, "generated/\n");
+    symlinkSync("policy.txt", join(root, ".gitignore"), "file");
+    const state = realHarness(paths);
+    await state.manager.start(false);
+
+    await expectObserved(state.changes, () => writeFileSync(policy, "# visible\n"),
+      (change) => change.skillsChanged === true, "linked ignore control change was not observed");
+    await expectObserved(state.changes, () => writeFileSync(descriptor, "admitted"),
+      (change) => change.skillsChanged === true, "linked ignore control did not restore discovery");
+  }, 15_000);
+
+  it("watches only the referenced descriptor target below stopped supporting content", async () => {
+    const paths = workspace();
+    const root = join(paths.agentDir, "skills");
+    const target = join(root, "support", "descriptor.txt");
+    mkdirSync(join(target, ".."), { recursive: true });
+    writeFileSync(target, "one");
+    writeFileSync(join(root, "support", "irrelevant.txt"), "irrelevant");
+    symlinkSync("support/descriptor.txt", join(root, "SKILL.md"), "file");
+    const state = realHarness(paths);
+    await state.manager.start(false);
+
+    await expectObserved(state.changes, () => writeFileSync(target, "two"),
+      (change) => change.skillsChanged === true, "referenced descriptor bytes were not watched");
+    await expectUnobserved(state.changes, () => writeFileSync(join(root, "support", "irrelevant.txt"), "still irrelevant"));
+  }, 15_000);
+
+  it.each(["global", "home"] as const)("stops %s watching at root SKILL.md and restores grouping after its removal", async (scope) => {
+    const paths = workspace();
+    const root = scope === "global" ? join(paths.agentDir, "skills") : join(paths.homeDir, ".agents", "skills");
+    const nested = join(root, "support", "SKILL.md");
+    mkdirSync(join(nested, ".."), { recursive: true });
+    writeFileSync(nested, "nested");
+    writeFileSync(join(root, "SKILL.md"), "root");
+    const state = realHarness(paths);
+    await state.manager.start(scope === "home");
+
+    expect(state.watchers.flatMap((watcher) => Object.keys(watcher.getWatched()))).not.toContain(join(root, "support"));
+    await expectUnobserved(state.changes, () => writeFileSync(nested, "not a discovered Skill"));
+    await expectObserved(state.changes, () => unlinkSync(join(root, "SKILL.md")),
+      (change) => change.skillsChanged === true, "root descriptor removal was not observed");
+    await expectObserved(state.changes, () => writeFileSync(nested, "discovered now"),
+      (change) => change.skillsChanged === true, "root descriptor removal did not restore discovery");
+    await expectObserved(state.changes, () => writeFileSync(join(root, "SKILL.md"), "root again"),
+      (change) => change.skillsChanged === true, "root descriptor recreation was not observed");
+    await expectUnobserved(state.changes, () => writeFileSync(nested, "support again"));
+    expect(state.errors.count).toBe(0);
+  }, 20_000);
+
+  it.each(["global", "home", "project"] as const)("does not watch or scan ignored %s Skill trees and reapplies ignore-control changes", async (scope) => {
+    const paths = workspace();
+    const root = scope === "global" ? join(paths.agentDir, "skills")
+      : scope === "home" ? join(paths.homeDir, ".agents", "skills")
+      : join(paths.project, ".easyresearch", "skills");
+    const ignored = join(root, "group", "generated");
+    const descriptor = join(ignored, "one", "SKILL.md");
+    mkdirSync(join(descriptor, ".."), { recursive: true });
+    writeFileSync(descriptor, "initial");
+    writeFileSync(join(root, "group", ".gitignore"), "generated/\n");
+    const state = realHarness(paths);
+    await state.manager.start(scope === "home");
+    const registration = scope === "project" ? await state.manager.acquireProject(paths.project) : undefined;
+    const watchedIgnored = () => state.watchers.filter((watcher) => !watcher.closed)
+      .flatMap((watcher) => Object.keys(watcher.getWatched()))
+      .filter((path) => path === ignored || path.startsWith(`${ignored}/`));
+
+    expect(watchedIgnored()).toEqual([]);
+    await expectUnobserved(state.changes, () => writeFileSync(descriptor, "ignored edit"));
+    const replacement = join(paths.root, "replacement-ignore");
+    writeFileSync(replacement, "# now visible\n");
+    await expectObserved(state.changes, () => renameSync(replacement, join(root, "group", ".gitignore")),
+      (change) => change.skillsChanged === true, "ignore replacement did not request discovery");
+    await expectObserved(state.changes, () => writeFileSync(descriptor, "visible edit"),
+      (change) => change.skillsChanged === true, "admitted Skill was not watched");
+    await waitFor(() => watchedIgnored().length > 0, "admitted Skill watcher was not retained");
+    await expectObserved(state.changes, () => writeFileSync(join(root, "group", ".fdignore"), "generated/\n"),
+      (change) => change.skillsChanged === true, "new ignore control did not request discovery");
+    await waitFor(() => watchedIgnored().length === 0, "newly ignored watchers were retained");
+    await expectUnobserved(state.changes, () => writeFileSync(descriptor, "ignored again"));
+    await expectObserved(state.changes, () => unlinkSync(join(root, "group", ".fdignore")),
+      (change) => change.skillsChanged === true, "ignore unlink did not request discovery");
+    await expectObserved(state.changes, () => writeFileSync(descriptor, "visible again"),
+      (change) => change.skillsChanged === true, "ignore unlink did not restore watching");
+    expect(state.errors.count).toBe(0);
+    await registration?.release();
+  }, 20_000);
+
   it("observes first global leaf creation, every mutation kind, and atomic replacement", async () => {
     const paths = workspace();
     const state = realHarness(paths);

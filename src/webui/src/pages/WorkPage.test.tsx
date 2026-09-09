@@ -1,6 +1,6 @@
 import { act, fireEvent, render as renderWithTestingLibrary, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { createRef, type ReactElement, type ReactNode } from "react";
+import { type ComponentProps, createRef, type ReactElement, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileEntryDto, SubagentSessionSummaryDto, SubagentSupervisorEventDto } from "../../../web/contracts";
 import * as api from "../api";
@@ -9,6 +9,19 @@ import { STORAGE_KEY } from "../preferences";
 import { PreferencesProvider } from "../preferences/PreferencesProvider";
 import { hydrateTranscript, observerFor } from "../testing/transcriptTest";
 import { WorkPage } from "./WorkPage";
+
+const fileQueueProbe = vi.hoisted(() => ({ pending: 0 }));
+
+vi.mock("../components/FileBrowser", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../components/FileBrowser")>();
+  return {
+    ...actual,
+    FileBrowser: (props: ComponentProps<typeof actual.FileBrowser>) => {
+      fileQueueProbe.pending = props.fileEvents?.length ?? 0;
+      return <actual.FileBrowser {...props} />;
+    },
+  };
+});
 
 vi.mock("../api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api")>();
@@ -941,6 +954,65 @@ describe("WorkPage", () => {
     expect(api.sendPrompt).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { accepted: "queued", latest: "running", failed: false },
+    { accepted: "running", latest: "idle", failed: false },
+    { accepted: "queued", latest: "idle", failed: true },
+  ] as const)(
+    "keeps newer compaction SSE state $latest after a late $accepted acknowledgement (failed=$failed)",
+    async ({ accepted, latest, failed }) => {
+      const user = userEvent.setup();
+      const pending = deferred<Awaited<ReturnType<typeof api.compactSession>>>();
+      vi.mocked(api.compactSession).mockReturnValueOnce(pending.promise);
+      vi.mocked(api.getSnapshot).mockResolvedValue({
+        ...snapshotValue,
+        contextUsage: { tokens: 40_000, contextWindow: 100_000, percent: 40 },
+      } as never);
+      vi.mocked(api.getSessionTree).mockResolvedValue({
+        tree: [
+          { id: "u1", parentId: null, role: "user", kind: "user", text: "Original question" },
+          { id: "a1", parentId: "u1", role: "assistant", kind: "assistant", text: "Current answer" },
+        ],
+        leafId: "a1",
+        filterMode: "default",
+        skipBranchSummaryPrompt: true,
+      });
+      render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+      await screen.findByText("starting research");
+      const input = screen.getByRole("textbox", { name: "Message" });
+      fireEvent.change(input, { target: { value: "/compact" } });
+      await user.click(screen.getByRole("button", { name: "Send" }));
+      expect(api.compactSession).toHaveBeenCalledOnce();
+
+      emitInAct({ type: "compaction_state_changed", state: "running" });
+      if (failed) emitInAct({ type: "compaction_end", errorMessage: "Summary failed" });
+      emitInAct({ type: "compaction_state_changed", state: latest });
+      await act(async () => pending.resolve({ state: accepted }));
+      emitInAct({ type: "agent_settled" });
+      const capacity = screen.getByRole("progressbar", { name: /context capacity/i });
+      if (latest === "running") {
+        expect(capacity).toHaveAttribute("aria-valuetext", expect.stringMatching(/Compacting/i));
+      } else {
+        expect(capacity).not.toHaveAttribute("aria-valuetext", expect.stringMatching(/Compacting|Queued/i));
+      }
+      if (failed) expect(screen.getByRole("alert")).toHaveTextContent("Summary failed");
+      fireEvent.change(input, { target: { value: "/history" } });
+      await user.click(screen.getByRole("button", { name: "Send" }));
+      const history = await screen.findByRole("dialog", { name: /^history$/i });
+      const entry = within(history).getByRole("treeitem");
+      if (latest === "running") {
+        expect(entry).toHaveAttribute("aria-disabled", "true");
+        await user.click(entry);
+        expect(api.navigateSessionTree).not.toHaveBeenCalled();
+      } else {
+        expect(entry).not.toHaveAttribute("aria-disabled", "true");
+        await user.click(entry);
+        await waitFor(() => expect(api.navigateSessionTree).toHaveBeenCalledWith("s1", "u1", { summarize: false }));
+      }
+      expect(api.sendPrompt).not.toHaveBeenCalled();
+    },
+  );
+
   it("clears a rejected command notice when the next normal message is sent", async () => {
     vi.mocked(api.compactSession).mockRejectedValueOnce(new Error("Nothing to compact"));
     const user = userEvent.setup();
@@ -1855,6 +1927,98 @@ describe("WorkPage", () => {
     expect(within(rootCard as HTMLElement).queryByText("nested failed")).toBeNull();
   });
 
+  it.each([
+    { ownerLoaded: true, batched: false },
+    { ownerLoaded: false, batched: false },
+    { ownerLoaded: true, batched: true },
+    { ownerLoaded: false, batched: true },
+  ])(
+    "starts nested card thinking fresh across reconnect (owner loaded=$ownerLoaded, batched=$batched)",
+    async ({ ownerLoaded, batched }) => {
+      const user = userEvent.setup();
+      const writing = subagentSummary("root-writing", "child-writing", "writing", {
+        agentId: "writing_0",
+        status: "working",
+      });
+      const search = subagentSummary("nested-search", "grandchild-search", "search", {
+        ownerSessionId: "child-writing",
+        agentId: "search_nested",
+        status: "working",
+        latestMessage: "previous answer",
+      });
+      const parent = {
+        session: { id: "s1", cwd: "/p", isStreaming: false, status: "running" },
+        subagents: ownerLoaded ? [writing, search] : [writing],
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "toolCall", id: "root-writing", name: "subagent", arguments: { agent: "writing" } }],
+          },
+        ],
+      };
+      const child = normalizeTimelineSnapshot({
+        session: { id: "child-writing", cwd: "/p", sessionName: "easyresearch:writing" },
+        subagents: [search],
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "toolCall", id: "nested-search", name: "subagent", arguments: { agent: "search" } }],
+          },
+        ],
+      });
+      const pending = deferred<Awaited<ReturnType<typeof api.getChildSnapshot>>>();
+      const initial = deferred<Awaited<ReturnType<typeof api.getChildSnapshot>>>();
+      const refreshed = { ...child, subagents: [{ ...search, latestMessage: "newer answer" }] };
+      vi.mocked(api.getSnapshot).mockResolvedValue(parent as never);
+      vi.mocked(api.getChildSnapshot)
+        .mockReturnValueOnce(ownerLoaded ? Promise.resolve(child as never) : initial.promise)
+        .mockReturnValueOnce(pending.promise);
+      render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+      await user.click(await screen.findByRole("button", { name: "View details" }));
+      if (ownerLoaded) expect(await screen.findByText("previous answer")).toBeVisible();
+      else await waitFor(() => expect(api.getChildSnapshot).toHaveBeenCalledTimes(1));
+      const delta = (text: string) =>
+        emitSupervisor({
+          ...search,
+          event: {
+            type: "message_update",
+            assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: text },
+          } as never,
+        });
+      const reconnect = {
+        type: "snapshot",
+        ...parent,
+        subagents: [writing, { ...search, latestMessage: "newer answer" }],
+      };
+      if (batched) {
+        act(() => {
+          delta("discarded prefix");
+          delta("Old thought");
+          emit(reconnect);
+        });
+      } else {
+        delta("Old thought");
+        if (ownerLoaded) expect(await screen.findByText("Old thought")).toBeVisible();
+        emitInAct(reconnect);
+      }
+      if (!ownerLoaded) {
+        await act(async () =>
+          initial.resolve(normalizeTimelineSnapshot({ session: child.session, subagents: [], messages: [] }) as never),
+        );
+      }
+      await waitFor(() => expect(api.getChildSnapshot).toHaveBeenCalledTimes(2));
+      if (!ownerLoaded) await act(async () => pending.resolve(refreshed as never));
+      expect(screen.queryByText("Old thought")).toBeNull();
+      expect(screen.getByText("newer answer")).toBeVisible();
+      delta("New suffix");
+      expect(await screen.findByText("New suffix")).toBeVisible();
+      if (ownerLoaded) await act(async () => pending.resolve(refreshed as never));
+      expect(screen.getByText("New suffix")).toBeVisible();
+      expect(screen.queryByText(/Old thought/)).toBeNull();
+      expect(screen.getByRole("textbox", { name: "Message" })).toBeDisabled();
+    },
+  );
+
   it("replays a nested terminal frame that arrives before its owner snapshot", async () => {
     const user = userEvent.setup();
     let resolveOwner!: (value: Awaited<ReturnType<typeof api.getChildSnapshot>>) => void;
@@ -1949,6 +2113,281 @@ describe("WorkPage", () => {
     await user.click(screen.getByRole("button", { name: /agent research assistant/i }));
     expect(screen.getByText("parent remains")).toBeVisible();
   });
+
+  it.each(["before-delta", "during-delta", "at-termination", "overlapping-final"])(
+    "streams a retained Working child without a message start when reconnect history resolves %s",
+    async (historyTiming) => {
+      const user = userEvent.setup();
+      const parent = {
+        session: { id: "s1", cwd: "/p", isStreaming: false, status: "running" },
+        subagents: [subagentSummary("sub-cursor", "child-cursor", "search", { status: "working" })],
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "toolCall", id: "sub-cursor", name: "subagent", arguments: { agent: "search" } }],
+          },
+        ],
+      };
+      const child = normalizeTimelineSnapshot({
+        session: { id: "child-cursor", cwd: "/p", sessionName: "easyresearch:search" },
+        subagents: [],
+        messages: [
+          { id: "dispatch", role: "user", content: "Find papers" },
+          { id: "prior-answer", role: "assistant", content: "Previous complete answer" },
+          ...(historyTiming === "before-delta"
+            ? [
+                {
+                  id: "read-call",
+                  role: "assistant",
+                  content: [{ type: "toolCall", id: "read-paper", name: "read", arguments: { path: "/p/paper.md" } }],
+                },
+                {
+                  id: "read-result",
+                  role: "toolResult",
+                  toolCallId: "read-paper",
+                  toolName: "read",
+                  content: "Paper data",
+                },
+              ]
+            : []),
+        ],
+      });
+      const pending = deferred<Awaited<ReturnType<typeof api.getChildSnapshot>>>();
+      vi.mocked(api.getSnapshot).mockResolvedValue(parent as never);
+      vi.mocked(api.getChildSnapshot)
+        .mockResolvedValueOnce(child as never)
+        .mockReturnValueOnce(pending.promise);
+      render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+      await user.click(await screen.findByRole("button", { name: "View details" }));
+      expect(await screen.findByText("Previous complete answer")).toBeVisible();
+      expect(screen.getByRole("textbox", { name: "Message" })).toBeDisabled();
+
+      emitInAct({ type: "snapshot", ...parent });
+      await waitFor(() => expect(api.getChildSnapshot).toHaveBeenCalledTimes(2));
+      if (historyTiming === "before-delta") await act(async () => pending.resolve(child as never));
+      emitSupervisorChildEvent({
+        toolCallId: "sub-cursor",
+        childSessionId: "child-cursor",
+        event: {
+          type: "message_update",
+          assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "Checking new evidence" },
+        } as never,
+      });
+      expect(await screen.findByRole("button", { name: /Thinking: Checking new evidence/ })).toBeVisible();
+      emitSupervisorChildEvent({
+        toolCallId: "sub-cursor",
+        childSessionId: "child-cursor",
+        event: {
+          type: "message_update",
+          assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: "Live suffix after reconnect" },
+        } as never,
+      });
+      expect(await screen.findByText("Live suffix after reconnect")).toBeVisible();
+      expect(screen.getByText("Previous complete answer")).toBeVisible();
+      expect(screen.getByRole("textbox", { name: "Message" })).toBeDisabled();
+
+      const finalMessage = {
+        role: "assistant",
+        timestamp: 30,
+        content: [
+          { type: "thinking", thinking: "Checking new evidence" },
+          { type: "text", text: "Full body. Live suffix after reconnect" },
+        ],
+      };
+      if (historyTiming === "at-termination") {
+        await act(async () => {
+          emit(supervisorEvent({ toolCallId: "sub-cursor", childSessionId: "child-cursor", status: "error" }));
+          pending.resolve(child as never);
+        });
+      } else {
+        if (historyTiming === "during-delta") await act(async () => pending.resolve(child as never));
+        if (historyTiming === "overlapping-final")
+          await act(async () =>
+            pending.resolve({
+              session: child.session,
+              subagents: [],
+              timeline: [
+                { kind: "message", entryId: "dispatch", message: { role: "user", content: "Find papers" } },
+                {
+                  kind: "message",
+                  entryId: "prior-answer",
+                  message: { role: "assistant", id: "prior-answer", content: "Previous complete answer" },
+                },
+                { kind: "message", entryId: "persisted-new", message: finalMessage },
+              ],
+            } as never),
+          );
+        expect(screen.getByText("Live suffix after reconnect")).toBeVisible();
+        emitSupervisorChildEvent({
+          toolCallId: "sub-cursor",
+          childSessionId: "child-cursor",
+          event: { type: "message_end", message: finalMessage } as never,
+        });
+        expect(await screen.findByText("Full body. Live suffix after reconnect")).toBeVisible();
+        expect(screen.queryByText("Live suffix after reconnect")).toBeNull();
+        emitSupervisor({ toolCallId: "sub-cursor", childSessionId: "child-cursor", status: "complete" });
+      }
+      expect(await screen.findByRole("button", { name: "Thinking process" })).toBeVisible();
+      expect(screen.getByText("Previous complete answer")).toBeVisible();
+      expect(screen.getByRole("textbox", { name: "Message" })).toBeDisabled();
+      await user.click(screen.getByRole("button", { name: /agent research assistant/i }));
+      expect(screen.getByRole("textbox", { name: "Message" })).toBeEnabled();
+      expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
+      expect(api.sendPrompt).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { status: "complete", duringHydration: false, answerEntryId: "answer-entry" },
+    { status: "working", duringHydration: false, answerEntryId: "stream:3" },
+    { status: "working", duringHydration: true, answerEntryId: "answer-entry" },
+    { status: "working", duringHydration: true, answerEntryId: "stream:4" },
+  ] as const)(
+    "replaces pre-reconnect child partials with $status history and preserves newer deltas ($duringHydration, $answerEntryId)",
+    async ({ status, duringHydration, answerEntryId }) => {
+      const user = userEvent.setup();
+      const parent = {
+        session: { id: "s1", cwd: "/p", isStreaming: false, status: "running" },
+        subagents: [subagentSummary("sub-reconnect", "child-reconnect", "search", { status: "working" })],
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "toolCall", id: "sub-reconnect", name: "subagent", arguments: { agent: "search" } }],
+          },
+        ],
+      };
+      const child = {
+        session: { id: "child-reconnect", cwd: "/p", sessionName: "easyresearch:search" },
+        subagents: [],
+        timeline: [
+          {
+            kind: "message",
+            entryId: "dispatch-entry",
+            message: { role: "user", timestamp: 10, content: "Find evidence" },
+          },
+          {
+            kind: "message",
+            entryId: "prior-entry",
+            message: {
+              role: "assistant",
+              timestamp: 11,
+              content: [
+                { type: "text", text: "Prior answer" },
+                { type: "toolCall", id: "prior-read", name: "read", arguments: { path: "/p/evidence.md" } },
+              ],
+            },
+          },
+          {
+            kind: "message",
+            entryId: "read-entry",
+            message: {
+              role: "toolResult",
+              timestamp: 12,
+              toolCallId: "prior-read",
+              toolName: "read",
+              content: "Earlier evidence",
+            },
+          },
+        ],
+      };
+      const pending = deferred<Awaited<ReturnType<typeof api.getChildSnapshot>>>();
+      vi.mocked(api.getSnapshot).mockResolvedValue(parent as never);
+      vi.mocked(api.getChildSnapshot)
+        .mockResolvedValueOnce(child as never)
+        .mockReturnValueOnce(pending.promise);
+      const view = render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+      await user.click(await screen.findByRole("button", { name: "View details" }));
+      await screen.findByText("Prior answer");
+      const delta = (text: string) =>
+        emitSupervisorChildEvent({
+          toolCallId: "sub-reconnect",
+          childSessionId: "child-reconnect",
+          event: {
+            type: "message_update",
+            assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: text },
+          } as never,
+        });
+      delta("suffix");
+      expect(screen.getByText("suffix")).toBeVisible();
+
+      act(() => latestHandlers?.onError());
+      emitInAct({
+        type: "snapshot",
+        ...parent,
+        session: { ...parent.session, status: status === "working" ? "running" : "ready" },
+        subagents: [subagentSummary("sub-reconnect", "child-reconnect", "search", { status })],
+      });
+      await waitFor(() => expect(api.getChildSnapshot).toHaveBeenCalledTimes(2));
+      if (duringHydration) {
+        delta("Post-snapshot delta");
+        emitSupervisorChildEvent({
+          toolCallId: "sub-reconnect",
+          childSessionId: "child-reconnect",
+          event: {
+            type: "tool_execution_start",
+            toolCallId: "nested-launch",
+            toolName: "subagent",
+            args: { agent: "writing" },
+          } as never,
+        });
+        emitSupervisor({
+          ownerSessionId: "child-reconnect",
+          toolCallId: "nested-launch",
+          childSessionId: "nested-child",
+          agent: "writing",
+          agentId: "writing_0",
+          latestMessage: "Nested progress",
+        });
+      }
+      await act(async () =>
+        pending.resolve({
+          ...child,
+          timeline: [
+            ...child.timeline,
+            {
+              kind: "message",
+              entryId: answerEntryId,
+              message: { role: "assistant", timestamp: 20, content: "Complete body with suffix" },
+            },
+          ],
+        } as never),
+      );
+
+      expect(await screen.findByText("Complete body with suffix")).toBeVisible();
+      expect(screen.queryByText("suffix")).toBeNull();
+      expect(screen.getByText("Prior answer")).toBeVisible();
+      expect(screen.getByRole("textbox", { name: "Message" })).toBeDisabled();
+      if (status === "working") {
+        if (duringHydration) {
+          expect(screen.getByText("Post-snapshot delta")).toBeVisible();
+          expect(screen.getByText("Nested progress")).toBeVisible();
+          expect(screen.getByRole("button", { name: "Agent writing_0" })).toBeVisible();
+          delta(" and more");
+          expect(screen.getByText("Post-snapshot delta and more")).toBeVisible();
+        } else {
+          delta("Next live response");
+          expect(screen.getByText("Next live response")).toBeVisible();
+        }
+        const keys = [...view.container.querySelectorAll<HTMLElement>("[data-row-key]")].map(
+          (row) => row.dataset.rowKey,
+        );
+        expect(new Set(keys).size).toBe(keys.length);
+        emitSupervisorChildEvent({
+          toolCallId: "sub-reconnect",
+          childSessionId: "child-reconnect",
+          event: {
+            type: "message_end",
+            message: { role: "assistant", timestamp: 21, content: "Next complete body" },
+          } as never,
+        });
+        expect(await screen.findByText("Next complete body")).toBeVisible();
+        expect(screen.getByText("Complete body with suffix")).toBeVisible();
+        expect(screen.queryByText("Post-snapshot delta and more")).toBeNull();
+        expect(screen.queryByText("Next live response")).toBeNull();
+      }
+      expect(api.sendPrompt).not.toHaveBeenCalled();
+    },
+  );
 
   it("refreshes every open child snapshot when the parent SSE snapshot reconnects", async () => {
     const user = userEvent.setup();
@@ -2709,6 +3148,171 @@ describe("WorkPage", () => {
       properties: { file: "/outside/generated.md", event: "add" },
     });
     expect(vi.mocked(api.listEntries).mock.calls.length).toBe(callsAfterValidEvent);
+  });
+
+  it("delivers file-event bursts to pending nested listings and every open preview exactly once", async () => {
+    const user = userEvent.setup();
+    let revision = 0;
+    let holdParent = false;
+    const parent = deferred<FileEntryDto[]>();
+    vi.mocked(api.listEntries).mockImplementation(async (path) => {
+      if (path === "/p")
+        return [
+          { kind: "directory", name: "results", path: "/p/results" },
+          { kind: "file", name: "a.txt", path: "/p/a.txt" },
+          { kind: "file", name: "b.txt", path: "/p/b.txt" },
+        ];
+      if (path === "/p/results")
+        return holdParent ? parent.promise : [{ kind: "directory", name: "nested", path: "/p/results/nested" }];
+      return [{ kind: "file", name: `result-${revision}.txt`, path: `/p/results/nested/result-${revision}.txt` }];
+    });
+    vi.mocked(api.readFileContent).mockImplementation(async (path) => ({
+      path,
+      content: `${path} version ${revision}`,
+      byteCount: 20,
+      truncated: false,
+      binary: false,
+    }));
+    const view = render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await user.click(await screen.findByText("results"));
+    await user.click(await screen.findByText("nested"));
+    await screen.findByText("result-0.txt");
+    await user.click(screen.getByText("a.txt"));
+    await screen.findByText("/p/a.txt version 0");
+    await user.click(screen.getByText("b.txt"));
+    await screen.findByText("/p/b.txt version 0");
+    vi.mocked(api.listEntries).mockClear();
+    vi.mocked(api.readFileContent).mockClear();
+    const burst = () => {
+      for (const file of ["/p/results", "/p/results/nested", "/p", "/p/a.txt", "/p/b.txt", "/p/b.txt"]) {
+        emit({ type: "file.watcher.updated", properties: { file, event: "change" } });
+      }
+    };
+    revision = 1;
+    holdParent = true;
+    await act(async () => burst());
+    expect(api.listEntries).toHaveBeenCalledWith("/p/results/nested");
+    expect(await screen.findByText("result-1.txt")).toBeVisible();
+    await act(async () => parent.resolve([{ kind: "directory", name: "nested", path: "/p/results/nested" }]));
+    expect(await screen.findByText("/p/b.txt version 1")).toBeVisible();
+    await user.click(screen.getByRole("tab", { name: "a.txt" }));
+    expect(await screen.findByText("/p/a.txt version 1")).toBeVisible();
+    expect(
+      vi
+        .mocked(api.readFileContent)
+        .mock.calls.map(([path]) => path)
+        .sort(),
+    ).toEqual(["/p/a.txt", "/p/b.txt"]);
+    expect(
+      vi
+        .mocked(api.listEntries)
+        .mock.calls.map(([path]) => path)
+        .sort(),
+    ).toEqual(["/p", "/p/results", "/p/results/nested"]);
+
+    holdParent = false;
+    revision = 2;
+    await act(async () => burst());
+    expect(await screen.findByText("/p/a.txt version 2")).toBeVisible();
+    await user.click(screen.getByRole("tab", { name: "b.txt" }));
+    expect(await screen.findByText("/p/b.txt version 2")).toBeVisible();
+    expect(await screen.findByText("result-2.txt")).toBeVisible();
+    const reads = vi.mocked(api.readFileContent).mock.calls.length;
+    const listings = vi.mocked(api.listEntries).mock.calls.length;
+    view.rerender(
+      <WorkPage id="s1" cwd="/p" configurationGeneration={2} onBack={() => {}} onOpenSettings={() => {}} />,
+    );
+    await user.click(screen.getByRole("tab", { name: "a.txt" }));
+    expect(api.readFileContent).toHaveBeenCalledTimes(reads);
+    expect(api.listEntries).toHaveBeenCalledTimes(listings);
+    expect(reads).toBe(4);
+    expect(listings).toBe(6);
+    expect(fileQueueProbe.pending).toBe(0);
+  });
+
+  it("discards queued pre-snapshot file events but keeps the following burst", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listEntries).mockResolvedValue(
+      ["a", "b"].map((name) => ({ kind: "file", name: `${name}.txt`, path: `/p/${name}.txt` })),
+    );
+    let revision = 0;
+    vi.mocked(api.readFileContent).mockImplementation(async (path) => ({
+      path,
+      content: `${path} version ${revision}`,
+      byteCount: 20,
+      truncated: false,
+      binary: false,
+    }));
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await user.click(await screen.findByText("a.txt"));
+    await screen.findByText("/p/a.txt version 0");
+    await user.click(screen.getByText("b.txt"));
+    await screen.findByText("/p/b.txt version 0");
+    vi.mocked(api.readFileContent).mockClear();
+    revision = 1;
+    await act(async () => {
+      emit({ type: "file.watcher.updated", properties: { file: "/p/a.txt", event: "change" } });
+      emit({ type: "snapshot", ...snapshotValue, subagents: [] });
+      emit({ type: "file.watcher.updated", properties: { file: "/p/b.txt", event: "change" } });
+    });
+    await screen.findByText("/p/b.txt version 1");
+    await user.click(screen.getByRole("tab", { name: "a.txt" }));
+    expect(await screen.findByText("/p/a.txt version 0")).toBeVisible();
+    expect(vi.mocked(api.readFileContent).mock.calls.map(([path]) => path)).toEqual(["/p/b.txt"]);
+    await act(async () => {
+      emit({ type: "file.watcher.updated", properties: { file: "/p/a.txt", event: "change" } });
+      emit({ type: "snapshot", ...snapshotValue, subagents: [] });
+    });
+    expect(api.readFileContent).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("/p/a.txt version 0")).toBeVisible();
+  });
+
+  it("does not replay file events admitted before parent hydration", async () => {
+    const pending = deferred<typeof snapshot>();
+    vi.mocked(api.getSnapshot).mockReturnValue(pending.promise);
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    expect(api.listEntries).not.toHaveBeenCalled();
+    await act(async () => {
+      emit({ type: "file.watcher.updated", properties: { file: "/p", event: "change" } });
+      emit({ type: "snapshot", ...snapshotValue, subagents: [] });
+    });
+    await screen.findByText("notes.md");
+    expect(api.listEntries).toHaveBeenCalledTimes(1);
+    await act(async () => pending.resolve(snapshot));
+    expect(api.listEntries).toHaveBeenCalledTimes(1);
+  });
+
+  it("fences queued file events and old stream callbacks when the Work session changes", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.readFileContent).mockResolvedValue({
+      path: "/p/notes.md",
+      content: "plan",
+      byteCount: 4,
+      truncated: false,
+      binary: false,
+    });
+    const view = render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("notes.md");
+    const oldHandlers = latestHandlers!;
+    vi.mocked(api.getSnapshot).mockResolvedValue({
+      ...snapshotValue,
+      session: { ...snapshotValue.session, id: "s2" },
+    } as never);
+    await act(async () => {
+      emit({ type: "file.watcher.updated", properties: { file: "/p", event: "change" } });
+      view.rerender(<WorkPage id="s2" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    });
+    expect(api.connectSessionEvents).toHaveBeenLastCalledWith("s2", expect.any(Object));
+    await screen.findByText("notes.md");
+    await user.click(screen.getByText("notes.md"));
+    await screen.findByText("plan");
+    vi.mocked(api.readFileContent).mockClear();
+    await act(async () =>
+      oldHandlers.onEvent({ type: "file.watcher.updated", properties: { file: "/p/notes.md", event: "change" } }),
+    );
+    expect(api.readFileContent).not.toHaveBeenCalled();
+    await act(async () => emit({ type: "file.watcher.updated", properties: { file: "/p/notes.md", event: "change" } }));
+    expect(api.readFileContent).toHaveBeenCalledOnce();
   });
 
   it("opens a file from the files panel into a tab and previews its content", async () => {

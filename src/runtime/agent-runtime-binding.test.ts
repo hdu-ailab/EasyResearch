@@ -1470,9 +1470,45 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     await state.binding.attach(session);
 
     await expect(state.binding.dispose()).rejects.toThrow("unsubscribe failed");
+    state.live.publish([definition("v2")]);
+    expect(session.reloadCalls).toBe(0);
     await state.binding.dispose();
 
     expect(unsubscribeCalls).toBe(2);
+  });
+
+  it("closes configuration admission and drains a reload without disposing the current model runtime", async () => {
+    const state = createHarness();
+    const { session } = await attachHarness(state);
+    let enterReload!: () => void;
+    let releaseReload!: () => void;
+    const entered = new Promise<void>((resolve) => { enterReload = resolve; });
+    const release = new Promise<void>((resolve) => { releaseReload = resolve; });
+    const reload = session.reload.bind(session);
+    session.reload = async () => {
+      enterReload();
+      await release;
+      await reload();
+    };
+    state.models.setNext(model("metadata-v2"));
+    state.live.publish([definition("v2")]);
+    const applying = state.binding.ensureCurrent();
+    await entered;
+    let closed = false;
+    const closing = state.binding.close().then(() => { closed = true; });
+    await expect(state.binding.ensureCurrent({ activeBoundary: true })).rejects.toThrow(/closed/);
+    expect(closed).toBe(false);
+    state.live.publish([definition("v3")]);
+    releaseReload();
+    await applying;
+    await closing;
+    const current = state.models.runtimes.at(-1)!;
+    expect(session.reloadCalls).toBe(1);
+    expect(current.disposeCalls).toBe(0);
+    expect(state.binding.current().systemPrompt).toBe("Prompt v2");
+
+    await state.binding.dispose();
+    expect(current.disposeCalls).toBe(1);
   });
 });
 

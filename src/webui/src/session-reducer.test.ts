@@ -1,6 +1,6 @@
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
-import type { SubagentSupervisorEventDto } from "../../web/contracts";
+import type { ApiUsageRecordDto, SubagentSupervisorEventDto } from "../../web/contracts";
 import {
   fromSnapshot as fromSnapshotRuntime,
   mergeSnapshot as mergeSnapshotRuntime,
@@ -61,6 +61,25 @@ function userMessage(text: string) {
 
 function assistantMessage(text: string) {
   return { role: "assistant", content: [{ type: "text", text }] } as never;
+}
+
+function usageRecord(id: string, anchor: ApiUsageRecordDto["anchor"]): ApiUsageRecordDto {
+  return {
+    id,
+    sessionId: "s1",
+    source: "assistant",
+    timestamp: "2026-09-08T00:00:00.000Z",
+    anchor,
+    usage: {
+      input: 2,
+      output: 1,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 3,
+      cacheHitRate: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+  };
 }
 
 function assistantEvent(type: "message_start" | "message_update" | "message_end", text: string): AgentSessionEvent {
@@ -195,6 +214,241 @@ describe("session reducer", () => {
       messages: [],
     });
     expect(reconnected.runtimeConfigurationGeneration).toBe(2);
+  });
+
+  it.each(["message", "tool", "standalone", "summary"] as const)(
+    "bounds usage identity reads by record count during %s hydration",
+    (kind) => {
+      const count = 128;
+      let reads = 0;
+      const timeline = Array.from({ length: count }, (_, index) =>
+        kind === "summary"
+          ? { kind: "compaction", entryId: `entry-${index}`, summary: "Accepted summary" }
+          : {
+              kind: "message",
+              entryId: `entry-${index}`,
+              message: {
+                role: "assistant",
+                content:
+                  kind === "tool"
+                    ? [{ type: "toolCall", id: `tool-${index}`, name: "read", arguments: {} }]
+                    : [{ type: "text", text: `Accepted result ${index}` }],
+              },
+            },
+      );
+      const inlineUsage = timeline.map((entry, index) => {
+        const anchor: ApiUsageRecordDto["anchor"] =
+          kind === "message"
+            ? {
+                kind: "message",
+                get messageEntryId() {
+                  reads++;
+                  return entry.entryId;
+                },
+              }
+            : kind === "tool"
+              ? {
+                  kind: "tool",
+                  get toolCallId() {
+                    reads++;
+                    return `tool-${index}`;
+                  },
+                }
+              : {
+                  kind: "standalone",
+                  get afterEntryId() {
+                    reads++;
+                    return entry.entryId;
+                  },
+                };
+        return {
+          ...usageRecord(entry.entryId, anchor),
+          get id() {
+            reads++;
+            return entry.entryId;
+          },
+        };
+      });
+
+      const state = fromSnapshot({
+        runtimeConfigurationGeneration: 0,
+        session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+        subagents: [],
+        timeline,
+        inlineUsage,
+      });
+      const hydrationReads = reads;
+      const rows = [...state.messages, ...state.tools, ...state.summaries];
+      expect(rows.filter((row) => row.apiUsage)).toHaveLength(count);
+      expect(state.inlineUsage).toEqual(inlineUsage);
+      expect(hydrationReads).toBeLessThan(count * 12);
+    },
+  );
+
+  it.each(["entryId", "identity", "key"] as const)(
+    "attaches usage to the first row matching any identity, even when it matches by %s",
+    (field) => {
+      const first = {
+        key: "first-key",
+        entryId: "first-entry",
+        identity: "first-identity",
+        [field]: "shared",
+        role: "assistant" as const,
+        text: "first",
+        streaming: false,
+        error: false,
+        order: 1,
+      };
+      const second = {
+        key: "shared",
+        entryId: "shared",
+        identity: "shared",
+        role: "assistant" as const,
+        text: "second",
+        streaming: false,
+        error: false,
+        order: 0,
+      };
+      const record = usageRecord("usage-record", { kind: "message", messageEntryId: "shared" });
+      const input = { ...emptyState, messages: [first, second], nextOrder: 2 };
+      const event = { type: "entry_appended", entry: {}, apiUsageRecord: record } as never;
+      const state = reduceSessionEvent(input, event);
+
+      expect(state.messages.find((row) => row.text === "first")?.apiUsage).toBe(record);
+      expect(state.messages.find((row) => row.text === "second")?.apiUsage).toBeUndefined();
+      expect(first).not.toHaveProperty("apiUsage");
+      expect(state.messageStructureRevision).toBe(input.messageStructureRevision);
+      expect(reduceSessionEvent(state, event)).toBe(state);
+    },
+  );
+
+  it("preserves usage fallbacks, summary priority, and anchors added earlier in the same hydration", () => {
+    const records = [
+      usageRecord("calls", { kind: "message", messageEntryId: "calls" }),
+      usageRecord("tool-usage", { kind: "tool", toolCallId: "t2" }),
+      usageRecord("missing-tool", { kind: "tool", toolCallId: "absent" }),
+      usageRecord("compact", { kind: "message", messageEntryId: "absent" }),
+      usageRecord("branch", { kind: "standalone", afterEntryId: "absent" }),
+      usageRecord("after-tool", { kind: "standalone", afterEntryId: "result" }),
+      usageRecord("orphan", { kind: "message", messageEntryId: "absent" }),
+      usageRecord("replace-orphan", { kind: "message", messageEntryId: "usage:orphan" }),
+      usageRecord("after-orphan", { kind: "standalone", afterEntryId: "usage:orphan" }),
+      usageRecord("after-new-summary", { kind: "standalone", afterEntryId: "after-orphan" }),
+      usageRecord("unanchored", { kind: "standalone", afterEntryId: "absent" }),
+      usageRecord("no-anchor", { kind: "standalone" }),
+    ];
+    const state = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      subagents: [],
+      timeline: [
+        { kind: "message", entryId: "question", message: { role: "user", content: "Question" } },
+        {
+          kind: "message",
+          entryId: "calls",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "toolCall", id: "t1", name: "read", arguments: {} },
+              { type: "toolCall", id: "t2", name: "read", arguments: {} },
+            ],
+          },
+        },
+        { kind: "message", entryId: "result", message: { role: "toolResult", toolCallId: "t2", content: "Result" } },
+        { kind: "compaction", entryId: "compact", summary: "Compacted" },
+        { kind: "branch-summary", entryId: "branch", summary: "Branched" },
+      ],
+      inlineUsage: records,
+    });
+    const ordered = [...state.messages, ...state.tools, ...state.summaries].sort((a, b) => a.order - b.order);
+    expect(ordered.map((row) => row.key)).toEqual([
+      "question",
+      "usage:calls",
+      "t1",
+      "t2",
+      "usage:after-tool",
+      "summary:compact",
+      "summary:branch",
+      "usage:orphan",
+      "usage:after-orphan",
+      "usage:after-new-summary",
+      "usage:unanchored",
+      "usage:no-anchor",
+    ]);
+    expect(ordered.map((row) => row.order)).toEqual(ordered.map((_, index) => index));
+    expect(state.nextOrder).toBe(ordered.length);
+    expect(state.tools[1]?.apiUsage).toBe(records[1]);
+    expect(state.summaries.map((row) => row.apiUsage)).toEqual([records[3], records[4]]);
+    expect(state.messages.find((row) => row.key === "usage:orphan")).toMatchObject({
+      role: "assistant",
+      usageOnly: true,
+      apiUsage: records[7],
+    });
+    expect(state.messages.find((row) => row.key === "usage:after-orphan")?.role).toBe("system");
+    expect(state.inlineUsage).toEqual(records);
+  });
+
+  it("keeps first-match tool identities, minimum call order, and message-before-tool standalone anchors", () => {
+    const input: SessionViewState = {
+      ...emptyState,
+      messages: [
+        {
+          key: "shared",
+          entryId: "entry-only",
+          role: "assistant",
+          text: "Answer",
+          streaming: false,
+          error: false,
+          order: 5,
+        },
+      ],
+      tools: [
+        {
+          key: "fallback",
+          name: "read",
+          running: false,
+          done: true,
+          error: false,
+          callEntryId: "call",
+          resultEntryId: "shared",
+          order: 3,
+        },
+        {
+          key: "second",
+          toolCallId: "fallback",
+          name: "read",
+          running: false,
+          done: true,
+          error: false,
+          callEntryId: "call",
+          order: 0,
+        },
+        { key: "shadow", toolCallId: "different", name: "read", running: false, done: true, error: false, order: 4 },
+      ],
+      nextOrder: 6,
+    };
+    const record = usageRecord("tool", { kind: "tool", toolCallId: "fallback" });
+    let state = reduceSessionEvent(input, { type: "entry_appended", entry: {}, apiUsageRecord: record } as never);
+    expect(state.tools.find((row) => row.key === "fallback")?.apiUsage).toBe(record);
+    expect(state.tools.find((row) => row.key === "second")?.apiUsage).toBeUndefined();
+    const shadow = usageRecord("shadowed", { kind: "tool", toolCallId: "shadow" });
+    state = reduceSessionEvent(state, { type: "entry_appended", entry: {}, apiUsageRecord: shadow } as never);
+    expect(state.tools.find((row) => row.key === "shadow")?.apiUsage).toBeUndefined();
+    for (const record of [
+      usageRecord("call-usage", { kind: "message", messageEntryId: "call" }),
+      usageRecord("after-message", { kind: "standalone", afterEntryId: "shared" }),
+      usageRecord("entry-only-fallback", { kind: "standalone", afterEntryId: "entry-only" }),
+    ])
+      state = reduceSessionEvent(state, { type: "entry_appended", entry: {}, apiUsageRecord: record } as never);
+    expect([...state.messages, ...state.tools].sort((a, b) => a.order - b.order).map((row) => row.key)).toEqual([
+      "usage:call-usage",
+      "second",
+      "fallback",
+      "shadow",
+      "shared",
+      "usage:after-message",
+      "usage:entry-only-fallback",
+    ]);
   });
 
   it("hydrates tool-only, nested-tool, and internal usage with the backend statistics replacement", () => {
@@ -511,6 +765,64 @@ describe("session reducer", () => {
 
     expect(state.contextUsage).toEqual({ tokens: null, contextWindow: 128_000, percent: null });
     expect(state.compactionState).toBe("queued");
+  });
+
+  it.each([30, 31])(
+    "reconciles a missing-start cursor with hydrated history only by exact identity (%s)",
+    (timestamp) => {
+      const record = usageRecord("persisted", { kind: "message", messageEntryId: "persisted" });
+      const finalMessage = { role: "assistant", timestamp, content: [{ type: "text", text: "Complete answer" }] };
+      const hydrated = fromSnapshot({
+        runtimeConfigurationGeneration: 0,
+        session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+        subagents: [],
+        timeline: [{ kind: "message", entryId: "persisted", message: { ...finalMessage, timestamp: 30 } }],
+        inlineUsage: [record],
+      });
+      const streaming = reduceSessionEvent(
+        { ...hydrated, isStreaming: true },
+        assistantEvent("message_update", "suffix"),
+      );
+      const ended = reduceSessionEvent(streaming, { type: "message_end", message: finalMessage } as never);
+      expect(ended.messages).toHaveLength(timestamp === 30 ? 1 : 2);
+      expect(ended.messages[0]).toMatchObject({
+        key: "persisted",
+        entryId: "persisted",
+        apiUsage: record,
+        text: "Complete answer",
+      });
+      expect(ended.messages.every((row) => !row.streaming && row.text === "Complete answer")).toBe(true);
+      expect(ended.activeMessageKey).toBeUndefined();
+      expect(ended.isStreaming).toBe(true);
+      expect(ended.messageStructureRevision).toBe(streaming.messageStructureRevision + (timestamp === 30 ? 1 : 0));
+    },
+  );
+
+  it("does not reuse a persisted message key for a missing-start cursor", () => {
+    const hydrated = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      subagents: [],
+      timeline: [
+        {
+          kind: "message",
+          entryId: "stream:1",
+          message: { role: "assistant", timestamp: 30, content: "Persisted answer" },
+        },
+      ],
+    });
+    const streaming = reduceSessionEvent(
+      { ...hydrated, isStreaming: true },
+      assistantEvent("message_update", "New suffix"),
+    );
+    expect(new Set(streaming.messages.map((row) => row.key)).size).toBe(streaming.messages.length);
+    expect(streaming.activeMessageKey).not.toBe("stream:1");
+    const ended = reduceSessionEvent(streaming, {
+      type: "message_end",
+      message: { role: "assistant", timestamp: 31, content: "New full answer" },
+    } as never);
+    expect(ended.messages.map((row) => row.text)).toEqual(["Persisted answer", "New full answer"]);
+    expect(ended.messages[0]?.entryId).toBe("stream:1");
   });
 
   it("restores the assistant delta cursor from a running snapshot", () => {
@@ -1052,6 +1364,131 @@ describe("session reducer", () => {
       return reduceSessionEvent(started, launchToolEnd(overrides, toolCallId));
     }
 
+    it("recovers thinking deltas without a start and replaces the block at thinking_end", () => {
+      let state = reduceSubagentSupervisorEvent(launchedState(), supervisorEvent({ latestMessage: "previous answer" }));
+      expect(state.tools[0]?.latestMessage).toBe("previous answer");
+      const update = (assistantMessageEvent: Record<string, unknown>) => {
+        state = reduceSubagentSupervisorEvent(
+          state,
+          supervisorEvent({
+            event: { type: "message_update", assistantMessageEvent } as never,
+          }),
+        );
+      };
+      update({ type: "thinking_delta", contentIndex: 0, delta: "partial " });
+      update({ type: "thinking_delta", contentIndex: 0, delta: "partial" });
+      expect(state.tools[0]?.latestActivity).toEqual({ kind: "thinking", text: "partial partial", active: true });
+      update({ type: "thinking_end", contentIndex: 0, content: "authoritative thought" });
+      expect(state.tools[0]?.latestActivity).toEqual({
+        kind: "thinking",
+        text: "authoritative thought",
+        active: false,
+      });
+      expect(state.tools[0]?.latestMessage).toBe("previous answer");
+
+      state = reduceSubagentSupervisorEvent(
+        state,
+        supervisorEvent({
+          event: { type: "message_start", message: { role: "assistant", content: [] } } as never,
+        }),
+      );
+      expect(state.tools[0]?.latestActivity).toBeUndefined();
+      update({ type: "thinking_start", contentIndex: 0 });
+      update({ type: "thinking_delta", contentIndex: 0, delta: "fresh thought" });
+      expect(state.tools[0]?.latestActivity).toEqual({ kind: "thinking", text: "fresh thought", active: true });
+      expect(state.messages).toEqual([]);
+    });
+
+    it.each([
+      {
+        partial: undefined,
+        content: [{ type: "thinking", thinking: "final-only thought" }],
+        expected: { kind: "thinking", text: "final-only thought", active: false },
+      },
+      { partial: "superseded thought", content: [], expected: undefined },
+      { partial: "superseded thought", content: [{ type: "thinking", thinking: "" }], expected: undefined },
+    ])("reconciles card reasoning from authoritative message_end (%j)", ({ partial, content, expected }) => {
+      let state = launchedState();
+      if (partial) {
+        state = reduceSubagentSupervisorEvent(
+          state,
+          supervisorEvent({
+            event: {
+              type: "message_update",
+              assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: partial },
+            } as never,
+          }),
+        );
+      }
+      const ended = reduceSubagentSupervisorEvent(
+        state,
+        supervisorEvent({
+          event: { type: "message_end", message: { role: "assistant", content } } as never,
+        }),
+      );
+      expect(ended.tools[0]?.latestActivity).toEqual(expected);
+      expect(ended.tools[0]?.latestMessage).toBeUndefined();
+    });
+
+    it.each([false, true])("does not join thinking across reconnect (summary=%s)", (withSummary) => {
+      const prior = reduceSubagentSupervisorEvent(
+        launchedState(),
+        supervisorEvent({
+          event: {
+            type: "message_update",
+            assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "Before reconnect" },
+          } as never,
+        }),
+      );
+      const restored = mergeSnapshot(prior, {
+        runtimeConfigurationGeneration: 0,
+        session: { id: "root", cwd: "/p", isStreaming: false, status: "running" },
+        subagents: withSummary ? [supervisorEvent({ latestMessage: "newer completed answer" })] : [],
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "toolCall", id: "t1", name: "subagent", arguments: { agent: "search" } }],
+          },
+        ],
+      });
+      expect(restored.tools[0]).toMatchObject({ running: true, done: false });
+      expect(restored.tools[0]?.latestActivity).toBeUndefined();
+      if (withSummary) expect(restored.tools[0]?.latestMessage).toBe("newer completed answer");
+      const next = reduceSubagentSupervisorEvent(
+        restored,
+        supervisorEvent({
+          event: {
+            type: "message_update",
+            assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "After reconnect" },
+          } as never,
+        }),
+      );
+      expect(next.tools[0]?.latestActivity).toEqual({ kind: "thinking", text: "After reconnect", active: true });
+    });
+
+    it.each([
+      {
+        type: "message_end",
+        message: { role: "assistant", content: [{ type: "thinking", thinking: "final thought" }] },
+      },
+      { type: "agent_end", messages: [] },
+      { type: "agent_settled" },
+    ])("settles card thinking on $type without completing the supervised child", (event) => {
+      const thinking = reduceSubagentSupervisorEvent(
+        launchedState(),
+        supervisorEvent({
+          event: {
+            type: "message_update",
+            assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "Live thought" },
+          } as never,
+        }),
+      );
+      const ended = reduceSubagentSupervisorEvent(thinking, supervisorEvent({ event: event as never }));
+      expect(ended.tools[0]?.latestActivity).toMatchObject({ kind: "thinking", active: false });
+      expect(ended.tools[0]).toMatchObject({ running: true, done: false });
+      expect(ended.tools[0]?.latestMessage).toBeUndefined();
+    });
+
     it("keeps a successful subagent launch acknowledgement background-working", () => {
       const ended = launchedState();
 
@@ -1522,6 +1959,43 @@ describe("session reducer", () => {
     expect(state.tools).toHaveLength(1);
     expect(state.tools[0]).toMatchObject({ key: "tc-1", name: "bash", done: true, error: false });
     expect(state.tools[0]!.output).toBe("file.txt");
+  });
+
+  it("pairs repeated snapshot results with the first matching call and retains unmatched results", () => {
+    const state = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      subagents: [],
+      messages: [
+        {
+          id: "calls",
+          role: "assistant",
+          content: [
+            { type: "toolCall", id: "duplicate", name: "read", arguments: { path: "/first" } },
+            { type: "toolCall", id: "duplicate", name: "bash", arguments: { command: "second" } },
+          ],
+        },
+        { id: "result-1", role: "toolResult", toolCallId: "duplicate", toolName: "bash", content: "First result" },
+        { id: "orphan-1", role: "toolResult", toolCallId: "orphan", toolName: "read", content: "Orphan" },
+        { id: "result-2", role: "toolResult", toolCallId: "duplicate", content: "Final result", isError: true },
+        { id: "orphan-2", role: "toolResult", toolCallId: "orphan", content: "Updated orphan" },
+        { id: "missing-id", role: "toolResult", toolName: "read", content: "Unidentified" },
+      ],
+    });
+    expect(state.tools).toEqual([
+      expect.objectContaining({
+        key: "duplicate",
+        name: "read",
+        output: "Final result",
+        resultEntryId: "result-2",
+        error: true,
+      }),
+      expect.objectContaining({ key: "duplicate", name: "bash", interrupted: true }),
+      expect.objectContaining({ key: "orphan", output: "Updated orphan", resultEntryId: "orphan-2" }),
+      expect.objectContaining({ key: "5", output: "Unidentified", resultEntryId: "missing-id" }),
+    ]);
+    expect(state.tools[1]?.output).toBeUndefined();
+    expect(state.tools[3]?.toolCallId).toBeUndefined();
   });
 
   it("unwraps text-block arrays from toolResult content", () => {

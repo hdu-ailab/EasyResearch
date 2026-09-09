@@ -28,6 +28,13 @@ export async function importPi(): Promise<typeof import("@earendil-works/pi-codi
 	}
 }
 
+export async function importPiAuthStorage() {
+	await importPi();
+	// The pinned package omits these native stores from its root exports. A
+	// literal dependency import keeps this boundary bundled in native builds.
+	return import("../../node_modules/@earendil-works/pi-coding-agent/dist/core/auth-storage.js");
+}
+
 /**
  * Synchronous access to the EasyResearch agent dir. Callers that run before
  * `importPi()` has bootstrapped identity fall back to the exact `~/.easyresearch`

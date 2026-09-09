@@ -16,6 +16,7 @@ import { RESEARCH_ASSISTANT_AGENT } from "./agent-identity";
 /** Latest live activity of a running subagent from a dedicated supervisor event. */
 export type SubagentActivity =
   | { kind: "text"; text: string }
+  | { kind: "thinking"; text: string; active: boolean }
   | { kind: "tool"; name: string; args?: string; state: "running" | "done" | "error" };
 
 export interface ToolView {
@@ -437,6 +438,7 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
   const next = () => state.nextOrder++;
   let cursorCandidate: SessionMessageView | undefined;
   const currentBatch = new Set<string>();
+  const toolsByKey = new Map<string, ToolView>();
   snapshot.timeline.forEach((timelineEntry, index) => {
     cursorCandidate = undefined;
     if (timelineEntry.kind !== "message") {
@@ -459,7 +461,7 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
     }
     if (message.role === "toolResult") {
       const toolMessage = message as unknown as { toolCallId?: unknown; toolName?: unknown; isError?: unknown };
-      const tool = state.tools.find((t) => t.key === String(toolMessage.toolCallId));
+      const tool = toolsByKey.get(String(toolMessage.toolCallId));
       const toolName = tool?.name ?? (typeof toolMessage.toolName === "string" ? toolMessage.toolName : "tool");
       const text = outputText(message.content);
       const subagentText = usableText(text);
@@ -475,7 +477,7 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
           tool.output = output;
         }
       } else {
-        state.tools.push({
+        const unmatched: ToolView = {
           key: String(toolMessage.toolCallId ?? index),
           ...(typeof toolMessage.toolCallId === "string" && toolMessage.toolCallId
             ? { toolCallId: toolMessage.toolCallId }
@@ -487,7 +489,9 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
           resultEntryId: identityFor(message as UnknownMessage),
           ...(toolName === "subagent" ? (subagentText ? { latestMessage: subagentText } : {}) : { output }),
           order: next(),
-        });
+        };
+        state.tools.push(unmatched);
+        if (!toolsByKey.has(unmatched.key)) toolsByKey.set(unmatched.key, unmatched);
       }
       return;
     }
@@ -532,7 +536,7 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
       for (const b of toolCallBlocks) {
         const toolCallId = typeof b.id === "string" && b.id ? b.id : undefined;
         if (!failedAssistant(message)) currentBatch.add(String(b.id ?? b.name ?? index));
-        state.tools.push({
+        const tool: ToolView = {
           key: String(b.id ?? b.name ?? index),
           ...(toolCallId ? { toolCallId } : {}),
           name: typeof b.name === "string" ? b.name : "tool",
@@ -544,7 +548,9 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
           agentName: b.name === "subagent" ? agentNameOfToolCall(b.arguments) : undefined,
           skillName: b.name === "read" ? readSkillName(b.arguments) : undefined,
           order: next(),
-        });
+        };
+        state.tools.push(tool);
+        if (!toolsByKey.has(tool.key)) toolsByKey.set(tool.key, tool);
       }
     }
   });
@@ -573,30 +579,53 @@ function applyInlineUsage(state: SessionViewState, records: readonly ApiUsageRec
   let tools = state.tools.map((tool) => ({ ...tool }));
   let summaries = state.summaries.map((summary) => ({ ...summary }));
   let nextOrder = state.nextOrder;
+  const messagesByIdentity = new Map<string, SessionMessageView>();
+  const messageAnchorOrders = new Map<string, number>();
+  const toolsByCallId = new Map<string, ToolView>();
+  const toolAnchorOrders = new Map<string, number>();
+  const firstCallOrders = new Map<string, number>();
+  const summariesById = new Map<string, SessionSummaryView>();
+  // Preserve array-first matching across all aliases, not field-first priority.
+  const indexMessage = (message: SessionMessageView) => {
+    for (const key of [message.key, message.identity]) {
+      if (key !== undefined && !messageAnchorOrders.has(key)) messageAnchorOrders.set(key, message.order);
+    }
+    for (const key of [message.entryId, message.identity, message.key]) {
+      if (key !== undefined && !messagesByIdentity.has(key)) messagesByIdentity.set(key, message);
+    }
+  };
+  for (const message of messages) indexMessage(message);
+  for (const tool of tools) {
+    const callId = tool.toolCallId ?? tool.key;
+    if (!toolsByCallId.has(callId)) toolsByCallId.set(callId, tool);
+    for (const key of [tool.resultEntryId, tool.callEntryId]) {
+      if (key !== undefined && !toolAnchorOrders.has(key)) toolAnchorOrders.set(key, tool.order);
+    }
+    if (tool.callEntryId !== undefined) {
+      firstCallOrders.set(
+        tool.callEntryId,
+        Math.min(firstCallOrders.get(tool.callEntryId) ?? Number.POSITIVE_INFINITY, tool.order),
+      );
+    }
+  }
+  for (const summary of summaries) {
+    if (!summariesById.has(summary.entryId)) summariesById.set(summary.entryId, summary);
+  }
   for (const record of additions) {
-    const summaryIndex = summaries.findIndex((summary) => summary.entryId === record.id);
-    if (summaryIndex >= 0) {
-      const summary = summaries[summaryIndex];
-      if (summary) summaries[summaryIndex] = { ...summary, apiUsage: record };
+    const summary = summariesById.get(record.id);
+    if (summary) {
+      summary.apiUsage = record;
       continue;
     }
     const anchor = record.anchor;
     if (anchor.kind === "message") {
-      const index = messages.findIndex(
-        (message) =>
-          message.entryId === anchor.messageEntryId ||
-          message.identity === anchor.messageEntryId ||
-          message.key === anchor.messageEntryId,
-      );
-      if (index >= 0) {
-        const message = messages[index];
-        if (message) messages[index] = { ...message, apiUsage: record };
+      const message = messagesByIdentity.get(anchor.messageEntryId);
+      if (message) {
+        message.apiUsage = record;
         continue;
       }
-      const toolOrder = tools
-        .filter((tool) => tool.callEntryId === anchor.messageEntryId)
-        .reduce((minimum, tool) => Math.min(minimum, tool.order), Number.POSITIVE_INFINITY);
-      messages.push({
+      const toolOrder = firstCallOrders.get(anchor.messageEntryId) ?? Number.POSITIVE_INFINITY;
+      const usageMessage: SessionMessageView = {
         key: `usage:${record.id}`,
         role: "assistant",
         text: "",
@@ -605,25 +634,21 @@ function applyInlineUsage(state: SessionViewState, records: readonly ApiUsageRec
         usageOnly: true,
         apiUsage: record,
         order: Number.isFinite(toolOrder) ? toolOrder - 0.5 : nextOrder++,
-      });
+      };
+      messages.push(usageMessage);
+      indexMessage(usageMessage);
       continue;
     }
     if (anchor.kind === "tool") {
-      const index = tools.findIndex((tool) => (tool.toolCallId ?? tool.key) === anchor.toolCallId);
-      if (index >= 0) {
-        const tool = tools[index];
-        if (tool) tools[index] = { ...tool, apiUsage: record };
-      }
+      const tool = toolsByCallId.get(anchor.toolCallId);
+      if (tool) tool.apiUsage = record;
       continue;
     }
     const anchorOrder =
       anchor.afterEntryId === undefined
         ? undefined
-        : (messages.find((message) => message.identity === anchor.afterEntryId || message.key === anchor.afterEntryId)
-            ?.order ??
-          tools.find((tool) => tool.resultEntryId === anchor.afterEntryId || tool.callEntryId === anchor.afterEntryId)
-            ?.order);
-    messages.push({
+        : (messageAnchorOrders.get(anchor.afterEntryId) ?? toolAnchorOrders.get(anchor.afterEntryId));
+    const usageMessage: SessionMessageView = {
       key: `usage:${record.id}`,
       identity: record.id,
       role: "system",
@@ -633,7 +658,9 @@ function applyInlineUsage(state: SessionViewState, records: readonly ApiUsageRec
       usageOnly: true,
       apiUsage: record,
       order: anchorOrder === undefined ? nextOrder++ : anchorOrder + 0.5,
-    });
+    };
+    messages.push(usageMessage);
+    indexMessage(usageMessage);
   }
   const ordered = [
     ...messages.map((value) => ({ kind: "message" as const, value })),
@@ -928,13 +955,31 @@ function applySubagentEventActivity(
       const message = (event as { message?: { role?: string } }).message;
       const text = childMessageText(message);
       if (!text && event.type === "message_start" && message?.role === "assistant") return undefined;
+      if (!text && event.type === "message_end" && message?.role === "assistant") {
+        const { reasoning } = splitContent(message as UnknownMessage);
+        if (reasoning) return { kind: "thinking", text: reasoning, active: false };
+        return current?.kind === "thinking" ? undefined : current;
+      }
       return text ? { kind: "text", text } : current;
     }
     case "message_update": {
       const update = assistantUpdateOf(event as MessageUpdateEvent);
+      if (update?.kind === "thinking-start") return { kind: "thinking", text: "", active: true };
+      if (update?.kind === "thinking") {
+        if (!update.delta && !update.complete) return current;
+        return {
+          kind: "thinking",
+          text: update.complete ? update.delta : (current?.kind === "thinking" ? current.text : "") + update.delta,
+          active: !update.complete,
+        };
+      }
+      if (update?.kind === "text-start" && current?.kind === "thinking") return undefined;
       if (update?.kind !== "text" || !update.delta) return current;
       return { kind: "text", text: current?.kind === "text" ? current.text + update.delta : update.delta };
     }
+    case "agent_end":
+    case "agent_settled":
+      return current?.kind === "thinking" ? { ...current, active: false } : current;
     default:
       return current;
   }
@@ -1064,7 +1109,10 @@ export function mergeSnapshot(state: SessionViewState, snapshot: SessionSnapshot
       usableText(prior.latestMessage) !== undefined
         ? { latestMessage: prior.latestMessage }
         : {}),
-      ...(compatible && (!tool.done || preserveLiveSupervised) && prior.latestActivity !== undefined
+      ...(compatible &&
+      (!tool.done || preserveLiveSupervised) &&
+      prior.latestActivity !== undefined &&
+      prior.latestActivity.kind !== "thinking"
         ? { latestActivity: prior.latestActivity }
         : {}),
       ...(compatible && summary === undefined && prior.agentName !== undefined ? { agentName: prior.agentName } : {}),
@@ -1200,7 +1248,10 @@ export function reduceSessionEvent(
       let currentState = state;
       if (currentState.activeMessageKey === undefined && !currentState.messages.some((message) => message.streaming)) {
         if (!currentState.isStreaming) return currentState;
-        const key = `stream:${currentState.nextOrder}`;
+        const messageKeys = new Set(currentState.messages.map((message) => message.key));
+        let suffix = currentState.nextOrder;
+        while (messageKeys.has(`stream:${suffix}`)) suffix += 1;
+        const key = `stream:${suffix}`;
         currentState = {
           ...currentState,
           activeMessageKey: key,
@@ -1291,7 +1342,21 @@ export function reduceSessionEvent(
         return applyToolResult(state, result.toolCallId, result.isError, result);
       }
       const identity = identityFor(message);
+      const anonymousCursor =
+        message.role === "assistant" && state.activeMessageKey !== undefined && identity !== undefined
+          ? state.messages.find(
+              (candidate) => candidate.key === state.activeMessageKey && candidate.identity === undefined,
+            )
+          : undefined;
+      const hydratedMessage = anonymousCursor
+        ? state.messages.find((candidate) => candidate.role === "assistant" && candidate.identity === identity)
+        : undefined;
+      // Child history can arrive before message_end identifies a missing-start cursor.
+      const messages = hydratedMessage
+        ? state.messages.filter((candidate) => candidate !== anonymousCursor)
+        : state.messages;
       const key =
+        hydratedMessage?.key ??
         state.activeMessageKey ??
         (identity === undefined
           ? undefined
@@ -1307,9 +1372,9 @@ export function reduceSessionEvent(
       const omitToolCallOnlyRow = message.role === "assistant" && hasToolCall && !text && !reasoning && !error;
       let nextMessages = omitToolCallOnlyRow
         ? key === undefined
-          ? state.messages
-          : state.messages.filter((m) => m.key !== key)
-        : state.messages.map((m) =>
+          ? messages
+          : messages.filter((m) => m.key !== key)
+        : messages.map((m) =>
             key !== undefined && m.key === key
               ? {
                   ...m,

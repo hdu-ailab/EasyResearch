@@ -1,5 +1,6 @@
 import {
   appendFileSync,
+  Dir,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -14,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as resourceFingerprint from "./resource-fingerprint";
+import { importPi } from "./pi-import";
 
 const { fingerprintGlobalSkillResources, fingerprintSkillRoot } = resourceFingerprint;
 
@@ -23,6 +25,8 @@ const EXPECTED_MAX_DESCRIPTOR_BYTES = 1_048_576;
 const tempRoots: string[] = [];
 
 afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   for (const root of tempRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -97,6 +101,44 @@ describe("Skill descriptor relative-path classification", () => {
 });
 
 describe("canonical synchronous Skill descriptor enumeration", () => {
+  it.each(["pi", "agents"] as const)("stops at root SKILL.md in %s mode without reading supporting directories", async (mode) => {
+    const base = tempRoot();
+    const root = join(base, "skills");
+    const agentDir = join(base, "agent");
+    mkdirSync(agentDir);
+    mkdirSync(join(root, "nested"), { recursive: true });
+    const skill = (name: string) => `---\nname: ${name}\ndescription: fixture\n---\n`;
+    writeFileSync(join(root, "SKILL.md"), skill("root-skill"));
+    writeFileSync(join(root, "aux.md"), skill("aux-skill"));
+    writeFileSync(join(root, "nested", "SKILL.md"), skill("nested-skill"));
+    vi.stubEnv("HOME", base);
+    vi.stubEnv("EASYRESEARCH_CODING_AGENT_DIR", agentDir);
+    const pi = await importPi();
+    const read = vi.spyOn(Dir.prototype, "readSync");
+
+    const descriptors = resourceFingerprint.enumerateSkillDescriptors(root, mode);
+
+    expect(descriptors.map((entry) => entry.relativePath)).toEqual(["SKILL.md"]);
+    expect(descriptors.map((entry) => entry.skillPath)).toEqual(
+      pi.loadSkillsFromDir({ dir: root, source: "user" }).skills.map((entry) => entry.filePath),
+    );
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it.each(["pi", "agents"] as const)("ignores a root descriptor excluded by ignore controls while preserving %s grouping rules", (mode) => {
+    const root = join(tempRoot(), "skills");
+    mkdirSync(join(root, "group", "nested"), { recursive: true });
+    writeFileSync(join(root, "SKILL.md"), "root");
+    writeFileSync(join(root, ".gitignore"), "SKILL.md\n!group/nested/SKILL.md\n");
+    writeFileSync(join(root, "direct.md"), "direct");
+    writeFileSync(join(root, "group", "grouped.md"), "grouped");
+    writeFileSync(join(root, "group", "nested", "SKILL.md"), "nested");
+
+    expect(resourceFingerprint.enumerateSkillDescriptors(root, mode).map((entry) => entry.relativePath)).toEqual(
+      mode === "pi" ? ["direct.md", "group/nested/SKILL.md"] : ["group/grouped.md", "group/nested/SKILL.md"],
+    );
+  });
+
   it("returns bytewise descriptor metadata used for first-name-wins collisions", () => {
     const root = join(tempRoot(), "skills");
     mkdirSync(join(root, "foo"), { recursive: true });
@@ -450,6 +492,165 @@ describe("mutable Skill resource fingerprints", () => {
 });
 
 describe("bounded Skill descriptor traversal", () => {
+  it("tracks a directory link used in a descriptor target path", () => {
+    const root = join(tempRoot(), "skills");
+    const source = join(root, ".source");
+    mkdirSync(join(source, "actual"), { recursive: true });
+    const target = join(source, "actual", "descriptor.txt");
+    writeFileSync(target, "descriptor");
+    symlinkSync("actual", join(source, "branch"), "dir");
+    symlinkSync(".source/branch/descriptor.txt", join(root, "linked.md"), "file");
+    const additions: string[] = [];
+    const filter = resourceFingerprint.createSkillWatchFilter(root, "pi", (paths) => additions.push(...paths));
+
+    expect(filter(join(root, "linked.md"))).toBe(true);
+    expect(new Set(additions)).toEqual(new Set([source, join(source, "branch"), join(source, "actual"), target]));
+    expect(filter.affectsDiscovery(join(source, "branch"))).toBe(true);
+  });
+
+  it("retains distinct intermediate links when descriptor chains converge on one file", () => {
+    const root = join(tempRoot(), "skills");
+    const source = join(root, ".source");
+    mkdirSync(source, { recursive: true });
+    writeFileSync(join(source, "final.txt"), "descriptor");
+    for (const name of ["one", "two"]) {
+      symlinkSync("final.txt", join(source, `${name}.txt`), "file");
+      symlinkSync(`.source/${name}.txt`, join(root, `${name}.md`), "file");
+    }
+    const additions: string[] = [];
+    const filter = resourceFingerprint.createSkillWatchFilter(root, "pi", (paths) => additions.push(...paths));
+    filter(join(root, "one.md"));
+    filter(join(root, "two.md"));
+
+    expect(new Set(additions)).toEqual(new Set([
+      source, join(source, "one.txt"), join(source, "two.txt"), join(source, "final.txt"),
+    ]));
+    expect(filter.affectsDiscovery(join(source, "one.txt"))).toBe(true);
+    expect(filter.affectsDiscovery(join(source, "two.txt"))).toBe(true);
+  });
+
+  it("rejects a dependency chain that escapes and re-enters the controlled root without adding watches", () => {
+    const root = join(tempRoot(), "skills");
+    const outside = tempRoot();
+    mkdirSync(root);
+    writeFileSync(join(root, "final.txt"), "descriptor");
+    symlinkSync(join(root, "final.txt"), join(outside, "return.txt"), "file");
+    symlinkSync(join(outside, "return.txt"), join(root, "SKILL.md"), "file");
+    const additions: string[] = [];
+    const filter = resourceFingerprint.createSkillWatchFilter(root, "pi", (paths) => additions.push(...paths));
+
+    expect(() => filter(join(root, "SKILL.md"))).toThrow(/controlled root/i);
+    expect(additions).toEqual([]);
+  });
+
+  it.each(["cycle", "long chain"])("does not publish dependency watches for a %s", (kind) => {
+    const root = join(tempRoot(), "skills");
+    const source = join(root, ".source");
+    mkdirSync(source, { recursive: true });
+    writeFileSync(join(source, "final.txt"), "descriptor");
+    if (kind === "cycle") {
+      symlinkSync("current.txt", join(source, "current.txt"), "file");
+    } else {
+      for (let index = 0; index < 64; index += 1) {
+        symlinkSync(index === 63 ? "final.txt" : `link-${index + 1}.txt`, join(source, `link-${index}.txt`), "file");
+      }
+      symlinkSync("link-0.txt", join(source, "current.txt"), "file");
+    }
+    symlinkSync(".source/current.txt", join(root, "SKILL.md"), "file");
+    const additions: string[] = [];
+    const filter = resourceFingerprint.createSkillWatchFilter(root, "pi", (paths) => additions.push(...paths));
+
+    expect(() => filter(join(root, "SKILL.md"))).toThrow(/loop|link/i);
+    expect(additions).toEqual([]);
+  });
+
+  it("requests a shared dependency anchor only once for multiple linked descriptors", () => {
+    const root = join(tempRoot(), "skills");
+    const source = join(root, "source");
+    mkdirSync(source, { recursive: true });
+    writeFileSync(join(root, ".gitignore"), "source/\n");
+    for (const name of ["one", "two"]) {
+      writeFileSync(join(source, `${name}.txt`), name);
+      symlinkSync(`source/${name}.txt`, join(root, `${name}.md`), "file");
+    }
+    const additions: string[] = [];
+    const filter = resourceFingerprint.createSkillWatchFilter(root, "pi", (paths) => additions.push(...paths));
+    expect(filter(source)).toBe(false);
+    expect(filter(join(root, "one.md"))).toBe(true);
+    expect(filter(join(root, "two.md"))).toBe(true);
+
+    expect(additions.filter((path) => path === source)).toHaveLength(1);
+    expect(new Set(additions)).toEqual(new Set([source, join(source, "one.txt"), join(source, "two.txt")]));
+  });
+
+  it("bounds empty-directory work across the entire scope without a partial result", () => {
+    const root = join(tempRoot(), "skills");
+    mkdirSync(root);
+    for (let index = 0; index < 12_000; index += 1) mkdirSync(join(root, `dir-${index}`));
+    const visited = new Set<string>();
+    const originalRead = Dir.prototype.readSync;
+    vi.spyOn(Dir.prototype, "readSync").mockImplementation(function (this: Dir) {
+      visited.add(this.path);
+      return originalRead.call(this);
+    });
+
+    expect(() => resourceFingerprint.enumerateSkillDescriptors(root)).toThrow(/directory.*limit/i);
+    expect(visited.size).toBeGreaterThan(1);
+    expect(visited.size).toBeLessThanOrEqual(8192);
+    const dependencyTarget = join(root, "ignored-source", "nested", "descriptor.txt");
+    mkdirSync(join(dependencyTarget, ".."), { recursive: true });
+    writeFileSync(dependencyTarget, "descriptor");
+    writeFileSync(join(root, ".gitignore"), "ignored-source/\n");
+    symlinkSync("ignored-source/nested/descriptor.txt", join(root, "linked.md"), "file");
+    const requested: string[][] = [];
+    const filter = resourceFingerprint.createSkillWatchFilter(root, "pi", (paths) => requested.push([...paths]));
+    let admittedDirectories = 0;
+    expect(() => {
+      for (let index = 0; index < 12_000; index += 1) {
+        if (filter(join(root, `dir-${index}`))) admittedDirectories += 1;
+      }
+    }).toThrow(/directory.*limit/i);
+    expect(admittedDirectories).toBeLessThan(8192);
+    expect(filter(join(root, ".gitignore"))).toBe(true);
+    expect(() => filter(join(root, "linked.md"))).toThrow(/directory.*limit/i);
+    expect(requested).toEqual([]);
+  });
+
+  it("bounds entry reads before allocating a complete oversized directory listing", () => {
+    const root = join(tempRoot(), "skills");
+    mkdirSync(root);
+    const originalRead = Dir.prototype.readSync;
+    let reads = 0;
+    vi.spyOn(Dir.prototype, "readSync").mockImplementation(function (this: Dir) {
+      if (this.path !== root) return originalRead.call(this);
+      reads += 1;
+      return { name: `auxiliary-${reads}.txt`, isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false } as ReturnType<Dir["readSync"]>;
+    });
+
+    expect(() => resourceFingerprint.enumerateSkillDescriptors(root)).toThrow(/entry.*limit/i);
+    expect(reads).toBeLessThanOrEqual(32_769);
+    expect(reads).toBeGreaterThan(0);
+  });
+
+  it("shares the entry budget across separately bounded directory listings", () => {
+    const root = join(tempRoot(), "skills");
+    mkdirSync(join(root, "a"), { recursive: true });
+    mkdirSync(join(root, "b"));
+    const originalRead = Dir.prototype.readSync;
+    const reads = new Map<string, number>();
+    vi.spyOn(Dir.prototype, "readSync").mockImplementation(function (this: Dir) {
+      if (this.path === root) return originalRead.call(this);
+      const count = (reads.get(this.path) ?? 0) + 1;
+      reads.set(this.path, count);
+      return count <= 17_000
+        ? { name: `auxiliary-${count}.txt` } as ReturnType<Dir["readSync"]> : null;
+    });
+
+    expect(() => resourceFingerprint.enumerateSkillDescriptors(root)).toThrow(/entry.*limit/i);
+    expect(reads.size).toBe(2);
+    expect([...reads.values()].every((count) => count <= 17_001)).toBe(true);
+  });
+
   it.each([
     { descriptor: "regular", symlinkDescriptor: false },
     { descriptor: "symlink", symlinkDescriptor: true },

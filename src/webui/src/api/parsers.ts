@@ -153,6 +153,7 @@ function parseContextUsage(value: unknown): ContextUsageDto {
     tokens: nullableNumber(source, "tokens"),
     contextWindow: requiredNumber(source, "contextWindow"),
     percent: nullableNumber(source, "percent"),
+    ...(source.estimated !== undefined ? { estimated: requiredBoolean(source, "estimated") } : {}),
   };
 }
 

@@ -53,6 +53,7 @@ export function abortError(message: string): Error {
 export async function readLimited(response: Response): Promise<Uint8Array> {
   const declaredLength = Number(response.headers.get("content-length"));
   if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_SIZE) {
+    await response.body?.cancel().catch(() => {});
     throw new Error(`Response too large (exceeds ${formatSize(MAX_RESPONSE_SIZE)} limit)`);
   }
 
@@ -67,7 +68,7 @@ export async function readLimited(response: Response): Promise<Uint8Array> {
       if (done) break;
       size += value.byteLength;
       if (size > MAX_RESPONSE_SIZE) {
-        await reader.cancel();
+        await reader.cancel().catch(() => {});
         throw new Error(`Response too large (exceeds ${formatSize(MAX_RESPONSE_SIZE)} limit)`);
       }
       chunks.push(value);

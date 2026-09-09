@@ -32,6 +32,7 @@ export class ManualCompactionController {
   private previousStopAfterTurn: StopAfterTurn | undefined;
   private installedStopAfterTurn: StopAfterTurn | undefined;
   private disposed = false;
+  private cancellationRequested = false;
   private readonly listeners = new Set<(state: ManualCompactionState) => void>();
 
   attach(session: ManualCompactionSession): void {
@@ -48,12 +49,11 @@ export class ManualCompactionController {
 
   request(customInstructions?: string): { state: ManualCompactionAcceptedState } {
     if (this.disposed) throw new Error("Manual compaction controller has been disposed");
+    if (this.cancellationRequested) throw new Error("Session cancellation is still in progress");
     const session = this.requiredSession();
     if (this.running || this.nativeCompactionRunning) return { state: "running" };
     if (session.isCompacting) {
-      this.beginNativeCompaction();
-      this.setState("running");
-      return { state: "running" };
+      throw new Error("Wait for active summarization to finish before compacting.");
     }
     if (session.isStreaming) {
       this.pending = customInstructions === undefined ? {} : { customInstructions };
@@ -103,15 +103,23 @@ export class ManualCompactionController {
   }
 
   async cancel(): Promise<void> {
+    this.cancellationRequested = true;
     const session = this.session;
     const hadPending = this.pending !== undefined;
     this.pending = undefined;
-    const hadNativeCompaction = !this.running && (this.nativeCompactionRunning || session?.isCompacting === true);
-    if (hadNativeCompaction) this.beginNativeCompaction();
     const nativeCompletion = this.nativeCompactionCompletion;
-    if (hadPending && !this.running && !hadNativeCompaction) this.setState("idle");
-    if (session && (this.running || hadNativeCompaction)) session.abortCompaction();
+    if (hadPending && !this.running && !this.nativeCompactionRunning) this.setState("idle");
+    // isCompacting also includes branch summaries, which never emit compaction_end.
+    if (session && (this.running || this.nativeCompactionRunning)) session.abortCompaction();
     await Promise.all([this.running, nativeCompletion].filter((value) => value !== undefined));
+  }
+
+  isCancelling(): boolean {
+    return this.cancellationRequested;
+  }
+
+  finishCancellation(): void {
+    this.cancellationRequested = false;
   }
 
   async dispose(): Promise<void> {

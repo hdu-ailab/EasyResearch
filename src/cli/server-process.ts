@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dayStamp, resolveLogConfig } from "../runtime/logger";
-import { directLocalHttpFetch, type LocalHttpFetch } from "./local-http";
+import { directLocalHttpFetch, localHttpOrigin, type LocalHttpFetch } from "./local-http";
 import {
   readLegacyServerLeaseRecord,
   serverLeasePath,
@@ -344,8 +344,7 @@ async function probeServerProcess(
 
 function serverControlUrl(record: ServerProcessRecord): string {
   const host = record.host === "0.0.0.0" || record.host === "::" ? "127.0.0.1" : record.host;
-  const authority = host.includes(":") ? `[${host}]` : host;
-  return `http://${authority}:${record.port}${DAEMON_CONTROL_PATH}`;
+  return `${localHttpOrigin(host, record.port)}${DAEMON_CONTROL_PATH}`;
 }
 
 function unverifiedDaemonError(identity: string, cause?: unknown): Error {

@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join, posix, win32 } from "node:path";
 import { getAgentDir } from "./runtime/pi-import";
@@ -63,26 +63,73 @@ export const SKILL_VENV_PACKAGES = [
   { distribution: "arxiv", imports: ["arxiv"] },
 ] as const satisfies readonly SkillVenvPackage[];
 
+const VENV_CREATION_MARKER = ".easyresearch-venv-creation";
+
+function ownsVenvCreation(venvDir: string): boolean {
+  try {
+    const marker = JSON.parse(readFileSync(join(venvDir, VENV_CREATION_MARKER), "utf8")) as {
+      schema?: unknown; path?: unknown; dev?: unknown; ino?: unknown;
+    };
+    const stat = lstatSync(venvDir, { bigint: true });
+    return stat.isDirectory() && stat.ino !== 0n && marker?.schema === 1 && marker.path === venvDir
+      && marker.dev === String(stat.dev) && marker.ino === String(stat.ino);
+  } catch {
+    return false;
+  }
+}
+
 export function setupSkillVenv(deps: SetupDeps): SetupResult {
   const { venvDir, run, log, platform, packages = SKILL_VENV_PACKAGES } = deps;
   const runtimePlatform = platform ?? process.platform;
   const python = venvPythonPath(venvDir, runtimePlatform);
   const installArgs = ["-m", "pip", "install", "--upgrade", "pip", ...packages.map((pkg) => pkg.distribution)];
-  if (existsSync(python)) {
-    const result = run(python, installArgs);
-    if (result.status !== 0) return { venvDir, success: false, reason: `pip install failed: ${result.stderr}` };
-    return { venvDir, success: true };
+  const existing = existsSync(venvDir);
+  const configured = existsSync(join(venvDir, "pyvenv.cfg")) && statSync(join(venvDir, "pyvenv.cfg")).isFile();
+  if (existing && (!lstatSync(venvDir).isDirectory()
+    || (!configured && !ownsVenvCreation(venvDir)))) {
+    return { venvDir, success: false, reason: "Existing venv path is not a directory with pyvenv.cfg; left unchanged" };
   }
-  const pythonCmd = detectPython(run, runtimePlatform);
-  if (!pythonCmd) {
-    return {
-      venvDir,
-      success: false,
-      reason: runtimePlatform === "win32" ? "py/python/python3 not found on PATH" : "python3/python not found on PATH",
-    };
+  let recreate = !configured || !existsSync(python) || run(python, ["--version"]).status !== 0;
+  if (!recreate && run(python, ["-m", "pip", "--version"]).status !== 0) {
+    const bootstrap = run(python, ["-m", "ensurepip", "--upgrade"]);
+    if (bootstrap.status !== 0) return { venvDir, success: false, reason: `pip bootstrap failed: ${bootstrap.stderr}` };
+    // Stale dist-info can make ensurepip succeed without restoring the pip module.
+    recreate = run(python, ["-m", "pip", "--version"]).status !== 0;
   }
-  const create = run(pythonCmd.command, [...pythonCmd.prefixArgs, "-m", "venv", venvDir]);
-  if (create.status !== 0) return { venvDir, success: false, reason: `venv creation failed: ${create.stderr}` };
+  if (recreate) {
+    const pythonCmd = detectPython(run, runtimePlatform);
+    if (!pythonCmd) {
+      return {
+        venvDir,
+        success: false,
+        reason: runtimePlatform === "win32" ? "py/python/python3 not found on PATH" : "python3/python not found on PATH",
+      };
+    }
+    if (existing) {
+      // Keep the entire broken environment, including any user files, rather than --clear.
+      const backup = join(mkdtempSync(`${venvDir}.repair-`), "venv");
+      renameSync(venvDir, backup);
+      log(`Preserved broken skill venv at ${backup}`);
+    }
+    // Publish ownership before Python can leave partial files, but build at the final path.
+    const staging = mkdtempSync(`${venvDir}.creating-`);
+    try {
+      const stat = lstatSync(staging, { bigint: true });
+      writeFileSync(join(staging, VENV_CREATION_MARKER), JSON.stringify({
+        schema: 1, path: venvDir, dev: String(stat.dev), ino: String(stat.ino),
+      }), { flag: "wx", mode: 0o600 });
+      if (existsSync(venvDir)) throw new Error("The venv directory changed during setup; left unchanged.");
+      renameSync(staging, venvDir);
+    } finally {
+      rmSync(staging, { recursive: true, force: true });
+    }
+    const create = run(pythonCmd.command, [...pythonCmd.prefixArgs, "-m", "venv", venvDir]);
+    if (!ownsVenvCreation(venvDir)) return { venvDir, success: false, reason: "The venv directory changed during creation; left unchanged" };
+    if (create.status !== 0) return { venvDir, success: false, reason: `venv creation failed: ${create.stderr}` };
+    const pip = run(python, ["-m", "pip", "--version"]);
+    if (pip.status !== 0) return { venvDir, success: false, reason: `pip unavailable after venv creation: ${pip.stderr}` };
+    unlinkSync(join(venvDir, VENV_CREATION_MARKER));
+  }
   const install = run(python, installArgs);
   if (install.status !== 0) return { venvDir, success: false, reason: `pip install failed: ${install.stderr}` };
   log(`Skill venv ready at ${venvDir}`);
@@ -113,7 +160,7 @@ export interface EnsureVenvOptions {
 }
 
 /**
- * Idempotent first-run setup. Reuses an existing venv (quick import check
+ * Idempotent first-run setup. Reuses an existing venv (package imports and pip CLI check
  * instead of reinstalling), recreates it when broken, and streams progress
  * to the terminal when `stream` is enabled. Never throws; failures degrade
  * to a warning so the CLI can keep working without the Python extras.
@@ -126,10 +173,10 @@ export function ensureSkillVenv(agentDir: string, options: EnsureVenvOptions = {
   const venvDir = join(agentDir, "venv");
   const python = venvPythonPath(venvDir);
 
-  if (existsSync(python)) {
-    const imports = packages.flatMap((pkg) => pkg.imports);
+  if (existsSync(python) && existsSync(join(venvDir, "pyvenv.cfg"))) {
+    const imports = [...new Set(["pip", ...packages.flatMap((pkg) => pkg.imports)])];
     const check = run(python, ["-c", `import ${imports.join(", ")}`]);
-    if (check.status === 0) {
+    if (check.status === 0 && run(python, ["-m", "pip", "--version"]).status === 0) {
       log(`Skill venv already ready: ${venvDir}`);
       return { venvDir, success: true };
     }
@@ -138,7 +185,12 @@ export function ensureSkillVenv(agentDir: string, options: EnsureVenvOptions = {
     log(`First run: creating skill Python venv at ${venvDir}`);
   }
 
-  const result = setupSkillVenv({ venvDir, run, log, packages });
+  let result: SetupResult;
+  try {
+    result = setupSkillVenv({ venvDir, run, log, packages });
+  } catch (error) {
+    result = { venvDir, success: false, reason: error instanceof Error ? error.message : String(error) };
+  }
   if (!result.success) {
     const createCommand = process.platform === "win32"
       ? `py -3 -m venv "${venvDir}"; & "${python}" -m pip install ${distributions.join(" ")}`

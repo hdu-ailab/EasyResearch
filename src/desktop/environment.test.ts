@@ -32,28 +32,36 @@ describe("desktop launch environment", () => {
     expect(runShell).not.toHaveBeenCalled();
   });
 
-  it("merges a macOS login shell while controlled inherited values win", () => {
+  it("uses the macOS login PATH while preserving controlled inherited values", () => {
     const runShell = vi.fn(() => ({
       status: 0,
-      stdout: "PATH=/login/bin\0SHELL=/bin/zsh\0FROM_LOGIN=yes\0",
+      stdout: "PATH=/login/bin\0SHELL=/bin/zsh\0FROM_LOGIN=yes\0HOME=/shell-home\0EASYRESEARCH_CODING_AGENT_DIR=/shell-agent\0EASYRESEARCH_SKIP_SETUP=0\0",
       stderr: "",
     }));
     expect(resolveDesktopEnvironment(
-      { PATH: "/controlled/bin", EASYRESEARCH_CODING_AGENT_DIR: "/agent" },
+      { PATH: "/usr/bin:/bin", HOME: "/controlled-home", EASYRESEARCH_CODING_AGENT_DIR: "/agent", EASYRESEARCH_SKIP_SETUP: "1" },
       "darwin",
       { runShell },
     )).toEqual({
-      PATH: "/controlled/bin",
+      PATH: "/login/bin",
+      HOME: "/controlled-home",
       SHELL: "/bin/zsh",
       FROM_LOGIN: "yes",
       EASYRESEARCH_CODING_AGENT_DIR: "/agent",
+      EASYRESEARCH_SKIP_SETUP: "1",
     });
     expect(runShell).toHaveBeenCalledWith("/bin/zsh", ["-ilc", "/usr/bin/env -0"], {
-      env: { PATH: "/controlled/bin", EASYRESEARCH_CODING_AGENT_DIR: "/agent" },
+      env: { PATH: "/usr/bin:/bin", HOME: "/controlled-home", EASYRESEARCH_CODING_AGENT_DIR: "/agent", EASYRESEARCH_SKIP_SETUP: "1" },
       encoding: "utf8",
       timeout: 10_000,
       maxBuffer: 1024 * 1024,
     });
+  });
+
+  it.each(["", "PATH=\0"])("keeps the inherited PATH when shell output has no usable PATH: %j", (stdout) => {
+    expect(resolveDesktopEnvironment({ PATH: "/usr/bin:/bin" }, "darwin", {
+      runShell: () => ({ status: 0, stdout, stderr: "" }),
+    }).PATH).toBe("/usr/bin:/bin");
   });
 
   it("falls back to inherited macOS variables and reports a local warning", () => {

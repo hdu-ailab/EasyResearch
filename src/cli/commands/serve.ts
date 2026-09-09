@@ -26,6 +26,7 @@ import {
 } from "../../runtime/network-policy";
 import { isEmbeddedBuild } from "../../runtime/bundled-assets";
 import { startCliDaemonSuccessor } from "../daemon-spawn";
+import { localHttpOrigin } from "../local-http";
 import type { RuntimeRestartReservation } from "../../web/runtime-restart";
 
 export interface ServeOptions {
@@ -175,7 +176,7 @@ export async function runServe(
     unregisterShutdownTrigger = options.registerShutdownTrigger?.(requestTerminalShutdown);
     const logPath = serverLogFile(agentDir);
     options.onReady?.({ port: server.port, logPath, bootId });
-    console.log(`EasyResearch server listening on http://${host}:${server.port}`);
+    console.log(`EasyResearch server listening on ${localHttpOrigin(host, server.port)}`);
     console.log(`Logs: ${logPath}`);
     await shutdownRequested;
     // Let the authenticated control response flush before closing the listener.

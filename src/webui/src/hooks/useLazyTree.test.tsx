@@ -5,6 +5,7 @@ import { useLazyTree } from "./useLazyTree";
 interface Entry {
   path: string;
   name: string;
+  kind?: "directory" | "file";
 }
 
 function deferred<T>() {
@@ -236,6 +237,92 @@ describe("useLazyTree", () => {
 
     expect(result.current.children("/p/folder")).toEqual([folder("/p/folder/new")]);
     expect(loadChildren).toHaveBeenCalledTimes(3);
+  });
+
+  it("retains known children through loading and skips a superseded parent listing without losing fresh child data", async () => {
+    const loadChildren = vi.fn(async (path: string): Promise<Entry[]> => {
+      if (path === "/p") return [folder("/p/a")];
+      return [folder("/p/a/old")];
+    });
+    const { result } = renderHook(() => useLazyTree({ root: "/p", loadChildren }));
+    await settle();
+    act(() => result.current.toggle("/p/a"));
+    await settle();
+    const parent = deferred<Entry[]>();
+    const parentRetry = deferred<Entry[]>();
+    let parentCalls = 0;
+    loadChildren.mockImplementation((path) => {
+      if (path === "/p") return ++parentCalls === 1 ? parent.promise : parentRetry.promise;
+      return Promise.resolve([folder("/p/a/fresh")]);
+    });
+    act(() => result.current.refreshDirectory("/p"));
+    expect(result.current.status("/p")).toBe("loading");
+    expect(result.current.children("/p")).toEqual([folder("/p/a")]);
+    act(() => {
+      result.current.refreshDirectory("/p");
+      result.current.refreshDirectory("/p/a");
+    });
+    await settle();
+    await act(() => parent.resolve([]));
+    expect(result.current.children("/p")).toEqual([folder("/p/a")]);
+    expect(result.current.children("/p/a")).toEqual([folder("/p/a/fresh")]);
+    await act(() => parentRetry.resolve([folder("/p/a")]));
+    expect(result.current.children("/p/a")).toEqual([folder("/p/a/fresh")]);
+    expect(result.current.expanded.has("/p/a")).toBe(true);
+    expect(parentCalls).toBe(2);
+  });
+
+  it.each([
+    { outcome: "removed", order: "parent-first" },
+    { outcome: "removed", order: "child-first" },
+    { outcome: "file", order: "parent-first" },
+    { outcome: "file", order: "child-first" },
+    { outcome: "error", order: "parent-first" },
+    { outcome: "error", order: "child-first" },
+  ])("discards detached child data after a $outcome parent response ($order)", async ({ outcome, order }) => {
+    const loadChildren = vi.fn(async (path: string): Promise<Entry[]> => {
+      if (path === "/p") return [folder("/p/a")];
+      if (path === "/p/a") return [folder("/p/a/b")];
+      return [folder("/p/a/b/old")];
+    });
+    const { result } = renderHook(() => useLazyTree({ root: "/p", loadChildren }));
+    await settle();
+    act(() => result.current.toggle("/p/a"));
+    await settle();
+    act(() => result.current.toggle("/p/a/b"));
+    await settle();
+    const parent = deferred<Entry[]>();
+    const child = deferred<Entry[]>();
+    loadChildren.mockImplementation((path) => (path === "/p" ? parent.promise : child.promise));
+    act(() => {
+      result.current.refreshDirectory("/p");
+      result.current.refreshDirectory("/p/a/b");
+    });
+    await settle();
+    const settleParent = () =>
+      act(async () => {
+        if (outcome === "error") parent.reject(new Error("directory unavailable"));
+        else parent.resolve(outcome === "file" ? [{ ...folder("/p/a"), kind: "file" }] : []);
+      });
+    const settleChild = () => act(async () => child.resolve([folder("/p/a/b/late")]));
+    if (order === "parent-first") {
+      await settleParent();
+      await settleChild();
+    } else {
+      await settleChild();
+      await settleParent();
+    }
+    expect(result.current.status("/p/a")).toBe("unloaded");
+    expect(result.current.status("/p/a/b")).toBe("unloaded");
+    expect(result.current.children("/p/a/b")).toEqual([]);
+    expect(result.current.expanded.has("/p/a")).toBe(false);
+    expect(result.current.expanded.has("/p/a/b")).toBe(false);
+
+    loadChildren.mockResolvedValue([folder("/p/a")]);
+    act(() => result.current.retry("/p"));
+    await settle();
+    expect(result.current.children("/p")).toEqual([folder("/p/a")]);
+    expect(result.current.children("/p/a/b")).toEqual([]);
   });
 
   it("ignores stale resolutions after the root changes", async () => {

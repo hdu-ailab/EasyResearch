@@ -2,6 +2,10 @@ import { describe, it, expect, vi } from "vitest";
 import { createAuthGateway, AuthGatewayError } from "./auth-gateway";
 import { createAuthFlowStore } from "./auth-flow-store";
 import type { AuthFlowEventDto } from "./contracts";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createNativeAuthRuntime } from "./auth-runtime";
 
 const anthropicProvider = {
   id: "anthropic",
@@ -29,6 +33,7 @@ function fakeRuntime(
     getProvider: (id: string) => providers.find((p) => p.id === id),
     getModels: opts.getModels ?? opts.getAvailableSnapshot ?? (() => []),
     getAvailableSnapshot: opts.getAvailableSnapshot ?? (() => []),
+    getAvailable: async () => opts.getAvailableSnapshot?.() ?? [],
     getError: opts.getError ?? (() => undefined),
     getProviderAuthStatus: () => ({ configured: false }) as any,
     checkAuth: async () => undefined as any,
@@ -339,6 +344,60 @@ describe("AuthGateway.preflight", () => {
 });
 
 describe("AuthGateway.runFlow single-flight", () => {
+  it("keeps the accepted catalog during post-login synchronization while models.json changes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "easyresearch-login-generation-"));
+    const home = join(root, "home");
+    mkdirSync(home);
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("USERPROFILE", home);
+    vi.stubEnv("EASYRESEARCH_CODING_AGENT_DIR", root);
+    vi.stubEnv("PI_OFFLINE", "1");
+    vi.stubGlobal("fetch", async () => { throw new Error("Unexpected network request"); });
+    const modelsPath = join(root, "models.json");
+    const authPath = join(root, "auth.json");
+    const modelConfig = (id: string) => JSON.stringify({
+      providers: {
+        "login-provider": { api: "openai-completions", baseUrl: "http://127.0.0.1:1/v1", models: [{ id }] },
+      },
+    });
+    writeFileSync(modelsPath, modelConfig("accepted-model"));
+    const { importPi } = await import("../runtime/pi-import");
+    const { ModelRuntime } = await importPi();
+    const runtime = await ModelRuntime.create({ authPath, modelsPath, refreshOnCreate: false });
+    await runtime.refresh({ allowNetwork: false });
+    let notified = false;
+    const gateway = createAuthGateway(runtime, undefined, {
+      timeoutMs: 1_000,
+      synchronizeCatalog: async () => {},
+      onModelsChanged: async () => { await runtime.getAvailable(); notified = true; },
+      createAuthRuntime: (providerId) => createNativeAuthRuntime(runtime.getProvider(providerId)!, authPath),
+    });
+    const request = { flowId: "synthetic-login", providerId: "login-provider", type: "api_key" as const };
+    try {
+      await gateway.preflight(request);
+      const acceptedModels = [...runtime.getModels()];
+      writeFileSync(modelsPath, modelConfig("unaccepted-model"));
+      const unsubscribe = gateway.store().subscribe(request.flowId, (event) => {
+        if (event.type === "prompt") queueMicrotask(() => gateway.store().resolveRespond(request.flowId, "synthetic-key"));
+      });
+      await gateway.runFlow(request);
+      unsubscribe();
+
+      expect(gateway.store().get(request.flowId)?.terminalEvent).toMatchObject({ type: "done", warning: undefined });
+      expect(notified).toBe(true);
+      expect(JSON.parse(readFileSync(authPath, "utf8"))[request.providerId]).toMatchObject({ type: "api_key", key: "synthetic-key" });
+      expect([...runtime.getModels()]).toEqual(acceptedModels);
+      expect(runtime.getAvailableSnapshot()).toContainEqual(expect.objectContaining({
+        provider: request.providerId, id: "accepted-model",
+      }));
+    } finally {
+      await gateway.shutdown();
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("registers a preflighted flow before returning its run promise", async () => {
     const loginImpl = vi.fn(async (_id: string, _type: string, interaction: any) => {
       await interaction.prompt({ type: "secret", message: "API key" });
@@ -520,7 +579,7 @@ describe("AuthGateway.logout", () => {
       onModelsChanged,
     });
     await gw.logout("anthropic");
-    expect(logout).toHaveBeenCalledWith("anthropic");
+    expect(logout).toHaveBeenCalledWith("anthropic", { signal: expect.any(AbortSignal) });
     expect(onModelsChanged).toHaveBeenCalledTimes(1);
   });
 

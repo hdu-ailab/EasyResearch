@@ -1,6 +1,8 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type { CompactionPolicyDto, ContextUsageDto } from "../../../web/contracts";
+import { I18nContext } from "../i18n/I18nProvider";
+import { messages } from "../i18n/messages";
 import { ContextCapacity } from "./ContextCapacity";
 
 function usage(percent: number | null, tokens: number | null = 50_000): ContextUsageDto {
@@ -12,6 +14,42 @@ function policy(triggerPercent = 70, enabled = true): CompactionPolicyDto {
 }
 
 describe("ContextCapacity", () => {
+  it.each([
+    { language: "en", counter: "~8k / 100k", approximate: /estimated/i },
+    { language: "zh-CN", counter: "约 8k / 100k", approximate: /估算/ },
+  ] as const)(
+    "marks estimated capacity visually and accessibly until native usage returns ($language)",
+    ({ language, counter, approximate }) => {
+      const context = {
+        language,
+        setLanguage: () => {},
+        t: (key: keyof typeof messages.en) => messages[language][key],
+      };
+      const view = render(
+        <I18nContext.Provider value={context}>
+          <ContextCapacity
+            usage={{ ...usage(8, 8_000), estimated: true }}
+            compactionState="idle"
+            compactionPolicy={policy()}
+          />
+        </I18nContext.Provider>,
+      );
+      expect(screen.getByText(counter)).toBeInTheDocument();
+      const progress = screen.getByRole("progressbar");
+      expect(progress).toHaveAttribute("aria-valuetext", expect.stringMatching(approximate));
+      expect(progress).toHaveAttribute("title", progress.getAttribute("aria-valuetext"));
+      expect(progress.querySelector("[data-progress-arc]")).toHaveAttribute("stroke-dasharray", "8 100");
+      view.rerender(
+        <I18nContext.Provider value={context}>
+          <ContextCapacity usage={usage(10, 10_000)} compactionState="idle" compactionPolicy={policy()} />
+        </I18nContext.Provider>,
+      );
+      expect(screen.getByText("10k / 100k")).toBeInTheDocument();
+      expect(progress.getAttribute("aria-valuetext")).not.toMatch(approximate);
+      expect(screen.queryByText(counter)).toBeNull();
+    },
+  );
+
   it("stays absent until Pi supplies usage or a compaction is active", () => {
     const { container } = render(<ContextCapacity compactionState="idle" compactionPolicy={policy()} />);
 

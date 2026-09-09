@@ -642,6 +642,47 @@ describe("ChatTranscript", () => {
     expect(toggle).not.toHaveTextContent("latest paragraph");
   });
 
+  it("uses the same width-truncated latest thinking line in root and subagent cards", () => {
+    const latest = `Latest reasoning ${"evidence ".repeat(40)}ends here`;
+    const reasoning = `Earlier paragraph\r\n\r\n  ${latest}  \r\n \t\r\n`;
+    const { rerender } = renderTranscript(
+      <ChatTranscript
+        messages={[msg({ key: "thinking-root", text: "", reasoning, isThinking: true })]}
+        tools={[
+          tool({
+            name: "subagent",
+            agentName: "search",
+            running: true,
+            done: false,
+            latestActivity: { kind: "thinking", text: reasoning, active: true },
+          }),
+        ]}
+      />,
+    );
+    const rootPreview = within(screen.getByRole("button", { name: `Thinking: ${latest}` })).getByText(latest);
+    const childPreview = within(screen.getByRole("article")).getByText(latest);
+    expect(childPreview.textContent).toBe(rootPreview.textContent);
+    expect(childPreview).toHaveClass("min-w-0", "truncate", "text-[12.5px]", "font-normal", "text-v2-text-text-muted");
+    expect(screen.queryByText(/Earlier paragraph/)).toBeNull();
+
+    rerender(
+      <ChatTranscript
+        messages={[]}
+        tools={[
+          tool({
+            name: "subagent",
+            agentName: "search",
+            running: true,
+            done: false,
+            latestActivity: { kind: "thinking", text: reasoning, active: false },
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText("Thinking process")).toBeVisible();
+    expect(screen.queryByText(latest)).toBeNull();
+  });
+
   it("uses the expanded reasoning typography for the collapsed paragraph preview", () => {
     renderTranscript(
       <ChatTranscript messages={[msg({ key: "a", reasoning: "matching typography", isThinking: true })]} tools={[]} />,
@@ -1010,6 +1051,40 @@ describe("ChatTranscript", () => {
       await user.click(screen.getByRole("button", { name: /cancel/i }));
       expect(screen.queryByRole("textbox")).toBeNull();
       expect(screen.getByText("hello")).toBeTruthy();
+    });
+
+    it("keeps historical edits through IME and Safari confirmation Enter, then submits ordinary Enter", async () => {
+      const user = userEvent.setup();
+      const onEditMessage = vi.fn();
+      renderTranscript(
+        <ChatTranscript
+          messages={[userMsg("k1")]}
+          tools={[]}
+          messageMeta={{ k1: { entryId: "e1" } }}
+          onEditMessage={onEditMessage}
+        />,
+      );
+      await user.click(screen.getByRole("button", { name: /edit/i }));
+      const input = screen.getByRole("textbox");
+      fireEvent.change(input, { target: { value: "revised draft" } });
+      for (const event of [
+        { isComposing: true, keyCode: 13 },
+        { isComposing: false, keyCode: 229 },
+      ]) {
+        fireEvent.keyDown(input, { key: "Enter", ...event });
+        expect(onEditMessage).not.toHaveBeenCalled();
+        expect(input).toHaveValue("revised draft");
+      }
+      fireEvent.compositionStart(input);
+      fireEvent.keyDown(input, { key: "Enter", keyCode: 13 });
+      expect(onEditMessage).not.toHaveBeenCalled();
+      fireEvent.compositionEnd(input);
+      fireEvent.keyDown(input, { key: "Enter", keyCode: 229 });
+      expect(onEditMessage).not.toHaveBeenCalled();
+      await user.keyboard("{Shift>}{Enter}{/Shift}");
+      expect(onEditMessage).not.toHaveBeenCalled();
+      await user.keyboard("{Enter}");
+      expect(onEditMessage).toHaveBeenCalledWith("e1", "revised draft");
     });
 
     it("renders the version switcher and reports direction", async () => {

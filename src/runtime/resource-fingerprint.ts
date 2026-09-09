@@ -1,15 +1,18 @@
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, opendirSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import createIgnore from "ignore";
 
 export const MAX_SKILL_DEPTH = 16;
 export const MAX_SKILL_DESCRIPTORS = 4096;
+export const MAX_SKILL_DIRECTORIES = 8192;
+export const MAX_SKILL_ENTRIES = 32_768;
 export const MAX_SKILL_DESCRIPTOR_BYTES = 1_048_576;
 export const MAX_SKILL_IGNORE_BYTES = 1_048_576;
-const IGNORE_FILE_NAMES = [".gitignore", ".ignore", ".fdignore"] as const;
+export const SKILL_IGNORE_FILE_NAMES = [".gitignore", ".ignore", ".fdignore"] as const;
 const SNAPSHOT_BASE_DIR_FILE = ".easyresearch-skill-base-dir";
+const MAX_SKILL_LINK_HOPS = 40;
 
 export interface SkillScopeFingerprint {
   value: string;
@@ -71,7 +74,7 @@ export function isSkillDescriptorRelativePath(
   if (components.length === 1) {
     const filename = components[0];
     if (filename === undefined) return false;
-    return mode === "pi" && filename.length > ".md".length && filename.endsWith(".md");
+    return filename === "SKILL.md" || (mode === "pi" && filename.length > ".md".length && filename.endsWith(".md"));
   }
   return components.at(-1) === "SKILL.md"
     || (mode === "agents" && components.at(-1)?.endsWith(".md") === true);
@@ -236,6 +239,7 @@ export function enumerateSkillDescriptors(
 
   const candidates: SkillDescriptor[] = [];
   const visitedDirectories = new Set<string>();
+  let entriesRead = 0;
   const ignoreMatcher = createIgnore();
   const ignoreBudget = { bytes: 0 };
 
@@ -283,22 +287,31 @@ export function enumerateSkillDescriptors(
       throw new Error(`Skill fingerprint traversal depth exceeds ${MAX_SKILL_DEPTH}.`);
     }
     if (visitedDirectories.has(realDirectory)) return;
-    visitedDirectories.add(realDirectory);
-    addIgnoreRules(ignoreMatcher, logicalDirectory, root, realRoot, ignoreBudget);
-
-    const names = readdirSync(realDirectory);
-    names.sort(compareBytes);
-
-    if (!isRoot && names.includes("SKILL.md")) {
-      const descriptorPath = join(realDirectory, "SKILL.md");
-      const descriptor = locateEntry(descriptorPath, realRoot);
-      const relativeDescriptor = normalizeRelativePath(relative(root, join(logicalDirectory, "SKILL.md")));
-      if (descriptor?.kind === "file" && !ignoreMatcher.ignores(relativeDescriptor)) {
-        addDescriptor(join(logicalDirectory, "SKILL.md"));
-        return;
-      }
-      if (descriptor?.kind === "outside") return;
+    if (visitedDirectories.size >= MAX_SKILL_DIRECTORIES) {
+      throw new Error(`Skill fingerprint directory limit is ${MAX_SKILL_DIRECTORIES}.`);
     }
+    visitedDirectories.add(realDirectory);
+    // A declared Skill stops discovery even at the scope root, before listing assets.
+    const descriptor = readDirectoryDiscovery(logicalDirectory, root, realRoot, ignoreMatcher, ignoreBudget);
+    if (descriptor?.kind === "file") {
+      addDescriptor(join(logicalDirectory, "SKILL.md"));
+      return;
+    }
+    if (descriptor?.kind === "outside") return;
+
+    const names: string[] = [];
+    const directory = opendirSync(realDirectory);
+    try {
+      for (let entry = directory.readSync(); entry !== null; entry = directory.readSync()) {
+        if (++entriesRead > MAX_SKILL_ENTRIES) {
+          throw new Error(`Skill fingerprint entry limit is ${MAX_SKILL_ENTRIES}.`);
+        }
+        names.push(entry.name);
+      }
+    } finally {
+      directory.closeSync();
+    }
+    names.sort(compareBytes);
 
     for (const name of names) {
       if (name.startsWith(".") || name === "node_modules" || (isRoot && name.endsWith(".bak"))) continue;
@@ -324,21 +337,223 @@ export function enumerateSkillDescriptors(
   return candidates;
 }
 
+/** Per-installation discovery hints; descriptor acceptance still requires a complete fingerprint. */
+export function createSkillWatchFilter(
+  root: string,
+  mode: SkillDiscoveryMode = "pi",
+  onDependency?: (paths: readonly string[]) => void,
+) {
+  const ignoreMatcher = createIgnore();
+  const controlPaths = new Set<string>();
+  const dependencyPaths = new Set<string>();
+  const dependencySources = new Set<string>();
+  const linkPaths = new Set<string>();
+  const directories = new Map<string, boolean | undefined>();
+  const entries = new Set<string>();
+  let dependencySteps = 0;
+  let realRoot: string | undefined;
+  const addDependency = (target: string, logicalPath: string): void => {
+    if (!realRoot) return;
+    const source = join(realRoot, relative(root, logicalPath));
+    if (target === source || dependencySources.has(source)) return;
+    const links = new Set<string>();
+    const seen = new Set<string>();
+    let remaining = relative(realRoot, source).split(sep);
+    let cursor = realRoot;
+    let hops = 0;
+    // Resolve components without collapsing '..' across an unresolved directory link.
+    while (remaining.length > 0) {
+      if (++dependencySteps > MAX_SKILL_ENTRIES) {
+        throw new Error(`Skill watch dependency traversal limit is ${MAX_SKILL_ENTRIES}.`);
+      }
+      const component = remaining.shift()!;
+      if (!component || component === ".") continue;
+      if (component === "..") {
+        cursor = dirname(cursor);
+        if (!isInside(realRoot, cursor)) throw new Error("Skill watch dependency leaves the controlled root.");
+        continue;
+      }
+      const path = join(cursor, component);
+      const stats = lstatSync(path);
+      if (!stats.isSymbolicLink()) {
+        if (remaining.length > 0 && !stats.isDirectory()) throw new Error("Skill dependency changed while enumerating.");
+        cursor = path;
+        continue;
+      }
+      const state = `${path}\0${remaining.join(sep)}`;
+      if (++hops > MAX_SKILL_LINK_HOPS || seen.has(state)) {
+        throw new Error(`Skill watch symbolic-link limit is ${MAX_SKILL_LINK_HOPS}.`);
+      }
+      seen.add(state);
+      links.add(path);
+      const link = readlinkSync(path);
+      let next = link;
+      if (isAbsolute(link)) {
+        const base = [realRoot, root].find((base) =>
+          relative(base, link.slice(0, base.length)) === "" &&
+          (base.endsWith(sep) || link.length === base.length || link[base.length] === sep || (sep === "\\" && link[base.length] === "/"))
+        );
+        if (!base) throw new Error("Skill watch dependency leaves the controlled root.");
+        next = link.slice(base.length);
+        cursor = realRoot;
+      }
+      remaining = [...next.split(sep === "\\" ? /[\\/]/ : /\//), ...remaining];
+    }
+    if (realpathSync(cursor) !== target) throw new Error("Skill dependency changed while enumerating.");
+
+    const required = new Set<string>();
+    const requiredDirectories = new Set<string>();
+    for (const dependency of [...links, target]) {
+      if (dependency === source) continue;
+      if (relative(realRoot, dependency).split(sep).length > MAX_SKILL_DEPTH + 1) {
+        throw new Error(`Skill watch traversal depth exceeds ${MAX_SKILL_DEPTH}.`);
+      }
+      for (let path = dependency; path !== realRoot && isInside(realRoot, path); path = dirname(path)) {
+        const logical = join(root, relative(realRoot, path));
+        required.add(logical);
+        if (path !== dependency) requiredDirectories.add(logical);
+      }
+    }
+    const paths = [...required];
+    const newDirectories = [...requiredDirectories].filter((path) => !directories.has(path));
+    if (directories.size + newDirectories.length > MAX_SKILL_DIRECTORIES) {
+      throw new Error(`Skill watch directory limit is ${MAX_SKILL_DIRECTORIES}.`);
+    }
+    if (entries.size + paths.filter((path) => !entries.has(path)).length > MAX_SKILL_ENTRIES) {
+      throw new Error(`Skill watch entry limit is ${MAX_SKILL_ENTRIES}.`);
+    }
+    const additions = paths.filter((path) => !dependencyPaths.has(join(realRoot!, relative(root, path))));
+    for (const path of paths) {
+      entries.add(path);
+      dependencyPaths.add(join(realRoot, relative(root, path)));
+    }
+    for (const path of newDirectories) directories.set(path, undefined);
+    for (const link of links) linkPaths.add(link);
+    dependencySources.add(source);
+    // Re-admit exact paths already pruned by Chokidar, including replacement anchors.
+    if (additions.length > 0) onDependency?.(additions.reverse());
+  };
+  const ignoreBudget = {
+    bytes: 0,
+    onControl(path: string, logicalPath: string) {
+      controlPaths.add(path);
+      addDependency(path, logicalPath);
+    },
+  };
+  const directoryStopped = (directory: string): boolean => {
+    const cached = directories.get(directory);
+    if (cached !== undefined) return cached;
+    if (!directories.has(directory) && directories.size >= MAX_SKILL_DIRECTORIES) {
+      throw new Error(`Skill watch directory limit is ${MAX_SKILL_DIRECTORIES}.`);
+    }
+    directories.set(directory, undefined);
+    const descriptor = readDirectoryDiscovery(directory, root, realRoot!, ignoreMatcher, ignoreBudget);
+    if (descriptor?.kind === "file") addDependency(descriptor.realPath, join(directory, "SKILL.md"));
+    const stopped = descriptor !== null;
+    directories.set(directory, stopped);
+    return stopped;
+  };
+
+  return Object.assign((target: string): boolean => {
+    if (!isInside(root, target)) return false;
+    const child = normalizeRelativePath(relative(root, target));
+    if (!child) return true;
+    try {
+      realRoot ??= realpathSync(root);
+    } catch (error) {
+      if (isMissing(error)) return true;
+      throw error;
+    }
+    const canonicalTarget = join(realRoot, relative(root, target));
+    if (dependencyPaths.has(canonicalTarget)) return true;
+    const components = child.split("/");
+    if (components.length > MAX_SKILL_DEPTH + 1) return false;
+    if (components[0]?.endsWith(".bak")) return false;
+    const control = SKILL_IGNORE_FILE_NAMES.includes(components.at(-1) as typeof SKILL_IGNORE_FILE_NAMES[number]);
+    if (components.some((name, index) =>
+      name === "node_modules" || (name.startsWith(".") && !(control && index === components.length - 1))
+    )) return false;
+    let directory = root;
+    for (let index = 0; index < components.length; index += 1) {
+      const name = components[index]!;
+      const last = index === components.length - 1;
+      if (directoryStopped(directory)) {
+        return (last && (name === "SKILL.md" || control)) || dependencyPaths.has(canonicalTarget);
+      }
+      // Controls must remain reachable even when they ignore themselves.
+      if (last && control) return true;
+      directory = join(directory, name);
+      const relativeEntry = normalizeRelativePath(relative(root, directory));
+      if (!entries.has(directory)) {
+        if (entries.size >= MAX_SKILL_ENTRIES) {
+          throw new Error(`Skill watch entry limit is ${MAX_SKILL_ENTRIES}.`);
+        }
+        entries.add(directory);
+      }
+      let isDirectory = !last;
+      if (last) {
+        try {
+          isDirectory = lstatSync(target).isDirectory();
+        } catch (error) {
+          if (!isMissing(error)) throw error;
+          isDirectory = true;
+        }
+      }
+      if (ignoreMatcher.ignores(isDirectory ? `${relativeEntry}/` : relativeEntry)) {
+        return dependencyPaths.has(canonicalTarget);
+      }
+      if (last && isDirectory) directoryStopped(target);
+      if (last && !isDirectory && isSkillDescriptorRelativePath(child, mode)) {
+        const descriptor = locateEntry(target, realRoot);
+        if (descriptor?.kind === "file") addDependency(descriptor.realPath, target);
+      }
+    }
+    return true;
+  }, {
+    affectsDiscovery(target: string): boolean {
+      return isInside(root, target) && (isSkillDescriptorRelativePath(normalizeRelativePath(relative(root, target)), mode)
+        || (realRoot !== undefined && (controlPaths.has(join(realRoot, relative(root, target)))
+          || linkPaths.has(join(realRoot, relative(root, target))))));
+    },
+  });
+}
+
+interface SkillIgnoreBudget {
+  bytes: number;
+  onControl?(path: string, logicalPath: string): void;
+}
+
+function readDirectoryDiscovery(
+  directory: string,
+  root: string,
+  realRoot: string,
+  ignoreMatcher: ReturnType<typeof createIgnore>,
+  budget: SkillIgnoreBudget,
+): LocatedEntry | null {
+  addIgnoreRules(ignoreMatcher, directory, root, realRoot, budget);
+  const descriptorPath = join(directory, "SKILL.md");
+  const descriptor = locateEntry(descriptorPath, realRoot);
+  const relativeDescriptor = normalizeRelativePath(relative(root, descriptorPath));
+  return descriptor?.kind === "outside" || (descriptor?.kind === "file" && !ignoreMatcher.ignores(relativeDescriptor))
+    ? descriptor : null;
+}
+
 function addIgnoreRules(
   ignoreMatcher: ReturnType<typeof createIgnore>,
   directory: string,
   root: string,
   realRoot: string,
-  budget: { bytes: number },
+  budget: SkillIgnoreBudget,
 ): void {
   const relativeDirectory = normalizeRelativePath(relative(root, directory));
   const prefix = relativeDirectory ? `${relativeDirectory}/` : "";
-  for (const filename of IGNORE_FILE_NAMES) {
+  for (const filename of SKILL_IGNORE_FILE_NAMES) {
     const path = join(directory, filename);
     if (!existsSync(path)) continue;
     let content: string;
+    let resolved: string;
     try {
-      const resolved = realpathSync(path);
+      resolved = realpathSync(path);
       if (!isInside(realRoot, resolved)) continue;
       const stats = lstatSync(resolved);
       if (!stats.isFile()) continue;
@@ -351,6 +566,7 @@ function addIgnoreRules(
       // Match Pi: an unreadable ignore file does not make Skill discovery fail.
       continue;
     }
+    budget.onControl?.(resolved, path);
     budget.bytes += Buffer.byteLength(content);
     const patterns = content
       .split(/\r?\n/u)

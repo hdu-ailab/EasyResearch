@@ -1396,6 +1396,31 @@ describe("ActiveSessionRegistry", () => {
     await expect(registry.open({ cwd, sessionPath })).rejects.toThrow(/shutting down/i);
     expect(factory.created).toHaveLength(0);
   });
+  it.each(["queued", "running"] as const)("includes %s compaction in aggregate activity without changing root streaming", async (state) => {
+    const created = await registry.create({ cwd });
+    const adapter = factory.created[0]!;
+    const events: unknown[] = [];
+    registry.subscribe(created.id, (event) => events.push(event));
+    const emit = (event: unknown) => adapter.events.forEach((listener) => listener(event));
+
+    adapter.compactionState = state;
+    emit({ type: "compaction_state_changed", state });
+    expect(registry.list()[0]).toMatchObject({ status: "running", isStreaming: false });
+    expect(events).toContainEqual({ type: "session_activity_changed", status: "running", isStreaming: false });
+    expect((await registry.snapshot(created.id)).session).toMatchObject({ status: "running", isStreaming: false });
+
+    adapter.supervisorActive = true;
+    emit({ type: "session_activity_changed", active: true });
+    adapter.compactionState = "idle";
+    emit({ type: "compaction_state_changed", state: "idle" });
+    expect(registry.list()[0]).toMatchObject({ status: "running", isStreaming: false });
+    adapter.supervisorActive = false;
+    emit({ type: "session_activity_changed", active: false });
+    expect(registry.list()[0]).toMatchObject({ status: "ready", isStreaming: false });
+    expect(events.at(-1)).toEqual({ type: "session_activity_changed", status: "ready", isStreaming: false });
+    await registry.shutdown();
+  });
+
   describe("tree and commands (ADR-066)", () => {
     it("delegates getCommands/getTree/navigateTree to the adapter", async () => {
       const created = await registry.create({ cwd });

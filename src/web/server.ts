@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { isThinkingLevel } from "../thinking-levels";
-import { createRouteHandler, type DaemonControl, type RouteServices } from "./routes";
+import { createRouteHandler, rawFileErrorResponse, type DaemonControl, type RouteServices } from "./routes";
 import { ActiveSessionRegistry } from "./active-sessions";
 import { PiSessionFactory } from "./session-adapter";
 import { DirectoryService } from "./directories";
@@ -200,6 +200,7 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
         modelsPath: join(agentDir, "models.json"),
         refreshOnCreate: false,
       })),
+      decorateAuthRuntime: (runtime) => networkRouter.decorateModelRuntime(runtime),
       synchronizeCatalog: async () => {
         await liveConfiguration?.synchronize();
       },
@@ -408,7 +409,7 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
       config,
       subagentSessions,
       auth,
-      providerDeletion: createProviderDeletionService(config),
+      providerDeletion: createProviderDeletionService(config, auth),
       configuration: live,
       configurationProjectWatches: projectWatches,
       logger,
@@ -441,6 +442,7 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
       hostname: host,
       port,
       fetch: handler,
+      error: rawFileErrorResponse,
       idleTimeout: 0,
     });
     logger.info("web server started", { host, port: server.port ?? port });

@@ -1,5 +1,6 @@
 import { ChevronLeft, FilePlus, Folder, FolderPlus, RefreshCw, Save, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { parsePiSettingsJson } from "../../../runtime/pi-settings-json";
 import type { ConfigEntryDto, ConfigScope } from "../../../web/contracts";
 import {
   createConfigDirectory,
@@ -41,8 +42,13 @@ export function ConfigPage({ onHome, onBackToSettings, onProjectInterestChange, 
   const [name, setName] = useState("");
   const entryRequest = useRef(0);
 
-  const loadEntries = async (root: Root, nextPath = "", refreshError: string | null = null) => {
-    const request = ++entryRequest.current;
+  const loadEntries = async (
+    root: Root,
+    nextPath = "",
+    refreshError: string | null = null,
+    request = ++entryRequest.current,
+  ) => {
+    if (request !== entryRequest.current) return;
     const params = rootScope(root);
     setError(null);
     try {
@@ -80,6 +86,9 @@ export function ConfigPage({ onHome, onBackToSettings, onProjectInterestChange, 
     setSelectedRoot(root);
     setSelectedFile(null);
     setContent("");
+    setEntries([]);
+    setPath("");
+    setSaved(null);
     await loadEntries(root);
   };
 
@@ -91,6 +100,9 @@ export function ConfigPage({ onHome, onBackToSettings, onProjectInterestChange, 
     setPath("");
     setEntries([]);
     setError(null);
+    setSaved(null);
+    setDialog(null);
+    setName("");
   };
 
   const refreshEntries = async () => {
@@ -101,7 +113,7 @@ export function ConfigPage({ onHome, onBackToSettings, onProjectInterestChange, 
     try {
       const result = await refreshConfigurationResources(root.kind === "project" ? { projectCwds: [root.cwd] } : {});
       if (request !== entryRequest.current) return;
-      await loadEntries(root, currentPath, result.error);
+      await loadEntries(root, currentPath, result.error, request);
     } catch (cause) {
       if (request === entryRequest.current) setError(cause instanceof Error ? cause.message : String(cause));
     }
@@ -124,9 +136,11 @@ export function ConfigPage({ onHome, onBackToSettings, onProjectInterestChange, 
 
   const save = async () => {
     if (!selectedRoot || !selectedFile) return;
+    const request = ++entryRequest.current;
     if (selectedFile.endsWith(".json")) {
       try {
-        JSON.parse(content);
+        if (selectedFile === "settings.json") parsePiSettingsJson(content);
+        else JSON.parse(content);
       } catch {
         setError(t("config.invalidJson"));
         return;
@@ -135,6 +149,7 @@ export function ConfigPage({ onHome, onBackToSettings, onProjectInterestChange, 
     try {
       const params = rootScope(selectedRoot);
       const result = await writeConfigFile(params.scope, params.cwd, selectedFile, content);
+      if (request !== entryRequest.current) return;
       setSaved(
         result.configuration?.status === "repaired"
           ? "config.savedRepaired"
@@ -143,31 +158,36 @@ export function ConfigPage({ onHome, onBackToSettings, onProjectInterestChange, 
             : "config.saved",
       );
       setError(null);
-      await loadEntries(selectedRoot, path);
+      await loadEntries(selectedRoot, path, null, request);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (request === entryRequest.current) setError(e instanceof Error ? e.message : String(e));
     }
   };
 
   const create = async () => {
-    if (!selectedRoot || !name.trim()) return;
+    if (!selectedRoot || !dialog || !name.trim()) return;
+    const request = ++entryRequest.current;
     const nextPath = path ? `${path}/${name.trim()}` : name.trim();
     try {
       const params = rootScope(selectedRoot);
       if (dialog === "directory") {
         await createConfigDirectory(params.scope, params.cwd, nextPath);
-        await loadEntries(selectedRoot, path);
       } else {
         await writeConfigFile(params.scope, params.cwd, nextPath, nextPath.endsWith(".json") ? "{}\n" : "");
-        await loadEntries(selectedRoot, path);
+      }
+      if (request !== entryRequest.current) return;
+      await loadEntries(selectedRoot, path, null, request);
+      if (request !== entryRequest.current) return;
+      if (dialog === "file") {
         setSelectedFile(nextPath);
         setContent(nextPath.endsWith(".json") ? "{}\n" : "");
+        setSaved(null);
       }
       setDialog(null);
       setName("");
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (request === entryRequest.current) setError(e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -258,7 +278,10 @@ export function ConfigPage({ onHome, onBackToSettings, onProjectInterestChange, 
                 className="flex size-7 items-center justify-center rounded-md hover:bg-v2-grey-100"
                 title={t("config.newFile")}
                 aria-label={t("config.newFile")}
-                onClick={() => setDialog("file")}
+                onClick={() => {
+                  entryRequest.current += 1;
+                  setDialog("file");
+                }}
               >
                 <FilePlus size={14} />
               </button>
@@ -267,7 +290,10 @@ export function ConfigPage({ onHome, onBackToSettings, onProjectInterestChange, 
                 className="flex size-7 items-center justify-center rounded-md hover:bg-v2-grey-100"
                 title={t("config.newFolder")}
                 aria-label={t("config.newFolder")}
-                onClick={() => setDialog("directory")}
+                onClick={() => {
+                  entryRequest.current += 1;
+                  setDialog("directory");
+                }}
               >
                 <FolderPlus size={14} />
               </button>
@@ -305,7 +331,10 @@ export function ConfigPage({ onHome, onBackToSettings, onProjectInterestChange, 
                         type="button"
                         className="ml-auto"
                         aria-label={t("config.closeEditor")}
-                        onClick={() => setSelectedFile(null)}
+                        onClick={() => {
+                          entryRequest.current += 1;
+                          setSelectedFile(null);
+                        }}
                       >
                         <X size={14} />
                       </button>
@@ -315,6 +344,7 @@ export function ConfigPage({ onHome, onBackToSettings, onProjectInterestChange, 
                       className="min-h-0 flex-1 resize-none bg-transparent p-3 font-mono text-[12px] leading-[1.5] outline-none"
                       value={content}
                       onChange={(e) => {
+                        entryRequest.current += 1;
                         setContent(e.target.value);
                         setSaved(null);
                       }}
@@ -351,9 +381,16 @@ export function ConfigPage({ onHome, onBackToSettings, onProjectInterestChange, 
         <ConfigCreateDialog
           kind={dialog}
           name={name}
-          onNameChange={setName}
+          onNameChange={(value) => {
+            entryRequest.current += 1;
+            setName(value);
+          }}
           onCreate={() => void create()}
-          onCancel={() => setDialog(null)}
+          onCancel={() => {
+            entryRequest.current += 1;
+            setDialog(null);
+            setName("");
+          }}
         />
       )}
     </div>

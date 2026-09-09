@@ -30,8 +30,8 @@ import type {
 } from "./contracts";
 import { createGlobalAgent, listGlobalAgents, readGlobalAgent, writeGlobalAgent, listGlobalSkills, readGlobalSkill, writeGlobalSkill } from "./agent-resources";
 import type { DirectoryService } from "./directories";
-import { DirectoryServiceError } from "./directories";
-import { parseByteRange, RawFileRangeError, type ByteRange, type RawFileDescriptor } from "./raw-file";
+import { DirectoryServiceError, fileServiceError } from "./directories";
+import { parseByteRange, RawFileRangeError, type RawFileDescriptor } from "./raw-file";
 import { UnknownSessionError, type ActiveSessionRegistry } from "./active-sessions";
 import { flattenMessageTree } from "./session-tree";
 import { ExtensionGuardError } from "../runtime/extensions-guard";
@@ -274,7 +274,7 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       }
 
       if (req.method === "GET" && path === "/api/file/raw") {
-        return rawFileResponse(services.directories, requireQuery(url, "path"), req.headers.get("range"));
+        return await rawFileResponse(services.directories, requireQuery(url, "path"), req.headers.get("range"));
       }
 
       if (req.method === "POST" && path === "/api/sessions") {
@@ -667,32 +667,35 @@ class SessionStartError extends Error {
 }
 
 /**
- * Serves canonicalized raw file bytes with MIME metadata and single-range
- * support. No Range header yields `200` with the full bytes; a valid range
- * yields `206` with a `Content-Range` header; an unsatisfiable or malformed
- * range yields `416` with `Content-Range` set to `bytes` star-slash `<size>`.
- * Both full and ranged bodies are streamed via {@link DirectoryService.readFileStream}
- * so only the requested bytes are read into memory.
+ * Validate the single-range request, then let Bun derive wire length and ranges
+ * from the file it opens. Slicing the body or setting range metadata here would
+ * mix an earlier path stat with a replacement file opened after this returns.
  */
-function rawFileResponse(directories: DirectoryService, path: string, rangeHeader: string | null): Response {
+async function rawFileResponse(directories: DirectoryService, path: string, rangeHeader: string | null): Promise<Response> {
   const descriptor = directories.describeFile(path);
   try {
-    const range = rangeHeader === null ? null : (parseByteRange(rangeHeader, descriptor.size) as ByteRange);
-    const length = range === null ? descriptor.size : range.end - range.start + 1;
-    const headers: Record<string, string> = {
-      "Content-Type": descriptor.mimeType,
-      "Content-Length": String(length),
-      "Accept-Ranges": "bytes",
-    };
-    if (rangeHeader !== null) {
-      headers["Content-Range"] = `bytes ${range!.start}-${range!.end}/${descriptor.size}`;
-      return new Response(directories.readFileStream(path, range), { status: 206, headers });
-    }
-    return new Response(directories.readFileStream(path, null), { status: 200, headers });
+    parseByteRange(rangeHeader, descriptor.size);
+    return new Response(await directories.readFileBody(path, null), {
+      headers: {
+        "Content-Type": descriptor.mimeType,
+        // Bun adds this header itself when it applies a Range request.
+        ...(rangeHeader === null ? { "Accept-Ranges": "bytes" } : {}),
+      },
+    });
   } catch (error) {
     if (error instanceof RawFileRangeError) return rangeErrorResponse(descriptor);
     throw error;
   }
+}
+
+/** Bun opens file-backed bodies after the route's try/catch has returned. */
+export function rawFileErrorResponse(error: unknown): Response {
+  if (error && typeof error === "object" && "path" in error && typeof error.path === "string"
+    && "syscall" in error && (error.syscall === "open" || error.syscall === "read")) {
+    const failure = fileServiceError(error, error.path);
+    if (failure) return errorResponse(failure.status, failure.message);
+  }
+  return errorResponse(500, "Internal server error");
 }
 
 function rangeErrorResponse(descriptor: RawFileDescriptor): Response {

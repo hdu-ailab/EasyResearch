@@ -31,7 +31,7 @@ import {
   type EnvironmentMap,
 } from "../runtime/network-policy";
 import { startCliDaemon } from "./daemon-spawn";
-import { directLocalHttpFetch } from "./local-http";
+import { directLocalHttpFetch, localHttpOrigin } from "./local-http";
 
 export interface CliDependencies {
   serve: (host: string, port: number) => Promise<number>;
@@ -186,7 +186,7 @@ export async function waitForReady(
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      const response = await directLocalHttpFetch(`http://${probeHost}:${port}/api/status`, {
+      const response = await directLocalHttpFetch(`${localHttpOrigin(probeHost, port)}/api/status`, {
         signal: AbortSignal.timeout(2_000),
       });
       if (response.ok) return true;
@@ -279,7 +279,7 @@ export async function runCli(
           console.error(`No service is listening on port ${port}.`);
           return 1;
         }
-        const url = `http://${host}:${port}`;
+        const url = localHttpOrigin(host, port);
         console.log(`EasyResearch: ${url}`);
         if (open && isLoopbackHost(host)) await deps.openBrowser(url);
         return 0;
@@ -302,7 +302,7 @@ export async function runCli(
           { cause: error },
         );
       }
-      const url = `http://${host}:${port}`;
+      const url = localHttpOrigin(host, port);
       console.log(`EasyResearch: ${url}`);
       if (!isLoopbackHost(host)) {
         console.warn(`Warning: EasyResearch is listening on ${host}. Web config editing trusts the local OS user. Make sure the network is trusted before exposing it.`);
@@ -388,13 +388,14 @@ async function runRuntimeEntry(args: string[]): Promise<void> {
     stopBackground: stopServerProcess,
     spawnBackground: async (host, port, environment, transitionLease) => {
       const agentDir = defaultAgentDir();
-      const daemon = daemonBinaryPath(agentDir);
+      const embedded = isEmbeddedBuild();
+      const daemon = embedded ? daemonBinaryPath(agentDir) : process.execPath;
       await startCliDaemon({
         agentDir,
         daemonExecutable: daemon,
         sourceExecutable: process.execPath,
         sourceEntry: fileURLToPath(import.meta.url),
-        embedded: isEmbeddedBuild(),
+        embedded,
         platform: process.platform,
         host,
         port,

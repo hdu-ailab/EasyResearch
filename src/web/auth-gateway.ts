@@ -24,6 +24,7 @@ import type {
   AuthEvent,
   Credential,
   AuthCheck,
+  AuthOperationOptions,
 } from "@earendil-works/pi-ai";
 
 export interface AuthStatusLike {
@@ -56,6 +57,13 @@ export interface AuthGatewaySettings {
   synchronizeCatalog?: () => Promise<void>;
   /** Publish a daemon availability epoch after credentials change. */
   onModelsChanged?: () => Promise<void>;
+  /** Auth mutations must not refresh the daemon's accepted provider catalog. */
+  createAuthRuntime?: (providerId: string) => Promise<AuthOperationRuntime>;
+}
+
+export interface AuthOperationRuntime {
+  readonly runtime: Pick<AuthModelRuntime, "login" | "logout">;
+  dispose(): void | Promise<void>;
 }
 
 /** Minimal view of `ModelRuntime` this gateway relies on. */
@@ -74,11 +82,12 @@ export interface AuthModelRuntime {
     reasoning: boolean;
     thinkingLevelMap?: Record<string, string | null>;
   }[];
+  getAvailable(): Promise<ReturnType<AuthModelRuntime["getAvailableSnapshot"]>>;
   getError(): string | undefined;
   getProviderAuthStatus(providerId: string): AuthStatusLike;
   checkAuth(providerId: string): Promise<AuthCheck | undefined>;
   login(providerId: string, type: AuthType, interaction: AuthInteraction): Promise<Credential>;
-  logout(providerId: string): Promise<void>;
+  logout(providerId: string, options?: AuthOperationOptions): Promise<void>;
   refresh(options: {
     allowNetwork?: boolean;
     providers?: readonly string[];
@@ -108,6 +117,7 @@ export interface AuthGateway {
   preflight(req: PreflightRequest): Promise<void>;
   runFlow(req: RunFlowRequest): Promise<void>;
   logout(providerId: string): Promise<void>;
+  withProviderDeletion<T>(providerId: string, operation: () => Promise<T>): Promise<T>;
   activeFlow(): AuthFlowId | null;
   store(): AuthFlowStore;
   /**
@@ -124,12 +134,14 @@ export function createAuthGateway(
   settings: AuthGatewaySettings = { timeoutMs: 600_000 },
 ): AuthGateway {
   const guard = singleFlightGuard();
-  const externalAbortMap = new Map<AuthFlowId, AbortController>();
+  const externalAbortMap = new Map<AuthFlowId, { controller: AbortController; providerId?: string }>();
   const { logger } = settings;
   let refreshPromise: Promise<void> | undefined;
   let modelsJsonProviderIds: ReadonlySet<string> = new Set();
   let noAuthProviderIds: ReadonlySet<string> = new Set();
   const activeOperations = new Set<Promise<unknown>>();
+  const providerOperations = new Map<string, Promise<void>>();
+  const shutdownController = new AbortController();
   let shuttingDown = false;
   let shutdownPromise: Promise<void> | undefined;
 
@@ -150,11 +162,45 @@ export function createAuthGateway(
     return trackOperation(start());
   };
 
+  const serializeProviderOperation = async <T>(
+    providerId: string,
+    signal: AbortSignal,
+    operation: () => Promise<T>,
+  ): Promise<T> => {
+    const previous = providerOperations.get(providerId) ?? Promise.resolve();
+    const settled = Promise.withResolvers<void>();
+    // A cancelled waiter may release early, but its successors still wait for
+    // the preceding operation rather than overtaking it.
+    const tail = previous.then(() => settled.promise);
+    providerOperations.set(providerId, tail);
+    void tail.then(() => {
+      if (providerOperations.get(providerId) === tail) providerOperations.delete(providerId);
+    });
+    const aborted = Promise.withResolvers<never>();
+    const onAbort = () => aborted.reject(signal.reason);
+    try {
+      signal.throwIfAborted();
+      signal.addEventListener("abort", onAbort, { once: true });
+      await Promise.race([previous, aborted.promise]);
+      signal.throwIfAborted();
+      return await operation();
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+      settled.resolve();
+    }
+  };
+
   const assertRuntimeHealthy = (): void => {
     const semanticError = runtime.getError();
     if (semanticError) {
       throw new Error("Model catalog refresh failed", { cause: semanticError });
     }
+  };
+
+  const acquireAuthRuntime = async (providerId: string): Promise<AuthOperationRuntime> => {
+    if (settings.createAuthRuntime) return settings.createAuthRuntime(providerId);
+    if (settings.synchronizeCatalog) throw new Error("An isolated authentication runtime is required.");
+    return { runtime, dispose() {} };
   };
 
   const refreshLocal = (): Promise<void> =>
@@ -179,23 +225,26 @@ export function createAuthGateway(
       });
 
   const preflight = async (req: PreflightRequest): Promise<void> => {
-    await refreshLocal();
-    if (shuttingDown) throw shutdownError();
-    const provider = runtime.getProvider(req.providerId);
-    if (!provider) throw new AuthGatewayError(404, `unknown provider: ${req.providerId}`);
-    if (noAuthProviderIds.has(req.providerId)) {
-      throw new AuthGatewayError(400, `provider ${req.providerId} is a no-auth endpoint`);
-    }
-    const auth = provider.auth ?? {};
-    const hasMethod =
-      (req.type === "api_key" && auth.apiKey) || (req.type === "oauth" && auth.oauth);
-    if (!hasMethod) {
-      throw new AuthGatewayError(400, `provider ${req.providerId} has no ${req.type} auth method`);
-    }
     if (!guard.tryAcquire(req.flowId)) throw new AuthGatewayError(409, "another auth flow is active");
     const shutdownCtrl = new AbortController();
-    externalAbortMap.set(req.flowId, shutdownCtrl);
+    externalAbortMap.set(req.flowId, { controller: shutdownCtrl, providerId: req.providerId });
     try {
+      // Own cancellation before catalog sync, but keep that sync outside the
+      // credential queue: deletion's configuration acceptance must not wait on it.
+      await refreshLocal();
+      if (shuttingDown) throw shutdownError();
+      const provider = runtime.getProvider(req.providerId);
+      if (!provider) throw new AuthGatewayError(404, `unknown provider: ${req.providerId}`);
+      if (shutdownCtrl.signal.aborted) throw new AuthGatewayError(409, "Authentication was cancelled.");
+      if (noAuthProviderIds.has(req.providerId)) {
+        throw new AuthGatewayError(400, `provider ${req.providerId} is a no-auth endpoint`);
+      }
+      const auth = provider.auth ?? {};
+      const hasMethod =
+        (req.type === "api_key" && auth.apiKey) || (req.type === "oauth" && auth.oauth);
+      if (!hasMethod) {
+        throw new AuthGatewayError(400, `provider ${req.providerId} has no ${req.type} auth method`);
+      }
       store.create(req.flowId, shutdownCtrl.signal);
     } catch (error) {
       externalAbortMap.delete(req.flowId);
@@ -236,14 +285,25 @@ export function createAuthGateway(
       },
     };
     try {
-      const credential = await runtime.login(req.providerId, req.type, interaction);
+      const credential = await serializeProviderOperation(req.providerId, rec.abortController.signal, async () => {
+        const operation = await acquireAuthRuntime(req.providerId);
+        try {
+          return await operation.runtime.login(req.providerId, req.type, interaction);
+        } finally {
+          await operation.dispose();
+        }
+      });
       let warning: string | undefined;
-      try {
-        const res = await runtime.refresh({ providers: [req.providerId], signal: AbortSignal.timeout(15_000) });
-        if (res.aborted) warning = "Catalog refresh timed out; models may not refresh until restart.";
-        else if (res.errors.size > 0) warning = "Credential saved; models may not refresh until restart.";
-      } catch {
-        warning = "Credential saved; models may not refresh until restart.";
+      // Only unmanaged catalogs may refresh in place. The daemon's isolated
+      // native auth collection commits credentials; availability is published below.
+      if (!settings.synchronizeCatalog) {
+        try {
+          const res = await runtime.refresh({ providers: [req.providerId], signal: AbortSignal.timeout(15_000) });
+          if (res.aborted) warning = "Catalog refresh timed out; models may not refresh until restart.";
+          else if (res.errors.size > 0) warning = "Credential saved; models may not refresh until restart.";
+        } catch {
+          warning = "Credential saved; models may not refresh until restart.";
+        }
       }
       try {
         await settings.onModelsChanged?.();
@@ -372,41 +432,60 @@ export function createAuthGateway(
     }),
     preflight: (req) => ownOperation(() => preflight(req)),
     runFlow,
-    logout: (providerId) => ownOperation(async () => {
+    logout: (providerId) => ownOperation(() => serializeProviderOperation(providerId, shutdownController.signal, async () => {
       await refreshLocal();
       if (!runtime.getProvider(providerId)) {
         throw new AuthGatewayError(404, `unknown provider: ${providerId}`);
       }
       if (noAuthProviderIds.has(providerId)) return;
+      const operation = await acquireAuthRuntime(providerId);
       try {
-        await runtime.logout(providerId);
-      } catch (error) {
-        if (!isCredentialSynchronizationError(error, "logout")) throw error;
+        try {
+          await operation.runtime.logout(providerId, { signal: shutdownController.signal });
+        } catch (error) {
+          if (!isCredentialSynchronizationError(error, "logout")) throw error;
+          try {
+            await settings.onModelsChanged?.();
+          } catch {
+            // Credential removal already committed; preserve the fixed safe error.
+          }
+          throw new AuthGatewayError(500, SAFE_LOGOUT_SYNCHRONIZATION_ERROR);
+        }
         try {
           await settings.onModelsChanged?.();
         } catch {
-          // Credential removal already committed; preserve the fixed safe error.
+          throw new AuthGatewayError(500, SAFE_LOGOUT_SYNCHRONIZATION_ERROR);
         }
-        throw new AuthGatewayError(500, SAFE_LOGOUT_SYNCHRONIZATION_ERROR);
+        logger?.info("auth logout", { provider: providerId, outcome: "ok" });
+      } finally {
+        await operation.dispose();
       }
-      try {
-        await settings.onModelsChanged?.();
-      } catch {
-        throw new AuthGatewayError(500, SAFE_LOGOUT_SYNCHRONIZATION_ERROR);
+    })),
+    withProviderDeletion: (providerId, operation) => ownOperation(() => {
+      // Reserve before cancellation: later logins must wait through catalog and
+      // credential cleanup, including when an older flow has not started yet.
+      const deletion = serializeProviderOperation(providerId, shutdownController.signal, operation);
+      for (const [flowId, owner] of externalAbortMap) {
+        if (owner.providerId === providerId) {
+          owner.controller.abort();
+          store.cancel(flowId);
+        }
       }
-      logger?.info("auth logout", { provider: providerId, outcome: "ok" });
+      return deletion;
     }),
     activeFlow: () => guard.active(),
     store: () => store,
     markExternalControl(flowId, ctrl) {
-      externalAbortMap.set(flowId, ctrl);
+      externalAbortMap.set(flowId, { controller: ctrl });
       guard.tryAcquire(flowId);
     },
     shutdown() {
       if (shutdownPromise) return shutdownPromise;
       shuttingDown = true;
-      for (const [, ctrl] of externalAbortMap) ctrl.abort();
-      shutdownPromise = Promise.allSettled([...activeOperations]).then(() => {
+      shutdownController.abort();
+      for (const { controller } of externalAbortMap.values()) controller.abort();
+      shutdownPromise = Promise.allSettled([...activeOperations]).then(async () => {
+        await Promise.all(providerOperations.values());
         externalAbortMap.clear();
       });
       return shutdownPromise;

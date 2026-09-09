@@ -1,4 +1,5 @@
-import { existsSync, readdirSync, renameSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { getAgentDir } from "./runtime/pi-import";
 import { bundledSourceRoot } from "./runtime/bundled-assets";
@@ -8,6 +9,7 @@ export interface RenameOptions {
   bundledAgentsDir: string;
   bundledSkillsDir: string;
   log?: (msg: string) => void;
+  version?: string;
 }
 
 export interface RenameEntry {
@@ -22,6 +24,12 @@ export interface RenameResult {
   entries: RenameEntry[];
 }
 
+interface RetirementProgress {
+  version: string;
+  completed: string[];
+  pending?: { key: string; dev: string; ino: string };
+}
+
 let renameLog: (msg: string) => void = (msg) => console.log(`[easyresearch] ${msg}`);
 const FORMER_MAIN_AGENT_FILES = ["paper-assistant.md", "Paper Assistant.md", "论文助手.md"] as const;
 
@@ -30,25 +38,17 @@ export function setRenameLogger(log: (msg: string) => void): void {
 }
 
 export function listBundledAgents(dir: string): string[] {
-  try {
-    return readdirSync(dir)
-      .filter((name) => name.endsWith(".md") && !name.endsWith(".test.md"))
-      .sort()
-      .map((name) => name.slice(0, -3));
-  } catch {
-    return [];
-  }
+  return readdirSync(dir)
+    .filter((name) => name.endsWith(".md") && !name.endsWith(".test.md"))
+    .sort()
+    .map((name) => name.slice(0, -3));
 }
 
 export function listBundledSkills(dir: string): string[] {
-  try {
-    return readdirSync(dir, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name)
-      .sort();
-  } catch {
-    return [];
-  }
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort();
 }
 
 /**
@@ -58,36 +58,97 @@ export function listBundledSkills(dir: string): string[] {
 export function renameSameNameToBak(options: RenameOptions): RenameResult {
   if (options.log) renameLog = options.log;
   const entries: RenameEntry[] = [];
-
   const bundledAgentFiles = listBundledAgents(options.bundledAgentsDir).map((name) => `${name}.md`);
   const agentFiles = [...new Set([...bundledAgentFiles, ...FORMER_MAIN_AGENT_FILES])];
-  for (const fileName of agentFiles) {
-    const name = fileName.slice(0, -3);
-    const agentPath = join(options.agentDir, "agents", fileName);
-    if (!existsSync(agentPath)) continue;
-    const bakPath = join(options.agentDir, "agents", `${fileName}.bak`);
+  const resources = [
+    ...agentFiles.map((file) => ({ key: `agents/${file}`, name: file.slice(0, -3), kind: "agent" as const })),
+    ...listBundledSkills(options.bundledSkillsDir).map((name) => ({ key: `skills/${name}`, name, kind: "skill" as const })),
+  ];
+  const progressPath = join(options.agentDir, ".easyresearch-resource-retirement-progress");
+  let progress: RetirementProgress = { version: options.version ?? "", completed: [] };
+  if (options.version) {
     try {
-      if (existsSync(bakPath)) rmSync(bakPath);
-      renameSync(agentPath, bakPath);
-      entries.push({ name, kind: "agent", renamed: true, oldPath: agentPath, newPath: bakPath });
+      const saved = JSON.parse(readFileSync(progressPath, "utf8")) as RetirementProgress;
+      if (!saved || typeof saved.version !== "string" || !Array.isArray(saved.completed)
+        || !saved.completed.every((key) => typeof key === "string")
+        || (saved.pending !== undefined && (!saved.pending || typeof saved.pending.key !== "string"
+          || typeof saved.pending.dev !== "string" || typeof saved.pending.ino !== "string"))) {
+        throw new Error("Invalid resource retirement progress; left unchanged.");
+      }
+      if (saved.version === options.version) progress = saved;
     } catch (error) {
-      renameLog(`rename failed for ${agentPath}: ${error instanceof Error ? error.message : String(error)}`);
-      entries.push({ name, kind: "agent", renamed: false });
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
   }
-
-  for (const name of listBundledSkills(options.bundledSkillsDir)) {
-    const skillPath = join(options.agentDir, "skills", name);
-    if (!existsSync(skillPath)) continue;
-    const bakPath = join(options.agentDir, "skills", `${name}.bak`);
+  const completed = new Set(progress.completed);
+  const saveProgress = (): void => {
+    if (!options.version) return;
+    progress.completed = [...completed];
+    const temporary = `${progressPath}.tmp-${randomUUID()}`;
+    writeFileSync(temporary, JSON.stringify(progress), { flag: "wx", mode: 0o600 });
     try {
-      if (existsSync(bakPath)) rmSync(bakPath, { recursive: true });
-      renameSync(skillPath, bakPath);
-      entries.push({ name, kind: "skill", renamed: true, oldPath: skillPath, newPath: bakPath });
-    } catch (error) {
-      renameLog(`rename failed for ${skillPath}: ${error instanceof Error ? error.message : String(error)}`);
-      entries.push({ name, kind: "skill", renamed: false });
+      renameSync(temporary, progressPath);
+    } finally {
+      rmSync(temporary, { force: true });
     }
+  };
+  const complete = (key: string): void => {
+    completed.add(key);
+    delete progress.pending;
+    saveProgress();
+  };
+  const reconcilePending = (): void => {
+    const pending = progress.pending;
+    if (!pending) return;
+    const { key } = pending;
+    if (!resources.some((resource) => resource.key === key)) {
+      throw new Error("Unknown pending resource retirement; left unchanged.");
+    }
+    const source = join(options.agentDir, key);
+    const backup = `${source}.bak`;
+    // Rename preserves identity, so a lost completion write cannot retire a new user copy.
+    if (pending.ino === "0") {
+      throw new Error("Cannot verify interrupted resource retirement without file identity; left unchanged.");
+    }
+    const current = existsSync(source) ? lstatSync(source, { bigint: true }) : undefined;
+    const originalRemains = current?.dev.toString() === pending.dev && current?.ino.toString() === pending.ino;
+    const moved = existsSync(backup) ? lstatSync(backup, { bigint: true }) : undefined;
+    if (!current || (!originalRemains && moved?.dev.toString() === pending.dev && moved?.ino.toString() === pending.ino)) {
+      complete(key);
+      return;
+    }
+    if (!originalRemains) {
+      throw new Error("Interrupted resource retirement identity changed; left unchanged.");
+    }
+    delete progress.pending;
+    saveProgress();
+  };
+
+  reconcilePending();
+  for (const { key, name, kind } of resources) {
+    if (completed.has(key)) continue;
+    const source = join(options.agentDir, key);
+    const backup = `${source}.bak`;
+    if (!existsSync(source)) {
+      complete(key);
+      continue;
+    }
+    if (options.version) {
+      const stat = lstatSync(source, { bigint: true });
+      progress.pending = { key, dev: String(stat.dev), ino: String(stat.ino) };
+      saveProgress();
+    }
+    try {
+      if (existsSync(backup)) rmSync(backup, { recursive: kind === "skill" });
+      renameSync(source, backup);
+    } catch (error) {
+      renameLog(`rename failed for ${source}: ${error instanceof Error ? error.message : String(error)}`);
+      entries.push({ name, kind, renamed: false });
+      reconcilePending();
+      continue;
+    }
+    complete(key);
+    entries.push({ name, kind, renamed: true, oldPath: source, newPath: backup });
   }
 
   return { entries };

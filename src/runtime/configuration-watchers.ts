@@ -1,15 +1,19 @@
 import { lstat, realpath } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { type ChokidarOptions, watch as chokidarWatch } from "chokidar";
 import type { ConfigurationWatchImplementation } from "./live-configuration";
-import type { SkillScopeFingerprint } from "./resource-fingerprint";
-import type { AcceptedSkillDescriptor } from "./resource-fingerprint";
+import {
+  type AcceptedSkillDescriptor,
+  createSkillWatchFilter,
+  SKILL_IGNORE_FILE_NAMES,
+  type SkillScopeFingerprint,
+} from "./resource-fingerprint";
 
 const WATCH_DEPTH = 18;
 const STABILITY_THRESHOLD_MS = 200;
 const WATCH_EVENTS = ["add", "change", "unlink", "addDir", "unlinkDir"] as const;
 const PROJECT_INSTALL_ATTEMPTS = 2;
-const SKILL_IGNORE_CONTROL_FILES = new Set([".gitignore", ".ignore", ".fdignore"]);
+const SKILL_IGNORE_CONTROL_FILES = new Set<string>(SKILL_IGNORE_FILE_NAMES);
 
 export interface ResourceWatchChange {
   agentsChanged?: boolean;
@@ -60,6 +64,7 @@ interface WatchInstance {
   watcher?: ConfigurationWatcher;
   cancelInstallation?: () => void;
   closed?: boolean;
+  refreshQueued?: boolean;
 }
 
 interface ProjectRecord {
@@ -164,7 +169,7 @@ export function createConfigurationWatcherManager(dependencies: WatcherDependenc
   };
 
   const isCurrent = (scope: WatchScope, instance: WatchInstance): boolean => {
-    if (admissionClosed) return false;
+    if (admissionClosed || instance.closed) return false;
     if (scope.kind === "global") return globalInstance?.token === instance.token;
     if (scope.kind === "home") return homeEnabled && homeInstance?.token === instance.token;
     return projects.get(scope.cwd)?.instance?.token === instance.token;
@@ -192,7 +197,30 @@ export function createConfigurationWatcherManager(dependencies: WatcherDependenc
     instance.cancelInstallation = cancelInstallation;
 
     try {
-      const watcher = watch(initialWatchAnchors(scope), watcherOptions(scope)) as ConfigurationWatcher;
+      let watcher: ConfigurationWatcher | undefined;
+      const pendingDependencies = new Set<string>();
+      const filters = new Map<string, ReturnType<typeof createSkillWatchFilter>>();
+      let filterErrorReported = false;
+      const addDependencies = (paths: readonly string[]): void => {
+        if (!watcher) {
+          for (const path of paths) pendingDependencies.add(path);
+        } else if (isCurrent(scope, instance) && instance.watcher === watcher) {
+          watcher.add(paths);
+        }
+      };
+      const skillAllowed = (root: string, path: string): boolean => {
+        if (!isWithin(root, path)) return false;
+        let filter = filters.get(root);
+        if (!filter) filters.set(root, filter = createSkillWatchFilter(root, scope.kind === "home" ? "agents" : "pi", addDependencies));
+        try {
+          return filter(path);
+        } catch {
+          if (!filterErrorReported) reportError();
+          filterErrorReported = true;
+          return false;
+        }
+      };
+      watcher = watch(initialWatchAnchors(scope), watcherOptions(scope, skillAllowed)) as ConfigurationWatcher;
       instance.watcher = watcher;
       const synchronizePath = (event: (typeof WATCH_EVENTS)[number], candidate: unknown): void => {
         const path = resolve(String(candidate));
@@ -205,13 +233,32 @@ export function createConfigurationWatcherManager(dependencies: WatcherDependenc
           }
           return;
         }
-        if (!isCurrent(scope, instance)) return;
+        if (!isCurrent(scope, instance) || instance.watcher !== watcher) return;
         if (scope.kind === "project" && path === scope.anchor) {
           void serialize(() => refreshProjectAnchor(scope, instance)).catch(() => {});
           return;
         }
-        const change = classifyPath(scope, path);
-        if (change) reportChange(change);
+        const change = classifyPath(scope, path, skillAllowed);
+        if (!change) return;
+        reportChange(change);
+        const discoveryChanged = event !== "change" || basename(path) === "SKILL.md"
+          || SKILL_IGNORE_CONTROL_FILES.has(basename(path))
+          || [...filters.values()].some((filter) => filter.affectsDiscovery(path));
+        if (change.skillsChanged && discoveryChanged && (readySettled || event === "change" || event.startsWith("unlink"))) {
+          if (instance.refreshQueued) return;
+          instance.refreshQueued = true;
+          void serialize(async () => {
+            if (!isCurrent(scope, instance)) return;
+            await closeInstance(instance);
+            if (admissionClosed) return;
+            instance.closed = false;
+            await installWatcher(scope, instance);
+            // Reconfirm bytes after replacing the watcher; policy changes can admit old trees.
+            if (isCurrent(scope, instance)) reportChange(change);
+          }).catch(reportError).finally(() => {
+            instance.refreshQueued = false;
+          });
+        }
       };
       for (const event of WATCH_EVENTS) watcher.on(event, (candidate) => synchronizePath(event, candidate));
       watcher.on("ready", () => {
@@ -221,12 +268,13 @@ export function createConfigurationWatcherManager(dependencies: WatcherDependenc
           return;
         }
         waitingForExactAnchor = true;
-        watcher.add(scope.anchor);
+        watcher!.add(scope.anchor);
       });
       watcher.on("error", (error) => {
         if (isCurrent(scope, instance)) reportError();
         rejectReady(error);
       });
+      if (pendingDependencies.size > 0) watcher.add([...pendingDependencies]);
     } catch (error) {
       reportError();
       rejectReady(error);
@@ -691,13 +739,15 @@ class ProjectAnchorUnavailableError extends Error {
   }
 }
 
-function watcherOptions(scope: WatchScope): ChokidarOptions {
+type SkillWatchFilter = (root: string, path: string) => boolean;
+
+function watcherOptions(scope: WatchScope, skillAllowed: SkillWatchFilter): ChokidarOptions {
   return {
     ignoreInitial: true,
     depth: WATCH_DEPTH,
     followSymlinks: false,
     atomic: true,
-    ignored: (candidate) => !isAllowedPath(scope, resolve(String(candidate))),
+    ignored: (candidate) => !isAllowedPath(scope, resolve(String(candidate)), skillAllowed),
     awaitWriteFinish: {
       stabilityThreshold: STABILITY_THRESHOLD_MS,
       pollInterval: 50,
@@ -723,7 +773,7 @@ function isMissingPathError(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
-function isAllowedPath(scope: WatchScope, path: string): boolean {
+function isAllowedPath(scope: WatchScope, path: string, skillAllowed: SkillWatchFilter): boolean {
   if (scope.kind === "project") {
     for (const anchor of watchAnchors(scope)) {
       const configurationDir = join(anchor, ".easyresearch");
@@ -732,7 +782,7 @@ function isAllowedPath(scope: WatchScope, path: string): boolean {
         path === anchor
         || path === configurationDir
         || path === skillsDir
-        || isDiscoverableSkillWatchPath(skillsDir, path)
+        || skillAllowed(skillsDir, path)
       ) return true;
     }
     return false;
@@ -748,19 +798,19 @@ function isAllowedPath(scope: WatchScope, path: string): boolean {
       path === scope.agentsDir ||
       isDirectMarkdown(path, scope.agentsDir) ||
       path === scope.skillsDir ||
-      isDiscoverableSkillWatchPath(scope.skillsDir, path)
+      skillAllowed(scope.skillsDir, path)
     );
   }
   if (scope.kind === "home") {
     return path === scope.dotAgentsDir
       || path === scope.skillsDir
-      || isDiscoverableSkillWatchPath(scope.skillsDir, path);
+      || skillAllowed(scope.skillsDir, path);
   }
   return false;
 }
 
-function classifyPath(scope: WatchScope, path: string): ResourceWatchChange | undefined {
-  if (!isAllowedPath(scope, path) || path === scope.anchor) return undefined;
+function classifyPath(scope: WatchScope, path: string, skillAllowed: SkillWatchFilter): ResourceWatchChange | undefined {
+  if (!isAllowedPath(scope, path, skillAllowed) || path === scope.anchor) return undefined;
   if (scope.kind === "global") {
     if (path === scope.settingsPath) return {};
     if (path === scope.modelsPath) return { modelsChanged: true };
@@ -776,18 +826,6 @@ function classifyPath(scope: WatchScope, path: string): ResourceWatchChange | un
 function isDirectMarkdown(path: string, directory: string): boolean {
   const child = relative(directory, path);
   return child.length > 0 && !child.includes(sep) && child.endsWith(".md");
-}
-
-function isDiscoverableSkillWatchPath(root: string, target: string): boolean {
-  const child = relative(root, target);
-  if (child.length === 0 || !isWithin(root, target)) return child.length === 0;
-  const components = child.split(sep);
-  if (components[0]?.endsWith(".bak")) return false;
-  return components.every((component, index) => {
-    if (component === "node_modules") return false;
-    if (!component.startsWith(".")) return true;
-    return index === components.length - 1 && SKILL_IGNORE_CONTROL_FILES.has(component);
-  });
 }
 
 function isWithin(root: string, target: string): boolean {

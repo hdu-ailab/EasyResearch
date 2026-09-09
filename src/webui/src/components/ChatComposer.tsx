@@ -40,6 +40,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
    * (re)enabled, covering the disable-then-enable send cycle (ADR-083). */
   const [pendingFocus, setPendingFocus] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composing = useRef(false);
   const insertedCaret = useRef<number | null>(null);
   const commandListId = `composer-commands-${useId().replaceAll(":", "")}`;
 
@@ -221,7 +222,18 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
             setActiveIndex(0);
           }}
           onSelect={(e) => setSelectionStart(e.currentTarget.selectionStart)}
+          onCompositionStart={() => {
+            composing.current = true;
+          }}
+          onCompositionEnd={() => {
+            composing.current = false;
+          }}
+          onBlur={() => {
+            composing.current = false;
+          }}
           onKeyDown={(e) => {
+            // Safari may end composition before its confirmation keydown (229).
+            if (composing.current || e.nativeEvent.isComposing || e.keyCode === 229) return;
             if (slash && filtered.length > 0) {
               if (e.key === "ArrowDown" || e.key === "ArrowUp") {
                 e.preventDefault();

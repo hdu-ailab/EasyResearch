@@ -1,7 +1,6 @@
 import { Bot, FileSearch, Settings } from "lucide-react";
 import { type Ref, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
-  FileWatcherEvent,
   SessionTreeDto,
   SkillCommandDto,
   SubagentSessionSummaryDto,
@@ -30,7 +29,7 @@ import { SessionHistoryDialog } from "../components/SessionHistoryDialog";
 import { ProductMark, Topbar, TopbarIconButton } from "../components/Topbar";
 import { WorkMobileTabs, type WorkView } from "../components/WorkMobileTabs";
 import { FILE_PATH_DRAG_TYPE, readFilePathDrop } from "../file-path-drag";
-import { parseFileWatcherEvent } from "../file-watcher";
+import { EMPTY_FILE_EVENTS, parseFileWatcherEvent, type QueuedFileWatcherEvent } from "../file-watcher";
 import { filesystemPathName } from "../filesystem-path";
 import { usePanelTransition } from "../hooks/usePanelTransition";
 import { useSessionConnection } from "../hooks/useSessionConnection";
@@ -115,12 +114,15 @@ function mergeChildView(snapshot: SessionViewState, live: SessionViewState): Ses
     ...snapshot.summaries.map((value) => ({ kind: "summary" as const, value })),
   ].sort((a, b) => a.value.order - b.value.order);
   const identityKeys = (entry: (typeof entries)[number]): string[] => [
-    `${entry.kind}:key:${entry.value.key}`,
+    ...(entry.kind !== "message" ? [`${entry.kind}:key:${entry.value.key}`] : []),
     ...(entry.kind === "message" && "entryId" in entry.value && entry.value.entryId
       ? [`message:entry:${entry.value.entryId}`]
       : []),
     ...(entry.kind === "message" && "identity" in entry.value && entry.value.identity
       ? [`message:identity:${entry.value.identity}`]
+      : []),
+    ...(entry.kind === "message" && entry.value.usageOnly && entry.value.apiUsage
+      ? [`message:usage:${entry.value.apiUsage.id}`]
       : []),
   ];
   const positions = new Map<string, number>();
@@ -142,7 +144,30 @@ function mergeChildView(snapshot: SessionViewState, live: SessionViewState): Ses
       for (const key of keys) positions.set(key, position);
     }
   }
-  const ordered = entries.map((entry, order) => ({ kind: entry.kind, value: { ...entry.value, order } }));
+  // Render keys are not message identities; keep persisted keys on a collision.
+  const messageKeyOwners = new Map<string, SessionViewState["messages"][number]>();
+  for (const entry of entries) {
+    if (entry.kind !== "message") continue;
+    const owner = messageKeyOwners.get(entry.value.key);
+    if (!owner || (owner.entryId === undefined && entry.value.entryId !== undefined)) {
+      messageKeyOwners.set(entry.value.key, entry.value);
+    }
+  }
+  let suffix = Math.max(snapshot.nextOrder, live.nextOrder, entries.length);
+  let activeMessageKey: string | undefined;
+  const ordered = entries.map((entry, order) => {
+    let key = entry.value.key;
+    if (entry.kind === "message") {
+      if (messageKeyOwners.get(key) !== entry.value) {
+        do {
+          key = `stream:${suffix++}`;
+        } while (messageKeyOwners.has(key));
+        messageKeyOwners.set(key, entry.value);
+      }
+      if (entry.value.streaming) activeMessageKey = key;
+    }
+    return { kind: entry.kind, value: { ...entry.value, key, order } };
+  });
   return {
     ...snapshot,
     messages: ordered
@@ -154,11 +179,11 @@ function mergeChildView(snapshot: SessionViewState, live: SessionViewState): Ses
     summaries: ordered
       .filter((entry) => entry.kind === "summary")
       .map((entry) => entry.value as SessionViewState["summaries"][number]),
-    isStreaming: live.isStreaming,
+    isStreaming: live.isStreaming || activeMessageKey !== undefined,
     error: live.error,
     retry: live.retry,
     nextOrder: ordered.length,
-    activeMessageKey: live.activeMessageKey,
+    activeMessageKey,
     messageStructureRevision: Math.max(snapshot.messageStructureRevision, live.messageStructureRevision) + 1,
   };
 }
@@ -173,7 +198,11 @@ function defaultPanel(): Panel {
   return typeof window !== "undefined" && window.innerWidth >= CONVERSATION_FIRST_BREAKPOINT ? "files" : null;
 }
 
-export function WorkPage({
+export function WorkPage(props: WorkPageProps) {
+  return <SessionWorkPage key={`${props.id}\0${props.cwd}`} {...props} />;
+}
+
+function SessionWorkPage({
   id,
   cwd,
   onBack,
@@ -183,7 +212,13 @@ export function WorkPage({
   configurationError = null,
 }: WorkPageProps) {
   const { t } = useI18n();
-  const [fileEvent, setFileEvent] = useState<FileWatcherEvent | null>(null);
+  const [fileEvents, setFileEvents] = useState<{ sessionId: string; pending: readonly QueuedFileWatcherEvent[] }>({
+    sessionId: id,
+    pending: EMPTY_FILE_EVENTS,
+  });
+  // Keep sequences monotonic across snapshots so a late acknowledgement cannot drop newer events.
+  const fileEventSequence = useRef(0);
+  const fileEventsEnabled = useRef(false);
   const [panel, setPanel] = useState<Panel>(defaultPanel);
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < CONVERSATION_FIRST_BREAKPOINT);
   const [mobileView, setMobileView] = useState<WorkView>("chat");
@@ -242,12 +277,19 @@ export function WorkPage({
     (event: unknown) => {
       const watcherEvent = parseFileWatcherEvent(event, cwd);
       if (watcherEvent) {
-        setFileEvent(watcherEvent);
+        if (!fileEventsEnabled.current) return true;
+        const queued = { sequence: ++fileEventSequence.current, event: watcherEvent };
+        setFileEvents((current) => ({ ...current, pending: [...current.pending, queued] }));
         return true;
       }
       if (event && typeof event === "object" && (event as { type?: unknown }).type === "snapshot") {
         try {
           const snapshot = parseSessionSnapshot(event);
+          setFileEvents({ sessionId: snapshot.session.id, pending: EMPTY_FILE_EVENTS });
+          fileEventsEnabled.current =
+            snapshot.session.status === "ready" ||
+            snapshot.session.status === "running" ||
+            snapshot.session.status === "stopped";
           childWorking.current.clear();
           for (const child of snapshot.subagents) {
             childWorking.current.set(
@@ -258,6 +300,37 @@ export function WorkPage({
         } catch {
           return false;
         }
+        // Old cursors and nested thinking cannot cross the reconnect acquisition boundary.
+        // Later supervisor deltas start fresh while child history is in flight.
+        pendingSupervisorEvents.current = new Map(
+          [...pendingSupervisorEvents.current].filter(([, pending]) => pending.status !== "working"),
+        );
+        setChildViews((current) => {
+          const next = { ...current };
+          for (const [childId, view] of Object.entries(current)) {
+            const messages = view.messages.filter(
+              (message) =>
+                message.role !== "assistant" ||
+                message.entryId !== undefined ||
+                message.identity !== undefined ||
+                message.usageOnly,
+            );
+            next[childId] = {
+              ...view,
+              messages: messages.map((message) =>
+                message.streaming || message.isThinking ? { ...message, streaming: false, isThinking: false } : message,
+              ),
+              tools: view.tools.map((tool) =>
+                tool.latestActivity?.kind === "thinking" ? { ...tool, latestActivity: undefined } : tool,
+              ),
+              activeMessageKey: undefined,
+              isStreaming: false,
+              messageStructureRevision:
+                view.messageStructureRevision + (messages.length === view.messages.length ? 0 : 1),
+            };
+          }
+          return next;
+        });
         childLoaded.current.clear();
         for (const requestKey of childRequests.current.keys()) childRefreshPending.current.add(requestKey);
         for (const tab of tabsStateRef.current.tabs) {
@@ -269,7 +342,14 @@ export function WorkPage({
     },
     [cwd],
   );
+  const consumeFileEvents = useCallback((through: number) => {
+    setFileEvents((current) => {
+      const pending = current.pending.filter((entry) => entry.sequence > through);
+      return pending.length === current.pending.length ? current : { ...current, pending };
+    });
+  }, []);
   const handleSupervisorEvent = useCallback((event: SubagentSupervisorEventDto) => {
+    const admittedQueue = pendingSupervisorEvents.current;
     const invocationKey = temporarySubagentTabKey(event.ownerSessionId, event.toolCallId);
     childSessionByInvocation.current.set(invocationKey, event.childSessionId);
     const childSessionId = childSessionByInvocation.current.get(invocationKey) ?? event.childSessionId;
@@ -282,6 +362,8 @@ export function WorkPage({
     childRevisions.current.set(childSessionId, (childRevisions.current.get(childSessionId) ?? 0) + 1);
 
     setChildViews((current) => {
+      // A deferred pre-snapshot update cannot refill the replacement progress queue.
+      if (event.status === "working" && admittedQueue !== pendingSupervisorEvents.current) return current;
       let next = current;
       if (event.ownerSessionId !== rootSessionId) {
         const ownerView = next[event.ownerSessionId] ?? { ...emptyView };
@@ -304,12 +386,16 @@ export function WorkPage({
         };
       }
       if (event.event) {
+        const childView = next[childSessionId] ?? { ...emptyView, subagentName: event.agent };
+        // A Working delta proves live output even when reconnect missed its start.
+        // Do not mark persisted history active or couple this to composer access.
+        const streamingView =
+          event.status === "working" && event.event.type === "message_update" && !childView.isStreaming
+            ? { ...childView, isStreaming: true }
+            : childView;
         next = {
           ...next,
-          [childSessionId]: reduceSessionEvent(
-            next[childSessionId] ?? { ...emptyView, subagentName: event.agent },
-            event.event as Parameters<typeof reduceSessionEvent>[1],
-          ),
+          [childSessionId]: reduceSessionEvent(streamingView, event.event as Parameters<typeof reduceSessionEvent>[1]),
         };
       }
       if (event.status !== "working" && next[childSessionId]) {
@@ -345,6 +431,8 @@ export function WorkPage({
     parentOwner.current = { id: sessionId, generation: parentOwner.current.generation + 1 };
   }
   const status = connection.status;
+  const filesLoadEnabled = status === "ready" || status === "running" || status === "stopped";
+  fileEventsEnabled.current = filesLoadEnabled && fileEvents.sessionId === sessionId;
   const statusText = commandError ?? connection.notice;
   const accepting = connection.accepting;
   const pendingOutput = connection.pendingOutput;
@@ -972,11 +1060,10 @@ export function WorkPage({
         return;
       }
       if (command.name === "compact") {
-        void compactSession(sessionId, args || undefined)
-          .then(({ state }) => connection.setView((current) => ({ ...current, compactionState: state })))
-          .catch((error: unknown) => {
-            setCommandError(error instanceof Error ? error.message : String(error));
-          });
+        // SSE owns progress; the POST acknowledgement can arrive after completion.
+        void compactSession(sessionId, args || undefined).catch((error: unknown) => {
+          setCommandError(error instanceof Error ? error.message : String(error));
+        });
         return;
       }
       if (command.name === "statistics") {
@@ -985,7 +1072,7 @@ export function WorkPage({
       }
       void send(args ? `/${command.name} ${args}` : `/${command.name}`);
     },
-    [connection.setView, refreshTree, send, sessionId, sessionView.sessionName],
+    [refreshTree, send, sessionId, sessionView.sessionName],
   );
 
   const messageStructure = structuredMessages.current.messages;
@@ -1249,11 +1336,13 @@ export function WorkPage({
             className={`h-full min-h-0 overflow-hidden min-[820px]:rounded-[10px] ${animateFiles ? "animate-v2-fade-in motion-reduce:animate-none" : ""}`}
           >
             <FileBrowser
+              key={sessionId}
               root={cwd}
-              loadEnabled={status === "ready" || status === "running" || status === "stopped"}
+              loadEnabled={filesLoadEnabled}
               sessionId={sessionId}
               fileWatchLeaseId={connection.fileWatchLeaseId}
-              fileEvent={fileEvent}
+              fileEvents={fileEvents.sessionId === sessionId ? fileEvents.pending : EMPTY_FILE_EVENTS}
+              onFileEventsConsumed={consumeFileEvents}
             />
           </div>
           <div

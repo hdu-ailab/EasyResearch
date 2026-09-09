@@ -25,6 +25,7 @@ import { configureBatchedSteering, type RuntimeSteeringSession } from "../runtim
 import type { AgentSessionNetworkRouter } from "../runtime/network-routing";
 import { createConfiguredModelRuntime } from "../web/auth-runtime";
 import type { AgentConfig } from "./agents";
+import { createCompactionCancellationExtension, prioritizeCompactionCancellation } from "./compaction-cancellation";
 import {
   AgentConfigurationChangedError,
   availableSubagentsForCaller,
@@ -34,7 +35,7 @@ import {
 import type { ReservedDispatch, SubagentCoordinator } from "./coordinator";
 import { createSessionMaterializationBarrier, type SessionMaterializationBarrier } from "./materialization";
 import { sessionNameFor } from "./session-links";
-import type { SubagentSupervisor, SupervisableAgentSession } from "./supervisor";
+import { createSubagentNotificationExtension, type SubagentSupervisor, type SupervisableAgentSession } from "./supervisor";
 
 const SAFE_STAGE_AUTHORIZATION_ERROR =
   "The selected Agent is not available to this caller in the current valid configuration.";
@@ -113,6 +114,9 @@ export interface StageAgentSession extends RuntimeSteeringSession {
   readonly model: Model<any> | undefined;
   readonly isStreaming: boolean;
   readonly isIdle: boolean;
+  readonly extensionRunner: {
+    emit(event: { type: "session_shutdown"; reason: "quit" }): Promise<unknown>;
+  };
   readonly sessionManager: { getEntries(): readonly unknown[] };
   subscribe(listener: (event: unknown) => void): () => void;
   bindExtensions(bindings: unknown): Promise<void>;
@@ -124,12 +128,14 @@ export interface StageAgentSession extends RuntimeSteeringSession {
   setThinkingLevel(level: ThinkingLevel): void;
   waitForIdle(): Promise<void>;
   navigateTree(targetId: string, options?: Record<string, unknown>): Promise<{ cancelled: boolean }>;
-  prompt(message: string): Promise<void>;
+  prompt(message: string, options?: { preflightResult?: (success: boolean) => void }): Promise<void>;
   sendCustomMessage(
     message: { customType: string; content: string; display: boolean; details?: unknown },
     options: { deliverAs: "steer"; triggerTurn: boolean },
   ): Promise<void>;
   abort(): Promise<void>;
+  abortCompaction(): void;
+  abortBranchSummary(): void;
   dispose(): void;
 }
 
@@ -177,6 +183,7 @@ export interface StageSessionDependencies {
     agentDir: string;
     settingsManager: unknown;
     extensionFactories: unknown[];
+    extensionsOverride: typeof prioritizeCompactionCancellation;
     noSkills: boolean;
     additionalSkillPaths: string[];
     skillsOverride: typeof applySkillSnapshotBaseDirs;
@@ -268,6 +275,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
       agentId: options.reservation.agentId,
     };
     let binding: AgentRuntimeBinding | undefined;
+    let abortRequested = false;
     let session: StageAgentSession | undefined;
     let supervisor: SubagentSupervisor | undefined;
     let barrier: SessionMaterializationBarrier | undefined;
@@ -280,6 +288,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
     let setupSessionUnsubscribed = false;
     let setupSupervisorDisposed = false;
     let setupSessionDisposed = false;
+    let sessionShutdownComplete = false;
     let setupBindingDisposed = false;
     const pendingTimelineEntries: unknown[] = [];
     let publishTimelineEntry: (entry: unknown) => void = (entry) => {
@@ -318,9 +327,16 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
           if (supervisor) await supervisor.dispose();
           setupSupervisorDisposed = true;
         },
-        () => {
+        async () => {
           if (setupSessionDisposed) return;
-          if (session) session.dispose();
+          await binding?.close();
+          if (session) {
+            if (!sessionShutdownComplete) {
+              await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+              sessionShutdownComplete = true;
+            }
+            session.dispose();
+          }
           setupSessionDisposed = true;
         },
         async () => {
@@ -381,14 +397,19 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         cwd: options.cwd,
         agentDir: deps.agentDir,
         settingsManager,
-        extensionFactories: deps.createExtensionFactories({
-          binding,
-          networkRouter: deps.networkRouter,
-          liveConfiguration: options.liveConfiguration,
-          coordinator: options.coordinator,
-          supervisor,
-          publishTimelineEntry: (entry) => publishTimelineEntry(entry),
-        }),
+        extensionFactories: [
+          createCompactionCancellationExtension(() => abortRequested, () => session!.abortCompaction()),
+          ...deps.createExtensionFactories({
+            binding,
+            networkRouter: deps.networkRouter,
+            liveConfiguration: options.liveConfiguration,
+            coordinator: options.coordinator,
+            supervisor,
+            publishTimelineEntry: (entry) => publishTimelineEntry(entry),
+          }),
+          createSubagentNotificationExtension(supervisor),
+        ],
+        extensionsOverride: prioritizeCompactionCancellation,
         noSkills: true,
         additionalSkillPaths: [],
         skillsOverride: applySkillSnapshotBaseDirs,
@@ -426,10 +447,11 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
       const listeners = new Set<(event: JsonAgentSessionEvent) => void>();
       const pendingOwnerEvents: JsonAgentSessionEvent[] = [];
       let ownerSubscribed = false;
-      let abortRequested = false;
       let abortReapplied = false;
       let abortReason: string | undefined;
       let initialSessionAbortComplete = false;
+      let compactionAbortComplete = false;
+      let branchSummaryAbortComplete = false;
       let descendantAbortComplete = false;
       let reappliedSessionAbortRequired = false;
       let reappliedSessionAbortComplete = false;
@@ -448,7 +470,17 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
       const attemptAbort = () => {
         if (abortOperation) return abortOperation;
         let tracked!: Promise<void>;
-        tracked = runCleanupSteps([
+        const cancellations = [
+          () => {
+            if (!abortRequested || compactionAbortComplete) return;
+            session!.abortCompaction();
+            compactionAbortComplete = true;
+          },
+          () => {
+            if (!abortRequested || branchSummaryAbortComplete) return;
+            session!.abortBranchSummary();
+            branchSummaryAbortComplete = true;
+          },
           async () => {
             if (!abortRequested || initialSessionAbortComplete) return;
             await session!.abort();
@@ -459,12 +491,23 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
             await supervisor!.abortAll(abortReason ?? "Stage AgentSession aborted.");
             descendantAbortComplete = true;
           },
-          async () => {
-            if (!reappliedSessionAbortRequired || reappliedSessionAbortComplete) return;
-            await session!.abort();
-            reappliedSessionAbortComplete = true;
-          },
-        ], "Stage abort cleanup failed.").then(
+        ];
+        tracked = Promise.allSettled(cancellations.map(async (cancel) => cancel())).then((results) =>
+          runCleanupSteps([
+            ...results.map((result) => () => {
+              if (result.status === "rejected") throw result.reason;
+            }),
+            async () => {
+              if (!reappliedSessionAbortRequired || reappliedSessionAbortComplete) return;
+              await runCleanupSteps([
+                () => session!.abortCompaction(),
+                () => session!.abortBranchSummary(),
+                () => session!.abort(),
+              ], "Stage reapplied abort failed.");
+              reappliedSessionAbortComplete = true;
+            },
+          ], "Stage abort cleanup failed."),
+        ).then(
           () => {
             if (abortOperation === tracked) abortOperation = undefined;
           },
@@ -521,7 +564,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
       supervisor.attach(session as unknown as SupervisableAgentSession, async () => {
         if (!session!.isIdle) await session!.waitForIdle();
         await binding!.ensureCurrent();
-      });
+      }, () => abortRequested);
       await session.bindExtensions({
         mode: "rpc",
         commandContextActions: {
@@ -571,7 +614,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
       if (options.signal?.aborted) signalListener();
       else options.signal?.addEventListener("abort", signalListener, { once: true });
 
-      const authorizePrompt = async (): Promise<{ prompt: Promise<void> }> => {
+      const authorizePrompt = async (releaseAdmission: () => void): Promise<{ prompt: Promise<void> }> => {
         let bindingMismatchRetries = 0;
         for (;;) {
           await binding!.ensureCurrent();
@@ -604,7 +647,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
               if (currentModel) result.model = `${currentModel.provider}/${currentModel.id}`;
               assertModelRequestReady(binding!.modelRuntime(), currentModel);
               throwIfAuthorizationAborted(options.signal);
-              return { prompt: session!.prompt(`Task: ${options.task}`) };
+              return { prompt: session!.prompt(`Task: ${options.task}`, { preflightResult: releaseAdmission }) };
             },
             { signal: options.signal, maxGenerationRetries: 1 },
           );
@@ -615,9 +658,17 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         }
       };
 
-      const { prompt } = await authorizePrompt();
+      const releaseAdmission = await supervisor.acquirePromptAdmission();
+      let prompt: Promise<void>;
+      try {
+        ({ prompt } = await authorizePrompt(releaseAdmission));
+      } catch (error) {
+        releaseAdmission();
+        throw error;
+      }
 
       const finish = async (error?: unknown): Promise<StageRunResult> => {
+        releaseAdmission();
         barrier!.settlePrompt(error);
         const activeAbort = abortOperation;
         if (activeAbort) await activeAbort.catch(() => {});
@@ -711,8 +762,13 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
               pendingOwnerEvents.length = 0;
               eventBuffersCleared = true;
             },
-            () => {
+            async () => {
               if (sessionDisposed) return;
+              await binding!.close();
+              if (!sessionShutdownComplete) {
+                await session!.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+                sessionShutdownComplete = true;
+              }
               session!.dispose();
               sessionDisposed = true;
             },

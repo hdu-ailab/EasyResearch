@@ -94,6 +94,8 @@ export interface ContextUsageDto {
   tokens: number | null;
   contextWindow: number;
   percent: number | null;
+  /** Pi message-size fallback while post-compaction usage is unavailable; not billing usage. */
+  estimated?: boolean;
 }
 
 export interface ApiUsageDto {

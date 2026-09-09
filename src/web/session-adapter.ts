@@ -30,8 +30,9 @@ import {
   type LiveConfiguration,
 } from "../runtime/live-configuration";
 import type { CoordinatorSessionManager, SubagentCoordinator } from "../subagent/coordinator";
+import { createCompactionCancellationExtension, prioritizeCompactionCancellation } from "../subagent/compaction-cancellation";
 import { AGENT_STATUS_TYPE } from "../subagent/notifications";
-import type { SubagentSupervisor, SupervisableAgentSession } from "../subagent/supervisor";
+import { createSubagentNotificationExtension, type SubagentSupervisor, type SupervisableAgentSession } from "../subagent/supervisor";
 import type {
   ApiUsageRecordDto,
   CompactionPolicyDto,
@@ -133,6 +134,7 @@ export interface InProcessAgentSession extends RuntimeSteeringSession {
   };
   readonly extensionRunner: {
     getRegisteredCommands(): ReadonlyArray<{ invocationName: string; description?: string }>;
+    emit(event: { type: "session_shutdown"; reason: "quit" }): Promise<unknown>;
   };
   readonly settingsManager: {
     getTreeFilterMode(): string;
@@ -154,6 +156,7 @@ export interface InProcessAgentSession extends RuntimeSteeringSession {
   abort(): Promise<void>;
   compact(customInstructions?: string): Promise<unknown>;
   abortCompaction(): void;
+  abortBranchSummary(): void;
   setModel(model: Model<any>): Promise<void>;
   setThinkingLevel(level: ThinkingLevel): void;
   setSessionName(name: string): void;
@@ -205,10 +208,10 @@ export type AgentSessionCreator = (
 ) => Promise<ManagedAgentSession>;
 
 function createRuntimeSetupCleanup(
-  session: Pick<InProcessAgentSession, "dispose"> | undefined,
+  session: Pick<InProcessAgentSession, "dispose" | "extensionRunner"> | undefined,
   compaction: Pick<ManualCompactionController, "dispose"> | undefined,
   supervisor: Pick<SubagentSupervisor, "dispose"> | undefined,
-  binding: Pick<AgentRuntimeBinding, "dispose">,
+  binding: Pick<AgentRuntimeBinding, "close" | "dispose">,
   coordinatorUnsubscribe?: () => void,
   activityUnsubscribe?: () => void,
   compactionUnsubscribe?: () => void,
@@ -221,6 +224,7 @@ function createRuntimeSetupCleanup(
   let compactionUnsubscribed = compactionUnsubscribe === undefined;
   let sessionUnsubscribed = sessionUnsubscribe === undefined;
   let sessionDisposed = session === undefined;
+  let sessionShutdownComplete = session === undefined;
   let bindingDisposed = false;
   return async () => {
     await runCleanupSteps([
@@ -254,8 +258,13 @@ function createRuntimeSetupCleanup(
         sessionUnsubscribe!();
         sessionUnsubscribed = true;
       },
-      () => {
+      async () => {
         if (sessionDisposed) return;
+        await binding.close();
+        if (!sessionShutdownComplete) {
+          await session!.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+          sessionShutdownComplete = true;
+        }
         session!.dispose();
         sessionDisposed = true;
       },
@@ -342,6 +351,7 @@ export interface PiRuntimeDependencies {
     agentDir: string;
     settingsManager: unknown;
     extensionFactories: unknown[];
+    extensionsOverride: typeof prioritizeCompactionCancellation;
     noSkills: boolean;
     additionalSkillPaths: string[];
     skillsOverride: typeof applySkillSnapshotBaseDirs;
@@ -407,7 +417,12 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
         cwd: options.cwd,
         agentDir: deps.agentDir,
         settingsManager,
-        extensionFactories,
+        extensionFactories: [
+          createCompactionCancellationExtension(() => compaction.isCancelling(), () => session!.abortCompaction()),
+          ...extensionFactories,
+          createSubagentNotificationExtension(supervisor),
+        ],
+        extensionsOverride: prioritizeCompactionCancellation,
         noSkills: true,
         additionalSkillPaths: [],
         skillsOverride: applySkillSnapshotBaseDirs,
@@ -436,7 +451,7 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
       supervisor.attach(session as unknown as SupervisableAgentSession, async () => {
         if (!session!.isIdle) await session!.waitForIdle();
         await binding.ensureCurrent();
-      });
+      }, () => compaction.isCancelling());
       await session.bindExtensions({
         mode: "rpc",
         commandContextActions: {
@@ -519,7 +534,10 @@ const THINKING_LEVELS = new Set<ThinkingLevel>([
 ]);
 
 export class PiSessionFactory implements SessionFactory {
-  constructor(private readonly createAgentSession: AgentSessionCreator) {}
+  constructor(
+    private readonly createAgentSession: AgentSessionCreator,
+    private readonly estimateTokens?: (message: AgentMessage) => number,
+  ) {}
 
   static async resolve(
     liveConfiguration?: LiveConfiguration,
@@ -596,11 +614,11 @@ export class PiSessionFactory implements SessionFactory {
         });
       },
     });
-    return new PiSessionFactory(creator);
+    return new PiSessionFactory(creator, pi.estimateTokens);
   }
 
   create(options: StartSessionOptions): SessionAdapter {
-    return new DirectSessionAdapter(this.createAgentSession, options);
+    return new DirectSessionAdapter(this.createAgentSession, options, this.estimateTokens);
   }
 }
 
@@ -638,8 +656,10 @@ class DirectSessionAdapter implements SessionAdapter {
   private compactionUnsubscribeComplete = false;
   private unsubscribeComplete = false;
   private sessionDisposeComplete = false;
+  private sessionShutdownComplete = false;
   private bindingDisposeComplete = false;
   private readonly promptOperations = new Set<Promise<void>>();
+  private treeNavigationOperation: Promise<unknown> | undefined;
   private readonly stopAbortOperations = new Set<Promise<void>>();
   private readonly stopAbortErrors: unknown[] = [];
   private readonly stopAbortProgressWaiters = new Set<() => void>();
@@ -652,6 +672,7 @@ class DirectSessionAdapter implements SessionAdapter {
   constructor(
     private readonly createAgentSession: AgentSessionCreator,
     private readonly options: StartSessionOptions,
+    private readonly estimateTokens?: (message: AgentMessage) => number,
   ) {}
 
   async start(): Promise<void> {
@@ -686,6 +707,8 @@ class DirectSessionAdapter implements SessionAdapter {
       let compactionUnsubscribe: (() => void) | undefined;
       let sessionUnsubscribe: (() => void) | undefined;
       try {
+        created.supervisor.attach(created.session as unknown as SupervisableAgentSession, undefined,
+          () => this.runCancellationPending || this.stopRequested || created.compaction.isCancelling());
         coordinatorUnsubscribe = created.coordinator.subscribe((event) => {
           this.publishEvent(event);
         });
@@ -715,7 +738,7 @@ class DirectSessionAdapter implements SessionAdapter {
           this.publishEvent({ type: "compaction_state_changed", state });
         });
         const unsubscribeStats = created.stats.subscribe(() => {
-          const contextUsage = created.session.getSessionStats().contextUsage;
+          const contextUsage = this.readContextUsage(created.session);
           this.lastCompactionPolicy = created.binding.compactionPolicy();
           const event = {
             type: "session_stats_changed",
@@ -826,8 +849,13 @@ class DirectSessionAdapter implements SessionAdapter {
         await compaction.dispose();
         this.compactionDisposeComplete = true;
       },
-      () => {
+      async () => {
         if (!session || this.sessionDisposeComplete) return;
+        await binding?.close();
+        if (!this.sessionShutdownComplete) {
+          await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+          this.sessionShutdownComplete = true;
+        }
         session.dispose();
         this.sessionDisposeComplete = true;
       },
@@ -868,6 +896,13 @@ class DirectSessionAdapter implements SessionAdapter {
     // composer. Preflight failures reject through the prompt promise.
     const session = this.requiredSession();
     const binding = this.requiredBinding();
+    const isRunningCommand = (text: string): boolean => {
+      if (!session.isStreaming || !text.startsWith("/")) return false;
+      // Match Pi's command parser, not Skill aliases or general whitespace.
+      const spaceIndex = text.indexOf(" ");
+      const name = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
+      return session.extensionRunner.getRegisteredCommands().some((command) => command.invocationName === name);
+    };
     let accepted = false;
     let resolveAccepted!: () => void;
     let rejectAccepted!: (error: Error) => void;
@@ -876,8 +911,17 @@ class DirectSessionAdapter implements SessionAdapter {
       rejectAccepted = reject;
     });
     const operation = (async () => {
+      let releaseAdmission: (() => void) | undefined;
       try {
+        if (!isRunningCommand(message)) {
+          releaseAdmission = await this.managed!.supervisor.acquirePromptAdmission();
+        }
         await binding.ensureCurrent();
+        // A run may settle or reload its commands while preparation is pending.
+        if (!releaseAdmission && !isRunningCommand(message)) {
+          releaseAdmission = await this.managed!.supervisor.acquirePromptAdmission();
+          await binding.ensureCurrent();
+        }
         if (this.stopRequested) throw new Error("Session has stopped");
         assertModelRequestReady(session.modelRuntime, session.model);
         if (/^\/web-tree(?:\s|$)/.test(message.trimStart())) {
@@ -896,10 +940,14 @@ class DirectSessionAdapter implements SessionAdapter {
             promptMessage = `/skill:${name}${message.slice(name.length + 1)}`;
           }
         }
+        // Commands may await this run's idle boundary. They cannot own the LLM
+        // preflight gate that the boundary needs to drain completed handoffs.
+        if (isRunningCommand(promptMessage)) releaseAdmission?.();
         await session.prompt(promptMessage, {
           streamingBehavior: "steer",
           ...options,
           preflightResult: (didSucceed) => {
+            releaseAdmission?.();
             if (!accepted && didSucceed) {
               accepted = true;
               resolveAccepted();
@@ -918,11 +966,14 @@ class DirectSessionAdapter implements SessionAdapter {
           accepted = true;
           rejectAccepted(error instanceof Error ? error : new Error(String(error)));
         }
+      } finally {
+        releaseAdmission?.();
       }
     })();
     this.promptOperations.add(operation);
     void operation.finally(() => {
       this.promptOperations.delete(operation);
+      this.publishEvent({ type: "session_activity_changed", active: this.isSupervisorActive() });
     });
     await acceptedPromise;
   }
@@ -942,10 +993,14 @@ class DirectSessionAdapter implements SessionAdapter {
       () => this.abortSessionAndSettlePrompts(session),
       () => managed.supervisor.cancelAll("Research Assistant stopped."),
     ], "Research Assistant run cancellation failed.")
-      .then(() => managed.coordinator.finishCancellation())
+      .then(() => {
+        managed.coordinator.finishCancellation();
+        managed.compaction.finishCancellation();
+      })
       .finally(() => {
         if (this.runCancellationPromise === tracked) this.runCancellationPromise = undefined;
         this.runCancellationPending = false;
+        this.publishEvent({ type: "session_activity_changed", active: this.isSupervisorActive() });
       });
     this.runCancellationPromise = tracked;
     return tracked;
@@ -980,7 +1035,27 @@ class DirectSessionAdapter implements SessionAdapter {
   }
 
   getContextUsage(): ContextUsageDto | undefined {
-    return this.requiredSession().getSessionStats().contextUsage;
+    return this.readContextUsage(this.requiredSession());
+  }
+
+  private readContextUsage(session: InProcessAgentSession): ContextUsageDto | undefined {
+    const usage = session.getSessionStats().contextUsage;
+    if (usage?.tokens !== null || !this.estimateTokens) return usage;
+    if (!Number.isFinite(usage.contextWindow) || usage.contextWindow <= 0) return usage;
+    try {
+      let tokens = 0;
+      // Match Pi's post-compaction heuristic without reusing retained messages' old usage.
+      for (const message of session.messages) {
+        const count = this.estimateTokens(message);
+        if (!Number.isSafeInteger(count) || count < 0) return usage;
+        tokens += count;
+        if (!Number.isSafeInteger(tokens)) return usage;
+      }
+      const percent = tokens / usage.contextWindow * 100;
+      return Number.isFinite(percent) ? { tokens, contextWindow: usage.contextWindow, percent, estimated: true } : usage;
+    } catch {
+      return usage;
+    }
   }
 
   getRuntimeConfigurationGeneration(): number {
@@ -1073,12 +1148,20 @@ class DirectSessionAdapter implements SessionAdapter {
     if (this.hasBackgroundWork()) {
       throw new Error("Wait for active work to finish before navigating the session tree.");
     }
-    const result = await session.navigateTree(entryId, options ? { ...options } : undefined);
-    return {
-      cancelled: result.cancelled,
-      ...(result.editorText !== undefined ? { editorText: result.editorText } : {}),
-      leafId: session.sessionManager.getLeafId(),
-    };
+    const operation = session.navigateTree(entryId, options ? { ...options } : undefined);
+    this.treeNavigationOperation = operation;
+    this.publishEvent({ type: "session_activity_changed", active: this.isSupervisorActive() });
+    try {
+      const result = await operation;
+      return {
+        cancelled: result.cancelled,
+        ...(result.editorText !== undefined ? { editorText: result.editorText } : {}),
+        leafId: session.sessionManager.getLeafId(),
+      };
+    } finally {
+      this.treeNavigationOperation = undefined;
+      this.publishEvent({ type: "session_activity_changed", active: this.isSupervisorActive() });
+    }
   }
 
   onEvent(listener: (event: unknown) => void): () => void {
@@ -1095,6 +1178,7 @@ class DirectSessionAdapter implements SessionAdapter {
       this.startPending
       || this.startCleanup !== undefined
       || this.promptOperations.size > 0
+      || this.treeNavigationOperation !== undefined
       || this.runCancellationPending
       || this.treeCleanupPending
       || this.stopPending
@@ -1204,20 +1288,16 @@ class DirectSessionAdapter implements SessionAdapter {
       await Promise.allSettled([...this.stopAbortOperations]);
     }
     this.throwIfStopAbortFailed();
+    await this.treeNavigationOperation?.catch(() => {});
     this.stopAbortErrors.splice(0);
   }
 
   private requestStopAbort(session: InProcessAgentSession): void {
     const sequence = ++this.stopAbortSequence;
-    let operation: Promise<void>;
-    try {
-      operation = session.abort();
-    } catch (error) {
-      this.stopAbortFailureSequence = Math.max(this.stopAbortFailureSequence, sequence);
-      this.stopAbortErrors.push(error);
-      for (const settle of [...this.stopAbortProgressWaiters]) settle();
-      return;
-    }
+    const operation = runCleanupSteps([
+      () => session.abortBranchSummary(),
+      () => session.abort(),
+    ], SAFE_STOP_ABORT_ERROR);
     this.stopAbortOperations.add(operation);
     void operation
       .then(() => {

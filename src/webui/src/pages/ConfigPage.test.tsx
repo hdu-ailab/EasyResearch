@@ -347,6 +347,148 @@ describe("ConfigPage", () => {
     expect(api.writeConfigFile).not.toHaveBeenCalled();
   });
 
+  it.each([/Global/, /\/home\/u\/proj/])(
+    "saves a single leading settings BOM verbatim in scope %s",
+    async (rootName) => {
+      const user = userEvent.setup();
+      vi.mocked(api.readConfigFile).mockResolvedValue({ path: "settings.json", content: '\uFEFF{"before":true}' });
+      renderConfigPage();
+      await user.click(await screen.findByRole("button", { name: rootName }));
+      await user.click(screen.getByRole("button", { name: "settings.json" }));
+      const content = '\uFEFF{"after":true}';
+      fireEvent.change(await screen.findByRole("textbox", { name: "Editor" }), { target: { value: content } });
+      await user.click(screen.getByRole("button", { name: "Save" }));
+      expect(api.writeConfigFile).toHaveBeenCalledWith(
+        rootName.source === "Global" ? "global" : "project",
+        rootName.source === "Global" ? undefined : "/home/u/proj",
+        "settings.json",
+        content,
+      );
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    },
+  );
+
+  it.each([
+    ["models.json", "\uFEFF{}"],
+    ["auth.json", "\uFEFF{}"],
+    ["skills/settings.json", "\uFEFF{}"],
+    [String.raw`skills\settings.json`, "\uFEFF{}"],
+    ["settings.json", "\uFEFF\uFEFF{}"],
+    ["settings.json", " \uFEFF{}"],
+  ])("keeps unsupported BOM syntax strict for %s (%s)", async (path, content) => {
+    const user = userEvent.setup();
+    vi.mocked(api.listConfig).mockResolvedValue([{ name: path, path, type: "file" }]);
+    vi.mocked(api.readConfigFile).mockResolvedValue({ path, content });
+    renderConfigPage();
+    await user.click(await screen.findByRole("button", { name: /Global/ }));
+    await user.click(screen.getByRole("button", { name: path }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(api.writeConfigFile).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent(/invalid JSON/i);
+  });
+
+  it.each(["write", "listing"])(
+    "does not install a cancelled global creation in a project after its late %s",
+    async (phase) => {
+      const user = userEvent.setup();
+      const write = deferred<Awaited<ReturnType<typeof api.writeConfigFile>>>();
+      const listing = deferred<Awaited<ReturnType<typeof api.listConfig>>>();
+      vi.mocked(api.writeConfigFile).mockReturnValueOnce(write.promise);
+      renderConfigPage();
+      await user.click(await screen.findByRole("button", { name: /Global/ }));
+      await user.click(screen.getByRole("button", { name: "New file" }));
+      fireEvent.change(screen.getByRole("textbox", { name: "New file" }), { target: { value: "created.md" } });
+      await user.click(screen.getByRole("button", { name: "Confirm" }));
+      if (phase === "listing") {
+        vi.mocked(api.listConfig).mockReturnValueOnce(listing.promise);
+        await act(async () => write.resolve({ ok: true }));
+      }
+      await user.click(screen.getByRole("button", { name: "Cancel" }));
+      await user.click(screen.getByRole("button", { name: "Back to files" }));
+      await user.click(screen.getByRole("button", { name: "/home/u/proj" }));
+      await user.click(await screen.findByRole("button", { name: "notes.md" }));
+      const editor = await screen.findByRole("textbox", { name: "Editor" });
+      fireEvent.change(editor, { target: { value: "project draft" } });
+      const listCalls = vi.mocked(api.listConfig).mock.calls.length;
+      await act(async () => {
+        write.resolve({ ok: true });
+        listing.resolve([{ name: "created.md", path: "created.md", type: "file" }]);
+      });
+      expect(editor).toHaveValue("project draft");
+      expect(api.listConfig).toHaveBeenCalledTimes(listCalls);
+      await user.click(screen.getByRole("button", { name: "Save" }));
+      expect(api.writeConfigFile).toHaveBeenLastCalledWith("project", "/home/u/proj", "notes.md", "project draft");
+    },
+  );
+
+  it("ignores cancelled directory-creation failure while a successor dialog is open", async () => {
+    const user = userEvent.setup();
+    const old = Promise.withResolvers<void>();
+    vi.mocked(api.createConfigDirectory).mockReturnValueOnce(old.promise);
+    renderConfigPage();
+    await user.click(await screen.findByRole("button", { name: /Global/ }));
+    await user.click(screen.getByRole("button", { name: "New folder" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "New folder" }), { target: { value: "old" } });
+    await user.click(screen.getByRole("button", { name: "Confirm" }));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await user.click(screen.getByRole("button", { name: "New file" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "New file" }), { target: { value: "new.md" } });
+    await act(async () => old.reject(new Error("obsolete failure")));
+    expect(screen.getByRole("textbox", { name: "New file" })).toHaveValue("new.md");
+    expect(screen.queryByText("obsolete failure")).not.toBeInTheDocument();
+  });
+
+  it.each(["success", "failure"])("ignores a late save %s after changing roots", async (outcome) => {
+    const user = userEvent.setup();
+    const pending = Promise.withResolvers<Awaited<ReturnType<typeof api.writeConfigFile>>>();
+    vi.mocked(api.writeConfigFile).mockReturnValueOnce(pending.promise);
+    renderConfigPage();
+    await user.click(await screen.findByRole("button", { name: /Global/ }));
+    await user.click(screen.getByRole("button", { name: "notes.md" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(screen.getByRole("button", { name: "Back to files" }));
+    await user.click(screen.getByRole("button", { name: "/home/u/proj" }));
+    await user.click(screen.getByRole("button", { name: "notes.md" }));
+    const listCalls = vi.mocked(api.listConfig).mock.calls.length;
+    await act(async () => {
+      if (outcome === "success") pending.resolve({ ok: true });
+      else pending.reject(new Error("obsolete save failed"));
+    });
+    expect(screen.queryByText(/^Saved/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(api.listConfig).toHaveBeenCalledTimes(listCalls);
+  });
+
+  it("does not mark a newer draft saved when the older save completes", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<Awaited<ReturnType<typeof api.writeConfigFile>>>();
+    vi.mocked(api.writeConfigFile).mockReturnValueOnce(pending.promise);
+    renderConfigPage();
+    await user.click(await screen.findByRole("button", { name: /Global/ }));
+    await user.click(screen.getByRole("button", { name: "notes.md" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    const editor = screen.getByRole("textbox", { name: "Editor" });
+    fireEvent.change(editor, { target: { value: "unsaved newer draft" } });
+    await act(async () => pending.resolve({ ok: true }));
+    expect(editor).toHaveValue("unsaved newer draft");
+    expect(screen.queryByText(/^Saved/)).not.toBeInTheDocument();
+  });
+
+  it("does not continue a creation's listing work after unmount", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<Awaited<ReturnType<typeof api.writeConfigFile>>>();
+    vi.mocked(api.writeConfigFile).mockReturnValueOnce(pending.promise);
+    const view = renderConfigPage();
+    await user.click(await screen.findByRole("button", { name: /Global/ }));
+    await user.click(screen.getByRole("button", { name: "New file" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "New file" }), { target: { value: "created.md" } });
+    await user.click(screen.getByRole("button", { name: "Confirm" }));
+    const listCalls = vi.mocked(api.listConfig).mock.calls.length;
+    view.unmount();
+    await act(async () => pending.resolve({ ok: true }));
+    expect(api.listConfig).toHaveBeenCalledTimes(listCalls);
+  });
+
   it("creates a directory under the current config path", async () => {
     const user = userEvent.setup();
     renderConfigPage();

@@ -61,6 +61,8 @@ export interface AgentRuntimeBinding {
   attach(session: AgentRuntimeBindingSession): Promise<void>;
   ensureCurrent(options?: EnsureCurrentOptions): Promise<void>;
   reapplyCompaction(): Promise<void>;
+  /** Close application admission and drain it, retaining models for Pi shutdown. */
+  close(): Promise<void>;
   dispose(): Promise<void>;
 }
 
@@ -121,6 +123,8 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
   let unsubscribe: (() => void) | undefined;
   let applyPromise: Promise<void> | undefined;
   let disposePromise: Promise<void> | undefined;
+  let closePromise: Promise<void> | undefined;
+  let closing = false;
   let eventApplyRequested = false;
   let activeBoundaryRequested = false;
   let recaptureCompactionBaseRequested = false;
@@ -189,7 +193,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
     if (!projectRegistration) {
       projectRegistration = await options.live.acquireProject(options.cwd);
     }
-    if (disposed) throw new Error("Agent runtime binding has been disposed.");
+    if (disposed || closing) throw new Error("Agent runtime binding has been closed.");
     for (;;) {
       let modelRuntimeCandidate: ModelRuntimeCandidate<AgentRuntimeModelRuntime> | undefined;
       const discardModelRuntimeCandidate = async (): Promise<void> => {
@@ -199,7 +203,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
       };
       try {
         await options.live.synchronize({ projectCwds: [options.cwd] });
-        if (disposed) throw new Error("Agent runtime binding has been disposed.");
+        if (disposed || closing) throw new Error("Agent runtime binding has been closed.");
         const generation = options.live.generation;
         const availabilityEpoch = options.live.availabilityEpoch ?? 0;
         if (
@@ -223,7 +227,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
         } catch {
           // Credential/availability refresh failures do not invalidate registered configuration.
         }
-        if (disposed) throw new Error("Agent runtime binding has been disposed.");
+        if (disposed || closing) throw new Error("Agent runtime binding has been closed.");
         if (generation !== options.live.generation) {
           await discardModelRuntimeCandidate();
           continue;
@@ -255,14 +259,14 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
         const selectedThinking = definition.name === RESEARCH_ASSISTANT_AGENT
           ? researchAssistantThinking
           : resolveConfiguredThinking(definition, researchAssistantThinking, selectedModel);
-        if (disposed) throw new Error("Agent runtime binding has been disposed.");
+        if (disposed || closing) throw new Error("Agent runtime binding has been closed.");
         if (generation !== options.live.generation) {
           await discardModelRuntimeCandidate();
           continue;
         }
 
         await options.live.synchronize({ projectCwds: [options.cwd] });
-        if (disposed) throw new Error("Agent runtime binding has been disposed.");
+        if (disposed || closing) throw new Error("Agent runtime binding has been closed.");
         if (!options.live.isCurrent(generation)) {
           await discardModelRuntimeCandidate();
           if (generation !== options.live.generation) continue;
@@ -340,6 +344,10 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
         throw new Error(error instanceof Error && error.message === SAFE_MISSING_AGENT ? SAFE_MISSING_AGENT : SAFE_APPLY_ERROR);
       }
       if (!candidate) return false;
+      if (closing) {
+        await candidate.modelRuntimeCandidate.dispose();
+        return false;
+      }
       if (!options.live.isCurrent(candidate.generation)) {
         try {
           await candidate.modelRuntimeCandidate.dispose();
@@ -409,6 +417,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
 
   const ensureCurrent = (ensureOptions: EnsureCurrentOptions = {}): Promise<void> => {
     if (disposed) return Promise.reject(new Error("Agent runtime binding has been disposed."));
+    if (closing) return Promise.reject(new Error("Agent runtime binding has been closed."));
     if (ensureOptions.activeBoundary === true) {
       activeBoundaryRequested = true;
       abortOnActiveFailureRequested = true;
@@ -443,7 +452,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
           }
           projectAppliedGeneration();
         } while (
-          !disposed &&
+          !disposed && !closing &&
           (
             activeBoundaryRequested ||
             recaptureCompactionBaseRequested ||
@@ -451,7 +460,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
           )
         );
         abortOnActiveFailureRequested = false;
-        if (runtimeApplied && runtimeStatus === "clean") {
+        if (!closing && runtimeApplied && runtimeStatus === "clean") {
           try {
             options.onRuntimeCoherent?.();
           } catch {
@@ -476,6 +485,19 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
     });
     applyPromise = operation;
     return operation;
+  };
+
+  const close = (): Promise<void> => {
+    if (closePromise) return closePromise;
+    closing = true;
+    closePromise = (async () => {
+      try {
+        await applyPromise;
+      } catch {
+        // An admitted application owns its rollback before the final runner shuts down.
+      }
+    })();
+    return closePromise;
   };
 
   return {
@@ -507,6 +529,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
     },
     async attach(attached) {
       if (disposed) throw new Error("Agent runtime binding has been disposed.");
+      if (closing) throw new Error("Agent runtime binding has been closed.");
       if (session) throw new Error("Agent runtime binding is already attached.");
       const current = requireApplied();
       const acceptedGeneration = options.live.generation;
@@ -514,6 +537,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
       session = attached;
       if (!sameModel(attached.model, current.model)) attached.rebindModel(current.model);
       unsubscribe = options.live.subscribe((event) => {
+        if (closing) return;
         if (event.type !== "config.updated") return;
         if (
           event.availabilityChanged
@@ -551,6 +575,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
     ensureCurrent,
     async reapplyCompaction() {
       if (disposed) throw new Error("Agent runtime binding has been disposed.");
+      if (closing) throw new Error("Agent runtime binding has been closed.");
       if (applyingRuntimeModel) return;
       try {
         applyCompaction();
@@ -560,6 +585,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
         throw new Error(SAFE_APPLY_ERROR);
       }
     },
+    close,
     dispose() {
       if (disposePromise) return disposePromise;
       if (
@@ -574,15 +600,11 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
       disposePromise = (async () => {
         const errors: unknown[] = [];
         try {
+          await close();
           unsubscribe?.();
           unsubscribe = undefined;
         } catch (error) {
           errors.push(error);
-        }
-        try {
-          await applyPromise;
-        } catch {
-          // The owner is tearing down; the apply path already restored what it could.
         }
         session = undefined;
         try {

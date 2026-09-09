@@ -8,6 +8,13 @@ import {
 
 export type { FileWatcherEvent } from "../../web/contracts";
 
+export interface QueuedFileWatcherEvent {
+  sequence: number;
+  event: FileWatcherEvent;
+}
+
+export const EMPTY_FILE_EVENTS: readonly QueuedFileWatcherEvent[] = [];
+
 type RecordValue = Record<string, unknown>;
 
 function record(value: unknown): RecordValue | null {

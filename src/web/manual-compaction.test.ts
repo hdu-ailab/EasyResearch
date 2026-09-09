@@ -48,6 +48,21 @@ class FakeCompactionSession implements ManualCompactionSession {
 }
 
 describe("ManualCompactionController", () => {
+  it("does not adopt branch summarization as an event-owned native compaction", async () => {
+    const session = new FakeCompactionSession();
+    const controller = new ManualCompactionController();
+    controller.attach(session);
+    session.isCompacting = true;
+
+    const cancellation = controller.cancel();
+    expect(controller.hasWork()).toBe(false);
+    await cancellation;
+    controller.finishCancellation();
+    expect(() => controller.request()).toThrow(/summari|compacting/i);
+    expect(controller.hasWork()).toBe(false);
+    await controller.dispose();
+  });
+
   it("starts idle native compaction without waiting for its completion", async () => {
     const gate = deferred<void>();
     const session = new FakeCompactionSession();
@@ -95,11 +110,15 @@ describe("ManualCompactionController", () => {
 
     await controller.cancel();
 
+    expect(controller.isCancelling()).toBe(true);
+    expect(() => controller.request()).toThrow(/cancellation/);
     expect(controller.state()).toBe("idle");
     expect(await session.agent.shouldStopAfterTurn?.({})).toBe(false);
     expect(session.compactCalls).toEqual([]);
 
     const gate = deferred<void>();
+    controller.finishCancellation();
+    expect(controller.isCancelling()).toBe(false);
     session.isStreaming = false;
     session.compactImpl = () => gate.promise;
     controller.request("Running");

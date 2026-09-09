@@ -17,7 +17,7 @@ import {
   serverOwner,
   stopServerProcess,
 } from "./server-process";
-import { directLocalHttpFetch, type LocalHttpFetch } from "./local-http";
+import { directLocalHttpFetch, localHttpOrigin, type LocalHttpFetch } from "./local-http";
 import type { RuntimeLease, RuntimeLeaseHandoff } from "./runtime-lease";
 
 export const SUCCESSOR_READY_TIMEOUT_MS = 10_000;
@@ -435,8 +435,7 @@ function readExpectedSuccessorRecord(
 
 function daemonProbeOrigin(host: string, port: number): string {
   const probeHost = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
-  const authority = probeHost.includes(":") ? `[${probeHost}]` : probeHost;
-  return `http://${authority}:${port}`;
+  return localHttpOrigin(probeHost, port);
 }
 
 async function launchDaemon(spec: DaemonLaunchSpec): Promise<OwnedDaemonChild> {

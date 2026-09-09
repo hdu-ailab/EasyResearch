@@ -532,6 +532,106 @@ describe("ConfigFileService", () => {
     });
   });
 
+  it("shares provider-file mutation ownership with queued direct config writes", async () => {
+    const path = "auth.json";
+    writeFileSync(join(agentDir, path), '{"removed":{},"old":{}}');
+    const replacement = service.write({ scope: "global", path, content: '{"removed":{},"new":{"keep":true}}' });
+    const removal = service.mutateGlobalProviderFile(path, (content) => {
+      const next = JSON.parse(content!);
+      delete next.removed;
+      return JSON.stringify(next);
+    });
+
+    await Promise.all([replacement, removal]);
+    expect(JSON.parse(readFileSync(join(agentDir, path), "utf8"))).toEqual({ new: { keep: true } });
+  });
+
+  it.each(["auth.json", "alias/auth.json"])("serializes a direct %s write with Pi's native auth lock", async (path) => {
+    const target = join(agentDir, "auth.json");
+    writeFileSync(target, '{"retained":{"type":"api_key","key":"before"}}');
+    symlinkSync(agentDir, join(agentDir, "alias"), process.platform === "win32" ? "junction" : "dir");
+    const { importPi } = await import("../runtime/pi-import");
+    await importPi();
+    const { AuthStorage } = await import("../../node_modules/@earendil-works/pi-coding-agent/dist/core/auth-storage.js");
+    const storage = AuthStorage.create(target);
+    const held = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const writing = storage.modify("retained", async () => {
+      held.resolve();
+      await release.promise;
+      return { type: "api_key", key: "native-update" };
+    });
+    await held.promise;
+    const config = new ConfigFileService(agentDir, {
+      onAuthoritativeWrite: async () => {
+        await storage.read("retained");
+      },
+    });
+    const content = '{"retained":{"type":"api_key","key":"editor-update"}}';
+    const saving = config.write({ scope: "global", path, content });
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(readFileSync(target, "utf8")).toContain('"before"');
+      release.resolve();
+      await writing;
+      await saving;
+      expect(readFileSync(target, "utf8")).toBe(content);
+    } finally {
+      release.resolve();
+      await Promise.allSettled([writing, saving]);
+    }
+  });
+
+  it("keeps settings mutations available while a native auth writer holds its file lock", async () => {
+    const target = join(agentDir, "auth.json");
+    writeFileSync(target, '{"provider":{"type":"api_key","key":"before"}}');
+    const { importPiAuthStorage } = await import("../runtime/pi-import");
+    const { AuthStorage } = await importPiAuthStorage();
+    const storage = AuthStorage.create(target);
+    const held = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const nativeWrite = storage.modify("provider", async (current) => {
+      held.resolve();
+      await release.promise;
+      return current;
+    });
+    await held.promise;
+    const authWrite = service.write({ scope: "global", path: "auth.json", content: "{}" });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    let settingsWritten = false;
+    const settingsWrite = service.mutateGlobalSettings((settings) => ({
+      settings: { ...settings, theme: "light" }, result: undefined,
+    })).then(() => { settingsWritten = true; });
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(settingsWritten).toBe(true);
+      expect(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"))).toEqual({ theme: "light" });
+    } finally {
+      release.resolve();
+      await Promise.allSettled([nativeWrite, authWrite, settingsWrite]);
+    }
+  });
+
+  it("retries provider-file CAS against external bytes and notifies only the committed mutation", async () => {
+    const target = join(agentDir, "auth.json");
+    writeFileSync(target, '{"removed":{},"old":{}}');
+    const onAuthoritativeWrite = vi.fn(async () => "accepted");
+    const config = new ConfigFileService(agentDir, { onAuthoritativeWrite });
+    let attempts = 0;
+
+    const outcome = await config.mutateGlobalProviderFile("auth.json", (content) => {
+      const next = JSON.parse(content!);
+      if (++attempts === 1) writeFileSync(target, '{"removed":{},"external":{"keep":true}}');
+      delete next.removed;
+      return JSON.stringify(next);
+    });
+
+    expect(attempts).toBe(2);
+    expect(JSON.parse(readFileSync(target, "utf8"))).toEqual({ external: { keep: true } });
+    expect(outcome).toEqual({ changed: true, configuration: "accepted" });
+    expect(onAuthoritativeWrite).toHaveBeenCalledExactlyOnceWith({ availabilityChanged: true });
+  });
+
   it("mutates BOM-prefixed global settings with the existing formatted output", async () => {
     const settingsPath = join(agentDir, "settings.json");
     writeFileSync(settingsPath, '\uFEFF{"theme":"dark","future":{"keep":true}}', "utf8");
@@ -620,6 +720,48 @@ describe("ConfigFileService", () => {
     }
     const sub = await service.list({ scope: "global", path: "agents" });
     expect(sub.map((e) => e.path)).toEqual(["agents/x.json"]);
+  });
+
+  it("round-trips nested entries through a symlinked global root without changing its identity", async () => {
+    const alias = join(freshDir(), "agent-link");
+    symlinkSync(agentDir, alias, process.platform === "win32" ? "junction" : "dir");
+    const linked = new ConfigFileService(alias);
+    await linked.write({ scope: "global", path: "skills/one/notes.md", content: "before" });
+    const top = await linked.list({ scope: "global" });
+    const directories = await linked.list({ scope: "global", path: top[0]!.path });
+    const entries = await linked.list({ scope: "global", path: directories[0]!.path });
+
+    expect(linked.globalRoot).toBe(alias);
+    expect(entries).toEqual([{ name: "notes.md", path: join("skills", "one", "notes.md"), type: "file" }]);
+    await expect(linked.read({ scope: "global", path: entries[0]!.path })).resolves.toBe("before");
+    await linked.write({ scope: "global", path: entries[0]!.path, content: "after" });
+    expect(readFileSync(join(agentDir, "skills/one/notes.md"), "utf8")).toBe("after");
+
+    const outside = freshDir();
+    writeFileSync(join(outside, "private.md"), "outside");
+    symlinkSync(outside, join(agentDir, "escape"), process.platform === "win32" ? "junction" : "dir");
+    await expect(linked.list({ scope: "global", path: "escape" })).rejects.toThrow(ConfigPathError);
+    await expect(linked.read({ scope: "global", path: "escape/private.md" })).rejects.toThrow(ConfigPathError);
+    await expect(linked.write({ scope: "global", path: "escape/private.md", content: "no" })).rejects.toThrow(ConfigPathError);
+  });
+
+  it("round-trips BOM-prefixed settings listed through an in-root directory alias", async () => {
+    symlinkSync(agentDir, join(agentDir, "alias"), process.platform === "win32" ? "junction" : "dir");
+    const content = '\uFEFF{"theme":"dark"}';
+    writeFileSync(join(agentDir, "settings.json"), content);
+    const entry = (await service.list({ scope: "global", path: "alias" })).find((entry) => entry.name === "settings.json")!;
+
+    await service.write({ scope: "global", path: entry.path, content: await service.read({ scope: "global", path: entry.path }) });
+    expect(readFileSync(join(agentDir, "settings.json"), "utf8")).toBe(content);
+  });
+
+  it("does not let an escaping auth-file link block unrelated in-root writes", async () => {
+    const outside = freshDir();
+    writeFileSync(join(outside, "auth.json"), "{}");
+    symlinkSync(join(outside, "auth.json"), join(agentDir, "auth.json"));
+    await service.write({ scope: "global", path: "settings.json", content: "{}" });
+    expect(readFileSync(join(agentDir, "settings.json"), "utf8")).toBe("{}");
+    await expect(service.write({ scope: "global", path: "auth.json", content: "{}" })).rejects.toThrow(ConfigPathError);
   });
 
   it("refuses to escape the project root via traversal", async () => {

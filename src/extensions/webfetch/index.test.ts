@@ -14,12 +14,14 @@ import webFetchExtension, {
 } from "./index";
 import {
   COLLAPSED_LINE_MAX_CHARS,
+  MAX_RESPONSE_SIZE,
   abortError,
   collapsedUrl,
   compactLine,
   convertHtmlToMarkdown,
   extractTextFromHtml,
   isImageAttachment,
+  readLimited,
   textContent,
   webFetchTool,
 } from "./index";
@@ -225,5 +227,32 @@ describe("abortError", () => {
     const error = abortError("boom");
     expect(error.message).toBe("boom");
     expect(error.name).toBe("AbortError");
+  });
+});
+
+describe("bounded response ownership", () => {
+  it("cancels a declared oversized body before returning the size error", async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({ cancel() { cancelled = true; } });
+    const response = new Response(body, { headers: { "content-length": String(MAX_RESPONSE_SIZE + 1) } });
+
+    await expect(readLimited(response)).rejects.toThrow("Response too large");
+
+    expect(cancelled).toBe(true);
+    expect((await body.getReader().read()).done).toBe(true);
+  });
+
+  it.each([true, false])("preserves the size error when cancellation fails (declared: %s)", async (declared) => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) { controller.enqueue(new Uint8Array(MAX_RESPONSE_SIZE + 1)); },
+      cancel() { cancelled = true; throw new Error("source cleanup failed"); },
+    }, { highWaterMark: 0 });
+    const response = new Response(body, { headers: declared ? { "content-length": String(MAX_RESPONSE_SIZE + 1) } : {} });
+
+    await expect(readLimited(response)).rejects.toThrow("Response too large");
+
+    expect(cancelled).toBe(true);
+    expect(body.locked).toBe(false);
   });
 });

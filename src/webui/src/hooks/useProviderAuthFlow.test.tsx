@@ -80,6 +80,14 @@ describe("useProviderAuthFlow", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     handlersList.length = 0;
+    vi.mocked(api.startAuthFlow).mockReset().mockResolvedValue({ flowId: "f1" });
+    vi.mocked(api.cancelAuthFlow).mockReset().mockResolvedValue();
+    vi.mocked(api.authFlowEventSource)
+      .mockReset()
+      .mockImplementation((_id, handlers) => {
+        handlersList.push(handlers);
+        return vi.fn();
+      });
     vi.mocked(api.listAuthProviders)
       .mockReset()
       .mockResolvedValue([
@@ -385,5 +393,103 @@ describe("useProviderAuthFlow", () => {
     });
     unmount();
     expect(api.cancelAuthFlow).toHaveBeenCalledWith("f1");
+  });
+
+  it.each(["unmount", "cancel", "backToList"] as const)(
+    "owns pending login startup through %s and cancels the late admitted id without a stream",
+    async (action) => {
+      const pending = deferred<{ flowId: string }>();
+      vi.mocked(api.startAuthFlow).mockReturnValueOnce(pending.promise);
+      const view = renderHook(() => useProviderAuthFlow());
+      let start!: Promise<void>;
+      act(() => {
+        start = view.result.current.start("anthropic", "api_key");
+      });
+      if (action === "unmount") view.unmount();
+      else
+        await act(async () => {
+          await view.result.current[action]();
+        });
+      await act(async () => {
+        pending.resolve({ flowId: "late-flow" });
+        await start;
+      });
+      expect(api.cancelAuthFlow).toHaveBeenCalledExactlyOnceWith("late-flow");
+      expect(api.authFlowEventSource).not.toHaveBeenCalled();
+      if (action !== "unmount") {
+        expect(view.result.current.view).toBe("idle");
+        expect(view.result.current.pendingPrompt).toBeNull();
+      }
+    },
+  );
+
+  it.each(["admitted", "rejected"])(
+    "ignores an obsolete %s login without disturbing the successor's stream",
+    async (outcome) => {
+      const pending = deferred<{ flowId: string }>();
+      vi.mocked(api.startAuthFlow).mockReturnValueOnce(pending.promise).mockResolvedValueOnce({ flowId: "successor" });
+      const view = renderHook(() => useProviderAuthFlow());
+      let oldStart!: Promise<void>;
+      act(() => {
+        oldStart = view.result.current.start("anthropic", "api_key");
+      });
+      act(() => view.result.current.backToList());
+      await act(async () => view.result.current.start("xai", "oauth"));
+      emit({ type: "prompt", kind: "text", message: "successor prompt" });
+      const stop = vi.mocked(api.authFlowEventSource).mock.results[0]!.value;
+      await act(async () => {
+        if (outcome === "admitted") pending.resolve({ flowId: "obsolete" });
+        else pending.reject(new Error("obsolete rejection"));
+        await oldStart;
+      });
+      expect(view.result.current.activeProviderId).toBe("xai");
+      expect(view.result.current.view).toBe("flow");
+      expect(view.result.current.pendingPrompt?.message).toBe("successor prompt");
+      expect(api.authFlowEventSource).toHaveBeenCalledExactlyOnceWith("successor", expect.any(Object));
+      expect(stop).not.toHaveBeenCalled();
+      if (outcome === "admitted") expect(api.cancelAuthFlow).toHaveBeenCalledExactlyOnceWith("obsolete");
+      else expect(api.cancelAuthFlow).not.toHaveBeenCalled();
+      await act(async () => view.result.current.respond("answer"));
+      expect(api.respondAuthFlow).toHaveBeenLastCalledWith("successor", "answer");
+      view.unmount();
+      expect(stop).toHaveBeenCalledOnce();
+      expect(api.cancelAuthFlow).toHaveBeenLastCalledWith("successor");
+    },
+  );
+
+  it("invalidates old stream callbacks before a replacement login is acknowledged", async () => {
+    const pending = deferred<{ flowId: string }>();
+    const view = renderHook(() => useProviderAuthFlow());
+    await act(async () => view.result.current.start("anthropic", "api_key"));
+    const oldHandlers = handlersList[0]!;
+    vi.mocked(api.startAuthFlow).mockReturnValueOnce(pending.promise);
+    let nextStart!: Promise<void>;
+    act(() => {
+      nextStart = view.result.current.start("xai", "oauth");
+    });
+    await act(async () => {});
+    expect(api.cancelAuthFlow).toHaveBeenCalledWith("f1");
+    act(() => oldHandlers.onEvent({ type: "error", reason: "aborted", message: "cancelled" }));
+    expect(view.result.current.view).toBe("flow");
+    expect(view.result.current.activeProviderId).toBe("xai");
+    await act(async () => {
+      pending.resolve({ flowId: "next" });
+      await nextStart;
+    });
+    emit({ type: "prompt", kind: "text", message: "next prompt" });
+    expect(view.result.current.pendingPrompt?.message).toBe("next prompt");
+  });
+
+  it("cancels an admitted flow if opening its EventSource throws", async () => {
+    vi.mocked(api.authFlowEventSource).mockImplementationOnce(() => {
+      throw new Error("stream unavailable");
+    });
+    const view = renderHook(() => useProviderAuthFlow());
+    await act(async () => view.result.current.start("anthropic", "api_key"));
+    expect(api.cancelAuthFlow).toHaveBeenCalledExactlyOnceWith("f1");
+    expect(view.result.current.view).toBe("error");
+    expect(view.result.current.errorMessage).toBe("stream unavailable");
+    view.unmount();
+    expect(api.cancelAuthFlow).toHaveBeenCalledOnce();
   });
 });

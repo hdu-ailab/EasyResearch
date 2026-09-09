@@ -38,6 +38,12 @@ interface LeaseState {
   directories: Set<string>;
 }
 
+interface WatchedDirectory {
+  watcher: NativeWatcher;
+  identity: string;
+  linked: boolean;
+}
+
 interface PendingEvent {
   directory: string;
   timer: ReturnType<typeof setTimeout>;
@@ -109,10 +115,34 @@ export function createFileWatcherFactory(
       const root = resolve(cwd);
       const realRoot = realpathSync(root);
       const leases = new Map<string, LeaseState>();
-      const watchers = new Map<string, NativeWatcher>();
+      const watchers = new Map<string, WatchedDirectory>();
       const pendingEvents = new Map<string, PendingEvent>();
+      const invalidatedDirectories = new Set<string>();
       let closed = false;
       let closePromise: Promise<void> | undefined;
+
+      const directoryIdentity = (directory: string): Omit<WatchedDirectory, "watcher"> => {
+        let realDirectory: string;
+        let stat: ReturnType<typeof statSync>;
+        try {
+          stat = statSync(directory);
+          if (!stat.isDirectory()) {
+            throw new FileWatchPathError(`File watch path is not a directory: ${directory}`);
+          }
+          realDirectory = realpathSync(directory);
+        } catch (error) {
+          if (error instanceof FileWatchPathError) throw error;
+          throw new FileWatchPathError(`File watch path is not a readable directory: ${directory}`);
+        }
+        if (!isWithin(realRoot, realDirectory)) {
+          throw new FileWatchPathError(`File watch directory is outside the session cwd: ${directory}`);
+        }
+        // Creation time also distinguishes inodes immediately reused after deletion.
+        return {
+          identity: `${realDirectory}\0${stat.dev}:${stat.ino}:${stat.birthtimeMs}`,
+          linked: realDirectory !== resolve(realRoot, relative(root, directory)),
+        };
+      };
 
       const clearPendingForDirectory = (directory: string): void => {
         for (const [key, pending] of pendingEvents) {
@@ -127,23 +157,40 @@ export function createFileWatcherFactory(
         const watcher = watchers.get(directory);
         if (!watcher) return;
         watchers.delete(directory);
+        // A restored watch must refresh its listing even after a period of absence.
+        invalidatedDirectories.add(directory);
         try {
-          watcher.close();
+          watcher.watcher.close();
         } catch (error) {
           logger.warn("file watcher close failed", { cwd: directory, error: errorText(error) });
         }
       };
 
+      const isCurrent = (directory: string, watcher: WatchedDirectory): boolean => {
+        if (closed || watchers.get(directory) !== watcher) return false;
+        try {
+          if (directoryIdentity(directory).identity === watcher.identity) return true;
+        } catch {
+          // Reconciliation closes invalid handles and reports best-effort recovery.
+        }
+        reconcile();
+        return false;
+      };
+
       const schedule = (directory: string, file: string): void => {
+        const watcher = watchers.get(directory);
+        if (!watcher) return;
         const key = `${directory}\0${file}`;
         const previous = pendingEvents.get(key);
         if (previous) clearTimeout(previous.timer);
         const timer = setTimeout(() => {
+          if (pendingEvents.get(key) !== pending) return;
           pendingEvents.delete(key);
-          if (closed || !watchers.has(directory)) return;
+          if (!isCurrent(directory, watcher)) return;
           onEvent({ type: "file.watcher.updated", properties: { file, event: "change" } });
         }, STABILITY_THRESHOLD_MS);
-        pendingEvents.set(key, { directory, timer });
+        const pending = { directory, timer };
+        pendingEvents.set(key, pending);
       };
 
       const eventPath = (directory: string, filename: string | Buffer | null): string | undefined => {
@@ -156,32 +203,53 @@ export function createFileWatcherFactory(
       };
 
       const startDirectory = (directory: string): void => {
-        if (closed || watchers.has(directory)) return;
-        let watcher: NativeWatcher;
+        if (closed) return;
+        const previous = watchers.get(directory);
         try {
-          watcher = watchImpl(directory, { recursive: false }, (event, filename) => {
-            if (closed || watchers.get(directory) !== watcher) return;
+          const { identity, linked } = directoryIdentity(directory);
+          if (previous?.identity === identity) return;
+          stopDirectory(directory);
+          const watcher = watchImpl(directory, { recursive: false }, (event, filename) => {
+            if (!isCurrent(directory, entry)) return;
             const file = eventPath(directory, filename);
             if (file === undefined && filename !== null) return;
+            // Native watches follow inodes, not names. Parent activity can replace
+            // any leased descendant, including one that is currently missing.
+            if (event === "rename" || filename === null) reconcile(file ?? directory);
+            if (watchers.get(directory) !== entry) return;
             schedule(directory, event === "change" && file ? file : directory);
           });
-          watchers.set(directory, watcher);
+          const entry = { watcher, identity, linked };
+          watchers.set(directory, entry);
           watcher.on("error", (error) => {
-            if (watchers.get(directory) !== watcher) return;
+            if (watchers.get(directory) !== entry) return;
             logger.warn("file watcher error", { cwd: directory, error: errorText(error) });
             stopDirectory(directory);
           });
+          if (invalidatedDirectories.delete(directory)) schedule(directory, directory);
         } catch (error) {
-          logger.warn("file watcher unavailable", { cwd: directory, error: errorText(error) });
+          stopDirectory(directory);
+          logger.warn("file watcher unavailable", {
+            cwd: directory,
+            error: errorText(error),
+            recovery: "Retry with a newer lease revision or reconnect after restoring the directory. Automatic recovery requires events from an existing leased directory; no parent outside the session cwd is watched.",
+          });
         }
       };
 
-      const reconcile = (): void => {
+      const reconcile = (affectedPath?: string): void => {
         const desired = aggregateDirectories(leases.values());
         for (const directory of [...watchers.keys()]) {
           if (!desired.has(directory)) stopDirectory(directory);
         }
-        for (const directory of desired) startDirectory(directory);
+        for (const directory of invalidatedDirectories) {
+          if (!desired.has(directory)) invalidatedDirectories.delete(directory);
+        }
+        for (const directory of desired) {
+          const current = watchers.get(directory);
+          // Missing watches need surviving events; links can change through another spelling.
+          if (!affectedPath || !current || current.linked || isWithin(affectedPath, directory)) startDirectory(directory);
+        }
       };
 
       const normalizeDirectories = (directories: readonly string[]): Set<string> => {
@@ -192,19 +260,7 @@ export function createFileWatcherFactory(
             throw new FileWatchPathError(`File watch directory is outside the session cwd: ${directory}`);
           }
           if (isGitPath(root, directory)) continue;
-          let realDirectory: string;
-          try {
-            if (!statSync(directory).isDirectory()) {
-              throw new FileWatchPathError(`File watch path is not a directory: ${directory}`);
-            }
-            realDirectory = realpathSync(directory);
-          } catch (error) {
-            if (error instanceof FileWatchPathError) throw error;
-            throw new FileWatchPathError(`File watch path is not a readable directory: ${directory}`);
-          }
-          if (!isWithin(realRoot, realDirectory)) {
-            throw new FileWatchPathError(`File watch directory is outside the session cwd: ${directory}`);
-          }
+          directoryIdentity(directory);
           normalized.add(directory);
         }
         return normalized;
@@ -243,6 +299,7 @@ export function createFileWatcherFactory(
             for (const directory of [...watchers.keys()]) stopDirectory(directory);
             for (const pending of pendingEvents.values()) clearTimeout(pending.timer);
             pendingEvents.clear();
+            invalidatedDirectories.clear();
           });
           return closePromise;
         },

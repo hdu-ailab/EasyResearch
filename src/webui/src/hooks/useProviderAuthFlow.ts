@@ -133,6 +133,9 @@ export function useProviderAuthFlow(configurationGeneration?: number): UseProvid
 
   const start = useCallback(
     async (providerId: string, type: "api_key" | "oauth") => {
+      const gen = ++genRef.current;
+      const previousFlowId = flowIdRef.current;
+      flowIdRef.current = null;
       closeStream();
       terminalRef.current = false;
       errorStreakRef.current = 0;
@@ -145,15 +148,22 @@ export function useProviderAuthFlow(configurationGeneration?: number): UseProvid
       setActiveProviderId(providerId);
       let flowId: string;
       try {
+        if (previousFlowId) await cancelAuthFlow(previousFlowId).catch(() => {});
+        if (genRef.current !== gen) return;
         ({ flowId } = await startAuthFlow({ providerId, type }));
       } catch (error) {
+        if (genRef.current !== gen) return;
         setErrorMessage(error instanceof Error ? error.message : String(error));
         setErrorReason("reject");
         setView("error");
         return;
       }
+      if (genRef.current !== gen) {
+        // Admission can finish after Cancel, unmount, or a successor start.
+        await cancelAuthFlow(flowId).catch(() => {});
+        return;
+      }
       flowIdRef.current = flowId;
-      const gen = ++genRef.current;
       const onEvent = (event: AuthFlowEventDto) => {
         if (genRef.current !== gen) return;
         errorStreakRef.current = 0;
@@ -200,25 +210,37 @@ export function useProviderAuthFlow(configurationGeneration?: number): UseProvid
           setView("error");
         }
       };
-      unsubRef.current = authFlowEventSource(flowId, {
-        onEvent,
-        onError: () => {
-          if (genRef.current !== gen) return;
-          if (terminalRef.current) return;
-          // Transient network blip: the server replays the pending prompt and
-          // any buffered events on reconnect, so drop the notifies client-side
-          // to avoid duplicate cards. The pending prompt is kept (it is
-          // replayed identically) so a typed secret is not blanked.
-          errorStreakRef.current += 1;
-          if (errorStreakRef.current >= 3) {
-            setErrorMessage("Connection lost");
-            setErrorReason(undefined);
-            setView("error");
-          } else {
-            setNotifies([]);
-          }
-        },
-      });
+      try {
+        const unsubscribe = authFlowEventSource(flowId, {
+          onEvent,
+          onError: () => {
+            if (genRef.current !== gen) return;
+            if (terminalRef.current) return;
+            // Transient network blip: the server replays the pending prompt and
+            // any buffered events on reconnect, so drop the notifies client-side
+            // to avoid duplicate cards. The pending prompt is kept (it is
+            // replayed identically) so a typed secret is not blanked.
+            errorStreakRef.current += 1;
+            if (errorStreakRef.current >= 3) {
+              setErrorMessage("Connection lost");
+              setErrorReason(undefined);
+              setView("error");
+            } else {
+              setNotifies([]);
+            }
+          },
+        });
+        if (genRef.current !== gen || terminalRef.current) unsubscribe();
+        else unsubRef.current = unsubscribe;
+      } catch (error) {
+        if (genRef.current === gen) {
+          flowIdRef.current = null;
+          setErrorMessage(error instanceof Error ? error.message : String(error));
+          setErrorReason("reject");
+          setView("error");
+        }
+        await cancelAuthFlow(flowId).catch(() => {});
+      }
     },
     [closeStream, refresh],
   );
@@ -228,18 +250,8 @@ export function useProviderAuthFlow(configurationGeneration?: number): UseProvid
     await respondAuthFlow(flowIdRef.current, value);
   }, []);
 
-  const cancel = useCallback(async () => {
-    const flowId = flowIdRef.current;
-    if (!flowId) return;
-    try {
-      await cancelAuthFlow(flowId);
-    } catch {
-      // The flow may already have terminated server-side; the SSE terminal
-      // event (or the error card) is the source of truth.
-    }
-  }, []);
-
   const backToList = useCallback(() => {
+    genRef.current += 1;
     // An active flow must be cancelled server-side or the single-flight lock
     // stays held and the next Connect request gets a 409.
     const flowId = flowIdRef.current;
@@ -256,6 +268,19 @@ export function useProviderAuthFlow(configurationGeneration?: number): UseProvid
     setErrorReason(undefined);
     setActiveProviderId(undefined);
   }, [closeStream]);
+
+  const cancel = useCallback(async () => {
+    const flowId = flowIdRef.current;
+    if (!flowId) {
+      backToList();
+      return;
+    }
+    try {
+      await cancelAuthFlow(flowId);
+    } catch {
+      // Admitted flows retain their stream until the authoritative terminal event.
+    }
+  }, [backToList]);
 
   const logout = useCallback(
     async (providerId: string) => {

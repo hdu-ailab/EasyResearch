@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { AgentSessionEvent, JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import type { AgentSessionEvent, InlineExtension, JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { runCleanupSteps } from "../runtime/cleanup";
 import { type ReservedDispatch, SubagentCoordinator } from "./coordinator";
 import type { SubagentJobIdentity, SubagentLaunchDetails } from "./contracts";
@@ -148,13 +148,17 @@ export class SubagentSupervisor {
   private readonly pendingAcknowledgementChecks = new Set<string>();
   private parent?: SupervisableAgentSession;
   private ensureTriggeredTurnReady?: () => Promise<void>;
+  private parentIsStopping?: () => boolean;
   private parentSubscription?: () => void;
   private sendPromise?: Promise<void>;
+  private releasePromptAdmission?: () => void;
+  private readonly notificationSends = new Set<Promise<void>>();
+  private admittingBatch?: { batchId: string; acknowledge: () => void };
   private notificationScheduled = false;
   private blockedTriggeredBatchId?: string;
   private scheduledTriggeredRetryBatchId?: string;
   private readonly automaticallyRetriedTriggeredBatchIds = new Set<string>();
-  private awaitingAcknowledgementBatchId?: string;
+  private readonly awaitingAcknowledgementBatchIds = new Set<string>();
   private stopping = false;
   private closing = false;
   private disposed = false;
@@ -177,15 +181,21 @@ export class SubagentSupervisor {
     this.schedule = options.schedule ?? queueMicrotask;
   }
 
-  attach(session: SupervisableAgentSession, ensureTriggeredTurnReady?: () => Promise<void>): void {
+  attach(
+    session: SupervisableAgentSession,
+    ensureTriggeredTurnReady?: () => Promise<void>,
+    parentIsStopping?: () => boolean,
+  ): void {
     if (this.disposed) throw new Error("Cannot attach a disposed subagent supervisor.");
     if (this.parent === session) {
       if (ensureTriggeredTurnReady) this.ensureTriggeredTurnReady = ensureTriggeredTurnReady;
+      if (parentIsStopping) this.parentIsStopping = parentIsStopping;
       return;
     }
     if (this.parent) throw new Error("Subagent supervisor is already attached to another AgentSession.");
     this.parent = session;
     this.ensureTriggeredTurnReady = ensureTriggeredTurnReady;
+    this.parentIsStopping = parentIsStopping;
     this.parentSubscription = session.subscribe((event) => this.observeParentEvent(event));
     if (this.hasPendingNotifications()) this.scheduleNotification();
     this.stateChanged();
@@ -239,7 +249,7 @@ export class SubagentSupervisor {
   ): Promise<SubagentLaunchDetails> {
     const parent = this.requireParent();
     if (this.closing || this.disposed) throw new Error("Cannot launch a subagent while its supervisor is closing.");
-    if (this.stopping) throw new Error("Cannot launch a subagent while its supervisor is stopping.");
+    if (this.isStopping()) throw new Error("Cannot launch a subagent while its supervisor is stopping.");
     if (reservation.ownerSessionId !== parent.sessionId) {
       throw new Error("Subagent reservation owner does not match the attached AgentSession.");
     }
@@ -393,7 +403,7 @@ export class SubagentSupervisor {
   }
 
   isQuiescent(): boolean {
-    return !this.hasRunningChildren() && !this.sendPromise && !this.hasPendingNotifications();
+    return !this.hasRunningChildren() && !this.sendPromise && this.notificationSends.size === 0 && !this.hasPendingNotifications();
   }
 
   subscribeActivity(listener: (active: boolean) => void): () => void {
@@ -411,8 +421,7 @@ export class SubagentSupervisor {
     const batchId = this.blockedTriggeredBatchId;
     if (
       !batchId
-      || this.stopping
-      || this.closing
+      || this.isStopping()
       || this.disposed
       || this.scheduledTriggeredRetryBatchId === batchId
       || !this.isPendingBatch(batchId)
@@ -428,8 +437,7 @@ export class SubagentSupervisor {
         this.scheduledTriggeredRetryBatchId = undefined;
         if (
           this.blockedTriggeredBatchId !== batchId
-          || this.stopping
-          || this.closing
+          || this.isStopping()
           || this.disposed
           || !this.isPendingBatch(batchId)
         ) return;
@@ -448,7 +456,41 @@ export class SubagentSupervisor {
   }
 
   flushNotifications(options: { triggerTurn?: boolean } = {}): Promise<void> {
-    return this.flushNotificationBatch(options.triggerTurn ?? !this.isStopping(), false);
+    return this.flushNotificationBatch(options.triggerTurn ?? !this.isStopping(), false, this.blockedTriggeredBatchId);
+  }
+
+  async acquirePromptAdmission(): Promise<() => void> {
+    while (this.sendPromise) await this.sendPromise.catch(() => {});
+    if (this.isStopping() || this.disposed) throw new Error("Cannot prompt a stopping subagent owner.");
+    let resolve!: () => void;
+    const admission = new Promise<void>((release) => { resolve = release; });
+    this.sendPromise = admission;
+    this.stateChanged();
+    const release = () => {
+      if (this.sendPromise !== admission) return;
+      this.releasePromptAdmission = undefined;
+      this.sendPromise = undefined;
+      resolve();
+      if (this.hasSchedulableNotificationWork()) this.scheduleNotification();
+      this.stateChanged();
+    };
+    this.releasePromptAdmission = release;
+    return release;
+  }
+
+  async drainNotifications(nativeStart = false): Promise<void> {
+    // Extension commands can enter a native run before their handler returns
+    // and Pi reports preflight acceptance. Do not wait on that same run here.
+    if (nativeStart) this.releasePromptAdmission?.();
+    // The awaited native hook precedes the steering poll. Release only native
+    // admission here, never the batch's persistence or its full-run ownership.
+    this.admittingBatch?.acknowledge();
+    while (
+      !this.isStopping() && !this.disposed && this.parent?.isStreaming
+      && (this.sendPromise || this.hasSchedulableNotificationWork())
+    ) {
+      await this.flushNotificationBatch(true, false);
+    }
   }
 
   private flushStoppingNotification(): Promise<void> {
@@ -470,6 +512,9 @@ export class SubagentSupervisor {
       });
     this.sendPromise = tracked;
     this.stateChanged();
+    void tracked.then(() => {
+      if (this.hasSchedulableNotificationWork()) this.scheduleNotification();
+    }).catch(() => {});
     return tracked;
   }
 
@@ -548,6 +593,7 @@ export class SubagentSupervisor {
               }
               if (this.sendPromise === activeSend) break;
             }
+            await Promise.allSettled([...this.notificationSends]);
             const ownerSessionId = this.parent?.sessionId;
             if (!ownerSessionId) return;
             for (const batch of this.coordinator.journal().pendingBatches) {
@@ -597,10 +643,11 @@ export class SubagentSupervisor {
       this.parentSubscription = undefined;
       this.parent = undefined;
       this.ensureTriggeredTurnReady = undefined;
+      this.parentIsStopping = undefined;
       this.blockedTriggeredBatchId = undefined;
       this.scheduledTriggeredRetryBatchId = undefined;
       this.automaticallyRetriedTriggeredBatchIds.clear();
-      this.awaitingAcknowledgementBatchId = undefined;
+      this.awaitingAcknowledgementBatchIds.clear();
       this.disposed = true;
       this.stateChanged();
     })().catch((error) => {
@@ -652,11 +699,12 @@ export class SubagentSupervisor {
 
   private publishProgress(child: OwnedChild, event: JsonAgentSessionEvent): void {
     if (!child.identity || child.materialization !== "materialized" || child.terminalPublished) return;
+    const latestMessage = event.type === "message_end" ? messageText(event.message) : undefined;
     this.coordinator.publish({
       type: "subagent_supervisor",
       ...child.identity,
       status: "working",
-      ...(child.latestAssistantText === undefined ? {} : { latestMessage: child.latestAssistantText }),
+      ...(latestMessage === undefined ? {} : { latestMessage }),
       event,
     });
   }
@@ -855,12 +903,12 @@ export class SubagentSupervisor {
   }
 
   private scheduleNotification(): void {
-    if (this.notificationScheduled || !this.parent) return;
+    if (this.notificationScheduled || !this.parent || this.isStopping() || this.disposed) return;
     this.notificationScheduled = true;
     try {
       this.schedule(() => {
         this.notificationScheduled = false;
-        if (!this.parent || this.disposed) return;
+        if (!this.parent || this.disposed || this.isStopping()) return;
         if (this.sendPromise) {
           const activeSend = this.sendPromise;
           void activeSend.finally(() => {
@@ -869,7 +917,7 @@ export class SubagentSupervisor {
           return;
         }
         if (!this.hasSchedulableNotificationWork()) return;
-        void this.flushNotifications({ triggerTurn: !this.isStopping() }).catch(() => {});
+        void this.flushNotificationBatch(true, false).catch(() => {});
       });
     } catch {
       this.notificationScheduled = false;
@@ -943,38 +991,37 @@ export class SubagentSupervisor {
     const pendingBatches = this.coordinator.journal().pendingBatches.filter(
       (candidate) => candidate.ownerSessionId === parent.sessionId,
     );
+    this.reconcileNotificationQueueState(pendingBatches);
     const batch = closingBatch
       ? pendingBatches.find((candidate) => candidate.batchId === this.stoppingBatchId)
         ?? pendingBatches.find((candidate) => candidate.batchId === createdBatchId)
-      : pendingBatches[0];
+      : pendingBatches.find((candidate) => !this.awaitingAcknowledgementBatchIds.has(candidate.batchId));
     if (!batch) return;
     if (closingBatch) this.stoppingBatchId = batch.batchId;
 
-    this.reconcileNotificationQueueState(pendingBatches);
-    if (this.awaitingAcknowledgementBatchId) return;
+    if (this.awaitingAcknowledgementBatchIds.has(batch.batchId)) return;
     if (this.blockedTriggeredBatchId === batch.batchId && retryTriggeredBatchId !== batch.batchId) return;
     if (retryTriggeredBatchId && retryTriggeredBatchId !== batch.batchId) return;
 
     if (batch.triggerTurn) {
       try {
-        await this.ensureTriggeredTurnReady?.();
+        // Running callers consume native steers at their next boundary. Only an
+        // idle wake needs configuration preflight before starting another run.
+        if (!parent.isStreaming) await this.ensureTriggeredTurnReady?.();
       } catch (error) {
-        if (!this.isStopping() && !this.disposed && this.isPendingBatch(batch.batchId)) {
-          this.blockedTriggeredBatchId = batch.batchId;
-          if (!this.automaticallyRetriedTriggeredBatchIds.has(batch.batchId)) {
-            this.automaticallyRetriedTriggeredBatchIds.add(batch.batchId);
-            this.scheduleTriggeredRetry(batch.batchId);
-          }
-        }
+        this.blockTriggeredBatch(batch.batchId);
         throw error;
       }
       if (this.blockedTriggeredBatchId === batch.batchId) this.blockedTriggeredBatchId = undefined;
       if (this.isStopping() || this.disposed || !this.isPendingBatch(batch.batchId)) return;
     }
 
-    this.awaitingAcknowledgementBatchId = batch.batchId;
+    this.awaitingAcknowledgementBatchIds.add(batch.batchId);
+    const admitted = new Promise<void>((acknowledge) => {
+      this.admittingBatch = { batchId: batch.batchId, acknowledge };
+    });
     try {
-      await parent.sendCustomMessage(
+      const sending = parent.sendCustomMessage(
         {
           customType: AGENT_STATUS_TYPE,
           content: batch.content,
@@ -983,11 +1030,41 @@ export class SubagentSupervisor {
         },
         { deliverAs: "steer", triggerTurn: batch.triggerTurn },
       );
+      // Pi enters an idle wake synchronously, before its first awaited hook.
+      // Admission is not persistence; retain the full run even after releasing the gate.
+      let owned!: Promise<void>;
+      owned = sending.catch((error) => {
+        if (this.isPendingBatch(batch.batchId) && !this.acknowledgePersistedNotification(batch)) {
+          this.awaitingAcknowledgementBatchIds.delete(batch.batchId);
+          if (batch.triggerTurn) this.blockTriggeredBatch(batch.batchId);
+        }
+        throw error;
+      }).finally(() => {
+        this.notificationSends.delete(owned);
+        // A completed, delivered wake is a real recovery boundary for a later
+        // failed send. A rejected, unacknowledged attempt cannot retry itself.
+        if (!this.isPendingBatch(batch.batchId)) this.runtimeBecameCoherent();
+        this.stateChanged();
+      });
+      this.notificationSends.add(owned);
+      void owned.catch(() => {});
+      if (parent.isStreaming) this.admittingBatch?.acknowledge();
+      await Promise.race([owned, admitted]);
     } catch (error) {
-      if (this.awaitingAcknowledgementBatchId === batch.batchId) {
-        this.awaitingAcknowledgementBatchId = undefined;
-      }
+      this.awaitingAcknowledgementBatchIds.delete(batch.batchId);
+      if (batch.triggerTurn) this.blockTriggeredBatch(batch.batchId);
       throw error;
+    } finally {
+      if (this.admittingBatch?.batchId === batch.batchId) this.admittingBatch = undefined;
+    }
+  }
+
+  private blockTriggeredBatch(batchId: string): void {
+    if (this.isStopping() || this.disposed || !this.isPendingBatch(batchId)) return;
+    this.blockedTriggeredBatchId = batchId;
+    if (!this.automaticallyRetriedTriggeredBatchIds.has(batchId)) {
+      this.automaticallyRetriedTriggeredBatchIds.add(batchId);
+      this.scheduleTriggeredRetry(batchId);
     }
   }
 
@@ -1036,15 +1113,14 @@ export class SubagentSupervisor {
 
   private hasSchedulableNotificationWork(): boolean {
     const parent = this.parent;
-    if (!parent || this.disposed) return false;
+    if (!parent || this.disposed || this.isStopping()) return false;
     if (this.hasDeliverableOutcomes()) return true;
     const pendingBatches = this.coordinator.journal().pendingBatches.filter(
       (batch) => batch.ownerSessionId === parent.sessionId,
     );
     this.reconcileNotificationQueueState(pendingBatches);
-    const batch = pendingBatches[0];
+    const batch = pendingBatches.find((candidate) => !this.awaitingAcknowledgementBatchIds.has(candidate.batchId));
     return batch !== undefined
-      && this.awaitingAcknowledgementBatchId === undefined
       && this.blockedTriggeredBatchId !== batch.batchId;
   }
 
@@ -1055,10 +1131,9 @@ export class SubagentSupervisor {
         .filter((batch) => batch.ownerSessionId === ownerSessionId)
         .map((batch) => batch.batchId),
     );
-    if (
-      this.awaitingAcknowledgementBatchId
-      && !pendingIds.has(this.awaitingAcknowledgementBatchId)
-    ) this.awaitingAcknowledgementBatchId = undefined;
+    for (const batchId of this.awaitingAcknowledgementBatchIds) {
+      if (!pendingIds.has(batchId)) this.awaitingAcknowledgementBatchIds.delete(batchId);
+    }
     if (this.blockedTriggeredBatchId && !pendingIds.has(this.blockedTriggeredBatchId)) {
       const staleBatchId = this.blockedTriggeredBatchId;
       this.blockedTriggeredBatchId = undefined;
@@ -1072,7 +1147,8 @@ export class SubagentSupervisor {
   }
 
   private clearNotificationBatchState(batchId: string): void {
-    if (this.awaitingAcknowledgementBatchId === batchId) this.awaitingAcknowledgementBatchId = undefined;
+    this.awaitingAcknowledgementBatchIds.delete(batchId);
+    if (this.admittingBatch?.batchId === batchId) this.admittingBatch.acknowledge();
     if (this.blockedTriggeredBatchId === batchId) this.blockedTriggeredBatchId = undefined;
     if (this.scheduledTriggeredRetryBatchId === batchId) this.scheduledTriggeredRetryBatchId = undefined;
     this.automaticallyRetriedTriggeredBatchIds.delete(batchId);
@@ -1093,7 +1169,7 @@ export class SubagentSupervisor {
   }
 
   private isStopping(): boolean {
-    return this.stopping || this.closing;
+    return this.stopping || this.closing || this.parentIsStopping?.() === true;
   }
 
   private stateChanged(): void {
@@ -1125,4 +1201,14 @@ export class SubagentSupervisor {
       ? failures[0]
       : new AggregateError(failures, "Subagent cleanup failed before quiescence.");
   }
+}
+
+export function createSubagentNotificationExtension(supervisor: SubagentSupervisor): InlineExtension {
+  return {
+    name: "subagent-notifications",
+    factory: (api) => {
+      api.on("agent_start", () => supervisor.drainNotifications(true));
+      api.on("turn_end", () => supervisor.drainNotifications());
+    },
+  };
 }

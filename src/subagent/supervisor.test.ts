@@ -168,7 +168,11 @@ class FakeParentSession implements SupervisableAgentSession {
   }
 
   acknowledgeLastMessage(): void {
-    const sent = this.sent.at(-1);
+    this.acknowledgeMessage(this.sent.length - 1);
+  }
+
+  acknowledgeMessage(index: number): void {
+    const sent = this.sent[index];
     if (!sent) throw new Error("No notification was sent.");
     const entry = {
       type: "custom_message",
@@ -293,6 +297,67 @@ function makeHarness(input: {
 }
 
 describe("SubagentSupervisor ownership and launch ordering", () => {
+  it("queues natural completion in a running caller without idle configuration preflight", async () => {
+    const stage = new FakeStage("search_0", "child-0", "/sessions/child-0.jsonl");
+    let preflights = 0;
+    const { coordinator, parent, supervisor } = makeHarness({
+      launchStage: async () => stage.handle,
+      autoAcknowledge: true,
+      ensureTriggeredTurnReady: async () => { preflights += 1; },
+    });
+    parent.isStreaming = true;
+    const launching = supervisor.launch(reserve(coordinator, "handoff"), options());
+    stage.materialization.resolve();
+    await launching;
+    parent.acknowledgeLaunch("handoff");
+    stage.completion.resolve(result("evidence ready"));
+    await supervisor.waitForQuiescence();
+    await supervisor.dispose();
+
+    expect(preflights).toBe(0);
+    expect(parent.sent).toHaveLength(1);
+    expect(parent.sent[0]?.options).toEqual({ deliverAs: "steer", triggerTurn: true });
+    expect(parent.sent[0]?.message.content).toContain("evidence ready");
+  });
+
+  it("keeps later progress bytes independent of previous response size while retaining full boundaries", async () => {
+    const stage = new FakeStage("search_0", "child-0", "/sessions/child-0.jsonl");
+    const { coordinator, parent, supervisor } = makeHarness({
+      launchStage: async () => stage.handle,
+      autoAcknowledge: true,
+    });
+    const events: SubagentSupervisorEvent[] = [];
+    coordinator.subscribe((event) => events.push(event));
+    const reservation = reserve(coordinator, "progress");
+    const launching = supervisor.launch(reservation, options());
+    stage.materialization.resolve();
+    await launching;
+    parent.acknowledgeLaunch("progress");
+    const progress: JsonAgentSessionEvent = {
+      type: "message_update",
+      usage: assistant("").usage,
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "0123456789" },
+    };
+    stage.emit(progress);
+    const bytesWithoutPreviousText = Buffer.byteLength(JSON.stringify(events.at(-1)));
+    const previous = "d".repeat(32_768);
+    stage.emit({ type: "message_end", message: assistant(previous) });
+    expect(events.at(-1)).toMatchObject({ latestMessage: previous });
+    events.length = 0;
+    for (let index = 0; index < 1_000; index += 1) stage.emit(progress);
+    const encodedBytes = events.reduce((total, event) => total + Buffer.byteLength(JSON.stringify(event)), 0);
+
+    stage.completion.resolve(result(previous));
+    await supervisor.waitForQuiescence();
+    await supervisor.dispose();
+
+    expect(encodedBytes).toBe(bytesWithoutPreviousText * 1_000);
+    expect(events.slice(0, 1_000).every((event) => event.latestMessage === undefined)).toBe(true);
+    expect(events.at(-1)).toMatchObject({ status: "complete", latestMessage: previous });
+    expect(coordinator.summaries()).toContainEqual(expect.objectContaining({ latestMessage: previous }));
+    expect(parent.sent[0]?.message.content).toContain(previous);
+  });
+
   it("acknowledges materialization while retaining completion ownership", async () => {
     const stage = new FakeStage("search_0", "child-0", "/sessions/child-0.jsonl");
     const { coordinator, parent, supervisor } = makeHarness({
@@ -884,6 +949,121 @@ describe("SubagentSupervisor ownership and launch ordering", () => {
 });
 
 describe("SubagentSupervisor notification acknowledgement", () => {
+  it.each([false, true])("bounds failed native sends before persistence and retries on recovery (admitted: %s)", async (admitted) => {
+    const scheduled: Array<() => void> = [];
+    const { coordinator, parent, supervisor } = makeHarness({
+      launchStage: async () => { throw new Error("No child launch expected"); },
+      autoAcknowledge: true,
+      schedule: (run) => scheduled.push(run),
+    });
+    parent.sendImpl = async (_sent, index) => {
+      if (index >= 2) return;
+      parent.isStreaming = admitted;
+      await Promise.resolve();
+      parent.isStreaming = false;
+      throw new Error("Native run rejected before persistence");
+    };
+    coordinator.recordNotificationBatch({
+      batchId: "retained", ownerSessionId: parent.sessionId, launchIds: [], content: "HANDOFF", triggerTurn: true,
+    });
+    await supervisor.flushNotifications().catch(() => {});
+    await turn();
+    try {
+      expect(coordinator.journal().pendingBatches.map(({ batchId }) => batchId)).toEqual(["retained"]);
+      expect(scheduled).toHaveLength(1);
+      scheduled.shift()!();
+      await turn();
+      expect(parent.sent).toHaveLength(2);
+      expect(scheduled).toEqual([]);
+      expect(supervisor.isQuiescent()).toBe(false);
+      supervisor.runtimeBecameCoherent();
+      supervisor.runtimeBecameCoherent();
+      expect(scheduled).toHaveLength(1);
+      scheduled.shift()!();
+      await turn();
+      expect(parent.sent).toHaveLength(3);
+      expect(parent.sent.every((sent) => JSON.stringify(sent) === JSON.stringify(parent.sent[0]))).toBe(true);
+      expect(coordinator.journal().pendingBatches).toEqual([]);
+      expect(supervisor.isQuiescent()).toBe(true);
+    } finally {
+      await supervisor.dispose();
+    }
+  });
+
+  it.each([false, true])("admits a later steer while retaining an acknowledged wake's run (reject: %s)", async (rejectRun) => {
+    const wakeRun = deferred<void>();
+    const { coordinator, parent, supervisor } = makeHarness({
+      launchStage: async () => { throw new Error("No child launch needed for notification replay"); },
+      schedule: () => {},
+    });
+    parent.sendImpl = async (_sent, index) => {
+      if (index === 0) await wakeRun.promise;
+    };
+    coordinator.recordNotificationBatch({
+      batchId: "wake-a", ownerSessionId: parent.sessionId, launchIds: [], content: "handoff A", triggerTurn: true,
+    });
+    const firstAdmission = supervisor.flushNotifications();
+    void firstAdmission.catch(() => {});
+    await turn();
+    parent.isStreaming = true;
+    parent.acknowledgeMessage(0);
+    await turn();
+    coordinator.recordNotificationBatch({
+      batchId: "steer-b", ownerSessionId: parent.sessionId, launchIds: [], content: "handoff B", triggerTurn: true,
+    });
+    const secondAdmission = supervisor.flushNotifications();
+    void secondAdmission.catch(() => {});
+    await turn();
+    try {
+      expect(parent.sent.map(({ message }) => message.content)).toEqual(["handoff A", "handoff B"]);
+      expect(parent.sent.every(({ options }) => options.deliverAs === "steer")).toBe(true);
+      parent.acknowledgeMessage(1);
+      expect(supervisor.hasPendingNotifications()).toBe(false);
+      expect(supervisor.isQuiescent()).toBe(false);
+    } finally {
+      if (rejectRun) wakeRun.reject(new Error("Wake run failed after delivery"));
+      else wakeRun.resolve();
+      await Promise.allSettled([firstAdmission, secondAdmission]);
+      await supervisor.flushNotifications();
+      if (supervisor.hasPendingNotifications()) parent.acknowledgeLastMessage();
+      await supervisor.waitForQuiescence();
+      await supervisor.dispose();
+    }
+    expect(parent.sent.map(({ message }) => message.content)).toEqual(["handoff A", "handoff B"]);
+  });
+
+  it("keeps a completion-woken run owned through Stop after its delivery gate is released", async () => {
+    const wakeRun = deferred<void>();
+    const { coordinator, parent, supervisor } = makeHarness({
+      launchStage: async () => { throw new Error("No child launch needed for notification replay"); },
+      schedule: () => {},
+    });
+    parent.sendImpl = async () => wakeRun.promise;
+    coordinator.recordNotificationBatch({
+      batchId: "wake", ownerSessionId: parent.sessionId, launchIds: [], content: "handoff", triggerTurn: true,
+    });
+    let admitted = false;
+    const sending = supervisor.flushNotifications().then(() => { admitted = true; });
+    await turn();
+    parent.acknowledgeLastMessage();
+    await turn();
+    let stopped = false;
+    const stopping = supervisor.cancelAll("Stop").then(() => { stopped = true; });
+    await turn();
+    try {
+      expect(admitted).toBe(true);
+      expect(stopped).toBe(false);
+      expect(supervisor.isQuiescent()).toBe(false);
+    } finally {
+      wakeRun.resolve();
+      await sending;
+      await stopping;
+      await supervisor.dispose();
+    }
+    expect(stopped).toBe(true);
+    expect(parent.sent).toHaveLength(1);
+  });
+
   it("drains multiple frozen triggered batches in order after coherent recovery", async () => {
     const first = new FakeStage("search_0", "child-0", "/sessions/child-0.jsonl");
     const second = new FakeStage("search_1", "child-1", "/sessions/child-1.jsonl");
@@ -964,8 +1144,6 @@ describe("SubagentSupervisor notification acknowledgement", () => {
 
     supervisor.runtimeBecameCoherent();
     supervisor.runtimeBecameCoherent();
-    expect(scheduled).toEqual([]);
-    parent.acknowledgeLastMessage();
     expect(scheduled).toHaveLength(1);
     supervisor.runtimeBecameCoherent();
     expect(scheduled).toHaveLength(1);
@@ -981,6 +1159,8 @@ describe("SubagentSupervisor notification acknowledgement", () => {
     }));
     expect(parent.sent[1]?.message.content).not.toContain("Complete subagent:search_0");
 
+    expect(coordinator.journal().pendingBatches).toHaveLength(2);
+    parent.acknowledgeMessage(0);
     parent.acknowledgeLastMessage();
     await supervisor.waitForQuiescence();
     supervisor.runtimeBecameCoherent();
@@ -1257,7 +1437,7 @@ describe("SubagentSupervisor notification acknowledgement", () => {
     await supervisor.waitForQuiescence();
   });
 
-  it("creates a new batch for later outcomes while an earlier sent batch awaits acknowledgement", async () => {
+  it("queues later outcomes before an earlier steer is consumed by the next LLM boundary", async () => {
     const first = new FakeStage("search_0", "child-0", "/sessions/child-0.jsonl");
     const second = new FakeStage("search_1", "child-1", "/sessions/child-1.jsonl");
     const stages = new Map([["search_0", first], ["search_1", second]]);
@@ -1265,6 +1445,7 @@ describe("SubagentSupervisor notification acknowledgement", () => {
       launchStage: async (reservation) => stages.get(reservation.agentId)!.handle,
       schedule: () => {},
     });
+    parent.isStreaming = true;
     const reservation0 = reserve(coordinator, "tool-0");
     const reservation1 = reserve(coordinator, "tool-1");
     const launch0 = supervisor.launch(reservation0, options("first"));
@@ -1284,9 +1465,9 @@ describe("SubagentSupervisor notification acknowledgement", () => {
     await turn();
     await supervisor.flushNotifications();
 
-    expect(parent.sent).toHaveLength(1);
+    expect(parent.sent).toHaveLength(2);
     expect(coordinator.journal().pendingBatches).toHaveLength(2);
-    parent.acknowledgeLastMessage();
+    parent.acknowledgeMessage(0);
     await supervisor.flushNotifications();
 
     expect(parent.sent).toHaveLength(2);

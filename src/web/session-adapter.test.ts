@@ -65,6 +65,9 @@ class FakeAgentSession implements InProcessAgentSession {
   compactCalls: Array<string | undefined> = [];
   compactImpl: () => Promise<void> = async () => {};
   abortCompactionCalls = 0;
+  abortBranchSummaryCalls = 0;
+  shutdownCalls = 0;
+  shutdownImpl: () => Promise<void> = async () => {};
   disposeCalls = 0;
   disposeImpl: () => void = () => {};
   unsubscribeCalls = 0;
@@ -105,6 +108,7 @@ class FakeAgentSession implements InProcessAgentSession {
   };
 
   extensionRunner = {
+    emit: async () => { this.shutdownCalls += 1; await this.shutdownImpl(); },
     getRegisteredCommands: () => [
       { invocationName: "clear", description: "Clear", source: "extension" as const },
       { invocationName: "web-tree", description: "Internal tree navigation", source: "extension" as const },
@@ -168,6 +172,10 @@ class FakeAgentSession implements InProcessAgentSession {
 
   abortCompaction(): void {
     this.abortCompactionCalls += 1;
+  }
+
+  abortBranchSummary(): void {
+    this.abortBranchSummaryCalls += 1;
   }
 
   async bindExtensions(bindings: unknown): Promise<void> {
@@ -237,6 +245,8 @@ interface ManagedHarness {
   };
   supervisor: {
     label: string;
+    attach: SubagentSupervisor["attach"];
+    acquirePromptAdmission(): Promise<() => void>;
     cancelAll(reason: string): Promise<void>;
     abortAll(reason: string): Promise<void>;
     flushNotifications(options?: { triggerTurn?: boolean }): Promise<void>;
@@ -294,6 +304,8 @@ function managed(
     },
     supervisor: {
       label,
+      attach() {},
+      acquirePromptAdmission: async () => () => {},
       cancelAll: overrides.supervisor?.cancelAll ?? (async () => {}),
       abortAll: overrides.supervisor?.abortAll ?? (async () => {}),
       flushNotifications: overrides.supervisor?.flushNotifications ?? (async () => {}),
@@ -320,6 +332,8 @@ class FakeRuntimeBinding {
   disposeImpl: (() => Promise<void>) | undefined;
   policy = { triggerPercent: 70, enabled: true };
 
+  async close(): Promise<void> {}
+
   compactionPolicy() {
     return { ...this.policy };
   }
@@ -340,6 +354,37 @@ function created(session: InProcessAgentSession, binding = new FakeRuntimeBindin
 }
 
 describe("PiSessionFactory", () => {
+  it("still aborts the root when branch-summary cancellation fails", async () => {
+    const session = new FakeAgentSession();
+    session.abortBranchSummary = () => { throw new Error("branch abort failed"); };
+    const adapter = new PiSessionFactory(async () => managed(session)).create({ cwd: "/project" });
+    await adapter.start();
+
+    await expect(adapter.abort()).rejects.toThrow("Session stop could not abort active work");
+    expect(session.abortCalls).toBe(1);
+    session.abortBranchSummary = () => {};
+    await adapter.stop();
+  });
+
+  it("retains a failed shutdown owner and never repeats shutdown after successful delivery", async () => {
+    const session = new FakeAgentSession();
+    session.shutdownImpl = async () => {
+      if (session.shutdownCalls === 1) throw new Error("shutdown failed");
+    };
+    session.disposeImpl = () => {
+      if (session.disposeCalls === 1) throw new Error("dispose failed");
+    };
+    const adapter = new PiSessionFactory(async () => managed(session)).create({ cwd: "/project" });
+    await adapter.start();
+
+    await expect(adapter.stop()).rejects.toThrow("shutdown failed");
+    expect(session.disposeCalls).toBe(0);
+    await expect(adapter.stop()).rejects.toThrow("dispose failed");
+    await adapter.stop();
+    expect(session.shutdownCalls).toBe(2);
+    expect(session.disposeCalls).toBe(2);
+  });
+
   it("reports startup and recovery work until the managed runtime settles", async () => {
     const session = new FakeAgentSession();
     let releaseStart!: (runtime: ManagedHarness & ManagedAgentSession) => void;
@@ -440,7 +485,7 @@ describe("PiSessionFactory", () => {
     expect(session.promptCalls).toEqual(["hello (steer)"]);
     expect(session.modelCalls).toEqual([{ provider: "anthropic", id: "claude-test" }]);
     expect(session.thinkingCalls).toEqual(["high"]);
-    expect(events).toEqual([{ type: "agent_start" }]);
+    expect(events).toContainEqual({ type: "agent_start" });
     await expect(adapter.getTree()).resolves.toEqual({
       tree: [],
       leafId: "leaf-1",
@@ -551,6 +596,62 @@ describe("PiSessionFactory", () => {
       contextUsage: { tokens: null, contextWindow: 128_000, percent: null },
       compactionPolicy: { triggerPercent: 70, enabled: true },
     });
+  });
+
+  it("projects current message estimates consistently for snapshots and stats until native usage returns", async () => {
+    const session = new FakeAgentSession();
+    const first: AgentMessage = { role: "user", content: "first", timestamp: 1 };
+    const second: AgentMessage = { role: "user", content: "second", timestamp: 2 };
+    session.messages = [first, second];
+    session.contextUsage = { tokens: null, contextWindow: 100, percent: null };
+    const runtime = created(session);
+    const adapter = new PiSessionFactory(async () => runtime, (message) => message === first ? 20 : 5)
+      .create({ cwd: "/project" });
+    const events: unknown[] = [];
+    adapter.onEvent((event) => events.push(event));
+    await adapter.start();
+    try {
+      expect(adapter.getContextUsage()).toEqual({ tokens: 25, contextWindow: 100, percent: 25, estimated: true });
+      runtime.stats.notify();
+      expect(events.at(-1)).toMatchObject({ type: "session_stats_changed", contextUsage: adapter.getContextUsage() });
+      expect(session.contextUsage).toEqual({ tokens: null, contextWindow: 100, percent: null });
+
+      session.messages = [second];
+      session.contextUsage = { tokens: null, contextWindow: 200, percent: null };
+      runtime.stats.notify();
+      expect(adapter.getContextUsage()).toEqual({ tokens: 5, contextWindow: 200, percent: 2.5, estimated: true });
+      expect(events.at(-1)).toMatchObject({ contextUsage: adapter.getContextUsage() });
+
+      session.messages = [];
+      expect(adapter.getContextUsage()).toEqual({ tokens: 0, contextWindow: 200, percent: 0, estimated: true });
+      session.contextUsage = { tokens: 40, contextWindow: 200, percent: 20 };
+      runtime.stats.notify();
+      expect(adapter.getContextUsage()).toEqual(session.contextUsage);
+      expect(events.at(-1)).toMatchObject({ contextUsage: session.contextUsage });
+      expect((events.at(-1) as { contextUsage: object }).contextUsage).not.toHaveProperty("estimated");
+      expect(session.promptCalls).toEqual([]);
+    } finally { await adapter.stop(); }
+  });
+
+  it.each(["throw", -1, NaN, Infinity, Number.MAX_SAFE_INTEGER] as const)("keeps native unknown when estimation is unusable (%s)", async (value) => {
+    const session = new FakeAgentSession();
+    session.contextUsage = { tokens: null, contextWindow: 100, percent: null };
+    session.messages = [{ role: "user", content: "one", timestamp: 1 }, { role: "user", content: "two", timestamp: 2 }];
+    const runtime = created(session);
+    const adapter = new PiSessionFactory(async () => runtime, () => {
+      if (value === "throw") throw new Error("estimation unavailable");
+      return value;
+    }).create({ cwd: "/project" });
+    const events: unknown[] = [];
+    adapter.onEvent((event) => events.push(event));
+    await adapter.start();
+    try {
+      expect(adapter.getContextUsage()).toEqual(session.contextUsage);
+      runtime.stats.notify();
+      expect(events.at(-1)).toMatchObject({ contextUsage: session.contextUsage });
+      session.contextUsage = undefined;
+      expect(adapter.getContextUsage()).toBeUndefined();
+    } finally { await adapter.stop(); }
   });
 
   it("tracks native compaction events as background work and visible state", async () => {
@@ -2232,7 +2333,7 @@ describe("createPiAgentSessionCreator", () => {
       "Pi base",
       "Project Research Assistant body",
     ]);
-    expect(loaderOptions.extensionFactories).toEqual([expect.objectContaining({ name: "research-assistant" })]);
+    expect(loaderOptions.extensionFactories).toContainEqual(expect.objectContaining({ name: "research-assistant" }));
     expect(harness.calls.find(({ name }) => name === "model-refresh")?.value).toEqual({ allowNetwork: false });
     expect(managedRoot.binding.skillPaths()).toEqual(["/accepted/project/research-project-workflow"]);
     expect(harness.createdOptions[0]?.settingsManager).toBe(harness.rawSettings);

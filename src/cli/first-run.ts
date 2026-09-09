@@ -9,7 +9,7 @@ import {
   useExistingMaterializedBundle,
 } from "../runtime/bundled-assets";
 import { ensureSkillVenv, type SetupResult } from "../setup-venv";
-import { renameSameNameToBak } from "../setup-resources";
+import { renameSameNameToBak, type RenameResult } from "../setup-resources";
 
 export interface FirstRunOptions {
   log: (message: string) => void;
@@ -76,10 +76,12 @@ export function ensureFirstRunSetup(agentDir: string, log: (message: string) => 
         agentDir,
         bundledAgentsDir: join(bundledRoot, "agents"),
         bundledSkillsDir: join(bundledRoot, "skills"),
+        version,
         log,
       });
       const count = retired.entries.filter((entry) => entry.renamed).length;
       if (count > 0) log(`Retired ${count} same-name user resources to .bak backups`);
+      return retired;
     });
   } catch (error) {
     log(`Bundled resource retirement failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -90,7 +92,7 @@ export function ensureFirstRunSetup(agentDir: string, log: (message: string) => 
 export function retireBundledResourcesOnce(
   agentDir: string,
   version: string,
-  retire: () => void,
+  retire: () => RenameResult,
 ): boolean {
   const marker = join(agentDir, ".easyresearch-resource-retirement-version");
   try {
@@ -98,7 +100,10 @@ export function retireBundledResourcesOnce(
   } catch {
     // Missing/unreadable marker means this version has not completed retirement.
   }
-  retire();
+  const result = retire();
+  if (result.entries.some((entry) => !entry.renamed)) {
+    throw new Error("Resource retirement is incomplete; setup will retry on the next launch.");
+  }
   const temporary = `${marker}.tmp-${process.pid}-${Date.now()}`;
   writeFileSync(temporary, version);
   renameSync(temporary, marker);

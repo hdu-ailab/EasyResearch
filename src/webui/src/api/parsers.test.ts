@@ -730,6 +730,27 @@ describe("API response parsers", () => {
     expect(() => parseChildSnapshot({ session: { id: "child-1", cwd: "/p" }, timeline: [] })).toThrow();
   });
 
+  it.each([true, false])("preserves the estimated marker in capacity snapshots and live stats (%s)", (estimated) => {
+    const contextUsage = { tokens: 8_000, contextWindow: 100_000, percent: 8, estimated };
+    const snapshot = {
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      runtimeConfigurationGeneration: 1,
+      timeline: [],
+      subagents: [],
+      compactionPolicy,
+      contextUsage,
+    };
+    const stats = { type: "session_stats_changed", compactionPolicy, contextUsage };
+    expect(parseSessionSnapshot(snapshot).contextUsage).toEqual(contextUsage);
+    expect(parseSessionStatsChangedEvent(stats).contextUsage).toEqual(contextUsage);
+    expect(() =>
+      parseSessionStatsChangedEvent({ ...stats, contextUsage: { ...contextUsage, estimated: "true" } }),
+    ).toThrow();
+    expect(() =>
+      parseSessionSnapshot({ ...snapshot, contextUsage: { ...contextUsage, estimated: "false" } }),
+    ).toThrow();
+  });
+
   it("parses persisted transcript timeline entries with stable identities", () => {
     const timeline = [
       {

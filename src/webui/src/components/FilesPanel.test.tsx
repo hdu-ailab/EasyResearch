@@ -159,7 +159,7 @@ describe("FilesPanel", () => {
       if (path === "/p") return rootEntries;
       return [];
     });
-    const { rerender } = render(<FilesPanel root="/p" onOpenFile={() => {}} fileEvent={null} />);
+    const { rerender } = render(<FilesPanel root="/p" onOpenFile={() => {}} />);
     expect(await screen.findByText("old.txt")).toBeVisible();
 
     rootEntries = [...rootEntries, { kind: "file", name: "new.txt", path: "/p/new.txt" }];
@@ -167,7 +167,7 @@ describe("FilesPanel", () => {
       type: "file.watcher.updated",
       properties: { file: "/p/new.txt", event: "add" },
     };
-    rerender(<FilesPanel root="/p" onOpenFile={() => {}} fileEvent={event} />);
+    rerender(<FilesPanel root="/p" onOpenFile={() => {}} fileEvents={[{ sequence: 1, event }]} />);
 
     expect(await screen.findByText("new.txt")).toBeVisible();
   });
@@ -179,7 +179,7 @@ describe("FilesPanel", () => {
       if (path === "/p/folder") return folderEntries;
       return [];
     });
-    const { rerender } = render(<FilesPanel root="/p" onOpenFile={() => {}} fileEvent={null} />);
+    const { rerender } = render(<FilesPanel root="/p" onOpenFile={() => {}} />);
     await userEvent.setup().click(await screen.findByText("folder"));
     expect(await screen.findByText("old.txt")).toBeVisible();
 
@@ -188,10 +188,15 @@ describe("FilesPanel", () => {
       <FilesPanel
         root="/p"
         onOpenFile={() => {}}
-        fileEvent={{
-          type: "file.watcher.updated",
-          properties: { file: "/p/folder/old.txt", event: "unlink" },
-        }}
+        fileEvents={[
+          {
+            sequence: 1,
+            event: {
+              type: "file.watcher.updated",
+              properties: { file: "/p/folder/old.txt", event: "unlink" },
+            },
+          },
+        ]}
       />,
     );
 
@@ -203,7 +208,7 @@ describe("FilesPanel", () => {
 
   it("does not fetch an untouched directory for a nested event", async () => {
     vi.mocked(api.listEntries).mockResolvedValue([{ kind: "directory", name: "closed", path: "/p/closed" }]);
-    const { rerender } = render(<FilesPanel root="/p" onOpenFile={() => {}} fileEvent={null} />);
+    const { rerender } = render(<FilesPanel root="/p" onOpenFile={() => {}} />);
     await screen.findByText("closed");
     vi.mocked(api.listEntries).mockClear();
 
@@ -211,13 +216,60 @@ describe("FilesPanel", () => {
       <FilesPanel
         root="/p"
         onOpenFile={() => {}}
-        fileEvent={{
-          type: "file.watcher.updated",
-          properties: { file: "/p/closed/new.txt", event: "add" },
-        }}
+        fileEvents={[
+          {
+            sequence: 1,
+            event: {
+              type: "file.watcher.updated",
+              properties: { file: "/p/closed/new.txt", event: "add" },
+            },
+          },
+        ]}
       />,
     );
 
     await waitFor(() => expect(api.listEntries).not.toHaveBeenCalledWith("/p/closed"));
   });
+
+  it.each(["resolve", "reject"])(
+    "retains a second invalidation while a listing is loading and will %s",
+    async (outcome) => {
+      const pending = Promise.withResolvers<Awaited<ReturnType<typeof api.listEntries>>>();
+      let folderLoads = 0;
+      vi.mocked(api.listEntries).mockImplementation(async (path) => {
+        if (path === "/p") return [{ kind: "directory", name: "folder", path: "/p/folder" }];
+        folderLoads += 1;
+        if (folderLoads === 2) return pending.promise;
+        const name = folderLoads === 1 ? "old.txt" : "fresh.txt";
+        return [{ kind: "file", name, path: `/p/folder/${name}` }];
+      });
+      const view = render(<FilesPanel root="/p" onOpenFile={() => {}} />);
+      await userEvent.setup().click(await screen.findByText("folder"));
+      await screen.findByText("old.txt");
+      let sequence = 0;
+      const invalidate = () =>
+        view.rerender(
+          <FilesPanel
+            root="/p"
+            onOpenFile={() => {}}
+            fileEvents={[
+              {
+                sequence: ++sequence,
+                event: { type: "file.watcher.updated", properties: { file: "/p/folder", event: "change" } },
+              },
+            ]}
+          />,
+        );
+      await act(async () => invalidate());
+      await act(async () => invalidate());
+      await act(async () => {
+        if (outcome === "reject") pending.reject(new Error("temporary read failure"));
+        else pending.resolve([{ kind: "file", name: "stale.txt", path: "/p/folder/stale.txt" }]);
+      });
+      expect(await screen.findByText("fresh.txt")).toBeVisible();
+      expect(screen.queryByText("old.txt")).not.toBeInTheDocument();
+      expect(screen.queryByText("stale.txt")).not.toBeInTheDocument();
+      expect(folderLoads).toBe(3);
+    },
+  );
 });

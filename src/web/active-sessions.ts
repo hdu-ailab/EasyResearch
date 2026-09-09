@@ -664,8 +664,8 @@ export class ActiveSessionRegistry {
   }
 
   /**
-   * Root streaming and supervisor activity are independent inputs. Aggregate
-   * status stays running until both are idle, while `isStreaming` remains the
+   * Root streaming, compaction, and supervisor activity are independent inputs.
+   * Status stays running until all are idle, while `isStreaming` remains the
    * root AgentSession's state for composer and cursor behavior.
    */
   private syncDtoFromEvent(record: ActiveRecord, event: unknown): boolean {
@@ -692,6 +692,10 @@ export class ActiveSessionRegistry {
         this.syncActivityStatus(record);
       }
     }
+    if (type === "compaction_state_changed") {
+      activityChanged = true;
+      this.syncActivityStatus(record);
+    }
     if (type === "session_info_changed") {
       const name = (event as { name?: unknown }).name;
       record.dto.sessionName = typeof name === "string" ? name : undefined;
@@ -702,7 +706,9 @@ export class ActiveSessionRegistry {
 
   private syncActivityStatus(record: ActiveRecord): void {
     if (record.dto.status === "stopped" || record.dto.status === "error") return;
-    record.dto.status = record.dto.isStreaming || record.supervisorActive ? "running" : "ready";
+    const compaction = record.client.getCompactionState();
+    record.dto.status = record.dto.isStreaming || record.supervisorActive || compaction === "queued" || compaction === "running"
+      ? "running" : "ready";
   }
 
   private activityReplacement(record: ActiveRecord): SessionActivityChangedEventDto | undefined {

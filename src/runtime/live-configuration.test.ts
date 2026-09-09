@@ -1,7 +1,8 @@
-import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { Dir, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
+import { watch } from "chokidar";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   type AgentCatalogSnapshot,
@@ -13,13 +14,17 @@ import {
 } from "../subagent/agents";
 import type { ConfigurationEvent } from "../web/contracts";
 import { ConfigFileService } from "../web/config-files";
+import { createCompactionSettingsService } from "../web/compaction-settings";
+import { createApiUsageSettingsService } from "../web/api-usage-settings";
 import type {
   ConfigurationWatcherManager,
   ProjectWatchRegistration,
   ResourceWatchChange,
   WatcherDependencies,
 } from "./configuration-watchers";
-import { createAgentRuntimeBinding } from "./agent-runtime-binding";
+import { createAgentRuntimeBinding, type AgentRuntimeBindingSession } from "./agent-runtime-binding";
+import { createCompactionPolicyBinding } from "./compaction-policy";
+import { importPi } from "./pi-import";
 import { repairDanglingAgentDefaults } from "./agent-default-repair";
 import {
   type ConfigurationFingerprint,
@@ -1447,7 +1452,331 @@ describe("live configuration generations", () => {
   });
 });
 
+describe("partially invalid live settings recovery", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  async function startSettings(settings: object) {
+    const state = await startRealConfiguration({
+      watch: droppedConfigurationWatch(),
+      prepare({ agentDir, homeDir }) {
+        vi.stubEnv("HOME", homeDir);
+        vi.stubEnv("USERPROFILE", homeDir);
+        vi.stubEnv("EASYRESEARCH_CODING_AGENT_DIR", agentDir);
+        writeFileSync(join(agentDir, "settings.json"), JSON.stringify(settings));
+      },
+    });
+    const config = new ConfigFileService(state.agentDir);
+    return {
+      ...state,
+      settingsPath: join(state.agentDir, "settings.json"),
+      compactionSettings: createCompactionSettingsService(config, state.live),
+      apiUsageSettings: createApiUsageSettingsService(config, state.live),
+    };
+  }
+
+  async function attachRuntime(state: RealConfigurationHarness, agentName: string) {
+    const { SettingsManager } = await importPi();
+    const settings = SettingsManager.create(state.project, state.agentDir);
+    const model = {
+      provider: "test-provider", id: "test-model", name: "Test Model", api: "test-api",
+      baseUrl: "http://localhost.invalid", reasoning: false, input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128_000, maxTokens: 2_048,
+    } as Model<any>;
+    const binding = createAgentRuntimeBinding({
+      live: state.live,
+      agentName,
+      cwd: state.project,
+      createModelRuntime: async () => ({
+        async refresh() {},
+        getModel: () => undefined,
+        getAvailableSnapshot: () => [],
+        getProvider: () => undefined,
+        getProviderAuthStatus: () => ({ configured: false }),
+        getError: () => undefined,
+      }),
+      resolveAutomaticModel: async () => model,
+      compaction: createCompactionPolicyBinding(settings),
+    });
+    try {
+      await binding.ensureCurrent();
+      const session: AgentRuntimeBindingSession & { isIdle: boolean } = {
+        isIdle: true,
+        model,
+        thinkingLevel: binding.thinking(),
+        async reload() { settings.reload(); },
+        async abort() {},
+        rebindModel(next) { Object.assign(this, { model: next }); },
+        setThinkingLevel(next) { Object.assign(this, { thinkingLevel: next }); },
+      };
+      await binding.attach(session);
+      return { binding, session, settings };
+    } catch (error) {
+      await binding.dispose();
+      throw error;
+    }
+  }
+
+  it.each([
+    { name: "percentage", initial: { easyresearch: { compaction: { triggerPercent: 90 } } } },
+    { name: "native enabled", initial: { compaction: { enabled: false } } },
+    { name: "native keepRecentTokens", initial: { compaction: { keepRecentTokens: 6_000 } } },
+  ])("applies repaired $name to attached root and stage bindings instead of acknowledging stale policy", async ({ initial }) => {
+    const state = await startSettings(initial);
+    const root = await attachRuntime(state, "research-assistant");
+    const stage = await attachRuntime(state, "search");
+    try {
+      stage.session.isIdle = false;
+      const accepted = state.live.compactionPolicy;
+      const native = root.settings.getCompactionSettings();
+      writeFileSync(state.settingsPath, JSON.stringify({ easyresearch: { compaction: { triggerPercent: 9 } } }));
+      await state.live.synchronize();
+      await root.binding.ensureCurrent();
+      await stage.binding.ensureCurrent({ activeBoundary: true });
+      expect(state.live.compactionPolicy).toEqual(accepted);
+      expect(root.settings.getCompactionSettings()).toEqual(native);
+      expect(stage.settings.getCompactionSettings()).toEqual(native);
+      const invalidGeneration = state.live.generation;
+      writeFileSync(state.settingsPath, JSON.stringify({ easyresearch: { compaction: { triggerPercent: 8 } } }));
+      await expect(state.live.synchronize()).resolves.toMatchObject({ status: "unchanged", generation: invalidGeneration });
+
+      await expect(state.compactionSettings.patch({ triggerPercent: 70 })).resolves.toEqual({
+        triggerPercent: 70, globalEnabled: true,
+      });
+      const repairedGeneration = state.live.generation;
+      expect(stage.binding.generation()).toBe(invalidGeneration);
+      expect(stage.settings.getCompactionSettings()).toEqual(native);
+      await root.binding.ensureCurrent();
+      await stage.binding.ensureCurrent({ activeBoundary: true });
+
+      for (const runtime of [root, stage]) {
+        expect(runtime.binding.generation()).toBe(repairedGeneration);
+        expect(runtime.binding.compactionPolicy()).toEqual({ triggerPercent: 70, enabled: true });
+        expect(runtime.settings.getCompactionSettings()).toEqual({
+          enabled: true, reserveTokens: 38_400, keepRecentTokens: 20_000,
+        });
+      }
+      expect(configurationUpdates(state.events).slice(-2)).toEqual([
+        expect.objectContaining({ runtimeChanged: false }),
+        expect.objectContaining({ runtimeChanged: true }),
+      ]);
+      expect(native).not.toEqual(root.settings.getCompactionSettings());
+      const updates = configurationUpdates(state.events).length;
+      await Promise.all([state.compactionSettings.get(), state.apiUsageSettings.get(), state.live.synchronize()]);
+      expect(state.live.generation).toBe(repairedGeneration);
+      expect(configurationUpdates(state.events)).toHaveLength(updates);
+    } finally {
+      await root.binding.dispose();
+      await stage.binding.dispose();
+    }
+  });
+
+  it.each([
+    { initial: false, repaired: true, effective: true },
+    { initial: false, repaired: undefined, effective: true },
+    { initial: false, repaired: false, effective: false },
+    { initial: true, repaired: false, effective: false },
+    { initial: true, repaired: true, effective: true },
+    { initial: true, repaired: undefined, effective: true },
+  ])("reports effective API-usage recovery from $initial to $repaired without a runtime change", async ({ initial, repaired, effective }) => {
+    const state = await startSettings({ easyresearch: { web: { showApiUsageDetails: initial } } });
+    writeFileSync(state.settingsPath, JSON.stringify({ easyresearch: { web: { showApiUsageDetails: "invalid" } } }));
+    await expect(state.apiUsageSettings.get()).resolves.toEqual({ showApiUsageDetails: initial });
+    const invalidGeneration = state.live.generation;
+    expect(configurationUpdates(state.events).at(-1)).toMatchObject({ runtimeChanged: false });
+    expect(configurationUpdates(state.events).at(-1)).not.toHaveProperty("apiUsageChanged");
+
+    if (repaired === undefined) {
+      writeFileSync(state.settingsPath, "{}");
+    } else {
+      await expect(state.apiUsageSettings.patch({ showApiUsageDetails: repaired }))
+        .resolves.toEqual({ showApiUsageDetails: effective });
+    }
+    await expect(state.apiUsageSettings.get()).resolves.toEqual({ showApiUsageDetails: effective });
+    expect(state.live.error).toBeNull();
+    expect(state.live.generation).toBe(invalidGeneration + 1);
+    const event = configurationUpdates(state.events).at(-1);
+    expect(event).toMatchObject({ runtimeChanged: false });
+    if (initial !== effective) expect(event).toHaveProperty("apiUsageChanged", true);
+    else expect(event).not.toHaveProperty("apiUsageChanged");
+
+    state.events.splice(0);
+    writeFileSync(state.settingsPath, JSON.stringify({ theme: "light", easyresearch: { web: { showApiUsageDetails: repaired } } }, null, 2));
+    await Promise.all([state.apiUsageSettings.get(), state.compactionSettings.get()]);
+    expect(state.live.generation).toBe(invalidGeneration + 1);
+    expect(configurationUpdates(state.events)).toEqual([]);
+  });
+
+  it.each(["compaction", "apiUsage"] as const)("detects a valid %s repair when the invalid sibling and combined diagnostic swap", async (layer) => {
+    const state = await startSettings({ easyresearch: {
+      compaction: { triggerPercent: 90 }, web: { showApiUsageDetails: false },
+    } });
+    const first = layer === "compaction"
+      ? { compaction: { triggerPercent: 9 }, web: { showApiUsageDetails: true } }
+      : { compaction: { triggerPercent: 70 }, web: { showApiUsageDetails: "invalid" } };
+    const second = layer === "compaction"
+      ? { compaction: { triggerPercent: 70 }, web: { showApiUsageDetails: "invalid" } }
+      : { compaction: { triggerPercent: 9 }, web: { showApiUsageDetails: true } };
+    writeFileSync(state.settingsPath, JSON.stringify({ easyresearch: first }));
+    await state.live.synchronize();
+    const invalidGeneration = state.live.generation;
+    const diagnostic = state.live.error;
+    expect(diagnostic).toMatch(/configuration/i);
+    writeFileSync(state.settingsPath, JSON.stringify({ easyresearch: second }));
+
+    if (layer === "compaction") {
+      await expect(state.compactionSettings.patch({ triggerPercent: 70 })).resolves.toEqual({
+        triggerPercent: 70, globalEnabled: true,
+      });
+    } else {
+      await expect(state.apiUsageSettings.patch({ showApiUsageDetails: true })).resolves.toEqual({ showApiUsageDetails: true });
+    }
+    expect(state.live.generation).toBe(invalidGeneration + 1);
+    expect(state.live.error).toBe(diagnostic);
+    await expect(state.compactionSettings.get()).resolves.toEqual({ triggerPercent: 70, globalEnabled: true });
+    await expect(state.apiUsageSettings.get()).resolves.toEqual({ showApiUsageDetails: true });
+    const event = configurationUpdates(state.events).at(-1);
+    expect(event).toMatchObject({ runtimeChanged: layer === "compaction" });
+    if (layer === "apiUsage") expect(event).toHaveProperty("apiUsageChanged", true);
+    else expect(event).not.toHaveProperty("apiUsageChanged");
+
+    state.events.splice(0);
+    await state.live.synchronize();
+    expect(state.live.generation).toBe(invalidGeneration + 1);
+    expect(configurationUpdates(state.events)).toEqual([]);
+  });
+
+  it("retains all invalid live layers while accepting an independent valid settings change", async () => {
+    const state = await startSettings({ easyresearch: {
+      agentDefaults: { "research-assistant": { thinking: "low" } },
+      compaction: { triggerPercent: 90 }, web: { showApiUsageDetails: false },
+      enable_dot_agents_skill: true,
+    } });
+    const acceptedCompaction = state.live.compactionPolicy;
+    writeFileSync(state.settingsPath, JSON.stringify({ easyresearch: {
+      agentDefaults: { "research-assistant": { thinking: "invalid" } },
+      compaction: { triggerPercent: 9 }, web: { showApiUsageDetails: "invalid" },
+      enable_dot_agents_skill: true,
+    } }));
+    await state.live.synchronize();
+    expect(state.live.compactionPolicy).toEqual(acceptedCompaction);
+    expect(state.live.apiUsageSettings).toEqual({ showApiUsageDetails: false });
+    expect(state.live.skillPolicy).toEqual({ enableDotAgentsSkill: true });
+    expect(await state.live.resolveAgents()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "research-assistant", thinking: "low" }),
+    ]));
+    expect(configurationUpdates(state.events).at(-1)).toMatchObject({ agentsChanged: false, runtimeChanged: false });
+    expect(configurationUpdates(state.events).at(-1)).not.toHaveProperty("apiUsageChanged");
+
+    const invalidGeneration = state.live.generation;
+    const unchanged = { ...JSON.parse(readFileSync(state.settingsPath, "utf8")), theme: "light" };
+    writeFileSync(state.settingsPath, JSON.stringify(unchanged, null, 2));
+    await expect(state.live.synchronize()).resolves.toMatchObject({ status: "unchanged", generation: invalidGeneration });
+
+    await state.apiUsageSettings.patch({ showApiUsageDetails: true });
+    expect(state.live.compactionPolicy).toEqual(acceptedCompaction);
+    expect(await state.live.resolveAgents()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "research-assistant", thinking: "low" }),
+    ]));
+    expect(configurationUpdates(state.events).at(-1)).toMatchObject({ runtimeChanged: false, apiUsageChanged: true });
+  });
+});
+
 describe("live configuration resource transactions", () => {
+  it("rejects an over-budget resource candidate without publishing partial descriptor bytes", async () => {
+    const state = await startRealConfiguration({
+      watch: droppedConfigurationWatch(),
+      prepare({ agentDir }) {
+        mkdirSync(join(agentDir, "agents"));
+        mkdirSync(join(agentDir, "skills"));
+        writeFileSync(join(agentDir, "agents", "research-assistant.md"), agentMarkdown("research-assistant", "BOUNDED", ["stable"]));
+        writeFileSync(join(agentDir, "skills", "stable.md"), skillMarkdown("stable", "ACCEPTED"));
+      },
+    });
+    const accepted = await state.live.resolveAgents();
+    const acceptedPath = accepted.find((agent) => agent.name === "research-assistant")!.effectiveSkillPaths[0]!;
+    writeFileSync(join(state.agentDir, "skills", "stable.md"), skillMarkdown("stable", "PENDING"));
+    state.events.splice(0);
+    const originalRead = Dir.prototype.readSync;
+    let entriesRead = 0;
+    const read = vi.spyOn(Dir.prototype, "readSync").mockImplementation(function (this: Dir) {
+      if (this.path !== join(state.agentDir, "skills")) return originalRead.call(this);
+      entriesRead += 1;
+      return { name: `entry-${entriesRead}.txt` } as ReturnType<Dir["readSync"]>;
+    });
+    try {
+      await expect(state.live.synchronize()).resolves.toMatchObject({ status: "rejected", generation: 1 });
+      expect(entriesRead).toBeLessThanOrEqual(32_769);
+      expect(configurationUpdates(state.events)).toEqual([]);
+      expect(readFileSync(acceptedPath, "utf8")).toContain("ACCEPTED");
+    } finally {
+      read.mockRestore();
+    }
+    expect(await state.live.resolveAgents()).toEqual(accepted);
+    await expect(state.live.synchronize()).resolves.toMatchObject({ status: "committed", generation: 2, error: null });
+    const recovered = await state.live.resolveAgents();
+    const recoveredPath = recovered.find((agent) => agent.name === "research-assistant")!.effectiveSkillPaths[0]!;
+    expect(readFileSync(recoveredPath, "utf8")).toContain("PENDING");
+  });
+
+  it("retains accepted home Skills and watcher ownership when global settings become malformed", async () => {
+    const observedPaths: string[] = [];
+    const state = await startRealConfiguration({
+      watch(paths, options) {
+        const watcher = watch(paths, options);
+        watcher.on("change", (path) => observedPaths.push(path));
+        return watcher;
+      },
+      prepare({ agentDir, homeDir }) {
+        mkdirSync(join(agentDir, "agents"));
+        writeFileSync(join(agentDir, "agents", "research-assistant.md"), agentMarkdown("research-assistant", "HOME", ["home-only"]));
+        writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ easyresearch: { enable_dot_agents_skill: true } }));
+        mkdirSync(join(homeDir, ".agents", "skills", "home-only"), { recursive: true });
+        writeFileSync(join(homeDir, ".agents", "skills", "home-only", "SKILL.md"), skillMarkdown("home-only", "ACCEPTED"));
+      },
+    });
+    const accepted = await state.live.resolveAgents();
+    const generation = state.live.generation;
+    state.events.splice(0);
+    writeFileSync(join(state.agentDir, "settings.json"), "{");
+
+    await state.live.synchronize();
+
+    expect(state.live.skillPolicy).toEqual({ enableDotAgentsSkill: true });
+    expect(await state.live.resolveAgents()).toEqual(accepted);
+    expect(state.live.error).toMatch(/configuration/i);
+    expect(configurationUpdates(state.events)).toEqual([]);
+    const homeDescriptor = join(state.homeDir, ".agents", "skills", "home-only", "SKILL.md");
+    writeFileSync(homeDescriptor, skillMarkdown("home-only", "PENDING"));
+    await vi.waitFor(() => expect(observedPaths).toContain(homeDescriptor));
+    expect(state.live.skillPolicy.enableDotAgentsSkill).toBe(true);
+    expect(state.live.generation).toBe(generation);
+    writeFileSync(join(state.agentDir, "settings.json"), JSON.stringify({ easyresearch: { enable_dot_agents_skill: false } }));
+    await state.live.synchronize();
+    expect(state.live.skillPolicy.enableDotAgentsSkill).toBe(false);
+    expect(state.live.error).toBeNull();
+  });
+
+  it.each(["null", '{"easyresearch":[]}', '{"easyresearch":{"enable_dot_agents_skill":"false"}}'])(
+    "does not treat malformed Skill policy %s as a valid disable",
+    async (bytes) => {
+      const state = await startRealConfiguration({
+        watch: droppedConfigurationWatch(),
+        prepare({ agentDir }) {
+          writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ easyresearch: { enable_dot_agents_skill: true } }));
+        },
+      });
+      state.events.splice(0);
+      writeFileSync(join(state.agentDir, "settings.json"), bytes);
+
+      const outcome = await state.live.synchronize();
+
+      expect(outcome).toMatchObject({ status: "rejected", generation: 1 });
+      expect(state.live.skillPolicy.enableDotAgentsSkill).toBe(true);
+      expect(configurationUpdates(state.events)).toEqual([]);
+    },
+  );
+
   it("does not advance for empty or auxiliary-only Skill roots but advances for the first descriptor", async () => {
     const base = tempRoot();
     const agentDir = join(base, "agent");

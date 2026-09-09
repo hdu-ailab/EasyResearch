@@ -8,6 +8,11 @@ export type LocalHttpFetch = (
   init?: RequestInit,
 ) => Promise<Response>;
 
+export function localHttpOrigin(host: string, port: number): string {
+  const authority = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+  return `http://${authority}:${port}`;
+}
+
 export function createDirectLocalHttpFetch(
   timeoutMs = LOCAL_HTTP_TIMEOUT_MS,
 ): LocalHttpFetch {

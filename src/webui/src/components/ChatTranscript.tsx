@@ -16,6 +16,7 @@ import { indexSubtreeUsage, mergeTranscriptEntries, type TranscriptEntry } from 
 import { ApiUsageLine } from "./ApiUsageLine";
 import { MarkdownBlock } from "./MarkdownBlock";
 import { SubagentToolCard } from "./SubagentToolCard";
+import { ThinkingPreview } from "./ThinkingPreview";
 
 export interface ChatTranscriptProps {
   messages: SessionMessageView[];
@@ -75,15 +76,7 @@ function ReasoningBlock({
   markdownKey: string;
   onRendered: () => void;
 }) {
-  const { t } = useI18n();
   const { mounted, phase } = useExpandable(open);
-  const preview =
-    active && !open
-      ? text
-          .split(/\r?\n/)
-          .findLast((line) => line.trim())
-          ?.trim()
-      : undefined;
 
   return (
     <div className="flex w-full flex-col gap-1.5">
@@ -98,16 +91,7 @@ function ReasoningBlock({
         ) : (
           <ChevronRight size={14} className="shrink-0" aria-hidden />
         )}
-        {preview ? (
-          <span className="flex min-w-0 items-center gap-1">
-            <span className="shrink-0 text-v2-text-text-faint">{t("transcript.thinking")}:</span>{" "}
-            <span className="min-w-0 truncate text-[12.5px] font-normal text-v2-text-text-muted">{preview}</span>
-          </span>
-        ) : (
-          <span className="shrink-0 text-v2-text-text-faint">
-            {active ? t("transcript.thinking") : t("transcript.thinkingProcess")}
-          </span>
-        )}
+        <ThinkingPreview text={text} active={active} open={open} />
       </button>
       {mounted && (
         <div
@@ -280,6 +264,7 @@ function EditMessageDraft({
 }) {
   const { t } = useI18n();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composing = useRef(false);
   useEffect(() => {
     textareaRef.current?.focus();
   }, []);
@@ -289,7 +274,17 @@ function EditMessageDraft({
         ref={textareaRef}
         value={draft}
         onChange={(e) => onDraftChange(e.target.value)}
+        onCompositionStart={() => {
+          composing.current = true;
+        }}
+        onCompositionEnd={() => {
+          composing.current = false;
+        }}
+        onBlur={() => {
+          composing.current = false;
+        }}
         onKeyDown={(e) => {
+          if (composing.current || e.nativeEvent.isComposing || e.keyCode === 229) return;
           if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
             onSubmitEdit(draft.trim());

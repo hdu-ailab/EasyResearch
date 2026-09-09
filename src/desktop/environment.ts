@@ -57,7 +57,9 @@ export function resolveDesktopEnvironment(
     options.warn?.("EasyResearch could not resolve the macOS login shell environment; inherited app variables will be used.");
     return inherited;
   }
-  return { ...parseNulEnvironment(result.stdout), ...inherited };
+  const shellEnv = parseNulEnvironment(result.stdout);
+  // Finder's minimal PATH is the exception to protected inherited overrides.
+  return { ...shellEnv, ...inherited, ...(shellEnv.PATH ? { PATH: shellEnv.PATH } : {}) };
 }
 
 export function parseNulEnvironment(output: string): NodeJS.ProcessEnv {

@@ -7,6 +7,7 @@ import { useI18n } from "../i18n/useI18n";
 import type { ToolView } from "../session-reducer";
 import { ApiUsageSummaryLine } from "./ApiUsageLine";
 import { MarkdownBlock } from "./MarkdownBlock";
+import { ThinkingPreview } from "./ThinkingPreview";
 
 const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)";
 
@@ -66,6 +67,7 @@ export function SubagentToolCard({
   const running = tool.running && !tool.done;
   const activity = running ? tool.latestActivity : undefined;
   const isToolActivity = activity?.kind === "tool";
+  const thinking = activity?.kind === "thinking" ? activity : undefined;
   const message = activity
     ? activity.kind === "tool"
       ? `${activity.name}${activity.args ? ` ${activity.args}` : ""}`
@@ -134,7 +136,11 @@ export function SubagentToolCard({
             )}
           </button>
 
-          {!mounted ? (
+          {thinking ? (
+            <div className="mt-1.5 text-[12px] font-medium">
+              <ThinkingPreview text={thinking.text} active={thinking.active} open={isOpen} />
+            </div>
+          ) : !mounted ? (
             <p className="mt-1.5 line-clamp-3 text-[length:var(--v2-chat-font-size)] leading-relaxed text-v2-text-text-muted">
               {message ? subagentMessagePreview(message) : emptyMessage}
             </p>
@@ -154,15 +160,16 @@ export function SubagentToolCard({
                 ) : (
                   <MarkdownBlock
                     text={message}
+                    className={thinking ? "text-[12.5px] font-normal text-v2-text-text-muted" : undefined}
                     scope={markdownScope}
                     cacheKey={markdownCacheKey}
-                    streaming={running && activity?.kind === "text"}
+                    streaming={running && (activity?.kind === "text" || thinking?.active === true)}
                     onRendered={onMarkdownRendered}
                   />
                 )
-              ) : (
+              ) : !thinking ? (
                 <p className="text-v2-text-text-faint">{emptyMessage}</p>
-              )}
+              ) : null}
             </div>
           ) : null}
           {showApiUsageDetails && subtreeUsage ? <ApiUsageSummaryLine totals={subtreeUsage} /> : null}

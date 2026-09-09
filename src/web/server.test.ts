@@ -1,4 +1,4 @@
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, parse } from "node:path";
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
@@ -205,7 +205,7 @@ class FakeAdapter implements SessionAdapter {
     return {
       thinkingLevel: "medium",
       isStreaming: false,
-      isCompacting: false,
+      isCompacting: this.compactState === "running",
       sessionFile: this.options.sessionPath ?? "/agent/sessions/default.jsonl",
       sessionId: `sess-${++FakeAdapter.nextId}`,
       messageCount: 0,
@@ -243,7 +243,7 @@ class FakeAdapter implements SessionAdapter {
   navigateCalls: Array<{ entryId: string; options?: { summarize?: boolean; customInstructions?: string } }> = [];
   navigateResult = { cancelled: false, editorText: "restored prompt", leafId: "leaf-after" as string | null };
   compactCalls: Array<string | undefined> = [];
-  compactState: "queued" | "running" = "running";
+  compactState: "idle" | "queued" | "running" = "idle";
   contextUsage: { tokens: number | null; contextWindow: number; percent: number | null } | undefined;
   compactionPolicy = { triggerPercent: 70, enabled: true };
   runtimeConfigurationGeneration = 0;
@@ -259,6 +259,7 @@ class FakeAdapter implements SessionAdapter {
   }
   async compact(customInstructions?: string) {
     this.compactCalls.push(customInstructions);
+    if (this.compactState === "idle") this.compactState = "running";
     return { state: this.compactState };
   }
   getCompactionState() {
@@ -1036,7 +1037,7 @@ describe("web routes", () => {
       { path: "/api/config/events", status: 200, contentType: "text/event-stream" },
       {
         path: `/api/file/raw?path=${encodeURIComponent(rawFile)}`,
-        status: 206,
+        status: 200, // Bun applies the range only after this authorized response is returned.
         headers: { Range: "bytes=1-2" },
         contentType: "application/octet-stream",
       },
@@ -1120,12 +1121,12 @@ describe("web routes", () => {
     const res = await handler(new Request(`http://localhost/api/file/raw?path=${encodeURIComponent(pdf)}`));
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("application/pdf");
-    expect(res.headers.get("content-length")).toBe("5");
+    expect(res.headers.get("content-length")).toBeNull();
     expect(res.headers.get("accept-ranges")).toBe("bytes");
     expect([...new Uint8Array(await res.arrayBuffer())]).toEqual([0, 1, 2, 3, 4]);
   });
 
-  it("serves a single ranged raw file response", async () => {
+  it("passes an unsliced body to Bun without committing range metadata from an earlier stat", async () => {
     const pdf = join(homeDir, "raw.pdf");
     writeFileSync(pdf, Buffer.from([0, 1, 2, 3, 4]));
     setup();
@@ -1134,10 +1135,10 @@ describe("web routes", () => {
         headers: { Range: "bytes=1-3" },
       }),
     );
-    expect(res.status).toBe(206);
-    expect(res.headers.get("content-range")).toBe("bytes 1-3/5");
-    expect(res.headers.get("accept-ranges")).toBe("bytes");
-    expect([...new Uint8Array(await res.arrayBuffer())]).toEqual([1, 2, 3]);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-range")).toBeNull();
+    expect(res.headers.get("content-length")).toBeNull();
+    expect([...new Uint8Array(await res.arrayBuffer())]).toEqual([0, 1, 2, 3, 4]);
   });
 
   it("rejects unsatisfiable ranges with 416 and a content-range hint", async () => {
@@ -1154,18 +1155,20 @@ describe("web routes", () => {
   });
 
   it.each([
-    ["full", undefined, null],
-    ["ranged", "bytes=1-3", { start: 1, end: 3 }],
-  ] as const)("delivers %s raw headers and a chunk before source EOF, and forwards cancellation", async (_name, rangeHeader, range) => {
+    ["full", undefined],
+    ["ranged", "bytes=1-3"],
+  ] as const)("prepares a %s raw body before source EOF and forwards cancellation", async (_name, rangeHeader) => {
     const pdf = join(homeDir, "raw.pdf");
     writeFileSync(pdf, Buffer.from([0, 1, 2, 3, 4]));
-    let source!: ReadableStreamDefaultController<Uint8Array>;
+    let source!: ReadableStreamDefaultController<Uint8Array<ArrayBuffer>>;
     const cancel = vi.fn();
-    const stream = new ReadableStream<Uint8Array>({
+    const stream = new ReadableStream<Uint8Array<ArrayBuffer>>({
       start(controller) { source = controller; },
       cancel,
     });
-    const readFileStream = vi.spyOn(directoryService, "readFileStream").mockReturnValue(stream);
+    const body = new Blob([Uint8Array.of(1)]);
+    vi.spyOn(body, "stream").mockReturnValue(stream);
+    const readFileBody = vi.spyOn(directoryService, "readFileBody").mockResolvedValue(body);
     setup();
     let response: Response | undefined;
     const request = handler(
@@ -1176,7 +1179,7 @@ describe("web routes", () => {
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     try {
       await vi.waitFor(() => expect(response).toBeDefined());
-      expect(readFileStream).toHaveBeenCalledExactlyOnceWith(pdf, range);
+      expect(readFileBody).toHaveBeenCalledExactlyOnceWith(pdf, null);
       reader = response!.body!.getReader();
       source.enqueue(Uint8Array.of(1));
       await expect(reader.read()).resolves.toEqual({ done: false, value: Uint8Array.of(1) });
@@ -1187,30 +1190,8 @@ describe("web routes", () => {
       if (cancel.mock.calls.length === 0) source.close();
       if (reader) await reader.cancel();
       else await (await request).body?.cancel();
-      readFileStream.mockRestore();
+      readFileBody.mockRestore();
     }
-  });
-
-  it("serves a small range of a large raw file through the streaming body", async () => {
-    const big = join(homeDir, "big.bin");
-    const size = 8 * 1024 * 1024;
-    const fd = openSync(big, "w");
-    try {
-      writeSync(fd, Buffer.alloc(size));
-      writeSync(fd, Buffer.from([0xaa, 0xbb, 0xcc, 0xdd]), 0, 4, size - 4);
-    } finally {
-      closeSync(fd);
-    }
-    setup();
-    const res = await handler(
-      new Request(`http://localhost/api/file/raw?path=${encodeURIComponent(big)}`, {
-        headers: { Range: "bytes=-4" },
-      }),
-    );
-    expect(res.status).toBe(206);
-    expect(res.headers.get("content-range")).toBe(`bytes ${size - 4}-${size - 1}/${size}`);
-    expect(res.headers.get("content-length")).toBe("4");
-    expect([...new Uint8Array(await res.arrayBuffer())]).toEqual([0xaa, 0xbb, 0xcc, 0xdd]);
   });
 
   it("rejects raw reads of a directory with the same typed error as text reads", async () => {
@@ -2428,6 +2409,7 @@ describe("web routes", () => {
         },
         getError: () => undefined,
         getModels: () => models,
+        getAvailable: async () => models,
         getAvailableSnapshot: () => models,
         getProviders: () => providers,
         getProvider: (providerId: string) => providers.find((provider) => provider.id === providerId),

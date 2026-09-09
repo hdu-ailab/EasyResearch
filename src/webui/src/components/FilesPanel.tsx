@@ -1,9 +1,9 @@
 import { ChevronRight, File as FileIcon, Folder, FolderOpen, RefreshCw, Search } from "lucide-react";
 import { type DragEvent, useEffect, useMemo, useRef, useState } from "react";
-import type { FileEntryDto, FileWatcherEvent } from "../../../web/contracts";
+import type { FileEntryDto } from "../../../web/contracts";
 import { listEntries, replaceFileWatchDirectories } from "../api";
 import { FILE_PATH_DRAG_TYPE } from "../file-path-drag";
-import { parentPath } from "../file-watcher";
+import { EMPTY_FILE_EVENTS, parentPath, type QueuedFileWatcherEvent } from "../file-watcher";
 import { relativeFilesystemPath } from "../filesystem-path";
 import { useLazyTree } from "../hooks/useLazyTree";
 import { useI18n } from "../i18n/useI18n";
@@ -14,7 +14,8 @@ export interface FilesPanelProps {
   sessionId?: string;
   fileWatchLeaseId?: string | null;
   onOpenFile: (entry: FileEntryDto) => void;
-  fileEvent?: FileWatcherEvent | null;
+  fileEvents?: readonly QueuedFileWatcherEvent[];
+  onFileEventsConsumed?: (through: number) => void;
 }
 
 interface TreeRow {
@@ -28,13 +29,14 @@ export function FilesPanel({
   sessionId,
   fileWatchLeaseId,
   onOpenFile,
-  fileEvent = null,
+  fileEvents = EMPTY_FILE_EVENTS,
+  onFileEventsConsumed,
 }: FilesPanelProps) {
   const { t } = useI18n();
   const [filter, setFilter] = useState("");
   const [focusedPath, setFocusedPath] = useState<string | null>(null);
   const tree = useLazyTree<FileEntryDto>({ root, loadChildren: listEntries, enabled: loadEnabled });
-  const handledEvent = useRef<FileWatcherEvent | null>(null);
+  const handledSequence = useRef(0);
   const watchRevision = useRef({ key: "", revision: 0 });
   const rowRefs = useRef(new Map<string, HTMLElement>());
 
@@ -45,20 +47,28 @@ export function FilesPanel({
   };
 
   useEffect(() => {
-    if (!fileEvent || handledEvent.current === fileEvent) return;
-    handledEvent.current = fileEvent;
-    const changedPath = fileEvent.properties.file;
-    const target =
-      fileEvent.properties.event === "add" || fileEvent.properties.event === "unlink"
-        ? parentPath(changedPath)
-        : changedPath === root ||
-            tree
-              .children(parentPath(changedPath))
-              .some((entry) => entry.path === changedPath && entry.kind === "directory")
-          ? changedPath
-          : null;
-    if (target && tree.status(target) === "loaded") tree.refreshDirectory(target);
-  }, [fileEvent, root, tree.children, tree.refreshDirectory, tree.status]);
+    if (!loadEnabled) return;
+    const pending = fileEvents.filter((entry) => entry.sequence > handledSequence.current);
+    const through = pending.at(-1)?.sequence;
+    if (through === undefined) return;
+    const targets = new Set<string>();
+    for (const { event } of pending) {
+      const changedPath = event.properties.file;
+      const target =
+        event.properties.event === "add" || event.properties.event === "unlink"
+          ? parentPath(changedPath)
+          : changedPath === root ||
+              tree
+                .children(parentPath(changedPath))
+                .some((entry) => entry.path === changedPath && entry.kind === "directory")
+            ? changedPath
+            : null;
+      if (target) targets.add(target);
+    }
+    for (const target of targets) tree.refreshDirectory(target);
+    handledSequence.current = through;
+    onFileEventsConsumed?.(handledSequence.current);
+  }, [fileEvents, loadEnabled, onFileEventsConsumed, root, tree.children, tree.refreshDirectory]);
 
   const watchedDirectories = useMemo(() => {
     const directories = [root];

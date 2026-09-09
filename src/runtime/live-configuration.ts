@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import type { ChokidarOptions } from "chokidar";
 import { readGlobalAgentDefaults } from "../subagent/agent-defaults";
 import {
@@ -266,10 +267,10 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
     publish(event);
   };
 
-  const publishValidationError = (): void => {
-    if (closed || validationError === SAFE_CONFIGURATION_ERROR) return;
-    validationError = SAFE_CONFIGURATION_ERROR;
-    emitError(SAFE_CONFIGURATION_ERROR);
+  const publishValidationError = (message = SAFE_CONFIGURATION_ERROR): void => {
+    if (closed || validationError === message) return;
+    validationError = message;
+    emitError(message);
   };
 
   const publishWatcherError = (): void => {
@@ -390,6 +391,11 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
           await alignHomeWatcher();
           return "unchanged";
         }
+        if (currentFingerprint && candidate.invalidSettingsLayers?.skillPolicy) {
+          rollbackPreparedProjects();
+          publishValidationError(SAFE_SETTINGS_DIAGNOSTIC);
+          return "rejected";
+        }
 
         const loadedCatalog = await loadCatalog({
           ...catalogOptions,
@@ -449,12 +455,19 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
           return supersededDuringValidation ? "superseded" : "unchanged";
         }
 
+        // Rejected layers retain their accepted values, not the fingerprint's cold defaults.
+        const nextCompactionPolicy = candidate.invalidSettingsLayers?.compaction
+          ? currentCompactionPolicy
+          : candidate.compactionPolicy;
+        const nextApiUsageSettings = candidate.invalidSettingsLayers?.apiUsage
+          ? currentApiUsageSettings
+          : candidate.apiUsageSettings;
         const agentsChanged =
           change.agentsChanged ||
           failedAgentsChanged ||
           currentFingerprint === undefined ||
           candidate.agents !== currentFingerprint.agents ||
-          candidate.agentDefaults !== currentFingerprint.agentDefaults;
+          !isDeepStrictEqual(nextCatalog.defaults, currentCatalog?.defaults);
         const modelsChanged =
           change.modelsChanged ||
           currentFingerprint === undefined ||
@@ -465,12 +478,12 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
           candidate.globalSkills !== currentFingerprint.globalSkills ||
           candidate.homeSkills !== currentFingerprint.homeSkills;
         const apiUsageChanged = currentFingerprint !== undefined
-          && candidate.apiUsage !== currentFingerprint.apiUsage;
+          && !isDeepStrictEqual(nextApiUsageSettings, currentApiUsageSettings);
         const runtimeChanged = agentsChanged
           || modelsChanged
           || skillsChanged
           || currentFingerprint === undefined
-          || candidate.compaction !== currentFingerprint.compaction;
+          || !isDeepStrictEqual(nextCompactionPolicy, currentCompactionPolicy);
         const preparedAvailabilitySignature = modelCatalogSignature(preparedModels.availableModels);
         const availabilityChanged = currentFingerprint !== undefined
           && preparedAvailabilitySignature !== currentAvailabilitySignature;
@@ -500,12 +513,8 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
         preparedProjects = undefined;
         currentCatalog = nextCatalog;
         currentFingerprint = candidate;
-        currentCompactionPolicy = candidate.invalidSettingsLayers?.compaction && currentFingerprint
-          ? currentCompactionPolicy
-          : candidate.compactionPolicy;
-        currentApiUsageSettings = candidate.invalidSettingsLayers?.apiUsage && currentFingerprint
-          ? currentApiUsageSettings
-          : candidate.apiUsageSettings;
+        currentCompactionPolicy = nextCompactionPolicy;
+        currentApiUsageSettings = nextApiUsageSettings;
         if (currentAvailabilityEpoch === 0) currentAvailabilityEpoch = 1;
         else if (availabilityChanged) currentAvailabilityEpoch += 1;
         currentAvailabilitySignature = preparedAvailabilitySignature;
@@ -832,6 +841,15 @@ export async function fingerprintConfiguration(
   let compactionPolicy = parseGlobalCompactionPolicy({});
   let apiUsageSettings = parseGlobalApiUsageSettings({});
   try {
+    if (typeof settings !== "object" || settings === null || Array.isArray(settings)) {
+      throw new Error("Invalid settings object.");
+    }
+    const easyresearch = (settings as { easyresearch?: unknown }).easyresearch;
+    if (easyresearch !== undefined && (typeof easyresearch !== "object" || easyresearch === null || Array.isArray(easyresearch))) {
+      throw new Error("Invalid EasyResearch settings object.");
+    }
+    const policy = (easyresearch as { enable_dot_agents_skill?: unknown } | undefined)?.enable_dot_agents_skill;
+    if (policy !== undefined && typeof policy !== "boolean") throw new Error("Invalid Skill discovery policy.");
     enableDotAgentsSkill = isDotAgentsSkillEnabled(settings);
   } catch {
     diagnostic = SAFE_SETTINGS_DIAGNOSTIC;
@@ -882,7 +900,6 @@ export async function fingerprintConfiguration(
   } catch {
     diagnostic = SAFE_SETTINGS_DIAGNOSTIC;
     invalidSettingsLayers.agentDefaults = true;
-    if (settingsBytes !== undefined) updateHashField(defaultsHash, settingsBytes);
   }
   for (const [name, entry] of Object.entries(defaults).sort(([left], [right]) => compareNames(left, right))) {
     updateHashField(defaultsHash, Buffer.from(name, "utf8"));
@@ -924,6 +941,8 @@ export async function fingerprintConfiguration(
     .update(globalSkills)
     .update(homeSkills ?? "disabled")
     .update(diagnostic ?? "valid")
+    .update("\0")
+    .update(Object.keys(invalidSettingsLayers).sort(compareNames).join("\0"))
     .digest("hex");
   return {
     value,
@@ -969,7 +988,11 @@ function sameFingerprint(left: ConfigurationFingerprint, right: ConfigurationFin
     left.apiUsage === right.apiUsage &&
     left.globalSkills === right.globalSkills &&
     left.homeSkills === right.homeSkills &&
-    left.diagnostic === right.diagnostic;
+    left.diagnostic === right.diagnostic &&
+    left.invalidSettingsLayers?.agentDefaults === right.invalidSettingsLayers?.agentDefaults &&
+    left.invalidSettingsLayers?.compaction === right.invalidSettingsLayers?.compaction &&
+    left.invalidSettingsLayers?.apiUsage === right.invalidSettingsLayers?.apiUsage &&
+    left.invalidSettingsLayers?.skillPolicy === right.invalidSettingsLayers?.skillPolicy;
 }
 
 function isPromiseLike(value: unknown): value is PromiseLike<unknown> {

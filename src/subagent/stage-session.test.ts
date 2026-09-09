@@ -211,6 +211,13 @@ class FakeStageSession implements StageAgentSession {
   readonly entries: unknown[] = [];
   readonly sessionManager = { getEntries: () => this.entries };
   abortCalls = 0;
+  abortCompactionCalls = 0;
+  abortBranchSummaryCalls = 0;
+  shutdownCalls = 0;
+  shutdownImpl: () => Promise<void> = async () => {};
+  readonly extensionRunner = {
+    emit: async () => { this.shutdownCalls += 1; await this.shutdownImpl(); },
+  };
   disposeCalls = 0;
   unsubscribeCalls = 0;
   reloadCalls = 0;
@@ -287,6 +294,12 @@ class FakeStageSession implements StageAgentSession {
     this.abortCalls += 1;
     await this.abortImpl();
   }
+  abortCompaction(): void {
+    this.abortCompactionCalls += 1;
+  }
+  abortBranchSummary(): void {
+    this.abortBranchSummaryCalls += 1;
+  }
   dispose(): void {
     this.disposeCalls += 1;
     this.disposeImpl();
@@ -301,6 +314,8 @@ class FakeStageSession implements StageAgentSession {
 }
 
 class FakeDirectChildSupervisor {
+  async acquirePromptAdmission(): Promise<() => void> { return () => {}; }
+  async drainNotifications(): Promise<void> {}
   readonly attached: StageAgentSession[] = [];
   readonly turnGuards: Array<(() => Promise<void>) | undefined> = [];
   readonly abortReasons: string[] = [];
@@ -553,10 +568,10 @@ describe("createStageSessionLauncher", () => {
     };
     expect(loader.additionalSkillPaths).toEqual([]);
     expect(loader.appendSystemPromptOverride(["Pi base"])).toEqual(["Pi base", "Search carefully."]);
-    expect(loader.extensionFactories).toEqual([
+    expect(loader.extensionFactories).toEqual(expect.arrayContaining([
       { name: "stage", caller: "search", coordinator, supervisor: harness.supervisors[0] },
       { name: "web-search" },
-    ]);
+    ]));
     const stageCreateOptions = harness.calls.find(
       (call) => call.name === "createSession",
     )?.value as Record<string, unknown>;
@@ -970,6 +985,54 @@ describe("createStageSessionLauncher", () => {
     expect(session.abortCalls).toBe(2);
     expect(harness.supervisors[0]?.abortReasons).toEqual(["stopped by parent"]);
     await handle.dispose();
+  });
+
+  it("starts descendant cancellation before waiting for the stage abort to settle", async () => {
+    const prompt = deferred<void>();
+    const abortGate = deferred<void>();
+    const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
+    session.abortImpl = () => abortGate.promise;
+    const harness = dependencyHarness(session);
+    const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
+    const handle = await createStageSessionLauncher(harness.dependencies)(stageOptions(coordinator));
+    session.emitAssistantEndAndPersist();
+    await handle.materialized;
+    const aborting = handle.abort("Stop descendants now");
+    try {
+      await vi.waitFor(() => expect(harness.supervisors[0]?.abortReasons).toEqual(["Stop descendants now"]));
+      expect(session.abortCompactionCalls).toBe(1);
+      expect(session.abortBranchSummaryCalls).toBe(1);
+    } finally {
+      abortGate.resolve();
+      prompt.resolve();
+      await aborting;
+      await handle.completion;
+      await handle.dispose();
+    }
+  });
+
+  it("retains a failed shutdown owner and never repeats shutdown after successful delivery", async () => {
+    const prompt = deferred<void>();
+    const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
+    session.shutdownImpl = async () => {
+      if (session.shutdownCalls === 1) throw new Error("shutdown failed");
+    };
+    session.disposeImpl = () => {
+      if (session.disposeCalls === 1) throw new Error("dispose failed");
+    };
+    const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
+    const handle = await createStageSessionLauncher(dependencyHarness(session).dependencies)(stageOptions(coordinator));
+    session.emitAssistantEndAndPersist();
+    await handle.materialized;
+    prompt.resolve();
+    await handle.completion;
+
+    await expect(handle.dispose()).rejects.toThrow("shutdown failed");
+    expect(session.disposeCalls).toBe(0);
+    await expect(handle.dispose()).rejects.toThrow("dispose failed");
+    await handle.dispose();
+    expect(session.shutdownCalls).toBe(2);
+    expect(session.disposeCalls).toBe(2);
   });
 
   it("makes abort and disposal idempotent", async () => {

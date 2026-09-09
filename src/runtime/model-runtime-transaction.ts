@@ -9,14 +9,21 @@ export interface ModelRuntimeCandidate<T extends object> {
 export interface ModelRuntimeTransaction<T extends object> {
   /** Stable object identity delegated to the currently committed runtime. */
   readonly runtime: T;
+  acquire(): ModelRuntimeLease<T>;
   prepare(): Promise<ModelRuntimeCandidate<T>>;
   dispose(): Promise<void>;
+}
+
+export interface ModelRuntimeLease<T extends object> {
+  readonly runtime: T;
+  release(): void;
 }
 
 interface RuntimeOwner<T extends object> {
   runtime: T;
   disposed: boolean;
   disposePromise?: Promise<void>;
+  leases: Set<Promise<void>>;
 }
 
 type CandidateState = "prepared" | "active" | "committed" | "rolled-back" | "discarded";
@@ -66,6 +73,7 @@ export function createModelRuntimeTransaction<T extends object>(
   });
 
   const release = async (owner: RuntimeOwner<T>): Promise<void> => {
+    if (owner.leases.size > 0) await Promise.all(owner.leases);
     await disposeOwner(owner);
     owners.delete(owner);
   };
@@ -75,6 +83,7 @@ export function createModelRuntimeTransaction<T extends object>(
     const owner: RuntimeOwner<T> = {
       runtime: await createRuntime(),
       disposed: false,
+      leases: new Set(),
     };
     owners.add(owner);
     let previous: RuntimeOwner<T> | undefined;
@@ -126,6 +135,20 @@ export function createModelRuntimeTransaction<T extends object>(
 
   return {
     runtime,
+    acquire() {
+      if (closing) throw new Error("Model runtime transaction has been disposed.");
+      const target = requireCurrent();
+      const owner = current!;
+      const lease = Promise.withResolvers<void>();
+      owner.leases.add(lease.promise);
+      return {
+        runtime: target,
+        release() {
+          owner.leases.delete(lease.promise);
+          lease.resolve();
+        },
+      };
+    },
     prepare,
     dispose() {
       if (disposePromise) return disposePromise;

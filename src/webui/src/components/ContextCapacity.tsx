@@ -19,17 +19,16 @@ export function ContextCapacity({ usage, compactionState, compactionPolicy }: Co
   const actualPercent = usage?.percent ?? null;
   const roundedPercent = actualPercent === null ? null : Math.round(actualPercent);
   const clampedPercent = roundedPercent === null ? null : Math.min(100, Math.max(0, roundedPercent));
+  const estimated = usage?.estimated === true && usage.tokens !== null;
+  const tokens = usage?.tokens == null ? t("context.unknown") : formatTokens(usage.tokens);
   const tokenSummary = usage
-    ? `${usage.tokens === null ? t("context.unknown") : formatTokens(usage.tokens)} / ${formatTokens(usage.contextWindow)}`
+    ? `${estimated ? t("context.estimatedTokens").replace("{tokens}", tokens) : tokens} / ${formatTokens(usage.contextWindow)}`
     : t("context.unknown");
   const usageSummary =
     roundedPercent === null
       ? t("context.unknown")
-      : t("context.usageSummary")
-          .replace(
-            "{tokens}",
-            usage?.tokens === null || usage === undefined ? t("context.unknown") : formatTokens(usage.tokens),
-          )
+      : t(estimated ? "context.estimatedUsageSummary" : "context.usageSummary")
+          .replace("{tokens}", tokens)
           .replace("{window}", usage === undefined ? t("context.unknown") : formatTokens(usage.contextWindow))
           .replace("{percent}", String(roundedPercent));
   const policySummary = compactionPolicy.enabled

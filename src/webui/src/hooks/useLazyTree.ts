@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { isSameOrDescendantPath } from "../filesystem-path";
+import { isSameOrDescendantPath, parentFilesystemPath } from "../filesystem-path";
 
 export type NodeLoadStatus = "unloaded" | "loading" | "loaded" | "error";
 
@@ -34,42 +34,68 @@ export interface UseLazyTreeResult<T> {
  * path: it refuses to start a second request while one is already in flight,
  * so rapid batched toggles can never duplicate a fetch.
  */
-export function useLazyTree<T>({ root, loadChildren, enabled = true }: UseLazyTreeOptions<T>): UseLazyTreeResult<T> {
+export function useLazyTree<T extends { path: string; kind?: string }>({
+  root,
+  loadChildren,
+  enabled = true,
+}: UseLazyTreeOptions<T>): UseLazyTreeResult<T> {
   const [stateMap, setStateMap] = useState<Map<string, NodeLoadState<T>>>(() => new Map());
+  // Promise settlements must see each other even when React batches the rendered tree.
+  const nodes = useRef(stateMap);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const inFlight = useRef<Map<string, number>>(new Map());
   const pendingRefresh = useRef<Set<string>>(new Set());
   const tokens = useRef(0);
 
+  const commit = useCallback((next: Map<string, NodeLoadState<T>>) => {
+    nodes.current = next;
+    setStateMap(next);
+  }, []);
+
   const load = useCallback(
-    (path: string) => {
+    function loadDirectory(path: string) {
       if (!enabled) return;
       if (inFlight.current.has(path)) return;
       const token = ++tokens.current;
       inFlight.current.set(path, token);
-      setStateMap((current) => new Map(current).set(path, { status: "loading", children: [] }));
+      commit(
+        new Map(nodes.current).set(path, { status: "loading", children: nodes.current.get(path)?.children ?? [] }),
+      );
+      const settle = (node: NodeLoadState<T>) => {
+        if (inFlight.current.get(path) !== token) return;
+        inFlight.current.delete(path);
+        if (pendingRefresh.current.delete(path)) {
+          loadDirectory(path);
+          return;
+        }
+        // Reconcile against the latest cache, not the tree captured when this request began.
+        const next = new Map(nodes.current);
+        const directories = new Set(node.children.filter((child) => child.kind !== "file").map((child) => child.path));
+        const removed = [...next.keys()].filter(
+          (child) => child !== path && parentFilesystemPath(child) === path && !directories.has(child),
+        );
+        if (removed.length > 0) {
+          const detached = (candidate: string) => removed.some((child) => isSameOrDescendantPath(child, candidate));
+          for (const candidate of next.keys()) {
+            if (!detached(candidate)) continue;
+            next.delete(candidate);
+            inFlight.current.delete(candidate);
+            pendingRefresh.current.delete(candidate);
+          }
+          setExpanded((current) => new Set([...current].filter((candidate) => !detached(candidate))));
+        }
+        commit(next.set(path, node));
+      };
       Promise.resolve()
         .then(() => loadChildren(path))
         .then(
-          (children) => {
-            if (inFlight.current.get(path) !== token) return;
-            inFlight.current.delete(path);
-            setStateMap((current) => new Map(current).set(path, { status: "loaded", children }));
-          },
+          (children) => settle({ status: "loaded", children }),
           (error: unknown) => {
-            if (inFlight.current.get(path) !== token) return;
-            inFlight.current.delete(path);
-            setStateMap((current) =>
-              new Map(current).set(path, {
-                status: "error",
-                children: [],
-                error: error instanceof Error ? error.message : String(error),
-              }),
-            );
+            settle({ status: "error", children: [], error: error instanceof Error ? error.message : String(error) });
           },
         );
     },
-    [enabled, loadChildren],
+    [commit, enabled, loadChildren],
   );
 
   // Root or enablement changes are reset boundaries; adding load here would also reset when its callback identity changes.
@@ -77,18 +103,14 @@ export function useLazyTree<T>({ root, loadChildren, enabled = true }: UseLazyTr
   useEffect(() => {
     inFlight.current.clear();
     pendingRefresh.current.clear();
-    setStateMap(new Map());
+    commit(new Map());
     setExpanded(new Set());
     if (enabled) load(root);
+    return () => {
+      inFlight.current.clear();
+      pendingRefresh.current.clear();
+    };
   }, [root, enabled]);
-
-  useEffect(() => {
-    for (const path of pendingRefresh.current) {
-      if (stateMap.get(path)?.status !== "loaded") continue;
-      pendingRefresh.current.delete(path);
-      load(path);
-    }
-  }, [load, stateMap]);
 
   const toggle = useCallback(
     (path: string) => {
@@ -98,23 +120,21 @@ export function useLazyTree<T>({ root, loadChildren, enabled = true }: UseLazyTr
         else next.add(path);
         return next;
       });
-      const node = stateMap.get(path);
+      const node = nodes.current.get(path);
       if (!node || node.status === "unloaded" || node.status === "error") load(path);
     },
-    [stateMap, load],
+    [load],
   );
 
   const retry = useCallback((path: string) => load(path), [load]);
 
   const refresh = useCallback(
     (path: string) => {
-      setStateMap((current) => {
-        const next = new Map(current);
-        for (const key of current.keys()) {
-          if (isSameOrDescendantPath(path, key)) next.delete(key);
-        }
-        return next;
-      });
+      const next = new Map(nodes.current);
+      for (const key of next.keys()) {
+        if (isSameOrDescendantPath(path, key)) next.delete(key);
+      }
+      commit(next);
       setExpanded((current) => {
         const next = new Set(current);
         for (const key of current) {
@@ -125,23 +145,25 @@ export function useLazyTree<T>({ root, loadChildren, enabled = true }: UseLazyTr
       for (const key of [...inFlight.current.keys()]) {
         if (isSameOrDescendantPath(path, key)) inFlight.current.delete(key);
       }
+      for (const key of pendingRefresh.current) {
+        if (isSameOrDescendantPath(path, key)) pendingRefresh.current.delete(key);
+      }
       load(path);
     },
-    [load],
+    [commit, load],
   );
 
   const refreshDirectory = useCallback(
     (path: string) => {
-      const node = stateMap.get(path);
-      if (!node || node.status === "unloaded" || node.status === "error") return;
-      if (node.status === "loading") {
+      const node = nodes.current.get(path);
+      if (!node || node.status === "unloaded") return;
+      if (inFlight.current.has(path)) {
         pendingRefresh.current.add(path);
         return;
       }
-      inFlight.current.delete(path);
       load(path);
     },
-    [load, stateMap],
+    [load],
   );
 
   const children = useCallback((path: string) => stateMap.get(path)?.children ?? [], [stateMap]);

@@ -64,9 +64,8 @@ async function publishPackage(dir: string, name: string, version: string, dryRun
     console.log(`[release] DRY RUN: validated ${name}@${version}`);
     return;
   }
-  if (!dryRun && isAlreadyPublished(name, version)) {
-    console.log(`[release] ${name}@${version} already published, skipping`);
-    return;
+  if (isAlreadyPublished(name, version)) {
+    throw immutablePublicationError([name], version);
   }
   const args = ["publish", `--registry=${NPM_REGISTRY}`];
   if (process.env.GITHUB_ACTIONS === "true") args.push("--provenance");
@@ -91,7 +90,13 @@ async function publishPackage(dir: string, name: string, version: string, dryRun
 
 export function isAlreadyPublished(name: string, version: string): boolean {
   const result = spawnSync("npm", ["view", `${name}@${version}`, "version", `--registry=${NPM_REGISTRY}`], { encoding: "utf8" });
-  return result.status === 0 && (result.stdout ?? "").trim() === version;
+  if (result.status === 0 && (result.stdout ?? "").trim() === version) return true;
+  if (!result.error && result.status !== 0 && /\bE404\b/u.test(result.stderr ?? "")) return false;
+  throw new Error(`Cannot verify npm publication of ${name}@${version}; no absence was established.`);
+}
+
+function immutablePublicationError(names: readonly string[], version: string): Error {
+  return new Error(`Immutable npm publication exists for ${names.map((name) => `${name}@${version}`).join(", ")}; advance the package version before another release attempt.`);
 }
 
 function writeJson(file: string, value: unknown): void {
@@ -325,44 +330,34 @@ async function waitForAllPlatformPackages(version: string): Promise<void> {
 
 export async function main(): Promise<void> {
   const flags = parseFlags();
+  if (flags.only && !flags.dryRun) {
+    throw new Error("--only requires --dry-run; publication requires every accepted platform target.");
+  }
   const version = repoPackageVersion();
   const targets = TARGETS.filter((t) => flags.only === undefined || t.name === flags.only);
-  const mainPublished = !flags.dryRun && isAlreadyPublished(MAIN_PACKAGE, version);
-  const missing = flags.dryRun ? targets : targets.filter((t) => !isAlreadyPublished(`easyresearch-${t.name}`, version));
-  const skipCount = targets.length - missing.length;
-  if (skipCount > 0) console.log(`[release] skipping ${skipCount} already-published platform package(s)`);
-
-  if (missing.length === 0 && mainPublished) {
-    console.log(`[release] ${MAIN_PACKAGE}@${version} and all platform packages already published`);
-    return;
-  }
+  // Check the complete release, even with --only or --dry-run, before building.
+  const published = [MAIN_PACKAGE, ...TARGETS.map((target) => `easyresearch-${target.name}`)]
+    .filter((name) => isAlreadyPublished(name, version));
+  if (published.length > 0) throw immutablePublicationError(published, version);
 
   if (!flags.skipBuild) {
-    if (missing.length > 0) {
-      console.log(`[release] building ${missing.length} target(s) for easyresearch@${version}`);
-      await buildTargets(flags.only, missing.map((t) => t.name));
-    } else {
-      console.log("[release] no platform packages to build");
-    }
+    console.log(`[release] building ${targets.length} target(s) for easyresearch@${version}`);
+    await buildTargets(flags.only, targets.map((t) => t.name));
   }
-  if (missing.length > 0) validateBuildArtifacts(missing, version);
+  validateBuildArtifacts(targets, version);
 
   if (!flags.dryRun) requireNpmAuth();
 
-  for (const t of missing) {
+  for (const t of targets) {
     assemblePlatformPackage(t.name, version);
     validatePackedPackage(platformPackageDir(t.name), true);
     await publishPackage(platformPackageDir(t.name), `easyresearch-${t.name}`, version, flags.dryRun);
   }
 
-  if (!mainPublished) {
-    if (!flags.dryRun) await waitForAllPlatformPackages(version);
-    assembleMainPackage(version);
-    validatePackedPackage(join(releaseDir(), MAIN_PACKAGE), false);
-    await publishPackage(join(releaseDir(), MAIN_PACKAGE), MAIN_PACKAGE, version, flags.dryRun);
-  } else {
-    console.log(`[release] ${MAIN_PACKAGE}@${version} already published, skipping`);
-  }
+  if (!flags.dryRun) await waitForAllPlatformPackages(version);
+  assembleMainPackage(version);
+  validatePackedPackage(join(releaseDir(), MAIN_PACKAGE), false);
+  await publishPackage(join(releaseDir(), MAIN_PACKAGE), MAIN_PACKAGE, version, flags.dryRun);
   console.log(`[release] done${flags.dryRun ? " (dry run)" : ""}`);
 }
 

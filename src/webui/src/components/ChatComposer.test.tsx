@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -33,6 +33,52 @@ async function renderComposer(props: Partial<React.ComponentProps<typeof ChatCom
 }
 
 describe("ChatComposer slash popover", () => {
+  it.each(["plain draft", "/na", "/ar", "/name draft"])(
+    "does not submit or complete %s during IME confirmation, but accepts ordinary Enter",
+    async (draft) => {
+      const onSend = vi.fn();
+      const onCommand = vi.fn();
+      const { user } = await renderComposer({ onSend, onCommand });
+      const input = screen.getByRole("textbox", { name: "Message" });
+      await user.click(input);
+      await user.keyboard(draft);
+      for (const event of [
+        { isComposing: true, keyCode: 13 },
+        { isComposing: false, keyCode: 229 },
+      ]) {
+        fireEvent.keyDown(input, { key: "Enter", ...event });
+        expect(input).toHaveValue(draft);
+        expect(onSend).not.toHaveBeenCalled();
+        expect(onCommand).not.toHaveBeenCalled();
+      }
+      fireEvent.compositionStart(input);
+      fireEvent.keyDown(input, { key: "Enter", keyCode: 13 });
+      expect(input).toHaveValue(draft);
+      expect(onSend).not.toHaveBeenCalled();
+      expect(onCommand).not.toHaveBeenCalled();
+      fireEvent.compositionEnd(input);
+      fireEvent.keyDown(input, { key: "Enter", keyCode: 229 });
+      expect(input).toHaveValue(draft);
+      await user.keyboard("{Enter}");
+      if (draft === "/ar") expect(input).toHaveValue("/arxiv ");
+      else if (draft.startsWith("/na")) expect(onCommand).toHaveBeenCalledOnce();
+      else expect(onSend).toHaveBeenCalledWith(draft);
+    },
+  );
+
+  it("preserves Shift+Enter newlines after composition finishes", async () => {
+    const onSend = vi.fn();
+    const { user } = await renderComposer({ onSend });
+    const input = screen.getByRole("textbox", { name: "Message" });
+    await user.click(input);
+    await user.keyboard("draft");
+    fireEvent.compositionStart(input);
+    fireEvent.compositionEnd(input);
+    await user.keyboard("{Shift>}{Enter}{/Shift}");
+    expect(input).toHaveValue("draft\n");
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
   it("opens on a leading slash and lists skill commands", async () => {
     const { user } = await renderComposer();
     const input = screen.getByLabelText(/message/i) as HTMLTextAreaElement;

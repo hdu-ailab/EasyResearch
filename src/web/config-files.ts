@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, join, normalize, relative, sep } from "node:path";
 import type { ConfigEntryDto, ConfigScope } from "./contracts";
-import { getAgentDir } from "../runtime/pi-import";
+import { getAgentDir, importPiAuthStorage } from "../runtime/pi-import";
 import { parsePiSettingsJson } from "../runtime/pi-settings-json";
 import { isSkillDescriptorRelativePath } from "../runtime/resource-fingerprint";
 
@@ -66,7 +66,9 @@ interface ProjectWriteContext {
   canonicalCwd: string;
 }
 
-class GlobalSettingsChangedError extends Error {}
+type GlobalProviderFile = "models.json" | "auth.json" | "models-store.json";
+
+class ConfigFileChangedError extends Error {}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -128,7 +130,7 @@ function canonicalizeNearestAncestor(target: string): string {
  * File contents are never logged or embedded in errors.
  */
 export class ConfigFileService {
-  private settingsMutationTail: Promise<void> = Promise.resolve();
+  private readonly globalMutationTails = new Map<string, Promise<void>>();
 
   constructor(
     private readonly agentDir: string = getAgentDir(),
@@ -151,10 +153,11 @@ export class ConfigFileService {
       if ((error as NodeJS.ErrnoException).code === "ENOENT" && !input.path) return [];
       throw new ConfigServiceError(404, `does not exist: ${input.path ?? dirPath}`);
     }
+    const relativeDir = input.path ? relative(fs.realpathSync(root), dirPath) : "";
     return dirents
       .map((dirent) => ({
         name: dirent.name,
-        path: relative(root, join(dirPath, dirent.name)),
+        path: join(relativeDir, dirent.name),
         type: dirent.isDirectory() ? ("directory" as const) : ("file" as const),
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -184,9 +187,16 @@ export class ConfigFileService {
   }
 
   async write(input: ConfigWriteInput): Promise<unknown> {
-    if (isGlobalSettingsWrite(input)) {
-      await this.enqueueGlobalSettingsMutation(() => this.writeNow(input, undefined, { notify: false }));
-      return this.notifyPersistedWrite(input, false);
+    const storePath = this.nativeStorePath(input);
+    if (input.scope === "global" && (
+      isPiSettingsWrite(input) || normalize(input.path) === "models.json" || storePath
+    )) {
+      if (storePath) {
+        try { JSON.parse(input.content); } catch { throw new ConfigServiceError(400, "Invalid JSON"); }
+      }
+      await this.enqueueGlobalMutation(storePath ? basename(storePath) : normalize(input.path), () => this.withNativeStoreLock(storePath,
+        () => this.writeNow(input, undefined, { notify: false })));
+      return this.notifyPersistedWrite(storePath ? { ...input, path: basename(storePath) } : input, false);
     }
     if (isProjectSkillDescriptorInput(input) && input.cwd && this.options.acquireProject) {
       const registration = await this.options.acquireProject(input.cwd);
@@ -204,7 +214,7 @@ export class ConfigFileService {
     options: { notify?: boolean } = {},
   ): Promise<T> {
     let wrote = false;
-    const result = await this.enqueueGlobalSettingsMutation(async () => {
+    const result = await this.enqueueGlobalMutation("settings.json", async () => {
       const settingsPath = join(this.agentDir, "settings.json");
       for (;;) {
         const sourceBytes = fs.existsSync(settingsPath) ? fs.readFileSync(settingsPath) : undefined;
@@ -231,7 +241,7 @@ export class ConfigFileService {
               content: `${JSON.stringify(next.settings, null, 2)}\n`,
             }, undefined, { notify: false, expectedPrevious: sourceBytes ?? null });
           } catch (error) {
-            if (error instanceof GlobalSettingsChangedError) continue;
+            if (error instanceof ConfigFileChangedError) continue;
             throw error;
           }
           wrote = true;
@@ -243,6 +253,61 @@ export class ConfigFileService {
       await this.notifyPersistedWrite({ scope: "global", path: "settings.json", content: "" }, false);
     }
     return result;
+  }
+
+  async mutateGlobalProviderFile(
+    path: GlobalProviderFile,
+    mutate: (content: string | undefined) => string | undefined,
+  ): Promise<{ changed: boolean; configuration: unknown }> {
+    const mutateNow = async () => {
+      for (;;) {
+        const target = resolveAllowedConfigPath(this.agentDir, path, "write");
+        let previous: Buffer | undefined;
+        try {
+          previous = fs.readFileSync(target);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+            throw new ConfigServiceError(409, `${path} must be repaired before modifying it`);
+          }
+        }
+        const content = mutate(previous?.toString("utf8"));
+        if (content === undefined) return false;
+        try {
+          await this.writeNow({ scope: "global", path, content }, undefined, {
+            notify: false, expectedPrevious: previous ?? null,
+          });
+          return true;
+        } catch (error) {
+          if (error instanceof ConfigFileChangedError) continue;
+          throw error;
+        }
+      }
+    };
+    const changed = await this.enqueueGlobalMutation(path, () => {
+      const storePath = path === "models.json" ? undefined : join(this.agentDir, path);
+      return this.withNativeStoreLock(storePath && fs.existsSync(storePath) ? storePath : undefined, mutateNow);
+    });
+    // Acceptance can repair settings through this same queue, so notify only
+    // after releasing mutation ownership.
+    const configuration = changed
+      ? await this.notifyPersistedWrite({ scope: "global", path, content: "" }, false)
+      : undefined;
+    return { changed, configuration };
+  }
+
+  private nativeStorePath(input: ConfigReadInput): string | undefined {
+    if (input.scope !== "global") return undefined;
+    const target = resolveAllowedConfigPath(this.agentDir, input.path, "write");
+    for (const path of ["auth.json", "models-store.json"]) {
+      if (target === canonicalizeNearestAncestor(join(this.agentDir, path))) return join(this.agentDir, path);
+    }
+    return undefined;
+  }
+
+  private async withNativeStoreLock<T>(path: string | undefined, operation: () => Promise<T>): Promise<T> {
+    if (!path) return operation();
+    const { FileAuthStorageBackend } = await importPiAuthStorage();
+    return new FileAuthStorageBackend(path).withLockAsync(async () => ({ result: await operation() }));
   }
 
   private async writeNow(
@@ -275,7 +340,7 @@ export class ConfigFileService {
       : undefined;
     if (options.expectedPrevious !== undefined) {
       const expected = options.expectedPrevious === null ? undefined : options.expectedPrevious;
-      if (!sameOptionalBytes(previous?.bytes, expected)) throw new GlobalSettingsChangedError();
+      if (!sameOptionalBytes(previous?.bytes, expected)) throw new ConfigFileChangedError();
     }
     let persisted = false;
     try {
@@ -348,9 +413,13 @@ export class ConfigFileService {
     }
   }
 
-  private enqueueGlobalSettingsMutation<T>(operation: () => Promise<T>): Promise<T> {
-    const current = this.settingsMutationTail.then(operation);
-    this.settingsMutationTail = current.then(() => undefined, () => undefined);
+  private enqueueGlobalMutation<T>(path: string, operation: () => Promise<T>): Promise<T> {
+    const current = (this.globalMutationTails.get(path) ?? Promise.resolve()).then(operation);
+    const tail = current.then(() => undefined, () => undefined);
+    this.globalMutationTails.set(path, tail);
+    void tail.then(() => {
+      if (this.globalMutationTails.get(path) === tail) this.globalMutationTails.delete(path);
+    });
     return current;
   }
 
@@ -378,10 +447,6 @@ export class ConfigFileService {
     if (!stat.isDirectory()) throw new ConfigServiceError(400, `not a directory: ${cwd}`);
     return join(fs.realpathSync(cwd), ".easyresearch");
   }
-}
-
-function isGlobalSettingsWrite(input: ConfigWriteInput): boolean {
-  return input.scope === "global" && isPiSettingsWrite(input);
 }
 
 function isPiSettingsWrite(input: ConfigWriteInput): boolean {

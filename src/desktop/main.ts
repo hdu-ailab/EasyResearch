@@ -180,11 +180,12 @@ async function startApplication(
       const environment = resolveDesktopEnvironment(process.env, process.platform, {
         warn: writeDesktopLog,
       });
+      environment.EASYRESEARCH_CODING_AGENT_DIR ||= defaultAgentDir();
       if (lifecycle.exiting || !sidecarOwnership.acceptingLaunches) return false;
       const handle = await startDesktopSidecar({
         sidecarPath: resolvePackagedSidecar(process.resourcesPath, process.platform),
         baseEnv: environment,
-        agentDir: defaultAgentDir(),
+        agentDir: environment.EASYRESEARCH_CODING_AGENT_DIR,
         transitionLease,
         onSetup: (message) => {
           writeDesktopLog(`Desktop sidecar setup: ${message}`);

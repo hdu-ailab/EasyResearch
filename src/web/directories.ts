@@ -1,8 +1,8 @@
-import { accessSync, closeSync, constants, mkdirSync, openSync, readFileSync, readdirSync, readSync, realpathSync, statSync } from "node:fs";
+import fs, { accessSync, closeSync, constants, fstatSync, mkdirSync, openSync, readdirSync, readSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, win32 } from "node:path";
 import type { DirectoryEntryDto, FileContentDto, FileEntryDto } from "./contracts";
-import { isBinaryBytes, mimeTypeFor, RawFileRangeError, type ByteRange, type RawFileDescriptor } from "./raw-file";
+import { mimeTypeFor, RawFileRangeError, type ByteRange, type RawFileDescriptor } from "./raw-file";
 
 /** Maximum bytes read for a single file preview. */
 export const FILE_PREVIEW_LIMIT = 1024 * 1024;
@@ -24,6 +24,23 @@ export class DirectoryServiceError extends Error {
     message: string,
   ) {
     super(message);
+  }
+}
+
+/** Expected file failures share one classification before and during body open. */
+export function fileServiceError(error: unknown, path: string): DirectoryServiceError | undefined {
+  if (!error || typeof error !== "object" || !("code" in error)) return undefined;
+  switch (error.code) {
+    case "ENOENT":
+    case "ENOTDIR":
+      return new DirectoryServiceError(404, `does not exist: ${path}`);
+    case "EISDIR":
+      return new DirectoryServiceError(400, `not a file: ${path}`);
+    case "EACCES":
+    case "EPERM":
+      return new DirectoryServiceError(403, `File is not readable: ${path}`);
+    default:
+      return undefined;
   }
 }
 
@@ -109,14 +126,38 @@ export class DirectoryService {
    * `binary` with an empty `content` string while preserving `byteCount`.
    */
   readFile(path: string): FileContentDto {
-    const file = this.resolveReadableFile(path);
-    const buffer = readFileSync(file.path);
-    const byteCount = buffer.byteLength;
-    const truncated = byteCount > FILE_PREVIEW_LIMIT;
-    const sample = buffer.subarray(0, FILE_PREVIEW_LIMIT);
-    const binary = isBinaryBytes(sample);
-    const content = binary ? "" : new TextDecoder("utf-8", { fatal: true }).decode(sample);
-    return { path: file.path, content, byteCount, truncated, binary };
+    let fd: number | undefined;
+    try {
+      const file = this.resolveReadableFile(path);
+      fd = openSync(file.path, "r");
+      const stat = fstatSync(fd);
+      if (!stat.isFile()) throw new DirectoryServiceError(400, `not a file: ${path}`);
+      const byteCount = stat.size;
+      const buffer = Buffer.allocUnsafe(Math.min(byteCount, FILE_PREVIEW_LIMIT));
+      let read = 0;
+      while (read < buffer.byteLength) {
+        const count = readSync(fd, buffer, read, buffer.byteLength - read, read);
+        if (count === 0) break;
+        read += count;
+      }
+      const sample = buffer.subarray(0, read);
+      const truncated = byteCount > read && read === FILE_PREVIEW_LIMIT;
+      let binary = sample.includes(0);
+      let content = "";
+      if (!binary) {
+        try {
+          // Streaming decode retains an incomplete final code point only when capped.
+          content = new TextDecoder("utf-8", { fatal: true }).decode(sample, { stream: truncated });
+        } catch {
+          binary = true;
+        }
+      }
+      return { path: file.path, content, byteCount, truncated, binary };
+    } catch (error) {
+      throw fileServiceError(error, path) ?? error;
+    } finally {
+      if (fd !== undefined) closeSync(fd);
+    }
   }
 
   /**
@@ -135,12 +176,13 @@ export class DirectoryService {
    * the rest of the file is never materialized in memory.
    */
   readFileBytes(path: string, range: ByteRange): Uint8Array<ArrayBuffer> {
-    const file = this.resolveReadableFile(path);
-    this.assertRange(range, file.size);
-    const length = range.end - range.start + 1;
-    const buffer = new Uint8Array(length);
-    const fd = openSync(file.path, "r");
+    let fd: number | undefined;
     try {
+      const file = this.resolveReadableFile(path);
+      this.assertRange(range, file.size);
+      const length = range.end - range.start + 1;
+      const buffer = new Uint8Array(length);
+      fd = openSync(file.path, "r");
       let read = 0;
       while (read < length) {
         const count = readSync(fd, buffer, read, length - read, range.start + read);
@@ -148,67 +190,29 @@ export class DirectoryService {
         read += count;
       }
       return read === length ? buffer : buffer.slice(0, read);
+    } catch (error) {
+      throw fileServiceError(error, path) ?? error;
     } finally {
-      closeSync(fd);
+      if (fd !== undefined) closeSync(fd);
     }
   }
 
   /**
-   * Opens a readable file and returns a web `ReadableStream` that emits only the
-   * inclusive byte range (the whole file when `range` is `null`) in bounded
-   * chunks, closing the descriptor on drain, error, or cancel. Used by the raw
-   * file route so both full and ranged responses stream instead of buffering
-   * the entire file.
+   * A file-backed body keeps raw reads lazy and exposes a known length to Bun's
+   * HTTP server. A generic ReadableStream loses Content-Length on full responses.
    */
-  readFileStream(path: string, range: ByteRange | null): ReadableStream<Uint8Array> {
-    const file = this.resolveReadableFile(path);
-    if (range !== null) this.assertRange(range, file.size);
-    const fd = openSync(file.path, "r");
-    const start = range?.start ?? 0;
-    const end = range?.end ?? Math.max(0, file.size - 1);
-    const CHUNK_SIZE = 64 * 1024;
-    let position = start;
-    let closed = false;
-    const close = (): void => {
-      if (closed) return;
-      closed = true;
-      try {
-        closeSync(fd);
-      } catch {
-        // Best effort: the descriptor may already be closed by the kernel.
-      }
-    };
-    return new ReadableStream<Uint8Array>({
-      pull(controller) {
-        try {
-          if (position > end) {
-            close();
-            controller.close();
-            return;
-          }
-          const length = Math.min(CHUNK_SIZE, end - position + 1);
-          const chunk = new Uint8Array(length);
-          let read = 0;
-          while (read < length) {
-            const count = readSync(fd, chunk, read, length - read, position + read);
-            if (count === 0) break;
-            read += count;
-          }
-          position += read;
-          if (read > 0) controller.enqueue(read === length ? chunk : chunk.slice(0, read));
-          if (read === 0 || position > end) {
-            close();
-            controller.close();
-          }
-        } catch (error) {
-          close();
-          controller.error(error);
-        }
-      },
-      cancel() {
-        close();
-      },
-    });
+  async readFileBody(path: string, range: ByteRange | null): Promise<Blob> {
+    try {
+      const file = this.resolveReadableFile(path);
+      // The pinned Node declarations omit this API supported by both test Node and Bun.
+      const body = await (fs as typeof fs & { openAsBlob(path: string): Promise<Blob> }).openAsBlob(file.path);
+      if (range === null) return body;
+      // Bun's lazy Blob.size reports a disappeared path as zero; its native open must report that error.
+      this.assertRange(range, file.size);
+      return body.slice(range.start, range.end + 1);
+    } catch (error) {
+      throw fileServiceError(error, path) ?? error;
+    }
   }
 
   /** Validates an inclusive range against a file's exact size. */
@@ -227,27 +231,15 @@ export class DirectoryService {
 
   /** Resolves a path to a canonical readable file, sharing typed error mapping. */
   private resolveReadableFile(path: string): { path: string; size: number } {
-    let real: string;
     try {
-      real = realpathSync(path);
-    } catch {
-      throw new DirectoryServiceError(404, `does not exist: ${path}`);
-    }
-    let stat;
-    try {
-      stat = statSync(real);
-    } catch {
-      throw new DirectoryServiceError(404, `does not exist: ${path}`);
-    }
-    if (!stat.isFile()) {
-      throw new DirectoryServiceError(400, `not a file: ${path}`);
-    }
-    try {
+      const real = realpathSync(path);
+      const stat = statSync(real);
+      if (!stat.isFile()) throw new DirectoryServiceError(400, `not a file: ${path}`);
       accessSync(real, constants.R_OK);
-    } catch {
-      throw new DirectoryServiceError(403, `File is not readable: ${path}`);
+      return { path: real, size: stat.size };
+    } catch (error) {
+      throw fileServiceError(error, path) ?? error;
     }
-    return { path: real, size: stat.size };
   }
 
   requireCwd(path: string): string {
