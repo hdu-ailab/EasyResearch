@@ -3,9 +3,10 @@ name: customize-easyresearch
 description: >-
   Use when editing or troubleshooting EasyResearch's own agents, skills,
   settings.json, models.json, auth.json, extensions, prompts, themes, or
-  .easyresearch configuration; also when mounting skills or explaining config
-  scope and precedence. Not for paper research, experiments, writing, figures,
-  or review themselves.
+  .easyresearch configuration; also for API timeouts, retries, transport,
+  compaction, thinking budgets, image settings, mounting skills, or explaining
+  config scope and precedence. Not for paper research, experiments, writing,
+  figures, or review themselves.
 ---
 
 # Customizing EasyResearch
@@ -40,8 +41,27 @@ data, or create a separate `config.json`. EasyResearch does not read or write
 Settings copies an Agent file or complete Skill directory into the global root
 on edit. Preserve existing user copies.
 
-For less common settings, extension authoring, Web APIs, or diagnostics, read
-[Configuration reference](references/configuration.md) only as needed.
+## Common runtime settings
+
+For API request timeouts, retry counts/backoff, SSE/WebSocket transport,
+compaction, thinking-token budgets, or image handling, read the
+[Configuration reference](references/configuration.md). It provides selective
+JSON templates, defaults, provider limitations, and application timing.
+
+1. Inspect the relevant global and exact-project settings. Choose global scope
+   for all projects or project scope for a native Pi override; keep global-only
+   EasyResearch policies global.
+2. Merge only requested fields, preserving unrelated nested values. Native Pi
+   settings such as `retry` belong at the settings root, not in `models.json`,
+   Agent frontmatter, or `easyresearch.agentDefaults`.
+3. Distinguish Agent retries from Provider retries and request timeouts from
+   stream/connect timeouts and Web idle retention. State units, whether a value
+   is a default or an example, and the affected provider's support. A single
+   timeout does not impose a whole-task deadline.
+4. State whether the setting requires a new/recreated runtime or has a supported
+   live-update path. Do not seed a full template into existing settings or claim
+   saving changed an in-flight request. For extension authoring, Web APIs, or
+   diagnostics, consult the same reference only as needed.
 
 ## Editing Agents and Skills
 

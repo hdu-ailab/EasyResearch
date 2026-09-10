@@ -18,6 +18,42 @@
       "prompt": "我要在 EasyResearch 的 models.json 里添加 deepseek/deepseek-v4-flash-0731（provider myapi，API 见 http://127.0.0.1:20129/v1/models，OpenRouter 返回结构）。请给出完整 models.json 条目：为它设计 thinkingLevelMap，并处理它 deepseek 风格的 thinkingFormat。不要改动任何真实配置文件，把结果写到输出目录。",
       "expected_output": "条目含探测值 contextWindow=1048576/maxTokens=393216，thinkingLevelMap 覆盖 supported_efforts 的 low/high/max，含 compat.thinkingFormat",
       "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "只调整当前项目的 EasyResearch API 请求配置：请求超时改为 10 分钟，临时错误最多额外重试 2 次，不增加 Provider 内层重试。现有全局 settings.json 为 {\"retry\":{\"enabled\":true,\"maxRetries\":4,\"baseDelayMs\":1000,\"provider\":{\"maxRetries\":0,\"maxRetryDelayMs\":45000}},\"easyresearch\":{\"web\":{\"showApiUsageDetails\":false}}}，项目 settings.json 为 {\"extensions\":[\"./local-extension.ts\"],\"customFlag\":\"keep\"}。给出最小修改后的项目 JSON、合并后的 retry、配置生效步骤和超时边界。只输出，不读取或修改真实配置。",
+      "expected_output": "Project settings preserve extensions/customFlag and use native retry.maxRetries=2 and retry.provider.timeoutMs=600000. Effective retry preserves inherited enabled/baseDelayMs/provider.maxRetries/maxRetryDelayMs. No global or Agent-default mutation. Explains additional retries, runtime recreation, and provider-dependent timeout rather than a whole-task deadline.",
+      "assertions": [
+        "The project JSON preserves existing fields and only overrides the requested native retry fields; it does not move them into easyresearch or models.json.",
+        "The effective retry preserves the supplied global nested values while applying the requested timeout and additional retry count.",
+        "The answer distinguishes saving from recreating a runtime and does not claim an exact whole-task deadline or universal provider support."
+      ],
+      "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "EasyResearch 的 Pi 0.84.3 模板里 timeoutMs 是 3600000，这是不是默认所有 API 都会等待一小时？我想无限等待，把 retry.provider.timeoutMs、httpIdleTimeoutMs、websocketConnectTimeoutMs、retry.provider.maxRetryDelayMs 和 easyresearch.web.sessionIdleTimeoutMs 全设成 0 可以吗？另外把 retry.enabled=false 后是否连 Provider 内层重试也关掉了？请解释默认值、每个 0 的含义，以及 OpenAI/Anthropic、Codex、Google/Vertex、Bedrock 的支持边界。不要修改任何文件。",
+      "expected_output": "Rejects one-hour-as-default and all-zero-as-unlimited assumptions. Describes AgentSession timeout fallback to httpIdleTimeoutMs, provider-specific zero behavior, HTTP and WebSocket timer scope, maxRetryDelayMs=0 removing the wait cap, sessionIdleTimeoutMs=0 immediately disconnecting only when idle versus -1 disabling expiry, and independent retry layers. Does not promise universal stream deadlines or unsupported provider controls.",
+      "assertions": [
+        "The one-hour example is distinguished from the ordinary SDK fallback, and retry.provider.timeoutMs=0 is not recommended as a portable unlimited timeout.",
+        "Zero-valued HTTP/WebSocket timers, server backoff cap, and Web idle retention are explained separately; never-expiring Web retention uses -1.",
+        "Disabling agent retries is not claimed to disable provider retries, transport recovery, or all network attempts.",
+        "Provider limitations distinguish OpenAI/Anthropic request versus stream timing, Codex timing, and unsupported Google/Vertex/Bedrock timeout wiring."
+      ],
+      "files": []
+    },
+    {
+      "id": 6,
+      "prompt": "给我 EasyResearch 的常用配置片段，不要实际写文件：所有项目在上下文占用 60% 时自动压缩，当前项目保留最近 12000 token、禁止向模型发送图片，并为支持数字思考预算的模型设置 high=8192。我还想在代理不支持 WebSocket 时用 SSE。请区分全局和项目文件，保留没有要求修改的配置；说明这些数字是不是默认值、压缩保留量是否保证、思考预算能否套用所有模型、SSE 是否改变 Web UI 连接，以及何时生效。",
+      "expected_output": "Separates global easyresearch.compaction.triggerPercent=60 from native project compaction.keepRecentTokens=12000, images.blockImages=true, thinkingBudgets.high=8192, and transport=sse. Does not override unrelated settings or Agent thinking selection. Explains model-aware retention cap, provider-dependent numeric thinking support, image-content removal, LLM transport scope, selected values versus defaults, and setting-specific application timing.",
+      "assertions": [
+        "The global percentage and native project fields are placed in separate settings fragments without changing unrelated fields or Agent defaults.",
+        "The answer explains the keepRecentTokens ceiling and distinguishes high-token budget from model thinking-level selection and universal provider support.",
+        "The answer does not require a top-level thinking-token-budget compatibility flag for every OpenAI-compatible model or claim high budgets can never affect extended levels.",
+        "Image blocking is described as preventing image content from reaching the model, and transport=sse is scoped to supporting LLM providers rather than browser SSE.",
+        "Requested example values are not called product defaults, and general settings are not promised universal hot reload."
+      ],
+      "files": []
     }
   ]
 }
