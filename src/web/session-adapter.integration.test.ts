@@ -50,6 +50,7 @@ afterEach(() => {
 async function harness(options: {
   extensions?: ExtensionFactory[];
   compact?: boolean;
+  keepRecentTokens?: number;
   filesystemExtensions?: boolean;
   failAfterAttach?: boolean;
   schedule?: (run: () => void) => void;
@@ -74,7 +75,7 @@ async function harness(options: {
   let generation = 1;
   const live = {
     get generation() { return generation; }, availabilityEpoch: 0,
-    compactionPolicy: { triggerPercent: 70, globalEnabled: options.compact ?? false, globalKeepRecentTokens: 100 },
+    compactionPolicy: { triggerPercent: 70, globalEnabled: options.compact ?? false, globalKeepRecentTokens: options.keepRecentTokens ?? 100 },
     synchronize: async () => {},
     acquireProject: async (cwd: string) => ({ cwd, release: async () => {} }),
     isCurrent: (candidate: number) => candidate === generation,
@@ -102,7 +103,7 @@ async function harness(options: {
     createSessionManager: (cwd: string) => pi.SessionManager.create(cwd, join(root, "sessions")),
     openSessionManager: (path: string) => pi.SessionManager.open(path, join(root, "sessions")),
     createSettingsManager: () => pi.SettingsManager.inMemory({
-      compaction: { enabled: options.compact ?? false, keepRecentTokens: 100 }, retry: { enabled: false },
+      compaction: { enabled: options.compact ?? false, keepRecentTokens: options.keepRecentTokens ?? 100 }, retry: { enabled: false },
     }),
     createModelRuntime: async () => {
       const runtime = await pi.ModelRuntime.create({
@@ -186,6 +187,95 @@ async function harness(options: {
 }
 
 describe("Pinned Pi lifecycle ownership", () => {
+  it.each(["root", "stage"] as const)("compacts a large %s tool result before the next model request", async (scope) => {
+    const pi = await importPi();
+    const order: string[] = [];
+    const toolTurns: Array<{ contextTokens: number | null | undefined; responseTokens: number; resultTokens: number }> = [];
+    const compactions: Array<{ reason: string; tokensBefore: number }> = [];
+    const oldEvidence = "initial evidence ".repeat(1_000);
+    const largeEvidence = "evidence ".repeat(2_000);
+    let toolResults = 0;
+    let agentStarts = 0;
+    let nextRequest = "";
+    // The newest result must fit the kept tail: Pi cannot cut at a tool result.
+    const h = await harness({ compact: true, keepRecentTokens: 5_000, extensions: [(api) => {
+      api.on("agent_start", () => { agentStarts += 1; });
+      api.on("turn_end", (event, ctx) => {
+        if (event.message.role !== "assistant" || event.toolResults.length === 0) return;
+        toolTurns.push({
+          contextTokens: ctx.getContextUsage()?.tokens,
+          responseTokens: pi.calculateContextTokens(event.message.usage),
+          resultTokens: event.toolResults.reduce((total, message) => total + pi.estimateTokens(message), 0),
+        });
+      });
+      api.registerTool({
+        name: "hold", label: "Evidence", description: "Return evidence", parameters: Type.Object({}),
+        execute: async () => ({
+          content: [{ type: "text", text: ++toolResults === 1 ? oldEvidence : largeEvidence }],
+          details: {},
+        }),
+      });
+      api.on("session_before_compact", (event) => {
+        return { compaction: {
+          summary: "Evidence summary",
+          firstKeptEntryId: event.preparation.firstKeptEntryId,
+          tokensBefore: event.preparation.tokensBefore,
+        } };
+      });
+      api.on("session_compact", (event) => {
+        order.push("compact");
+        compactions.push({ reason: event.reason, tokensBefore: event.compactionEntry.tokensBefore });
+      });
+    }] });
+    h.provider.setResponses([
+      h.ai.fauxAssistantMessage(h.ai.fauxToolCall("hold", {}), { stopReason: "toolUse" }),
+      h.ai.fauxAssistantMessage(h.ai.fauxToolCall("hold", {}), { stopReason: "toolUse" }),
+      (context) => {
+        order.push("response");
+        nextRequest = JSON.stringify(context.messages);
+        return h.ai.fauxAssistantMessage("finished");
+      },
+    ]);
+    if (scope === "stage") {
+      const { handle } = await h.launch("inspect evidence");
+      try {
+        await handle.completion;
+      } finally {
+        await handle.dispose();
+      }
+    } else {
+      const adapter = h.factory.create({ cwd: join(root, "project") });
+      try {
+        await adapter.start();
+        await adapter.prompt("inspect evidence");
+        await h.sessions[0]!.waitForIdle();
+      } finally {
+        await adapter.stop();
+      }
+    }
+    expect(order).toEqual(["compact", "response"]);
+    const native = h.sessions[0]!;
+    const settings = native.settingsManager.getCompactionSettings();
+    const contextWindow = native.model!.contextWindow;
+    const threshold = contextWindow - settings.reserveTokens;
+    expect(threshold).toBe(Math.floor(contextWindow * 0.7));
+    expect(toolTurns).toHaveLength(2);
+    expect(toolTurns[0]!.contextTokens).toBeLessThan(threshold);
+    const lastTurn = toolTurns[1]!;
+    expect(lastTurn.responseTokens).toBeLessThan(threshold);
+    expect(lastTurn.resultTokens).toBeLessThan(settings.keepRecentTokens);
+    expect(lastTurn.contextTokens).toBe(lastTurn.responseTokens + lastTurn.resultTokens);
+    expect(lastTurn.contextTokens).toBeGreaterThan(threshold);
+    expect(lastTurn.contextTokens).toBeLessThan(contextWindow);
+    expect(compactions).toEqual([{ reason: "threshold", tokensBefore: lastTurn.contextTokens }]);
+    expect(nextRequest).toContain("Evidence summary");
+    expect(nextRequest).toContain(largeEvidence);
+    expect(nextRequest).not.toContain(oldEvidence);
+    expect(agentStarts).toBe(1);
+    expect(h.provider.state.callCount).toBe(3);
+    expect(native.getLastAssistantText()).toBe("finished");
+  });
+
   it("refreshes estimated capacity after compaction retry cleanup before the retry response", async () => {
     const atRetry = deferred();
     const releaseRetry = deferred();

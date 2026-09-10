@@ -1306,6 +1306,10 @@ class FakeModelRuntime {
     return this.networkPromise("fetchDeferred", args);
   }
 
+  streamDeferred(...args: unknown[]): { request: Promise<Response> } {
+    return this.networkLazy("streamDeferred", args);
+  }
+
   cancelDeferred(...args: unknown[]): Promise<Response> {
     return this.networkPromise("cancelDeferred", args);
   }
@@ -1460,6 +1464,7 @@ describe("ModelRuntime network decoration", () => {
       simpleStream.request,
       decorated.complete("model", "context", options),
       decorated.completeSimple("model", "context", options),
+      decorated.streamDeferred("model", "handle", options).request,
       decorated.fetchDeferred("model", "handle", options),
       decorated.cancelDeferred("model", "handle", options),
       decorated.getAuth("provider", { env: { CUSTOM_AUTH_VALUE: "kept" }, signal }),
@@ -1470,6 +1475,7 @@ describe("ModelRuntime network decoration", () => {
       "streamSimple",
       "complete",
       "completeSimple",
+      "streamDeferred",
       "fetchDeferred",
       "cancelDeferred",
     ].includes(name))) {

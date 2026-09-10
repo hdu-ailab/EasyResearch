@@ -109,6 +109,7 @@ const REQUEST_OPTIONS_INDEX: Readonly<Record<string, number>> = Object.freeze({
   streamSimple: 2,
   complete: 2,
   completeSimple: 2,
+  streamDeferred: 2,
   fetchDeferred: 2,
   cancelDeferred: 2,
 });
