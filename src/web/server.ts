@@ -12,7 +12,7 @@ import type { AgentDto, SessionSummaryDto } from "./contracts";
 import type { AgentConfig } from "../subagent/agents";
 import { discoverAgents, discoverGlobalAgents, RESEARCH_ASSISTANT_AGENT } from "../subagent/agents";
 import { createLogger } from "../runtime/logger";
-import { SubagentSessionService } from "./subagent-sessions";
+import { createReadonlySubagentSessionStore, SubagentSessionService } from "./subagent-sessions";
 import { isSubagentSessionName } from "../subagent/session-links";
 import { createFileWatcherFactory } from "./file-watcher";
 import { createDaemonAuthRuntime } from "./auth-runtime";
@@ -343,13 +343,7 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
       },
     });
     const projectWatches = configurationProjectWatches;
-    const subagentSessions = new SubagentSessionService({
-      open: (path) => SessionManager.open(path),
-      listAll: async () => {
-        const sessions = await SessionManager.listAll(undefined);
-        return sessions.map(({ id, path, cwd }) => ({ id, path, cwd }));
-      },
-    });
+    const subagentSessions = new SubagentSessionService(createReadonlySubagentSessionStore(pi));
     const renameSessions = resolveRenameSessionService({
       isConnected: (id) => Promise.resolve(activeRegistry.has(id)),
       setConnectedName: (id, name) => activeRegistry.prompt(id, `/name ${name}`),

@@ -1,7 +1,7 @@
-import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeAll, beforeEach, describe, expect, expectTypeOf, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import type { Message } from "@earendil-works/pi-ai";
 import { importPi } from "../runtime/pi-import";
 import { AGENT_ALIAS_ENTRY } from "../subagent/agent-alias";
@@ -13,6 +13,7 @@ import type {
   SubagentSessionSummaryDto,
 } from "./contracts";
 import {
+  createReadonlySubagentSessionStore,
   createSubagentRecoverySessionStore,
   SubagentSessionNotFoundError,
   SubagentSessionService,
@@ -73,22 +74,27 @@ it("requires parent snapshots to include subagent summaries", () => {
 });
 
 describe("SubagentSessionService", () => {
+  let pi: Pi;
   let SessionManager: Pi["SessionManager"];
+  let homeDir: string;
   let sessionDir: string;
   let cwd: string;
 
-  beforeAll(async () => {
-    ({ SessionManager } = await importPi());
-  });
-
-  beforeEach(() => {
+  beforeEach(async () => {
+    homeDir = mkdtempSync(join(tmpdir(), "lazy-subagent-home-"));
+    vi.stubEnv("HOME", homeDir);
+    vi.stubEnv("EASYRESEARCH_CODING_AGENT_DIR", join(homeDir, ".easyresearch", "agent"));
     sessionDir = mkdtempSync(join(tmpdir(), "lazy-subagent-sessions-"));
     cwd = mkdtempSync(join(tmpdir(), "lazy-subagent-project-"));
+    pi = await importPi();
+    ({ SessionManager } = pi);
   });
 
   afterEach(() => {
     rmSync(sessionDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
+    rmSync(homeDir, { recursive: true, force: true });
+    vi.unstubAllEnvs();
   });
 
   function createSession(sessionCwd = cwd): SessionManagerInstance {
@@ -97,7 +103,7 @@ describe("SubagentSessionService", () => {
 
   function service(listAll = () => SessionManager.listAll(sessionDir)): SubagentSessionService {
     return new SubagentSessionService({
-      open: (path) => SessionManager.open(path),
+      ...createReadonlySubagentSessionStore(pi),
       listAll,
     });
   }
@@ -627,6 +633,179 @@ describe("SubagentSessionService", () => {
     }]);
     await expect(service(staleList).snapshot(parent.getSessionId(), child.getSessionId()))
       .rejects.toBeInstanceOf(SubagentSessionNotFoundError);
+  });
+
+  it.each([
+    "deleted", "directory", "empty", "malformed", "missing header", "late header",
+    "missing id", "non-string id", "empty id", "missing cwd", "non-string cwd", "empty cwd",
+    "different id", "different cwd",
+  ])("rejects a %s source without repairing it or trusting stale identity", async (invalid) => {
+    const parent = createSession();
+    const child = createSession();
+    appendParentMessage(parent);
+    child.appendMessage(user("find papers"));
+    child.appendMessage(assistantUsage(7, 2, 0.1, "reply"));
+    link(parent, child);
+    const listed = await SessionManager.listAll(sessionDir);
+    const sessions = service(async () => listed);
+    await expect(sessions.snapshot(parent.getSessionId(), child.getSessionId())).resolves.toMatchObject({
+      session: { id: child.getSessionId(), cwd },
+    });
+
+    const path = child.getSessionFile()!;
+    const header: Record<string, unknown> = { ...child.getHeader()! };
+    const entries = child.getEntries();
+    let content: string;
+    switch (invalid) {
+      case "deleted":
+      case "directory":
+        unlinkSync(path);
+        if (invalid === "directory") mkdirSync(path);
+        break;
+      default:
+        if (invalid === "missing id") delete header.id;
+        if (invalid === "non-string id") header.id = 123;
+        if (invalid === "empty id") header.id = "";
+        if (invalid === "missing cwd") delete header.cwd;
+        if (invalid === "non-string cwd") header.cwd = 123;
+        if (invalid === "empty cwd") header.cwd = "";
+        if (invalid === "different id") header.id = parent.getSessionId();
+        if (invalid === "different cwd") header.cwd = homeDir;
+        content = invalid === "empty" ? ""
+          : invalid === "malformed" ? '{"type":"session"'
+          : (invalid === "missing header" ? entries
+            : invalid === "late header" ? [entries[0], header, ...entries.slice(1)]
+              : [header, ...entries]).map((entry) => JSON.stringify(entry)).join("\n");
+        writeFileSync(path, content);
+    }
+    const before = invalid === "deleted" || invalid === "directory" ? undefined : readFileSync(path);
+
+    if (invalid !== "different id" && invalid !== "different cwd") {
+      expect(() => createReadonlySubagentSessionStore(pi).open(path)).toThrow();
+    }
+    await expect(sessions.snapshot(parent.getSessionId(), child.getSessionId()))
+      .rejects.toBeInstanceOf(SubagentSessionNotFoundError);
+    const statistics = await sessions.statistics(parent.getSessionId());
+    expect(statistics).toMatchObject({
+      partial: true,
+      warnings: [{ sessionId: child.getSessionId(), reason: "unreadable-descendant" }],
+      total: { totalTokens: 0 },
+    });
+    expect(statistics.sessions.map((session) => session.sessionId)).toEqual([parent.getSessionId()]);
+    expect(JSON.stringify(statistics)).not.toContain(path);
+    if (before) expect(readFileSync(path).equals(before)).toBe(true);
+    else if (invalid === "directory") expect(readdirSync(path)).toEqual([]);
+    else expect(existsSync(path)).toBe(false);
+  });
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("rejects a physically unreadable mapped source", async () => {
+    const parent = createSession();
+    const child = createSession();
+    appendParentMessage(parent);
+    child.appendMessage(assistant("reply"));
+    link(parent, child);
+    const listed = await SessionManager.listAll(sessionDir);
+    const path = child.getSessionFile()!;
+    const before = readFileSync(path);
+    chmodSync(path, 0);
+    try {
+      const sessions = service(async () => listed);
+      await expect(sessions.snapshot(parent.getSessionId(), child.getSessionId()))
+        .rejects.toBeInstanceOf(SubagentSessionNotFoundError);
+      await expect(sessions.statistics(parent.getSessionId())).resolves.toMatchObject({
+        partial: true,
+        warnings: [{ sessionId: child.getSessionId(), reason: "unreadable-descendant" }],
+      });
+    } finally {
+      chmodSync(path, 0o600);
+    }
+    expect(readFileSync(path).equals(before)).toBe(true);
+  });
+
+  it("preserves native branch, summary, usage, and latest-name semantics and rereads each request", async () => {
+    const parent = createSession();
+    const child = createSession();
+    appendParentMessage(parent);
+    child.appendSessionInfo("old name");
+    const requestId = child.appendMessage(user("before compaction"));
+    child.appendMessage(assistantUsage(20, 4, 0.2, "abandoned reply"));
+    const summaryId = child.branchWithSummary(requestId, "abandoned branch summary", undefined, false, usage);
+    const keptId = child.appendMessage(assistantUsage(5, 1, 0.05, "kept reply"));
+    const compactionId = child.appendCompaction("compaction summary", keptId, 1_000, undefined, false, usage);
+    child.appendSessionInfo("  current\nname  ");
+    const latestId = child.appendMessage(assistantUsage(3, 1, 0.03, "latest reply"));
+    link(parent, child);
+    const path = child.getSessionFile()!;
+    const before = readFileSync(path).subarray(0, -1);
+    writeFileSync(path, before);
+    const sessions = service();
+    const reader = createReadonlySubagentSessionStore(pi).open(path);
+    expect(reader.getSessionFile()).toBe(path);
+    expect(reader).not.toHaveProperty("appendMessage");
+    expect(reader).not.toHaveProperty("appendSessionInfo");
+    expect(reader).not.toHaveProperty("setSessionFile");
+
+    const snapshot = await sessions.snapshot(parent.getSessionId(), child.getSessionId());
+    expect(snapshot.session).toEqual({ id: child.getSessionId(), cwd, sessionName: "current name" });
+    expect(snapshot.timeline.map((entry) => entry.entryId)).toEqual([
+      requestId, summaryId, keptId, compactionId, latestId,
+    ]);
+    expect(snapshot.timeline.map((entry) => entry.kind)).toEqual([
+      "message", "branch-summary", "message", "compaction", "message",
+    ]);
+    expect(snapshot.inlineUsage?.map((record) => record.id)).toEqual([summaryId, keptId, compactionId, latestId]);
+    expect(snapshot.inlineUsage?.map((record) => record.usage.totalTokens)).toEqual([0, 6, 0, 4]);
+    const statistics = await sessions.statistics(parent.getSessionId());
+    expect(statistics.sessions.find((session) => session.sessionId === child.getSessionId())).toMatchObject({
+      direct: { records: 5, input: 28, output: 6, totalTokens: 34, cost: { total: 0.28 } },
+      models: [
+        { key: "openai/test-model", totals: { records: 3, totalTokens: 34 } },
+        { kind: "internal", totals: { records: 2, totalTokens: 0 } },
+      ],
+    });
+    expect(readFileSync(path).equals(before)).toBe(true);
+
+    // Only the real writer restores the terminator and appends the next turn.
+    const writer = SessionManager.open(path);
+    writer.appendSessionInfo("");
+    const nextId = writer.appendMessage(assistantUsage(2, 1, 0.02, "next reply"));
+    const changed = readFileSync(path);
+    const next = await sessions.snapshot(parent.getSessionId(), child.getSessionId());
+    expect(next.session).toEqual({ id: child.getSessionId(), cwd });
+    expect(next.timeline.at(-1)?.entryId).toBe(nextId);
+    expect(next.inlineUsage?.at(-1)).toMatchObject({ id: nextId, usage: { totalTokens: 3 } });
+    await expect(sessions.statistics(parent.getSessionId())).resolves.toMatchObject({
+      total: { totalTokens: 37 }, partial: false,
+    });
+    expect(readFileSync(path).equals(changed)).toBe(true);
+  });
+
+  it("restores legacy native entries in memory without persisting migration data", async () => {
+    const parent = createSession();
+    const child = createSession();
+    appendParentMessage(parent);
+    child.appendSessionInfo("legacy name");
+    child.appendMessage(user("legacy request"));
+    child.appendMessage(assistantUsage(4, 1, 0.1, "legacy reply"));
+    link(parent, child);
+    const { version: _version, ...header } = child.getHeader()!;
+    const legacyEntries = child.getEntries().map(({ id: _id, parentId: _parentId, ...entry }) => entry);
+    const path = child.getSessionFile()!;
+    const before = Buffer.from([header, ...legacyEntries].map((entry) => JSON.stringify(entry)).join("\n"));
+    writeFileSync(path, before);
+
+    const sessions = service();
+    const snapshot = await sessions.snapshot(parent.getSessionId(), child.getSessionId());
+    expect(snapshot.session).toEqual({ id: child.getSessionId(), cwd, sessionName: "legacy name" });
+    expect(snapshot.timeline).toMatchObject([
+      { kind: "message", entryId: expect.any(String), message: { content: "legacy request" } },
+      { kind: "message", entryId: expect.any(String), message: { content: [{ text: "legacy reply" }] } },
+    ]);
+    expect(snapshot.inlineUsage?.[0]?.id).toBe(snapshot.timeline[1]?.entryId);
+    await expect(sessions.statistics(parent.getSessionId())).resolves.toMatchObject({
+      partial: false, total: { totalTokens: 5, cost: { total: 0.1 } },
+    });
+    expect(readFileSync(path).equals(before)).toBe(true);
   });
 
   it("keeps messages and the compaction disclosure in complete branch order", async () => {

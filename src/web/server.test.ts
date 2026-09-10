@@ -31,6 +31,7 @@ import type {
   RuntimeApiKeyModelRuntime,
 } from "./auth-runtime";
 import { SubagentSessionNotFoundError } from "./subagent-sessions";
+import { SUBAGENT_SESSION_LINK_ENTRY } from "../subagent/session-links";
 import type { FileWatcherEvent, FileWatcherFactory } from "./file-watcher";
 import { createAgentPatchService, patchGlobalAgent } from "./agent-configuration";
 import * as piImportModule from "../runtime/pi-import";
@@ -734,6 +735,87 @@ describe("web routes", () => {
       httpProxy: "http://proxy.example",
     });
     expect(notify).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { route: "snapshot", tail: "", ending: "missing final newline" },
+    { route: "snapshot", tail: '\n{"type":"message","id":"torn', ending: "torn tail" },
+    { route: "statistics", tail: "", ending: "missing final newline" },
+    { route: "statistics", tail: '\n{"type":"message","id":"torn', ending: "torn tail" },
+  ])("keeps production $route reads byte-preserving with a $ending", async ({ route, tail }) => {
+    onTestFinished(() => {
+      for (const path of [homeDir, agentDir, projectDir]) rmSync(path, { recursive: true, force: true });
+    });
+    vi.stubEnv("HOME", homeDir);
+    vi.stubEnv("EASYRESEARCH_CODING_AGENT_DIR", agentDir);
+    onTestFinished(() => { vi.unstubAllEnvs(); });
+    const { SessionManager } = await piImportModule.importPi();
+    const parent = SessionManager.create(projectDir);
+    const child = SessionManager.create(projectDir);
+    for (const session of [parent, child]) {
+      session.appendMessage({ role: "user", content: "request", timestamp: 1 });
+      session.appendMessage({
+        role: "assistant",
+        content: [{ type: "text", text: "reply" }],
+        api: "openai-completions",
+        provider: "openai",
+        model: "test-model",
+        usage: {
+          input: 4, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 6,
+          cost: { input: 0.1, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.1 },
+        },
+        stopReason: "stop",
+        timestamp: 2,
+      });
+    }
+    child.appendSessionInfo("easyresearch:search");
+    parent.appendCustomEntry(SUBAGENT_SESSION_LINK_ENTRY, {
+      toolCallId: "readonly-child",
+      childSessionId: child.getSessionId(),
+      agent: "search",
+    });
+    const files = [parent, child].map((session) => session.getSessionFile()!);
+    for (const path of files) {
+      writeFileSync(path, readFileSync(path, "utf8").trimEnd() + tail);
+    }
+    const before = files.map((path) => readFileSync(path));
+    const resolveFactory = vi.spyOn(PiSessionFactory, "resolve").mockResolvedValue(factory as never);
+    const createLive = vi.spyOn(liveConfigurationModule, "createLiveConfiguration")
+      .mockReturnValue(fakeConfiguration().live);
+    onTestFinished(() => { resolveFactory.mockRestore(); createLive.mockRestore(); });
+    let productionHandler!: (request: Request) => Promise<Response>;
+    vi.stubGlobal("Bun", {
+      serve: ({ fetch }: { fetch: typeof productionHandler }) => {
+        productionHandler = fetch;
+        return { port: 43210, stop: () => {} };
+      },
+    });
+    onTestFinished(() => { vi.unstubAllGlobals(); });
+    const server = await startServer({ host: "127.0.0.1", port: 0, networkPolicy: directNetworkPolicy() });
+    try {
+      const path = route === "snapshot"
+        ? `/api/sessions/${parent.getSessionId()}/subagents/${child.getSessionId()}/snapshot`
+        : `/api/sessions/${parent.getSessionId()}/statistics`;
+      const response = await productionHandler(new Request(`http://127.0.0.1:${server.port}${path}`));
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject(route === "snapshot" ? {
+        session: { id: child.getSessionId(), cwd: projectDir, sessionName: "easyresearch:search" },
+        timeline: [{ kind: "message" }, { kind: "message" }],
+        inlineUsage: [{ usage: { totalTokens: 6 } }],
+      } : {
+        rootSessionId: parent.getSessionId(),
+        partial: false,
+        total: { records: 2, totalTokens: 12, cost: { total: 0.2 } },
+      });
+      for (const [index, path] of files.entries()) {
+        expect.soft(readFileSync(path).equals(before[index]!), `${route} changed ${index === 0 ? "parent" : "child"} bytes`)
+          .toBe(true);
+      }
+      const active = await productionHandler(new Request(`http://127.0.0.1:${server.port}/api/active-sessions`));
+      expect(await active.json()).toEqual({ sessions: [] });
+    } finally {
+      await server.stop();
+    }
   });
 
   it("returns backend-owned recursive session statistics", async () => {

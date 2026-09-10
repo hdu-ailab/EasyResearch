@@ -141,6 +141,36 @@ export interface SubagentSessionStore {
   listAll(): Promise<Array<{ id: string; path: string; cwd: string }>>;
 }
 
+export function createReadonlySubagentSessionStore(
+  pi: Pick<typeof import("@earendil-works/pi-coding-agent"), "SessionManager" | "parseSessionEntries">,
+): SubagentSessionStore {
+  return {
+    open(path) {
+      const entries = pi.parseSessionEntries(readFileSync(path, "utf8"));
+      const header = entries[0];
+      // In-memory restoration can synthesize a header; observational reads cannot.
+      if (
+        !isObject(header)
+        || header.type !== "session"
+        || typeof header.id !== "string" || !header.id.trim()
+        || typeof header.cwd !== "string" || !header.cwd.trim()
+      ) throw new Error("Session file has no valid header.");
+
+      const manager = pi.SessionManager.inMemory(header.cwd, undefined, entries);
+      return {
+        getEntries: () => manager.getEntries(),
+        getSessionId: () => manager.getSessionId(),
+        // Read-path metadata only: the native manager stays unpersisted and pathless.
+        getSessionFile: () => path,
+        getCwd: () => manager.getCwd(),
+        getSessionName: () => manager.getSessionName(),
+        getBranch: () => manager.getBranch(),
+      };
+    },
+    listAll: () => pi.SessionManager.listAll(),
+  };
+}
+
 export class SubagentSessionNotFoundError extends Error {}
 
 export class SubagentSessionService {
