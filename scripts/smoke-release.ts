@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { connect as connectTcp, createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
@@ -795,6 +796,115 @@ async function readAuthenticatedDaemonReadiness(base: string): Promise<{
     throw new Error("authenticated initial daemon readiness returned the wrong runtime identity");
   }
   return { status, identity };
+}
+
+async function probeForwardedCliWeb(identity: SmokeDaemonIdentity, bootId: string): Promise<unknown> {
+  const sockets = new Set<Socket>();
+  // Preserve HTTP bytes, including the browser-facing Host, as an SSH tunnel does.
+  const forwarder = createServer((client) => {
+    const upstream = connectTcp({ host: "127.0.0.1", port: identity.port });
+    const destroy = () => { client.destroy(); upstream.destroy(); };
+    for (const socket of [client, upstream]) {
+      sockets.add(socket);
+      socket.on("error", destroy);
+      socket.once("close", () => sockets.delete(socket));
+      socket.setTimeout(10_000, destroy);
+    }
+    client.once("close", () => upstream.destroy());
+    client.pipe(upstream).pipe(client);
+  });
+  try {
+    await new Promise<void>((resolveListen, reject) => {
+      forwarder.once("error", reject);
+      forwarder.listen(0, "127.0.0.1", resolveListen);
+    });
+    const address = forwarder.address();
+    if (!address || typeof address === "string" || address.port === identity.port) {
+      throw new Error("CLI Web forwarding probe requires a distinct loopback port");
+    }
+    const host = `127.0.0.1:${address.port}`;
+    const base = `http://${host}`;
+    const request = async (path: string, init: RequestInit = {}, expectedStatus = 200) => {
+      const remaining = Math.min(10_000, firstRunDeadline - Date.now());
+      if (remaining <= 0) throw new Error(`forwarded ${path} exceeded the native smoke deadline`);
+      const headers = new Headers({ Host: host, Origin: base, Connection: "close" });
+      new Headers(init.headers).forEach((value, name) => headers.set(name, value));
+      const response = await fetch(`${base}${path}`, {
+        ...init, headers, proxy: "", redirect: "error", signal: AbortSignal.timeout(remaining),
+      });
+      try {
+        const text = await response.text();
+        if (response.status !== expectedStatus) {
+          throw new Error(`forwarded ${path} returned ${response.status}, expected ${expectedStatus}`);
+        }
+        return { text, headers: response.headers };
+      } finally {
+        if (!response.bodyUsed) await response.body?.cancel();
+      }
+    };
+
+    const document = await request("/");
+    const script = document.text.match(/<script\b[^>]*\bsrc="(\/assets\/[^"?#]+\.js)"/u)?.[1];
+    if (!document.headers.get("content-type")?.includes("text/html") || !script) {
+      throw new Error("forwarded CLI Web document did not reference an embedded script");
+    }
+    const asset = await request(script);
+    if (!asset.text || !asset.headers.get("content-type")?.includes("javascript")) {
+      throw new Error("forwarded CLI Web asset was not JavaScript");
+    }
+    const alias = `forward-${setupRunId}.native-smoke.invalid`;
+    for (const [authority, origin] of [
+      [host, base],
+      [`${alias}:${address.port}`, `https://${alias}:${address.port}`],
+      [host, `https://${alias}:${address.port}`],
+      [host, "null"],
+    ] as const) {
+      const status = JSON.parse((await request("/api/status", {
+        headers: {
+          Host: authority,
+          Origin: origin,
+          Forwarded: `host="${alias}:${address.port}";proto=https`,
+          "X-Forwarded-Host": `${alias}:${address.port}`,
+          "X-Forwarded-Proto": "https",
+        },
+      })).text);
+      if (status.bootId !== bootId || status.agentDir !== agentDir) {
+        throw new Error("forwarded CLI Web API did not reach the current isolated daemon");
+      }
+    }
+    const fixture = readFileSync(validationScript);
+    const range = await request(`/api/file/raw?path=${encodeURIComponent(validationScript)}`, {
+      headers: { Range: "bytes=0-15" },
+    }, 206);
+    if (range.text !== fixture.subarray(0, 16).toString("utf8")
+      || range.headers.get("content-length") !== "16"
+      || range.headers.get("content-range") !== `bytes 0-15/${fixture.length}`) {
+      throw new Error("forwarded CLI Web file range did not preserve native bytes and headers");
+    }
+    await request(DAEMON_CONTROL_PATH, {}, 404);
+    const control = JSON.parse((await request(DAEMON_CONTROL_PATH, {
+      headers: { [DAEMON_TOKEN_HEADER]: identity.token },
+    })).text);
+    if (control.runtimeId !== identity.runtimeId) {
+      throw new Error("forwarded daemon control returned the wrong runtime identity");
+    }
+    const candidateBody = JSON.stringify({ scope: "all", proxyUrl: candidateProxy.url });
+    await request("/api/settings/network-proxy/test", {
+      method: "POST", headers: { "Content-Type": "text/plain" }, body: candidateBody,
+    }, 415);
+    const candidate = await request("/api/settings/network-proxy/test", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: candidateBody,
+    });
+    console.log("[smoke] CLI Web forwarding: document, asset, API, range, unrestricted admission and control checks passed");
+    return JSON.parse(candidate.text);
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    if (forwarder.listening) {
+      await new Promise<void>((resolveClose, reject) => {
+        forwarder.close((error) => error ? reject(error) : resolveClose());
+      });
+    }
+  }
 }
 
 async function restartCompiledDaemon(
@@ -1761,16 +1871,7 @@ try {
     throw new Error("compiled OAuth providers were not registered");
   }
 
-  const candidateProbe = await requestSmokeJsonBeforeDeadline({
-    url: `${base}/api/settings/network-proxy/test`,
-    deadline: firstRunDeadline,
-    label: "compiled Network candidate proxy probe",
-    init: {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ scope: "all", proxyUrl: candidateProxy.url }),
-    },
-  }) as Record<string, unknown>;
+  const candidateProbe = await probeForwardedCliWeb(initialIdentity, initialStatus.bootId) as Record<string, unknown>;
   const candidateProbeText = JSON.stringify(candidateProbe);
   const candidateRecords = candidateProxy.records();
   const candidateRoutes = classifySmokeProxyRoutes(candidateRecords, {

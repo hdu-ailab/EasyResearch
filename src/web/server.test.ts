@@ -3950,7 +3950,7 @@ describe("web routes", () => {
     }
   });
 
-  it("rejects a browser JSON request whose Host is rebound while TCP connects to loopback", async () => {
+  it.each(["cli", "desktop"] as const)("keeps %s admission distinct from the other Web owner's authority policy", async (owner) => {
     const configuration = fakeConfiguration().live;
     const createLive = vi.spyOn(liveConfigurationModule, "createLiveConfiguration")
       .mockReturnValue(configuration);
@@ -3987,7 +3987,7 @@ describe("web routes", () => {
         port: 0,
         networkPolicy: directNetworkPolicy(),
         networkProxyProbe: { test: testNetworkProxy },
-        desktopAccess: { token: "renderer-token" },
+        desktopAccess: owner === "desktop" ? { token: "renderer-token" } : undefined,
         daemonControl: {
           token: "daemon-token",
           runtimeId: "runtime-current",
@@ -4014,22 +4014,76 @@ describe("web routes", () => {
         },
       ));
 
-      expect(response.status).toBe(403);
-      expect(testNetworkProxy).not.toHaveBeenCalled();
+      expect(response.status).toBe(owner === "desktop" ? 403 : 200);
+      if (owner === "desktop") expect(testNetworkProxy).not.toHaveBeenCalled();
 
-      for (const path of [
+      for (const path of owner === "desktop" ? [
         "/",
         "/assets/app.js",
         "/api/file/raw?path=%2Ftmp%2Frebound.pdf",
         "/api/config/events",
         "/api/internal/daemon",
-      ]) {
+      ] : []) {
         const denied = await productionHandler!(new Request(
           `http://127.0.0.1:${server.port}${path}`,
           { headers: attackerHeaders },
         ));
         expect(denied.status, path).toBe(403);
         expect(denied.headers.get("Cache-Control"), path).toBe("no-store");
+      }
+
+      const forwardedHeaders = { Host: "localhost:3001", Origin: "http://localhost:3001" };
+      const forwarded = await productionHandler!(new Request(
+        `http://127.0.0.1:${server.port}/api/status`,
+        { headers: { ...forwardedHeaders, "x-easyresearch-desktop-token": "renderer-token" } },
+      ));
+      expect(forwarded.status).toBe(owner === "desktop" ? 403 : 200);
+
+      if (owner === "cli") {
+        const arbitraryHeaders: Record<string, string>[] = [
+          { Host: "localhost:3001" },
+          { Host: "lab.internal:8181", Origin: "https://proxy.internal" },
+          { Host: "alias.internal", Origin: "null" },
+          { Host: "[::1]:3002", Origin: "not-an-origin" },
+        ];
+        for (const headers of arbitraryHeaders) {
+          const admitted = await productionHandler!(new Request(
+            `http://127.0.0.1:${server.port}/api/status`, { headers },
+          ));
+          expect(admitted.status).toBe(200);
+        }
+        const crossOrigin = await productionHandler!(new Request(
+          `http://127.0.0.1:${server.port}/api/settings/network-proxy/test`,
+          {
+            method: "POST",
+            headers: { ...forwardedHeaders, Origin: "http://attacker.example", "Content-Type": "application/json" },
+            body: JSON.stringify({ scope: "all", proxyUrl: null }),
+          },
+        ));
+        expect(crossOrigin.status).toBe(200);
+
+        const nonJson = await productionHandler!(new Request(
+          `http://127.0.0.1:${server.port}/api/settings/network-proxy/test`,
+          {
+            method: "POST",
+            headers: { ...forwardedHeaders, "Content-Type": "text/plain" },
+            body: JSON.stringify({ scope: "all", proxyUrl: null }),
+          },
+        ));
+        expect(nonJson.status).toBe(415);
+
+        const events = await productionHandler!(new Request(
+          `http://127.0.0.1:${server.port}/api/config/events`,
+          { headers: forwardedHeaders },
+        ));
+        const reader = events.body!.getReader();
+        try {
+          expect(events.status).toBe(200);
+          expect(events.headers.get("Content-Type")).toContain("text/event-stream");
+          expect(await readSseEvent(reader)).toMatchObject({ type: "config.updated" });
+        } finally {
+          await reader.cancel();
+        }
       }
 
       const legitimateOrigin = `http://localhost:${server.port}`;
@@ -4048,7 +4102,12 @@ describe("web routes", () => {
       const missingDesktopToken = await productionHandler!(new Request(
         `http://127.0.0.1:${server.port}/api/status`,
       ));
-      expect(missingDesktopToken.status).toBe(401);
+      expect(missingDesktopToken.status).toBe(owner === "desktop" ? 401 : 200);
+
+      const missingControlToken = await productionHandler!(new Request(
+        `http://127.0.0.1:${server.port}/api/internal/daemon`,
+      ));
+      expect(missingControlToken.status).toBe(404);
 
       const nativeControl = await productionHandler!(new Request(
         `http://127.0.0.1:${server.port}/api/internal/daemon`,

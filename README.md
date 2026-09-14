@@ -64,6 +64,24 @@ easyresearch
 EasyResearch opens a local Web workspace. Choose a project directory, connect a
 model provider in **Settings**, and describe the outcome you want.
 
+### SSH Port Forwarding
+
+On the remote machine, start the CLI without opening a browser:
+
+```bash
+easyresearch --no-open
+```
+
+On your local machine, keep this tunnel running and open `http://localhost:3001`:
+
+```bash
+ssh -N -L 3001:localhost:3000 user@host
+```
+
+Local and remote ports may differ; no domain, port, or Origin allowlist needs
+configuration. CLI Web trusts your access path and has no login or request-origin
+protection. Use a trusted network or SSH tunnel rather than exposing it publicly.
+
 ## Start With An Outcome
 
 | Automated literature review | Autoresearch | Full paper pipeline |

@@ -421,15 +421,17 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
       },
     };
     const routeHandler = createRouteHandler(services);
-    const localInterfaceAddresses = localInterfaceIpAddresses();
+    const localInterfaceAddresses = options.desktopAccess ? localInterfaceIpAddresses() : undefined;
     const handler = (request: Request): Promise<Response> => {
-      const actualPort = server?.port ?? port;
-      const rejection = rejectDisallowedWebRequest(request, {
-        host,
-        port: actualPort,
-        localInterfaceAddresses,
-      });
-      if (rejection) return Promise.resolve(rejection);
+      // CLI Web trusts the access path, including SSH-forwarded hosts and ports.
+      if (options.desktopAccess) {
+        const rejection = rejectDisallowedWebRequest(request, {
+          host,
+          port: server?.port ?? port,
+          localInterfaceAddresses,
+        });
+        if (rejection) return Promise.resolve(rejection);
+      }
       return routeHandler(request);
     };
     server = Bun.serve({

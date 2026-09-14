@@ -60,6 +60,23 @@ easyresearch
 EasyResearch 会打开本地 Web 工作区。选择一个项目目录，在**设置**中连接模型
 provider，然后描述你想得到的成果。
 
+### SSH 端口转发
+
+在远程机器启动 CLI，不打开浏览器：
+
+```bash
+easyresearch --no-open
+```
+
+在本机保持下面的隧道运行，然后打开 `http://localhost:3001`：
+
+```bash
+ssh -N -L 3001:localhost:3000 user@host
+```
+
+本地与远程端口可以不同，无需配置域名、端口或 Origin 白名单。CLI Web 信任访问
+路径，没有登录鉴权或请求来源防护；请通过可信内网或 SSH 隧道访问，不要直接暴露到公网。
+
 ## 从成果出发
 
 | 自动文献综述 | Autoresearch | 完整论文流水线 |
