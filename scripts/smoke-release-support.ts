@@ -9,6 +9,8 @@ import {
 import { request as requestHttps } from "node:https";
 import { connect as connectTcp, type AddressInfo, type Socket } from "node:net";
 import { isAbsolute, posix, win32 } from "node:path";
+import { isDeepStrictEqual } from "node:util";
+import type { BundledModelAddition, BundledModelRemoval } from "../src/runtime/bundled-model-additions";
 import type { NativeLocalShellTool } from "../src/runtime/platform-tools";
 
 export const FIRST_RUN_CEILING_MS = 720_000;
@@ -586,6 +588,59 @@ export function recordSmokeNetworkMilestone(
     fail("invalid LLM rejection requires invalid Search rejection first");
   }
   return { ...state, invalidLlmRejected: true };
+}
+
+export function assertSmokeModelCatalog(
+  catalog: unknown,
+  additions: readonly BundledModelAddition[],
+  cacheOnly?: { provider: string; id: string },
+  removals: readonly BundledModelRemoval[] = [],
+): void {
+  const modelCatalog = catalog as { models?: unknown } | null | undefined;
+  if (
+    !modelCatalog
+    || typeof modelCatalog !== "object"
+    || Array.isArray(modelCatalog)
+    || !Array.isArray(modelCatalog.models)
+  ) {
+    throw new Error("native smoke model catalog did not expose a models array");
+  }
+  const registeredModels = new Map<string, Record<string, unknown>>();
+  for (const value of modelCatalog.models) {
+    const model = value as Record<string, unknown> | null;
+    if (
+      !model
+      || typeof model !== "object"
+      || Array.isArray(model)
+      || typeof model.provider !== "string" || !model.provider
+      || typeof model.id !== "string" || !model.id
+      || typeof model.available !== "boolean"
+    ) {
+      throw new Error("native smoke model catalog contained an invalid model row");
+    }
+    registeredModels.set(`${model.provider}\0${model.id}`, model);
+  }
+  for (const entry of additions) {
+    const key = `${entry.provider}/${entry.model.id}`;
+    const model = registeredModels.get(`${entry.provider}\0${entry.model.id}`);
+    if (!model) {
+      throw new Error(`bundled model addition was not registered: ${key}`);
+    }
+    if (model.reasoning !== entry.model.reasoning) {
+      throw new Error(`bundled model reasoning metadata did not match: ${key}`);
+    }
+    if (!isDeepStrictEqual(model.thinkingLevelMap, entry.model.thinkingLevelMap)) {
+      throw new Error(`bundled model thinkingLevelMap metadata did not match: ${key}`);
+    }
+  }
+  if (cacheOnly && !registeredModels.has(`${cacheOnly.provider}\0${cacheOnly.id}`)) {
+    throw new Error(`cache-only model was not preserved: ${cacheOnly.provider}/${cacheOnly.id}`);
+  }
+  for (const entry of removals) {
+    if (registeredModels.has(`${entry.provider}\0${entry.id}`)) {
+      throw new Error(`removed model was still registered: ${entry.provider}/${entry.id}`);
+    }
+  }
 }
 
 export function parseRecordedPid(content: string): number | undefined {

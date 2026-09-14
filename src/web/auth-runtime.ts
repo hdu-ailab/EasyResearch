@@ -6,6 +6,10 @@ import type { Logger } from "../runtime/logger";
 import { createModelRuntimeTransaction, type ModelRuntimeLease } from "../runtime/model-runtime-transaction";
 import { parsePiSettingsJson } from "../runtime/pi-settings-json";
 import { importPiAuthStorage } from "../runtime/pi-import";
+import {
+  applyBundledModelCatalogOverlay,
+  type BundledOverlayRuntime,
+} from "../runtime/model-catalog-overlay";
 import type { Provider } from "@earendil-works/pi-ai";
 import type {
   ModelCatalogValidator,
@@ -177,19 +181,21 @@ export function createAcceptedModelRuntime<T extends AuthModelRuntime>(
   };
 }
 
-export async function createDaemonAuthRuntime<T extends AuthModelRuntime & RuntimeApiKeyModelRuntime>(
-  options: DaemonAuthRuntimeOptions<T>,
-): Promise<DaemonAuthRuntime> {
+export async function createDaemonAuthRuntime<
+  T extends AuthModelRuntime & RuntimeApiKeyModelRuntime & BundledOverlayRuntime,
+>(options: DaemonAuthRuntimeOptions<T>): Promise<DaemonAuthRuntime> {
   const modelsPath = join(options.config.globalRoot, "models.json");
   const accepted = createAcceptedModelRuntime(
     async () => {
       const runtime = await options.createModelRuntime();
+      const excludedProviders = await readModelsJsonRadiusProviderIds(runtime, modelsPath);
       try {
         await configureNoAuthModelRuntime(runtime, modelsPath);
       } catch {
         // Pi's runtime keeps its built-in/default layer; candidate preparation
         // reports the malformed custom layer as a safe degraded diagnostic.
       }
+      await applyBundledModelCatalogOverlay(runtime, excludedProviders);
       return runtime;
     },
     () => readModelsJsonProviderIds(modelsPath),
@@ -273,6 +279,25 @@ export async function readModelsJsonNoAuthProviderIds(modelsPath: string): Promi
   return noAuthProviderIds(providers);
 }
 
+async function readModelsJsonRadiusProviderIds(
+  runtime: { getError(): string | undefined },
+  modelsPath: string | null,
+): Promise<ReadonlySet<string>> {
+  // Inspect initial composition before no-auth operations can add availability errors.
+  if (modelsPath === null || runtime.getError()) return new Set();
+  try {
+    const root = await readModelsJsonRoot(modelsPath);
+    if (!isRecord(root?.providers)) return new Set();
+    return new Set(Object.entries(root.providers)
+      .filter(([, value]) => isRecord(value) && value.oauth === "radius"
+        && typeof value.baseUrl === "string" && value.baseUrl.length > 0)
+      .map(([id]) => id));
+  } catch {
+    // The existing host validation/fallback owns malformed configuration diagnostics.
+    return new Set();
+  }
+}
+
 /**
  * Pi requires an auth resolution even for keyless compatible endpoints. Give
  * only complete, explicitly keyless custom providers a runtime-only key. The
@@ -288,7 +313,12 @@ export async function configureNoAuthModelRuntime(
   if (!isRecord(providers)) throw new Error('Invalid models.json: "providers" must be an object');
   const providerIds = noAuthProviderIds(providers);
   for (const providerId of providerIds) {
-    await runtime.setRuntimeApiKey(providerId, NO_AUTH_RUNTIME_KEY);
+    try {
+      await runtime.setRuntimeApiKey(providerId, NO_AUTH_RUNTIME_KEY);
+    } catch {
+      // Runtime-key synchronization is not config parsing. Leave availability
+      // diagnostics to Pi and continue configuring valid sibling providers.
+    }
   }
   return providerIds;
 }
@@ -320,22 +350,28 @@ function noAuthProviderIds(providers: Record<string, unknown>): ReadonlySet<stri
 }
 
 export async function createConfiguredModelRuntime<
-  T extends RuntimeApiKeyModelRuntime & { getError(): string | undefined },
+  T extends RuntimeApiKeyModelRuntime & { getError(): string | undefined } & BundledOverlayRuntime,
 >(
   createRuntime: (modelsPath: string | null) => Promise<T>,
   modelsPath: string,
   decorateRuntime: (runtime: T) => T,
 ): Promise<T> {
-  const createCandidate = async (candidatePath: string | null): Promise<T> =>
-    decorateRuntime(await createRuntime(candidatePath));
-  const runtime = await createCandidate(modelsPath);
-  if (runtime.getError()) return createCandidate(null);
-  try {
-    await configureNoAuthModelRuntime(runtime, modelsPath);
-  } catch {
-    return createCandidate(null);
-  }
-  return runtime.getError() ? createCandidate(null) : runtime;
+  const createCandidate = async (candidatePath: string | null): Promise<T> => {
+    const runtime = decorateRuntime(await createRuntime(candidatePath));
+    // Callers create unrefreshed runtimes; later getError() also includes availability.
+    const configurationError = runtime.getError();
+    const excludedProviders = await readModelsJsonRadiusProviderIds(runtime, candidatePath);
+    await applyBundledModelCatalogOverlay(runtime, excludedProviders);
+    if (candidatePath === null) return runtime;
+    if (configurationError) return createCandidate(null);
+    try {
+      await configureNoAuthModelRuntime(runtime, candidatePath);
+    } catch {
+      return createCandidate(null);
+    }
+    return runtime;
+  };
+  return createCandidate(modelsPath);
 }
 
 async function readModelsJsonRoot(modelsPath: string): Promise<Record<string, unknown> | undefined> {
@@ -349,7 +385,8 @@ async function readModelsJsonRoot(modelsPath: string): Promise<Record<string, un
 
   let root: unknown;
   try {
-    root = parsePiJsonObject(content);
+    // Match native ModelConfig without relaxing the generic JSON parser.
+    root = parsePiJsonObject(content.charCodeAt(0) === 0xfeff ? content.slice(1) : content);
   } catch (cause) {
     throw new Error("Unable to parse models.json", { cause });
   }

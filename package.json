@@ -36,7 +36,7 @@
     "build:web": "vite build --config src/webui/vite.config.ts",
     "format:web": "biome format --write src/webui vitest.config.ts",
     "lint:web": "biome check src/webui vitest.config.ts",
-    "check:web": "bun run typecheck && bun run test && bun run build:web && bun run lint:web",
+    "check:web": "bun scripts/check-model-additions.ts && bun run typecheck && bun run test && bun run build:web && bun run lint:web",
     "prepack": "bun run build:web",
     "build:release": "bun scripts/build.ts",
     "build:desktop": "bun scripts/build-desktop.ts",

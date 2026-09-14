@@ -5,10 +5,12 @@ import { connect as connectTcp, createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import { TARGETS, platformBinaryName, platformPackageDir, repoPackageVersion } from "./build";
 import { validateNativeVersionOutput } from "./release";
 import {
   FIRST_RUN_CEILING_MS,
+  assertSmokeModelCatalog,
   assertSmokeRuntimeReplacement,
   assertPathFreeSessionEvent,
   buildWindowsShutdownLauncherScript,
@@ -56,6 +58,7 @@ import {
   writeVenvValidationScript,
 } from "./smoke-release-support";
 import { nativeLocalShellTool } from "../src/runtime/platform-tools";
+import { BUNDLED_MODEL_ADDITIONS, BUNDLED_MODEL_REMOVALS } from "../src/runtime/bundled-model-additions";
 import { DAEMON_CONTROL_PATH, DAEMON_TOKEN_HEADER } from "../src/cli/daemon-control";
 
 const targetName = process.argv[2];
@@ -1720,6 +1723,34 @@ try {
   requireCommandUnavailable("bun");
   const version = repoPackageVersion();
   if (!versionVerifiedByRunner) validateNativeVersionOutput(0, runVersion(), version, target.name);
+  const cacheAddition = BUNDLED_MODEL_ADDITIONS[0];
+  const cacheOnlyModel: Model<Api> | undefined = cacheAddition
+    ? {
+        ...cacheAddition.model,
+        provider: cacheAddition.provider,
+        id: `${cacheAddition.model.id}-native-smoke-cache-${setupRunId}`,
+        name: `${cacheAddition.model.name} (native smoke cache-only)`,
+      }
+    : undefined;
+  if (cacheOnlyModel) {
+    const { getBuiltinModelDataGeneratedAt } = await import("@earendil-works/pi-ai/providers/all");
+    const generatedAt = getBuiltinModelDataGeneratedAt();
+    if (generatedAt === undefined || !Number.isFinite(generatedAt)) {
+      throw new Error("locked Pi model catalog timestamp is missing or invalid");
+    }
+    // Only the native cache can supply this id; models.json must not define its provider.
+    writeFileSync(join(agentDir, "models-store.json"), JSON.stringify({
+      [cacheOnlyModel.provider]: {
+        models: [
+          cacheOnlyModel,
+          ...BUNDLED_MODEL_REMOVALS.filter((entry) => entry.provider === cacheOnlyModel.provider)
+            .map((entry) => ({ ...cacheOnlyModel, id: entry.id, name: `${entry.id} (native smoke removed)` })),
+        ],
+        lastModified: generatedAt + 1,
+        checkedAt: Date.now(),
+      },
+    }));
+  }
   const deadLegacyPid = 2_147_483_647;
   const deadLegacyToken = `native-smoke-dead-legacy-${setupRunId}`;
   const deadLegacyRecord = `${JSON.stringify({
@@ -2236,6 +2267,12 @@ try {
   ) {
     throw new Error(`custom Agent catalog row was not authoritative: ${JSON.stringify(customAgent)}`);
   }
+  const modelCatalog = await requestSmokeJsonBeforeDeadline({
+    url: `${base}/api/models`,
+    deadline: firstRunDeadline,
+    label: "Model catalog probe",
+  });
+  assertSmokeModelCatalog(modelCatalog, BUNDLED_MODEL_ADDITIONS, cacheOnlyModel, BUNDLED_MODEL_REMOVALS);
   if (
     smokeModelState.completedRequests !== modelRequests
       - loopbackProviderRequests

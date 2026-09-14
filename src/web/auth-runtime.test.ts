@@ -1,8 +1,9 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it, expect, vi } from "vitest";
-import type { AuthInteraction } from "@earendil-works/pi-ai";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
+import type { AuthInteraction, InMemoryCredentialStore, InMemoryModelsStore } from "@earendil-works/pi-ai";
+import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createAuthGateway } from "./auth-gateway";
 import { createAuthFlowStore } from "./auth-flow-store";
 import {
@@ -10,11 +11,13 @@ import {
   createConfiguredModelRuntime,
   createDaemonAuthRuntime,
   configureNoAuthModelRuntime,
+  parsePiJsonObject,
   readModelsJsonProviderIds,
   resolveAuthFlowTimeout,
 } from "./auth-runtime";
 import { ConfigFileService } from "./config-files";
 import { createLiveConfiguration, type ConfigurationWatchImplementation } from "../runtime/live-configuration";
+import { BUNDLED_MODEL_ADDITIONS } from "../runtime/bundled-model-additions";
 
 const anthropicProvider = {
   id: "anthropic",
@@ -46,6 +49,7 @@ function transactionRuntime(
     getProvider: vi.fn((providerId: string) => providers.find((provider) => provider.id === providerId)),
     getProviderAuthStatus: vi.fn(() => ({ configured: false })),
     setRuntimeApiKey: vi.fn(async () => {}),
+    registerNativeProvider: vi.fn(),
     checkAuth: vi.fn(async () => undefined),
     login: vi.fn(async () => ({ type: "api_key" as const, key: "secret" })),
     logout: vi.fn(async () => {}),
@@ -664,17 +668,258 @@ describe("createDaemonAuthRuntime", () => {
     await expect(daemon.auth.listProviders()).resolves.toMatchObject([
       { id: "accepted-provider", modelsJson: true },
     ]);
-    expect(acceptedRuntime.refresh).toHaveBeenCalledTimes(1);
+    expect(acceptedRuntime.refresh).toHaveBeenCalledTimes(2);
 
     writeFileSync(modelsPath, '{"providers":{"recovered-provider":{}}}');
     (await daemon.modelValidator.prepareModelCatalog()).commit();
     await expect(daemon.auth.listProviders()).resolves.toMatchObject([
       { id: "recovered-provider", modelsJson: true },
     ]);
-    expect(recoveredRuntime.refresh).toHaveBeenCalledTimes(1);
+    expect(recoveredRuntime.refresh).toHaveBeenCalledTimes(2);
 
     await daemon.dispose();
     rmSync(agentDir, { recursive: true, force: true });
+  });
+
+  it("registers the bundled provider overlay on every daemon catalog candidate", async () => {
+    const agentDir = mkdtempSync(join(tmpdir(), "easyresearch-daemon-overlay-"));
+    const registerNativeProvider = vi.fn();
+    const candidate = { ...transactionRuntime("overlay-candidate"), registerNativeProvider };
+    const daemon = await createDaemonAuthRuntime({
+      config: new ConfigFileService(agentDir),
+      logger: { debug() {}, info() {}, warn() {}, error() {} },
+      createModelRuntime: async () => candidate,
+      synchronizeCatalog: async () => {},
+      onModelsChanged: async () => {},
+    });
+    try {
+      expect(registerNativeProvider).toHaveBeenCalledTimes(1);
+      const provider = registerNativeProvider.mock.calls[0]![0];
+      expect(provider.id).toBe("deepseek");
+      expect(provider.getModels().some((model: { id: string }) => model.id === "deepseek-flash")).toBe(true);
+      expect(candidate.refresh).toHaveBeenCalledWith({ allowNetwork: false });
+    } finally {
+      await daemon.dispose();
+      rmSync(agentDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe.each(["daemon", "session"] as const)("%s bundled overlay host boundary", (host) => {
+  let root: string;
+  let agentDir: string;
+  let modelsPath: string;
+  let dispose: (() => Promise<void>) | undefined;
+  const addition = BUNDLED_MODEL_ADDITIONS.find((entry) => entry.provider === "deepseek")!;
+  const radius = { oauth: "radius", baseUrl: "https://radius.invalid/v1" };
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "easyresearch-overlay-host-"));
+    agentDir = join(root, "agent");
+    mkdirSync(agentDir);
+    modelsPath = join(agentDir, "models.json");
+    vi.stubEnv("HOME", root);
+    vi.stubEnv("USERPROFILE", root);
+    vi.stubEnv("EASYRESEARCH_CODING_AGENT_DIR", agentDir);
+    vi.stubEnv("PI_OFFLINE", "1");
+    vi.stubEnv("DEEPSEEK_API_KEY", undefined);
+    vi.stubEnv("RADIUS_API_KEY", undefined);
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("Unexpected network request"); }));
+  });
+
+  afterEach(async () => {
+    await dispose?.();
+    dispose = undefined;
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  async function createHost(initialize?: (
+    runtime: ModelRuntime,
+    credentials: InMemoryCredentialStore,
+    modelsStore: InMemoryModelsStore,
+  ) => void) {
+    const { importPi } = await import("../runtime/pi-import");
+    const { ModelRuntime } = await importPi();
+    const { InMemoryCredentialStore, InMemoryModelsStore } = await import("@earendil-works/pi-ai");
+    const candidates: Array<Awaited<ReturnType<typeof ModelRuntime.create>>> = [];
+    const create = async (path: string | null = modelsPath) => {
+      const credentials = new InMemoryCredentialStore();
+      const modelsStore = new InMemoryModelsStore();
+      const runtime = await ModelRuntime.create({
+        modelsPath: path, credentials, modelsStore,
+        refreshOnCreate: false,
+      });
+      initialize?.(runtime, credentials, modelsStore);
+      candidates.push(runtime);
+      return runtime;
+    };
+    if (host === "session") {
+      return { runtime: await createConfiguredModelRuntime(create, modelsPath, (runtime) => runtime), candidates };
+    }
+    const daemon = await createDaemonAuthRuntime({
+      config: new ConfigFileService(agentDir),
+      logger: { debug() {}, info() {}, warn() {}, error() {} },
+      createModelRuntime: create,
+      synchronizeCatalog: async () => {}, onModelsChanged: async () => {},
+    });
+    dispose = () => daemon.dispose();
+    return { runtime: daemon.modelRuntime as Awaited<ReturnType<typeof ModelRuntime.create>>, candidates, daemon };
+  }
+
+  it.each([
+    { format: "plain", prefix: "" },
+    { format: "BOM-prefixed", prefix: "\uFEFF" },
+  ])("preserves a valid same-id Radius substitution instead of installing the stock provider ($format)", async ({ prefix }) => {
+    writeFileSync(modelsPath, `${prefix}{
+      // Substitution uses the existing Pi-compatible parser.
+      "providers": { "deepseek": ${JSON.stringify(radius)}, },
+    }`);
+    const before = readFileSync(modelsPath);
+    const { runtime, candidates } = await createHost();
+
+    expect(candidates).toHaveLength(1);
+    expect(runtime.getError()).toBeUndefined();
+    expect(runtime.getProvider(addition.provider)?.auth.oauth?.login).toBeTypeOf("function");
+    expect(runtime.getRegisteredNativeProvider(addition.provider)).toBeUndefined();
+    expect(runtime.getModel(addition.provider, addition.model.id)).toBeUndefined();
+    expect(readFileSync(modelsPath)).toEqual(before);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it("captures Radius substitutions before sibling no-auth availability can fail", async () => {
+    writeFileSync(modelsPath, JSON.stringify({ providers: { deepseek: radius, local: {
+      api: "openai-completions", baseUrl: "http://127.0.0.1:1/v1", models: [{ id: "keyless" }],
+    } } }));
+    const { runtime } = await createHost((candidate, credentials) => {
+      vi.spyOn(credentials, "list").mockRejectedValue(new Error("Synthetic credential-store failure"));
+      vi.spyOn(candidate, "setRuntimeApiKey").mockImplementation(async () => { await candidate.getAvailable(); });
+    });
+    expect(runtime.getError()).toContain("Availability refresh:");
+    expect(runtime.getProvider(addition.provider)?.auth.oauth?.login).toBeTypeOf("function");
+    expect(runtime.getRegisteredNativeProvider(addition.provider)).toBeUndefined();
+    expect(runtime.getModel(addition.provider, addition.model.id)).toBeUndefined();
+  });
+
+  it("retains valid custom models and overrides when credential metadata listing fails", async () => {
+    const content = JSON.stringify({ providers: {
+      custom: {
+        api: "openai-completions", baseUrl: "http://127.0.0.1:1/v1", apiKey: "synthetic-key",
+        models: [{ id: "configured-model", contextWindow: 8192 }],
+      },
+      [addition.provider]: {
+        modelOverrides: { [addition.model.id]: { name: "User override", contextWindow: 4096 } },
+      },
+    } });
+    writeFileSync(modelsPath, content);
+    const failure = new Error("Synthetic credential metadata failure");
+    const { runtime, candidates } = await createHost((candidate, credentials) => {
+      expect(candidate.getError()).toBeUndefined();
+      vi.spyOn(credentials, "list").mockRejectedValue(failure);
+    });
+
+    expect(runtime.getModel("custom", "configured-model")).toMatchObject({ contextWindow: 8192 });
+    expect(runtime.getModel(addition.provider, addition.model.id)).toMatchObject({
+      name: "User override", contextWindow: 4096,
+    });
+    expect(candidates).toHaveLength(1);
+    expect(runtime.getError()).toContain(`Availability refresh: ${failure.message}`);
+    expect(readFileSync(modelsPath, "utf8")).toBe(content);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it("continues valid no-auth siblings after native runtime-key synchronization fails", async () => {
+    const content = JSON.stringify({ providers: {
+      [addition.provider]: {
+        api: "openai-completions", baseUrl: "http://127.0.0.1:1/v1",
+        models: [{ id: "configured-model", contextWindow: 8192 }],
+        modelOverrides: { [addition.model.id]: { name: "User override", contextWindow: 4096 } },
+      },
+      local: {
+        api: "openai-completions", baseUrl: "http://127.0.0.1:2/v1", models: [{ id: "sibling" }],
+      },
+    } });
+    writeFileSync(modelsPath, content);
+    const failure = new Error("Synthetic runtime-key catalog synchronization failure");
+    const synchronizationFailures: unknown[] = [];
+    const { runtime, candidates } = await createHost((candidate, _credentials, modelsStore) => {
+      const read = modelsStore.read.bind(modelsStore);
+      vi.spyOn(modelsStore, "read").mockImplementation(async (providerId, options) => {
+        if (providerId === addition.provider && candidate.getProviderAuthStatus(providerId).source === "runtime") {
+          throw failure;
+        }
+        return read(providerId, options);
+      });
+      const setRuntimeApiKey = candidate.setRuntimeApiKey.bind(candidate);
+      vi.spyOn(candidate, "setRuntimeApiKey").mockImplementation(async (...args) => {
+        try {
+          await setRuntimeApiKey(...args);
+        } catch (error) {
+          synchronizationFailures.push(error);
+          throw error;
+        }
+      });
+    });
+
+    expect(synchronizationFailures).toEqual([expect.objectContaining({
+      name: "CredentialSynchronizationError", providerId: addition.provider,
+      operation: "setRuntimeApiKey", cause: failure,
+    })]);
+    expect(runtime.getProviderAuthStatus("local")).toMatchObject({ configured: true, source: "runtime" });
+    expect(runtime.getAvailableSnapshot()).toContainEqual(expect.objectContaining({ provider: "local", id: "sibling" }));
+    expect(runtime.getModel(addition.provider, "configured-model")).toMatchObject({ contextWindow: 8192 });
+    expect(runtime.getModel(addition.provider, addition.model.id)).toMatchObject({
+      name: "User override", contextWindow: 4096,
+    });
+    expect(candidates).toHaveLength(1);
+    expect(runtime.getProviderAuthStatus(addition.provider)).toMatchObject({ configured: true, source: "runtime" });
+    expect(readFileSync(modelsPath, "utf8")).toBe(content);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["syntax error", '{"providers":'],
+    ["invalid sibling", JSON.stringify({ providers: { deepseek: radius, broken: { models: [{ id: "invalid", contextWindow: "invalid" }] } } })],
+    ["composition error", JSON.stringify({ providers: { deepseek: radius, broken: { models: [{ id: "no-api-or-endpoint" }] } } })],
+    ["Radius without a provider baseUrl", JSON.stringify({ providers: { deepseek: { oauth: "radius", models: [
+      { id: "custom", api: "openai-completions", baseUrl: "https://custom.invalid/v1" },
+    ] } } })],
+  ])("retains stock additions for an invalid initial config (%s) and null-path fallback", async (_name, content) => {
+    writeFileSync(modelsPath, content);
+    const { runtime, candidates, daemon } = await createHost();
+    expect(runtime.getModel(addition.provider, addition.model.id)).toMatchObject(addition.model);
+    expect(runtime.getProvider(addition.provider)?.auth.oauth).toBeUndefined();
+    if (host === "session") {
+      expect(candidates).toHaveLength(2);
+      expect(runtime.getError()).toBeUndefined();
+    } else {
+      expect(candidates).toHaveLength(1);
+      expect(runtime.getError()).toBeDefined();
+      const degraded = await daemon!.modelValidator.prepareModelCatalog();
+      expect(degraded.diagnostic).toContain("models.json");
+      await degraded.rollback();
+    }
+    expect(readFileSync(modelsPath, "utf8")).toBe(content);
+  });
+
+  it("keeps true keyless providers available without authenticating unrelated stock additions", async () => {
+    const content = JSON.stringify({ providers: { local: {
+      api: "openai-completions", baseUrl: "http://127.0.0.1:1/v1", models: [{ id: "keyless" }],
+    } } });
+    writeFileSync(modelsPath, content);
+    const authPath = join(agentDir, "auth.json");
+    writeFileSync(authPath, '{"unrelated":{"type":"api_key","key":"synthetic"}}');
+    const authBefore = readFileSync(authPath);
+    const { runtime } = await createHost();
+    const local = runtime.getModel("local", "keyless")!;
+    expect(runtime.getAvailableSnapshot()).toContainEqual(local);
+    expect(await runtime.getAuth(local)).toMatchObject({ auth: { apiKey: expect.any(String) } });
+    expect(runtime.getAvailableSnapshot().some((model) => model.provider === addition.provider)).toBe(false);
+    expect(await runtime.getAuth(addition.provider)).toBeUndefined();
+    expect(readFileSync(authPath)).toEqual(authBefore);
+    expect(readFileSync(modelsPath, "utf8")).toBe(content);
   });
 });
 
@@ -695,6 +940,14 @@ describe("resolveAuthFlowTimeout", () => {
     expect(resolveAuthFlowTimeout({ easyresearch: { web: { authFlowTimeoutMs: -5 } } })).toBe(600_000);
     expect(resolveAuthFlowTimeout({ easyresearch: { web: { authFlowTimeoutMs: "1000" } } })).toBe(600_000);
     expect(resolveAuthFlowTimeout({ easyresearch: { web: { authFlowTimeoutMs: 1.5 } } })).toBe(600_000);
+  });
+});
+
+describe("parsePiJsonObject", () => {
+  it("keeps generic JSON parsing strict about a leading BOM", () => {
+    const source = '{"providers":{}}';
+    expect(parsePiJsonObject(source)).toEqual({ providers: {} });
+    expect(() => parsePiJsonObject(`\uFEFF${source}`)).toThrow(SyntaxError);
   });
 });
 
@@ -726,6 +979,19 @@ describe("readModelsJsonProviderIds", () => {
 
     try {
       await expect(readModelsJsonProviderIds(modelsPath)).rejects.toThrow("Unable to parse models.json");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a second leading BOM without changing models.json bytes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "easyresearch-models-json-"));
+    const modelsPath = join(dir, "models.json");
+    writeFileSync(modelsPath, '\uFEFF\uFEFF{"providers":{}}');
+    const before = readFileSync(modelsPath);
+    try {
+      await expect(readModelsJsonProviderIds(modelsPath)).rejects.toThrow("Unable to parse models.json");
+      expect(readFileSync(modelsPath)).toEqual(before);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -775,6 +1041,13 @@ describe("configureNoAuthModelRuntime", () => {
         order.push("raw:getError");
         return undefined;
       },
+      registerNativeProvider(provider: { id: string }) {
+        order.push(`raw:registerNativeProvider:${provider.id}`);
+      },
+      async refresh() {
+        order.push("raw:refresh");
+        return { aborted: false, errors: new Map() };
+      },
       async setRuntimeApiKey(providerId: string) {
         order.push(`raw:setRuntimeApiKey:${providerId}`);
       },
@@ -797,15 +1070,13 @@ describe("configureNoAuthModelRuntime", () => {
     try {
       await expect(createConfiguredModelRuntime(createRuntime, modelsPath, decorate)).resolves.toBeDefined();
 
-      expect(order).toEqual([
-        "create",
-        "decorated:getError",
-        "raw:getError",
-        "decorated:setRuntimeApiKey",
-        "raw:setRuntimeApiKey:local",
-        "decorated:getError",
-        "raw:getError",
-      ]);
+      expect(order[0]).toBe("create");
+      for (const operation of ["getError", "refresh", "registerNativeProvider:deepseek", "setRuntimeApiKey:local"]) {
+        const decorated = order.indexOf(`decorated:${operation.split(":")[0]}`);
+        expect(decorated).toBeGreaterThan(0);
+        expect(order.indexOf(`raw:${operation}`)).toBeGreaterThan(decorated);
+      }
+      expect(order.indexOf("raw:getError")).toBeLessThan(order.indexOf("raw:setRuntimeApiKey:local"));
       expect(decorate).toHaveBeenCalledOnce();
       expect(decorate).toHaveBeenCalledWith(raw);
     } finally {
@@ -820,16 +1091,46 @@ describe("configureNoAuthModelRuntime", () => {
     const malformed = {
       getError: () => "private models.json parse detail",
       setRuntimeApiKey: vi.fn(async () => {}),
+      registerNativeProvider: vi.fn(),
+      refresh: vi.fn(async () => ({ aborted: false, errors: new Map() })),
     };
     const fallback = {
       getError: () => undefined,
       setRuntimeApiKey: vi.fn(async () => {}),
+      registerNativeProvider: vi.fn(),
+      refresh: vi.fn(async () => ({ aborted: false, errors: new Map() })),
     };
     const createRuntime = vi.fn(async (path: string | null) => path === null ? fallback : malformed);
 
     try {
       await expect(createConfiguredModelRuntime(createRuntime, modelsPath, (runtime) => runtime)).resolves.toBe(fallback);
       expect(createRuntime.mock.calls.map(([path]) => path)).toEqual([modelsPath, null]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("registers the bundled registry on every session catalog candidate", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "easyresearch-session-overlay-"));
+    const modelsPath = join(dir, "models.json");
+    writeFileSync(modelsPath, JSON.stringify({ providers: {} }));
+    const registerNativeProvider = vi.fn();
+    const refresh = vi.fn(async () => ({ aborted: false, errors: new Map() }));
+    const raw = {
+      getError: () => undefined,
+      setRuntimeApiKey: vi.fn(async () => {}),
+      registerNativeProvider,
+      refresh,
+    };
+    try {
+      const runtime = await createConfiguredModelRuntime(async () => raw, modelsPath, (value) => value);
+      expect(runtime).toBe(raw);
+      expect(registerNativeProvider).toHaveBeenCalledTimes(1);
+      const provider = registerNativeProvider.mock.calls[0]![0];
+      expect(provider.id).toBe("deepseek");
+      expect(provider.getModels().some((model: { id: string }) => model.id === "deepseek-flash")).toBe(true);
+      expect(refresh).toHaveBeenCalledTimes(1);
+      expect(refresh).toHaveBeenCalledWith({ allowNetwork: false });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

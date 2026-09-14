@@ -7,6 +7,7 @@ import { connect as connectTcp, type AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   FIRST_RUN_CEILING_MS,
+  assertSmokeModelCatalog,
   assertSmokeRuntimeReplacement,
   assertPathFreeSessionEvent,
   buildWindowsShutdownLauncherScript,
@@ -50,6 +51,7 @@ import {
   venvToolCommand,
   writeVenvValidationScript,
 } from "../../scripts/smoke-release-support";
+import type { BundledModelAddition } from "./bundled-model-additions";
 import type { NativeLocalShellTool } from "./platform-tools";
 
 const tempDirs: string[] = [];
@@ -144,6 +146,100 @@ async function requestThroughConnect(proxyUrl: string, targetUrl: string): Promi
     socket.once("error", reject);
   });
 }
+
+describe("assertSmokeModelCatalog", () => {
+  const addition: BundledModelAddition = {
+    provider: "fixture-a",
+    model: {
+      id: "new-model", name: "New model", api: "openai-completions",
+      baseUrl: "https://fixture.invalid", reasoning: true, input: ["text"],
+      contextWindow: 8192, maxTokens: 512,
+      cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
+      thinkingLevelMap: { minimal: null, high: "enabled" },
+    },
+  };
+  const additions: readonly BundledModelAddition[] = [addition, {
+    provider: "fixture-b",
+    model: { ...addition.model, reasoning: false, thinkingLevelMap: undefined },
+  }];
+  const addedRow = {
+    provider: "fixture-a", id: "new-model", reasoning: true,
+    thinkingLevelMap: { high: "enabled", minimal: null }, available: false,
+  };
+  const otherAddedRow = {
+    provider: "fixture-b", id: "new-model", reasoning: false, available: true,
+  };
+  const cacheOnly = { provider: "fixture-a", id: "cache-only" };
+  const cachedRow = { ...cacheOnly, reasoning: true, available: false };
+  const rows = [addedRow, otherAddedRow, cachedRow];
+
+  it("accepts every addition and cached model regardless of availability or thinking-map key order", () => {
+    expect(() => assertSmokeModelCatalog({ models: rows }, additions, cacheOnly)).not.toThrow();
+  });
+
+  it.each(additions)("rejects a missing addition for $provider even if another provider has the id", (entry) => {
+    const models = rows.filter((row) => row.provider !== entry.provider || row.id !== entry.model.id);
+    expect(() => assertSmokeModelCatalog({ models }, additions, cacheOnly))
+      .toThrow(`bundled model addition was not registered: ${entry.provider}/${entry.model.id}`);
+  });
+
+  it("rejects a missing cached model even if another provider has the sentinel id", () => {
+    expect(() => assertSmokeModelCatalog({
+      models: [addedRow, otherAddedRow, { ...cachedRow, provider: "other" }],
+    }, additions, cacheOnly)).toThrow(/cache-only model.*fixture-a\/cache-only/);
+  });
+
+  it.each([true, false])("rejects a retired provider/id even when its availability is %s", (available) => {
+    const retired = { provider: "fixture-a", id: "retired" };
+    expect(() => assertSmokeModelCatalog({
+      models: [...rows, { ...retired, available }],
+    }, additions, cacheOnly, [retired])).toThrow(/removed model.*fixture-a\/retired/);
+  });
+
+  it("allows a removed id on another provider and checks removal-only registries", () => {
+    const retired = { provider: "fixture-a", id: "retired" };
+    const otherRow = { provider: "fixture-b", id: retired.id, available: true };
+    expect(() => assertSmokeModelCatalog({ models: [...rows, otherRow] }, additions, cacheOnly, [retired]))
+      .not.toThrow();
+    expect(() => assertSmokeModelCatalog({ models: [] }, [], undefined, [retired])).not.toThrow();
+    expect(() => assertSmokeModelCatalog({ models: [{ ...retired, available: false }] }, [], undefined, [retired]))
+      .toThrow(/removed model.*fixture-a\/retired/);
+  });
+
+  it.each([
+    ["reasoning", { reasoning: false }],
+    ["reasoning", { reasoning: undefined }],
+    ["thinkingLevelMap", { thinkingLevelMap: { high: "different", minimal: null } }],
+    ["thinkingLevelMap", { thinkingLevelMap: { high: "enabled" } }],
+    ["thinkingLevelMap", { thinkingLevelMap: undefined }],
+    ["thinkingLevelMap", { thinkingLevelMap: ["enabled", null] }],
+  ])("rejects missing, changed, or malformed %s metadata: %j", (field, patch) => {
+    expect(() => assertSmokeModelCatalog({
+      models: [{ ...addedRow, ...patch }, otherAddedRow, cachedRow],
+    }, additions, cacheOnly)).toThrow(new RegExp(`${field}.*fixture-a/new-model`));
+  });
+
+  it.each([
+    null,
+    [],
+    {},
+    { models: {} },
+    { models: [null] },
+    { models: [[]] },
+    { models: [{ ...addedRow, provider: 1 }] },
+    { models: [{ ...addedRow, id: "" }] },
+    { models: [{ ...addedRow, available: "false" }] },
+    { models: [{ ...addedRow, available: undefined }] },
+  ].map((catalog) => [catalog]))("rejects an invalid catalog shape even when the additions registry is empty: %j", (catalog) => {
+    expect(() => assertSmokeModelCatalog(catalog, [])).toThrow(/model catalog/i);
+  });
+
+  it("allows an empty registry without a cache fixture but still checks a supplied sentinel", () => {
+    expect(() => assertSmokeModelCatalog({ models: [] }, [])).not.toThrow();
+    expect(() => assertSmokeModelCatalog({ models: rows }, [])).not.toThrow();
+    expect(() => assertSmokeModelCatalog({ models: [] }, [], cacheOnly)).toThrow(/cache-only model/);
+  });
+});
 
 describe("parseRecordedPid", () => {
   it("accepts both legacy numeric files and structured daemon records", () => {

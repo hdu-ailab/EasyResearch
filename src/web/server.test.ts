@@ -30,6 +30,7 @@ import type {
   DaemonAuthRuntimeOptions,
   RuntimeApiKeyModelRuntime,
 } from "./auth-runtime";
+import type { BundledOverlayRuntime } from "../runtime/model-catalog-overlay";
 import { SubagentSessionNotFoundError } from "./subagent-sessions";
 import { SUBAGENT_SESSION_LINK_ENTRY } from "../subagent/session-links";
 import type { FileWatcherEvent, FileWatcherFactory } from "./file-watcher";
@@ -92,7 +93,7 @@ const [authGatewayMock, createDaemonAuthRuntimeMock, modelValidatorMock, dispose
   };
   const disposeModels = vi.fn(async () => {});
   const createDaemon = vi.fn<
-    (options: DaemonAuthRuntimeOptions<AuthModelRuntime & RuntimeApiKeyModelRuntime>) => Promise<DaemonAuthRuntime>
+    (options: DaemonAuthRuntimeOptions<AuthModelRuntime & RuntimeApiKeyModelRuntime & BundledOverlayRuntime>) => Promise<DaemonAuthRuntime>
   >(async () => ({
     auth: gateway,
     modelValidator,
@@ -2497,10 +2498,11 @@ describe("web routes", () => {
         getProvider: (providerId: string) => providers.find((provider) => provider.id === providerId),
         getProviderAuthStatus: () => ({ configured: false }),
         setRuntimeApiKey: async () => {},
+        registerNativeProvider: vi.fn(),
         checkAuth: async () => undefined,
         login: async () => ({ type: "api_key" as const, key: "unused" }),
         logout: async () => {},
-      } satisfies AuthModelRuntime & RuntimeApiKeyModelRuntime & { dispose: ReturnType<typeof vi.fn> };
+      } satisfies AuthModelRuntime & RuntimeApiKeyModelRuntime & BundledOverlayRuntime & { dispose: ReturnType<typeof vi.fn> };
       createdRuntimes.push(runtime);
       return runtime;
     });
@@ -2512,7 +2514,11 @@ describe("web routes", () => {
     const importPi = vi.spyOn(piImportModule, "importPi").mockResolvedValue({
       ...pi,
       getAgentDir: () => agentDir,
-      ModelRuntime: { create: createModelRuntime },
+      ModelRuntime: {
+        create: (options: Parameters<typeof pi.ModelRuntime.create>[0]) => options?.modelsPath === null
+          ? pi.ModelRuntime.create(options)
+          : createModelRuntime(),
+      },
       SessionManager: {
         listAll: async () => [{
           id: "fixture-history",
@@ -4949,6 +4955,7 @@ describe("web routes", () => {
       getProvider: () => undefined,
       getProviderAuthStatus: () => ({ configured: false }),
       setRuntimeApiKey: async () => {},
+      registerNativeProvider: () => {},
       checkAuth: async () => undefined,
       login: async () => ({ type: "api_key" as const, key: "unused" }),
       logout: async () => {},
@@ -4977,7 +4984,11 @@ describe("web routes", () => {
     const importPi = vi.spyOn(piImportModule, "importPi").mockResolvedValue({
       ...pi,
       getAgentDir: () => agentDir,
-      ModelRuntime: { create: createModelRuntime },
+      ModelRuntime: {
+        create: (options: Parameters<typeof pi.ModelRuntime.create>[0]) => options?.modelsPath === null
+          ? pi.ModelRuntime.create(options)
+          : createModelRuntime(),
+      },
       SessionManager: { listAll: async () => [], open: vi.fn() },
     } as never);
     const pendingFactory: SessionFactory = {
