@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileWatcherEvent } from "../../../web/contracts";
 import { listEntries, readFileContent } from "../api";
+import { observerFor } from "../testing/transcriptTest";
 import { FileBrowser } from "./FileBrowser";
 
 const docxLoader = vi.hoisted(() => ({ load: vi.fn(), render: vi.fn() }));
@@ -545,7 +546,7 @@ describe("FileBrowser", () => {
     render(<FileBrowser root="/p" />);
     const button = await screen.findByRole("button", { name: "Toggle file tree" });
     const tree = await screen.findByRole("tree", { name: "Project files tree" });
-    const container = tree.closest("[class*='w-[240px]']");
+    const container = tree.closest("[data-files-tree]");
     expect(container).not.toBeNull();
     expect(button).toHaveAttribute("aria-expanded", "true");
     expect(await screen.findByText("paper.pdf")).toBeVisible();
@@ -559,5 +560,62 @@ describe("FileBrowser", () => {
     expect(button).toHaveAttribute("aria-expanded", "true");
     expect(container).not.toHaveClass("hidden");
     expect(screen.getByText("paper.pdf")).toBeVisible();
+  });
+
+  it("resizes the desktop file tree against the preview with pointer and keyboard input", async () => {
+    render(<FileBrowser root="/p" />);
+    const handle = await screen.findByRole("separator", { name: "Resize file tree" });
+    const tree = screen.getByRole("tree", { name: "Project files tree" });
+    const container = tree.closest("[data-files-tree]") as HTMLElement;
+    expect(container.style.width).toBe("240px");
+    expect(handle).toHaveAttribute("aria-valuenow", "240");
+
+    const root = container.parentElement?.parentElement as HTMLElement;
+    const observer = observerFor(root);
+    expect(observer).toBeTruthy();
+    act(() => observer?.__fire(700));
+    expect(handle).toHaveAttribute("aria-valuemax", "460");
+
+    fireEvent.pointerDown(handle, { clientX: 500, clientY: 100, pointerId: 1 });
+    fireEvent.pointerMove(document, { clientX: 560, clientY: 100, pointerId: 1 });
+    fireEvent.pointerUp(document, { clientX: 560, clientY: 100, pointerId: 1 });
+    expect(container.style.width).toBe("300px");
+    expect(handle).toHaveAttribute("aria-valuenow", "300");
+
+    fireEvent.keyDown(handle, { key: "ArrowRight" });
+    expect(container.style.width).toBe("316px");
+    fireEvent.keyDown(handle, { key: "ArrowLeft" });
+    expect(container.style.width).toBe("300px");
+    fireEvent.keyDown(handle, { key: "End" });
+    expect(container.style.width).toBe("460px");
+    fireEvent.keyDown(handle, { key: "Home" });
+    expect(container.style.width).toBe("180px");
+  });
+
+  it("clamps a dragged tree width when the file area narrows", async () => {
+    render(<FileBrowser root="/p" />);
+    const handle = await screen.findByRole("separator", { name: "Resize file tree" });
+    const tree = screen.getByRole("tree", { name: "Project files tree" });
+    const container = tree.closest("[data-files-tree]") as HTMLElement;
+    const observer = observerFor(container.parentElement?.parentElement as HTMLElement);
+    act(() => observer?.__fire(900));
+    fireEvent.keyDown(handle, { key: "End" });
+    expect(container.style.width).toBe("660px");
+    act(() => observer?.__fire(500));
+    expect(container.style.width).toBe("260px");
+  });
+
+  it("omits the tree resize separator on mobile and while the tree is collapsed", async () => {
+    const desktop = render(<FileBrowser root="/p" />);
+    await screen.findByRole("tree", { name: "Project files tree" });
+    await userEvent.click(screen.getByRole("button", { name: "Toggle file tree" }));
+    expect(screen.queryByRole("separator", { name: "Resize file tree" })).toBeNull();
+    desktop.unmount();
+
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+    render(<FileBrowser root="/p" />);
+    const tree = await screen.findByRole("tree", { name: "Project files tree" });
+    expect(screen.queryByRole("separator", { name: "Resize file tree" })).toBeNull();
+    expect((tree.closest("[data-files-tree]") as HTMLElement).style.width).toBe("");
   });
 });
