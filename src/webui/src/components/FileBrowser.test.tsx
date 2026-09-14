@@ -1,9 +1,9 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileWatcherEvent } from "../../../web/contracts";
 import { listEntries, readFileContent } from "../api";
-import { observerFor } from "../testing/transcriptTest";
+import { allObservers } from "../testing/transcriptTest";
 import { FileBrowser } from "./FileBrowser";
 
 const docxLoader = vi.hoisted(() => ({ load: vi.fn(), render: vi.fn() }));
@@ -40,6 +40,32 @@ describe("FileBrowser", () => {
       { kind: "file", name: "notes.md", path: "/p/notes.md" },
     ]);
   });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    document.body.style.userSelect = "";
+  });
+
+  async function renderResizableBrowser(width = 700) {
+    vi.useFakeTimers({ toFake: ["requestAnimationFrame", "cancelAnimationFrame"] });
+    const view = render(<FileBrowser root="/p" />);
+    const handle = await screen.findByRole("separator", { name: "Resize file tree" });
+    const container = screen
+      .getByRole("tree", { name: "Project files tree" })
+      .closest("[data-files-tree]") as HTMLElement;
+    const observer = allObservers().find((candidate) => candidate.__observed.some((node) => node.contains(container)));
+    if (!observer) throw new Error("The file split must observe its available width");
+    act(() => observer.__fire(width));
+    const captured = new Set<number>();
+    // jsdom has no native Pointer Capture; real cross-iframe routing is covered by browser smoke.
+    Object.defineProperties(handle, {
+      setPointerCapture: { value: (id: number) => captured.add(id) },
+      hasPointerCapture: { value: (id: number) => captured.has(id) },
+      releasePointerCapture: { value: (id: number) => captured.delete(id) },
+    });
+    return { ...view, handle, container, observer };
+  }
 
   it("dispatches a PDF file to the PDF preview without fetching bounded text", async () => {
     const user = userEvent.setup();
@@ -563,22 +589,14 @@ describe("FileBrowser", () => {
   });
 
   it("resizes the desktop file tree against the preview with pointer and keyboard input", async () => {
-    render(<FileBrowser root="/p" />);
-    const handle = await screen.findByRole("separator", { name: "Resize file tree" });
-    const tree = screen.getByRole("tree", { name: "Project files tree" });
-    const container = tree.closest("[data-files-tree]") as HTMLElement;
+    const { handle, container } = await renderResizableBrowser();
     expect(container.style.width).toBe("240px");
     expect(handle).toHaveAttribute("aria-valuenow", "240");
-
-    const root = container.parentElement?.parentElement as HTMLElement;
-    const observer = observerFor(root);
-    expect(observer).toBeTruthy();
-    act(() => observer?.__fire(700));
     expect(handle).toHaveAttribute("aria-valuemax", "460");
 
-    fireEvent.pointerDown(handle, { clientX: 500, clientY: 100, pointerId: 1 });
-    fireEvent.pointerMove(document, { clientX: 560, clientY: 100, pointerId: 1 });
-    fireEvent.pointerUp(document, { clientX: 560, clientY: 100, pointerId: 1 });
+    fireEvent.pointerDown(handle, { clientX: 500, pointerId: 1, button: 0, isPrimary: true });
+    fireEvent.pointerMove(handle, { clientX: 560, pointerId: 1, buttons: 1 });
+    fireEvent.pointerUp(handle, { clientX: 560, pointerId: 1 });
     expect(container.style.width).toBe("300px");
     expect(handle).toHaveAttribute("aria-valuenow", "300");
 
@@ -592,17 +610,127 @@ describe("FileBrowser", () => {
     expect(container.style.width).toBe("180px");
   });
 
-  it("clamps a dragged tree width when the file area narrows", async () => {
-    render(<FileBrowser root="/p" />);
-    const handle = await screen.findByRole("separator", { name: "Resize file tree" });
-    const tree = screen.getByRole("tree", { name: "Project files tree" });
-    const container = tree.closest("[data-files-tree]") as HTMLElement;
-    const observer = observerFor(container.parentElement?.parentElement as HTMLElement);
-    act(() => observer?.__fire(900));
+  it("clamps the remembered width when the file area narrows and restores it on widening", async () => {
+    const { handle, container, observer } = await renderResizableBrowser(900);
     fireEvent.keyDown(handle, { key: "End" });
     expect(container.style.width).toBe("660px");
-    act(() => observer?.__fire(500));
+    act(() => observer.__fire(500));
     expect(container.style.width).toBe("260px");
+    act(() => observer.__fire(900));
+    expect(container.style.width).toBe("660px");
+  });
+
+  it("owns one captured pointer and commits its final release position before a pending frame", async () => {
+    const { handle, container } = await renderResizableBrowser();
+    fireEvent.pointerDown(handle, { clientX: 500, pointerId: 7, button: 0, isPrimary: true });
+    expect(handle.hasPointerCapture(7)).toBe(true);
+    expect(handle).toHaveFocus();
+
+    fireEvent.pointerMove(handle, { clientX: 900, pointerId: 8, buttons: 1 });
+    fireEvent.pointerUp(handle, { clientX: 900, pointerId: 8 });
+    act(() => vi.advanceTimersToNextFrame());
+    expect(container.style.width).toBe("240px");
+    expect(handle.hasPointerCapture(7)).toBe(true);
+
+    fireEvent.pointerMove(handle, { clientX: 550, pointerId: 7, buttons: 1 });
+    fireEvent.pointerUp(handle, { clientX: 570, pointerId: 7 });
+    expect(container.style.width).toBe("310px");
+    expect(handle.hasPointerCapture(7)).toBe(false);
+    fireEvent.pointerMove(handle, { clientX: 800, pointerId: 7, buttons: 0 });
+    act(() => vi.advanceTimersToNextFrame());
+    expect(container.style.width).toBe("310px");
+  });
+
+  it("does not replace the remembered width when a clamped separator is clicked without moving", async () => {
+    const { handle, container, observer } = await renderResizableBrowser(900);
+    fireEvent.keyDown(handle, { key: "End" });
+    act(() => observer.__fire(500));
+    expect(container.style.width).toBe("260px");
+    fireEvent.pointerDown(handle, { clientX: 500, pointerId: 1, button: 0, isPrimary: true });
+    fireEvent.pointerUp(handle, { clientX: 500, pointerId: 1 });
+    act(() => observer.__fire(900));
+    expect(container.style.width).toBe("660px");
+  });
+
+  it.each([
+    { button: 2, isPrimary: true },
+    { button: 0, isPrimary: false },
+  ])("does not start a resize for $button/$isPrimary input", async (input) => {
+    const { handle, container } = await renderResizableBrowser();
+    fireEvent.pointerDown(handle, { clientX: 500, pointerId: 1, ...input });
+    fireEvent.pointerMove(handle, { clientX: 560, pointerId: 1, buttons: 1 });
+    act(() => vi.advanceTimersToNextFrame());
+    expect(container.style.width).toBe("240px");
+    expect(handle.hasPointerCapture(1)).toBe(false);
+    expect(document.body.style.userSelect).toBe("");
+  });
+
+  it("applies current bounds during a drag, including when an older frame is pending", async () => {
+    const { handle, container, observer } = await renderResizableBrowser(900);
+    fireEvent.pointerDown(handle, { clientX: 500, pointerId: 1, button: 0, isPrimary: true });
+    fireEvent.pointerMove(handle, { clientX: 860, pointerId: 1, buttons: 1 });
+    act(() => vi.advanceTimersToNextFrame());
+    expect(container.style.width).toBe("600px");
+
+    fireEvent.pointerMove(handle, { clientX: 900, pointerId: 1, buttons: 1 });
+    act(() => observer.__fire(500));
+    expect(container.style.width).toBe("260px");
+    act(() => vi.advanceTimersToNextFrame());
+    expect(container.style.width).toBe("260px");
+    expect(handle).toHaveAttribute("aria-valuenow", handle.getAttribute("aria-valuemax"));
+
+    act(() => observer.__fire(700));
+    fireEvent.pointerUp(handle, { clientX: 900, pointerId: 1 });
+    expect(container.style.width).toBe("460px");
+    act(() => observer.__fire(900));
+    expect(container.style.width).toBe("460px");
+  });
+
+  it.each(["pointercancel", "lostcapture", "escape", "blur", "hidden", "collapse", "mobile", "unmount", "buttons"])(
+    "cleans up a drag on %s without applying a queued frame",
+    async (reason) => {
+      const { handle, container, unmount } = await renderResizableBrowser();
+      document.body.style.userSelect = "text";
+      fireEvent.pointerDown(handle, { clientX: 500, pointerId: 1, button: 0, isPrimary: true });
+      fireEvent.pointerMove(handle, { clientX: 560, pointerId: 1, buttons: 1 });
+      act(() => vi.advanceTimersToNextFrame());
+      expect(container.style.width).toBe("300px");
+      fireEvent.pointerMove(handle, { clientX: 620, pointerId: 1, buttons: 1 });
+
+      if (reason === "pointercancel") fireEvent.pointerCancel(handle, { pointerId: 1 });
+      else if (reason === "lostcapture") {
+        handle.releasePointerCapture(1);
+        fireEvent.lostPointerCapture(handle, { pointerId: 1 });
+      } else if (reason === "escape") fireEvent.keyDown(handle, { key: "Escape" });
+      else if (reason === "blur") fireEvent(window, new Event("blur"));
+      else if (reason === "hidden") {
+        vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+        fireEvent(document, new Event("visibilitychange"));
+      } else if (reason === "collapse") fireEvent.click(screen.getByRole("button", { name: "Toggle file tree" }));
+      else if (reason === "mobile") {
+        Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+        fireEvent(window, new Event("resize"));
+      } else if (reason === "unmount") unmount();
+      else fireEvent.pointerMove(handle, { clientX: 620, pointerId: 1, buttons: 0 });
+
+      expect(document.body.style.userSelect).toBe("text");
+      expect(handle.hasPointerCapture(1)).toBe(false);
+      act(() => vi.advanceTimersToNextFrame());
+      expect(container.style.width).toBe(reason === "mobile" ? "" : reason === "unmount" ? "300px" : "240px");
+    },
+  );
+
+  it("preserves the pre-drag width preference when cancellation happens in a narrowed area", async () => {
+    const { handle, container, observer } = await renderResizableBrowser(900);
+    fireEvent.keyDown(handle, { key: "End" });
+    act(() => observer.__fire(500));
+    fireEvent.pointerDown(handle, { clientX: 500, pointerId: 1, button: 0, isPrimary: true });
+    fireEvent.pointerMove(handle, { clientX: 420, pointerId: 1, buttons: 1 });
+    act(() => vi.advanceTimersToNextFrame());
+    expect(container.style.width).toBe("180px");
+    fireEvent.pointerCancel(handle, { pointerId: 1 });
+    act(() => observer.__fire(900));
+    expect(container.style.width).toBe("660px");
   });
 
   it("omits the tree resize separator on mobile and while the tree is collapsed", async () => {
