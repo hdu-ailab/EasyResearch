@@ -26,7 +26,7 @@ import { FileBrowser } from "../components/FileBrowser";
 import { RenameSessionDialog } from "../components/RenameSessionDialog";
 import { RetryBanner } from "../components/RetryBanner";
 import { SessionHistoryDialog } from "../components/SessionHistoryDialog";
-import { ProductMark, Topbar, TopbarIconButton } from "../components/Topbar";
+import { Topbar, TopbarIconButton } from "../components/Topbar";
 import { WorkMobileTabs, type WorkView } from "../components/WorkMobileTabs";
 import { FILE_PATH_DRAG_TYPE, readFilePathDrop } from "../file-path-drag";
 import { EMPTY_FILE_EVENTS, parseFileWatcherEvent, type QueuedFileWatcherEvent } from "../file-watcher";
@@ -1122,20 +1122,11 @@ function SessionWorkPage({
             : t("work.ready");
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full min-h-0 flex-col bg-v2-background-bg-base">
       <Topbar
         home={{ active: false, onClick: onBack }}
-        leading={!isMobile && <ProductMark />}
         center={
           <span className="flex min-w-0 items-center gap-1.5">
-            {sessionView.sessionName ? (
-              <span
-                className="max-w-[40%] truncate text-[13px] font-medium text-v2-text-text-base"
-                title={sessionView.sessionName}
-              >
-                {sessionView.sessionName}
-              </span>
-            ) : null}
             <span className="max-w-full truncate font-mono text-[12px] text-v2-text-text-muted" title={cwd}>
               {isMobile ? projectName : cwd}
             </span>
@@ -1189,18 +1180,13 @@ function SessionWorkPage({
       )}
       {sessionView.retry ? <RetryBanner retry={sessionView.retry} /> : null}
       <WorkMobileTabs active={mobileView} onChange={setMobileView} />
-      <div
-        ref={rowRef}
-        className={`relative flex min-h-0 flex-1 overflow-x-clip px-2 pb-2 pt-[4px] ${panelOpen ? "gap-2" : "gap-0"} ${
-          panelMotionReady ? "transition-[gap] duration-v2-panel ease-v2-panel motion-reduce:transition-none" : ""
-        }`}
-      >
+      <div ref={rowRef} className="relative flex min-h-0 min-w-0 flex-1 gap-0 overflow-x-clip">
         <section
           id="work-panel-chat"
           role="tabpanel"
           aria-labelledby="work-tab-chat"
           hidden={chatHidden}
-          className="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]"
+          className="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden bg-v2-background-bg-base"
           onDragEnter={(event) => {
             if (composerDisabled || !event.dataTransfer.types.includes(FILE_PATH_DRAG_TYPE)) return;
             event.preventDefault();
@@ -1238,54 +1224,66 @@ function SessionWorkPage({
               </span>
             </div>
           ) : null}
-          <AgentTabBar
-            tabs={tabsState.tabs}
-            activeKey={activeTab}
-            researchAssistantStatus={
-              sessionView.error !== null ? "error" : sessionView.isStreaming ? "working" : "idle"
-            }
-            onSelect={selectAgentTab}
-            onClose={closeAgentTab}
-            onStop={() => abort()}
-            trailing={
-              activeTab === RESEARCH_ASSISTANT_AGENT && !sessionView.subagentName ? (
-                <ContextCapacity
-                  usage={sessionView.contextUsage}
-                  compactionState={sessionView.compactionState}
-                  compactionPolicy={sessionView.compactionPolicy}
-                />
-              ) : undefined
-            }
-          />
+          <header className="mx-auto w-full max-w-[952px] shrink-0 px-4 pb-3 pt-4 min-[820px]:pt-6">
+            <h1
+              className="truncate text-[18px] font-semibold tracking-tight text-v2-text-text-base min-[820px]:text-[22px]"
+              title={sessionView.sessionName || undefined}
+            >
+              {sessionView.sessionName || projectName}
+            </h1>
+          </header>
+          <div className="mx-auto w-full max-w-[952px] shrink-0 px-2">
+            <AgentTabBar
+              tabs={tabsState.tabs}
+              activeKey={activeTab}
+              researchAssistantStatus={
+                sessionView.error !== null ? "error" : sessionView.isStreaming ? "working" : "idle"
+              }
+              onSelect={selectAgentTab}
+              onClose={closeAgentTab}
+              onStop={() => abort()}
+              trailing={
+                activeTab === RESEARCH_ASSISTANT_AGENT && !sessionView.subagentName ? (
+                  <ContextCapacity
+                    usage={sessionView.contextUsage}
+                    compactionState={sessionView.compactionState}
+                    compactionPolicy={sessionView.compactionPolicy}
+                  />
+                ) : undefined
+              }
+            />
+          </div>
           {activeChildId && childErrors[activeChildId] ? (
             <p className="px-4 py-3 text-[13px] text-v2-text-text-muted">{t("work.childUnavailable")}</p>
           ) : null}
-          <ChatTranscript
-            ref={transcriptRef}
-            messages={activeMessages}
-            tools={activeTools}
-            summaries={activeSummaries}
-            emptyHint={activeTab === RESEARCH_ASSISTANT_AGENT ? undefined : t("work.noMessagesYet")}
-            pending={pendingOutput && activeTab === RESEARCH_ASSISTANT_AGENT}
-            onViewDetails={openSubagentTool}
-            messageMeta={activeTab === RESEARCH_ASSISTANT_AGENT ? messageMeta : undefined}
-            onEditMessage={activeTab === RESEARCH_ASSISTANT_AGENT ? onEditMessage : undefined}
-            onSwitchBranch={activeTab === RESEARCH_ASSISTANT_AGENT ? onSwitchBranch : undefined}
-            steers={activeTab === RESEARCH_ASSISTANT_AGENT ? sessionView.steers : []}
-            hydrationRevision={
-              activeTab === RESEARCH_ASSISTANT_AGENT
-                ? sessionView.hydrationRevision
-                : (activeView?.hydrationRevision ?? 0)
-            }
-            hydrationScope={
-              activeTab === RESEARCH_ASSISTANT_AGENT
-                ? `${sessionId}:root`
-                : `${sessionId}:${activeChildId ?? activeTab}`
-            }
-            showApiUsageDetails={showApiUsageDetails}
-            apiUsage={sessionView.apiUsage}
-          />
-          <footer className="shrink-0 p-3">
+          <div className="mx-auto flex min-h-0 w-full max-w-[952px] flex-1 flex-col">
+            <ChatTranscript
+              ref={transcriptRef}
+              messages={activeMessages}
+              tools={activeTools}
+              summaries={activeSummaries}
+              emptyHint={activeTab === RESEARCH_ASSISTANT_AGENT ? undefined : t("work.noMessagesYet")}
+              pending={pendingOutput && activeTab === RESEARCH_ASSISTANT_AGENT}
+              onViewDetails={openSubagentTool}
+              messageMeta={activeTab === RESEARCH_ASSISTANT_AGENT ? messageMeta : undefined}
+              onEditMessage={activeTab === RESEARCH_ASSISTANT_AGENT ? onEditMessage : undefined}
+              onSwitchBranch={activeTab === RESEARCH_ASSISTANT_AGENT ? onSwitchBranch : undefined}
+              steers={activeTab === RESEARCH_ASSISTANT_AGENT ? sessionView.steers : []}
+              hydrationRevision={
+                activeTab === RESEARCH_ASSISTANT_AGENT
+                  ? sessionView.hydrationRevision
+                  : (activeView?.hydrationRevision ?? 0)
+              }
+              hydrationScope={
+                activeTab === RESEARCH_ASSISTANT_AGENT
+                  ? `${sessionId}:root`
+                  : `${sessionId}:${activeChildId ?? activeTab}`
+              }
+              showApiUsageDetails={showApiUsageDetails}
+              apiUsage={sessionView.apiUsage}
+            />
+          </div>
+          <footer className="sticky bottom-0 z-10 mx-auto w-full max-w-[952px] shrink-0 bg-v2-background-bg-base px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] min-[820px]:pb-5">
             {activeTab !== RESEARCH_ASSISTANT_AGENT || sessionView.subagentName ? (
               <p className="mb-2 text-[12px] text-v2-text-text-faint">{t("work.subagentLineNote")}</p>
             ) : null}
@@ -1304,7 +1302,7 @@ function SessionWorkPage({
         <section
           ref={panelRef}
           hidden={isMobile && mobileView === "chat"}
-          className={`flex h-full min-w-0 w-full flex-col bg-v2-background-bg-base min-[820px]:relative min-[820px]:shrink-0 min-[820px]:w-(--panel-w) min-[820px]:rounded-[10px] min-[820px]:shadow-[var(--v2-elevation-raised)] ${
+          className={`flex h-full min-w-0 w-full flex-col bg-v2-background-bg-base min-[820px]:relative min-[820px]:shrink-0 min-[820px]:w-(--panel-w) ${
             sizing || !panelMotionReady
               ? ""
               : "min-[820px]:transition-[width,opacity] min-[820px]:duration-v2-panel min-[820px]:ease-v2-panel motion-reduce:transition-none"
@@ -1326,14 +1324,14 @@ function SessionWorkPage({
             title={t("work.resizePanel")}
             onPointerDown={startResize}
             onKeyDown={resizeWithKeyboard}
-            className="absolute inset-y-0 left-[-0.5rem] z-30 hidden h-auto w-2 cursor-col-resize border-0 min-[820px]:block"
+            className="absolute inset-y-0 left-[-0.5rem] z-30 hidden h-auto w-2 cursor-col-resize border-0 transition-colors hover:bg-v2-blue-600/10 focus-visible:bg-v2-blue-600/10 min-[820px]:block"
           />
           <div
             id="work-panel-files"
             role="tabpanel"
             aria-labelledby="work-tab-files"
             hidden={filesHidden}
-            className={`h-full min-h-0 overflow-hidden min-[820px]:rounded-[10px] ${animateFiles ? "animate-v2-fade-in motion-reduce:animate-none" : ""}`}
+            className={`h-full min-h-0 overflow-hidden min-[820px]:border-l min-[820px]:border-v2-grey-200/70 ${animateFiles ? "animate-v2-fade-in motion-reduce:animate-none" : ""}`}
           >
             <FileBrowser
               key={sessionId}
@@ -1350,7 +1348,7 @@ function SessionWorkPage({
             role="tabpanel"
             aria-labelledby="work-tab-agents"
             hidden={agentsHidden}
-            className={`h-full min-h-0 overflow-hidden min-[820px]:rounded-[10px] ${animateAgents ? "animate-v2-fade-in motion-reduce:animate-none" : ""}`}
+            className={`h-full min-h-0 overflow-hidden min-[820px]:border-l min-[820px]:border-v2-grey-200/70 ${animateAgents ? "animate-v2-fade-in motion-reduce:animate-none" : ""}`}
           >
             <AgentList
               cwd={cwd}

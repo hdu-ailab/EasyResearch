@@ -10,7 +10,7 @@ import {
   refreshConfigurationResources,
   writeConfigFile,
 } from "../api";
-import { ProductMark, Topbar } from "../components/Topbar";
+import { Topbar } from "../components/Topbar";
 import { useModalLayer } from "../hooks/useModalLayer";
 import { useI18n } from "../i18n/useI18n";
 import type { ConfigProjectsDto } from "../types";
@@ -196,17 +196,14 @@ export function ConfigPage({ onHome, onBackToSettings, onProjectInterestChange, 
       <Topbar
         home={{ active: false, onClick: onHome }}
         leading={
-          <>
-            <button
-              type="button"
-              className="flex h-[28px] shrink-0 items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100 hover:text-v2-text-text-base"
-              onClick={onBackToSettings}
-            >
-              <ChevronLeft size={14} aria-hidden />
-              {t("config.backToSettings")}
-            </button>
-            <ProductMark />
-          </>
+          <button
+            type="button"
+            className="flex h-[28px] shrink-0 items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100 hover:text-v2-text-text-base"
+            onClick={onBackToSettings}
+          >
+            <ChevronLeft size={14} aria-hidden />
+            {t("config.backToSettings")}
+          </button>
         }
         center={<span className="truncate text-[13px] text-v2-text-text-muted">{t("config.browser")}</span>}
       />

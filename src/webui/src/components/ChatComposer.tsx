@@ -183,7 +183,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
 
   return (
     <form
-      className="relative mx-auto flex w-full max-w-[1000px] items-center gap-2 md:max-w-200 2xl:max-w-[1000px]"
+      className="relative mx-auto flex w-full max-w-[920px] items-end rounded-[22px] border border-v2-grey-200 bg-v2-background-bg-deep p-2 shadow-[0_4px_20px_-12px_rgba(15,23,42,0.2)] transition-colors focus-within:border-v2-grey-400"
       onSubmit={(e) => {
         e.preventDefault();
         submit();
@@ -221,10 +221,10 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
           ))}
         </div>
       ) : null}
-      <div className="flex min-w-0 flex-1 flex-col rounded-lg border border-v2-grey-200 bg-v2-background-bg-base transition-colors focus-within:border-v2-grey-400">
+      <div className="flex min-w-0 flex-1 flex-col">
         <textarea
           ref={textareaRef}
-          className="max-h-[160px] min-h-[52px] w-full resize-none bg-transparent px-3 py-2 text-[13px] text-v2-text-text-base placeholder:text-v2-text-text-faint"
+          className="max-h-[160px] min-h-[76px] w-full resize-none bg-transparent px-3 py-2 text-[14px] leading-6 text-v2-text-text-base placeholder:text-v2-text-text-faint disabled:opacity-60"
           style={{ outline: "none" }}
           aria-label={t("composer.message")}
           aria-autocomplete="list"
@@ -289,11 +289,11 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
           }}
         />
       </div>
-      <div className="flex shrink-0 items-center gap-1">
+      <div className="flex shrink-0 items-center gap-1 p-1">
         {showStop ? (
           <button
             type="button"
-            className="flex size-8 items-center justify-center rounded-md bg-v2-grey-1100 text-v2-grey-50 transition-opacity hover:opacity-90"
+            className="flex size-9 items-center justify-center rounded-full bg-v2-blue-600 text-white transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-v2-blue-600"
             aria-label={t("composer.stop")}
             title={t("composer.stopTitle")}
             onClick={() => {
@@ -306,7 +306,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
         ) : (
           <button
             type="submit"
-            className="flex size-8 items-center justify-center rounded-md bg-v2-grey-1100 text-v2-grey-50 transition-opacity hover:opacity-90 disabled:opacity-40 disabled:hover:opacity-40"
+            className="flex size-9 items-center justify-center rounded-full bg-v2-blue-600 text-white transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-v2-blue-600 disabled:opacity-40 disabled:hover:opacity-40"
             aria-label={t("composer.send")}
             disabled={disabled || !canSend}
           >

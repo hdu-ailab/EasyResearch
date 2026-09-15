@@ -157,7 +157,7 @@ export function FileTreeSplit({ isMobile, treeOpened, tree, children }: FileTree
             ? "hidden"
             : isMobile
               ? "flex min-w-0 flex-1 flex-col"
-              : "flex min-w-0 shrink-0 flex-col border-r border-v2-grey-200"
+              : "flex min-w-0 shrink-0 flex-col border-r border-v2-grey-200/70 bg-v2-background-bg-deep"
         }
       >
         {tree}

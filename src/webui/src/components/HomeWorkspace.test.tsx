@@ -134,35 +134,32 @@ it("shows project basenames as the primary folder values while preserving the ex
 it("separates the New project entry from an existing project's New session action", () => {
   renderWorkspace([history()], []);
 
-  expect(screen.getByRole("button", { name: "New project" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "New project" })).toHaveClass("bg-[#304c90]", "hover:bg-[#4176E6]");
   expect(screen.getByRole("button", { name: "New session /proj" })).toBeVisible();
 });
 
-it("uses the 820px desktop threshold for the workspace, project rail, and active-session details", () => {
+it("uses a full-height 264px rail and a responsive active-session card grid", () => {
   renderWorkspace([history({ path: "/agent/sessions/a1.jsonl" })], [active()]);
 
   expect(screen.getByRole("region", { name: "Research workspace" })).toHaveClass(
-    "min-[820px]:grid-cols-[minmax(280px,25%)_minmax(0,1fr)]",
+    "min-[820px]:grid-cols-[264px_minmax(0,1fr)]",
+    "min-[820px]:grid-rows-[88px_auto_auto_minmax(0,1fr)]",
+    "flex-1",
   );
   expect(screen.getByRole("complementary", { name: "Projects" })).toHaveClass(
     "min-[820px]:col-start-1",
-    "min-[820px]:row-span-2",
+    "min-[820px]:row-span-3",
+    "bg-v2-grey-100",
   );
 
   const sessionButton = screen.getByText("Custom active name").closest("button");
-  expect(sessionButton).toHaveClass(
-    "min-[820px]:grid-cols-[minmax(0,1.55fr)_minmax(0,0.9fr)_minmax(56px,72px)_minmax(72px,92px)]",
-    "min-[820px]:gap-x-2",
-    "min-[820px]:px-4",
+  expect(sessionButton?.closest("ul")).toHaveClass(
+    "grid",
+    "grid-cols-[repeat(auto-fill,minmax(min(100%,280px),1fr))]",
+    "gap-3",
   );
-  expect(
-    within(sessionButton!)
-      .getAllByTitle("/proj")
-      .some((element) => element.classList.contains("min-[820px]:flex")),
-  ).toBe(true);
-  expect(
-    within(sessionButton!)
-      .getAllByText("Running")
-      .some((element) => element.classList.contains("min-w-0") && element.classList.contains("truncate")),
-  ).toBe(true);
+  expect(sessionButton?.closest("li")).toHaveClass("rounded-xl", "border", "min-h-[156px]");
+  expect(sessionButton).toHaveClass("flex-col", "px-4", "pt-4");
+  expect(within(sessionButton!).getByTitle("/proj")).toBeVisible();
+  expect(within(sessionButton!).getByText("Running")).toBeVisible();
 });

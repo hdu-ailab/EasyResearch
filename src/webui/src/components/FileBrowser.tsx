@@ -183,7 +183,7 @@ export const FileBrowser = memo(function FileBrowser({
   );
 
   return (
-    <div className="flex h-full min-w-0 flex-col">
+    <div className="flex h-full min-w-0 flex-col bg-v2-background-bg-base">
       <FileTabs
         tabs={tabs}
         active={isMobile && treeOpened ? null : activeTab}
@@ -214,8 +214,8 @@ export const FileBrowser = memo(function FileBrowser({
             onOpenFile={openPath}
           />
         ) : (
-          <div className="flex h-full items-center justify-center text-center">
-            <p className="text-[13px] font-medium text-v2-text-text-base">{t("files.emptyTitle")}</p>
+          <div className="flex h-full items-center justify-center px-5 py-10 text-center">
+            <p className="max-w-60 text-[13px] leading-6 text-v2-text-text-muted">{t("files.emptyTitle")}</p>
           </div>
         )}
       </FileTreeSplit>

@@ -117,13 +117,15 @@ describe("HomePage", () => {
     } as never);
   });
 
-  it("renders the fixed current Home control above a 4px content gap", async () => {
+  it("renders the current Home control above an edge-to-edge full-height workspace", async () => {
     renderHome();
     const home = screen.getByRole("button", { name: /back to home/i });
     expect(home).toHaveAttribute("aria-current", "page");
     const workspace = await screen.findByRole("region", { name: /research workspace/i });
-    expect(workspace.parentElement).toHaveClass("px-2", "pb-2", "pt-[4px]");
-    expect(workspace.parentElement).not.toHaveClass("p-2");
+    expect(workspace.parentElement).toHaveClass("min-h-full", "w-full", "flex", "flex-col");
+    expect(workspace.parentElement).not.toHaveClass("px-2", "pb-2", "pt-[4px]");
+    expect(workspace).toHaveClass("flex-1");
+    expect(workspace).not.toHaveClass("home-workspace", "rounded-[10px]", "max-w-[1600px]");
   });
 
   it("renders historical and active sessions separately", async () => {
@@ -148,6 +150,7 @@ describe("HomePage", () => {
     expect(screen.getByText("Project experiment")).toBeVisible();
     expect(screen.getByText("Other experiment")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "/other" }));
+    expect(screen.getByRole("heading", { level: 1, name: "other" })).toBeVisible();
     expect(screen.queryByText("Fault diagnosis")).toBeNull();
     expect(screen.queryByText("Project experiment")).toBeNull();
     expect(screen.getByText("Other paper")).toBeVisible();
@@ -175,6 +178,21 @@ describe("HomePage", () => {
     renderHomeWithTwoProjects();
     await user.click(await screen.findByRole("button", { name: /new session \/other/i }));
     await waitFor(() => expect(api.createSession).toHaveBeenCalledWith("/other"));
+  });
+
+  it("keeps project selection and session opening keyboard accessible", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.openSession).mockResolvedValue({ id: "h2", cwd: "/other" } as never);
+    renderHomeWithTwoProjects();
+    const project = await screen.findByRole("button", { name: "/other" });
+    project.focus();
+    await user.keyboard("{Enter}");
+    expect(project).toHaveAttribute("aria-current", "true");
+    const session = screen.getByRole("button", { name: /^Other paper/ });
+    session.focus();
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(api.openSession).toHaveBeenCalledWith(otherHistory.path));
+    expect(api.createSession).not.toHaveBeenCalled();
   });
 
   it("reports connected running and idle sessions", async () => {

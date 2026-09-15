@@ -577,7 +577,7 @@ describe("WorkPage", () => {
     expect(api.sendPrompt).not.toHaveBeenCalled();
   });
 
-  it("keeps Home first and places the workspace 4px below the topbar", async () => {
+  it("keeps Home navigation and presents a contiguous workspace with a bounded conversation", async () => {
     const onBack = vi.fn();
     const user = userEvent.setup();
     render(<WorkPage id="s1" cwd="/p" onBack={onBack} onOpenSettings={() => {}} />);
@@ -588,7 +588,15 @@ describe("WorkPage", () => {
     await user.click(home);
     expect(onBack).toHaveBeenCalledOnce();
     const conversation = screen.getByRole("tabpanel", { name: /^chat$/i });
-    expect(conversation.parentElement).toHaveClass("px-2", "pb-2", "pt-[4px]");
+    expect(conversation.parentElement).toHaveClass("gap-0", "min-w-0");
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("p");
+    expect(screen.getByTestId("transcript-viewport").parentElement?.parentElement).toHaveClass("max-w-[952px]");
+    const files = screen.getByRole("button", { name: /files browser/i });
+    const agents = screen.getByRole("button", { name: /agent list/i });
+    const settings = screen.getByRole("button", { name: /settings/i });
+    expect(files.parentElement).toBe(settings.parentElement);
+    expect(agents.parentElement).toBe(settings.parentElement);
+    expect(screen.queryByRole("navigation", { name: /work views/i })).toBeNull();
     expect(conversation).not.toHaveClass("v2-work-enter");
     expect(conversation.parentElement).not.toHaveClass("p-2");
   });
@@ -1094,7 +1102,7 @@ describe("WorkPage", () => {
     expect(screen.queryByRole("progressbar", { name: /context capacity/i })).toBeNull();
   });
 
-  it("shows the session name in the topbar and updates it live on session_info_changed", async () => {
+  it("shows the session name in the workspace heading and updates it live on session_info_changed", async () => {
     stubEvents();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
@@ -3593,18 +3601,18 @@ describe("WorkPage", () => {
     expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*320px/);
   });
 
-  it("removes the inter-panel gap when the desktop side panel closes", async () => {
+  it("keeps the shell contiguous when the desktop side panel closes", async () => {
     const user = userEvent.setup();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     const chat = screen.getByRole("tabpanel", { name: /chat/i });
     const row = chat?.parentElement;
     expect(row).toBeTruthy();
-    expect(row).toHaveClass("gap-2", "px-2");
+    expect(row).toHaveClass("gap-0");
 
     await user.click(screen.getByRole("button", { name: /files browser/i }));
 
-    expect(row).toHaveClass("gap-0", "px-2");
+    expect(row).toHaveClass("gap-0");
     expect(row).not.toHaveClass("gap-2");
   });
 

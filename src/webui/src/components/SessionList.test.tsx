@@ -39,7 +39,7 @@ it("falls back to the first eight id characters when no name or first message is
   expect(screen.getByText("01234567")).toBeVisible();
 });
 
-it("shows the project folder and message count in the recent-session ledger", () => {
+it("shows the project folder and message count in the recent-session card", () => {
   renderList([history({ cwd: "/papers/fault-diagnosis", messageCount: 12 })]);
   const row = screen.getByText("Fault diagnosis").closest("li");
   expect(row).not.toBeNull();
@@ -62,14 +62,16 @@ it("exposes a rename control per recent row", () => {
   expect(onRenameSession).toHaveBeenCalledWith(expect.objectContaining({ id: "h1" }));
 });
 
-it("uses shrinkable recent-session columns at the 820px Home desktop threshold", () => {
-  renderList([history()]);
+it("renders recent sessions in a responsive card grid", () => {
+  const { container } = renderList([history()]);
 
   const sessionButton = screen.getByText("Fault diagnosis").closest("button");
-  expect(sessionButton).toHaveClass(
-    "min-[820px]:grid-cols-[minmax(0,1.55fr)_minmax(0,0.9fr)_minmax(56px,72px)_minmax(72px,92px)]",
-    "min-[820px]:gap-x-2",
-    "min-[820px]:px-4",
+  expect(container.querySelector("ul")).toHaveClass(
+    "grid",
+    "grid-cols-[repeat(auto-fill,minmax(min(100%,280px),1fr))]",
+    "gap-3",
   );
+  expect(sessionButton?.closest("li")).toHaveClass("rounded-xl", "border", "min-h-[148px]");
+  expect(sessionButton).toHaveClass("flex-col", "px-4", "pt-4");
   expect(within(sessionButton!).getAllByText("proj")[0]).toHaveClass("truncate");
 });

@@ -82,66 +82,61 @@ export function HomeWorkspace({
     return (
       <li
         key={session.id}
-        className="group relative flex min-w-0 border-t border-v2-grey-200 transition-colors hover:bg-v2-grey-100"
+        className="group relative flex min-h-[156px] min-w-0 flex-col overflow-hidden rounded-xl border border-v2-grey-200 bg-v2-background-bg-base shadow-[0_1px_2px_rgb(15_23_42_/_0.03)] transition-[border-color,box-shadow,transform] hover:-translate-y-0.5 hover:border-v2-blue-200 hover:shadow-[var(--v2-elevation-raised)] focus-within:border-v2-blue-300 focus-within:shadow-[var(--v2-elevation-raised)]"
       >
         <button
           type="button"
-          className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)] gap-y-1 px-5 py-3.5 text-left min-[820px]:grid-cols-[minmax(0,1.55fr)_minmax(0,0.9fr)_minmax(56px,72px)_minmax(72px,92px)] min-[820px]:items-center min-[820px]:gap-x-2 min-[820px]:px-4 min-[820px]:py-4"
+          className="flex min-w-0 flex-1 flex-col items-start gap-3 rounded-t-xl px-4 pb-3 pt-4 text-left"
           onClick={() => onOpenActive(session)}
         >
-          <span className="flex min-w-0 items-center gap-3">
-            <span className={`size-2 shrink-0 rounded-full ${statusDot[session.status]}`} aria-hidden />
-            <span className="min-w-0 truncate text-[14px] font-medium text-v2-text-text-base" title={title}>
-              {title}
+          <span className="flex w-full min-w-0 items-start gap-3">
+            <span className="relative flex size-8 shrink-0 items-center justify-center rounded-lg bg-v2-blue-100 text-v2-blue-600">
+              <Activity size={15} aria-hidden />
+              <span
+                className={`absolute -right-0.5 -top-0.5 size-2.5 rounded-full border-2 border-v2-background-bg-base ${statusDot[session.status]}`}
+                aria-hidden
+              />
+            </span>
+            <span className="min-w-0 flex-1 pt-1">
+              <span className="block truncate text-[15px] font-medium text-v2-text-text-base" title={title}>
+                {title}
+              </span>
             </span>
           </span>
-          <span
-            className="hidden min-w-0 items-center gap-2 text-[13px] text-v2-text-text-faint min-[820px]:flex"
-            title={session.cwd}
+          <span className="mt-auto flex w-full min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 text-[12px] text-v2-text-text-faint">
+            <span className="flex min-w-0 max-w-full items-center gap-1.5" title={session.cwd}>
+              <Folder size={13} className="shrink-0" aria-hidden />
+              <span className="truncate">{folder}</span>
+            </span>
+            <span className="flex shrink-0 items-center gap-1.5 text-v2-text-text-muted">
+              <span className={`size-1.5 rounded-full ${statusDot[session.status]}`} aria-hidden />
+              {statusLabel}
+            </span>
+            {modified && <span className="ml-auto shrink-0">{modified}</span>}
+          </span>
+        </button>
+        <div className="flex items-center justify-end gap-1 border-t border-v2-grey-200/70 bg-v2-grey-100/50 px-2 py-1.5">
+          <button
+            type="button"
+            aria-label={`${t("home.rename")}: ${title}`}
+            title={t("home.renameTitle")}
+            className="flex size-8 shrink-0 items-center justify-center rounded-md text-v2-text-text-faint transition-colors hover:bg-v2-grey-200 hover:text-v2-text-text-base"
+            onClick={() => onRenameSession(session)}
           >
-            <Folder size={15} className="shrink-0" aria-hidden />
-            <span className="truncate">{folder}</span>
-          </span>
-          <span className="hidden min-w-0 truncate text-[13px] text-v2-text-text-muted min-[820px]:block">
-            {statusLabel}
-          </span>
-          <span className="hidden min-w-0 truncate text-[13px] text-v2-text-text-faint min-[820px]:block">
-            {modified}
-          </span>
-          <span className="flex min-w-0 items-center gap-2 pl-5 text-[12px] text-v2-text-text-faint min-[820px]:hidden">
-            <span className="truncate" title={session.cwd}>
-              {folder}
-            </span>
-            <span aria-hidden>·</span>
-            <span>{statusLabel}</span>
-            {modified && (
-              <>
-                <span aria-hidden>·</span>
-                <span>{modified}</span>
-              </>
-            )}
-          </span>
-        </button>
-        <button
-          type="button"
-          aria-label={`${t("home.rename")}: ${title}`}
-          title={t("home.renameTitle")}
-          className="flex size-8 shrink-0 self-center items-center justify-center rounded-md text-v2-text-text-faint transition-colors hover:bg-v2-grey-200 hover:text-v2-text-text-base"
-          onClick={() => onRenameSession(session)}
-        >
-          <Pencil size={13} aria-hidden />
-        </button>
-        <button
-          type="button"
-          aria-label={`${t("home.disconnectTitle")}: ${title}`}
-          title={t("home.disconnectTitle")}
-          className="mr-2 flex min-h-8 shrink-0 self-center items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-faint transition-colors hover:bg-v2-grey-200 hover:text-v2-text-text-base disabled:cursor-wait disabled:opacity-50 min-[820px]:mr-4"
-          disabled={disconnecting}
-          onClick={() => onDisconnectActive(session)}
-        >
-          <Power size={13} aria-hidden />
-          <span className="hidden sm:inline">{disconnecting ? "…" : t("home.disconnect")}</span>
-        </button>
+            <Pencil size={13} aria-hidden />
+          </button>
+          <button
+            type="button"
+            aria-label={`${t("home.disconnectTitle")}: ${title}`}
+            title={t("home.disconnectTitle")}
+            className="flex min-h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-[12px] text-v2-text-text-faint transition-colors hover:bg-v2-grey-200 hover:text-v2-text-text-base disabled:cursor-wait disabled:opacity-50"
+            disabled={disconnecting}
+            onClick={() => onDisconnectActive(session)}
+          >
+            <Power size={13} aria-hidden />
+            <span>{disconnecting ? "…" : t("home.disconnect")}</span>
+          </button>
+        </div>
       </li>
     );
   };
@@ -149,12 +144,12 @@ export function HomeWorkspace({
   return (
     <section
       aria-label={t("home.workspace")}
-      className="home-workspace mx-auto grid w-full max-w-[1600px] overflow-hidden rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)] min-[820px]:grid-cols-[minmax(280px,25%)_minmax(0,1fr)] min-[820px]:grid-rows-[80px_auto_minmax(0,1fr)]"
+      className="grid w-full min-w-0 flex-1 grid-cols-[minmax(0,1fr)] content-start bg-v2-background-bg-base min-[820px]:grid-cols-[264px_minmax(0,1fr)] min-[820px]:grid-rows-[88px_auto_auto_minmax(0,1fr)]"
     >
-      <div className="p-4 min-[820px]:col-start-1 min-[820px]:row-start-1 min-[820px]:border-r min-[820px]:border-v2-grey-200">
+      <div className="bg-v2-grey-100 p-5 min-[820px]:col-start-1 min-[820px]:row-start-1 min-[820px]:border-r min-[820px]:border-v2-grey-200">
         <button
           type="button"
-          className="flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-v2-blue-600 px-4 text-[14px] font-medium text-v2-grey-50 transition-colors hover:bg-v2-blue-700 disabled:opacity-50"
+          className="flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-[#304c90] px-4 text-[14px] font-medium text-v2-grey-50 transition-colors hover:bg-[#4176E6] disabled:opacity-50"
           disabled={creating}
           onClick={onChooseDirectory}
         >
@@ -162,8 +157,15 @@ export function HomeWorkspace({
           {t("home.newProject")}
         </button>
       </div>
-      <div className="border-t border-v2-grey-200 p-4 min-[820px]:col-start-2 min-[820px]:row-start-1 min-[820px]:border-t-0">
-        <label className="flex h-12 items-center gap-3 rounded-lg border border-v2-grey-300 bg-v2-background-bg-base px-4 transition-colors focus-within:border-v2-blue-600">
+      <header className="min-w-0 px-5 pb-8 pt-8 min-[820px]:col-start-2 min-[820px]:row-start-1 min-[820px]:row-span-2 min-[820px]:px-8 min-[820px]:pt-12 min-[1200px]:px-16">
+        <p className="mb-2 text-[12px] font-medium tracking-wide text-v2-text-text-faint">{t("home.workspace")}</p>
+        <h1 className="break-words text-[28px] font-semibold tracking-tight text-v2-text-text-base min-[820px]:text-[32px]">
+          {selectedCwd === null ? t("home.allProjects") : directoryName(selectedCwd)}
+        </h1>
+        <p className="mt-2 break-words text-[13px] text-v2-text-text-muted">
+          {selectedCwd === null ? t("home.tagline") : <span className="font-mono">{selectedCwd}</span>}
+        </p>
+        <label className="mt-6 flex h-11 max-w-[640px] items-center gap-3 rounded-lg border border-transparent bg-v2-grey-100 px-4 transition-colors focus-within:border-v2-blue-600 focus-within:bg-v2-background-bg-base">
           <Search size={17} className="shrink-0 text-v2-icon-icon-muted" aria-hidden />
           <input
             type="search"
@@ -174,14 +176,14 @@ export function HomeWorkspace({
             onChange={(event) => setQuery(event.target.value)}
           />
         </label>
-      </div>
+      </header>
       <section
-        className="border-t border-v2-grey-200 min-[820px]:col-start-2 min-[820px]:row-start-2"
+        className="min-w-0 px-5 pb-8 min-[820px]:col-start-2 min-[820px]:row-start-3 min-[820px]:px-8 min-[1200px]:px-16"
         aria-labelledby="active-sessions-heading"
       >
-        <div className="flex items-center gap-2 px-5 py-4 min-[820px]:px-6">
+        <div className="mb-2 flex items-center gap-2 border-b border-v2-grey-200 pb-3">
           <Activity size={16} className="text-v2-icon-icon-muted" aria-hidden />
-          <h2 id="active-sessions-heading" className="text-[14px] font-semibold text-v2-text-text-base">
+          <h2 id="active-sessions-heading" className="text-[15px] font-semibold text-v2-text-text-base">
             {t("home.activeSessions")}
           </h2>
           <span className="ml-auto text-[13px] font-normal text-v2-text-text-faint">
@@ -189,26 +191,29 @@ export function HomeWorkspace({
           </span>
         </div>
         {loading ? (
-          <p className="border-t border-v2-grey-200 px-6 py-4 text-[13px] text-v2-text-text-faint">
-            {t("home.loadingSessions")}
-          </p>
+          <p className="py-6 text-[14px] text-v2-text-text-faint">{t("home.loadingSessions")}</p>
         ) : visibleActive.length === 0 ? (
-          <p className="border-t border-v2-grey-200 px-6 py-4 text-[13px] text-v2-text-text-muted">
+          <p className="py-6 text-[14px] text-v2-text-text-muted">
             {selectedCwd === null ? t("home.noAgentsRunning") : t("home.noSessionsForProject")}
           </p>
         ) : (
-          <ul>{visibleActive.map(renderActiveSession)}</ul>
+          <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,280px),1fr))] gap-3 pt-2">
+            {visibleActive.map(renderActiveSession)}
+          </ul>
         )}
       </section>
       <aside
         aria-label={t("home.projects")}
-        className="border-t border-v2-grey-200 p-3 min-[820px]:col-start-1 min-[820px]:row-start-2 min-[820px]:row-span-2 min-[820px]:border-r min-[820px]:border-t-0"
+        className="min-w-0 border-y border-v2-grey-200 bg-v2-grey-100 px-3 pb-8 pt-4 min-[820px]:col-start-1 min-[820px]:row-start-2 min-[820px]:row-span-3 min-[820px]:border-y-0 min-[820px]:border-r min-[820px]:pt-2"
       >
-        <div className="flex flex-col gap-1">
+        <h2 className="px-3 pb-3 text-[12px] font-medium tracking-wide text-v2-text-text-faint">
+          {t("home.projects")}
+        </h2>
+        <div className="flex max-h-[240px] flex-col gap-1 overflow-y-auto min-[820px]:max-h-none">
           <button
             type="button"
             aria-current={selectedCwd === null ? "true" : undefined}
-            className={`flex w-full items-center gap-3 rounded-md border-l-2 px-3 py-3 text-left text-[14px] transition-colors ${selectedCwd === null ? "border-v2-blue-600 bg-v2-blue-100 font-medium text-v2-blue-700" : "border-transparent text-v2-text-text-muted hover:bg-v2-grey-100"}`}
+            className={`flex w-full items-center gap-3 rounded-md border-l-2 px-3 py-3 text-left text-[14px] transition-colors ${selectedCwd === null ? "border-v2-blue-600 bg-v2-blue-100 font-medium text-v2-blue-700" : "border-transparent text-v2-text-text-muted hover:bg-v2-grey-200"}`}
             onClick={() => onSelectProject(null)}
           >
             {selectedCwd === null ? <FolderOpen size={17} aria-hidden /> : <Folder size={17} aria-hidden />}
@@ -219,7 +224,7 @@ export function HomeWorkspace({
             const name = directoryName(group.cwd);
             const parent = compactParentPath(group.cwd);
             return (
-              <div key={group.cwd} className="group flex items-center rounded-md hover:bg-v2-grey-100">
+              <div key={group.cwd} className="group flex items-center rounded-md hover:bg-v2-grey-200">
                 <button
                   type="button"
                   aria-label={group.cwd}
@@ -256,21 +261,19 @@ export function HomeWorkspace({
         </div>
       </aside>
       <section
-        className="min-w-0 border-t border-v2-grey-200 min-[820px]:col-start-2 min-[820px]:row-start-3"
+        className="min-w-0 px-5 pb-12 pt-6 min-[820px]:col-start-2 min-[820px]:row-start-4 min-[820px]:px-8 min-[820px]:pt-0 min-[1200px]:px-16"
         aria-labelledby="recent-sessions-heading"
       >
         <h2
           id="recent-sessions-heading"
-          className="px-5 py-4 text-[14px] font-semibold text-v2-text-text-base min-[820px]:px-6"
+          className="mb-2 border-b border-v2-grey-200 pb-3 text-[15px] font-semibold text-v2-text-text-base"
         >
           {t("home.recentSessions")}
         </h2>
         {loading ? (
-          <p className="border-t border-v2-grey-200 px-6 py-4 text-[13px] text-v2-text-text-faint">
-            {t("home.loadingSessions")}
-          </p>
+          <p className="py-6 text-[14px] text-v2-text-text-faint">{t("home.loadingSessions")}</p>
         ) : visibleHistory.length === 0 ? (
-          <p className="border-t border-v2-grey-200 px-6 py-4 text-[13px] text-v2-text-text-muted">{emptyHistory}</p>
+          <p className="py-6 text-[14px] text-v2-text-text-muted">{emptyHistory}</p>
         ) : (
           <SessionList
             history={visibleHistory}

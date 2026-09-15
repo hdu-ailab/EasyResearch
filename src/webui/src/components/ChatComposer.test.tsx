@@ -247,9 +247,16 @@ describe("ChatComposer single running-state button (ADR-083)", () => {
 
     expect(input).toHaveFocus();
     expect(input).toHaveStyle({ outline: "none" });
-    expect(input.parentElement).toHaveClass("border-v2-grey-200", "focus-within:border-v2-grey-400");
-    expect(input.parentElement?.className).not.toContain("has-[textarea:focus-visible]:outline");
-    expect(input.parentElement?.className).not.toContain("focus-within:border-v2-blue-600");
+    const shell = input.closest("form");
+    expect(shell).toHaveClass(
+      "rounded-[22px]",
+      "max-w-[920px]",
+      "border-v2-grey-200",
+      "focus-within:border-v2-grey-400",
+    );
+    expect(shell).toContainElement(screen.getByRole("button", { name: /send/i }));
+    expect(shell?.className).not.toContain("has-[textarea:focus-visible]:outline");
+    expect(shell?.className).not.toContain("focus-within:border-v2-blue-600");
   });
 
   it("sends while streaming whenever the input has content", async () => {

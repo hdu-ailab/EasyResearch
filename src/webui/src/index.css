@@ -6,58 +6,57 @@
 }
 
 @theme {
-  /* opencode v2 greys (light) */
-  --color-v2-grey-50: #ffffff;
-  --color-v2-grey-100: #fafafa;
-  --color-v2-grey-200: #f2f2f2;
-  --color-v2-grey-300: #eeeeee;
-  --color-v2-grey-400: #dbdbdb;
-  --color-v2-grey-500: #aeaeae;
-  --color-v2-grey-600: #808080;
-  --color-v2-grey-700: #5c5c5c;
-  --color-v2-grey-800: #3a3a3a;
-  --color-v2-grey-900: #2e2e2e;
-  --color-v2-grey-1000: #242424;
-  --color-v2-grey-1100: #161616;
-  --color-v2-grey-1200: #080808;
+  /* DeepSeek-inspired palette (light variant). */
+  --color-v2-grey-50: rgb(255, 255, 255);
+  --color-v2-grey-100: rgb(249, 250, 251);
+  --color-v2-grey-200: rgb(245, 246, 247);
+  --color-v2-grey-300: rgb(233, 236, 242);
+  --color-v2-grey-400: rgb(207, 211, 214);
+  --color-v2-grey-500: rgb(173, 178, 184);
+  --color-v2-grey-600: rgb(129, 133, 140);
+  --color-v2-grey-700: rgb(97, 102, 107);
+  --color-v2-grey-800: rgb(67, 69, 74);
+  --color-v2-grey-900: rgb(53, 54, 56);
+  --color-v2-grey-1000: rgb(33, 33, 35);
+  --color-v2-grey-1100: rgb(15, 15, 15);
+  --color-v2-grey-1200: rgb(15, 15, 15);
 
-  /* opencode v2 blues */
-  --color-v2-blue-100: #ecf1fe;
-  --color-v2-blue-200: #d7e2fc;
-  --color-v2-blue-300: #c3d4fd;
-  --color-v2-blue-400: #a2bcff;
-  --color-v2-blue-500: #7698fd;
-  --color-v2-blue-600: #3b5cf6;
-  --color-v2-blue-700: #3250df;
-  --color-v2-blue-800: #2c47c8;
+  --color-v2-blue-100: rgb(237, 243, 254);
+  --color-v2-blue-200: rgb(219, 234, 254);
+  --color-v2-blue-300: rgb(183, 200, 254);
+  --color-v2-blue-400: rgb(103, 158, 254);
+  --color-v2-blue-450: rgb(86, 134, 254);
+  --color-v2-blue-500: rgb(65, 118, 230);
+  --color-v2-blue-600: rgb(65, 118, 230);
+  --color-v2-blue-700: rgb(47, 76, 143);
+  --color-v2-blue-800: rgb(52, 65, 91);
 
-  /* opencode v2 surfaces */
-  --color-v2-background-bg-base: #ffffff;
-  --color-v2-background-bg-deep: #fafafa;
-  --color-v2-background-bg-layer: #f2f2f2;
-  --color-v2-background-bg-layer-2: #eeeeee;
+  --color-v2-background-bg-base: rgb(255, 255, 255);
+  --color-v2-background-bg-deep: rgb(249, 250, 251);
+  --color-v2-background-bg-layer: rgb(241, 243, 245);
+  --color-v2-background-bg-layer-2: rgb(233, 236, 242);
 
-  /* opencode v2 text */
-  --color-v2-text-text-base: #161616;
-  --color-v2-text-text-muted: #5c5c5c;
-  --color-v2-text-text-faint: #808080;
-  --color-v2-text-text-accent: #3b5cf6;
+  --color-v2-text-text-base: rgb(15, 17, 21);
+  --color-v2-text-text-muted: rgb(97, 102, 107);
+  --color-v2-text-text-faint: rgb(129, 133, 140);
+  --color-v2-text-text-accent: rgb(65, 118, 230);
 
-  /* opencode v2 icons */
-  --color-v2-icon-icon-base: #3a3a3a;
-  --color-v2-icon-icon-muted: #808080;
-  --color-v2-icon-icon-accent: #3b5cf6;
+  --color-v2-icon-icon-base: rgb(41, 41, 41);
+  --color-v2-icon-icon-muted: rgb(129, 133, 140);
+  --color-v2-icon-icon-accent: rgb(65, 118, 230);
 
-  /* status */
-  --color-v2-status-success: #3a8437;
-  --color-v2-status-error: #ed4831;
-  --color-v2-status-warning: #e7af36;
+  --color-v2-status-success: rgb(34, 197, 94);
+  --color-v2-status-error: rgb(239, 68, 68);
+  --color-v2-status-warning: rgb(247, 173, 49);
 
-  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+    "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-mono:
+    "SF Mono", "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 
   --transition-duration-v2-panel: 200ms;
-  --ease-v2-panel: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-v2-panel: cubic-bezier(0.4, 0, 0.2, 1);
   --animate-v2-fade-in: v2-fade-in 200ms var(--ease-v2-panel);
   --animate-v2-expand-down: v2-expand-down 200ms var(--ease-v2-panel);
   --animate-v2-collapse-up: v2-collapse-up 200ms var(--ease-v2-panel);
@@ -75,11 +74,21 @@ body,
 }
 
 body {
-  background-color: var(--color-v2-background-bg-deep);
+  background-image: linear-gradient(180deg, rgb(255, 255, 255), rgb(249, 250, 251));
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   color: var(--color-v2-text-text-base);
   font-family: var(--font-sans);
   font-size: 14px;
   line-height: 1.5;
+}
+
+button,
+input,
+textarea,
+select {
+  font-family: inherit;
 }
 
 .home-workspace {

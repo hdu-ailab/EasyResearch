@@ -103,14 +103,17 @@ export function FileTabs({ tabs, active, onActivate, onClose, toggle }: FileTabs
               <button
                 type="button"
                 tabIndex={-1}
-                className={`flex size-4 shrink-0 items-center justify-center rounded text-v2-text-text-faint transition-opacity hover:bg-v2-grey-200 hover:text-v2-text-text-base ${
-                  isActive ? "opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+                className={`focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-v2-blue-600 flex size-5 shrink-0 items-center justify-center rounded-md text-v2-text-text-faint transition-colors ${
+                  isActive
+                    ? "bg-v2-background-bg-layer/60 opacity-100"
+                    : "bg-v2-background-bg-layer/40 opacity-70 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
                 }`}
                 aria-label={t("tabs.closeRow").replace("{name}", tab.name)}
                 title={t("tabs.close")}
+                onMouseDown={(event) => event.preventDefault()}
                 onClick={() => onClose(tab.path)}
               >
-                <X size={11} aria-hidden />
+                <X size={12} aria-hidden />
               </button>
             </div>
           );
