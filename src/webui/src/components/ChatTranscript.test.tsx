@@ -1157,6 +1157,8 @@ describe("ChatTranscript", () => {
     let writeTextMock: ReturnType<typeof vi.fn>;
 
     beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date(2026, 8, 16, 12));
       writeTextMock = vi.fn().mockResolvedValue(undefined);
       Object.defineProperty(navigator, "clipboard", {
         configurable: true,
@@ -1170,6 +1172,111 @@ describe("ChatTranscript", () => {
       );
       fireEvent.click(screen.getByRole("button", { name: /copy/i }));
       expect(writeTextMock).toHaveBeenCalledWith("hello");
+    });
+
+    it.each([
+      { role: "user", label: undefined },
+      { role: "assistant", label: undefined },
+      { role: "user", label: "Research Assistant" },
+      { role: "assistant", label: "search" },
+    ] as const)("shows system-local time before $role $label actions and copies only raw text", ({ role, label }) => {
+      const timestamp = new Date(2026, 8, 16, 1, 2, 3).getTime();
+      renderTranscript(
+        <ChatTranscript
+          messages={[msg({ key: "k1", role, label, timestamp, text: "**original**" })]}
+          tools={[]}
+          messageMeta={{ k1: { entryId: "e1" } }}
+        />,
+      );
+      const time = screen.getByText("01:02");
+      expect(time.tagName).toBe("TIME");
+      expect(time).toHaveAttribute("datetime", new Date(timestamp).toISOString());
+      const copy = screen.getByRole("button", { name: /copy/i });
+      expect(time.compareDocumentPosition(copy) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      const edit = screen.queryByRole("button", { name: /edit/i });
+      if (role === "user" && !label) {
+        expect(edit).not.toBeNull();
+        expect(time.compareDocumentPosition(edit!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      } else {
+        expect(edit).toBeNull();
+      }
+      fireEvent.click(copy);
+      expect(writeTextMock).toHaveBeenCalledWith("**original**");
+    });
+
+    it("makes a streaming timestamp keyboard reachable without offering Copy", async () => {
+      const user = userEvent.setup();
+      const timestamp = new Date(2026, 8, 16, 1, 2, 3).getTime();
+      const { container, rerender } = renderTranscript(
+        <ChatTranscript messages={[msg({ timestamp, streaming: true, text: "partial" })]} tools={[]} />,
+      );
+      const time = screen.getByText("01:02");
+      await user.tab();
+      await user.tab();
+      expect(time).toHaveFocus();
+      expect(screen.queryByRole("button", { name: /copy/i })).toBeNull();
+      rerender(<ChatTranscript messages={[msg({ text: "legacy answer" })]} tools={[]} />);
+      expect(container.querySelector("time")).toBeNull();
+      expect(screen.getByRole("button", { name: /copy/i })).toBeTruthy();
+    });
+
+    it.each([
+      { sent: new Date(2026, 8, 16, 0, 0, 59), expected: "00:00" },
+      { sent: new Date(2026, 8, 15, 23, 59, 59), expected: "09-15 23:59" },
+      { sent: new Date(2026, 7, 16, 1, 2, 59), expected: "08-16 01:02" },
+      { sent: new Date(2025, 8, 16, 1, 2, 59), expected: "2025-09-16 01:02" },
+    ])("shows $expected relative to the local calendar without seconds", ({ sent, expected }) => {
+      vi.setSystemTime(new Date(2026, 8, 16, 0, 1));
+      renderTranscript(
+        <ChatTranscript
+          messages={[
+            userMsg("u1", { timestamp: sent.getTime() }),
+            msg({ key: "a1", order: 1, timestamp: sent.getTime() }),
+          ]}
+          tools={[]}
+        />,
+      );
+      const times = screen.getAllByText(expected);
+      expect(times).toHaveLength(2);
+      for (const time of times) expect(time).toHaveAttribute("datetime", sent.toISOString());
+    });
+
+    it.each([
+      { now: new Date(2026, 8, 16, 23, 59, 59), next: new Date(2026, 8, 17), before: "23:59", expected: "09-16 23:59" },
+      {
+        now: new Date(2026, 11, 31, 23, 59, 59),
+        next: new Date(2027, 0, 1),
+        before: "23:59",
+        expected: "2026-12-31 23:59",
+      },
+      { now: new Date(2026, 2, 8), next: new Date(2026, 2, 9), before: "00:00", expected: "03-08 00:00" },
+      { now: new Date(2026, 10, 1), next: new Date(2026, 10, 2), before: "00:00", expected: "11-01 00:00" },
+    ])("updates visible timestamps at local midnight to $expected", ({ now, next, before, expected }) => {
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+      vi.setSystemTime(now);
+      const { unmount } = renderTranscript(
+        <ChatTranscript
+          messages={[
+            userMsg("u1", { timestamp: now.getTime() }),
+            msg({ key: "a1", order: 1, timestamp: now.getTime() }),
+          ]}
+          tools={[]}
+        />,
+      );
+      expect(screen.getAllByText(before)).toHaveLength(2);
+      act(() => vi.advanceTimersByTime(next.getTime() - now.getTime()));
+      expect(screen.getAllByText(expected)).toHaveLength(2);
+      unmount();
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it.each(["focus", "visibilitychange"])("refreshes dates after suspension on %s", (event) => {
+      const timestamp = new Date(2026, 8, 16, 1, 2, 3).getTime();
+      renderTranscript(<ChatTranscript messages={[msg({ timestamp })]} tools={[]} />);
+      expect(screen.getByText("01:02")).toBeTruthy();
+      vi.setSystemTime(new Date(2027, 0, 1, 12));
+      fireEvent(event === "focus" ? window : document, new Event(event));
+      expect(screen.getByText("2026-09-16 01:02")).toBeTruthy();
     });
 
     it("enters edit mode, cancels, and sends edits with the entry id", async () => {
@@ -1256,10 +1363,11 @@ describe("ChatTranscript", () => {
       expect(onSwitchBranch).toHaveBeenCalledWith("m1", 1);
     });
 
-    it("hides actions without tree metadata", () => {
+    it("allows copying without tree metadata but keeps editing unavailable", () => {
       renderTranscript(<ChatTranscript messages={[userMsg("k1")]} tools={[]} />);
       expect(screen.queryByRole("button", { name: /edit/i })).toBeNull();
-      expect(screen.queryByRole("button", { name: /copy/i })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: /copy/i }));
+      expect(writeTextMock).toHaveBeenCalledWith("hello");
     });
   });
 

@@ -274,6 +274,72 @@ describe("session reducer", () => {
     expect(state.runtimeConfigurationGeneration).toBe(3);
   });
 
+  it.each([undefined, "easyresearch:search"])(
+    "retains SDK message times in %s history, not entry times",
+    (sessionName) => {
+      const state = fromSnapshot({
+        session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready", sessionName },
+        timeline: ["user", "assistant"].map((role) => ({
+          kind: "message",
+          entryId: role,
+          timestamp: "2026-09-17T00:00:00.000Z",
+          message: { role, timestamp: 1789520523000, content: [{ type: "text", text: role }] },
+        })),
+      });
+      expect(state.messages.map((message) => message.timestamp)).toEqual([1789520523000, 1789520523000]);
+      expect(new Set(state.messages.map((message) => message.key)).size).toBe(2);
+    },
+  );
+
+  it.each(["snapshot", "message_start", "message_end"])(
+    "accepts only valid numeric SDK timestamps via %s",
+    (source) => {
+      for (const [timestamp, expected] of [
+        [0, 0],
+        [1789520523000, 1789520523000],
+        [undefined, undefined],
+        [null, undefined],
+        ["1789520523000", undefined],
+        [Number.NaN, undefined],
+        [Number.POSITIVE_INFINITY, undefined],
+        [8640000000000001, undefined],
+      ]) {
+        const message = { role: "assistant", timestamp, content: [{ type: "text", text: "answer" }] };
+        const state =
+          source === "snapshot"
+            ? fromSnapshot({
+                session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+                messages: [message],
+              })
+            : reduceSessionEvent(emptyState, { type: source, message } as never);
+        expect(state.messages[0]?.timestamp, `${source}: ${String(timestamp)}`).toBe(expected);
+      }
+    },
+  );
+
+  it("preserves message time through deltas and reconciles an authoritative end time", () => {
+    let state = reduceSessionEvent(emptyState, {
+      type: "message_start",
+      message: { role: "user", timestamp: 1000, content: "question" },
+    } as never);
+    state = reduceSessionEvent(state, {
+      type: "message_start",
+      message: { id: "answer", role: "assistant", timestamp: 2000, content: [] },
+    } as never);
+    state = reduceSessionEvent(state, assistantEvent("message_update", "answer"));
+    expect(state.messages.map((message) => message.timestamp)).toEqual([1000, 2000]);
+    state = reduceSessionEvent(state, {
+      type: "message_end",
+      message: { id: "answer", role: "assistant", timestamp: 3000, content: "answer" },
+    } as never);
+    expect(state.messages.map((message) => message.timestamp)).toEqual([1000, 3000]);
+    state = reduceSessionEvent(state, {
+      type: "message_end",
+      message: { id: "answer", role: "assistant", content: "answer" },
+    } as never);
+    expect(state.messages.map((message) => message.timestamp)).toEqual([1000, 3000]);
+  });
+
   it("advances only on increasing live runtime generations and replaces from an authoritative snapshot", () => {
     const hydrated = fromSnapshot({
       runtimeConfigurationGeneration: 3,
@@ -1038,15 +1104,22 @@ describe("session reducer", () => {
       messages: [],
     });
     const withDelta = reduceSessionEvent(hydrated, assistantEvent("message_update", "partial"));
+    expect(withDelta.messages[0]?.timestamp).toBeUndefined();
 
     const ended = reduceSessionEvent(withDelta, {
       type: "message_end",
-      message: { id: "final-id", role: "assistant", content: [{ type: "text", text: "authoritative final" }] },
+      message: {
+        id: "final-id",
+        role: "assistant",
+        timestamp: 1234,
+        content: [{ type: "text", text: "authoritative final" }],
+      },
     } as never);
 
     expect(ended.messages).toEqual([
       expect.objectContaining({
         identity: "final-id",
+        timestamp: 1234,
         role: "assistant",
         text: "authoritative final",
         streaming: false,

@@ -338,11 +338,12 @@ function SkillInvocationContent({ invocation }: { invocation: NonNullable<SteerV
 
 /** A single message bubble. Human messages align right with the You label;
  * anything labeled otherwise (subagent-line dispatches, agent replies)
- * aligns left under its own label. User messages with tree metadata gain
- * hover Edit/Copy actions and a version switcher (ADR-066); skill-invoked
+ * aligns left under its own label. Both roles reveal message time and Copy;
+ * human messages with tree metadata also gain Edit and a version switcher. Skill-invoked
  * messages render a compact card instead of the expanded content. */
 function MessageRow({
   message,
+  today,
   open,
   onToggle,
   meta,
@@ -358,6 +359,7 @@ function MessageRow({
   onRendered,
 }: {
   message: SessionMessageView;
+  today: Date;
   open: boolean;
   onToggle: (open: boolean) => void;
   meta?: SessionMessageMeta;
@@ -377,6 +379,23 @@ function MessageRow({
   const label = message.label ? agentDisplayName(t, message.label) : roleKey ? t(roleKey) : message.role;
   const isYou = message.role === "user" && message.label == null;
   const hasBody = Boolean(message.text.trim()) || (message.streaming && !message.reasoning && !message.isThinking);
+  const isChatMessage = message.role === "user" || message.role === "assistant";
+  const canEdit = isYou && !message.streaming && !message.error && meta !== undefined;
+  const canCopy = isChatMessage && !message.streaming && Boolean(message.text.trim());
+  const sentAt = message.timestamp === undefined ? undefined : new Date(message.timestamp);
+  const sameYear = sentAt?.getFullYear() === today.getFullYear();
+  const sameDay = sameYear && sentAt?.getMonth() === today.getMonth() && sentAt?.getDate() === today.getDate();
+  const localDateTime = sentAt
+    ? [
+        [sentAt.getFullYear(), sentAt.getMonth() + 1, sentAt.getDate()]
+          .map((part, index) => String(part).padStart(index === 0 ? 4 : 2, "0"))
+          .slice(sameDay ? 3 : sameYear ? 1 : 0)
+          .join("-"),
+        [sentAt.getHours(), sentAt.getMinutes()].map((part) => String(part).padStart(2, "0")).join(":"),
+      ]
+        .filter(Boolean)
+        .join(" ")
+    : undefined;
   if (message.usageOnly && message.apiUsage) {
     return (
       <li className="flex flex-col items-start gap-1">
@@ -435,56 +454,71 @@ function MessageRow({
         </span>
       ) : null}
       {showApiUsageDetails && message.apiUsage ? <ApiUsageLine record={message.apiUsage} /> : null}
-      {isYou && !message.streaming && !message.error && meta ? (
-        <>
-          <div className="mt-1 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-            <button
-              type="button"
-              aria-label={t("transcript.editMessage")}
-              title={t("transcript.editMessage")}
-              className="flex size-6 items-center justify-center rounded-md text-v2-text-text-muted hover:bg-v2-grey-100"
-              onClick={onStartEdit}
+      {isChatMessage && (sentAt || canCopy || canEdit) ? (
+        <div className="mt-1 flex max-w-full flex-wrap items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 motion-reduce:transition-none [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:opacity-100">
+          {sentAt ? (
+            <time
+              dateTime={sentAt.toISOString()}
+              tabIndex={canEdit || canCopy ? undefined : 0}
+              className="mr-1 whitespace-nowrap font-mono text-[11px] text-v2-text-text-faint"
             >
-              <Pencil size={12} />
-            </button>
-            <button
-              type="button"
-              aria-label={t("transcript.copyMessage")}
-              title={t("transcript.copyMessage")}
-              className="flex size-6 items-center justify-center rounded-md text-v2-text-text-muted hover:bg-v2-grey-100"
-              onClick={() => void navigator.clipboard?.writeText(message.text).catch(() => {})}
-            >
-              <Copy size={12} />
-            </button>
-          </div>
-          {meta.version && meta.version.count > 1 ? (
-            <span className="-mt-1 flex items-center gap-1 text-[11px] text-v2-text-text-faint">
-              <button
-                type="button"
-                aria-label={t("transcript.previousVersion")}
-                title={t("transcript.previousVersion")}
-                disabled={meta.version.index <= 1}
-                className="flex size-5 items-center justify-center rounded hover:bg-v2-grey-100 disabled:opacity-30"
-                onClick={() => onSwitchBranch?.(meta.entryId, -1)}
-              >
-                <ChevronLeft size={12} />
-              </button>
-              <span>
-                {meta.version.index}/{meta.version.count}
-              </span>
-              <button
-                type="button"
-                aria-label={t("transcript.nextVersion")}
-                title={t("transcript.nextVersion")}
-                disabled={meta.version.index >= meta.version.count}
-                className="flex size-5 items-center justify-center rounded hover:bg-v2-grey-100 disabled:opacity-30"
-                onClick={() => onSwitchBranch?.(meta.entryId, 1)}
-              >
-                <ChevronRight size={12} />
-              </button>
+              {localDateTime}
+            </time>
+          ) : null}
+          {canEdit || canCopy ? (
+            <span className="flex shrink-0 items-center gap-1">
+              {canEdit ? (
+                <button
+                  type="button"
+                  aria-label={t("transcript.editMessage")}
+                  title={t("transcript.editMessage")}
+                  className="flex size-6 items-center justify-center rounded-md text-v2-text-text-muted hover:bg-v2-grey-100"
+                  onClick={onStartEdit}
+                >
+                  <Pencil size={12} />
+                </button>
+              ) : null}
+              {canCopy ? (
+                <button
+                  type="button"
+                  aria-label={t("transcript.copyMessage")}
+                  title={t("transcript.copyMessage")}
+                  className="flex size-6 items-center justify-center rounded-md text-v2-text-text-muted hover:bg-v2-grey-100"
+                  onClick={() => void navigator.clipboard?.writeText(message.text).catch(() => {})}
+                >
+                  <Copy size={12} />
+                </button>
+              ) : null}
             </span>
           ) : null}
-        </>
+        </div>
+      ) : null}
+      {canEdit && meta.version && meta.version.count > 1 ? (
+        <span className="-mt-1 flex items-center gap-1 text-[11px] text-v2-text-text-faint">
+          <button
+            type="button"
+            aria-label={t("transcript.previousVersion")}
+            title={t("transcript.previousVersion")}
+            disabled={meta.version.index <= 1}
+            className="flex size-5 items-center justify-center rounded hover:bg-v2-grey-100 disabled:opacity-30"
+            onClick={() => onSwitchBranch?.(meta.entryId, -1)}
+          >
+            <ChevronLeft size={12} />
+          </button>
+          <span>
+            {meta.version.index}/{meta.version.count}
+          </span>
+          <button
+            type="button"
+            aria-label={t("transcript.nextVersion")}
+            title={t("transcript.nextVersion")}
+            disabled={meta.version.index >= meta.version.count}
+            className="flex size-5 items-center justify-center rounded hover:bg-v2-grey-100 disabled:opacity-30"
+            onClick={() => onSwitchBranch?.(meta.entryId, 1)}
+          >
+            <ChevronRight size={12} />
+          </button>
+        </span>
       ) : null}
     </li>
   );
@@ -507,6 +541,7 @@ function PendingRow() {
 
 interface TranscriptVirtualRowProps {
   entry: TranscriptEntry;
+  today: Date;
   index: number;
   start: number;
   rowKey: string;
@@ -531,6 +566,7 @@ interface TranscriptVirtualRowProps {
 
 const TranscriptVirtualRow = memo(function TranscriptVirtualRow({
   entry,
+  today,
   index,
   start,
   rowKey,
@@ -631,6 +667,7 @@ const TranscriptVirtualRow = memo(function TranscriptVirtualRow({
         ) : (
           <MessageRow
             message={entry}
+            today={today}
             open={open}
             onToggle={(next) => onToggle(rowKey, next)}
             meta={messageMeta}
@@ -688,6 +725,27 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
   const [openByKey, setOpenByKey] = useState<Record<string, boolean>>({});
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  const [today, setToday] = useState(() => new Date());
+
+  useEffect(() => {
+    let midnightTimer: number | undefined;
+    const refreshDate = () => {
+      const now = new Date();
+      setToday(now);
+      // Local midnight may be 23 or 25 hours away across daylight-saving changes.
+      const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+      window.clearTimeout(midnightTimer);
+      midnightTimer = window.setTimeout(refreshDate, nextMidnight.getTime() - now.getTime());
+    };
+    refreshDate();
+    window.addEventListener("focus", refreshDate);
+    document.addEventListener("visibilitychange", refreshDate);
+    return () => {
+      window.clearTimeout(midnightTimer);
+      window.removeEventListener("focus", refreshDate);
+      document.removeEventListener("visibilitychange", refreshDate);
+    };
+  }, []);
 
   const entries = useMemo(
     () => mergeTranscriptEntries(messages, tools, summaries, pending, completions),
@@ -1021,6 +1079,7 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
                 <TranscriptVirtualRow
                   key={key}
                   entry={entry}
+                  today={today}
                   index={virtualRow.index}
                   start={virtualRow.start}
                   rowKey={key}
