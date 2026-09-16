@@ -11,6 +11,7 @@ import {
   type SessionViewState,
   terminateSessionRun,
 } from "./session-reducer";
+import { completionEntry } from "./testing/subagentCompletion";
 
 function withTimeline(snapshot: Record<string, unknown>) {
   if (Array.isArray(snapshot.timeline)) return snapshot;
@@ -43,6 +44,7 @@ const emptyState: SessionViewState = {
   messages: [],
   tools: [],
   summaries: [],
+  completions: [],
   hydrationRevision: 0,
   messageStructureRevision: 0,
   isStreaming: false,
@@ -133,6 +135,96 @@ function launchToolEnd(overrides: Partial<SubagentSupervisorEventDto> = {}, tool
 }
 
 describe("session reducer", () => {
+  it("interleaves independent completion outcomes without moving a live assistant cursor", () => {
+    let state = reduceSessionEvent(emptyState, { type: "agent_start" });
+    state = reduceSessionEvent(state, {
+      type: "message_start",
+      message: { id: "answer", role: "assistant", content: [{ type: "text", text: "before" }] },
+    } as never);
+    state = reduceSessionEvent(state, toolEvent("tool_execution_start"));
+    const before = state;
+    const entry = completionEntry();
+    state = reduceSessionEvent(state, { type: "timeline_entry_appended", entry });
+    expect(state.completions).toMatchObject([
+      {
+        entryId: entry.entryId,
+        batchId: entry.batchId,
+        launchId: "launch-1",
+        agentId: "search_0",
+        status: "complete",
+        order: 2,
+      },
+      {
+        entryId: entry.entryId,
+        batchId: entry.batchId,
+        launchId: "launch-2",
+        agentId: "search_1",
+        status: "error",
+        order: 3,
+      },
+    ]);
+    expect(state.messages).toBe(before.messages);
+    expect(state.tools).toBe(before.tools);
+    expect(state.activeMessageKey).toBe(before.activeMessageKey);
+    expect(state.isStreaming).toBe(true);
+    expect(state.nextOrder).toBe(4);
+    state = reduceSessionEvent(state, assistantEvent("message_update", " continued"));
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]?.text).toBe("before continued");
+    expect(state.completions[0]?.text).toBe(entry.outcomes[0]?.text);
+  });
+
+  it("hydrates completion batches like live delivery, deduplicates replay, and freezes prior continuations", () => {
+    const first = completionEntry();
+    const continuation = completionEntry({
+      entryId: "notification-2",
+      batchId: "batch-2",
+      outcomes: [{ launchId: "launch-3", agentId: "search_0", status: "error", text: "A later result." }],
+    });
+    let live = reduceSessionEvent(emptyState, { type: "timeline_entry_appended", entry: first });
+    expect(reduceSessionEvent(live, { type: "timeline_entry_appended", entry: first })).toBe(live);
+    expect(
+      reduceSessionEvent(live, { type: "timeline_entry_appended", entry: { ...first, entryId: "retry-entry" } }),
+    ).toBe(live);
+    live = reduceSessionEvent(live, { type: "timeline_entry_appended", entry: continuation });
+    const snapshot = {
+      runtimeConfigurationGeneration: 0,
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      timeline: [first, continuation],
+      subagents: [],
+    };
+    expect(fromSnapshot(snapshot).completions).toEqual(live.completions);
+    expect(mergeSnapshot(live, snapshot).completions).toEqual(live.completions);
+    expect(live.completions).toHaveLength(3);
+    expect(new Set(live.completions.map((row) => row.key)).size).toBe(3);
+    expect(live.completions[0]?.text).toBe(first.outcomes[0]?.text);
+  });
+
+  it("keeps completion order and snapshot cursor stable through usage insertion", () => {
+    const entry = completionEntry();
+    const state = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
+      session: { id: "s1", cwd: "/p", isStreaming: true, status: "running" },
+      timeline: [{ kind: "message", entryId: "before", message: { role: "assistant", content: "before" } }, entry],
+      subagents: [],
+    });
+    expect(state.activeMessageKey).toBe("before");
+    expect(state.completions).toHaveLength(2);
+    const used = reduceSessionEvent(state, {
+      type: "entry_appended",
+      apiUsageRecord: usageRecord("internal", { kind: "standalone", afterEntryId: entry.entryId }),
+    } as never);
+    expect(used.completions.map((row) => row.order)).toEqual([1, 2]);
+    expect(used.messages.find((row) => row.apiUsage)?.order).toBe(3);
+    expect(used.nextOrder).toBe(4);
+    expect(used.activeMessageKey).toBe("before");
+    const after = reduceSessionEvent(used, {
+      type: "message_start",
+      message: { role: "user", content: "after" },
+    } as never);
+    expect(after.messages.at(-1)?.order).toBe(4);
+  });
+
   it("never renders agent-status custom messages or lets their boundaries move the assistant cursor", () => {
     const hidden = {
       role: "custom",

@@ -8,6 +8,66 @@ export interface TerminalNotificationOutcome {
   latestAssistantText?: string;
 }
 
+export interface SubagentCompletionOutcome {
+  launchId: string;
+  agentId: string;
+  status: "complete" | "error";
+  text?: string;
+}
+
+export interface SubagentCompletionEntry {
+  kind: "subagent-completion";
+  entryId: string;
+  timestamp: string;
+  batchId: string;
+  outcomes: SubagentCompletionOutcome[];
+}
+
+export function completionOutcomes(outcomes: readonly TerminalNotificationOutcome[]): SubagentCompletionOutcome[] {
+  return outcomes.map(({ launchId, agentId, status, latestAssistantText }) => ({
+    launchId,
+    agentId,
+    status,
+    ...(latestAssistantText?.trim() ? { text: latestAssistantText } : {}),
+  }));
+}
+
+export function readCompletionOutcomes(value: unknown): SubagentCompletionOutcome[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  const outcomes: SubagentCompletionOutcome[] = [];
+  const launchIds = new Set<string>();
+  for (const outcome of value) {
+    if (
+      !isObject(outcome)
+      || typeof outcome.launchId !== "string" || !outcome.launchId.trim()
+      || typeof outcome.agentId !== "string" || !outcome.agentId.trim()
+      || (outcome.status !== "complete" && outcome.status !== "error")
+      || (outcome.text !== undefined && typeof outcome.text !== "string")
+      || launchIds.has(outcome.launchId)
+    ) return undefined;
+    launchIds.add(outcome.launchId);
+    outcomes.push({
+      launchId: outcome.launchId,
+      agentId: outcome.agentId,
+      status: outcome.status,
+      ...(typeof outcome.text === "string" && outcome.text.trim() ? { text: outcome.text } : {}),
+    });
+  }
+  return outcomes;
+}
+
+export function projectSubagentCompletionEntry(value: unknown): SubagentCompletionEntry | undefined {
+  if (
+    !isObject(value) || value.type !== "custom_message" || value.display !== false
+    || typeof value.id !== "string" || !value.id.trim()
+    || typeof value.timestamp !== "string" || !value.timestamp.trim()
+  ) return undefined;
+  const batchId = notificationBatchId(value);
+  const outcomes = isObject(value.details) ? readCompletionOutcomes(value.details.outcomes) : undefined;
+  if (!batchId || !outcomes) return undefined;
+  return { kind: "subagent-completion", entryId: value.id, timestamp: value.timestamp, batchId, outcomes };
+}
+
 export function formatTerminalNotification(input: {
   time: string;
   workingAgentIds: readonly string[];

@@ -2,13 +2,16 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { createRef, type ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { I18nProvider } from "../i18n/I18nProvider";
 import { STORAGE_KEY, type WebUiPreferences, writePreferences } from "../preferences";
 import { PreferencesProvider } from "../preferences/PreferencesProvider";
-import type { SessionMessageView, SessionSummaryView, ToolView } from "../session-reducer";
+import { fromSnapshot, type SessionMessageView, type SessionSummaryView, type ToolView } from "../session-reducer";
+import { completionEntry } from "../testing/subagentCompletion";
 import {
   fireTranscriptGrowth,
   hydrateTranscript,
   metricStub,
+  observerFor,
   smallTranscript,
   transcriptContentObserver,
   wheelUp,
@@ -104,6 +107,154 @@ describe("ChatTranscript", () => {
     expect(screen.getByText("Send a message to start.")).toBeTruthy();
     rerender(<ChatTranscript messages={[]} tools={[]} pending />);
     expect(screen.queryByText("Send a message to start.")).toBeNull();
+  });
+
+  it.each([
+    ["\r\n  First sentence. Second sentence.\r\nLast line.", "First sentence."],
+    ["Score is 0.95 in results/run.v1.json. More evidence follows.", "Score is 0.95 in results/run.v1.json."],
+    ["Saved https://example.org/paper.pdf! Next step?", "Saved https://example.org/paper.pdf!"],
+    ["Ready? More work.", "Ready?"],
+    ["\r\n\r\nNo punctuation\r\nwith a wrapped line", "No punctuation with a wrapped line"],
+    ["\n首句完成。第二句解释。\n最后一行", "首句完成。"],
+    ["真的完成了吗？还有说明！", "真的完成了吗？"],
+  ])("previews only the first completion sentence for %j", (text, preview) => {
+    const view = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
+      session: { id: "root", cwd: "/p", status: "ready", isStreaming: false },
+      subagents: [],
+      timeline: [
+        completionEntry({ outcomes: [{ launchId: "launch", agentId: "search_0", status: "complete", text }] }),
+      ],
+    });
+    renderTranscript(<ChatTranscript {...view} />);
+    const toggle = screen.getByRole("button", { name: /search_0 is complete/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    const sentence = within(toggle).getByText(preview, { exact: true });
+    expect(sentence).toHaveClass("truncate", "min-w-0", "text-[12.5px]", "font-normal");
+    expect(screen.queryByText("Thinking")).toBeNull();
+  });
+
+  it("expands full completion Markdown with the keyboard independently of progress and sibling cards", async () => {
+    const user = userEvent.setup();
+    const view = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
+      session: { id: "root", cwd: "/p", status: "ready", isStreaming: false },
+      subagents: [],
+      timeline: [
+        { kind: "message", entryId: "before", message: { role: "user", content: "before notification" } as never },
+        completionEntry(),
+        { kind: "message", entryId: "after", message: { role: "user", content: "after notification" } as never },
+      ],
+    });
+    renderTranscript(
+      <ChatTranscript
+        {...view}
+        tools={[tool({ name: "subagent", agentId: "search_0", order: -1, latestMessage: "live progress" })]}
+      />,
+    );
+    const toggle = screen.getByRole("button", { name: /search_0 is complete/ });
+    const error = screen.getByRole("button", { name: /search_1 has failed/ });
+    const text = scrollContainer().textContent!;
+    expect(text.indexOf("before notification")).toBeLessThan(text.indexOf("search_0 is complete"));
+    expect(text.indexOf("search_1 has failed")).toBeLessThan(text.indexOf("after notification"));
+    expect(screen.getByText("live progress")).toBeVisible();
+    expect(screen.queryByText("details")).toBeNull();
+    toggle.focus();
+    await user.keyboard("{Enter}");
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("details").tagName).toBe("STRONG");
+    expect(error).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("Thinking process")).toBeNull();
+    expect(screen.getByText("details").closest(".animate-v2-expand-down")).toHaveClass("motion-reduce:animate-none");
+    await user.keyboard(" ");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText("details").closest(".animate-v2-collapse-up")).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText("details")).toBeNull());
+    await user.click(error);
+    expect(error).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("Result unavailable")).toBeVisible();
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("keeps manual completion expansion through virtual unmount and independent continuations", async () => {
+    const user = userEvent.setup();
+    const view = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
+      session: { id: "root", cwd: "/p", status: "ready", isStreaming: false },
+      subagents: [],
+      timeline: [completionEntry()],
+    });
+    const messages = Array.from({ length: 400 }, (_, index) => msg({ key: `filler-${index}`, order: index + 2 }));
+    const result = renderTranscript(<ChatTranscript {...view} messages={messages} />, { expandSubagentOutput: true });
+    const first = screen.getByRole("button", { name: /search_0 is complete/ });
+    expect(first).toHaveAttribute("aria-expanded", "true");
+    await user.click(first);
+    const section = scrollContainer();
+    section.scrollTop = 23000;
+    fireEvent.scroll(section);
+    expect(screen.queryByRole("button", { name: /search_0 is complete/ })).toBeNull();
+    section.scrollTop = 0;
+    fireEvent.scroll(section);
+    expect(screen.getByRole("button", { name: /search_0 is complete/ })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: /search_1 has failed/ })).toHaveAttribute("aria-expanded", "true");
+    const continued = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
+      session: { id: "root", cwd: "/p", status: "ready", isStreaming: false },
+      subagents: [],
+      timeline: [
+        completionEntry(),
+        completionEntry({
+          entryId: "next",
+          batchId: "next",
+          outcomes: [{ launchId: "next", agentId: "search_0", status: "complete", text: "Later body." }],
+        }),
+      ],
+    });
+    result.rerender(<ChatTranscript {...continued} />);
+    expect(
+      screen
+        .getAllByRole("button", { name: /search_0 is complete/ })
+        .map((button) => button.getAttribute("aria-expanded")),
+    ).toEqual(["false", "true"]);
+  });
+
+  it("localizes completion status without translating agent ids or inferring status from body prose", () => {
+    const view = fromSnapshot({
+      runtimeConfigurationGeneration: 0,
+      session: { id: "root", cwd: "/p", status: "ready", isStreaming: false },
+      subagents: [],
+      timeline: [
+        completionEntry({
+          outcomes: [
+            {
+              launchId: "one",
+              agentId: "search_0",
+              status: "complete",
+              text: "blocked. Still a completed invocation.",
+            },
+            { launchId: "two", agentId: "search_1", status: "error", text: " \r\n " },
+          ],
+        }),
+      ],
+    });
+    renderTranscript(
+      <I18nProvider>
+        <ChatTranscript {...view} />
+      </I18nProvider>,
+      { language: "zh-CN", expandSubagentOutput: true },
+    );
+    const section = screen.getByRole("region", { name: "对话" });
+    act(() => {
+      metricStub(section);
+      observerFor(section)?.__fireEntries([
+        { target: section, borderBoxSize: [{ inlineSize: 800, blockSize: 10000 }] } as unknown as ResizeObserverEntry,
+      ]);
+      section.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    expect(screen.getByRole("button", { name: /search_0 已完成/ })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: /search_1 失败/ })).toBeVisible();
+    expect(screen.getByText("暂无结果")).toBeVisible();
+    expect(screen.getByText(/blocked/)).toBeVisible();
   });
 
   it.each([undefined, "arxiv"])(

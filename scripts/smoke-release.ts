@@ -60,6 +60,8 @@ import {
 import { nativeLocalShellTool } from "../src/runtime/platform-tools";
 import { BUNDLED_MODEL_ADDITIONS, BUNDLED_MODEL_REMOVALS } from "../src/runtime/bundled-model-additions";
 import { DAEMON_CONTROL_PATH, DAEMON_TOKEN_HEADER } from "../src/cli/daemon-control";
+import type { SubagentCompletionEntryDto } from "../src/web/contracts";
+import { parseTimelineEntryAppendedEvent } from "../src/webui/src/api/parsers";
 
 const targetName = process.argv[2];
 const target = TARGETS.find((candidate) => candidate.name === targetName);
@@ -208,6 +210,7 @@ let smokeModelState: SmokeModelState = {
 };
 let sessionSnapshotObserved = false;
 let observedSupervisorTerminal = false;
+let observedCompletionEntry: SubagentCompletionEntryDto | undefined;
 let sessionActivityState: SmokeSessionActivityTracker = { sequence: 0 };
 let dispatchActivityBaseline: number | undefined;
 let completionActivityBaseline: number | undefined;
@@ -281,7 +284,8 @@ function smokeCompletionMilestonesSatisfied(): boolean {
     && smokeModelState.stageCompleted
     && smokeModelState.terminalHandoffObserved
     && venvToolResults === 1
-    && observedSupervisorTerminal;
+    && observedSupervisorTerminal
+    && observedCompletionEntry !== undefined;
 }
 
 function captureCompletionActivityBaseline(): void {
@@ -1313,6 +1317,7 @@ function smokeProgressDiagnostics(): string {
     recentConfigurationEvents: recentConfigurationEvents.map(safeSmokeDiagnostic),
     sessionSnapshotObserved,
     observedSupervisorTerminal,
+    observedCompletionEntry,
     sessionActivitySequence: sessionActivityState.sequence,
     latestSessionActivity: sessionActivityState.latest,
     dispatchActivityBaseline,
@@ -1340,6 +1345,20 @@ function observeSessionEvent(event: unknown): void {
     generation?: unknown;
     runtimeConfigurationGeneration?: unknown;
   };
+  if (value.type === "timeline_entry_appended") {
+    const { entry } = parseTimelineEntryAppendedEvent(event);
+    if (entry.kind === "subagent-completion") {
+      const outcome = entry.outcomes.find((outcome) => outcome.agentId === `${smokeAgentName}_0`);
+      if (outcome) {
+        if (outcome.status !== "complete" || outcome.text !== "complete\nArtifacts: none\nGaps: none\nNext action: none") {
+          throw new Error("compiled completion card did not preserve the child's final body and status");
+        }
+        if (observedCompletionEntry) throw new Error("compiled completion card was emitted more than once");
+        observedCompletionEntry = entry;
+        captureCompletionActivityBaseline();
+      }
+    }
+  }
   if (value.type === "snapshot") {
     sessionActivityState = {
       ...sessionActivityState,
@@ -2326,7 +2345,15 @@ try {
   const completedSnapshot = await requireOk(
     await fetch(`${base}/api/sessions/${created.id}/snapshot`),
     "completed root session snapshot",
-  ) as { session?: { sessionFile?: unknown } };
+  ) as { session?: { sessionFile?: unknown }; timeline?: unknown[] };
+  parseSmokeInitialSessionSnapshot({ type: "snapshot", ...completedSnapshot });
+  assertPathFreeSessionEvent(completedSnapshot);
+  const savedCompletions = completedSnapshot.timeline?.filter((entry) =>
+    entry && typeof entry === "object" && (entry as { kind?: unknown }).kind === "subagent-completion"
+  ).map((entry) => parseTimelineEntryAppendedEvent({ type: "timeline_entry_appended", entry }).entry);
+  if (savedCompletions?.length !== 1 || JSON.stringify(savedCompletions[0]) !== JSON.stringify(observedCompletionEntry)) {
+    throw new Error("completion snapshot did not restore the exact single live terminal card");
+  }
   const originalSessionPath = completedSnapshot.session?.sessionFile;
   if (typeof originalSessionPath !== "string" || !originalSessionPath) {
     throw new Error("completed root session snapshot did not expose its persisted path");

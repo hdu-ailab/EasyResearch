@@ -16,8 +16,9 @@ import {
   readSubagentJournal,
   type SubagentJobJournalRecord,
   type SubagentJournalState,
+  type NotificationBatchRecord,
 } from "./job-journal";
-import { privateSubagentEventDataReason } from "./notifications";
+import { privateSubagentEventDataReason, readCompletionOutcomes } from "./notifications";
 import { SUBAGENT_SESSION_LINK_ENTRY } from "./session-links";
 
 export interface CoordinatorSessionManager {
@@ -225,13 +226,14 @@ export class SubagentCoordinator {
     this.append({ kind: "launch_suppressed", launchId, suppressedAt: now() });
   }
 
-  recordNotificationBatch(input: { batchId: string; ownerSessionId: string; launchIds: string[]; content: string; triggerTurn: boolean }): void {
+  recordNotificationBatch(input: Omit<NotificationBatchRecord, "createdAt">): void {
     this.append({
       kind: "notification_batch",
       batchId: input.batchId,
       ownerSessionId: input.ownerSessionId,
       launchIds: [...input.launchIds],
       content: input.content,
+      ...(input.outcomes ? { outcomes: readCompletionOutcomes(input.outcomes) } : {}),
       triggerTurn: input.triggerTurn,
       createdAt: now(),
     });

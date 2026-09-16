@@ -1,4 +1,8 @@
 import type { JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import type { SubagentCompletionEntry } from "./notifications";
+
+export type SubagentProgressEvent = JsonAgentSessionEvent
+  | { type: "timeline_entry_appended"; entry: SubagentCompletionEntry };
 
 export type SubagentJobStatus = "working" | "complete" | "error";
 
@@ -18,7 +22,7 @@ export interface SubagentJobSummary extends SubagentJobIdentity {
 
 export interface SubagentSupervisorEvent extends SubagentJobSummary {
   type: "subagent_supervisor";
-  event?: JsonAgentSessionEvent;
+  event?: SubagentProgressEvent;
 }
 
 export interface SubagentLaunchDetails {

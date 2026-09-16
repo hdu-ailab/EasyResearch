@@ -2,12 +2,14 @@ import { randomUUID } from "node:crypto";
 import type { AgentSessionEvent, InlineExtension, JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { runCleanupSteps } from "../runtime/cleanup";
 import { type ReservedDispatch, SubagentCoordinator } from "./coordinator";
-import type { SubagentJobIdentity, SubagentLaunchDetails } from "./contracts";
+import type { SubagentJobIdentity, SubagentLaunchDetails, SubagentProgressEvent } from "./contracts";
 import type { NotificationBatchRecord } from "./job-journal";
 import {
   AGENT_STATUS_TYPE,
+  completionOutcomes,
   formatTerminalNotification,
   notificationBatchId,
+  projectSubagentCompletionEntry,
   type TerminalNotificationOutcome,
 } from "./notifications";
 import {
@@ -50,8 +52,8 @@ interface OwnedChild {
   disposePromise?: Promise<void>;
   materialization: "pending" | "materialized" | "failed";
   identity?: SubagentJobIdentity;
-  queuedEvents: JsonAgentSessionEvent[];
-  acknowledgementEvents: JsonAgentSessionEvent[];
+  queuedEvents: SubagentProgressEvent[];
+  acknowledgementEvents: SubagentProgressEvent[];
   latestAssistantText?: string;
   terminal?: TerminalNotificationOutcome & { errorMessage?: string };
   terminalRecorded: boolean;
@@ -117,7 +119,11 @@ function isHiddenStatusMessage(value: unknown): boolean {
   return isObject(value) && value.customType === AGENT_STATUS_TYPE;
 }
 
-function publicChildEvent(event: JsonAgentSessionEvent): JsonAgentSessionEvent | undefined {
+function publicChildEvent(event: JsonAgentSessionEvent): SubagentProgressEvent | undefined {
+  if (event.type === "entry_appended") {
+    const completion = projectSubagentCompletionEntry(event.entry);
+    if (completion) return { type: "timeline_entry_appended", entry: completion };
+  }
   const value = event.type === "message_start" || event.type === "message_end"
     ? event.message
     : event.type === "entry_appended"
@@ -131,7 +137,7 @@ function publicChildEvent(event: JsonAgentSessionEvent): JsonAgentSessionEvent |
   };
 }
 
-function requiresLaunchAcknowledgement(event: JsonAgentSessionEvent): boolean {
+function requiresLaunchAcknowledgement(event: SubagentProgressEvent): boolean {
   return event.type === "agent_end" || event.type === "agent_settled";
 }
 
@@ -697,7 +703,7 @@ export class SubagentSupervisor {
     else this.publishProgress(child, publicEvent);
   }
 
-  private publishProgress(child: OwnedChild, event: JsonAgentSessionEvent): void {
+  private publishProgress(child: OwnedChild, event: SubagentProgressEvent): void {
     if (!child.identity || child.materialization !== "materialized" || child.terminalPublished) return;
     const latestMessage = event.type === "message_end" ? messageText(event.message) : undefined;
     this.coordinator.publish({
@@ -983,6 +989,7 @@ export class SubagentSupervisor {
         ownerSessionId: parent.sessionId,
         launchIds: outcomes.map(({ launchId }) => launchId),
         content,
+        outcomes: completionOutcomes(outcomes),
         triggerTurn,
       });
       createdBatchId = batchId;
@@ -1026,7 +1033,7 @@ export class SubagentSupervisor {
           customType: AGENT_STATUS_TYPE,
           content: batch.content,
           display: false,
-          details: { batchId: batch.batchId },
+          details: { batchId: batch.batchId, ...(batch.outcomes ? { outcomes: batch.outcomes } : {}) },
         },
         { deliverAs: "steer", triggerTurn: batch.triggerTurn },
       );

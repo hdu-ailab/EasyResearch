@@ -24,6 +24,7 @@ import {
   parseSessionSnapshot,
   parseSessionStatsChangedEvent,
   parseSubagentSupervisorEvent,
+  parseTimelineEntryAppendedEvent,
 } from "../api/parsers";
 import { useI18n } from "../i18n/useI18n";
 import { createSessionEventFrame } from "../session-event-frame";
@@ -117,7 +118,6 @@ function isAgentSessionEvent(event: unknown): event is AgentSessionEvent {
     "auto_retry_end",
     "session_info_changed",
     "entry_appended",
-    "timeline_entry_appended",
   ].includes(eventType(event) ?? "");
 }
 
@@ -282,6 +282,16 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
             setView((current) => reduceSubagentSupervisorEvent(current, supervisorEvent));
           }
           onSupervisorEventRef.current?.(supervisorEvent);
+          return;
+        }
+        if (eventType(event) === "timeline_entry_appended") {
+          try {
+            const appended = parseTimelineEntryAppendedEvent(event);
+            setView((current) => reduceSessionEvent(current, appended));
+          } catch {
+            // Reject malformed or private timeline data before it reaches the transcript.
+            connectionToken.receivedStreamData = hadReceivedStreamData;
+          }
           return;
         }
         if (eventType(event) === "session_stats_changed") {

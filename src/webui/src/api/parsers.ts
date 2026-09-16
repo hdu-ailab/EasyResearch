@@ -49,6 +49,7 @@ import type {
   StatusDto,
   SubagentSessionSummaryDto,
   SubagentSupervisorEventDto,
+  TimelineEntryAppendedEventDto,
   TranscriptTimelineEntryDto,
   TreeNavigationResultDto,
   UpdateCheckDto,
@@ -600,6 +601,12 @@ function parseNestedSessionEvent(value: unknown): NonNullable<SubagentSupervisor
   const privateData = privateSubagentEventDataReason(source);
   if (privateData) throw new Error(`Invalid API response: nested subagent event must not contain a ${privateData}`);
   requiredIdentityString(source, "type");
+  if (source.type === "timeline_entry_appended") {
+    return parseTimelineEntryAppendedEvent(source) as NonNullable<SubagentSupervisorEventDto["event"]>;
+  }
+  if (source.type === "subagent_supervisor") {
+    return parseSubagentSupervisorEvent(source) as unknown as NonNullable<SubagentSupervisorEventDto["event"]>;
+  }
   if (source.type === "message_update") {
     const update = record(source.assistantMessageEvent, "assistantMessageEvent");
     requiredIdentityString(update, "type");
@@ -632,26 +639,82 @@ export function parseSubagentSupervisorEvent(value: unknown): SubagentSupervisor
   };
 }
 
-function parseTimeline(value: unknown): TranscriptTimelineEntryDto[] {
-  return arrayOf(value, "transcript timeline", (item) => {
-    const source = record(item, "transcript timeline entry");
-    const entryId = requiredIdentityString(source, "entryId");
-    if (source.kind === "message") {
-      const message = record(source.message, "transcript message");
-      requiredIdentityString(message, "role");
-      return { kind: "message", entryId, message: message as unknown as AgentMessage };
-    }
-    if (source.kind !== "compaction" && source.kind !== "branch-summary") {
-      throw new Error("Invalid API response: transcript timeline entry kind is invalid");
-    }
-    const summary = optionalString(source, "summary");
+function parseTimelineEntry(value: unknown): TranscriptTimelineEntryDto {
+  const source = record(value, "transcript timeline entry");
+  const entryId = requiredIdentityString(source, "entryId");
+  if (source.kind === "subagent-completion") {
+    onlyKeys(source, ["kind", "entryId", "timestamp", "batchId", "outcomes"], "subagent completion");
+    const launchIds = new Set<string>();
+    const outcomes = arrayOf<Extract<TranscriptTimelineEntryDto, { kind: "subagent-completion" }>["outcomes"][number]>(
+      source.outcomes,
+      "completion outcomes",
+      (value) => {
+        const outcome = record(value, "completion outcome");
+        onlyKeys(outcome, ["launchId", "agentId", "status", "text"], "completion outcome");
+        const launchId = requiredIdentityString(outcome, "launchId");
+        if (launchIds.has(launchId)) throw new Error("Invalid API response: duplicate completion launch");
+        launchIds.add(launchId);
+        const status = outcome.status;
+        if (status !== "complete" && status !== "error") {
+          throw new Error("Invalid API response: completion status must be terminal");
+        }
+        const text = optionalString(outcome, "text");
+        return {
+          launchId,
+          agentId: requiredIdentityString(outcome, "agentId"),
+          status,
+          ...(text === undefined ? {} : { text }),
+        };
+      },
+    );
+    if (outcomes.length === 0) throw new Error("Invalid API response: completion outcomes must not be empty");
     return {
-      kind: source.kind,
+      kind: "subagent-completion",
       entryId,
       timestamp: requiredString(source, "timestamp"),
-      ...(summary === undefined ? {} : { summary }),
+      batchId: requiredIdentityString(source, "batchId"),
+      outcomes,
     };
+  }
+  if (source.kind === "message") {
+    const message = record(source.message, "transcript message");
+    requiredIdentityString(message, "role");
+    return { kind: "message", entryId, message: message as unknown as AgentMessage };
+  }
+  if (source.kind !== "compaction" && source.kind !== "branch-summary") {
+    throw new Error("Invalid API response: transcript timeline entry kind is invalid");
+  }
+  const summary = optionalString(source, "summary");
+  return {
+    kind: source.kind,
+    entryId,
+    timestamp: requiredString(source, "timestamp"),
+    ...(summary === undefined ? {} : { summary }),
+  };
+}
+
+function parseTimeline(value: unknown): TranscriptTimelineEntryDto[] {
+  const entryIds = new Set<string>();
+  return arrayOf(value, "transcript timeline", (value) => {
+    const entry = parseTimelineEntry(value);
+    if (entryIds.has(entry.entryId)) throw new Error("Invalid API response: duplicate timeline entry");
+    entryIds.add(entry.entryId);
+    return entry;
   });
+}
+
+export function parseTimelineEntryAppendedEvent(value: unknown): TimelineEntryAppendedEventDto {
+  const source = record(value, "timeline entry event");
+  onlyKeys(source, ["type", "entry", "apiUsageRecord"], "timeline entry event");
+  if (source.type !== "timeline_entry_appended")
+    throw new Error("Invalid API response: timeline event type is invalid");
+  const entry = parseTimelineEntry(source.entry);
+  if (entry.kind === "message") throw new Error("Invalid API response: unexpected timeline message event");
+  return {
+    type: "timeline_entry_appended",
+    entry,
+    ...(source.apiUsageRecord === undefined ? {} : { apiUsageRecord: parseApiUsageRecord(source.apiUsageRecord) }),
+  };
 }
 
 export function parseAgent(value: unknown): AgentDto {

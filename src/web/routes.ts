@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { bundledFilePath } from "../runtime/bundled-assets";
+import { AGENT_STATUS_TYPE } from "../subagent/notifications";
 import type {
   ActiveSessionDto,
   AgentConfigurationPatch,
@@ -981,6 +982,7 @@ function publicSessionEvent(event: unknown): unknown | undefined {
         ...(isObject(event.apiUsageRecord) ? { apiUsageRecord: event.apiUsageRecord } : {}),
       };
     }
+    if (isObject(event.entry) && event.entry.customType === AGENT_STATUS_TYPE) return undefined;
   }
   if (!event || typeof event !== "object" || (event as { type?: unknown }).type !== "subagent_supervisor") {
     return event;

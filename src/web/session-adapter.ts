@@ -722,6 +722,14 @@ class DirectSessionAdapter implements SessionAdapter {
           if (agentEvent.type === "agent_start" && (this.runCancellationPending || this.stopRequested)) {
             this.requestStopAbort(created.session);
           }
+          publishPersistedUsageEntry(agentEvent, created.session.sessionManager, (persistedEvent) => {
+            if (isHiddenStatusEntry(persistedEvent.entry)) {
+              const completion = projectSessionTimeline([persistedEvent.entry])[0];
+              if (completion) this.publishEvent({ type: "timeline_entry_appended", entry: completion });
+            } else {
+              this.publishEvent(persistedEvent);
+            }
+          });
           if (isHiddenStatusEvent(agentEvent)) return;
           const jsonEvent = toJsonSessionEvent(agentEvent);
           const publicEvent = jsonEvent.type === "agent_end"
@@ -730,9 +738,6 @@ class DirectSessionAdapter implements SessionAdapter {
               ? { ...jsonEvent, steering: jsonEvent.steering.filter((message) => !isHiddenStatusContent(message)) }
               : jsonEvent;
           this.publishEvent(publicEvent);
-          publishPersistedUsageEntry(agentEvent, created.session.sessionManager, (persistedEvent) => {
-            this.publishEvent(persistedEvent);
-          });
         });
         const unsubscribeCompactionState = created.compaction.subscribe((state) => {
           this.publishEvent({ type: "compaction_state_changed", state });

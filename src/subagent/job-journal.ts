@@ -1,3 +1,5 @@
+import { readCompletionOutcomes, type SubagentCompletionOutcome } from "./notifications";
+
 export const SUBAGENT_JOB_ENTRY = "easyresearch:subagent_job";
 
 export type SubagentJobJournalRecord =
@@ -8,7 +10,7 @@ export type SubagentJobJournalRecord =
   | { kind: "pre_materialization_failed"; launchId: string; reason: string; failedAt: string }
   | { kind: "terminal"; launchId: string; status: "complete" | "error"; latestAssistantText?: string; errorMessage?: string; recovered?: boolean; finishedAt: string }
   | { kind: "launch_suppressed"; launchId: string; suppressedAt: string }
-  | { kind: "notification_batch"; batchId: string; ownerSessionId: string; launchIds: string[]; content: string; triggerTurn?: boolean; createdAt: string }
+  | { kind: "notification_batch"; batchId: string; ownerSessionId: string; launchIds: string[]; content: string; outcomes?: SubagentCompletionOutcome[]; triggerTurn?: boolean; createdAt: string }
   | { kind: "notification_ack"; batchId: string; acknowledgedAt: string }
   | { kind: "notification_superseded"; batchId: string; supersededAt: string };
 
@@ -36,6 +38,7 @@ export interface NotificationBatchRecord {
   ownerSessionId: string;
   launchIds: string[];
   content: string;
+  outcomes?: SubagentCompletionOutcome[];
   triggerTurn: boolean;
   createdAt: string;
 }
@@ -125,7 +128,7 @@ function readRecord(entry: unknown): SubagentJobJournalRecord | undefined {
     case "launch_suppressed":
       if (!isNonEmptyString(data.launchId) || !isNonEmptyString(data.suppressedAt)) return undefined;
       return { kind: data.kind, launchId: data.launchId, suppressedAt: data.suppressedAt };
-    case "notification_batch":
+    case "notification_batch": {
       if (
         !isNonEmptyString(data.batchId)
         || !isNonEmptyString(data.ownerSessionId)
@@ -135,15 +138,21 @@ function readRecord(entry: unknown): SubagentJobJournalRecord | undefined {
         || !isOptionalBoolean(data.triggerTurn)
         || !isNonEmptyString(data.createdAt)
       ) return undefined;
+      const outcomes = readCompletionOutcomes(data.outcomes);
+      const launchIds = data.launchIds;
+      const matchingOutcomes = outcomes?.length === launchIds.length
+        && outcomes.every((outcome, index) => outcome.launchId === launchIds[index]);
       return {
         kind: data.kind,
         batchId: data.batchId,
         ownerSessionId: data.ownerSessionId,
         launchIds: [...data.launchIds],
         content: data.content,
+        ...(matchingOutcomes ? { outcomes } : {}),
         ...(data.triggerTurn === undefined ? {} : { triggerTurn: data.triggerTurn }),
         createdAt: data.createdAt,
       };
+    }
     case "notification_ack":
       if (!isNonEmptyString(data.batchId) || !isNonEmptyString(data.acknowledgedAt)) return undefined;
       return { kind: data.kind, batchId: data.batchId, acknowledgedAt: data.acknowledgedAt };
@@ -191,6 +200,7 @@ export function readSubagentJournal(entries: readonly unknown[]): SubagentJourna
         ownerSessionId: record.ownerSessionId,
         launchIds: [...record.launchIds],
         content: record.content,
+        ...(record.outcomes ? { outcomes: record.outcomes } : {}),
         triggerTurn: record.triggerTurn ?? true,
         createdAt: record.createdAt,
       };

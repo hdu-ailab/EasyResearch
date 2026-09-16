@@ -7,6 +7,7 @@ import * as api from "../api";
 import { I18nProvider } from "../i18n/I18nProvider";
 import { STORAGE_KEY } from "../preferences";
 import { PreferencesProvider } from "../preferences/PreferencesProvider";
+import { completionEntry } from "../testing/subagentCompletion";
 import { hydrateTranscript, observerFor } from "../testing/transcriptTest";
 import { WorkPage } from "./WorkPage";
 
@@ -2082,6 +2083,148 @@ describe("WorkPage", () => {
     expect(failedCard).not.toBeNull();
     expect(within(failedCard as HTMLElement).getByText("Failed")).toBeVisible();
   });
+
+  it.each([false, true])(
+    "keeps completion cards in their immediate read-only caller across pending history and reconnect (overlap=%s)",
+    async (overlap) => {
+      const user = userEvent.setup();
+      const writing = subagentSummary("root-writing", "child-writing", "writing", {
+        agentId: "writing_0",
+        status: "working",
+      });
+      const parent = normalizeTimelineSnapshot({
+        session: { id: "s1", cwd: "/p", status: "running", isStreaming: false },
+        subagents: [writing],
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "toolCall", id: "root-writing", name: "subagent", arguments: { agent: "writing" } }],
+          },
+        ],
+      });
+      const entry = completionEntry();
+      const before = {
+        kind: "message",
+        entryId: "before",
+        message: { id: "before", role: "assistant", content: "Caller before." },
+      };
+      const after = {
+        kind: "message",
+        entryId: "after",
+        message: { id: "after", role: "assistant", content: "Caller after." },
+      };
+      const child = {
+        session: { id: "child-writing", cwd: "/p", sessionName: "easyresearch:writing" },
+        subagents: [],
+        timeline: [before],
+      };
+      const pending = deferred<Awaited<ReturnType<typeof api.getChildSnapshot>>>();
+      vi.mocked(api.getSnapshot).mockResolvedValue(parent as never);
+      vi.mocked(api.getChildSnapshot)
+        .mockReturnValueOnce(pending.promise)
+        .mockResolvedValue({ ...child, timeline: [before, entry, after] } as never);
+      render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+      await user.click(await screen.findByRole("button", { name: "View details" }));
+      const notify = () => emitSupervisorChildEvent({ ...writing, event: { type: "timeline_entry_appended", entry } });
+      notify();
+      emitSupervisorChildEvent({ ...writing, event: { type: "message_start", message: after.message as never } });
+      emitSupervisorChildEvent({ ...writing, event: { type: "message_end", message: after.message as never } });
+      await act(async () =>
+        pending.resolve({ ...child, timeline: overlap ? [before, entry, after] : [before] } as never),
+      );
+      const assertCaller = () => {
+        expect(screen.getAllByRole("button", { name: /search_0 is complete/ })).toHaveLength(1);
+        expect(screen.getAllByRole("button", { name: /search_1 has failed/ })).toHaveLength(1);
+        const text = screen.getByLabelText("Conversation").textContent!;
+        expect(text.indexOf("Caller before.")).toBeLessThan(text.indexOf("search_0 is complete"));
+        expect(text.indexOf("search_1 has failed")).toBeLessThan(text.indexOf("Caller after."));
+        expect(screen.getByRole("textbox", { name: "Message" })).toBeDisabled();
+      };
+      await waitFor(assertCaller);
+      notify();
+      assertCaller();
+      emitInAct({ type: "snapshot", ...parent });
+      await waitFor(() => expect(api.getChildSnapshot).toHaveBeenCalledTimes(2));
+      await waitFor(assertCaller);
+      await user.click(screen.getByRole("button", { name: /agent research assistant/i }));
+      expect(screen.queryByRole("button", { name: /search_0 is complete/ })).toBeNull();
+      emitInAct({ type: "timeline_entry_appended", entry });
+      expect(await screen.findByRole("button", { name: /search_0 is complete/ })).toBeVisible();
+      emitInAct({
+        type: "timeline_entry_appended",
+        entry: {
+          ...entry,
+          entryId: "invalid",
+          batchId: "invalid",
+          outcomes: [{ ...entry.outcomes[0], status: "working" }],
+        },
+      });
+      expect(screen.getAllByRole("button", { name: /search_0 is complete/ })).toHaveLength(1);
+      expect(screen.queryByRole("button", { name: /search_0 has failed/ })).toBeNull();
+    },
+  );
+
+  it.each(["batched-delivery", "missed-delivery"])(
+    "preserves chronological completion placement through %s reconnect",
+    async (delivery) => {
+      const user = userEvent.setup();
+      const writing = subagentSummary("root-writing", "child-writing", "writing", {
+        agentId: "writing_0",
+        status: "working",
+      });
+      const parent = normalizeTimelineSnapshot({
+        session: { id: "s1", cwd: "/p", status: "running", isStreaming: false },
+        subagents: [writing],
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "toolCall", id: "root-writing", name: "subagent", arguments: { agent: "writing" } }],
+          },
+        ],
+      });
+      const entry = completionEntry();
+      const before = {
+        kind: "message",
+        entryId: "before",
+        message: { id: "before", role: "assistant", content: "Caller before." },
+      };
+      const after = {
+        kind: "message",
+        entryId: "after",
+        message: { id: "after", role: "assistant", content: "Caller after." },
+      };
+      const child = {
+        session: { id: "child-writing", cwd: "/p", sessionName: "easyresearch:writing" },
+        subagents: [],
+        timeline: delivery === "missed-delivery" ? [before, after] : [before],
+      };
+      const refreshed = deferred<Awaited<ReturnType<typeof api.getChildSnapshot>>>();
+      vi.mocked(api.getSnapshot).mockResolvedValue(parent as never);
+      vi.mocked(api.getChildSnapshot)
+        .mockResolvedValueOnce(child as never)
+        .mockReturnValueOnce(refreshed.promise);
+      render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+      await user.click(await screen.findByRole("button", { name: "View details" }));
+      expect(await screen.findByText("Caller before.")).toBeVisible();
+      act(() => {
+        if (delivery === "batched-delivery") {
+          emit(supervisorEvent({ ...writing, event: { type: "agent_start" } }));
+          emit(supervisorEvent({ ...writing, event: { type: "timeline_entry_appended", entry } as never }));
+        }
+        emit({ type: "snapshot", ...parent });
+      });
+      await waitFor(() => expect(api.getChildSnapshot).toHaveBeenCalledTimes(2));
+      if (delivery === "batched-delivery") {
+        expect(screen.getByRole("button", { name: /search_0 is complete/ })).toBeVisible();
+      }
+      await act(async () => refreshed.resolve({ ...child, timeline: [before, entry, after] } as never));
+      expect(screen.getAllByRole("button", { name: /search_0 is complete/ })).toHaveLength(1);
+      const text = screen.getByLabelText("Conversation").textContent!;
+      expect(text.indexOf("Caller before.")).toBeLessThan(text.indexOf("search_0 is complete"));
+      expect(text.indexOf("search_1 has failed")).toBeLessThan(text.indexOf("Caller after."));
+      expect(screen.getByRole("textbox", { name: "Message" })).toBeDisabled();
+    },
+  );
 
   it("shows unique same-role Agent ids and keeps a child 404 inline without losing the parent transcript", async () => {
     const user = userEvent.setup();

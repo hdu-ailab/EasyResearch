@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { SubagentCoordinator } from "./coordinator";
 import type { InternalSubagentJob, NotificationBatchRecord, SubagentJournalState } from "./job-journal";
-import { AGENT_STATUS_TYPE, formatTerminalNotification } from "./notifications";
+import { AGENT_STATUS_TYPE, completionOutcomes, formatTerminalNotification, type SubagentCompletionOutcome } from "./notifications";
 
 export interface RecoverySessionStore {
   inspect(path: string): Promise<{
@@ -14,7 +14,7 @@ export interface RecoverySessionStore {
     customType: string;
     content: string;
     display: false;
-    details: { batchId: string };
+    details: { batchId: string; outcomes?: SubagentCompletionOutcome[] };
   }): Promise<void>;
 }
 
@@ -91,7 +91,7 @@ export async function recoverSubagentTree(options: {
       customType: AGENT_STATUS_TYPE,
       content: batch.content,
       display: false,
-      details: { batchId: batch.batchId },
+      details: { batchId: batch.batchId, ...(batch.outcomes ? { outcomes: batch.outcomes } : {}) },
     });
     options.coordinator.acknowledgeNotification(batch.batchId);
     report.acknowledgedBatchIds.push(batch.batchId);
@@ -212,6 +212,7 @@ export async function recoverSubagentTree(options: {
       ownerSessionId,
       launchIds: outcomes.map(({ launchId }) => launchId),
       content,
+      outcomes: completionOutcomes(outcomes),
       triggerTurn: false,
     });
     const batch = options.coordinator.journal().pendingBatches.find(

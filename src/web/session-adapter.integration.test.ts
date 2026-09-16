@@ -17,6 +17,10 @@ import { createStageSessionLauncher, type StageSessionDependencies } from "../su
 import { createManualCompactionExtension } from "./manual-compaction";
 import { createSessionStatsExtension } from "../extensions/session-stats";
 import { ActiveSessionRegistry } from "./active-sessions";
+import { AGENT_STATUS_TYPE, projectSubagentCompletionEntry } from "../subagent/notifications";
+import { projectSessionTimeline } from "./session-timeline";
+import type { SubagentSupervisorEvent } from "../subagent/contracts";
+import type { TimelineEntryAppendedEventDto } from "./contracts";
 import {
   createPiAgentSessionCreator,
   PiSessionFactory,
@@ -183,7 +187,7 @@ async function harness(options: {
     };
     for (const listener of [...configListeners]) listener(event);
   };
-  return { ai, provider, factory, launch, sessions, bindings, publishConfiguration, managed: () => managed };
+  return { ai, provider, factory, launch, sessions, supervisors, live, rows, bindings, publishConfiguration, managed: () => managed };
 }
 
 describe("Pinned Pi lifecycle ownership", () => {
@@ -771,11 +775,22 @@ describe("Pinned Pi lifecycle ownership", () => {
     ]);
     const adapter = h.factory.create({ cwd: join(root, "project") });
     const stage = scope === "stage" ? await h.launch() : undefined;
+    const delivered: unknown[] = [];
+    if (stage) stage.handle.subscribe((event) => {
+      if (event.type === "entry_appended") {
+        const entry = projectSubagentCompletionEntry(event.entry);
+        if (entry) delivered.push(entry);
+      }
+    });
+    else adapter.onEvent((event) => {
+      if ((event as { type?: string }).type === "timeline_entry_appended") delivered.push((event as TimelineEntryAppendedEventDto).entry);
+    });
     if (!stage) { await adapter.start(); await adapter.prompt("seed"); }
     await seedEnding.promise;
     const { coordinator, supervisor, session } = stage ?? h.managed();
     coordinator.recordNotificationBatch({
-      batchId: "A", ownerSessionId: session.sessionId, launchIds: [], content: "HANDOFF_A", triggerTurn: true,
+      batchId: "A", ownerSessionId: session.sessionId, launchIds: ["launch-A"], content: "HANDOFF_A", triggerTurn: true,
+      outcomes: [{ launchId: "launch-A", agentId: "search_0", status: "complete", text: "frozen A" }],
     });
     releaseSeed.resolve();
     await session.waitForIdle();
@@ -783,13 +798,15 @@ describe("Pinned Pi lifecycle ownership", () => {
     await ackEntered.promise;
     for (const batchId of ["B", "C"]) {
       coordinator.recordNotificationBatch({
-        batchId, ownerSessionId: session.sessionId, launchIds: [], content: `HANDOFF_${batchId}`, triggerTurn: true,
+        batchId, ownerSessionId: session.sessionId, launchIds: [`launch-${batchId}`], content: `HANDOFF_${batchId}`, triggerTurn: true,
+        outcomes: [{ launchId: `launch-${batchId}`, agentId: "search_0", status: "complete", text: `frozen ${batchId}` }],
       });
     }
     const later = supervisor.flushNotifications();
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(requests).toEqual([]);
     expect(coordinator.journal().acknowledgedBatchIds.has("A")).toBe(false);
+    expect(delivered).toEqual([]);
     releaseAck.resolve();
     try {
       await Promise.all([first, later]);
@@ -799,9 +816,91 @@ describe("Pinned Pi lifecycle ownership", () => {
       expect(requests[0]).toContain("HANDOFF_B");
       expect(requests[0]).toContain("HANDOFF_C");
       expect(coordinator.journal().pendingBatches).toEqual([]);
+      const history = projectSessionTimeline(session.sessionManager.getBranch()).filter((entry) => entry.kind === "subagent-completion");
+      expect(delivered).toEqual(history);
+      expect(history.map((entry) => entry.batchId)).toEqual(["A", "B", "C"]);
+      expect(new Set(history.map((entry) => entry.entryId)).size).toBe(3);
+      expect(requests[0]).not.toMatch(/frozen|outcomes|launch-A/);
     } finally {
       if (stage) { await stage.handle.completion; await stage.handle.dispose(); }
       else await adapter.stop();
+    }
+  });
+
+  it.each(["complete", "stop"] as const)("routes a real nested completion only to its caller and preserves %s ownership", async (mode) => {
+    const toolEntered = deferred();
+    const releaseTool = deferred();
+    const h = await harness({ extensions: [(api) => {
+      api.registerTool({
+        name: "hold", label: "Hold", description: "Hold child", parameters: Type.Object({}),
+        execute: async () => {
+          toolEntered.resolve();
+          await releaseTool.promise;
+          return { content: [{ type: "text", text: "tool done" }], details: {} };
+        },
+      });
+    }] });
+    const adapter = h.factory.create({ cwd: join(root, "project") });
+    const events: unknown[] = [];
+    adapter.onEvent((event) => events.push(event));
+    await adapter.start();
+    await adapter.prompt("seed");
+    await vi.waitFor(() => expect(adapter.hasBackgroundWork()).toBe(false));
+    const contexts: string[] = [];
+    h.provider.setResponses([
+      h.ai.fauxAssistantMessage(h.ai.fauxToolCall("hold", {}), { stopReason: "toolUse" }),
+      (context) => { contexts.push(JSON.stringify(context.messages)); return h.ai.fauxAssistantMessage("child final body"); },
+      (context) => { contexts.push(JSON.stringify(context.messages)); return h.ai.fauxAssistantMessage("root accepted"); },
+    ]);
+    const { coordinator, supervisor, session: caller } = h.managed();
+    const reservation = coordinator.reserveDispatch({
+      ownerSessionId: caller.sessionId, toolCallId: "launch", requested: "search",
+      catalog: { all: h.rows, available: [h.rows[1]!] },
+    });
+    const launched = await supervisor.launch(reservation, {
+      agent: h.rows[1]!, callerAgent: "research-assistant", task: "nested work", cwd: join(root, "project"), liveConfiguration: h.live,
+    });
+    supervisor.observeParentEvent({ type: "tool_execution_end", toolCallId: "launch", toolName: "subagent", isError: false, result: {} });
+    await toolEntered.promise;
+    const child = h.sessions.at(-1)!;
+    const childSupervisor = h.supervisors.at(-1)!;
+    const nestedBatch = {
+      batchId: "nested", ownerSessionId: child.sessionId, launchIds: ["grandchild-launch"], triggerTurn: mode === "complete",
+      content: `<agent_status>private ${child.sessionFile}</agent_status>\n<agent_handoff>nested model handoff</agent_handoff>`,
+      outcomes: [{ launchId: "grandchild-launch", agentId: "search_1", status: "error" as const, text: "status: blocked\nFrozen nested body." }],
+    };
+    coordinator.recordNotificationBatch(nestedBatch);
+    await childSupervisor.flushNotifications();
+    let stopping: Promise<void> | undefined;
+    try {
+      if (mode === "stop") {
+        stopping = adapter.abort();
+        await vi.waitFor(() => expect(child.agent.signal?.aborted).toBe(true));
+      }
+      releaseTool.resolve();
+      if (stopping) await stopping;
+      await vi.waitFor(() => expect(adapter.hasBackgroundWork()).toBe(false));
+      const nested = (events as SubagentSupervisorEvent[]).filter((event) => event.type === "subagent_supervisor"
+        && event.event?.type === "timeline_entry_appended" && event.event.entry.batchId === "nested");
+      expect(nested).toHaveLength(1);
+      expect(nested[0]).toMatchObject({ childSessionId: launched.job.childSessionId, event: { entry: { batchId: "nested", outcomes: nestedBatch.outcomes } } });
+      expect((nested[0]!.event as TimelineEntryAppendedEventDto).entry).toEqual(projectSessionTimeline(child.sessionManager.getBranch()).find((entry) => entry.kind === "subagent-completion" && entry.batchId === "nested"));
+      const rootCards = (events as TimelineEntryAppendedEventDto[]).filter((event) => event.type === "timeline_entry_appended" && event.entry.kind === "subagent-completion");
+      expect(rootCards).toHaveLength(1);
+      expect(rootCards[0]!.entry).toMatchObject({ outcomes: [{ launchId: reservation.launchId, status: mode === "stop" ? "error" : "complete" }] });
+      expect((await adapter.getTranscriptSnapshot()).timeline.filter((entry) => entry.kind === "subagent-completion")).toEqual(rootCards.map((event) => event.entry));
+      expect(JSON.stringify(events)).not.toContain(AGENT_STATUS_TYPE);
+      expect(JSON.stringify(events)).not.toContain(child.sessionFile!);
+      if (mode === "stop") expect(contexts).toEqual([]);
+      else {
+        expect(contexts).toHaveLength(2);
+        expect(contexts[0]).toContain("nested model handoff");
+        expect(contexts[1]).not.toContain("nested model handoff");
+      }
+    } finally {
+      releaseTool.resolve();
+      await stopping;
+      await adapter.stop();
     }
   });
 

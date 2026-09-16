@@ -1894,6 +1894,34 @@ describe("web routes", () => {
     await reader.cancel();
   });
 
+  it("projects completion SSE and drops malformed or legacy raw status entries", async () => {
+    setup();
+    const created = await registry.create({ cwd: projectDir });
+    const response = await handler(new Request(`http://localhost/api/sessions/${created.id}/events`));
+    const reader = response.body!.getReader();
+    expect((await readSseEvent(reader)).type).toBe("snapshot");
+    const adapter = factory.created[0]!;
+    const emit = (event: unknown) => adapter.events.forEach((listener) => listener(event as never));
+    const entry = {
+      type: "custom_message", id: "completion", timestamp: "2026-09-16T00:00:00.000Z",
+      customType: "easyresearch:agent_status", content: "Working inventory /private/child.jsonl", display: false,
+      details: { batchId: "b0", outcomes: [{ launchId: "l0", agentId: "search_0", status: "complete", text: "frozen body", sessionPath: "/private/child.jsonl" }] },
+    };
+    try {
+      emit({ type: "entry_appended", entry });
+      expect(await readSseEvent(reader)).toEqual({ type: "timeline_entry_appended", entry: {
+        kind: "subagent-completion", entryId: "completion", timestamp: entry.timestamp, batchId: "b0",
+        outcomes: [{ launchId: "l0", agentId: "search_0", status: "complete", text: "frozen body" }],
+      } });
+      emit({ type: "entry_appended", entry: { ...entry, details: { batchId: "legacy" } } });
+      emit({ type: "entry_appended", entry: { ...entry, details: { ...entry.details, outcomes: [{ status: "working" }] } } });
+      emit({ type: "queue_update", steering: [], followUp: [] });
+      expect(await readSseEvent(reader)).toEqual({ type: "queue_update", steering: [], followUp: [] });
+    } finally {
+      await reader.cancel();
+    }
+  });
+
   it("streams one current configuration event before ordered daemon-wide updates", async () => {
     const configuration = fakeConfiguration({ generation: 1, error: null });
     const configurationProjectWatches = createConfigurationProjectWatches({

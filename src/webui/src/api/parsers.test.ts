@@ -1,5 +1,6 @@
 import type { JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
+import { completionEntry } from "../testing/subagentCompletion";
 import * as parserModule from "./parsers";
 import {
   parseActiveSession,
@@ -28,11 +29,90 @@ import {
   parseSkillCommands,
   parseStatus,
   parseSubagentSupervisorEvent,
+  parseTimelineEntryAppendedEvent,
   parseUpdateCheck,
 } from "./parsers";
 
 describe("API response parsers", () => {
   const compactionPolicy = { triggerPercent: 70, enabled: true };
+
+  it("accepts frozen completion batches in root, read-only child, and nested timelines", () => {
+    const entry = completionEntry();
+    const child = { session: { id: "child", cwd: "/p" }, timeline: [entry], subagents: [] };
+    expect(parseChildSnapshot(child).timeline).toEqual([entry]);
+    expect(
+      parseSessionSnapshot({
+        ...child,
+        session: { ...child.session, status: "running", isStreaming: true },
+        runtimeConfigurationGeneration: 0,
+        compactionPolicy,
+      }).timeline,
+    ).toEqual([entry]);
+    const nested = {
+      type: "subagent_supervisor",
+      ownerSessionId: "root",
+      toolCallId: "call-1",
+      childSessionId: "child",
+      launchId: "owner-launch",
+      agent: "writing",
+      agentId: "writing_0",
+      status: "working",
+      event: { type: "timeline_entry_appended", entry },
+    };
+    expect(parseSubagentSupervisorEvent(nested).event).toEqual(nested.event);
+  });
+
+  it("rejects malformed and private completion data at every nested depth", () => {
+    const entry = completionEntry();
+    const outcome = entry.outcomes[0]!;
+    const invalid = [
+      ...["entryId", "batchId"].flatMap((key) => ["", " \t", 1].map((value) => ({ ...entry, [key]: value }))),
+      { ...entry, timestamp: null },
+      { ...entry, outcomes: [] },
+      { ...entry, outcomes: {} },
+      { ...entry, outcomes: [outcome, outcome] },
+      ...["launchId", "agentId"].flatMap((key) =>
+        ["", " \t", 1].map((value) => ({ ...entry, outcomes: [{ ...outcome, [key]: value }] })),
+      ),
+      ...["working", "partial", "Complete", null].map((status) => ({ ...entry, outcomes: [{ ...outcome, status }] })),
+      { ...entry, outcomes: [{ ...outcome, text: 42 }] },
+      ...["sessionPath", "session_path", "reasoning", "errorMessage", "details", "customType"].flatMap((key) => [
+        { ...entry, [key]: "private" },
+        { ...entry, outcomes: [{ ...outcome, [key]: "private" }] },
+      ]),
+    ];
+    const envelope = (event: unknown) => ({
+      type: "subagent_supervisor",
+      ownerSessionId: "root",
+      toolCallId: "call-1",
+      childSessionId: "child",
+      launchId: "owner-launch",
+      agent: "writing",
+      agentId: "writing_0",
+      status: "working",
+      event,
+    });
+    for (const malformed of invalid) {
+      expect(() =>
+        parseChildSnapshot({ session: { id: "child", cwd: "/p" }, timeline: [malformed], subagents: [] }),
+      ).toThrow();
+      const event = { type: "timeline_entry_appended", entry: malformed };
+      expect(() => parseTimelineEntryAppendedEvent(event)).toThrow();
+      expect(() => parseSubagentSupervisorEvent(envelope(event))).toThrow();
+      expect(() => parseSubagentSupervisorEvent(envelope(envelope(event)))).toThrow();
+    }
+  });
+
+  it("rejects duplicate persisted timeline identities instead of hiding a conflicting completion", () => {
+    const entry = completionEntry();
+    expect(() =>
+      parseChildSnapshot({
+        session: { id: "child", cwd: "/p" },
+        subagents: [],
+        timeline: [entry, { ...entry, batchId: "another-batch" }],
+      }),
+    ).toThrow();
+  });
 
   it("parses only internally consistent session activity replacements", () => {
     const parseSessionActivityChangedEvent = (

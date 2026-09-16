@@ -164,6 +164,11 @@ describe("recoverSubagentTree", () => {
       latestAssistantText: "partial work",
     });
     expect(report.acknowledgedBatchIds).toHaveLength(1);
+    expect(store.hidden.get("/sessions/root.jsonl")?.[0]?.details).toEqual({
+      batchId: report.acknowledgedBatchIds[0], outcomes: [
+        { launchId: job.launchId, agentId: "search_0", status: "error", text: "partial work" },
+      ],
+    });
     expect(coordinator.journal().pendingBatches).toEqual([]);
   });
 
@@ -425,8 +430,17 @@ describe("recoverSubagentTree", () => {
         ownerSessionId: "root",
         launchIds: [job.launchId],
         triggerTurn: false,
+        outcomes: [{ launchId: job.launchId, agentId: "search_0", status: "complete", text: "done" }],
       }),
     ]);
+    const frozen = structuredClone(store.appendAttempts[0]!.message);
+    coordinator.recordTerminal({ launchId: job.launchId, status: "error", latestAssistantText: "later continuation" });
+    store.appendError = undefined;
+    await recover(coordinator, store);
+    expect(store.hidden.get("/sessions/root.jsonl")).toEqual([frozen]);
+    expect(store.hidden.get("/sessions/root.jsonl")?.[0]?.details).toMatchObject({
+      outcomes: [{ launchId: job.launchId, agentId: "search_0", status: "complete", text: "done" }],
+    });
   });
 
   it("writes a nested recovery handoff only to the exact immediate-owner session", async () => {

@@ -10,6 +10,7 @@ import type {
   SubagentSessionSummaryDto,
   SubagentSupervisorEventDto,
   TimelineEntryAppendedEventDto,
+  TranscriptTimelineEntryDto,
 } from "../../web/contracts";
 import { RESEARCH_ASSISTANT_AGENT } from "./agent-identity";
 
@@ -101,10 +102,28 @@ export interface SessionSummaryView {
   apiUsage?: ApiUsageRecordDto;
 }
 
+type CompletionEntry = Extract<TranscriptTimelineEntryDto, { kind: "subagent-completion" }>;
+export type SessionCompletionView = Omit<CompletionEntry, "outcomes"> &
+  CompletionEntry["outcomes"][number] & {
+    key: string;
+    order: number;
+  };
+
+function completionRows(entry: CompletionEntry, nextOrder: number): SessionCompletionView[] {
+  const { outcomes, ...batch } = entry;
+  return outcomes.map((outcome, index) => ({
+    ...batch,
+    ...outcome,
+    key: `completion:${JSON.stringify([entry.batchId, outcome.launchId])}`,
+    order: nextOrder + index,
+  }));
+}
+
 export interface SessionViewState {
   messages: SessionMessageView[];
   tools: ToolView[];
   summaries: SessionSummaryView[];
+  completions: SessionCompletionView[];
   /** Increments whenever an authoritative snapshot seeds transcript history. */
   hydrationRevision: number;
   /** Changes when message rows or their persisted ancestry change within a hydration. */
@@ -158,6 +177,7 @@ const emptyState: SessionViewState = {
   messages: [],
   tools: [],
   summaries: [],
+  completions: [],
   hydrationRevision: 0,
   messageStructureRevision: 0,
   isStreaming: false,
@@ -418,6 +438,7 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
     messages: [],
     tools: [],
     summaries: [],
+    completions: [],
     hydrationRevision,
     messageStructureRevision: Math.max(1, hydrationRevision),
     isStreaming,
@@ -439,7 +460,20 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
   let cursorCandidate: SessionMessageView | undefined;
   const currentBatch = new Set<string>();
   const toolsByKey = new Map<string, ToolView>();
+  const completionEntries = new Set<string>();
+  const completionBatches = new Set<string>();
   snapshot.timeline.forEach((timelineEntry, index) => {
+    if (timelineEntry.kind === "subagent-completion") {
+      if (!completionEntries.has(timelineEntry.entryId) && !completionBatches.has(timelineEntry.batchId)) {
+        completionEntries.add(timelineEntry.entryId);
+        completionBatches.add(timelineEntry.batchId);
+        const rows = completionRows(timelineEntry, state.nextOrder);
+        state.completions.push(...rows);
+        state.nextOrder += rows.length;
+      }
+      // This observational notification is not a caller message or tool-batch boundary.
+      return;
+    }
     cursorCandidate = undefined;
     if (timelineEntry.kind !== "message") {
       currentBatch.clear();
@@ -578,6 +612,7 @@ function applyInlineUsage(state: SessionViewState, records: readonly ApiUsageRec
   let messages = state.messages.map((message) => ({ ...message }));
   let tools = state.tools.map((tool) => ({ ...tool }));
   let summaries = state.summaries.map((summary) => ({ ...summary }));
+  let completions = state.completions;
   let nextOrder = state.nextOrder;
   const messagesByIdentity = new Map<string, SessionMessageView>();
   const messageAnchorOrders = new Map<string, number>();
@@ -585,6 +620,8 @@ function applyInlineUsage(state: SessionViewState, records: readonly ApiUsageRec
   const toolAnchorOrders = new Map<string, number>();
   const firstCallOrders = new Map<string, number>();
   const summariesById = new Map<string, SessionSummaryView>();
+  const completionAnchorOrders = new Map<string, number>();
+  for (const completion of completions) completionAnchorOrders.set(completion.entryId, completion.order);
   // Preserve array-first matching across all aliases, not field-first priority.
   const indexMessage = (message: SessionMessageView) => {
     for (const key of [message.key, message.identity]) {
@@ -647,7 +684,9 @@ function applyInlineUsage(state: SessionViewState, records: readonly ApiUsageRec
     const anchorOrder =
       anchor.afterEntryId === undefined
         ? undefined
-        : (messageAnchorOrders.get(anchor.afterEntryId) ?? toolAnchorOrders.get(anchor.afterEntryId));
+        : (messageAnchorOrders.get(anchor.afterEntryId) ??
+          toolAnchorOrders.get(anchor.afterEntryId) ??
+          completionAnchorOrders.get(anchor.afterEntryId));
     const usageMessage: SessionMessageView = {
       key: `usage:${record.id}`,
       identity: record.id,
@@ -666,17 +705,22 @@ function applyInlineUsage(state: SessionViewState, records: readonly ApiUsageRec
     ...messages.map((value) => ({ kind: "message" as const, value })),
     ...tools.map((value) => ({ kind: "tool" as const, value })),
     ...summaries.map((value) => ({ kind: "summary" as const, value })),
+    ...completions.map((value) => ({ kind: "completion" as const, value })),
   ]
     .sort((left, right) => left.value.order - right.value.order)
     .map((entry, order) => ({ ...entry, value: { ...entry.value, order } }));
   messages = ordered.filter((entry) => entry.kind === "message").map((entry) => entry.value as SessionMessageView);
   tools = ordered.filter((entry) => entry.kind === "tool").map((entry) => entry.value as ToolView);
   summaries = ordered.filter((entry) => entry.kind === "summary").map((entry) => entry.value as SessionSummaryView);
+  completions = ordered
+    .filter((entry) => entry.kind === "completion")
+    .map((entry) => entry.value as SessionCompletionView);
   return {
     ...state,
     messages,
     tools,
     summaries,
+    completions,
     messageStructureRevision: state.messageStructureRevision + (messages.length === state.messages.length ? 0 : 1),
     nextOrder: ordered.length,
     inlineUsage: [...(state.inlineUsage ?? []), ...additions],
@@ -1175,6 +1219,13 @@ export function reduceSessionEvent(
       return next;
     }
     case "timeline_entry_appended": {
+      if (event.entry.kind === "subagent-completion") {
+        const entry = event.entry;
+        if (state.completions.some((row) => row.entryId === entry.entryId || row.batchId === entry.batchId))
+          return state;
+        const rows = completionRows(entry, state.nextOrder);
+        return { ...state, completions: [...state.completions, ...rows], nextOrder: state.nextOrder + rows.length };
+      }
       const appended = event as unknown as {
         entry?: { kind?: unknown; entryId?: unknown; summary?: unknown };
         apiUsageRecord?: ApiUsageRecordDto;

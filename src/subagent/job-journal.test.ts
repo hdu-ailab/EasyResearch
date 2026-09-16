@@ -13,6 +13,32 @@ const entry = (data: SubagentJobJournalRecord) => ({
 });
 
 describe("subagent job journal", () => {
+  it("replays detached frozen outcomes independently of later terminal records", () => {
+    const batch = entry({
+      kind: "notification_batch", batchId: "b0", ownerSessionId: "root", launchIds: ["l0"],
+      content: "frozen control text", triggerTurn: false, createdAt: "t0",
+      outcomes: [{ launchId: "l0", agentId: "search_0", status: "complete", text: "status: partial" }],
+    });
+    const records = [batch, entry({ kind: "terminal", launchId: "l0", status: "error", latestAssistantText: "later", finishedAt: "t1" })];
+    const first = readSubagentJournal(records);
+    expect(first.pendingBatches[0]).toMatchObject({
+      outcomes: [{ launchId: "l0", agentId: "search_0", status: "complete", text: "status: partial" }], triggerTurn: false,
+    });
+    first.pendingBatches[0]!.outcomes![0]!.text = "mutated projection";
+    expect(readSubagentJournal(records).pendingBatches[0]!.outcomes![0]!.text).toBe("status: partial");
+  });
+
+  it.each([undefined, [], [{ launchId: "other", agentId: "search_0", status: "error" }], [{ launchId: "l0", agentId: "search_0", status: "partial" }]])(
+    "keeps delivery retryable while discarding missing or mismatched outcomes: %j", (outcomes) => {
+      const state = readSubagentJournal([{
+        type: "custom", customType: SUBAGENT_JOB_ENTRY,
+        data: { kind: "notification_batch", batchId: "b0", ownerSessionId: "root", launchIds: ["l0"], content: "control", createdAt: "t0", outcomes },
+      }]);
+      expect(state.pendingBatches).toHaveLength(1);
+      expect(state.pendingBatches[0]).not.toHaveProperty("outcomes");
+    },
+  );
+
   it("reduces reservation through acknowledged terminal notification", () => {
     const state = readSubagentJournal([
       entry({ kind: "reserved", launchId: "l0", ownerSessionId: "root", toolCallId: "t0", agent: "search", agentId: "search_0", continuation: false, createdAt: "t" }),

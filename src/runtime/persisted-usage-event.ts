@@ -1,3 +1,5 @@
+import { notificationBatchId } from "../subagent/notifications";
+
 interface SessionEntryReader {
   getEntries(): readonly unknown[];
 }
@@ -6,7 +8,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-/** Publish Pi's exact entry after a usage-bearing lifecycle event is persisted. */
+/** Publish Pi's exact entry after usage or supervisor-message persistence. */
 export function publishPersistedUsageEntry(
   event: unknown,
   sessionManager: SessionEntryReader,
@@ -16,11 +18,17 @@ export function publishPersistedUsageEntry(
   let matches: (candidate: Record<string, unknown>) => boolean;
   if (event.type === "message_end" && isRecord(event.message)) {
     const message = event.message;
-    if (
-      (message.role !== "assistant" && message.role !== "toolResult")
-      || !isRecord(message.usage)
-    ) return;
-    matches = (candidate) => candidate.type === "message" && candidate.message === message;
+    if (message.role === "custom" && notificationBatchId(message)) {
+      // Pi copies custom-message fields, but retains this delivery's details object.
+      matches = (candidate) => candidate.type === "custom_message"
+        && candidate.customType === message.customType
+        && candidate.details === message.details
+        && candidate.content === message.content
+        && candidate.display === message.display;
+    } else {
+      if ((message.role !== "assistant" && message.role !== "toolResult") || !isRecord(message.usage)) return;
+      matches = (candidate) => candidate.type === "message" && candidate.message === message;
+    }
   } else {
     return;
   }
@@ -33,7 +41,7 @@ export function publishPersistedUsageEntry(
       );
       if (entry) publish({ type: "entry_appended", entry });
     } catch {
-      // Usage projection is observational and must never affect Agent execution.
+      // Projection is observational and must never affect Agent execution.
     }
   });
 }

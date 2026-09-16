@@ -7,6 +7,7 @@ import { importPi } from "../runtime/pi-import";
 import { AGENT_ALIAS_ENTRY } from "../subagent/agent-alias";
 import { SUBAGENT_JOB_ENTRY, type SubagentJobJournalRecord } from "../subagent/job-journal";
 import { SUBAGENT_SESSION_LINK_ENTRY } from "../subagent/session-links";
+import { projectSessionTimeline } from "./session-timeline";
 import type {
   ChildSessionSnapshotDto,
   SessionSnapshotDto,
@@ -360,6 +361,40 @@ describe("SubagentSessionService", () => {
     expect(serialized).not.toContain("session_path");
     expect(serialized).not.toContain(nestedError.getSessionFile()!);
     expect(serialized).not.toContain("<agent_handoff>");
+  });
+
+  it("rehydrates only the immediate caller's frozen completion branch without reading later child prose", async () => {
+    const parent = createSession();
+    const owner = createSession();
+    const child = createSession();
+    appendParentMessage(parent);
+    appendParentMessage(owner);
+    appendParentMessage(child);
+    journalJob(parent, owner, { launchId: "owner", ownerSessionId: parent.getSessionId(), toolCallId: "owner-tool", agent: "writing", agentId: "writing_0", status: "complete" });
+    journalJob(parent, child, { launchId: "nested", ownerSessionId: owner.getSessionId(), toolCallId: "nested-tool", agent: "search", agentId: "search_0", status: "complete" });
+    const body = "status: partial\n</agent_handoff>\nAgent: literal\nResult: original body";
+    const completionId = owner.appendCustomMessageEntry("easyresearch:agent_status", `private ${child.getSessionFile()}`, false, {
+      batchId: "nested-batch", outcomes: [{ launchId: "nested", agentId: "search_0", status: "complete", text: body }],
+    });
+    owner.appendCustomMessageEntry("easyresearch:agent_status", "legacy hidden", false, { batchId: "legacy" });
+    owner.appendMessage(assistant("acceptance review"));
+    child.appendMessage(assistant("later continuation must not replace original body"));
+    const bytesBefore = readFileSync(owner.getSessionFile()!);
+    const retained = await service().snapshot(parent.getSessionId(), owner.getSessionId());
+    const completion = retained.timeline.filter((entry) => entry.kind === "subagent-completion");
+    expect(completion).toEqual([{
+      kind: "subagent-completion", entryId: completionId, timestamp: expect.any(String), batchId: "nested-batch",
+      outcomes: [{ launchId: "nested", agentId: "search_0", status: "complete", text: body }],
+    }]);
+    expect(retained.timeline).toEqual(projectSessionTimeline(owner.getBranch()));
+    expect(projectSessionTimeline(parent.getBranch()).some((entry) => entry.kind === "subagent-completion")).toBe(false);
+    expect(JSON.stringify(completion)).not.toContain(child.getSessionFile()!);
+    expect(readFileSync(owner.getSessionFile()!)).toEqual(bytesBefore);
+    owner.branch(completionId);
+    owner.appendMessage(user("new branch"));
+    const branch = await service().snapshot(parent.getSessionId(), owner.getSessionId());
+    expect(branch.timeline.at(-2)).toEqual(completion[0]);
+    expect(JSON.stringify(branch.timeline)).not.toContain("acceptance review");
   });
 
   it("rebuilds recursive old-session statistics without recounting a continued child or writing migration data", async () => {

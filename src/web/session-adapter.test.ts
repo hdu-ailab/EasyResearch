@@ -1150,6 +1150,25 @@ describe("PiSessionFactory", () => {
       .not.toContain("/private/child.jsonl");
   });
 
+  it("publishes only safe completion metadata after exact root persistence", async () => {
+    const session = new FakeAgentSession();
+    const adapter = new PiSessionFactory(async () => managed(session)).create({ cwd: "/project" });
+    const events: unknown[] = [];
+    adapter.onEvent((event) => events.push(event));
+    await adapter.start();
+    const details = { batchId: "b0", outcomes: [{ launchId: "l0", agentId: "search_0", status: "error", text: "partial body" }] };
+    const message = { role: "custom", customType: "easyresearch:agent_status", display: false, content: "/private/child.jsonl", details, timestamp: 1 };
+    session.listeners.forEach((listener) => listener({ type: "message_end", message }));
+    expect(events).toEqual([]);
+    session.entries.push({ type: "custom_message", id: "exact", ...message, timestamp: "2026-09-16T00:00:00.000Z" });
+    await Promise.resolve();
+    const expected = { kind: "subagent-completion", entryId: "exact", timestamp: "2026-09-16T00:00:00.000Z", ...details };
+    expect(events).toEqual([{ type: "timeline_entry_appended", entry: expected }]);
+    expect((await adapter.getTranscriptSnapshot()).timeline).toEqual([expected]);
+    expect(JSON.stringify(events)).not.toMatch(/private|easyresearch:agent_status/);
+    await adapter.stop();
+  });
+
   it("projects stable root message ids and active-branch usage from persisted entries", async () => {
     const session = new FakeAgentSession();
     const message = {

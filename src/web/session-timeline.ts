@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { AGENT_STATUS_TYPE } from "../subagent/notifications";
+import { AGENT_STATUS_TYPE, projectSubagentCompletionEntry } from "../subagent/notifications";
 import type { TranscriptTimelineEntryDto } from "./contracts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -13,13 +13,19 @@ function isAgentMessage(value: unknown): value is AgentMessage {
 function isHiddenStatusMessage(value: unknown): boolean {
   return isRecord(value)
     && value.role === "custom"
-    && value.customType === AGENT_STATUS_TYPE;
+    && (value.customType === AGENT_STATUS_TYPE || value.display === false);
 }
 
 export function projectSessionTimeline(entries: readonly unknown[]): TranscriptTimelineEntryDto[] {
   const timeline: TranscriptTimelineEntryDto[] = [];
   for (const value of entries) {
     if (!isRecord(value) || typeof value.id !== "string") continue;
+    const completion = projectSubagentCompletionEntry(value);
+    if (completion) {
+      timeline.push(completion);
+      continue;
+    }
+    if (value.customType === AGENT_STATUS_TYPE) continue;
     if (value.type === "message" && isAgentMessage(value.message) && !isHiddenStatusMessage(value.message)) {
       timeline.push({ kind: "message", entryId: value.id, message: value.message });
       continue;

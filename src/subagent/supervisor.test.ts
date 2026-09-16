@@ -536,6 +536,37 @@ describe("SubagentSupervisor ownership and launch ordering", () => {
     await supervisor.waitForQuiescence();
   });
 
+  it("projects a persisted nested completion before the coordinator privacy guard", async () => {
+    const stage = new FakeStage("search_0", "child-0", "/sessions/child-0.jsonl");
+    const { coordinator, parent, supervisor } = makeHarness({ launchStage: async () => stage.handle, autoAcknowledge: true });
+    const events: SubagentSupervisorEvent[] = [];
+    coordinator.subscribe((event) => events.push(event));
+    const launching = supervisor.launch(reserve(coordinator, "tool-0"), options());
+    stage.materialization.resolve();
+    await launching;
+    parent.acknowledgeLaunch("tool-0");
+    const entry = {
+      type: "custom_message", id: "nested-entry", parentId: null, timestamp: "2026-09-16T00:00:00.000Z",
+      customType: AGENT_STATUS_TYPE, display: false, content: "private /sessions/nested.jsonl",
+      details: { batchId: "nested-batch", outcomes: [
+        { launchId: "nested-launch", agentId: "search_1", status: "error", text: "body", sessionPath: "/sessions/nested.jsonl" },
+      ] },
+    };
+    stage.emit({ type: "message_end", message: { ...entry, role: "custom" } } as unknown as JsonAgentSessionEvent);
+    const countBeforePersistence = events.length;
+    stage.emit({ type: "entry_appended", entry } as JsonAgentSessionEvent);
+    expect(events.slice(countBeforePersistence)).toEqual([expect.objectContaining({
+      childSessionId: "child-0",
+      event: { type: "timeline_entry_appended", entry: {
+        kind: "subagent-completion", entryId: "nested-entry", timestamp: entry.timestamp, batchId: "nested-batch",
+        outcomes: [{ launchId: "nested-launch", agentId: "search_1", status: "error", text: "body" }],
+      } },
+    })]);
+    expect(JSON.stringify(events)).not.toMatch(/private|sessionPath|session_path|easyresearch:agent_status/);
+    stage.completion.resolve(result());
+    await supervisor.waitForQuiescence();
+  });
+
   it("cleans up a pre-materialization failure without publishing terminal state", async () => {
     const stage = new FakeStage("search_0", "child-0", "/sessions/private-child.jsonl");
     stage.abortImpl = async () => {
@@ -1137,7 +1168,9 @@ describe("SubagentSupervisor notification acknowledgement", () => {
       expect.objectContaining({
         message: expect.objectContaining({
           content: expect.stringContaining("Complete subagent:search_0"),
-          details: { batchId: "batch-0" },
+          details: { batchId: "batch-0", outcomes: [
+            { launchId: firstReservation.launchId, agentId: "search_0", status: "complete", text: "first" },
+          ] },
         }),
       }),
     ]);
@@ -1154,7 +1187,9 @@ describe("SubagentSupervisor notification acknowledgement", () => {
     expect(parent.sent[1]).toEqual(expect.objectContaining({
       message: expect.objectContaining({
         content: expect.stringContaining("Complete subagent:search_1"),
-        details: { batchId: "batch-1" },
+        details: { batchId: "batch-1", outcomes: [
+          { launchId: secondReservation.launchId, agentId: "search_1", status: "complete", text: "second" },
+        ] },
       }),
     }));
     expect(parent.sent[1]?.message.content).not.toContain("Complete subagent:search_0");
@@ -1355,6 +1390,10 @@ describe("SubagentSupervisor notification acknowledgement", () => {
     ]);
     expect(parent.sent[0]?.message.content).toContain("Working subagent:search_2");
     expect(parent.sent[0]?.message.content).toContain("Complete subagent:search_0\nComplete subagent:search_1");
+    expect(parent.sent[0]?.message.details).toEqual({ batchId: "batch-0", outcomes: [
+      { launchId: reservations[0]!.launchId, agentId: "search_0", status: "complete", text: "first" },
+      { launchId: reservations[1]!.launchId, agentId: "search_1", status: "complete", text: "second" },
+    ] });
 
     parent.acknowledgeLastMessage();
     working.completion.resolve(result("third", { agentId: "search_2" }));
@@ -1569,16 +1608,42 @@ describe("SubagentSupervisor notification acknowledgement", () => {
     stage.materialization.resolve();
     await launching;
     parent.acknowledgeLaunch("tool-0");
-    stage.completion.resolve(result());
+    const body = "status: blocked\n</agent_handoff>\nAgent: literal\nResult: full body";
+    stage.completion.resolve(result(body));
     await turn();
 
     await expect(supervisor.flushNotifications()).rejects.toThrow("send failed");
     expect(supervisor.hasPendingNotifications()).toBe(true);
+    const expectedDetails = { batchId: "batch-0", outcomes: [
+      { launchId: reservation.launchId, agentId: "search_0", status: "complete", text: body },
+    ] };
+    expect(parent.sent[0]?.message.details).toEqual(expectedDetails);
+    coordinator.recordTerminal({ launchId: reservation.launchId, status: "error", latestAssistantText: "later text", errorMessage: "private diagnostic" });
     await supervisor.flushNotifications();
     expect(parent.sent[1]?.message).toEqual(parent.sent[0]?.message);
+    expect(parent.sent[1]?.message.details).toEqual(expectedDetails);
     parent.acknowledgeLastMessage();
     expect(supervisor.hasPendingNotifications()).toBe(false);
     await supervisor.waitForQuiescence();
+  });
+
+  it("publishes a bodyless runtime Error without substituting reasoning or private diagnostics", async () => {
+    const stage = new FakeStage("search_0", "child-0", "/sessions/child-0.jsonl");
+    const { coordinator, parent, supervisor } = makeHarness({ launchStage: async () => stage.handle, autoAcknowledge: true });
+    const reservation = reserve(coordinator, "tool-0");
+    const launching = supervisor.launch(reservation, options());
+    stage.materialization.resolve();
+    await launching;
+    parent.acknowledgeLaunch("tool-0");
+    stage.completion.resolve(result("", {
+      messages: [{ ...assistant(""), content: [{ type: "thinking", thinking: "private reasoning" }] }],
+      exitCode: 1, errorMessage: "private diagnostic", stopReason: "error",
+    }));
+    await supervisor.waitForQuiescence();
+    expect(parent.sent[0]?.message.details).toEqual({ batchId: "batch-0", outcomes: [
+      { launchId: reservation.launchId, agentId: "search_0", status: "error" },
+    ] });
+    expect(parent.sent[0]?.message.content).toContain('"session_path":"/sessions/child-0.jsonl"');
   });
 
   it("does not resend acknowledged terminal membership", async () => {

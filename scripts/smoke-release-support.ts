@@ -12,6 +12,7 @@ import { isAbsolute, posix, win32 } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { BundledModelAddition, BundledModelRemoval } from "../src/runtime/bundled-model-additions";
 import type { NativeLocalShellTool } from "../src/runtime/platform-tools";
+import { parseTimelineEntryAppendedEvent } from "../src/webui/src/api/parsers";
 
 export const FIRST_RUN_CEILING_MS = 720_000;
 
@@ -979,6 +980,10 @@ function validateSmokeInitialTimeline(timeline: readonly unknown[]): void {
       if (typeof role !== "string" || role.trim().length === 0) {
         throw new Error(`native smoke initial timeline message ${index} had an invalid role`);
       }
+      continue;
+    }
+    if (value.kind === "subagent-completion") {
+      parseTimelineEntryAppendedEvent({ type: "timeline_entry_appended", entry });
       continue;
     }
     if (value.kind !== "compaction" && value.kind !== "branch-summary") {

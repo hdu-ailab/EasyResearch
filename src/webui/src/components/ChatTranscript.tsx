@@ -11,10 +11,17 @@ import type { MessageKey } from "../i18n/messages";
 import { useI18n } from "../i18n/useI18n";
 import type { SessionMessageMeta } from "../message-tree";
 import { usePreferences } from "../preferences/PreferencesProvider";
-import type { SessionMessageView, SessionSummaryView, SteerView, ToolView } from "../session-reducer";
+import type {
+  SessionCompletionView,
+  SessionMessageView,
+  SessionSummaryView,
+  SteerView,
+  ToolView,
+} from "../session-reducer";
 import { indexSubtreeUsage, mergeTranscriptEntries, type TranscriptEntry } from "../transcript-entries";
 import { ApiUsageLine } from "./ApiUsageLine";
 import { MarkdownBlock } from "./MarkdownBlock";
+import { SubagentCompletionCard } from "./SubagentCompletionCard";
 import { SubagentToolCard } from "./SubagentToolCard";
 import { ThinkingPreview } from "./ThinkingPreview";
 
@@ -22,6 +29,7 @@ export interface ChatTranscriptProps {
   messages: SessionMessageView[];
   tools: ToolView[];
   summaries?: SessionSummaryView[];
+  completions?: SessionCompletionView[];
   hydrationRevision?: number;
   hydrationScope?: string;
   emptyHint?: string;
@@ -580,6 +588,14 @@ const TranscriptVirtualRow = memo(function TranscriptVirtualRow({
       >
         {"kind" in entry && entry.kind === "pending" ? (
           <PendingRow />
+        ) : "kind" in entry && entry.kind === "subagent-completion" ? (
+          <SubagentCompletionCard
+            entry={entry}
+            open={open}
+            onToggle={(next) => onToggle(rowKey, next)}
+            markdownScope={markdownScope}
+            onRendered={remeasure}
+          />
         ) : "kind" in entry ? (
           <SummaryRow
             entry={entry}
@@ -649,6 +665,7 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
     messages,
     tools,
     summaries = [],
+    completions = [],
     hydrationRevision = 0,
     hydrationScope = "default",
     emptyHint,
@@ -673,8 +690,8 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
   const [draft, setDraft] = useState("");
 
   const entries = useMemo(
-    () => mergeTranscriptEntries(messages, tools, summaries, pending),
-    [messages, tools, summaries, pending],
+    () => mergeTranscriptEntries(messages, tools, summaries, pending, completions),
+    [messages, tools, summaries, pending, completions],
   );
   const subtreeUsage = useMemo(() => indexSubtreeUsage(apiUsage), [apiUsage]);
   const entryKeys = useMemo(
@@ -994,7 +1011,7 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
               const open =
                 openByKey[key] ??
                 ("kind" in entry
-                  ? false
+                  ? entry.kind === "subagent-completion" && preferences.expandSubagentOutput
                   : "name" in entry
                     ? entry.name === "subagent"
                       ? preferences.expandSubagentOutput

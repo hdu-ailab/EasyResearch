@@ -783,6 +783,31 @@ describe("assertPathFreeSessionEvent", () => {
 });
 
 describe("native smoke public session activity", () => {
+  it("accepts safe completion cards in persisted timeline snapshots", () => {
+    expect(parseSmokeInitialSessionSnapshot({
+      type: "snapshot",
+      session: { status: "ready", isStreaming: false },
+      timeline: [{
+        kind: "subagent-completion", entryId: "completion-entry", batchId: "batch-0",
+        timestamp: "2026-09-16T00:00:00.000Z",
+        outcomes: [{ launchId: "launch-0", agentId: "search_0", status: "complete", text: "First sentence. Full body." }],
+      }],
+    })).toEqual({ status: "ready", isStreaming: false });
+  });
+
+  it.each([
+    { status: "working" }, { launchId: "" }, { text: 42 }, { sessionPath: "/private/child.jsonl" },
+  ])("rejects unsafe completion outcomes in the native acceptance gate: %j", (invalid) => {
+    expect(() => parseSmokeInitialSessionSnapshot({
+      type: "snapshot", session: { status: "ready", isStreaming: false },
+      timeline: [{
+        kind: "subagent-completion", entryId: "completion-entry", batchId: "batch-0",
+        timestamp: "2026-09-16T00:00:00.000Z",
+        outcomes: [{ launchId: "launch-0", agentId: "search_0", status: "complete", ...invalid }],
+      }],
+    })).toThrow();
+  });
+
   it("accepts a timeline snapshot with a valid public session state", () => {
     expect(parseSmokeInitialSessionSnapshot({
       type: "snapshot",

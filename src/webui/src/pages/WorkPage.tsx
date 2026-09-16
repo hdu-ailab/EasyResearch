@@ -69,6 +69,7 @@ const emptyView: SessionViewState = {
   messages: [],
   tools: [],
   summaries: [],
+  completions: [],
   hydrationRevision: 0,
   messageStructureRevision: 0,
   isStreaming: false,
@@ -107,11 +108,12 @@ function subagentSummary(
   };
 }
 
-function mergeChildView(snapshot: SessionViewState, live: SessionViewState): SessionViewState {
+function mergeChildView(snapshot: SessionViewState, live: SessionViewState, preferLive = true): SessionViewState {
   const entries = [
     ...snapshot.messages.map((value) => ({ kind: "message" as const, value })),
     ...snapshot.tools.map((value) => ({ kind: "tool" as const, value })),
     ...snapshot.summaries.map((value) => ({ kind: "summary" as const, value })),
+    ...snapshot.completions.map((value) => ({ kind: "completion" as const, value })),
   ].sort((a, b) => a.value.order - b.value.order);
   const identityKeys = (entry: (typeof entries)[number]): string[] => [
     ...(entry.kind !== "message" ? [`${entry.kind}:key:${entry.value.key}`] : []),
@@ -133,13 +135,14 @@ function mergeChildView(snapshot: SessionViewState, live: SessionViewState): Ses
     ...live.messages.map((value) => ({ kind: "message" as const, value })),
     ...live.tools.map((value) => ({ kind: "tool" as const, value })),
     ...live.summaries.map((value) => ({ kind: "summary" as const, value })),
+    ...live.completions.map((value) => ({ kind: "completion" as const, value })),
   ].sort((a, b) => a.value.order - b.value.order)) {
     const keys = identityKeys(entry);
     const position = keys.map((key) => positions.get(key)).find((value) => value !== undefined);
     if (position === undefined) {
       for (const key of keys) positions.set(key, entries.length);
       entries.push(entry);
-    } else {
+    } else if (preferLive) {
       entries[position] = entry;
       for (const key of keys) positions.set(key, position);
     }
@@ -179,9 +182,12 @@ function mergeChildView(snapshot: SessionViewState, live: SessionViewState): Ses
     summaries: ordered
       .filter((entry) => entry.kind === "summary")
       .map((entry) => entry.value as SessionViewState["summaries"][number]),
-    isStreaming: live.isStreaming || activeMessageKey !== undefined,
-    error: live.error,
-    retry: live.retry,
+    completions: ordered
+      .filter((entry) => entry.kind === "completion")
+      .map((entry) => entry.value as SessionViewState["completions"][number]),
+    isStreaming: (preferLive ? live : snapshot).isStreaming || activeMessageKey !== undefined,
+    error: (preferLive ? live : snapshot).error,
+    retry: (preferLive ? live : snapshot).retry,
     nextOrder: ordered.length,
     activeMessageKey,
     messageStructureRevision: Math.max(snapshot.messageStructureRevision, live.messageStructureRevision) + 1,
@@ -363,7 +369,13 @@ function SessionWorkPage({
 
     setChildViews((current) => {
       // A deferred pre-snapshot update cannot refill the replacement progress queue.
-      if (event.status === "working" && admittedQueue !== pendingSupervisorEvents.current) return current;
+      if (event.status === "working" && admittedQueue !== pendingSupervisorEvents.current) {
+        // Persisted completion rows are immutable even while their caller is still Working.
+        if (event.event?.type !== "timeline_entry_appended" || event.event.entry.kind !== "subagent-completion")
+          return current;
+        const childView = current[childSessionId] ?? { ...emptyView, subagentName: event.agent };
+        return { ...current, [childSessionId]: reduceSessionEvent(childView, event.event) };
+      }
       let next = current;
       if (event.ownerSessionId !== rootSessionId) {
         const ownerView = next[event.ownerSessionId] ?? { ...emptyView };
@@ -680,6 +692,8 @@ function SessionWorkPage({
     activeTab === RESEARCH_ASSISTANT_AGENT ? sessionView.tools : activeChildId ? (activeView?.tools ?? []) : [];
   const activeSummaries =
     activeTab === RESEARCH_ASSISTANT_AGENT ? sessionView.summaries : (activeView?.summaries ?? []);
+  const activeCompletions =
+    activeTab === RESEARCH_ASSISTANT_AGENT ? sessionView.completions : (activeView?.completions ?? []);
   const rootAgentStatus: AgentStatus =
     sessionView.error !== null ? "error" : sessionView.isStreaming ? "working" : "idle";
   const rootTools = sessionView.tools;
@@ -775,11 +789,11 @@ function SessionWorkPage({
               hydrationRevision: (current[childId]?.hydrationRevision ?? 0) + 1,
             };
             let merged = current[childId]
-              ? refresh
-                ? (childRevisions.current.get(childId) ?? 0) > startRevision
-                  ? mergeChildView(seeded, current[childId])
-                  : mergeChildView(current[childId], seeded)
-                : mergeChildView(seeded, current[childId])
+              ? mergeChildView(
+                  seeded,
+                  current[childId],
+                  !refresh || (childRevisions.current.get(childId) ?? 0) > startRevision,
+                )
               : seeded;
             if (childWorking.current.get(childId) === false) merged = terminateSessionRun(merged);
             return {
@@ -1262,6 +1276,7 @@ function SessionWorkPage({
               messages={activeMessages}
               tools={activeTools}
               summaries={activeSummaries}
+              completions={activeCompletions}
               emptyHint={activeTab === RESEARCH_ASSISTANT_AGENT ? undefined : t("work.noMessagesYet")}
               pending={pendingOutput && activeTab === RESEARCH_ASSISTANT_AGENT}
               onViewDetails={openSubagentTool}

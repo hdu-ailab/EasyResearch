@@ -79,10 +79,13 @@ export interface SessionSnapshotDto {
   steering?: string[];
 }
 
+export type SubagentCompletionEntryDto = import("../subagent/notifications").SubagentCompletionEntry;
+
 export type TranscriptTimelineEntryDto =
   | { kind: "message"; entryId: string; message: AgentMessage }
   | { kind: "compaction"; entryId: string; timestamp: string; summary?: string }
-  | { kind: "branch-summary"; entryId: string; timestamp: string; summary?: string };
+  | { kind: "branch-summary"; entryId: string; timestamp: string; summary?: string }
+  | SubagentCompletionEntryDto;
 
 export interface TimelineEntryAppendedEventDto {
   type: "timeline_entry_appended";
