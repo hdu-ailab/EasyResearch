@@ -72,6 +72,8 @@ export interface SessionMessageView {
   entryId?: string;
   role: "user" | "assistant" | "tool" | "system";
   text: string;
+  /** Pi message creation time in Unix milliseconds, not the entry persistence time. */
+  timestamp?: number;
   /** Reasoning/thinking content, rendered as a collapsible block. */
   reasoning?: string;
   /** True only while the current assistant reasoning block is streaming. */
@@ -246,6 +248,12 @@ function identityFor(message: { role?: unknown; id?: unknown; timestamp?: unknow
   if (message.timestamp === undefined || message.timestamp === null) return undefined;
   const role = typeof message.role === "string" && message.role ? message.role : "message";
   return `${role}:${String(message.timestamp)}`;
+}
+
+function timestampFor(message: { timestamp?: unknown }): number | undefined {
+  return typeof message.timestamp === "number" && Number.isFinite(new Date(message.timestamp).getTime())
+    ? message.timestamp
+    : undefined;
 }
 
 function assistantUpdateOf(
@@ -511,6 +519,7 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
       entryId: timelineEntry.entryId,
       role,
       text,
+      timestamp: timestampFor(message),
       isThinking: false,
       streaming: false,
       error: failedAssistant(message),
@@ -1225,6 +1234,7 @@ export function reduceSessionEvent(
         ...(identity !== undefined ? { identity } : {}),
         role,
         text: text || (errorMessage ? "" : "..."),
+        timestamp: timestampFor(message),
         isThinking: false,
         streaming: role === "assistant",
         error: Boolean(errorMessage),
@@ -1380,6 +1390,7 @@ export function reduceSessionEvent(
                   ...m,
                   ...(identity !== undefined ? { identity } : {}),
                   text,
+                  timestamp: timestampFor(message) ?? m.timestamp,
                   ...(reasoning ? { reasoning } : { reasoning: undefined }),
                   isThinking: false,
                   streaming: false,
@@ -1401,6 +1412,7 @@ export function reduceSessionEvent(
           ...(identity !== undefined ? { identity } : {}),
           role: "assistant",
           text,
+          timestamp: timestampFor(message),
           ...(reasoning ? { reasoning } : {}),
           isThinking: false,
           streaming: false,

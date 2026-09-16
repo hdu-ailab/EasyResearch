@@ -68,6 +68,7 @@ describe("toJsonSessionEvent", () => {
       }));
     }
     expect(kind === "text" ? state.messages[0]?.text : state.messages[0]?.reasoning).toBe("haha");
+    expect(state.messages[0]?.timestamp).toBe(message.timestamp);
     expect(state.messages[0]?.streaming).toBe(true);
   });
 
@@ -86,6 +87,7 @@ describe("toJsonSessionEvent", () => {
       text: "all tokens",
       streaming: false,
       error: stopReason === "aborted",
+      timestamp: message.timestamp,
     })]);
   });
 
