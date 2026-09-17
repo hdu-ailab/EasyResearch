@@ -1,10 +1,11 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { createRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileWatcherEvent } from "../../../web/contracts";
 import { listEntries, readFileContent } from "../api";
 import { allObservers } from "../testing/transcriptTest";
-import { FileBrowser } from "./FileBrowser";
+import { FileBrowser, type FileBrowserHandle } from "./FileBrowser";
 
 const docxLoader = vi.hoisted(() => ({ load: vi.fn(), render: vi.fn() }));
 
@@ -72,6 +73,19 @@ describe("FileBrowser", () => {
     render(<FileBrowser root="/p" />);
     await user.click(await screen.findByText("paper.pdf"));
     expect(await screen.findByRole("group", { name: "PDF controls" })).toBeVisible();
+    expect(readFileContent).not.toHaveBeenCalled();
+  });
+
+  it("opens a requested path through the handle without changing the tree root", async () => {
+    const browser = createRef<FileBrowserHandle>();
+    render(<FileBrowser ref={browser} root="/p" />);
+    await screen.findByRole("treeitem", { name: /notes\.md/ });
+
+    act(() => browser.current?.openPath("/shared/paper.pdf"));
+
+    expect(await screen.findByRole("group", { name: "PDF controls" })).toBeVisible();
+    expect(screen.getByRole("tab", { name: "paper.pdf" })).toHaveAttribute("title", "/shared/paper.pdf");
+    expect(listEntries).toHaveBeenCalledExactlyOnceWith("/p");
     expect(readFileContent).not.toHaveBeenCalled();
   });
 

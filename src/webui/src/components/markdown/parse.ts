@@ -6,6 +6,7 @@ import remarkParse from "remark-parse";
 import remarkRehype from "remark-rehype";
 import { unified } from "unified";
 import { removePosition } from "unist-util-remove-position";
+import { rehypeFileReferences } from "./file-references";
 import type { MarkdownWorkerBlock } from "./protocol";
 
 const processor = unified()
@@ -14,9 +15,10 @@ const processor = unified()
   .use(remarkMath)
   .use(remarkRehype, {
     // ReactMarkdown displays raw HTML as text without executing or dropping it.
-    handlers: { html: (_state, node) => ({ type: "text", value: node.value }) },
+    handlers: { html: (_state, node) => ({ type: "text", value: node.value, data: { transcriptRawHtml: true } }) },
   })
-  .use(rehypeKatex);
+  .use(rehypeKatex)
+  .use(rehypeFileReferences);
 
 function hexadecimal(bytes: ArrayBuffer): string {
   return [...new Uint8Array(bytes)].map((value) => value.toString(16).padStart(2, "0")).join("");

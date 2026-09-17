@@ -1,4 +1,5 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MarkdownBlock } from "./MarkdownBlock";
 import {
@@ -9,6 +10,7 @@ import {
 import { parseMarkdownBlocks } from "./markdown/parse";
 import type { MarkdownParseRequest, MarkdownWorkerResponse } from "./markdown/protocol";
 import { clearCompletedMarkdownCacheForTests } from "./markdown/render";
+import { TranscriptFileContext } from "./markdown/TranscriptFileLink";
 
 vi.mock("mermaid", () => ({
   default: {
@@ -80,6 +82,78 @@ describe("MarkdownBlock", () => {
   it("keeps non-mermaid code fences as code", () => {
     render(<MarkdownBlock text={"```ts\nconst x = 1;\n```"} />);
     expect(screen.getByText("const x = 1;")).toBeTruthy();
+  });
+
+  it.each(["worker", "fallback"])("opens local references without navigating in %s mode", async (mode) => {
+    if (mode === "worker") configureMarkdownWorkerFactoryForTests(() => new ParsingWorker());
+    const open = vi.fn();
+    const user = userEvent.setup();
+    const before = window.location.hash;
+    const { container } = render(
+      <TranscriptFileContext value={open}>
+        <MarkdownBlock
+          scope="paths"
+          cacheKey="body"
+          text={
+            "Read results/table.csv and `C:\\My Papers\\draft.md`. [Open](notes/report%20final.md) [web](https://example.com/a.md)\n\n```text\nresults/code.csv\n```"
+          }
+        />
+      </TranscriptFileContext>,
+    );
+    const path = await screen.findByRole("button", { name: "results/table.csv" });
+    path.focus();
+    await user.keyboard("{Enter}");
+    expect(open).toHaveBeenLastCalledWith("results/table.csv");
+    await user.click(screen.getByRole("button", { name: "C:\\My Papers\\draft.md" }));
+    expect(open).toHaveBeenLastCalledWith("C:\\My Papers\\draft.md");
+    await user.click(screen.getByRole("button", { name: "Open" }));
+    expect(open).toHaveBeenLastCalledWith("notes/report final.md");
+    expect(container.querySelector("pre button")).toBeNull();
+    expect(screen.queryByRole("button", { name: "web" })).toBeNull();
+    expect(window.location.hash).toBe(before);
+  });
+
+  it.each(["worker", "fallback"])("leaves escaped HTML inert in %s mode", async (mode) => {
+    if (mode === "worker") configureMarkdownWorkerFactoryForTests(() => new ParsingWorker());
+    const text = '<span title="notes.md">hello</span>\n\n<div>notes.md</div>';
+    const { container } = render(
+      <TranscriptFileContext value={vi.fn()}>
+        <MarkdownBlock scope="html-paths" cacheKey="body" text={text} />
+      </TranscriptFileContext>,
+    );
+    if (mode === "worker")
+      await waitFor(() =>
+        expect(container.querySelector("[data-markdown-source-length]")).toHaveAttribute(
+          "data-markdown-source-length",
+          String(text.length),
+        ),
+      );
+    expect(container).toHaveTextContent('<span title="notes.md">hello</span>');
+    expect(container).toHaveTextContent("<div>notes.md</div>");
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("uses the current Work action after cached Markdown is remounted", async () => {
+    const worker = new ParsingWorker();
+    configureMarkdownWorkerFactoryForTests(() => worker);
+    const oldOpen = vi.fn();
+    const newOpen = vi.fn();
+    const first = render(
+      <TranscriptFileContext value={oldOpen}>
+        <MarkdownBlock scope="same" cacheKey="same" text="results/table.csv" />
+      </TranscriptFileContext>,
+    );
+    await screen.findByRole("button", { name: "results/table.csv" });
+    first.unmount();
+    render(
+      <TranscriptFileContext value={newOpen}>
+        <MarkdownBlock scope="same" cacheKey="same" text="results/table.csv" />
+      </TranscriptFileContext>,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "results/table.csv" }));
+    expect(newOpen).toHaveBeenCalledWith("results/table.csv");
+    expect(oldOpen).not.toHaveBeenCalled();
+    expect(worker.requests).toBe(1);
   });
 
   it("reuses a completed worker render after virtual remount", async () => {

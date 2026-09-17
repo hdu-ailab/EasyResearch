@@ -22,7 +22,9 @@ import { ApiUsageStatisticsDialog } from "../components/ApiUsageStatisticsDialog
 import { ChatComposer, type ChatComposerHandle } from "../components/ChatComposer";
 import { ChatTranscript, type ChatTranscriptHandle } from "../components/ChatTranscript";
 import { ContextCapacity } from "../components/ContextCapacity";
-import { FileBrowser } from "../components/FileBrowser";
+import { FileBrowser, type FileBrowserHandle } from "../components/FileBrowser";
+import { resolveTranscriptFilePath } from "../components/markdown/file-references";
+import { TranscriptFileContext } from "../components/markdown/TranscriptFileLink";
 import { RenameSessionDialog } from "../components/RenameSessionDialog";
 import { RetryBanner } from "../components/RetryBanner";
 import { SessionHistoryDialog } from "../components/SessionHistoryDialog";
@@ -251,6 +253,7 @@ function SessionWorkPage({
   const [commandError, setCommandError] = useState<string | null>(null);
   const transcriptRef = useRef<ChatTranscriptHandle>(null);
   const composerRef = useRef<ChatComposerHandle>(null);
+  const fileBrowserRef = useRef<FileBrowserHandle>(null);
   const [fileDragOver, setFileDragOver] = useState(false);
   const fileDragDepth = useRef(0);
   const tabsStateRef = useRef(tabsState);
@@ -278,6 +281,21 @@ function SessionWorkPage({
   const rowRef = useRef<HTMLDivElement>(null);
   const previousPanel = useRef(panel);
   const structuredMessages = useRef({ revision: -1, hydration: -1, messages: emptyView.messages });
+
+  const openTranscriptFile = useCallback(
+    (reference: string) => {
+      const path = resolveTranscriptFilePath(cwd, reference);
+      if (path === null) return;
+      setPanel("files");
+      if (window.innerWidth < CONVERSATION_FIRST_BREAKPOINT) {
+        setMobileView("files");
+        // Keep keyboard focus out of Chat before it becomes hidden.
+        document.getElementById("work-tab-files")?.focus();
+      }
+      fileBrowserRef.current?.openPath(path);
+    },
+    [cwd],
+  );
 
   const handleWorkEvent = useCallback(
     (event: unknown) => {
@@ -1271,32 +1289,34 @@ function SessionWorkPage({
             <p className="px-4 py-3 text-[13px] text-v2-text-text-muted">{t("work.childUnavailable")}</p>
           ) : null}
           <div className="mx-auto flex min-h-0 w-full max-w-[952px] flex-1 flex-col">
-            <ChatTranscript
-              ref={transcriptRef}
-              messages={activeMessages}
-              tools={activeTools}
-              summaries={activeSummaries}
-              completions={activeCompletions}
-              emptyHint={activeTab === RESEARCH_ASSISTANT_AGENT ? undefined : t("work.noMessagesYet")}
-              pending={pendingOutput && activeTab === RESEARCH_ASSISTANT_AGENT}
-              onViewDetails={openSubagentTool}
-              messageMeta={activeTab === RESEARCH_ASSISTANT_AGENT ? messageMeta : undefined}
-              onEditMessage={activeTab === RESEARCH_ASSISTANT_AGENT ? onEditMessage : undefined}
-              onSwitchBranch={activeTab === RESEARCH_ASSISTANT_AGENT ? onSwitchBranch : undefined}
-              steers={activeTab === RESEARCH_ASSISTANT_AGENT ? sessionView.steers : []}
-              hydrationRevision={
-                activeTab === RESEARCH_ASSISTANT_AGENT
-                  ? sessionView.hydrationRevision
-                  : (activeView?.hydrationRevision ?? 0)
-              }
-              hydrationScope={
-                activeTab === RESEARCH_ASSISTANT_AGENT
-                  ? `${sessionId}:root`
-                  : `${sessionId}:${activeChildId ?? activeTab}`
-              }
-              showApiUsageDetails={showApiUsageDetails}
-              apiUsage={sessionView.apiUsage}
-            />
+            <TranscriptFileContext value={openTranscriptFile}>
+              <ChatTranscript
+                ref={transcriptRef}
+                messages={activeMessages}
+                tools={activeTools}
+                summaries={activeSummaries}
+                completions={activeCompletions}
+                emptyHint={activeTab === RESEARCH_ASSISTANT_AGENT ? undefined : t("work.noMessagesYet")}
+                pending={pendingOutput && activeTab === RESEARCH_ASSISTANT_AGENT}
+                onViewDetails={openSubagentTool}
+                messageMeta={activeTab === RESEARCH_ASSISTANT_AGENT ? messageMeta : undefined}
+                onEditMessage={activeTab === RESEARCH_ASSISTANT_AGENT ? onEditMessage : undefined}
+                onSwitchBranch={activeTab === RESEARCH_ASSISTANT_AGENT ? onSwitchBranch : undefined}
+                steers={activeTab === RESEARCH_ASSISTANT_AGENT ? sessionView.steers : []}
+                hydrationRevision={
+                  activeTab === RESEARCH_ASSISTANT_AGENT
+                    ? sessionView.hydrationRevision
+                    : (activeView?.hydrationRevision ?? 0)
+                }
+                hydrationScope={
+                  activeTab === RESEARCH_ASSISTANT_AGENT
+                    ? `${sessionId}:root`
+                    : `${sessionId}:${activeChildId ?? activeTab}`
+                }
+                showApiUsageDetails={showApiUsageDetails}
+                apiUsage={sessionView.apiUsage}
+              />
+            </TranscriptFileContext>
           </div>
           <footer className="sticky bottom-0 z-10 mx-auto w-full max-w-[952px] shrink-0 bg-v2-background-bg-base px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] min-[820px]:pb-5">
             {activeTab !== RESEARCH_ASSISTANT_AGENT || sessionView.subagentName ? (
@@ -1350,6 +1370,7 @@ function SessionWorkPage({
           >
             <FileBrowser
               key={sessionId}
+              ref={fileBrowserRef}
               root={cwd}
               loadEnabled={filesLoadEnabled}
               sessionId={sessionId}

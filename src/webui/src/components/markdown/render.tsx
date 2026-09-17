@@ -6,6 +6,7 @@ import { MermaidDiagram } from "../MermaidDiagram";
 import { recordMarkdownRuntimeMetric } from "./client";
 import { LruCache } from "./lru";
 import type { MarkdownWorkerBlock } from "./protocol";
+import { TranscriptFileLink } from "./TranscriptFileLink";
 
 export interface PreparedMarkdownBlock {
   signature: string;
@@ -39,7 +40,7 @@ function TranscriptImage({ src, alt, ...props }: ComponentProps<"img">) {
 }
 
 const components = {
-  a: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
+  a: TranscriptFileLink,
   code: TranscriptCode,
   img: TranscriptImage,
 };

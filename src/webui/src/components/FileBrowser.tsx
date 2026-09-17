@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, type Ref, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { FileContentDto, FileEntryDto } from "../../../web/contracts";
 import { readFileContent } from "../api";
 import { EMPTY_FILE_EVENTS, parentPath, type QueuedFileWatcherEvent } from "../file-watcher";
@@ -11,12 +11,17 @@ import { FilePreview } from "./previews/FilePreview";
 import { previewKind } from "./previews/preview-kind";
 
 export interface FileBrowserProps {
+  ref?: Ref<FileBrowserHandle>;
   root: string;
   loadEnabled?: boolean;
   sessionId?: string;
   fileWatchLeaseId?: string | null;
   fileEvents?: readonly QueuedFileWatcherEvent[];
   onFileEventsConsumed?: (through: number) => void;
+}
+
+export interface FileBrowserHandle {
+  openPath(path: string): void;
 }
 
 /**
@@ -27,6 +32,7 @@ export interface FileBrowserProps {
  * route.
  */
 export const FileBrowser = memo(function FileBrowser({
+  ref,
   root,
   loadEnabled = true,
   sessionId,
@@ -160,6 +166,8 @@ export const FileBrowser = memo(function FileBrowser({
     },
     [openFile],
   );
+
+  useImperativeHandle(ref, () => ({ openPath }), [openPath]);
 
   const closeTab = useCallback(
     (path: string) => {

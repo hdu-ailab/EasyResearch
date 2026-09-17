@@ -6,12 +6,14 @@ import remarkMath from "remark-math";
 import "katex/dist/katex.min.css";
 import { MermaidDiagram } from "./MermaidDiagram";
 import { cancelMarkdown, canUseMarkdownWorker, requestMarkdown } from "./markdown/client";
+import { rehypeFileReferences } from "./markdown/file-references";
 import {
   getCompletedMarkdown,
   type PreparedMarkdownBlock,
   prepareMarkdownBlocks,
   setCompletedMarkdown,
 } from "./markdown/render";
+import { TranscriptFileLink } from "./markdown/TranscriptFileLink";
 
 export interface MarkdownBlockProps {
   text: string;
@@ -23,9 +25,9 @@ export interface MarkdownBlockProps {
 }
 
 const remarkPlugins = [remarkGfm, remarkMath];
-const rehypePlugins = [rehypeKatex];
+const rehypePlugins = [rehypeKatex, rehypeFileReferences];
 const components = {
-  a: ({ children }: { children?: React.ReactNode }) => <span>{children}</span>,
+  a: TranscriptFileLink,
   code: ({ className: codeClassName, children }: React.ComponentProps<"code">) => {
     const language = codeClassName?.match(/language-(\w+)/)?.[1];
     if (language === "mermaid") {

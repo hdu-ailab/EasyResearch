@@ -3483,6 +3483,108 @@ describe("WorkPage", () => {
     expect(tab.getAttribute("aria-selected")).toBe("true");
   });
 
+  describe("chat file references", () => {
+    beforeEach(() => {
+      vi.mocked(api.getSnapshot).mockResolvedValue({
+        ...snapshotValue,
+        timeline: [
+          { role: "user", content: [{ type: "text", text: "Read `manuscript/draft.md`." }] },
+          { role: "assistant", content: [{ type: "text", text: "Compare [shared notes](/shared/notes.md)." }] },
+        ].map((message, index) => ({ kind: "message", entryId: `file-reference-${index}`, message })),
+      } as never);
+      vi.mocked(api.readFileContent).mockImplementation(async (path) => {
+        const files: Record<string, string> = {
+          "/p/manuscript/draft.md": "# Local draft",
+          "/shared/notes.md": "# Shared notes",
+        };
+        const content = files[path];
+        if (content === undefined) throw new Error(`Unexpected file: ${path}`);
+        return { path, content, byteCount: content.length, truncated: false, binary: false };
+      });
+    });
+
+    it("selects Files from hidden and Agents panels, activates existing tabs, and reopens closed tabs", async () => {
+      vi.stubGlobal("innerWidth", 1200);
+      const user = userEvent.setup();
+      const hash = window.location.hash;
+      render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+      const chat = screen.getByRole("tabpanel", { name: "Chat" });
+      const local = await within(chat).findByRole("button", { name: "manuscript/draft.md" });
+      const outside = within(chat).getByRole("button", { name: "shared notes" });
+      const files = screen.getByRole("tabpanel", { name: "Files" });
+      const draft = screen.getByRole("textbox", { name: /message/i });
+      fireEvent.change(draft, { target: { value: "Keep this draft" } });
+      await user.click(screen.getByRole("button", { name: "Files browser" }));
+      expect(files).not.toBeVisible();
+
+      await user.click(local);
+      expect(await within(files).findByRole("heading", { name: "Local draft" })).toBeVisible();
+      expect(screen.getByRole("tab", { name: "draft.md" })).toHaveAttribute("title", "/p/manuscript/draft.md");
+      expect(api.readFileContent).toHaveBeenLastCalledWith("/p/manuscript/draft.md");
+
+      await user.click(screen.getByRole("button", { name: "Agent list" }));
+      expect(files).not.toBeVisible();
+      await user.click(outside);
+      expect(await within(files).findByRole("heading", { name: "Shared notes" })).toBeVisible();
+      expect(screen.getByRole("tab", { name: "notes.md" })).toHaveAttribute("title", "/shared/notes.md");
+      expect(api.readFileContent).toHaveBeenLastCalledWith("/shared/notes.md");
+
+      await user.click(local);
+      await user.click(local);
+      expect(files).toBeVisible();
+      expect(screen.getByRole("tab", { name: "draft.md" })).toHaveAttribute("aria-selected", "true");
+      expect(within(files).getByRole("heading", { name: "Local draft" })).toBeVisible();
+      expect(within(files).getAllByRole("tab")).toHaveLength(2);
+      expect(api.readFileContent).toHaveBeenCalledTimes(2);
+
+      await user.click(screen.getByRole("button", { name: "Close draft.md" }));
+      expect(screen.queryByRole("tab", { name: "draft.md" })).toBeNull();
+      await user.click(local);
+      expect(await within(files).findByRole("heading", { name: "Local draft" })).toBeVisible();
+      expect(screen.getAllByRole("tab", { name: "draft.md" })).toHaveLength(1);
+      expect(screen.getByRole("tab", { name: "draft.md" })).toHaveAttribute("aria-selected", "true");
+      expect(api.readFileContent).toHaveBeenCalledTimes(3);
+      expect(api.listEntries).toHaveBeenCalledExactlyOnceWith("/p");
+      expect(draft).toHaveValue("Keep this draft");
+      expect(window.location.hash).toBe(hash);
+      expect(api.sendPrompt).not.toHaveBeenCalled();
+    });
+
+    it("moves keyboard focus from Chat to mobile Files and reveals the preview on every activation", async () => {
+      vi.stubGlobal("innerWidth", 390);
+      const user = userEvent.setup();
+      render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+      const chat = screen.getByRole("tabpanel", { name: "Chat" });
+      const reference = await within(chat).findByRole("button", { name: "manuscript/draft.md" });
+      const filesTab = screen.getByRole("tab", { name: "Files" });
+      reference.focus();
+      await user.keyboard("{Enter}");
+
+      const files = screen.getByRole("tabpanel", { name: "Files" });
+      expect(await within(files).findByRole("heading", { name: "Local draft" })).toBeVisible();
+      expect(chat).not.toBeVisible();
+      expect(filesTab).toHaveAttribute("aria-selected", "true");
+      expect(filesTab).toHaveFocus();
+      const toggle = within(files).getByRole("button", { name: "Toggle file tree" });
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+
+      await user.click(toggle);
+      expect(within(files).getByRole("tree", { name: "Project files tree" })).toBeVisible();
+      await user.click(screen.getByRole("tab", { name: "Chat" }));
+      reference.focus();
+      await user.keyboard(" ");
+
+      expect(files).toBeVisible();
+      expect(filesTab).toHaveFocus();
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+      expect(within(files).getByRole("heading", { name: "Local draft" })).toBeVisible();
+      expect(within(files).getAllByRole("tab")).toHaveLength(1);
+      expect(within(files).getByRole("tab", { name: "draft.md" })).toHaveAttribute("aria-selected", "true");
+      expect(api.readFileContent).toHaveBeenCalledExactlyOnceWith("/p/manuscript/draft.md");
+      expect(api.sendPrompt).not.toHaveBeenCalled();
+    });
+  });
+
   it("closing the active tab returns to the transcript", async () => {
     const user = userEvent.setup();
     vi.mocked(api.readFileContent).mockResolvedValue({
