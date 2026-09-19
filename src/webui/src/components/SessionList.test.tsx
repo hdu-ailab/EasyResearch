@@ -18,7 +18,14 @@ function history(patch: Partial<SessionSummaryDto> = {}): SessionSummaryDto {
 }
 
 function renderList(history: SessionSummaryDto[], onRenameSession: (session: SessionSummaryDto) => void = vi.fn()) {
-  return render(<SessionList history={history} onOpenHistory={vi.fn()} onRenameSession={onRenameSession} />);
+  return render(
+    <SessionList
+      history={history}
+      onOpenHistory={vi.fn()}
+      onRenameSession={onRenameSession}
+      onDeleteSession={vi.fn()}
+    />,
+  );
 }
 
 it("shows the session name as the recent title when set", () => {

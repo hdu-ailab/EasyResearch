@@ -13,6 +13,12 @@ import { isDeepStrictEqual } from "node:util";
 import type { BundledModelAddition, BundledModelRemoval } from "../src/runtime/bundled-model-additions";
 import type { NativeLocalShellTool } from "../src/runtime/platform-tools";
 import { parseTimelineEntryAppendedEvent } from "../src/webui/src/api/parsers";
+import {
+  DAEMON_CONTROL_PATH, DAEMON_TOKEN_HEADER, isProcessAlive, readServerProcess,
+  serverOwner, stopServerProcess, type ServerProcessOptions, type ServerProcessRecord,
+} from "../src/cli/server-process";
+import { directLocalHttpFetch, localHttpOrigin } from "../src/cli/local-http";
+import { serverLeasePath, serverLeaseTokenState, transitionLeasePath } from "../src/cli/runtime-lease";
 
 export const FIRST_RUN_CEILING_MS = 720_000;
 
@@ -1331,8 +1337,84 @@ export function requireZeroProcessStatus(options: {
 
 type CleanupStep = () => void | Promise<void>;
 
+/** The browser smoke owns a private agent root, but a PID file alone is not custody. */
+export function createSmokeDaemonCustody(
+  target: { agentDir: string; host: string; port: number },
+  options: Pick<ServerProcessOptions, "fetch" | "isAlive" | "now" | "wait" | "timeoutMs"> = {},
+) {
+  let identity: ServerProcessRecord | undefined;
+  const now = options.now ?? Date.now;
+  const wait = options.wait ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const isAlive = options.isAlive ?? isProcessAlive;
+  const timeoutMs = options.timeoutMs ?? 10_000;
+  const ownershipError = () => new Error("Browser smoke daemon ownership could not be verified; no unverified process was signalled.");
+  const readIdentity = () => {
+    const entry = readServerProcess(target.agentDir);
+    if (entry.kind === "missing") return undefined;
+    if (entry.kind !== "owned" || serverOwner(entry.record) !== "cli"
+      || entry.record.host !== target.host || entry.record.port !== target.port
+      || identity && !isDeepStrictEqual(identity, entry.record)) throw ownershipError();
+    return entry.record;
+  };
+  const capture = async (): Promise<boolean> => {
+    const deadline = now() + timeoutMs;
+    while (true) {
+      const record = readIdentity();
+      if (record) {
+        if (serverLeaseTokenState(target.agentDir, record.token) !== "held") throw ownershipError();
+        const url = `${localHttpOrigin(record.host, record.port)}${DAEMON_CONTROL_PATH}`;
+        const response = await requestSmokeJsonBeforeDeadline({
+          url,
+          deadline: now() + Math.min(2_000, timeoutMs), now,
+          label: "browser smoke daemon authentication",
+          init: { headers: { [DAEMON_TOKEN_HEADER]: record.token }, redirect: "error" },
+          fetch: (_input, init) => (options.fetch ?? directLocalHttpFetch)(url, init),
+        }) as { runtimeId?: unknown };
+        if (response.runtimeId !== record.runtimeId || !isDeepStrictEqual(readIdentity(), record)) throw ownershipError();
+        identity = record;
+        return true;
+      }
+      if (identity) return true;
+      if (!existsSync(serverLeasePath(target.agentDir)) && !existsSync(transitionLeasePath(target.agentDir))) return false;
+      // A timed-out launcher may have handed off a not-yet-ready detached child.
+      if (now() >= deadline) throw new Error("Browser smoke startup left unpublished daemon custody.");
+      await wait(Math.min(100, deadline - now()));
+    }
+  };
+  return {
+    capture,
+    async stopAndVerify(): Promise<void> {
+      if (!identity && !await capture()) return;
+      const owned = identity;
+      if (!owned) throw ownershipError();
+      const deadline = now() + timeoutMs;
+      let shutdownError: unknown;
+      if (readIdentity()) {
+        try {
+          // Independent of CLI launch/capture-file failures; expectedToken fences replacements.
+          await stopServerProcess(target.agentDir, {
+            ...options, expectedOwner: "cli", expectedToken: owned.token, timeoutMs,
+          });
+        } catch (error) { shutdownError = error; }
+      }
+      while (true) {
+        const record = readIdentity();
+        if (!isAlive(owned.pid) && !record && serverLeaseTokenState(target.agentDir, owned.token) === "released") {
+          if (shutdownError) throw shutdownError;
+          return;
+        }
+        if (now() >= deadline) {
+          throw new Error("Browser smoke daemon did not exit and release its verified ownership within the cleanup deadline.", { cause: shutdownError });
+        }
+        await wait(Math.min(100, deadline - now()));
+      }
+    },
+  };
+}
+
 export async function finishSmokeCleanup(options: {
   primaryError?: Error;
+  writeDiagnostics?: CleanupStep;
   shutdown: CleanupStep;
   stopAuxiliary: CleanupStep;
   verifyDaemonStopped: CleanupStep;
@@ -1349,6 +1431,7 @@ export async function finishSmokeCleanup(options: {
     }
   };
 
+  if (options.writeDiagnostics) await attempt("diagnostics", options.writeDiagnostics);
   await attempt("shutdown", options.shutdown);
   await attempt("auxiliary shutdown", options.stopAuxiliary);
   const daemonStopped = await attempt("daemon termination verification", options.verifyDaemonStopped);

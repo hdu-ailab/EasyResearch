@@ -33,7 +33,11 @@ import { createGlobalAgent, listGlobalAgents, readGlobalAgent, writeGlobalAgent,
 import type { DirectoryService } from "./directories";
 import { DirectoryServiceError, fileServiceError } from "./directories";
 import { parseByteRange, RawFileRangeError, type RawFileDescriptor } from "./raw-file";
-import { UnknownSessionError, type ActiveSessionRegistry } from "./active-sessions";
+import {
+  UnknownSessionError, SessionBusyError, SessionLifecycleConflictError,
+  SessionRegistryShuttingDownError, type ActiveSessionRegistry,
+} from "./active-sessions";
+import { SessionHistoryConflictError } from "./session-deletion";
 import { flattenMessageTree } from "./session-tree";
 import { ExtensionGuardError } from "../runtime/extensions-guard";
 import type { ConfigFileService } from "./config-files";
@@ -92,6 +96,7 @@ export interface RouteServices {
   listModels: () => Promise<ModelOptionDto[]>;
   checkForUpdate: () => Promise<UpdateCheckDto>;
   renameSession: (sessionId: string, name: string) => Promise<void>;
+  deleteSession: (sessionId: string, force: boolean) => Promise<void>;
   listConfigProjects: () => Promise<{ home: string; projects: Array<{ cwd: string }> }>;
   directories: DirectoryService;
   registry: ActiveSessionRegistry;
@@ -290,6 +295,17 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
 
       if (req.method === "GET" && path === "/api/active-sessions") {
         return jsonResponse({ sessions: services.registry.listActive() });
+      }
+
+      const deleteMatch = path.match(/^\/api\/sessions\/([^/]+)$/);
+      if (req.method === "DELETE" && deleteMatch) {
+        const body = await jsonBody<unknown>(req);
+        if (!isObject(body) || Object.keys(body).some((key) => key !== "force")
+          || ("force" in body && typeof body.force !== "boolean")) {
+          throw new BodyError("Session deletion requires an object with optional boolean force");
+        }
+        await services.deleteSession(deleteMatch[1]!, body.force === true);
+        return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
       }
 
       const touchMatch = path.match(/^\/api\/sessions\/([^/]+)\/touch$/);
@@ -592,6 +608,11 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       if (error instanceof DirectoryServiceError) return errorResponse(error.status, error.message);
       if (error instanceof ExtensionGuardError) return errorResponse(400, error.message);
       if (error instanceof UnknownSessionError) return errorResponse(404, error.message);
+      if (error instanceof SessionBusyError) return errorResponse(409, error.message, { code: error.code });
+      if (error instanceof SessionLifecycleConflictError || error instanceof SessionHistoryConflictError
+        || error instanceof SessionRegistryShuttingDownError) {
+        return errorResponse(409, "Session history or lifecycle changed. Refresh and try again.");
+      }
       if (error instanceof UnknownFileWatchLeaseError) return errorResponse(404, error.message);
       if (error instanceof FileWatchPathError) return errorResponse(400, error.message);
       if (error instanceof SubagentSessionNotFoundError) return errorResponse(404, error.message);
@@ -653,10 +674,13 @@ async function openSession(
     const dto: ActiveSessionDto = await services.registry.open({
       cwd: session.cwd,
       sessionPath: session.path,
+      sessionId: session.id,
     });
     return jsonResponse(dto);
   } catch (error) {
-    if (error instanceof ExtensionGuardError) throw error;
+    if (error instanceof ExtensionGuardError || error instanceof UnknownSessionError
+      || error instanceof SessionHistoryConflictError || error instanceof SessionLifecycleConflictError
+      || error instanceof SessionRegistryShuttingDownError) throw error;
     throw new SessionStartError(error);
   }
 }
@@ -719,13 +743,22 @@ function sessionEvents(services: RouteServices, id: string): Response {
   let snapshotAcquired = false;
   let initialized = false;
   let cancelled = false;
+  let deleted = false;
   const preBarrierSupplements: unknown[] = [];
   const postBarrierEvents: unknown[] = [];
   const send = (controller: ReadableStreamDefaultController<Uint8Array>, event: unknown): void => {
     controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
   };
   const publishOrQueue = (event: unknown): void => {
-    if (cancelled) return;
+    if (cancelled || deleted) return;
+    if (isObject(event) && event.type === "session_deleted") {
+      // Terminal deletion wins even when a now-invalid hydration never resolves.
+      deleted = true;
+      preBarrierSupplements.length = 0;
+      postBarrierEvents.length = 0;
+      if (controllerRef) send(controllerRef, event);
+      return;
+    }
     if (!initialized) {
       if (snapshotAcquired) postBarrierEvents.push(event);
       else if (isPreBarrierSupplement(event)) preBarrierSupplements.push(event);
@@ -737,6 +770,7 @@ function sessionEvents(services: RouteServices, id: string): Response {
   const refreshUsage = (record: ApiUsageRecordDto): void => {
     usageRefreshTail = usageRefreshTail
       .then(async () => {
+        if (cancelled || deleted) return;
         const statistics = await subagentSessions.trackUsage(id, record);
         publishOrQueue({ type: "api_usage_changed", statistics });
       })
@@ -786,7 +820,7 @@ function sessionEvents(services: RouteServices, id: string): Response {
         subagentSessions.statistics(id),
       ]).then(
         ([snapshot, subagents, apiUsage]) => {
-          if (cancelled) return;
+          if (cancelled || deleted) return;
           send(controller, { type: "snapshot", ...snapshot, subagents, apiUsage, fileWatchLeaseId });
           for (const event of preBarrierSupplements) send(controller, event);
           for (const event of postBarrierEvents) send(controller, event);
@@ -794,8 +828,10 @@ function sessionEvents(services: RouteServices, id: string): Response {
           postBarrierEvents.length = 0;
           initialized = true;
         },
-        (error) => {
-          if (cancelled) return;
+        async (error) => {
+          // Stop can invalidate hydration before the owned unlink finishes.
+          await registry.deletionCompletion(id)?.catch(() => {});
+          if (cancelled || deleted) return;
           send(controller, { type: "error", error: String(error) });
           disconnect();
           controller.close();

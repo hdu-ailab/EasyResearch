@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, parse } from "node:path";
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
@@ -31,7 +31,9 @@ import type {
   RuntimeApiKeyModelRuntime,
 } from "./auth-runtime";
 import type { BundledOverlayRuntime } from "../runtime/model-catalog-overlay";
-import { SubagentSessionNotFoundError } from "./subagent-sessions";
+import { createReadonlySubagentSessionStore, SubagentSessionNotFoundError, SubagentSessionService } from "./subagent-sessions";
+import { createSessionHistoryLifecycle, validateHistoricalSession } from "./session-lifecycle";
+import { resolveRenameSessionService } from "./session-rename";
 import { SUBAGENT_SESSION_LINK_ENTRY } from "../subagent/session-links";
 import type { FileWatcherEvent, FileWatcherFactory } from "./file-watcher";
 import { createAgentPatchService, patchGlobalAgent } from "./agent-configuration";
@@ -149,11 +151,11 @@ function fakeLogger(): Logger & { calls: Array<[level: string, msg: string, fiel
   return { debug: make("debug"), info: make("info"), warn: make("warn"), error: make("error"), calls };
 }
 
-function userMessage(text: string): AgentMessage {
+function userMessage(text: string): Extract<AgentMessage, { role: "user" }> {
   return { role: "user", content: text, timestamp: 1 };
 }
 
-function assistant(text: string): AgentMessage {
+function assistant(text: string): Extract<AgentMessage, { role: "assistant" }> {
   return {
     role: "assistant",
     content: [{ type: "text", text }],
@@ -569,6 +571,324 @@ describe("web routes", () => {
     } as RouteServices;
     handler = createRouteHandler(services);
   }
+
+  describe("session deletion HTTP", () => {
+    const request = (id: string, body: unknown = {}) => new Request(`http://localhost/api/sessions/${id}`, {
+      method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+
+    async function persistentFixture(removeFile?: (path: string) => void) {
+      vi.stubEnv("HOME", homeDir);
+      vi.stubEnv("EASYRESEARCH_CODING_AGENT_DIR", agentDir);
+      onTestFinished(async () => {
+        await registry.shutdown();
+        vi.unstubAllEnvs();
+        rmSync(agentDir, { recursive: true, force: true });
+        rmSync(projectDir, { recursive: true, force: true });
+        rmSync(homeDir, { recursive: true, force: true });
+      });
+      const pi = await piImportModule.importPi();
+      const create = (persist = true) => {
+        const manager = pi.SessionManager.create(projectDir);
+        if (persist) {
+          manager.appendMessage(userMessage("fixture request"));
+          manager.appendMessage(assistant("fixture response"));
+        }
+        return { id: manager.getSessionId(), path: manager.getSessionFile()!, cwd: projectDir, manager };
+      };
+      const root = create();
+      const child = create();
+      child.manager.appendSessionInfo("easyresearch:search");
+      root.manager.appendCustomEntry(SUBAGENT_SESSION_LINK_ENTRY, {
+        toolCallId: "dispatch", agent: "search", childSessionId: child.id,
+      });
+      const other = create();
+      const store = createReadonlySubagentSessionStore(pi);
+      const usage = new SubagentSessionService(store);
+      registry = new ActiveSessionRegistry(factory, noopLogger, {
+        idleTimeoutMs: -1,
+        validateOpen: (input) => lifecycle.validateOpen(input),
+      }, watcherFactory);
+      const lifecycle = createSessionHistoryLifecycle({
+        registry, store, usage, sessionsDir: join(agentDir, "sessions"), removeFile,
+      });
+      const rename = resolveRenameSessionService({
+        isConnected: async (id) => registry.has(id),
+        setConnectedName: (id, name) => registry.prompt(id, `/name ${name}`),
+        listAll: async () => historySessions,
+        withHistoryMutation: (target, run) => registry.withHistoryMutation(target, run),
+        validateHistory: (target) => validateHistoricalSession(target, store),
+        openSessionManager: async (path) => pi.SessionManager.open(path),
+      });
+      const opening = vi.spyOn(factory, "create").mockImplementation((options) => {
+        const adapter = new FakeAdapter(options);
+        const manager = options.sessionPath ? pi.SessionManager.open(options.sessionPath) : create(false).manager;
+        adapter.getState = async () => ({
+          sessionId: manager.getSessionId(), sessionFile: manager.getSessionFile(),
+          isStreaming: false, isCompacting: false, thinkingLevel: "medium", messageCount: 0,
+        });
+        factory.created.push(adapter);
+        return adapter;
+      });
+      onTestFinished(() => opening.mockRestore());
+      historySessions = toUserSessionSummaries(await pi.SessionManager.listAll());
+      setup({
+        deleteSession: lifecycle.deleteSession, renameSession: rename.rename,
+        subagentSessions: {
+          summaries: (id) => usage.summaries(id), statistics: (id) => usage.statistics(id),
+          snapshot: (parent, child) => usage.snapshot(parent, child),
+          trackUsage: (id, record) => usage.trackUsage(id, record),
+        },
+      });
+      return { root, child, other, create, lifecycle, pi, usage, store };
+    }
+
+    it("removes real root/child JSONL only and refuses stale open and rename resolutions", async () => {
+      const { root, child, other } = await persistentFixture();
+      const artifact = join(projectDir, "manuscript.md");
+      writeFileSync(artifact, "project artifact");
+      expect((await handler(request(root.id))).status).toBe(204);
+      expect(existsSync(root.path)).toBe(false);
+      expect(existsSync(child.path)).toBe(false);
+      expect(existsSync(other.path)).toBe(true);
+      expect(readFileSync(artifact, "utf8")).toBe("project artifact");
+      // setup intentionally still exposes the pre-deletion historical listing.
+      const open = await handler(new Request("http://localhost/api/sessions/open", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: root.path }),
+      }));
+      expect(open.status).toBe(404);
+      const rename = await handler(new Request(`http://localhost/api/sessions/${root.id}/name`, {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "late" }),
+      }));
+      expect(rename.status).toBe(404);
+      expect(factory.created).toHaveLength(0);
+      expect(existsSync(root.path)).toBe(false);
+      expect((await handler(request(root.id))).status).toBe(404);
+    });
+
+    it("rejects unknown and internal child identities without touching physical history", async () => {
+      const { root, child } = await persistentFixture();
+      expect((await handler(request("unknown"))).status).toBe(404);
+      expect((await handler(request(child.id, { force: true }))).status).toBe(404);
+      expect(existsSync(root.path)).toBe(true);
+      expect(existsSync(child.path)).toBe(true);
+    });
+
+    it("requires explicit force for preflight and delivers deletion to previously disconnected SSE", async () => {
+      const { root, child } = await persistentFixture();
+      await registry.open({ cwd: root.cwd, sessionPath: root.path, sessionId: root.id });
+      const adapter = factory.created[0]!;
+      adapter.backgroundWork = true;
+      const busy = await handler(request(root.id));
+      expect(busy.status).toBe(409);
+      expect(await busy.json()).toMatchObject({ code: "SESSION_BUSY", error: expect.any(String) });
+      expect(adapter.stopped).toBe(0);
+      expect(existsSync(root.path)).toBe(true);
+      const events = await handler(new Request(`http://localhost/api/sessions/${root.id}/events`));
+      const reader = events.body!.getReader();
+      try {
+        expect((await readSseEvent(reader)).type).toBe("snapshot");
+        await registry.stop(root.id);
+        expect(await readSseEvent(reader)).toEqual({ type: "session_deactivated", sessionId: root.id });
+        expect((await handler(request(root.id, { force: true }))).status).toBe(204);
+        expect(await readSseEvent(reader)).toEqual({ type: "session_deleted", sessionId: root.id });
+        expect(existsSync(child.path)).toBe(false);
+      } finally {
+        await reader.cancel();
+      }
+      expect(watcherFactory.created[0]!.leases.size).toBe(0);
+    });
+
+    it("does not unlink or emit deletion on cleanup failure, then succeeds on retry", async () => {
+      const { root, child } = await persistentFixture();
+      await registry.open({ cwd: root.cwd, sessionPath: root.path, sessionId: root.id });
+      const adapter = factory.created[0]!;
+      const cleanup = vi.spyOn(adapter, "stop").mockRejectedValueOnce(new Error("/private/cleanup"));
+      const events: unknown[] = [];
+      const release = registry.subscribe(root.id, (event) => events.push(event));
+      const failed = await handler(request(root.id, { force: true }));
+      expect(failed.status).toBe(500);
+      expect(await failed.text()).not.toContain("private");
+      expect(existsSync(root.path)).toBe(true);
+      expect(existsSync(child.path)).toBe(true);
+      expect(events).toEqual([]);
+      cleanup.mockRestore();
+      expect((await handler(request(root.id, { force: true }))).status).toBe(204);
+      expect(events.at(-1)).toEqual({ type: "session_deleted", sessionId: root.id });
+      release();
+    });
+
+    it("retains the root on partial unlink failure and retries without a false terminal event", async () => {
+      let fail = true;
+      const { root, child } = await persistentFixture((path) => {
+        if (path === root.path && fail) { fail = false; throw new Error("/private/unlink EACCES"); }
+        unlinkSync(path);
+      });
+      await registry.open({ cwd: root.cwd, sessionPath: root.path, sessionId: root.id });
+      const events: unknown[] = [];
+      const release = registry.subscribe(root.id, (event) => events.push(event));
+      expect((await handler(request(root.id))).status).toBe(500);
+      expect(existsSync(root.path)).toBe(true);
+      expect(existsSync(child.path)).toBe(false);
+      expect(events).toEqual([{ type: "session_deactivated", sessionId: root.id }]);
+      expect((await handler(request(root.id))).status).toBe(204);
+      expect(events.at(-1)).toEqual({ type: "session_deleted", sessionId: root.id });
+      release();
+    });
+
+    it("deletes a live lazy root without persisting it", async () => {
+      await persistentFixture();
+      const lazy = await registry.create({ cwd: projectDir });
+      expect(existsSync(lazy.sessionFile!)).toBe(false);
+      expect((await handler(request(lazy.id))).status).toBe(204);
+      expect(existsSync(lazy.sessionFile!)).toBe(false);
+      expect(registry.has(lazy.id)).toBe(false);
+    });
+
+    it("retains lazy-root authority for retry when history verification fails after stop", async () => {
+      const { store } = await persistentFixture();
+      const lazy = await registry.create({ cwd: projectDir });
+      const listing = vi.spyOn(store, "listAll").mockRejectedValueOnce(new Error("store temporarily unreadable"));
+      const events: unknown[] = [];
+      const release = registry.subscribe(lazy.id, (event) => events.push(event));
+      try {
+        expect((await handler(request(lazy.id))).status).toBe(500);
+        expect(events).not.toContainEqual({ type: "session_deleted", sessionId: lazy.id });
+        expect((await handler(request(lazy.id))).status).toBe(204);
+        expect(factory.created[0]!.stopped).toBe(1);
+        expect(events.at(-1)).toEqual({ type: "session_deleted", sessionId: lazy.id });
+        expect(existsSync(lazy.sessionFile!)).toBe(false);
+      } finally { listing.mockRestore(); release(); }
+    });
+
+    it("refuses missing-root authority for a previously persisted live root", async () => {
+      const { root } = await persistentFixture();
+      await registry.open({ cwd: root.cwd, sessionPath: root.path, sessionId: root.id });
+      unlinkSync(root.path);
+      const events: unknown[] = [];
+      const release = registry.subscribe(root.id, (event) => events.push(event));
+      expect((await handler(request(root.id))).status).toBe(409);
+      expect(events).not.toContainEqual({ type: "session_deleted", sessionId: root.id });
+      release();
+    });
+
+    it("rejects replaced physical headers with 409 without creating a runtime", async () => {
+      const { root } = await persistentFixture();
+      const bytes = readFileSync(root.path, "utf8").replace(root.id, "different-id");
+      writeFileSync(root.path, bytes);
+      const open = await handler(new Request("http://localhost/api/sessions/open", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: root.path }),
+      }));
+      expect(open.status).toBe(409);
+      expect(factory.created).toHaveLength(0);
+      expect(readFileSync(root.path, "utf8")).toBe(bytes);
+    });
+
+    it("wires production startServer to the native store, registry cleanup and removal", async () => {
+      const { root, child, other } = await persistentFixture();
+      const resolveFactory = vi.spyOn(PiSessionFactory, "resolve").mockResolvedValue(factory as never);
+      const createLive = vi.spyOn(liveConfigurationModule, "createLiveConfiguration").mockReturnValue(fakeConfiguration().live);
+      onTestFinished(() => { resolveFactory.mockRestore(); createLive.mockRestore(); vi.unstubAllGlobals(); });
+      let productionHandler!: (request: Request) => Promise<Response>;
+      vi.stubGlobal("Bun", {
+        serve: ({ fetch }: { fetch: typeof productionHandler }) => {
+          productionHandler = fetch;
+          return { port: 43210, stop: () => {} };
+        },
+      });
+      const server = await startServer({ host: "127.0.0.1", port: 0, networkPolicy: directNetworkPolicy() });
+      try {
+        const openRequest = () => new Request("http://localhost/api/sessions/open", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: root.path }),
+        });
+        expect((await productionHandler(openRequest())).status).toBe(200);
+        expect((await productionHandler(request(root.id))).status).toBe(204);
+        expect(factory.created[0]!.stopped).toBe(1);
+        expect(existsSync(root.path)).toBe(false);
+        expect(existsSync(child.path)).toBe(false);
+        expect(existsSync(other.path)).toBe(true);
+        expect((await productionHandler(openRequest())).status).toBe(404);
+      } finally { await server.stop(); }
+    });
+
+    it("returns 204 only after the owned deletion service settles", async () => {
+      const deletion = deferred<void>();
+      const deleteSession = vi.fn(() => deletion.promise);
+      setup({ deleteSession });
+      let responded = false;
+      const response = handler(request("root")).then((result) => { responded = true; return result; });
+      await vi.waitFor(() => expect(deleteSession).toHaveBeenCalledWith("root", false));
+      expect(responded).toBe(false);
+      deletion.resolve();
+      expect((await response).status).toBe(204);
+      expect(await (await response).text()).toBe("");
+    });
+
+    it.each([null, [], "bad", { force: "true" }, { force: 1 }, { force: null }, { path: "/private/file.jsonl" }].map((body) => ({ body })))(
+      "rejects invalid deletion body $body before admission", async ({ body }) => {
+        const deleteSession = vi.fn(async () => {});
+        setup({ deleteSession });
+        expect((await handler(request("root", body))).status).toBe(400);
+        expect(deleteSession).not.toHaveBeenCalled();
+      },
+    );
+
+    it("passes explicit force and never exposes a cleanup path in a failed response", async () => {
+      const deleteSession = vi.fn(async () => { throw new Error("unlink /private/secret.jsonl EACCES"); });
+      setup({ deleteSession });
+      const response = await handler(request("root", { force: true }));
+      expect(response.status).toBe(500);
+      expect(deleteSession).toHaveBeenCalledWith("root", true);
+      expect(await response.text()).not.toContain("private");
+    });
+
+    it.each([false, true])("delivers terminal deletion despite late hydration failure (acquired=%s)", async (acquired) => {
+      const created = await registry.create({ cwd: projectDir });
+      const gate = deferred<never>();
+      const adapter = factory.created[0]!;
+      if (!acquired) adapter.timelinePromise = gate.promise;
+      const stats = acquired ? gate.promise : undefined;
+      setup({
+        deleteSession: (id, force) => registry.deleteSession(id, force, {
+          resolve: async () => { throw new UnknownSessionError("unknown"); },
+          remove: async () => {},
+        }),
+        ...(stats ? { subagentSessions: { statistics: () => stats } } : {}),
+      });
+      const response = await handler(new Request(`http://localhost/api/sessions/${created.id}/events`));
+      const reader = response.body!.getReader();
+      try {
+        expect((await handler(request(created.id, { force: true }))).status).toBe(204);
+        gate.reject(new Error("snapshot no longer exists"));
+        expect(await readSseEvent(reader)).toEqual({ type: "session_deleted", sessionId: created.id });
+      } finally {
+        gate.reject(new Error("test cleanup"));
+        await reader.cancel();
+      }
+    });
+
+    it("retains hydrating SSE when its snapshot fails between terminal stop and unlink", async () => {
+      const created = await registry.create({ cwd: projectDir });
+      const snapshot = deferred<never>();
+      const removal = deferred<void>();
+      const remove = vi.fn(() => removal.promise);
+      factory.created[0]!.timelinePromise = snapshot.promise;
+      setup({ deleteSession: (id, force) => registry.deleteSession(id, force, {
+        resolve: async () => { throw new UnknownSessionError("unknown"); }, remove,
+      }) });
+      const stream = await handler(new Request(`http://localhost/api/sessions/${created.id}/events`));
+      const reader = stream.body!.getReader();
+      const deleting = handler(request(created.id));
+      await vi.waitFor(() => expect(remove).toHaveBeenCalledOnce());
+      snapshot.reject(new Error("runtime stopped"));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      removal.resolve();
+      try {
+        expect((await deleting).status).toBe(204);
+        expect(await readSseEvent(reader)).toEqual({ type: "session_deleted", sessionId: created.id });
+      } finally { await reader.cancel(); }
+    });
+  });
 
   it("reads and patches the focused global compaction setting", async () => {
     const getCompactionSettings = vi.fn(async () => ({ triggerPercent: 70, globalEnabled: false }));

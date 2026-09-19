@@ -266,6 +266,251 @@ describe("ActiveSessionRegistry", () => {
     expect(created.id).toBe(fakeState.sessionId);
   });
 
+  describe("session deletion admission", () => {
+    const history = (id: string, remove = vi.fn(async () => {})) => ({
+      resolve: async () => ({ id, cwd, path: sessionPath }),
+      remove,
+    });
+
+    it.each(["preflight", "descendants", "queued compaction", "running compaction"])(
+      "rejects no-force %s without stopping writers or removing history", async (work) => {
+        const created = await registry.create({ cwd });
+        const adapter = factory.created[0]!;
+        if (work === "preflight") adapter.backgroundWork = true;
+        if (work === "descendants") adapter.supervisorActive = true;
+        if (work === "queued compaction") adapter.compactionState = "queued";
+        if (work === "running compaction") adapter.compactionState = "running";
+        const deps = history(created.id);
+
+        await expect(registry.deleteSession(created.id, false, deps)).rejects.toMatchObject({ code: "SESSION_BUSY" });
+
+        expect(adapter.stats.stopped).toBe(0);
+        expect(deps.remove).not.toHaveBeenCalled();
+        await registry.prompt(created.id, "still usable");
+        expect(adapter.stats.prompts).toEqual(["still usable"]);
+      },
+    );
+
+    it("waits for terminal cleanup, excludes competing writers and keeps unrelated roots usable", async () => {
+      const created = await registry.create({ cwd });
+      factory.getStateImpl = async () => ({ ...fakeState, sessionId: "other", sessionFile: "/agent/sessions/other.jsonl" });
+      const other = await registry.create({ cwd: "/other/project" });
+      const cleanup = deferred<void>();
+      factory.created[0]!.stopImpl = () => cleanup.promise;
+      const deps = history(created.id);
+      const deleting = registry.deleteSession(created.id, true, deps);
+      await vi.waitFor(() => expect(factory.created[0]!.stats.stopped).toBe(1));
+      expect(deps.remove).not.toHaveBeenCalled();
+      await expect(registry.prompt(created.id, "late")).rejects.toThrow();
+      await expect(registry.compact(created.id)).rejects.toThrow();
+      await expect(registry.setThinkingLevel(created.id, "high")).rejects.toThrow();
+      await expect(registry.navigateTree(created.id, "leaf")).rejects.toThrow();
+      await expect(registry.open({ cwd, sessionPath })).rejects.toThrow();
+      await expect(registry.restart(created.id)).rejects.toThrow();
+      const rename = vi.fn(async () => {});
+      await expect(registry.withHistoryMutation({ id: created.id, cwd, path: sessionPath }, rename)).rejects.toThrow();
+      await registry.prompt(other.id, "unrelated");
+      expect(factory.created[1]!.stats.prompts).toEqual(["unrelated"]);
+      cleanup.resolve();
+      await deleting;
+      expect(deps.remove).toHaveBeenCalledOnce();
+      expect(rename).not.toHaveBeenCalled();
+    });
+
+    it("retains failed writer cleanup for retry and never reports deletion before success", async () => {
+      const created = await registry.create({ cwd });
+      const listener = vi.fn();
+      registry.subscribe(created.id, listener);
+      factory.created[0]!.stopImpl = vi.fn().mockRejectedValueOnce(new Error("cleanup failed")).mockResolvedValue(undefined);
+      const deps = history(created.id);
+      await expect(registry.deleteSession(created.id, true, deps)).rejects.toThrow("cleanup failed");
+      expect(deps.remove).not.toHaveBeenCalled();
+      expect(listener).not.toHaveBeenCalledWith({ type: "session_deleted", sessionId: created.id });
+      await expect(registry.open({ cwd, sessionPath })).rejects.toThrow();
+      await registry.deleteSession(created.id, true, deps);
+      expect(deps.remove).toHaveBeenCalledOnce();
+      expect(listener).toHaveBeenLastCalledWith({ type: "session_deleted", sessionId: created.id });
+    });
+
+    it("owns pending open cancellation and cleanup before forced removal", async () => {
+      const start = deferred<void>();
+      const cleanup = deferred<void>();
+      factory.startImpl = () => start.promise;
+      factory.stopImpl = () => cleanup.promise;
+      const opening = registry.open({ cwd, sessionPath }).catch((error: unknown) => error);
+      await vi.waitFor(() => expect(factory.created).toHaveLength(1));
+      const deps = history("sess-1");
+      await expect(registry.deleteSession("sess-1", false, deps)).rejects.toMatchObject({ code: "SESSION_BUSY" });
+      expect(factory.created[0]!.stats.stopped).toBe(0);
+      const deleting = registry.deleteSession("sess-1", true, deps);
+      await Promise.resolve();
+      expect(deps.remove).not.toHaveBeenCalled();
+      start.resolve();
+      await vi.waitFor(() => expect(factory.created[0]!.stats.stopped).toBe(1));
+      expect(deps.remove).not.toHaveBeenCalled();
+      cleanup.resolve();
+      await deleting;
+      expect(await opening).toBeInstanceOf(Error);
+      expect(registry.list()).toEqual([]);
+      expect(deps.remove).toHaveBeenCalledOnce();
+    });
+
+    it("stops an admitted open that finishes while deletion resolves historical identity", async () => {
+      const start = deferred<void>();
+      const resolving = deferred<{ id: string; cwd: string; path: string }>();
+      const cleanup = deferred<void>();
+      factory.startImpl = () => start.promise;
+      factory.stopImpl = () => cleanup.promise;
+      const opening = registry.open({ cwd, sessionPath });
+      await vi.waitFor(() => expect(factory.created).toHaveLength(1));
+      const deps = { resolve: () => resolving.promise, remove: vi.fn(async () => {}) };
+      const deleting = registry.deleteSession("sess-1", true, deps);
+      start.resolve();
+      const opened = await opening;
+      resolving.resolve({ id: opened.id, cwd, path: sessionPath });
+      await vi.waitFor(() => expect(factory.created[0]!.stats.stopped).toBe(1));
+      expect(deps.remove).not.toHaveBeenCalled();
+      cleanup.resolve();
+      await deleting;
+      expect(registry.has(opened.id)).toBe(false);
+    });
+
+    it("rechecks no-force work after admission before terminal stop", async () => {
+      const created = await registry.create({ cwd });
+      const deps = history(created.id);
+      const deleting = registry.deleteSession(created.id, false, deps);
+      factory.created[0]!.backgroundWork = true;
+      await expect(deleting).rejects.toMatchObject({ code: "SESSION_BUSY" });
+      expect(factory.created[0]!.stats.stopped).toBe(0);
+      expect(deps.remove).not.toHaveBeenCalled();
+    });
+
+    it("excludes deletion, open and restart while a historical rename owns the path", async () => {
+      const gate = deferred<void>();
+      const target = { id: "sess-1", cwd, path: sessionPath };
+      const renaming = registry.withHistoryMutation(target, () => gate.promise);
+      const deps = history(target.id);
+      await expect(registry.deleteSession(target.id, true, deps)).rejects.toThrow();
+      await expect(registry.open({ cwd, sessionPath })).rejects.toThrow();
+      expect(deps.remove).not.toHaveBeenCalled();
+      gate.resolve();
+      await renaming;
+      await registry.deleteSession(target.id, true, deps);
+      expect(deps.remove).toHaveBeenCalledOnce();
+    });
+
+    it("holds already admitted live mutations through unlink even after adapter stop resolves", async () => {
+      const created = await registry.create({ cwd });
+      const mutation = deferred<void>();
+      factory.created[0]!.setModel = () => mutation.promise;
+      const changing = registry.setModel(created.id, "provider", "model");
+      const deps = history(created.id);
+      await expect(registry.deleteSession(created.id, false, deps)).rejects.toMatchObject({ code: "SESSION_BUSY" });
+      const deleting = registry.deleteSession(created.id, true, deps);
+      await vi.waitFor(() => expect(factory.created[0]!.stats.stopped).toBe(1));
+      expect(deps.remove).not.toHaveBeenCalled();
+      mutation.resolve();
+      await changing;
+      await deleting;
+      expect(deps.remove).toHaveBeenCalledOnce();
+    });
+
+    it("shares a deletion attempt and holds it through registry shutdown", async () => {
+      const created = await registry.create({ cwd });
+      const removal = deferred<void>();
+      const deps = history(created.id, vi.fn(() => removal.promise));
+      const deleting = registry.deleteSession(created.id, true, deps);
+      await vi.waitFor(() => expect(deps.remove).toHaveBeenCalledOnce());
+      const duplicate = registry.deleteSession(created.id, true, deps);
+      let shutdownDone = false;
+      const shutdown = registry.shutdown().then(() => { shutdownDone = true; });
+      await Promise.resolve();
+      expect(shutdownDone).toBe(false);
+      removal.resolve();
+      await Promise.all([deleting, duplicate, shutdown]);
+      expect(deps.remove).toHaveBeenCalledOnce();
+    });
+
+    it("notifies disconnected subscribers but not released subscriptions", async () => {
+      const created = await registry.create({ cwd });
+      const retained = vi.fn();
+      const released = vi.fn();
+      registry.subscribe(created.id, retained);
+      const release = registry.subscribe(created.id, released);
+      await registry.stop(created.id);
+      release();
+      const deps = history(created.id);
+      await registry.deleteSession(created.id, false, deps);
+      expect(retained).toHaveBeenLastCalledWith({ type: "session_deleted", sessionId: created.id });
+      expect(released).not.toHaveBeenCalledWith({ type: "session_deleted", sessionId: created.id });
+    });
+
+    it("rejects reopen while a failed startup still owns cleanup", async () => {
+      factory.startError = new Error("startup failed");
+      factory.stopImpl = async () => { throw new Error("cleanup failed"); };
+      await expect(registry.open({ cwd, sessionPath })).rejects.toThrow("startup failed");
+      factory.startError = null;
+      await expect(registry.open({ cwd, sessionPath })).rejects.toThrow(/conflict/i);
+      expect(factory.created).toHaveLength(1);
+      factory.created[0]!.stopImpl = async () => {};
+      await registry.shutdown();
+    });
+
+    it("retries pending-open cleanup after failure without unlinking first", async () => {
+      const start = deferred<void>();
+      factory.startImpl = () => start.promise;
+      factory.stopImpl = vi.fn().mockRejectedValueOnce(new Error("pending cleanup failed")).mockResolvedValue(undefined);
+      const opening = registry.open({ cwd, sessionPath }).catch((error: unknown) => error);
+      await vi.waitFor(() => expect(factory.created).toHaveLength(1));
+      const deps = history("sess-1");
+      const deleting = registry.deleteSession("sess-1", true, deps);
+      // Let the deletion resolve its identity and cancel the admitted open.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      start.resolve();
+      await expect(deleting).rejects.toThrow("pending cleanup failed");
+      await opening;
+      expect(deps.remove).not.toHaveBeenCalled();
+      await expect(registry.open({ cwd, sessionPath })).rejects.toThrow();
+      await registry.deleteSession("sess-1", true, deps);
+      expect(deps.remove).toHaveBeenCalledOnce();
+      expect(factory.created[0]!.stats.stopped).toBe(2);
+    });
+
+    it("retains an admitted historical rename through shutdown", async () => {
+      const rename = deferred<void>();
+      const renaming = registry.withHistoryMutation({ id: "historical", path: sessionPath, cwd }, () => rename.promise);
+      let stopped = false;
+      const shutdown = registry.shutdown().then(() => { stopped = true; });
+      await Promise.resolve();
+      expect(stopped).toBe(false);
+      rename.resolve();
+      await Promise.all([renaming, shutdown]);
+      expect(stopped).toBe(true);
+    });
+
+    it("releases a disconnected view's exact watcher after a same-id reopen", async () => {
+      factory.getStateImpl = async () => fakeState;
+      const created = await registry.open({ cwd, sessionPath });
+      const oldLease = registry.acquireFileWatchLease(created.id);
+      const oldListener = vi.fn();
+      const releaseOld = registry.subscribe(created.id, oldListener);
+      await registry.stop(created.id);
+      await registry.open({ cwd, sessionPath });
+      const newLease = registry.acquireFileWatchLease(created.id);
+      const newListener = vi.fn();
+      registry.subscribe(created.id, newListener);
+      releaseOld();
+      registry.releaseFileWatchLease(created.id, oldLease);
+      expect(watcherFactory.created[0]!.leases.size).toBe(0);
+      expect(watcherFactory.created[1]!.leases.has(newLease)).toBe(true);
+      await registry.deleteSession(created.id, true, history(created.id));
+      expect(oldListener).not.toHaveBeenCalledWith({ type: "session_deleted", sessionId: created.id });
+      expect(newListener).toHaveBeenLastCalledWith({ type: "session_deleted", sessionId: created.id });
+      registry.releaseFileWatchLease(created.id, newLease);
+      expect(watcherFactory.created[1]!.leases.size).toBe(0);
+    });
+  });
+
   it("unsubscribing the last listener never stops the child", async () => {
     const created = await registry.create({ cwd });
     const listener = vi.fn();
@@ -684,6 +929,7 @@ describe("ActiveSessionRegistry", () => {
     expect(reopened.status).toBe("ready");
     expect(factory.created).toHaveLength(2);
     expect(factory.created[1]?.stats.started).toBe(1);
+    expect(adapter.stats.stopped).toBe(1);
   });
 
   it("open reuses an idle session after agent_settled", async () => {

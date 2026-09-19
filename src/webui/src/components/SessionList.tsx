@@ -1,4 +1,4 @@
-import { Folder, MessageSquareText, Pencil } from "lucide-react";
+import { Folder, MessageSquareText, Pencil, Trash2 } from "lucide-react";
 import type { SessionSummaryDto } from "../../../web/contracts";
 import { useI18n } from "../i18n/useI18n";
 import { directoryName, formatRelativeModifiedTime, sessionTitle } from "../pages/home-view-model";
@@ -8,10 +8,17 @@ export interface SessionListProps {
   showCwd?: boolean;
   onOpenHistory: (session: SessionSummaryDto) => void;
   onRenameSession: (session: SessionSummaryDto) => void;
+  onDeleteSession: (session: SessionSummaryDto) => void;
 }
 
 /** Home history ledger. Historical sessions open through their recorded session file. */
-export function SessionList({ history, showCwd = true, onOpenHistory, onRenameSession }: SessionListProps) {
+export function SessionList({
+  history,
+  showCwd = true,
+  onOpenHistory,
+  onRenameSession,
+  onDeleteSession,
+}: SessionListProps) {
   const { language, t } = useI18n();
   return (
     <section aria-label={t("sessions.ariaLabel")}>
@@ -68,6 +75,15 @@ export function SessionList({ history, showCwd = true, onOpenHistory, onRenameSe
                     onClick={() => onRenameSession(session)}
                   >
                     <Pencil size={13} aria-hidden />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`${t("home.deleteSession")}: ${title}`}
+                    title={t("home.deleteSession")}
+                    className="flex size-8 shrink-0 items-center justify-center rounded-md text-v2-text-text-faint transition-colors hover:bg-v2-status-error/10 hover:text-v2-status-error"
+                    onClick={() => onDeleteSession(session)}
+                  >
+                    <Trash2 size={13} aria-hidden />
                   </button>
                 </div>
               </li>

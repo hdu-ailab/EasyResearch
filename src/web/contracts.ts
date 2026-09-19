@@ -27,6 +27,20 @@ export interface RuntimeRestartRequestDto {
   force: boolean;
 }
 
+export interface SessionDeletionRequestDto {
+  force?: boolean;
+}
+
+export interface SessionBusyDto {
+  code: "SESSION_BUSY";
+  error: string;
+}
+
+export interface SessionDeletedEventDto {
+  type: "session_deleted";
+  sessionId: string;
+}
+
 export interface RuntimeRestartAcceptedDto {
   accepted: true;
   bootId: string;

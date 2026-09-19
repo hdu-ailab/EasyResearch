@@ -41,6 +41,7 @@ import type {
   RuntimeConfigurationAppliedEvent,
   RuntimeRestartAcceptedDto,
   SessionActivityChangedEventDto,
+  SessionDeletedEventDto,
   SessionSnapshotDto,
   SessionStatsChangedEventDto,
   SessionSummaryDto,
@@ -486,6 +487,14 @@ export function parseSessionActivityChangedEvent(value: unknown): SessionActivit
     throw new Error("Invalid API response: session activity state is inconsistent");
   }
   return { type: "session_activity_changed", status, isStreaming };
+}
+
+export function parseSessionDeletedEvent(value: unknown): SessionDeletedEventDto {
+  const source = record(value, "session deleted event");
+  if (source.type !== "session_deleted") {
+    throw new Error("Invalid API response: session deleted event type is invalid");
+  }
+  return { type: "session_deleted", sessionId: requiredIdentityString(source, "sessionId") };
 }
 
 export function parseRuntimeConfigurationAppliedEvent(value: unknown): RuntimeConfigurationAppliedEvent {

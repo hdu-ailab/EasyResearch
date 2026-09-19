@@ -9,6 +9,7 @@ import {
   reduceSubagentSupervisorEvent,
   replaceApiUsageStatistics,
   type SessionViewState,
+  terminateDeletedSession,
   terminateSessionRun,
 } from "./session-reducer";
 import { completionEntry } from "./testing/subagentCompletion";
@@ -135,6 +136,22 @@ function launchToolEnd(overrides: Partial<SubagentSupervisorEventDto> = {}, tool
 }
 
 describe("session reducer", () => {
+  it("settles all displayed work on deletion without changing completed evidence or normal run settlement", () => {
+    let state = reduceSessionEvent(emptyState, toolEvent("tool_execution_start", "finished"));
+    state = reduceSessionEvent(state, {
+      ...toolEvent("tool_execution_end", "finished"),
+      result: { content: [{ type: "text", text: "saved result" }] },
+      isError: false,
+    } as never);
+    state = reduceSessionEvent(state, toolEvent("tool_execution_start", "t1", "subagent"));
+    state = reduceSessionEvent(state, launchToolEnd());
+    const settled = terminateDeletedSession({ ...state, compactionState: "running" });
+    expect(settled.tools[0]).toEqual(state.tools[0]);
+    expect(settled.tools[1]).toMatchObject({ running: false, interrupted: true });
+    expect(settled.compactionState).toBe("idle");
+    expect(terminateSessionRun(state).tools[1]?.running).toBe(true);
+    expect(state.tools[1]?.running).toBe(true);
+  });
   it("interleaves independent completion outcomes without moving a live assistant cursor", () => {
     let state = reduceSessionEvent(emptyState, { type: "agent_start" });
     state = reduceSessionEvent(state, {

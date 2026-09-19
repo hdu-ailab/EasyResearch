@@ -174,12 +174,17 @@ export function createReadonlySubagentSessionStore(
 export class SubagentSessionNotFoundError extends Error {}
 
 export class SubagentSessionService {
-  private readonly usageCache = new Map<string, {
+  private usageCache = new Map<string, {
     statistics: ApiUsageStatisticsDto;
     recordIds: Set<string>;
   }>();
 
   constructor(private readonly store: SubagentSessionStore) {}
+
+  invalidateUsage(): void {
+    // Detach in-flight readers too; they must not refill the accepted cache.
+    this.usageCache = new Map();
+  }
 
   async summaries(parentSessionId: string): Promise<SubagentSessionSummaryDto[]> {
     let parent: Awaited<ReturnType<SubagentSessionService["parent"]>>;
@@ -213,13 +218,14 @@ export class SubagentSessionService {
   }
 
   async statistics(parentSessionId: string): Promise<ApiUsageStatisticsDto> {
+    const cache = this.usageCache;
     let parent: Awaited<ReturnType<SubagentSessionService["parent"]>>;
     try {
       parent = await this.parent(parentSessionId);
     } catch (error) {
       if (error instanceof SubagentSessionNotFoundError) {
         const statistics = emptyStatistics(parentSessionId);
-        this.usageCache.set(parentSessionId, { statistics, recordIds: new Set() });
+        cache.set(parentSessionId, { statistics, recordIds: new Set() });
         return statistics;
       }
       throw error;
@@ -306,25 +312,26 @@ export class SubagentSessionService {
       partial: warnings.length > 0,
       warnings,
     };
-    this.usageCache.set(parentSessionId, { statistics, recordIds });
+    cache.set(parentSessionId, { statistics, recordIds });
     return statistics;
   }
 
   async trackUsage(parentSessionId: string, record: ApiUsageRecordDto): Promise<ApiUsageStatisticsDto> {
-    const cached = this.usageCache.get(parentSessionId) ?? {
+    const cache = this.usageCache;
+    const cached = cache.get(parentSessionId) ?? {
       statistics: await this.statistics(parentSessionId),
-      recordIds: this.usageCache.get(parentSessionId)?.recordIds ?? new Set<string>(),
+      recordIds: cache.get(parentSessionId)?.recordIds ?? new Set<string>(),
     };
     const recordKey = `${record.sessionId}:${record.id}`;
     if (cached.recordIds.has(recordKey)) return cached.statistics;
     const next = applyApiUsageRecord(cached.statistics, record);
     if (!next) {
-      this.usageCache.delete(parentSessionId);
+      cache.delete(parentSessionId);
       return this.statistics(parentSessionId);
     }
     cached.recordIds.add(recordKey);
     cached.statistics = next;
-    this.usageCache.set(parentSessionId, cached);
+    cache.set(parentSessionId, cached);
     return next;
   }
 

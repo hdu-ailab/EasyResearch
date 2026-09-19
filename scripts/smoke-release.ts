@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { connect as connectTcp, createServer, type Socket } from "node:net";
@@ -58,6 +59,7 @@ import {
   writeVenvValidationScript,
 } from "./smoke-release-support";
 import { nativeLocalShellTool } from "../src/runtime/platform-tools";
+import { readAgentAliases } from "../src/subagent/agent-alias";
 import { BUNDLED_MODEL_ADDITIONS, BUNDLED_MODEL_REMOVALS } from "../src/runtime/bundled-model-additions";
 import { DAEMON_CONTROL_PATH, DAEMON_TOKEN_HEADER } from "../src/cli/daemon-control";
 import type { SubagentCompletionEntryDto } from "../src/web/contracts";
@@ -2558,6 +2560,64 @@ try {
   smokeNetworkState = recordSmokeNetworkMilestone(smokeNetworkState, {
     kind: "invalid-search-rejected",
   });
+
+  // Reuse the real, accepted Agent-generated tree only after all of its resume probes.
+  // Run before the intentionally failed LLM turn can leave an unlisted JSONL.
+  const deletionAliases = readAgentAliases(readFileSync(originalSessionPath, "utf8")
+    .trim().split("\n").map((line) => JSON.parse(line)));
+  assert.equal(deletionAliases.length, 1, "deletion probe requires the accepted custom-Agent history");
+  const deletionChild = deletionAliases[0]!;
+  assert.equal(deletionChild.id, `${smokeAgentName}_0`);
+  const childHeader = JSON.parse(readFileSync(deletionChild.sessionPath, "utf8").split("\n", 1)[0]!);
+  assert.equal(childHeader.id, deletionChild.sessionId);
+  assert(smokeSessionCwdMatches(project, childHeader.cwd), "accepted child must belong to the physical project cwd");
+  const deletionStatus = await requestSmokeJsonBeforeDeadline({
+    url: `${base}/api/status`, deadline: firstRunDeadline, label: "pre-deletion status",
+  }) as { sessions: Array<{ id: string; path: string; cwd: string }> };
+  const sibling = deletionStatus.sessions.find((session) => session.id === loopbackSession.id);
+  assert(sibling && smokeSessionCwdMatches(project, sibling.cwd) && sibling.path !== originalSessionPath,
+    "deletion probe requires an unrelated persisted same-cwd root");
+  const sentinelPath = join(project, "deletion-preserve.txt");
+  const sentinel = `Project artifacts survive conversation deletion: ${setupRunId}\n`;
+  writeFileSync(sentinelPath, sentinel, { flag: "wx" });
+  const sessionsDir = join(agentDir, "sessions");
+  const historiesBefore = new Map(treeFiles(sessionsDir).filter((path) => path.endsWith(".jsonl"))
+    .map((path) => {
+      const absolute = join(sessionsDir, path);
+      return [absolute, readFileSync(absolute)] as const;
+    }));
+  const removedPaths = new Set([originalSessionPath, deletionChild.sessionPath]);
+  for (const path of removedPaths) assert(historiesBefore.has(path), "accepted history must exist before DELETE");
+  const deletionRequest = async (path: string, method: string, body: unknown, expectedStatus: number) => {
+    const remaining = Math.min(10_000, firstRunDeadline - Date.now());
+    assert(remaining > 0, "deletion probe exceeded the native smoke deadline");
+    const response = await fetch(`${base}${path}`, {
+      method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      signal: AbortSignal.timeout(remaining),
+    });
+    const text = await response.text();
+    assert.equal(response.status, expectedStatus, `${method} ${path}: ${text}`);
+    if (expectedStatus === 204) assert.equal(text, "");
+  };
+  const deletionEndpoint = `/api/sessions/${created.id}`;
+  await deletionRequest(deletionEndpoint, "DELETE", { force: "true" }, 400);
+  await deletionRequest(`/api/sessions/${deletionChild.sessionId}`, "DELETE", { force: true }, 404);
+  for (const [path, bytes] of historiesBefore) assert.deepEqual(readFileSync(path), bytes, "rejected DELETE changed history");
+  await deletionRequest(deletionEndpoint, "DELETE", { force: false }, 204);
+  for (const [path, bytes] of historiesBefore) {
+    if (removedPaths.has(path)) assert(!existsSync(path), `DELETE retained owned history: ${path}`);
+    else assert.deepEqual(readFileSync(path), bytes, `DELETE changed unrelated history: ${path}`);
+  }
+  assert.equal(readFileSync(sentinelPath, "utf8"), sentinel);
+  const afterDeletion = await requestSmokeJsonBeforeDeadline({
+    url: `${base}/api/status`, deadline: firstRunDeadline, label: "post-deletion status",
+  }) as { sessions: Array<{ id: string }>; activeSessions: Array<{ id: string }> };
+  assert(![...afterDeletion.sessions, ...afterDeletion.activeSessions].some((session) => session.id === created.id));
+  assert(afterDeletion.sessions.some((session) => session.id === sibling.id));
+  await deletionRequest("/api/sessions/open", "POST", { path: originalSessionPath }, 404);
+  await deletionRequest(deletionEndpoint, "DELETE", {}, 404);
+  for (const path of removedPaths) assert(!existsSync(path), "stale open recreated deleted history");
+  console.log(`[smoke] session deletion: real root ${created.id} + child ${deletionChild.sessionId} removed; ${historiesBefore.size - removedPaths.size} unrelated histories and project sentinel unchanged; invalid/child DELETE and old-path reopen rejected`);
 
   const malformedLlm = "http://LLM_PROXY_SECRET@proxy.invalid";
   updateExternalProxySettings({

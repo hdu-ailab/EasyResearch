@@ -134,6 +134,36 @@ describe("api transport", () => {
     expect(result.agentDir).toBe("/a");
   });
 
+  it.each([undefined, false, true])(
+    "deletes an encoded session with explicit JSON force %s and accepts 204",
+    async (force) => {
+      fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+      await expect(apiModule.deleteSession("root/one ?", force)).resolves.toBeUndefined();
+      expect(fetchMock).toHaveBeenCalledExactlyOnceWith("/api/sessions/root%2Fone%20%3F", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force: force ?? false }),
+      });
+    },
+  );
+
+  it("preserves a busy deletion conflict without automatically forcing it", async () => {
+    const details = { code: "SESSION_BUSY", error: "Session has active work" };
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(details), { status: 409 }));
+    const error = await apiModule.deleteSession("s1").catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(apiModule.parseSessionBusyError(error)).toEqual(details);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    for (const other of [
+      new ApiError(500, details),
+      new ApiError(409, { code: "OTHER_CONFLICT", error: "Conflict" }),
+      new ApiError(409, { code: "SESSION_BUSY", error: false }),
+      new ApiError(409, null),
+      new Error("SESSION_BUSY"),
+    ])
+      expect(apiModule.parseSessionBusyError(other)).toBeNull();
+  });
+
   it("listStatus bypasses caches and forwards the expected-restart abort signal", async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(

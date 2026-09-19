@@ -1,10 +1,13 @@
 import { UnknownSessionError } from "./active-sessions";
 import type { SessionSummaryDto } from "./contracts";
+import { SessionHistoryConflictError, type SessionHistoryTarget } from "./session-deletion";
 
 export interface SessionRenameDeps {
   isConnected: (sessionId: string) => Promise<boolean>;
   setConnectedName: (sessionId: string, name: string) => Promise<void>;
   listAll: () => Promise<SessionSummaryDto[]>;
+  withHistoryMutation: <T>(target: SessionHistoryTarget, run: () => Promise<T>) => Promise<T>;
+  validateHistory: (target: SessionHistoryTarget) => void;
   openSessionManager: (path: string) => Promise<{ appendSessionInfo(name: string): unknown }>;
 }
 
@@ -22,10 +25,15 @@ export function resolveRenameSessionService(deps: SessionRenameDeps) {
         await deps.setConnectedName(sessionId, name);
         return;
       }
-      const session = (await deps.listAll()).find((s) => s.id === sessionId);
+      const matches = (await deps.listAll()).filter((session) => session.id === sessionId);
+      if (matches.length > 1) throw new SessionHistoryConflictError();
+      const session = matches[0];
       if (!session) throw new UnknownSessionError(`Unknown session: ${sessionId}`);
-      const manager = await deps.openSessionManager(session.path);
-      manager.appendSessionInfo(name);
+      await deps.withHistoryMutation(session, async () => {
+        deps.validateHistory(session);
+        const manager = await deps.openSessionManager(session.path);
+        manager.appendSessionInfo(name);
+      });
     },
   };
 }

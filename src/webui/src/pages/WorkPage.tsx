@@ -44,6 +44,7 @@ import {
   reduceSubagentSupervisorEvent,
   type SessionViewState,
   type ToolView,
+  terminateDeletedSession,
   terminateSessionRun,
 } from "../session-reducer";
 import {
@@ -264,7 +265,7 @@ function SessionWorkPage({
   const childRevisions = useRef(new Map<string, number>());
   const childWorking = useRef(new Map<string, boolean>());
   const pendingSupervisorEvents = useRef(new Map<string, SubagentSupervisorEventDto>());
-  const parentOwner = useRef({ id, generation: 1 });
+  const parentOwner = useRef({ id, generation: 1, deleted: false });
   const loadChildRef = useRef<(childId: string, refresh?: boolean) => Promise<void>>(async () => {});
   const commandRequest = useRef(0);
   const commandGeneration = useRef<{
@@ -299,6 +300,23 @@ function SessionWorkPage({
 
   const handleWorkEvent = useCallback(
     (event: unknown) => {
+      if (event && typeof event === "object" && (event as { type?: unknown }).type === "session_deleted") {
+        parentOwner.current = { ...parentOwner.current, deleted: true };
+        commandRequest.current += 1;
+        childRequests.current.clear();
+        childRefreshPending.current.clear();
+        pendingSupervisorEvents.current.clear();
+        setChildViews((current) =>
+          Object.fromEntries(Object.entries(current).map(([id, view]) => [id, terminateDeletedSession(view)])),
+        );
+        setCommands([]);
+        setTree(null);
+        setRenameInitialName(null);
+        setHistoryOpen(false);
+        setStatisticsOpen(false);
+        setCommandError(null);
+        return true;
+      }
       const watcherEvent = parseFileWatcherEvent(event, cwd);
       if (watcherEvent) {
         if (!fileEventsEnabled.current) return true;
@@ -458,12 +476,12 @@ function SessionWorkPage({
   hydrationRevisionRef.current = hydrationRevision;
   const childCacheSessionId = useRef(sessionId);
   if (parentOwner.current.id !== sessionId) {
-    parentOwner.current = { id: sessionId, generation: parentOwner.current.generation + 1 };
+    parentOwner.current = { id: sessionId, generation: parentOwner.current.generation + 1, deleted: false };
   }
   const status = connection.status;
   const filesLoadEnabled = status === "ready" || status === "running" || status === "stopped";
   fileEventsEnabled.current = filesLoadEnabled && fileEvents.sessionId === sessionId;
-  const statusText = commandError ?? connection.notice;
+  const statusText = connection.deleted ? null : (commandError ?? connection.notice);
   const accepting = connection.accepting;
   const pendingOutput = connection.pendingOutput;
   const treeBusy =
@@ -480,12 +498,15 @@ function SessionWorkPage({
   }, [tabsState]);
 
   useEffect(() => {
+    const owner = parentOwner.current;
+    if (owner.deleted) return;
     const summaries = sessionView.subagentSummaries ?? [];
     const nestedOwners = new Set(
       summaries.map((summary) => summary.ownerSessionId).filter((ownerSessionId) => ownerSessionId !== sessionId),
     );
     if (nestedOwners.size === 0) return;
     setChildViews((current) => {
+      if (parentOwner.current !== owner) return current;
       let next = current;
       for (const ownerSessionId of nestedOwners) {
         const existing = next[ownerSessionId] ?? { ...emptyView };
@@ -523,6 +544,7 @@ function SessionWorkPage({
   }, [configurationGeneration]);
 
   const refreshCommands = useCallback(async () => {
+    if (parentOwner.current.deleted) return;
     const request = ++commandRequest.current;
     try {
       const list = await getSessionCommands(sessionId);
@@ -570,8 +592,11 @@ function SessionWorkPage({
   }, [hydrationRevision, refreshCommands, runtimeConfigurationGeneration, sessionId]);
 
   const refreshTree = useCallback(async () => {
+    const owner = parentOwner.current;
+    if (owner.deleted) return;
     try {
-      setTree(await getSessionTree(sessionId));
+      const tree = await getSessionTree(sessionId);
+      if (parentOwner.current === owner) setTree(tree);
     } catch {
       // Tree metadata is best-effort; the transcript works without it.
     }
@@ -734,7 +759,7 @@ function SessionWorkPage({
   const projectName = filesystemPathName(cwd);
   const chatHidden = isMobile && mobileView !== "chat";
   const composerDisabled =
-    accepting || activeTab !== RESEARCH_ASSISTANT_AGENT || sessionView.subagentName !== undefined;
+    connection.deleted || accepting || activeTab !== RESEARCH_ASSISTANT_AGENT || sessionView.subagentName !== undefined;
 
   useEffect(() => {
     const clearDrag = () => {
@@ -758,6 +783,7 @@ function SessionWorkPage({
 
   const loadChild = useCallback(
     (childId: string, refresh = false): Promise<void> => {
+      if (parentOwner.current.deleted) return Promise.resolve();
       const requestKey = `${sessionId}:${childId}`;
       const inFlight = childRequests.current.get(requestKey);
       if (inFlight) {
@@ -1069,6 +1095,7 @@ function SessionWorkPage({
 
   const send = useCallback(
     async (text: string) => {
+      if (parentOwner.current.deleted) return;
       setCommandError(null);
       transcriptRef.current?.scrollToLatest();
       await connection.send(text);
@@ -1080,6 +1107,7 @@ function SessionWorkPage({
 
   const executeCommand = useCallback(
     (command: SkillCommandDto, args: string) => {
+      if (parentOwner.current.deleted) return;
       setCommandError(null);
       if (command.name === "name") {
         setRenameInitialName(args || sessionView.sessionName || "");
@@ -1094,6 +1122,7 @@ function SessionWorkPage({
       if (command.name === "compact") {
         // SSE owns progress; the POST acknowledgement can arrive after completion.
         void compactSession(sessionId, args || undefined).catch((error: unknown) => {
+          if (parentOwner.current.deleted) return;
           setCommandError(error instanceof Error ? error.message : String(error));
         });
         return;
@@ -1115,7 +1144,8 @@ function SessionWorkPage({
 
   const onEditMessage = useCallback(
     async (entryId: string, text: string) => {
-      await connection.navigateTree(entryId);
+      const result = await connection.navigateTree(entryId);
+      if (result.cancelled) return;
       await send(text);
       void refreshTree();
     },
@@ -1142,8 +1172,9 @@ function SessionWorkPage({
       : status === "running" || sessionView.isStreaming
         ? "bg-v2-status-success"
         : "bg-v2-grey-400";
-  const statusLabel =
-    status === "error"
+  const statusLabel = connection.deleted
+    ? t("work.deleted")
+    : status === "error"
       ? t("work.error")
       : status === "running"
         ? t("work.running")
@@ -1202,6 +1233,11 @@ function SessionWorkPage({
           </>
         }
       />
+      {connection.deleted && (
+        <p role="status" className="border-b border-v2-grey-200 px-4 py-2 text-[13px] text-v2-text-text-muted">
+          {t("work.deletedNotice")}
+        </p>
+      )}
       {statusText && (
         <p
           className="border-b border-v2-grey-200 bg-v2-status-error/5 px-4 py-1.5 text-[13px] text-v2-status-error"
@@ -1300,8 +1336,10 @@ function SessionWorkPage({
                 pending={pendingOutput && activeTab === RESEARCH_ASSISTANT_AGENT}
                 onViewDetails={openSubagentTool}
                 messageMeta={activeTab === RESEARCH_ASSISTANT_AGENT ? messageMeta : undefined}
-                onEditMessage={activeTab === RESEARCH_ASSISTANT_AGENT ? onEditMessage : undefined}
-                onSwitchBranch={activeTab === RESEARCH_ASSISTANT_AGENT ? onSwitchBranch : undefined}
+                onEditMessage={!connection.deleted && activeTab === RESEARCH_ASSISTANT_AGENT ? onEditMessage : undefined}
+                onSwitchBranch={
+                  !connection.deleted && activeTab === RESEARCH_ASSISTANT_AGENT ? onSwitchBranch : undefined
+                }
                 steers={activeTab === RESEARCH_ASSISTANT_AGENT ? sessionView.steers : []}
                 hydrationRevision={
                   activeTab === RESEARCH_ASSISTANT_AGENT
@@ -1402,6 +1440,7 @@ function SessionWorkPage({
           onSave={(name) => {
             setRenameInitialName(null);
             void renameSession(sessionId, name).catch((error: unknown) => {
+              if (parentOwner.current.deleted) return;
               setCommandError(error instanceof Error ? error.message : String(error));
             });
           }}

@@ -17,6 +17,7 @@ import { isSubagentSessionName } from "../subagent/session-links";
 import { createFileWatcherFactory } from "./file-watcher";
 import { createDaemonAuthRuntime } from "./auth-runtime";
 import { resolveRenameSessionService } from "./session-rename";
+import { createSessionHistoryLifecycle, validateHistoricalSession } from "./session-lifecycle";
 import { createAgentPatchService } from "./agent-configuration";
 import { createLiveConfiguration, type LiveConfiguration } from "../runtime/live-configuration";
 import { resolvePiDefaultModel, type PiDefaultModelApi } from "../runtime/pi-default-model";
@@ -318,6 +319,7 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
   try {
     await live.start();
     const idleTimeoutMs = await readWebSessionIdleTimeout(config);
+    const historyStore = createReadonlySubagentSessionStore(pi);
     registry = new ActiveSessionRegistry(
       await PiSessionFactory.resolve(live, networkRouter),
       logger,
@@ -325,6 +327,7 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
         idleTimeoutMs,
         resolveLaunchThinking: async (cwd) =>
           (await live.resolveAgents(cwd)).find((agent) => agent.name === RESEARCH_ASSISTANT_AGENT)?.thinking,
+        validateOpen: (input) => historyLifecycle.validateOpen(input),
       },
       createFileWatcherFactory(logger),
     );
@@ -343,7 +346,11 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
       },
     });
     const projectWatches = configurationProjectWatches;
-    const subagentSessions = new SubagentSessionService(createReadonlySubagentSessionStore(pi));
+    const subagentSessions = new SubagentSessionService(historyStore);
+    const historyLifecycle = createSessionHistoryLifecycle({
+      registry: activeRegistry, store: historyStore,
+      sessionsDir: join(agentDir, "sessions"), usage: subagentSessions,
+    });
     const renameSessions = resolveRenameSessionService({
       isConnected: (id) => Promise.resolve(activeRegistry.has(id)),
       setConnectedName: (id, name) => activeRegistry.prompt(id, `/name ${name}`),
@@ -352,6 +359,8 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
         return toUserSessionSummaries(sessions);
       },
       openSessionManager: async (path) => SessionManager.open(path),
+      withHistoryMutation: (target, run) => activeRegistry.withHistoryMutation(target, run),
+      validateHistory: (target) => validateHistoricalSession(target, historyStore),
     });
     const listModels = () => auth.listModels();
     const compactionSettings = createCompactionSettingsService(config, live);
@@ -397,6 +406,7 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
       patchNetworkProxySettings: (patch) => networkProxySettings.patch(patch),
       testNetworkProxy: (request, signal) => networkProxyProbe.test(request, signal),
       renameSession: (sessionId, name) => renameSessions.rename(sessionId, name),
+      deleteSession: (sessionId, force) => historyLifecycle.deleteSession(sessionId, force),
       listConfigProjects,
       directories: new DirectoryService(),
       registry: activeRegistry,

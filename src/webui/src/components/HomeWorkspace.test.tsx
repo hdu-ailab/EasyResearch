@@ -52,6 +52,7 @@ function renderWorkspace(
       onOpenHistory={vi.fn()}
       onRenameSession={handlers.onRenameActive ?? vi.fn()}
       onRenameHistory={handlers.onRenameHistory ?? vi.fn()}
+      onDeleteSession={vi.fn()}
     />,
   );
 }
