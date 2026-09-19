@@ -1336,7 +1336,9 @@ function SessionWorkPage({
                 pending={pendingOutput && activeTab === RESEARCH_ASSISTANT_AGENT}
                 onViewDetails={openSubagentTool}
                 messageMeta={activeTab === RESEARCH_ASSISTANT_AGENT ? messageMeta : undefined}
-                onEditMessage={!connection.deleted && activeTab === RESEARCH_ASSISTANT_AGENT ? onEditMessage : undefined}
+                onEditMessage={
+                  !connection.deleted && activeTab === RESEARCH_ASSISTANT_AGENT ? onEditMessage : undefined
+                }
                 onSwitchBranch={
                   !connection.deleted && activeTab === RESEARCH_ASSISTANT_AGENT ? onSwitchBranch : undefined
                 }
