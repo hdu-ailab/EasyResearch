@@ -1,4 +1,4 @@
-import { Activity, Folder, FolderOpen, Pencil, Plus, Power, Search } from "lucide-react";
+import { Activity, Folder, FolderOpen, Pencil, Plus, Power, Search, Trash2 } from "lucide-react";
 import { useState } from "react";
 import type { ActiveSessionDto, SessionSummaryDto } from "../../../web/contracts";
 import { useI18n } from "../i18n/useI18n";
@@ -28,6 +28,7 @@ export interface HomeWorkspaceProps {
   onOpenHistory: (session: SessionSummaryDto) => void;
   onRenameSession: (session: ActiveSessionDto | SessionSummaryDto) => void;
   onRenameHistory: (session: SessionSummaryDto) => void;
+  onDeleteSession: (session: ActiveSessionDto | SessionSummaryDto) => void;
   disconnectingSessionId?: string | null;
 }
 
@@ -52,6 +53,7 @@ export function HomeWorkspace({
   onOpenHistory,
   onRenameSession,
   onRenameHistory,
+  onDeleteSession,
   disconnectingSessionId = null,
 }: HomeWorkspaceProps) {
   const { language, t } = useI18n();
@@ -135,6 +137,16 @@ export function HomeWorkspace({
           >
             <Power size={13} aria-hidden />
             <span>{disconnecting ? "…" : t("home.disconnect")}</span>
+          </button>
+          <button
+            type="button"
+            aria-label={`${t("home.deleteSession")}: ${title}`}
+            title={t("home.deleteSession")}
+            className="flex size-8 shrink-0 items-center justify-center rounded-md text-v2-text-text-faint transition-colors hover:bg-v2-status-error/10 hover:text-v2-status-error disabled:opacity-50"
+            disabled={disconnecting}
+            onClick={() => onDeleteSession(session)}
+          >
+            <Trash2 size={13} aria-hidden />
           </button>
         </div>
       </li>
@@ -280,6 +292,7 @@ export function HomeWorkspace({
             showCwd={selectedCwd === null}
             onOpenHistory={onOpenHistory}
             onRenameSession={onRenameHistory}
+            onDeleteSession={onDeleteSession}
           />
         )}
       </section>

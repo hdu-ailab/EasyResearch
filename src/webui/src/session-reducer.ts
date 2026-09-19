@@ -1205,6 +1205,14 @@ export function terminateSessionRun(state: SessionViewState, clearError = false)
   };
 }
 
+export function terminateDeletedSession(state: SessionViewState): SessionViewState {
+  return {
+    ...terminateSessionRun(state, true),
+    compactionState: "idle",
+    tools: state.tools.map((tool) => (tool.done ? tool : interruptTool(tool))),
+  };
+}
+
 /**
  * Pure session event reducer. Streaming assistant text is updated in place on
  * each `message_update` token delta; `agent_settled` clears the streaming

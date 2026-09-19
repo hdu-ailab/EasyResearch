@@ -4253,7 +4253,134 @@ describe("WorkPage", () => {
     expect(screen.queryByText(/session ended/i)).toBeNull();
     expect(screen.getByText("write a paper")).toBeTruthy();
     expect(screen.getByText("starting research")).toBeTruthy();
+    expect(unsubscribeFn).not.toHaveBeenCalled();
+    expect(screen.getByRole("textbox", { name: /message/i })).toBeEnabled();
   });
+
+  it("disables the real composer after deletion during hydration and keeps Home available", async () => {
+    const pendingSnapshot = deferred<Awaited<ReturnType<typeof api.getSnapshot>>>();
+    vi.mocked(api.getSnapshot).mockReturnValueOnce(pendingSnapshot.promise);
+    const user = userEvent.setup();
+    const onBack = vi.fn();
+    render(<WorkPage id="s1" cwd="/p" onBack={onBack} onOpenSettings={() => {}} />);
+    const input = screen.getByRole("textbox", { name: /message/i });
+    fireEvent.change(input, { target: { value: "do not send" } });
+    emitInAct({ type: "session_deactivated", sessionId: "s1" });
+    expect(unsubscribeFn).not.toHaveBeenCalled();
+    emitInAct({ type: "session_deleted", sessionId: "s1" });
+    await act(async () => pendingSnapshot.resolve(snapshot));
+    emitInAct({ type: "snapshot", ...snapshotValue, subagents: [] });
+    expect(input).toBeDisabled();
+    expect(screen.getByText("This session was deleted.")).toBeVisible();
+    expect(screen.queryByText("starting research")).toBeNull();
+    expect(unsubscribeFn).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole("button", { name: /send/i }));
+    expect(api.sendPrompt).not.toHaveBeenCalled();
+    expect(api.openSession).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: /back to home/i }));
+    expect(onBack).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let a late command failure replace the deleted notice", async () => {
+    let reject!: (reason: Error) => void;
+    vi.mocked(api.compactSession).mockReturnValueOnce(
+      new Promise((_resolve, rejectPromise) => {
+        reject = rejectPromise;
+      }),
+    );
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+    const input = screen.getByRole("textbox", { name: /message/i });
+    await user.type(input, "/compact{Enter}");
+    await waitFor(() => expect(api.compactSession).toHaveBeenCalled());
+    emitInAct({ type: "session_deleted", sessionId: "s1" });
+    await act(async () => reject(new Error("Late compaction failure")));
+    expect(screen.getByText("This session was deleted.")).toBeVisible();
+    expect(screen.queryByText("Late compaction failure")).toBeNull();
+    expect(input).toBeDisabled();
+    expect(screen.getByText("starting research")).toBeVisible();
+  });
+
+  it("rejects retained-child hydration after terminal deletion", async () => {
+    const pendingChild = deferred<Awaited<ReturnType<typeof api.getChildSnapshot>>>();
+    vi.mocked(api.getChildSnapshot).mockReturnValueOnce(pendingChild.promise);
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+    emitInAct({
+      type: "tool_execution_start",
+      toolCallId: "child-delete",
+      toolName: "subagent",
+      args: { agent: "search", task: "search" },
+    });
+    emitSupervisor({ toolCallId: "child-delete", childSessionId: "child-deleted", agentId: "search_0" });
+    await user.click(screen.getByRole("button", { name: "Agent search_0" }));
+    await waitFor(() => expect(api.getChildSnapshot).toHaveBeenCalledWith("s1", "child-deleted"));
+    emitInAct({ type: "session_deleted", sessionId: "s1" });
+    await act(async () =>
+      pendingChild.resolve({
+        session: { id: "child-deleted", cwd: "/p", sessionName: "easyresearch:search" },
+        timeline: [
+          {
+            kind: "message",
+            entryId: "late-child",
+            message: { role: "assistant", content: [{ type: "text", text: "late child history" }] },
+          },
+        ],
+        subagents: [],
+      } as never),
+    );
+    expect(screen.getByText("This session was deleted.")).toBeVisible();
+    expect(screen.queryByText("late child history")).toBeNull();
+    expect(screen.getByRole("textbox", { name: /message/i })).toBeDisabled();
+    expect(api.getChildSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([true, false])(
+    "keeps nested summary hydration terminal when initial snapshot and deletion are batched=%s",
+    async (batched) => {
+      const pendingSnapshot = deferred<Awaited<ReturnType<typeof api.getSnapshot>>>();
+      vi.mocked(api.getSnapshot).mockReturnValueOnce(pendingSnapshot.promise);
+      render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+      const initial = {
+        ...snapshotValue,
+        session: { ...snapshotValue.session, status: "running" },
+        runtimeConfigurationGeneration: 1,
+        compactionPolicy: { triggerPercent: 70, enabled: true },
+        subagents: [
+          subagentSummary("root-writing", "child-writing", "writing", {
+            agentId: "writing_0",
+            status: "working",
+          }),
+          subagentSummary("nested-search", "grandchild-search", "search", {
+            ownerSessionId: "child-writing",
+            agentId: "search_nested",
+            status: "working",
+            latestMessage: "nested work",
+          }),
+        ],
+      } as never;
+
+      if (batched) {
+        await act(async () => {
+          pendingSnapshot.resolve(initial);
+          await Promise.resolve();
+          emit({ type: "session_deleted", sessionId: "s1" });
+        });
+      } else {
+        await act(async () => pendingSnapshot.resolve(initial));
+        expect(screen.getByRole("button", { name: "Stop agent: search_nested" })).toBeVisible();
+        emitInAct({ type: "session_deleted", sessionId: "s1" });
+      }
+
+      expect(screen.getByText("This session was deleted.")).toBeVisible();
+      expect(screen.getByRole("textbox", { name: /message/i })).toBeDisabled();
+      expect(screen.queryByRole("button", { name: "Stop agent: search_nested" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Agent search_nested" })).toBeNull();
+      expect(api.getChildSnapshot).not.toHaveBeenCalled();
+    },
+  );
 
   it("auto-reopens the deactivated session and re-sends the message", async () => {
     const user = userEvent.setup();
@@ -4276,6 +4403,8 @@ describe("WorkPage", () => {
       } as never);
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
+    emitInAct({ type: "session_deactivated", sessionId: "s1" });
+    expect(unsubscribeFn).not.toHaveBeenCalled();
     const input = screen.getByRole("textbox", { name: /message/i });
     expect(input).toBeVisible();
     expect(input).toBeEnabled();

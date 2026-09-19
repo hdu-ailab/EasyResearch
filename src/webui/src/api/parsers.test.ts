@@ -36,6 +36,22 @@ import {
 describe("API response parsers", () => {
   const compactionPolicy = { triggerPercent: 70, enabled: true };
 
+  it("accepts terminal deletion only with a nonempty session identity", () => {
+    expect(parserModule.parseSessionDeletedEvent({ type: "session_deleted", sessionId: "root-1" })).toEqual({
+      type: "session_deleted",
+      sessionId: "root-1",
+    });
+    for (const value of [
+      null,
+      [],
+      {},
+      { type: "session_deactivated", sessionId: "root-1" },
+      ...[undefined, null, 42, "", "  "].map((sessionId) => ({ type: "session_deleted", sessionId })),
+    ]) {
+      expect(() => parserModule.parseSessionDeletedEvent(value)).toThrow();
+    }
+  });
+
   it("accepts frozen completion batches in root, read-only child, and nested timelines", () => {
     const entry = completionEntry();
     const child = { session: { id: "child", cwd: "/p" }, timeline: [entry], subagents: [] };

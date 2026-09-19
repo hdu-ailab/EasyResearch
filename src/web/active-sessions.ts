@@ -1,4 +1,5 @@
 import type { SessionTreeNode } from "@earendil-works/pi-coding-agent";
+import { existsSync } from "node:fs";
 import type {
   ActiveSessionDto,
   ApiUsageRecordDto,
@@ -6,6 +7,7 @@ import type {
   CompactionStateDto,
   ContextUsageDto,
   SessionActivityChangedEventDto,
+  SessionDeletedEventDto,
   TranscriptTimelineEntryDto,
 } from "./contracts";
 import type {
@@ -22,10 +24,32 @@ import { attachEventLogger } from "./event-logger";
 import type { Logger } from "../runtime/logger";
 import { createNoopFileWatcherFactory, type FileWatcher, type FileWatcherFactory } from "./file-watcher";
 import type { ManualCompactionAcceptedState } from "./manual-compaction";
+import type { SessionHistoryTarget } from "./session-deletion";
 
 const logger = createLogger("web-registry");
 
 export class UnknownSessionError extends Error {}
+
+export class SessionLifecycleConflictError extends Error {
+  constructor() { super("A conflicting session lifecycle operation is in progress."); }
+}
+
+export class SessionBusyError extends Error {
+  readonly code = "SESSION_BUSY";
+  constructor() { super("The session has active work. Confirm Stop and delete to continue."); }
+}
+
+interface LifecycleOperation {
+  id: string;
+  path?: string;
+  kind: "delete" | "rename" | "restart";
+  promise: Promise<unknown>;
+}
+
+export interface SessionDeletionDependencies {
+  resolve(id: string): Promise<SessionHistoryTarget>;
+  remove(target: SessionHistoryTarget, allowMissingRoot: boolean): Promise<unknown>;
+}
 
 export class SessionRegistryShuttingDownError extends Error {
   constructor() {
@@ -48,6 +72,11 @@ interface ActiveRecord {
   idleTimer: ReturnType<typeof setTimeout> | null;
   supervisorActive: boolean;
   rootActivityRevision: number;
+  closing: boolean;
+  clientStopped: boolean;
+  listenersDisposed: boolean;
+  mutations: Set<Promise<unknown>>;
+  historyMayBeMissing: boolean;
 }
 
 type LaunchOptions = StartSessionOptions & { adoptListeners?: Set<(event: unknown) => void> };
@@ -72,12 +101,15 @@ export interface CreateSessionInput {
 export interface OpenSessionInput {
   cwd: string;
   sessionPath: string;
+  sessionId?: string;
 }
 
 export interface ActiveSessionRegistryOptions {
   idleTimeoutMs?: number;
   /** Resolves the Research Assistant thinking default for fresh session launches. */
   resolveLaunchThinking?: (cwd: string) => Promise<string | undefined>;
+  /** Persistent hosts revalidate physical identity under admission before Pi opens. */
+  validateOpen?: (input: OpenSessionInput) => void;
 }
 
 /**
@@ -89,8 +121,12 @@ export class ActiveSessionRegistry {
   private readonly records = new Map<string, ActiveRecord>();
   private readonly opening = new Map<string, Promise<ActiveSessionDto>>();
   private readonly pendingLaunches = new Set<PendingLaunch>();
+  private readonly lifecycleOperations = new Set<LifecycleOperation>();
+  private readonly subscriptions = new Map<string, Set<(event: unknown) => void>>();
+  private readonly fileWatchLeases = new Map<string, { id: string; watcher: FileWatcher }>();
   private readonly idleTimeoutMs: number;
   private readonly resolveLaunchThinking?: (cwd: string) => Promise<string | undefined>;
+  private readonly validateOpen?: (input: OpenSessionInput) => void;
   private shuttingDown = false;
 
   constructor(
@@ -101,6 +137,7 @@ export class ActiveSessionRegistry {
   ) {
     this.idleTimeoutMs = options.idleTimeoutMs ?? 3_600_000;
     this.resolveLaunchThinking = options.resolveLaunchThinking;
+    this.validateOpen = options.validateOpen;
   }
 
   async create(input: CreateSessionInput): Promise<ActiveSessionDto> {
@@ -109,7 +146,20 @@ export class ActiveSessionRegistry {
 
   open(input: OpenSessionInput): Promise<ActiveSessionDto> {
     if (this.shuttingDown) return Promise.reject(new SessionRegistryShuttingDownError());
+    if (this.conflictingOperation(input.sessionId, input.sessionPath)) {
+      return Promise.reject(new SessionLifecycleConflictError());
+    }
+    if ([...this.pendingLaunches].some((launch) =>
+      launch.options.sessionPath === input.sessionPath && (launch.cancelled || launch.initialSettled))) {
+      return Promise.reject(new SessionLifecycleConflictError());
+    }
     for (const record of this.records.values()) {
+      if (record.sessionPath === input.sessionPath && record.closing) {
+        return Promise.reject(new SessionLifecycleConflictError());
+      }
+      if (record.cwd === input.cwd && record.sessionPath === input.sessionPath && record.dto.status === "error") {
+        return this.restart(record.dto.id);
+      }
       if (
         record.cwd === input.cwd &&
         record.sessionPath === input.sessionPath &&
@@ -128,7 +178,7 @@ export class ActiveSessionRegistry {
       tracked = this.launch(this.reserveLaunch({
         cwd: input.cwd,
         sessionPath: input.sessionPath,
-      })).finally(() => {
+      }), input).finally(() => {
         if (this.opening.get(key) === tracked) this.opening.delete(key);
       });
     } catch (error) {
@@ -149,16 +199,9 @@ export class ActiveSessionRegistry {
   }
 
   activeWorkCount(): number {
-    let count = this.pendingLaunches.size;
+    let count = this.pendingLaunches.size + this.lifecycleOperations.size;
     for (const record of this.records.values()) {
-      if (!isConnectedStatus(record.dto.status)) continue;
-      if (
-        record.dto.status === "starting"
-        || record.dto.status === "running"
-        || record.dto.isStreaming
-        || record.supervisorActive
-        || record.client.hasBackgroundWork()
-      ) count += 1;
+      if (this.isBusy(record)) count += 1;
     }
     return count;
   }
@@ -217,7 +260,7 @@ export class ActiveSessionRegistry {
    */
   async prompt(id: string, message: string): Promise<void> {
     if (this.shuttingDown) throw new SessionRegistryShuttingDownError();
-    return this.withRecord(id, async (record) => {
+    return this.withMutation(id, async (record) => {
       this.clearIdleTimer(record);
       try {
         await record.client.prompt(message);
@@ -230,7 +273,7 @@ export class ActiveSessionRegistry {
   }
 
   async abort(id: string): Promise<void> {
-    return this.withRecord(id, async (record) => {
+    return this.withMutation(id, async (record) => {
       await record.client.abort();
       await this.refreshFromClient(record);
     });
@@ -243,7 +286,7 @@ export class ActiveSessionRegistry {
   }
 
   async setModel(id: string, provider: string, modelId: string): Promise<void> {
-    return this.withRecord(id, (record) => record.client.setModel(provider, modelId));
+    return this.withMutation(id, (record) => record.client.setModel(provider, modelId));
   }
 
   /**
@@ -251,10 +294,10 @@ export class ActiveSessionRegistry {
    * the next LLM call, even while a run is in progress.
    */
   async setThinkingLevel(id: string, level: string): Promise<void> {
-    return this.withRecord(id, (record) => record.client.setThinkingLevel(level));
+    return this.withMutation(id, (record) => record.client.setThinkingLevel(level));
   }
 
-  /** True when a live registry record exists for the id (i.e. the session is connected). */
+  /** Includes records retained for retryable terminal cleanup. */
   has(id: string): boolean {
     return this.records.has(id);
   }
@@ -326,16 +369,23 @@ export class ActiveSessionRegistry {
     entryId: string,
     options?: TreeNavigationOptions,
   ): Promise<TreeNavigationResult> {
-    return this.withRecord(id, (record) => record.client.navigateTree(entryId, options));
+    return this.withMutation(id, (record) => record.client.navigateTree(entryId, options));
   }
 
   async compact(id: string, customInstructions?: string): Promise<{ state: ManualCompactionAcceptedState }> {
-    return this.withRecord(id, (record) => record.client.compact(customInstructions));
+    return this.withMutation(id, (record) => record.client.compact(customInstructions));
   }
 
   async stop(id: string): Promise<void> {
+    if (this.conflictingOperation(id)) throw new SessionLifecycleConflictError();
     const record = this.records.get(id);
     if (!record) return;
+    return this.stopRecord(record);
+  }
+
+  private async stopRecord(record: ActiveRecord): Promise<void> {
+    const id = record.dto.id;
+    record.closing = true;
     this.clearIdleTimer(record);
     if (!record.stopPromise) {
       let tracked!: Promise<void>;
@@ -349,7 +399,16 @@ export class ActiveSessionRegistry {
             });
           });
         }
-        await record.client.stop();
+        if (!record.clientStopped) {
+          await record.client.stop();
+          record.clientStopped = true;
+        }
+        // Native Stop cancels its writers; registry-owned calls must also settle.
+        await Promise.allSettled([...record.mutations]);
+        if (!record.listenersDisposed) {
+          record.dispose();
+          record.listenersDisposed = true;
+        }
         if (!record.stopNotified) {
           record.stopNotified = true;
           this.publishEvent(record, { type: "session_deactivated", sessionId: record.dto.id });
@@ -357,7 +416,6 @@ export class ActiveSessionRegistry {
         record.dto.isStreaming = false;
         record.dto.status = "stopped";
         record.dto.error = undefined;
-        record.dispose();
         (this.logger ?? logger).info("session deactivated", { sessionId: record.dto.id });
         if (this.records.get(id) === record) this.records.delete(id);
       })().catch((error) => {
@@ -367,6 +425,7 @@ export class ActiveSessionRegistry {
       record.stopPromise = tracked;
     }
     await record.stopPromise;
+    if (this.records.get(id) === record) this.records.delete(id);
   }
 
   async restart(id: string): Promise<ActiveSessionDto> {
@@ -374,34 +433,94 @@ export class ActiveSessionRegistry {
     if (!record) {
       throw new UnknownSessionError(`Unknown session: ${id}`);
     }
-    const oldListeners = record.listeners;
-    const pending = this.reserveLaunch({
-      cwd: record.cwd,
-      sessionPath: record.sessionPath,
-      adoptListeners: oldListeners,
+    return this.runLifecycle({ id, path: record.sessionPath, kind: "restart" }, async () => {
+      const pending = this.reserveLaunch({
+        cwd: record.cwd,
+        sessionPath: record.sessionPath,
+        adoptListeners: record.listeners,
+      });
+      let launchStarted = false;
+      try {
+        await this.stopRecord(record);
+        launchStarted = true;
+        return await this.launch(pending, record.sessionPath ? {
+          cwd: record.cwd, sessionPath: record.sessionPath, sessionId: id,
+        } : undefined);
+      } catch (error) {
+        if (!launchStarted) this.releasePendingReservation(pending);
+        throw error;
+      }
     });
-    let launchStarted = false;
-    try {
-      await this.stop(id);
-      launchStarted = true;
-      return await this.launch(pending);
-    } catch (error) {
-      if (!launchStarted) this.releasePendingReservation(pending);
-      throw error;
-    }
+  }
+
+  withHistoryMutation<T>(target: SessionHistoryTarget, run: () => Promise<T>): Promise<T> {
+    if (this.records.has(target.id) || [...this.pendingLaunches].some((launch) =>
+      launch.options.sessionPath === target.path)) return Promise.reject(new SessionLifecycleConflictError());
+    return this.runLifecycle({ id: target.id, path: target.path, kind: "rename" }, run);
+  }
+
+  deleteSession(id: string, force: boolean, history: SessionDeletionDependencies): Promise<void> {
+    const existing = this.deletionCompletion(id);
+    if (existing) return existing;
+    const record = this.records.get(id);
+    if (!force && record && this.isBusy(record)) return Promise.reject(new SessionBusyError());
+    return this.runLifecycle({ id, path: record?.sessionPath, kind: "delete" }, async (operation) => {
+      const target = record?.sessionPath
+        ? { id, cwd: record.cwd, path: record.sessionPath }
+        : await history.resolve(id);
+      if (this.conflictingOperation(id, target.path, operation)) throw new SessionLifecycleConflictError();
+      operation.path = target.path;
+      // An already-admitted open can finish while the native listing resolves.
+      const live = this.records.get(id) ?? record;
+      if (target.id !== id || live && (live.sessionPath !== target.path || live.cwd !== target.cwd)) {
+        throw new SessionLifecycleConflictError();
+      }
+      const pending = [...this.pendingLaunches].filter((launch) => launch.options.sessionPath === target.path);
+      if (!force && (pending.length > 0 || live && this.isBusy(live))) throw new SessionBusyError();
+      const allowMissingRoot = live?.historyMayBeMissing === true && !existsSync(target.path);
+      for (const launch of pending) launch.cancelled = true;
+      const cleanup = await Promise.allSettled([
+        ...pending.map((launch) => this.settlePendingForShutdown(launch)),
+        ...(live ? [this.stopRecord(live)] : []),
+      ]);
+      const failures = cleanup.flatMap((outcome) => outcome.status === "rejected" ? [outcome.reason] : []);
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) throw new AggregateError(failures, "Session deletion cleanup failed");
+      try {
+        await history.remove(target, allowMissingRoot);
+      } catch (error) {
+        // A lazy root has no durable listing from which a failed attempt can retry.
+        if (allowMissingRoot && live) this.records.set(id, live);
+        throw error;
+      }
+      if (this.records.get(id) === live) this.records.delete(id);
+      this.publishTo(this.subscriptions.get(id), { type: "session_deleted", sessionId: id } satisfies SessionDeletedEventDto);
+    });
+  }
+
+  deletionCompletion(id: string): Promise<void> | undefined {
+    return [...this.lifecycleOperations].find((operation) => operation.id === id && operation.kind === "delete")
+      ?.promise as Promise<void> | undefined;
   }
 
   subscribe(id: string, listener: (event: unknown) => void): () => void {
     const record = this.records.get(id);
     if (!record) throw new UnknownSessionError(`Unknown session: ${id}`);
+    this.subscriptions.set(id, record.listeners);
     record.listeners.add(listener);
-    return () => record.listeners.delete(listener);
+    const listeners = record.listeners;
+    return () => {
+      listeners.delete(listener);
+      if (listeners.size === 0 && this.subscriptions.get(id) === listeners) this.subscriptions.delete(id);
+    };
   }
 
   acquireFileWatchLease(id: string): string {
     const record = this.records.get(id);
     if (!record) throw new UnknownSessionError(`Unknown session: ${id}`);
-    return record.fileWatcher.acquireLease();
+    const leaseId = record.fileWatcher.acquireLease();
+    this.fileWatchLeases.set(leaseId, { id, watcher: record.fileWatcher });
+    return leaseId;
   }
 
   replaceFileWatchLease(
@@ -416,8 +535,10 @@ export class ActiveSessionRegistry {
   }
 
   releaseFileWatchLease(id: string, leaseId: string): void {
-    // The session may have stopped before its EventSource cancellation runs.
-    this.records.get(id)?.fileWatcher.releaseLease(leaseId);
+    const lease = this.fileWatchLeases.get(leaseId);
+    if (lease?.id !== id) return;
+    this.fileWatchLeases.delete(leaseId);
+    lease.watcher.releaseLease(leaseId);
   }
 
   async shutdown(): Promise<void> {
@@ -425,8 +546,10 @@ export class ActiveSessionRegistry {
     const pending = [...this.pendingLaunches];
     const outcomes = await Promise.allSettled(
       [
-        ...[...this.records.values()].map((record) => this.stop(record.dto.id)),
+        ...[...this.records.values()].map((record) => this.stopRecord(record)),
         ...pending.map((launch) => this.settlePendingForShutdown(launch)),
+        // Request errors belong to their callers; shutdown still owns settlement.
+        ...[...this.lifecycleOperations].map((operation) => operation.promise.catch(() => {})),
       ],
     );
     const failures = outcomes.flatMap((outcome) =>
@@ -467,10 +590,11 @@ export class ActiveSessionRegistry {
   }
 
   private throwIfLaunchCancelled(pending: PendingLaunch): void {
-    if (pending.cancelled || this.shuttingDown) throw new SessionRegistryShuttingDownError();
+    if (this.shuttingDown) throw new SessionRegistryShuttingDownError();
+    if (pending.cancelled) throw new SessionLifecycleConflictError();
   }
 
-  private async launch(pending: PendingLaunch): Promise<ActiveSessionDto> {
+  private async launch(pending: PendingLaunch, historical?: OpenSessionInput): Promise<ActiveSessionDto> {
     const { options } = pending;
     const dto: ActiveSessionDto = {
       id: "",
@@ -490,6 +614,7 @@ export class ActiveSessionRegistry {
       // the in-process runtime binding remains authoritative.
       const launchThinking = !options.sessionPath ? await this.resolveLaunchThinking?.(options.cwd) : undefined;
       this.throwIfLaunchCancelled(pending);
+      if (historical) this.validateOpen?.(historical);
       const client = this.factory.create(launchThinking === undefined ? options : { ...options, thinking: launchThinking });
       const record: ActiveRecord = {
         dto,
@@ -505,6 +630,11 @@ export class ActiveSessionRegistry {
         idleTimer: null,
         supervisorActive: false,
         rootActivityRevision: 0,
+        closing: false,
+        clientStopped: false,
+        listenersDisposed: false,
+        mutations: new Set(),
+        historyMayBeMissing: !options.sessionPath,
       };
       pending.record = record;
       (this.logger ?? logger).info("session launch", { cwd: options.cwd, sessionPath: options.sessionPath ?? "" });
@@ -548,11 +678,13 @@ export class ActiveSessionRegistry {
       const state = await client.getState();
       this.throwIfLaunchCancelled(pending);
       dto.id = state.sessionId;
+      record.listeners = this.subscriptions.get(dto.id) ?? record.listeners;
       if (state.sessionFile) {
         dto.sessionFile = state.sessionFile;
         // Resume must target the real session file, even when it was created
         // during this launch (create has no sessionPath up front).
         record.sessionPath = state.sessionFile;
+        if (existsSync(state.sessionFile)) record.historyMayBeMissing = false;
       }
       if (state.sessionName) dto.sessionName = state.sessionName;
       if (rootActivityRevision === record.rootActivityRevision) dto.isStreaming = state.isStreaming;
@@ -593,7 +725,7 @@ export class ActiveSessionRegistry {
         if (cleanupError === undefined) pending.resolveSettlement();
         else pending.rejectSettlement(cleanupError);
       }
-      if (pending.cancelled || this.shuttingDown) throw new SessionRegistryShuttingDownError();
+      this.throwIfLaunchCancelled(pending);
       throw error;
     }
     return { ...dto };
@@ -654,7 +786,11 @@ export class ActiveSessionRegistry {
   }
 
   private publishEvent(record: ActiveRecord, event: unknown): void {
-    for (const listener of [...record.listeners]) {
+    this.publishTo(record.listeners, event);
+  }
+
+  private publishTo(listeners: Set<(event: unknown) => void> | undefined, event: unknown): void {
+    for (const listener of [...listeners ?? []]) {
       try {
         listener(event);
       } catch {
@@ -670,6 +806,9 @@ export class ActiveSessionRegistry {
    */
   private syncDtoFromEvent(record: ActiveRecord, event: unknown): boolean {
     const type = (event as { type?: string }).type;
+    if (type === "message_end" && (event as { message?: { role?: string } }).message?.role === "assistant") {
+      record.historyMayBeMissing = false;
+    }
     let activityChanged = false;
     if (type === "agent_start") {
       this.clearIdleTimer(record);
@@ -757,6 +896,9 @@ export class ActiveSessionRegistry {
 
   private canIdleStop(record: ActiveRecord): boolean {
     return record.dto.status === "ready"
+      && !record.closing
+      && !this.conflictingOperation(record.dto.id, record.sessionPath)
+      && record.mutations.size === 0
       && !record.dto.isStreaming
       && !record.client.hasBackgroundWork();
   }
@@ -784,6 +926,52 @@ export class ActiveSessionRegistry {
     const record = this.records.get(id);
     if (!record) return Promise.reject(new UnknownSessionError(`Unknown session: ${id}`));
     return run(record);
+  }
+
+  private isBusy(record: ActiveRecord): boolean {
+    if (record.dto.status === "stopped") return false;
+    return record.dto.status === "starting" || record.dto.isStreaming || record.supervisorActive
+      || record.mutations.size > 0 || record.closing || record.client.hasBackgroundWork()
+      || record.client.isSupervisorActive() || record.client.getCompactionState() !== "idle";
+  }
+
+  private withMutation<T>(id: string, run: (record: ActiveRecord) => Promise<T>): Promise<T> {
+    if (this.shuttingDown) return Promise.reject(new SessionRegistryShuttingDownError());
+    return this.withRecord(id, (record) => {
+      if (record.closing || this.conflictingOperation(id, record.sessionPath)) {
+        return Promise.reject(new SessionLifecycleConflictError());
+      }
+      const operation = run(record);
+      record.mutations.add(operation);
+      void operation.finally(() => {
+        record.mutations.delete(operation);
+        this.reconcileIdleLease(record);
+      }).catch(() => {});
+      return operation;
+    });
+  }
+
+  private conflictingOperation(id?: string, path?: string, except?: LifecycleOperation): boolean {
+    return [...this.lifecycleOperations].some((operation) => operation !== except
+      && (id !== undefined && operation.id === id || path !== undefined && operation.path === path));
+  }
+
+  private runLifecycle<T>(
+    input: Omit<LifecycleOperation, "promise">,
+    run: (operation: LifecycleOperation) => Promise<T>,
+  ): Promise<T> {
+    if (this.shuttingDown) return Promise.reject(new SessionRegistryShuttingDownError());
+    if (this.conflictingOperation(input.id, input.path)) return Promise.reject(new SessionLifecycleConflictError());
+    const operation: LifecycleOperation = { ...input, promise: Promise.resolve() };
+    this.lifecycleOperations.add(operation);
+    const promise = Promise.resolve().then(() => run(operation)).finally(() => {
+      this.lifecycleOperations.delete(operation);
+      for (const record of this.records.values()) {
+        if (record.dto.id === input.id || record.sessionPath === operation.path) this.reconcileIdleLease(record);
+      }
+    });
+    operation.promise = promise;
+    return promise;
   }
 }
 

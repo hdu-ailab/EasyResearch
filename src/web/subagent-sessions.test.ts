@@ -8,6 +8,7 @@ import { AGENT_ALIAS_ENTRY } from "../subagent/agent-alias";
 import { SUBAGENT_JOB_ENTRY, type SubagentJobJournalRecord } from "../subagent/job-journal";
 import { SUBAGENT_SESSION_LINK_ENTRY } from "../subagent/session-links";
 import { projectSessionTimeline } from "./session-timeline";
+import { projectSessionUsage } from "./api-usage";
 import type {
   ChildSessionSnapshotDto,
   SessionSnapshotDto,
@@ -101,6 +102,46 @@ describe("SubagentSessionService", () => {
   function createSession(sessionCwd = cwd): SessionManagerInstance {
     return SessionManager.create(sessionCwd, sessionDir);
   }
+
+  it("invalidates deleted history rather than retaining cached billed records", async () => {
+    const root = createSession();
+    root.appendMessage(user("request"));
+    root.appendMessage(assistantUsage(10, 2, 0.5, "answer"));
+    root.appendMessage(assistantUsage(20, 3, 1, "another answer"));
+    const sessions = service();
+    const rootId = root.getSessionId();
+    const record = projectSessionUsage(rootId, root.getEntries(), root.getBranch()).inlineUsage[0]!;
+    expect((await sessions.statistics(rootId)).total.records).toBe(2);
+    unlinkSync(root.getSessionFile()!);
+    sessions.invalidateUsage();
+    // Only the explicitly supplied live record remains, not the old disk totals.
+    expect((await sessions.trackUsage(rootId, record)).total.records).toBe(1);
+  });
+
+  it("does not let an overlapping history projection repopulate the invalidated cache", async () => {
+    const root = createSession();
+    root.appendMessage(user("request"));
+    root.appendMessage(assistantUsage(10, 2, 0.5, "answer"));
+    root.appendMessage(assistantUsage(20, 3, 1, "another answer"));
+    const reader = createReadonlySubagentSessionStore(pi);
+    let invalidateOnOpen = true;
+    const sessions = new SubagentSessionService({
+      listAll: () => SessionManager.listAll(sessionDir),
+      open: (path) => {
+        const manager = reader.open(path);
+        if (invalidateOnOpen) {
+          invalidateOnOpen = false;
+          sessions.invalidateUsage();
+          unlinkSync(path);
+        }
+        return manager;
+      },
+    });
+    const rootId = root.getSessionId();
+    const record = projectSessionUsage(rootId, root.getEntries(), root.getBranch()).inlineUsage[0]!;
+    expect((await sessions.statistics(rootId)).total.records).toBe(2);
+    expect((await sessions.trackUsage(rootId, record)).total.records).toBe(1);
+  });
 
   function service(listAll = () => SessionManager.listAll(sessionDir)): SubagentSessionService {
     return new SubagentSessionService({

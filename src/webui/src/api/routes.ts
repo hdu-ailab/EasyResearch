@@ -26,6 +26,7 @@ export const routes = {
   networkProxyTest: () => `${API_ROOT}/settings/network-proxy/test`,
   runtimeRestart: () => `${API_ROOT}/runtime/restart`,
   sessionName: (id: string) => `${session(id)}/name`,
+  deleteSession: session,
   directoryRoots: () => `${API_ROOT}/directories/roots`,
   directories: (path: string) => `${API_ROOT}/directories?${new URLSearchParams({ path }).toString()}`,
   createDirectory: () => `${API_ROOT}/directories`,

@@ -1,6 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { type ReactNode, StrictMode } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionSnapshotDto, SubagentSupervisorEventDto } from "../../../web/contracts";
 import * as api from "../api";
 import { useSessionConnection } from "./useSessionConnection";
@@ -132,6 +132,7 @@ function subagentLaunchEnd(): unknown {
 }
 
 describe("useSessionConnection", () => {
+  afterEach(() => vi.unstubAllGlobals());
   beforeEach(() => {
     handlers = [];
     vi.mocked(api.getSnapshot).mockReset().mockResolvedValue(initialSnapshot);
@@ -167,6 +168,233 @@ describe("useSessionConnection", () => {
     });
 
     expect(result.current.view.messages.map((message) => message.text)).toEqual(["authoritative reconnect"]);
+  });
+
+  it("makes deletion terminal before late HTTP/SSE hydration and rejects further work", async () => {
+    const pending = deferred<SessionSnapshotDto>();
+    vi.mocked(api.getSnapshot).mockReturnValueOnce(pending.promise);
+    const { result } = renderHook(() =>
+      useSessionConnection({ initialSessionId: "s1", cwd: "/paper", onEvent: () => true }),
+    );
+    const close = vi.mocked(api.connectSessionEvents).mock.results[0]!.value;
+    emit({ type: "session_deleted", sessionId: "s1" });
+    await act(async () => pending.resolve(initialSnapshot));
+    emit({ type: "snapshot", ...initialSnapshot });
+    emit({ type: "agent_start" });
+    act(() => handlers[0]!.onError());
+    expect(result.current.deleted).toBe(true);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(result.current.view.messages).toEqual([]);
+    expect(result.current.status).toBe("stopped");
+    expect(result.current.sessionPath).toBeNull();
+    expect(result.current.fileWatchLeaseId).toBeNull();
+    await act(async () => {
+      await result.current.send("must not send");
+      await result.current.abort();
+    });
+    expect(api.sendPrompt).not.toHaveBeenCalled();
+    expect(api.openSession).not.toHaveBeenCalled();
+    expect(api.abortSession).not.toHaveBeenCalled();
+  });
+
+  it("ignores malformed and foreign deletion frames without suppressing hydration", async () => {
+    const pending = deferred<SessionSnapshotDto>();
+    vi.mocked(api.getSnapshot).mockReturnValueOnce(pending.promise);
+    const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
+    for (const sessionId of [undefined, "", 42, "other"]) emit({ type: "session_deleted", sessionId });
+    await act(async () => pending.resolve(initialSnapshot));
+    expect(result.current.deleted).toBe(false);
+    expect(result.current.view.messages[0]?.text).toBe("snapshot text");
+  });
+
+  it("discards queued deltas and settles pending output, retry, compaction, and steers on deletion", async () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal(
+      "requestAnimationFrame",
+      vi.fn((callback: FrameRequestCallback) => frames.push(callback)),
+    );
+    const cancelFrame = vi.fn();
+    vi.stubGlobal("cancelAnimationFrame", cancelFrame);
+    const pending = deferred<void>();
+    vi.mocked(api.sendPrompt).mockReturnValueOnce(pending.promise);
+    const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    let sending!: Promise<void>;
+    act(() => {
+      sending = result.current.send("work");
+    });
+    emit({ type: "agent_start" });
+    emit({
+      type: "message_start",
+      message: { id: "live", role: "assistant", content: [{ type: "text", text: "visible" }] },
+    });
+    emit({ type: "queue_update", steering: ["queued"] });
+    emit({ type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 2000, errorMessage: "retry" });
+    emit({ type: "compaction_state_changed", state: "queued" });
+    emit({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: " stale frame" },
+    });
+    expect(frames).toHaveLength(1);
+    emit({ type: "session_deleted", sessionId: "s1" });
+    act(() => frames[0]!(0));
+    pending.reject(unknownSession());
+    await act(async () => sending);
+    expect(cancelFrame).toHaveBeenCalledWith(1);
+    expect(result.current.view.messages.at(-1)).toMatchObject({ text: "visible", streaming: false, isThinking: false });
+    expect(result.current.view).toMatchObject({ isStreaming: false, steers: [], retry: null, compactionState: "idle" });
+    expect(result.current.accepting).toBe(false);
+    expect(result.current.pendingOutput).toBe(false);
+    expect(api.openSession).not.toHaveBeenCalled();
+  });
+
+  it.each(["open", "stream"])("cancels automatic resend when deletion arrives during reopen %s", async (phase) => {
+    const pendingOpen = deferred<ReturnType<typeof reopenedSession>>();
+    vi.mocked(api.sendPrompt).mockRejectedValueOnce(unknownSession());
+    vi.mocked(api.openSession).mockReturnValueOnce(pendingOpen.promise);
+    const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
+    await waitFor(() => expect(result.current.sessionPath).not.toBeNull());
+    emit({ type: "session_deactivated", sessionId: "s1" });
+    expect(vi.mocked(api.connectSessionEvents).mock.results[0]!.value).not.toHaveBeenCalled();
+    let sending!: Promise<void>;
+    act(() => {
+      sending = result.current.send("continue");
+    });
+    await waitFor(() => expect(api.openSession).toHaveBeenCalledTimes(1));
+    if (phase === "stream") {
+      await act(async () => pendingOpen.resolve(reopenedSession("s1")));
+      await waitFor(() => expect(handlers).toHaveLength(2));
+    }
+    emit({ type: "session_deleted", sessionId: "s1" });
+    expect(result.current.accepting).toBe(false);
+    expect(result.current.pendingOutput).toBe(false);
+    pendingOpen.resolve(reopenedSession("s1"));
+    await act(async () => sending);
+    emit({ type: "snapshot", ...initialSnapshot });
+    expect(api.sendPrompt).toHaveBeenCalledTimes(1);
+    expect(result.current.deleted).toBe(true);
+    expect(result.current.accepting).toBe(false);
+    expect(result.current.pendingOutput).toBe(false);
+  });
+
+  it("ignores late steer and abort failures after deletion", async () => {
+    const steer = deferred<void>();
+    const abort = deferred<void>();
+    vi.mocked(api.sendPrompt).mockReturnValueOnce(steer.promise);
+    vi.mocked(api.abortSession).mockReturnValueOnce(abort.promise);
+    const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    emit({ type: "agent_start" });
+    let sending!: Promise<void>;
+    let aborting!: Promise<void>;
+    act(() => {
+      sending = result.current.send("steer");
+      aborting = result.current.abort();
+    });
+    emit({ type: "session_deleted", sessionId: "s1" });
+    steer.reject(new Error("stale steer failure"));
+    abort.reject(new Error("stale abort failure"));
+    await act(async () => {
+      await sending;
+      await aborting;
+    });
+    expect(result.current.deleted).toBe(true);
+    expect(result.current.notice).toBeNull();
+  });
+
+  it("accepts deletion while a same-id reopen is handing over to its new stream", async () => {
+    const pendingOpen = deferred<ReturnType<typeof reopenedSession>>();
+    vi.mocked(api.sendPrompt).mockRejectedValueOnce(unknownSession());
+    vi.mocked(api.openSession).mockReturnValueOnce(pendingOpen.promise);
+    const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
+    await waitFor(() => expect(result.current.sessionPath).not.toBeNull());
+    let sending!: Promise<void>;
+    act(() => {
+      sending = result.current.send("continue");
+    });
+    await waitFor(() => expect(api.openSession).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      pendingOpen.resolve(reopenedSession("s1"));
+      await Promise.resolve();
+      handlers[0]!.onEvent({ type: "session_deleted", sessionId: "s1" });
+    });
+    expect(result.current.deleted).toBe(true);
+    await act(async () => sending);
+    expect(api.sendPrompt).toHaveBeenCalledTimes(1);
+    expect(api.connectSessionEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["none", "session_deactivated", "agent_settled"])(
+    "preserves the successor send when the superseded same-id stream delivers %s during handover",
+    async (lateEvent) => {
+      const pendingOpen = deferred<ReturnType<typeof reopenedSession>>();
+      vi.mocked(api.sendPrompt).mockRejectedValueOnce(unknownSession());
+      vi.mocked(api.openSession).mockReturnValueOnce(pendingOpen.promise);
+      const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
+      await waitFor(() => expect(result.current.sessionPath).not.toBeNull());
+      emit({ type: "session_deactivated", sessionId: "s1" });
+      const oldStream = handlers[0]!;
+      let sending!: Promise<void>;
+      act(() => {
+        sending = result.current.send("continue");
+      });
+      await waitFor(() => expect(api.openSession).toHaveBeenCalledTimes(1));
+      await act(async () => {
+        pendingOpen.resolve(reopenedSession("s1"));
+        await Promise.resolve();
+        // The reopen continuation has reserved its successor, but React has not attached it yet.
+        if (lateEvent !== "none") oldStream.onEvent({ type: lateEvent, sessionId: "s1" });
+      });
+      expect(handlers).toHaveLength(2);
+      emit({ type: "snapshot", ...initialSnapshot });
+      await act(async () => sending);
+
+      expect({
+        sends: vi.mocked(api.sendPrompt).mock.calls,
+        accepting: result.current.accepting,
+        pendingOutput: result.current.pendingOutput,
+        notice: result.current.notice,
+      }).toEqual({
+        sends: [
+          ["s1", "continue"],
+          ["s1", "continue"],
+        ],
+        accepting: false,
+        pendingOutput: true,
+        notice: null,
+      });
+      expect(result.current.deleted).toBe(false);
+    },
+  );
+
+  it.each(["navigate", "snapshot"])("rejects late tree %s completion after deletion", async (phase) => {
+    const navigation = deferred<Awaited<ReturnType<typeof api.navigateSessionTree>>>();
+    const snapshot = deferred<SessionSnapshotDto>();
+    const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    vi.mocked(api.navigateSessionTree).mockReturnValueOnce(navigation.promise);
+    vi.mocked(api.getSnapshot).mockReturnValueOnce(snapshot.promise);
+    let navigating!: ReturnType<typeof result.current.navigateTree>;
+    act(() => {
+      navigating = result.current.navigateTree("entry");
+    });
+    if (phase === "snapshot")
+      await act(async () => navigation.resolve({ cancelled: false, leafId: "entry", editorText: "stale draft" }));
+    emit({ type: "session_deleted", sessionId: "s1" });
+    navigation.resolve({ cancelled: false, leafId: "entry", editorText: "stale draft" });
+    snapshot.resolve({
+      ...initialSnapshot,
+      session: { ...initialSnapshot.session, isStreaming: true, status: "running" },
+    });
+    let outcome: Awaited<typeof navigating> | undefined;
+    await act(async () => {
+      outcome = await navigating;
+    });
+    expect(outcome).toMatchObject({ cancelled: true });
+    expect(outcome?.editorText).toBeUndefined();
+    expect(result.current.status).toBe("stopped");
+    expect(result.current.view.isStreaming).toBe(false);
+    if (phase === "navigate") expect(api.getSnapshot).toHaveBeenCalledTimes(1);
   });
 
   it("orders increasing live runtime generations and lets reconnect snapshots replace them authoritatively", async () => {

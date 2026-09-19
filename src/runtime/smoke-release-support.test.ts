@@ -16,6 +16,7 @@ import {
   classifySmokeProxyRoutes,
   collectLaunchOutput,
   createCompiledChildEnv,
+  createSmokeDaemonCustody,
   fetchSessionEventsBeforeDeadline,
   finishSmokeCleanup,
   formatSmokeProxyDiagnostics,
@@ -53,6 +54,8 @@ import {
 } from "../../scripts/smoke-release-support";
 import type { BundledModelAddition } from "./bundled-model-additions";
 import type { NativeLocalShellTool } from "./platform-tools";
+import { acquireServerLease } from "../cli/runtime-lease";
+import { removeServerPid, writeServerProcess } from "../cli/server-process";
 
 const tempDirs: string[] = [];
 const asyncCleanups: Array<() => void | Promise<void>> = [];
@@ -258,6 +261,115 @@ describe("smokeSessionCwdMatches", () => {
     symlinkSync(physical, alias, "dir");
 
     expect(smokeSessionCwdMatches(alias, physical)).toBe(true);
+  });
+});
+
+describe("browser smoke daemon custody", () => {
+  async function fixture() {
+    const agentDir = tempDir();
+    const token = "isolated-smoke-token";
+    const lease = await acquireServerLease(agentDir, "cli", token);
+    asyncCleanups.push(() => { lease.release(); });
+    let alive = true;
+    let now = 0;
+    let releaseOnStop = true;
+    const requests: string[] = [];
+    const server = createServer((request, response) => {
+      requests.push(`${request.method} ${request.url}`);
+      if (request.headers["x-easyresearch-daemon-token"] !== token) {
+        response.writeHead(404).end();
+        return;
+      }
+      if (request.method === "POST" && releaseOnStop) {
+        removeServerPid(agentDir, token, lease);
+        lease.release();
+        alive = false;
+      }
+      response.setHeader("Content-Type", "application/json");
+      response.end(JSON.stringify({ runtimeId: "fixture-runtime" }));
+    });
+    const origin = await listen(server);
+    const record = { schema: 1 as const, owner: "cli" as const, token, runtimeId: "fixture-runtime", pid: process.pid, host: "127.0.0.1", port: Number(new URL(origin).port) };
+    writeServerProcess(agentDir, record);
+    const custody = createSmokeDaemonCustody({ agentDir, host: record.host, port: record.port }, {
+      timeoutMs: 250,
+      isAlive: () => alive,
+      now: () => now,
+      wait: async (ms) => { now += ms; },
+    });
+    return {
+      agentDir, record, custody, requests, lease,
+      alive: () => alive,
+      now: () => now,
+      withholdStop: () => { releaseOnStop = false; },
+    };
+  }
+
+  it("falls back to authenticated shutdown after a CLI exit failure, retaining the failure", async () => {
+    const f = await fixture();
+    await f.custody.capture();
+    await expect(finishSmokeCleanup({
+      shutdown: () => { throw new Error("CLI exit failed"); },
+      stopAuxiliary: () => {},
+      verifyDaemonStopped: () => f.custody.stopAndVerify(),
+      removeRoot: () => {},
+    })).rejects.toThrow("CLI exit failed");
+    expect(f.alive()).toBe(false);
+    expect(existsSync(join(f.agentDir, "server.pid"))).toBe(false);
+    expect(f.requests).toContain("POST /api/internal/daemon");
+  });
+
+  it("captures and stops a published daemon even when startup failed before capture", async () => {
+    const f = await fixture();
+    await f.custody.stopAndVerify();
+    expect(f.alive()).toBe(false);
+    expect(f.requests).toEqual(["GET /api/internal/daemon", "POST /api/internal/daemon"]);
+  });
+
+  it("does not mistake record/lease removal for process termination", async () => {
+    const f = await fixture();
+    await f.custody.capture();
+    removeServerPid(f.agentDir, f.record.token, f.lease);
+    f.lease.release();
+    await expect(f.custody.stopAndVerify()).rejects.toThrow(/did not exit/);
+    expect(f.now()).toBe(250);
+    expect(f.alive()).toBe(true);
+    expect(f.requests).toEqual(["GET /api/internal/daemon"]);
+  });
+
+  it("reports bounded failure when an authenticated daemon does not release custody", async () => {
+    const f = await fixture();
+    f.withholdStop();
+    await f.custody.capture();
+    await expect(f.custody.stopAndVerify()).rejects.toThrow(/did not release|did not exit/);
+    expect(f.now()).toBeGreaterThanOrEqual(250);
+    expect(f.alive()).toBe(true);
+  });
+
+  it.each(["token", "pid", "runtimeId", "port", "owner"])("never shuts down a replaced %s identity", async (field) => {
+    const f = await fixture();
+    await f.custody.capture();
+    writeServerProcess(f.agentDir, { ...f.record, [field]: field === "pid" || field === "port" ? f.record[field] + 1 : field === "owner" ? "desktop" : "replacement" });
+    await expect(f.custody.stopAndVerify()).rejects.toThrow(/ownership/);
+    expect(f.requests).toEqual(["GET /api/internal/daemon"]);
+    expect(f.alive()).toBe(true);
+  });
+
+  it("rejects a first record that cannot authenticate instead of trusting its PID", async () => {
+    const f = await fixture();
+    writeServerProcess(f.agentDir, { ...f.record, runtimeId: "wrong-runtime" });
+    await expect(f.custody.stopAndVerify()).rejects.toThrow(/ownership/);
+    expect(f.requests).toEqual(["GET /api/internal/daemon"]);
+    expect(f.alive()).toBe(true);
+  });
+
+  it("fails closed when startup leaves an unpublished lease rather than claiming no daemon", async () => {
+    const f = await fixture();
+    removeServerPid(f.agentDir, f.record.token, f.lease);
+    await expect(f.custody.stopAndVerify()).rejects.toThrow(/unpublished/);
+    expect(f.now()).toBe(250);
+    expect(f.requests).toEqual([]);
+    expect(f.alive()).toBe(true);
   });
 });
 
@@ -1861,6 +1973,18 @@ describe("finishSmokeCleanup", () => {
       ...overrides,
     };
   }
+
+  it("attempts authenticated fallback and verification even when diagnostics and CLI shutdown fail", async () => {
+    const steps: string[] = [];
+    await expect(finishSmokeCleanup(successfulCleanup({
+      writeDiagnostics: () => { steps.push("diagnostics"); throw new Error("ENOSPC"); },
+      shutdown: () => { steps.push("exit"); throw new Error("ENOENT"); },
+      stopAuxiliary: () => { steps.push("auxiliary"); },
+      verifyDaemonStopped: () => { steps.push("verified fallback"); },
+      removeRoot: () => { steps.push("finished"); },
+    }))).rejects.toThrow(/ENOSPC[\s\S]*ENOENT/);
+    expect(steps).toEqual(["diagnostics", "exit", "auxiliary", "verified fallback", "finished"]);
+  });
 
   it("waits for shutdown and daemon verification before deleting the root", async () => {
     const order: string[] = [];
