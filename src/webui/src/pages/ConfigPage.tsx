@@ -11,6 +11,8 @@ import {
   writeConfigFile,
 } from "../api";
 import { Topbar } from "../components/Topbar";
+import { ProductMark as ClassicProductMark, Topbar as ClassicTopbar } from "../legacy/Topbar";
+import { usePreferences } from "../preferences/PreferencesProvider";
 import { useModalLayer } from "../hooks/useModalLayer";
 import { useI18n } from "../i18n/useI18n";
 import type { ConfigProjectsDto } from "../types";
@@ -30,6 +32,11 @@ function rootScope(root: Root): { scope: ConfigScope; cwd?: string } {
 
 export function ConfigPage({ onHome, onBackToSettings, onProjectInterestChange, configurationError }: ConfigPageProps) {
   const { t } = useI18n();
+  const { preferences } = usePreferences();
+  // The config browser keeps one implementation; the interface version only
+  // changes the chrome (the classic bar carried the product mark).
+  const classic = preferences.uiVersion === "classic";
+  const ConfigTopbar = classic ? ClassicTopbar : Topbar;
   const [data, setData] = useState<ConfigProjectsDto | null>(null);
   const [selectedRoot, setSelectedRoot] = useState<Root | null>(null);
   const [path, setPath] = useState("");
@@ -193,17 +200,20 @@ export function ConfigPage({ onHome, onBackToSettings, onProjectInterestChange, 
 
   return (
     <div className="flex h-full flex-col">
-      <Topbar
+      <ConfigTopbar
         home={{ active: false, onClick: onHome }}
         leading={
-          <button
-            type="button"
-            className="flex h-[28px] shrink-0 items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100 hover:text-v2-text-text-base"
-            onClick={onBackToSettings}
-          >
-            <ChevronLeft size={14} aria-hidden />
-            {t("config.backToSettings")}
-          </button>
+          <>
+            <button
+              type="button"
+              className="flex h-[28px] shrink-0 items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-muted transition-colors hover:bg-v2-grey-100 hover:text-v2-text-text-base"
+              onClick={onBackToSettings}
+            >
+              <ChevronLeft size={14} aria-hidden />
+              {t("config.backToSettings")}
+            </button>
+            {classic ? <ClassicProductMark /> : null}
+          </>
         }
         center={<span className="truncate text-[13px] text-v2-text-text-muted">{t("config.browser")}</span>}
       />
