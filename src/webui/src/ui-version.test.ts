@@ -12,9 +12,18 @@ function iconLink(): HTMLLinkElement {
 
 afterEach(() => {
   document.querySelector('link[rel="icon"]')?.remove();
+  delete document.documentElement.dataset.uiVersion;
 });
 
 describe("applyUiVersion", () => {
+  it("marks the document so the classic theme tokens apply", () => {
+    applyUiVersion("classic");
+    expect(document.documentElement.dataset.uiVersion).toBe("classic");
+
+    applyUiVersion("current");
+    expect(document.documentElement.dataset.uiVersion).toBe("current");
+  });
+
   it("keeps the shipped dolphin icon for the current version", () => {
     const link = iconLink();
     link.href = "https://example.test/whatever.svg";

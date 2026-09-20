@@ -1,4 +1,15 @@
+import { createContext, useContext } from "react";
 import type { UiVersion } from "./preferences";
+
+/**
+ * The interface version in effect.
+ *
+ * A dedicated context rather than a slice of the preferences context: shared
+ * presentation components read only this value, and it carries the production
+ * default so such a component can still render outside the preferences
+ * provider (isolated tests) without changing what the app does.
+ */
+export const UiVersionContext = createContext<UiVersion>("current");
 
 /**
  * The pre-refresh favicon was an inline bulb data URI in `index.html`; the
@@ -17,7 +28,15 @@ export const CURRENT_FAVICON = "/favicon.svg";
  * safe to run on every preference change.
  */
 export function applyUiVersion(version: UiVersion): void {
+  // The classic palette and typography are a scoped theme-token override keyed
+  // off this attribute, so it must be applied before anything reads colors.
+  document.documentElement.dataset.uiVersion = version;
   const link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
   if (!link) return;
   link.href = version === "classic" ? CLASSIC_FAVICON : CURRENT_FAVICON;
+}
+
+/** Whether the classic interface version is selected. Re-renders on change. */
+export function useClassicUi(): boolean {
+  return useContext(UiVersionContext) === "classic";
 }

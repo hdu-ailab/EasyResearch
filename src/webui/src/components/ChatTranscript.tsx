@@ -719,6 +719,7 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
 ) {
   const { t } = useI18n();
   const { preferences } = usePreferences();
+  const classic = preferences.uiVersion === "classic";
   const hint = emptyHint ?? t("transcript.sendToStart");
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -1024,9 +1025,13 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
             aria-label={t("transcript.jumpToLatest")}
             onClick={resumeScroll}
             title={t("transcript.jumpToLatest")}
-            className="pointer-events-auto absolute bottom-6 left-1/2 z-50 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full bg-v2-background-bg-layer text-v2-blue-700 shadow-[var(--v2-elevation-raised)] backdrop-blur transition-all duration-200 hover:scale-105 hover:bg-v2-background-bg-layer-2 focus-visible:outline-2 focus-visible:outline-v2-blue-600 focus-visible:outline-offset-2"
+            className={
+              classic
+                ? "pointer-events-auto absolute bottom-6 left-1/2 z-50 flex h-7 -translate-x-1/2 items-center justify-center rounded-lg bg-v2-background-bg-base/95 px-2.5 text-v2-text-text-base shadow-[var(--v2-elevation-raised)] backdrop-blur transition-colors hover:bg-v2-background-bg-strong"
+                : "pointer-events-auto absolute bottom-6 left-1/2 z-50 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full bg-v2-background-bg-layer text-v2-blue-700 shadow-[var(--v2-elevation-raised)] backdrop-blur transition-all duration-200 hover:scale-105 hover:bg-v2-background-bg-layer-2 focus-visible:outline-2 focus-visible:outline-v2-blue-600 focus-visible:outline-offset-2"
+            }
           >
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+            <svg width={classic ? 14 : 16} height={classic ? 14 : 16} viewBox="0 0 16 16" fill="none" aria-hidden>
               <title>{t("transcript.jumpToLatest")}</title>
               <path
                 d="M12.3333 8.66665L8 13L3.66667 8.66665M8 12.6667V2.83332"
