@@ -29,6 +29,8 @@ import { RenameSessionDialog } from "../components/RenameSessionDialog";
 import { RetryBanner } from "../components/RetryBanner";
 import { SessionHistoryDialog } from "../components/SessionHistoryDialog";
 import { Topbar, TopbarIconButton } from "../components/Topbar";
+import { ProductMark as ClassicProductMark, Topbar as ClassicTopbar, TopbarIconButton as ClassicTopbarIconButton } from "../legacy/Topbar";
+import { usePreferences } from "../preferences/PreferencesProvider";
 import { WorkMobileTabs, type WorkView } from "../components/WorkMobileTabs";
 import { FILE_PATH_DRAG_TYPE, readFilePathDrop } from "../file-path-drag";
 import { EMPTY_FILE_EVENTS, parseFileWatcherEvent, type QueuedFileWatcherEvent } from "../file-watcher";
@@ -221,6 +223,7 @@ function SessionWorkPage({
   configurationError = null,
 }: WorkPageProps) {
   const { t } = useI18n();
+  const { preferences } = usePreferences();
   const [fileEvents, setFileEvents] = useState<{ sessionId: string; pending: readonly QueuedFileWatcherEvent[] }>({
     sessionId: id,
     pending: EMPTY_FILE_EVENTS,
@@ -757,6 +760,11 @@ function SessionWorkPage({
     );
   }, [childViews, rootAgentStatus, rootTools]);
   const projectName = filesystemPathName(cwd);
+  // The work surface keeps one implementation; the interface version selects the
+  // chrome around it (top bar, panel framing, and where the session name sits).
+  const classic = preferences.uiVersion === "classic";
+  const WorkTopbar = classic ? ClassicTopbar : Topbar;
+  const WorkTopbarIconButton = classic ? ClassicTopbarIconButton : TopbarIconButton;
   const chatHidden = isMobile && mobileView !== "chat";
   const composerDisabled =
     connection.deleted || accepting || activeTab !== RESEARCH_ASSISTANT_AGENT || sessionView.subagentName !== undefined;
@@ -1185,11 +1193,20 @@ function SessionWorkPage({
             : t("work.ready");
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-v2-background-bg-base">
-      <Topbar
+    <div className={classic ? "flex h-full flex-col" : "flex h-full min-h-0 flex-col bg-v2-background-bg-base"}>
+      <WorkTopbar
         home={{ active: false, onClick: onBack }}
+        leading={classic && !isMobile ? <ClassicProductMark /> : undefined}
         center={
           <span className="flex min-w-0 items-center gap-1.5">
+            {classic && sessionView.sessionName ? (
+              <span
+                className="max-w-[40%] truncate text-[13px] font-medium text-v2-text-text-base"
+                title={sessionView.sessionName}
+              >
+                {sessionView.sessionName}
+              </span>
+            ) : null}
             <span className="max-w-full truncate font-mono text-[12px] text-v2-text-text-muted" title={cwd}>
               {isMobile ? projectName : cwd}
             </span>
@@ -1204,32 +1221,32 @@ function SessionWorkPage({
             {!isMobile && (
               <>
                 <span className="mx-1 h-4 w-px bg-v2-grey-200" aria-hidden />
-                <TopbarIconButton
+                <WorkTopbarIconButton
                   active={panel === "files"}
                   label={t("work.filesBrowser")}
                   title={t("work.filesBrowser")}
                   onClick={() => togglePanel("files")}
                 >
                   <FileSearch size={15} />
-                </TopbarIconButton>
-                <TopbarIconButton
+                </WorkTopbarIconButton>
+                <WorkTopbarIconButton
                   active={panel === "agents"}
                   label={t("work.agentList")}
                   title={t("work.agentList")}
                   onClick={() => togglePanel("agents")}
                 >
                   <Bot size={15} />
-                </TopbarIconButton>
+                </WorkTopbarIconButton>
               </>
             )}
-            <TopbarIconButton
+            <WorkTopbarIconButton
               buttonRef={settingsButtonRef}
               label={t("home.settings")}
               title={t("home.settingsTitle")}
               onClick={onOpenSettings}
             >
               <Settings size={15} />
-            </TopbarIconButton>
+            </WorkTopbarIconButton>
           </>
         }
       />
@@ -1248,13 +1265,24 @@ function SessionWorkPage({
       )}
       {sessionView.retry ? <RetryBanner retry={sessionView.retry} /> : null}
       <WorkMobileTabs active={mobileView} onChange={setMobileView} />
-      <div ref={rowRef} className="relative flex min-h-0 min-w-0 flex-1 gap-0 overflow-x-clip">
+      <div
+        ref={rowRef}
+        className={
+          classic
+            ? `relative flex min-h-0 flex-1 overflow-x-clip px-2 pb-2 pt-[4px] ${panelOpen ? "gap-2" : "gap-0"} ${
+                panelMotionReady ? "transition-[gap] duration-v2-panel ease-v2-panel motion-reduce:transition-none" : ""
+              }`
+            : "relative flex min-h-0 min-w-0 flex-1 gap-0 overflow-x-clip"
+        }
+      >
         <section
           id="work-panel-chat"
           role="tabpanel"
           aria-labelledby="work-tab-chat"
           hidden={chatHidden}
-          className="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden bg-v2-background-bg-base"
+          className={`relative flex h-full min-w-0 flex-1 flex-col overflow-hidden bg-v2-background-bg-base ${
+            classic ? "rounded-[10px] shadow-[var(--v2-elevation-raised)]" : ""
+          }`}
           onDragEnter={(event) => {
             if (composerDisabled || !event.dataTransfer.types.includes(FILE_PATH_DRAG_TYPE)) return;
             event.preventDefault();
@@ -1292,15 +1320,17 @@ function SessionWorkPage({
               </span>
             </div>
           ) : null}
-          <header className="mx-auto w-full max-w-[952px] shrink-0 px-4 pb-3 pt-4 min-[820px]:pt-6">
-            <h1
-              className="truncate text-[18px] font-semibold tracking-tight text-v2-text-text-base min-[820px]:text-[22px]"
-              title={sessionView.sessionName || undefined}
-            >
-              {sessionView.sessionName || projectName}
-            </h1>
-          </header>
-          <div className="mx-auto w-full max-w-[952px] shrink-0 px-2">
+          {classic ? null : (
+            <header className="mx-auto w-full max-w-[952px] shrink-0 px-4 pb-3 pt-4 min-[820px]:pt-6">
+              <h1
+                className="truncate text-[18px] font-semibold tracking-tight text-v2-text-text-base min-[820px]:text-[22px]"
+                title={sessionView.sessionName || undefined}
+              >
+                {sessionView.sessionName || projectName}
+              </h1>
+            </header>
+          )}
+          <div className={classic ? "shrink-0 px-2" : "mx-auto w-full max-w-[952px] shrink-0 px-2"}>
             <AgentTabBar
               tabs={tabsState.tabs}
               activeKey={activeTab}
@@ -1324,7 +1354,7 @@ function SessionWorkPage({
           {activeChildId && childErrors[activeChildId] ? (
             <p className="px-4 py-3 text-[13px] text-v2-text-text-muted">{t("work.childUnavailable")}</p>
           ) : null}
-          <div className="mx-auto flex min-h-0 w-full max-w-[952px] flex-1 flex-col">
+          <div className={classic ? "flex min-h-0 w-full flex-1 flex-col" : "mx-auto flex min-h-0 w-full max-w-[952px] flex-1 flex-col"}>
             <TranscriptFileContext value={openTranscriptFile}>
               <ChatTranscript
                 ref={transcriptRef}
@@ -1358,7 +1388,11 @@ function SessionWorkPage({
               />
             </TranscriptFileContext>
           </div>
-          <footer className="sticky bottom-0 z-10 mx-auto w-full max-w-[952px] shrink-0 bg-v2-background-bg-base px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] min-[820px]:pb-5">
+          <footer
+            className={`sticky bottom-0 z-10 w-full shrink-0 bg-v2-background-bg-base px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] min-[820px]:pb-5 ${
+              classic ? "" : "mx-auto max-w-[952px]"
+            }`}
+          >
             {activeTab !== RESEARCH_ASSISTANT_AGENT || sessionView.subagentName ? (
               <p className="mb-2 text-[12px] text-v2-text-text-faint">{t("work.subagentLineNote")}</p>
             ) : null}
