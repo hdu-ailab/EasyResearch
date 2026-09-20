@@ -76,6 +76,10 @@ await page.keyboard.press("Escape");
 await page.waitForTimeout(400);
 check("classic Home drops the refreshed logo", (await page.locator('[data-testid="product-logo"]').count()) === 0);
 check("classic Home still lists the sessions", (await page.getByText("draft the fault diagnosis paper").count()) > 0);
+// Session deletion landed after this layout was replaced, so the classic
+// surface has to carry it: switching versions must not remove a capability.
+const classicDeletes = await page.getByRole("button", { name: /delete session/i }).count();
+check("classic Home still offers delete", classicDeletes > 0);
 await page.screenshot({ path: join(artifacts, "3-classic-home.png"), fullPage: true });
 
 // 4) The choice survives a reload (it is persisted, not just component state).

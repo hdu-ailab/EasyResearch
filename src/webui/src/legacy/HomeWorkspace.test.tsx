@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import type { ActiveSessionDto, SessionSummaryDto } from "../../../web/contracts";
 import { buildHomeProjectGroups } from "../pages/home-view-model";
@@ -36,6 +36,7 @@ function renderWorkspace(
   handlers: {
     onRenameActive?: (session: ActiveSessionDto | SessionSummaryDto) => void;
     onRenameHistory?: (session: SessionSummaryDto) => void;
+    onDeleteSession?: (session: ActiveSessionDto | SessionSummaryDto) => void;
   } = {},
 ) {
   return render(
@@ -52,6 +53,7 @@ function renderWorkspace(
       onOpenHistory={vi.fn()}
       onRenameSession={handlers.onRenameActive ?? vi.fn()}
       onRenameHistory={handlers.onRenameHistory ?? vi.fn()}
+      onDeleteSession={handlers.onDeleteSession ?? vi.fn()}
     />,
   );
 }
@@ -115,6 +117,18 @@ it("shows relative modified time from the exact matched summary in the active ro
 it("renders a separate disconnect control for an active session", () => {
   renderWorkspace([], [active({ sessionName: "Disconnectable" })]);
   expect(screen.getByRole("button", { name: /^disconnect session/i })).toBeVisible();
+});
+
+it("offers delete on both an active row and a history row", () => {
+  // The classic surface predates the delete feature, so it carries the control
+  // explicitly: switching versions must not remove a capability.
+  const onDeleteSession = vi.fn();
+  renderWorkspace([history({ id: "h1" })], [active({ id: "a1" })], { onDeleteSession });
+
+  const deletes = screen.getAllByRole("button", { name: /delete session/i });
+  expect(deletes).toHaveLength(2);
+  fireEvent.click(deletes[0]!);
+  expect(onDeleteSession).toHaveBeenCalledTimes(1);
 });
 
 it("renders a rename control per active row and per history row", () => {

@@ -18,7 +18,14 @@ function history(patch: Partial<SessionSummaryDto> = {}): SessionSummaryDto {
 }
 
 function renderList(history: SessionSummaryDto[], onRenameSession: (session: SessionSummaryDto) => void = vi.fn()) {
-  return render(<SessionList history={history} onOpenHistory={vi.fn()} onRenameSession={onRenameSession} />);
+  return render(
+    <SessionList
+      history={history}
+      onOpenHistory={vi.fn()}
+      onRenameSession={onRenameSession}
+      onDeleteSession={vi.fn()}
+    />,
+  );
 }
 
 it("shows the session name as the recent title when set", () => {
@@ -60,6 +67,24 @@ it("exposes a rename control per recent row", () => {
   const rename = screen.getByRole("button", { name: /rename session/i });
   fireEvent.click(rename);
   expect(onRenameSession).toHaveBeenCalledWith(expect.objectContaining({ id: "h1" }));
+});
+
+it("exposes a delete control per recent row", () => {
+  // Deleting arrived after this layout was replaced, so the classic surface has
+  // to carry it explicitly: switching versions must not remove a capability.
+  const onDeleteSession = vi.fn();
+  render(
+    <SessionList
+      history={[history({ id: "h1" })]}
+      onOpenHistory={vi.fn()}
+      onRenameSession={vi.fn()}
+      onDeleteSession={onDeleteSession}
+    />,
+  );
+
+  fireEvent.click(screen.getByRole("button", { name: /delete session/i }));
+
+  expect(onDeleteSession).toHaveBeenCalledWith(expect.objectContaining({ id: "h1" }));
 });
 
 it("uses shrinkable recent-session columns at the 820px Home desktop threshold", () => {

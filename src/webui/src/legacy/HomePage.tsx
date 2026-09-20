@@ -1,15 +1,17 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import packageJson from "../../../../package.json";
 import type { ActiveSessionDto, SessionSummaryDto } from "../../../web/contracts";
 import {
   checkForUpdate,
   createSession,
+  deleteSession,
   listStatus,
   openSession,
   renameSession,
   stopSession,
   touchSession,
 } from "../api";
+import { DeleteSessionDialog } from "../components/DeleteSessionDialog";
 import { DirectoryDialog } from "../components/DirectoryDialog";
 import { RenameSessionDialog } from "../components/RenameSessionDialog";
 import { useI18n } from "../i18n/useI18n";
@@ -43,16 +45,28 @@ export function LegacyHomePage({ onOpenSession, settingsButton }: HomePageProps)
   const [dialogOpen, setDialogOpen] = useState(false);
   const [selectedCwd, setSelectedCwd] = useState<string | null>(null);
   const [renamingSession, setRenamingSession] = useState<ActiveSessionDto | SessionSummaryDto | null>(null);
+  const [deletingSession, setDeletingSession] = useState<ActiveSessionDto | SessionSummaryDto | null>(null);
   const [latestVersion, setLatestVersion] = useState<string | null>(null);
+  const statusRequest = useRef(0);
 
   const refresh = useCallback(() => {
+    const request = ++statusRequest.current;
     setError(null);
     listStatus()
-      .then(setStatus)
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+      .then((next) => {
+        if (request === statusRequest.current) setStatus(next);
+      })
+      .catch((e: unknown) => {
+        if (request === statusRequest.current) setError(e instanceof Error ? e.message : String(e));
+      });
   }, []);
 
-  useEffect(refresh, [refresh]);
+  useEffect(() => {
+    refresh();
+    return () => {
+      statusRequest.current += 1;
+    };
+  }, [refresh]);
 
   useEffect(() => {
     let active = true;
@@ -184,6 +198,7 @@ export function LegacyHomePage({ onOpenSession, settingsButton }: HomePageProps)
             onOpenHistory={(session) => void openHistory(session)}
             onRenameSession={(session: ActiveSessionDto | SessionSummaryDto) => setRenamingSession(session)}
             onRenameHistory={(session) => setRenamingSession(session)}
+            onDeleteSession={setDeletingSession}
             disconnectingSessionId={disconnectingSessionId}
           />
         </div>
@@ -211,6 +226,28 @@ export function LegacyHomePage({ onOpenSession, settingsButton }: HomePageProps)
             renameSession(session.id, name)
               .then(refresh)
               .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+          }}
+        />
+      )}
+      {deletingSession && (
+        <DeleteSessionDialog
+          key={deletingSession.id}
+          session={deletingSession}
+          onClose={() => setDeletingSession(null)}
+          onDelete={async (force) => {
+            statusRequest.current += 1;
+            await deleteSession(deletingSession.id, force);
+            // Invalidate every pre-success poll before removing either projection.
+            statusRequest.current += 1;
+            setStatus(
+              (current) =>
+                current && {
+                  ...current,
+                  sessions: current.sessions.filter((session) => session.id !== deletingSession.id),
+                  activeSessions: current.activeSessions.filter((session) => session.id !== deletingSession.id),
+                },
+            );
+            refresh();
           }}
         />
       )}

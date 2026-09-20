@@ -1,4 +1,4 @@
-import { Activity, Folder, FolderOpen, Pencil, Plus, Power, Search } from "lucide-react";
+import { Activity, Folder, FolderOpen, Pencil, Plus, Power, Search, Trash2 } from "lucide-react";
 import { useState } from "react";
 import type { ActiveSessionDto, SessionSummaryDto } from "../../../web/contracts";
 import { useI18n } from "../i18n/useI18n";
@@ -28,6 +28,7 @@ export interface HomeWorkspaceProps {
   onOpenHistory: (session: SessionSummaryDto) => void;
   onRenameSession: (session: ActiveSessionDto | SessionSummaryDto) => void;
   onRenameHistory: (session: SessionSummaryDto) => void;
+  onDeleteSession: (session: ActiveSessionDto | SessionSummaryDto) => void;
   disconnectingSessionId?: string | null;
 }
 
@@ -52,6 +53,7 @@ export function HomeWorkspace({
   onOpenHistory,
   onRenameSession,
   onRenameHistory,
+  onDeleteSession,
   disconnectingSessionId = null,
 }: HomeWorkspaceProps) {
   const { language, t } = useI18n();
@@ -135,12 +137,24 @@ export function HomeWorkspace({
           type="button"
           aria-label={`${t("home.disconnectTitle")}: ${title}`}
           title={t("home.disconnectTitle")}
-          className="mr-2 flex min-h-8 shrink-0 self-center items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-faint transition-colors hover:bg-v2-grey-200 hover:text-v2-text-text-base disabled:cursor-wait disabled:opacity-50 min-[820px]:mr-4"
+          className="flex min-h-8 shrink-0 self-center items-center gap-1 rounded-md px-2 text-[12px] text-v2-text-text-faint transition-colors hover:bg-v2-grey-200 hover:text-v2-text-text-base disabled:cursor-wait disabled:opacity-50"
           disabled={disconnecting}
           onClick={() => onDisconnectActive(session)}
         >
           <Power size={13} aria-hidden />
           <span className="hidden sm:inline">{disconnecting ? "…" : t("home.disconnect")}</span>
+        </button>
+        {/* Present since the delete feature landed; the classic chrome keeps it
+            too, so switching versions never removes a capability. */}
+        <button
+          type="button"
+          aria-label={`${t("home.deleteSession")}: ${title}`}
+          title={t("home.deleteSession")}
+          className="mr-2 flex size-8 shrink-0 self-center items-center justify-center rounded-md text-v2-text-text-faint transition-colors hover:bg-v2-status-error/10 hover:text-v2-status-error min-[820px]:mr-4"
+          disabled={disconnecting}
+          onClick={() => onDeleteSession(session)}
+        >
+          <Trash2 size={13} aria-hidden />
         </button>
       </li>
     );
@@ -277,6 +291,7 @@ export function HomeWorkspace({
             showCwd={selectedCwd === null}
             onOpenHistory={onOpenHistory}
             onRenameSession={onRenameHistory}
+            onDeleteSession={onDeleteSession}
           />
         )}
       </section>
