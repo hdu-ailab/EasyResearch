@@ -6,8 +6,8 @@ import packageJson from "../../../package.json";
 import { App } from "./App";
 import * as api from "./api";
 import { I18nProvider } from "./i18n/I18nProvider";
-import { PreferencesProvider } from "./preferences/PreferencesProvider";
 import { STORAGE_KEY } from "./preferences";
+import { PreferencesProvider } from "./preferences/PreferencesProvider";
 import { hydrateTranscript, observerFor } from "./testing/transcriptTest";
 
 vi.mock("./api", async (importOriginal) => {

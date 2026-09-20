@@ -29,8 +29,6 @@ import { RenameSessionDialog } from "../components/RenameSessionDialog";
 import { RetryBanner } from "../components/RetryBanner";
 import { SessionHistoryDialog } from "../components/SessionHistoryDialog";
 import { Topbar, TopbarIconButton } from "../components/Topbar";
-import { ProductMark as ClassicProductMark, Topbar as ClassicTopbar, TopbarIconButton as ClassicTopbarIconButton } from "../legacy/Topbar";
-import { usePreferences } from "../preferences/PreferencesProvider";
 import { WorkMobileTabs, type WorkView } from "../components/WorkMobileTabs";
 import { FILE_PATH_DRAG_TYPE, readFilePathDrop } from "../file-path-drag";
 import { EMPTY_FILE_EVENTS, parseFileWatcherEvent, type QueuedFileWatcherEvent } from "../file-watcher";
@@ -38,6 +36,7 @@ import { filesystemPathName } from "../filesystem-path";
 import { usePanelTransition } from "../hooks/usePanelTransition";
 import { useSessionConnection } from "../hooks/useSessionConnection";
 import { useI18n } from "../i18n/useI18n";
+import { ProductMark as ClassicProductMark, Topbar as ClassicTopbar, TopbarIconButton as ClassicTopbarIconButton } from "../legacy/Topbar";
 import { buildMessageTreeMeta, versionTarget } from "../message-tree";
 import {
   fromSnapshot,
@@ -57,6 +56,7 @@ import {
   syncRunningSubagentTabs,
   temporarySubagentTabKey,
 } from "../subagent-tabs";
+import { useClassicUi } from "../ui-version";
 
 export interface WorkPageProps {
   id: string;
@@ -223,7 +223,7 @@ function SessionWorkPage({
   configurationError = null,
 }: WorkPageProps) {
   const { t } = useI18n();
-  const { preferences } = usePreferences();
+  const classic = useClassicUi();
   const [fileEvents, setFileEvents] = useState<{ sessionId: string; pending: readonly QueuedFileWatcherEvent[] }>({
     sessionId: id,
     pending: EMPTY_FILE_EVENTS,
@@ -762,7 +762,6 @@ function SessionWorkPage({
   const projectName = filesystemPathName(cwd);
   // The work surface keeps one implementation; the interface version selects the
   // chrome around it (top bar, panel framing, and where the session name sits).
-  const classic = preferences.uiVersion === "classic";
   const WorkTopbar = classic ? ClassicTopbar : Topbar;
   const WorkTopbarIconButton = classic ? ClassicTopbarIconButton : TopbarIconButton;
   const chatHidden = isMobile && mobileView !== "chat";
