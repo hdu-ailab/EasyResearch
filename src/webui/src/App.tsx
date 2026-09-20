@@ -10,6 +10,8 @@ import { useI18n } from "./i18n/useI18n";
 import { ConfigPage } from "./pages/ConfigPage";
 import { HomePage } from "./pages/HomePage";
 import { WorkPage } from "./pages/WorkPage";
+import { LegacyHomePage } from "./legacy/HomePage";
+import { usePreferences } from "./preferences/PreferencesProvider";
 import { isSettingsHostRoute, resolveWorkSession, type WorkSession } from "./router";
 import {
   pollForRuntimeReplacement,
@@ -67,6 +69,7 @@ export function App({
   runtimeReplacementPoller?: RuntimeReplacementPoller;
 } = {}) {
   const { t } = useI18n();
+  const { preferences } = usePreferences();
   const configuration = useConfigurationEvents();
   const { route, navigate, openSettings, closeSettings, openConfig, returnToSettings, registerSettingsCloseGuard } =
     useHashRoute();
@@ -244,7 +247,13 @@ export function App({
       );
     }
   } else if (hostRoute?.page === "home") {
-    baseSurface = (
+    baseSurface = preferences.uiVersion === "classic" ? (
+      <LegacyHomePage
+        onOpenSession={(session) => navigate({ page: "work", session })}
+        onOpenSettings={() => openSettings(hostRoute)}
+        settingsButton={settingsButton}
+      />
+    ) : (
       <HomePage
         onOpenSession={(session) => navigate({ page: "work", session })}
         onOpenSettings={() => openSettings(hostRoute)}

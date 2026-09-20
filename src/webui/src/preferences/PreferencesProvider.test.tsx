@@ -2,6 +2,7 @@ import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { STORAGE_KEY } from "../preferences";
+import { CLASSIC_FAVICON } from "../ui-version";
 import { CHAT_FONT_VAR, FILES_FONT_VAR } from "../webui-fonts";
 import { PreferencesProvider, usePreferences } from "./PreferencesProvider";
 
@@ -11,8 +12,15 @@ function Probe() {
     <>
       <span data-testid="tools-expanded">{String(preferences.autoExpandTools)}</span>
       <span data-testid="thinking-expanded">{String(preferences.autoExpandThinking)}</span>
+      <span data-testid="ui-version">{preferences.uiVersion}</span>
       <button type="button" onClick={() => updatePreferences({ autoExpandTools: true })}>
         enable tools
+      </button>
+      <button type="button" onClick={() => updatePreferences({ uiVersion: "classic" })}>
+        use classic
+      </button>
+      <button type="button" onClick={() => updatePreferences({ uiVersion: "current" })}>
+        use current
       </button>
       <button
         type="button"
@@ -40,6 +48,30 @@ describe("PreferencesProvider", () => {
     vi.restoreAllMocks();
   });
 
+  it("applies the selected interface version to the document icon", async () => {
+    const user = userEvent.setup();
+    const link = document.createElement("link");
+    link.rel = "icon";
+    document.head.append(link);
+    try {
+      render(
+        <PreferencesProvider>
+          <Probe />
+        </PreferencesProvider>,
+      );
+
+      await user.click(screen.getByRole("button", { name: "use classic" }));
+      expect(screen.getByTestId("ui-version").textContent).toBe("classic");
+      expect(link.getAttribute("href")).toBe(CLASSIC_FAVICON);
+
+      await user.click(screen.getByRole("button", { name: "use current" }));
+      expect(screen.getByTestId("ui-version").textContent).toBe("current");
+      expect(new URL(link.href).pathname).toBe("/favicon.svg");
+    } finally {
+      link.remove();
+    }
+  });
+
   it("updates consumers and persists a complete preference blob in the same tab", async () => {
     const user = userEvent.setup();
     render(
@@ -55,6 +87,7 @@ describe("PreferencesProvider", () => {
       chatFontSize: 13,
       filesFontSize: 12,
       language: "en",
+      uiVersion: "current",
       autoExpandThinking: false,
       autoExpandTools: true,
       expandSubagentOutput: false,

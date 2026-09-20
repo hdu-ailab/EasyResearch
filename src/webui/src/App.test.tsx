@@ -7,6 +7,7 @@ import { App } from "./App";
 import * as api from "./api";
 import { I18nProvider } from "./i18n/I18nProvider";
 import { PreferencesProvider } from "./preferences/PreferencesProvider";
+import { STORAGE_KEY } from "./preferences";
 import { hydrateTranscript, observerFor } from "./testing/transcriptTest";
 
 vi.mock("./api", async (importOriginal) => {
@@ -223,6 +224,24 @@ describe("App routing", () => {
   it("renders Home on an empty hash", async () => {
     render(<App />);
     expect(await screen.findByRole("region", { name: /research workspace/i })).toBeTruthy();
+  });
+
+  it("renders the refreshed Home surface by default", async () => {
+    render(<App />);
+    await screen.findByRole("region", { name: /research workspace/i });
+    expect(screen.getByTestId("product-logo")).toBeInTheDocument();
+  });
+
+  it("renders the classic Home surface when the interface version is classic", async () => {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ uiVersion: "classic", language: "en" }));
+    try {
+      render(<App />);
+      // The classic surface is the same workspace with the pre-refresh chrome.
+      expect(await screen.findByRole("region", { name: /research workspace/i })).toBeTruthy();
+      expect(screen.queryByTestId("product-logo")).toBeNull();
+    } finally {
+      window.localStorage.clear();
+    }
   });
 
   it("opens canonical Settings over the still-mounted, inert Home context", async () => {

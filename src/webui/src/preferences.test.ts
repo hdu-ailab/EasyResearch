@@ -3,6 +3,7 @@ import {
   CHAT_FONT_MIN,
   DEFAULT_CHAT_FONT_SIZE,
   DEFAULT_FILES_FONT_SIZE,
+  DEFAULT_UI_VERSION,
   FILES_FONT_MAX,
   readPreferences,
   resolveLanguage,
@@ -53,6 +54,7 @@ describe("readPreferences", () => {
       chatFontSize: DEFAULT_CHAT_FONT_SIZE,
       filesFontSize: DEFAULT_FILES_FONT_SIZE,
       language: "zh-CN",
+      uiVersion: "current",
       autoExpandThinking: false,
       autoExpandTools: false,
       expandSubagentOutput: false,
@@ -60,12 +62,31 @@ describe("readPreferences", () => {
     expect(readPreferences(fakeStorage(), nav("en-US")).language).toBe("en");
   });
 
+  it("defaults the interface version to the current layout", () => {
+    expect(readPreferences(fakeStorage(), nav("en-US")).uiVersion).toBe(DEFAULT_UI_VERSION);
+    expect(DEFAULT_UI_VERSION).toBe("current");
+  });
+
+  it("keeps an explicit classic version", () => {
+    const stored = fakeStorage({ [STORAGE_KEY]: JSON.stringify({ uiVersion: "classic" }) });
+    expect(readPreferences(stored, nav("en-US")).uiVersion).toBe("classic");
+  });
+
+  it.each([undefined, null, "", "legacy", "v2", 2, {}])(
+    "falls back to the default version for an unrecognized value %#",
+    (value) => {
+      const stored = fakeStorage({ [STORAGE_KEY]: JSON.stringify({ uiVersion: value }) });
+      expect(readPreferences(stored, nav("en-US")).uiVersion).toBe("current");
+    },
+  );
+
   it("round-trips stored values", () => {
     const storage = fakeStorage();
     writePreferences(storage, {
       chatFontSize: 16,
       filesFontSize: 11,
       language: "zh-CN",
+      uiVersion: "classic",
       autoExpandThinking: true,
       autoExpandTools: false,
       expandSubagentOutput: true,
@@ -74,6 +95,7 @@ describe("readPreferences", () => {
       chatFontSize: 16,
       filesFontSize: 11,
       language: "zh-CN",
+      uiVersion: "classic",
       autoExpandThinking: true,
       autoExpandTools: false,
       expandSubagentOutput: true,
@@ -96,6 +118,7 @@ describe("readPreferences", () => {
       chatFontSize: DEFAULT_CHAT_FONT_SIZE,
       filesFontSize: 14,
       language: "en",
+      uiVersion: "current",
       autoExpandThinking: true,
       autoExpandTools: false,
       expandSubagentOutput: true,
@@ -121,6 +144,7 @@ describe("readPreferences", () => {
       chatFontSize: DEFAULT_CHAT_FONT_SIZE,
       filesFontSize: DEFAULT_FILES_FONT_SIZE,
       language: "en",
+      uiVersion: DEFAULT_UI_VERSION,
       autoExpandThinking: false,
       autoExpandTools: false,
       expandSubagentOutput: false,
@@ -135,6 +159,7 @@ describe("writePreferences", () => {
       chatFontSize: 15,
       filesFontSize: 12,
       language: "en",
+      uiVersion: "current",
       autoExpandThinking: false,
       autoExpandTools: true,
       expandSubagentOutput: false,
@@ -143,6 +168,7 @@ describe("writePreferences", () => {
       chatFontSize: 15,
       filesFontSize: 12,
       language: "en",
+      uiVersion: "current",
       autoExpandThinking: false,
       autoExpandTools: true,
       expandSubagentOutput: false,
