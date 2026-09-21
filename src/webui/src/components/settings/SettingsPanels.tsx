@@ -1,9 +1,20 @@
-import { Activity, ChevronRight, KeyRound, Languages, Minus, Plus, RefreshCw, UserPlus } from "lucide-react";
+import {
+  Activity,
+  ChevronRight,
+  KeyRound,
+  Languages,
+  LayoutTemplate,
+  Minus,
+  Plus,
+  RefreshCw,
+  UserPlus,
+} from "lucide-react";
 import { useId } from "react";
 import type { AgentDto, AuthProviderInfoDto, SkillResourceDto } from "../../../../web/contracts";
 import { agentDisplayName, type Translate } from "../../i18n/agents";
+import type { MessageKey } from "../../i18n/messages";
 import { useI18n } from "../../i18n/useI18n";
-import { CHAT_FONT_MAX, CHAT_FONT_MIN, FILES_FONT_MAX, FILES_FONT_MIN } from "../../preferences";
+import { CHAT_FONT_MAX, CHAT_FONT_MIN, FILES_FONT_MAX, FILES_FONT_MIN, type UiVersion } from "../../preferences";
 import { usePreferences } from "../../preferences/PreferencesProvider";
 import { ApiUsageDetailsSetting } from "../ApiUsageDetailsSetting";
 import { CompactionThresholdSetting } from "../CompactionThresholdSetting";
@@ -12,6 +23,12 @@ import { ProviderIcon } from "../ProviderIcon";
 const sectionClass = "rounded-[10px] border border-v2-grey-200 bg-v2-background-bg-base";
 const buttonClass =
   "flex h-7 w-7 items-center justify-center rounded-md border border-v2-grey-200 text-v2-text-text-base transition-colors hover:bg-v2-grey-100 disabled:opacity-40";
+
+/** Current first: the refreshed layout is the default, the classic one opts in. */
+const UI_VERSION_OPTIONS: ReadonlyArray<{ value: UiVersion; label: MessageKey }> = [
+  { value: "current", label: "settings.uiVersion.current" },
+  { value: "classic", label: "settings.uiVersion.classic" },
+];
 
 function PanelHeading({ children }: { children: string }) {
   return (
@@ -190,6 +207,37 @@ export function GeneralSettingsPanel() {
             ))}
           </div>
           <p className="text-[12px] text-v2-text-text-muted">{t("settings.language.hint")}</p>
+        </div>
+      </section>
+      <section className={sectionClass} aria-label={t("settings.uiVersion.title")}>
+        <header className="flex items-center gap-2 border-b border-v2-grey-200 px-4 py-2.5">
+          <LayoutTemplate size={14} className="text-v2-icon-icon-muted" aria-hidden />
+          <h3 className="text-[13px] font-semibold text-v2-text-text-base">{t("settings.uiVersion.title")}</h3>
+        </header>
+        <div className="flex flex-col gap-3 px-4 py-4">
+          {/* biome-ignore lint/a11y/useSemanticElements: this compact segmented control intentionally has no fieldset chrome. */}
+          <div
+            className="flex w-fit gap-1 rounded-md border border-v2-grey-200 bg-v2-background-bg-deep p-1"
+            role="group"
+            aria-label={t("settings.uiVersion.selector")}
+          >
+            {UI_VERSION_OPTIONS.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                aria-pressed={preferences.uiVersion === option.value}
+                onClick={() => updatePreferences({ uiVersion: option.value })}
+                className={`h-7 rounded px-3 text-[13px] transition-colors ${
+                  preferences.uiVersion === option.value
+                    ? "bg-v2-blue-600 text-v2-grey-50"
+                    : "text-v2-text-text-base hover:bg-v2-grey-100"
+                }`}
+              >
+                {t(option.label)}
+              </button>
+            ))}
+          </div>
+          <p className="text-[12px] text-v2-text-text-muted">{t("settings.uiVersion.hint")}</p>
         </div>
       </section>
     </div>

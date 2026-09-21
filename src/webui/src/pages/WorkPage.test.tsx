@@ -223,6 +223,16 @@ function render(ui: ReactElement) {
   return result;
 }
 
+/**
+ * The work surface keeps one implementation; the interface version selects the
+ * chrome. The refreshed top bar renders the product logo, the classic one does
+ * not, which makes it a reliable version marker.
+ */
+async function workChromeMarker() {
+  await screen.findByText("starting research");
+  return screen.queryByTestId("product-logo") !== null;
+}
+
 function panelObserver(panel = screen.getByRole("region", { name: /file browser/i })) {
   const observer = observerFor(panel.parentElement as HTMLElement);
   expect(observer).toBeTruthy();
@@ -232,6 +242,7 @@ function panelObserver(panel = screen.getByRole("region", { name: /file browser/
 describe("WorkPage", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    window.localStorage.clear();
   });
 
   beforeEach(() => {
@@ -499,6 +510,20 @@ describe("WorkPage", () => {
       expect(input.value.match(/notes\.md/g)).toHaveLength(2);
     },
   );
+
+  it("uses the refreshed chrome on the work surface by default", async () => {
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    expect(await workChromeMarker()).toBe(true);
+  });
+
+  it("uses the classic chrome on the work surface when the interface version is classic", async () => {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ uiVersion: "classic" }));
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    expect(await workChromeMarker()).toBe(false);
+    // The classic work surface keeps the session name in the top bar rather than
+    // a page heading, so the refreshed heading must be gone too.
+    expect(screen.queryByRole("heading", { level: 1 })).toBeNull();
+  });
 
   it("clears drag feedback on nested leave, cancellation, and leaving the chat", async () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);

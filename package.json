@@ -42,6 +42,7 @@
     "build:desktop": "bun scripts/build-desktop.ts",
     "benchmark:work": "bun scripts/benchmark-work-transcript.ts",
     "smoke:desktop": "bun scripts/smoke-desktop.ts",
+    "verify:ui-toggle": "bun scripts/verify-ui-toggle.ts",
     "preview:desktop:linux": "bun scripts/preview-desktop-linux.ts",
     "release": "bun scripts/release.ts",
     "dev": "bun run src/cli/index.ts",

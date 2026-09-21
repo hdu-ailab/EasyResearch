@@ -6,6 +6,7 @@ import packageJson from "../../../package.json";
 import { App } from "./App";
 import * as api from "./api";
 import { I18nProvider } from "./i18n/I18nProvider";
+import { STORAGE_KEY } from "./preferences";
 import { PreferencesProvider } from "./preferences/PreferencesProvider";
 import { hydrateTranscript, observerFor } from "./testing/transcriptTest";
 
@@ -17,6 +18,7 @@ vi.mock("./api", async (importOriginal) => {
     checkForUpdate: vi.fn(),
     openSession: vi.fn(),
     createSession: vi.fn(),
+    deleteSession: vi.fn(),
     stopSession: vi.fn(),
     touchSession: vi.fn(),
     getSnapshot: vi.fn(),
@@ -105,10 +107,12 @@ const configurationApi = api as typeof api & {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
+    reject = rejectPromise;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 function stubEvents() {
@@ -162,6 +166,7 @@ describe("App routing", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     delete window.easyresearchDesktop;
+    window.localStorage.clear();
     window.history.replaceState(null, "", "#/");
   });
 
@@ -170,6 +175,8 @@ describe("App routing", () => {
     vi.mocked(api.listStatus).mockReset();
     vi.mocked(api.checkForUpdate).mockReset().mockResolvedValue({ latestVersion: null });
     vi.mocked(api.openSession).mockReset();
+    vi.mocked(api.createSession).mockReset();
+    vi.mocked(api.deleteSession).mockReset();
     vi.mocked(api.getSnapshot).mockReset();
     vi.mocked(api.getApiUsageSettings).mockReset().mockResolvedValue({ showApiUsageDetails: false });
     vi.mocked(api.getCompactionSettings).mockReset().mockResolvedValue({ triggerPercent: 70, globalEnabled: true });
@@ -225,6 +232,24 @@ describe("App routing", () => {
     expect(await screen.findByRole("region", { name: /research workspace/i })).toBeTruthy();
   });
 
+  it("renders the refreshed Home surface by default", async () => {
+    render(<App />);
+    await screen.findByRole("region", { name: /research workspace/i });
+    expect(screen.getByTestId("product-logo")).toBeInTheDocument();
+  });
+
+  it("renders the classic Home surface when the interface version is classic", async () => {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ uiVersion: "classic", language: "en" }));
+    try {
+      render(<App />);
+      // The classic surface is the same workspace with the pre-refresh chrome.
+      expect(await screen.findByRole("region", { name: /research workspace/i })).toBeTruthy();
+      expect(screen.queryByTestId("product-logo")).toBeNull();
+    } finally {
+      window.localStorage.clear();
+    }
+  });
+
   it("opens canonical Settings over the still-mounted, inert Home context", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -242,6 +267,109 @@ describe("App routing", () => {
     expect(baseSurface).not.toBeNull();
     expect(baseSurface!).toHaveAttribute("inert");
     expect(baseSurface!).toHaveAttribute("aria-hidden", "true");
+  });
+
+  async function switchHomeVersion(version: "current" | "classic", via: "local" | "storage") {
+    if (via === "storage") {
+      await act(async () => {
+        const prefs = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}");
+        window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...prefs, language: "en", uiVersion: version }));
+        window.dispatchEvent(new StorageEvent("storage", { key: STORAGE_KEY }));
+      });
+    } else {
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Settings" }));
+      await user.click(screen.getByRole("button", { name: version === "current" ? "Current" : "Classic" }));
+      await user.click(screen.getByRole("button", { name: "Close" }));
+      await waitFor(() => expect(window.location.hash).toBe("#/"));
+    }
+  }
+
+  it.each(["local", "storage"] as const)("preserves Home project and query across %s version switches", async (via) => {
+    vi.mocked(api.listStatus).mockResolvedValue({
+      ...persisted,
+      sessions: [
+        ...persisted.sessions,
+        {
+          ...persisted.sessions[0]!,
+          id: "s2",
+          path: "/store/s2.jsonl",
+          cwd: "/other",
+          firstMessage: "write another paper",
+        },
+        { ...persisted.sessions[0]!, id: "s3", path: "/store/s3.jsonl", firstMessage: "unrelated topic" },
+      ],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: "/p" }));
+    await user.type(screen.getByRole("searchbox"), "write");
+    for (const version of ["classic", "current"] as const) {
+      await switchHomeVersion(version, via);
+      expect(screen.getByRole("searchbox")).toHaveValue("write");
+      expect(screen.getByRole("button", { name: "/p" })).toHaveAttribute("aria-current", "true");
+      expect(screen.getByText("write a paper")).toBeVisible();
+      expect(screen.queryByText("write another paper")).toBeNull();
+      expect(screen.queryByText("unrelated topic")).toBeNull();
+    }
+    expect(api.listStatus).toHaveBeenCalledOnce();
+    expect(api.checkForUpdate).toHaveBeenCalledOnce();
+    expect(api.connectConfigurationEvents).toHaveBeenCalledOnce();
+  });
+
+  it.each(["local", "storage"] as const)(
+    "retains Home create ownership and failure across %s version switches",
+    async (via) => {
+      const request = deferred<Awaited<ReturnType<typeof api.createSession>>>();
+      vi.mocked(api.listStatus).mockResolvedValue(persisted);
+      vi.mocked(api.createSession).mockReturnValue(request.promise);
+      const user = userEvent.setup();
+      render(<App />);
+      await user.click(await screen.findByRole("button", { name: "New session /p" }));
+      for (const version of ["classic", "current"] as const) {
+        await switchHomeVersion(version, via);
+        const create = screen.getByRole("button", { name: "New session /p" });
+        expect(create).toBeDisabled();
+        expect(screen.getByRole("button", { name: "New project" })).toBeDisabled();
+        await user.click(create);
+        expect(api.createSession).toHaveBeenCalledOnce();
+      }
+      await act(async () => request.reject(new Error("Create failed")));
+      expect(await screen.findByRole("alert")).toHaveTextContent("Create failed");
+      await switchHomeVersion("classic", via);
+      expect(screen.getByRole("alert")).toHaveTextContent("Create failed");
+      expect(screen.getByRole("button", { name: "New session /p" })).toBeEnabled();
+    },
+  );
+
+  it("retains the Home delete dialog, pending guard and retry across cross-tab version switches", async () => {
+    const request = deferred<void>();
+    vi.mocked(api.listStatus).mockResolvedValue(persisted);
+    vi.mocked(api.deleteSession).mockReturnValueOnce(request.promise).mockResolvedValueOnce(undefined);
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: "Delete session: write a paper" }));
+    const dialog = screen.getByRole("dialog", { name: "Delete session" });
+    await switchHomeVersion("classic", "storage");
+    expect(screen.getByRole("dialog", { name: "Delete session" })).toBe(dialog);
+    await user.click(within(dialog).getByRole("button", { name: "Delete" }));
+    await switchHomeVersion("current", "storage");
+    expect(dialog).toHaveAttribute("aria-busy", "true");
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled();
+    fireEvent.submit(dialog);
+    await user.keyboard("{Escape}");
+    expect(api.deleteSession).toHaveBeenCalledOnce();
+    expect(dialog).toBeInTheDocument();
+    await act(async () => request.reject(new Error("Delete failed")));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("Delete failed");
+    await switchHomeVersion("classic", "storage");
+    expect(screen.getByRole("dialog", { name: "Delete session" })).toBe(dialog);
+    expect(within(dialog).getByRole("alert")).toHaveTextContent("Delete failed");
+    vi.mocked(api.listStatus).mockResolvedValue({ ...persisted, sessions: [] });
+    await user.click(within(dialog).getByRole("button", { name: "Retry deletion" }));
+    await waitFor(() => expect(dialog).not.toBeInTheDocument());
+    expect(api.deleteSession).toHaveBeenNthCalledWith(2, "s1", false);
+    expect(screen.queryByText("write a paper")).toBeNull();
   });
 
   it("shows a non-interactive update notice in the Home topbar", async () => {

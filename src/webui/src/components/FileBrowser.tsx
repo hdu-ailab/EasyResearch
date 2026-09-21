@@ -4,6 +4,7 @@ import { readFileContent } from "../api";
 import { EMPTY_FILE_EVENTS, parentPath, type QueuedFileWatcherEvent } from "../file-watcher";
 import { filesystemPathName } from "../filesystem-path";
 import { useI18n } from "../i18n/useI18n";
+import { useClassicUi } from "../ui-version";
 import { FilesPanel } from "./FilesPanel";
 import { type FileTab, FileTabs } from "./FileTabs";
 import { FileTreeSplit } from "./FileTreeSplit";
@@ -41,6 +42,7 @@ export const FileBrowser = memo(function FileBrowser({
   onFileEventsConsumed,
 }: FileBrowserProps) {
   const { t } = useI18n();
+  const classic = useClassicUi();
   const [tabs, setTabs] = useState<FileTab[]>([]);
   const [activeTab, setActiveTab] = useState<string | null>(null);
   const [contents, setContents] = useState<Record<string, FileContentDto>>({});
@@ -191,7 +193,7 @@ export const FileBrowser = memo(function FileBrowser({
   );
 
   return (
-    <div className="flex h-full min-w-0 flex-col bg-v2-background-bg-base">
+    <div className={classic ? "flex h-full min-w-0 flex-col" : "flex h-full min-w-0 flex-col bg-v2-background-bg-base"}>
       <FileTabs
         tabs={tabs}
         active={isMobile && treeOpened ? null : activeTab}
@@ -222,8 +224,22 @@ export const FileBrowser = memo(function FileBrowser({
             onOpenFile={openPath}
           />
         ) : (
-          <div className="flex h-full items-center justify-center px-5 py-10 text-center">
-            <p className="max-w-60 text-[13px] leading-6 text-v2-text-text-muted">{t("files.emptyTitle")}</p>
+          <div
+            className={
+              classic
+                ? "flex h-full items-center justify-center text-center"
+                : "flex h-full items-center justify-center px-5 py-10 text-center"
+            }
+          >
+            <p
+              className={
+                classic
+                  ? "text-[13px] font-medium text-v2-text-text-base"
+                  : "max-w-60 text-[13px] leading-6 text-v2-text-text-muted"
+              }
+            >
+              {t("files.emptyTitle")}
+            </p>
           </div>
         )}
       </FileTreeSplit>

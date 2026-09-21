@@ -3,6 +3,9 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../api";
 import { ApiError } from "../api";
+import { I18nProvider } from "../i18n/I18nProvider";
+import { STORAGE_KEY } from "../preferences";
+import { PreferencesProvider } from "../preferences/PreferencesProvider";
 import { ConfigPage } from "./ConfigPage";
 
 vi.mock("../api", async (importOriginal) => {
@@ -22,11 +25,15 @@ function renderConfigPage(onProjectInterestChange: (cwd?: string) => void = () =
   const onHome = vi.fn();
   const onBackToSettings = vi.fn();
   const view = render(
-    <ConfigPage
-      onHome={onHome}
-      onBackToSettings={onBackToSettings}
-      onProjectInterestChange={onProjectInterestChange}
-    />,
+    <PreferencesProvider>
+      <I18nProvider>
+        <ConfigPage
+          onHome={onHome}
+          onBackToSettings={onBackToSettings}
+          onProjectInterestChange={onProjectInterestChange}
+        />
+      </I18nProvider>
+    </PreferencesProvider>,
   );
   return { ...view, onHome, onBackToSettings };
 }
@@ -41,6 +48,7 @@ function deferred<T>() {
 
 describe("ConfigPage", () => {
   beforeEach(() => {
+    window.localStorage.clear();
     vi.mocked(api.listConfigProjects)
       .mockReset()
       .mockResolvedValue({
@@ -87,6 +95,19 @@ describe("ConfigPage", () => {
 
     expect(onHome).toHaveBeenCalledOnce();
     expect(onBackToSettings).not.toHaveBeenCalled();
+  });
+
+  it("shows the refreshed chrome by default", async () => {
+    renderConfigPage();
+    expect(await screen.findByTestId("product-logo")).toBeInTheDocument();
+  });
+
+  it("shows the classic chrome when the interface version is classic", async () => {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ uiVersion: "classic" }));
+    renderConfigPage();
+    // The classic bar carried the product mark alongside the back control.
+    expect(await screen.findByRole("button", { name: /back to settings/i })).toBeInTheDocument();
+    expect(screen.queryByTestId("product-logo")).toBeNull();
   });
 
   it("returns to Settings without invoking Home", async () => {

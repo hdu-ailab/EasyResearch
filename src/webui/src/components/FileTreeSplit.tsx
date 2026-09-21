@@ -1,5 +1,6 @@
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useI18n } from "../i18n/useI18n";
+import { useClassicUi } from "../ui-version";
 
 const TREE_MIN_WIDTH = 180;
 const TREE_DEFAULT_WIDTH = 240;
@@ -27,6 +28,7 @@ interface FileTreeSplitProps {
 // Keeping resize state here lets unchanged tree/preview elements skip drag-frame renders.
 export function FileTreeSplit({ isMobile, treeOpened, tree, children }: FileTreeSplitProps) {
   const { t } = useI18n();
+  const classic = useClassicUi();
   const areaRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<TreeDrag | null>(null);
   const [treeWidth, setTreeWidth] = useState(TREE_DEFAULT_WIDTH);
@@ -157,7 +159,9 @@ export function FileTreeSplit({ isMobile, treeOpened, tree, children }: FileTree
             ? "hidden"
             : isMobile
               ? "flex min-w-0 flex-1 flex-col"
-              : "flex min-w-0 shrink-0 flex-col border-r border-v2-grey-200/70 bg-v2-background-bg-deep"
+              : classic
+                ? "flex min-w-0 shrink-0 flex-col border-r border-v2-grey-200"
+                : "flex min-w-0 shrink-0 flex-col border-r border-v2-grey-200/70 bg-v2-background-bg-deep"
         }
       >
         {tree}

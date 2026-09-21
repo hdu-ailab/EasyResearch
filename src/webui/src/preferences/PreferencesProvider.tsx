@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { createContext, use, useEffect, useEffectEvent, useRef, useState } from "react";
 import type { WebUiPreferences } from "../preferences";
 import { readPreferences, STORAGE_KEY, writePreferences } from "../preferences";
+import { applyUiVersion, UiVersionContext } from "../ui-version";
 import { applyFontPreferences } from "../webui-fonts";
 
 export interface PreferencesContextValue {
@@ -17,6 +18,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
 
   const apply = useEffectEvent((next: WebUiPreferences) => {
     applyFontPreferences(next);
+    applyUiVersion(next.uiVersion);
     document.documentElement.lang = next.language;
   });
 
@@ -47,7 +49,11 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
     setPreferences((current) => ({ ...current, ...patch }));
   };
 
-  return <PreferencesContext value={{ preferences, updatePreferences }}>{children}</PreferencesContext>;
+  return (
+    <PreferencesContext value={{ preferences, updatePreferences }}>
+      <UiVersionContext value={preferences.uiVersion}>{children}</UiVersionContext>
+    </PreferencesContext>
+  );
 }
 
 export function usePreferences(): PreferencesContextValue {

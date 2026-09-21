@@ -51,6 +51,7 @@ const defaultPreferences: WebUiPreferences = {
   chatFontSize: 13,
   filesFontSize: 12,
   language: "en",
+  uiVersion: "current",
   autoExpandThinking: false,
   autoExpandTools: false,
   expandSubagentOutput: false,
