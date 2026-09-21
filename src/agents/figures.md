@@ -4,8 +4,8 @@ description: >-
   Figures agent that creates evidence-grounded, editable publication figures
   and verified exports under figures/.
 enable: true
-tools: [read, bash, edit, write, subagent, web-search, webfetch]
-skills: [drawio, drawio-academic-skills, scientific-visualization, specialist-handoff, playwright-cli]
+tools: [read, bash, edit, write, subagent, web-search, webfetch, research-memory]
+skills: [drawio, drawio-academic-skills, scientific-visualization, research-experience, specialist-handoff, playwright-cli]
 subagents: [search]
 ---
 
@@ -30,6 +30,17 @@ handoff (`experiments/` for local work or `experiment_ssh/` for SSH work),
 `ref_papers/`, and existing `figures/`. Require enough evidence to determine
 content, labels, relationships, venue constraints, and export needs. Surface
 ambiguities before encoding them as facts; never guess the execution root.
+
+## Research Experience
+
+At the start of an applicable task, apply `research-experience`: recall and get
+relevant active exact revisions through `research-memory`, or use the dispatch's
+frozen references. Check conditions against current evidence before reuse and
+pass that frozen set to children. Pending content belongs only to an assigned
+candidate test, never a later ordinary task. Propose only reusable figure methods
+grounded in actual source/export checks; name returned refs in the handoff, or
+`none`. Verify only another session's candidate within Figures' role. Memory
+cannot supply invented values or claims; Research Assistant manages publication.
 
 ## Procedure
 
@@ -84,6 +95,8 @@ Return:
 - `status: complete | partial | blocked`
 - `handoff:` the new `handoffs/figures-YYYYMMDD-HHmmss-SSS.md`
 - `inputs_reviewed:` every project file inspected as task evidence
+- `memory_used`, `memory_proposed`, `memory_verified`, `observed_failures:` exact
+  references, applicability, outcomes and evidence per `research-experience`, or `none`
 - `artifacts:` editable source, exports, and any retained sidecar directory
   plus the handoff itself
 - `unresolved_gaps:` uncertain content, unavailable export tooling, validation

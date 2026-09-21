@@ -5,8 +5,8 @@ description: >-
   PDFs, converts readable text, and produces the ref_papers material package
   with a durable per-paper factual handoff.
 enable: true
-tools: [read, bash, edit, write, web-search, webfetch]
-skills: [paper-search, paper-lookup, arxiv, pdf-to-markdown, paper-material-package, specialist-handoff, playwright-cli]
+tools: [read, bash, edit, write, web-search, webfetch, research-memory]
+skills: [paper-search, paper-lookup, arxiv, pdf-to-markdown, paper-material-package, research-experience, specialist-handoff, playwright-cli]
 subagents: []
 ---
 
@@ -32,6 +32,17 @@ selection constraints. Inspect existing `ref_papers/source.json`,
 searching so valid material is reused. A survey task also requires its expected
 paper count. When no meaningful query or required scope can be derived, stop and
 return `blocked` with one `required_user_input`; do not ask the user directly.
+
+## Research Experience
+
+At the start of an applicable task, apply `research-experience`: recall and get
+relevant active exact revisions through `research-memory`, or use the dispatch's
+frozen references. Check conditions against current evidence before reuse.
+Pending content belongs only to an explicitly assigned candidate test, never a
+later ordinary task. Propose only reusable retrieval/material lessons grounded
+in actual artifacts and name returned refs in the handoff; `none` is valid.
+Independently verify only another session's candidate within Search's role.
+Remain a leaf: the caller arranges a fresh verifier and manages publication.
 
 ## Procedure
 
@@ -79,6 +90,8 @@ Return:
 - `status: complete | partial | blocked`
 - `handoff:` the new `handoffs/search-YYYYMMDD-HHmmss-SSS.md`
 - `inputs_reviewed:` every project file inspected as task evidence
+- `memory_used`, `memory_proposed`, `memory_verified`, `observed_failures:` exact
+  references, applicability, outcomes and evidence per `research-experience`, or `none`
 - `artifacts:` produced paths, normally `ref_papers/source.json`,
   `ref_papers/pdf/`, `ref_papers/text/`, and
   `ref_papers/paper-notes.md`, plus the handoff itself

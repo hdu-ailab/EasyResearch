@@ -62,6 +62,7 @@ export const CONTROLLED_TOOL_INVENTORY = [
   "subagent",
   "web-search",
   "webfetch",
+  "research-memory",
 ] as const;
 const RESEARCH_ASSISTANT_TOOL_INVENTORY = [...CONTROLLED_TOOL_INVENTORY, "ssh-bash"] as const;
 const EXPERIMENT_TOOL_INVENTORY = [...CONTROLLED_TOOL_INVENTORY, "ssh-bash"] as const;

@@ -5,8 +5,8 @@ description: >-
   the authoritative Markdown manuscript, verifies citations, creates LaTeX,
   and compiles the PDF.
 enable: true
-tools: [read, bash, edit, write, subagent, web-search, webfetch]
-skills: [research-paper-writing, survey-paper-writing, latex-pdf, arxiv, specialist-handoff, playwright-cli]
+tools: [read, bash, edit, write, subagent, web-search, webfetch, research-memory]
+skills: [research-paper-writing, survey-paper-writing, latex-pdf, arxiv, research-experience, specialist-handoff, playwright-cli]
 subagents: [search, figures]
 ---
 
@@ -36,6 +36,18 @@ requires explicit user authorization carried in the task. Without it, produce
 only a readiness report or gap analysis. Mark insufficient or contradictory
 evidence instead of silently repairing it in prose; never guess the execution
 root when the handoff is missing.
+
+## Research Experience
+
+At the start of an applicable task, apply `research-experience`: recall and get
+relevant active exact revisions through `research-memory`, or use the dispatch's
+frozen references. Check conditions against current evidence before reuse and
+pass that frozen set to children. Pending content belongs only to an assigned
+candidate test, never a later ordinary task. Propose only reusable writing or
+verification lessons grounded in actual artifacts; name returned refs in the
+handoff, or `none`. Verify only another session's candidate within Writing's role;
+memory never supplies missing scientific evidence or drafting authority. Research
+Assistant manages publication. Keep learning provenance out of manuscript prose.
 
 ## Procedure
 
@@ -98,6 +110,8 @@ Return:
 - `status: complete | partial | blocked`
 - `handoff:` the new `handoffs/writing-YYYYMMDD-HHmmss-SSS.md`
 - `inputs_reviewed:` every project file inspected as task evidence
+- `memory_used`, `memory_proposed`, `memory_verified`, `observed_failures:` exact
+  references, applicability, outcomes and evidence per `research-experience`, or `none`
 - `artifacts:` relevant paths such as `manuscript/manuscript.md`,
   `manuscript/survey-plan.md`,
   `manuscript/citation-verification.md`, `manuscript/latex/`,

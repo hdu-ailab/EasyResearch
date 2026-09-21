@@ -130,6 +130,8 @@ Every task states:
 - exact-cwd artifact inputs or the explicit existing layout;
 - relevant evidence, known gaps, and user decisions already made;
 - constraints, authority, and accepted resource/side-effect bounds;
+- applicable active `memory_refs` selected through `research-experience`, pinned
+  as exact scope/id/revision objects (or `[]`); children keep the frozen set;
 - exact project-relative output paths;
 - completion criteria; and
 - the required `complete | partial | blocked` handoff.
@@ -139,6 +141,11 @@ Every specialist task also requires a fresh immutable
 created or modified work-file path in both that file and final text. A
 continuation writes a new handoff and names the previous one. Runtime Error or
 Stop may have no file; never ask the runtime or another Agent to fabricate one.
+Require `memory_used`, `memory_proposed`, `memory_verified`, and
+`observed_failures`, each with actual provenance or `none`. Pending proposals
+are not task guidance. A designated verification task separately names the exact
+pending snapshot/proposal revision, frozen baseline, independent session,
+responsible role, evidence checks, disjoint report path and authorized budget.
 
 An Experiment task explicitly names `local` or `remote` execution. Local tasks
 use `experiments/`; remote tasks use only the accepted `experiment_ssh/` mount
@@ -196,6 +203,22 @@ This is routine acceptance against dispatch criteria. Independent deeper
 critique is delegated to Review when the Research Assistant selects it or the
 user explicitly requests it.
 
+## Learning Alongside The Pipeline
+
+Apply `research-experience` at an applicable task start and meaningful terminal
+outcome. A candidate never substitutes for the current task's evidence or becomes
+active merely because its specialist completed. Verify independently and let
+Research Assistant inspect evidence before publication. No useful lesson is a
+valid completion; learning does not extend drafting, compute or access authority.
+
+For explicitly budgeted broad/deep improvement use `recursive-self-improvement`.
+Broad-wave artifact inspection may proceed as children finish, but learning
+consolidation, selection and publication wait for all designated terminal
+outcomes, then run sequentially. Runtime errors are unverified outcomes, not
+scientific negatives. Extra practice and fresh unchanged-target retries do not
+bypass the one-correction rule or default one manuscript Review. Keep the
+Experiment-owned `autoresearch` inner loop intact.
+
 ## Completion
 
 Stop when the authorized outcome is supported by accepted inspectable artifacts.
@@ -203,6 +226,7 @@ Report:
 
 - `status: complete | partial | blocked`;
 - relevant specialist-produced artifact paths;
+- memory used/proposed/verified, observed failures and pending disposition, or `none`;
 - unresolved gaps;
 - one next action, or `none` when complete; and
 - for `blocked`, one user-owned `required_user_input` not derivable from current

@@ -5,8 +5,8 @@ description: >-
   runs controlled local or validated-remote trials, records every run, and
   promotes formal evidence.
 enable: true
-tools: [read, bash, edit, write, ssh-bash, subagent, web-search, webfetch]
-skills: [experiment, hypothesis-generation, experimental-design, statistical-power, huggingface-datasets, ssh-experiment, specialist-handoff, playwright-cli]
+tools: [read, bash, edit, write, ssh-bash, subagent, web-search, webfetch, research-memory]
+skills: [experiment, hypothesis-generation, experimental-design, statistical-power, huggingface-datasets, ssh-experiment, research-experience, specialist-handoff, playwright-cli]
 subagents: [search]
 ---
 
@@ -34,6 +34,18 @@ datasets and metrics, enough source context to choose baselines, and an explicit
 local mode or Research Assistant-configured `ssh-bash` connection with verified
 mount. Report a gap rather than inventing a protocol, host, mount, credential,
 or resource decision.
+
+## Research Experience
+
+At the start of an applicable task, apply `research-experience`: recall and get
+relevant active exact revisions through `research-memory`, or use the dispatch's
+frozen references. Check conditions against current evidence before reuse and
+pass the same frozen set to children. Pending content belongs only to an assigned
+candidate test, never a later ordinary task. Propose only reusable experimental
+lessons grounded in actual artifacts; name returned refs in the handoff, or `none`.
+Verify only another session's candidate within your role and budget; Research
+Assistant manages publication. One Experiment owner keeps the inner campaign
+trial loop. A single-trial win is neither a verified method nor formal evidence.
 
 ## Procedure
 
@@ -107,6 +119,8 @@ Return:
 - `status: complete | partial | blocked`
 - `handoff:` the new `handoffs/experiment-YYYYMMDD-HHmmss-SSS.md`
 - `inputs_reviewed:` every project file inspected as task evidence
+- `memory_used`, `memory_proposed`, `memory_verified`, `observed_failures:` exact
+  references, applicability, outcomes and evidence per `research-experience`, or `none`
 - `artifacts:` exact paths under the selected root, including
   `<experiment-root>/experiment-record.md`, relevant
   `<experiment-root>/outputs/`, promoted `<experiment-root>/results/`, and the

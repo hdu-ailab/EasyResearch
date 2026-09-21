@@ -42,6 +42,7 @@ The contract must name:
 | Immutable scope | Evaluation harness, final-test data, source evidence, and protected files |
 | Trial command | Reproducible command plus per-trial timeout |
 | Budget | Trial count, wall-clock/compute budget, or explicit until-stopped authorization |
+| Experience | Frozen active `memory_refs` (or `[]`), applicability, isolated candidate if being tested; no mid-campaign adoption of live memory |
 | Acceptance rule | Improvement threshold and simplicity/resource tie-breaker |
 | Recovery | Snapshot and rollback method limited to mutable scope |
 | Artifacts | Exact campaign, ledger, log, output, and summary paths |
@@ -113,6 +114,21 @@ The Experiment specialist may dispatch Search only for a specific missing paper
 or source fact. Literature retrieval must not fragment the campaign into one
 subagent per trial.
 
+`recursive-self-improvement` is the outer method/strategy loop. Keep this one
+Experiment owner for the inner trials; do not launch one child per hypothesis or
+trial. Reserve independent verification costs inside the authorized total before
+selection. An explicit candidate test names its pending snapshot/proposal revision
+separately from active guidance. Its outcome never changes the frozen control.
+
+At a meaningful terminal outcome, Experiment applies `research-experience` and
+may propose a reusable lesson from existing immutable reports. It does not need
+to produce one. A new independent verifier can be dispatched after the campaign
+within remaining authority; continuing the author is not independent verification.
+Method activation and formal paper-result promotion are separate evidence gates.
+Neither a single-trial win nor more accepted proposals proves a better improvement
+strategy; strategy comparisons hold model/tools/evaluator/environment and total
+budget fixed, count all failures, and protect distinct held-out tasks.
+
 ## Selection Discipline
 
 - Select on validation evidence, never by repeatedly inspecting the final test
@@ -162,6 +178,9 @@ Require the Experiment specialist to return:
 - `trials:` attempted, accepted, rejected, crashed, and timed-out counts
 - `budget:` consumed and remaining
 - `formal_status:` always `exploratory` until normal formal gates pass
+- `memory_used`, `memory_proposed`, `memory_verified`, `observed_failures:` exact
+  references, applicability, outcomes/evidence, or `none`; identify actual strategy
+  choices and later `basedOn` lineage when this is an improvement round
 - `unresolved_gaps:` evidence, compute, robustness, or infrastructure gaps
 - `next_action:` formal validation, another authorized campaign, or one user
   decision
@@ -173,3 +192,9 @@ The Research Assistant acceptance-reviews those formal artifacts and advances
 to Writing automatically when the original request already authorizes a paper;
 it asks only when drafting authority or a consequential evidence decision is
 still missing.
+
+Exhausting the agreed exploratory budget with no accepted trial or useful lesson
+can satisfy the assigned scope. Close with `memory_proposed: none`, preserve the
+incumbent and all attempts, and resolve or explicitly park unverified pending
+work as inert. Never carry it into later ordinary tasks or extend the campaign
+until learning appears.

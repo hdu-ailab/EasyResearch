@@ -64,6 +64,9 @@ import { BUNDLED_MODEL_ADDITIONS, BUNDLED_MODEL_REMOVALS } from "../src/runtime/
 import { DAEMON_CONTROL_PATH, DAEMON_TOKEN_HEADER } from "../src/cli/daemon-control";
 import type { SubagentCompletionEntryDto } from "../src/web/contracts";
 import { parseTimelineEntryAppendedEvent } from "../src/webui/src/api/parsers";
+import { createResearchMemorySmoke } from "./smoke-research-memory";
+import { runResearchMemorySmoke } from "./smoke-research-memory-probe";
+import { assertResearchMemoryCapabilities } from "./smoke-research-memory-support";
 
 const targetName = process.argv[2];
 const target = TARGETS.find((candidate) => candidate.name === targetName);
@@ -94,6 +97,7 @@ const venvPython = skillVenvPython(agentDir, process.platform);
 const validationScript = join(root, "validate-easyresearch-venv.py");
 const stageValidationScript = join(root, "validate-easyresearch-agent-network.py");
 const setupRunId = randomUUID();
+const memorySmoke = createResearchMemorySmoke({ runId: setupRunId, project, agentDir, platform: process.platform });
 const googleCredentialsPath = join(root, "gaxios-adc.json");
 const firstRunStdoutPath = join(root, "first-run-stdout.txt");
 const firstRunStderrPath = join(root, "first-run-stderr.txt");
@@ -355,6 +359,16 @@ const modelServer = Bun.serve({
       tools?: Array<{ function?: { name?: string; description?: string } }>;
     };
     modelRequests += 1;
+    if (memorySmoke.laneFor(body)) {
+      try {
+        const action = memorySmoke.select(body);
+        return action.kind === "tool"
+          ? openAiStream({ toolCall: { id: action.id, name: action.name, arguments: action.arguments } })
+          : openAiStream({ text: action.text });
+      } catch (error) {
+        return Response.json({ error: { message: String(error) } }, { status: 400 });
+      }
+    }
     if (modelRequestContains(body.messages, loopbackProviderMarker)) {
       loopbackProviderRequests += 1;
       return openAiStream({ text: loopbackProviderCompletion });
@@ -1296,6 +1310,8 @@ function smokeProgressDiagnostics(): string {
     gaxiosRequests,
     vertexProviderRequests,
     smokeModelState,
+    memorySmokeRequests: memorySmoke.requests,
+    memorySmokeFailure: memorySmoke.failure ? String(memorySmoke.failure) : undefined,
     smokeNetworkState,
     loopbackEvidence: loopbackEvidence(),
     loopbackWebFetchState,
@@ -1881,6 +1897,10 @@ try {
     "skills/statistical-power/SKILL.md",
     "skills/huggingface-datasets/SKILL.md",
     "skills/peer-review/SKILL.md",
+    "skills/research-experience/SKILL.md",
+    "skills/research-experience/references/examples.md",
+    "skills/recursive-self-improvement/SKILL.md",
+    "skills/recursive-self-improvement/references/verification.md",
   ]) {
     const materializedPath = join(bundledDir, relativePath);
     if (!existsSync(materializedPath)) throw new Error(`bundled ADR-102 resource missing: ${materializedPath}`);
@@ -2245,34 +2265,7 @@ try {
     await fetch(`${base}/api/agents?cwd=${encodeURIComponent(project)}`),
     "Agent catalog probe",
   );
-  const reviewAgent = Array.isArray(agents)
-    ? agents.find((agent: { name?: unknown }) => agent.name === "review")
-    : undefined;
-  if (
-    !reviewAgent
-    || reviewAgent.builtin !== true
-    || reviewAgent.source !== "bundled"
-    || reviewAgent.enabled !== true
-    || JSON.stringify(reviewAgent.effectiveTools) !== JSON.stringify([
-      "read",
-      smokeShellToolName,
-      "write",
-      "subagent",
-      "web-search",
-      "webfetch",
-    ])
-    || JSON.stringify(reviewAgent.effectiveSkills) !== JSON.stringify([
-      "peer-review",
-      "paper-lookup",
-      "arxiv",
-      "specialist-handoff",
-      "playwright-cli",
-    ])
-    || JSON.stringify(reviewAgent.missingSkills) !== JSON.stringify([])
-    || JSON.stringify(reviewAgent.subagents) !== JSON.stringify(["search"])
-  ) {
-    throw new Error(`bundled Review catalog row was not authoritative: ${JSON.stringify(reviewAgent)}`);
-  }
+  assertResearchMemoryCapabilities(agents, process.platform);
   const customAgent = Array.isArray(agents)
     ? agents.find((agent: { name?: unknown }) => agent.name === smokeAgentName)
     : undefined;
@@ -2310,6 +2303,11 @@ try {
   ) {
     throw new Error(`native smoke completed an unexpected model-request sequence: ${smokeProgressDiagnostics()}`);
   }
+
+  const memoryReport = await runResearchMemorySmoke({ base, project, agentDir, deadline: firstRunDeadline, scenario: memorySmoke });
+  const memoryReportPath = resolve(platformPackageDir(target.name), "..", `research-memory-${target.name}.json`);
+  writeFileSync(memoryReportPath, `${JSON.stringify({ version, target: target.name, ...memoryReport }, null, 2)}\n`);
+  console.log(`[smoke] research-memory: proposal, independent verification, activation, fresh-task strategy reuse, rejection, retirement and rollback passed (${memorySmoke.requests} provider requests); evidence: ${memoryReportPath}`);
 
   const beforeOauth = classifySmokeProxyRoutes(recordsFor(initialProxies), {
     allHost: fakeChildHost,
@@ -2721,6 +2719,7 @@ try {
   }
 
   const expectedModelRequests = smokeModelState.completedRequests
+    + memorySmoke.requests
     + loopbackProviderRequests
     + loopbackWebFetchState.completedRequests
     + initialWebFetchState.completedRequests
