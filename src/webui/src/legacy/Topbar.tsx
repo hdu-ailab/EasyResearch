@@ -18,7 +18,7 @@ export function Topbar({ home, leading, center, actions }: TopbarProps) {
   const homeLabel = t("topbar.backToHome");
 
   return (
-    <header className="grid h-[36px] shrink-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 border-b border-v2-grey-200 bg-v2-background-bg-deep px-[12px] min-[820px]:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] min-[820px]:gap-3">
+    <header className="grid h-[36px] shrink-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 border-b border-v2-grey-200 bg-v2-background-bg-deep px-[12px] min-[820px]:gap-3">
       <div className="flex min-w-0 items-center gap-2 overflow-hidden">
         <button
           type="button"
@@ -37,7 +37,7 @@ export function Topbar({ home, leading, center, actions }: TopbarProps) {
         {leading}
       </div>
       <div className="flex min-w-0 items-center justify-center overflow-hidden">{center}</div>
-      <div className="flex min-w-0 items-center justify-end gap-0.5 overflow-hidden">{actions}</div>
+      <div className="flex shrink-0 items-center justify-end gap-0.5">{actions}</div>
     </header>
   );
 }
@@ -65,7 +65,7 @@ export function TopbarIconButton({
       title={title}
       aria-pressed={active}
       onClick={onClick}
-      className={`flex size-[28px] items-center justify-center rounded-md transition-colors ${
+      className={`flex size-[28px] shrink-0 items-center justify-center rounded-md transition-colors ${
         active
           ? "bg-v2-blue-100 text-v2-blue-600"
           : "text-v2-icon-icon-muted hover:bg-v2-grey-100 hover:text-v2-icon-icon-base"

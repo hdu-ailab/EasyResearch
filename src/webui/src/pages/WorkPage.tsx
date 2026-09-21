@@ -36,7 +36,11 @@ import { filesystemPathName } from "../filesystem-path";
 import { usePanelTransition } from "../hooks/usePanelTransition";
 import { useSessionConnection } from "../hooks/useSessionConnection";
 import { useI18n } from "../i18n/useI18n";
-import { ProductMark as ClassicProductMark, Topbar as ClassicTopbar, TopbarIconButton as ClassicTopbarIconButton } from "../legacy/Topbar";
+import {
+  ProductMark as ClassicProductMark,
+  Topbar as ClassicTopbar,
+  TopbarIconButton as ClassicTopbarIconButton,
+} from "../legacy/Topbar";
 import { buildMessageTreeMeta, versionTarget } from "../message-tree";
 import {
   fromSnapshot,
@@ -1353,7 +1357,13 @@ function SessionWorkPage({
           {activeChildId && childErrors[activeChildId] ? (
             <p className="px-4 py-3 text-[13px] text-v2-text-text-muted">{t("work.childUnavailable")}</p>
           ) : null}
-          <div className={classic ? "flex min-h-0 w-full flex-1 flex-col" : "mx-auto flex min-h-0 w-full max-w-[952px] flex-1 flex-col"}>
+          <div
+            className={
+              classic
+                ? "flex min-h-0 w-full flex-1 flex-col"
+                : "mx-auto flex min-h-0 w-full max-w-[952px] flex-1 flex-col"
+            }
+          >
             <TranscriptFileContext value={openTranscriptFile}>
               <ChatTranscript
                 ref={transcriptRef}

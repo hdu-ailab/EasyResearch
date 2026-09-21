@@ -1,8 +1,14 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render as renderView, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../api";
-import { LegacyHomePage as HomePage } from "./HomePage";
+import { HomePage } from "../pages/HomePage";
+import { UiVersionContext } from "../ui-version";
+
+function render(ui: ReactElement) {
+  return renderView(<UiVersionContext value="classic">{ui}</UiVersionContext>);
+}
 
 vi.mock("../api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api")>();

@@ -1,5 +1,4 @@
 import { Activity, Folder, FolderOpen, Pencil, Plus, Power, Search, Trash2 } from "lucide-react";
-import { useState } from "react";
 import type { ActiveSessionDto, SessionSummaryDto } from "../../../web/contracts";
 import { useI18n } from "../i18n/useI18n";
 import {
@@ -18,6 +17,8 @@ import { SessionList } from "./SessionList";
 export interface HomeWorkspaceProps {
   groups: HomeProjectGroup[];
   selectedCwd: string | null;
+  query: string;
+  onQueryChange: (query: string) => void;
   loading: boolean;
   creating: boolean;
   onSelectProject: (cwd: string | null) => void;
@@ -43,6 +44,8 @@ const statusDot: Record<ActiveSessionDto["status"], string> = {
 export function HomeWorkspace({
   groups,
   selectedCwd,
+  query,
+  onQueryChange,
   loading,
   creating,
   onSelectProject,
@@ -57,7 +60,6 @@ export function HomeWorkspace({
   disconnectingSessionId = null,
 }: HomeWorkspaceProps) {
   const { language, t } = useI18n();
-  const [query, setQuery] = useState("");
   const selectedGroups = selectedCwd === null ? groups : groups.filter((group) => group.cwd === selectedCwd);
   const visibleActive = selectedGroups
     .flatMap((group) => group.active)
@@ -185,7 +187,7 @@ export function HomeWorkspace({
             placeholder={t("home.searchPlaceholder")}
             className="min-w-0 flex-1 bg-transparent text-[14px] text-v2-text-text-base outline-none placeholder:text-v2-text-text-faint"
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => onQueryChange(event.target.value)}
           />
         </label>
       </header>

@@ -1,6 +1,10 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readDesktopPreferenceBlob, writeDesktopPreferenceBlob } from "../../../desktop/preferences-store";
 import { STORAGE_KEY } from "../preferences";
 import { CLASSIC_FAVICON } from "../ui-version";
 import { CHAT_FONT_VAR, FILES_FONT_VAR } from "../webui-fonts";
@@ -116,6 +120,60 @@ describe("PreferencesProvider", () => {
       autoExpandThinking: false,
     });
   });
+
+  it.each(["current", "classic"] as const)(
+    "restores the renderer's complete %s blob through host persistence",
+    async (uiVersion) => {
+      const root = mkdtempSync(join(tmpdir(), "easyresearch-renderer-prefs-"));
+      const user = userEvent.setup();
+      // The preload supplies a previously accepted six-field blob before React starts.
+      const oldBlob = JSON.stringify({
+        chatFontSize: 18,
+        filesFontSize: 15,
+        language: "zh-CN",
+        autoExpandThinking: true,
+        autoExpandTools: false,
+        expandSubagentOutput: true,
+      });
+      try {
+        writeDesktopPreferenceBlob(root, oldBlob);
+        window.localStorage.setItem(STORAGE_KEY, readDesktopPreferenceBlob(root)!);
+        window.easyresearchDesktop = {
+          platform: "darwin",
+          version: "1.2.3",
+          persistWebUiPreferences: (raw) => writeDesktopPreferenceBlob(root, raw),
+        };
+        const first = render(
+          <PreferencesProvider>
+            <Probe />
+          </PreferencesProvider>,
+        );
+        await user.click(screen.getByRole("button", { name: `use ${uiVersion}` }));
+        await user.click(screen.getByRole("button", { name: "enable tools" }));
+        const saved = readDesktopPreferenceBlob(root)!;
+        expect(JSON.parse(saved)).toEqual({ ...JSON.parse(oldBlob), uiVersion, autoExpandTools: true });
+        first.unmount();
+
+        // A fresh ephemeral origin starts with empty localStorage and the host mirror.
+        window.localStorage.clear();
+        window.localStorage.setItem(STORAGE_KEY, saved);
+        render(
+          <PreferencesProvider>
+            <Probe />
+          </PreferencesProvider>,
+        );
+        expect(screen.getByTestId("ui-version")).toHaveTextContent(uiVersion);
+        expect(screen.getByTestId("tools-expanded")).toHaveTextContent("true");
+        expect(screen.getByTestId("thinking-expanded")).toHaveTextContent("true");
+        expect(document.documentElement.lang).toBe("zh-CN");
+        expect(document.documentElement.style.getPropertyValue(CHAT_FONT_VAR)).toBe("18px");
+        expect(document.documentElement.style.getPropertyValue(FILES_FONT_VAR)).toBe("15px");
+      } finally {
+        delete window.easyresearchDesktop;
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("follows cross-tab preference changes and reapplies document preferences", () => {
     render(

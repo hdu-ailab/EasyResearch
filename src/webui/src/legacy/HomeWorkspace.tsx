@@ -1,36 +1,18 @@
 import { Activity, Folder, FolderOpen, Pencil, Plus, Power, Search, Trash2 } from "lucide-react";
-import { useState } from "react";
-import type { ActiveSessionDto, SessionSummaryDto } from "../../../web/contracts";
+import type { ActiveSessionDto } from "../../../web/contracts";
+import type { HomeWorkspaceProps } from "../components/HomeWorkspace";
 import { useI18n } from "../i18n/useI18n";
 import {
   compactParentPath,
   countConnectedSessions,
   directoryName,
   formatRelativeModifiedTime,
-  type HomeProjectGroup,
   isActuallyRunning,
   isConnected,
   matchesSessionQuery,
   sessionTitle,
 } from "../pages/home-view-model";
 import { SessionList } from "./SessionList";
-
-export interface HomeWorkspaceProps {
-  groups: HomeProjectGroup[];
-  selectedCwd: string | null;
-  loading: boolean;
-  creating: boolean;
-  onSelectProject: (cwd: string | null) => void;
-  onChooseDirectory: () => void;
-  onCreateInProject: (cwd: string) => void;
-  onOpenActive: (session: ActiveSessionDto) => void;
-  onDisconnectActive: (session: ActiveSessionDto) => void;
-  onOpenHistory: (session: SessionSummaryDto) => void;
-  onRenameSession: (session: ActiveSessionDto | SessionSummaryDto) => void;
-  onRenameHistory: (session: SessionSummaryDto) => void;
-  onDeleteSession: (session: ActiveSessionDto | SessionSummaryDto) => void;
-  disconnectingSessionId?: string | null;
-}
 
 const statusDot: Record<ActiveSessionDto["status"], string> = {
   starting: "bg-v2-grey-500",
@@ -43,6 +25,8 @@ const statusDot: Record<ActiveSessionDto["status"], string> = {
 export function HomeWorkspace({
   groups,
   selectedCwd,
+  query,
+  onQueryChange,
   loading,
   creating,
   onSelectProject,
@@ -57,7 +41,6 @@ export function HomeWorkspace({
   disconnectingSessionId = null,
 }: HomeWorkspaceProps) {
   const { language, t } = useI18n();
-  const [query, setQuery] = useState("");
   const selectedGroups = selectedCwd === null ? groups : groups.filter((group) => group.cwd === selectedCwd);
   const visibleActive = selectedGroups
     .flatMap((group) => group.active)
@@ -185,7 +168,7 @@ export function HomeWorkspace({
             placeholder={t("home.searchPlaceholder")}
             className="min-w-0 flex-1 bg-transparent text-[14px] text-v2-text-text-base outline-none placeholder:text-v2-text-text-faint"
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => onQueryChange(event.target.value)}
           />
         </label>
       </div>

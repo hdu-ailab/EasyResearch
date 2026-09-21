@@ -7,7 +7,6 @@ import { TopbarIconButton } from "./components/Topbar";
 import { useConfigurationEvents } from "./hooks/useConfigurationEvents";
 import { useHashRoute } from "./hooks/useHashRoute";
 import { useI18n } from "./i18n/useI18n";
-import { LegacyHomePage } from "./legacy/HomePage";
 import { ConfigPage } from "./pages/ConfigPage";
 import { HomePage } from "./pages/HomePage";
 import { WorkPage } from "./pages/WorkPage";
@@ -19,7 +18,6 @@ import {
   type RuntimeReplacementPollResult,
   reloadForRuntimeReplacement,
 } from "./runtime-replacement";
-import { useClassicUi } from "./ui-version";
 
 const RUNTIME_RESTART_POLL_INTERVAL_MS = 500;
 const RUNTIME_RESTART_TIMEOUT_MS = 30_000;
@@ -69,7 +67,6 @@ export function App({
   runtimeReplacementPoller?: RuntimeReplacementPoller;
 } = {}) {
   const { t } = useI18n();
-  const classicUi = useClassicUi();
   const configuration = useConfigurationEvents();
   const { route, navigate, openSettings, closeSettings, openConfig, returnToSettings, registerSettingsCloseGuard } =
     useHashRoute();
@@ -247,13 +244,7 @@ export function App({
       );
     }
   } else if (hostRoute?.page === "home") {
-    baseSurface = classicUi ? (
-      <LegacyHomePage
-        onOpenSession={(session) => navigate({ page: "work", session })}
-        onOpenSettings={() => openSettings(hostRoute)}
-        settingsButton={settingsButton}
-      />
-    ) : (
+    baseSurface = (
       <HomePage
         onOpenSession={(session) => navigate({ page: "work", session })}
         onOpenSettings={() => openSettings(hostRoute)}

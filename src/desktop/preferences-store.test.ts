@@ -47,6 +47,8 @@ describe("desktop preference persistence", () => {
     "[]",
     JSON.stringify({ auth: { token: "secret" } }),
     JSON.stringify({ chatFontSize: 99 }),
+    ...["future", null, false, 1, {}].map((uiVersion) => JSON.stringify({ ...JSON.parse(valid), uiVersion })),
+    JSON.stringify({ ...JSON.parse(valid), uiVersion: "classic", unknown: true }),
   ])("rejects an invalid preference blob without replacing the accepted value", (candidate) => {
     writeDesktopPreferenceBlob(root, valid);
     expect(() => writeDesktopPreferenceBlob(root, candidate)).toThrow(/preference/i);

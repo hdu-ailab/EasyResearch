@@ -118,7 +118,7 @@ export function FileTabs({ tabs, active, onActivate, onClose, toggle }: FileTabs
                 }
                 aria-label={t("tabs.closeRow").replace("{name}", tab.name)}
                 title={t("tabs.close")}
-                onMouseDown={classic ? undefined : (event) => event.preventDefault()}
+                onMouseDown={(event) => event.preventDefault()}
                 onClick={() => onClose(tab.path)}
               >
                 <X size={classic ? 11 : 12} aria-hidden />

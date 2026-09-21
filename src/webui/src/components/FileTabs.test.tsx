@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { expect, it, vi } from "vitest";
+import { UiVersionContext } from "../ui-version";
 import { type FileTab, FileTabs } from "./FileTabs";
 
 const initialTabs: FileTab[] = [
@@ -32,6 +33,25 @@ function Harness({ onClose }: { onClose: (path: string) => void }) {
     />
   );
 }
+
+it.each(["current", "classic"] as const)(
+  "retains the focused tab when an inactive close button is clicked in %s",
+  async (version) => {
+    const user = userEvent.setup();
+    render(
+      <UiVersionContext value={version}>
+        <Harness onClose={() => {}} />
+      </UiVersionContext>,
+    );
+    const active = screen.getByRole("tab", { name: "a.md" });
+    active.focus();
+    await user.click(screen.getByRole("button", { name: "Close b.md" }));
+    expect(screen.queryByRole("tab", { name: "b.md" })).toBeNull();
+    expect(active).toHaveFocus();
+    await user.keyboard("{ArrowRight}");
+    expect(screen.getByRole("tab", { name: "c.md" })).toHaveFocus();
+  },
+);
 
 it("uses one roving tab stop and supports arrow, boundary, and Delete keys", async () => {
   const user = userEvent.setup();

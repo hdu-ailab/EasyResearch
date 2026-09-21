@@ -1,4 +1,14 @@
-import { Activity, ChevronRight, KeyRound, Languages, LayoutTemplate, Minus, Plus, RefreshCw, UserPlus } from "lucide-react";
+import {
+  Activity,
+  ChevronRight,
+  KeyRound,
+  Languages,
+  LayoutTemplate,
+  Minus,
+  Plus,
+  RefreshCw,
+  UserPlus,
+} from "lucide-react";
 import { useId } from "react";
 import type { AgentDto, AuthProviderInfoDto, SkillResourceDto } from "../../../../web/contracts";
 import { agentDisplayName, type Translate } from "../../i18n/agents";

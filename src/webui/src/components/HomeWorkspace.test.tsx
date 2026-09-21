@@ -42,6 +42,8 @@ function renderWorkspace(
     <HomeWorkspace
       groups={buildHomeProjectGroups(history, active)}
       selectedCwd={null}
+      query=""
+      onQueryChange={vi.fn()}
       loading={false}
       creating={false}
       onSelectProject={vi.fn()}
