@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import {
   createServer,
   request as requestHttp,
@@ -8,7 +8,8 @@ import {
 } from "node:http";
 import { request as requestHttps } from "node:https";
 import { connect as connectTcp, type AddressInfo, type Socket } from "node:net";
-import { isAbsolute, posix, win32 } from "node:path";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, posix, win32 } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { BundledModelAddition, BundledModelRemoval } from "../src/runtime/bundled-model-additions";
 import type { NativeLocalShellTool } from "../src/runtime/platform-tools";
@@ -21,6 +22,12 @@ import { directLocalHttpFetch, localHttpOrigin } from "../src/cli/local-http";
 import { serverLeasePath, serverLeaseTokenState, transitionLeasePath } from "../src/cli/runtime-lease";
 
 export const FIRST_RUN_CEILING_MS = 720_000;
+
+export function createSmokeWorkspaceRoot(parent: string = tmpdir()): string {
+  // Web accepts canonical cwd spellings; derive every fixture path from the same
+  // physical root even when the OS temporary directory is a symlink or junction.
+  return realpathSync(mkdtempSync(join(parent, "easyresearch-native-smoke-")));
+}
 
 const PYTHON_CONTAMINATION_KEYS = new Set(["PYTHONPATH", "PYTHONHOME", "PYTHONUSERBASE"]);
 

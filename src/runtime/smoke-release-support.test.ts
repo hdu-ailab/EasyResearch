@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, request as httpRequest, type Server } from "node:http";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { connect as connectTcp, type AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -17,6 +17,7 @@ import {
   collectLaunchOutput,
   createCompiledChildEnv,
   createSmokeDaemonCustody,
+  createSmokeWorkspaceRoot,
   fetchSessionEventsBeforeDeadline,
   finishSmokeCleanup,
   formatSmokeProxyDiagnostics,
@@ -56,6 +57,7 @@ import type { BundledModelAddition } from "./bundled-model-additions";
 import type { NativeLocalShellTool } from "./platform-tools";
 import { acquireServerLease } from "../cli/runtime-lease";
 import { removeServerPid, writeServerProcess } from "../cli/server-process";
+import { DirectoryService } from "../web/directories";
 
 const tempDirs: string[] = [];
 const asyncCleanups: Array<() => void | Promise<void>> = [];
@@ -70,6 +72,27 @@ function tempDir(): string {
   tempDirs.push(dir);
   return dir;
 }
+
+it("creates fresh physical smoke roots through a real temporary-directory alias before deriving session paths", () => {
+  const parent = tempDir();
+  const physical = join(parent, "physical");
+  const alias = join(parent, "alias");
+  mkdirSync(physical);
+  symlinkSync(physical, alias, process.platform === "win32" ? "junction" : "dir");
+  const directories = new DirectoryService(parent);
+  const first = createSmokeWorkspaceRoot(alias);
+  const second = createSmokeWorkspaceRoot(alias);
+  expect(first).not.toBe(second);
+  expect(dirname(first)).toBe(directories.requireCwd(physical));
+  expect(dirname(second)).toBe(directories.requireCwd(physical));
+  for (const name of ["home", "agent", "project"]) {
+    const derived = join(first, name);
+    mkdirSync(derived);
+    // The fixture must already use the exact spelling accepted by Web creation.
+    expect(directories.requireCwd(derived)).toBe(derived);
+    expect(existsSync(join(second, name))).toBe(false);
+  }
+});
 
 function findPythonOnPath(): string | undefined {
   for (const name of ["python3", "python"]) {

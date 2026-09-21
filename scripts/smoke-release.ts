@@ -1,9 +1,8 @@
 #!/usr/bin/env bun
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { connect as connectTcp, createServer, type Socket } from "node:net";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import type { Api, Model } from "@earendil-works/pi-ai";
@@ -20,6 +19,7 @@ import {
   classifySmokeProxyRoutes,
   collectLaunchOutput,
   createCompiledChildEnv,
+  createSmokeWorkspaceRoot,
   fetchSessionEventsBeforeDeadline,
   finishSmokeCleanup,
   formatSmokeProxyDiagnostics,
@@ -86,7 +86,7 @@ const systemPowerShell = process.platform === "win32"
 const windowsSystem32 = process.platform === "win32"
   ? resolveSmokeWindowsSystem32(process.env)
   : undefined;
-const root = mkdtempSync(join(tmpdir(), "easyresearch-native-smoke-"));
+const root = createSmokeWorkspaceRoot();
 const home = join(root, "home");
 const agentDir = join(root, "agent");
 const project = join(root, "project");
