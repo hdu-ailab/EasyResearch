@@ -13,6 +13,23 @@ beforeEach(() => {
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
 describe("bundled agent definitions", () => {
+  it.each(["linux", "darwin", "win32"] as const)("resolves shared memory access with root-only improvement orchestration on %s", async (platform) => {
+    const agentDir = join(root, "agent");
+    const catalog = await loadAgentCatalog({ agentDir });
+    const { agents } = resolveAgentCatalog(catalog, {
+      agentDir,
+      cwd: join(root, "project"),
+      homeDir: join(root, "home"),
+      platform,
+    });
+    for (const agent of agents) {
+      expect(agent.effectiveTools).toContain("research-memory");
+      expect(agent.effectiveSkills).toContain("research-experience");
+      expect(agent.effectiveSkills.includes("recursive-self-improvement")).toBe(agent.name === "research-assistant");
+      expect(agent.missingSkills).toEqual([]);
+    }
+  });
+
   it("loads the role-specific capability and dispatch boundaries", async () => {
     const catalog = await loadAgentCatalog({
       agentDir: join(root, "agent"),

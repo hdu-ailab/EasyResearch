@@ -278,6 +278,26 @@ describe("discoverAgents (Markdown layers)", () => {
     expect(byName.custom?.effectiveTools).not.toContain("ssh-bash");
   });
 
+  it.each(["linux", "darwin", "win32"] as const)("includes memory in all-tools metadata while preserving strict capabilities on %s", async platform => {
+    writeAgent(bundledDir, "research-assistant", ["tools: []"]);
+    writeAgent(bundledDir, "custom", ["tools: []"]);
+    writeAgent(bundledDir, "search", ["tools: [read, bash, research-memory]", "subagents: []"]);
+    writeAgent(bundledDir, "review", ["tools: [read, bash]", "subagents: [search]"]);
+    const { agents } = await discoverAgents({ ...options(platform), homeDir: join(root, "home") });
+    const byName = Object.fromEntries(agents.map(agent => [agent.name, agent]));
+    for (const name of ["research-assistant", "custom", "search"]) {
+      expect(byName[name]?.effectiveTools).toContain("research-memory");
+    }
+    expect(byName.review?.effectiveTools).not.toContain("research-memory");
+    expect(byName.search?.effectiveTools).not.toContain("subagent");
+    expect(byName.custom?.effectiveTools).not.toContain("ssh-bash");
+    expect(byName.search?.subagents).toEqual([]);
+    for (const agent of agents) {
+      expect(agent.effectiveTools).toContain(platform === "win32" ? "powershell" : "bash");
+      expect(agent.effectiveTools).not.toContain(platform === "win32" ? "bash" : "powershell");
+    }
+  });
+
   it("preserves an empty subagent allowlist for leaf agents", async () => {
     writeAgent(bundledDir, "search", ["subagents: []"]);
 
