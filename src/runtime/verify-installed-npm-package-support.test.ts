@@ -25,6 +25,54 @@ type CommandResult = {
 };
 
 describe("post-publish installed npm package gate", () => {
+  it("includes check time in the budget and rejects a final success at or past the deadline", async () => {
+    for (const elapsed of [100, 101]) {
+      let now = 0;
+      const checked: string[] = [];
+      await expect(waitForPublishedPackages({
+        specs: ["linux@1", "darwin@1", "windows@1"], attempts: 3, delayMs: 10,
+        timeoutMs: 100, now: () => now,
+        check: (spec: string, budget?: { remainingMs: number }) => {
+          checked.push(spec);
+          if (budget) expect(budget.remainingMs).toBe(100 - now);
+          now += spec === "windows@1" ? elapsed - now : 30;
+          return true;
+        },
+        wait: async () => {},
+      })).rejects.toThrow(/deadline.*windows@1/i);
+      expect(checked).toEqual(["linux@1", "darwin@1", "windows@1"]);
+    }
+  });
+
+  it.each(["check", "wait"])("bounds a noncooperative asynchronous %s", async (operation) => {
+    vi.useFakeTimers();
+    try {
+      const outcome = waitForPublishedPackages({
+        specs: ["darwin@1"], attempts: 3, delayMs: 10, timeoutMs: 100,
+        check: () => operation === "check" ? new Promise(() => {}) : false,
+        wait: () => new Promise(() => {}),
+      }).then(() => "unexpected success", (error: Error) => error.message);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(await Promise.race([outcome, Promise.resolve("still pending")])).toMatch(/deadline.*darwin@1/i);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("caps the last sleep to the remaining budget and starts no lookup after expiry", async () => {
+    let now = 0;
+    const checks: number[] = [];
+    const waits: number[] = [];
+    await expect(waitForPublishedPackages({
+      specs: ["darwin@1"], attempts: 10, delayMs: 80, timeoutMs: 100, now: () => now,
+      check: () => { checks.push(now); now += 30; return false; },
+      wait: async (ms: number) => { waits.push(ms); now += ms; },
+    })).rejects.toThrow(/deadline.*darwin@1/i);
+    expect(checks).toEqual([0]);
+    expect(waits).toEqual([70]);
+  });
+
   it("retries registry visibility within a fixed attempt bound", async () => {
     const checks: string[] = [];
     const waits: number[] = [];

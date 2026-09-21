@@ -4,6 +4,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSyn
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { waitForPublishedPackages } from "./verify-installed-npm-package-support.mjs";
 import {
   TARGETS,
   type BuildArtifact,
@@ -88,10 +89,18 @@ async function publishPackage(dir: string, name: string, version: string, dryRun
   }
 }
 
-export function isAlreadyPublished(name: string, version: string): boolean {
-  const result = spawnSync("npm", ["view", `${name}@${version}`, "version", `--registry=${NPM_REGISTRY}`], { encoding: "utf8" });
-  if (result.status === 0 && (result.stdout ?? "").trim() === version) return true;
-  if (!result.error && result.status !== 0 && /\bE404\b/u.test(result.stderr ?? "")) return false;
+export function isAlreadyPublished(name: string, version: string, remainingMs = 30_000): boolean {
+  const timeout = Math.floor(Math.min(30_000, remainingMs));
+  if (timeout <= 0) throw new Error(`Cannot verify npm publication of ${name}@${version}; visibility deadline exceeded.`);
+  const result = spawnSync("npm", [
+    "view", `${name}@${version}`, "version", `--registry=${NPM_REGISTRY}`,
+    "--prefer-online", "--fetch-retries=0", `--fetch-timeout=${Math.min(20_000, timeout)}`,
+  ], { encoding: "utf8", timeout, killSignal: "SIGKILL" });
+  if (!result.error && result.signal == null && typeof result.status === "number"
+    && Number.isInteger(result.status) && result.status >= 0) {
+    if (result.status === 0 && (result.stdout ?? "").trim() === version) return true;
+    if (result.status > 0 && /\bE404\b/u.test(result.stderr ?? "")) return false;
+  }
   throw new Error(`Cannot verify npm publication of ${name}@${version}; no absence was established.`);
 }
 
@@ -320,11 +329,24 @@ export function packedPaths(output: string): Set<string> {
 }
 
 async function waitForAllPlatformPackages(version: string): Promise<void> {
-  for (let attempt = 1; attempt <= 6; attempt += 1) {
-    const missing = TARGETS.filter((target) => !isAlreadyPublished(`easyresearch-${target.name}`, version));
-    if (missing.length === 0) return;
-    if (attempt === 6) throw new Error(`meta publication blocked; registry is missing ${missing.map((target) => `easyresearch-${target.name}@${version}`).join(", ")}`);
-    await new Promise((resolve) => setTimeout(resolve, attempt * 10_000));
+  const timeoutMs = 15 * 60_000;
+  const delayMs = 10_000;
+  try {
+    await waitForPublishedPackages({
+      specs: TARGETS.map((target) => `easyresearch-${target.name}@${version}`),
+      attempts: Math.ceil(timeoutMs / delayMs) + 1,
+      delayMs,
+      timeoutMs,
+      check: (spec: string, { remainingMs }: { remainingMs: number }) => (
+        isAlreadyPublished(spec.slice(0, spec.lastIndexOf("@")), version, remainingMs)
+      ),
+      wait: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
+      onRetry: ({ attempt, missing }: { attempt: number; missing: string[] }) => {
+        console.log(`[release] registry visibility attempt ${attempt} missing ${missing.join(", ")}`);
+      },
+    });
+  } catch (error) {
+    throw new Error(`meta publication blocked; ${error instanceof Error ? error.message : "registry visibility failed"}`);
   }
 }
 

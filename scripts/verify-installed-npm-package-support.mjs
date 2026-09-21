@@ -27,17 +27,51 @@ export async function waitForPublishedPackages(options) {
   if (!Number.isSafeInteger(options.delayMs) || options.delayMs < 0) {
     throw new Error("npm registry visibility delay must be a non-negative integer");
   }
+  if (options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs <= 0)) {
+    throw new Error("npm registry visibility timeout must be a positive integer");
+  }
 
+  const now = options.now ?? (() => performance.now());
+  const deadline = options.timeoutMs === undefined ? Infinity : now() + options.timeoutMs;
   let missing = [...options.specs];
-  for (let attempt = 1; attempt <= options.attempts; attempt += 1) {
-    missing = [];
-    for (const spec of options.specs) {
-      if (!await options.check(spec)) missing.push(spec);
+  const deadlineError = () => new Error(
+    `npm registry visibility deadline exceeded; missing or unconfirmed: ${missing.join(", ")}`,
+  );
+  const remaining = () => {
+    const budget = deadline - now();
+    if (budget <= 0) throw deadlineError();
+    return budget;
+  };
+  // Bound asynchronous/noncooperative callbacks too. Synchronous subprocesses
+  // must enforce their own remaining budget; the post-check rejects late success.
+  const bounded = async (operation) => {
+    const budget = remaining();
+    if (!Number.isFinite(budget)) return operation(budget);
+    let timer;
+    try {
+      const expired = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(deadlineError()), budget);
+      });
+      const result = await Promise.race([operation(budget), expired]);
+      remaining();
+      return result;
+    } finally {
+      clearTimeout(timer);
     }
+  };
+  for (let attempt = 1; attempt <= options.attempts; attempt += 1) {
+    remaining();
+    missing = [...options.specs];
+    for (const spec of options.specs) {
+      if (await bounded((remainingMs) => options.check(spec, { remainingMs }))) {
+        missing = missing.filter((candidate) => candidate !== spec);
+      }
+    }
+    remaining();
     if (missing.length === 0) return;
     if (attempt < options.attempts) {
       options.onRetry?.({ attempt, missing: [...missing] });
-      await options.wait(options.delayMs);
+      await bounded((remainingMs) => options.wait(Math.min(options.delayMs, remainingMs)));
     }
   }
   throw new Error(
