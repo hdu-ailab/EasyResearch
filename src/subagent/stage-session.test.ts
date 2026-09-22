@@ -375,13 +375,17 @@ function model(name = "model-metadata"): Model<any> {
 
 function fakeSettingsManager<T extends object>(base: T): T & {
   getCompactionSettings(): { enabled: boolean; reserveTokens: number; keepRecentTokens: number };
-  applyOverrides(overrides: { compaction: { enabled: boolean; reserveTokens: number; keepRecentTokens: number } }): void;
+  applyOverrides(overrides: { compaction?: { enabled: boolean; reserveTokens: number; keepRecentTokens: number }; retry?: { provider?: { timeoutMs?: number } } }): void;
 } {
   let compaction = { enabled: true, reserveTokens: 16_384, keepRecentTokens: 20_000 };
+  let provider: { timeoutMs?: number } = {};
   return Object.assign(base, {
+    getProviderRetrySettings: () => ({ ...provider }),
+    getProjectSettings: () => ({}),
     getCompactionSettings: () => ({ ...compaction }),
-    applyOverrides: (overrides: { compaction: typeof compaction }) => {
-      compaction = { ...overrides.compaction };
+    applyOverrides: (overrides: { compaction?: typeof compaction; retry?: { provider?: typeof provider } }) => {
+      if (overrides.compaction) compaction = { ...overrides.compaction };
+      if (overrides.retry?.provider) provider = { ...provider, ...overrides.retry.provider };
     },
   });
 }

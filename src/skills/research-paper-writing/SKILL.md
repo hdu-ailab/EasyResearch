@@ -299,6 +299,13 @@ Use this pattern internally before writing the Results and Abstract:
 If a claim has no evidence, weaken it or remove it.
 
 ## Drafting Workflow
+
+Before generating long prose, apply `specialist-handoff`'s Long Documents And
+Interrupted Writes recipe. Save and verify one small section per call under a
+unique `manuscript/.parts-writing-<UUID>/` workspace, then assemble locally and
+inspect the draft before replacing the authoritative manuscript. After failure,
+inspect existing pieces and resume missing sections. `write` overwrites; it is
+not append. Keep temporary paths and recovery details out of manuscript prose.
 Follow this order:
 - Check the writing readiness gate.
 - Build a claim-evidence table.

@@ -67,6 +67,7 @@ import { parseTimelineEntryAppendedEvent } from "../src/webui/src/api/parsers";
 import { createResearchMemorySmoke } from "./smoke-research-memory";
 import { runResearchMemorySmoke } from "./smoke-research-memory-probe";
 import { assertResearchMemoryCapabilities } from "./smoke-research-memory-support";
+import { createWriteRecoverySmoke, runWriteRecoverySmoke } from "./smoke-write-recovery";
 
 const targetName = process.argv[2];
 const target = TARGETS.find((candidate) => candidate.name === targetName);
@@ -98,6 +99,7 @@ const validationScript = join(root, "validate-easyresearch-venv.py");
 const stageValidationScript = join(root, "validate-easyresearch-agent-network.py");
 const setupRunId = randomUUID();
 const memorySmoke = createResearchMemorySmoke({ runId: setupRunId, project, agentDir, platform: process.platform });
+const writeRecoverySmoke = createWriteRecoverySmoke(setupRunId);
 const googleCredentialsPath = join(root, "gaxios-adc.json");
 const firstRunStdoutPath = join(root, "first-run-stdout.txt");
 const firstRunStderrPath = join(root, "first-run-stderr.txt");
@@ -359,6 +361,16 @@ const modelServer = Bun.serve({
       tools?: Array<{ function?: { name?: string; description?: string } }>;
     };
     modelRequests += 1;
+    if (writeRecoverySmoke.laneFor(body)) {
+      try {
+        const action = writeRecoverySmoke.select(body);
+        return action.kind === "tool"
+          ? openAiStream({ toolCall: { id: action.id, name: action.name, arguments: action.arguments } })
+          : openAiStream({ text: action.text });
+      } catch (error) {
+        return Response.json({ error: { message: String(error) } }, { status: 400 });
+      }
+    }
     if (memorySmoke.laneFor(body)) {
       try {
         const action = memorySmoke.select(body);
@@ -2308,6 +2320,8 @@ try {
   const memoryReportPath = resolve(platformPackageDir(target.name), "..", `research-memory-${target.name}.json`);
   writeFileSync(memoryReportPath, `${JSON.stringify({ version, target: target.name, ...memoryReport }, null, 2)}\n`);
   console.log(`[smoke] research-memory: proposal, independent verification, activation, fresh-task strategy reuse, rejection, retirement and rollback passed (${memorySmoke.requests} provider requests); evidence: ${memoryReportPath}`);
+  await runWriteRecoverySmoke({ base, project, deadline: firstRunDeadline, scenario: writeRecoverySmoke });
+  console.log("[smoke] root and child failed-write guidance, section preservation, recovery and terminal handoff passed");
 
   const beforeOauth = classifySmokeProxyRoutes(recordsFor(initialProxies), {
     allHost: fakeChildHost,
@@ -2720,6 +2734,7 @@ try {
 
   const expectedModelRequests = smokeModelState.completedRequests
     + memorySmoke.requests
+    + writeRecoverySmoke.requests
     + loopbackProviderRequests
     + loopbackWebFetchState.completedRequests
     + initialWebFetchState.completedRequests

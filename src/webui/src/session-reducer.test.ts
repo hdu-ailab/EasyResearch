@@ -2860,6 +2860,35 @@ describe("session reducer", () => {
     ]);
   });
 
+  it.each(["Request timed out", "Stream ended without finish_reason"])(
+    "preserves partial prose and the actual provider error in live and child history: %s",
+    (errorMessage) => {
+      const message = {
+        role: "assistant",
+        stopReason: "error",
+        errorMessage,
+        content: [
+          { type: "thinking", thinking: "Reviewing evidence" },
+          { type: "text", text: "Now I will write the report." },
+          { type: "toolCall", id: "report-write", name: "write", arguments: { path: "report.md" } },
+        ],
+      };
+      const live = reduceSessionEvent(emptyState, { type: "message_end", message } as never);
+      const history = fromSnapshot({
+        runtimeConfigurationGeneration: 0,
+        session: { id: "child", cwd: "/p", isStreaming: false, status: "done", sessionName: "easyresearch:review" },
+        subagents: [],
+        messages: [message],
+      });
+      for (const state of [live, history]) {
+        expect(state.messages[0]?.text).toContain("Now I will write the report.");
+        expect(state.messages[0]?.text).toContain(errorMessage);
+        expect(state.messages[0]?.reasoning).toBe("Reviewing evidence");
+        expect(state.tools[0]).toMatchObject({ interrupted: true, running: false });
+      }
+    },
+  );
+
   it("keeps partial output on interruption and lets a real result replace the inferred outcome", () => {
     let state = reduceSessionEvent(emptyState, toolEvent("tool_execution_start"));
     state = reduceSessionEvent(state, {

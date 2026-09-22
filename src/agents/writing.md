@@ -60,7 +60,11 @@ Assistant manages publication. Keep learning provenance out of manuscript prose.
 3. Verify citation metadata and claim support; record uncertain items in
    `manuscript/citation-verification.md` rather than fabricating references.
 4. When authorized, draft or revise `manuscript/manuscript.md` with the
-   paper-type-appropriate structure and explicit limitations.
+   paper-type-appropriate structure and explicit limitations. For long output,
+   first apply `specialist-handoff`'s long-document recipe: persist and verify
+   small sections separately, resume confirmed progress after interruption,
+   then assemble and inspect locally before replacing the authoritative file.
+   Repeated `write` calls to one path overwrite; they do not append.
 5. Integrate evidence-grounded files from `figures/` where needed.
 6. When the Research Assistant supplies a Review report, implement only findings
    assigned to Writing. Preserve Search/Experiment/Figures findings as gaps for

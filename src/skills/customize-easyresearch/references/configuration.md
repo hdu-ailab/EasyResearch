@@ -3,7 +3,7 @@
 Examples are selective `settings.json` fragments, not replacement files or
 automatically installed defaults. Merge only the requested fields into existing
 objects; preserve unrelated settings and resource lists. The native settings
-below were checked against Pi 0.84.3's settings documentation and SDK/provider
+below were checked against Pi 0.85.1's settings documentation and SDK/provider
 implementation. Recheck matching documentation when the pinned runtime changes.
 
 ## API timeouts, retries, and transport
@@ -19,17 +19,18 @@ object, and are not per-Agent defaults.
 | `retry.enabled` | `true` | Automatic Agent-level retry for transient errors |
 | `retry.maxRetries` | `3` | Additional Agent attempts after failure; `0` disables this layer's retries |
 | `retry.baseDelayMs` | `2000` | Agent exponential backoff base: normally 2s, 4s, 8s |
-| `retry.provider.timeoutMs` | Unset | Provider request timeout in milliseconds; ordinary AgentSession requests fall back to `httpIdleTimeoutMs`, normally `300000` |
+| `retry.provider.timeoutMs` | `3600000` when neither timeout field is configured | EasyResearch's transient one-hour provider request default; explicit provider timeout wins, and explicit `httpIdleTimeoutMs` retains Pi's fallback |
 | `retry.provider.maxRetries` | `0` for supporting Pi adapters | Additional Provider-level attempts; normally leave at zero |
 | `retry.provider.maxRetryDelayMs` | `60000` | Reject an excessive server-requested retry delay; `0` removes this wait cap, not the retry count |
 | `httpIdleTimeoutMs` | `300000` | Pi HTTP/stream idle setting and SDK request-timeout fallback; `0` disables the configured idle limit, subject to the host/provider caveats below |
 | `websocketConnectTimeoutMs` | `15000` for supporting providers | WebSocket open/handshake timeout only; `0` disables that timer |
 | `transport` | `"auto"` | Supporting LLM providers: `"auto"`, `"sse"`, `"websocket"`, or `"websocket-cached"` |
 
-Explicit long-request example: one-hour Provider timeout, three additional
-Agent retries, and no additional Provider retries. The one-hour value is an
-example from Pi's docs, **not** the default or a promise that a complete streamed
-response can run for an hour:
+Explicit configuration example: one-hour Provider timeout, three additional
+Agent retries, and no additional Provider retries. EasyResearch now supplies the
+one-hour request default in memory when neither timeout field is configured;
+this example need not be saved to obtain that default. It is not a promise that
+a complete streamed response can run for an hour:
 
 ```json
 {
@@ -67,7 +68,10 @@ sentinel to another field.
   use `retry.provider.maxRetries: 0` for supporting Provider retry wrappers.
   Neither setting disables every transport recovery or intermediary retry.
 - In ordinary AgentSession requests, an explicit request override wins over
-  `retry.provider.timeoutMs`, then Pi falls back to `httpIdleTimeoutMs`. In that
+  `retry.provider.timeoutMs`, then Pi falls back to an explicitly configured
+  `httpIdleTimeoutMs`. If neither setting is configured, EasyResearch applies
+  its transient one-hour provider default at session start and before requests,
+  including after reload; it never seeds settings files. In the native HTTP
   fallback, `httpIdleTimeoutMs: 0` becomes `2147483647` ms (about 24.9 days), not
   literal infinity. An explicit Provider timeout is not removed by setting the
   HTTP idle field to zero.

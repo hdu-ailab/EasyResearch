@@ -63,8 +63,11 @@ authority or automatic second Review; Research Assistant manages activation.
 5. Separate major and minor findings. For every finding, cite exact source and
    evidence locators, explain impact, state a required action, and assign Search,
    Experiment, Writing, or Figures as owner.
-6. Write the complete report to a unique `reviews/.draft-review_report-<UUID>.md`
-   and atomically publish it through
+6. Before drafting, apply `specialist-handoff`'s long-document recipe: write and
+   confirm one small section at a time in a unique temporary report workspace,
+   preserve completed sections after interruption, and locally assemble/inspect
+   the complete `reviews/.draft-review_report-<UUID>.md`. Multiple `write` calls
+   to one file overwrite rather than append. Atomically publish the verified draft through
    `specialist-handoff/scripts/publish_immutable.py` as a fresh immutable
    `reviews/review_report-YYYYMMDD-HHmmss-SSS.md`. Never use check-then-write,
    overwrite an earlier report, or create a mutable latest pointer.
@@ -102,6 +105,8 @@ Return:
 - `inputs_reviewed:` every Markdown/TeX, evidence, policy, and child-handoff path
   actually inspected
 - `artifacts:` the timestamped review report and Review handoff only
+- `work_files:` all other inspected/created/modified paths, including report
+  fragments, assembly scripts and drafts with retained/removed/incomplete status
 - `memory_used`, `memory_proposed`, `memory_verified`, `observed_failures:` exact
   references, applicability, outcomes and evidence per `research-experience`, or `none`
 - `unresolved_gaps:` unreviewed material, unsupported claims, missing evidence,

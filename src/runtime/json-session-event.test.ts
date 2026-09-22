@@ -84,7 +84,7 @@ describe("toJsonSessionEvent", () => {
       state = reduceSessionEvent(state, wire);
     }
     expect(state.messages).toEqual([expect.objectContaining({
-      text: "all tokens",
+      text: stopReason === "aborted" ? "all tokens\n\n⚠ Request was aborted" : "all tokens",
       streaming: false,
       error: stopReason === "aborted",
       timestamp: message.timestamp,

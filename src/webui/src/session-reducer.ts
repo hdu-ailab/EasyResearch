@@ -217,7 +217,8 @@ type UnknownMessage = {
 function splitContent(message: UnknownMessage): { text: string; reasoning: string } {
   const content = message.content;
   const errorText = typeof message.errorMessage === "string" ? `⚠ ${message.errorMessage}` : "";
-  if (typeof content === "string") return { text: content.trim() ? content : errorText, reasoning: "" };
+  const withError = (text: string) => [text.trim() ? text : "", errorText].filter(Boolean).join("\n\n");
+  if (typeof content === "string") return { text: withError(content), reasoning: "" };
   if (Array.isArray(content)) {
     const texts: string[] = [];
     const reasoning: string[] = [];
@@ -236,7 +237,7 @@ function splitContent(message: UnknownMessage): { text: string; reasoning: strin
     const text = texts.join("\n\n");
     const joinedReasoning = reasoning.join("\n\n");
     if (text.trim() || joinedReasoning) {
-      return { text: text.trim() ? text : errorText, reasoning: joinedReasoning };
+      return { text: withError(text), reasoning: joinedReasoning };
     }
   }
   if (errorText) return { text: errorText, reasoning: "" };

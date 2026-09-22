@@ -191,6 +191,34 @@ async function harness(options: {
 }
 
 describe("Pinned Pi lifecycle ownership", () => {
+  it.each(["root", "stage"] as const)("applies slow-provider and write-recovery policies in the real %s factory", async (scope) => {
+    const h = await harness();
+    for (const row of h.rows) { row.tools = ["write"]; row.effectiveTools = ["write"]; }
+    const requests: Array<{ timeout: number | undefined; content: string }> = [];
+    h.provider.setResponses([
+      (context, options) => {
+        requests.push({ timeout: options?.timeoutMs, content: JSON.stringify(context.messages) });
+        return h.ai.fauxAssistantMessage(h.ai.fauxToolCall("write", { path: "report.md" }), { stopReason: "toolUse" });
+      },
+      (context, options) => {
+        requests.push({ timeout: options?.timeoutMs, content: JSON.stringify(context.messages) });
+        return h.ai.fauxAssistantMessage("resume by section");
+      },
+    ]);
+    if (scope === "stage") {
+      const { handle } = await h.launch("finish report");
+      try { await handle.completion; } finally { await handle.dispose(); }
+    } else {
+      const adapter = h.factory.create({ cwd: join(root, "project") });
+      try {
+        await adapter.start(); await adapter.prompt("finish report"); await h.sessions[0]!.waitForIdle();
+      } finally { await adapter.stop(); }
+    }
+    expect(requests.map(request => request.timeout)).toEqual([3_600_000, 3_600_000]);
+    expect(requests[1]!.content).toContain("Write recovery:");
+    expect(requests[1]!.content).toContain("smaller section");
+  });
+
   it.each(["root", "stage"] as const)("compacts a large %s tool result before the next model request", async (scope) => {
     const pi = await importPi();
     const order: string[] = [];

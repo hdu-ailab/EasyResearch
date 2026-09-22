@@ -1,6 +1,6 @@
 ---
 name: specialist-handoff
-description: Use when a bundled specialist is about to finish a normal run or continuation and must leave a durable, inspectable handoff for its immediate caller.
+description: Use before a bundled specialist writes a long report or manuscript, recovers an interrupted write, or finishes a normal run or continuation with a durable handoff for its immediate caller.
 license: MIT
 metadata:
   hermes:
@@ -32,6 +32,65 @@ Figures, or Review run, including:
 
 A hard runtime Error or external interruption may prevent file creation. Never
 invent a handoff for work the specialist did not complete or observe.
+
+## Long Documents And Interrupted Writes
+
+Apply this recipe **before** generating a long report, manuscript, or handoff.
+A complete draft is required before publication; it need not be generated in one
+tool call. Context-window capacity is not an output-token or time budget.
+
+1. Establish the section order. Create a unique hidden `.parts-<role>-<UUID>/`
+   directory beside the intended draft, within the role's authorized artifact
+   root. Review's report pieces belong under `reviews/`; manuscript pieces under
+   `manuscript/`. Record the directory and ordered filenames in working notes.
+2. Use one `write` call per small section, for example `01-scope.md`, then
+   `02-findings.md`. Split a long section further. Wait for each successful result
+   and inspect the saved section before moving on; keep calls comfortably below
+   the model's output limit. Do not put all sections into one tool batch or one
+   giant shell command. `write` **replaces** a file, never appends.
+3. After interruption, inspect the exact attempted file and confirmed pieces.
+   A streamed path or prose announcement is not execution evidence. Preserve
+   completed pieces; regenerate only missing or incomplete pieces. A read error
+   other than confirmed absence is a blocker to resolve, not permission to
+   overwrite. Never blindly append a retry or retransmit the whole document.
+4. Read the pieces and check required sections, findings, evidence locators and
+   ordering. Assemble an **explicit ordered list**, not a wildcard, locally into
+   a fresh unique draft. This short Python recipe reads every piece before opening
+   the destination, retains pieces on failure, and refuses to overwrite a draft:
+
+   ```python
+   # Save as a small assembly script in the task's own temporary directory.
+   import sys
+   from pathlib import Path
+   destination = Path(sys.argv[1])
+   parts = [Path(name) for name in sys.argv[2:]]
+   if not parts or len({p.resolve() for p in parts}) != len(parts):
+       raise ValueError("Provide a non-empty, duplicate-free ordered section list")
+   sections = [p.read_text(encoding="utf-8") for p in parts]
+   if any(not section.strip() for section in sections):
+       raise ValueError("An empty section is not a complete draft")
+   payload = ("\n\n".join(s.rstrip() for s in sections) + "\n").encode("utf-8")
+   with destination.open("xb") as output:
+       output.write(payload)
+   ```
+
+   Invoke with the existing Python interpreter, followed by script path, draft
+   path, and each section path in order. Use the native shell and quote paths.
+   For reports/handoffs, the assembled draft must follow the naming rules below.
+5. Inspect the assembled draft for completeness and continuity before using the
+   existing publisher. If assembly fails, keep pieces, inspect any partial draft,
+   and assemble into a fresh draft after correcting the cause. Preserve an existing
+   authoritative manuscript until its validated replacement is ready.
+6. If publication returned no confirmed result, inspect the draft and newly
+   published candidates and compare content before retrying: a missing draft may
+   mean publication succeeded. Do not create duplicate logical reports blindly.
+   Confirm the final path, then remove only task-owned temporary pieces/scripts
+   when cleanup is permitted. Review retains its temporary workspace because its
+   role does not authorize arbitrary deletion; the publisher owns draft cleanup.
+
+For permission, disk-space/quota, or path errors, correct the specific blocker;
+smaller writes cannot fix these. A user Stop is not permission to restart work.
+Runtime Error may still prevent a final handoff; never fabricate success.
 
 ## Immutable Path
 
@@ -151,7 +210,10 @@ handoff: <new handoff path>
 inputs_reviewed:
 - <every inspected project file>
 artifacts:
-- <every created or modified work file, including Review report when applicable>
+- <completed deliverables, including Review report when applicable>
+work_files:
+- <every other inspected/created/modified path, including temporary fragments,
+   assembly scripts and drafts; label retained, removed, incomplete, or published>
 memory_used: <exact active refs, applicability and actual use, or none>
 memory_proposed: <returned pending refs/proposal revisions and evidence, or none>
 memory_verified: <returned refs, tested proposal revisions, outcomes/evidence, or none>
@@ -163,7 +225,9 @@ required_user_input: <one user-owned dependency or none>
 ```
 
 The final response and disk handoff must agree. Include the handoff itself in
-`artifacts`. Do not claim a path that does not exist.
+`artifacts`. List temporary paths under `work_files`, not as completed
+deliverables; distinguish removed drafts from existing files. Do not claim a
+missing file exists or is a completed artifact.
 
 ## Caller Acceptance
 

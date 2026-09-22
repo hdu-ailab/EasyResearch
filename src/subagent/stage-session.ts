@@ -3,6 +3,7 @@ import type { Message, Model } from "@earendil-works/pi-ai";
 import type {
   AgentSessionEvent,
   JsonAgentSessionEvent,
+  SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import {
   createAgentRuntimeBinding,
@@ -13,6 +14,8 @@ import { runCleanupSteps } from "../runtime/cleanup";
 import { toJsonSessionEvent } from "../runtime/json-session-event";
 import type { LiveConfiguration } from "../runtime/live-configuration";
 import { excludedLocalShellTools } from "../runtime/platform-tools";
+import { createProviderTimeoutExtension } from "../extensions/provider-timeout";
+import { createFileWriteRecoveryExtension } from "../extensions/file-write-recovery";
 import {
   createCompactionPolicyBinding,
   type CompactionPolicySettingsManager,
@@ -398,6 +401,8 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         agentDir: deps.agentDir,
         settingsManager,
         extensionFactories: [
+          { name: "provider-timeout", factory: createProviderTimeoutExtension(settingsManager as SettingsManager) },
+          { name: "file-write-recovery", factory: createFileWriteRecoveryExtension() },
           createCompactionCancellationExtension(() => abortRequested, () => session!.abortCompaction()),
           ...deps.createExtensionFactories({
             binding,

@@ -171,6 +171,13 @@ handoff or return the coverage incomplete.
 
 ## Drafting Workflow
 
+Before generating long prose, apply `specialist-handoff`'s Long Documents And
+Interrupted Writes recipe. Persist and inspect one small section per call in a
+unique `manuscript/.parts-writing-<UUID>/` workspace, then assemble locally in the
+planned order and inspect before replacing the authoritative manuscript. Resume
+missing pieces after interruption rather than regenerating the entire survey.
+`write` overwrites, not appends. Temporary/recovery details stay outside the paper.
+
 1. Pass the survey readiness gate and create the durable survey plan.
 2. For each subsection, select relevant `note_key` entries, then inspect their
    readable sources at the recorded locators before writing claims.

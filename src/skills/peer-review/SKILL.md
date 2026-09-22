@@ -41,8 +41,12 @@ Every Review run or continuation creates a new immutable report:
 reviews/review_report-YYYYMMDD-HHmmss-SSS.md
 ```
 
-Write complete report content to a unique
-`reviews/.draft-review_report-<UUID>.md`, then use
+First apply `specialist-handoff`'s Long Documents And Interrupted Writes recipe:
+write and verify one small section per call in a unique `reviews/.parts-review-<UUID>/`
+workspace, then assemble the complete report locally into a unique
+`reviews/.draft-review_report-<UUID>.md`. Preserve confirmed sections after a
+failed call and retry only incomplete work; do not send a whole long report again.
+Inspect the assembled draft, then use
 the absolute loaded `specialist-handoff/scripts/publish_immutable.py` path from
 the exact session cwd with `--directory reviews --prefix review_report` to
 publish it with atomic no-overwrite semantics. The helper
@@ -50,7 +54,8 @@ appends a numeric suffix on collision. Never overwrite a previous report and
 never create a mutable `review_report.md`, latest pointer, or symlink. The Review
 handoff names the exact report.
 
-Review may write only its timestamped report and timestamped handoff. It must not
+Review may write only its report and handoff, including their unique temporary
+drafts, section fragments and assembly script. It must not
 modify manuscript, TeX, bibliography, experiment, result, or figure artifacts.
 
 ## Inputs

@@ -2,6 +2,7 @@ import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core"
 import type { Model } from "@earendil-works/pi-ai";
 import type {
   AgentSessionEvent,
+  SettingsManager,
   SessionTreeNode,
 } from "@earendil-works/pi-coding-agent";
 import { runCleanupSteps } from "../runtime/cleanup";
@@ -14,6 +15,8 @@ import {
   type AgentRuntimeBindingSession,
   type AgentRuntimeModelRuntime,
 } from "../runtime/agent-runtime-binding";
+import { createProviderTimeoutExtension } from "../extensions/provider-timeout";
+import { createFileWriteRecoveryExtension } from "../extensions/file-write-recovery";
 import {
   createCompactionPolicyBinding,
   DEFAULT_GLOBAL_COMPACTION_POLICY,
@@ -419,6 +422,8 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
         settingsManager,
         extensionFactories: [
           createCompactionCancellationExtension(() => compaction.isCancelling(), () => session!.abortCompaction()),
+          { name: "provider-timeout", factory: createProviderTimeoutExtension(settingsManager as SettingsManager) },
+          { name: "file-write-recovery", factory: createFileWriteRecoveryExtension() },
           ...extensionFactories,
           createSubagentNotificationExtension(supervisor),
         ],
