@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { connect as connectTcp, createServer, type Socket } from "node:net";
 import { join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
@@ -233,6 +233,7 @@ let observedConfigurationBootId: string | undefined;
 let advancedConfigurationGeneration: number | undefined;
 let snapshotConfigurationGeneration: number | undefined;
 let observedRootAppliedGeneration: number | undefined;
+let latestSkillConfigurationGeneration = 0;
 let configurationEventError: Error | undefined;
 let configurationEventReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 let configurationEventTask: Promise<void> | undefined;
@@ -1455,6 +1456,7 @@ function observeConfigurationEvent(event: unknown): void {
     throw new Error(`configuration SSE emitted a malformed update: ${serialized}`);
   }
   const generation = value.generation;
+  if (value.skillsChanged === true) latestSkillConfigurationGeneration = Math.max(latestSkillConfigurationGeneration, generation);
   if (initialConfigurationGeneration === undefined) {
     initialConfigurationGeneration = generation;
     return;
@@ -2299,6 +2301,28 @@ try {
     label: "Model catalog probe",
   });
   assertSmokeModelCatalog(modelCatalog, BUNDLED_MODEL_ADDITIONS, cacheOnlyModel, BUNDLED_MODEL_REMOVALS);
+  const projectConfig = join(project, ".easyresearch");
+  if (existsSync(projectConfig)) throw new Error("project configuration must be absent before native first-creation probe");
+  for (const phase of ["created", "replaced"] as const) {
+    const baseline = Math.max(latestSkillConfigurationGeneration, observedRootAppliedGeneration ?? 0);
+    if (phase === "replaced") renameSync(projectConfig, join(project, "retired-configuration"));
+    const description = `NATIVE_PROJECT_SKILL_${phase}_${setupRunId}`;
+    const descriptor = join(projectConfig, "skills", "research-project-workflow", "SKILL.md");
+    mkdirSync(join(descriptor, ".."), { recursive: true });
+    writeFileSync(descriptor, `---\nname: research-project-workflow\ndescription: ${description}\n---\nNative configuration boundary probe.\n`);
+    await waitForSmokeCondition(`project configuration ${phase} and applied without polling`, () =>
+      latestSkillConfigurationGeneration > baseline
+      && (observedRootAppliedGeneration ?? 0) >= latestSkillConfigurationGeneration);
+    const commandSnapshot = await requestSmokeJsonBeforeDeadline({
+      url: `${base}/api/sessions/${created.id}/commands`,
+      deadline: firstRunDeadline,
+      label: `project ${phase} Skill commands`,
+    }) as { commands?: Array<{ name?: string; description?: string }> };
+    if (!commandSnapshot.commands?.some((command) => command.name === "research-project-workflow"
+      && command.description === description)) {
+      throw new Error(`project ${phase} Skill did not reach the compiled runtime command catalog`);
+    }
+  }
   if (
     smokeModelState.completedRequests !== modelRequests
       - loopbackProviderRequests

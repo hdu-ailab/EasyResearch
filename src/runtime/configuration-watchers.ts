@@ -1,6 +1,7 @@
 import { lstat, realpath } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { type ChokidarOptions, watch as chokidarWatch } from "chokidar";
+import type { ChokidarOptions } from "chokidar";
+import { watchConfigurationResources } from "./configuration-resource-watcher";
 import type { ConfigurationWatchImplementation } from "./live-configuration";
 import {
   type AcceptedSkillDescriptor,
@@ -110,7 +111,6 @@ type WatchScope =
 export function createConfigurationWatcherManager(dependencies: WatcherDependencies): ConfigurationWatcherManager {
   const agentDir = resolve(dependencies.agentDir);
   const homeDir = resolve(dependencies.homeDir);
-  const watch = dependencies.watch ?? (chokidarWatch as unknown as ConfigurationWatchImplementation);
   const globalScope: WatchScope = {
     kind: "global",
     anchor: agentDir,
@@ -220,7 +220,13 @@ export function createConfigurationWatcherManager(dependencies: WatcherDependenc
           return false;
         }
       };
-      watcher = watch(initialWatchAnchors(scope), watcherOptions(scope, skillAllowed)) as ConfigurationWatcher;
+      const anchors = initialWatchAnchors(scope);
+      const options = watcherOptions(scope, skillAllowed);
+      watcher = (dependencies.watch
+        ? dependencies.watch(anchors, options)
+        : watchConfigurationResources(anchors, options, [scope.kind === "global" ? scope.anchor
+          : join(scope.kind === "home" ? scope.anchor : scope.canonicalAnchor,
+            scope.kind === "home" ? ".agents" : ".easyresearch")])) as ConfigurationWatcher;
       instance.watcher = watcher;
       const synchronizePath = (event: (typeof WATCH_EVENTS)[number], candidate: unknown): void => {
         const path = resolve(String(candidate));
