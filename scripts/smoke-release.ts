@@ -2304,8 +2304,17 @@ try {
   const projectConfig = join(project, ".easyresearch");
   if (existsSync(projectConfig)) throw new Error("project configuration must be absent before native first-creation probe");
   for (const phase of ["created", "replaced"] as const) {
-    const baseline = Math.max(latestSkillConfigurationGeneration, observedRootAppliedGeneration ?? 0);
-    if (phase === "replaced") renameSync(projectConfig, join(project, "retired-configuration"));
+    let baseline = Math.max(latestSkillConfigurationGeneration, observedRootAppliedGeneration ?? 0);
+    if (phase === "replaced") {
+      // Windows cannot rename a directory with live descendant watch handles.
+      // Delete/recreate exercises the same lost-root/reattachment boundary there.
+      if (process.platform === "win32") rmSync(projectConfig, { recursive: true, maxRetries: 10, retryDelay: 100 });
+      else renameSync(projectConfig, join(project, "retired-configuration"));
+      await waitForSmokeCondition("project configuration removal and applied fallback", () =>
+        latestSkillConfigurationGeneration > baseline
+        && (observedRootAppliedGeneration ?? 0) >= latestSkillConfigurationGeneration);
+      baseline = Math.max(latestSkillConfigurationGeneration, observedRootAppliedGeneration ?? 0);
+    }
     const description = `NATIVE_PROJECT_SKILL_${phase}_${setupRunId}`;
     const descriptor = join(projectConfig, "skills", "research-project-workflow", "SKILL.md");
     mkdirSync(join(descriptor, ".."), { recursive: true });
