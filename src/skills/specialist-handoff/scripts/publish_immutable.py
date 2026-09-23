@@ -96,7 +96,11 @@ def publish(source: str, directory: str, prefix: str) -> str:
             if not _same_file(directory_info, os.fstat(directory_fd)):
                 raise ValueError("destination directory changed during validation")
 
-        source_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        # Windows cannot flush a handle opened for reading: os.fsync maps to
+        # _commit(), which fails with EBADF unless the handle is writable. Open
+        # the draft for update there so the durability flush below stays real
+        # instead of degrading the publication guarantee.
+        source_flags = (os.O_RDWR if WINDOWS else os.O_RDONLY) | getattr(os, "O_NOFOLLOW", 0)
         if directory_fd is None:
             source_fd = os.open(draft, source_flags)
         else:
