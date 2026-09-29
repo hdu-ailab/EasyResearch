@@ -24,6 +24,26 @@ describe("semantic versions", () => {
 });
 
 describe("desktop update check", () => {
+  it("accepts only the exact Windows asset with a bounded size and SHA-256 digest", async () => {
+    const asset = {
+      name: "EasyResearch-1.3.0-windows-x64.exe",
+      browser_download_url: "https://github.com/hdu-ailab/EasyResearch/releases/download/v1.3.0/EasyResearch-1.3.0-windows-x64.exe",
+      size: 1234,
+      digest: `sha256:${"a".repeat(64)}`,
+    };
+    const release = (windowsAsset: typeof asset) => async () => new Response(JSON.stringify({
+      tag_name: "v1.3.0",
+      html_url: "https://github.com/hdu-ailab/EasyResearch/releases/tag/v1.3.0",
+      assets: [windowsAsset],
+    }));
+    await expect(checkDesktopUpdate("1.2.3", { fetch: release(asset) })).resolves.toMatchObject({
+      windowsInstaller: { fileName: asset.name, url: asset.browser_download_url, size: 1234, sha256: "a".repeat(64) },
+    });
+    await expect(checkDesktopUpdate("1.2.3", { fetch: release({ ...asset, browser_download_url: "https://example.com/installer.exe" }) }))
+      .rejects.toThrow(/installer metadata/i);
+    await expect(checkDesktopUpdate("1.2.3", { fetch: release({ ...asset, digest: "sha256:wrong" }) }))
+      .rejects.toThrow(/installer metadata/i);
+  });
   it("returns only a strictly newer validated repository release", async () => {
     const fetch = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
       expect(new Headers(init?.headers).get("accept")).toContain("application/vnd.github+json");

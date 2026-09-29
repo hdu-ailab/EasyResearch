@@ -90,9 +90,13 @@ function renderHomeWithTwoProjects() {
 }
 
 describe("HomePage", () => {
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    delete window.easyresearchDesktop;
+  });
 
   beforeEach(() => {
+    delete window.easyresearchDesktop;
     vi.mocked(api.listStatus).mockReset();
     vi.mocked(api.checkForUpdate).mockReset().mockResolvedValue({ latestVersion: null });
     vi.mocked(api.listDirectories).mockReset();
@@ -119,6 +123,47 @@ describe("HomePage", () => {
       isStreaming: false,
       status: "ready",
     } as never);
+  });
+
+  it("starts a desktop update from the Home notice and displays native progress", async () => {
+    const startUpdate = vi.fn().mockResolvedValue(undefined);
+    let progress: ((value: { phase: "downloading" | "restarting"; percent?: number }) => void) | undefined;
+    window.easyresearchDesktop = {
+      platform: "win32",
+      version: "0.1.7",
+      persistWebUiPreferences() {},
+      checkForUpdate: async () => "0.1.9",
+      startUpdate,
+      onUpdateProgress: (listener) => {
+        progress = listener;
+        return () => {
+          progress = undefined;
+        };
+      },
+    };
+    renderHome();
+    fireEvent.click(await screen.findByRole("button", { name: "Update to v0.1.9 and restart" }));
+    await waitFor(() => expect(startUpdate).toHaveBeenCalledExactlyOnceWith("0.1.9"));
+    act(() => progress?.({ phase: "downloading", percent: 42 }));
+    expect(screen.getByRole("button", { name: "Downloading update… 42%" })).toBeDisabled();
+  });
+
+  it("keeps a failed desktop update check visible and retries it", async () => {
+    const checkForUpdate = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("GitHub Release check returned HTTP 403."))
+      .mockResolvedValueOnce("0.1.9");
+    window.easyresearchDesktop = {
+      platform: "win32",
+      version: "0.1.7",
+      persistWebUiPreferences() {},
+      checkForUpdate,
+      startUpdate: async () => {},
+    };
+    renderHome();
+    fireEvent.click(await screen.findByRole("button", { name: "Could not check for updates. Retry" }));
+    expect(await screen.findByRole("button", { name: "Update to v0.1.9 and restart" })).toBeEnabled();
+    expect(checkForUpdate).toHaveBeenCalledTimes(2);
   });
 
   it("renders the current Home control above an edge-to-edge full-height workspace", async () => {

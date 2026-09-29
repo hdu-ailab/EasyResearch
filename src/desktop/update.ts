@@ -12,6 +12,14 @@ export interface SemanticVersion {
 export interface DesktopReleaseUpdate {
   version: string;
   url: string;
+  windowsInstaller?: DesktopInstallerAsset;
+}
+
+export interface DesktopInstallerAsset {
+  fileName: string;
+  url: string;
+  size: number;
+  sha256: string;
 }
 
 export function parseSemanticVersion(value: string): SemanticVersion {
@@ -75,14 +83,36 @@ export async function checkDesktopUpdate(
     signal: AbortSignal.timeout(options.timeoutMs ?? 5_000),
   });
   if (!response.ok) throw new Error(`GitHub Release check returned HTTP ${response.status}.`);
-  const body = await response.json() as { tag_name?: unknown; html_url?: unknown };
+  const body = await response.json() as { tag_name?: unknown; html_url?: unknown; assets?: unknown };
   if (typeof body.tag_name !== "string" || typeof body.html_url !== "string") {
     throw new Error("GitHub Release check returned malformed metadata.");
   }
   const latest = parseSemanticVersion(body.tag_name);
   const version = formatSemanticVersion(latest);
   const url = validateReleaseUrl(body.html_url, body.tag_name);
-  return compareSemanticVersions(version, currentVersion) > 0 ? { version, url } : null;
+  if (compareSemanticVersions(version, currentVersion) <= 0) return null;
+  const windowsInstaller = selectWindowsInstaller(body.assets, body.tag_name, version);
+  return windowsInstaller ? { version, url, windowsInstaller } : { version, url };
+}
+
+function selectWindowsInstaller(assets: unknown, tag: string, version: string): DesktopInstallerAsset | undefined {
+  if (!Array.isArray(assets)) return undefined;
+  const fileName = `EasyResearch-${version}-windows-x64.exe`;
+  const matches = assets.filter((asset) => asset && typeof asset === "object" && asset.name === fileName);
+  if (matches.length === 0) return undefined;
+  if (matches.length !== 1) throw new Error("GitHub Release contained duplicate Windows installers.");
+  const asset = matches[0] as Record<string, unknown>;
+  const expectedUrl = `https://github.com/hdu-ailab/EasyResearch/releases/download/${tag}/${fileName}`;
+  if (
+    asset.browser_download_url !== expectedUrl
+    || typeof asset.digest !== "string"
+    || !/^sha256:[a-f0-9]{64}$/iu.test(asset.digest)
+    || typeof asset.size !== "number"
+    || !Number.isSafeInteger(asset.size)
+    || asset.size <= 0
+    || asset.size > 500 * 1024 * 1024
+  ) throw new Error("GitHub Release Windows installer metadata is invalid.");
+  return { fileName, url: expectedUrl, size: asset.size, sha256: asset.digest.slice(7).toLowerCase() };
 }
 
 function formatSemanticVersion(version: SemanticVersion): string {

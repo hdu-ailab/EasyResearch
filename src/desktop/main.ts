@@ -5,9 +5,11 @@ import {
   ipcMain,
   Menu,
   nativeImage,
+  net,
   shell,
   Tray,
   type IpcMainEvent,
+  type IpcMainInvokeEvent,
   type MessageBoxOptions,
   type MessageBoxReturnValue,
 } from "electron";
@@ -20,6 +22,7 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { defaultAgentDir } from "../runtime/bundled-assets";
+import { directLocalHttpFetch } from "../cli/local-http";
 import type { RuntimeLease } from "../cli/runtime-lease";
 import {
   beginDesktopExit,
@@ -33,6 +36,9 @@ import {
   captureDesktopRestartHash,
   createTrayMenuTemplate,
   DESKTOP_HOST_VERSION_CHANNEL,
+  DESKTOP_UPDATE_CHECK_CHANNEL,
+  DESKTOP_UPDATE_START_CHANNEL,
+  DESKTOP_UPDATE_PROGRESS_CHANNEL,
   DESKTOP_PREFERENCES_READ_CHANNEL,
   DESKTOP_PREFERENCES_WRITE_CHANNEL,
   DESKTOP_SESSION_PARTITION,
@@ -60,6 +66,7 @@ import {
   type DesktopSidecarProcessHandle,
 } from "./sidecar";
 import { checkDesktopUpdate, type DesktopReleaseUpdate } from "./update";
+import { downloadWindowsInstaller, scheduleWindowsInstaller } from "./installer";
 import {
   desktopSmokeSidecarReadyEvent,
   desktopSmokeRestartFailureEvent,
@@ -69,7 +76,7 @@ import {
   requestDesktopSmokeRestart,
   verifyDesktopSmokeSuccessor,
 } from "./smoke-host";
-import { DESKTOP_SMOKE_USER_DATA_ENV } from "./contracts";
+import { DESKTOP_ACCESS_HEADER, DESKTOP_SMOKE_USER_DATA_ENV, type DesktopUpdateProgress } from "./contracts";
 
 configureSmokeUserData();
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
@@ -81,6 +88,7 @@ const sidecarOwnership = createDesktopSidecarOwnership();
 let lifecycle: DesktopLifecycleState = createDesktopLifecycleState();
 let startAttempt: Promise<boolean> | undefined;
 let exitAttempt: Promise<void> | undefined;
+let updateAttempt: Promise<void> | undefined;
 let allowQuit = false;
 let smokeTimer: ReturnType<typeof setInterval> | undefined;
 let smokeRestartContext: {
@@ -145,9 +153,27 @@ function installPreferenceIpc(): void {
       writeDesktopLog(`Preference mirror rejected: ${errorMessage(error)}`);
     }
   });
+  ipcMain.handle(DESKTOP_UPDATE_CHECK_CHANNEL, async (event) => {
+    if (!isTrustedRenderer(event)) throw new Error("Untrusted desktop update request.");
+    try {
+      const update = await checkAvailableDesktopUpdate();
+      const version = process.platform === "win32" && update?.windowsInstaller ? update.version : null;
+      if (version) writeDesktopLog(`Desktop update available: ${version}`);
+      return version;
+    } catch (error) {
+      writeDesktopLog(`Desktop update check failed: ${errorMessage(error)}`);
+      throw error;
+    }
+  });
+  ipcMain.handle(DESKTOP_UPDATE_START_CHANNEL, async (event, expectedVersion: unknown) => {
+    if (!isTrustedRenderer(event) || typeof expectedVersion !== "string") {
+      throw new Error("Invalid desktop update request.");
+    }
+    await startDesktopUpdate(expectedVersion);
+  });
 }
 
-function isTrustedRenderer(event: IpcMainEvent): boolean {
+function isTrustedRenderer(event: IpcMainEvent | IpcMainInvokeEvent): boolean {
   return mainWindow !== undefined && event.sender === mainWindow.webContents;
 }
 
@@ -222,7 +248,6 @@ async function startApplication(
       } : undefined));
       monitorSidecar(handle);
       await createMainWindow(handle, hash);
-      void checkForUpdates(false);
       return true;
     } catch (error) {
       writeDesktopLog(`Desktop startup failed: ${errorMessage(error)}`);
@@ -292,7 +317,7 @@ function showLoading(status: string): void {
 
 async function createMainWindow(handle: DesktopSidecarHandle, hash: string): Promise<void> {
   mainWindow?.destroy();
-  const preload = join(__dirname, "preload.cjs");
+  const preload = join(app.getAppPath(), "preload.cjs");
   const window = new BrowserWindow(
     desktopWindowOptions(preload, DESKTOP_SESSION_PARTITION),
   );
@@ -480,9 +505,60 @@ async function showUnexpectedExit(sidecarLogPath: string): Promise<void> {
   }
 }
 
+function reportUpdateProgress(progress: DesktopUpdateProgress): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(DESKTOP_UPDATE_PROGRESS_CHANNEL, progress);
+  }
+}
+
+function checkAvailableDesktopUpdate(): Promise<DesktopReleaseUpdate | null> {
+  return checkDesktopUpdate(app.getVersion(), { fetch: (input, init) => net.fetch(input instanceof URL ? input.href : input, init) });
+}
+
+async function assertDesktopUpdateIdle(handle: DesktopSidecarHandle): Promise<void> {
+  if (sidecar !== handle || lifecycle.exiting) throw new Error("The desktop runtime is restarting. Retry the update.");
+  const response = await directLocalHttpFetch(`${handle.ready.origin}/api/status`, {
+    headers: { [DESKTOP_ACCESS_HEADER]: handle.rendererToken },
+    redirect: "error",
+    signal: AbortSignal.timeout(5_000),
+  });
+  if (!response.ok) throw new Error("Could not verify the current Agent status. Retry the update.");
+  const status = await response.json() as { activeSessions?: unknown };
+  if (!Array.isArray(status.activeSessions)) throw new Error("Could not verify the current Agent status. Retry the update.");
+  if (status.activeSessions.some((session) => session && typeof session === "object"
+    && (session.isStreaming === true || session.status === "starting" || session.status === "running"))) {
+    throw new Error("Wait for running Agents and background work to finish before updating.");
+  }
+}
+
+async function startDesktopUpdate(expectedVersion: string): Promise<void> {
+  if (updateAttempt) return updateAttempt;
+  const current = (async () => {
+    if (process.platform !== "win32") throw new Error("Automatic desktop installation is available on Windows only.");
+    const handle = sidecar;
+    if (!handle) throw new Error("The desktop runtime is unavailable. Retry the update.");
+    await assertDesktopUpdateIdle(handle);
+    const release = await checkAvailableDesktopUpdate();
+    if (!release || release.version !== expectedVersion || !release.windowsInstaller) {
+      throw new Error("The desktop release changed or has no verified installer. Check for updates again.");
+    }
+    const dataDir = app.getPath("userData");
+    const installer = await downloadWindowsInstaller(release.windowsInstaller, join(dataDir, "updates"), {
+      fetch: (input, init) => net.fetch(input instanceof URL ? input.href : input, init),
+      onProgress: (percent) => reportUpdateProgress({ phase: "downloading", percent }),
+    });
+    await assertDesktopUpdateIdle(handle);
+    await scheduleWindowsInstaller(installer, process.execPath, join(dataDir, "logs", "update-install.log"));
+    reportUpdateProgress({ phase: "restarting" });
+    setTimeout(() => { void terminalExit(); }, 0);
+  })();
+  updateAttempt = current;
+  try { await current; } finally { if (updateAttempt === current) updateAttempt = undefined; }
+}
+
 async function checkForUpdates(manual: boolean): Promise<void> {
   try {
-    const update = await checkDesktopUpdate(app.getVersion());
+    const update = await checkAvailableDesktopUpdate();
     if (update) {
       await showUpdate(update);
     } else if (manual) {
@@ -506,16 +582,31 @@ async function checkForUpdates(manual: boolean): Promise<void> {
 }
 
 async function showUpdate(update: DesktopReleaseUpdate): Promise<void> {
+  const automatic = process.platform === "win32" && !!update.windowsInstaller;
   const result = await showDesktopMessage(mainWindow, {
     type: "info",
     title: "EasyResearch update available",
     message: `EasyResearch ${update.version} is available.`,
-    detail: "Download and install it manually from GitHub Releases.",
-    buttons: ["Open Release", "Later"],
+    detail: automatic ? "The verified installer will download, then EasyResearch will restart." : "Download and install it manually from GitHub Releases.",
+    buttons: [automatic ? "Install and Restart" : "Open Release", "Later"],
     defaultId: 0,
     cancelId: 1,
   });
-  if (result.response === 0) await shell.openExternal(update.url);
+  if (result.response !== 0) return;
+  if (!automatic) {
+    await shell.openExternal(update.url);
+    return;
+  }
+  try {
+    await startDesktopUpdate(update.version);
+  } catch (error) {
+    await showDesktopMessage(mainWindow, {
+      type: "warning",
+      title: "Update failed",
+      message: errorMessage(error),
+      buttons: ["OK"],
+    });
+  }
 }
 
 function terminalExit(): Promise<void> {
