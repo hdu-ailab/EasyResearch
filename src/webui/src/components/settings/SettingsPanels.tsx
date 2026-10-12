@@ -19,6 +19,7 @@ import { usePreferences } from "../../preferences/PreferencesProvider";
 import { ApiUsageDetailsSetting } from "../ApiUsageDetailsSetting";
 import { CompactionThresholdSetting } from "../CompactionThresholdSetting";
 import { ProviderIcon } from "../ProviderIcon";
+import { ProviderTimeoutSetting } from "../ProviderTimeoutSetting";
 
 const sectionClass = "rounded-[10px] border border-v2-grey-200 bg-v2-background-bg-base";
 const buttonClass =
@@ -258,6 +259,7 @@ export function ConversationSettingsPanel({ configurationGeneration }: Conversat
       <section className={sectionClass} aria-label={t("settings.conversation.title")}>
         <div className="flex flex-col gap-3 px-4 py-4">
           <CompactionThresholdSetting configurationGeneration={configurationGeneration} />
+          <ProviderTimeoutSetting configurationGeneration={configurationGeneration} />
           <ApiUsageDetailsSetting configurationGeneration={configurationGeneration} />
           <PreferenceSwitch
             label={t("settings.conversation.autoExpandThinking")}

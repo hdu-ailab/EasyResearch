@@ -31,6 +31,7 @@ export interface AgentDiagnostic {
   agent: string;
   source: AgentSource;
   message: string;
+  filePath?: string;
 }
 
 export interface AgentCatalogSnapshot {
@@ -62,7 +63,6 @@ export const CONTROLLED_TOOL_INVENTORY = [
   "subagent",
   "web-search",
   "webfetch",
-  "research-memory",
 ] as const;
 const RESEARCH_ASSISTANT_TOOL_INVENTORY = [...CONTROLLED_TOOL_INVENTORY, "ssh-bash"] as const;
 const EXPERIMENT_TOOL_INVENTORY = [...CONTROLLED_TOOL_INVENTORY, "ssh-bash"] as const;
@@ -112,7 +112,7 @@ function parseAgentFile(
     const parsed = parseFrontmatter<Record<string, unknown>>(content);
     const frontmatter = parsed.frontmatter ?? {};
     if (typeof frontmatter.name !== "string" || !frontmatter.name.trim()) {
-      return { diagnostic: invalidDefinitionDiagnostic(name, source) };
+      return { diagnostic: invalidDefinitionDiagnostic(name, source, filePath) };
     }
     const tools = configuredCapabilityList(frontmatter.tools);
     const skills = configuredCapabilityList(frontmatter.skills);
@@ -131,12 +131,12 @@ function parseAgentFile(
       },
     };
   } catch {
-    return { diagnostic: invalidDefinitionDiagnostic(name, source) };
+    return { diagnostic: invalidDefinitionDiagnostic(name, source, filePath) };
   }
 }
 
-function invalidDefinitionDiagnostic(agent: string, source: AgentSource): AgentDiagnostic {
-  return { agent, source, message: "Invalid Agent definition." };
+function invalidDefinitionDiagnostic(agent: string, source: AgentSource, filePath: string): AgentDiagnostic {
+  return { agent, source, filePath, message: "Invalid Agent definition." };
 }
 
 export function configuredCapabilityList(value: unknown): string[] | undefined {

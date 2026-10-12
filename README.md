@@ -107,30 +107,6 @@ evaluator, mutable scope, budget, rollback rule, and stopping conditions. An
 exploratory winner must still pass the normal multi-seed and robustness checks
 before it becomes formal paper evidence.
 
-### Improve reusable research methods
-
-```text
-/recursive-self-improvement Improve how we diagnose failed literature retrieval.
-Use the existing public material, keep the model and evaluator fixed, and spend
-at most 30 minutes including independent verification. Preserve an untouched
-task for comparison and record which strategy the next improvement round uses.
-```
-
-Agents can recall relevant, version-pinned methods and propose lessons grounded
-in actual artifacts. Candidates stay pending until independent-session checks
-and Research Assistant activation; the previous active method remains available.
-Project experience stays scoped to its exact project directory. Cross-project
-experience must be generalized and pass a distinct held-out transfer check.
-
-The Research Assistant can coordinate broad exploration and targeted practice
-within an authorized budget. Strategy comparisons measure how improvements are
-chosen and verified under matched conditions and total budgets; higher paper
-scores alone do not prove a better improvement strategy. Handoffs record exact
-memory versions, actual reuse, failures, and lineage. No useful new lesson is a
-valid outcome. Learned memory supports retirement and rollback and lives outside
-bundled resources under `~/.easyresearch/agent/research-memory/`; learning does
-not rewrite installed code, Agent/Skill definitions, or model weights.
-
 ### Run the complete paper workflow
 
 ```text
@@ -153,8 +129,6 @@ Skill name conflicts with another command, the composer displays
 | Command | Use it for |
 |---|---|
 | `/autoresearch <goal>` | Run a bounded, metric-driven experiment optimization campaign. |
-| `/recursive-self-improvement <goal>` | Coordinate bounded method/strategy learning and independent verification. |
-| `/research-experience <task>` | Apply relevant active experience or record an evidence-grounded reusable lesson. |
 | `/research-project-workflow <topic>` | Start or organize an end-to-end paper project. |
 | `/customize-easyresearch <request>` | Ask the Research Assistant to add or modify an Agent or Skill. |
 | `/find-skills <need>` | Find installable Skills for a missing capability. |
@@ -166,12 +140,15 @@ ordinary language.
 
 ## Not Another AI Writing Tool
 
-EasyResearch is not a general chatbot with a longer system prompt. Research work
-is split across specialists with explicit responsibility boundaries:
+The Research Assistant asks once per session whether to use specialist subagents
+or work directly as a single Agent. You can specify a mode upfront or change it
+later. It replies with user-facing results and useful deliverables; specialist
+handoff records remain internal. In subagent-driven mode, work is split across
+specialists with explicit responsibility boundaries:
 
 | Agent | Owns | Does not do |
 |---|---|---|
-| **Research Assistant** | Route classification, evidence inspection, specialist dispatch, acceptance review, authorized SSH preflight, autoresearch, and verified method/strategy coordination | Create specialist artifacts or run experiments itself |
+| **Research Assistant** | User-facing results; choose subagent-driven or single-Agent execution once per session; coordinate specialists or directly perform authorized work | Claim unsupported results or present self-checks as independent review |
 | **Search** | Retrieval, metadata verification, permitted PDFs, readable text, and per-paper factual material notes | Write cross-paper synthesis or manuscript prose |
 | **Experiment** | Baselines, methods, controlled trials, records, and formal evidence | Draft the paper or invent results |
 | **Writing** | Empirical/survey readiness, survey taxonomy and coverage, citation verification, authorized drafting, LaTeX, and PDF | Run experiments or fill evidence gaps with guesses |
@@ -203,9 +180,17 @@ flowchart LR
     R -->|No or corrected| I[LaTeX and PDF]
 ```
 
-The Research Assistant coordinates the flow, but Search, Experiment, Writing,
-Figures, and Review remain the owners of their artifacts. Review runs once by
+In subagent-driven mode the Research Assistant coordinates the flow, while Search,
+Experiment, Writing, Figures, and Review own their artifacts. Review runs once by
 default when the Research Assistant selects it; another review is explicit.
+Single-Agent mode follows the same evidence and authorization requirements using
+the relevant Skills directly, without claiming its self-checks are independent review.
+
+Settings → Conversation includes the global LLM request timeout in seconds.
+The default is one hour; zero disables the timeout. Project overrides retain
+precedence, and changes apply at the next request boundary. Configuration errors
+identify the affected file or directory; Retry configuration rechecks the files
+and restores monitoring without restarting active Agent work.
 
 ## Inspect The Outputs
 

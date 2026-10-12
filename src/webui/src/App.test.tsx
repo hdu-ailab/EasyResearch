@@ -30,6 +30,8 @@ vi.mock("./api", async (importOriginal) => {
     getSessionTree: vi.fn().mockResolvedValue({ tree: [], leafId: null }),
     navigateSessionTree: vi.fn().mockResolvedValue(undefined),
     getApiUsageSettings: vi.fn(),
+    getProviderTimeoutSettings: vi.fn(),
+    patchProviderTimeoutSettings: vi.fn(),
     getCompactionSettings: vi.fn(),
     getNetworkProxySettings: vi.fn(),
     patchNetworkProxySettings: vi.fn(),
@@ -179,6 +181,9 @@ describe("App routing", () => {
     vi.mocked(api.deleteSession).mockReset();
     vi.mocked(api.getSnapshot).mockReset();
     vi.mocked(api.getApiUsageSettings).mockReset().mockResolvedValue({ showApiUsageDetails: false });
+    vi.mocked(api.getProviderTimeoutSettings)
+      .mockReset()
+      .mockResolvedValue({ timeoutMs: 3_600_000, source: "default" });
     vi.mocked(api.getCompactionSettings).mockReset().mockResolvedValue({ triggerPercent: 70, globalEnabled: true });
     vi.mocked(api.getNetworkProxySettings)
       .mockReset()

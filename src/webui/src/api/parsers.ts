@@ -37,6 +37,7 @@ import type {
   NetworkProxyTestOutcomeDto,
   NetworkProxyTestResultDto,
   NetworkProxyValuesDto,
+  ProviderTimeoutSettingsDto,
   PublicConfigurationEvent,
   RuntimeConfigurationAppliedEvent,
   RuntimeRestartAcceptedDto,
@@ -200,6 +201,20 @@ export function parseCompactionRequestResult(value: unknown): CompactionRequestR
 export function parseApiUsageSettings(value: unknown): ApiUsageSettingsDto {
   const source = record(value, "API usage settings");
   return { showApiUsageDetails: requiredBoolean(source, "showApiUsageDetails") };
+}
+
+export function parseProviderTimeoutSettings(value: unknown): ProviderTimeoutSettingsDto {
+  const source = record(value, "provider timeout settings");
+  const timeoutMs = requiredNumber(source, "timeoutMs");
+  if (
+    !Number.isSafeInteger(timeoutMs) ||
+    timeoutMs < 0 ||
+    timeoutMs > 2_147_483_647 ||
+    (source.source !== "provider" && source.source !== "httpIdle" && source.source !== "default")
+  ) {
+    throw new Error("Invalid API response: provider timeout settings");
+  }
+  return { timeoutMs, source: source.source };
 }
 
 const networkProxyFields = ["all", "llm", "search"] as const;

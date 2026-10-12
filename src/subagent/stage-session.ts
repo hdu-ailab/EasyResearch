@@ -401,7 +401,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         agentDir: deps.agentDir,
         settingsManager,
         extensionFactories: [
-          { name: "provider-timeout", factory: createProviderTimeoutExtension(settingsManager as SettingsManager) },
+          { name: "provider-timeout", factory: createProviderTimeoutExtension(settingsManager as SettingsManager, () => binding!.providerTimeoutSettings()) },
           { name: "file-write-recovery", factory: createFileWriteRecoveryExtension() },
           createCompactionCancellationExtension(() => abortRequested, () => session!.abortCompaction()),
           ...deps.createExtensionFactories({
@@ -818,7 +818,6 @@ export async function createDefaultStageSessionLauncher(
   const { createAgentDefinitionExtension } = await import("../extensions/agent-definition");
   const { createSubagentExtension } = await import("../extensions/subagent");
   const { createSshBashExtension } = await import("../extensions/ssh-bash");
-  const { createResearchMemoryExtension } = await import("../extensions/research-memory");
   const { createSessionTimelineExtension } = await import("../extensions/session-timeline");
   const { SubagentSupervisor } = await import("./supervisor");
   const agentDir = getAgentDir();
@@ -865,10 +864,6 @@ export async function createDefaultStageSessionLauncher(
       {
         name: "agent-definition",
         factory: createAgentDefinitionExtension(binding),
-      },
-      {
-        name: "research-memory",
-        factory: createResearchMemoryExtension({ agent: () => binding.current().name }),
       },
       {
         name: "subagent",

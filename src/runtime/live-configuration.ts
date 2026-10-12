@@ -5,7 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { ChokidarOptions } from "chokidar";
-import { readGlobalAgentDefaults } from "../subagent/agent-defaults";
+import { parseAgentDefaults, type AgentRuntimeDefaults } from "../subagent/agent-defaults";
 import {
   type AgentCatalogSnapshot,
   type AgentConfig,
@@ -18,6 +18,7 @@ import {
 import { isDotAgentsSkillEnabled } from "../subagent/skill-resolution";
 import type {
   ApiUsageSettingsDto,
+  ProviderTimeoutSettingsDto,
   ConfigurationErrorEvent,
   ConfigurationEvent,
   ConfigurationUpdatedEvent,
@@ -41,6 +42,8 @@ import {
 } from "./configuration-watchers";
 import { getAgentDir } from "./pi-import";
 import { parsePiSettingsJson } from "./pi-settings-json";
+import { parseProviderTimeoutSettings } from "./provider-timeout-settings";
+import { ConfigurationSourceError } from "./configuration-source-error";
 import {
   fingerprintGlobalSkillResources,
   fingerprintSkillRoot,
@@ -66,6 +69,7 @@ export interface ConfigurationFingerprint {
   compactionPolicy: GlobalCompactionPolicy;
   apiUsage: string;
   apiUsageSettings: ApiUsageSettingsDto;
+  providerTimeoutSettings?: ProviderTimeoutSettingsDto;
   globalSkills: string;
   homeSkills: string | null;
   globalSkillDescriptors: readonly AcceptedSkillDescriptor[];
@@ -76,6 +80,7 @@ export interface ConfigurationFingerprint {
     compaction?: true;
     apiUsage?: true;
     skillPolicy?: true;
+    providerTimeout?: true;
   };
 }
 
@@ -151,9 +156,10 @@ export interface LiveConfiguration {
   readonly error: string | null;
   readonly compactionPolicy: GlobalCompactionPolicy;
   readonly apiUsageSettings: ApiUsageSettingsDto;
+  readonly providerTimeoutSettings: ProviderTimeoutSettingsDto;
   readonly skillPolicy: SkillResolutionPolicy;
   start(): Promise<void>;
-  synchronize(options?: { projectCwds?: readonly string[] }): Promise<ConfigurationSynchronizationOutcome>;
+  synchronize(options?: { projectCwds?: readonly string[]; recoverWatchers?: boolean }): Promise<ConfigurationSynchronizationOutcome>;
   acquireProject(cwd: string): Promise<ProjectWatchRegistration>;
   /** True only for the latest accepted generation, including retained last-good state. */
   isCurrent(generation: number): boolean;
@@ -224,6 +230,9 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
   let validationError: string | null = null;
   let acceptedDiagnostic: string | null = null;
   let watcherError: string | null = null;
+  let watcherFailureEpoch = 0;
+  let watcherRecovery: Promise<void> | undefined;
+  let currentProviderTimeoutSettings = parseProviderTimeoutSettings({});
   let currentCatalog: AgentCatalogSnapshot | undefined;
   let currentFingerprint: ConfigurationFingerprint | undefined;
   let currentCompactionPolicy = parseGlobalCompactionPolicy({});
@@ -267,16 +276,19 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
     publish(event);
   };
 
-  const publishValidationError = (message = SAFE_CONFIGURATION_ERROR): void => {
+  const publishValidationError = (message = `${SAFE_CONFIGURATION_ERROR} Configuration root: ${agentDir}`): void => {
     if (closed || validationError === message) return;
     validationError = message;
     emitError(message);
   };
 
-  const publishWatcherError = (): void => {
-    if (closed || watcherError === SAFE_WATCHER_ERROR) return;
-    watcherError = SAFE_WATCHER_ERROR;
-    emitError(SAFE_WATCHER_ERROR);
+  const publishWatcherError = (path: string = agentDir): void => {
+    if (closed) return;
+    watcherFailureEpoch += 1;
+    const message = `${SAFE_WATCHER_ERROR} Path: ${path}`;
+    if (watcherError === message) return;
+    watcherError = message;
+    emitError(message);
   };
 
   const skillPolicyFor = (fingerprint: ConfigurationFingerprint | undefined): SkillResolutionPolicy => ({
@@ -393,7 +405,7 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
         }
         if (currentFingerprint && candidate.invalidSettingsLayers?.skillPolicy) {
           rollbackPreparedProjects();
-          publishValidationError(SAFE_SETTINGS_DIAGNOSTIC);
+          publishValidationError(candidate.diagnostic ?? `${SAFE_SETTINGS_DIAGNOSTIC} Path: ${join(agentDir, "settings.json")}`);
           return "rejected";
         }
 
@@ -411,7 +423,9 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
           rollbackPreparedProjects();
           return "closed";
         }
-        preparedModels = await options.modelValidator.prepareModelCatalog();
+        preparedModels = await options.modelValidator.prepareModelCatalog().catch(() => {
+          throw new ConfigurationSourceError(join(agentDir, "models.json"), "validation");
+        });
         const danglingRepairs = planDanglingAgentDefaultRepairs(
           nextCatalog,
           preparedModels.registeredModels,
@@ -462,6 +476,9 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
         const nextApiUsageSettings = candidate.invalidSettingsLayers?.apiUsage
           ? currentApiUsageSettings
           : candidate.apiUsageSettings;
+        const nextProviderTimeoutSettings = candidate.invalidSettingsLayers?.providerTimeout
+          ? currentProviderTimeoutSettings
+          : candidate.providerTimeoutSettings ?? parseProviderTimeoutSettings({});
         const agentsChanged =
           change.agentsChanged ||
           failedAgentsChanged ||
@@ -483,7 +500,8 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
           || modelsChanged
           || skillsChanged
           || currentFingerprint === undefined
-          || !isDeepStrictEqual(nextCompactionPolicy, currentCompactionPolicy);
+          || !isDeepStrictEqual(nextCompactionPolicy, currentCompactionPolicy)
+          || !isDeepStrictEqual(nextProviderTimeoutSettings, currentProviderTimeoutSettings);
         const preparedAvailabilitySignature = modelCatalogSignature(preparedModels.availableModels);
         const availabilityChanged = currentFingerprint !== undefined
           && preparedAvailabilitySignature !== currentAvailabilitySignature;
@@ -504,8 +522,8 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
         };
 
         const candidateDiagnostic = candidate.diagnostic
-          ?? preparedModels.diagnostic
-          ?? catalogDiagnostic(nextCatalog)
+          ?? (preparedModels.diagnostic ? `${preparedModels.diagnostic} Path: ${join(agentDir, "models.json")}` : undefined)
+          ?? catalogDiagnostic(nextCatalog, agentDir)
           ?? null;
         preparedModels.commit();
         preparedModels = undefined;
@@ -515,6 +533,7 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
         currentFingerprint = candidate;
         currentCompactionPolicy = nextCompactionPolicy;
         currentApiUsageSettings = nextApiUsageSettings;
+        currentProviderTimeoutSettings = nextProviderTimeoutSettings;
         if (currentAvailabilityEpoch === 0) currentAvailabilityEpoch = 1;
         else if (availabilityChanged) currentAvailabilityEpoch += 1;
         currentAvailabilitySignature = preparedAvailabilitySignature;
@@ -530,7 +549,7 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
         if (watcherError) emitError(watcherError);
         await alignHomeWatcher();
         return repairedDuringValidation ? "repaired" : "committed";
-      } catch {
+      } catch (error) {
         try {
           await rollbackPreparedModels();
         } catch {
@@ -542,7 +561,7 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
           // Project candidate disposal cannot replace accepted baselines.
         }
         if (closed) return "closed";
-        publishValidationError();
+        publishValidationError(error instanceof ConfigurationSourceError ? error.message : undefined);
         return "rejected";
       }
     }
@@ -659,15 +678,15 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
         if (closed) return;
         void requestSynchronization(change);
       },
-      onError() {
-        publishWatcherError();
+      onError(path) {
+        publishWatcherError(path);
       },
       fingerprintProject(cwd) {
         return fingerprintSkillRoot(
           join(cwd, ".easyresearch", "skills"),
           `project:${cwd}`,
           skillSnapshotRoot,
-        );
+        ).catch(() => { throw new ConfigurationSourceError(join(cwd, ".easyresearch", "skills"), "read"); });
       },
     });
   } catch (error) {
@@ -691,6 +710,9 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
     get apiUsageSettings() {
       return { ...currentApiUsageSettings };
     },
+    get providerTimeoutSettings() {
+      return { ...currentProviderTimeoutSettings };
+    },
     get skillPolicy() {
       return acceptedSkillPolicy();
     },
@@ -706,7 +728,29 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
       })();
       return startPromise;
     },
-    synchronize(options = {}) {
+    async synchronize(options = {}) {
+      if (options.recoverWatchers && !closed && watcherManager.recover) {
+        if (!watcherRecovery) {
+          const epoch = watcherFailureEpoch;
+          const hadWatcherError = watcherError !== null;
+          const attempt = (async () => {
+            try {
+              await watcherManager.recover!(acceptedSkillPolicy().enableDotAgentsSkill);
+              if (!closed && watcherFailureEpoch === epoch) {
+                watcherError = null;
+                if (hadWatcherError) {
+                  publish({ type: "config.updated", generation: currentGeneration, availabilityEpoch: currentAvailabilityEpoch,
+                    agentsChanged: false, modelsChanged: false, skillsChanged: false, runtimeChanged: false });
+                  if (validationError ?? acceptedDiagnostic) emitError((validationError ?? acceptedDiagnostic)!);
+                }
+              }
+            } catch { if (watcherFailureEpoch === epoch) publishWatcherError(); }
+          })();
+          watcherRecovery = attempt;
+          void attempt.finally(() => { if (watcherRecovery === attempt) watcherRecovery = undefined; }).catch(() => {});
+        }
+        await watcherRecovery;
+      }
       return requestSynchronization({ projectCwds: options.projectCwds });
     },
     async acquireProject(cwd) {
@@ -714,9 +758,10 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
       let registration: ProjectWatchRegistration;
       try {
         registration = await watcherManager.acquireProject(cwd);
-      } catch {
-        publishWatcherError();
-        throw new Error(SAFE_WATCHER_ERROR);
+      } catch (error) {
+        const path = error instanceof ConfigurationSourceError ? error.path : join(cwd, ".easyresearch");
+        publishWatcherError(path);
+        throw new ConfigurationSourceError(path, "monitoring");
       }
       if (!closed) return registration;
       try {
@@ -825,21 +870,30 @@ export async function fingerprintConfiguration(
   const settingsBytes = await readOptionalFile(join(agentDir, "settings.json"));
   let settings: unknown = {};
   let diagnostic: string | undefined;
+  const settingsDiagnostic = `Configuration validation failed at ${join(agentDir, "settings.json")}. Open this file in Config to repair it.`;
   const invalidSettingsLayers: NonNullable<ConfigurationFingerprint["invalidSettingsLayers"]> = {};
   if (settingsBytes !== undefined) {
     try {
       settings = parsePiSettingsJson(settingsBytes.toString("utf8"));
     } catch {
-      diagnostic = SAFE_SETTINGS_DIAGNOSTIC;
+      diagnostic = `Configuration parsing failed at ${join(agentDir, "settings.json")}. Open this file in Config to repair it.`;
       invalidSettingsLayers.agentDefaults = true;
       invalidSettingsLayers.compaction = true;
       invalidSettingsLayers.apiUsage = true;
       invalidSettingsLayers.skillPolicy = true;
+      invalidSettingsLayers.providerTimeout = true;
     }
   }
   let enableDotAgentsSkill = false;
   let compactionPolicy = parseGlobalCompactionPolicy({});
   let apiUsageSettings = parseGlobalApiUsageSettings({});
+  let providerTimeoutSettings = parseProviderTimeoutSettings({});
+  try {
+    providerTimeoutSettings = parseProviderTimeoutSettings(settings);
+  } catch {
+    diagnostic ??= settingsDiagnostic;
+    invalidSettingsLayers.providerTimeout = true;
+  }
   try {
     if (typeof settings !== "object" || settings === null || Array.isArray(settings)) {
       throw new Error("Invalid settings object.");
@@ -852,19 +906,19 @@ export async function fingerprintConfiguration(
     if (policy !== undefined && typeof policy !== "boolean") throw new Error("Invalid Skill discovery policy.");
     enableDotAgentsSkill = isDotAgentsSkillEnabled(settings);
   } catch {
-    diagnostic = SAFE_SETTINGS_DIAGNOSTIC;
+    diagnostic ??= settingsDiagnostic;
     invalidSettingsLayers.skillPolicy = true;
   }
   try {
     compactionPolicy = parseGlobalCompactionPolicy(settings);
   } catch {
-    diagnostic = SAFE_SETTINGS_DIAGNOSTIC;
+    diagnostic ??= settingsDiagnostic;
     invalidSettingsLayers.compaction = true;
   }
   try {
     apiUsageSettings = parseGlobalApiUsageSettings(settings);
   } catch {
-    diagnostic = SAFE_SETTINGS_DIAGNOSTIC;
+    diagnostic ??= settingsDiagnostic;
     invalidSettingsLayers.apiUsage = true;
   }
 
@@ -894,11 +948,11 @@ export async function fingerprintConfiguration(
 
   const defaultsHash = createHash("sha256");
   defaultsHash.update("easyresearch-agent-defaults-v1\0");
-  let defaults: Awaited<ReturnType<typeof readGlobalAgentDefaults>> = {};
+  let defaults: AgentRuntimeDefaults = {};
   try {
-    defaults = await readGlobalAgentDefaults(agentDir);
+    if (!invalidSettingsLayers.agentDefaults) defaults = parseAgentDefaults(settings);
   } catch {
-    diagnostic = SAFE_SETTINGS_DIAGNOSTIC;
+    diagnostic ??= settingsDiagnostic;
     invalidSettingsLayers.agentDefaults = true;
   }
   for (const [name, entry] of Object.entries(defaults).sort(([left], [right]) => compareNames(left, right))) {
@@ -938,6 +992,7 @@ export async function fingerprintConfiguration(
     .update(agentDefaults)
     .update(compaction)
     .update(apiUsage)
+    .update(JSON.stringify(providerTimeoutSettings))
     .update(globalSkills)
     .update(homeSkills ?? "disabled")
     .update(diagnostic ?? "valid")
@@ -953,6 +1008,7 @@ export async function fingerprintConfiguration(
     compactionPolicy,
     apiUsage,
     apiUsageSettings,
+    providerTimeoutSettings,
     globalSkills,
     homeSkills,
     globalSkillDescriptors,
@@ -971,12 +1027,12 @@ function assertValidCatalog(snapshot: AgentCatalogSnapshot): void {
   }
 }
 
-function catalogDiagnostic(snapshot: AgentCatalogSnapshot): string | undefined {
+function catalogDiagnostic(snapshot: AgentCatalogSnapshot, agentDir: string): string | undefined {
   const diagnostic = snapshot.diagnostics[0];
   if (!diagnostic) return undefined;
   return diagnostic.source === "global"
-    ? `Agent configuration issue in global agents/${diagnostic.agent}.md. Open that file in Config to repair it.`
-    : `Agent configuration issue in bundled Agent ${diagnostic.agent}. Reinstall this EasyResearch version.`;
+    ? `Agent configuration validation failed at ${diagnostic.filePath ?? join(agentDir, "agents", `${diagnostic.agent}.md`)}. Open that file in Config to repair it.`
+    : `Agent configuration issue in bundled Agent ${diagnostic.agent}${diagnostic.filePath ? ` at ${diagnostic.filePath}` : ""}. Reinstall this EasyResearch version.`;
 }
 
 function sameFingerprint(left: ConfigurationFingerprint, right: ConfigurationFingerprint): boolean {
@@ -986,13 +1042,15 @@ function sameFingerprint(left: ConfigurationFingerprint, right: ConfigurationFin
     left.agentDefaults === right.agentDefaults &&
     left.compaction === right.compaction &&
     left.apiUsage === right.apiUsage &&
+    isDeepStrictEqual(left.providerTimeoutSettings, right.providerTimeoutSettings) &&
     left.globalSkills === right.globalSkills &&
     left.homeSkills === right.homeSkills &&
     left.diagnostic === right.diagnostic &&
     left.invalidSettingsLayers?.agentDefaults === right.invalidSettingsLayers?.agentDefaults &&
     left.invalidSettingsLayers?.compaction === right.invalidSettingsLayers?.compaction &&
     left.invalidSettingsLayers?.apiUsage === right.invalidSettingsLayers?.apiUsage &&
-    left.invalidSettingsLayers?.skillPolicy === right.invalidSettingsLayers?.skillPolicy;
+    left.invalidSettingsLayers?.skillPolicy === right.invalidSettingsLayers?.skillPolicy &&
+    left.invalidSettingsLayers?.providerTimeout === right.invalidSettingsLayers?.providerTimeout;
 }
 
 function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
@@ -1025,7 +1083,7 @@ async function readDirectoryOrEmpty(path: string): Promise<string[]> {
     return await readdir(path);
   } catch (error) {
     if (isMissing(error)) return [];
-    throw error;
+    throw new ConfigurationSourceError(path, "read");
   }
 }
 
@@ -1034,7 +1092,7 @@ async function readOptionalFile(path: string): Promise<Buffer | undefined> {
     return await readFile(path);
   } catch (error) {
     if (isMissing(error)) return undefined;
-    throw error;
+    throw new ConfigurationSourceError(path, "read");
   }
 }
 

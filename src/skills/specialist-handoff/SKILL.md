@@ -23,6 +23,11 @@ runtime completion, Error, Stop, and continuation.
 
 ## When To Apply
 
+The immutable handoff and terminal template apply to actual specialist children,
+not the user-facing Research Assistant. In single-Agent mode the Research
+Assistant may use the long-document recovery recipe below, but gives a natural
+user-facing result without creating a specialist handoff for itself.
+
 Apply this Skill to every normally terminating Search, Experiment, Writing,
 Figures, or Review run, including:
 
@@ -152,8 +157,6 @@ The handoff must include:
 - every project file inspected as task evidence;
 - a concise account of work and findings;
 - every file created or modified, with action and purpose;
-- memory used, proposed and independently verified with exact references and
-  observed failures, using the contract below;
 - unresolved evidence, dependency, permission, safety, or scope gaps;
 - one concrete recommended next action, or `none`;
 - one caller-resolvable or user-owned input for `blocked`, or `none`.
@@ -161,31 +164,6 @@ The handoff must include:
 Do not list transient shell output, caches, package-manager internals, or files
 merely discovered but not inspected. Do list source, configuration, result,
 report, figure, and manifest files actually used to reach the outcome.
-
-### Research Experience Fields
-
-Apply `research-experience` and keep each field, writing `none` when absent:
-
-- `memory_used`: exact `{scope,id,revision}` active snapshot references, active
-  proposal revision when known, applicability and what was actually done with
-  them. Mark considered-but-inapplicable guidance explicitly; listing a reference
-  alone is not evidence of use.
-- `memory_proposed`: successful tool-returned snapshot refs, pending
-  `proposalRevision`, evidence paths and pending disposition. Distinguish newly
-  proposed from already-pending work. An attempted/failed call is not a stored ref.
-- `memory_verified`: returned verification snapshot refs, tested pending proposal
-  revisions, `pass | fail | inconclusive`, checks and report paths. Passing
-  verification alone is not activation.
-- `observed_failures`: actual failed checks, fragile successes, mismatches or
-  infrastructure outcomes with evidence and limits; runtime Error is not a
-  scientific negative and may have no file.
-
-Propose or verify against already-existing immutable reports or earlier handoffs,
-then put returned refs in this new final handoff. Never cite a not-yet-published
-handoff or edit hashed source evidence to insert its own memory ref. After
-successful publication the helper removes its draft, so the final handoff
-normally has one link and is eligible evidence for a later operation. No new
-lesson, proposal, verification, or extra work is required merely to fill fields.
 
 ## Status Semantics
 
@@ -214,10 +192,6 @@ artifacts:
 work_files:
 - <every other inspected/created/modified path, including temporary fragments,
    assembly scripts and drafts; label retained, removed, incomplete, or published>
-memory_used: <exact active refs, applicability and actual use, or none>
-memory_proposed: <returned pending refs/proposal revisions and evidence, or none>
-memory_verified: <returned refs, tested proposal revisions, outcomes/evidence, or none>
-observed_failures: <evidence-backed failures and limits, or none>
 unresolved_gaps:
 - <gap or none>
 next_action: <one action or none>

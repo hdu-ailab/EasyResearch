@@ -19,6 +19,7 @@ import type {
   GlobalCompactionPolicy,
 } from "./compaction-policy";
 import { DEFAULT_GLOBAL_COMPACTION_POLICY } from "./compaction-policy";
+import type { ProviderTimeoutSettingsDto } from "../web/contracts";
 
 const SAFE_APPLY_ERROR = "Agent runtime configuration could not be applied. Retry after fixing the configuration.";
 const SAFE_MISSING_AGENT = "The configured Agent is not available in the current valid configuration.";
@@ -56,6 +57,7 @@ export interface AgentRuntimeBinding {
   modelRuntime(): AgentRuntimeModelRuntime;
   thinking(): ThinkingLevel;
   compactionPolicy(): EffectiveCompactionPolicy;
+  providerTimeoutSettings(): ProviderTimeoutSettingsDto | undefined;
   appendSystemPrompt(base: string[]): string[];
   skillPaths(): string[];
   attach(session: AgentRuntimeBindingSession): Promise<void>;
@@ -79,7 +81,7 @@ export interface AgentRuntimeBindingOptions {
   >, "availabilityEpoch" | "synchronize"> & {
     readonly availabilityEpoch?: number;
     synchronize(options?: { projectCwds?: readonly string[] }): Promise<unknown>;
-  } & Partial<Pick<LiveConfiguration, "compactionPolicy">>;
+  } & Partial<Pick<LiveConfiguration, "compactionPolicy" | "providerTimeoutSettings">>;
   agentName: string;
   cwd: string;
   createModelRuntime(): Promise<AgentRuntimeModelRuntime>;
@@ -99,6 +101,7 @@ interface AppliedRuntimeState {
   thinking: ThinkingLevel;
   skillPaths: string[];
   compactionPolicy: GlobalCompactionPolicy;
+  providerTimeoutSettings?: ProviderTimeoutSettingsDto;
 }
 
 interface PreparedRuntimeState extends AppliedRuntimeState {
@@ -279,6 +282,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
           model: selectedModel,
           thinking: selectedThinking,
           skillPaths: [...definition.effectiveSkillPaths],
+          providerTimeoutSettings: options.live.providerTimeoutSettings,
           compactionPolicy: {
             ...(options.live.compactionPolicy ?? DEFAULT_GLOBAL_COMPACTION_POLICY),
           },
@@ -516,6 +520,10 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
     },
     thinking() {
       return requireApplied().thinking;
+    },
+    providerTimeoutSettings() {
+      const policy = requireApplied().providerTimeoutSettings;
+      return policy && { ...policy };
     },
     compactionPolicy() {
       requireApplied();

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
 import { watch } from "chokidar";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   type AgentCatalogSnapshot,
   type AgentConfig,
@@ -25,6 +25,7 @@ import type {
 import { createAgentRuntimeBinding, type AgentRuntimeBindingSession } from "./agent-runtime-binding";
 import { createCompactionPolicyBinding } from "./compaction-policy";
 import { importPi } from "./pi-import";
+beforeAll(async () => { await importPi(); }, 60_000);
 import { repairDanglingAgentDefaults } from "./agent-default-repair";
 import {
   type ConfigurationFingerprint,
@@ -1418,7 +1419,7 @@ describe("live configuration generations", () => {
         );
       },
     },
-  ])("redacts paths, contents, credentials, and raw diagnostics from $name", async ({ configure }) => {
+  ])("redacts arbitrary error paths, contents and credentials while identifying owned resources for $name", async ({ configure, name }) => {
     const state = harness();
     const events: ConfigurationEvent[] = [];
     state.live.subscribe((event) => events.push(event));
@@ -1433,7 +1434,7 @@ describe("live configuration generations", () => {
     expect(publicText).not.toContain("AGENT_SECRET");
     expect(publicText).not.toContain("MODEL_SECRET");
     expect(publicText).not.toContain("SECRET_AGENT");
-    expect(publicText).not.toContain("models.json");
+    if (name === "model validation failures") expect(publicText).toContain("models.json");
   });
 
   it("redacts exact-cwd resolution failures after a valid generation", async () => {
