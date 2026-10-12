@@ -354,7 +354,7 @@ describe("ConfigFileService", () => {
       cwd: alias,
       path: "skills/retargeted/SKILL.md",
       content: "stale project",
-    })).rejects.toThrow(/project.*changed/i);
+    })).rejects.toMatchObject({ status: 409, code: "PROJECT_CHANGED" });
 
     expect(readFileSync(previousDescriptor, "utf8")).toBe("accepted project");
     expect(fs.existsSync(join(projectB, ".easyresearch", "skills", "retargeted", "SKILL.md"))).toBe(false);
