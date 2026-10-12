@@ -53,7 +53,7 @@ describe("FileBrowser", () => {
     const view = render(<FileBrowser root="/p" />);
     const handle = await screen.findByRole("separator", { name: "Resize file tree" });
     const container = screen
-      .getByRole("tree", { name: "Project files tree" })
+      .getByRole("tree", { name: "Workspace files tree" })
       .closest("[data-files-tree]") as HTMLElement;
     const observer = allObservers().find((candidate) => candidate.__observed.some((node) => node.contains(container)));
     if (!observer) throw new Error("The file split must observe its available width");
@@ -480,7 +480,7 @@ describe("FileBrowser", () => {
       binary: false,
     });
     render(<FileBrowser root="/p" />);
-    const tree = await screen.findByRole("tree", { name: "Project files tree" });
+    const tree = await screen.findByRole("tree", { name: "Workspace files tree" });
     const toggle = screen.getByRole("button", { name: "Toggle file tree" });
     fireEvent.change(screen.getByRole("textbox", { name: "Filter files" }), { target: { value: "notes" } });
     await user.click(screen.getByRole("treeitem", { name: /notes\.md/ }));
@@ -488,7 +488,7 @@ describe("FileBrowser", () => {
     expect(tree).not.toBeVisible();
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     await user.click(toggle);
-    expect(screen.getByRole("tree", { name: "Project files tree" })).toBe(tree);
+    expect(screen.getByRole("tree", { name: "Workspace files tree" })).toBe(tree);
     expect(tree).toBeVisible();
     expect(screen.getByRole("textbox", { name: "Filter files" })).toHaveValue("notes");
     expect(heading).not.toBeVisible();
@@ -505,7 +505,7 @@ describe("FileBrowser", () => {
     render(<FileBrowser root="/p" />);
     await user.click(await screen.findByText("paper.pdf"));
     const controls = await screen.findByRole("group", { name: "PDF controls" });
-    const tree = screen.getByRole("tree", { name: "Project files tree" });
+    const tree = screen.getByRole("tree", { name: "Workspace files tree" });
     expect(tree).toBeVisible();
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
     fireEvent(window, new Event("resize"));
@@ -585,7 +585,7 @@ describe("FileBrowser", () => {
     const user = userEvent.setup();
     render(<FileBrowser root="/p" />);
     const button = await screen.findByRole("button", { name: "Toggle file tree" });
-    const tree = await screen.findByRole("tree", { name: "Project files tree" });
+    const tree = await screen.findByRole("tree", { name: "Workspace files tree" });
     const container = tree.closest("[data-files-tree]");
     expect(container).not.toBeNull();
     expect(button).toHaveAttribute("aria-expanded", "true");
@@ -749,14 +749,14 @@ describe("FileBrowser", () => {
 
   it("omits the tree resize separator on mobile and while the tree is collapsed", async () => {
     const desktop = render(<FileBrowser root="/p" />);
-    await screen.findByRole("tree", { name: "Project files tree" });
+    await screen.findByRole("tree", { name: "Workspace files tree" });
     await userEvent.click(screen.getByRole("button", { name: "Toggle file tree" }));
     expect(screen.queryByRole("separator", { name: "Resize file tree" })).toBeNull();
     desktop.unmount();
 
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
     render(<FileBrowser root="/p" />);
-    const tree = await screen.findByRole("tree", { name: "Project files tree" });
+    const tree = await screen.findByRole("tree", { name: "Workspace files tree" });
     expect(screen.queryByRole("separator", { name: "Resize file tree" })).toBeNull();
     expect((tree.closest("[data-files-tree]") as HTMLElement).style.width).toBe("");
   });

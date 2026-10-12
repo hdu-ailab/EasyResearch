@@ -5,6 +5,7 @@ import { RESEARCH_ASSISTANT_AGENT } from "../agent-identity";
 import { agentDisplayName } from "../i18n/agents";
 import { useI18n } from "../i18n/useI18n";
 import { childTabLabel, type SubagentTabState } from "../subagent-tabs";
+import { ActionGlyph } from "./studio/ActionGlyph";
 
 export type AgentStatus = "idle" | "working" | "error";
 
@@ -51,8 +52,11 @@ export function AgentTabBar({
   }, [activeKey, tabs]);
 
   return (
-    <div className="flex shrink-0 items-start gap-2 px-3 py-2">
-      <div data-testid="agent-tab-group" className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+    <div className="er-agent-tabs flex shrink-0 items-start gap-2 px-3 py-2">
+      <div
+        data-testid="agent-tab-group"
+        className="er-agent-tab-group flex min-w-0 flex-1 flex-wrap items-center gap-1.5"
+      >
         <button
           type="button"
           aria-pressed={researchAssistantFocused}
@@ -126,7 +130,9 @@ export function AgentTabBar({
                     tab.running ? "hover:text-v2-status-error" : ""
                   }`}
                 >
-                  <X size={11} aria-hidden />
+                  <ActionGlyph label={actionLabel} compact>
+                    <X size={11} aria-hidden />
+                  </ActionGlyph>
                 </button>
               ) : null}
             </div>

@@ -6,6 +6,7 @@ import { expandFilesystemPath, filesystemPathName, joinFilesystemPath, parentFil
 import { useLazyTree } from "../hooks/useLazyTree";
 import { useModalLayer } from "../hooks/useModalLayer";
 import { useI18n } from "../i18n/useI18n";
+import { ActionGlyph } from "./studio/ActionGlyph";
 
 export interface DirectoryDialogProps {
   homeDir: string;
@@ -286,7 +287,9 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
             title={t("dialog.close")}
             onClick={onClose}
           >
-            <X size={16} />
+            <ActionGlyph label={t("dialog.close")}>
+              <X size={16} />
+            </ActionGlyph>
           </button>
         </header>
         <div className="relative flex shrink-0 flex-col gap-2 border-b border-v2-grey-200 p-3">
@@ -337,7 +340,9 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
                 setCreateError(null);
               }}
             >
-              <FolderPlus size={14} />
+              <ActionGlyph label={t("dialog.createProject")}>
+                <FolderPlus size={14} />
+              </ActionGlyph>
             </button>
             {roots.length > 1 ? (
               <select
@@ -375,7 +380,7 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
               aria-label={t("dialog.parent")}
               onClick={() => navigate(parentFilesystemPath(viewPath))}
             >
-              ↑
+              <ActionGlyph label={t("dialog.parent")}>↑</ActionGlyph>
             </button>
             <button
               type="button"
@@ -384,7 +389,9 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
               aria-label={t("dialog.refresh")}
               onClick={() => tree.refresh(viewPath)}
             >
-              <RefreshCw size={14} />
+              <ActionGlyph label={t("dialog.refresh")}>
+                <RefreshCw size={14} />
+              </ActionGlyph>
             </button>
           </div>
           {suggestionsOpen && suggestions.length > 0 && (
@@ -478,10 +485,12 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
                   {state === "loading" ? (
                     <span className="v2-spinner" aria-hidden />
                   ) : (
-                    <ChevronRight
-                      size={14}
-                      className={`shrink-0 transition-transform ${isExpanded ? "rotate-90" : ""}`}
-                    />
+                    <ActionGlyph label={t(isExpanded ? "studio.collapse" : "studio.expand")}>
+                      <ChevronRight
+                        size={14}
+                        className={`shrink-0 transition-transform ${isExpanded ? "rotate-90" : ""}`}
+                      />
+                    </ActionGlyph>
                   )}
                 </button>
                 {isSelected ? <FolderOpen size={15} /> : <Folder size={15} />}

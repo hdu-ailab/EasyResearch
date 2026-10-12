@@ -83,7 +83,7 @@ function SettingsLayerFrame({ dialogRef, layer, onBackdrop, children, nestedLaye
           role="dialog"
           {...layer.dialogProps}
           aria-labelledby="settings-dialog-title"
-          className="flex h-full w-full flex-col bg-v2-background-bg-base min-[820px]:max-h-[min(720px,calc(100vh-32px))] min-[820px]:max-w-[1080px] min-[820px]:rounded-[10px] min-[820px]:shadow-[var(--v2-elevation-floating)]"
+          className="er-settings-dialog flex h-full w-full flex-col bg-v2-background-bg-base min-[820px]:max-h-[min(720px,calc(100vh-32px))] min-[820px]:max-w-[1080px] min-[820px]:rounded-[10px] min-[820px]:shadow-[var(--v2-elevation-floating)]"
         >
           {children}
         </section>
@@ -609,7 +609,7 @@ export function SettingsModal({
         role={isMobile ? undefined : "tabpanel"}
         aria-labelledby={isMobile ? undefined : `settings-tab-${category}`}
         hidden={!visible}
-        className="min-h-0 flex-1 overflow-y-auto bg-v2-background-bg-base p-4"
+        className="er-settings-panel min-h-0 flex-1 overflow-y-auto bg-v2-background-bg-base p-4"
       >
         <div className="mx-auto flex w-full max-w-[820px] flex-col gap-3">
           {category === active && configurationError && (

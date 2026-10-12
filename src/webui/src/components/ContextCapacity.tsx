@@ -50,7 +50,7 @@ export function ContextCapacity({ usage, compactionState, compactionPolicy }: Co
       aria-valuetext={valueText}
       aria-live="polite"
       title={valueText}
-      className="flex items-center gap-2 text-v2-text-text-faint"
+      className="er-context-capacity flex items-center gap-2 text-v2-text-text-faint"
     >
       <div className="size-5 shrink-0">
         <svg

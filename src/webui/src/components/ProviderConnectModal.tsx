@@ -11,6 +11,7 @@ import {
 import { useI18n } from "../i18n/useI18n";
 import { ProviderIcon } from "./ProviderIcon";
 import { ProviderModelsList } from "./ProviderModelsList";
+import { ActionGlyph } from "./studio/ActionGlyph";
 
 export interface ProviderConnectModalProps {
   onClose: () => void;
@@ -182,7 +183,9 @@ export function ProviderConnectModalContent({
             className="ml-auto flex size-7 shrink-0 items-center justify-center rounded-md text-v2-icon-icon-muted hover:bg-v2-grey-100 hover:text-v2-icon-icon-base"
             onClick={onClose}
           >
-            <X size={15} aria-hidden />
+            <ActionGlyph label={t("dialog.close")}>
+              <X size={15} aria-hidden />
+            </ActionGlyph>
           </button>
         </header>
 

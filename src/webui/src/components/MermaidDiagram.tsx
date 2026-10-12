@@ -49,5 +49,5 @@ export function MermaidDiagram({ source }: MermaidDiagramProps) {
   }
   // Mermaid is initialized with securityLevel="strict" above; its SVG output is the trusted render result.
   // biome-ignore lint/security/noDangerouslySetInnerHtml: Mermaid strict-mode output must be mounted as SVG markup.
-  return <div className="v2-md" dangerouslySetInnerHTML={{ __html: svg }} />;
+  return <div className="er-rendered-diagram v2-md" dangerouslySetInnerHTML={{ __html: svg }} />;
 }

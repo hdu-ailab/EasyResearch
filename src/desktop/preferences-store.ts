@@ -15,6 +15,7 @@ const PREFERENCE_KEYS = new Set([
   "filesFontSize",
   "language",
   "uiVersion",
+  "studioTheme",
   "autoExpandThinking",
   "autoExpandTools",
   "expandSubagentOutput",
@@ -76,7 +77,8 @@ function validatePreferenceBlob(raw: string): void {
     !isIntegerInRange(value.chatFontSize, 10, 20)
     || !isIntegerInRange(value.filesFontSize, 10, 20)
     || (value.language !== "en" && value.language !== "zh-CN")
-    || ("uiVersion" in value && value.uiVersion !== "current" && value.uiVersion !== "classic")
+    || ("uiVersion" in value && value.uiVersion !== "current" && value.uiVersion !== "classic" && value.uiVersion !== "studio")
+    || ("studioTheme" in value && value.studioTheme !== "light" && value.studioTheme !== "dark")
     || typeof value.autoExpandThinking !== "boolean"
     || typeof value.autoExpandTools !== "boolean"
     || typeof value.expandSubagentOutput !== "boolean"

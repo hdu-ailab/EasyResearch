@@ -6,6 +6,7 @@ import { useModalLayer } from "../hooks/useModalLayer";
 import { agentDisplayName, type Translate } from "../i18n/agents";
 import { useI18n } from "../i18n/useI18n";
 import { formatApiUsageCost, formatCacheHitRate } from "./ApiUsageLine";
+import { ActionGlyph } from "./studio/ActionGlyph";
 
 function totalsText(totals: ApiUsageTotalsDto, t: Translate): string {
   const number = new Intl.NumberFormat();
@@ -82,7 +83,9 @@ export function ApiUsageStatisticsDialog({
             onClick={onClose}
             className="flex size-7 items-center justify-center rounded-md text-v2-text-text-muted hover:bg-v2-grey-100"
           >
-            <X size={15} aria-hidden />
+            <ActionGlyph label={t("dialog.close")}>
+              <X size={15} aria-hidden />
+            </ActionGlyph>
           </button>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto p-4">

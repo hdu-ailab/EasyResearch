@@ -150,7 +150,7 @@ it("shows project basenames as the primary folder values while preserving the ex
 it("separates the New project entry from an existing project's New session action", () => {
   renderWorkspace([history()], []);
 
-  expect(screen.getByRole("button", { name: "New project" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "New workspace" })).toBeVisible();
   expect(screen.getByRole("button", { name: "New session /proj" })).toBeVisible();
 });
 
@@ -160,7 +160,7 @@ it("uses the 820px desktop threshold for the workspace, project rail, and active
   expect(screen.getByRole("region", { name: "Research workspace" })).toHaveClass(
     "min-[820px]:grid-cols-[minmax(280px,25%)_minmax(0,1fr)]",
   );
-  expect(screen.getByRole("complementary", { name: "Projects" })).toHaveClass(
+  expect(screen.getByRole("complementary", { name: "Workspaces" })).toHaveClass(
     "min-[820px]:col-start-1",
     "min-[820px]:row-span-2",
   );

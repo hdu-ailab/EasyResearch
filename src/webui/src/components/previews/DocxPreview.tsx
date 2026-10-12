@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { RawFileSizeError, rawFileUrl } from "../../api";
 import type { MessageKey } from "../../i18n/messages";
 import { useI18n } from "../../i18n/useI18n";
+import { ActionGlyph } from "../studio/ActionGlyph";
 import { DocxPackageError } from "./docx-package";
 import { createDocxLoader, type DocxLoader } from "./docx-runtime";
 
@@ -218,7 +219,9 @@ export function DocxPreview({ path, revision = 0, loader }: DocxPreviewProps) {
             disabled={scale <= MIN_SCALE}
             onClick={() => zoom(-1)}
           >
-            <Minus size={14} aria-hidden />
+            <ActionGlyph label={t("preview.docx.zoomOut")}>
+              <Minus size={14} aria-hidden />
+            </ActionGlyph>
           </button>
           <span className="w-11 shrink-0 text-center font-mono text-[11px] text-v2-text-text-muted">
             {Math.round(scale * 100)}%
@@ -231,7 +234,9 @@ export function DocxPreview({ path, revision = 0, loader }: DocxPreviewProps) {
             disabled={scale >= MAX_SCALE}
             onClick={() => zoom(1)}
           >
-            <Plus size={14} aria-hidden />
+            <ActionGlyph label={t("preview.docx.zoomIn")}>
+              <Plus size={14} aria-hidden />
+            </ActionGlyph>
           </button>
           <span className="mx-1 h-4 w-px shrink-0 bg-v2-grey-200" aria-hidden />
           <a
@@ -240,8 +245,10 @@ export function DocxPreview({ path, revision = 0, loader }: DocxPreviewProps) {
             aria-label={t("preview.docx.download")}
             className="flex h-7 shrink-0 items-center gap-1 rounded-md px-1.5 text-[12px] font-medium text-v2-text-text-muted transition-colors hover:bg-v2-grey-100 hover:text-v2-text-text-base"
           >
-            <Download size={13} aria-hidden />
-            <span className="hidden sm:inline">{t("preview.docx.download")}</span>
+            <ActionGlyph label={t("preview.docx.download")}>
+              <Download size={13} aria-hidden />
+              <span className="hidden sm:inline">{t("preview.docx.download")}</span>
+            </ActionGlyph>
           </a>
         </fieldset>
       </header>

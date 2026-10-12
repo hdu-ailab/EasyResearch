@@ -163,10 +163,10 @@ describe("HomePage", () => {
   it("keeps mobile interaction and landmark order aligned with the visual workspace order", async () => {
     renderHomeWithTwoProjects();
     const elements = [
-      await screen.findByRole("button", { name: /^new project$/i }),
+      await screen.findByRole("button", { name: /^new workspace$/i }),
       screen.getByRole("searchbox", { name: /search sessions/i }),
       screen.getByRole("heading", { name: /active sessions/i }),
-      screen.getByRole("complementary", { name: /projects/i }),
+      screen.getByRole("complementary", { name: /workspaces/i }),
       screen.getByRole("heading", { name: /recent sessions/i }),
     ];
     for (let index = 0; index < elements.length - 1; index += 1) {
@@ -251,7 +251,7 @@ describe("HomePage", () => {
       await vi.advanceTimersByTimeAsync(5000);
     });
 
-    expect(screen.getByRole("button", { name: /all projects/i })).toHaveAttribute("aria-current", "true");
+    expect(screen.getByRole("button", { name: /all workspaces/i })).toHaveAttribute("aria-current", "true");
     expect(screen.queryByRole("button", { name: "/other" })).toBeNull();
     expect(screen.getByText("Fault diagnosis")).toBeVisible();
   });
@@ -271,8 +271,8 @@ describe("HomePage", () => {
         settingsButton={<button type="button">Settings</button>}
       />,
     );
-    await user.click(screen.getByRole("button", { name: /^new project$/i }));
-    const dialog = await screen.findByRole("dialog", { name: /choose project directory/i });
+    await user.click(screen.getByRole("button", { name: /^new workspace$/i }));
+    const dialog = await screen.findByRole("dialog", { name: /choose workspace directory/i });
     await user.click(await within(dialog).findByRole("treeitem", { name: /proj/i }));
     await user.click(screen.getByRole("button", { name: /create session/i }));
     await waitFor(() => expect(api.createSession).toHaveBeenCalledWith("/proj"));
@@ -290,8 +290,8 @@ describe("HomePage", () => {
         settingsButton={<button type="button">Settings</button>}
       />,
     );
-    await user.click(screen.getByRole("button", { name: /^new project$/i }));
-    const dialog = await screen.findByRole("dialog", { name: /choose project directory/i });
+    await user.click(screen.getByRole("button", { name: /^new workspace$/i }));
+    const dialog = await screen.findByRole("dialog", { name: /choose workspace directory/i });
     await user.click(await within(dialog).findByRole("treeitem", { name: /proj/i }));
     await user.click(screen.getByRole("button", { name: /create session/i }));
     expect(await screen.findByText(/user-added Pi extensions/)).toBeTruthy();
@@ -358,7 +358,7 @@ describe("HomePage", () => {
         settingsButton={<button type="button">Settings</button>}
       />,
     );
-    expect(screen.getByRole("button", { name: /^new project$/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /^new workspace$/i })).toBeEnabled();
   });
 
   it("shows an error state that does not shift layout", async () => {
@@ -371,7 +371,7 @@ describe("HomePage", () => {
       />,
     );
     expect(await screen.findByText(/agent dir unavailable/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: /^new project$/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^new workspace$/i })).toBeTruthy();
   });
 
   it("opens a running active session directly without restart", async () => {

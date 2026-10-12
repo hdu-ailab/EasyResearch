@@ -1,7 +1,8 @@
 import { ChevronRight, FileJson } from "lucide-react";
-import { type KeyboardEvent, useRef } from "react";
+import { Fragment, type KeyboardEvent, useRef } from "react";
 import type { MessageKey } from "../../i18n/messages";
 import { useI18n } from "../../i18n/useI18n";
+import { useStudioUi } from "../../ui-version";
 
 export type SettingsCategory = "general" | "network" | "conversation" | "providers" | "agents" | "resources";
 
@@ -13,11 +14,25 @@ export interface SettingsNavigationProps {
   registerMobileButton(category: SettingsCategory, element: HTMLButtonElement | null): void;
 }
 
-const categories: readonly { id: SettingsCategory; label: MessageKey }[] = [
+interface Category {
+  id: SettingsCategory;
+  label: MessageKey;
+  group?: MessageKey;
+}
+const defaultCategories: readonly Category[] = [
   { id: "general", label: "settings.category.general" },
   { id: "network", label: "settings.category.network" },
   { id: "conversation", label: "settings.category.conversation" },
   { id: "providers", label: "settings.category.providers" },
+  { id: "agents", label: "settings.category.agents" },
+  { id: "resources", label: "settings.category.resources" },
+];
+
+const studioCategories: readonly Category[] = [
+  { id: "general", label: "studio.appearanceLanguage", group: "studio.preferences" },
+  { id: "conversation", label: "settings.category.conversation" },
+  { id: "providers", label: "settings.category.providers", group: "studio.environment" },
+  { id: "network", label: "settings.category.network" },
   { id: "agents", label: "settings.category.agents" },
   { id: "resources", label: "settings.category.resources" },
 ];
@@ -30,6 +45,8 @@ export function SettingsNavigation({
   registerMobileButton,
 }: SettingsNavigationProps) {
   const { t } = useI18n();
+  const studio = useStudioUi();
+  const categories = studio ? studioCategories : defaultCategories;
   const desktopButtons = useRef<Partial<Record<SettingsCategory, HTMLButtonElement | null>>>({});
   const mobile = window.innerWidth < 820;
 
@@ -53,22 +70,28 @@ export function SettingsNavigation({
     return (
       <nav
         hidden={mobileDetailOpen}
-        className="min-h-0 flex-1 overflow-y-auto bg-v2-background-bg-base p-3"
+        className="er-settings-navigation min-h-0 flex-1 overflow-y-auto bg-v2-background-bg-base p-3"
         aria-label={t("settings.title")}
       >
         <div className="flex flex-col gap-1">
           {categories.map((category) => (
-            <button
-              key={category.id}
-              ref={(element) => registerMobileButton(category.id, element)}
-              type="button"
-              hidden={mobileDetailOpen}
-              onClick={() => onSelect(category.id)}
-              className="flex min-h-11 w-full items-center rounded-md px-3 text-left text-[13px] font-medium text-v2-text-text-base transition-colors hover:bg-v2-grey-100 focus:outline-2 focus:outline-offset-2 focus:outline-v2-blue-600"
-            >
-              <span className="min-w-0 flex-1 truncate">{t(category.label)}</span>
-              <ChevronRight size={15} className="shrink-0 text-v2-icon-icon-muted" aria-hidden />
-            </button>
+            <Fragment key={category.id}>
+              {category.group && (
+                <span className="er-nav-group" aria-hidden>
+                  {t(category.group)}
+                </span>
+              )}
+              <button
+                ref={(element) => registerMobileButton(category.id, element)}
+                type="button"
+                hidden={mobileDetailOpen}
+                onClick={() => onSelect(category.id)}
+                className="flex min-h-11 w-full items-center rounded-md px-3 text-left text-[13px] font-medium text-v2-text-text-base transition-colors hover:bg-v2-grey-100 focus:outline-2 focus:outline-offset-2 focus:outline-v2-blue-600"
+              >
+                <span className="min-w-0 flex-1 truncate">{t(category.label)}</span>
+                <ChevronRight size={15} className="shrink-0 text-v2-icon-icon-muted" aria-hidden />
+              </button>
+            </Fragment>
           ))}
           <div className="my-1 border-t border-v2-grey-200" />
           <button
@@ -86,30 +109,38 @@ export function SettingsNavigation({
   }
 
   return (
-    <nav className="flex w-[208px] shrink-0 flex-col border-r border-v2-grey-200 bg-v2-background-bg-deep p-2">
+    <nav className="er-settings-navigation flex w-[208px] shrink-0 flex-col border-r border-v2-grey-200 bg-v2-background-bg-deep p-2">
       <div role="tablist" aria-label={t("settings.title")} aria-orientation="vertical" className="flex flex-col gap-1">
         {categories.map((category) => {
           const selected = category.id === active;
           return (
-            <button
-              key={category.id}
-              ref={(element) => {
-                desktopButtons.current[category.id] = element;
-              }}
-              id={`settings-tab-${category.id}`}
-              type="button"
-              role="tab"
-              tabIndex={selected ? 0 : -1}
-              aria-selected={selected}
-              aria-controls={`settings-panel-${category.id}`}
-              onClick={() => onSelect(category.id)}
-              onKeyDown={(event) => onTabKeyDown(event, category.id)}
-              className={`flex h-9 w-full items-center rounded-md px-3 text-left text-[13px] transition-colors focus:outline-2 focus:outline-offset-2 focus:outline-v2-blue-600 ${
-                selected ? "bg-v2-blue-100 font-medium text-v2-blue-600" : "text-v2-text-text-base hover:bg-v2-grey-100"
-              }`}
-            >
-              {t(category.label)}
-            </button>
+            <Fragment key={category.id}>
+              {category.group && (
+                <span className="er-nav-group" aria-hidden>
+                  {t(category.group)}
+                </span>
+              )}
+              <button
+                ref={(element) => {
+                  desktopButtons.current[category.id] = element;
+                }}
+                id={`settings-tab-${category.id}`}
+                type="button"
+                role="tab"
+                tabIndex={selected ? 0 : -1}
+                aria-selected={selected}
+                aria-controls={`settings-panel-${category.id}`}
+                onClick={() => onSelect(category.id)}
+                onKeyDown={(event) => onTabKeyDown(event, category.id)}
+                className={`flex h-9 w-full items-center rounded-md px-3 text-left text-[13px] transition-colors focus:outline-2 focus:outline-offset-2 focus:outline-v2-blue-600 ${
+                  selected
+                    ? "bg-v2-blue-100 font-medium text-v2-blue-600"
+                    : "text-v2-text-text-base hover:bg-v2-grey-100"
+                }`}
+              >
+                {t(category.label)}
+              </button>
+            </Fragment>
           );
         })}
       </div>

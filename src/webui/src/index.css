@@ -162,6 +162,16 @@ select {
   font-family: inherit;
 }
 
+:where(button:enabled, a[href], select:enabled, summary, [role="button"], [role="tab"], [role="treeitem"]):not(
+  :disabled
+):not([aria-disabled="true"]) {
+  cursor: pointer;
+}
+
+:where(button:disabled, input:disabled, textarea:disabled, select:disabled, [aria-disabled="true"]) {
+  cursor: not-allowed;
+}
+
 .home-workspace {
   min-height: min(720px, calc(100vh - 52px));
 }

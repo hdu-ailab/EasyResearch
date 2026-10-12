@@ -1,5 +1,5 @@
 import { createContext, useContext } from "react";
-import type { UiVersion } from "./preferences";
+import type { StudioTheme, UiVersion } from "./preferences";
 
 /**
  * The interface version in effect.
@@ -27,16 +27,23 @@ export const CURRENT_FAVICON = "/favicon.svg";
  * document-level side effect rather than a rendered prop. It is idempotent and
  * safe to run on every preference change.
  */
-export function applyUiVersion(version: UiVersion): void {
+export function applyUiVersion(version: UiVersion, studioTheme: StudioTheme = "light"): void {
   // The classic palette and typography are a scoped theme-token override keyed
   // off this attribute, so it must be applied before anything reads colors.
   document.documentElement.dataset.uiVersion = version;
+  const theme = version === "studio" ? studioTheme : "light";
+  document.documentElement.dataset.uiTheme = theme;
+  document.documentElement.style.colorScheme = theme;
   const link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
   if (!link) return;
-  link.href = version === "classic" ? CLASSIC_FAVICON : CURRENT_FAVICON;
+  link.href = version === "studio" ? "data:," : version === "classic" ? CLASSIC_FAVICON : CURRENT_FAVICON;
 }
 
 /** Whether the classic interface version is selected. Re-renders on change. */
 export function useClassicUi(): boolean {
   return useContext(UiVersionContext) === "classic";
+}
+
+export function useStudioUi(): boolean {
+  return useContext(UiVersionContext) === "studio";
 }

@@ -3594,7 +3594,7 @@ describe("WorkPage", () => {
       expect(toggle).toHaveAttribute("aria-expanded", "false");
 
       await user.click(toggle);
-      expect(within(files).getByRole("tree", { name: "Project files tree" })).toBeVisible();
+      expect(within(files).getByRole("tree", { name: "Workspace files tree" })).toBeVisible();
       await user.click(screen.getByRole("tab", { name: "Chat" }));
       reference.focus();
       await user.keyboard(" ");

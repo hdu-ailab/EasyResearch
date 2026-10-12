@@ -57,13 +57,16 @@ try {
   const address = server?.httpServer.address();
   assert(suppliedOrigin || (address && typeof address !== "string"));
   const origin = suppliedOrigin ? new URL(suppliedOrigin).origin : `http://127.0.0.1:${(address as { port: number }).port}`;
-  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  const browser = await chromium.launch({ channel: "chrome", executablePath: process.env.COMPARE_CHROMIUM_PATH, headless: true });
   const deadline = setTimeout(() => {
     console.error("FILE_TREE_RESIZE_SMOKE exceeded its browser deadline");
     void browser.close();
-  }, 60_000);
+  }, 180_000);
   try {
+    for (const preferences of [{ uiVersion: "current" }, { uiVersion: "studio", studioTheme: "light" }, { uiVersion: "studio", studioTheme: "dark" }]) {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, locale: "en-US" });
+    try {
+    await page.addInitScript((value) => localStorage.setItem("easyresearch.webui.preferences", JSON.stringify({ language: "en", ...value })), preferences);
     page.setDefaultTimeout(10_000);
     const unexpected: string[] = [];
     const errors: string[] = [];
@@ -210,7 +213,9 @@ try {
     await checkHitArea();
     assert.deepEqual(unexpected, []);
     assert.deepEqual(errors, []);
-    console.log("FILE_TREE_RESIZE_SMOKE passed: full hit area, DOCX capture/release, live bounds, cancellation, mobile state retention");
+    console.log(`FILE_TREE_RESIZE_SMOKE ${preferences.uiVersion}/${preferences.studioTheme ?? "light"} passed: full hit area, DOCX capture/release, live bounds, cancellation, mobile state retention`);
+    } finally { await page.close(); }
+    }
   } finally {
     clearTimeout(deadline);
     await browser.close();

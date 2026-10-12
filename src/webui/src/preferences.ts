@@ -8,13 +8,16 @@ export type Language = "en" | "zh-CN";
  * list. Both read the same session data and share the same API surface, so
  * switching is a pure presentation choice.
  */
-export type UiVersion = "current" | "classic";
+export type UiVersion = "current" | "classic" | "studio";
+export type StudioTheme = "light" | "dark";
 
 export interface WebUiPreferences {
   chatFontSize: number;
   filesFontSize: number;
   language: Language;
   uiVersion: UiVersion;
+  /** Optional in older blobs; Studio resolves an absent theme to light. */
+  studioTheme?: StudioTheme;
   autoExpandThinking: boolean;
   autoExpandTools: boolean;
   expandSubagentOutput: boolean;
@@ -49,7 +52,7 @@ const pickBoolean = (value: unknown): boolean => (typeof value === "boolean" ? v
 
 /** An unknown or missing version falls back to the default, never to a broken layout. */
 const pickUiVersion = (value: unknown): UiVersion =>
-  value === "classic" || value === "current" ? value : DEFAULT_UI_VERSION;
+  value === "classic" || value === "current" || value === "studio" ? value : DEFAULT_UI_VERSION;
 
 export function readPreferences(storage: Pick<Storage, "getItem">, navigatorLanguage: () => string): WebUiPreferences {
   const browserLanguage = resolveLanguage(navigatorLanguage());
@@ -71,6 +74,9 @@ export function readPreferences(storage: Pick<Storage, "getItem">, navigatorLang
       filesFontSize: pickFontSize(parsed.filesFontSize, DEFAULT_FILES_FONT_SIZE, FILES_FONT_MIN, FILES_FONT_MAX),
       language,
       uiVersion: pickUiVersion(parsed.uiVersion),
+      ...(parsed.uiVersion === "studio" || "studioTheme" in parsed
+        ? { studioTheme: parsed.studioTheme === "dark" ? ("dark" as const) : ("light" as const) }
+        : {}),
       autoExpandThinking: pickBoolean(parsed.autoExpandThinking),
       autoExpandTools: pickBoolean(parsed.autoExpandTools),
       expandSubagentOutput: pickBoolean(parsed.expandSubagentOutput),

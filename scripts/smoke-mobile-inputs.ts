@@ -95,7 +95,7 @@ try {
       await checkFont(search, 14);
       await search.fill("mobile search");
       await expect(search).toHaveValue("mobile search");
-      await page.getByRole("button", { name: "New project", exact: true }).click();
+      await page.getByRole("button", { name: "New workspace", exact: true }).click();
       const path = page.getByRole("combobox", { name: "Directory path", exact: true });
       await checkFont(path, 13);
       const roots = page.locator("select");

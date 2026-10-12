@@ -215,7 +215,7 @@ try {
         await page.getByRole("button", { name: fixtureCwd, exact: true }).click();
         await runningDelete.click();
         await dialog.getByRole("button", { name: "Stop and delete", exact: true }).click();
-        await expect(page.getByRole("heading", { name: "All projects", exact: true })).toBeVisible();
+        await expect(page.getByRole("heading", { name: "All workspaces", exact: true })).toBeVisible();
         assert.deepEqual(requests.slice(3), [{ id: "recent", force: false }, { id: "recent", force: false }, { id: "running", force: true }]);
         await noOverflow(page);
         await page.screenshot({ path: join(artifacts, `fixture-${width}-home.png`) });
@@ -320,7 +320,7 @@ try {
           await work.screenshot({ path: join(artifacts, `real-${width}-deleted.png`) });
           await homePage.screenshot({ path: join(artifacts, `real-${width}-home.png`) });
           await work.getByRole("button", { name: "Back to home", exact: true }).click();
-          await expect(work.getByRole("heading", { name: "All projects", exact: true })).toBeVisible();
+          await expect(work.getByRole("heading", { name: "All workspaces", exact: true })).toBeVisible();
           assert.deepEqual(errors, []);
           evidence.push({ mode: "real-compiled-api-pi-seeded-history", width, root: root.path, child: child.path, sibling: sibling.path, mutations, assertions: "Cancel preserves files; HTTP DELETE 204; root+child absent; sibling/sentinel byte-preserved; subscribed Work terminal after live/disconnected deletion; old-path reopen 404; Home navigation; no overflow" });
         } finally {

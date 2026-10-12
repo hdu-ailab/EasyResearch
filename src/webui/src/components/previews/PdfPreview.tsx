@@ -2,6 +2,7 @@ import { AlertTriangle, ChevronLeft, ChevronRight, Download, FileText, Minus, Pl
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { rawFileUrl } from "../../api";
 import { useI18n } from "../../i18n/useI18n";
+import { ActionGlyph } from "../studio/ActionGlyph";
 import { createPdfLoader, type PdfDocumentHandle, type PdfLoader } from "./pdf-runtime";
 
 export interface PdfPreviewProps {
@@ -235,7 +236,9 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
             disabled={currentPage <= 1}
             onClick={() => navigateToPage(currentPage - 1)}
           >
-            <ChevronLeft size={14} aria-hidden />
+            <ActionGlyph label={t("studio.previous")}>
+              <ChevronLeft size={14} aria-hidden />
+            </ActionGlyph>
           </button>
           <input
             aria-label={t("preview.pdf.currentPage")}
@@ -260,7 +263,9 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
             disabled={currentPage >= numPages}
             onClick={() => navigateToPage(currentPage + 1)}
           >
-            <ChevronRight size={14} aria-hidden />
+            <ActionGlyph label={t("studio.next")}>
+              <ChevronRight size={14} aria-hidden />
+            </ActionGlyph>
           </button>
           <span className="mx-1 h-4 w-px shrink-0 bg-v2-grey-200" aria-hidden />
 
@@ -271,7 +276,9 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
             title={t("preview.pdf.zoomOut")}
             onClick={() => zoom(-1)}
           >
-            <Minus size={14} aria-hidden />
+            <ActionGlyph label={t("preview.pdf.zoomOut")}>
+              <Minus size={14} aria-hidden />
+            </ActionGlyph>
           </button>
           <span className="w-11 shrink-0 text-center font-mono text-[11px] text-v2-text-text-muted">
             {Math.round(scale * 100)}%
@@ -283,7 +290,9 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
             title={t("preview.pdf.zoomIn")}
             onClick={() => zoom(1)}
           >
-            <Plus size={14} aria-hidden />
+            <ActionGlyph label={t("preview.pdf.zoomIn")}>
+              <Plus size={14} aria-hidden />
+            </ActionGlyph>
           </button>
           <span className="mx-1 h-4 w-px shrink-0 bg-v2-grey-200" aria-hidden />
 
@@ -293,8 +302,10 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
             aria-label={t("preview.pdf.download")}
             className="flex h-7 shrink-0 items-center gap-1 rounded-md px-1.5 text-[12px] font-medium text-v2-text-text-muted transition-colors hover:bg-v2-grey-100 hover:text-v2-text-text-base"
           >
-            <Download size={13} aria-hidden />
-            <span className="hidden sm:inline">{t("preview.pdf.download")}</span>
+            <ActionGlyph label={t("preview.pdf.download")}>
+              <Download size={13} aria-hidden />
+              <span className="hidden sm:inline">{t("preview.pdf.download")}</span>
+            </ActionGlyph>
           </a>
         </fieldset>
       </header>

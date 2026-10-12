@@ -137,7 +137,7 @@ it("shows project basenames as the primary folder values while preserving the ex
 it("separates the New project entry from an existing project's New session action", () => {
   renderWorkspace([history()], []);
 
-  expect(screen.getByRole("button", { name: "New project" })).toHaveClass("bg-[#304c90]", "hover:bg-[#4176E6]");
+  expect(screen.getByRole("button", { name: "New workspace" })).toHaveClass("bg-[#304c90]", "hover:bg-[#4176E6]");
   expect(screen.getByRole("button", { name: "New session /proj" })).toBeVisible();
 });
 
@@ -149,7 +149,7 @@ it("uses a full-height 264px rail and a responsive active-session card grid", ()
     "min-[820px]:grid-rows-[88px_auto_auto_minmax(0,1fr)]",
     "flex-1",
   );
-  expect(screen.getByRole("complementary", { name: "Projects" })).toHaveClass(
+  expect(screen.getByRole("complementary", { name: "Workspaces" })).toHaveClass(
     "min-[820px]:col-start-1",
     "min-[820px]:row-span-3",
     "bg-v2-grey-100",

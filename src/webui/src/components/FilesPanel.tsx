@@ -7,6 +7,7 @@ import { EMPTY_FILE_EVENTS, parentPath, type QueuedFileWatcherEvent } from "../f
 import { relativeFilesystemPath } from "../filesystem-path";
 import { useLazyTree } from "../hooks/useLazyTree";
 import { useI18n } from "../i18n/useI18n";
+import { ActionGlyph } from "./studio/ActionGlyph";
 
 export interface FilesPanelProps {
   root: string;
@@ -205,7 +206,9 @@ export function FilesPanel({
           title={t("files.refresh")}
           onClick={() => tree.refresh(root)}
         >
-          <RefreshCw size={13} />
+          <ActionGlyph label={t("dialog.refresh")}>
+            <RefreshCw size={13} />
+          </ActionGlyph>
         </button>
       </div>
       {rootError && (
@@ -310,10 +313,12 @@ export function FilesPanel({
                       {state === "loading" ? (
                         <span className="v2-spinner" aria-hidden />
                       ) : (
-                        <ChevronRight
-                          size={12}
-                          className={`shrink-0 transition-transform ${isExpanded ? "rotate-90" : ""}`}
-                        />
+                        <ActionGlyph label={t(isExpanded ? "studio.collapse" : "studio.expand")}>
+                          <ChevronRight
+                            size={12}
+                            className={`shrink-0 transition-transform ${isExpanded ? "rotate-90" : ""}`}
+                          />
+                        </ActionGlyph>
                       )}
                     </button>
                   ) : (

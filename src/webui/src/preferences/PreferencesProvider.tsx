@@ -18,7 +18,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
 
   const apply = useEffectEvent((next: WebUiPreferences) => {
     applyFontPreferences(next);
-    applyUiVersion(next.uiVersion);
+    applyUiVersion(next.uiVersion, next.studioTheme);
     document.documentElement.lang = next.language;
   });
 

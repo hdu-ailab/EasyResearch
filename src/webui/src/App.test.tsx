@@ -269,7 +269,7 @@ describe("App routing", () => {
     expect(baseSurface!).toHaveAttribute("aria-hidden", "true");
   });
 
-  async function switchHomeVersion(version: "current" | "classic", via: "local" | "storage") {
+  async function switchHomeVersion(version: "current" | "classic" | "studio", via: "local" | "storage") {
     if (via === "storage") {
       await act(async () => {
         const prefs = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}");
@@ -279,7 +279,9 @@ describe("App routing", () => {
     } else {
       const user = userEvent.setup();
       await user.click(screen.getByRole("button", { name: "Settings" }));
-      await user.click(screen.getByRole("button", { name: version === "current" ? "Current" : "Classic" }));
+      await user.click(
+        screen.getByRole("button", { name: { current: "Current", classic: "Classic", studio: "Studio" }[version] }),
+      );
       await user.click(screen.getByRole("button", { name: "Close" }));
       await waitFor(() => expect(window.location.hash).toBe("#/"));
     }
@@ -304,7 +306,7 @@ describe("App routing", () => {
     render(<App />);
     await user.click(await screen.findByRole("button", { name: "/p" }));
     await user.type(screen.getByRole("searchbox"), "write");
-    for (const version of ["classic", "current"] as const) {
+    for (const version of ["classic", "studio", "current"] as const) {
       await switchHomeVersion(version, via);
       expect(screen.getByRole("searchbox")).toHaveValue("write");
       expect(screen.getByRole("button", { name: "/p" })).toHaveAttribute("aria-current", "true");
@@ -324,13 +326,15 @@ describe("App routing", () => {
       vi.mocked(api.listStatus).mockResolvedValue(persisted);
       vi.mocked(api.createSession).mockReturnValue(request.promise);
       const user = userEvent.setup();
+      if (via === "storage")
+        window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ uiVersion: "studio", language: "en" }));
       render(<App />);
       await user.click(await screen.findByRole("button", { name: "New session /p" }));
-      for (const version of ["classic", "current"] as const) {
+      for (const version of ["classic", "studio", "current"] as const) {
         await switchHomeVersion(version, via);
         const create = screen.getByRole("button", { name: "New session /p" });
         expect(create).toBeDisabled();
-        expect(screen.getByRole("button", { name: "New project" })).toBeDisabled();
+        expect(screen.getByRole("button", { name: "New workspace" })).toBeDisabled();
         await user.click(create);
         expect(api.createSession).toHaveBeenCalledOnce();
       }
@@ -353,7 +357,7 @@ describe("App routing", () => {
     await switchHomeVersion("classic", "storage");
     expect(screen.getByRole("dialog", { name: "Delete session" })).toBe(dialog);
     await user.click(within(dialog).getByRole("button", { name: "Delete" }));
-    await switchHomeVersion("current", "storage");
+    await switchHomeVersion("studio", "storage");
     expect(dialog).toHaveAttribute("aria-busy", "true");
     expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled();
     fireEvent.submit(dialog);
@@ -370,6 +374,28 @@ describe("App routing", () => {
     await waitFor(() => expect(dialog).not.toBeInTheDocument());
     expect(api.deleteSession).toHaveBeenNthCalledWith(2, "s1", false);
     expect(screen.queryByText("write a paper")).toBeNull();
+  });
+
+  it("selects Studio dark through Settings while retaining the Home search and configuration connection", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await workspace();
+    await user.type(screen.getByRole("searchbox"), "research draft");
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const dialog = screen.getByRole("dialog", { name: "Settings" });
+    await user.click(within(dialog).getByRole("button", { name: "Studio" }));
+    await user.click(within(dialog).getByRole("button", { name: "Dark" }));
+    expect(document.documentElement.dataset.uiVersion).toBe("studio");
+    expect(document.documentElement.dataset.uiTheme).toBe("dark");
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!)).toMatchObject({ uiVersion: "studio", studioTheme: "dark" });
+    await user.click(within(dialog).getByRole("button", { name: "Close" }));
+    expect(screen.getByRole("searchbox")).toHaveValue("research draft");
+    expect(api.connectConfigurationEvents).toHaveBeenCalledOnce();
+    await switchHomeVersion("classic", "storage");
+    expect(document.documentElement.dataset.uiTheme).toBe("light");
+    await switchHomeVersion("studio", "storage");
+    expect(document.documentElement.dataset.uiTheme).toBe("dark");
+    expect(screen.getByRole("searchbox")).toHaveValue("research draft");
   });
 
   it("shows a non-interactive update notice in the Home topbar", async () => {

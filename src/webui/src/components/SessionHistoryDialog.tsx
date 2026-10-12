@@ -8,6 +8,7 @@ import type {
 } from "../../../web/contracts";
 import { useModalLayer } from "../hooks/useModalLayer";
 import { useI18n } from "../i18n/useI18n";
+import { ActionGlyph } from "./studio/ActionGlyph";
 
 interface HistoryRow {
   entry: WebTreeEntryDto;
@@ -180,7 +181,9 @@ export function SessionHistoryDialog({
             className="ml-auto flex size-7 items-center justify-center rounded-md text-v2-icon-icon-muted hover:bg-v2-grey-100"
             onClick={onClose}
           >
-            <X size={15} />
+            <ActionGlyph label={t("dialog.close")}>
+              <X size={15} />
+            </ActionGlyph>
           </button>
         </header>
         <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-v2-grey-200 px-3 py-2">

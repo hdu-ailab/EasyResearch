@@ -389,10 +389,10 @@ export class ConfigFileService {
     try {
       current = fs.realpathSync(context.cwd);
     } catch {
-      throw new ConfigServiceError(409, "Project changed during configuration write", "PROJECT_CHANGED");
+      throw new ConfigServiceError(409, "Workspace changed during configuration write", "PROJECT_CHANGED");
     }
     if (current !== context.canonicalCwd) {
-      throw new ConfigServiceError(409, "Project changed during configuration write", "PROJECT_CHANGED");
+      throw new ConfigServiceError(409, "Workspace changed during configuration write", "PROJECT_CHANGED");
     }
   }
 

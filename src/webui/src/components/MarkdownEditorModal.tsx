@@ -2,6 +2,7 @@ import { X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useModalLayer } from "../hooks/useModalLayer";
 import { useI18n } from "../i18n/useI18n";
+import { ActionGlyph } from "./studio/ActionGlyph";
 
 export interface MarkdownEditorModalProps {
   title: string;
@@ -58,7 +59,9 @@ export function MarkdownEditorModal({
             className="ml-auto flex size-7 shrink-0 items-center justify-center rounded-md text-v2-icon-icon-muted hover:bg-v2-grey-100 hover:text-v2-icon-icon-base"
             onClick={close}
           >
-            <X size={15} aria-hidden />
+            <ActionGlyph label={t("dialog.close")}>
+              <X size={15} aria-hidden />
+            </ActionGlyph>
           </button>
         </header>
         <div className="min-h-0 flex-1 p-3 sm:p-4">

@@ -60,7 +60,7 @@ import {
   syncRunningSubagentTabs,
   temporarySubagentTabKey,
 } from "../subagent-tabs";
-import { useClassicUi } from "../ui-version";
+import { useClassicUi, useStudioUi } from "../ui-version";
 
 export interface WorkPageProps {
   id: string;
@@ -228,6 +228,8 @@ function SessionWorkPage({
 }: WorkPageProps) {
   const { t } = useI18n();
   const classic = useClassicUi();
+  const studio = useStudioUi();
+  const compactChrome = classic || studio;
   const [fileEvents, setFileEvents] = useState<{ sessionId: string; pending: readonly QueuedFileWatcherEvent[] }>({
     sessionId: id,
     pending: EMPTY_FILE_EVENTS,
@@ -1196,13 +1198,13 @@ function SessionWorkPage({
             : t("work.ready");
 
   return (
-    <div className={classic ? "flex h-full flex-col" : "flex h-full min-h-0 flex-col bg-v2-background-bg-base"}>
+    <div className={compactChrome ? "flex h-full flex-col" : "flex h-full min-h-0 flex-col bg-v2-background-bg-base"}>
       <WorkTopbar
         home={{ active: false, onClick: onBack }}
         leading={classic && !isMobile ? <ClassicProductMark /> : undefined}
         center={
           <span className="flex min-w-0 items-center gap-1.5">
-            {classic && sessionView.sessionName ? (
+            {compactChrome && sessionView.sessionName ? (
               <span
                 className="max-w-[40%] truncate text-[13px] font-medium text-v2-text-text-base"
                 title={sessionView.sessionName}
@@ -1270,8 +1272,10 @@ function SessionWorkPage({
       <WorkMobileTabs active={mobileView} onChange={setMobileView} />
       <div
         ref={rowRef}
+        data-work-layout
+        data-panel-open={panelOpen}
         className={
-          classic
+          compactChrome
             ? `relative flex min-h-0 flex-1 overflow-x-clip px-2 pb-2 pt-[4px] ${panelOpen ? "gap-2" : "gap-0"} ${
                 panelMotionReady ? "transition-[gap] duration-v2-panel ease-v2-panel motion-reduce:transition-none" : ""
               }`
@@ -1323,7 +1327,7 @@ function SessionWorkPage({
               </span>
             </div>
           ) : null}
-          {classic ? null : (
+          {compactChrome ? null : (
             <header className="mx-auto w-full max-w-[952px] shrink-0 px-4 pb-3 pt-4 min-[820px]:pt-6">
               <h1
                 className="truncate text-[18px] font-semibold tracking-tight text-v2-text-text-base min-[820px]:text-[22px]"
@@ -1333,7 +1337,7 @@ function SessionWorkPage({
               </h1>
             </header>
           )}
-          <div className={classic ? "shrink-0 px-2" : "mx-auto w-full max-w-[952px] shrink-0 px-2"}>
+          <div className={compactChrome ? "shrink-0 px-2" : "mx-auto w-full max-w-[952px] shrink-0 px-2"}>
             <AgentTabBar
               tabs={tabsState.tabs}
               activeKey={activeTab}
@@ -1359,7 +1363,7 @@ function SessionWorkPage({
           ) : null}
           <div
             className={
-              classic
+              compactChrome
                 ? "flex min-h-0 w-full flex-1 flex-col"
                 : "mx-auto flex min-h-0 w-full max-w-[952px] flex-1 flex-col"
             }
@@ -1399,7 +1403,7 @@ function SessionWorkPage({
           </div>
           <footer
             className={`sticky bottom-0 z-10 w-full shrink-0 bg-v2-background-bg-base px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] min-[820px]:pb-5 ${
-              classic ? "" : "mx-auto max-w-[952px]"
+              compactChrome ? "" : "mx-auto max-w-[952px]"
             }`}
           >
             {activeTab !== RESEARCH_ASSISTANT_AGENT || sessionView.subagentName ? (

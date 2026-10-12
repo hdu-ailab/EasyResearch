@@ -2,6 +2,7 @@ import { X } from "lucide-react";
 import { useRef } from "react";
 import { useModalLayer } from "../hooks/useModalLayer";
 import { useI18n } from "../i18n/useI18n";
+import { ActionGlyph } from "./studio/ActionGlyph";
 
 export interface AgentResourceDetailsDialogProps {
   agentName: string;
@@ -36,7 +37,9 @@ export function AgentResourceDetailsDialog({ agentName, tools, skills, onClose }
             className="ml-auto flex size-7 shrink-0 items-center justify-center rounded-md text-v2-icon-icon-muted hover:bg-v2-grey-100 hover:text-v2-icon-icon-base"
             onClick={onClose}
           >
-            <X size={15} aria-hidden />
+            <ActionGlyph label={t("dialog.close")}>
+              <X size={15} aria-hidden />
+            </ActionGlyph>
           </button>
         </header>
         <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto p-4 sm:grid-cols-2">

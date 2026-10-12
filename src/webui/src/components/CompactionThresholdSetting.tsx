@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { CompactionSettingsDto } from "../../../web/contracts";
 import { getCompactionSettings, patchCompactionSettings } from "../api";
 import { useI18n } from "../i18n/useI18n";
+import { ActionGlyph } from "./studio/ActionGlyph";
 
 const MIN_PERCENT = 10;
 const MAX_PERCENT = 90;
@@ -120,7 +121,9 @@ export function CompactionThresholdSetting({ configurationGeneration }: { config
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => step(-STEP_PERCENT)}
           >
-            <Minus size={13} aria-hidden />
+            <ActionGlyph label={t("studio.decrease")}>
+              <Minus size={13} aria-hidden />
+            </ActionGlyph>
           </button>
           <div className="flex items-center gap-1">
             <input
@@ -156,7 +159,9 @@ export function CompactionThresholdSetting({ configurationGeneration }: { config
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => step(STEP_PERCENT)}
           >
-            <Plus size={13} aria-hidden />
+            <ActionGlyph label={t("studio.increase")}>
+              <Plus size={13} aria-hidden />
+            </ActionGlyph>
           </button>
         </div>
       </div>

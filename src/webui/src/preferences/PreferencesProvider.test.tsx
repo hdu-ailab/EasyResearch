@@ -17,6 +17,10 @@ function Probe() {
       <span data-testid="tools-expanded">{String(preferences.autoExpandTools)}</span>
       <span data-testid="thinking-expanded">{String(preferences.autoExpandThinking)}</span>
       <span data-testid="ui-version">{preferences.uiVersion}</span>
+      <input aria-label="draft" defaultValue="Unsent research question" />
+      <button type="button" onClick={() => updatePreferences({ uiVersion: "studio", studioTheme: "dark" })}>
+        use studio dark
+      </button>
       <button type="button" onClick={() => updatePreferences({ autoExpandTools: true })}>
         enable tools
       </button>
@@ -40,6 +44,29 @@ function Probe() {
 }
 
 describe("PreferencesProvider", () => {
+  it("applies a cross-tab Studio theme while preserving the mounted draft and remembered theme", async () => {
+    const user = userEvent.setup();
+    render(
+      <PreferencesProvider>
+        <Probe />
+      </PreferencesProvider>,
+    );
+    const draft = screen.getByRole("textbox", { name: "draft" });
+    await user.click(screen.getByRole("button", { name: "use studio dark" }));
+    expect(document.documentElement.dataset.uiTheme).toBe("dark");
+    await user.click(screen.getByRole("button", { name: "use current" }));
+    expect(document.documentElement.dataset.uiTheme).toBe("light");
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!)).toMatchObject({ uiVersion: "current", studioTheme: "dark" });
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ ...JSON.parse(localStorage.getItem(STORAGE_KEY)!), uiVersion: "studio" }),
+    );
+    act(() => window.dispatchEvent(new StorageEvent("storage", { key: STORAGE_KEY })));
+    expect(document.documentElement.dataset.uiTheme).toBe("dark");
+    expect(screen.getByRole("textbox", { name: "draft" })).toBe(draft);
+    expect(draft).toHaveValue("Unsent research question");
+  });
+
   beforeEach(() => {
     window.localStorage.clear();
     document.documentElement.lang = "";

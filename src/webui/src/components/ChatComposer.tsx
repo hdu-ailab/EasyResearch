@@ -3,6 +3,7 @@ import { forwardRef, useEffect, useId, useImperativeHandle, useLayoutEffect, use
 import type { SkillCommandDto } from "../../../web/contracts";
 import { useI18n } from "../i18n/useI18n";
 import { useClassicUi } from "../ui-version";
+import { ActionGlyph } from "./studio/ActionGlyph";
 
 export interface ChatComposerProps {
   disabled: boolean;
@@ -185,6 +186,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
 
   return (
     <form
+      data-chat-composer
       className={
         classic
           ? "relative mx-auto flex w-full max-w-[1000px] items-center gap-2 md:max-w-200 2xl:max-w-[1000px]"
@@ -309,6 +311,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
         {showStop ? (
           <button
             type="button"
+            data-composer-action
             className={
               classic
                 ? "flex size-8 items-center justify-center rounded-md bg-v2-grey-1100 text-v2-grey-50 transition-opacity hover:opacity-90"
@@ -321,11 +324,14 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
               onAbort();
             }}
           >
-            <Square size={13} fill="currentColor" />
+            <ActionGlyph label={t("composer.stop")}>
+              <Square size={13} fill="currentColor" />
+            </ActionGlyph>
           </button>
         ) : (
           <button
             type="submit"
+            data-composer-action
             className={
               classic
                 ? "flex size-8 items-center justify-center rounded-md bg-v2-grey-1100 text-v2-grey-50 transition-opacity hover:opacity-90 disabled:opacity-40 disabled:hover:opacity-40"
@@ -334,21 +340,23 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
             aria-label={t("composer.send")}
             disabled={disabled || !canSend}
           >
-            <svg
-              width="15"
-              height="15"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden
-              role="presentation"
-            >
-              <path d="M12 19V5" />
-              <path d="M5 12l7-7 7 7" />
-            </svg>
+            <ActionGlyph label={t("composer.send")}>
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+                role="presentation"
+              >
+                <path d="M12 19V5" />
+                <path d="M5 12l7-7 7 7" />
+              </svg>
+            </ActionGlyph>
           </button>
         )}
       </div>

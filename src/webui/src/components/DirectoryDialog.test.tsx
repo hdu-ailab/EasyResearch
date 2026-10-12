@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../api";
+import { UiVersionContext } from "../ui-version";
 import { DirectoryDialog } from "./DirectoryDialog";
 
 vi.mock("../api", () => ({
@@ -115,6 +116,23 @@ describe("DirectoryDialog", () => {
     expect(screen.queryByText("draft")).toBeNull();
     await user.click(screen.getByRole("button", { name: /expand/i }));
     expect(await screen.findByText("draft")).toBeTruthy();
+  });
+
+  it("keeps Studio directory expansion visibly actionable and selectable", async () => {
+    mockListing({ [HOME]: ["papers"], [`${HOME}/papers`]: ["draft"] });
+    const onSelect = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <UiVersionContext value="studio">
+        <DirectoryDialog homeDir={HOME} onSelect={onSelect} onClose={() => {}} />
+      </UiVersionContext>,
+    );
+    const expand = await screen.findByRole("button", { name: "Expand papers" });
+    expect(expand).toHaveTextContent(/\S/);
+    await user.click(expand);
+    await user.click(await screen.findByText("draft"));
+    await user.click(screen.getByRole("button", { name: "Create session" }));
+    expect(onSelect).toHaveBeenCalledWith(`${HOME}/papers/draft`);
   });
 
   it("uses roving tree focus with arrow, Home, and hierarchy navigation", async () => {
@@ -418,8 +436,8 @@ describe("DirectoryDialog", () => {
     vi.mocked(api.createDirectory).mockResolvedValue({ path: created });
     const user = userEvent.setup();
     render(<DirectoryDialog homeDir={home} onSelect={() => {}} onClose={() => {}} />);
-    await user.click(screen.getByRole("button", { name: /new project/i }));
-    const createDialog = screen.getByRole("dialog", { name: "New project" });
+    await user.click(screen.getByRole("button", { name: /new workspace/i }));
+    const createDialog = screen.getByRole("dialog", { name: "New workspace" });
     await user.type(createDialog.querySelector("input")!, "new folder/review");
     await user.click(within(createDialog).getByRole("button", { name: /create/i }));
 
@@ -455,8 +473,8 @@ describe("DirectoryDialog", () => {
     await user.type(pathInput, `${HOME}/papers`);
     await user.keyboard("{Enter}");
     expect(screen.getByRole("button", { name: "Create session" })).toBeVisible();
-    await user.click(screen.getByRole("button", { name: /new project/i }));
-    const createDialog = screen.getByRole("dialog", { name: "New project" });
+    await user.click(screen.getByRole("button", { name: /new workspace/i }));
+    const createDialog = screen.getByRole("dialog", { name: "New workspace" });
     await user.type(createDialog.querySelector("input")!, "new folder/review");
     await user.click(within(createDialog).getByRole("button", { name: /create/i }));
     expect(api.createDirectory).toHaveBeenCalledWith(`${HOME}/papers/new folder/review`);
@@ -468,8 +486,8 @@ describe("DirectoryDialog", () => {
     mockListing({ [HOME]: [] });
     vi.mocked(api.createDirectory).mockRejectedValue(new Error("cannot create"));
     render(<DirectoryDialog homeDir={HOME} onSelect={() => {}} onClose={() => {}} />);
-    await user.click(screen.getByRole("button", { name: /new project/i }));
-    const createDialog = screen.getByRole("dialog", { name: "New project" });
+    await user.click(screen.getByRole("button", { name: /new workspace/i }));
+    const createDialog = screen.getByRole("dialog", { name: "New workspace" });
     await user.type(createDialog.querySelector("input")!, "bad\0name");
     await user.click(within(createDialog).getByRole("button", { name: /create/i }));
     expect(api.createDirectory).not.toHaveBeenCalled();

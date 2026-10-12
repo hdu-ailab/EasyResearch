@@ -3,6 +3,7 @@ import { useLayoutEffect, useRef } from "react";
 import type { FileContentDto } from "../../../web/contracts";
 import { useI18n } from "../i18n/useI18n";
 import { useClassicUi } from "../ui-version";
+import { ActionGlyph } from "./studio/ActionGlyph";
 
 export interface FileTab {
   path: string;
@@ -55,7 +56,7 @@ export function FileTabs({ tabs, active, onActivate, onClose, toggle }: FileTabs
   };
 
   return (
-    <div className="flex shrink-0 items-center gap-0.5 overflow-x-auto border-b border-v2-grey-200 px-1.5 py-1">
+    <div className="er-file-tabs flex shrink-0 items-center gap-0.5 overflow-x-auto border-b border-v2-grey-200 px-1.5 py-1">
       {toggle && (
         <div className="sticky left-0 z-10 shrink-0 bg-v2-background-bg-base">
           <button
@@ -70,7 +71,9 @@ export function FileTabs({ tabs, active, onActivate, onClose, toggle }: FileTabs
             data-expanded={toggle.opened}
             onClick={toggle.onToggle}
           >
-            <FolderTree size={14} />
+            <ActionGlyph label={t("studio.fileTree")}>
+              <FolderTree size={14} />
+            </ActionGlyph>
           </button>
         </div>
       )}
@@ -121,7 +124,9 @@ export function FileTabs({ tabs, active, onActivate, onClose, toggle }: FileTabs
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => onClose(tab.path)}
               >
-                <X size={classic ? 11 : 12} aria-hidden />
+                <ActionGlyph label={t("tabs.close")} compact>
+                  <X size={classic ? 11 : 12} aria-hidden />
+                </ActionGlyph>
               </button>
             </div>
           );

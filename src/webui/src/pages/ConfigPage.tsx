@@ -10,6 +10,7 @@ import {
   refreshConfigurationResources,
   writeConfigFile,
 } from "../api";
+import { ActionGlyph } from "../components/studio/ActionGlyph";
 import { Topbar } from "../components/Topbar";
 import { useModalLayer } from "../hooks/useModalLayer";
 import { useI18n } from "../i18n/useI18n";
@@ -266,7 +267,10 @@ export function ConfigPage({ onHome, onBackToSettings, onProjectInterestChange, 
             </div>
           </section>
         ) : (
-          <section className="mx-auto flex h-full w-full max-w-[1080px] flex-col rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]">
+          <section
+            data-file-open={!!selectedFile}
+            className="er-config-editor mx-auto flex h-full w-full max-w-[1080px] flex-col rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]"
+          >
             <header className="flex h-10 shrink-0 items-center gap-1 border-b border-v2-grey-200 px-2">
               <button
                 type="button"
@@ -274,7 +278,9 @@ export function ConfigPage({ onHome, onBackToSettings, onProjectInterestChange, 
                 aria-label={t("config.backToFiles")}
                 onClick={closeRoot}
               >
-                <ChevronLeft size={15} />
+                <ActionGlyph label={t("studio.back")}>
+                  <ChevronLeft size={15} />
+                </ActionGlyph>
               </button>
               <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-v2-text-text-muted">
                 {path || "."}
@@ -289,7 +295,9 @@ export function ConfigPage({ onHome, onBackToSettings, onProjectInterestChange, 
                   setDialog("file");
                 }}
               >
-                <FilePlus size={14} />
+                <ActionGlyph label={t("config.newFile")}>
+                  <FilePlus size={14} />
+                </ActionGlyph>
               </button>
               <button
                 type="button"
@@ -301,7 +309,9 @@ export function ConfigPage({ onHome, onBackToSettings, onProjectInterestChange, 
                   setDialog("directory");
                 }}
               >
-                <FolderPlus size={14} />
+                <ActionGlyph label={t("config.newFolder")}>
+                  <FolderPlus size={14} />
+                </ActionGlyph>
               </button>
               <button
                 type="button"
@@ -310,7 +320,9 @@ export function ConfigPage({ onHome, onBackToSettings, onProjectInterestChange, 
                 aria-label={t("config.refresh")}
                 onClick={() => void refreshEntries()}
               >
-                <RefreshCw size={14} />
+                <ActionGlyph label={t("config.refresh")}>
+                  <RefreshCw size={14} />
+                </ActionGlyph>
               </button>
             </header>
             <div className="flex min-h-0 flex-1">
@@ -342,7 +354,9 @@ export function ConfigPage({ onHome, onBackToSettings, onProjectInterestChange, 
                           setSelectedFile(null);
                         }}
                       >
-                        <X size={14} />
+                        <ActionGlyph label={t("dialog.close")}>
+                          <X size={14} />
+                        </ActionGlyph>
                       </button>
                     </div>
                     <textarea

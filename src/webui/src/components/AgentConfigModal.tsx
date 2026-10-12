@@ -7,6 +7,7 @@ import { agentDisplayName } from "../i18n/agents";
 import { useI18n } from "../i18n/useI18n";
 import { AgentMarkdownEditor } from "./AgentMarkdownEditor";
 import { SearchableSelect } from "./SearchableSelect";
+import { ActionGlyph } from "./studio/ActionGlyph";
 import { ThinkingLevelSelect } from "./ThinkingLevelSelect";
 
 export interface AgentConfigModalProps {
@@ -81,7 +82,9 @@ export function AgentConfigModal({
             className="ml-auto flex size-7 shrink-0 items-center justify-center rounded-md text-v2-icon-icon-muted hover:bg-v2-grey-100 hover:text-v2-icon-icon-base"
             onClick={onClose}
           >
-            <X size={15} aria-hidden />
+            <ActionGlyph label={t("dialog.close")}>
+              <X size={15} aria-hidden />
+            </ActionGlyph>
           </button>
         </header>
 

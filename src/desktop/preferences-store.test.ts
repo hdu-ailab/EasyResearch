@@ -28,6 +28,12 @@ afterEach(() => {
 });
 
 describe("desktop preference persistence", () => {
+  it.each(["light", "dark"])("restores a Studio %s preference blob through the host mirror", (studioTheme) => {
+    const blob = JSON.stringify({ ...JSON.parse(valid), uiVersion: "studio", studioTheme });
+    writeDesktopPreferenceBlob(root, blob);
+    expect(readDesktopPreferenceBlob(root)).toBe(blob);
+  });
+
   it("round-trips only the existing Web preference object", () => {
     writeDesktopPreferenceBlob(root, valid);
     expect(readDesktopPreferenceBlob(root)).toBe(valid);
@@ -48,6 +54,7 @@ describe("desktop preference persistence", () => {
     JSON.stringify({ auth: { token: "secret" } }),
     JSON.stringify({ chatFontSize: 99 }),
     ...["future", null, false, 1, {}].map((uiVersion) => JSON.stringify({ ...JSON.parse(valid), uiVersion })),
+    ...["system", null, false, 1, {}].map((studioTheme) => JSON.stringify({ ...JSON.parse(valid), uiVersion: "studio", studioTheme })),
     JSON.stringify({ ...JSON.parse(valid), uiVersion: "classic", unknown: true }),
   ])("rejects an invalid preference blob without replacing the accepted value", (candidate) => {
     writeDesktopPreferenceBlob(root, valid);

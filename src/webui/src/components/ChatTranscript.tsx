@@ -23,6 +23,7 @@ import { ApiUsageLine } from "./ApiUsageLine";
 import { MarkdownBlock } from "./MarkdownBlock";
 import { SubagentCompletionCard } from "./SubagentCompletionCard";
 import { SubagentToolCard } from "./SubagentToolCard";
+import { ActionGlyph } from "./studio/ActionGlyph";
 import { ThinkingPreview } from "./ThinkingPreview";
 
 export interface ChatTranscriptProps {
@@ -428,6 +429,7 @@ function MessageRow({
         />
       ) : hasBody && (message.role === "assistant" || message.role === "user") ? (
         <div
+          data-message-body={isYou ? "user" : "assistant"}
           className={`v2-md max-w-full rounded-lg px-3 py-2 text-[length:var(--v2-chat-font-size)] ${
             isYou ? "bg-v2-blue-100/60 text-v2-text-text-base" : "bg-v2-background-bg-deep text-v2-text-text-base"
           } ${message.error ? "text-v2-status-error" : ""}`}
@@ -475,7 +477,9 @@ function MessageRow({
                   className="flex size-6 items-center justify-center rounded-md text-v2-text-text-muted hover:bg-v2-grey-100"
                   onClick={onStartEdit}
                 >
-                  <Pencil size={12} />
+                  <ActionGlyph label={t("studio.edit")}>
+                    <Pencil size={12} />
+                  </ActionGlyph>
                 </button>
               ) : null}
               {canCopy ? (
@@ -486,7 +490,9 @@ function MessageRow({
                   className="flex size-6 items-center justify-center rounded-md text-v2-text-text-muted hover:bg-v2-grey-100"
                   onClick={() => void navigator.clipboard?.writeText(message.text).catch(() => {})}
                 >
-                  <Copy size={12} />
+                  <ActionGlyph label={t("studio.copy")}>
+                    <Copy size={12} />
+                  </ActionGlyph>
                 </button>
               ) : null}
             </span>
@@ -503,7 +509,9 @@ function MessageRow({
             className="flex size-5 items-center justify-center rounded hover:bg-v2-grey-100 disabled:opacity-30"
             onClick={() => onSwitchBranch?.(meta.entryId, -1)}
           >
-            <ChevronLeft size={12} />
+            <ActionGlyph label={t("studio.previous")}>
+              <ChevronLeft size={12} />
+            </ActionGlyph>
           </button>
           <span>
             {meta.version.index}/{meta.version.count}
@@ -516,7 +524,9 @@ function MessageRow({
             className="flex size-5 items-center justify-center rounded hover:bg-v2-grey-100 disabled:opacity-30"
             onClick={() => onSwitchBranch?.(meta.entryId, 1)}
           >
-            <ChevronRight size={12} />
+            <ActionGlyph label={t("studio.next")}>
+              <ChevronRight size={12} />
+            </ActionGlyph>
           </button>
         </span>
       ) : null}
@@ -1031,14 +1041,16 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
                 : "pointer-events-auto absolute bottom-6 left-1/2 z-50 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full bg-v2-background-bg-layer text-v2-blue-700 shadow-[var(--v2-elevation-raised)] backdrop-blur transition-all duration-200 hover:scale-105 hover:bg-v2-background-bg-layer-2 focus-visible:outline-2 focus-visible:outline-v2-blue-600 focus-visible:outline-offset-2"
             }
           >
-            <svg width={classic ? 14 : 16} height={classic ? 14 : 16} viewBox="0 0 16 16" fill="none" aria-hidden>
-              <title>{t("transcript.jumpToLatest")}</title>
-              <path
-                d="M12.3333 8.66665L8 13L3.66667 8.66665M8 12.6667V2.83332"
-                stroke="currentColor"
-                strokeLinecap="square"
-              />
-            </svg>
+            <ActionGlyph label={t("transcript.jumpToLatest")}>
+              <svg width={classic ? 14 : 16} height={classic ? 14 : 16} viewBox="0 0 16 16" fill="none" aria-hidden>
+                <title>{t("transcript.jumpToLatest")}</title>
+                <path
+                  d="M12.3333 8.66665L8 13L3.66667 8.66665M8 12.6667V2.83332"
+                  stroke="currentColor"
+                  strokeLinecap="square"
+                />
+              </svg>
+            </ActionGlyph>
           </button>
         ) : null}
         {/* The scroll container is focusable so scroll keys reach it (opencode scroll-view parity); biome.json scopes this in. */}

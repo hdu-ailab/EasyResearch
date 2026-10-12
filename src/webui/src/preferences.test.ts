@@ -48,6 +48,32 @@ describe("resolveLanguage", () => {
 });
 
 describe("readPreferences", () => {
+  it("restores Studio and its theme without discarding independent preferences", () => {
+    const storage = fakeStorage({
+      [STORAGE_KEY]: JSON.stringify({ uiVersion: "studio", studioTheme: "dark", chatFontSize: 18, language: "zh-CN" }),
+    });
+    const preferences = readPreferences(storage, nav("en"));
+    expect(preferences).toMatchObject({
+      uiVersion: "studio",
+      studioTheme: "dark",
+      chatFontSize: 18,
+      language: "zh-CN",
+    });
+    writePreferences(storage, preferences);
+    expect(readPreferences(storage, nav("en"))).toEqual(preferences);
+  });
+
+  it.each([undefined, null, "future", false])("recovers only an invalid or absent Studio theme (%s)", (studioTheme) => {
+    const storage = fakeStorage({
+      [STORAGE_KEY]: JSON.stringify({ uiVersion: "studio", studioTheme, filesFontSize: 17 }),
+    });
+    expect(readPreferences(storage, nav("en"))).toMatchObject({
+      uiVersion: "studio",
+      studioTheme: "light",
+      filesFontSize: 17,
+    });
+  });
+
   it("returns defaults and browser language when nothing is stored", () => {
     const prefs = readPreferences(fakeStorage(), nav("zh-CN"));
     expect(prefs).toEqual({

@@ -122,7 +122,7 @@ describe("ConfigPage", () => {
 
   it("lists the global root before project roots", async () => {
     renderConfigPage();
-    const list = await screen.findByRole("list", { name: /project folder/i });
+    const list = await screen.findByRole("list", { name: /workspace folder/i });
     const items = within(list).getAllByRole("listitem");
     expect(items[0]).toHaveTextContent(/Global/);
     expect(items[0]).toHaveTextContent("/home/u");
@@ -138,7 +138,7 @@ describe("ConfigPage", () => {
 
     vi.mocked(api.listConfig).mockResolvedValueOnce([{ name: "notes.md", path: "notes.md", type: "file" }]);
     await user.click(screen.getByRole("button", { name: /back to files/i }));
-    expect(await screen.findByRole("list", { name: /project folder/i })).toBeVisible();
+    expect(await screen.findByRole("list", { name: /workspace folder/i })).toBeVisible();
     expect(onHome).not.toHaveBeenCalled();
     expect(onBackToSettings).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: /\/home\/u\/proj/ }));
