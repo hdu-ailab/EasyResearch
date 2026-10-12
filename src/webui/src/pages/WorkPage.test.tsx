@@ -54,6 +54,8 @@ vi.mock("../api", async (importOriginal) => {
     navigateSessionTree: vi.fn().mockResolvedValue(undefined),
     compactSession: vi.fn(),
     getApiUsageSettings: vi.fn(),
+    getProviderTimeoutSettings: vi.fn(),
+    patchProviderTimeoutSettings: vi.fn(),
     getApiUsageStatistics: vi.fn(),
     renameSession: vi.fn(),
   };
@@ -277,6 +279,9 @@ describe("WorkPage", () => {
     vi.mocked(api.compactSession).mockReset();
     vi.mocked(api.compactSession).mockResolvedValue({ state: "running" });
     vi.mocked(api.getApiUsageSettings).mockReset().mockResolvedValue({ showApiUsageDetails: false });
+    vi.mocked(api.getProviderTimeoutSettings)
+      .mockReset()
+      .mockResolvedValue({ timeoutMs: 3_600_000, source: "default" });
     vi.mocked(api.getApiUsageStatistics)
       .mockReset()
       .mockResolvedValue({

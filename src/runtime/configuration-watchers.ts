@@ -29,7 +29,7 @@ export interface WatcherDependencies {
   homeDir: string;
   watch?: ConfigurationWatchImplementation;
   onChange(change: ResourceWatchChange): void;
-  onError(): void;
+  onError(path?: string): void;
   fingerprintProject(cwd: string): Promise<SkillScopeFingerprint>;
 }
 
@@ -48,6 +48,7 @@ export interface PreparedProjectResourceChanges {
 export interface ConfigurationWatcherManager {
   start(enableHome: boolean): Promise<void>;
   setHomeEnabled(enabled: boolean): Promise<void>;
+  recover?(enableHome: boolean): Promise<void>;
   acquireProject(cwd: string): Promise<ProjectWatchRegistration>;
   prepareProjectChanges(cwds: readonly string[]): Promise<PreparedProjectResourceChanges>;
   projectSkillDescriptors(cwd: string): readonly AcceptedSkillDescriptor[] | undefined;
@@ -141,9 +142,9 @@ export function createConfigurationWatcherManager(dependencies: WatcherDependenc
   let closePromise: Promise<void> | undefined;
   let refreshProjectAnchor: (scope: Extract<WatchScope, { kind: "project" }>, instance: WatchInstance) => Promise<void>;
 
-  const reportError = (): void => {
+  const reportError = (path: unknown = agentDir): void => {
     try {
-      const result = dependencies.onError() as unknown;
+      const result = dependencies.onError(typeof path === "string" && isAbsolute(path) ? path : agentDir) as unknown;
       if (isPromiseLike(result)) void Promise.resolve(result).catch(() => {});
     } catch {
       // Monitoring diagnostics cannot become watcher lifecycle failures.
@@ -176,6 +177,9 @@ export function createConfigurationWatcherManager(dependencies: WatcherDependenc
   };
 
   const installWatcher = async (scope: WatchScope, instance: WatchInstance): Promise<void> => {
+    const location = scope.kind === "project" ? join(scope.cwd, ".easyresearch")
+      : scope.kind === "home" ? join(homeDir, ".agents", "skills") : agentDir;
+    const reportScopeError = () => reportError(location);
     if (admissionClosed) throw new WatcherManagerClosingError();
     let readySettled = false;
     let waitingForExactAnchor = false;
@@ -215,7 +219,7 @@ export function createConfigurationWatcherManager(dependencies: WatcherDependenc
         try {
           return filter(path);
         } catch {
-          if (!filterErrorReported) reportError();
+          if (!filterErrorReported) reportScopeError();
           filterErrorReported = true;
           return false;
         }
@@ -261,7 +265,7 @@ export function createConfigurationWatcherManager(dependencies: WatcherDependenc
             await installWatcher(scope, instance);
             // Reconfirm bytes after replacing the watcher; policy changes can admit old trees.
             if (isCurrent(scope, instance)) reportChange(change);
-          }).catch(reportError).finally(() => {
+          }).catch(reportScopeError).finally(() => {
             instance.refreshQueued = false;
           });
         }
@@ -277,12 +281,12 @@ export function createConfigurationWatcherManager(dependencies: WatcherDependenc
         watcher!.add(scope.anchor);
       });
       watcher.on("error", (error) => {
-        if (isCurrent(scope, instance)) reportError();
+        if (isCurrent(scope, instance)) reportScopeError();
         rejectReady(error);
       });
       if (pendingDependencies.size > 0) watcher.add([...pendingDependencies]);
     } catch (error) {
-      reportError();
+      reportScopeError();
       rejectReady(error);
     }
     try {
@@ -673,10 +677,7 @@ export function createConfigurationWatcherManager(dependencies: WatcherDependenc
     if (failures.length > 0) throw new Error("Configuration watcher manager could not close safely.");
   };
 
-  return {
-    start(enableHome) {
-      if (admissionClosed) return Promise.reject(new Error("Configuration watcher manager is closing."));
-      return serialize(async () => {
+  const startInternal = async (enableHome: boolean): Promise<void> => {
         if (!started) {
           await closeGlobalOnly();
           const instance: WatchInstance = { token: Symbol("global-resource-watcher") };
@@ -696,6 +697,32 @@ export function createConfigurationWatcherManager(dependencies: WatcherDependenc
           }
         }
         await setHomeEnabledInternal(enableHome);
+  };
+
+  return {
+    start(enableHome) {
+      if (admissionClosed) return Promise.reject(new Error("Configuration watcher manager is closing."));
+      return serialize(() => startInternal(enableHome));
+    },
+    recover(enableHome) {
+      if (admissionClosed) return Promise.reject(new Error("Configuration watcher manager is closing."));
+      return serialize(async () => {
+        if (globalInstance) {
+          globalCloseOnly = globalInstance;
+          globalInstance = undefined;
+        }
+        started = false;
+        await closeGlobalOnly();
+        await setHomeEnabledInternal(false);
+        for (const record of projects.values()) {
+          if (record.instance) {
+            projectCloseOnly.set(record.cwd, record.instance);
+            record.instance = undefined;
+          }
+          await closeProjectOnly(record.cwd);
+        }
+        await startInternal(enableHome);
+        for (const record of projects.values()) await retryProjectWatcher(record, true);
       });
     },
     setHomeEnabled(enabled) {

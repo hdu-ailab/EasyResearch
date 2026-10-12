@@ -224,10 +224,10 @@ export class ConfigFileService {
           try {
             parsed = parsePiSettingsJson(sourceBytes.toString("utf8"));
           } catch {
-            throw new ConfigServiceError(409, "Global settings.json is invalid", "CONFIG_INVALID");
+            throw new ConfigServiceError(409, `Configuration parsing failed at ${settingsPath}`, "CONFIG_INVALID");
           }
           if (!isRecord(parsed)) {
-            throw new ConfigServiceError(409, "Global settings.json must contain an object", "CONFIG_INVALID");
+            throw new ConfigServiceError(409, `Configuration must contain an object at ${settingsPath}`, "CONFIG_INVALID");
           }
           settings = parsed;
         }

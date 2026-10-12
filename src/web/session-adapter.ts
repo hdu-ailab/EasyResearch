@@ -422,7 +422,7 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
         settingsManager,
         extensionFactories: [
           createCompactionCancellationExtension(() => compaction.isCancelling(), () => session!.abortCompaction()),
-          { name: "provider-timeout", factory: createProviderTimeoutExtension(settingsManager as SettingsManager) },
+          { name: "provider-timeout", factory: createProviderTimeoutExtension(settingsManager as SettingsManager, () => binding.providerTimeoutSettings()) },
           { name: "file-write-recovery", factory: createFileWriteRecoveryExtension() },
           ...extensionFactories,
           createSubagentNotificationExtension(supervisor),

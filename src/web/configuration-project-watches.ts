@@ -236,8 +236,7 @@ export function createConfigurationProjectWatches(options: {
     let failed = false;
     try {
       for (const cwd of projectCwds) registrations.push(await options.live.acquireProject(cwd));
-      if (projectCwds.length === 0) await options.live.synchronize();
-      else await options.live.synchronize({ projectCwds });
+      await options.live.synchronize({ ...(projectCwds.length ? { projectCwds } : {}), recoverWatchers: true });
     } catch {
       failed = true;
     } finally {

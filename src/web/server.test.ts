@@ -321,6 +321,7 @@ function fakeConfiguration(
     },
     compactionPolicy: { triggerPercent: 70, globalEnabled: true, globalKeepRecentTokens: 20_000 },
     apiUsageSettings: { showApiUsageDetails: false },
+    providerTimeoutSettings: { timeoutMs: 3_600_000, source: "default" },
     skillPolicy: { enableDotAgentsSkill: false },
     start: async () => {},
     synchronize: async () => ({ status: "unchanged", generation, availabilityEpoch: 1, error }),
@@ -543,6 +544,8 @@ describe("web routes", () => {
       listAgents: async () => [],
       patchAgent: async (name, patch) => patchGlobalAgent(configService, name, patch, () => true),
       getCompactionSettings: async () => ({ triggerPercent: 70, globalEnabled: true }),
+      getProviderTimeoutSettings: async () => ({ timeoutMs: 3_600_000, source: "default" }),
+      patchProviderTimeoutSettings: async ({ timeoutMs }) => ({ timeoutMs: timeoutMs ?? 3_600_000, source: "provider" }),
       patchCompactionSettings: async ({ triggerPercent }) => ({ triggerPercent, globalEnabled: true }),
       getApiUsageSettings: async () => ({ showApiUsageDetails: false }),
       patchApiUsageSettings: async ({ showApiUsageDetails }) => ({ showApiUsageDetails }),
@@ -2728,7 +2731,7 @@ describe("web routes", () => {
       const startupEvent = await readSseEvent(reader);
       expect(startupEvent).toMatchObject({ type: "config.error", bootId: "boot-route", generation: 0 });
       expect(JSON.stringify(startupEvent)).not.toContain("private semantic detail");
-      expect(JSON.stringify(startupEvent)).not.toContain(agentDir);
+      expect(JSON.stringify(startupEvent)).toContain(join(agentDir, "models.json"));
 
       const blocked = await handler(new Request("http://localhost/api/sessions", {
         method: "POST",

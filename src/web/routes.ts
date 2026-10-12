@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { bundledFilePath } from "../runtime/bundled-assets";
 import { AGENT_STATUS_TYPE } from "../subagent/notifications";
 import type {
+  ProviderTimeoutSettingsDto,
+  ProviderTimeoutSettingsPatchDto,
   ActiveSessionDto,
   AgentConfigurationPatch,
   AgentDto,
@@ -84,6 +86,8 @@ export interface RouteServices {
   listAgents: (cwd?: string) => Promise<AgentDto[]>;
   patchAgent: (name: string, patch: AgentConfigurationPatch) => Promise<AgentResourceDto>;
   getCompactionSettings: () => Promise<CompactionSettingsDto>;
+  getProviderTimeoutSettings: () => Promise<ProviderTimeoutSettingsDto>;
+  patchProviderTimeoutSettings: (patch: ProviderTimeoutSettingsPatchDto) => Promise<ProviderTimeoutSettingsDto>;
   patchCompactionSettings: (patch: CompactionSettingsPatchDto) => Promise<CompactionSettingsDto>;
   getApiUsageSettings: () => Promise<ApiUsageSettingsDto>;
   patchApiUsageSettings: (patch: ApiUsageSettingsPatchDto) => Promise<ApiUsageSettingsDto>;
@@ -173,6 +177,12 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
 
       if (req.method === "GET" && path === "/api/settings/compaction") {
         return jsonResponse(await services.getCompactionSettings());
+      }
+      if (req.method === "GET" && path === "/api/settings/provider-timeout") {
+        return jsonResponse(await services.getProviderTimeoutSettings());
+      }
+      if (req.method === "PATCH" && path === "/api/settings/provider-timeout") {
+        return jsonResponse(await services.patchProviderTimeoutSettings(await jsonBody<ProviderTimeoutSettingsPatchDto>(req)));
       }
       if (req.method === "PATCH" && path === "/api/settings/compaction") {
         return jsonResponse(await services.patchCompactionSettings(

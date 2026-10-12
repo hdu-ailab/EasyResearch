@@ -64,9 +64,7 @@ import { BUNDLED_MODEL_ADDITIONS, BUNDLED_MODEL_REMOVALS } from "../src/runtime/
 import { DAEMON_CONTROL_PATH, DAEMON_TOKEN_HEADER } from "../src/cli/daemon-control";
 import type { SubagentCompletionEntryDto } from "../src/web/contracts";
 import { parseTimelineEntryAppendedEvent } from "../src/webui/src/api/parsers";
-import { createResearchMemorySmoke } from "./smoke-research-memory";
-import { runResearchMemorySmoke } from "./smoke-research-memory-probe";
-import { assertResearchMemoryCapabilities } from "./smoke-research-memory-support";
+import { assertBundledAgentCapabilities } from "./smoke-agent-scenario";
 import { createWriteRecoverySmoke, runWriteRecoverySmoke } from "./smoke-write-recovery";
 
 const targetName = process.argv[2];
@@ -98,7 +96,6 @@ const venvPython = skillVenvPython(agentDir, process.platform);
 const validationScript = join(root, "validate-easyresearch-venv.py");
 const stageValidationScript = join(root, "validate-easyresearch-agent-network.py");
 const setupRunId = randomUUID();
-const memorySmoke = createResearchMemorySmoke({ runId: setupRunId, project, agentDir, platform: process.platform });
 const writeRecoverySmoke = createWriteRecoverySmoke(setupRunId);
 const googleCredentialsPath = join(root, "gaxios-adc.json");
 const firstRunStdoutPath = join(root, "first-run-stdout.txt");
@@ -234,6 +231,9 @@ let advancedConfigurationGeneration: number | undefined;
 let snapshotConfigurationGeneration: number | undefined;
 let observedRootAppliedGeneration: number | undefined;
 let latestSkillConfigurationGeneration = 0;
+let expectedConfigurationErrorPath: string | undefined;
+let expectedConfigurationErrorObserved = false;
+const configurationSecretSentinel = `PRIVATE_CONFIG_${setupRunId}`;
 let configurationEventError: Error | undefined;
 let configurationEventReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 let configurationEventTask: Promise<void> | undefined;
@@ -365,16 +365,6 @@ const modelServer = Bun.serve({
     if (writeRecoverySmoke.laneFor(body)) {
       try {
         const action = writeRecoverySmoke.select(body);
-        return action.kind === "tool"
-          ? openAiStream({ toolCall: { id: action.id, name: action.name, arguments: action.arguments } })
-          : openAiStream({ text: action.text });
-      } catch (error) {
-        return Response.json({ error: { message: String(error) } }, { status: 400 });
-      }
-    }
-    if (memorySmoke.laneFor(body)) {
-      try {
-        const action = memorySmoke.select(body);
         return action.kind === "tool"
           ? openAiStream({ toolCall: { id: action.id, name: action.name, arguments: action.arguments } })
           : openAiStream({ text: action.text });
@@ -1323,8 +1313,6 @@ function smokeProgressDiagnostics(): string {
     gaxiosRequests,
     vertexProviderRequests,
     smokeModelState,
-    memorySmokeRequests: memorySmoke.requests,
-    memorySmokeFailure: memorySmoke.failure ? String(memorySmoke.failure) : undefined,
     smokeNetworkState,
     loopbackEvidence: loopbackEvidence(),
     loopbackWebFetchState,
@@ -1436,6 +1424,12 @@ function observeConfigurationEvent(event: unknown): void {
     message?: unknown;
   };
   if (value.type === "config.error") {
+    if (expectedConfigurationErrorPath && value.bootId === expectedConfigurationBootId
+      && typeof value.message === "string" && value.message.includes(expectedConfigurationErrorPath)
+      && !value.message.includes(configurationSecretSentinel)) {
+      expectedConfigurationErrorObserved = true;
+      return;
+    }
     throw new Error(`configuration SSE reported an error: ${String(value.message)}`);
   }
   if (
@@ -1911,10 +1905,6 @@ try {
     "skills/statistical-power/SKILL.md",
     "skills/huggingface-datasets/SKILL.md",
     "skills/peer-review/SKILL.md",
-    "skills/research-experience/SKILL.md",
-    "skills/research-experience/references/examples.md",
-    "skills/recursive-self-improvement/SKILL.md",
-    "skills/recursive-self-improvement/references/verification.md",
   ]) {
     const materializedPath = join(bundledDir, relativePath);
     if (!existsSync(materializedPath)) throw new Error(`bundled ADR-102 resource missing: ${materializedPath}`);
@@ -2279,7 +2269,7 @@ try {
     await fetch(`${base}/api/agents?cwd=${encodeURIComponent(project)}`),
     "Agent catalog probe",
   );
-  assertResearchMemoryCapabilities(agents, process.platform);
+  assertBundledAgentCapabilities(agents, process.platform);
   const customAgent = Array.isArray(agents)
     ? agents.find((agent: { name?: unknown }) => agent.name === smokeAgentName)
     : undefined;
@@ -2301,6 +2291,34 @@ try {
     label: "Model catalog probe",
   });
   assertSmokeModelCatalog(modelCatalog, BUNDLED_MODEL_ADDITIONS, cacheOnlyModel, BUNDLED_MODEL_REMOVALS);
+  const timeoutBaseline = observedRootAppliedGeneration ?? 0;
+  const timeoutSettings = await requestSmokeJsonBeforeDeadline({
+    url: `${base}/api/settings/provider-timeout`, deadline: firstRunDeadline, label: "provider timeout save",
+    init: { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ timeoutMs: 120_000 }) },
+  }) as { timeoutMs?: number; source?: string };
+  assert.equal(timeoutSettings.timeoutMs, 120_000);
+  assert.equal(timeoutSettings.source, "provider");
+  await waitForSmokeCondition("runtime application of provider timeout", () => (observedRootAppliedGeneration ?? 0) > timeoutBaseline);
+  const settingsPath = join(agentDir, "settings.json");
+  const savedSettings = readFileSync(settingsPath, "utf8");
+  assert.equal(JSON.parse(savedSettings).retry.provider.timeoutMs, 120_000);
+  expectedConfigurationErrorPath = settingsPath;
+  writeFileSync(settingsPath, `{"private":"${configurationSecretSentinel}`);
+  try {
+    await waitForSmokeCondition("absolute-path configuration diagnostic without secret content", () => expectedConfigurationErrorObserved);
+  } finally {
+    writeFileSync(settingsPath, savedSettings);
+  }
+  const recoveredConfig = await requestSmokeJsonBeforeDeadline({
+    url: `${base}/api/config/refresh`, deadline: firstRunDeadline, label: "configuration monitoring recovery",
+    init: { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+  }) as { error?: string | null };
+  assert.equal(recoveredConfig.error, null);
+  expectedConfigurationErrorPath = undefined;
+  await requestSmokeJsonBeforeDeadline({
+    url: `${base}/api/settings/provider-timeout`, deadline: firstRunDeadline, label: "provider timeout default restoration",
+    init: { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ timeoutMs: null }) },
+  });
   const projectConfig = join(project, ".easyresearch");
   if (existsSync(projectConfig)) throw new Error("project configuration must be absent before native first-creation probe");
   for (const phase of ["created", "replaced"] as const) {
@@ -2349,10 +2367,6 @@ try {
     throw new Error(`native smoke completed an unexpected model-request sequence: ${smokeProgressDiagnostics()}`);
   }
 
-  const memoryReport = await runResearchMemorySmoke({ base, project, agentDir, deadline: firstRunDeadline, scenario: memorySmoke });
-  const memoryReportPath = resolve(platformPackageDir(target.name), "..", `research-memory-${target.name}.json`);
-  writeFileSync(memoryReportPath, `${JSON.stringify({ version, target: target.name, ...memoryReport }, null, 2)}\n`);
-  console.log(`[smoke] research-memory: proposal, independent verification, activation, fresh-task strategy reuse, rejection, retirement and rollback passed (${memorySmoke.requests} provider requests); evidence: ${memoryReportPath}`);
   await runWriteRecoverySmoke({ base, project, deadline: firstRunDeadline, scenario: writeRecoverySmoke });
   console.log("[smoke] root and child failed-write guidance, section preservation, recovery and terminal handoff passed");
 
@@ -2766,7 +2780,6 @@ try {
   }
 
   const expectedModelRequests = smokeModelState.completedRequests
-    + memorySmoke.requests
     + writeRecoverySmoke.requests
     + loopbackProviderRequests
     + loopbackWebFetchState.completedRequests

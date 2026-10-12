@@ -27,6 +27,8 @@ import type {
   NetworkProxySettingsPatchDto,
   NetworkProxyTestRequestDto,
   NetworkProxyTestResultDto,
+  ProviderTimeoutSettingsDto,
+  ProviderTimeoutSettingsPatchDto,
   PublicConfigurationEvent,
   RuntimeRestartAcceptedDto,
   RuntimeRestartBusyDto,
@@ -66,6 +68,7 @@ import {
   parseNetworkProxySettings,
   parseNetworkProxyTestResult,
   parseProjectWatchReplacementResult,
+  parseProviderTimeoutSettings,
   parseRuntimeRestartAccepted,
   parseSessionSnapshot,
   parseSessionTree,
@@ -131,6 +134,16 @@ export function patchAgent(name: string, patch: AgentConfigurationPatch): Promis
 
 export function getCompactionSettings(): Promise<CompactionSettingsDto> {
   return requestJson(routes.compactionSettings(), parseCompactionSettings);
+}
+
+export function getProviderTimeoutSettings(): Promise<ProviderTimeoutSettingsDto> {
+  return requestJson(routes.providerTimeoutSettings(), parseProviderTimeoutSettings);
+}
+
+export function patchProviderTimeoutSettings(
+  patch: ProviderTimeoutSettingsPatchDto,
+): Promise<ProviderTimeoutSettingsDto> {
+  return requestJson(routes.providerTimeoutSettings(), parseProviderTimeoutSettings, json("PATCH", patch));
 }
 
 export function patchCompactionSettings(patch: CompactionSettingsPatchDto): Promise<CompactionSettingsDto> {

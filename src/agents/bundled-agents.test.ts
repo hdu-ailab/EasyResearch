@@ -13,7 +13,7 @@ beforeEach(() => {
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
 describe("bundled agent definitions", () => {
-  it.each(["linux", "darwin", "win32"] as const)("resolves shared memory access with root-only improvement orchestration on %s", async (platform) => {
+  it.each(["linux", "darwin", "win32"] as const)("gives the main Agent specialist capabilities without restoring retired evolution features on %s", async (platform) => {
     const agentDir = join(root, "agent");
     const catalog = await loadAgentCatalog({ agentDir });
     const { agents } = resolveAgentCatalog(catalog, {
@@ -22,10 +22,13 @@ describe("bundled agent definitions", () => {
       homeDir: join(root, "home"),
       platform,
     });
+    const main = agents.find((agent) => agent.name === "research-assistant")!;
     for (const agent of agents) {
-      expect(agent.effectiveTools).toContain("research-memory");
-      expect(agent.effectiveSkills).toContain("research-experience");
-      expect(agent.effectiveSkills.includes("recursive-self-improvement")).toBe(agent.name === "research-assistant");
+      expect(agent.effectiveTools).not.toContain("research-memory");
+      expect(agent.effectiveSkills).not.toContain("research-experience");
+      expect(agent.effectiveSkills).not.toContain("recursive-self-improvement");
+      expect(main.effectiveSkills).toEqual(expect.arrayContaining(agent.effectiveSkills));
+      expect(main.effectiveTools).toEqual(expect.arrayContaining(agent.effectiveTools));
       expect(agent.missingSkills).toEqual([]);
     }
   });
@@ -51,7 +54,7 @@ describe("bundled agent definitions", () => {
     for (const name of ["search", "experiment", "writing", "figures"]) {
       expect(byName[name]!.effectiveSkills).toContain("specialist-handoff");
     }
-    expect(byName["research-assistant"]!.effectiveSkills).not.toContain("specialist-handoff");
+    expect(byName["research-assistant"]!.effectiveSkills).toContain("specialist-handoff");
     expect(byName["research-assistant"]!.effectiveTools).toEqual(
       expect.arrayContaining(["read", "bash", "edit", "write", "subagent", "web-search", "webfetch"]),
     );
@@ -69,7 +72,7 @@ describe("bundled agent definitions", () => {
       "huggingface-datasets",
     ]));
     expect(byName.experiment!.effectiveSkills).not.toContain("remote-experiment-preflight");
-    expect(byName["research-assistant"]!.effectiveSkills).not.toContain("ssh-experiment");
+    expect(byName["research-assistant"]!.effectiveSkills).toContain("ssh-experiment");
     expect(byName["research-assistant"]!.effectiveTools).toContain("ssh-bash");
     expect(byName.experiment!.effectiveTools).toContain("ssh-bash");
     expect(byName.search!.effectiveTools).not.toContain("ssh-bash");

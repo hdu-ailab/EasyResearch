@@ -207,6 +207,7 @@ try {
           "GET /api/agent-resources": [], "GET /api/skill-resources": [], "GET /api/auth/providers": { providers: [] },
           "GET /api/config/projects": { home: "/fixture/agent", projects: sessions.map(({ cwd }) => ({ cwd })) },
           "GET /api/settings/api-usage": { showApiUsageDetails: true },
+          "GET /api/settings/provider-timeout": { timeoutMs: 3_600_000, source: "default" },
           "GET /api/settings/compaction": { triggerPercent: 70, globalEnabled: true },
           "GET /api/settings/network-proxy": { configured: {}, appliedConfigured: {}, sources: { all: "direct", llm: "direct", search: "direct" }, errors: [], restartRequired: false },
         };

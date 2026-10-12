@@ -24,6 +24,7 @@ import { resolvePiDefaultModel, type PiDefaultModelApi } from "../runtime/pi-def
 import { embeddedPackageVersion } from "../runtime/bundled-assets";
 import { checkNpmUpdate } from "./update-check";
 import { createCompactionSettingsService } from "./compaction-settings";
+import { createProviderTimeoutSettingsService } from "./provider-timeout-settings";
 import { createApiUsageSettingsService } from "./api-usage-settings";
 import {
   createConfigurationProjectWatches,
@@ -364,6 +365,7 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
     });
     const listModels = () => auth.listModels();
     const compactionSettings = createCompactionSettingsService(config, live);
+    const providerTimeoutSettings = createProviderTimeoutSettingsService(config, live);
     const apiUsageSettings = createApiUsageSettingsService(config, live);
     const resolveDefaultModel = async (cwd: string): Promise<string | undefined> => {
       const settingsManager = SettingsManager.create(cwd, agentDir);
@@ -399,6 +401,8 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
       checkForUpdate: () => checkNpmUpdate(packageVersion),
       patchAgent: createAgentPatchService(config, listModels, { repairUnknownModels: true }),
       getCompactionSettings: () => compactionSettings.get(),
+      getProviderTimeoutSettings: () => providerTimeoutSettings.get(),
+      patchProviderTimeoutSettings: (patch) => providerTimeoutSettings.patch(patch),
       patchCompactionSettings: (patch) => compactionSettings.patch(patch),
       getApiUsageSettings: () => apiUsageSettings.get(),
       patchApiUsageSettings: (patch) => apiUsageSettings.patch(patch),

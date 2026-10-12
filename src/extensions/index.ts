@@ -16,7 +16,6 @@ import type { SubagentCoordinator } from "../subagent/coordinator";
 import type { SubagentSupervisor } from "../subagent/supervisor";
 import type { CreateSubagentToolOptions } from "../subagent/tool";
 import { createSshBashExtension } from "./ssh-bash";
-import { createResearchMemoryExtension } from "./research-memory";
 import {
   createManualCompactionExtension,
   type ManualCompactionController,
@@ -87,10 +86,6 @@ export function createResearchAssistantExtensions(runtime: ResearchAssistantExte
     {
       name: "ssh-bash",
       factory: createSshBashExtension({ allowConfigure: true }),
-    },
-    {
-      name: "research-memory",
-      factory: createResearchMemoryExtension({ agent: () => runtime.binding.current().name }),
     },
     {
       name: "research-assistant",

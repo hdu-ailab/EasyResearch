@@ -34,14 +34,14 @@
   --color-v2-icon-icon-muted: #68758a;
   --color-v2-icon-icon-accent: #455bb8;
   --color-v2-status-success: #277157;
-  --color-v2-status-error: #b44450;
+  --color-v2-status-error: #a33342;
   --color-v2-status-warning: #916018;
   --v2-elevation-raised: 0 1px 4px #17243d08;
   --v2-elevation-floating: 0 18px 70px #101a3024, 0 0 0 1px var(--color-v2-grey-200);
   --v2-elevation-overlay: var(--v2-elevation-floating);
   --ease-v2-panel: cubic-bezier(0.22, 1, 0.36, 1);
-  --er-hover-wash: color-mix(in srgb, currentColor 9%, transparent);
-  --er-pressed-wash: color-mix(in srgb, currentColor 17%, transparent);
+  --er-hover-wash: rgb(24 39 68 / 8%);
+  --er-pressed-wash: rgb(24 39 68 / 16%);
   --font-sans:
     Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei",
     sans-serif;
@@ -705,6 +705,8 @@
 }
 
 :root[data-ui-version="studio"][data-ui-theme="dark"] {
+  --er-hover-wash: rgb(217 229 255 / 10%);
+  --er-pressed-wash: rgb(217 229 255 / 18%);
   --color-v2-grey-50: #1d222b;
   --color-v2-grey-100: #252d3a;
   --color-v2-grey-200: #313b4c;

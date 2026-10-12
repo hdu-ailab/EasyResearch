@@ -20,6 +20,7 @@ import { useStudioUi } from "../../ui-version";
 import { ApiUsageDetailsSetting } from "../ApiUsageDetailsSetting";
 import { CompactionThresholdSetting } from "../CompactionThresholdSetting";
 import { ProviderIcon } from "../ProviderIcon";
+import { ProviderTimeoutSetting } from "../ProviderTimeoutSetting";
 import { ActionGlyph } from "../studio/ActionGlyph";
 import { StudioThemePicker } from "../studio/StudioThemePicker";
 
@@ -265,6 +266,7 @@ export function ConversationSettingsPanel({ configurationGeneration }: Conversat
       <section className={sectionClass} aria-label={t("settings.conversation.title")}>
         <div className="flex flex-col gap-3 px-4 py-4">
           <CompactionThresholdSetting configurationGeneration={configurationGeneration} />
+          <ProviderTimeoutSetting configurationGeneration={configurationGeneration} />
           <ApiUsageDetailsSetting configurationGeneration={configurationGeneration} />
           <PreferenceSwitch
             label={t("settings.conversation.autoExpandThinking")}

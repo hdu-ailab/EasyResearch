@@ -21,6 +21,7 @@ export const routes = {
   configurationProjectWatches: (leaseId: string) => `${API_ROOT}/config/project-watches/${encodeURIComponent(leaseId)}`,
   configurationRefresh: () => `${API_ROOT}/config/refresh`,
   compactionSettings: () => `${API_ROOT}/settings/compaction`,
+  providerTimeoutSettings: () => `${API_ROOT}/settings/provider-timeout`,
   apiUsageSettings: () => `${API_ROOT}/settings/api-usage`,
   networkProxySettings: () => `${API_ROOT}/settings/network-proxy`,
   networkProxyTest: () => `${API_ROOT}/settings/network-proxy/test`,

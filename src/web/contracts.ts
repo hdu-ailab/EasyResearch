@@ -204,6 +204,15 @@ export interface CompactionSettingsDto {
   globalEnabled: boolean;
 }
 
+export interface ProviderTimeoutSettingsDto {
+  timeoutMs: number;
+  source: "provider" | "httpIdle" | "default";
+}
+
+export interface ProviderTimeoutSettingsPatchDto {
+  timeoutMs: number | null;
+}
+
 export interface CompactionSettingsPatchDto {
   triggerPercent: number;
 }

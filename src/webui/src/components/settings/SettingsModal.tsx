@@ -613,12 +613,20 @@ export function SettingsModal({
       >
         <div className="mx-auto flex w-full max-w-[820px] flex-col gap-3">
           {category === active && configurationError && (
-            <p
-              className="rounded-md border border-v2-status-error/30 bg-v2-status-error/5 px-3 py-2 text-[13px] text-v2-status-error"
+            <div
+              className="break-words rounded-md border border-v2-status-error/30 bg-v2-status-error/5 px-3 py-2 text-[13px] text-v2-status-error"
               role="alert"
             >
               {configurationError}
-            </p>
+              <button
+                type="button"
+                disabled={busy || manualRefreshBusy}
+                onClick={() => void refreshAgentsManually()}
+                className="ml-2 rounded px-1.5 py-0.5 underline underline-offset-2 disabled:opacity-50"
+              >
+                {t("settings.configuration.retry")}
+              </button>
+            </div>
           )}
           {categoryErrors[category] && (
             <p

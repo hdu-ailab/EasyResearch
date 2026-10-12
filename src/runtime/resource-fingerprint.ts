@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { ConfigurationSourceError } from "./configuration-source-error";
 import { existsSync, lstatSync, mkdirSync, opendirSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
@@ -162,14 +163,14 @@ export async function fingerprintGlobalSkillResources(options: FingerprintResour
     join(options.agentDir, "skills"),
     "global",
     options.snapshotRoot,
-  );
+  ).catch(() => { throw new ConfigurationSourceError(join(options.agentDir, "skills"), "read"); });
   const homeSkills = options.enableDotAgentsSkill
     ? await fingerprintSkillRoot(
         join(options.homeDir, ".agents", "skills"),
         "home",
         options.snapshotRoot,
         "agents",
-      )
+      ).catch(() => { throw new ConfigurationSourceError(join(options.homeDir, ".agents", "skills"), "read"); })
     : null;
   return { globalSkills, homeSkills };
 }

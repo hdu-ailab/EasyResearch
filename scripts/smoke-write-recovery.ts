@@ -1,19 +1,19 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { MemorySmokeLane, memorySmokeText, type MemorySmokeRequest, type MemorySmokeStep } from "./smoke-research-memory-support";
+import { SmokeAgentLane, smokeAgentText, type SmokeAgentRequest, type SmokeAgentStep } from "./smoke-agent-scenario";
 import { requestSmokeJsonBeforeDeadline } from "./smoke-release-support";
 import type { SessionSnapshotDto } from "../src/web/contracts";
 
 /** Reuses the deterministic native provider; every next step requires a real result. */
 export function createWriteRecoverySmoke(runId: string) {
   const prefix = `WRITE_RECOVERY:${runId}:`;
-  const lanes = new Map<string, MemorySmokeLane>();
+  const lanes = new Map<string, SmokeAgentLane>();
   const paths = (name: string) => [`native-write-${name}-01.md`, `native-write-${name}-02.md`];
   const sections = ["# Confirmed first section\n", "## Recovered second section\n"];
   const prompt = (name: string) => `${prefix}${name}`;
   const final = (name: string) => `${prefix}${name}:complete`;
-  const makeSteps = (name: string): MemorySmokeStep[] => [
+  const makeSteps = (name: string): SmokeAgentStep[] => [
     { name: "write", args: () => ({ path: paths(name)[0], content: sections[0] }), accept: text => assert(text.includes("Successfully wrote")) },
     { name: "write", args: () => ({ path: paths(name)[1] }), errorCode: 'Validation failed for tool "write"',
       accept: text => {
@@ -22,18 +22,18 @@ export function createWriteRecoverySmoke(runId: string) {
       } },
     { name: "write", args: () => ({ path: paths(name)[1], content: sections[1] }), accept: text => assert(text.includes("Successfully wrote")) },
   ];
-  lanes.set("child", new MemorySmokeLane("write_child", makeSteps("child"), () => final("child")));
-  lanes.set("root", new MemorySmokeLane("write_root", [
+  lanes.set("child", new SmokeAgentLane("write_child", makeSteps("child"), () => final("child")));
+  lanes.set("root", new SmokeAgentLane("write_root", [
     ...makeSteps("root"),
     { name: "subagent", args: () => ({ agent: "search", task: prompt("child") }), terminal: () => {
       assert(lanes.get("child")!.complete);
       return final("child");
     } },
   ], () => final("root")));
-  const laneFor = (request: MemorySmokeRequest) => {
+  const laneFor = (request: SmokeAgentRequest) => {
     for (const message of request.messages ?? []) {
       if (message.role !== "user") continue;
-      const text = memorySmokeText(message.content);
+      const text = smokeAgentText(message.content);
       const at = text.indexOf(prefix);
       if (at >= 0) return lanes.get(text.slice(at + prefix.length).split(/\s/u)[0]!);
     }
@@ -45,7 +45,7 @@ export function createWriteRecoverySmoke(runId: string) {
     prompt, final, laneFor, paths, sections, lanes,
     get failure() { return failure; },
     get requests() { return requests; },
-    select(request: MemorySmokeRequest) {
+    select(request: SmokeAgentRequest) {
       requests++;
       try { const lane = laneFor(request); assert(lane); return lane.select(request); }
       catch (error) { failure = error; throw error; }
@@ -68,7 +68,7 @@ export async function runWriteRecoverySmoke(options: {
       assert(Date.now() < deadline, "compiled write recovery did not settle before deadline");
       const snapshot = await json(`/api/sessions/${created.id}/snapshot`) as SessionSnapshotDto;
       const finished = snapshot.timeline.some(entry => entry.kind === "message" && entry.message.role === "assistant"
-        && memorySmokeText(entry.message.content) === scenario.final("root"));
+        && smokeAgentText(entry.message.content) === scenario.final("root"));
       if (scenario.lanes.get("root")!.complete && snapshot.session.status === "ready" && finished) {
         assert.equal(snapshot.session.isStreaming, false);
         const failed = snapshot.timeline.filter(entry => entry.kind === "message" && entry.message.role === "toolResult" && entry.message.isError);

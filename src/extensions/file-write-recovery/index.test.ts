@@ -1,12 +1,14 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { importPi } from "../../runtime/pi-import";
 import { createProviderTimeoutExtension } from "../provider-timeout";
 import { createFileWriteRecoveryExtension } from ".";
+import type { ProviderTimeoutSettingsDto } from "../../web/contracts";
+beforeAll(async () => { await importPi(); }, 60_000);
 
-async function fixture(global = {}, project = {}) {
+async function fixture(global = {}, project = {}, policy?: () => ProviderTimeoutSettingsDto) {
   const root = mkdtempSync(join(tmpdir(), "easyresearch-write-recovery-"));
   const cwd = join(root, "paper");
   const agentDir = join(root, "agent");
@@ -28,7 +30,7 @@ async function fixture(global = {}, project = {}) {
     cwd, agentDir, settingsManager: settings,
     noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
     extensionFactories: [
-      { name: "provider-timeout", factory: createProviderTimeoutExtension(settings) },
+      { name: "provider-timeout", factory: createProviderTimeoutExtension(settings, policy) },
       { name: "file-write-recovery", factory: createFileWriteRecoveryExtension() },
     ],
   });
@@ -46,6 +48,29 @@ async function fixture(global = {}, project = {}) {
 }
 
 describe("slow-provider and failed-write recovery through Pi", () => {
+  it.each([false, true])("applies accepted timeout changes on the next request and retains project precedence (%s)", async (projectOverride) => {
+    let policy: ProviderTimeoutSettingsDto = { timeoutMs: 120_000, source: "provider" };
+    const f = await fixture({}, projectOverride ? { retry: { provider: { timeoutMs: 3000 } } } : { httpIdleTimeoutMs: 9000 }, () => policy);
+    try {
+      const timeouts: unknown[] = [];
+      f.provider.setResponses([
+        (_context: unknown, options: { timeoutMs?: number } | undefined) => {
+          timeouts.push(options?.timeoutMs);
+          policy = { timeoutMs: 0, source: "provider" };
+          expect(options?.timeoutMs).toBe(projectOverride ? 3000 : 120_000);
+          return f.fauxAssistantMessage("first");
+        },
+        (_context: unknown, options: { timeoutMs?: number } | undefined) => {
+          timeouts.push(options?.timeoutMs);
+          return f.fauxAssistantMessage("second");
+        },
+      ]);
+      await f.session.prompt("first request");
+      await f.session.prompt("next request");
+      expect(timeouts).toEqual(projectOverride ? [3000, 3000] : [120_000, 2_147_483_647]);
+      f.assertUnchanged();
+    } finally { f.close(); }
+  });
   it.each([
     ["EACCES: permission denied", /permissions/, /one smaller section/],
     ["ENOSPC: no space left on device", /disk space/, /one smaller section/],
@@ -101,7 +126,7 @@ describe("slow-provider and failed-write recovery through Pi", () => {
     [{ retry: { provider: { timeoutMs: 900_000 } } }, { retry: { provider: { timeoutMs: 420_000 } } }, 420_000],
     [{ httpIdleTimeoutMs: 480_000 }, {}, 480_000],
     [{}, { httpIdleTimeoutMs: 0 }, 2_147_483_647],
-    [{ retry: { provider: { timeoutMs: 0 } } }, {}, 0],
+    [{ retry: { provider: { timeoutMs: 0 } } }, {}, 2_147_483_647],
   ])("passes effective timeout to the provider before and after reload (%j, %j)", async (global, project, expected) => {
     const f = await fixture(global, project);
     try {
