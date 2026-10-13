@@ -51,7 +51,13 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
   const [renamingSession, setRenamingSession] = useState<ActiveSessionDto | SessionSummaryDto | null>(null);
   const [deletingSession, setDeletingSession] = useState<ActiveSessionDto | SessionSummaryDto | null>(null);
   const [latestVersion, setLatestVersion] = useState<string | null>(null);
+  const [desktopUpdatePhase, setDesktopUpdatePhase] = useState<"downloading" | "restarting" | null>(null);
+  const [desktopUpdatePercent, setDesktopUpdatePercent] = useState<number | null>(null);
+  const [desktopUpdateError, setDesktopUpdateError] = useState<string | null>(null);
+  const [desktopUpdateCheckError, setDesktopUpdateCheckError] = useState<string | null>(null);
+  const [desktopUpdateChecking, setDesktopUpdateChecking] = useState(false);
   const statusRequest = useRef(0);
+  const updateCheckRequest = useRef(0);
 
   const refresh = useCallback(() => {
     const request = ++statusRequest.current;
@@ -72,17 +78,56 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
     };
   }, [refresh]);
 
-  useEffect(() => {
-    let active = true;
-    checkForUpdate()
-      .then((result) => {
-        if (active) setLatestVersion(result.latestVersion);
+  const refreshAvailableUpdate = useCallback(() => {
+    const current = ++updateCheckRequest.current;
+    setDesktopUpdateChecking(true);
+    setDesktopUpdateCheckError(null);
+    const request =
+      window.easyresearchDesktop?.checkForUpdate?.() ?? checkForUpdate().then((result) => result.latestVersion);
+    request
+      .then((version) => {
+        if (current !== updateCheckRequest.current) return;
+        setLatestVersion(version);
+        setDesktopUpdateChecking(false);
       })
-      .catch(() => undefined);
-    return () => {
-      active = false;
-    };
+      .catch((cause: unknown) => {
+        if (current !== updateCheckRequest.current) return;
+        setDesktopUpdateChecking(false);
+        if (window.easyresearchDesktop) {
+          setDesktopUpdateCheckError(cause instanceof Error ? cause.message : String(cause));
+        }
+      });
   }, []);
+
+  useEffect(() => {
+    refreshAvailableUpdate();
+    return () => {
+      updateCheckRequest.current += 1;
+    };
+  }, [refreshAvailableUpdate]);
+
+  useEffect(
+    () =>
+      window.easyresearchDesktop?.onUpdateProgress?.((progress) => {
+        setDesktopUpdatePhase(progress.phase);
+        if (progress.percent !== undefined) setDesktopUpdatePercent(progress.percent);
+      }),
+    [],
+  );
+
+  const startDesktopUpdate = useCallback(async () => {
+    const start = window.easyresearchDesktop?.startUpdate;
+    if (!start || !latestVersion || desktopUpdatePhase) return;
+    setDesktopUpdateError(null);
+    setDesktopUpdatePhase("downloading");
+    setDesktopUpdatePercent(null);
+    try {
+      await start(latestVersion);
+    } catch (cause) {
+      setDesktopUpdatePhase(null);
+      setDesktopUpdateError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }, [desktopUpdatePhase, latestVersion]);
 
   useEffect(() => {
     const timer = setInterval(refresh, MONITOR_POLL_MS);
@@ -164,7 +209,21 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
           </>
         }
         center={
-          latestVersion ? (
+          latestVersion && window.easyresearchDesktop?.startUpdate ? (
+            <button
+              type="button"
+              disabled={desktopUpdatePhase !== null}
+              aria-live="polite"
+              onClick={() => void startDesktopUpdate()}
+              className="truncate rounded-md px-2 py-1 text-[12px] font-medium text-v2-text-text-accent hover:bg-v2-grey-100 disabled:cursor-wait disabled:opacity-60"
+            >
+              {desktopUpdatePhase === "downloading"
+                ? `${t("home.updateDownloading")}${desktopUpdatePercent === null ? "" : ` ${desktopUpdatePercent}%`}`
+                : desktopUpdatePhase === "restarting"
+                  ? t("home.updateRestarting")
+                  : t("home.updateAction").replace("{version}", latestVersion)}
+            </button>
+          ) : latestVersion ? (
             <span
               role="status"
               title={`${t("home.updateAvailable")} v${latestVersion}`}
@@ -172,6 +231,20 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
             >
               {t("home.updateAvailable")} <span className="font-mono">v{latestVersion}</span>
             </span>
+          ) : desktopUpdateChecking && window.easyresearchDesktop?.checkForUpdate ? (
+            <span role="status" className="truncate text-[12px] text-v2-text-text-muted">
+              {t("home.updateChecking")}
+            </span>
+          ) : desktopUpdateCheckError && window.easyresearchDesktop?.checkForUpdate ? (
+            <button
+              type="button"
+              disabled={desktopUpdateChecking}
+              title={desktopUpdateCheckError}
+              onClick={refreshAvailableUpdate}
+              className="truncate rounded-md px-2 py-1 text-[12px] font-medium text-v2-status-error hover:bg-v2-grey-100 disabled:cursor-wait"
+            >
+              {t("home.updateCheckFailed")}
+            </button>
           ) : (
             <span className="hidden truncate text-[13px] text-v2-text-text-muted sm:inline">
               {t(studio ? "home.workspace" : "home.tagline")}
@@ -182,12 +255,12 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
       />
       <main className={`er-home-main min-h-0 flex-1 overflow-y-auto ${classic ? "" : "bg-v2-background-bg-base"}`}>
         <div className={`flex min-h-full w-full flex-col ${classic ? "gap-2 px-2 pb-2 pt-[4px]" : ""}`}>
-          {error && (
+          {(error || desktopUpdateError || desktopUpdateCheckError) && (
             <p
               className={`shrink-0 border-v2-status-error/30 bg-v2-status-error/5 text-[13px] text-v2-status-error ${classic ? "rounded-md border px-3 py-2" : "border-b px-5 py-3"}`}
               role="alert"
             >
-              {error}
+              {desktopUpdateError || desktopUpdateCheckError || error}
             </p>
           )}
 

@@ -8,6 +8,11 @@ export const DESKTOP_EVENT_PREFIX = "@easyresearch-desktop ";
 export const DESKTOP_ACCESS_HEADER = "x-easyresearch-desktop-token";
 export const DESKTOP_SMOKE_USER_DATA_ENV = "EASYRESEARCH_DESKTOP_SMOKE_USER_DATA";
 
+export interface DesktopUpdateProgress {
+  phase: "downloading" | "restarting";
+  percent?: number;
+}
+
 export type DesktopSidecarEvent =
   | { type: "desktop.setup"; message: string }
   | {

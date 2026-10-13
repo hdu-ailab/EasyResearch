@@ -332,6 +332,12 @@ class DesktopOwnsRuntimeError extends Error {
 
 async function runRuntimeEntry(args: string[]): Promise<void> {
   restoreBunSandboxEnvironment(process.env);
+  // Bun 1.3.14 lacks this Node worker_threads API. Undici captures it while
+  // loading and otherwise crashes when the compiled desktop server responds.
+  const workerThreads = require("node:worker_threads") as {
+    markAsUncloneable?: (value: object) => void;
+  };
+  workerThreads.markAsUncloneable ??= () => {};
   let desktopRequest: ReturnType<typeof consumeDesktopServeRequest> | undefined;
   if (args[0] === "--desktop-serve") {
     try {

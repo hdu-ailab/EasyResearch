@@ -9,6 +9,9 @@ import {
 export const DESKTOP_PREFERENCES_READ_CHANNEL = "desktop:preferences:read";
 export const DESKTOP_PREFERENCES_WRITE_CHANNEL = "desktop:preferences:write";
 export const DESKTOP_HOST_VERSION_CHANNEL = "desktop:host-version";
+export const DESKTOP_UPDATE_CHECK_CHANNEL = "desktop:update:check";
+export const DESKTOP_UPDATE_START_CHANNEL = "desktop:update:start";
+export const DESKTOP_UPDATE_PROGRESS_CHANNEL = "desktop:update:progress";
 export const DESKTOP_SESSION_PARTITION = "persist:easyresearch-desktop";
 export const TRAY_ICON_DATA_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABTElEQVRYw+2XMVLDMBBFH5lcgziNZkwTiqTEVRquwQ0IB8kVuAaNK6eEAjd4Rk2cXIOCIquwMWAnkYyHwdtoLMv6T+vd0S78d7v4bjI2EcAEmAOjADobIAXywpb1ALGJIuAJiFs4cAHcFrbcUxwAiPhaTWXASwDhGXCjnscOYg8gbn+Tk78DprDl+niNeotNNAYsMBRPXBW2ZKDWTPh0e1BxANnPOB7ROwCYy7gKLV6ByLSeBnDR/tyGuDIXUyPY/Y9ae0yuL4EHD8HlXfa6/ellI4CI33ueeuEDsPQUr/2+EUDct2had64N/Lf44wBtZEFt1J8MwHlZcHTMtJEFJ63vs6BzgP4u6O8CHYQbGadtiYnNtJ4GSGVMpIAMbrKvq47TKkDOrloFsKEhVFWM6OTQ3BesCFMjToFEPX/tCyoQ3XRGCgJ+qTfs3D4AUxdvdO8dHTAAAAAASUVORK5CYII=";
 
