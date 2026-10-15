@@ -14,7 +14,17 @@ import {
   DESKTOP_RENDERER_TOKEN_ENV,
   DESKTOP_TRANSITION_HANDOFF_ENV,
 } from "./contracts";
-import { startDesktopSidecar } from "./sidecar";
+import { startDesktopSidecar as startSidecar } from "./sidecar";
+
+// Every fake-PID launch must inject the OS signal boundary, even for tests
+// that expect graceful shutdown. No regression may signal a real process group.
+function startDesktopSidecar(options: Parameters<typeof startSidecar>[0]) {
+  return startSidecar({
+    platform: "linux",
+    killProcess: () => { throw new Error("Unexpected process-group signal"); },
+    ...options,
+  });
+}
 
 class FakeSidecarChild extends EventEmitter {
   readonly stdin = new PassThrough();
@@ -351,6 +361,7 @@ describe("desktop sidecar client", () => {
     const child = fakeChild();
     const order: string[] = [];
     const transitionLease = fakeRuntimeLease(order);
+    const killProcess = vi.fn(() => true);
 
     await expect(startDesktopSidecar({
       sidecarPath: "/app/sidecar/easyresearch",
@@ -369,9 +380,11 @@ describe("desktop sidecar client", () => {
       startupTimeoutMs: 1_000,
       shutdownTimeoutMs: 0,
       forcedShutdownTimeoutMs: 0,
+      killProcess,
     })).rejects.toThrow(/owned-child cleanup failed/i);
 
-    expect(child.kill).toHaveBeenCalledWith("SIGKILL");
+    expect(killProcess).toHaveBeenCalledWith(-4242, "SIGKILL");
+    expect(child.kill).not.toHaveBeenCalled();
     expect(order).toEqual([
       `reserve:${"c".repeat(43)}`,
       "commit:4242",
@@ -616,8 +629,8 @@ describe("desktop sidecar client", () => {
     expect(child.stdin.writableEnded).toBe(true);
   });
 
-  it("creates an isolated macOS process group without changing Windows spawn semantics", async () => {
-    const platforms = ["darwin", "win32"] as const;
+  it("creates isolated Linux/macOS process groups without changing Windows spawn semantics", async () => {
+    const platforms = ["linux", "darwin", "win32"] as const;
     const spawnOptions: Array<{ detached?: boolean }> = [];
 
     for (const [index, platform] of platforms.entries()) {
@@ -648,40 +661,11 @@ describe("desktop sidecar client", () => {
     }
 
     expect(spawnOptions[0]).toMatchObject({ detached: true });
-    expect(spawnOptions[1]?.detached).not.toBe(true);
+    expect(spawnOptions[1]).toMatchObject({ detached: true });
+    expect(spawnOptions[2]?.detached).not.toBe(true);
   });
 
-  it("force-terminates the isolated macOS sidecar process group", async () => {
-    const child = fakeChild();
-    const killProcess = vi.spyOn(process, "kill").mockImplementation(() => true);
-    try {
-      const handlePromise = startDesktopSidecar({
-        sidecarPath: "/app/sidecar/easyresearch",
-        baseEnv: {},
-        spawn: (() => child) as never,
-        fetch: async () => Response.json({ ok: true }),
-        createToken: (() => {
-          const tokens = ["c".repeat(43), "r".repeat(43)];
-          return () => tokens.shift()!;
-        })(),
-        startupTimeoutMs: 1_000,
-        platform: "darwin",
-      });
-      child.stdout.write('@easyresearch-desktop {"type":"desktop.ready","origin":"http://127.0.0.1:43123","owner":"desktop","pid":4242,"logPath":"/tmp/log","bootId":"boot-ready"}\n');
-      const handle = await handlePromise;
-
-      handle.forceTerminate();
-
-      expect(killProcess).toHaveBeenCalledWith(-4242, "SIGKILL");
-      expect(child.kill).not.toHaveBeenCalled();
-      child.emitExit(null, "SIGKILL");
-      await handle.exited;
-    } finally {
-      killProcess.mockRestore();
-    }
-  });
-
-  it("force-terminates the macOS process group after its leader exits but descendants retain pipes", async () => {
+  it.each(["linux", "darwin"] as const)("force-terminates the isolated %s sidecar process group", async (platform) => {
     const child = fakeChild();
     const killProcess = vi.fn(() => true);
     const handlePromise = startDesktopSidecar({
@@ -694,7 +678,34 @@ describe("desktop sidecar client", () => {
         return () => tokens.shift()!;
       })(),
       startupTimeoutMs: 1_000,
-      platform: "darwin",
+      platform,
+      killProcess,
+    });
+    child.stdout.write('@easyresearch-desktop {"type":"desktop.ready","origin":"http://127.0.0.1:43123","owner":"desktop","pid":4242,"logPath":"/tmp/log","bootId":"boot-ready"}\n');
+    const handle = await handlePromise;
+
+    handle.forceTerminate();
+
+    expect(killProcess).toHaveBeenCalledWith(-4242, "SIGKILL");
+    expect(child.kill).not.toHaveBeenCalled();
+    child.emitExit(null, "SIGKILL");
+    await handle.exited;
+  });
+
+  it.each(["linux", "darwin"] as const)("force-terminates the %s process group after its leader exits but descendants retain pipes", async (platform) => {
+    const child = fakeChild();
+    const killProcess = vi.fn(() => true);
+    const handlePromise = startDesktopSidecar({
+      sidecarPath: "/app/sidecar/easyresearch",
+      baseEnv: {},
+      spawn: (() => child) as never,
+      fetch: async () => Response.json({ ok: true }),
+      createToken: (() => {
+        const tokens = ["c".repeat(43), "r".repeat(43)];
+        return () => tokens.shift()!;
+      })(),
+      startupTimeoutMs: 1_000,
+      platform,
       killProcess,
     });
     child.stdout.write('@easyresearch-desktop {"type":"desktop.ready","origin":"http://127.0.0.1:43123","owner":"desktop","pid":4242,"logPath":"/tmp/log","bootId":"boot-ready"}\n');
@@ -709,7 +720,7 @@ describe("desktop sidecar client", () => {
     await handle.exited;
   });
 
-  it("does not signal a reusable macOS process-group id after child close", async () => {
+  it.each(["linux", "darwin"] as const)("does not signal a reusable %s process-group id after child close", async (platform) => {
     const child = fakeChild();
     const killProcess = vi.fn(() => true);
     const handlePromise = startDesktopSidecar({
@@ -722,7 +733,7 @@ describe("desktop sidecar client", () => {
         return () => tokens.shift()!;
       })(),
       startupTimeoutMs: 1_000,
-      platform: "darwin",
+      platform,
       killProcess,
     });
     child.stdout.write('@easyresearch-desktop {"type":"desktop.ready","origin":"http://127.0.0.1:43123","owner":"desktop","pid":4242,"logPath":"/tmp/log","bootId":"boot-ready"}\n');
@@ -1105,7 +1116,7 @@ describe("desktop sidecar client", () => {
 
   it("times out instead of leaving an unowned child", async () => {
     const child = fakeChild();
-    child.kill.mockImplementation(() => {
+    const killProcess = vi.fn(() => {
       queueMicrotask(() => child.emitExit(null, "SIGKILL"));
       return true;
     });
@@ -1121,8 +1132,10 @@ describe("desktop sidecar client", () => {
       startupTimeoutMs: 10,
       shutdownTimeoutMs: 0,
       forcedShutdownTimeoutMs: 100,
+      killProcess,
     })).rejects.toThrow(/timed out/i);
-    expect(child.kill).toHaveBeenCalled();
+    expect(killProcess).toHaveBeenCalledWith(-4242, "SIGKILL");
+    expect(child.kill).not.toHaveBeenCalled();
   });
 
   it("reports when the owned child survives graceful and forced shutdown", async () => {
@@ -1183,6 +1196,7 @@ describe("desktop sidecar client", () => {
         startupTimeoutMs: 1_000,
         platform: "win32",
         systemRoot: "C:\\Windows",
+        killProcess: () => { throw new Error("Unexpected POSIX process-group signal"); },
       });
       child.stdout.write('@easyresearch-desktop {"type":"desktop.ready","origin":"http://127.0.0.1:43123","owner":"desktop","pid":4242,"logPath":"C:\\\\tmp\\\\log","bootId":"boot-ready"}\n');
       const handle = await handlePromise;
@@ -1223,6 +1237,7 @@ describe("desktop sidecar client", () => {
         startupTimeoutMs: 1_000,
         platform: "win32",
         systemRoot: "C:\\Windows",
+        killProcess: () => { throw new Error("Unexpected POSIX process-group signal"); },
       });
       child.stdout.write('@easyresearch-desktop {"type":"desktop.ready","origin":"http://127.0.0.1:43123","owner":"desktop","pid":4242,"logPath":"C:\\\\tmp\\\\log","bootId":"boot-ready"}\n');
       const handle = await handlePromise;
@@ -1270,6 +1285,7 @@ describe("desktop sidecar client", () => {
         startupTimeoutMs: 1_000,
         platform: "win32",
         systemRoot: "C:\\Windows",
+        killProcess: () => { throw new Error("Unexpected POSIX process-group signal"); },
       });
       child.stdout.write('@easyresearch-desktop {"type":"desktop.ready","origin":"http://127.0.0.1:43123","owner":"desktop","pid":4242,"logPath":"C:\\\\tmp\\\\log","bootId":"boot-ready"}\n');
       const handle = await handlePromise;

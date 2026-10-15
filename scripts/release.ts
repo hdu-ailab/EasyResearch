@@ -182,7 +182,7 @@ easyresearch --version
 
 ## Supported platforms
 
-Linux x64, macOS arm64, and Windows x64. The selected platform executable needs
+Linux x64 and arm64 (aarch64, glibc), macOS arm64, and Windows x64. The selected platform executable needs
 neither Node nor Bun. Windows runs natively through PowerShell without WSL or
 Git Bash.
 

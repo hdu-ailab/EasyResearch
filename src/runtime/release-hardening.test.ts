@@ -15,7 +15,12 @@ describe("release argument validation", () => {
   it("rejects unknown flags, missing --only values, and unsupported targets", () => {
     expect(() => release.parseFlags(["--bogus"])).toThrow("unknown release flag");
     expect(() => release.parseFlags(["--only"])).toThrow("requires a target");
-    expect(() => release.parseFlags(["--only", "linux-arm64"])).toThrow("unknown target");
+    expect(() => release.parseFlags(["--only", "linux-armv7"])).toThrow("unknown target");
+  });
+
+  it("admits the permanent Linux ARM64 target for native build assembly", () => {
+    expect(release.parseFlags(["--dry-run", "--only", "linux-arm64"]))
+      .toMatchObject({ dryRun: true, only: "linux-arm64" });
   });
 });
 
@@ -43,12 +48,18 @@ describe("package manifests", () => {
     expect(meta.files).toEqual(["launcher.mjs", "README.md", "LICENSE"]);
   });
 
-  it("marks Linux as glibc", () => {
+  it.each(["linux-x64", "linux-arm64"])("binds %s to the matching glibc architecture and meta dependency", (name) => {
     const platformPackageManifest = (release as typeof release & {
       platformPackageManifest(target: (typeof TARGETS)[number], version: string): Record<string, any>;
     }).platformPackageManifest;
-    const manifest = platformPackageManifest(TARGETS.find((target) => target.name === "linux-x64")!, "1.2.3");
+    const target = TARGETS.find((target) => target.name === name);
+    expect(target).toBeDefined();
+    const manifest = platformPackageManifest(target!, "1.2.3");
     expect(manifest.libc).toEqual(["glibc"]);
+    expect(manifest.os).toEqual(["linux"]);
+    expect(manifest.cpu).toEqual([name.slice("linux-".length)]);
+    expect((release.mainPackageManifest("1.2.3").optionalDependencies as Record<string, string>)[String(manifest.name)])
+      .toBe(manifest.version);
   });
 
   it("accepts npm pack JSON from both array and package-keyed npm versions", () => {

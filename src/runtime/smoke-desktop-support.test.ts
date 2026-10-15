@@ -1,14 +1,18 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { BuildArtifact } from "../../scripts/build";
+import type { DesktopBuildManifest } from "../../scripts/build-desktop";
 import {
+  appImageExtractCommand,
   combineDesktopSmokeFailures,
   appendBoundedDiagnosticText,
   assertPackagedDesktopRunning,
   createDesktopSmokeDiagnosticReport,
+  createDesktopSmokeEnvironment,
+  debExtractCommand,
   dmgAttachCommand,
   dmgDetachCommand,
   nsisInstallCommand,
@@ -19,6 +23,9 @@ import {
   removePreservedDesktopSmokeRecord,
   removeDesktopSmokeRoot,
   reduceDesktopSmokeEvents,
+  restoreDesktopSmokeExecutable,
+  runDesktopPackageSmokes,
+  verifyDesktopSmokePackages,
   verifyDesktopSidecarIdentity,
   verifyDesktopOwnershipSuccessor,
   verifyPackagedNotice,
@@ -294,6 +301,58 @@ describe("desktop smoke failure diagnostics", () => {
 });
 
 describe("native package commands and paths", () => {
+  it("extracts AppImage in a dedicated working directory without sandbox launch switches", () => {
+    expect(appImageExtractCommand("/packages/EasyResearch.AppImage", "/fixture/appimage")).toEqual({
+      command: "/packages/EasyResearch.AppImage",
+      args: ["--appimage-extract"],
+      cwd: "/fixture/appimage",
+    });
+  });
+
+  it("extracts a deb without installing into the host filesystem", () => {
+    expect(debExtractCommand("/packages/EasyResearch.deb", "/fixture/deb")).toEqual({
+      command: "dpkg-deb",
+      args: ["-x", "/packages/EasyResearch.deb", "/fixture/deb"],
+    });
+  });
+
+  it("runs the extracted AppRun and resolves resources inside that same AppImage", () => {
+    expect(packagedApplicationPaths("linux-arm64", "/fixture/squashfs-root", "AppImage")).toEqual({
+      executable: "/fixture/squashfs-root/AppRun",
+      sidecar: "/fixture/squashfs-root/resources/sidecar/easyresearch",
+      notices: "/fixture/squashfs-root/resources/sidecar/THIRD_PARTY_NOTICES.txt",
+    });
+  });
+
+  it("runs the extracted deb Electron binary and resolves its own sidecar", () => {
+    expect(packagedApplicationPaths("linux-arm64", "/fixture/deb", "deb")).toEqual({
+      executable: "/fixture/deb/opt/EasyResearch/easyresearch-desktop",
+      sidecar: "/fixture/deb/opt/EasyResearch/resources/sidecar/easyresearch",
+      notices: "/fixture/deb/opt/EasyResearch/resources/sidecar/THIRD_PARTY_NOTICES.txt",
+    });
+  });
+
+  it("requires an explicit matching Linux format instead of falling back to a macOS layout", () => {
+    expect(() => packagedApplicationPaths("linux-arm64", root)).toThrow(/format/i);
+    expect(() => packagedApplicationPaths("linux-arm64", root, "dmg")).toThrow(/format/i);
+    expect(() => packagedApplicationPaths("windows-x64", root, "deb")).toThrow(/format/i);
+  });
+
+  it.skipIf(process.platform === "win32")("restores only the selected downloaded executable's mode", () => {
+    const downloaded = join(root, "downloaded.AppImage");
+    const sandbox = join(root, "chrome-sandbox");
+    const notices = join(root, "THIRD_PARTY_NOTICES.txt");
+    for (const path of [downloaded, sandbox, notices]) {
+      writeFileSync(path, "fixture");
+      chmodSync(path, 0o640);
+    }
+    restoreDesktopSmokeExecutable(downloaded);
+
+    expect(statSync(downloaded).mode & 0o7777).toBe(0o740);
+    expect(statSync(sandbox).mode & 0o7777).toBe(0o640);
+    expect(statSync(notices).mode & 0o7777).toBe(0o640);
+  });
+
   it("builds a silent per-user NSIS installation command", () => {
     expect(nsisInstallCommand("C:\\artifacts\\EasyResearch.exe", "C:\\Users\\test\\EasyResearch"))
       .toEqual({
@@ -325,6 +384,234 @@ describe("native package commands and paths", () => {
       sidecar: "/Volumes/EasyResearch/EasyResearch.app/Contents/Resources/sidecar/easyresearch",
       notices: "/Volumes/EasyResearch/EasyResearch.app/Contents/Resources/sidecar/THIRD_PARTY_NOTICES.txt",
     });
+  });
+});
+
+describe("desktop package collection acceptance", () => {
+  function linuxManifest(): DesktopBuildManifest {
+    const packages = (["AppImage", "deb"] as const).map((format) => {
+      const fileName = `EasyResearch-1.2.3-linux-arm64.${format}`;
+      const bytes = `package-${format}`;
+      writeFileSync(join(root, fileName), bytes);
+      return {
+        format,
+        fileName,
+        size: Buffer.byteLength(bytes),
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+      };
+    });
+    return {
+      version: "1.2.3",
+      target: "linux-arm64",
+      electronVersion: "42.3.3",
+      sidecar: { ...artifact("native"), target: "linux-arm64", binaryName: "easyresearch" },
+      packages,
+      builtAt: "2026-10-15T00:00:00.000Z",
+    };
+  }
+
+  it("validates both required Linux packages before returning their artifact paths", () => {
+    const manifest = linuxManifest();
+    expect(verifyDesktopSmokePackages(manifest, "linux-arm64", "1.2.3", root)).toEqual(
+      manifest.packages.map((pkg) => ({ ...pkg, path: join(root, pkg.fileName) })),
+    );
+  });
+
+  it.each(["missing", "duplicate", "wrong-format"])("rejects a %s required package", (scenario) => {
+    const manifest = linuxManifest();
+    if (scenario === "missing") manifest.packages.pop();
+    if (scenario === "duplicate") manifest.packages[1] = { ...manifest.packages[0]! };
+    if (scenario === "wrong-format") manifest.packages[1]!.format = "dmg";
+    expect(() => verifyDesktopSmokePackages(manifest, "linux-arm64", "1.2.3", root))
+      .toThrow(/required.*format|package.*format/i);
+  });
+
+  it.each(["../other.deb", "EasyResearch-0.0.1-linux-arm64.deb", "EasyResearch-1.2.3-linux-x64.deb"])(
+    "rejects a noncanonical package name %s",
+    (fileName) => {
+      const manifest = linuxManifest();
+      manifest.packages[1]!.fileName = fileName;
+      expect(() => verifyDesktopSmokePackages(manifest, "linux-arm64", "1.2.3", root))
+        .toThrow(/package name/i);
+    },
+  );
+
+  it.each(["AppImage", "deb"] as const)("rejects tampered %s even when its sibling is accepted", (format) => {
+    const manifest = linuxManifest();
+    const pkg = manifest.packages.find((candidate) => candidate.format === format)!;
+    writeFileSync(join(root, pkg.fileName), "x".repeat(pkg.size));
+    expect(() => verifyDesktopSmokePackages(manifest, "linux-arm64", "1.2.3", root))
+      .toThrow(/SHA-256/i);
+  });
+
+  it("rejects incorrect recorded sizes, missing files and stale manifest identity", () => {
+    const manifest = linuxManifest();
+    manifest.packages[1]!.size += 1;
+    expect(() => verifyDesktopSmokePackages(manifest, "linux-arm64", "1.2.3", root)).toThrow(/size/i);
+    manifest.packages[1]!.size -= 1;
+    rmSync(join(root, manifest.packages[1]!.fileName));
+    expect(() => verifyDesktopSmokePackages(manifest, "linux-arm64", "1.2.3", root)).toThrow(/missing/i);
+    expect(() => verifyDesktopSmokePackages(manifest, "linux-arm64", "9.9.9", root)).toThrow(/manifest/i);
+    expect(() => verifyDesktopSmokePackages(manifest, "darwin-arm64", "1.2.3", root)).toThrow(/manifest/i);
+  });
+
+  it("runs every package with fresh state and removes only successful fixtures", async () => {
+    const packages = verifyDesktopSmokePackages(linuxManifest(), "linux-arm64", "1.2.3", root);
+    const fixtures: string[] = [];
+    const formats: string[] = [];
+    await runDesktopPackageSmokes(packages, async (pkg, fixtureRoot) => {
+      fixtures.push(fixtureRoot);
+      formats.push(pkg.format);
+      const env = createDesktopSmokeEnvironment(fixtureRoot, {});
+      expect(existsSync(env.EASYRESEARCH_CODING_AGENT_DIR!)).toBe(false);
+      mkdirSync(env.EASYRESEARCH_CODING_AGENT_DIR!, { recursive: true });
+      writeFileSync(join(env.EASYRESEARCH_CODING_AGENT_DIR!, "state"), pkg.format);
+    }, root);
+
+    expect(formats).toEqual(["AppImage", "deb"]);
+    expect(new Set(fixtures).size).toBe(2);
+    expect(fixtures.every((path) => !existsSync(path))).toBe(true);
+  });
+
+  it("does not let one failed format hide the other format's smoke or its own diagnostics", async () => {
+    const packages = verifyDesktopSmokePackages(linuxManifest(), "linux-arm64", "1.2.3", root);
+    const fixtures: string[] = [];
+    const formats: string[] = [];
+    await expect(runDesktopPackageSmokes(packages, async (pkg, fixtureRoot) => {
+      fixtures.push(fixtureRoot);
+      formats.push(pkg.format);
+      if (pkg.format === "AppImage") throw new Error("AppRun did not start");
+    }, root)).rejects.toThrow(/AppImage/);
+
+    expect(formats).toEqual(["AppImage", "deb"]);
+    expect(existsSync(fixtures[0]!)).toBe(true);
+    expect(existsSync(fixtures[1]!)).toBe(false);
+  });
+});
+
+describe("desktop smoke environment", () => {
+  it("isolates package state and removes inherited setup overrides while preserving the graphical session", () => {
+    const inherited = {
+      HOME: "/real/home",
+      XDG_CONFIG_HOME: "/real/config",
+      XDG_CACHE_HOME: "/real/cache",
+      EASYRESEARCH_SKIP_SETUP: "1",
+      EASYRESEARCH_BUNDLED_ROOT: "/other/bundled",
+      EASYRESEARCH_VENV: "/other/venv",
+      EASYRESEARCH_CODING_AGENT_DIR: "/other/agent",
+      EASYRESEARCH_DESKTOP_SMOKE_DIR: "/other/control",
+      EASYRESEARCH_DESKTOP_SMOKE_USER_DATA: "/other/electron",
+      EASYRESEARCH_DESKTOP_SMOKE_SESSION_PATH: "/other/session.jsonl",
+      EASYRESEARCH_SMOKE_SETUP_RESULT_PATH: "/other/evidence",
+      ELECTRON_RUN_AS_NODE: "1",
+      ELECTRON_NO_SANDBOX: "1",
+      CHROME_DEVEL_SANDBOX: "/other/sandbox",
+      NODE_OPTIONS: "--require /other/hook.cjs",
+      PYTHONHOME: "/other/python",
+      PYTHONPATH: "/other/modules",
+      VIRTUAL_ENV: "/other/venv",
+      APPDIR: "/other/appimage",
+      APPIMAGE: "/other/image",
+      DISPLAY: ":88",
+      XAUTHORITY: "/display/auth",
+      DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus",
+      XDG_RUNTIME_DIR: "/run/user/1000",
+      PATH: "/tools:/usr/bin",
+    };
+    const env = createDesktopSmokeEnvironment(root, inherited);
+    for (const key of [
+      "EASYRESEARCH_SKIP_SETUP", "EASYRESEARCH_BUNDLED_ROOT", "EASYRESEARCH_VENV",
+      "EASYRESEARCH_DESKTOP_SMOKE_DIR", "EASYRESEARCH_DESKTOP_SMOKE_SESSION_PATH",
+      "EASYRESEARCH_SMOKE_SETUP_RESULT_PATH", "ELECTRON_RUN_AS_NODE", "ELECTRON_NO_SANDBOX",
+      "CHROME_DEVEL_SANDBOX", "NODE_OPTIONS", "PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "APPDIR", "APPIMAGE",
+    ]) expect(env).not.toHaveProperty(key);
+    expect(env).toMatchObject({
+      HOME: join(root, "home"),
+      USERPROFILE: join(root, "home"),
+      XDG_CONFIG_HOME: join(root, "xdg-config"),
+      XDG_CACHE_HOME: join(root, "xdg-cache"),
+      XDG_DATA_HOME: join(root, "xdg-data"),
+      XDG_STATE_HOME: join(root, "xdg-state"),
+      EASYRESEARCH_CODING_AGENT_DIR: join(root, "agent"),
+      EASYRESEARCH_DESKTOP_SMOKE_USER_DATA: join(root, "electron-user-data"),
+      DISPLAY: inherited.DISPLAY,
+      XAUTHORITY: inherited.XAUTHORITY,
+      DBUS_SESSION_BUS_ADDRESS: inherited.DBUS_SESSION_BUS_ADDRESS,
+      XDG_RUNTIME_DIR: inherited.XDG_RUNTIME_DIR,
+      PATH: inherited.PATH,
+    });
+    expect(inherited.HOME).toBe("/real/home");
+    expect(inherited.EASYRESEARCH_SKIP_SETUP).toBe("1");
+  });
+});
+
+describe("Linux packaged renderer sandbox evidence", () => {
+  const ready = {
+    type: "desktop-smoke.sidecar-ready",
+    origin: "http://127.0.0.1:43123",
+    bootId: "boot-old",
+    sidecarPid: 41,
+  };
+  const security = {
+    type: "desktop-smoke.renderer-security",
+    osSandboxed: true,
+    sandbox: true,
+    contextIsolation: true,
+    nodeIntegration: false,
+  };
+  const active = [
+    { type: "desktop-smoke.window-loaded" },
+    { type: "desktop-smoke.state-visible" },
+    { type: "desktop-smoke.agent-running" },
+  ];
+
+  it("requires actual OS sandbox evidence before accepting a running Linux renderer", () => {
+    expect(reduceDesktopSmokeEvents([ready, security, ...active], { target: "linux-arm64" }))
+      .toMatchObject({ rendererSecurityVerified: true, agentRunning: true });
+    expect(() => reduceDesktopSmokeEvents([ready, ...active], { target: "linux-arm64" }))
+      .toThrow(/renderer security evidence/i);
+  });
+
+  it.each([
+    { osSandboxed: false },
+    { osSandboxed: undefined },
+    { sandbox: false },
+    { contextIsolation: false },
+    { nodeIntegration: true },
+  ])("rejects insecure or incomplete renderer evidence %j", (overrides) => {
+    expect(() => reduceDesktopSmokeEvents([ready, { ...security, ...overrides }, ...active], {
+      target: "linux-arm64",
+    })).toThrow(/renderer security evidence/i);
+  });
+
+  it("requires fresh sandbox evidence for the successor renderer", () => {
+    const hash = "#/work/active-session?cwd=%2Fpaper";
+    const restarted = [
+      ready,
+      security,
+      ...active,
+      { type: "desktop-smoke.restart-api-accepted", bootId: "boot-old", hash },
+      { type: "desktop-smoke.restart-requested", bootId: "boot-old" },
+      { type: "desktop-smoke.old-sidecar-exited", bootId: "boot-old", clean: true },
+      {
+        type: "desktop-smoke.sidecar-ready",
+        origin: "http://127.0.0.1:43124",
+        bootId: "boot-new",
+        sidecarPid: 42,
+        rendererCredentialFresh: true,
+      },
+    ];
+    const visible = {
+      type: "desktop-smoke.successor-visible",
+      bootId: "boot-new",
+      hash,
+      authenticated: true,
+      persistedSessionVisible: true,
+    };
+    expect(() => reduceDesktopSmokeEvents([...restarted, visible], { target: "linux-arm64" }))
+      .toThrow(/renderer security evidence/i);
+    expect(reduceDesktopSmokeEvents([...restarted, security, visible], { target: "linux-arm64" }))
+      .toMatchObject({ rendererSecurityVerified: true, successorVisible: true });
   });
 });
 

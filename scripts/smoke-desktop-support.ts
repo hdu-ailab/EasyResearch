@@ -1,19 +1,29 @@
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   closeSync,
   existsSync,
   lstatSync,
+  mkdtempSync,
   openSync,
   readFileSync,
   readSync,
   readdirSync,
+  realpathSync,
   rmSync,
   statSync,
   unlinkSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import type { BuildArtifact } from "./build";
-import type { DesktopTargetName } from "./build-desktop";
+import {
+  validateDesktopBuildManifest,
+  type DesktopBuildManifest,
+  type DesktopPackageFormat,
+  type DesktopTargetName,
+} from "./build-desktop";
+import { DESKTOP_SMOKE_USER_DATA_ENV } from "../src/desktop/contracts";
 import { THIRD_PARTY_NOTICES_FILE } from "./third-party-notices";
 
 const TRANSIENT_DESKTOP_SMOKE_CLEANUP_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
@@ -22,6 +32,87 @@ const DESKTOP_SUCCESSOR_FAILURE_LOG = "Desktop smoke injected one successor star
 export interface NativeCommand {
   command: string;
   args: string[];
+  cwd?: string;
+}
+
+export type DesktopSmokePackage = DesktopBuildManifest["packages"][number] & { path: string };
+
+export function verifyDesktopSmokePackages(
+  value: unknown,
+  target: DesktopTargetName,
+  version: string,
+  packageDirectory: string,
+): DesktopSmokePackage[] {
+  const manifest = validateDesktopBuildManifest(value, target, version);
+  return manifest.packages.map((pkg) => {
+    const path = join(packageDirectory, pkg.fileName);
+    if (!existsSync(path)) throw new Error(`Desktop package is missing: ${path}`);
+    if (statSync(path).size !== pkg.size) {
+      throw new Error(`Desktop package size mismatch for ${pkg.fileName}.`);
+    }
+    const sha256 = createHash("sha256").update(readFileSync(path)).digest("hex");
+    if (sha256 !== pkg.sha256) throw new Error(`Desktop package SHA-256 mismatch for ${pkg.fileName}.`);
+    return { ...pkg, path };
+  });
+}
+
+export async function runDesktopPackageSmokes(
+  packages: readonly DesktopSmokePackage[],
+  smoke: (pkg: DesktopSmokePackage, root: string) => Promise<void>,
+  temporaryDirectory = tmpdir(),
+): Promise<void> {
+  const failures: Error[] = [];
+  for (const pkg of packages) {
+    const root = realpathSync(mkdtempSync(join(temporaryDirectory, `easyresearch-desktop-smoke-${pkg.format}-`)));
+    try {
+      await smoke(pkg, root);
+      await removeDesktopSmokeRoot(root);
+    } catch (error) {
+      failures.push(new Error(`Desktop ${pkg.format} smoke failed; preserved fixture: ${root}`, { cause: error }));
+    }
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, "Desktop package smokes failed.");
+}
+
+export function createDesktopSmokeEnvironment(
+  root: string,
+  inherited: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  const env = { ...inherited };
+  const isolated: NodeJS.ProcessEnv = {
+    HOME: join(root, "home"),
+    USERPROFILE: join(root, "home"),
+    APPDATA: join(root, "appdata"),
+    LOCALAPPDATA: join(root, "localappdata"),
+    XDG_CONFIG_HOME: join(root, "xdg-config"),
+    XDG_CACHE_HOME: join(root, "xdg-cache"),
+    XDG_DATA_HOME: join(root, "xdg-data"),
+    XDG_STATE_HOME: join(root, "xdg-state"),
+    EASYRESEARCH_CODING_AGENT_DIR: join(root, "agent"),
+    [DESKTOP_SMOKE_USER_DATA_ENV]: join(root, "electron-user-data"),
+  };
+  const contamination = new Set([
+    "PI_PACKAGE_DIR", "PI_CODING_AGENT_DIR", "NODE_OPTIONS", "NODE_PATH",
+    "ELECTRON_RUN_AS_NODE", "ELECTRON_NO_SANDBOX", "CHROME_DEVEL_SANDBOX",
+    "PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP", "VIRTUAL_ENV",
+    "APPIMAGE", "APPDIR", "ARGV0", "OWD",
+  ]);
+  for (const key of Object.keys(env)) {
+    const normalized = key.toUpperCase();
+    if (
+      normalized.startsWith("EASYRESEARCH_")
+      || contamination.has(normalized)
+      || Object.hasOwn(isolated, normalized)
+    ) delete env[key];
+  }
+  // Retain DISPLAY/XAUTHORITY, the session D-Bus address and XDG_RUNTIME_DIR.
+  return { ...env, ...isolated };
+}
+
+export function restoreDesktopSmokeExecutable(path: string): void {
+  const mode = statSync(path).mode;
+  if ((mode & 0o100) === 0) chmodSync(path, mode | 0o100);
 }
 
 export interface DesktopSmokeOwnershipRecord {
@@ -81,6 +172,7 @@ export interface DesktopSmokeState {
   initialSidecarPid?: number;
   failure?: string;
   loaded: boolean;
+  rendererSecurityVerified: boolean;
   stateVisible: boolean;
   agentRunning: boolean;
   restartAccepted: boolean;
@@ -104,6 +196,7 @@ export interface DesktopSmokeState {
 
 export interface DesktopSmokeEvidence {
   desktopLog?: string;
+  target?: DesktopTargetName;
 }
 
 export interface PackagedDesktopProcessState {
@@ -370,17 +463,41 @@ export function dmgDetachCommand(mountPoint: string): NativeCommand {
   };
 }
 
+export function appImageExtractCommand(appImage: string, extractionDirectory: string): NativeCommand {
+  return { command: appImage, args: ["--appimage-extract"], cwd: extractionDirectory };
+}
+
+export function debExtractCommand(deb: string, extractionDirectory: string): NativeCommand {
+  return { command: "dpkg-deb", args: ["-x", deb, extractionDirectory] };
+}
+
 export function packagedApplicationPaths(
   target: DesktopTargetName,
   root: string,
+  format?: DesktopPackageFormat,
 ): { executable: string; sidecar: string; notices: string; uninstaller?: string } {
   if (target === "windows-x64") {
+    if (format !== undefined && format !== "nsis") throw new Error("Invalid Windows desktop package format.");
     return {
       executable: win32.join(root, "EasyResearch.exe"),
       sidecar: win32.join(root, "resources", "sidecar", "easyresearch.exe"),
       notices: win32.join(root, "resources", "sidecar", THIRD_PARTY_NOTICES_FILE),
       uninstaller: win32.join(root, "Uninstall EasyResearch.exe"),
     };
+  }
+  if (target === "linux-arm64") {
+    if (format !== "AppImage" && format !== "deb") {
+      throw new Error("Linux desktop package paths require an explicit AppImage or deb format.");
+    }
+    const appRoot = format === "AppImage" ? root : posix.join(root, "opt", "EasyResearch");
+    return {
+      executable: posix.join(appRoot, format === "AppImage" ? "AppRun" : "easyresearch-desktop"),
+      sidecar: posix.join(appRoot, "resources", "sidecar", "easyresearch"),
+      notices: posix.join(appRoot, "resources", "sidecar", THIRD_PARTY_NOTICES_FILE),
+    };
+  }
+  if (target !== "darwin-arm64" || (format !== undefined && format !== "dmg")) {
+    throw new Error("Invalid macOS desktop package format.");
   }
   return {
     executable: posix.join(root, "EasyResearch.app", "Contents", "MacOS", "EasyResearch"),
@@ -595,6 +712,7 @@ export function reduceDesktopSmokeEvents(
 ): DesktopSmokeState {
   const state: DesktopSmokeState = {
     loaded: false,
+    rendererSecurityVerified: false,
     stateVisible: false,
     agentRunning: false,
     restartAccepted: false,
@@ -661,8 +779,20 @@ export function reduceDesktopSmokeEvents(
         state.successorBootId = event.bootId;
         state.successorSidecarPid = event.sidecarPid as number;
         state.rendererCredentialFresh = true;
+        state.rendererSecurityVerified = false;
         break;
       }
+      case "desktop-smoke.renderer-security":
+        requireMilestone(
+          state.origin !== undefined
+            && event.osSandboxed === true
+            && event.sandbox === true
+            && event.contextIsolation === true
+            && event.nodeIntegration === false,
+          "Desktop renderer security evidence did not prove OS sandboxing and isolated Web preferences.",
+        );
+        state.rendererSecurityVerified = true;
+        break;
       case "desktop-smoke.window-loaded":
         requireMilestone(state.origin !== undefined, "Window loaded before sidecar readiness.");
         state.loaded = true;
@@ -673,6 +803,10 @@ export function reduceDesktopSmokeEvents(
         break;
       case "desktop-smoke.agent-running":
         requireMilestone(state.stateVisible, "Agent started before shared state validation.");
+        requireMilestone(
+          evidence.target !== "linux-arm64" || state.rendererSecurityVerified,
+          "Linux desktop renderer security evidence is required before accepting an active Agent.",
+        );
         state.agentRunning = true;
         break;
       case "desktop-smoke.restart-api-accepted":
@@ -764,6 +898,10 @@ export function reduceDesktopSmokeEvents(
         break;
       case "desktop-smoke.successor-visible":
         requireMilestone(state.successorBootId !== undefined, "Successor state was checked before readiness.");
+        requireMilestone(
+          evidence.target !== "linux-arm64" || state.rendererSecurityVerified,
+          "Linux desktop successor renderer security evidence is required before accepting restored Work state.",
+        );
         requireMilestone(
           event.bootId === state.successorBootId
             && typeof event.hash === "string"

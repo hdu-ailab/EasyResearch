@@ -48,6 +48,9 @@ jobs:
           - os: ubuntu-latest
             target: linux-x64
             python-executable: bin/python
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+            python-executable: bin/python
           - os: macos-26
             target: darwin-arm64
             python-executable: bin/python
@@ -123,11 +126,17 @@ jobs:
         include:
           - os: windows-latest
             target: windows-x64
-            package-glob: EasyResearch-*-windows-x64.exe
+            package-paths: release/desktop/EasyResearch-*-windows-x64.exe
             python-executable: python.exe
           - os: macos-26
             target: darwin-arm64
-            package-glob: EasyResearch-*-macos-arm64.dmg
+            package-paths: release/desktop/EasyResearch-*-macos-arm64.dmg
+            python-executable: bin/python
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+            package-paths: |
+              release/desktop/EasyResearch-*-linux-arm64.AppImage
+              release/desktop/EasyResearch-*-linux-arm64.deb
             python-executable: bin/python
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
@@ -145,6 +154,35 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Provision Linux desktop runtime and package tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            xvfb xauth dbus-x11 xfce4-panel xfconf libglib2.0-bin \
+            libnss3 libnspr4 libatk1.0-0t64 libatk-bridge2.0-0t64 \
+            libcups2t64 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
+            libxfixes3 libxrandr2 libgbm1 libasound2t64 libpango-1.0-0 \
+            libcairo2 libgtk-3-0t64 libatspi2.0-0t64 libxshmfence1 \
+            libx11-xcb1 libxcb1 libxss1 libxtst6 libsecret-1-0 \
+            libfuse2t64 fonts-liberation squashfs-tools dpkg fakeroot \
+            binutils xz-utils zstd unzip file
+
+      - name: Enable and verify sandbox namespaces in the ephemeral Linux runner
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          if [ -e /proc/sys/kernel/unprivileged_userns_clone ]; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+          if [ "$(sysctl -n user.max_user_namespaces)" -eq 0 ]; then
+            sudo sysctl -w user.max_user_namespaces=16384
+          fi
+          unshare -Ur true
+
       - name: Download accepted native sidecar
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
@@ -160,18 +198,78 @@ jobs:
         run: bun scripts/build-desktop.ts ${{ matrix.target }}
 
       - name: Smoke packaged desktop app
+        if: runner.os != 'Linux'
         run: bun scripts/smoke-desktop.ts ${{ matrix.target }}
         env:
           EASYRESEARCH_SMOKE_PYTHON: ${{ env.pythonLocation }}/${{ matrix.python-executable }}
           PIP_RETRIES: "3"
           PIP_DEFAULT_TIMEOUT: "30"
 
+      - name: Smoke both Linux desktop packages in a sandbox-capable tray session
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          EASYRESEARCH_SMOKE_PYTHON: ${{ env.pythonLocation }}/${{ matrix.python-executable }}
+          PIP_RETRIES: "3"
+          PIP_DEFAULT_TIMEOUT: "30"
+        run: |
+          set -euo pipefail
+          export session_root
+          session_root="$(mktemp -d "${RUNNER_TEMP}/easyresearch-tray.XXXXXX")"
+          export XDG_CONFIG_HOME="$session_root/config"
+          export XDG_CACHE_HOME="$session_root/cache"
+          export XDG_RUNTIME_DIR="$session_root/runtime"
+          mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          trap 'rm -rf "$session_root"' EXIT
+          dbus-run-session -- xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" bash <<'SMOKE'
+          set -euo pipefail
+          tray_pid=""
+          cleanup() {
+            status=$?
+            trap - EXIT
+            if [ -n "$tray_pid" ]; then
+              kill -TERM -- "-$tray_pid" 2>/dev/null || true
+              timeout 5s tail --pid="$tray_pid" -f /dev/null || true
+              kill -KILL -- "-$tray_pid" 2>/dev/null || true
+              wait "$tray_pid" 2>/dev/null || true
+            fi
+            exit "$status"
+          }
+          trap cleanup EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          xfconf-query --channel xfce4-panel --property /configver --create --type int --set 2
+          xfconf-query --channel xfce4-panel --property /panels --create --force-array --type int --set 1
+          xfconf-query --channel xfce4-panel --property /panels/panel-1/plugin-ids --create --force-array --type int --set 1
+          xfconf-query --channel xfce4-panel --property /plugins/plugin-1 --create --type string --set systray
+          setsid xfce4-panel --disable-wm-check >"$session_root/tray.log" 2>&1 &
+          tray_pid=$!
+          tray_ready=false
+          for attempt in {1..50}; do
+            if ! kill -0 "$tray_pid" 2>/dev/null; then break; fi
+            if gdbus call --session --timeout 2 --dest org.kde.StatusNotifierWatcher \
+              --object-path /StatusNotifierWatcher --method org.freedesktop.DBus.Properties.Get \
+              org.kde.StatusNotifierWatcher IsStatusNotifierHostRegistered 2>/dev/null | grep -q true; then
+              tray_ready=true
+              break
+            fi
+            sleep 0.2
+          done
+          if [ "$tray_ready" != true ]; then
+            cat "$session_root/tray.log"
+            echo "Linux desktop smoke requires a registered StatusNotifier tray host" >&2
+            exit 1
+          fi
+          bun scripts/smoke-desktop.ts linux-arm64
+          SMOKE
+
       - name: Upload tested desktop package
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: easyresearch-desktop-${{ matrix.target }}
           path: |
-            release/desktop/${{ matrix.package-glob }}
+            ${{ matrix.package-paths }}
             release/desktop-manifest-${{ matrix.target }}.json
           retention-days: 7
           if-no-files-found: error
@@ -202,6 +300,9 @@ jobs:
           path: release
           merge-multiple: true
 
+      - name: Restore AppImage executable mode
+        run: chmod +x release/desktop/EasyResearch-*-linux-arm64.AppImage
+
       - name: Verify desktop packages and write checksums
         run: bun scripts/prepare-desktop-release.ts
 
@@ -211,6 +312,8 @@ jobs:
           subject-path: |
             release/desktop/EasyResearch-*-windows-x64.exe
             release/desktop/EasyResearch-*-macos-arm64.dmg
+            release/desktop/EasyResearch-*-linux-arm64.AppImage
+            release/desktop/EasyResearch-*-linux-arm64.deb
             release/desktop/SHA256SUMS
 
       - name: Create or update draft GitHub Release
@@ -228,7 +331,14 @@ jobs:
           else
             gh release create "$tag" --draft --title "EasyResearch $tag" --notes-file .github/desktop-release-notes.md
           fi
-          assets=(release/desktop/*.exe release/desktop/*.dmg release/desktop/SHA256SUMS)
+          version="${tag#v}"
+          assets=(
+            "release/desktop/EasyResearch-${version}-windows-x64.exe"
+            "release/desktop/EasyResearch-${version}-macos-arm64.dmg"
+            "release/desktop/EasyResearch-${version}-linux-arm64.AppImage"
+            "release/desktop/EasyResearch-${version}-linux-arm64.deb"
+            release/desktop/SHA256SUMS
+          )
           for asset in "${assets[@]}"; do
             test -f "$asset"
           done
@@ -260,7 +370,7 @@ jobs:
           merge-multiple: true
 
       - name: Restore packaged executable permissions
-        run: chmod +x release/easyresearch-linux-x64/bin/easyresearch release/easyresearch-darwin-arm64/bin/easyresearch
+        run: chmod +x release/easyresearch-linux-x64/bin/easyresearch release/easyresearch-linux-arm64/bin/easyresearch release/easyresearch-darwin-arm64/bin/easyresearch
 
       - name: Configure npm registry
         run: npm config set //registry.npmjs.org/:_authToken "$NODE_AUTH_TOKEN"
@@ -269,9 +379,17 @@ jobs:
         run: bun scripts/release.ts --skip-build
 
   verify-installed-npm-package:
-    name: Verify installed npm package
+    name: Verify installed npm package (${{ matrix.target }})
     needs: publish-npm
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -302,6 +420,8 @@ jobs:
           expected=(
             "EasyResearch-${version}-windows-x64.exe"
             "EasyResearch-${version}-macos-arm64.dmg"
+            "EasyResearch-${version}-linux-arm64.AppImage"
+            "EasyResearch-${version}-linux-arm64.deb"
             "SHA256SUMS"
           )
           mapfile -t assets < <(gh release view "$tag" --json assets --jq '.assets[].name')

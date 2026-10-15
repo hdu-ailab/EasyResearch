@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -41,22 +42,18 @@ function fixture(bytes = "accepted-sidecar") {
 }
 
 describe("desktop target selection", () => {
-  it("maps only the two supported native targets", () => {
-    expect(desktopTarget("windows-x64")).toEqual({
+  it("maps supported hosts and retains Linux x64 as preview-only", () => {
+    expect(desktopTarget("windows-x64")).toMatchObject({
       name: "windows-x64",
       platform: "win32",
       arch: "x64",
-      electronTarget: "nsis",
       binaryName: "easyresearch.exe",
-      packageExtension: ".exe",
     });
-    expect(desktopTarget("darwin-arm64")).toEqual({
+    expect(desktopTarget("darwin-arm64")).toMatchObject({
       name: "darwin-arm64",
       platform: "darwin",
       arch: "arm64",
-      electronTarget: "dmg",
       binaryName: "easyresearch",
-      packageExtension: ".dmg",
     });
     expect(() => desktopTarget("linux-x64")).toThrow(/no desktop package/i);
   });
@@ -66,6 +63,14 @@ describe("desktop target selection", () => {
       .toThrow(/must be packaged on win32-x64/i);
     expect(() => assertNativeDesktopHost("windows-x64", "win32", "x64"))
       .not.toThrow();
+  });
+
+  it("accepts native Linux ARM64 and rejects a cross-host desktop build", () => {
+    expect(desktopTarget("linux-arm64")).toMatchObject({
+      platform: "linux", arch: "arm64", binaryName: "easyresearch",
+    });
+    expect(() => assertNativeDesktopHost("linux-arm64", "linux", "arm64")).not.toThrow();
+    expect(() => assertNativeDesktopHost("linux-arm64", "linux", "x64")).toThrow(/native|linux-arm64|packaged/i);
   });
 });
 
@@ -110,6 +115,42 @@ describe("accepted third-party notices", () => {
 });
 
 describe("electron-builder configuration", () => {
+  it("builds both ARM64 Linux formats with explicit desktop naming and sandbox-preserving arguments", () => {
+    const config = electronBuilderConfig("linux-arm64", "1.2.3", join(root, "stage"), join(root, "desktop"));
+    expect(config.linux).toMatchObject({
+      executableName: "easyresearch-desktop",
+      target: [{ target: "AppImage", arch: ["arm64"] }, { target: "deb", arch: ["arm64"] }],
+      artifactName: "EasyResearch-1.2.3-linux-arm64.${ext}",
+    });
+    expect(config.appImage?.executableArgs).toEqual([]);
+    expect(config.mac).toBeUndefined();
+    expect(config.win).toBeUndefined();
+  });
+
+  it.skipIf(process.platform === "win32")("stages an AppRun that forwards quoted arguments without an unsandboxed fallback", async () => {
+    const appDir = join(root, "app with spaces");
+    mkdirSync(appDir);
+    const capture = join(root, "arguments");
+    const executable = join(appDir, "easyresearch-desktop");
+    writeFileSync(executable, '#!/bin/sh\nprintf "%s\\n" "$@" > "$ARGUMENT_CAPTURE"\n');
+    chmodSync(executable, 0o755);
+    const fakeTools = join(root, "tools");
+    mkdirSync(fakeTools);
+    writeFileSync(join(fakeTools, "unshare"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    const config = electronBuilderConfig("linux-arm64", "1.2.3", join(root, "stage"), join(root, "desktop"));
+    expect(typeof config.afterPack).toBe("function");
+    await (config.afterPack as (context: { appOutDir: string }) => Promise<void>)({ appOutDir: appDir });
+    const result = spawnSync(join(appDir, "AppRun"), ["a value with spaces", "--example=one"], {
+      env: { ...process.env, PATH: `${fakeTools}:${process.env.PATH ?? ""}`, APPDIR: appDir, ARGUMENT_CAPTURE: capture }, encoding: "utf8",
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(capture, "utf8").trim().split("\n")).toEqual(["a value with spaces", "--example=one"]);
+    const extractedEnv: NodeJS.ProcessEnv = { ...process.env, ARGUMENT_CAPTURE: capture };
+    delete extractedEnv.APPDIR;
+    const extracted = spawnSync(join(appDir, "AppRun"), ["extracted launch"], { env: extractedEnv, encoding: "utf8" });
+    expect(extracted.status, extracted.stderr).toBe(0);
+    expect(readFileSync(capture, "utf8").trim()).toBe("extracted launch");
+  });
   it("uses the staging directory as the project root for relative sidecar resources", () => {
     const stage = join(root, "stage");
     const invocation = desktopBuilderInvocation(

@@ -10,6 +10,7 @@ import {
   type IpcMainEvent,
   type MessageBoxOptions,
   type MessageBoxReturnValue,
+  type WebPreferences,
 } from "electron";
 import {
   appendFileSync,
@@ -61,6 +62,7 @@ import {
 } from "./sidecar";
 import { checkDesktopUpdate, type DesktopReleaseUpdate } from "./update";
 import {
+  desktopSmokeLinuxRendererSecurityEvent,
   desktopSmokeSidecarReadyEvent,
   desktopSmokeRestartFailureEvent,
   desktopSmokeWorkHash,
@@ -293,9 +295,8 @@ function showLoading(status: string): void {
 async function createMainWindow(handle: DesktopSidecarHandle, hash: string): Promise<void> {
   mainWindow?.destroy();
   const preload = join(__dirname, "preload.cjs");
-  const window = new BrowserWindow(
-    desktopWindowOptions(preload, DESKTOP_SESSION_PARTITION),
-  );
+  const windowOptions = desktopWindowOptions(preload, DESKTOP_SESSION_PARTITION);
+  const window = new BrowserWindow(windowOptions);
   mainWindow = window;
   const networkSession = window.webContents.session;
   networkSession.webRequest.onBeforeSendHeaders(
@@ -334,7 +335,7 @@ async function createMainWindow(handle: DesktopSidecarHandle, hash: string): Pro
     loadingWindow?.hide();
     window.show();
     window.focus();
-    void installSmokeLifecycle(window, handle);
+    void installSmokeLifecycle(window, handle, windowOptions.webPreferences);
   });
   await window.loadURL(`${handle.ready.origin}/${hash}`);
 }
@@ -552,6 +553,7 @@ function terminalExit(): Promise<void> {
 async function installSmokeLifecycle(
   window: BrowserWindow,
   handle: DesktopSidecarHandle,
+  webPreferences: Readonly<WebPreferences>,
 ): Promise<void> {
   const directory = smokeDirectory();
   if (!directory) return;
@@ -566,6 +568,14 @@ async function installSmokeLifecycle(
   }
   try {
     await waitForCurrentWebUi(window, handle.ready.origin);
+    if (process.platform === "linux") {
+      emitSmokeEvent(desktopSmokeLinuxRendererSecurityEvent({
+        rendererPid: window.webContents.getOSProcessId(),
+        hostPid: process.pid,
+        noSandbox: app.commandLine.hasSwitch("no-sandbox"),
+        webPreferences,
+      }));
+    }
     if (!smokeRestartContext) {
       emitSmokeEvent({ type: "desktop-smoke.window-loaded" });
       const prepared = await prepareDesktopSmokeWork({

@@ -2,6 +2,14 @@ import { describe, expect, it } from "vitest";
 import { compileCommand, TARGETS } from "../../scripts/build";
 
 describe("compiled release command", () => {
+  it("selects a standalone ARM64 executable without substituting an x64 target", () => {
+    const target = TARGETS.find((candidate) => candidate.name === "linux-arm64");
+    expect(target).toBeDefined();
+    const command = compileCommand(target!, "/release/arm/easyresearch", "/tools/bun");
+    expect(command[command.indexOf("--target") + 1]).toBe("bun-linux-arm64");
+    expect(command[command.indexOf("--outfile") + 1]).toBe("/release/arm/easyresearch");
+    expect(command).toContain("--compile");
+  });
   it("reuses the selected Bun executable without a PATH lookup", () => {
     const target = TARGETS.find((candidate) => candidate.name === "windows-x64");
     expect(target).toBeDefined();

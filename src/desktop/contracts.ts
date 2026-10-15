@@ -35,6 +35,6 @@ export type DesktopRestartRequestedEvent = Extract<
 >;
 
 export interface DesktopHostMetadata {
-  platform: "win32" | "darwin";
+  platform: "win32" | "darwin" | "linux";
   version: string;
 }

@@ -1,6 +1,64 @@
+import { readFileSync, readlinkSync } from "node:fs";
 import { DESKTOP_ACCESS_HEADER } from "./contracts";
 
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
+export function desktopSmokeLinuxRendererSecurityEvent(options: {
+  rendererPid: number;
+  hostPid: number;
+  noSandbox: boolean;
+  webPreferences: { sandbox?: boolean; contextIsolation?: boolean; nodeIntegration?: boolean };
+  readFile?: (path: string) => string;
+  readLink?: (path: string) => string;
+}): Record<string, unknown> {
+  const { rendererPid, hostPid, webPreferences } = options;
+  if (
+    options.noSandbox !== false
+    || webPreferences.sandbox !== true
+    || webPreferences.contextIsolation !== true
+    || webPreferences.nodeIntegration !== false
+  ) {
+    throw new Error("Desktop smoke Linux renderer security preferences or sandbox switch are invalid.");
+  }
+  if (
+    !Number.isSafeInteger(rendererPid) || rendererPid <= 0
+    || !Number.isSafeInteger(hostPid) || hostPid <= 0
+    || rendererPid === hostPid
+  ) {
+    throw new Error("Desktop smoke Linux renderer OS sandbox process identity is invalid.");
+  }
+
+  const readFile = options.readFile ?? ((path: string) => readFileSync(path, "utf8"));
+  const readLink = options.readLink ?? ((path: string) => readlinkSync(path));
+  let status: string;
+  let rendererNamespace: string;
+  let hostNamespace: string;
+  try {
+    status = readFile(`/proc/${rendererPid}/status`);
+    rendererNamespace = readLink(`/proc/${rendererPid}/ns/pid`);
+    hostNamespace = readLink(`/proc/${hostPid}/ns/pid`);
+  } catch {
+    throw new Error("Desktop smoke Linux renderer OS sandbox evidence could not be read.");
+  }
+  // Inherited container filters alone do not prove Chromium renderer isolation.
+  // Electron's ProcessMetric.sandboxed is not an OS-level Linux probe.
+  if (
+    !/^Seccomp:[\t ]+2[\t ]*$/mu.test(status)
+    || !/^NoNewPrivs:[\t ]+1[\t ]*$/mu.test(status)
+    || !/^pid:\[\d+\]$/u.test(rendererNamespace)
+    || !/^pid:\[\d+\]$/u.test(hostNamespace)
+    || rendererNamespace === hostNamespace
+  ) {
+    throw new Error("Desktop smoke Linux renderer OS sandbox verification failed.");
+  }
+  return {
+    type: "desktop-smoke.renderer-security",
+    osSandboxed: true,
+    sandbox: true,
+    contextIsolation: true,
+    nodeIntegration: false,
+  };
+}
 
 export type DesktopSmokeRestartFailureMilestone =
   | "successor-start-failed"

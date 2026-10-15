@@ -141,7 +141,7 @@ export async function startDesktopSidecar(
         env: childEnv,
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
-        ...(platform === "darwin" ? { detached: true } : {}),
+        ...(platform === "darwin" || platform === "linux" ? { detached: true } : {}),
       },
     );
   } catch (error) {
@@ -570,7 +570,7 @@ function forceTerminateChild(
 ): void {
   if (!child.pid) return;
   const platform = options.platform ?? process.platform;
-  if (platform === "darwin") {
+  if (platform === "darwin" || platform === "linux") {
     if (!childClosed) (options.killProcess ?? process.kill)(-child.pid, "SIGKILL");
     return;
   }

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { DESKTOP_ACCESS_HEADER } from "./contracts";
 import {
+  desktopSmokeLinuxRendererSecurityEvent,
   desktopSmokeRestartFailureEvent,
   desktopSmokeSidecarReadyEvent,
   desktopSmokeWorkHash,
@@ -9,6 +10,95 @@ import {
   requestDesktopSmokeRestart,
   verifyDesktopSmokeSuccessor,
 } from "./smoke-host";
+
+describe("Linux packaged renderer OS sandbox evidence", () => {
+  const secureStatus = "Name:\telectron\nPid:\t4242\nNoNewPrivs:\t1\nSeccomp:\t2\nSeccomp_filters:\t1\n";
+  const baseOptions = {
+    rendererPid: 4242,
+    hostPid: 5151,
+    noSandbox: false,
+    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
+    readFile: (path: string): string => {
+      if (path === "/proc/4242/status") return secureStatus;
+      throw new Error(`Unexpected status path: ${path}`);
+    },
+    readLink: (path: string): string => {
+      if (path === "/proc/4242/ns/pid") return "pid:[4026533001]";
+      if (path === "/proc/5151/ns/pid") return "pid:[4026531836]";
+      throw new Error(`Unexpected namespace path: ${path}`);
+    },
+  };
+
+  it("accepts an isolated renderer with kernel filters and emits only boolean security evidence", () => {
+    expect(desktopSmokeLinuxRendererSecurityEvent(baseOptions)).toEqual({
+      type: "desktop-smoke.renderer-security",
+      osSandboxed: true,
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+    });
+  });
+
+  it.each([
+    { sandbox: false, contextIsolation: true, nodeIntegration: false },
+    { sandbox: true, contextIsolation: false, nodeIntegration: false },
+    { sandbox: true, contextIsolation: true, nodeIntegration: true },
+    { sandbox: undefined, contextIsolation: true, nodeIntegration: false },
+    { sandbox: true, contextIsolation: undefined, nodeIntegration: false },
+    { sandbox: true, contextIsolation: true, nodeIntegration: undefined },
+  ])("rejects weakened or missing BrowserWindow isolation: %j", (webPreferences) => {
+    expect(() => desktopSmokeLinuxRendererSecurityEvent({ ...baseOptions, webPreferences }))
+      .toThrow(/^Desktop smoke Linux renderer security/u);
+  });
+
+  it("rejects no-sandbox even when preferences and proc evidence claim isolation", () => {
+    expect(() => desktopSmokeLinuxRendererSecurityEvent({ ...baseOptions, noSandbox: true }))
+      .toThrow(/^Desktop smoke Linux renderer security/u);
+  });
+
+  it.each([
+    "NoNewPrivs:\t1\nSeccomp:\t0\n",
+    "NoNewPrivs:\t1\nSeccomp:\t1\n",
+    "NoNewPrivs:\t0\nSeccomp:\t2\n",
+    "Seccomp:\t2\n",
+    "NoNewPrivs:\t1\nSeccomp_filters:\t2\n",
+    "NoNewPrivs:\t10\nSeccomp:\t2\n",
+    "NoNewPrivs:\t1\nSeccomp:\t20\n",
+  ])("rejects incomplete kernel enforcement: %j", (status) => {
+    expect(() => desktopSmokeLinuxRendererSecurityEvent({
+      ...baseOptions,
+      readFile: () => status,
+    })).toThrow(/renderer.*sandbox/i);
+  });
+
+  it("does not mistake an inherited container seccomp filter for renderer sandboxing", () => {
+    expect(() => desktopSmokeLinuxRendererSecurityEvent({
+      ...baseOptions,
+      readLink: () => "pid:[4026531836]",
+    })).toThrow(/renderer.*sandbox/i);
+  });
+
+  it.each(["", "pid:[]", "mnt:[4026533001]", "unavailable"])("rejects invalid PID namespace evidence: %j", (namespace) => {
+    expect(() => desktopSmokeLinuxRendererSecurityEvent({
+      ...baseOptions,
+      readLink: (path) => path === "/proc/4242/ns/pid" ? namespace : baseOptions.readLink(path),
+    })).toThrow(/renderer.*sandbox/i);
+  });
+
+  it.each([0, -1, 1.5, Number.NaN, 5151])("rejects a missing or host renderer PID: %s", (rendererPid) => {
+    const readFile = vi.fn(baseOptions.readFile);
+    expect(() => desktopSmokeLinuxRendererSecurityEvent({ ...baseOptions, rendererPid, readFile }))
+      .toThrow(/renderer.*sandbox/i);
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
+  it.each(["readFile", "readLink"] as const)("fails closed without publishing raw %s diagnostics", (reader) => {
+    expect(() => desktopSmokeLinuxRendererSecurityEvent({
+      ...baseOptions,
+      [reader]: () => { throw new Error("private-proc-diagnostic"); },
+    })).toThrow(/^Desktop smoke Linux renderer OS sandbox evidence could not be read\.$/u);
+  });
+});
 
 describe("packaged desktop smoke preflight", () => {
   const baseOptions = {

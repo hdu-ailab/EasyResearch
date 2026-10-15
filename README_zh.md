@@ -21,7 +21,8 @@
 |---|---|---|
 | Windows x64 | [`EasyResearch-<version>-windows-x64.exe`](https://github.com/hdu-ailab/EasyResearch/releases/latest) | 运行安装程序。 |
 | Apple Silicon macOS | [`EasyResearch-<version>-macos-arm64.dmg`](https://github.com/hdu-ailab/EasyResearch/releases/latest) | 打开 DMG，将 EasyResearch 拖入 Applications。 |
-| Linux | 不提供桌面安装包 | 使用下方 npm CLI。 |
+| Linux ARM64（aarch64，glibc） | [`EasyResearch-<version>-linux-arm64.AppImage`](https://github.com/hdu-ailab/EasyResearch/releases/latest) / [`.deb`](https://github.com/hdu-ailab/EasyResearch/releases/latest) | AppImage 添加执行权限后启动；Debian/Ubuntu 可安装 `.deb`。从 0.1.12 起持续提供。 |
+| Linux x64 | npm CLI | 桌面构建仅供开发预览。 |
 
 1. 打开[最新 GitHub Release](https://github.com/hdu-ailab/EasyResearch/releases/latest)。
 2. 下载对应平台的安装包和 `SHA256SUMS`。
@@ -34,6 +35,22 @@ Get-FileHash -Algorithm SHA256 .\EasyResearch-*-windows-x64.exe
 ```bash
 shasum -a 256 EasyResearch-*-macos-arm64.dmg
 ```
+
+```bash
+sha256sum EasyResearch-*-linux-arm64.AppImage  # 或下载的 .deb 文件
+```
+
+Linux ARM64 使用下载版本对应的文件名启动 AppImage：
+
+```bash
+version=0.1.12
+chmod +x "EasyResearch-${version}-linux-arm64.AppImage"
+"./EasyResearch-${version}-linux-arm64.AppImage"
+```
+
+Debian/Ubuntu 也可运行 `sudo apt install ./EasyResearch-<version>-linux-arm64.deb`，
+然后从应用菜单打开 EasyResearch。AppImage 需要可用的系统沙盒；若宿主限制非特权
+用户命名空间，可使用 `.deb` 安装包或恢复宿主支持。
 
 还可以使用 GitHub CLI 核验构建来源证明：
 
@@ -48,7 +65,8 @@ EasyResearch 并选择**打开**。
 桌面版与 CLI 共用 `~/.easyresearch/agent` 状态，但不能同时运行。启动桌面版会停止
 正在运行的 CLI 服务；桌面版持有状态期间，CLI 启动与退出命令会被拒绝。关闭窗口
 只会隐藏到系统托盘或菜单栏；使用其中的**退出**才会取消活动任务并停止后端。
-桌面版通过 GitHub Releases 手动更新。
+桌面版通过 GitHub Releases 手动更新：先从托盘退出，再替换 AppImage 或安装新版
+安装包；已有 `~/.easyresearch/agent` 状态会保留。
 
 ### npm CLI
 
@@ -238,7 +256,7 @@ flowchart LR
 
 ## 运行说明
 
-- npm CLI 支持 Linux x64、Apple Silicon macOS 和 Windows x64；被选中的平台
+- npm CLI 支持 Linux x64/ARM64（glibc）、Apple Silicon macOS 和 Windows x64；被选中的平台
   可执行文件本身不需要 Node 或 Bun。
 - Windows 通过 PowerShell 原生运行，不需要 WSL 或 Git Bash。
 - PATH 中的 Python 3 用于 PDF 转换和 arXiv SDK 功能；内置 Web 检索不依赖

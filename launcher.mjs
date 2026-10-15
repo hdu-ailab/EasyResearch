@@ -47,8 +47,12 @@ export function runLauncher(argv = process.argv.slice(2)) {
   const arch = supportedArchs.includes(process.arch) ? process.arch : undefined;
   const name = platform && arch ? `easyresearch-${platform}-${arch}` : undefined;
   if (!name || !packageJson.optionalDependencies?.[name]) {
+    const supported = Object.keys(packageJson.optionalDependencies ?? {})
+      .filter((dependency) => dependency.startsWith("easyresearch-"))
+      .map((dependency) => dependency.slice("easyresearch-".length))
+      .sort().join(", ");
     console.error(
-      `easyresearch does not ship a binary for ${process.platform}-${process.arch}. Supported platforms: linux-x64, darwin-arm64, windows-x64.`,
+      `easyresearch does not ship a binary for ${process.platform}-${process.arch}. Supported platforms: ${supported || "none configured"}.`,
     );
     return 1;
   }

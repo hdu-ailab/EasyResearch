@@ -24,7 +24,7 @@ interface DesktopEnvironmentOptions {
 
 export function resolvePackagedSidecar(resourcesPath: string, platform: NodeJS.Platform): string {
   if (platform === "win32") return win32.join(resourcesPath, "sidecar", "easyresearch.exe");
-  if (platform === "darwin") return posix.join(resourcesPath, "sidecar", "easyresearch");
+  if (platform === "darwin" || platform === "linux") return posix.join(resourcesPath, "sidecar", "easyresearch");
   throw new Error(`Unsupported desktop platform: ${platform}`);
 }
 
@@ -34,7 +34,7 @@ export function resolveDesktopEnvironment(
   options: DesktopEnvironmentOptions = {},
 ): NodeJS.ProcessEnv {
   const inherited = { ...baseEnv };
-  if (platform === "win32") return inherited;
+  if (platform === "win32" || platform === "linux") return inherited;
   if (platform !== "darwin") throw new Error(`Unsupported desktop platform: ${platform}`);
 
   const shell = inherited.SHELL || "/bin/zsh";

@@ -136,7 +136,10 @@ describe("post-publish installed npm package gate", () => {
     }
   });
 
-  it("installs in isolation and invokes npm's generated Linux bin link", async () => {
+  it.each([
+    ["x64", "easyresearch-linux-x64"],
+    ["arm64", "easyresearch-linux-arm64"],
+  ])("installs the exact %s package in isolation and invokes npm's generated bin link", async (arch, platformPackage) => {
     expect(NPM_REGISTRY).toBe("https://registry.npmjs.org/");
     const version = "0.0.79";
     const calls: Array<{
@@ -161,14 +164,14 @@ describe("post-publish installed npm package gate", () => {
         if (!prefix) throw new Error("test install did not receive a prefix");
         temporaryRoot = dirname(prefix);
         const metaDir = join(prefix, "lib", "node_modules", "easyresearch");
-        const platformDir = join(metaDir, "node_modules", "easyresearch-linux-x64");
+        const platformDir = join(metaDir, "node_modules", platformPackage);
         const binDir = join(prefix, "bin");
         mkdirSync(platformDir, { recursive: true });
         mkdirSync(binDir, { recursive: true });
         writeFileSync(join(metaDir, "package.json"), JSON.stringify({ name: "easyresearch", version }));
         writeFileSync(join(metaDir, "launcher.mjs"), "");
         writeFileSync(join(platformDir, "package.json"), JSON.stringify({
-          name: "easyresearch-linux-x64",
+          name: platformPackage,
           version,
         }));
         generatedBin = join(binDir, "easyresearch");
@@ -186,7 +189,7 @@ describe("post-publish installed npm package gate", () => {
     const result = await verifyInstalledNpmPackage({
       version,
       platform: "linux",
-      arch: "x64",
+      arch,
       baseEnv: {
         PATH: "/usr/bin",
         NODE_PATH: "/ambient/node_modules",
@@ -198,6 +201,8 @@ describe("post-publish installed npm package gate", () => {
     });
 
     expect(result).toEqual({ version, binPath: generatedBin });
+    expect(calls.filter(({ command, args }) => command === "npm" && args[0] === "view")
+      .map(({ args }) => args[1])).toEqual([`easyresearch@${version}`, `${platformPackage}@${version}`]);
     expect(calls.filter(({ command }) => command === "npm").every(({ args }) =>
       args.includes(`--registry=${NPM_REGISTRY}`)
     )).toBe(true);
@@ -206,17 +211,20 @@ describe("post-publish installed npm package gate", () => {
     expect(calls.at(-1)).toMatchObject({ command: generatedBin, args: ["--version"] });
     expect(calls.every(({ env }) => env.NODE_PATH === undefined && env.NODE_OPTIONS === undefined))
       .toBe(true);
-    expect(generatedBin).not.toContain("easyresearch-linux-x64/bin");
+    expect(generatedBin).not.toContain(`${platformPackage}/bin`);
     expect(temporaryRoot).toBeTypeOf("string");
     expect(existsSync(temporaryRoot!)).toBe(false);
   });
 
-  it("rejects a resolved platform manifest outside the temporary prefix", async () => {
+  it.each([
+    ["x64", "easyresearch-linux-x64"],
+    ["arm64", "easyresearch-linux-arm64"],
+  ])("rejects a resolved %s platform manifest outside the temporary prefix", async (arch, platformPackage) => {
     const version = "0.0.79";
     const outsideRoot = mkdtempSync(join(tmpdir(), "easyresearch-outside-platform-"));
     const outsideManifest = join(outsideRoot, "package.json");
     writeFileSync(outsideManifest, JSON.stringify({
-      name: "easyresearch-linux-x64",
+      name: platformPackage,
       version,
     }));
     let generatedBin: string | undefined;
@@ -232,14 +240,14 @@ describe("post-publish installed npm package gate", () => {
         const prefix = args[args.indexOf("--prefix") + 1];
         if (!prefix) throw new Error("test install did not receive a prefix");
         const metaDir = join(prefix, "lib", "node_modules", "easyresearch");
-        const platformDir = join(metaDir, "node_modules", "easyresearch-linux-x64");
+        const platformDir = join(metaDir, "node_modules", platformPackage);
         const binDir = join(prefix, "bin");
         mkdirSync(platformDir, { recursive: true });
         mkdirSync(binDir, { recursive: true });
         writeFileSync(join(metaDir, "package.json"), JSON.stringify({ name: "easyresearch", version }));
         writeFileSync(join(metaDir, "launcher.mjs"), "");
         writeFileSync(join(platformDir, "package.json"), JSON.stringify({
-          name: "easyresearch-linux-x64",
+          name: platformPackage,
           version,
         }));
         generatedBin = join(binDir, "easyresearch");
@@ -256,7 +264,7 @@ describe("post-publish installed npm package gate", () => {
       await expect(verifyInstalledNpmPackage({
         version,
         platform: "linux",
-        arch: "x64",
+        arch,
         baseEnv: { PATH: "/usr/bin" },
         run,
         wait: async () => {},
@@ -267,14 +275,23 @@ describe("post-publish installed npm package gate", () => {
     }
   });
 
-  it("rejects a simulated non-x64 Linux host before invoking npm", async () => {
+  it.each([
+    ["linux", "arm"],
+    ["linux", "ia32"],
+    ["linux", "riscv64"],
+    ["darwin", "arm64"],
+    ["win32", "x64"],
+  ])("rejects unsupported %s/%s before invoking npm or creating a prefix", async (platform, arch) => {
     const run = vi.fn();
+    const makeTemporaryRoot = vi.fn();
     await expect(verifyInstalledNpmPackage({
       version: "0.0.79",
-      platform: "linux",
-      arch: "arm64",
+      platform,
+      arch,
       run,
-    })).rejects.toThrow(/must run on Linux x64/i);
+      makeTemporaryRoot,
+    })).rejects.toThrow(/must run on Linux/i);
     expect(run).not.toHaveBeenCalled();
+    expect(makeTemporaryRoot).not.toHaveBeenCalled();
   });
 });

@@ -19,12 +19,37 @@ describe("packaged sidecar path", () => {
     )).toBe("/Applications/EasyResearch.app/Contents/Resources/sidecar/easyresearch");
   });
 
+  it("resolves the Linux sidecar inside the packaged resources", () => {
+    expect(resolvePackagedSidecar("/opt/EasyResearch/resources", "linux"))
+      .toBe("/opt/EasyResearch/resources/sidecar/easyresearch");
+  });
+
   it("rejects unsupported desktop platforms", () => {
-    expect(() => resolvePackagedSidecar("/app/resources", "linux")).toThrow(/unsupported desktop platform/i);
+    expect(() => resolvePackagedSidecar("/app/resources", "freebsd")).toThrow(/unsupported desktop platform/i);
   });
 });
 
 describe("desktop launch environment", () => {
+  it("copies the Linux desktop environment without invoking a login shell", () => {
+    const baseEnv = {
+      PATH: "/desktop/bin:/usr/bin",
+      SHELL: "/bin/bash",
+      HOME: "/isolated/home",
+      DISPLAY: ":99",
+      WAYLAND_DISPLAY: "wayland-0",
+      XDG_RUNTIME_DIR: "/isolated/runtime",
+      DBUS_SESSION_BUS_ADDRESS: "unix:path=/isolated/bus",
+      EASYRESEARCH_CODING_AGENT_DIR: "/isolated/agent",
+    };
+    const runShell = vi.fn(() => { throw new Error("Unexpected login shell"); });
+    const environment = resolveDesktopEnvironment(baseEnv, "linux", { runShell });
+
+    expect(environment).toEqual(baseEnv);
+    environment.PATH = "/child-only";
+    expect(baseEnv.PATH).toBe("/desktop/bin:/usr/bin");
+    expect(runShell).not.toHaveBeenCalled();
+  });
+
   it("keeps inherited Windows variables without invoking a shell", () => {
     const runShell = vi.fn();
     expect(resolveDesktopEnvironment({ Path: "C:\\Windows" }, "win32", { runShell }))

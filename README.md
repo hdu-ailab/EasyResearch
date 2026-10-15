@@ -23,7 +23,11 @@ require a global npm installation, Node, or Bun.
 |---|---|---|
 | Windows x64 | [`EasyResearch-<version>-windows-x64.exe`](https://github.com/hdu-ailab/EasyResearch/releases/latest) | Run the installer. |
 | macOS Apple silicon | [`EasyResearch-<version>-macos-arm64.dmg`](https://github.com/hdu-ailab/EasyResearch/releases/latest) | Open the DMG and drag EasyResearch to Applications. |
-| Linux | No desktop package | Use the npm CLI below. |
+| Linux ARM64 (aarch64), glibc | [`EasyResearch-<version>-linux-arm64.AppImage`](https://github.com/hdu-ailab/EasyResearch/releases/latest) | Make executable and run. |
+| Debian/Ubuntu ARM64 | [`EasyResearch-<version>-linux-arm64.deb`](https://github.com/hdu-ailab/EasyResearch/releases/latest) | Install with `apt`, then open EasyResearch from the applications menu. |
+
+Linux ARM64 desktop packages are available starting with 0.1.12. Linux x64 uses
+the npm CLI; its desktop build is a development preview only.
 
 1. Open the [latest GitHub Release](https://github.com/hdu-ailab/EasyResearch/releases/latest).
 2. Download the installer for your platform and `SHA256SUMS`.
@@ -37,6 +41,10 @@ Get-FileHash -Algorithm SHA256 .\EasyResearch-*-windows-x64.exe
 shasum -a 256 EasyResearch-*-macos-arm64.dmg
 ```
 
+```bash
+sha256sum EasyResearch-*-linux-arm64.AppImage  # or the downloaded .deb
+```
+
 GitHub build-provenance attestations can also be checked with:
 
 ```bash
@@ -48,11 +56,31 @@ users can choose **More info** and **Run anyway** if SmartScreen warns. On
 macOS, right-click EasyResearch and choose **Open** if Gatekeeper blocks the
 first launch.
 
+On Linux ARM64, use the version you downloaded:
+
+```bash
+version=0.1.12
+chmod +x "EasyResearch-${version}-linux-arm64.AppImage"
+"./EasyResearch-${version}-linux-arm64.AppImage"
+```
+
+For Debian/Ubuntu installation:
+
+```bash
+version=0.1.12
+sudo apt install "./EasyResearch-${version}-linux-arm64.deb"
+```
+
+Open the installed app from the applications menu. If the AppImage cannot start
+because the host restricts unprivileged user namespaces, use the `.deb` package
+or restore the host's namespace support. The app requires a working sandbox.
+
 Desktop and CLI share `~/.easyresearch/agent` state but cannot run at the same
 time. Starting Desktop stops a running CLI service; CLI start and exit commands
 are rejected while Desktop owns the state. Closing the window keeps Desktop
 active in the tray or menu bar; use **Exit** there to cancel active work and stop
-the backend. Desktop updates are manual downloads from GitHub Releases.
+the backend. To update, choose **Exit**, download the newer package from GitHub
+Releases, then replace the AppImage or install the new installer/`.deb`.
 
 ### npm CLI
 
@@ -262,8 +290,9 @@ For manual configuration:
 
 ## Runtime Notes
 
-- The npm CLI supports Linux x64, Apple Silicon macOS, and Windows x64. Its
-  selected platform executable needs neither Node nor Bun.
+- The npm CLI supports Linux x64 and ARM64 (aarch64) with glibc, Apple Silicon
+  macOS, and Windows x64. npm selects the matching exact-version platform package;
+  its executable needs neither Node nor Bun.
 - Windows runs natively through PowerShell and does not require WSL or Git Bash.
 - Python 3 on PATH enables PDF conversion and arXiv SDK features. Bundled Web
   search does not depend on Python. Startup degrades gracefully when Python is

@@ -15,7 +15,6 @@ import { createRequire } from "node:module";
 export const NPM_REGISTRY = "https://registry.npmjs.org/";
 
 const META_PACKAGE = "easyresearch";
-const PLATFORM_PACKAGE = "easyresearch-linux-x64";
 
 export async function waitForPublishedPackages(options) {
   if (!Array.isArray(options.specs) || options.specs.length === 0) {
@@ -112,12 +111,12 @@ export async function verifyInstalledNpmPackage(options) {
   if (typeof version !== "string" || !/^[0-9A-Za-z][0-9A-Za-z.+-]*$/u.test(version)) {
     throw new Error(`installed npm package gate received an invalid version: ${String(version)}`);
   }
-  if ((options.platform ?? process.platform) !== "linux") {
-    throw new Error("installed npm package gate must run on Linux");
+  const platform = options.platform ?? process.platform;
+  const arch = options.arch ?? process.arch;
+  if (platform !== "linux" || (arch !== "x64" && arch !== "arm64")) {
+    throw new Error(`installed npm package gate must run on Linux x64 or arm64; received ${platform}/${arch}`);
   }
-  if ((options.arch ?? process.arch) !== "x64") {
-    throw new Error("installed npm package gate must run on Linux x64");
-  }
+  const platformPackage = `easyresearch-${platform}-${arch}`;
 
   const run = options.run ?? ((command, args, runOptions) => spawnSync(command, args, runOptions));
   const wait = options.wait
@@ -140,7 +139,7 @@ export async function verifyInstalledNpmPackage(options) {
   delete childEnv.NODE_PATH;
   delete childEnv.NODE_OPTIONS;
   const runOptions = { encoding: "utf8", env: childEnv };
-  const specs = [`${META_PACKAGE}@${version}`, `${PLATFORM_PACKAGE}@${version}`];
+  const specs = [`${META_PACKAGE}@${version}`, `${platformPackage}@${version}`];
 
   try {
     await waitForPublishedPackages({
@@ -193,10 +192,10 @@ export async function verifyInstalledNpmPackage(options) {
       platformManifestPath = (options.resolvePlatformManifest
         ?? ((fromPath, specifier) => createRequire(fromPath).resolve(specifier)))(
         join(metaDir, "launcher.mjs"),
-        `${PLATFORM_PACKAGE}/package.json`,
+        `${platformPackage}/package.json`,
       );
     } catch (error) {
-      throw new Error(`installed ${META_PACKAGE}@${version} did not resolve ${PLATFORM_PACKAGE}`, {
+      throw new Error(`installed ${META_PACKAGE}@${version} did not resolve ${platformPackage}`, {
         cause: error,
       });
     }
@@ -214,7 +213,7 @@ export async function verifyInstalledNpmPackage(options) {
     }
     assertInstalledPackageManifest(
       readJson(canonicalPlatformManifest),
-      PLATFORM_PACKAGE,
+      platformPackage,
       version,
     );
 
