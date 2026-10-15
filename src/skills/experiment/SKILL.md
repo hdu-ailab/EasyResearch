@@ -332,7 +332,10 @@ Formal artifacts usually include:
 
 Formal table requirements:
 - Label the proposed method as `<method name> (ours)` in performance comparison tables.
-- In paper-facing Markdown tables, bold the highest primary metric within each dataset, dataset/SNR, or otherwise comparable group.
+- In paper-facing Markdown tables, bold the best primary metric according to
+  its declared direction within each fair comparison group: highest for
+  accuracy/F1, lowest for error/loss/latency. Show direction and handle ties
+  consistently; rounding and bolding do not establish statistical significance.
 - Keep raw numeric CSV tables unformatted for analysis, and apply bolding only to Markdown/LaTeX presentation tables.
 - Include paired-delta and statistical-test tables when they materially clarify the claim.
 - If the proposed method is not the best in an ablation or subgroup, do not force bolding onto it; bold the true best score and explain the result honestly.

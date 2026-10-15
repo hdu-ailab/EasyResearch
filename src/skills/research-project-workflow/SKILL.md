@@ -160,6 +160,14 @@ coverage target, not permission to omit additional selected papers. They also re
 output unless the user limited scope. Writing tasks carry the exact drafting
 authority already supplied.
 
+Empirical Writing tasks identify the accepted implementation/configuration,
+formal result and seed/ablation records, material passages, and figure/data
+paths needed for the intended claims. Require the Skill's compact argument map
+in the existing readiness report, source-grounded prose, author self-checks and
+an inspectable revision record. Scope these requirements to the requested
+section or correction for narrow tasks. Complete-paper PDF delivery includes
+rendered-output checks, with unavailable inspection explicitly reported.
+
 A Review task carries source/material authority, exact Markdown/TeX source
 paths, relevant material/experiment/figure evidence, the preceding specialist
 handoff, and timestamped report/handoff completion criteria. After one Review,
@@ -197,7 +205,19 @@ On the hidden terminal status+handoff:
 6. After accepted Writing source artifacts, decide whether one independent
    Review is warranted. Review completion means the critique was produced, not
    that the paper passed. Route findings to Search, Experiment, Writing, or
-   Figures and keep final acceptance with the Research Assistant.
+    Figures and keep final acceptance with the Research Assistant.
+
+For manuscript drafting/revision acceptance, check the actual manuscript and
+the argument/evidence map required by the selected route and scope, not just
+file existence. For readiness-only work, accept the requested readiness/gap
+report without requiring a manuscript or full-draft map. For corrections,
+follow each supplied finding ID to
+its changed location and checked evidence in the revision report. A narrowed
+claim does not prove another owner's missing experiment was performed. Inspect
+required PDF delivery checks and any unreviewed scope before declaring the
+requested outcome complete. A required unperformed check remains partial/blocked
+unless the user explicitly accepted that scope limitation. These are routine
+acceptance checks, not a second independent Review.
 
 This is routine acceptance against dispatch criteria. Independent deeper
 critique is delegated to Review when the Research Assistant selects it or the

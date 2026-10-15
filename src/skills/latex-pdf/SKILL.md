@@ -23,7 +23,9 @@ description: |-
 
 ## Discovery
 
-- Locate the main file with `Glob` for `*.tex` if the user does not specify it.
+- Locate the main `*.tex` file within the supplied project using the
+  platform-native shell (`Get-ChildItem` in PowerShell or `find` in Bash) if the
+  user does not specify it. Do not assume a separate `Glob` tool exists.
 - Read the first 80 lines of likely main files and prefer the file containing `\documentclass` and `\begin{document}`.
 - Check graphics paths from `\includegraphics{...}` when image errors occur.
 - Check whether the project uses inline `thebibliography`, BibTeX (`\bibliography{...}`), or BibLaTeX (`\addbibresource{...}`).
@@ -76,7 +78,10 @@ neither resolves anywhere, proceed to `## Overleaf Compilation` below.
 
 ## Build Commands
 
-Run commands from the directory containing the main `.tex` file. Use the Bash tool `workdir` parameter rather than `cd`.
+Run commands from the directory containing the main `.tex` file. Use the
+platform-native shell's directory-changing syntax when needed; do not assume
+the tool has a `workdir` argument. The executable invocations below apply to
+both Bash and PowerShell when the executable is on PATH.
 
 Preferred command:
 
@@ -176,6 +181,39 @@ existing guidance in `## Error Handling`: check whether the package is used,
 remove unused `\usepackage{...}` lines, and only then recommend the TeX Live
 package for the user's distribution.
 
+## Rendered-Output Inspection
+
+For complete-paper delivery, inspect the PDF generated from the final source,
+not a previous build or the TeX alone. For a build-only request, report the
+build result and scope any additional inspection to the task.
+
+1. Confirm the expected PDF is nonempty, opens, and has the expected content
+   and page sequence. Compare title, main results, citations and figure/table
+   references with the authoritative Markdown.
+2. Use an available local renderer or authorized browser PDF viewer to inspect
+   every page at reading size. For example, if Poppler is installed, create a
+   temporary preview directory with the native shell and run
+   `pdftoppm -r 120 -png main.pdf preview/page`, then inspect the generated PNGs
+   with image-capable `read`. PDF text extraction alone is not a visual check.
+3. Check clipping, overlapping text/math, missing glyphs, unreadable legends,
+   table width, caption placement, broken cross-references and excessive blank
+   space. Confirm figures and their accompanying discussion remain correctly
+   associated after pagination. Inspect real figure pixels and supplied numeric
+   sources when a caption or interpretation is in doubt.
+4. Correct Writing-owned content/layout, preserving Markdown as the authority
+   for semantic edits. Route figure-source/data defects to the responsible
+   owner. Rebuild and inspect affected pages and downstream placement after
+   corrections; do not edit venue style files to hide a layout failure.
+5. Record actual checks and remaining issues in the existing revision report
+   for paper-pipeline work, or in the task result for standalone compilation.
+   Account for temporary previews as work files rather than final deliverables.
+
+If rendering or image understanding is unavailable, preserve the compiled PDF
+and state which visual checks remain unreviewed. Do not claim visual readiness
+from a successful compiler exit or a clean log. If that inspection is required
+by the delivery scope, return a partial result or the specific blocking
+dependency through the caller. No unapproved package installation is implied.
+
 ## Cleanup
 
 - Use `latexmk -c` to remove auxiliary files while preserving the PDF.
@@ -194,5 +232,6 @@ package for the user's distribution.
 
 - State whether PDF generation succeeded.
 - Give the absolute or project-relative PDF path.
+- State which rendered-output checks were performed and which remain unreviewed.
 - Summarize only meaningful warnings: undefined references/citations, missing fonts/packages/figures, severe overfull boxes, or template-specific issues.
 - Mention routine underfull/overfull boxes as non-fatal unless they affect visible layout.

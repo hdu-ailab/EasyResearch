@@ -28,6 +28,21 @@ benchmark, apply this Skill only to benchmark-derived claims.
 
 This skill is not responsible for exploratory experiments or PDF conversion. Use `research-project-workflow` to orchestrate the full paper project. Use `experiment` for experiment setup, baselines, model trials, dataset expansion, and experiment-record management. Use `paper-search` for paper discovery. Use `arxiv` for arXiv metadata, BibTeX, and citation checks. Use `pdf-to-markdown` to convert public or user-provided PDFs before reading them deeply.
 
+## Load The Relevant Writing Instructions
+
+Read these files from this Skill's resolved directory at the indicated step.
+Their contents are not automatically loaded with this Skill:
+
+| Task | Required reference |
+|---|---|
+| Draft or substantially rewrite scholarly prose | `references/writing-guide.md` before organizing the argument |
+| Add, replace, or verify citations | `references/citation-workflow.md` before choosing sources |
+| Finalize a draft or address review findings | `references/manuscript-revision-audit.md` before checking and revising |
+
+Use `references/reviewer-guidelines.md` for deeper author self-critique and
+`references/checklists.md` for a supplied venue. Verify current venue rules;
+historical examples do not impose a universal page count or review score.
+
 ## Non-Negotiable Rule
 Do not start writing the manuscript body just because a few small or incomplete experiments exist.
 
@@ -43,6 +58,8 @@ Read when available:
 - `<experiment-root>/logs/` only when needed to verify commands or failures
 - result summary CSV/JSON/Markdown files
 - ablation files and dataset/split manifests
+- executed implementation and saved configuration for the reported runs
+- figure exports, plotting code and the numeric data behind intended figures
 
 The accepted Experiment handoff selects `<experiment-root>`: `experiments/` for
 local execution or `experiment_ssh/` for SSH execution. These paths are relative
@@ -99,7 +116,7 @@ Keep outputs separated by audience:
 - Submission-facing source: `manuscript/manuscript.md`.
 - Internal evidence and workflow records:
   `manuscript/citation-verification.md`,
-  `manuscript/writing-readiness-report.md` when needed,
+  `manuscript/writing-readiness-report.md` for readiness and the full-draft argument map,
   `manuscript/revision-report.md` after revision or audit passes, and the
   immutable timestamped Writing handoff.
 - Derived submission files: `manuscript/latex/` and
@@ -107,7 +124,10 @@ Keep outputs separated by audience:
 
 Create `manuscript/` only when an authorized deliverable or readiness report needs it. Keep `manuscript/manuscript.md` authoritative and LaTeX/PDF derived.
 
-Markdown drafts may contain LaTeX math blocks for formulas. Do not convert to a conference LaTeX template unless the user asks.
+Markdown drafts may contain LaTeX math. A complete-paper request includes
+derived LaTeX/PDF; a draft-, section-, or Markdown-only request does not. Use a
+venue template only when the task identifies that venue; otherwise use a
+suitable neutral layout without inventing a submission target.
 
 ## Manuscript And Internal Records
 
@@ -194,6 +214,13 @@ Required Method content:
 
 If the proposed model is a combination of components from multiple papers, describe the novelty as an evidence-backed component combination unless there is a genuinely new mechanism.
 
+Reconcile every central equation and algorithm step with the executed code and
+saved configuration: tensors being transformed, normalization/reduction axes,
+loss coefficients, training versus inference, and data used for selection.
+An early proposal or a polished summary is not proof that a component was
+implemented. Correct the description when implementation evidence is clear;
+route scientific implementation errors or missing evidence to Experiment.
+
 For each combined component, state:
 - Source paper or baseline family.
 - Original purpose of the component.
@@ -241,8 +268,11 @@ Make paper-facing tables easy for reviewers to parse.
 
 Required table conventions:
 - Label the proposed method as `<method name> (ours)` in every main performance, SNR, ablation, and paired-delta table where it appears.
-- Bold the highest score for the primary metric within each fair comparison group, such as dataset, dataset/SNR, task, or split.
-- If accuracy and macro-F1 are both reported, bold the highest value in each metric column only when the values are directly comparable.
+- Bold the best value according to the metric's declared direction within each
+  fair comparison group: highest for accuracy/F1, lowest for loss/error/latency.
+  Mark direction in the header or caption and compare only like protocols.
+- Treat exact ties consistently. If rounding hides a difference, increase
+  precision or explain the tie; formatting does not establish significance.
 - Do not bold a proposed method just because it is proposed; bold the actual best score, even if a baseline wins.
 - Keep numeric precision consistent across methods and datasets.
 - State whether values are `mean ± sample std`, confidence intervals, or single-run values.
@@ -265,6 +295,11 @@ For each cited work, verify at least:
 - Venue or source.
 - Stable URL, DOI, arXiv ID, OpenReview URL, or ACL Anthology URL.
 
+Separately verify support for the adjacent claim in a readable source passage,
+equation, table or figure. In `citation-verification.md`, record the citation's
+purpose, intended manuscript location, source locator and support limits.
+Metadata verification or a keyword match cannot establish scientific support.
+
 If a citation cannot be verified, do not silently include it as a normal
 reference. Record it in `manuscript/citation-verification.md`, not in the
 submission-facing manuscript:
@@ -286,17 +321,27 @@ user inside the paper.
 Do not leave fake BibTeX entries, placeholder venues, or invented author lists in the draft.
 
 ## Claim Discipline
-Every main claim must be backed by an experiment, ablation, verified citation, or clearly marked limitation.
+Every main scientific claim needs support from an actual experiment, ablation,
+analysis or verified source passage, with its limits stated accurately.
 
-Use this pattern internally before writing the Results and Abstract:
+Before a full draft, put a compact argument map in the existing
+`manuscript/writing-readiness-report.md`. Record the research question, audience
+or supplied venue, one evidence-bounded central contribution, and each section's
+purpose. Use the following table to connect claims with their actual support:
 
 ```markdown
-| Claim | Evidence | Manuscript location |
-|---|---|---|
-| <claim> | <result table, ablation, citation, or limitation> | <section> |
+| Claim / question | Result or source locator | Code / config / figure locator | Counterevidence and limits | Manuscript location |
+|---|---|---|---|---|
+| <bounded claim> | <actual run/table or source passage> | <implementation and visual evidence, or not applicable> | <negative cases, uncertainty, untested conditions> | <section and purpose> |
 ```
 
 If a claim has no evidence, weaken it or remove it.
+
+A limitation bounds a claim; it is not positive evidence for that claim. Keep
+planned experiments distinct from completed runs. Include relevant negative
+results and all formal seed/ablation evidence, not only a selected winner.
+For a section-only request, prepare only the relevant entries. For revisions,
+update changed entries and preserve the evidence behind unaffected claims.
 
 ## Drafting Workflow
 
@@ -307,51 +352,99 @@ inspect the draft before replacing the authoritative manuscript. After failure,
 inspect existing pieces and resume missing sections. `write` overwrites; it is
 not append. Keep temporary paths and recovery details out of manuscript prose.
 Follow this order:
-- Check the writing readiness gate.
-- Build a claim-evidence table.
-- Verify citations and separate uncertain references.
-- Draft the Method section with formulas before polishing the Abstract.
-- Draft Experiments from `results/`, not from memory.
-- Draft Introduction after the contribution and evidence are clear.
-- Draft Abstract last or revise it last.
-- Run a self-review pass for overclaiming, missing formulas, missing citations, and result mismatches.
-- Compare `manuscript/manuscript.md` against the internal reports and handoff.
-  Move any workflow status, local path inventory, unresolved-reference queue,
-  changed-file list, audit finding, or user instruction out of the manuscript
-  before deriving LaTeX/PDF.
+1. Check readiness and authority, read the writing guide, and build the argument
+   map. Scope the work to the actual requested deliverable.
+2. Read the accepted evidence directly. Reconcile code/configuration with the
+   method, verify citation identity and claim support, and inventory real
+   figures and their numeric sources. Resolve conflicts before writing claims.
+3. Draft Method and Experimental Setup from the implementation and protocol.
+   Explain why each design choice tests the question; equations formalize the
+   actual operations rather than decorate the prose.
+4. Draft Results from formal artifacts. For each main comparison, explain the
+   question, controlled comparison, observed magnitude and uncertainty, and the
+   bounded answer. Distinguish observations from proposed explanations.
+5. Write Related Work by comparing mechanisms, assumptions and evaluation
+   settings. Write Introduction around the supported gap and contribution;
+   write Discussion/Limitations from counterevidence and untested conditions.
+6. Write or revise the title and Abstract last. They summarize the completed
+   study, including mixed outcomes, rather than the initial proposal.
+7. Load the revision audit and perform the author revision passes below.
+8. Inspect the assembled Markdown for coherence and internal-record leakage.
+   Derive required LaTeX/PDF from this version, inspect the rendered deliverable,
+   and verify that citations, numbers and conclusions still agree.
 
 Do not spend large token budgets writing polished prose before the readiness gate passes.
+
+## Author Revision Passes
+
+Use at most three passes after the initial draft within the authorized budget.
+Each pass reads the current manuscript and the evidence for its findings;
+previous prose is not a substitute for original sources.
+
+- **Evidence:** check method/code agreement, result values and direction,
+  uncertainty, citation support, counterexamples and scope of conclusions.
+- **Argument:** check whether sections answer the research question, comparisons
+  establish the claimed difference, and paragraphs develop an explanation rather
+  than repeat tables or generic motivation. Merge fragments and remove repetition.
+- **Presentation:** check actual images, captions and their in-text discussion,
+  notation, cross-references and required PDF rendering.
+
+For each pass, fix concrete observed issues and recheck the affected claims.
+Stop early when no actionable issue remains. Final artifact verification is
+still required. If evidence or another owner's work is missing, preserve the
+usable draft, narrow unsupported claims where possible, and report the gap.
+Do not fabricate an experiment, alter its results, or start an unlimited polish
+loop. These are author self-checks, not independent Review or acceptance scores.
+
+Record self-check findings and supplied Review findings in
+`manuscript/revision-report.md`:
+
+| Finding ID | Owner | Disposition | Changed manuscript location | Evidence checked | Remaining action |
+|---|---|---|---|---|---|
+| <original Review ID or local self-check ID> | <responsible role> | <corrected / claim narrowed / unresolved / unreviewed> | <section, paragraph, equation, table or caption> | <exact source/result locator and check> | <owner action or none> |
+
+Preserve supplied finding IDs and immutable Review reports. Correct only
+Writing-owned artifacts. A removed claim can be recorded as narrowed while its
+requested Experiment/Figures/Search task remains unresolved; never mark that
+task completed by editing prose. Recheck that the recorded change actually
+appears in the final artifact. A second independent Review is user-explicit.
 
 ## Self-Review Checklist
 Before calling a draft usable, check:
 - The paper uses "We" for authorial actions.
 - The Method section contains complete formulas.
 - The proposed model is described precisely enough to implement.
+- Central formulas and algorithm steps agree with the executed code/configuration.
 - Results are copied from actual experiment artifacts.
 - Baseline comparison is fair and uses the same protocol.
 - Ablations support the component-combination story.
 - Unverified citations are isolated in `citation-verification.md` and omitted
   from the manuscript.
 - Claims in Abstract and Introduction are supported by Results.
+- Each main result has an interpretation and scope limit, not just a repeated number.
+- Every included figure agrees with its caption, discussion and numeric source;
+  visual checks actually performed are distinguished from unavailable checks.
 - Limitations include weak datasets, failed settings, incomplete ablations, and external validity limits.
 - The manuscript contains no workflow status, local project paths, internal
   verification queues, revision log, or instructions to the user.
 
 ## LaTeX And Venue Templates
-Use LaTeX only when the user explicitly asks for it or when preparing a venue submission.
+Use `latex-pdf` for a complete paper and for explicitly requested TeX/PDF work.
+Skip derived files when the user limits the output to a draft, section or
+Markdown. Keep the same scholarly content and claim limits across formats.
 
-Templates are available under `templates/`, but do not copy or convert to them by default.
+Templates under `templates/` are candidates for a supplied venue, not evidence
+of current venue rules. Use the task's verified requirements and available tools.
 
 When converting Markdown to LaTeX:
 - Keep the Markdown draft as the source working draft unless the user says otherwise.
 - Compile after major section changes.
 - Verify citations, figure paths, labels, and table formatting.
+- Follow `latex-pdf`'s rendered-output inspection; compiling is not visual review.
 - Do not modify venue `.sty` files.
 
 ## Useful References
-Load reference files only when needed:
-- `references/writing-guide.md` for detailed writing advice.
-- `references/citation-workflow.md` for citation verification.
+Follow the required loading table above. Additional references:
 - `references/reviewer-guidelines.md` for self-review and rebuttal framing.
 - `references/checklists.md` for venue-specific checklists.
 - `references/manuscript-revision-audit.md` for near-complete manuscript audits.

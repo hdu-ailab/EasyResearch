@@ -2,6 +2,12 @@
 
 Patterns and best practices distilled from running research experiments at scale with the Hermes agent. These cover experiment infrastructure, evaluation protocols, monitoring, and failure recovery.
 
+For EasyResearch Writing, use this reference to interpret evidence and identify
+gaps for Experiment. Execution, environment changes, retry budgets and remote
+operations follow the `experiment` Skill and the current Agent's authority.
+Examples here do not grant Writing permission to run trials or replace another
+specialist when a dispatch fails. Use only tools available in the current runtime.
+
 ---
 
 ## Experiment Infrastructure
@@ -481,8 +487,8 @@ Next: Experiment should record the completed run and produce the missing formal 
 | **Process crash** | PID gone, log stops mid-problem | Re-run script (resumes from last checkpoint) |
 | **Wrong model ID** | Model not found errors | Fix ID (e.g., `claude-opus-4-6` not `claude-opus-4.6`) |
 | **Parallel slowdown** | Each experiment taking 2x longer | Reduce parallel experiments to 2-3 max |
-| **Security scan blocks** | Commands blocked by security | Use `execute_code` instead of piped `terminal` commands |
-| **Delegation failures** | `delegate_task` returns errors | Fall back to doing work directly |
+| **Command permission or tool failure** | The configured tool rejects or cannot execute the action | Preserve evidence and report the exact blocker to the caller; do not bypass the failure with an invented tool |
+| **Delegation failures** | The available `subagent` tool reports an error | Follow the caller's bounded retry policy and role boundaries; report an unresolved owner task rather than taking over its work |
 | **Timeout on hard problems** | Process stuck, no log progress | Kill, skip problem, note in results |
 | **Dataset path mismatch** | File not found errors | Verify paths before launching |
 

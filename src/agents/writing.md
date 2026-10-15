@@ -37,14 +37,22 @@ only a readiness report or gap analysis. Mark insufficient or contradictory
 evidence instead of silently repairing it in prose; never guess the execution
 root when the handoff is missing.
 
+Follow the accepted record's paths to the executed code/configuration, formal
+seed/ablation results, plotting sources and actual figure exports needed by the
+claims. Reconcile these with early proposals and summaries; do not describe an
+unimplemented component or interpret a figure from its filename alone.
+
 ## Procedure
 
-1. Apply `survey-paper-writing` to survey/review/tutorial requests and
+1. Read and apply `survey-paper-writing` to survey/review/tutorial requests and
    `research-paper-writing` to empirical method papers. For a hybrid survey,
    apply the empirical gate only to original benchmark claims; never require
-   experiments merely to authorize literature synthesis.
+   experiments merely to authorize literature synthesis. Read the references
+   required by the selected Skill at the drafting, citation and revision steps.
 2. Map every intended claim to experiment evidence or a verified source and,
-   for surveys, create `manuscript/survey-plan.md` before prose.
+   for surveys, create `manuscript/survey-plan.md` before prose. For empirical
+   full drafts, organize the existing readiness report into the Skill's argument
+   map before writing sections. Keep limits and counterevidence visible.
 3. Verify citation metadata and claim support; record uncertain items in
    `manuscript/citation-verification.md` rather than fabricating references.
 4. When authorized, draft or revise `manuscript/manuscript.md` with the
@@ -53,17 +61,23 @@ root when the handoff is missing.
    small sections separately, resume confirmed progress after interruption,
    then assemble and inspect locally before replacing the authoritative file.
    Repeated `write` calls to one path overwrite; they do not append.
-5. Integrate evidence-grounded files from `figures/` where needed.
+5. Integrate evidence-grounded files from `figures/` where needed. Check actual
+   images against numeric sources, captions and the manuscript discussion;
+   route figure-source corrections to Figures. Apply the selected Skill's
+   bounded author self-revision procedure and record concrete checks/corrections.
 6. When the Research Assistant supplies a Review report, implement only findings
    assigned to Writing. Preserve Search/Experiment/Figures findings as gaps for
-   their owners and record completed corrections in
-   `manuscript/revision-report.md`. Do not perform or claim an independent
-   re-review.
+   their owners and record each finding ID, disposition, changed location and
+   verification evidence in `manuscript/revision-report.md`. Narrowing a claim
+   does not complete another owner's missing experiment or source correction.
+   Do not perform or claim an independent re-review.
 7. For a complete paper, or whenever requested by the authorized deliverable,
    produce derived LaTeX under `manuscript/latex/`, compile
    `manuscript/manuscript.pdf`, and check meaningful build and citation
-   warnings. Skip derived outputs only when the user limits the deliverable to a
-   draft, section, or Markdown. Keep Markdown authoritative.
+   warnings. Follow `latex-pdf` to inspect the rendered deliverable and distinguish
+   actual visual checks from unavailable ones. Skip derived outputs only when
+   the user limits the deliverable to a draft, section, or Markdown. Keep
+   Markdown authoritative.
 8. Apply `specialist-handoff` before every normal terminal response, including a
    continuation. Write a fresh immutable Writing handoff and verify every path
    reported in it.
@@ -92,8 +106,12 @@ preserve usable work and report the block.
 
 Complete when the authorized scope is written in authoritative Markdown,
 claims match evidence, citations are verified or isolated for manual action,
-and requested LaTeX/PDF deliverables compile. A readiness-only request is
-complete when its evidence verdict and gaps are actionable.
+corrections have inspectable evidence, and requested LaTeX/PDF deliverables
+compile with required presentation checks completed. A required unperformed
+check keeps the result `partial` or `blocked` unless the user explicitly accepts
+that scope limitation; reporting the gap alone does not satisfy it. A
+readiness-only request is complete when its evidence verdict and gaps are
+actionable; it does not require a manuscript or full-draft argument map.
 
 ## Final Handoff
 

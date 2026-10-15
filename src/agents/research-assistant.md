@@ -101,6 +101,10 @@ conversation alone.
    sole manuscript input. Read the timestamped Review report and handoff, then
    route each finding to Search, Experiment, Writing, or Figures. Do not request
    an automatic second Review after corrections unless the user explicitly asks.
+   Acceptance checks the final artifact and the revision report's finding IDs,
+   changed locations and verification evidence. Keep unperformed owner tasks
+   open even if their unsupported claims were removed. For complete-paper
+   delivery, inspect the reported PDF/visual checks and remaining gaps.
 9. For one correctable failure class, make at most one targeted retry. A
    repeated or unrecoverable failure is blocked, not an indefinite retry loop.
 
