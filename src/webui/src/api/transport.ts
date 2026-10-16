@@ -1,6 +1,8 @@
 import type { AuthFlowEventDto } from "../../../web/contracts";
 import { parseAuthFlowEvent } from "./parsers";
+import { requestBudget } from "./request-budget";
 import { routes } from "./routes";
+import { subscribeSharedEvents } from "./shared-events";
 
 export interface AuthFlowHandlers {
   onEvent: (event: AuthFlowEventDto) => void;
@@ -46,6 +48,10 @@ async function responseDetails(response: Response): Promise<unknown> {
 }
 
 export async function requestJson<T>(path: string, decode: Decoder<T>, init?: RequestInit): Promise<T> {
+  return requestBudget.run(path, init?.signal, () => readJson(path, decode, init));
+}
+
+async function readJson<T>(path: string, decode: Decoder<T>, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init ?? { method: "GET" });
   if (!response.ok) throw new ApiError(response.status, await responseDetails(response));
   if (response.status === 204) return undefined as T;
@@ -65,15 +71,21 @@ export async function requestJson<T>(path: string, decode: Decoder<T>, init?: Re
 }
 
 export async function requestVoid(path: string, init: RequestInit): Promise<void> {
-  const response = await fetch(path, init);
-  if (!response.ok) throw new ApiError(response.status, await responseDetails(response));
-  if (response.status !== 204) await response.text();
+  return requestBudget.run(path, init.signal, async () => {
+    const response = await fetch(path, init);
+    if (!response.ok) throw new ApiError(response.status, await responseDetails(response));
+    if (response.status !== 204) await response.text();
+  });
 }
 
 export async function requestBytes(
   path: string,
   options: { maxBytes: number; signal?: AbortSignal },
 ): Promise<ArrayBuffer> {
+  return requestBudget.run(path, options.signal, () => readBytes(path, options));
+}
+
+async function readBytes(path: string, options: { maxBytes: number; signal?: AbortSignal }): Promise<ArrayBuffer> {
   const response = await fetch(path, { method: "GET", signal: options.signal });
   if (!response.ok) throw new ApiError(response.status, await responseDetails(response));
 
@@ -104,34 +116,25 @@ export interface SessionEventHandlers {
 }
 
 export function connectEventStream(path: string, handlers: SessionEventHandlers): () => void {
-  const source = new EventSource(path);
-  source.onmessage = (event) => {
-    try {
-      handlers.onEvent(JSON.parse(event.data));
-    } catch {
-      handlers.onError();
-    }
-  };
-  source.onerror = () => handlers.onError();
-  return () => source.close();
+  return subscribeSharedEvents(path, handlers);
 }
 
 /**
- * Open a per-flow SSE connection to `/api/auth/flows/:flowId/events`. The
+ * Open a logical subscription to `/api/auth/flows/:flowId/events`. The
  * browser-side generation token (return value of the caller) is managed by
  * the `useProviderAuthFlow` hook, not here; this function only owns the
- * underlying `EventSource` lifecycle.
+ * shared transport retains physical connection ownership.
  */
 export function connectAuthFlow(flowId: string, handlers: AuthFlowHandlers): () => void {
   const path = routes.authFlowEvents(flowId);
-  const source = new EventSource(path);
-  source.onmessage = (event) => {
-    try {
-      handlers.onEvent(parseAuthFlowEvent(JSON.parse(event.data)));
-    } catch {
-      handlers.onError();
-    }
-  };
-  source.onerror = () => handlers.onError();
-  return () => source.close();
+  return subscribeSharedEvents(path, {
+    onEvent: (event) => {
+      try {
+        handlers.onEvent(parseAuthFlowEvent(event));
+      } catch {
+        handlers.onError();
+      }
+    },
+    onError: handlers.onError,
+  });
 }

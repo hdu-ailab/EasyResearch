@@ -268,12 +268,14 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
   let authStopped = false;
   let modelsDisposed = false;
   let serverStopped = false;
+  let closeEventChannels: (() => Promise<void>) | undefined;
 
   const cleanup = async (): Promise<void> => {
     if (registry && !sessionsStopped) {
       await registry.shutdown();
       sessionsStopped = true;
     }
+    await closeEventChannels?.();
     if (configurationProjectWatches && !projectWatchesClosed) {
       await configurationProjectWatches.close();
       projectWatchesClosed = true;
@@ -435,6 +437,7 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
       },
     };
     const routeHandler = createRouteHandler(services);
+    closeEventChannels = routeHandler.close;
     const localInterfaceAddresses = options.desktopAccess ? localInterfaceIpAddresses() : undefined;
     const handler = (request: Request): Promise<Response> => {
       // CLI Web trusts the access path, including SSH-forwarded hosts and ports.

@@ -66,6 +66,7 @@ import type { SubagentCompletionEntryDto } from "../src/web/contracts";
 import { parseTimelineEntryAppendedEvent } from "../src/webui/src/api/parsers";
 import { assertBundledAgentCapabilities } from "./smoke-agent-scenario";
 import { createWriteRecoverySmoke, runWriteRecoverySmoke } from "./smoke-write-recovery";
+import { smokeEventChannel } from "./smoke-event-channel";
 
 const targetName = process.argv[2];
 const target = TARGETS.find((candidate) => candidate.name === targetName);
@@ -2131,6 +2132,7 @@ try {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ cwd: project }),
   }), "session create");
+  await smokeEventChannel(base, created.id, initialStatus.bootId);
   const sessionEvents = await fetchSessionEventsBeforeDeadline({
     url: `${base}/api/sessions/${created.id}/events`,
     deadline: firstRunDeadline,

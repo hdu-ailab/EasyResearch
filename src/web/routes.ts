@@ -61,6 +61,7 @@ import {
 } from "./desktop-access";
 import { projectApiUsageRecord } from "./api-usage";
 import { projectSessionTimeline } from "./session-timeline";
+import { EventChannels } from "./event-channel";
 import {
   ConfigurationProjectWatchRequestError,
   type ConfigurationProjectWatches,
@@ -117,7 +118,7 @@ export interface RouteServices {
   desktopAccess?: DesktopAccessControl;
 }
 
-export type RouteHandler = (request: Request) => Promise<Response>;
+export type RouteHandler = ((request: Request) => Promise<Response>) & { close?: () => Promise<void> };
 
 const SSE_HEADERS: Record<string, string> = {
   "Content-Type": "text/event-stream",
@@ -130,7 +131,15 @@ const SSE_HEADERS: Record<string, string> = {
  * through injected services so vitest can run every route against fakes.
  */
 export function createRouteHandler(services: RouteServices): RouteHandler {
-  return async (req) => {
+  const channels = new EventChannels({ bootId: services.bootId, open(path) {
+    if (path === "/api/config/events") return configurationEvents(services.bootId, services.configuration, services.configurationProjectWatches);
+    const session = path.match(/^\/api\/sessions\/([^/]+)\/events$/);
+    if (session) return sessionEvents(services, decodeURIComponent(session[1]!));
+    const auth = path.match(/^\/api\/auth\/flows\/([^/]+)\/events$/);
+    if (auth && services.auth) return authFlowSse(services, decodeURIComponent(auth[1]!));
+    throw new Error("Unknown event source");
+  } });
+  const handler: RouteHandler = async (req) => {
     try {
       const url = new URL(req.url);
       const path = url.pathname;
@@ -147,6 +156,18 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
 
       const unauthorized = rejectUnauthorizedDesktopRequest(req, services.desktopAccess);
       if (unauthorized) return unauthorized;
+
+      if (path === "/api/events" && req.method === "GET") return channels.open();
+      const channelMatch = path.match(/^\/api\/events\/([a-f0-9-]+)$/);
+      if (channelMatch && req.method === "PUT") {
+        const body = await jsonBody<unknown>(req);
+        try {
+          const result = await channels.replace(channelMatch[1]!, body);
+          return result ? jsonResponse(result) : errorResponse(404, "Event channel is no longer connected");
+        } catch {
+          return errorResponse(400, "Invalid event subscriptions");
+        }
+      }
 
       if (req.method === "GET" && path === "/api/status") {
         return jsonResponse({
@@ -655,6 +676,8 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       return errorResponse(500, "Internal server error");
     }
   };
+  handler.close = () => channels.close();
+  return handler;
 }
 
 async function createSession(

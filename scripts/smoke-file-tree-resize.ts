@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { chromium, expect } from "@playwright/test";
+import { installBrowserEventFixture } from "./browser-event-fixture";
 import { preview } from "vite";
 
 // A stored ZIP keeps the real DOCX decoder/render path in this smoke without another dependency.
@@ -65,6 +66,7 @@ try {
   try {
     for (const preferences of [{ studioTheme: "light" }, { studioTheme: "dark" }]) {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, locale: "en-US" });
+    await installBrowserEventFixture(page.context());
     try {
     await page.addInitScript((value) => localStorage.setItem("easyresearch.webui.preferences", JSON.stringify({ language: "en", ...value })), preferences);
     page.setDefaultTimeout(10_000);

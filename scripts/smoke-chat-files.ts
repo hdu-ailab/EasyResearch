@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { chromium, expect } from "@playwright/test";
+import { installBrowserEventFixture } from "./browser-event-fixture";
 import { preview } from "vite";
 
 // Pass an isolated compiled daemon origin to exercise the embedded assets instead.
@@ -19,6 +20,7 @@ try {
     for (const width of [1440, 390]) for (const fallback of [false, true]) {
       const mobile = width < 820;
       const context = await browser.newContext({ viewport: { width, height: 900 }, locale: "en-US", hasTouch: mobile });
+      await installBrowserEventFixture(context);
       try {
         await context.addInitScript((value) => localStorage.setItem("easyresearch.webui.preferences", JSON.stringify({ language: "en", ...value })), preferences);
         const page = await context.newPage();

@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { chromium, expect, type Locator, type Page } from "@playwright/test";
 import { preview } from "vite";
+import { installBrowserEventFixture } from "./browser-event-fixture";
 
 const argument = process.argv[2];
 const suppliedUrl = argument
@@ -185,6 +186,7 @@ try {
       serviceWorkers: "block",
     });
     try {
+      await installBrowserEventFixture(context);
       await context.tracing.start({ screenshots: true, snapshots: true });
       const page = await context.newPage();
       page.setDefaultTimeout(10_000);

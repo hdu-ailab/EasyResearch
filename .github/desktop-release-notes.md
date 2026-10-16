@@ -2,14 +2,17 @@
 
 EasyResearch Desktop runs the same EasyResearch backend and Web interface as the npm CLI. It embeds the matching native EasyResearch executable, so Node and Bun are not required at runtime.
 
-## 0.1.12 highlights
+## 0.1.13 highlights
 
-- Linux ARM64 is a permanent native CLI/npm and Desktop target, with AppImage
-  and `.deb` packages and native build, sandbox, lifecycle and installation gates.
-- Manuscript writing now connects the argument, executed method and formal
-  evidence; citation checks distinguish bibliographic identity from claim support.
-  Bounded author revision, figure/text checks and traceable review corrections
-  are integrated into the shared writing Skills.
+- One compact light/dark interface, restored action/file/provider icons with
+  hover labels, and dolphin artwork for browser tabs and desktop application icons.
+- SharedWorker-capable browsers share one event connection across tabs, keeping
+  file/configuration requests responsive with multiple Work sessions open.
+  Older browsers use one combined event connection per page.
+- Independent per-view file watches, bounded event delivery, body-aware request
+  concurrency and automatic snapshot recovery after reconnect/restart.
+- Compact model/thinking selectors retain matching small typography on desktop
+  and touch devices.
 
 ## Downloads
 
@@ -21,7 +24,7 @@ EasyResearch Desktop runs the same EasyResearch backend and Web interface as the
 For Linux ARM64, replace the version below with the downloaded release:
 
 ```bash
-version=0.1.12
+version=0.1.13
 chmod +x "EasyResearch-${version}-linux-arm64.AppImage"
 "./EasyResearch-${version}-linux-arm64.AppImage"
 ```
@@ -29,7 +32,7 @@ chmod +x "EasyResearch-${version}-linux-arm64.AppImage"
 Or install the Debian/Ubuntu package and open EasyResearch from the applications menu:
 
 ```bash
-version=0.1.12
+version=0.1.13
 sudo apt install "./EasyResearch-${version}-linux-arm64.deb"
 ```
 

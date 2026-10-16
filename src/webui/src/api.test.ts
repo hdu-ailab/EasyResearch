@@ -477,6 +477,30 @@ describe("api transport", () => {
     expect(cancelBody).toHaveBeenCalledOnce();
   });
 
+  it("keeps slow-request admission until raw response bodies finish", async () => {
+    const bodies: ReadableStreamDefaultController<Uint8Array>[] = [];
+    fetchMock.mockImplementation(
+      async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              bodies.push(controller);
+            },
+          }),
+        ),
+    );
+    const pending = ["a", "b", "c"].map((name) => rawByteReader()(`/p/${name}.docx`, { maxBytes: 10 }));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    for (const controller of bodies.slice(0, 2)) {
+      controller.enqueue(new Uint8Array([1]));
+      controller.close();
+    }
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    bodies[2]!.enqueue(new Uint8Array([1]));
+    bodies[2]!.close();
+    expect((await Promise.all(pending)).map((body) => body.byteLength)).toEqual([1, 1, 1]);
+  });
+
   it("rejects oversized bytes when Content-Length is absent or understated", async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { "Content-Length": "1" } }),
@@ -840,27 +864,37 @@ describe("connectSessionEvents", () => {
     vi.unstubAllGlobals();
   });
 
-  it("creates an EventSource at the session endpoint and returns close", () => {
+  it("routes the session through the shared channel and returns logical unsubscribe", async () => {
+    const fetch = vi.fn(async () => Response.json({ applied: true }));
+    vi.stubGlobal("fetch", fetch);
     const handlers = { onEvent: vi.fn(), onError: vi.fn() };
     const unsubscribe = connectSessionEvents("abc/123", handlers);
     const instance = FakeEventSource.instances[0]!;
-    expect(instance.url).toBe("/api/sessions/abc%2F123/events");
-    instance.onmessage?.({ data: '{"type":"agent_settled"}' } as MessageEvent);
+    expect(instance.url).toBe("/api/events");
+    instance.onmessage?.({ data: '{"type":"connected","id":"channel","bootId":"boot"}' } as MessageEvent);
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+    expect(
+      JSON.parse((fetch.mock.calls[0] as unknown as [string, RequestInit])[1].body as string).subscriptions,
+    ).toEqual([{ id: "1", path: "/api/sessions/abc%2F123/events" }]);
+    instance.onmessage?.({
+      data: '{"type":"event","id":"1","bootId":"boot","event":{"type":"agent_settled"}}',
+    } as MessageEvent);
     expect(handlers.onEvent).toHaveBeenCalledWith({ type: "agent_settled" });
+    const closed = vi.spyOn(instance, "close");
     instance.onerror?.();
     expect(handlers.onError).toHaveBeenCalled();
-    const closed = vi.spyOn(instance, "close");
     unsubscribe();
     expect(closed).toHaveBeenCalled();
   });
 
   it("calls onError on malformed payload", () => {
     const handlers = { onEvent: vi.fn(), onError: vi.fn() };
-    connectSessionEvents("s1", handlers);
+    const disconnect = connectSessionEvents("s1", handlers);
     const instance = FakeEventSource.instances[0]!;
     instance.onmessage?.({ data: "{not json" } as MessageEvent);
     expect(handlers.onEvent).not.toHaveBeenCalled();
     expect(handlers.onError).toHaveBeenCalled();
+    disconnect();
   });
 });
 
@@ -893,20 +927,21 @@ describe("connectConfigurationEvents", () => {
     const handlers = { onEvent: vi.fn(), onError: vi.fn() };
     const disconnect = connectConfigurationEvents(handlers);
     const source = instances[0]!;
-    expect(source.url).toBe("/api/config/events");
+    expect(source.url).toBe("/api/events");
+    source.onmessage?.({ data: '{"type":"connected","id":"channel","bootId":"boot-a"}' } as MessageEvent);
+    const send = (event: unknown) =>
+      source.onmessage?.({ data: JSON.stringify({ type: "event", id: "1", bootId: "boot-a", event }) } as MessageEvent);
 
-    source.onmessage?.({
-      data: JSON.stringify({
-        type: "config.updated",
-        bootId: "boot-a",
-        generation: 2,
-        agentsChanged: true,
-        modelsChanged: false,
-        skillsChanged: true,
-        runtimeChanged: true,
-        projectWatchLeaseId: "project-watch-1",
-      }),
-    } as MessageEvent);
+    send({
+      type: "config.updated",
+      bootId: "boot-a",
+      generation: 2,
+      agentsChanged: true,
+      modelsChanged: false,
+      skillsChanged: true,
+      runtimeChanged: true,
+      projectWatchLeaseId: "project-watch-1",
+    });
     expect(handlers.onEvent).toHaveBeenCalledWith({
       type: "config.updated",
       bootId: "boot-a",
@@ -918,36 +953,32 @@ describe("connectConfigurationEvents", () => {
       projectWatchLeaseId: "project-watch-1",
     });
 
-    source.onmessage?.({
-      data: JSON.stringify({
-        type: "config.updated",
-        bootId: "boot-a",
-        generation: "2",
-        agentsChanged: true,
-        modelsChanged: false,
-        skillsChanged: false,
-        runtimeChanged: true,
-      }),
-    } as MessageEvent);
+    send({
+      type: "config.updated",
+      bootId: "boot-a",
+      generation: "2",
+      agentsChanged: true,
+      modelsChanged: false,
+      skillsChanged: false,
+      runtimeChanged: true,
+    });
     expect(handlers.onEvent).toHaveBeenCalledTimes(1);
     expect(handlers.onError).toHaveBeenCalledTimes(1);
 
-    source.onmessage?.({
-      data: JSON.stringify({
-        type: "config.updated",
-        generation: 3,
-        agentsChanged: true,
-        modelsChanged: false,
-        skillsChanged: false,
-        runtimeChanged: true,
-      }),
-    } as MessageEvent);
+    send({
+      type: "config.updated",
+      generation: 3,
+      agentsChanged: true,
+      modelsChanged: false,
+      skillsChanged: false,
+      runtimeChanged: true,
+    });
     expect(handlers.onEvent).toHaveBeenCalledTimes(1);
     expect(handlers.onError).toHaveBeenCalledTimes(2);
 
+    const close = vi.spyOn(source, "close");
     source.onerror?.();
     expect(handlers.onError).toHaveBeenCalledTimes(3);
-    const close = vi.spyOn(source, "close");
     disconnect();
     expect(close).toHaveBeenCalledOnce();
   });

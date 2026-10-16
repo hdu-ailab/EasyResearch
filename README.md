@@ -100,6 +100,11 @@ feedback, both resizable Work splits, file previews and session controls. Theme
 changes preserve the current draft, open files and adjusted panel widths. The
 dolphin identifies the application in browser tabs and desktop shortcuts.
 
+Multiple browser tabs share one event connection when SharedWorker is available,
+keeping file and configuration requests responsive while several sessions remain
+open. Session execution continues when a tab closes; older browsers use one
+combined event connection per page.
+
 ### SSH Port Forwarding
 
 On the remote machine, start the CLI without opening a browser:
