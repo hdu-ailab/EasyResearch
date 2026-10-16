@@ -2,7 +2,6 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../api";
-import { UiVersionContext } from "../ui-version";
 import { DirectoryDialog } from "./DirectoryDialog";
 
 vi.mock("../api", () => ({
@@ -118,17 +117,13 @@ describe("DirectoryDialog", () => {
     expect(await screen.findByText("draft")).toBeTruthy();
   });
 
-  it("keeps Studio directory expansion visibly actionable and selectable", async () => {
+  it("keeps directory expansion actionable and selectable", async () => {
     mockListing({ [HOME]: ["papers"], [`${HOME}/papers`]: ["draft"] });
     const onSelect = vi.fn();
     const user = userEvent.setup();
-    render(
-      <UiVersionContext value="studio">
-        <DirectoryDialog homeDir={HOME} onSelect={onSelect} onClose={() => {}} />
-      </UiVersionContext>,
-    );
+    render(<DirectoryDialog homeDir={HOME} onSelect={onSelect} onClose={() => {}} />);
     const expand = await screen.findByRole("button", { name: "Expand papers" });
-    expect(expand).toHaveTextContent(/\S/);
+    expect(expand).toHaveAccessibleName("Expand papers");
     await user.click(expand);
     await user.click(await screen.findByText("draft"));
     await user.click(screen.getByRole("button", { name: "Create session" }));

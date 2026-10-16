@@ -15,7 +15,7 @@ try {
   const origin = suppliedOrigin ? new URL(suppliedOrigin).origin : `http://127.0.0.1:${(address as { port: number }).port}`;
   const browser = await chromium.launch({ channel: "chrome", executablePath: process.env.COMPARE_CHROMIUM_PATH, headless: true });
   try {
-    for (const preferences of [{ uiVersion: "current" }, { uiVersion: "studio", studioTheme: "light" }, { uiVersion: "studio", studioTheme: "dark" }]) {
+    for (const preferences of [{ studioTheme: "light" }, { studioTheme: "dark" }]) {
     for (const width of [1440, 390]) for (const fallback of [false, true]) {
       const mobile = width < 820;
       const context = await browser.newContext({ viewport: { width, height: 900 }, locale: "en-US", hasTouch: mobile });
@@ -121,7 +121,7 @@ try {
         assert(workers.length > 0 && workers.every((url) => new URL(url).origin === origin));
         assert.deepEqual(unexpected, []);
         assert.deepEqual(errors, []);
-        console.log(`CHAT_FILES_SMOKE ${preferences.uiVersion}/${preferences.studioTheme ?? "light"} width=${width} fallback=${fallback} passed`);
+        console.log(`CHAT_FILES_SMOKE ${preferences.studioTheme} width=${width} fallback=${fallback} passed`);
       } finally { await context.close(); }
     }
     }

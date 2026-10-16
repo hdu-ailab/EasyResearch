@@ -2,7 +2,6 @@ import { ChevronRight, FileJson } from "lucide-react";
 import { Fragment, type KeyboardEvent, useRef } from "react";
 import type { MessageKey } from "../../i18n/messages";
 import { useI18n } from "../../i18n/useI18n";
-import { useStudioUi } from "../../ui-version";
 
 export type SettingsCategory = "general" | "network" | "conversation" | "providers" | "agents" | "resources";
 
@@ -19,16 +18,7 @@ interface Category {
   label: MessageKey;
   group?: MessageKey;
 }
-const defaultCategories: readonly Category[] = [
-  { id: "general", label: "settings.category.general" },
-  { id: "network", label: "settings.category.network" },
-  { id: "conversation", label: "settings.category.conversation" },
-  { id: "providers", label: "settings.category.providers" },
-  { id: "agents", label: "settings.category.agents" },
-  { id: "resources", label: "settings.category.resources" },
-];
-
-const studioCategories: readonly Category[] = [
+const categories: readonly Category[] = [
   { id: "general", label: "studio.appearanceLanguage", group: "studio.preferences" },
   { id: "conversation", label: "settings.category.conversation" },
   { id: "providers", label: "settings.category.providers", group: "studio.environment" },
@@ -45,8 +35,6 @@ export function SettingsNavigation({
   registerMobileButton,
 }: SettingsNavigationProps) {
   const { t } = useI18n();
-  const studio = useStudioUi();
-  const categories = studio ? studioCategories : defaultCategories;
   const desktopButtons = useRef<Partial<Record<SettingsCategory, HTMLButtonElement | null>>>({});
   const mobile = window.innerWidth < 820;
 

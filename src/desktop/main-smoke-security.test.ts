@@ -111,7 +111,7 @@ it.each([
   vi.doMock("electron", () => ({
     app, BrowserWindow: Window, Tray, ipcMain: new EventEmitter(),
     Menu: { buildFromTemplate: (items: unknown) => items },
-    nativeImage: { createFromDataURL: () => ({ isEmpty: () => false }) },
+    nativeImage: { createFromPath: () => ({ isEmpty: () => false }) },
     dialog: { showMessageBox: async () => ({ response: 1 }), showErrorBox() {} },
     shell: { openExternal: async () => {}, showItemInFolder() {} },
   }));

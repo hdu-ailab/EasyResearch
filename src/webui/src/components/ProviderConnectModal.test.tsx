@@ -211,9 +211,9 @@ describe("ProviderConnectModal", () => {
     const user = userEvent.setup();
     render(<ProviderConnectModal onClose={() => {}} />);
     expect(screen.getByRole("searchbox")).toHaveFocus();
-    expect(screen.getByText("Anthropic")).toBeInTheDocument();
-    expect(screen.getByText("xAI")).toBeInTheDocument();
-    expect(screen.getByText("Google Vertex AI")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Anthropic" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "xAI" })).toBeVisible();
+    expect(screen.getByRole("button", { name: /Google Vertex AI/ })).toBeVisible();
     expect(screen.getByText("Ambient-only: configure via environment or config file.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /Google Vertex AI/ }));
     expect(screen.getByText("ambient creds")).toBeInTheDocument();
@@ -382,13 +382,13 @@ describe("ProviderConnectModal", () => {
     const user = userEvent.setup();
     mockedUse.mockReturnValue(makeFlow());
     render(<ProviderConnectModal onClose={() => {}} />);
-    expect(screen.getByText("Anthropic")).toBeInTheDocument();
-    expect(screen.getByText("xAI")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Anthropic" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "xAI" })).toBeVisible();
 
     const search = screen.getByRole("searchbox");
     await user.type(search, "anthrop");
-    expect(screen.getByText("Anthropic")).toBeInTheDocument();
-    expect(screen.queryByText("xAI")).toBeNull();
+    expect(screen.getByRole("button", { name: "Anthropic" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "xAI" })).toBeNull();
 
     await user.clear(search);
     await user.type(search, "nonexistent-provider");

@@ -130,7 +130,7 @@ export function AgentTabBar({
                     tab.running ? "hover:text-v2-status-error" : ""
                   }`}
                 >
-                  <ActionGlyph label={actionLabel} compact>
+                  <ActionGlyph label={actionLabel}>
                     <X size={11} aria-hidden />
                   </ActionGlyph>
                 </button>

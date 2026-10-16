@@ -6,7 +6,6 @@ import {
   handleMainWindowClose,
   isCurrentDesktopDocument,
   renderLoadingDocument,
-  TRAY_ICON_DATA_URL,
 } from "./main-support";
 import { beginDesktopExit, createDesktopLifecycleState } from "./lifecycle";
 
@@ -82,12 +81,6 @@ describe("desktop restart route capture", () => {
 });
 
 describe("desktop window and tray actions", () => {
-  it("uses a supported in-memory PNG for the tray icon", () => {
-    expect(TRAY_ICON_DATA_URL).toMatch(/^data:image\/png;base64,/);
-    const bytes = Buffer.from(TRAY_ICON_DATA_URL.split(",")[1]!, "base64");
-    expect([...bytes.subarray(0, 8)]).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
-  });
-
   it("hides close before terminal exit and allows close afterward", () => {
     const event = { preventDefault: vi.fn() };
     const hide = vi.fn();

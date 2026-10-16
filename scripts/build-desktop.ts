@@ -31,6 +31,12 @@ import {
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const ELECTRON_VERSION = "42.3.3";
+export const DESKTOP_ICON_DIR = join(ROOT, "src", "desktop", "assets");
+export const DESKTOP_ICON_RESOURCE = {
+  from: DESKTOP_ICON_DIR,
+  to: "icons",
+  filter: ["icon.png", "tray.png", "tray@2x.png"],
+};
 
 export type DesktopTargetName = "windows-x64" | "darwin-arm64" | "linux-arm64";
 export type DesktopPackageFormat = "nsis" | "dmg" | "AppImage" | "deb";
@@ -223,7 +229,7 @@ export function electronBuilderConfig(
     electronVersion: ELECTRON_VERSION,
     asar: true,
     files: ["main.cjs", "preload.cjs", "package.json"],
-    extraResources: [{ from: "sidecar", to: "sidecar" }],
+    extraResources: [{ from: "sidecar", to: "sidecar" }, DESKTOP_ICON_RESOURCE],
     directories: { app: stageDir, output: outputDir },
     npmRebuild: false,
     buildDependenciesFromSource: false,
@@ -234,11 +240,14 @@ export function electronBuilderConfig(
     return {
       ...common,
       win: {
+        icon: join(DESKTOP_ICON_DIR, "icon.ico"),
         signExecutable: false,
         target: [{ target: "nsis", arch: ["x64"] }],
         artifactName: `EasyResearch-${version}-windows-x64.\${ext}`,
       },
       nsis: {
+        installerIcon: join(DESKTOP_ICON_DIR, "icon.ico"),
+        uninstallerIcon: join(DESKTOP_ICON_DIR, "icon.ico"),
         perMachine: false,
         oneClick: true,
         allowElevation: false,
@@ -250,6 +259,7 @@ export function electronBuilderConfig(
     return {
       ...common,
       linux: {
+        icon: join(DESKTOP_ICON_DIR, "icon.png"),
         executableName: "easyresearch-desktop",
         category: "Science",
         maintainer: "hdu-ailab",
@@ -263,6 +273,7 @@ export function electronBuilderConfig(
   return {
     ...common,
     mac: {
+      icon: join(DESKTOP_ICON_DIR, "icon.icns"),
       identity: null,
       notarize: false,
       hardenedRuntime: false,

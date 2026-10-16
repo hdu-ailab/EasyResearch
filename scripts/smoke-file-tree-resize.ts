@@ -63,7 +63,7 @@ try {
     void browser.close();
   }, 180_000);
   try {
-    for (const preferences of [{ uiVersion: "current" }, { uiVersion: "studio", studioTheme: "light" }, { uiVersion: "studio", studioTheme: "dark" }]) {
+    for (const preferences of [{ studioTheme: "light" }, { studioTheme: "dark" }]) {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, locale: "en-US" });
     try {
     await page.addInitScript((value) => localStorage.setItem("easyresearch.webui.preferences", JSON.stringify({ language: "en", ...value })), preferences);
@@ -213,7 +213,7 @@ try {
     await checkHitArea();
     assert.deepEqual(unexpected, []);
     assert.deepEqual(errors, []);
-    console.log(`FILE_TREE_RESIZE_SMOKE ${preferences.uiVersion}/${preferences.studioTheme ?? "light"} passed: full hit area, DOCX capture/release, live bounds, cancellation, mobile state retention`);
+    console.log(`FILE_TREE_RESIZE_SMOKE ${preferences.studioTheme} passed: full hit area, DOCX capture/release, live bounds, cancellation, mobile state retention`);
     } finally { await page.close(); }
     }
   } finally {

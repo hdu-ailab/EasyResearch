@@ -1,7 +1,5 @@
-import { House } from "lucide-react";
 import type { ReactNode, Ref } from "react";
 import { useI18n } from "../i18n/useI18n";
-import { useStudioUi } from "../ui-version";
 import { ActionGlyph } from "./studio/ActionGlyph";
 
 export interface TopbarProps {
@@ -66,68 +64,24 @@ export function TopbarIconButton({
 
 export function ProductMark({ home }: { home?: TopbarProps["home"] } = {}) {
   const { t } = useI18n();
-  const studio = useStudioUi();
-  if (studio)
-    return (
-      <div className="er-product-mark">
-        {home ? (
-          <button
-            type="button"
-            className="er-wordmark"
-            aria-label={t("topbar.backToHome")}
-            title={t("topbar.backToHome")}
-            aria-current={home.active ? "page" : undefined}
-            onClick={home.onClick}
-          >
-            Easy<span>Research</span>
-          </button>
-        ) : (
-          <span className="er-wordmark">
-            Easy<span>Research</span>
-          </span>
-        )}
-        <span className="er-edition" aria-hidden>
-          STUDIO
-        </span>
-      </div>
-    );
-  const logo = (
-    <img
-      src="/favicon.svg"
-      width="30"
-      height="30"
-      alt=""
-      aria-hidden="true"
-      data-testid="product-logo"
-      className={`shrink-0 ${home ? "transition-opacity group-hover:opacity-0 group-focus-visible:opacity-0" : ""}`}
-    />
-  );
-
   return (
-    <div className="flex items-center gap-2">
+    <div className="er-product-mark">
       {home ? (
         <button
           type="button"
+          className="er-wordmark"
           aria-label={t("topbar.backToHome")}
           title={t("topbar.backToHome")}
           aria-current={home.active ? "page" : undefined}
           onClick={home.onClick}
-          className="group relative flex size-[36px] shrink-0 items-center justify-center rounded-xl text-v2-icon-icon-muted transition-colors hover:bg-v2-grey-100 hover:text-v2-blue-600 focus-visible:text-v2-blue-600"
         >
-          {logo}
-          <House
-            size={17}
-            data-testid="product-home-icon"
-            className="absolute opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
-            aria-hidden
-          />
+          Easy<span>Research</span>
         </button>
       ) : (
-        logo
+        <span className="er-wordmark">
+          Easy<span>Research</span>
+        </span>
       )}
-      <span className="text-[24px] font-bold tracking-tight" style={{ color: "#304c90" }}>
-        EasyResearch
-      </span>
     </div>
   );
 }

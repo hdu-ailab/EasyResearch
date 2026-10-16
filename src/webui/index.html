@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-ui-theme="light">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -14,12 +14,9 @@
           const raw = localStorage.getItem("easyresearch.webui.preferences");
           if (!raw) return;
           const p = JSON.parse(raw);
-          const version = p.uiVersion === "studio" || p.uiVersion === "classic" ? p.uiVersion : "current";
-          const theme = version === "studio" && p.studioTheme === "dark" ? "dark" : "light";
-          document.documentElement.dataset.uiVersion = version;
+          const theme = p.studioTheme === "dark" ? "dark" : "light";
           document.documentElement.dataset.uiTheme = theme;
           document.documentElement.style.colorScheme = theme;
-          if (version === "studio") document.querySelector('link[rel="icon"]').href = "data:,";
           const chat = typeof p.chatFontSize === "number" && Number.isInteger(p.chatFontSize)
             ? Math.min(20, Math.max(10, p.chatFontSize)) : 13;
           const files = typeof p.filesFontSize === "number" && Number.isInteger(p.filesFontSize)

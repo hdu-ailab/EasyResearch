@@ -92,13 +92,13 @@ easyresearch
 EasyResearch opens a local Web workspace. Choose a workspace directory, connect a
 model provider in **Settings**, and describe the outcome you want.
 
-### Studio interface
+### Workspace appearance
 
-Select **Settings → General → Interface version → Studio** for the compact
-workspace interface. Studio includes light and dark themes, visible hover and
-keyboard-focus feedback, and text-first controls. Both resizable Work splits,
-file previews, session actions and settings remain available. Appearance changes
-preserve the current draft, open files and adjusted panel widths.
+Choose a light or dark theme under **Settings → Appearance and language**.
+The compact workspace includes labelled action icons, hover and keyboard-focus
+feedback, both resizable Work splits, file previews and session controls. Theme
+changes preserve the current draft, open files and adjusted panel widths. The
+dolphin identifies the application in browser tabs and desktop shortcuts.
 
 ### SSH Port Forwarding
 

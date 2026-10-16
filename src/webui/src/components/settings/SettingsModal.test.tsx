@@ -914,17 +914,16 @@ describe("SettingsModal", () => {
     renderSettings();
     const tabs = screen.getByRole("tablist", { name: "Settings" });
     expect(tabs).toHaveAttribute("aria-orientation", "vertical");
-    const general = screen.getByRole("tab", { name: "General" });
-    const network = screen.getByRole("tab", { name: "Network" });
+    const general = screen.getByRole("tab", { name: "Appearance and language" });
     const conversation = screen.getByRole("tab", { name: "Conversation" });
     general.focus();
-    await user.keyboard("{ArrowDown}");
-    expect(network).toHaveFocus();
-    expect(network).toHaveAttribute("aria-selected", "true");
     await user.keyboard("{ArrowDown}");
     expect(conversation).toHaveFocus();
     expect(conversation).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tabpanel", { name: "Conversation" })).toBeVisible();
+    await user.keyboard("{ArrowUp}");
+    expect(general).toHaveFocus();
+    expect(general).toHaveAttribute("aria-selected", "true");
   });
 
   it("opens a category index first on mobile and restores row focus on Back", async () => {
@@ -997,7 +996,7 @@ describe("SettingsModal", () => {
 
   it("focuses the selected desktop category on first mount", () => {
     renderSettings();
-    expect(screen.getByRole("tab", { name: "General" })).toHaveFocus();
+    expect(screen.getByRole("tab", { name: "Appearance and language" })).toHaveFocus();
   });
 
   it("returns to the mobile category index when crossing below 820px and restores the active desktop tab", async () => {
@@ -1173,7 +1172,7 @@ describe("SettingsModal", () => {
     await user.type(input, "80");
     await user.tab();
     await waitFor(() => expect(api.patchCompactionSettings).toHaveBeenCalledOnce());
-    await selectCategory(user, "General");
+    await selectCategory(user, "Appearance and language");
     await act(async () => {
       failedSave.reject(new Error("offline"));
       await failedSave.promise.catch(() => {});
@@ -1204,7 +1203,7 @@ describe("SettingsModal", () => {
 
     await user.click(toggle);
     await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
-    await selectCategory(user, "General");
+    await selectCategory(user, "Appearance and language");
     await selectCategory(user, "Conversation");
     expect(screen.getByRole("switch", { name: /show api usage details/i })).toBe(toggle);
     expect(toggle).toHaveAttribute("aria-checked", "true");
@@ -1296,7 +1295,7 @@ describe("SettingsModal", () => {
     await user.click(screen.getByRole("button", { name: "简体中文" }));
     expect(screen.getByText("外观")).toBeTruthy();
     expect(screen.getByText("语言")).toBeTruthy();
-    expect(screen.getByRole("tab", { name: "常规" })).toBeVisible();
+    expect(screen.getByRole("tab", { name: "外观与语言" })).toBeVisible();
     expect(screen.getByRole("tab", { name: "模型提供商" })).toBeVisible();
     expect(screen.getByRole("button", { name: "打开配置浏览器…" })).toBeVisible();
     expect(screen.getByRole("button", { name: "关闭" })).toBeVisible();
@@ -2269,7 +2268,7 @@ describe("SettingsModal", () => {
     expect(await screen.findByRole("button", { name: "Edit skill paper-search" })).toBeVisible();
     expect(screen.getByRole("alert")).toHaveTextContent("project discovery failed");
 
-    await selectCategory(user, "General");
+    await selectCategory(user, "Appearance and language");
     expect(screen.queryByRole("alert")).toBeNull();
   });
 

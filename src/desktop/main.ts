@@ -41,7 +41,6 @@ import {
   handleMainWindowClose,
   isCurrentDesktopDocument,
   renderLoadingDocument,
-  TRAY_ICON_DATA_URL,
 } from "./main-support";
 import {
   readDesktopPreferenceBlob,
@@ -274,6 +273,7 @@ function showLoading(status: string): void {
       show: true,
       backgroundColor: "#f3efe6",
       title: "EasyResearch",
+      icon: join(process.resourcesPath, "icons", "icon.png"),
       webPreferences: {
         nodeIntegration: false,
         contextIsolation: true,
@@ -296,7 +296,7 @@ async function createMainWindow(handle: DesktopSidecarHandle, hash: string): Pro
   mainWindow?.destroy();
   const preload = join(__dirname, "preload.cjs");
   const windowOptions = desktopWindowOptions(preload, DESKTOP_SESSION_PARTITION);
-  const window = new BrowserWindow(windowOptions);
+  const window = new BrowserWindow({ ...windowOptions, icon: join(process.resourcesPath, "icons", "icon.png") });
   mainWindow = window;
   const networkSession = window.webContents.session;
   networkSession.webRequest.onBeforeSendHeaders(
@@ -341,7 +341,7 @@ async function createMainWindow(handle: DesktopSidecarHandle, hash: string): Pro
 }
 
 function createTray(): void {
-  const icon = nativeImage.createFromDataURL(TRAY_ICON_DATA_URL);
+  const icon = nativeImage.createFromPath(join(process.resourcesPath, "icons", "tray.png"));
   if (icon.isEmpty()) throw new Error("EasyResearch tray icon could not be decoded.");
   if (process.platform === "darwin") icon.setTemplateImage(true);
   tray = new Tray(icon);

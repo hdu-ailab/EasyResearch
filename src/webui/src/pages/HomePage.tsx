@@ -15,12 +15,8 @@ import { DeleteSessionDialog } from "../components/DeleteSessionDialog";
 import { DirectoryDialog } from "../components/DirectoryDialog";
 import { HomeWorkspace } from "../components/HomeWorkspace";
 import { RenameSessionDialog } from "../components/RenameSessionDialog";
-import { StudioHomeWorkspace } from "../components/studio/StudioHomeWorkspace";
 import { Topbar } from "../components/Topbar";
 import { useI18n } from "../i18n/useI18n";
-import { HomeWorkspace as ClassicHomeWorkspace } from "../legacy/HomeWorkspace";
-import { ProductMark as ClassicProductMark, Topbar as ClassicTopbar } from "../legacy/Topbar";
-import { useClassicUi, useStudioUi } from "../ui-version";
 import { buildHomeProjectGroups } from "./home-view-model";
 
 export interface HomePageProps {
@@ -33,10 +29,6 @@ const MONITOR_POLL_MS = 5000;
 
 export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
   const { t } = useI18n();
-  const classic = useClassicUi();
-  const studio = useStudioUi();
-  const HomeTopbar = classic ? ClassicTopbar : Topbar;
-  const Workspace = studio ? StudioHomeWorkspace : classic ? ClassicHomeWorkspace : HomeWorkspace;
   const [status, setStatus] = useState<{
     sessions: SessionSummaryDto[];
     activeSessions: ActiveSessionDto[];
@@ -153,15 +145,12 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
 
   return (
     <div className="flex h-full flex-col">
-      <HomeTopbar
+      <Topbar
         home={{ active: true }}
         leading={
-          <>
-            {classic && <ClassicProductMark />}
-            <span className="shrink-0 rounded-md border border-v2-grey-300 bg-v2-background-bg-base px-1 py-0.5 font-mono text-[10px] text-v2-text-text-faint min-[360px]:px-1.5 min-[360px]:text-[11px]">
-              v{packageJson.version}
-            </span>
-          </>
+          <span className="shrink-0 rounded-md border border-v2-grey-300 bg-v2-background-bg-base px-1 py-0.5 font-mono text-[10px] text-v2-text-text-faint min-[360px]:px-1.5 min-[360px]:text-[11px]">
+            v{packageJson.version}
+          </span>
         }
         center={
           latestVersion ? (
@@ -173,25 +162,23 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
               {t("home.updateAvailable")} <span className="font-mono">v{latestVersion}</span>
             </span>
           ) : (
-            <span className="hidden truncate text-[13px] text-v2-text-text-muted sm:inline">
-              {t(studio ? "home.workspace" : "home.tagline")}
-            </span>
+            <span className="hidden truncate text-[13px] text-v2-text-text-muted sm:inline">{t("home.workspace")}</span>
           )
         }
         actions={settingsButton}
       />
-      <main className={`er-home-main min-h-0 flex-1 overflow-y-auto ${classic ? "" : "bg-v2-background-bg-base"}`}>
-        <div className={`flex min-h-full w-full flex-col ${classic ? "gap-2 px-2 pb-2 pt-[4px]" : ""}`}>
+      <main className="er-home-main min-h-0 flex-1 overflow-y-auto bg-v2-background-bg-base">
+        <div className="flex min-h-full w-full flex-col">
           {error && (
             <p
-              className={`shrink-0 border-v2-status-error/30 bg-v2-status-error/5 text-[13px] text-v2-status-error ${classic ? "rounded-md border px-3 py-2" : "border-b px-5 py-3"}`}
+              className="shrink-0 border-b border-v2-status-error/30 bg-v2-status-error/5 px-5 py-3 text-[13px] text-v2-status-error"
               role="alert"
             >
               {error}
             </p>
           )}
 
-          <Workspace
+          <HomeWorkspace
             groups={groups}
             selectedCwd={selectedCwd}
             query={query}

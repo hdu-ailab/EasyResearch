@@ -372,7 +372,7 @@ function ProviderRow({
         active ? "bg-v2-grey-100" : "hover:bg-v2-grey-100"
       }`}
     >
-      <ProviderIcon id={provider.id} className="size-4 shrink-0 text-v2-icon-icon-base" />
+      <ProviderIcon id={provider.id} label={provider.name} className="size-4 shrink-0 text-v2-icon-icon-base" />
       <span className="min-w-0 truncate font-medium text-v2-text-text-base">{provider.name}</span>
       <span className={`size-1.5 shrink-0 rounded-full ${statusDot(provider.authStatus.configured)}`} aria-hidden />
       {!provider.connectable && (
@@ -409,7 +409,7 @@ function ConnectionView({
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4">
       <div className="flex items-center gap-3">
-        <ProviderIcon id={provider.id} className="size-6 shrink-0 text-v2-icon-icon-base" />
+        <ProviderIcon id={provider.id} label={provider.name} className="size-6 shrink-0 text-v2-icon-icon-base" />
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <h3 className="truncate text-[14px] font-semibold text-v2-text-text-base">{provider.name}</h3>

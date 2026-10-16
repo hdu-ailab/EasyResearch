@@ -225,16 +225,6 @@ function render(ui: ReactElement) {
   return result;
 }
 
-/**
- * The work surface keeps one implementation; the interface version selects the
- * chrome. The refreshed top bar renders the product logo, the classic one does
- * not, which makes it a reliable version marker.
- */
-async function workChromeMarker() {
-  await screen.findByText("starting research");
-  return screen.queryByTestId("product-logo") !== null;
-}
-
 function panelObserver(panel = screen.getByRole("region", { name: /file browser/i })) {
   const observer = observerFor(panel.parentElement as HTMLElement);
   expect(observer).toBeTruthy();
@@ -516,17 +506,18 @@ describe("WorkPage", () => {
     },
   );
 
-  it("uses the refreshed chrome on the work surface by default", async () => {
+  it("keeps the application artwork outside the Work surface", async () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
-    expect(await workChromeMarker()).toBe(true);
+    await screen.findByText("starting research");
+    expect(screen.queryByTestId("product-logo")).toBeNull();
+    expect(screen.getByRole("button", { name: "Back to home" })).toHaveTextContent("EasyResearch");
   });
 
-  it("uses the classic chrome on the work surface when the interface version is classic", async () => {
+  it("keeps the single Work layout when an old presentation preference is present", async () => {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ uiVersion: "classic" }));
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
-    expect(await workChromeMarker()).toBe(false);
-    // The classic work surface keeps the session name in the top bar rather than
-    // a page heading, so the refreshed heading must be gone too.
+    await screen.findByText("starting research");
+    expect(screen.queryByTestId("product-logo")).toBeNull();
     expect(screen.queryByRole("heading", { level: 1 })).toBeNull();
   });
 
@@ -608,7 +599,7 @@ describe("WorkPage", () => {
     expect(api.sendPrompt).not.toHaveBeenCalled();
   });
 
-  it("keeps Home navigation and presents a contiguous workspace with a bounded conversation", async () => {
+  it("keeps Home navigation, chat and labelled inspector controls in the shared workspace", async () => {
     const onBack = vi.fn();
     const user = userEvent.setup();
     render(<WorkPage id="s1" cwd="/p" onBack={onBack} onOpenSettings={() => {}} />);
@@ -619,12 +610,14 @@ describe("WorkPage", () => {
     await user.click(home);
     expect(onBack).toHaveBeenCalledOnce();
     const conversation = screen.getByRole("tabpanel", { name: /^chat$/i });
-    expect(conversation.parentElement).toHaveClass("gap-0", "min-w-0");
-    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("p");
-    expect(screen.getByTestId("transcript-viewport").parentElement?.parentElement).toHaveClass("max-w-[952px]");
+    expect(conversation).toContainElement(screen.getByTestId("transcript-viewport"));
+    expect(screen.getByTitle("/p")).toBeVisible();
     const files = screen.getByRole("button", { name: /files browser/i });
     const agents = screen.getByRole("button", { name: /agent list/i });
     const settings = screen.getByRole("button", { name: /settings/i });
+    expect(files).toHaveAttribute("title");
+    expect(agents).toHaveAttribute("title");
+    expect(settings).toHaveAttribute("title");
     expect(files.parentElement).toBe(settings.parentElement);
     expect(agents.parentElement).toBe(settings.parentElement);
     expect(screen.queryByRole("navigation", { name: /work views/i })).toBeNull();
@@ -3883,12 +3876,12 @@ describe("WorkPage", () => {
     const chat = screen.getByRole("tabpanel", { name: /chat/i });
     const row = chat?.parentElement;
     expect(row).toBeTruthy();
-    expect(row).toHaveClass("gap-0");
+    expect(row).toHaveAttribute("data-panel-open", "true");
 
     await user.click(screen.getByRole("button", { name: /files browser/i }));
 
-    expect(row).toHaveClass("gap-0");
-    expect(row).not.toHaveClass("gap-2");
+    expect(row).toHaveAttribute("data-panel-open", "false");
+    expect(screen.getByRole("textbox", { name: "Message" })).toBeVisible();
   });
 
   it("resizes the panel within min/max while dragging", async () => {

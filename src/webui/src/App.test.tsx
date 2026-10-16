@@ -237,23 +237,29 @@ describe("App routing", () => {
     expect(await screen.findByRole("region", { name: /research workspace/i })).toBeTruthy();
   });
 
-  it("renders the refreshed Home surface by default", async () => {
+  it("renders the single text-first Home surface by default", async () => {
     render(<App />);
     await screen.findByRole("region", { name: /research workspace/i });
-    expect(screen.getByTestId("product-logo")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Research sessions" })).toBeVisible();
+    expect(screen.queryByTestId("product-logo")).toBeNull();
+    expect(screen.queryByText(/studio/i)).toBeNull();
   });
 
-  it("renders the classic Home surface when the interface version is classic", async () => {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ uiVersion: "classic", language: "en" }));
-    try {
-      render(<App />);
-      // The classic surface is the same workspace with the pre-refresh chrome.
-      expect(await screen.findByRole("region", { name: /research workspace/i })).toBeTruthy();
-      expect(screen.queryByTestId("product-logo")).toBeNull();
-    } finally {
-      window.localStorage.clear();
-    }
-  });
+  it.each(["classic", "current", "studio"])(
+    "recovers an old %s preference into the single Home surface",
+    async (uiVersion) => {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ uiVersion, language: "en", studioTheme: "dark" }));
+      try {
+        render(<App />);
+        expect(await screen.findByRole("region", { name: /research workspace/i })).toBeTruthy();
+        expect(screen.getByRole("heading", { name: "Research sessions" })).toBeVisible();
+        expect(document.documentElement.dataset.uiTheme).toBe("dark");
+        expect(screen.queryByTestId("product-logo")).toBeNull();
+      } finally {
+        window.localStorage.clear();
+      }
+    },
+  );
 
   it("opens canonical Settings over the still-mounted, inert Home context", async () => {
     const user = userEvent.setup();
@@ -266,7 +272,7 @@ describe("App routing", () => {
     await user.click(screen.getByRole("button", { name: "Settings" }));
     expect(window.location.hash).toBe("#/?settings=1");
     expect(await screen.findByRole("dialog", { name: "Settings" })).toBeVisible();
-    expect(screen.getByRole("tab", { name: "General" })).toHaveFocus();
+    expect(screen.getByRole("tab", { name: "Appearance and language" })).toHaveFocus();
     expect(versionNode).toBeInTheDocument();
     const baseSurface = versionNode.closest("[data-app-surface]");
     expect(baseSurface).not.toBeNull();
@@ -274,25 +280,23 @@ describe("App routing", () => {
     expect(baseSurface!).toHaveAttribute("aria-hidden", "true");
   });
 
-  async function switchHomeVersion(version: "current" | "classic" | "studio", via: "local" | "storage") {
+  async function switchHomeTheme(studioTheme: "light" | "dark", via: "local" | "storage") {
     if (via === "storage") {
       await act(async () => {
         const prefs = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}");
-        window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...prefs, language: "en", uiVersion: version }));
+        window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...prefs, language: "en", studioTheme }));
         window.dispatchEvent(new StorageEvent("storage", { key: STORAGE_KEY }));
       });
     } else {
       const user = userEvent.setup();
       await user.click(screen.getByRole("button", { name: "Settings" }));
-      await user.click(
-        screen.getByRole("button", { name: { current: "Current", classic: "Classic", studio: "Studio" }[version] }),
-      );
+      await user.click(screen.getByRole("button", { name: studioTheme === "light" ? "Light" : "Dark" }));
       await user.click(screen.getByRole("button", { name: "Close" }));
       await waitFor(() => expect(window.location.hash).toBe("#/"));
     }
   }
 
-  it.each(["local", "storage"] as const)("preserves Home project and query across %s version switches", async (via) => {
+  it.each(["local", "storage"] as const)("preserves Home workspace and query across %s theme switches", async (via) => {
     vi.mocked(api.listStatus).mockResolvedValue({
       ...persisted,
       sessions: [
@@ -311,8 +315,8 @@ describe("App routing", () => {
     render(<App />);
     await user.click(await screen.findByRole("button", { name: "/p" }));
     await user.type(screen.getByRole("searchbox"), "write");
-    for (const version of ["classic", "studio", "current"] as const) {
-      await switchHomeVersion(version, via);
+    for (const theme of ["dark", "light"] as const) {
+      await switchHomeTheme(theme, via);
       expect(screen.getByRole("searchbox")).toHaveValue("write");
       expect(screen.getByRole("button", { name: "/p" })).toHaveAttribute("aria-current", "true");
       expect(screen.getByText("write a paper")).toBeVisible();
@@ -325,18 +329,16 @@ describe("App routing", () => {
   });
 
   it.each(["local", "storage"] as const)(
-    "retains Home create ownership and failure across %s version switches",
+    "retains Home create ownership and failure across %s theme switches",
     async (via) => {
       const request = deferred<Awaited<ReturnType<typeof api.createSession>>>();
       vi.mocked(api.listStatus).mockResolvedValue(persisted);
       vi.mocked(api.createSession).mockReturnValue(request.promise);
       const user = userEvent.setup();
-      if (via === "storage")
-        window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ uiVersion: "studio", language: "en" }));
       render(<App />);
       await user.click(await screen.findByRole("button", { name: "New session /p" }));
-      for (const version of ["classic", "studio", "current"] as const) {
-        await switchHomeVersion(version, via);
+      for (const theme of ["dark", "light"] as const) {
+        await switchHomeTheme(theme, via);
         const create = screen.getByRole("button", { name: "New session /p" });
         expect(create).toBeDisabled();
         expect(screen.getByRole("button", { name: "New workspace" })).toBeDisabled();
@@ -345,13 +347,13 @@ describe("App routing", () => {
       }
       await act(async () => request.reject(new Error("Create failed")));
       expect(await screen.findByRole("alert")).toHaveTextContent("Create failed");
-      await switchHomeVersion("classic", via);
+      await switchHomeTheme("dark", via);
       expect(screen.getByRole("alert")).toHaveTextContent("Create failed");
       expect(screen.getByRole("button", { name: "New session /p" })).toBeEnabled();
     },
   );
 
-  it("retains the Home delete dialog, pending guard and retry across cross-tab version switches", async () => {
+  it("retains the Home delete dialog, pending guard and retry across cross-tab theme switches", async () => {
     const request = deferred<void>();
     vi.mocked(api.listStatus).mockResolvedValue(persisted);
     vi.mocked(api.deleteSession).mockReturnValueOnce(request.promise).mockResolvedValueOnce(undefined);
@@ -359,10 +361,10 @@ describe("App routing", () => {
     render(<App />);
     await user.click(await screen.findByRole("button", { name: "Delete session: write a paper" }));
     const dialog = screen.getByRole("dialog", { name: "Delete session" });
-    await switchHomeVersion("classic", "storage");
+    await switchHomeTheme("dark", "storage");
     expect(screen.getByRole("dialog", { name: "Delete session" })).toBe(dialog);
     await user.click(within(dialog).getByRole("button", { name: "Delete" }));
-    await switchHomeVersion("studio", "storage");
+    await switchHomeTheme("light", "storage");
     expect(dialog).toHaveAttribute("aria-busy", "true");
     expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled();
     fireEvent.submit(dialog);
@@ -371,7 +373,7 @@ describe("App routing", () => {
     expect(dialog).toBeInTheDocument();
     await act(async () => request.reject(new Error("Delete failed")));
     expect(await within(dialog).findByRole("alert")).toHaveTextContent("Delete failed");
-    await switchHomeVersion("classic", "storage");
+    await switchHomeTheme("dark", "storage");
     expect(screen.getByRole("dialog", { name: "Delete session" })).toBe(dialog);
     expect(within(dialog).getByRole("alert")).toHaveTextContent("Delete failed");
     vi.mocked(api.listStatus).mockResolvedValue({ ...persisted, sessions: [] });
@@ -381,24 +383,25 @@ describe("App routing", () => {
     expect(screen.queryByText("write a paper")).toBeNull();
   });
 
-  it("selects Studio dark through Settings while retaining the Home search and configuration connection", async () => {
+  it("selects dark through Settings without an interface selector or a new configuration connection", async () => {
     const user = userEvent.setup();
     render(<App />);
     await workspace();
     await user.type(screen.getByRole("searchbox"), "research draft");
     await user.click(screen.getByRole("button", { name: "Settings" }));
     const dialog = screen.getByRole("dialog", { name: "Settings" });
-    await user.click(within(dialog).getByRole("button", { name: "Studio" }));
+    expect(within(dialog).queryByRole("group", { name: "Interface version" })).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: /studio|classic|current/i })).toBeNull();
     await user.click(within(dialog).getByRole("button", { name: "Dark" }));
-    expect(document.documentElement.dataset.uiVersion).toBe("studio");
     expect(document.documentElement.dataset.uiTheme).toBe("dark");
-    expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!)).toMatchObject({ uiVersion: "studio", studioTheme: "dark" });
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!)).toMatchObject({ studioTheme: "dark" });
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!)).not.toHaveProperty("uiVersion");
     await user.click(within(dialog).getByRole("button", { name: "Close" }));
     expect(screen.getByRole("searchbox")).toHaveValue("research draft");
     expect(api.connectConfigurationEvents).toHaveBeenCalledOnce();
-    await switchHomeVersion("classic", "storage");
+    await switchHomeTheme("light", "storage");
     expect(document.documentElement.dataset.uiTheme).toBe("light");
-    await switchHomeVersion("studio", "storage");
+    await switchHomeTheme("dark", "storage");
     expect(document.documentElement.dataset.uiTheme).toBe("dark");
     expect(screen.getByRole("searchbox")).toHaveValue("research draft");
   });
@@ -1173,7 +1176,7 @@ describe("App routing", () => {
     window.history.replaceState(null, "", "#/?settings=1");
     render(<App />);
 
-    const general = await screen.findByRole("tab", { name: "General" });
+    const general = await screen.findByRole("tab", { name: "Appearance and language" });
     expect(general).toHaveFocus();
     await user.click(screen.getByRole("button", { name: "Close" }));
 
@@ -1196,7 +1199,7 @@ describe("App routing", () => {
       status.resolve(persisted);
       await status.promise;
     });
-    const general = await screen.findByRole("tab", { name: "General" });
+    const general = await screen.findByRole("tab", { name: "Appearance and language" });
     expect(general).toHaveFocus();
     await hydrateResolvedWork(result.container);
 

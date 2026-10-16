@@ -128,8 +128,7 @@ describe("HomePage", () => {
     const workspace = await screen.findByRole("region", { name: /research workspace/i });
     expect(workspace.parentElement).toHaveClass("min-h-full", "w-full", "flex", "flex-col");
     expect(workspace.parentElement).not.toHaveClass("px-2", "pb-2", "pt-[4px]");
-    expect(workspace).toHaveClass("flex-1");
-    expect(workspace).not.toHaveClass("home-workspace", "rounded-[10px]", "max-w-[1600px]");
+    expect(within(workspace).getByRole("heading", { name: "Research sessions" })).toBeVisible();
   });
 
   it.each(["a1", "Fault diagnosis"])(
@@ -319,7 +318,7 @@ describe("HomePage", () => {
     expect(await screen.findByText("Fault diagnosis")).toBeTruthy();
     expect(screen.getByRole("button", { name: "/proj" })).toBeVisible();
     expect(screen.getAllByText("proj").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("12").length).toBeGreaterThan(0);
+    expect(screen.getByText("12 messages")).toBeVisible();
   });
 
   it("starts in All projects and filters both active and history by exact cwd", async () => {
@@ -330,7 +329,7 @@ describe("HomePage", () => {
     expect(screen.getByText("Project experiment")).toBeVisible();
     expect(screen.getByText("Other experiment")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "/other" }));
-    expect(screen.getByRole("heading", { level: 1, name: "other" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "/other" })).toHaveAttribute("aria-current", "true");
     expect(screen.queryByText("Fault diagnosis")).toBeNull();
     expect(screen.queryByText("Project experiment")).toBeNull();
     expect(screen.getByText("Other paper")).toBeVisible();
@@ -341,9 +340,9 @@ describe("HomePage", () => {
     renderHomeWithTwoProjects();
     const elements = [
       await screen.findByRole("button", { name: /^new workspace$/i }),
+      screen.getByRole("complementary", { name: /workspaces/i }),
       screen.getByRole("searchbox", { name: /search sessions/i }),
       screen.getByRole("heading", { name: /active sessions/i }),
-      screen.getByRole("complementary", { name: /workspaces/i }),
       screen.getByRole("heading", { name: /recent sessions/i }),
     ];
     for (let index = 0; index < elements.length - 1; index += 1) {
@@ -387,7 +386,8 @@ describe("HomePage", () => {
       ],
     } as never);
     renderHome();
-    expect(await screen.findByText(/^2 active$/i)).toBeVisible();
+    const activeRegion = await screen.findByRole("region", { name: "Active sessions" });
+    await waitFor(() => expect(within(activeRegion).getAllByRole("listitem")).toHaveLength(2));
     expect(screen.getByText("Running paper")).toBeVisible();
     expect(screen.getByText("Ready paper")).toBeVisible();
     expect(screen.queryByText("Error paper")).toBeNull();

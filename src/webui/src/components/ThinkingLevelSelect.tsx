@@ -34,6 +34,7 @@ export function ThinkingLevelSelect({
 }: ThinkingLevelSelectProps) {
   return (
     <select
+      data-component="thinking-level-select"
       id={id}
       aria-label={ariaLabel}
       value={value}

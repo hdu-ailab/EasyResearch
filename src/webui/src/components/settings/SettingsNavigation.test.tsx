@@ -20,47 +20,28 @@ function renderNavigation(onSelect = vi.fn()) {
   return onSelect;
 }
 
-it("orders Network after General and includes it in desktop roving focus", () => {
+it("moves focus to the next visible desktop category and the last category", () => {
   vi.stubGlobal("innerWidth", 1200);
   const onSelect = renderNavigation();
   const tablist = screen.getByRole("tablist", { name: "Settings" });
-  expect(
-    within(tablist)
-      .getAllByRole("tab")
-      .map((tab) => tab.textContent),
-  ).toEqual(["General", "Network", "Conversation", "Model providers", "Agents", "Skills and tools"]);
-
-  const general = within(tablist).getByRole("tab", { name: "General" });
+  const tabs = within(tablist).getAllByRole("tab");
+  const general = tabs[0]!;
   general.focus();
   fireEvent.keyDown(general, { key: "ArrowDown" });
 
-  expect(within(tablist).getByRole("tab", { name: "Network" })).toHaveFocus();
-  expect(onSelect).toHaveBeenLastCalledWith("network");
+  expect(tabs[1]).toHaveFocus();
+  expect(onSelect).toHaveBeenLastCalledWith(tabs[1]!.id.replace("settings-tab-", ""));
 
   fireEvent.keyDown(screen.getByRole("tab", { name: "Network" }), { key: "End" });
-  expect(screen.getByRole("tab", { name: "Skills and tools" })).toHaveFocus();
-  expect(onSelect).toHaveBeenLastCalledWith("resources");
+  expect(tabs.at(-1)).toHaveFocus();
+  expect(onSelect).toHaveBeenLastCalledWith(tabs.at(-1)!.id.replace("settings-tab-", ""));
 });
 
-it("orders and selects Network from the mobile category stack", async () => {
+it("selects Network from the mobile category stack", async () => {
   vi.stubGlobal("innerWidth", 390);
   const user = userEvent.setup();
   const onSelect = renderNavigation();
   const navigation = screen.getByRole("navigation", { name: "Settings" });
-  const categoryNames = within(navigation)
-    .getAllByRole("button")
-    .slice(0, 6)
-    .map((button) => button.textContent);
-
-  expect(categoryNames).toEqual([
-    "General",
-    "Network",
-    "Conversation",
-    "Model providers",
-    "Agents",
-    "Skills and tools",
-  ]);
-
   await user.click(within(navigation).getByRole("button", { name: "Network" }));
   expect(onSelect).toHaveBeenCalledWith("network");
 });

@@ -266,7 +266,7 @@ function ModelRow({
 
   return (
     <div className="mt-2">
-      <div className="flex items-center gap-1.5">
+      <div className="grid grid-cols-2 items-center gap-1.5 *:min-w-0">
         <SearchableSelect
           ariaLabel={t("work.selectModel")}
           value={current}
@@ -285,7 +285,7 @@ function ModelRow({
           placeholder={emptyModelLabel}
           disabled={disabled}
           onSelect={(value) => onPatch({ model: value === "" ? null : value })}
-          className="flex-1"
+          className="w-full"
         />
         <ThinkingLevelSelect
           ariaLabel={t("work.selectThinking")}

@@ -182,7 +182,7 @@ describe("electron-builder configuration", () => {
       electronVersion: "42.3.3",
       asar: true,
       files: ["main.cjs", "preload.cjs", "package.json"],
-      extraResources: [{ from: "sidecar", to: "sidecar" }],
+      extraResources: expect.arrayContaining([{ from: "sidecar", to: "sidecar" }]),
       mac: {
         identity: null,
         notarize: false,
@@ -213,4 +213,16 @@ describe("electron-builder configuration", () => {
       },
     });
   });
+
+  it.each(["windows-x64", "darwin-arm64", "linux-arm64"] as const)(
+    "packages application and window artwork for %s", (target) => {
+      const config = electronBuilderConfig(target, "1.2.3", join(root, "stage"), join(root, "desktop"));
+      const resources = config.extraResources as Array<{ from: string; to: string; filter?: string[] }>;
+      const artwork = resources.find(resource => resource.to === "icons");
+      expect(artwork).toBeDefined();
+      expect(artwork?.filter).toEqual(expect.arrayContaining(["icon.png", "tray.png", "tray@2x.png"]));
+      const icon = target === "windows-x64" ? config.win?.icon : target === "darwin-arm64" ? config.mac?.icon : config.linux?.icon;
+      expect(icon).toBe(join(artwork!.from, target === "windows-x64" ? "icon.ico" : target === "darwin-arm64" ? "icon.icns" : "icon.png"));
+    },
+  );
 });

@@ -6,7 +6,6 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readDesktopPreferenceBlob, writeDesktopPreferenceBlob } from "../../../desktop/preferences-store";
 import { STORAGE_KEY } from "../preferences";
-import { CLASSIC_FAVICON } from "../ui-version";
 import { CHAT_FONT_VAR, FILES_FONT_VAR } from "../webui-fonts";
 import { PreferencesProvider, usePreferences } from "./PreferencesProvider";
 
@@ -16,19 +15,16 @@ function Probe() {
     <>
       <span data-testid="tools-expanded">{String(preferences.autoExpandTools)}</span>
       <span data-testid="thinking-expanded">{String(preferences.autoExpandThinking)}</span>
-      <span data-testid="ui-version">{preferences.uiVersion}</span>
+      <span data-testid="theme">{preferences.studioTheme}</span>
       <input aria-label="draft" defaultValue="Unsent research question" />
-      <button type="button" onClick={() => updatePreferences({ uiVersion: "studio", studioTheme: "dark" })}>
-        use studio dark
+      <button type="button" onClick={() => updatePreferences({ studioTheme: "dark" })}>
+        use dark
       </button>
       <button type="button" onClick={() => updatePreferences({ autoExpandTools: true })}>
         enable tools
       </button>
-      <button type="button" onClick={() => updatePreferences({ uiVersion: "classic" })}>
-        use classic
-      </button>
-      <button type="button" onClick={() => updatePreferences({ uiVersion: "current" })}>
-        use current
+      <button type="button" onClick={() => updatePreferences({ studioTheme: "light" })}>
+        use light
       </button>
       <button
         type="button"
@@ -44,7 +40,7 @@ function Probe() {
 }
 
 describe("PreferencesProvider", () => {
-  it("applies a cross-tab Studio theme while preserving the mounted draft and remembered theme", async () => {
+  it("applies a cross-tab theme while preserving the mounted draft", async () => {
     const user = userEvent.setup();
     render(
       <PreferencesProvider>
@@ -52,14 +48,14 @@ describe("PreferencesProvider", () => {
       </PreferencesProvider>,
     );
     const draft = screen.getByRole("textbox", { name: "draft" });
-    await user.click(screen.getByRole("button", { name: "use studio dark" }));
+    await user.click(screen.getByRole("button", { name: "use dark" }));
     expect(document.documentElement.dataset.uiTheme).toBe("dark");
-    await user.click(screen.getByRole("button", { name: "use current" }));
+    await user.click(screen.getByRole("button", { name: "use light" }));
     expect(document.documentElement.dataset.uiTheme).toBe("light");
-    expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!)).toMatchObject({ uiVersion: "current", studioTheme: "dark" });
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!)).toMatchObject({ studioTheme: "light" });
     localStorage.setItem(
       STORAGE_KEY,
-      JSON.stringify({ ...JSON.parse(localStorage.getItem(STORAGE_KEY)!), uiVersion: "studio" }),
+      JSON.stringify({ ...JSON.parse(localStorage.getItem(STORAGE_KEY)!), studioTheme: "dark" }),
     );
     act(() => window.dispatchEvent(new StorageEvent("storage", { key: STORAGE_KEY })));
     expect(document.documentElement.dataset.uiTheme).toBe("dark");
@@ -79,10 +75,11 @@ describe("PreferencesProvider", () => {
     vi.restoreAllMocks();
   });
 
-  it("applies the selected interface version to the document icon", async () => {
+  it("keeps the application favicon stable across theme changes", async () => {
     const user = userEvent.setup();
     const link = document.createElement("link");
     link.rel = "icon";
+    link.href = "/favicon.svg";
     document.head.append(link);
     try {
       render(
@@ -91,12 +88,12 @@ describe("PreferencesProvider", () => {
         </PreferencesProvider>,
       );
 
-      await user.click(screen.getByRole("button", { name: "use classic" }));
-      expect(screen.getByTestId("ui-version").textContent).toBe("classic");
-      expect(link.getAttribute("href")).toBe(CLASSIC_FAVICON);
+      await user.click(screen.getByRole("button", { name: "use dark" }));
+      expect(screen.getByTestId("theme").textContent).toBe("dark");
+      expect(link.getAttribute("href")).toBe("/favicon.svg");
 
-      await user.click(screen.getByRole("button", { name: "use current" }));
-      expect(screen.getByTestId("ui-version").textContent).toBe("current");
+      await user.click(screen.getByRole("button", { name: "use light" }));
+      expect(screen.getByTestId("theme").textContent).toBe("light");
       expect(new URL(link.href).pathname).toBe("/favicon.svg");
     } finally {
       link.remove();
@@ -118,7 +115,7 @@ describe("PreferencesProvider", () => {
       chatFontSize: 13,
       filesFontSize: 12,
       language: "en",
-      uiVersion: "current",
+      studioTheme: "light",
       autoExpandThinking: false,
       autoExpandTools: true,
       expandSubagentOutput: false,
@@ -148,9 +145,9 @@ describe("PreferencesProvider", () => {
     });
   });
 
-  it.each(["current", "classic"] as const)(
+  it.each(["light", "dark"] as const)(
     "restores the renderer's complete %s blob through host persistence",
-    async (uiVersion) => {
+    async (studioTheme) => {
       const root = mkdtempSync(join(tmpdir(), "easyresearch-renderer-prefs-"));
       const user = userEvent.setup();
       // The preload supplies a previously accepted six-field blob before React starts.
@@ -175,10 +172,10 @@ describe("PreferencesProvider", () => {
             <Probe />
           </PreferencesProvider>,
         );
-        await user.click(screen.getByRole("button", { name: `use ${uiVersion}` }));
+        await user.click(screen.getByRole("button", { name: `use ${studioTheme}` }));
         await user.click(screen.getByRole("button", { name: "enable tools" }));
         const saved = readDesktopPreferenceBlob(root)!;
-        expect(JSON.parse(saved)).toEqual({ ...JSON.parse(oldBlob), uiVersion, autoExpandTools: true });
+        expect(JSON.parse(saved)).toEqual({ ...JSON.parse(oldBlob), studioTheme, autoExpandTools: true });
         first.unmount();
 
         // A fresh ephemeral origin starts with empty localStorage and the host mirror.
@@ -189,7 +186,7 @@ describe("PreferencesProvider", () => {
             <Probe />
           </PreferencesProvider>,
         );
-        expect(screen.getByTestId("ui-version")).toHaveTextContent(uiVersion);
+        expect(screen.getByTestId("theme")).toHaveTextContent(studioTheme);
         expect(screen.getByTestId("tools-expanded")).toHaveTextContent("true");
         expect(screen.getByTestId("thinking-expanded")).toHaveTextContent("true");
         expect(document.documentElement.lang).toBe("zh-CN");

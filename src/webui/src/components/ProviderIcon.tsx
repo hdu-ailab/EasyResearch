@@ -124,6 +124,7 @@ const KNOWN_ICON_IDS = new Set([
 export interface ProviderIconProps extends SVGAttributes<SVGSVGElement> {
   /** Pi provider id (e.g. "anthropic"). Unknown ids render the synthetic fallback. */
   id: string;
+  label?: string;
 }
 
 /**
@@ -132,11 +133,11 @@ export interface ProviderIconProps extends SVGAttributes<SVGSVGElement> {
  * the surrounding text color. Provider ids without a sprite entry fall back
  * to the `synthetic` spark glyph.
  */
-export function ProviderIcon({ id, ...rest }: ProviderIconProps) {
+export function ProviderIcon({ id, label = id, ...rest }: ProviderIconProps) {
   const symbol = PROVIDER_ID_TO_ICON[id] ?? (KNOWN_ICON_IDS.has(id) ? id : "synthetic");
   return (
-    // biome-ignore lint/a11y/noSvgWithoutTitle: decorative provider badge; adjacent text carries the accessible name.
     <svg data-component="provider-icon" aria-hidden {...rest}>
+      <title>{label}</title>
       <use href={`${spriteUrl}#${symbol}`} />
     </svg>
   );

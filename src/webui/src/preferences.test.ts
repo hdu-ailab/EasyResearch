@@ -3,7 +3,6 @@ import {
   CHAT_FONT_MIN,
   DEFAULT_CHAT_FONT_SIZE,
   DEFAULT_FILES_FONT_SIZE,
-  DEFAULT_UI_VERSION,
   FILES_FONT_MAX,
   readPreferences,
   resolveLanguage,
@@ -48,13 +47,12 @@ describe("resolveLanguage", () => {
 });
 
 describe("readPreferences", () => {
-  it("restores Studio and its theme without discarding independent preferences", () => {
+  it("restores the saved theme without discarding independent preferences", () => {
     const storage = fakeStorage({
       [STORAGE_KEY]: JSON.stringify({ uiVersion: "studio", studioTheme: "dark", chatFontSize: 18, language: "zh-CN" }),
     });
     const preferences = readPreferences(storage, nav("en"));
     expect(preferences).toMatchObject({
-      uiVersion: "studio",
       studioTheme: "dark",
       chatFontSize: 18,
       language: "zh-CN",
@@ -63,12 +61,11 @@ describe("readPreferences", () => {
     expect(readPreferences(storage, nav("en"))).toEqual(preferences);
   });
 
-  it.each([undefined, null, "future", false])("recovers only an invalid or absent Studio theme (%s)", (studioTheme) => {
+  it.each([undefined, null, "future", false])("recovers only an invalid or absent theme (%s)", (studioTheme) => {
     const storage = fakeStorage({
       [STORAGE_KEY]: JSON.stringify({ uiVersion: "studio", studioTheme, filesFontSize: 17 }),
     });
     expect(readPreferences(storage, nav("en"))).toMatchObject({
-      uiVersion: "studio",
       studioTheme: "light",
       filesFontSize: 17,
     });
@@ -80,7 +77,7 @@ describe("readPreferences", () => {
       chatFontSize: DEFAULT_CHAT_FONT_SIZE,
       filesFontSize: DEFAULT_FILES_FONT_SIZE,
       language: "zh-CN",
-      uiVersion: "current",
+      studioTheme: "light",
       autoExpandThinking: false,
       autoExpandTools: false,
       expandSubagentOutput: false,
@@ -88,21 +85,18 @@ describe("readPreferences", () => {
     expect(readPreferences(fakeStorage(), nav("en-US")).language).toBe("en");
   });
 
-  it("defaults the interface version to the current layout", () => {
-    expect(readPreferences(fakeStorage(), nav("en-US")).uiVersion).toBe(DEFAULT_UI_VERSION);
-    expect(DEFAULT_UI_VERSION).toBe("current");
-  });
-
-  it("keeps an explicit classic version", () => {
-    const stored = fakeStorage({ [STORAGE_KEY]: JSON.stringify({ uiVersion: "classic" }) });
-    expect(readPreferences(stored, nav("en-US")).uiVersion).toBe("classic");
-  });
-
-  it.each([undefined, null, "", "legacy", "v2", 2, {}])(
-    "falls back to the default version for an unrecognized value %#",
-    (value) => {
-      const stored = fakeStorage({ [STORAGE_KEY]: JSON.stringify({ uiVersion: value }) });
-      expect(readPreferences(stored, nav("en-US")).uiVersion).toBe("current");
+  it.each(["current", "classic", "studio", undefined, "future"])(
+    "retires the old presentation %s while preserving the saved theme",
+    (uiVersion) => {
+      const storage = fakeStorage({
+        [STORAGE_KEY]: JSON.stringify({ uiVersion, studioTheme: "dark", chatFontSize: 18, autoExpandTools: true }),
+      });
+      const preferences = readPreferences(storage, nav("en"));
+      expect(preferences).not.toHaveProperty("uiVersion");
+      expect(preferences).toMatchObject({ studioTheme: "dark", chatFontSize: 18, autoExpandTools: true });
+      writePreferences(storage, preferences);
+      expect(JSON.parse(storage.getItem(STORAGE_KEY)!)).not.toHaveProperty("uiVersion");
+      expect(readPreferences(storage, nav("en"))).toEqual(preferences);
     },
   );
 
@@ -112,7 +106,7 @@ describe("readPreferences", () => {
       chatFontSize: 16,
       filesFontSize: 11,
       language: "zh-CN",
-      uiVersion: "classic",
+      studioTheme: "dark",
       autoExpandThinking: true,
       autoExpandTools: false,
       expandSubagentOutput: true,
@@ -121,7 +115,7 @@ describe("readPreferences", () => {
       chatFontSize: 16,
       filesFontSize: 11,
       language: "zh-CN",
-      uiVersion: "classic",
+      studioTheme: "dark",
       autoExpandThinking: true,
       autoExpandTools: false,
       expandSubagentOutput: true,
@@ -144,7 +138,7 @@ describe("readPreferences", () => {
       chatFontSize: DEFAULT_CHAT_FONT_SIZE,
       filesFontSize: 14,
       language: "en",
-      uiVersion: "current",
+      studioTheme: "light",
       autoExpandThinking: true,
       autoExpandTools: false,
       expandSubagentOutput: true,
@@ -170,7 +164,7 @@ describe("readPreferences", () => {
       chatFontSize: DEFAULT_CHAT_FONT_SIZE,
       filesFontSize: DEFAULT_FILES_FONT_SIZE,
       language: "en",
-      uiVersion: DEFAULT_UI_VERSION,
+      studioTheme: "light",
       autoExpandThinking: false,
       autoExpandTools: false,
       expandSubagentOutput: false,
@@ -185,7 +179,7 @@ describe("writePreferences", () => {
       chatFontSize: 15,
       filesFontSize: 12,
       language: "en",
-      uiVersion: "current",
+      studioTheme: "light",
       autoExpandThinking: false,
       autoExpandTools: true,
       expandSubagentOutput: false,
@@ -194,7 +188,7 @@ describe("writePreferences", () => {
       chatFontSize: 15,
       filesFontSize: 12,
       language: "en",
-      uiVersion: "current",
+      studioTheme: "light",
       autoExpandThinking: false,
       autoExpandTools: true,
       expandSubagentOutput: false,

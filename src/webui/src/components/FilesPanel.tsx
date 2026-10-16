@@ -313,7 +313,9 @@ export function FilesPanel({
                       {state === "loading" ? (
                         <span className="v2-spinner" aria-hidden />
                       ) : (
-                        <ActionGlyph label={t(isExpanded ? "studio.collapse" : "studio.expand")}>
+                        <ActionGlyph
+                          label={t(isExpanded ? "files.collapseRow" : "files.expandRow").replace("{name}", entry.name)}
+                        >
                           <ChevronRight
                             size={12}
                             className={`shrink-0 transition-transform ${isExpanded ? "rotate-90" : ""}`}
@@ -325,10 +327,11 @@ export function FilesPanel({
                     <span className="w-4 shrink-0" aria-hidden />
                   )}
                   {isDirectory ? (
-                    <FolderOpen
-                      size={13}
-                      className={`shrink-0 ${isExpanded ? "text-v2-blue-600" : "text-v2-icon-icon-muted"}`}
-                    />
+                    isExpanded ? (
+                      <FolderOpen size={13} className="shrink-0 text-v2-blue-600" aria-hidden />
+                    ) : (
+                      <Folder size={13} className="shrink-0 text-v2-icon-icon-muted" aria-hidden />
+                    )
                   ) : (
                     <FileIcon size={13} className="shrink-0 text-v2-icon-icon-muted" />
                   )}

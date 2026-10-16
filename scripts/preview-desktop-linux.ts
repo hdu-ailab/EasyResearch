@@ -29,7 +29,7 @@ import {
   buildManifestPath,
   repoPackageVersion,
 } from "./build";
-import { ELECTRON_VERSION } from "./build-desktop";
+import { DESKTOP_ICON_DIR, DESKTOP_ICON_RESOURCE, ELECTRON_VERSION } from "./build-desktop";
 import { validateBuildArtifact } from "./release";
 
 export interface LinuxPreviewPaths {
@@ -110,13 +110,14 @@ export function linuxPreviewBuilderConfig(
     electronVersion: ELECTRON_VERSION,
     asar: true,
     files: ["main.cjs", "preload.cjs", "package.json"],
-    extraResources: [{ from: "sidecar", to: "sidecar" }],
+    extraResources: [{ from: "sidecar", to: "sidecar" }, DESKTOP_ICON_RESOURCE],
     directories: { app: stageDir, output: outputDir },
     npmRebuild: false,
     buildDependenciesFromSource: false,
     forceCodeSigning: false,
     publish: null,
     linux: {
+      icon: join(DESKTOP_ICON_DIR, "icon.png"),
       target: [{ target: "dir", arch: ["x64"] }],
       executableName: "easyresearch-preview",
       category: "Science",

@@ -127,7 +127,7 @@ describe("Linux desktop preview planning", () => {
       productName: "EasyResearch Preview",
       electronVersion: "42.3.3",
       files: ["main.cjs", "preload.cjs", "package.json"],
-      extraResources: [{ from: "sidecar", to: "sidecar" }],
+      extraResources: expect.arrayContaining([{ from: "sidecar", to: "sidecar" }]),
       directories: { app: "/stage", output: "/output" },
       publish: null,
       linux: {

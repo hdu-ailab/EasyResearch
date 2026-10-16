@@ -17,23 +17,37 @@ import { chromium, expect, type Locator, type Page } from "@playwright/test";
 import { preview } from "vite";
 
 const argument = process.argv[2];
-const suppliedUrl = argument ? new URL(/^\d+$/.test(argument) ? `http://127.0.0.1:${argument}` : argument) : undefined;
+const suppliedUrl = argument
+  ? new URL(/^\d+$/.test(argument) ? `http://127.0.0.1:${argument}` : argument)
+  : undefined;
 if (suppliedUrl) {
-  assert(["http:", "https:"].includes(suppliedUrl.protocol) && !suppliedUrl.username && !suppliedUrl.password
-    && suppliedUrl.pathname === "/" && !suppliedUrl.search && !suppliedUrl.hash, "Supply an isolated HTTP(S) origin or port");
+  assert(
+    ["http:", "https:"].includes(suppliedUrl.protocol) &&
+      !suppliedUrl.username &&
+      !suppliedUrl.password &&
+      suppliedUrl.pathname === "/" &&
+      !suppliedUrl.search &&
+      !suppliedUrl.hash,
+    "Supply an isolated HTTP(S) origin or port",
+  );
 }
 const configFile = resolve(import.meta.dir, "../src/webui/vite.config.ts");
 if (!suppliedUrl) {
-  const built = spawnSync(process.execPath, ["run", "build:web"], { cwd: resolve(import.meta.dir, ".."), stdio: "inherit" });
+  const built = spawnSync(process.execPath, ["run", "build:web"], {
+    cwd: resolve(import.meta.dir, ".."),
+    stdio: "inherit",
+  });
   if (built.error) throw built.error;
   assert.equal(built.status, 0, "Web rebuild must succeed before browser verification");
 }
 const artifacts = mkdtempSync(join(tmpdir(), "easyresearch-ui-toggle-"));
 console.log(`UI_TOGGLE_VERIFY artifacts: ${artifacts}`);
-const server = suppliedUrl ? undefined : await preview({
-  configFile,
-  preview: { host: "127.0.0.1", port: 0, open: false, proxy: {} },
-});
+const server = suppliedUrl
+  ? undefined
+  : await preview({
+      configFile,
+      preview: { host: "127.0.0.1", port: 0, open: false, proxy: {} },
+    });
 
 async function assertHome(page: Page) {
   await expect(page).toHaveURL(/#\/$/);
@@ -50,21 +64,26 @@ async function assertConfig(page: Page) {
   await expect(page.getByRole("region", { name: "Research workspace", exact: true })).toHaveCount(0);
 }
 
-async function chooseVersion(page: Page, version: "Current" | "Classic" | "Studio") {
+async function chooseTheme(page: Page, theme: "Light" | "Dark") {
   const settings = page.getByRole("dialog", { name: "Settings", exact: true });
   await expect(settings).toBeVisible();
-  if (!await settings.getByRole("button", { name: version, exact: true }).isVisible()) {
-    await settings.getByRole("button", { name: /General|Appearance and language/ }).click();
+  if (!(await settings.getByRole("button", { name: theme, exact: true }).isVisible())) {
+    await settings.getByRole("button", { name: "Appearance and language", exact: true }).click();
   }
-  await settings.getByRole("button", { name: version, exact: true }).click();
-  await expect(settings.getByRole("button", { name: version, exact: true })).toHaveAttribute("aria-pressed", "true");
-  await expect(page.locator("html")).toHaveAttribute("data-ui-version", version.toLowerCase());
+  await expect(settings.getByRole("button", { name: /^(Current|Classic|Studio)$/ })).toHaveCount(0);
+  await settings.getByRole("button", { name: theme, exact: true }).click();
+  await expect(settings.getByRole("button", { name: theme, exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(page.locator("html")).toHaveAttribute("data-ui-theme", theme.toLowerCase());
 }
 
-async function assertChrome(page: Page, classic: boolean, studio = false) {
+async function assertChrome(page: Page) {
   // Scope to the visible rail: App retains a hidden Home/Work beneath Config.
-  await expect(page.getByRole("banner").getByTestId("product-logo")).toHaveCount(classic || studio ? 0 : 1);
-  await expect(page.locator('link[rel="icon"]')).toHaveAttribute("href", studio ? "data:," : classic ? /^data:image\/svg\+xml,/ : "/favicon.svg");
+  await expect(page.getByRole("banner").locator("img")).toHaveCount(0);
+  await expect(page.getByRole("banner").getByText(/studio/i)).toHaveCount(0);
+  await expect(page.locator('link[rel="icon"]')).toHaveAttribute("href", "/favicon.svg");
 }
 
 async function assertTopbarHitAreas(page: Page, width: number) {
@@ -75,67 +94,96 @@ async function assertTopbarHitAreas(page: Page, width: number) {
       const rect = element.getBoundingClientRect();
       const parent = element.parentElement!.getBoundingClientRect();
       return {
-        label: element.getAttribute("aria-label"), width: rect.width,
-        inside: rect.left >= parent.left && rect.right <= parent.right && rect.left >= 0 && rect.right <= innerWidth,
-        hit: [0.5, rect.width / 2, rect.width - 0.5].every((x) => element.contains(document.elementFromPoint(rect.x + x, rect.y + rect.height / 2))),
+        label: element.getAttribute("aria-label"),
+        width: rect.width,
+        inside:
+          rect.left >= parent.left &&
+          rect.right <= parent.right &&
+          rect.left >= 0 &&
+          rect.right <= innerWidth,
+        hit: [0.5, rect.width / 2, rect.width - 0.5].every((x) =>
+          element.contains(document.elementFromPoint(rect.x + x, rect.y + rect.height / 2)),
+        ),
       };
     });
-    assert(geometry.width >= 28 && geometry.inside && geometry.hit, `Clipped/shrunk topbar action at ${width}px: ${JSON.stringify(geometry)}`);
+    assert(
+      geometry.width >= 28 && geometry.inside && geometry.hit,
+      `Clipped/shrunk topbar action at ${width}px: ${JSON.stringify(geometry)}`,
+    );
   }
-  assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "No horizontal page overflow");
+  assert(
+    await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+    "No horizontal page overflow",
+  );
 }
 
 async function assertActionFeedback(page: Page, action: Locator) {
-  const paint = () => action.evaluate(element => {
-    const style = getComputedStyle(element);
-    return [style.backgroundColor, style.backgroundImage, style.boxShadow, style.borderColor, style.color];
-  });
+  const paint = () =>
+    action.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return [style.backgroundColor, style.backgroundImage, style.boxShadow, style.borderColor, style.color];
+    });
   await page.mouse.move(1, (page.viewportSize()?.height ?? 900) - 1);
   const resting = await paint();
   await action.hover();
-  await expect.poll(paint, { message: "An enabled action must visibly emphasize on hover" }).not.toEqual(resting);
-  assert.equal(await action.evaluate(element => getComputedStyle(element).cursor), "pointer");
+  await expect
+    .poll(paint, { message: "An enabled action must visibly emphasize on hover" })
+    .not.toEqual(resting);
+  assert.equal(await action.evaluate((element) => getComputedStyle(element).cursor), "pointer");
   const hovered = await paint();
   await page.mouse.down();
   await expect.poll(paint, { message: "Pressed feedback must differ from hover" }).not.toEqual(hovered);
   await page.mouse.move(1, (page.viewportSize()?.height ?? 900) - 1);
-  if (await action.getAttribute("draggable") === "true") await page.keyboard.press("Escape");
+  if ((await action.getAttribute("draggable")) === "true") await page.keyboard.press("Escape");
   await page.mouse.up();
   await page.keyboard.press("Tab");
   await action.focus();
-  assert(await action.evaluate(element => {
-    const style = getComputedStyle(element);
-    return style.outlineStyle !== "none" && Number.parseFloat(style.outlineWidth) > 0;
-  }), "Keyboard focus must remain visible");
-  await action.evaluate(element => (element as HTMLElement).blur());
+  assert(
+    await action.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return style.outlineStyle !== "none" && Number.parseFloat(style.outlineWidth) > 0;
+    }),
+    "Keyboard focus must remain visible",
+  );
+  await action.evaluate((element) => (element as HTMLElement).blur());
 }
 
 async function assertFieldFeedback(page: Page, field: Locator) {
-  await field.evaluate(element => (element as HTMLElement).blur());
+  await field.evaluate((element) => (element as HTMLElement).blur());
   await page.mouse.move(1, (page.viewportSize()?.height ?? 900) - 1);
-  const boundary = () => field.evaluate(element => {
-    const style = getComputedStyle(element);
-    return [style.borderColor, style.outlineColor, style.outlineStyle, style.outlineWidth];
-  });
+  const boundary = () =>
+    field.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return [style.borderColor, style.outlineColor, style.outlineStyle, style.outlineWidth];
+    });
   const resting = await boundary();
   await field.hover();
-  await expect.poll(boundary, { message: "Editable controls need a visible hover boundary" }).not.toEqual(resting);
+  await expect
+    .poll(boundary, { message: "Editable controls need a visible hover boundary" })
+    .not.toEqual(resting);
   await field.focus();
-  assert(await field.evaluate(element => getComputedStyle(element).outlineStyle !== "none"));
-  await field.evaluate(element => (element as HTMLElement).blur());
+  assert(await field.evaluate((element) => getComputedStyle(element).outlineStyle !== "none"));
+  await field.evaluate((element) => (element as HTMLElement).blur());
 }
 
 try {
   const address = server?.httpServer.address();
   assert(suppliedUrl || (address && typeof address !== "string"));
   const origin = suppliedUrl?.origin ?? `http://127.0.0.1:${(address as { port: number }).port}`;
-  const browser = await chromium.launch({ headless: true, executablePath: process.env.COMPARE_CHROMIUM_PATH });
+  const browser = await chromium.launch({
+    headless: true,
+    executablePath: process.env.COMPARE_CHROMIUM_PATH,
+  });
   const deadline = setTimeout(() => {
     console.error("UI_TOGGLE_VERIFY exceeded its browser deadline");
     void browser.close();
   }, 240_000);
   try {
-    const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: "en-US", serviceWorkers: "block" });
+    const context = await browser.newContext({
+      viewport: { width: 1440, height: 900 },
+      locale: "en-US",
+      serviceWorkers: "block",
+    });
     try {
       await context.tracing.start({ screenshots: true, snapshots: true });
       const page = await context.newPage();
@@ -147,18 +195,53 @@ try {
       let finishCreate: (() => void) | undefined;
       page.on("pageerror", (error) => errors.push(error.message));
       const sessions = [
-        { id: "toggle-posix", cwd: `/papers/${"long-project-path/".repeat(9)}fault-diagnosis`, name: `POSIX session ${"long label ".repeat(12)}`.trim() },
-        { id: "toggle-windows", cwd: `C:\\papers\\${"long-project-path\\".repeat(9)}fault-diagnosis`, name: `Windows session ${"long label ".repeat(12)}`.trim() },
-      ].map((session) => ({ ...session, path: `/fixture/${session.id}.jsonl`, created: "2026-09-21T00:00:00.000Z", modified: "2026-09-21T00:00:00.000Z", messageCount: 2, firstMessage: "Isolated UI toggle fixture" }));
+        {
+          id: "toggle-posix",
+          cwd: `/papers/${"long-project-path/".repeat(9)}fault-diagnosis`,
+          name: `POSIX session ${"long label ".repeat(12)}`.trim(),
+        },
+        {
+          id: "toggle-windows",
+          cwd: `C:\\papers\\${"long-project-path\\".repeat(9)}fault-diagnosis`,
+          name: `Windows session ${"long label ".repeat(12)}`.trim(),
+        },
+      ].map((session) => ({
+        ...session,
+        path: `/fixture/${session.id}.jsonl`,
+        created: "2026-09-21T00:00:00.000Z",
+        modified: "2026-09-21T00:00:00.000Z",
+        messageCount: 2,
+        firstMessage: "Isolated UI toggle fixture",
+      }));
       const active = (id: string) => {
         const session = sessions.find((candidate) => candidate.id === id);
         assert(session, `Unknown fixture session: ${id}`);
-        return { id, cwd: session.cwd, sessionFile: session.path, sessionName: session.name, status: "ready", isStreaming: false };
+        return {
+          id,
+          cwd: session.cwd,
+          sessionFile: session.path,
+          sessionName: session.name,
+          status: "ready",
+          isStreaming: false,
+        };
       };
       const snapshot = (id: string) => ({
-        session: active(id), timeline: [{ kind: "message", entryId: "answer", message: {
-          role: "assistant", timestamp: 1, content: "## Evidence and methods\n\nRead `draft.md` before planning the next experiment.\n\n$e^{i\\pi}+1=0$\n\n| Method | Evidence |\n| --- | --- |\n| Baseline | To verify |\n\n" + "Keep the research evidence reproducible and the source references explicit. ".repeat(30),
-        } }], subagents: [], runtimeConfigurationGeneration: 0,
+        session: active(id),
+        timeline: [
+          {
+            kind: "message",
+            entryId: "answer",
+            message: {
+              role: "assistant",
+              timestamp: 1,
+              content:
+                "## Evidence and methods\n\nRead `draft.md` before planning the next experiment.\n\n$e^{i\\pi}+1=0$\n\n| Method | Evidence |\n| --- | --- |\n| Baseline | To verify |\n\n" +
+                "Keep the research evidence reproducible and the source references explicit. ".repeat(30),
+            },
+          },
+        ],
+        subagents: [],
+        runtimeConfigurationGeneration: 0,
         compactionPolicy: { enabled: true, triggerPercent: 70 },
       });
       // No request in /api can reach a daemon, including unexpected mutations.
@@ -170,14 +253,29 @@ try {
         if (key === "GET /api/config/events") {
           return route.fulfill({ contentType: "text/event-stream", body: "retry: 60000\n\n" });
         }
-        const sessionRoute = /^\/api\/sessions\/(toggle-posix|toggle-windows)\/(events|snapshot|commands|tree)$/.exec(path);
+        const sessionRoute =
+          /^\/api\/sessions\/(toggle-posix|toggle-windows)\/(events|snapshot|commands|tree)$/.exec(path);
         if (request.method() === "GET" && sessionRoute) {
           const id = sessionRoute[1]!;
           switch (sessionRoute[2]) {
-            case "events": return route.fulfill({ contentType: "text/event-stream", body: `retry: 60000\n\ndata: ${JSON.stringify({ type: "snapshot", ...snapshot(id) })}\n\n` });
-            case "snapshot": return route.fulfill({ json: snapshot(id) });
-            case "commands": return route.fulfill({ json: { commands: [] } });
-            case "tree": return route.fulfill({ json: { tree: [], leafId: null, treeFilterMode: "default", branchSummary: { skipPrompt: false } } });
+            case "events":
+              return route.fulfill({
+                contentType: "text/event-stream",
+                body: `retry: 60000\n\ndata: ${JSON.stringify({ type: "snapshot", ...snapshot(id) })}\n\n`,
+              });
+            case "snapshot":
+              return route.fulfill({ json: snapshot(id) });
+            case "commands":
+              return route.fulfill({ json: { commands: [] } });
+            case "tree":
+              return route.fulfill({
+                json: {
+                  tree: [],
+                  leafId: null,
+                  treeFilterMode: "default",
+                  branchSummary: { skipPrompt: false },
+                },
+              });
           }
         }
         if (key === "POST /api/sessions/open") {
@@ -192,24 +290,74 @@ try {
         }
         if (key === "GET /api/entries") {
           const root = new URL(request.url()).searchParams.get("path")!;
-          assert(sessions.some(session => session.cwd === root), "File tree must keep the session cwd");
-          return route.fulfill({ json: { entries: [{ kind: "file", name: "draft.md", path: `${root}${root.includes("\\") ? "\\" : "/"}draft.md` }] } });
+          const separator = root.includes("\\") ? "\\" : "/";
+          if (root.endsWith(`${separator}notes`)) return route.fulfill({ json: { entries: [] } });
+          assert(
+            sessions.some((session) => session.cwd === root),
+            "File tree must keep the session cwd",
+          );
+          return route.fulfill({
+            json: {
+              entries: [
+                { kind: "directory", name: "notes", path: `${root}${separator}notes` },
+                { kind: "file", name: "draft.md", path: `${root}${separator}draft.md` },
+              ],
+            },
+          });
         }
         if (key === "GET /api/file") {
           const path = new URL(request.url()).searchParams.get("path")!;
           assert(path.endsWith("draft.md"));
-          return route.fulfill({ json: { path, content: "# Draft\n\nA preserved research file preview.", byteCount: 48, binary: false, truncated: false } });
+          return route.fulfill({
+            json: {
+              path,
+              content: "# Draft\n\nA preserved research file preview.",
+              byteCount: 48,
+              binary: false,
+              truncated: false,
+            },
+          });
         }
         const fixtures: Record<string, unknown> = {
-          "GET /api/status": { bootId: "ui-toggle-fixture", agentDir: "/fixture/agent", homeDir: "/fixture", sessions, activeSessions: [] },
+          "GET /api/status": {
+            bootId: "ui-toggle-fixture",
+            agentDir: "/fixture/agent",
+            homeDir: "/fixture",
+            sessions,
+            activeSessions: [],
+          },
           "GET /api/update-check": { latestVersion: null },
-          "GET /api/agents": [], "GET /api/models": { models: [] }, "GET /api/entries": { entries: [] },
-          "GET /api/agent-resources": [], "GET /api/skill-resources": [], "GET /api/auth/providers": { providers: [] },
-          "GET /api/config/projects": { home: "/fixture/agent", projects: sessions.map(({ cwd }) => ({ cwd })) },
+          "GET /api/agents": [],
+          "GET /api/models": { models: [] },
+          "GET /api/entries": { entries: [] },
+          "GET /api/agent-resources": [],
+          "GET /api/skill-resources": [],
+          "GET /api/auth/providers": {
+            providers: [
+              {
+                id: "anthropic",
+                name: "Anthropic",
+                authMethods: ["api_key"],
+                connectable: true,
+                authStatus: { configured: true },
+                modelsJson: false,
+              },
+            ],
+          },
+          "GET /api/config/projects": {
+            home: "/fixture/agent",
+            projects: sessions.map(({ cwd }) => ({ cwd })),
+          },
           "GET /api/settings/api-usage": { showApiUsageDetails: true },
           "GET /api/settings/provider-timeout": { timeoutMs: 3_600_000, source: "default" },
           "GET /api/settings/compaction": { triggerPercent: 70, globalEnabled: true },
-          "GET /api/settings/network-proxy": { configured: {}, appliedConfigured: {}, sources: { all: "direct", llm: "direct", search: "direct" }, errors: [], restartRequired: false },
+          "GET /api/settings/network-proxy": {
+            configured: {},
+            appliedConfigured: {},
+            sources: { all: "direct", llm: "direct", search: "direct" },
+            errors: [],
+            restartRequired: false,
+          },
         };
         if (!(key in fixtures)) {
           unexpected.push(key);
@@ -221,79 +369,104 @@ try {
       try {
         await page.goto(`${origin}/#/`);
         await assertHome(page);
-        await assertChrome(page, false);
+        await assertChrome(page);
         await expect(page.getByTitle(sessions[0]!.name, { exact: true })).toBeVisible();
-        const currentBlue = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--color-v2-blue-600").trim());
-        await page.screenshot({ path: join(artifacts, "home-current.png"), fullPage: true });
-        await page.getByRole("button", { name: "Settings", exact: true }).click();
-        await expect(page.getByRole("button", { name: "Current", exact: true })).toHaveAttribute("aria-pressed", "true");
-        await chooseVersion(page, "Classic");
-        await page.getByRole("button", { name: "Close", exact: true }).click();
-        await assertHome(page);
-        await assertChrome(page, true);
-        const classicBlue = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--color-v2-blue-600").trim());
-        assert.equal(classicBlue, "#3b5cf6");
-        assert.notEqual(currentBlue, classicBlue);
-        await page.screenshot({ path: join(artifacts, "home-classic.png"), fullPage: true });
-        await page.reload();
-        await assertHome(page);
-        await assertChrome(page, true);
+        // An existing browser preference must never restore a removed layout.
+        for (const uiVersion of ["classic", "current", "studio"]) {
+          await page.evaluate(
+            (uiVersion) =>
+              localStorage.setItem(
+                "easyresearch.webui.preferences",
+                JSON.stringify({ uiVersion, studioTheme: "dark", language: "en" }),
+              ),
+            uiVersion,
+          );
+          await page.reload();
+          await assertHome(page);
+          await assertChrome(page);
+          await expect(page.getByRole("heading", { name: "Research sessions", exact: true })).toBeVisible();
+          await expect(page.locator("html")).toHaveAttribute("data-ui-theme", "dark");
+        }
 
-        for (const version of ["Classic", "Current", "Studio"] as const) {
+        for (const theme of ["Light", "Dark"] as const) {
           await page.getByRole("button", { name: "Settings", exact: true }).click();
-          await chooseVersion(page, version);
+          await chooseTheme(page, theme);
           // Always re-enter Config after changing the preference in Settings.
           await page.getByRole("button", { name: /open config browser/i }).click();
           await assertConfig(page);
-          await assertChrome(page, version === "Classic", version === "Studio");
-          await page.screenshot({ path: join(artifacts, `config-${version.toLowerCase()}.png`), fullPage: true });
+          await assertChrome(page);
+          await page.screenshot({
+            path: join(artifacts, `config-${theme.toLowerCase()}.png`),
+            fullPage: true,
+          });
           await page.getByRole("button", { name: "Back to Settings", exact: true }).click();
           await page.getByRole("button", { name: "Close", exact: true }).click();
           await assertHome(page);
-          await page.screenshot({ path: join(artifacts, `home-${version.toLowerCase()}.png`), fullPage: true });
-          await page.getByRole("button", { name: `Delete session: ${sessions[0]!.name}`, exact: true }).click();
+          await page.screenshot({ path: join(artifacts, `home-${theme.toLowerCase()}.png`), fullPage: true });
+          await page
+            .getByRole("button", { name: `Delete session: ${sessions[0]!.name}`, exact: true })
+            .click();
           await expect(page.getByRole("dialog", { name: "Delete session", exact: true })).toBeVisible();
           await page.getByRole("button", { name: "Cancel", exact: true }).click();
           await expect(page.getByTitle(sessions[0]!.name, { exact: true })).toBeVisible();
-          if (version === "Studio") {
-            for (const theme of ["Light", "Dark"] as const) {
-              await page.getByRole("button", { name: "Settings", exact: true }).click();
-              const dialog = page.getByRole("dialog", { name: "Settings", exact: true });
-              await dialog.getByRole("button", { name: theme, exact: true }).click();
-              await assertActionFeedback(page, dialog.getByRole("button", { name: theme, exact: true }));
-              await assertActionFeedback(page, dialog.getByRole("tab", { name: "Appearance and language", exact: true }));
-              await assertActionFeedback(page, dialog.getByRole("button", { name: "English", exact: true }));
-              await dialog.getByRole("button", { name: "Close", exact: true }).click();
-              await assertActionFeedback(page, page.locator(".er-project-select").first());
-              await assertActionFeedback(page, page.locator(".er-session-open").first());
-              await assertActionFeedback(page, page.locator(".er-all-projects"));
-              await assertActionFeedback(page, page.getByRole("button", { name: "New workspace", exact: true }));
-              await assertActionFeedback(page, page.getByRole("button", { name: `Rename session: ${sessions[0]!.name}`, exact: true }));
-              await assertFieldFeedback(page, page.getByRole("searchbox"));
-              createPending = new Promise<void>(resolve => { finishCreate = resolve; });
-              await page.getByRole("button", { name: `New session ${sessions[0]!.cwd}`, exact: true }).click();
-              const disabled = page.getByRole("button", { name: "New workspace", exact: true });
-              await expect(disabled).toBeDisabled();
-              await disabled.hover();
-              assert.deepEqual(await disabled.evaluate(element => {
-                const style = getComputedStyle(element);
-                return [style.cursor, style.backgroundImage];
-              }), ["not-allowed", "none"], "A pending control must not advertise availability");
-              finishCreate!();
-              await expect(disabled).toBeEnabled();
-              createPending = undefined;
-              await page.screenshot({ path: join(artifacts, `home-studio-${theme.toLowerCase()}-feedback.png`), animations: "disabled" });
-            }
-            await page.setViewportSize({ width: 390, height: 844 });
-            await page.getByRole("combobox", { name: "Workspaces", exact: true }).selectOption(sessions[0]!.cwd);
-            const create = page.getByRole("button", { name: `New session ${sessions[0]!.cwd}`, exact: true });
-            await expect(create).toBeVisible();
-            await create.focus();
-            await expect(create).toBeFocused();
-            assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
-            await page.getByRole("combobox", { name: "Workspaces", exact: true }).selectOption("");
-            await page.setViewportSize({ width: 1440, height: 900 });
-          }
+          await page.getByRole("button", { name: "Settings", exact: true }).click();
+          const dialog = page.getByRole("dialog", { name: "Settings", exact: true });
+          await dialog.getByRole("button", { name: theme, exact: true }).click();
+          await assertActionFeedback(page, dialog.getByRole("button", { name: theme, exact: true }));
+          await assertActionFeedback(
+            page,
+            dialog.getByRole("tab", { name: "Appearance and language", exact: true }),
+          );
+          await assertActionFeedback(page, dialog.getByRole("button", { name: "English", exact: true }));
+          await dialog.getByRole("tab", { name: "Model providers", exact: true }).click();
+          const providerIcon = dialog.locator('[data-component="provider-icon"]').first();
+          await expect(providerIcon).toBeVisible();
+          await expect(providerIcon.locator("title")).toHaveText("Anthropic");
+          await providerIcon.hover();
+          await page.screenshot({ path: join(artifacts, `providers-${theme.toLowerCase()}.png`) });
+          await dialog.getByRole("button", { name: "Close", exact: true }).click();
+          await assertActionFeedback(page, page.locator(".er-project-select").first());
+          await assertActionFeedback(page, page.locator(".er-session-open").first());
+          await assertActionFeedback(page, page.locator(".er-all-projects"));
+          await assertActionFeedback(page, page.getByRole("button", { name: "New workspace", exact: true }));
+          await assertActionFeedback(
+            page,
+            page.getByRole("button", { name: `Rename session: ${sessions[0]!.name}`, exact: true }),
+          );
+          await assertFieldFeedback(page, page.getByRole("searchbox"));
+          createPending = new Promise<void>((resolve) => {
+            finishCreate = resolve;
+          });
+          await page.getByRole("button", { name: `New session ${sessions[0]!.cwd}`, exact: true }).click();
+          const disabled = page.getByRole("button", { name: "New workspace", exact: true });
+          await expect(disabled).toBeDisabled();
+          await disabled.hover();
+          assert.deepEqual(
+            await disabled.evaluate((element) => {
+              const style = getComputedStyle(element);
+              return [style.cursor, style.backgroundImage];
+            }),
+            ["not-allowed", "none"],
+            "A pending control must not advertise availability",
+          );
+          finishCreate!();
+          await expect(disabled).toBeEnabled();
+          createPending = undefined;
+          await page.screenshot({
+            path: join(artifacts, `home-${theme.toLowerCase()}-feedback.png`),
+            animations: "disabled",
+          });
+          await page.setViewportSize({ width: 390, height: 844 });
+          await page
+            .getByRole("combobox", { name: "Workspaces", exact: true })
+            .selectOption(sessions[0]!.cwd);
+          const create = page.getByRole("button", { name: `New session ${sessions[0]!.cwd}`, exact: true });
+          await expect(create).toBeVisible();
+          await create.focus();
+          await expect(create).toBeFocused();
+          assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+          await page.getByRole("combobox", { name: "Workspaces", exact: true }).selectOption("");
+          await page.setViewportSize({ width: 1440, height: 900 });
         }
         console.log("UI_TOGGLE_VERIFY Home/Config routes, preferences, reload and deletion parity passed");
 
@@ -305,7 +478,9 @@ try {
           const composer = page.getByRole("textbox", { name: /message/i });
           await expect(composer).toBeVisible();
           await composer.fill("Draft retained across interface switches");
-          const streamCount = requests.filter((key) => key === `GET /api/sessions/${session.id}/events`).length;
+          const streamCount = requests.filter(
+            (key) => key === `GET /api/sessions/${session.id}/events`,
+          ).length;
           await page.getByRole("tree").getByText("draft.md", { exact: true }).click();
           const outer = page.getByRole("separator", { name: "Resize panel", exact: true });
           const treeHandle = page.getByRole("separator", { name: "Resize file tree" });
@@ -316,50 +491,87 @@ try {
           await page.keyboard.press("ArrowRight");
           const panelWidth = await outer.getAttribute("aria-valuenow");
           const treeWidth = await treeHandle.getAttribute("aria-valuenow");
-          for (const version of ["Current", "Classic", "Studio"] as const) {
+          for (const theme of ["Dark", "Light"] as const) {
             await page.getByRole("button", { name: "Settings", exact: true }).click();
-            await chooseVersion(page, version);
+            await chooseTheme(page, theme);
             await page.getByRole("button", { name: "Close", exact: true }).click();
             await expect.poll(() => new URL(page.url()).hash).toBe(workHash);
-            await assertChrome(page, version === "Classic", version === "Studio");
+            await assertChrome(page);
             await expect(composer).toHaveValue("Draft retained across interface switches");
-            assert.equal(requests.filter((key) => key === `GET /api/sessions/${session.id}/events`).length, streamCount);
+            assert.equal(
+              requests.filter((key) => key === `GET /api/sessions/${session.id}/events`).length,
+              streamCount,
+            );
             await expect(outer).toHaveAttribute("aria-valuenow", panelWidth!);
             await expect(treeHandle).toHaveAttribute("aria-valuenow", treeWidth!);
             await expect(page.getByRole("tab", { name: "draft.md", exact: true })).toBeVisible();
-            await page.screenshot({ path: join(artifacts, `${session.id}-${version.toLowerCase()}.png`) });
-            if (version === "Studio") {
-              for (const theme of ["Dark", "Light"] as const) {
-                await page.getByRole("button", { name: "Settings", exact: true }).click();
-                const dialog = page.getByRole("dialog", { name: "Settings", exact: true });
-                await dialog.getByRole("button", { name: theme, exact: true }).click();
-                await page.screenshot({ path: join(artifacts, `settings-studio-${theme.toLowerCase()}.png`), animations: "disabled" });
-                await dialog.getByRole("button", { name: "Close", exact: true }).click();
-                await expect(page.locator("html")).toHaveAttribute("data-ui-theme", theme.toLowerCase());
-                await expect(composer).toHaveValue("Draft retained across interface switches");
-                await expect(outer).toHaveAttribute("aria-valuenow", panelWidth!);
-                await expect(treeHandle).toHaveAttribute("aria-valuenow", treeWidth!);
-                await assertActionFeedback(page, page.getByRole("button", { name: "Files browser", exact: true }));
-                await assertActionFeedback(page, page.getByRole("tab", { name: "draft.md", exact: true }));
-                await assertActionFeedback(page, page.getByRole("treeitem", { name: "draft.md", exact: true }));
-                const composerBoundary = page.locator("[data-chat-composer]");
-                await composer.evaluate(element => (element as HTMLElement).blur());
-                await page.mouse.move(1, 1);
-                const border = await composerBoundary.evaluate(element => getComputedStyle(element).borderColor);
-                await composer.hover();
-                await expect.poll(() => composerBoundary.evaluate(element => getComputedStyle(element).borderColor)).not.toBe(border);
-                await composer.focus();
-                assert.equal(await composer.evaluate(element => getComputedStyle(element).outlineStyle), "none", "Composer keeps one shell border");
-                await page.screenshot({ path: join(artifacts, `${session.id}-studio-${theme.toLowerCase()}.png`), animations: "disabled" });
-              }
+            for (const label of ["Files browser", "Agent list", "Settings"]) {
+              const button = page.getByRole("button", { name: label, exact: true });
+              await expect(button.locator("svg")).toBeVisible();
+              assert(await button.getAttribute("title"), `Missing hover text: ${label}`);
             }
+            const expand = page.getByRole("button", { name: "Expand notes", exact: true });
+            await expect(expand.locator("svg")).toBeVisible();
+            await expand.click();
+            const collapse = page.getByRole("button", { name: "Collapse notes", exact: true });
+            await expect(collapse).toBeVisible();
+            await expect(collapse.locator("[title]")).toHaveAttribute("title", "Collapse notes");
+            await collapse.click();
+            await expect(
+              page.getByRole("treeitem", { name: "draft.md", exact: true }).locator("svg"),
+            ).toBeVisible();
+            await page.getByRole("button", { name: "Settings", exact: true }).click();
+            const dialog = page.getByRole("dialog", { name: "Settings", exact: true });
+            await dialog.getByRole("button", { name: theme, exact: true }).click();
+            await page.screenshot({
+              path: join(artifacts, `settings-${theme.toLowerCase()}.png`),
+              animations: "disabled",
+            });
+            await dialog.getByRole("button", { name: "Close", exact: true }).click();
+            await expect(page.locator("html")).toHaveAttribute("data-ui-theme", theme.toLowerCase());
+            await expect(composer).toHaveValue("Draft retained across interface switches");
+            await expect(outer).toHaveAttribute("aria-valuenow", panelWidth!);
+            await expect(treeHandle).toHaveAttribute("aria-valuenow", treeWidth!);
+            await assertActionFeedback(
+              page,
+              page.getByRole("button", { name: "Files browser", exact: true }),
+            );
+            await assertActionFeedback(page, page.getByRole("tab", { name: "draft.md", exact: true }));
+            await assertActionFeedback(page, page.getByRole("treeitem", { name: "draft.md", exact: true }));
+            const composerBoundary = page.locator("[data-chat-composer]");
+            await composer.evaluate((element) => (element as HTMLElement).blur());
+            await page.mouse.move(1, 1);
+            const border = await composerBoundary.evaluate(
+              (element) => getComputedStyle(element).borderColor,
+            );
+            await composer.hover();
+            await expect
+              .poll(() => composerBoundary.evaluate((element) => getComputedStyle(element).borderColor))
+              .not.toBe(border);
+            await composer.focus();
+            assert.equal(
+              await composer.evaluate((element) => getComputedStyle(element).outlineStyle),
+              "none",
+              "Composer keeps one shell border",
+            );
+            await page.screenshot({
+              path: join(artifacts, `${session.id}-${theme.toLowerCase()}.png`),
+              animations: "disabled",
+            });
           }
           for (const width of [1024, 821, 820, 819]) {
             await page.setViewportSize({ width, height: 900 });
             await assertTopbarHitAreas(page, width);
             if (width >= 820) {
               const path = page.getByRole("banner").getByTitle(session.cwd, { exact: true });
-              assert(await path.evaluate((element) => element.scrollWidth > element.clientWidth && getComputedStyle(element).textOverflow === "ellipsis"), "Long path must truncate");
+              assert(
+                await path.evaluate(
+                  (element) =>
+                    element.scrollWidth > element.clientWidth &&
+                    getComputedStyle(element).textOverflow === "ellipsis",
+                ),
+                "Long path must truncate",
+              );
               for (const label of ["Files browser", "Agent list"]) {
                 const button = page.getByRole("button", { name: label, exact: true });
                 const before = await button.getAttribute("aria-pressed");
@@ -368,7 +580,7 @@ try {
               }
             }
             await page.getByRole("button", { name: "Settings", exact: true }).click();
-            await chooseVersion(page, "Studio");
+            await chooseTheme(page, "Light");
             await page.getByRole("button", { name: "Close", exact: true }).click();
             await expect.poll(() => new URL(page.url()).hash).toBe(workHash);
             await page.screenshot({ path: join(artifacts, `${session.id}-${width}.png`) });
@@ -381,17 +593,24 @@ try {
         assert.deepEqual(errors, []);
         console.log(`UI_TOGGLE_VERIFY passed. Screenshots/trace: ${artifacts}`);
       } catch (error) {
-        await page.screenshot({ path: join(artifacts, "failure.png"), fullPage: true }).catch(() => undefined);
+        await page
+          .screenshot({ path: join(artifacts, "failure.png"), fullPage: true })
+          .catch(() => undefined);
         throw error;
       } finally {
         finishCreate?.();
         await context.tracing.stop({ path: join(artifacts, "trace.zip") });
       }
-    } finally { await context.close(); }
+    } finally {
+      await context.close();
+    }
   } finally {
     clearTimeout(deadline);
     await browser.close();
   }
 } finally {
-  if (server) await new Promise<void>((done, reject) => server.httpServer.close((error) => error ? reject(error) : done()));
+  if (server)
+    await new Promise<void>((done, reject) =>
+      server.httpServer.close((error) => (error ? reject(error) : done())),
+    );
 }

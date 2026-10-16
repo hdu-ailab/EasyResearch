@@ -485,7 +485,9 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
                   {state === "loading" ? (
                     <span className="v2-spinner" aria-hidden />
                   ) : (
-                    <ActionGlyph label={t(isExpanded ? "studio.collapse" : "studio.expand")}>
+                    <ActionGlyph
+                      label={t(isExpanded ? "dialog.collapse" : "dialog.expand").replace("{name}", row.name)}
+                    >
                       <ChevronRight
                         size={14}
                         className={`shrink-0 transition-transform ${isExpanded ? "rotate-90" : ""}`}

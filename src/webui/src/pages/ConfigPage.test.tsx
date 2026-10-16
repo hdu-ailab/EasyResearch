@@ -97,15 +97,15 @@ describe("ConfigPage", () => {
     expect(onBackToSettings).not.toHaveBeenCalled();
   });
 
-  it("shows the refreshed chrome by default", async () => {
+  it("keeps the configuration return action without an in-page application icon", async () => {
     renderConfigPage();
-    expect(await screen.findByTestId("product-logo")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /back to settings/i })).toBeVisible();
+    expect(screen.queryByTestId("product-logo")).toBeNull();
   });
 
-  it("shows the classic chrome when the interface version is classic", async () => {
+  it("ignores a retired presentation preference in the configuration browser", async () => {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ uiVersion: "classic" }));
     renderConfigPage();
-    // The classic bar carried the product mark alongside the back control.
     expect(await screen.findByRole("button", { name: /back to settings/i })).toBeInTheDocument();
     expect(screen.queryByTestId("product-logo")).toBeNull();
   });
@@ -514,7 +514,7 @@ describe("ConfigPage", () => {
     const user = userEvent.setup();
     renderConfigPage();
     await user.click(await screen.findByRole("button", { name: /\/home\/u\/proj/ }));
-    await user.click(screen.getByTitle("New folder"));
+    await user.click(screen.getByRole("button", { name: "New folder" }));
     const dialog = screen.getByRole("dialog", { name: "New folder" });
     const input = within(dialog).getByRole("textbox", { name: "New folder" });
     expect(input).toHaveFocus();

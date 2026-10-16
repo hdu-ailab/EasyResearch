@@ -4,14 +4,14 @@ import { App } from "./App";
 import { I18nProvider } from "./i18n/I18nProvider";
 import { readPreferences } from "./preferences";
 import { PreferencesProvider } from "./preferences/PreferencesProvider";
-import { applyUiVersion } from "./ui-version";
+import { applyTheme } from "./theme";
 import { applyFontPreferences } from "./webui-fonts";
 import "./index.css";
 import "./studio.css";
 
 const preferences = readPreferences(window.localStorage, () => navigator.language);
 applyFontPreferences(preferences);
-applyUiVersion(preferences.uiVersion, preferences.studioTheme);
+applyTheme(preferences.studioTheme);
 document.documentElement.lang = preferences.language;
 
 const root = document.getElementById("root");

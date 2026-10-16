@@ -137,32 +137,20 @@ it("shows project basenames as the primary folder values while preserving the ex
 it("separates the New project entry from an existing project's New session action", () => {
   renderWorkspace([history()], []);
 
-  expect(screen.getByRole("button", { name: "New workspace" })).toHaveClass("bg-[#304c90]", "hover:bg-[#4176E6]");
+  expect(screen.getByRole("button", { name: "New workspace" })).toBeEnabled();
   expect(screen.getByRole("button", { name: "New session /proj" })).toBeVisible();
 });
 
-it("uses a full-height 264px rail and a responsive active-session card grid", () => {
+it("keeps session actions separately labelled from the session-opening control", () => {
   renderWorkspace([history({ path: "/agent/sessions/a1.jsonl" })], [active()]);
 
-  expect(screen.getByRole("region", { name: "Research workspace" })).toHaveClass(
-    "min-[820px]:grid-cols-[264px_minmax(0,1fr)]",
-    "min-[820px]:grid-rows-[88px_auto_auto_minmax(0,1fr)]",
-    "flex-1",
-  );
-  expect(screen.getByRole("complementary", { name: "Workspaces" })).toHaveClass(
-    "min-[820px]:col-start-1",
-    "min-[820px]:row-span-3",
-    "bg-v2-grey-100",
-  );
-
   const sessionButton = screen.getByText("Custom active name").closest("button");
-  expect(sessionButton?.closest("ul")).toHaveClass(
-    "grid",
-    "grid-cols-[repeat(auto-fill,minmax(min(100%,280px),1fr))]",
-    "gap-3",
-  );
-  expect(sessionButton?.closest("li")).toHaveClass("rounded-xl", "border", "min-h-[156px]");
-  expect(sessionButton).toHaveClass("flex-col", "px-4", "pt-4");
   expect(within(sessionButton!).getByTitle("/proj")).toBeVisible();
-  expect(within(sessionButton!).getByText("Running")).toBeVisible();
+  const row = within(sessionButton!.closest("li")!);
+  expect(row.getByText("Running")).toBeVisible();
+  for (const name of [/rename session/i, /disconnect session/i, /delete session/i]) {
+    const action = row.getByRole("button", { name });
+    expect(action).toHaveAttribute("title");
+    expect(sessionButton!.contains(action)).toBe(false);
+  }
 });

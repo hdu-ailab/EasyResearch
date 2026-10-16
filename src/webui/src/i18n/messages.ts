@@ -1,7 +1,6 @@
 import type { Language } from "../preferences";
 
 export const en = {
-  "settings.uiVersion.studio": "Studio",
   "studio.homeTitle": "Research sessions",
   "studio.projectSummary": "{projects} workspaces · {sessions} active sessions",
   "studio.appearanceLanguage": "Appearance and language",
@@ -145,12 +144,6 @@ export const en = {
   "settings.language.title": "Language",
   "settings.language.selector": "Interface language",
   "settings.language.hint": "Default follows your browser language; you can switch anytime.",
-  "settings.uiVersion.title": "Interface version",
-  "settings.uiVersion.selector": "Interface version",
-  "settings.uiVersion.current": "Current",
-  "settings.uiVersion.classic": "Classic",
-  "settings.uiVersion.hint":
-    "Classic restores the earlier home layout and branding. It shows the same sessions and changes only how they look.",
   "settings.agents.title": "Agents",
   "settings.agents.toolsSkills": "{tools} tools, {skills} skills",
   "settings.agents.enable": "Enable {name}",
@@ -521,7 +514,6 @@ export const en = {
 export type MessageKey = keyof typeof en;
 
 export const zhCN: Record<MessageKey, string> = {
-  "settings.uiVersion.studio": "Studio",
   "studio.homeTitle": "研究会话",
   "studio.projectSummary": "{projects} 个工作区 · {sessions} 个活动会话",
   "studio.appearanceLanguage": "外观与语言",
@@ -660,11 +652,6 @@ export const zhCN: Record<MessageKey, string> = {
   "settings.language.title": "语言",
   "settings.language.selector": "界面语言",
   "settings.language.hint": "默认跟随浏览器语言，可随时手动切换。",
-  "settings.uiVersion.title": "界面版本",
-  "settings.uiVersion.selector": "界面版本",
-  "settings.uiVersion.current": "当前版",
-  "settings.uiVersion.classic": "经典版",
-  "settings.uiVersion.hint": "旧版恢复此前的首页布局与品牌样式。它展示相同的会话，只改变外观。",
   "settings.agents.title": "智能体",
   "settings.agents.toolsSkills": "{tools} 个工具，{skills} 个技能",
   "settings.agents.enable": "启用 {name}",

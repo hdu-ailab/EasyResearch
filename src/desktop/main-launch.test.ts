@@ -65,7 +65,7 @@ it.each([200, 503])("uses the shell-resolved root for desktop custody and child 
   vi.doMock("electron", () => ({
     app, BrowserWindow: Window, Tray, ipcMain: new EventEmitter(),
     Menu: { buildFromTemplate: (items: unknown) => items },
-    nativeImage: { createFromDataURL: () => ({ isEmpty: () => false, setTemplateImage() {} }) },
+    nativeImage: { createFromPath: () => ({ isEmpty: () => false, setTemplateImage() {} }) },
     dialog: { showMessageBox: async () => ({ response: 1 }), showErrorBox() {} },
     shell: { openExternal: async () => {}, showItemInFolder() {} },
   }));
