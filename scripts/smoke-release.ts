@@ -67,6 +67,7 @@ import { parseTimelineEntryAppendedEvent } from "../src/webui/src/api/parsers";
 import { assertBundledAgentCapabilities } from "./smoke-agent-scenario";
 import { createWriteRecoverySmoke, runWriteRecoverySmoke } from "./smoke-write-recovery";
 import { smokeEventChannel } from "./smoke-event-channel";
+import { verifyMacOsSignature } from "./macos-signing";
 
 const targetName = process.argv[2];
 const target = TARGETS.find((candidate) => candidate.name === targetName);
@@ -78,6 +79,7 @@ if (versionVerifiedByRunner && target.name !== "windows-x64") {
 }
 
 const binary = resolve(platformPackageDir(target.name), "bin", platformBinaryName(target));
+if (target.os[0] === "darwin") verifyMacOsSignature(binary);
 const systemPython = resolveSmokePython({ explicit: process.env.EASYRESEARCH_SMOKE_PYTHON });
 const smokeShellToolName = nativeLocalShellTool(process.platform);
 const systemPowerShell = process.platform === "win32"

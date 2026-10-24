@@ -75,6 +75,10 @@ jobs:
       - name: Build native platform binary
         run: bun scripts/build.ts --only ${{ matrix.target }}
 
+      - name: Verify native macOS signature rejection and repair
+        if: runner.os == 'macOS'
+        run: bun run test src/runtime/macos-signing.test.ts src/runtime/macos-signing.native.test.ts
+
       - name: Verify Windows native version
         if: runner.os == 'Windows'
         run: |

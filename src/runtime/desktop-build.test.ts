@@ -169,7 +169,7 @@ describe("electron-builder configuration", () => {
       .toBe(join(stage, "sidecar"));
   });
 
-  it("uses explicit allowlists and unsigned arm64 DMG configuration", () => {
+  it("uses explicit allowlists and ad-hoc-signed unnotarized arm64 DMG configuration", () => {
     const config = electronBuilderConfig(
       "darwin-arm64",
       "1.2.3",
@@ -184,7 +184,7 @@ describe("electron-builder configuration", () => {
       files: ["main.cjs", "preload.cjs", "package.json"],
       extraResources: expect.arrayContaining([{ from: "sidecar", to: "sidecar" }]),
       mac: {
-        identity: null,
+        identity: "-",
         notarize: false,
         target: [{ target: "dmg", arch: ["arm64"] }],
         artifactName: "EasyResearch-1.2.3-macos-arm64.${ext}",

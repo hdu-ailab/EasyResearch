@@ -9,7 +9,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Configuration } from "electron-builder";
 import {
@@ -23,6 +23,7 @@ import {
   repoPackageVersion,
 } from "./build";
 import { validateBuildArtifact } from "./release";
+import { verifyMacOsBundle, verifyMacOsSignature } from "./macos-signing";
 import {
   THIRD_PARTY_NOTICES_FILE,
   assertThirdPartyNoticesFile,
@@ -274,12 +275,23 @@ export function electronBuilderConfig(
     ...common,
     mac: {
       icon: join(DESKTOP_ICON_DIR, "icon.icns"),
-      identity: null,
+      identity: "-",
+      timestamp: "none",
+      strictVerify: true,
+      // Already signed, smoke-tested and hashed by the native build. Let the
+      // pinned signer seal every host/helper from the inside out without changing it.
+      signIgnore: ["/Contents/Resources/sidecar/easyresearch$"],
       notarize: false,
       hardenedRuntime: false,
       gatekeeperAssess: false,
       target: [{ target: "dmg", arch: ["arm64"] }],
       artifactName: `EasyResearch-${version}-macos-arm64.\${ext}`,
+    },
+    afterSign: async ({ appOutDir }) => {
+      verifyMacOsBundle(
+        posix.join(appOutDir, "EasyResearch.app"),
+        join(stageDir, "sidecar", "easyresearch"),
+      );
     },
   };
 }
@@ -305,6 +317,7 @@ export async function buildDesktop(targetName: DesktopTargetName): Promise<Deskt
   ) as BuildManifest;
   const sourceBinary = join(platformPackageDir(targetName), "bin", target.binaryName);
   const acceptedSidecar = validateDesktopSidecar(targetName, nativeManifest, sourceBinary, version);
+  if (target.platform === "darwin") verifyMacOsSignature(sourceBinary);
 
   const stageDir = join(releaseDir(), "desktop-stage", targetName);
   const outputDir = join(releaseDir(), "desktop");

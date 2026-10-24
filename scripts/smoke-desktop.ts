@@ -40,6 +40,7 @@ import {
   debExtractCommand,
   dmgAttachCommand,
   dmgDetachCommand,
+  installMacOsDmgApplication,
   nsisInstallCommand,
   packagedApplicationPaths,
   pollDesktopSmokeEvents,
@@ -58,6 +59,7 @@ import {
   type NativeCommand,
 } from "./smoke-desktop-support";
 import { serverLogFile } from "../src/cli/server-process";
+import { verifyMacOsSignature } from "./macos-signing";
 
 const targetArgument = process.argv[2];
 if (!targetArgument || process.argv.length !== 3) {
@@ -82,6 +84,7 @@ const nativeBinary = resolve(
 const nativeArtifact = validateDesktopSidecar(targetName, nativeManifest, nativeBinary, version);
 verifyDesktopSidecarIdentity(desktopManifest.sidecar, nativeArtifact);
 if (process.platform !== "win32") restoreDesktopSmokeExecutable(nativeBinary);
+if (target.platform === "darwin") verifyMacOsSignature(nativeBinary);
 
 await runDesktopPackageSmokes(packages, runPackagedSmoke);
 console.log(`[desktop-smoke] ${targetName} passed all ${packages.length} package formats`);
@@ -599,10 +602,17 @@ async function runPackagedSmoke(pkg: DesktopSmokePackage, root: string): Promise
         runNative(nsisInstallCommand(packagePath, installRoot), "NSIS installation", env);
         installed = true;
         return packagedApplicationPaths(targetName, installRoot, pkg.format);
-      case "dmg":
+      case "dmg": {
         runNative(dmgAttachCommand(packagePath, mountRoot), "DMG attach", env);
         mounted = true;
-        return packagedApplicationPaths(targetName, mountRoot, pkg.format);
+        const appPaths = installMacOsDmgApplication(
+          mountRoot, installRoot, nativeBinary,
+          (command, label) => runNative(command, label, env),
+        );
+        runNative(dmgDetachCommand(mountRoot), "DMG detach", env);
+        mounted = false;
+        return appPaths;
+      }
       case "AppImage":
         // Artifact transfer can remove this outer executable bit. The extracted
         // package's Electron, AppRun, sidecar and chrome-sandbox modes remain intact.
