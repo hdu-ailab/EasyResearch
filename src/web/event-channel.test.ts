@@ -78,6 +78,19 @@ describe("multiplexed event ownership", () => {
     await f.reader.cancel();
     expect(f.sources[0]!.cancel).toHaveBeenCalledOnce();
   });
+  it("isolates a UTF-8 oversized source without killing the physical channel", async () => {
+    const f = fixture(512);
+    const { id } = await f.next();
+    await f.hub.replace(id, { revision: 1, subscriptions: [
+      { id: "large", path: "/api/sessions/s/events" },
+      { id: "config", path: "/api/config/events" },
+    ] });
+    f.sources.find((source) => source.path.includes("sessions"))!.send({ text: "汉".repeat(200) });
+    expect(await f.next()).toMatchObject({ type: "stream-error", id: "large" });
+    f.sources.find((source) => source.path.includes("config"))!.send({ type: "config.updated" });
+    expect(await f.next()).toMatchObject({ type: "event", id: "config" });
+    await f.reader.cancel();
+  });
   it("disconnects a slow physical reader instead of retaining unlimited output", async () => {
     const f = fixture(256);
     const { id } = await f.next();

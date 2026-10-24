@@ -38,6 +38,8 @@ import type {
   SessionTreeDto,
   SkillCommandDto,
   StatusDto,
+  TranscriptPageDto,
+  TranscriptTimelineEntryDto,
   TreeNavigationOptionsDto,
   TreeNavigationResultDto,
   UpdateCheckDto,
@@ -76,6 +78,8 @@ import {
   parseSkillResource,
   parseSkillResources,
   parseStatus,
+  parseTimelineEntry,
+  parseTranscriptPage,
   parseTreeNavigationResult,
   parseUpdateCheck,
 } from "./api/parsers";
@@ -339,6 +343,24 @@ export function getSnapshot(id: string): Promise<SessionSnapshotDto> {
   return requestJson(routes.snapshot(id), parseSessionSnapshot);
 }
 
+export function getTranscriptPage(
+  id: string,
+  cursor: string,
+  childId?: string,
+  signal?: AbortSignal,
+): Promise<TranscriptPageDto> {
+  return requestJson(routes.history(id, childId, cursor), parseTranscriptPage, { signal, cache: "no-store" });
+}
+
+export function getTranscriptEntry(
+  id: string,
+  entryId: string,
+  childId?: string,
+  signal?: AbortSignal,
+): Promise<TranscriptTimelineEntryDto> {
+  return requestJson(routes.transcriptEntry(id, entryId, childId), parseTimelineEntry, { signal, cache: "no-store" });
+}
+
 export function getApiUsageStatistics(id: string): Promise<ApiUsageStatisticsDto> {
   return requestJson(routes.statistics(id), parseApiUsageStatistics);
 }
@@ -355,8 +377,8 @@ export function getSessionCommands(id: string): Promise<SkillCommandDto[]> {
   return requestJson(routes.commands(id), parseSkillCommands);
 }
 
-export function getSessionTree(id: string): Promise<SessionTreeDto> {
-  return requestJson(routes.tree(id), parseSessionTree);
+export function getSessionTree(id: string, preview = true): Promise<SessionTreeDto> {
+  return requestJson(routes.tree(id, preview), parseSessionTree);
 }
 
 export function navigateSessionTree(

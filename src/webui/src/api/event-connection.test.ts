@@ -25,6 +25,52 @@ const flush = async () => {
 };
 
 describe("one physical event connection", () => {
+  it.each(["stream-error", "end"])(
+    "recovers a logical %s while healthy peers and heartbeats keep the socket open",
+    async (type) => {
+      vi.useFakeTimers();
+      const f = fixture();
+      const received: unknown[] = [];
+      let failures = 0;
+      f.connection.subscribe("work", "/api/sessions/s/events", {
+        onEvent: (event) => received.push(event),
+        onError: () => failures++,
+      });
+      f.connection.subscribe("config", "/api/config/events", { onEvent() {}, onError() {} });
+      f.emit(0, { type: "connected", id: "one", bootId: "boot" });
+      await flush();
+      f.emit(0, { type, id: "work", bootId: "boot" });
+      f.emit(0, { type: "heartbeat", id: "one", bootId: "boot" });
+      await vi.advanceTimersByTimeAsync(1100);
+      expect(f.requests.length).toBeGreaterThan(1);
+      expect(f.requests.at(-1)?.body.subscriptions).toContainEqual({ id: "work", path: "/api/sessions/s/events" });
+      f.emit(0, { type: "event", id: "work", bootId: "boot", event: { type: "snapshot", lease: "fresh" } });
+      expect(received).toEqual([{ type: "snapshot", lease: "fresh" }]);
+      expect(failures).toBe(1);
+      expect(f.sources).toHaveLength(1);
+      f.connection.close();
+    },
+  );
+
+  it("keeps completed streams terminal and cancels logical retries on unsubscribe", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    f.connection.subscribe("config", "/api/config/events", { onEvent() {}, onError() {} });
+    const stop = f.connection.subscribe("work", "/api/sessions/s/events", { onEvent() {}, onError() {} });
+    f.connection.subscribe("auth", "/api/auth/flows/login/events", { onEvent() {}, onError() {} });
+    f.emit(0, { type: "connected", id: "one", bootId: "boot" });
+    await flush();
+    f.emit(0, { type: "end", id: "auth", bootId: "boot" });
+    f.emit(0, { type: "stream-error", id: "work", bootId: "boot" });
+    stop();
+    await flush();
+    const count = f.requests.length;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(f.requests).toHaveLength(count);
+    expect(f.requests.at(-1)?.body.subscriptions).toEqual([{ id: "config", path: "/api/config/events" }]);
+    f.connection.close();
+  });
+
   it("routes distinct same-path subscriptions and removes one without closing its peer", async () => {
     const f = fixture();
     const a = { onEvent: vi.fn(), onError: vi.fn() };

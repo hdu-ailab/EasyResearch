@@ -37,12 +37,16 @@ export const routes = {
   createSession: () => `${API_ROOT}/sessions`,
   openSession: () => `${API_ROOT}/sessions/open`,
   snapshot: (id: string) => `${session(id)}/snapshot`,
+  history: (id: string, childId?: string, cursor?: string) =>
+    `${session(id)}${childId === undefined ? "" : `/subagents/${encodeURIComponent(childId)}`}/history${cursor === undefined ? "" : `?cursor=${encodeURIComponent(cursor)}`}`,
+  transcriptEntry: (id: string, entryId: string, childId?: string) =>
+    `${session(id)}${childId === undefined ? "" : `/subagents/${encodeURIComponent(childId)}`}/history/${encodeURIComponent(entryId)}`,
   statistics: (id: string) => `${session(id)}/statistics`,
   childSnapshot: (parentId: string, childId: string) =>
     `${session(parentId)}/subagents/${encodeURIComponent(childId)}/snapshot`,
   messages: (id: string) => `${session(id)}/messages`,
   commands: (id: string) => `${session(id)}/commands`,
-  tree: (id: string) => `${session(id)}/tree`,
+  tree: (id: string, preview = true) => `${session(id)}/tree${preview ? "?preview=1" : ""}`,
   treeNavigate: (id: string) => `${session(id)}/tree/navigate`,
   compact: (id: string) => `${session(id)}/compact`,
   abort: (id: string) => `${session(id)}/abort`,

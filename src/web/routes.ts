@@ -61,6 +61,7 @@ import {
 } from "./desktop-access";
 import { projectApiUsageRecord } from "./api-usage";
 import { projectSessionTimeline } from "./session-timeline";
+import { pageTranscript, readTranscriptEntry, TranscriptCursorError, windowTranscript } from "./transcript-history";
 import { EventChannels } from "./event-channel";
 import {
   ConfigurationProjectWatchRequestError,
@@ -352,7 +353,23 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
 
       const childSnapshotMatch = path.match(/^\/api\/sessions\/([^/]+)\/subagents\/([^/]+)\/snapshot$/);
       if (req.method === "GET" && childSnapshotMatch) {
-        return jsonResponse(await services.subagentSessions.snapshot(childSnapshotMatch[1]!, childSnapshotMatch[2]!));
+        const parent = decodeURIComponent(childSnapshotMatch[1]!);
+        const child = decodeURIComponent(childSnapshotMatch[2]!);
+        return jsonResponse(windowTranscript(`${parent}/${child}`, await services.subagentSessions.snapshot(parent, child)));
+      }
+
+      const historyMatch = path.match(/^\/api\/sessions\/([^/]+)(?:\/subagents\/([^/]+))?\/history(?:\/([^/]+))?$/);
+      if (req.method === "GET" && historyMatch) {
+        const parent = decodeURIComponent(historyMatch[1]!);
+        const child = historyMatch[2] === undefined ? undefined : decodeURIComponent(historyMatch[2]);
+        const source = child === undefined
+          ? await services.registry.snapshot(parent)
+          : await services.subagentSessions.snapshot(parent, child);
+        if (historyMatch[3] !== undefined) {
+          const entry = readTranscriptEntry(source, decodeURIComponent(historyMatch[3]));
+          return entry === undefined ? errorResponse(404, "Transcript entry is no longer available") : jsonResponse(entry);
+        }
+        return jsonResponse(pageTranscript(child === undefined ? parent : `${parent}/${child}`, source, url.searchParams.get("cursor") ?? undefined));
       }
 
       const sessionMatch = path.match(/^\/api\/sessions\/([^/]+)\/snapshot$/);
@@ -363,7 +380,7 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
           services.subagentSessions.summaries(sessionId),
           services.subagentSessions.statistics(sessionId),
         ]);
-        return jsonResponse({ ...snapshot, subagents, apiUsage });
+        return jsonResponse(windowTranscript(sessionId, { ...snapshot, subagents, apiUsage }));
       }
 
       const eventsMatch = path.match(/^\/api\/sessions\/([^/]+)\/events$/);
@@ -415,7 +432,7 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       const treeMatch = path.match(/^\/api\/sessions\/([^/]+)\/tree$/);
       if (req.method === "GET" && treeMatch) {
         const { tree, ...state } = await services.registry.getTree(treeMatch[1]!);
-        return jsonResponse({ tree: flattenMessageTree(tree), ...state });
+        return jsonResponse({ tree: flattenMessageTree(tree, { preview: url.searchParams.get("preview") === "1" }), ...state });
       }
 
       const treeNavigateMatch = path.match(/^\/api\/sessions\/([^/]+)\/tree\/navigate$/);
@@ -639,6 +656,7 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       if (error instanceof DirectoryServiceError) return errorResponse(error.status, error.message);
       if (error instanceof ExtensionGuardError) return errorResponse(400, error.message);
       if (error instanceof UnknownSessionError) return errorResponse(404, error.message);
+      if (error instanceof TranscriptCursorError) return errorResponse(409, error.message, { code: "HISTORY_CHANGED" });
       if (error instanceof SessionBusyError) return errorResponse(409, error.message, { code: error.code });
       if (error instanceof SessionLifecycleConflictError || error instanceof SessionHistoryConflictError
         || error instanceof SessionRegistryShuttingDownError) {
@@ -854,7 +872,7 @@ function sessionEvents(services: RouteServices, id: string): Response {
       ]).then(
         ([snapshot, subagents, apiUsage]) => {
           if (cancelled || deleted) return;
-          send(controller, { type: "snapshot", ...snapshot, subagents, apiUsage, fileWatchLeaseId });
+          send(controller, { type: "snapshot", ...windowTranscript(id, { ...snapshot, subagents, apiUsage }), fileWatchLeaseId });
           for (const event of preBarrierSupplements) send(controller, event);
           for (const event of postBarrierEvents) send(controller, event);
           preBarrierSupplements.length = 0;

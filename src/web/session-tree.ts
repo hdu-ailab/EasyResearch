@@ -31,9 +31,11 @@ function messageText(message: AgentMessage): string {
  * - `compaction` carries `firstKeptEntryId` so the frontend can mirror pi's
  *   `buildContextEntries` (summarized entries are omitted from the context).
  */
-export function flattenMessageTree(nodes: SessionTreeNode[]): WebTreeEntryDto[] {
+export function flattenMessageTree(nodes: SessionTreeNode[], options: { preview?: boolean } = {}): WebTreeEntryDto[] {
   const out: WebTreeEntryDto[] = [];
-  const visit = (node: SessionTreeNode): void => {
+  const pending = [...nodes].reverse();
+  while (pending.length) {
+    const node = pending.pop()!;
     const entry = node.entry;
     const nodeMeta = {
       ...(node.label !== undefined ? { label: node.label } : {}),
@@ -127,8 +129,10 @@ export function flattenMessageTree(nodes: SessionTreeNode[]): WebTreeEntryDto[] 
     } else if (entry.type === "label") {
       out.push({ id: entry.id, parentId: entry.parentId, role: "other", kind: "label", text: entry.label ?? "", ...nodeMeta });
     }
-    for (const child of node.children) visit(child);
-  };
-  for (const node of nodes) visit(node);
-  return out;
+    for (let index = node.children.length - 1; index >= 0; index--) pending.push(node.children[index]!);
+  }
+  return options.preview ? out.map((entry) => ({
+    ...entry,
+    text: entry.text.length > 512 ? `${entry.text.slice(0, 512).replace(/[\uD800-\uDBFF]$/, "")}…` : entry.text,
+  })) : out;
 }

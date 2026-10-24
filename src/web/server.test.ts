@@ -1835,7 +1835,8 @@ describe("web routes", () => {
     };
     expect(body.session.id).toBe(created.id);
     expect(body.timeline).toEqual([]);
-    expect(body.inlineUsage).toHaveLength(1);
+    // Inline records outside the displayed timeline belong to older pages.
+    expect(body.inlineUsage).toHaveLength(0);
     expect(body.apiUsage.rootSessionId).toBe(created.id);
     expect(body.runtimeConfigurationGeneration).toBe(4);
   });
@@ -3384,6 +3385,85 @@ describe("web routes", () => {
       await reader.cancel();
     }
     expect(watcherFactory.activeDirectories()).toEqual([]);
+  });
+
+  it("hydrates a large history through bounded multiplexed snapshots and complete HTTP pages", async () => {
+    setup();
+    const created = await registry.create({ cwd: projectDir });
+    const timeline = Array.from({ length: 400 }, (_, i) => ({
+      kind: "message" as const, entryId: `entry-${i}`, message: userMessage("x".repeat(100_000)),
+    }));
+    factory.created[0]!.timelinePromise = Promise.resolve(timeline);
+    const response = await handler(new Request("http://localhost/api/events"));
+    const reader = response.body!.getReader();
+    try {
+      const connected = await readSseEvent(reader);
+      const subscribed = await handler(new Request(`http://localhost/api/events/${connected.id}`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ revision: 1, subscriptions: [{ id: "work", path: `/api/sessions/${created.id}/events` }] }),
+      }));
+      expect(subscribed.status).toBe(200);
+      const frame = await readSseEvent(reader);
+      expect(frame.type).toBe("event");
+      const snapshot = frame.event as any;
+      expect(snapshot.type).toBe("snapshot");
+      expect(Buffer.byteLength(JSON.stringify(frame))).toBeLessThan(2 * 1024 * 1024);
+      const httpSnapshot = await (await handler(new Request(`http://localhost/api/sessions/${created.id}/snapshot`))).json() as any;
+      expect(httpSnapshot.timeline).toEqual(snapshot.timeline);
+      const ids = snapshot.timeline.map((entry: any) => entry.entryId);
+      let cursor = snapshot.history?.cursor;
+      while (cursor) {
+        const pageResponse = await handler(new Request(`http://localhost/api/sessions/${created.id}/history?cursor=${cursor}`));
+        expect(pageResponse.status).toBe(200);
+        const page = await pageResponse.json() as any;
+        ids.unshift(...page.timeline.map((entry: any) => entry.entryId));
+        cursor = page.history?.cursor;
+      }
+      expect(ids).toEqual(timeline.map((entry) => entry.entryId));
+      factory.created[0]!.events.forEach((listener) => listener({ type: "agent_start" }));
+      expect(await readSseEvent(reader)).toMatchObject({ type: "event", event: { type: "agent_start" } });
+      expect(factory.created[0]!.stopped).toBe(0);
+    } finally {
+      await reader.cancel();
+      await (handler as ReturnType<typeof createRouteHandler>).close?.();
+    }
+  });
+
+  it("reads full oversized entries on demand and rejects foreign or stale history cursors", async () => {
+    setup();
+    const first = await registry.create({ cwd: projectDir });
+    const second = await registry.create({ cwd: projectDir });
+    const timeline = Array.from({ length: 70 }, (_, i) => ({
+      kind: "message" as const, entryId: `entry-${i}`, message: userMessage("汉".repeat(i === 69 ? 300_000 : 10)),
+    }));
+    factory.created[0]!.timelinePromise = Promise.resolve(timeline);
+    const snapshot = await (await handler(new Request(`http://localhost/api/sessions/${first.id}/snapshot`))).json() as any;
+    expect(snapshot.timeline.at(-1).deferred.bytes).toBeGreaterThan(800_000);
+    const entry = await handler(new Request(`http://localhost/api/sessions/${first.id}/history/entry-69`));
+    expect(await entry.json()).toEqual(timeline[69]);
+    expect((await handler(new Request(`http://localhost/api/sessions/${first.id}/history/private-entry`))).status).toBe(404);
+    expect((await handler(new Request(`http://localhost/api/sessions/${second.id}/history?cursor=${snapshot.history.cursor}`))).status).toBe(409);
+    factory.created[0]!.timelinePromise = Promise.resolve(timeline.slice(0, 2));
+    expect((await handler(new Request(`http://localhost/api/sessions/${first.id}/history?cursor=${snapshot.history.cursor}`))).status).toBe(409);
+  });
+
+  it("applies the same bounded window and exact parent mapping to retained child history", async () => {
+    const timeline = Array.from({ length: 80 }, (_, i) => ({ kind: "message" as const, entryId: `child-${i}`, message: userMessage("c".repeat(20_000)) }));
+    setup({ subagentSessions: {
+      summaries: async () => [],
+      snapshot: async (parent, child) => {
+        if (parent !== "parent" || child !== "child") throw new SubagentSessionNotFoundError("not mapped");
+        return { session: { id: child, cwd: projectDir }, timeline, subagents: [] };
+      },
+    } });
+    const prefix = "http://localhost/api/sessions/parent/subagents/child";
+    const snapshot = await (await handler(new Request(`${prefix}/snapshot`))).json() as any;
+    expect(snapshot.timeline.length).toBeLessThan(timeline.length);
+    expect(snapshot.timeline.at(-1).entryId).toBe("child-79");
+    const page = await (await handler(new Request(`${prefix}/history?cursor=${snapshot.history.cursor}`))).json() as any;
+    expect([...page.timeline, ...snapshot.timeline].map((entry: any) => entry.entryId)).toEqual(timeline.map((entry) => entry.entryId));
+    expect(await (await handler(new Request(`${prefix}/history/child-0`))).json()).toEqual(timeline[0]);
+    expect((await handler(new Request("http://localhost/api/sessions/other/subagents/child/history/child-0"))).status).toBe(404);
   });
 
   it("keeps the union for concurrent Work streams when one lease collapses or disconnects", async () => {

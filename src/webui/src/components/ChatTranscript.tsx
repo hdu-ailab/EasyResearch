@@ -19,6 +19,7 @@ import type {
   ToolView,
 } from "../session-reducer";
 import { indexSubtreeUsage, mergeTranscriptEntries, type TranscriptEntry } from "../transcript-entries";
+import { shouldAdjustTranscriptRow } from "../transcript-history";
 import { ApiUsageLine } from "./ApiUsageLine";
 import { MarkdownBlock } from "./MarkdownBlock";
 import { SubagentCompletionCard } from "./SubagentCompletionCard";
@@ -48,6 +49,12 @@ export interface ChatTranscriptProps {
   steers?: SteerView[];
   showApiUsageDetails?: boolean;
   apiUsage?: ApiUsageStatisticsDto;
+  historyCursor?: string;
+  historyLoading?: boolean;
+  historyError?: boolean;
+  onLoadOlder?: (beforePublish?: () => void) => Promise<void>;
+  deferredEntries?: Record<string, number>;
+  onReadEntry?: (entryId: string) => void;
 }
 
 export interface ChatTranscriptHandle {
@@ -572,6 +579,8 @@ interface TranscriptVirtualRowProps {
   onAnimationEnd: (key: string) => void;
   onSwitchBranch?: (entryId: string, direction: -1 | 1) => void;
   onViewDetails?: (toolCallId: string, step?: number) => void;
+  deferredEntries?: Record<string, number>;
+  onReadEntry?: (entryId: string) => void;
 }
 
 const TranscriptVirtualRow = memo(function TranscriptVirtualRow({
@@ -597,7 +606,14 @@ const TranscriptVirtualRow = memo(function TranscriptVirtualRow({
   onAnimationEnd,
   onSwitchBranch,
   onViewDetails,
+  deferredEntries,
+  onReadEntry,
 }: TranscriptVirtualRowProps) {
+  const { t } = useI18n();
+  const ids = "name" in entry ? [entry.callEntryId, entry.resultEntryId] : "entryId" in entry ? [entry.entryId] : [];
+  const deferred = [
+    ...new Set(ids.filter((id): id is string => id !== undefined && deferredEntries?.[id] !== undefined)),
+  ];
   const element = useRef<HTMLDivElement | null>(null);
   const measureFrame = useRef<number | null>(null);
   const bindMeasure = useCallback(
@@ -680,7 +696,7 @@ const TranscriptVirtualRow = memo(function TranscriptVirtualRow({
             today={today}
             open={open}
             onToggle={(next) => onToggle(rowKey, next)}
-            meta={messageMeta}
+            meta={deferred.length ? undefined : messageMeta}
             editing={editing}
             draft={draft}
             onStartEdit={() => onStartEdit(rowKey, entry.text)}
@@ -693,6 +709,19 @@ const TranscriptVirtualRow = memo(function TranscriptVirtualRow({
             onRendered={remeasure}
           />
         )}
+        {onReadEntry
+          ? deferred.map((id) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => onReadEntry(id)}
+                className="mt-1 mr-3 text-[12px] text-v2-blue-600 underline underline-offset-2"
+              >
+                {t("transcript.fullEntry")}
+                {deferred.length > 1 ? ` · ${deferred.indexOf(id) + 1}` : ""}
+              </button>
+            ))
+          : null}
       </div>
     </div>
   );
@@ -724,6 +753,12 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
     steers = [],
     showApiUsageDetails = false,
     apiUsage,
+    historyCursor,
+    historyLoading = false,
+    historyError = false,
+    onLoadOlder,
+    deferredEntries,
+    onReadEntry,
   },
   ref,
 ) {
@@ -770,12 +805,15 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
     [entries],
   );
   const seenRowKeys = useRef<Set<string> | null>(null);
+  const introducedRowKeys = useRef(new Set<string>());
   const hydrationIdentity = `${hydrationScope}\u0000${hydrationRevision}`;
   const seenHydrationIdentity = useRef(hydrationIdentity);
   if (seenRowKeys.current === null || seenHydrationIdentity.current !== hydrationIdentity) {
     seenHydrationIdentity.current = hydrationIdentity;
     seenRowKeys.current = new Set(entryKeys);
+    introducedRowKeys.current.clear();
   }
+  for (const key of entryKeys) if (!seenRowKeys.current.has(key)) introducedRowKeys.current.add(key);
   const [entrance, setEntrance] = useState(() => ({ identity: hydrationIdentity, keys: new Set<string>() }));
 
   useEffect(() => {
@@ -803,6 +841,7 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
     handleScroll: handleAutoScroll,
     handleInteraction,
     resume: autoScrollResume,
+    pause: pauseAutoScroll,
     userScrolled,
   } = autoScroll;
   const { markScrollGesture, markBoundaryWheel, hasScrollGesture } = useScrollGesture(scrollRef);
@@ -853,7 +892,7 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
     anchorTo: "end",
     followOnAppend: true,
     scrollEndThreshold: 80,
-    paddingStart: 32,
+    paddingStart: historyCursor ? 64 : 32,
     paddingEnd: 64,
     initialOffset: () => (shouldAnchorBottom() ? Number.MAX_SAFE_INTEGER : 0),
     scrollToFn: (offset, options, instance) => {
@@ -863,11 +902,26 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
       elementScroll(offset, options, instance);
     },
   });
-  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item) => {
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => {
     if (shouldAnchorBottom()) return false;
-    const first = virtualizer.range?.startIndex;
-    return first !== undefined && item.index < first;
+    return shouldAdjustTranscriptRow({
+      introduced: introducedRowKeys.current.has(String(item.key)),
+      index: item.index,
+      end: item.end,
+      firstVisible: instance.range?.startIndex,
+      offset: instance.scrollOffset ?? 0,
+      adjustments: instance.scrollAdjustments,
+      header: instance.options.paddingStart,
+    });
   };
+
+  const loadOlder = useCallback(() => {
+    if (!historyCursor || historyLoading || !onLoadOlder) return;
+    // The virtualizer's key-based anchorTo:"end" already preserves prepends,
+    // including later size measurements. An absolute scroll here races that
+    // correction; only pause live following before publishing the older page.
+    void onLoadOlder(pauseAutoScroll);
+  }, [historyCursor, historyLoading, onLoadOlder, pauseAutoScroll]);
 
   const measureRow = useCallback(
     (element: HTMLDivElement | null) => {
@@ -940,8 +994,9 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
       if (!hasScrollGesture()) return;
       handleAutoScroll();
       markScrollGesture(event.currentTarget);
+      if (event.currentTarget.scrollTop < 160 && !historyError) loadOlder();
     },
-    [handleAutoScroll, hasScrollGesture, markScrollGesture, scheduleScrollState],
+    [handleAutoScroll, hasScrollGesture, markScrollGesture, scheduleScrollState, historyError, loadOlder],
   );
 
   const handleWheel = useCallback(
@@ -954,8 +1009,15 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
       });
       if (!delta) return;
       markBoundaryWheel(event.target, delta);
+      if (
+        delta < 0 &&
+        root.scrollTop < 160 &&
+        !historyError &&
+        (!(event.target instanceof Element) || event.target.closest("[data-scrollable]") === root)
+      )
+        loadOlder();
     },
-    [markBoundaryWheel],
+    [markBoundaryWheel, historyError, loadOlder],
   );
 
   const handleKeyDown = useCallback(
@@ -1074,6 +1136,23 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
             className="relative mx-auto w-full max-w-[1000px]"
             style={{ height: virtualizer.getTotalSize() }}
           >
+            {historyCursor ? (
+              <div className="absolute inset-x-0 top-3 z-10 flex items-center justify-center gap-2 text-[12px]">
+                {historyError ? (
+                  <span role="alert" className="text-v2-status-error">
+                    {t("transcript.historyError")}
+                  </span>
+                ) : null}
+                <button
+                  type="button"
+                  disabled={historyLoading}
+                  onClick={loadOlder}
+                  className="rounded-md px-3 py-1 text-v2-text-text-muted hover:bg-v2-grey-100 disabled:opacity-60"
+                >
+                  {historyLoading ? t("dialog.loading") : t("transcript.loadOlder")}
+                </button>
+              </div>
+            ) : null}
             {virtualizer.getVirtualItems().map((virtualRow) => {
               const entry = entries[virtualRow.index];
               if (!entry) return null;
@@ -1116,6 +1195,8 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
                   onAnimationEnd={finishEntrance}
                   onSwitchBranch={onSwitchBranch}
                   onViewDetails={onViewDetails}
+                  deferredEntries={deferredEntries}
+                  onReadEntry={onReadEntry}
                 />
               );
             })}

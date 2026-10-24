@@ -61,6 +61,7 @@ export interface SessionConnection {
   pendingOutput: boolean;
   send(text: string): Promise<void>;
   abort(): Promise<void>;
+  refresh(): void;
   /** Move the session leaf to an entry in place, then refresh the view. */
   navigateTree(entryId: string, options?: TreeNavigationOptionsDto): Promise<TreeNavigationResultDto>;
   setView: Dispatch<SetStateAction<SessionViewState>>;
@@ -608,6 +609,11 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
     [updateSessionPath],
   );
 
+  const refresh = useCallback(() => {
+    if (!mountedRef.current || deletedRef.current) return;
+    setConnectionTarget((current) => ({ ...current, generation: current.generation + 1 }));
+  }, []);
+
   return {
     sessionId,
     sessionPath,
@@ -620,6 +626,7 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
     pendingOutput,
     send,
     abort,
+    refresh,
     navigateTree,
     setView,
   };
