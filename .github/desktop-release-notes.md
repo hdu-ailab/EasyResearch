@@ -9,6 +9,8 @@ EasyResearch Desktop runs the same EasyResearch backend and Web interface as the
 - Missing-folder recovery lets you choose the new location after an external
   move/rename and reconnect the existing root and child sessions. Open Work tabs
   follow the new location; active work requires confirmation before stopping.
+- Long conversations open with a recent history window and load older entries on
+  demand. Individual event subscriptions recover without restarting Agent work.
 - macOS ARM64 signature repair for [#7](https://github.com/hdu-ailab/EasyResearch/issues/7):
   native binaries are ad-hoc signed and strictly verified before acceptance;
   desktop packaging seals the application while preserving the accepted sidecar.
