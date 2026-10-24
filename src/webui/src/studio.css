@@ -773,6 +773,13 @@
       background: var(--color-v2-background-bg-base);
       font-size: 12px;
     }
+    .er-project-row[data-selected] > .er-workspace-menu {
+      order: 1;
+      margin: 16px 16px 0 0;
+    }
+    .er-workspace-menu > summary {
+      height: 38px;
+    }
     .er-session-create-long {
       display: inline;
     }

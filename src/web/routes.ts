@@ -36,10 +36,11 @@ import type { DirectoryService } from "./directories";
 import { DirectoryServiceError, fileServiceError } from "./directories";
 import { parseByteRange, RawFileRangeError, type RawFileDescriptor } from "./raw-file";
 import {
-  UnknownSessionError, SessionBusyError, SessionLifecycleConflictError,
+  UnknownSessionError, SessionBusyError, SessionLifecycleConflictError, WorkspaceBusyError,
   SessionRegistryShuttingDownError, type ActiveSessionRegistry,
 } from "./active-sessions";
 import { SessionHistoryConflictError } from "./session-deletion";
+import { WorkspaceError, requireWorkspaceDirectory, type WorkspaceService } from "./workspaces";
 import { flattenMessageTree } from "./session-tree";
 import { ExtensionGuardError } from "../runtime/extensions-guard";
 import type { ConfigFileService } from "./config-files";
@@ -102,6 +103,7 @@ export interface RouteServices {
   checkForUpdate: () => Promise<UpdateCheckDto>;
   renameSession: (sessionId: string, name: string) => Promise<void>;
   deleteSession: (sessionId: string, force: boolean) => Promise<void>;
+  workspaces?: WorkspaceService;
   listConfigProjects: () => Promise<{ home: string; projects: Array<{ cwd: string }> }>;
   directories: DirectoryService;
   registry: ActiveSessionRegistry;
@@ -324,6 +326,23 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
         return await openSession(services, body);
       }
 
+      const workspaceAction = path.match(/^\/api\/workspaces\/(validate|rename|relocate)$/);
+      if (services.workspaces && (req.method === "POST" && workspaceAction || req.method === "DELETE" && path === "/api/workspaces")) {
+        const body = await jsonBody<unknown>(req);
+        const action = workspaceAction?.[1] ?? "delete";
+        const extra = action === "rename" ? "name" : action === "relocate" ? "directory" : undefined;
+        if (!isObject(body) || typeof body.cwd !== "string" || !body.cwd
+          || (body.force !== undefined && typeof body.force !== "boolean")
+          || (extra && (typeof body[extra] !== "string" || !body[extra]))
+          || Object.keys(body).some((key) => key !== "cwd" && key !== "force" && key !== extra)) {
+          throw new BodyError("Invalid workspace operation");
+        }
+        if (action === "validate") return jsonResponse(await services.workspaces.validate(body.cwd));
+        if (action === "rename") return jsonResponse(await services.workspaces.rename(body.cwd, body.name as string, body.force === true));
+        if (action === "relocate") return jsonResponse(await services.workspaces.relocate(body.cwd, body.directory as string, body.force === true));
+        return jsonResponse(await services.workspaces.delete(body.cwd, body.force === true));
+      }
+
       if (req.method === "GET" && path === "/api/active-sessions") {
         return jsonResponse({ sessions: services.registry.listActive() });
       }
@@ -341,6 +360,7 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
 
       const touchMatch = path.match(/^\/api\/sessions\/([^/]+)\/touch$/);
       if (req.method === "POST" && touchMatch) {
+        if (services.workspaces) requireWorkspaceDirectory(services.directories, await services.registry.getCwd(touchMatch[1]!));
         await services.registry.touch(touchMatch[1]!);
         return jsonResponse({ ok: true });
       }
@@ -395,6 +415,7 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
         if (!body.message || typeof body.message !== "string") {
           return errorResponse(400, "message is required");
         }
+        if (services.workspaces) requireWorkspaceDirectory(services.directories, await services.registry.getCwd(messagesMatch[1]!));
         await services.registry.prompt(messagesMatch[1]!, body.message);
         return jsonResponse({ ok: true });
       }
@@ -632,6 +653,8 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
 
       return new Response("Not found", { status: 404 });
     } catch (error) {
+      if (error instanceof WorkspaceError) return errorResponse(error.status, error.message, { code: error.code, cwd: error.cwd });
+      if (error instanceof WorkspaceBusyError) return errorResponse(409, error.message, { code: error.code });
       if (error instanceof ConfigPathError) return errorResponse(403, error.message);
       if (error instanceof ConfigServiceError) {
         return errorResponse(error.status, error.message, error.code ? { code: error.code } : undefined);
@@ -685,7 +708,7 @@ async function createSession(
   body: { cwd: string },
 ): Promise<Response> {
   if (!body.cwd) throw new BodyError("cwd is required");
-  const cwd = services.directories.requireCwd(body.cwd);
+  const cwd = requireWorkspaceDirectory(services.directories, body.cwd);
   try {
     return jsonResponse(await services.registry.create({ cwd }));
   } catch (error) {
@@ -702,7 +725,7 @@ async function openSession(
   const sessions = await services.listAllSessions();
   const session = sessions.find((s) => s.path === body.path);
   if (!session) throw new UnknownSessionError(`Unknown session path: ${body.path}`);
-  services.directories.requireCwd(session.cwd);
+  requireWorkspaceDirectory(services.directories, session.cwd);
   try {
     const dto: ActiveSessionDto = await services.registry.open({
       cwd: session.cwd,
@@ -784,7 +807,7 @@ function sessionEvents(services: RouteServices, id: string): Response {
   };
   const publishOrQueue = (event: unknown): void => {
     if (cancelled || deleted) return;
-    if (isObject(event) && event.type === "session_deleted") {
+    if (isObject(event) && (event.type === "session_deleted" || event.type === "session_relocated")) {
       // Terminal deletion wins even when a now-invalid hydration never resolves.
       deleted = true;
       preBarrierSupplements.length = 0;

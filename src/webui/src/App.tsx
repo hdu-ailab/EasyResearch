@@ -1,9 +1,10 @@
 import { Settings } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { listStatus, openSession } from "./api";
+import { listStatus, openSession, resumeRelocatedSession, workspaceMissingCwd } from "./api";
 import { RuntimeRestartOverlay } from "./components/RuntimeRestartOverlay";
 import { SettingsModal } from "./components/settings/SettingsModal";
 import { TopbarIconButton } from "./components/Topbar";
+import { WorkspaceDialog } from "./components/WorkspaceDialog";
 import { useConfigurationEvents } from "./hooks/useConfigurationEvents";
 import { useHashRoute } from "./hooks/useHashRoute";
 import { useI18n } from "./i18n/useI18n";
@@ -76,6 +77,9 @@ export function App({
     error: string | null;
   } | null>(null);
   const [workRevision, setWorkRevision] = useState(0);
+  const [resolutionRetry, setResolutionRetry] = useState(0);
+  const [missingWorkspace, setMissingWorkspace] = useState<WorkSession | null>(null);
+  const [homeDir, setHomeDir] = useState("/");
   const settingsTriggerRef = useRef<HTMLButtonElement>(null);
   const settingsOpen = isSettingsHostRoute(route);
   const configOpen = route.page === "config";
@@ -96,6 +100,38 @@ export function App({
       : null;
   const mountedWorkCwd = resolvedWorkSession?.cwd;
   const setProjectInterests = configuration.setProjectInterests;
+  const relocationRequest = useRef(0);
+  const openRelocated = useCallback(
+    async (session: WorkSession) => {
+      const request = ++relocationRequest.current;
+      const stillSelected = () => {
+        const route = routeRef.current;
+        const host = route.page === "config" ? route.returnTo : route;
+        return request === relocationRequest.current && host?.page === "work" && host.session.id === session.id;
+      };
+      try {
+        const next = await resumeRelocatedSession(session.id, session.cwd);
+        if (!stillSelected()) return;
+        navigate({ page: "work", session: { id: next.id, cwd: next.cwd } });
+        setResolutionRetry((value) => value + 1);
+      } catch (error) {
+        if (!stillSelected()) return;
+        setWorkResolution({
+          requested: session,
+          resolved: null,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        navigate({ page: "work", session });
+      }
+    },
+    [navigate],
+  );
+  const showMissingWorkspace = useCallback((session: WorkSession) => {
+    setMissingWorkspace(session);
+    void listStatus()
+      .then((status) => setHomeDir(status.homeDir))
+      .catch(() => {});
+  }, []);
 
   const reloadRuntime = useCallback(() => {
     if (runtimeReplacementHandled.current) return;
@@ -166,7 +202,7 @@ export function App({
   useEffect(() => {
     if (routeWorkId === null || routeWorkCwd === null) return;
     let cancelled = false;
-    const requested = { id: routeWorkId, cwd: routeWorkCwd };
+    const requested = { id: routeWorkId, cwd: routeWorkCwd, revision: resolutionRetry };
     setWorkResolution({ requested, resolved: null, error: null });
     resolveWorkSession(routeWorkId, routeWorkCwd, { listStatus, openSession })
       .then((resolved) => {
@@ -176,6 +212,8 @@ export function App({
       })
       .catch((error: unknown) => {
         if (cancelled) return;
+        const missing = workspaceMissingCwd(error);
+        if (missing) showMissingWorkspace({ id: requested.id, cwd: missing });
         setWorkResolution({
           requested,
           resolved: null,
@@ -185,7 +223,7 @@ export function App({
     return () => {
       cancelled = true;
     };
-  }, [routeWorkCwd, routeWorkId]);
+  }, [routeWorkCwd, routeWorkId, resolutionRetry, showMissingWorkspace]);
 
   useEffect(() => {
     setProjectInterests("work", mountedWorkCwd === undefined ? [] : [mountedWorkCwd]);
@@ -237,6 +275,8 @@ export function App({
           cwd={session.cwd}
           configurationGeneration={configuration.revision}
           configurationError={configuration.error}
+          onWorkspaceMissing={(cwd) => showMissingWorkspace({ id: session.id, cwd })}
+          onWorkspaceRelocated={(next) => void openRelocated(next)}
           onBack={() => navigate({ page: "home" })}
           onOpenSettings={() => openSettings(hostRoute)}
           settingsButtonRef={settingsTriggerRef}
@@ -253,6 +293,20 @@ export function App({
     );
   }
 
+  const recoveryDialog = missingWorkspace && (
+    <WorkspaceDialog
+      key={missingWorkspace.cwd}
+      cwd={missingWorkspace.cwd}
+      mode="missing"
+      homeDir={homeDir}
+      onClose={() => setMissingWorkspace(null)}
+      onComplete={async (result, deleted) => {
+        if (deleted) navigate({ page: "home" });
+        else await openRelocated({ id: missingWorkspace.id, cwd: result.cwd });
+      }}
+    />
+  );
+
   if (workError && !configOpen) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 p-4 text-center">
@@ -266,6 +320,7 @@ export function App({
         >
           {t("topbar.backToHome")}
         </button>
+        {recoveryDialog}
       </div>
     );
   }
@@ -280,6 +335,7 @@ export function App({
 
   return (
     <>
+      {recoveryDialog}
       {baseSurface && (
         <div
           data-app-surface

@@ -1,6 +1,21 @@
 import type { Language } from "../preferences";
 
 export const en = {
+  "workspace.actions": "Workspace actions",
+  "workspace.rename": "Edit workspace name",
+  "workspace.delete": "Delete workspace",
+  "workspace.folderName": "Folder name",
+  "workspace.renameDescription": "Renames the folder on disk and moves its sessions to the new path.",
+  "workspace.deleteDescription":
+    "Delete this workspace's sessions, including its child sessions. The folder and project files are kept.",
+  "workspace.missing": "Workspace folder not found",
+  "workspace.missingDescription":
+    "Was this folder moved or renamed? Select its new location to migrate all existing sessions, or delete the workspace's sessions.",
+  "workspace.chooseFolder": "Choose new folder",
+  "workspace.migrate": "Migrate and open",
+  "workspace.busy": "This workspace has active work. Continuing will stop its running sessions and child Agents.",
+  "workspace.stopAndContinue": "Stop and continue",
+  "workspace.working": "Applying…",
   "studio.homeTitle": "Research sessions",
   "studio.projectSummary": "{projects} workspaces · {sessions} active sessions",
   "studio.appearanceLanguage": "Appearance and language",
@@ -514,6 +529,19 @@ export const en = {
 export type MessageKey = keyof typeof en;
 
 export const zhCN: Record<MessageKey, string> = {
+  "workspace.actions": "工作区操作",
+  "workspace.rename": "编辑工作区名称",
+  "workspace.delete": "删除工作区",
+  "workspace.folderName": "文件夹名称",
+  "workspace.renameDescription": "修改磁盘上的文件夹名称，并将相关会话迁移到新路径。",
+  "workspace.deleteDescription": "删除此工作区的全部会话及其子会话，保留文件夹和项目文件。",
+  "workspace.missing": "找不到工作区文件夹",
+  "workspace.missingDescription": "文件夹是否已移动或改名？可以选择新位置并迁移已有会话，或者删除该工作区及其会话。",
+  "workspace.chooseFolder": "选择新文件夹",
+  "workspace.migrate": "迁移并打开",
+  "workspace.busy": "此工作区有任务正在运行。继续操作将停止相关会话及其子 Agent。",
+  "workspace.stopAndContinue": "停止并继续",
+  "workspace.working": "正在处理…",
   "studio.homeTitle": "研究会话",
   "studio.projectSummary": "{projects} 个工作区 · {sessions} 个活动会话",
   "studio.appearanceLanguage": "外观与语言",

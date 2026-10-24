@@ -68,6 +68,7 @@ import { assertBundledAgentCapabilities } from "./smoke-agent-scenario";
 import { createWriteRecoverySmoke, runWriteRecoverySmoke } from "./smoke-write-recovery";
 import { smokeEventChannel } from "./smoke-event-channel";
 import { verifyMacOsSignature } from "./macos-signing";
+import { smokeWorkspaceManagement } from "./smoke-workspace-management";
 
 const targetName = process.argv[2];
 const target = TARGETS.find((candidate) => candidate.name === targetName);
@@ -2827,6 +2828,7 @@ try {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path: sessionPath }),
   }), "session resume");
+  await smokeWorkspaceManagement(base, pi, root, firstRunDeadline);
 } catch (error) {
   primaryError = new Error(safeSmokeDiagnostic(error));
   try {

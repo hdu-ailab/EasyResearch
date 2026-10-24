@@ -2,17 +2,17 @@
 
 EasyResearch Desktop runs the same EasyResearch backend and Web interface as the npm CLI. It embeds the matching native EasyResearch executable, so Node and Bun are not required at runtime.
 
-## 0.1.13 highlights
+## 0.1.14 highlights
 
-- One compact light/dark interface, restored action/file/provider icons with
-  hover labels, and dolphin artwork for browser tabs and desktop application icons.
-- SharedWorker-capable browsers share one event connection across tabs, keeping
-  file/configuration requests responsive with multiple Work sessions open.
-  Older browsers use one combined event connection per page.
-- Independent per-view file watches, bounded event delivery, body-aware request
-  concurrency and automatic snapshot recovery after reconnect/restart.
-- Compact model/thinking selectors retain matching small typography on desktop
-  and touch devices.
+- Home workspace actions can rename the actual project folder or delete its
+  conversation histories while keeping the folder and project files.
+- Missing-folder recovery lets you choose the new location after an external
+  move/rename and reconnect the existing root and child sessions. Open Work tabs
+  follow the new location; active work requires confirmation before stopping.
+- macOS ARM64 signature repair for [#7](https://github.com/hdu-ailab/EasyResearch/issues/7):
+  native binaries are ad-hoc signed and strictly verified before acceptance;
+  desktop packaging seals the application while preserving the accepted sidecar.
+  Release checks verify and launch a copy installed from the DMG.
 
 ## Downloads
 
@@ -24,7 +24,7 @@ EasyResearch Desktop runs the same EasyResearch backend and Web interface as the
 For Linux ARM64, replace the version below with the downloaded release:
 
 ```bash
-version=0.1.13
+version=0.1.14
 chmod +x "EasyResearch-${version}-linux-arm64.AppImage"
 "./EasyResearch-${version}-linux-arm64.AppImage"
 ```
@@ -32,7 +32,7 @@ chmod +x "EasyResearch-${version}-linux-arm64.AppImage"
 Or install the Debian/Ubuntu package and open EasyResearch from the applications menu:
 
 ```bash
-version=0.1.13
+version=0.1.14
 sudo apt install "./EasyResearch-${version}-linux-arm64.deb"
 ```
 
@@ -40,7 +40,7 @@ If the AppImage cannot start because the host restricts unprivileged user namesp
 
 The npm CLI also supports Linux ARM64: `npm install -g easyresearch@latest` selects the native package automatically.
 
-The Windows and macOS packages are unsigned. Windows SmartScreen and macOS Gatekeeper may display a warning. On macOS, after verifying the checksum and attestation, remove quarantine with:
+The Windows installer is unsigned. The macOS app has ad-hoc integrity signatures but is not Developer ID-signed or notarized. Windows SmartScreen and macOS Gatekeeper may display a warning. On macOS, after verifying the checksum and attestation, remove quarantine with:
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/EasyResearch.app

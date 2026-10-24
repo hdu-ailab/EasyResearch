@@ -12,6 +12,8 @@ export interface DirectoryDialogProps {
   homeDir: string;
   onSelect: (path: string) => void;
   onClose: () => void;
+  title?: string;
+  selectLabel?: string;
 }
 
 interface TreeRow {
@@ -20,7 +22,7 @@ interface TreeRow {
   depth: number;
 }
 
-export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogProps) {
+export function DirectoryDialog({ homeDir, onSelect, onClose, title, selectLabel }: DirectoryDialogProps) {
   const { t } = useI18n();
   const [input, setInput] = useState(homeDir);
   const [selected, setSelected] = useState<string | null>(null);
@@ -276,10 +278,10 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
         className="flex h-full w-full flex-col overflow-hidden rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-overlay)] sm:h-auto sm:max-h-[84vh] sm:max-w-[640px]"
         role="dialog"
         {...dialogProps}
-        aria-label={t("dialog.title")}
+        aria-label={title ?? t("dialog.title")}
       >
         <header className="flex h-10 shrink-0 items-center justify-between border-b border-v2-grey-200 px-3">
-          <h2 className="text-[13px] font-semibold text-v2-text-text-base">{t("dialog.title")}</h2>
+          <h2 className="text-[13px] font-semibold text-v2-text-text-base">{title ?? t("dialog.title")}</h2>
           <button
             type="button"
             className="flex size-7 items-center justify-center rounded-md text-v2-icon-icon-muted transition-colors hover:bg-v2-grey-100 hover:text-v2-icon-icon-base"
@@ -529,7 +531,7 @@ export function DirectoryDialog({ homeDir, onSelect, onClose }: DirectoryDialogP
             disabled={!selected}
             onClick={confirm}
           >
-            {t("dialog.createSession")}
+            {selectLabel ?? t("dialog.createSession")}
           </button>
         </footer>
       </section>

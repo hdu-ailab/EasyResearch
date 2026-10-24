@@ -41,6 +41,11 @@ export interface SessionDeletedEventDto {
   sessionId: string;
 }
 
+export interface WorkspaceMutationResultDto {
+  cwd: string;
+  sessionIds: string[];
+}
+
 export interface RuntimeRestartAcceptedDto {
   accepted: true;
   bootId: string;

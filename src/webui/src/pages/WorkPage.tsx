@@ -64,6 +64,8 @@ export interface WorkPageProps {
   settingsButtonRef?: Ref<HTMLButtonElement>;
   configurationGeneration?: number;
   configurationError?: string | null;
+  onWorkspaceMissing?: (cwd: string) => void;
+  onWorkspaceRelocated?: (session: { id: string; cwd: string }) => void;
 }
 
 type Panel = "files" | "agents" | null;
@@ -215,6 +217,8 @@ function SessionWorkPage({
   id,
   cwd,
   onBack,
+  onWorkspaceMissing,
+  onWorkspaceRelocated,
   onOpenSettings,
   settingsButtonRef,
   configurationGeneration = 0,
@@ -457,6 +461,8 @@ function SessionWorkPage({
     cwd,
     onEvent: handleWorkEvent,
     onSupervisorEvent: handleSupervisorEvent,
+    onWorkspaceMissing,
+    onRelocated: onWorkspaceRelocated,
   });
   const sessionView = connection.view;
   if (

@@ -6,6 +6,8 @@ const session = (id: string) => `${API_ROOT}/sessions/${encodeURIComponent(id)}`
 
 export const routes = {
   status: () => `${API_ROOT}/status`,
+  workspaces: () => `${API_ROOT}/workspaces`,
+  workspace: (action: "validate" | "rename" | "relocate") => `${API_ROOT}/workspaces/${action}`,
   updateCheck: () => `${API_ROOT}/update-check`,
   agents: (cwd?: string) => {
     const query = cwd ? `?cwd=${encodeURIComponent(cwd)}` : "";

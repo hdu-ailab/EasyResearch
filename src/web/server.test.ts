@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, parse } from "node:path";
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
@@ -63,6 +63,7 @@ import type { InstalledNetworkRouter } from "../runtime/network-routing";
 import * as networkRoutingModule from "../runtime/network-routing";
 import { createNetworkProxyProbe } from "./network-proxy-probe";
 import { NetworkProxySettingsService } from "./network-proxy-settings";
+import { WorkspaceService } from "./workspaces";
 
 const [loggerMock, createLoggerMock] = vi.hoisted(() => {
   const mockLogger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
@@ -645,6 +646,61 @@ describe("web routes", () => {
       });
       return { root, child, other, create, lifecycle, pi, usage, store };
     }
+
+    it("renames a workspace over HTTP and reopens its stable root and child paths", async () => {
+      const { root, child, pi, store, usage } = await persistentFixture();
+      setup({
+        workspaces: new WorkspaceService({ store, registry, directories: directoryService,
+          sessionsDir: join(agentDir, "sessions"), invalidateUsage: () => usage.invalidateUsage() }),
+        listAllSessions: async () => toUserSessionSummaries(await pi.SessionManager.listAll()),
+        subagentSessions: { snapshot: (parent, child) => usage.snapshot(parent, child) },
+      });
+      const post = (path: string, body: unknown) => handler(new Request(`http://localhost${path}`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      }));
+      await post("/api/sessions/open", { path: root.path });
+      const received: unknown[] = [];
+      const release = registry.subscribe(root.id, (event) => received.push(event));
+      const name = `${parse(projectDir).base}-renamed`;
+      const next = join(parse(projectDir).dir, name);
+      onTestFinished(() => rmSync(next, { recursive: true, force: true }));
+      const response = await post("/api/workspaces/rename", { cwd: projectDir, name });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ cwd: next, sessionIds: expect.arrayContaining([root.id, child.id]) });
+      expect(received).toContainEqual({ type: "session_relocated", sessionId: root.id, cwd: next });
+      release();
+      const reopened = await post("/api/sessions/open", { path: root.path });
+      expect(reopened.status).toBe(200);
+      expect(await reopened.json()).toMatchObject({ id: root.id, cwd: next, sessionFile: root.path });
+      const childResponse = await handler(new Request(`http://localhost/api/sessions/${root.id}/subagents/${child.id}/snapshot`));
+      expect(childResponse.status).toBe(200);
+      expect(await childResponse.json()).toMatchObject({ session: { id: child.id, cwd: next } });
+    });
+
+    it("reports missing workspace identity, recovers all sessions, and deletes histories without files", async () => {
+      const { root, child, other, pi, store, usage } = await persistentFixture();
+      setup({
+        workspaces: new WorkspaceService({ store, registry, directories: directoryService,
+          sessionsDir: join(agentDir, "sessions"), invalidateUsage: () => usage.invalidateUsage() }),
+        listAllSessions: async () => toUserSessionSummaries(await pi.SessionManager.listAll()),
+      });
+      writeFileSync(join(projectDir, "keep.txt"), "evidence");
+      const moved = `${projectDir}-external`;
+      renameSync(projectDir, moved);
+      onTestFinished(() => rmSync(moved, { recursive: true, force: true }));
+      const post = (path: string, body: unknown, method = "POST") => handler(new Request(`http://localhost${path}`, {
+        method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      }));
+      const missing = await post("/api/sessions/open", { path: root.path });
+      expect(missing.status).toBe(404);
+      expect(await missing.json()).toMatchObject({ code: "WORKSPACE_MISSING", cwd: projectDir });
+      expect((await post("/api/workspaces/relocate", { cwd: projectDir, directory: moved, force: "yes" })).status).toBe(400);
+      expect((await post("/api/workspaces/relocate", { cwd: projectDir, directory: moved })).status).toBe(200);
+      const removed = await post("/api/workspaces", { cwd: moved }, "DELETE");
+      expect(removed.status).toBe(200);
+      for (const entry of [root, child, other]) expect(existsSync(entry.path)).toBe(false);
+      expect(readFileSync(join(moved, "keep.txt"), "utf8")).toBe("evidence");
+    });
 
     it("removes real root/child JSONL only and refuses stale open and rename resolutions", async () => {
       const { root, child, other } = await persistentFixture();

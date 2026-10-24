@@ -1,5 +1,6 @@
 import type { SessionTreeNode } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
+import { isAbsolute, relative, sep } from "node:path";
 import type {
   ActiveSessionDto,
   ApiUsageRecordDto,
@@ -37,6 +38,20 @@ export class SessionLifecycleConflictError extends Error {
 export class SessionBusyError extends Error {
   readonly code = "SESSION_BUSY";
   constructor() { super("The session has active work. Confirm Stop and delete to continue."); }
+}
+
+export interface WorkspaceScope { cwd: string; descendants?: boolean }
+
+export function matchesWorkspaceScope(cwd: string, scope: WorkspaceScope): boolean {
+  if (cwd === scope.cwd) return true;
+  const suffix = relative(scope.cwd, cwd);
+  return scope.descendants === true && !!suffix && !isAbsolute(suffix)
+    && suffix !== ".." && !suffix.startsWith(`..${sep}`);
+}
+
+export class WorkspaceBusyError extends Error {
+  readonly code = "WORKSPACE_BUSY";
+  constructor() { super("The workspace has active work. Confirm Stop and continue."); }
 }
 
 interface LifecycleOperation {
@@ -128,6 +143,7 @@ export class ActiveSessionRegistry {
   private readonly resolveLaunchThinking?: (cwd: string) => Promise<string | undefined>;
   private readonly validateOpen?: (input: OpenSessionInput) => void;
   private shuttingDown = false;
+  private workspaceOperation?: { scopes: readonly WorkspaceScope[]; promise: Promise<unknown> };
 
   constructor(
     private readonly factory: SessionFactory,
@@ -146,6 +162,7 @@ export class ActiveSessionRegistry {
 
   open(input: OpenSessionInput): Promise<ActiveSessionDto> {
     if (this.shuttingDown) return Promise.reject(new SessionRegistryShuttingDownError());
+    if (this.workspaceBlocked(input.cwd)) return Promise.reject(new SessionLifecycleConflictError());
     if (this.conflictingOperation(input.sessionId, input.sessionPath)) {
       return Promise.reject(new SessionLifecycleConflictError());
     }
@@ -199,7 +216,7 @@ export class ActiveSessionRegistry {
   }
 
   activeWorkCount(): number {
-    let count = this.pendingLaunches.size + this.lifecycleOperations.size;
+    let count = this.pendingLaunches.size + this.lifecycleOperations.size + (this.workspaceOperation ? 1 : 0);
     for (const record of this.records.values()) {
       if (this.isBusy(record)) count += 1;
     }
@@ -380,6 +397,7 @@ export class ActiveSessionRegistry {
     if (this.conflictingOperation(id)) throw new SessionLifecycleConflictError();
     const record = this.records.get(id);
     if (!record) return;
+    if (this.workspaceBlocked(record.cwd)) throw new SessionLifecycleConflictError();
     return this.stopRecord(record);
   }
 
@@ -457,6 +475,48 @@ export class ActiveSessionRegistry {
     if (this.records.has(target.id) || [...this.pendingLaunches].some((launch) =>
       launch.options.sessionPath === target.path)) return Promise.reject(new SessionLifecycleConflictError());
     return this.runLifecycle({ id: target.id, path: target.path, kind: "rename" }, run);
+  }
+
+  /** Owns affected runtimes through disk publication; unrelated Agents keep running. */
+  withWorkspaceMutation<T>(
+    scopes: readonly WorkspaceScope[],
+    force: boolean,
+    run: (stopped: ActiveSessionDto[]) => Promise<T>,
+  ): Promise<T> {
+    if (this.shuttingDown) return Promise.reject(new SessionRegistryShuttingDownError());
+    if (this.workspaceOperation || this.lifecycleOperations.size) return Promise.reject(new SessionLifecycleConflictError());
+    const matches = (cwd: string) => scopes.some((scope) => matchesWorkspaceScope(cwd, scope));
+    const records = [...this.records.values()].filter((record) => matches(record.cwd));
+    const pending = [...this.pendingLaunches].filter((launch) => matches(launch.options.cwd));
+    if (!force && (pending.length || records.some((record) => this.isBusy(record)))) {
+      return Promise.reject(new WorkspaceBusyError());
+    }
+    const operation = { scopes, promise: Promise.resolve() as Promise<unknown> };
+    this.workspaceOperation = operation;
+    for (const launch of pending) launch.cancelled = true;
+    const stopped = records.map((record) => ({ ...record.dto }));
+    const promise = Promise.resolve().then(async () => {
+      const outcomes = await Promise.allSettled([
+        ...pending.map((launch) => this.settlePendingForShutdown(launch)),
+        ...records.map((record) => this.stopRecord(record)),
+      ]);
+      const failures = outcomes.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+      if (failures.length) throw new AggregateError(failures, "Workspace runtime cleanup failed");
+      if (this.shuttingDown) throw new SessionRegistryShuttingDownError();
+      return run(stopped);
+    }).finally(() => {
+      if (this.workspaceOperation === operation) this.workspaceOperation = undefined;
+    });
+    operation.promise = promise;
+    return promise;
+  }
+
+  publishSessionEvent(id: string, event: unknown): void {
+    this.publishTo(this.subscriptions.get(id), event);
+  }
+
+  private workspaceBlocked(cwd: string): boolean {
+    return this.workspaceOperation?.scopes.some((scope) => matchesWorkspaceScope(cwd, scope)) ?? false;
   }
 
   deleteSession(id: string, force: boolean, history: SessionDeletionDependencies): Promise<void> {
@@ -550,6 +610,7 @@ export class ActiveSessionRegistry {
         ...pending.map((launch) => this.settlePendingForShutdown(launch)),
         // Request errors belong to their callers; shutdown still owns settlement.
         ...[...this.lifecycleOperations].map((operation) => operation.promise.catch(() => {})),
+        ...(this.workspaceOperation ? [this.workspaceOperation.promise.catch(() => {})] : []),
       ],
     );
     const failures = outcomes.flatMap((outcome) =>
@@ -561,6 +622,7 @@ export class ActiveSessionRegistry {
 
   private reserveLaunch(options: LaunchOptions): PendingLaunch {
     if (this.shuttingDown) throw new SessionRegistryShuttingDownError();
+    if (this.workspaceBlocked(options.cwd)) throw new SessionLifecycleConflictError();
     let resolveSettlement!: () => void;
     let rejectSettlement!: (error: unknown) => void;
     const settlement = new Promise<void>((resolve, reject) => {
@@ -897,6 +959,7 @@ export class ActiveSessionRegistry {
   private canIdleStop(record: ActiveRecord): boolean {
     return record.dto.status === "ready"
       && !record.closing
+      && !this.workspaceBlocked(record.cwd)
       && !this.conflictingOperation(record.dto.id, record.sessionPath)
       && record.mutations.size === 0
       && !record.dto.isStreaming
@@ -938,7 +1001,7 @@ export class ActiveSessionRegistry {
   private withMutation<T>(id: string, run: (record: ActiveRecord) => Promise<T>): Promise<T> {
     if (this.shuttingDown) return Promise.reject(new SessionRegistryShuttingDownError());
     return this.withRecord(id, (record) => {
-      if (record.closing || this.conflictingOperation(id, record.sessionPath)) {
+      if (record.closing || this.workspaceBlocked(record.cwd) || this.conflictingOperation(id, record.sessionPath)) {
         return Promise.reject(new SessionLifecycleConflictError());
       }
       const operation = run(record);
@@ -961,6 +1024,7 @@ export class ActiveSessionRegistry {
     run: (operation: LifecycleOperation) => Promise<T>,
   ): Promise<T> {
     if (this.shuttingDown) return Promise.reject(new SessionRegistryShuttingDownError());
+    if (this.workspaceOperation) return Promise.reject(new SessionLifecycleConflictError());
     if (this.conflictingOperation(input.id, input.path)) return Promise.reject(new SessionLifecycleConflictError());
     const operation: LifecycleOperation = { ...input, promise: Promise.resolve() };
     this.lifecycleOperations.add(operation);

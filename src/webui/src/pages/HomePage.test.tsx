@@ -21,6 +21,11 @@ vi.mock("../api", async (importOriginal) => {
     stopSession: vi.fn(),
     renameSession: vi.fn(),
     deleteSession: vi.fn(),
+    validateWorkspace: vi.fn().mockResolvedValue(undefined),
+    renameWorkspace: vi.fn(),
+    deleteWorkspace: vi.fn(),
+    relocateWorkspace: vi.fn(),
+    resumeRelocatedSession: vi.fn(),
   };
 });
 
@@ -106,6 +111,10 @@ describe("HomePage", () => {
     vi.mocked(api.stopSession).mockReset();
     vi.mocked(api.renameSession).mockReset();
     vi.mocked(api.deleteSession).mockReset().mockResolvedValue(undefined);
+    vi.mocked(api.validateWorkspace).mockReset().mockResolvedValue(undefined);
+    vi.mocked(api.renameWorkspace).mockReset();
+    vi.mocked(api.deleteWorkspace).mockReset();
+    vi.mocked(api.relocateWorkspace).mockReset();
     vi.mocked(api.listStatus).mockResolvedValue({
       agentDir: "/agent",
       homeDir: "/home/user",
@@ -129,6 +138,93 @@ describe("HomePage", () => {
     expect(workspace.parentElement).toHaveClass("min-h-full", "w-full", "flex", "flex-col");
     expect(workspace.parentElement).not.toHaveClass("px-2", "pb-2", "pt-[4px]");
     expect(within(workspace).getByRole("heading", { name: "Research sessions" })).toBeVisible();
+  });
+
+  it("renames a workspace from its actions and retains the sessions under the new path", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.renameWorkspace).mockImplementation(async () => {
+      vi.mocked(api.listStatus).mockResolvedValue({
+        agentDir: "/agent",
+        homeDir: "/home/user",
+        sessions: history.map((session) => ({ ...session, cwd: "/renamed" })),
+        activeSessions: [],
+      } as never);
+      return { cwd: "/renamed", sessionIds: ["h1", "a1"] };
+    });
+    renderHome();
+    await user.click(await screen.findByLabelText("Workspace actions: /proj"));
+    await user.click(screen.getByRole("button", { name: "Edit workspace name" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit workspace name" });
+    await user.clear(within(dialog).getByLabelText("Folder name"));
+    await user.type(within(dialog).getByLabelText("Folder name"), "renamed");
+    await user.click(within(dialog).getByRole("button", { name: "Edit workspace name" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(api.renameWorkspace).toHaveBeenCalledWith("/proj", "renamed", false);
+    expect(await screen.findByRole("button", { name: "/renamed" })).toBeVisible();
+    expect(screen.getByText("Fault diagnosis")).toBeVisible();
+  });
+
+  it("confirms busy workspace deletion and removes only the selected workspace's sessions", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.deleteWorkspace)
+      .mockRejectedValueOnce(new ApiError(409, { code: "WORKSPACE_BUSY", error: "busy" }))
+      .mockImplementationOnce(async () => {
+        vi.mocked(api.listStatus).mockResolvedValue({
+          agentDir: "/agent",
+          homeDir: "/home/user",
+          sessions: [otherHistory],
+          activeSessions: [otherActive],
+        } as never);
+        return { cwd: "/proj", sessionIds: ["h1", "a1"] };
+      });
+    renderHomeWithTwoProjects();
+    const menu = await screen.findByLabelText("Workspace actions: /proj");
+    await user.click(menu);
+    await user.click(within(menu.closest("details")!).getByRole("button", { name: "Delete workspace" }));
+    const dialog = screen.getByRole("dialog", { name: "Delete workspace" });
+    expect(dialog).toHaveTextContent("project files are kept");
+    await user.click(within(dialog).getByRole("button", { name: "Delete workspace" }));
+    await user.click(await within(dialog).findByRole("button", { name: "Stop and continue" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(vi.mocked(api.deleteWorkspace).mock.calls).toEqual([
+      ["/proj", false],
+      ["/proj", true],
+    ]);
+    expect(screen.queryByText("Fault diagnosis")).toBeNull();
+    expect(screen.getByText("Other paper")).toBeVisible();
+  });
+
+  it("offers directory recovery when a workspace has been renamed externally", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.validateWorkspace).mockRejectedValueOnce(
+      new ApiError(404, { code: "WORKSPACE_MISSING", cwd: "/proj" }),
+    );
+    vi.mocked(api.listDirectories).mockImplementation(async (path) => ({
+      path: path ?? "/home/user",
+      entries: [{ name: "moved", path: "/moved" }],
+    }));
+    vi.mocked(api.relocateWorkspace).mockImplementation(async () => {
+      vi.mocked(api.listStatus).mockResolvedValue({
+        agentDir: "/agent",
+        homeDir: "/home/user",
+        sessions: history.map((session) => ({ ...session, cwd: "/moved" })),
+        activeSessions: [],
+      } as never);
+      return { cwd: "/moved", sessionIds: ["h1", "a1"] };
+    });
+    renderHome();
+    await user.click(await screen.findByRole("button", { name: "/proj" }));
+    const recovery = await screen.findByRole("dialog", { name: "Workspace folder not found" });
+    expect(recovery).toHaveTextContent("moved or renamed");
+    await user.click(within(recovery).getByRole("button", { name: "Choose new folder" }));
+    const picker = screen.getByRole("dialog", { name: "Choose new folder" });
+    await user.clear(within(picker).getByRole("combobox"));
+    await user.type(within(picker).getByRole("combobox"), "/moved{Enter}");
+    await waitFor(() => expect(within(picker).getByRole("button", { name: "Migrate and open" })).toBeEnabled());
+    await user.click(within(picker).getByRole("button", { name: "Migrate and open" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(api.relocateWorkspace).toHaveBeenCalledWith("/proj", "/moved", false);
+    expect(screen.getByRole("button", { name: "/moved" })).toBeVisible();
   });
 
   it.each(["a1", "Fault diagnosis"])(

@@ -266,6 +266,76 @@ describe("ActiveSessionRegistry", () => {
     expect(created.id).toBe(fakeState.sessionId);
   });
 
+  describe("workspace mutation admission", () => {
+    it("requires explicit cancellation of active work before invoking disk mutation", async () => {
+      factory.backgroundWork = true;
+      const session = await registry.create({ cwd });
+      const changed = vi.fn(async () => "changed");
+      await expect(registry.withWorkspaceMutation([{ cwd }], false, changed)).rejects.toMatchObject({ code: "WORKSPACE_BUSY" });
+      expect(changed).not.toHaveBeenCalled();
+      expect(factory.created[0]!.stats.stopped).toBe(0);
+      await expect(registry.withWorkspaceMutation([{ cwd }], true, async (stopped) => {
+        expect(stopped.map((item) => item.id)).toEqual([session.id]);
+        expect(factory.created[0]!.stats.stopped).toBe(1);
+        expect(watcherFactory.created[0]!.close).toHaveBeenCalled();
+        return "changed";
+      })).resolves.toBe("changed");
+      expect(registry.list()).toEqual([]);
+    });
+
+    it("blocks affected launches, reuse, prompts and history mutations until publication completes", async () => {
+      const session = await registry.create({ cwd });
+      const completion = deferred<void>();
+      const entered = deferred<void>();
+      const stopping = deferred<void>();
+      factory.created[0]!.stopImpl = () => stopping.promise;
+      const changing = registry.withWorkspaceMutation([{ cwd, descendants: true }], false, async () => {
+        entered.resolve(); await completion.promise;
+      });
+      await expect(registry.create({ cwd: `${cwd}/nested` })).rejects.toThrow(/conflicting/i);
+      await expect(registry.open({ cwd, sessionPath, sessionId: session.id })).rejects.toThrow(/conflicting/i);
+      await expect(registry.prompt(session.id, "late prompt")).rejects.toThrow(/conflicting/i);
+      await expect(registry.withHistoryMutation({ id: "old", cwd, path: "/history" }, async () => {})).rejects.toThrow(/conflicting/i);
+      stopping.resolve();
+      await entered.promise;
+      const other = await registry.create({ cwd: `${cwd}-unrelated` });
+      expect(other.cwd).toBe(`${cwd}-unrelated`);
+      completion.resolve();
+      await changing;
+      expect((await registry.create({ cwd })).cwd).toBe(cwd);
+      await registry.shutdown();
+    });
+
+    it("settles pending startup before changing a workspace and rejects the cancelled open", async () => {
+      const start = deferred<void>();
+      const entered = deferred<void>();
+      factory.startImpl = async () => { entered.resolve(); await start.promise; };
+      const opening = registry.create({ cwd });
+      const rejected = expect(opening).rejects.toThrow(/conflicting/i);
+      await entered.promise;
+      const changed = vi.fn(async () => {});
+      const changing = registry.withWorkspaceMutation([{ cwd }], true, changed);
+      expect(changed).not.toHaveBeenCalled();
+      start.resolve();
+      await rejected;
+      await changing;
+      expect(factory.created[0]!.stats.stopped).toBe(1);
+      expect(changed).toHaveBeenCalledOnce();
+      expect(registry.list()).toEqual([]);
+    });
+
+    it("keeps disk untouched after cleanup failure and permits a verified retry", async () => {
+      factory.stopImpl = async () => { throw new Error("cleanup failed"); };
+      await registry.create({ cwd });
+      const change = vi.fn(async () => {});
+      await expect(registry.withWorkspaceMutation([{ cwd }], false, change)).rejects.toThrow(/cleanup/i);
+      expect(change).not.toHaveBeenCalled();
+      factory.created[0]!.stopImpl = async () => {};
+      await registry.withWorkspaceMutation([{ cwd }], true, change);
+      expect(change).toHaveBeenCalledOnce();
+    });
+  });
+
   describe("session deletion admission", () => {
     const history = (id: string, remove = vi.fn(async () => {})) => ({
       resolve: async () => ({ id, cwd, path: sessionPath }),

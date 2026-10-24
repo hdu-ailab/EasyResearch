@@ -19,6 +19,7 @@ vi.mock("./api", async (importOriginal) => {
     openSession: vi.fn(),
     createSession: vi.fn(),
     deleteSession: vi.fn(),
+    deleteWorkspace: vi.fn(),
     stopSession: vi.fn(),
     touchSession: vi.fn(),
     getSnapshot: vi.fn(),
@@ -179,6 +180,7 @@ describe("App routing", () => {
     vi.mocked(api.openSession).mockReset();
     vi.mocked(api.createSession).mockReset();
     vi.mocked(api.deleteSession).mockReset();
+    vi.mocked(api.deleteWorkspace).mockReset();
     vi.mocked(api.getSnapshot).mockReset();
     vi.mocked(api.getApiUsageSettings).mockReset().mockResolvedValue({ showApiUsageDetails: false });
     vi.mocked(api.getProviderTimeoutSettings)
@@ -230,6 +232,29 @@ describe("App routing", () => {
       return disconnectConfiguration;
     });
     stubEvents();
+  });
+
+  it("offers workspace recovery on a direct Work URL and allows history-only deletion", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listStatus).mockResolvedValue(persisted);
+    window.history.replaceState(null, "", "#/work/s1?cwd=%2Fp");
+    vi.mocked(api.openSession).mockRejectedValueOnce(
+      new api.ApiError(404, { code: "WORKSPACE_MISSING", cwd: "/p", error: "Folder missing" }),
+    );
+    vi.mocked(api.deleteWorkspace).mockImplementation(async () => {
+      vi.mocked(api.listStatus).mockResolvedValue({ ...persisted, sessions: [] });
+      return { cwd: "/p", sessionIds: ["s1"] };
+    });
+    render(<App />);
+    const recovery = await screen.findByRole("dialog", { name: "Workspace folder not found" });
+    expect(recovery).toHaveTextContent("/p");
+    expect(within(recovery).getByRole("button", { name: "Choose new folder" })).toBeVisible();
+    await user.click(within(recovery).getByRole("button", { name: "Delete workspace" }));
+    const confirmation = screen.getByRole("dialog", { name: "Delete workspace" });
+    expect(confirmation).toHaveTextContent("project files are kept");
+    await user.click(within(confirmation).getByRole("button", { name: "Delete workspace" }));
+    await waitFor(() => expect(window.location.hash).toBe("#/"));
+    expect(api.deleteWorkspace).toHaveBeenCalledWith("/p", false);
   });
 
   it("renders Home on an empty hash", async () => {

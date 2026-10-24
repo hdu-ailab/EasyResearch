@@ -170,6 +170,36 @@ describe("useSessionConnection", () => {
     expect(result.current.view.messages.map((message) => message.text)).toEqual(["authoritative reconnect"]);
   });
 
+  it("reports a missing workspace without treating it as a deleted session or retrying the prompt", async () => {
+    const missing = vi.fn();
+    const { result } = renderHook(() =>
+      useSessionConnection({ initialSessionId: "s1", cwd: "/paper", onWorkspaceMissing: missing }),
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    vi.mocked(api.sendPrompt).mockRejectedValueOnce(
+      new api.ApiError(404, { code: "WORKSPACE_MISSING", cwd: "/paper", error: "missing" }),
+    );
+    await act(async () => result.current.send("continue"));
+    expect(missing).toHaveBeenCalledWith("/paper");
+    expect(api.openSession).not.toHaveBeenCalled();
+    expect(result.current.deleted).toBe(false);
+    expect(result.current.view.messages[0]?.text).toBe("snapshot text");
+  });
+
+  it("ends the old connection on relocation without discarding its history or admitting late sends", async () => {
+    const relocated = vi.fn();
+    const { result } = renderHook(() =>
+      useSessionConnection({ initialSessionId: "s1", cwd: "/paper", onRelocated: relocated }),
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    emit({ type: "session_relocated", sessionId: "s1", cwd: "/moved" });
+    await act(async () => result.current.send("late"));
+    expect(relocated).toHaveBeenCalledExactlyOnceWith({ id: "s1", cwd: "/moved" });
+    expect(api.sendPrompt).not.toHaveBeenCalled();
+    expect(result.current.view.messages[0]?.text).toBe("snapshot text");
+    expect(result.current.deleted).toBe(false);
+  });
+
   it("makes deletion terminal before late HTTP/SSE hydration and rejects further work", async () => {
     const pending = deferred<SessionSnapshotDto>();
     vi.mocked(api.getSnapshot).mockReturnValueOnce(pending.promise);

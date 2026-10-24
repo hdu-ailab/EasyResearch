@@ -2,7 +2,7 @@ import { lstatSync, opendirSync, readFileSync, realpathSync, unlinkSync } from "
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { readAgentAliases } from "../subagent/agent-alias";
 import { readSubagentJournal } from "../subagent/job-journal";
-import { readSubagentSessionLinks } from "../subagent/session-links";
+import { isSubagentSessionName, readSubagentSessionLinks } from "../subagent/session-links";
 import type { SubagentSessionStore } from "./subagent-sessions";
 
 export interface SessionHistoryTarget {
@@ -16,6 +16,9 @@ export interface DeleteSessionHistoryOptions {
   store: SubagentSessionStore;
   allowMissingRoot?: boolean;
   removeFile?: (path: string) => void;
+  /** Workspace deletion can retain a child shared with another workspace. */
+  preserveSharedChildren?: boolean;
+  onRemoved?: (id: string) => void;
 }
 
 export class SessionHistoryConflictError extends Error {}
@@ -24,6 +27,14 @@ export async function deleteSessionHistory(
   target: SessionHistoryTarget,
   options: DeleteSessionHistoryOptions,
 ): Promise<string[]> {
+  return deleteSessionHistories([target], options);
+}
+
+export async function deleteSessionHistories(
+  targets: readonly SessionHistoryTarget[],
+  options: DeleteSessionHistoryOptions,
+): Promise<string[]> {
+  if (targets.length === 0) return [];
   const { store, removeFile = unlinkSync } = options;
   const listed = await store.listAll();
   const sessionsDir = resolve(options.sessionsDir);
@@ -83,17 +94,24 @@ export async function deleteSessionHistory(
     }
   };
 
-  const matches = listed.filter((session) => session.id === target.id || session.path === target.path);
-  if (matches.length > 1 || matches.some((session) =>
-    session.id !== target.id || session.path !== target.path || session.cwd !== target.cwd)) {
-    conflict("Session history does not match its native listing.");
+  const roots = new Map<string, ReturnType<SubagentSessionStore["open"]>>();
+  const absent: string[] = [];
+  for (const target of targets) {
+    const matches = listed.filter((session) => session.id === target.id || session.path === target.path);
+    if (matches.length > 1 || matches.some((session) =>
+      session.id !== target.id || session.path !== target.path || session.cwd !== target.cwd)) {
+      conflict("Session history does not match its native listing.");
+    }
+    const root = inspect(target, options.allowMissingRoot === true);
+    if (!root) {
+      if (matches.length) conflict("A listed root session disappeared.");
+      absent.push(target.id);
+      continue;
+    }
+    if (matches.length !== 1) conflict("Root session is missing from the native listing.");
+    roots.set(target.id, root);
   }
-  const root = inspect(target, options.allowMissingRoot === true);
-  if (!root) {
-    if (matches.length) conflict("A listed root session disappeared.");
-    return [target.id];
-  }
-  if (matches.length !== 1) conflict("Root session is missing from the native listing.");
+  if (roots.size === 0) return absent;
 
   type History = { id: string; cwd?: string; path?: string; children: Set<string> };
   const histories = new Map<string, History>();
@@ -120,13 +138,12 @@ export async function deleteSessionHistory(
     }
     return history;
   };
-  remember(target.id, target.cwd, target.path);
+  for (const target of targets) if (roots.has(target.id)) remember(target.id, target.cwd, target.path);
   for (const session of listed) remember(session.id, session.cwd, session.path);
 
   for (const history of pending) {
     if (!history.path) continue;
-    const manager = history.id === target.id ? root
-      : inspect({ ...history, path: history.path }, true);
+    const manager = roots.get(history.id) ?? inspect({ ...history, path: history.path }, true);
     if (!manager) continue;
     remember(history.id, manager.getCwd(), history.path);
     const entries = manager.getEntries();
@@ -260,25 +277,31 @@ export async function deleteSessionHistory(
     }
   }
 
-  const intended = postorder([target.id], target.cwd);
+  const intended = [...new Set(targets.filter((target) => roots.has(target.id))
+    .flatMap((target) => postorder([target.id], target.cwd)))];
   const intendedIds = new Set(intended);
   // Any surviving history can retain a reference, irrespective of its display name.
   // Unobserved missing nodes protect descendants only through a surviving reference.
   const protectedIds = new Set(postorder([...histories.keys()].filter((id) =>
     histories.get(id)!.cwd !== undefined && !intendedIds.has(id))));
-  if (protectedIds.has(target.id)) conflict("The root history is referenced by another surviving session.");
-  const removed: string[] = [];
+  for (const [id, root] of roots) {
+    if (protectedIds.has(id) && !(options.preserveSharedChildren && isSubagentSessionName(root.getSessionName()))) {
+      conflict("The root history is referenced by another surviving session.");
+    }
+  }
+  const removed: string[] = [...absent];
   for (const id of intended) {
     if (protectedIds.has(id)) continue;
     const history = histories.get(id)!;
-    if (history.path && inspect({ ...history, path: history.path }, id !== target.id)) {
+    if (history.path && inspect({ ...history, path: history.path }, !roots.has(id))) {
       try {
         removeFile(history.path);
       } catch (error) {
-        if (id === target.id || !isMissing(error)) throw error;
+        if (roots.has(id) || !isMissing(error)) throw error;
       }
     }
     removed.push(id);
+    options.onRemoved?.(id);
   }
   return removed;
 }

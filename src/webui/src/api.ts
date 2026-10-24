@@ -41,6 +41,7 @@ import type {
   TreeNavigationOptionsDto,
   TreeNavigationResultDto,
   UpdateCheckDto,
+  WorkspaceMutationResultDto,
 } from "../../web/contracts";
 import {
   type ModelOption,
@@ -78,6 +79,7 @@ import {
   parseStatus,
   parseTreeNavigationResult,
   parseUpdateCheck,
+  parseWorkspaceResult,
 } from "./api/parsers";
 import { routes } from "./api/routes";
 import {
@@ -101,7 +103,51 @@ export type { AuthFlowHandlers, SessionEventHandlers } from "./api/transport";
 export { ApiError, RawFileSizeError } from "./api/transport";
 
 export function isUnknownSession(error: unknown): boolean {
-  return error instanceof ApiError && error.status === 404;
+  return error instanceof ApiError && error.status === 404 && workspaceMissingCwd(error) === null;
+}
+
+export function workspaceMissingCwd(error: unknown): string | null {
+  if (!(error instanceof ApiError) || !error.details || typeof error.details !== "object") return null;
+  const details = error.details as { code?: unknown; cwd?: unknown };
+  return details.code === "WORKSPACE_MISSING" && typeof details.cwd === "string" && details.cwd.trim()
+    ? details.cwd
+    : null;
+}
+
+export function isWorkspaceBusy(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    error.status === 409 &&
+    !!error.details &&
+    typeof error.details === "object" &&
+    (error.details as { code?: unknown }).code === "WORKSPACE_BUSY"
+  );
+}
+
+export function validateWorkspace(cwd: string): Promise<void> {
+  return requestVoid(routes.workspace("validate"), json("POST", { cwd }));
+}
+
+export function deleteWorkspace(cwd: string, force: boolean): Promise<WorkspaceMutationResultDto> {
+  return requestJson(routes.workspaces(), parseWorkspaceResult, json("DELETE", { cwd, force }));
+}
+
+export function renameWorkspace(cwd: string, name: string, force: boolean): Promise<WorkspaceMutationResultDto> {
+  return requestJson(routes.workspace("rename"), parseWorkspaceResult, json("POST", { cwd, name, force }));
+}
+
+export function relocateWorkspace(cwd: string, directory: string, force: boolean): Promise<WorkspaceMutationResultDto> {
+  return requestJson(routes.workspace("relocate"), parseWorkspaceResult, json("POST", { cwd, directory, force }));
+}
+
+/** Only explicit relocation can recreate an empty, never-persisted session. */
+export async function resumeRelocatedSession(id: string, cwd: string): Promise<ActiveSessionDto> {
+  const status = await listStatus();
+  const history = status.sessions.find((session) => session.id === id);
+  if (history) return openSession(history.path);
+  const active = status.activeSessions.find((session) => session.id === id);
+  if (active) return active;
+  return createSession(cwd);
 }
 
 function json(method: "POST" | "PUT" | "PATCH" | "DELETE", body: unknown): RequestInit {

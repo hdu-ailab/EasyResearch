@@ -8,14 +8,18 @@ import {
   listStatus,
   openSession,
   renameSession,
+  resumeRelocatedSession,
   stopSession,
   touchSession,
+  validateWorkspace,
+  workspaceMissingCwd,
 } from "../api";
 import { DeleteSessionDialog } from "../components/DeleteSessionDialog";
 import { DirectoryDialog } from "../components/DirectoryDialog";
 import { HomeWorkspace } from "../components/HomeWorkspace";
 import { RenameSessionDialog } from "../components/RenameSessionDialog";
 import { Topbar } from "../components/Topbar";
+import { WorkspaceDialog, type WorkspaceDialogProps } from "../components/WorkspaceDialog";
 import { useI18n } from "../i18n/useI18n";
 import { buildHomeProjectGroups } from "./home-view-model";
 
@@ -44,6 +48,32 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
   const [deletingSession, setDeletingSession] = useState<ActiveSessionDto | SessionSummaryDto | null>(null);
   const [latestVersion, setLatestVersion] = useState<string | null>(null);
   const statusRequest = useRef(0);
+  const selectionRequest = useRef(0);
+  const mounted = useRef(true);
+  const [workspaceDialog, setWorkspaceDialog] = useState<{
+    cwd: string;
+    mode: WorkspaceDialogProps["mode"];
+    sessionId?: string;
+  } | null>(null);
+  const reportFailure = useCallback((failure: unknown, sessionId?: string) => {
+    if (!mounted.current) return;
+    const cwd = workspaceMissingCwd(failure);
+    if (cwd) setWorkspaceDialog({ cwd, mode: "missing", sessionId });
+    else setError(failure instanceof Error ? failure.message : String(failure));
+  }, []);
+  const selectProject = useCallback(
+    async (cwd: string | null) => {
+      const request = ++selectionRequest.current;
+      setSelectedCwd(cwd);
+      if (cwd === null) return;
+      try {
+        await validateWorkspace(cwd);
+      } catch (failure) {
+        if (request === selectionRequest.current) reportFailure(failure);
+      }
+    },
+    [reportFailure],
+  );
 
   const refresh = useCallback(() => {
     const request = ++statusRequest.current;
@@ -58,9 +88,12 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
   }, []);
 
   useEffect(() => {
+    mounted.current = true;
     refresh();
     return () => {
+      mounted.current = false;
       statusRequest.current += 1;
+      selectionRequest.current += 1;
     };
   }, [refresh]);
 
@@ -89,12 +122,12 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
         const dto = await createSession(cwd);
         onOpenSession({ id: dto.id, cwd: dto.cwd });
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        reportFailure(e);
       } finally {
         setCreating(false);
       }
     },
-    [onOpenSession],
+    [onOpenSession, reportFailure],
   );
 
   const openHistory = useCallback(
@@ -103,10 +136,10 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
         const dto = await openSession(session.path);
         onOpenSession({ id: dto.id, cwd: dto.cwd });
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        reportFailure(e, session.id);
       }
     },
-    [onOpenSession],
+    [onOpenSession, reportFailure],
   );
 
   const openActive = useCallback(
@@ -115,10 +148,10 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
         await touchSession(session.id);
         onOpenSession({ id: session.id, cwd: session.cwd });
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        reportFailure(e, session.id);
       }
     },
-    [onOpenSession],
+    [onOpenSession, reportFailure],
   );
 
   const disconnectActive = useCallback(
@@ -185,7 +218,7 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
             onQueryChange={setQuery}
             loading={!status}
             creating={creating}
-            onSelectProject={setSelectedCwd}
+            onSelectProject={(cwd) => void selectProject(cwd)}
             onChooseDirectory={() => setDialogOpen(true)}
             onCreateInProject={(cwd) => void startSession(cwd)}
             onOpenActive={(session) => void openActive(session)}
@@ -194,6 +227,8 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
             onRenameSession={(session: ActiveSessionDto | SessionSummaryDto) => setRenamingSession(session)}
             onRenameHistory={(session) => setRenamingSession(session)}
             onDeleteSession={setDeletingSession}
+            onRenameWorkspace={(cwd) => setWorkspaceDialog({ cwd, mode: "rename" })}
+            onDeleteWorkspace={(cwd) => setWorkspaceDialog({ cwd, mode: "delete" })}
             disconnectingSessionId={disconnectingSessionId}
           />
         </div>
@@ -205,6 +240,46 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
           onSelect={(path) => {
             setDialogOpen(false);
             void startSession(path);
+          }}
+        />
+      )}
+      {workspaceDialog && (
+        <WorkspaceDialog
+          key={`${workspaceDialog.cwd}:${workspaceDialog.mode}`}
+          cwd={workspaceDialog.cwd}
+          mode={workspaceDialog.mode}
+          homeDir={status?.homeDir ?? "/"}
+          onClose={() => setWorkspaceDialog(null)}
+          onComplete={async (result, deleted) => {
+            if (!mounted.current) return;
+            statusRequest.current += 1;
+            selectionRequest.current += 1;
+            const ids = new Set(result.sessionIds);
+            const oldCwd = workspaceDialog.cwd;
+            setStatus(
+              (current) =>
+                current && {
+                  ...current,
+                  sessions: deleted
+                    ? current.sessions.filter((session) => !ids.has(session.id))
+                    : current.sessions.map((session) =>
+                        ids.has(session.id)
+                          ? { ...session, cwd: result.cwd + session.cwd.slice(oldCwd.length) }
+                          : session,
+                      ),
+                  activeSessions: current.activeSessions.filter((session) => !ids.has(session.id)),
+                },
+            );
+            setSelectedCwd((current) => (current === oldCwd ? (deleted ? null : result.cwd) : current));
+            refresh();
+            if (!deleted && workspaceDialog.sessionId) {
+              try {
+                const next = await resumeRelocatedSession(workspaceDialog.sessionId, result.cwd);
+                if (mounted.current) onOpenSession({ id: next.id, cwd: next.cwd });
+              } catch (failure) {
+                if (mounted.current) setError(failure instanceof Error ? failure.message : String(failure));
+              }
+            }
           }}
         />
       )}

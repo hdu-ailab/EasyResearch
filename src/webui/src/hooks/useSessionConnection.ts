@@ -16,6 +16,7 @@ import {
   navigateSessionTree,
   openSession,
   sendPrompt,
+  workspaceMissingCwd,
 } from "../api";
 import {
   parseApiUsageChangedEvent,
@@ -47,6 +48,8 @@ export interface UseSessionConnectionOptions {
   cwd: string;
   onEvent?: (event: unknown) => boolean;
   onSupervisorEvent?: (event: SubagentSupervisorEventDto) => void;
+  onWorkspaceMissing?: (cwd: string) => void;
+  onRelocated?: (session: { id: string; cwd: string }) => void;
 }
 
 export interface SessionConnection {
@@ -144,6 +147,12 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
   onEventRef.current = onEvent;
   const onSupervisorEventRef = useRef(onSupervisorEvent);
   onSupervisorEventRef.current = onSupervisorEvent;
+  const workspaceCallbacks = useRef(options);
+  workspaceCallbacks.current = options;
+  const reportMissing = useCallback((error: unknown) => {
+    const cwd = workspaceMissingCwd(error);
+    if (cwd) workspaceCallbacks.current.onWorkspaceMissing?.(cwd);
+  }, []);
   const [view, setView] = useState<SessionViewState>(freshEmptyState);
   const viewRef = useRef(view);
   viewRef.current = view;
@@ -256,13 +265,28 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
       })
       .catch((error: unknown) => {
         if (!isCurrentConnection() || connectionToken.receivedStreamData) return;
+        reportMissing(error);
         setStatus("error");
         setNotice(error instanceof Error ? error.message : String(error));
       });
     const unsubscribe = connectSessionEvents(sessionId, {
       onEvent: (event) => {
         // A superseded stream stays subscribed only to avoid a terminal-deletion gap.
-        if (!isCurrentConnection(eventType(event) === "session_deleted")) return;
+        if (!isCurrentConnection(eventType(event) === "session_deleted" || eventType(event) === "session_relocated"))
+          return;
+        if (eventType(event) === "session_relocated") {
+          const moved = event as { sessionId?: unknown; cwd?: unknown };
+          if (moved.sessionId !== sessionId || typeof moved.cwd !== "string" || !moved.cwd) return;
+          deletedRef.current = true; // The old connection cannot reopen/send during route replacement.
+          connectionToken.active = false;
+          eventFrame.discard();
+          closeStream();
+          clearRootRun();
+          setFileWatchLeaseId(null);
+          setStatus("stopped");
+          workspaceCallbacks.current.onRelocated?.({ id: sessionId, cwd: moved.cwd });
+          return;
+        }
         if (eventType(event) === "session_deleted") {
           let deletion: SessionDeletedEventDto;
           try {
@@ -463,7 +487,7 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
       }
       closeStream();
     };
-  }, [clearRootRun, connectionTarget.generation, rejectPendingStream, sessionId, updateSessionPath]);
+  }, [clearRootRun, connectionTarget.generation, rejectPendingStream, reportMissing, sessionId, updateSessionPath]);
 
   const send = useCallback(
     async (text: string) => {
@@ -478,6 +502,7 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
           await sendPrompt(sessionId, text);
         } catch (error: unknown) {
           if (!mountedRef.current || deletedRef.current || connectionTokenRef.current !== connection) return;
+          reportMissing(error);
           setNotice(error instanceof Error ? error.message : String(error));
         }
         return;
@@ -498,6 +523,7 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
         sendOperationRef.current = null;
       } catch (error: unknown) {
         if (!isCurrentOperation(operation)) return;
+        reportMissing(error);
         const message = error instanceof Error ? error.message : String(error);
         const path = sessionPathRef.current;
         if (isUnknownSession(error) && path) {
@@ -528,6 +554,7 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
             return;
           } catch (reopenError: unknown) {
             if (!isCurrentOperation(operation)) return;
+            reportMissing(reopenError);
             setAccepting(false);
             setPendingOutput(false);
             pendingBaseline.current = null;
@@ -546,7 +573,7 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
         sendOperationRef.current = null;
       }
     },
-    [cancelOperation, isCurrentOperation, nextGeneration, sessionId, updateSessionPath],
+    [cancelOperation, isCurrentOperation, nextGeneration, reportMissing, sessionId, updateSessionPath],
   );
 
   useEffect(() => {

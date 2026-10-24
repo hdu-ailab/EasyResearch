@@ -18,6 +18,7 @@ import { createFileWatcherFactory } from "./file-watcher";
 import { createDaemonAuthRuntime } from "./auth-runtime";
 import { resolveRenameSessionService } from "./session-rename";
 import { createSessionHistoryLifecycle, validateHistoricalSession } from "./session-lifecycle";
+import { WorkspaceService } from "./workspaces";
 import { createAgentPatchService } from "./agent-configuration";
 import { createLiveConfiguration, type LiveConfiguration } from "../runtime/live-configuration";
 import { resolvePiDefaultModel, type PiDefaultModelApi } from "../runtime/pi-default-model";
@@ -350,6 +351,11 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
     });
     const projectWatches = configurationProjectWatches;
     const subagentSessions = new SubagentSessionService(historyStore);
+    const directories = new DirectoryService();
+    const workspaces = new WorkspaceService({
+      registry: activeRegistry, store: historyStore, sessionsDir: join(agentDir, "sessions"), directories,
+      invalidateUsage: () => subagentSessions.invalidateUsage(),
+    });
     const historyLifecycle = createSessionHistoryLifecycle({
       registry: activeRegistry, store: historyStore,
       sessionsDir: join(agentDir, "sessions"), usage: subagentSessions,
@@ -413,8 +419,9 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
       testNetworkProxy: (request, signal) => networkProxyProbe.test(request, signal),
       renameSession: (sessionId, name) => renameSessions.rename(sessionId, name),
       deleteSession: (sessionId, force) => historyLifecycle.deleteSession(sessionId, force),
+      workspaces,
       listConfigProjects,
-      directories: new DirectoryService(),
+      directories,
       registry: activeRegistry,
       config,
       subagentSessions,

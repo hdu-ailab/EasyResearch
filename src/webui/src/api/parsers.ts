@@ -56,6 +56,7 @@ import type {
   TreeNavigationResultDto,
   UpdateCheckDto,
   WebTreeEntryDto,
+  WorkspaceMutationResultDto,
 } from "../../../web/contracts";
 import type { ConfigFileDto, ConfigProjectsDto } from "../types";
 
@@ -69,6 +70,14 @@ export interface ModelOption {
 }
 
 type RecordValue = Record<string, unknown>;
+
+export function parseWorkspaceResult(value: unknown): WorkspaceMutationResultDto {
+  const source = record(value, "workspace result");
+  if (!Array.isArray(source.sessionIds) || !source.sessionIds.every((id) => typeof id === "string" && id.length > 0)) {
+    throw new Error("Invalid workspace session ids");
+  }
+  return { cwd: requiredIdentityString(source, "cwd"), sessionIds: source.sessionIds };
+}
 
 function record(value: unknown, label: string): RecordValue {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {

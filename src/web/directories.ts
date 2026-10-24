@@ -265,7 +265,10 @@ export class DirectoryService {
     let real: string;
     try {
       real = realpathSync(path);
-    } catch {
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EACCES" || (error as NodeJS.ErrnoException).code === "EPERM") {
+        throw new DirectoryServiceError(403, `Directory is not readable: ${path}`);
+      }
       throw new DirectoryServiceError(404, `does not exist: ${path}`);
     }
     let stat;

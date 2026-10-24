@@ -12,6 +12,7 @@ import {
   matchesSessionQuery,
   sessionTitle,
 } from "../pages/home-view-model";
+import { WorkspaceMenu } from "./WorkspaceMenu";
 
 export interface HomeWorkspaceProps {
   groups: HomeProjectGroup[];
@@ -29,6 +30,8 @@ export interface HomeWorkspaceProps {
   onRenameSession: (session: ActiveSessionDto | SessionSummaryDto) => void;
   onRenameHistory: (session: SessionSummaryDto) => void;
   onDeleteSession: (session: ActiveSessionDto | SessionSummaryDto) => void;
+  onRenameWorkspace?: (cwd: string) => void;
+  onDeleteWorkspace?: (cwd: string) => void;
   disconnectingSessionId?: string | null;
 }
 
@@ -191,6 +194,13 @@ export function HomeWorkspace(props: HomeWorkspaceProps) {
               <Plus size={14} aria-hidden />
               <span className="er-session-create-long">{t("home.newSession")}</span>
             </button>
+            {props.onRenameWorkspace && props.onDeleteWorkspace && (
+              <WorkspaceMenu
+                cwd={group.cwd}
+                onRename={() => props.onRenameWorkspace?.(group.cwd)}
+                onDelete={() => props.onDeleteWorkspace?.(group.cwd)}
+              />
+            )}
           </div>
         ))}
       </aside>
