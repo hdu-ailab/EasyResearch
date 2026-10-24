@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { signMacOsBinary } from "./macos-signing";
 import {
   THIRD_PARTY_NOTICES_FILE,
   generateThirdPartyNotices,
@@ -237,6 +238,27 @@ export async function compileTarget(target: PlatformTarget): Promise<string> {
   return outfile;
 }
 
+export function finalizeBuildArtifact(
+  target: PlatformTarget,
+  binary: string,
+  version: string,
+  hostPlatform: NodeJS.Platform = process.platform,
+): BuildArtifact {
+  if (target.os[0] === "darwin" && hostPlatform === "darwin") {
+    signMacOsBinary(binary);
+  }
+  // Cross-built artifacts remain auxiliary output, subject to native acceptance.
+  // Native signing must finish before either size or hash is recorded.
+  return {
+    version,
+    target: target.name,
+    binaryName: platformBinaryName(target),
+    size: statSync(binary).size,
+    sha256: createHash("sha256").update(readFileSync(binary)).digest("hex"),
+    builtAt: new Date().toISOString(),
+  };
+}
+
 export async function buildTargets(only?: string, prefer?: string[]): Promise<PlatformTarget[]> {
   const targets = selectBuildTargets(only, prefer);
   const developmentStub = readFileSync(GENERATED_MODULE, "utf8");
@@ -255,16 +277,9 @@ export async function buildTargets(only?: string, prefer?: string[]): Promise<Pl
     for (const target of targets) {
       console.log(`[build] compiling ${target.name} (${target.target})…`);
       const outfile = await compileTarget(target);
-      const size = statSync(outfile).size;
-      artifacts.push({
-        version: repoPackageVersion(),
-        target: target.name,
-        binaryName: platformBinaryName(target),
-        size,
-        sha256: createHash("sha256").update(readFileSync(outfile)).digest("hex"),
-        builtAt: new Date().toISOString(),
-      });
-      console.log(`[build] ${target.name} -> ${outfile} (${(size / 1024 / 1024).toFixed(1)} MiB)`);
+      const artifact = finalizeBuildArtifact(target, outfile, repoPackageVersion());
+      artifacts.push(artifact);
+      console.log(`[build] ${target.name} -> ${outfile} (${(artifact.size / 1024 / 1024).toFixed(1)} MiB)`);
     }
     mkdirSync(releaseDir(), { recursive: true });
     writeFileSync(

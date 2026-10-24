@@ -25,6 +25,7 @@ import {
 } from "./build-desktop";
 import { DESKTOP_SMOKE_USER_DATA_ENV } from "../src/desktop/contracts";
 import { THIRD_PARTY_NOTICES_FILE } from "./third-party-notices";
+import { verifyMacOsBundle } from "./macos-signing";
 
 const TRANSIENT_DESKTOP_SMOKE_CLEANUP_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
 const DESKTOP_SUCCESSOR_FAILURE_LOG = "Desktop smoke injected one successor startup failure.";
@@ -461,6 +462,21 @@ export function dmgDetachCommand(mountPoint: string): NativeCommand {
     command: "/usr/bin/hdiutil",
     args: ["detach", mountPoint, "-force"],
   };
+}
+
+export function installMacOsDmgApplication(
+  mountRoot: string,
+  installRoot: string,
+  acceptedBinary: string,
+  run: (command: NativeCommand, label: string) => void,
+): ReturnType<typeof packagedApplicationPaths> {
+  const app = posix.join(installRoot, "EasyResearch.app");
+  run({
+    command: "/usr/bin/ditto",
+    args: [posix.join(mountRoot, "EasyResearch.app"), app],
+  }, "DMG app installation");
+  verifyMacOsBundle(app, acceptedBinary);
+  return packagedApplicationPaths("darwin-arm64", installRoot, "dmg");
 }
 
 export function appImageExtractCommand(appImage: string, extractionDirectory: string): NativeCommand {
