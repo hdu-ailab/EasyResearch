@@ -29,12 +29,14 @@ import { RenameSessionDialog } from "../components/RenameSessionDialog";
 import { RetryBanner } from "../components/RetryBanner";
 import { SessionHistoryDialog } from "../components/SessionHistoryDialog";
 import { Topbar as WorkTopbar, TopbarIconButton as WorkTopbarIconButton } from "../components/Topbar";
+import { TranscriptEntryDialog } from "../components/TranscriptEntryDialog";
 import { WorkMobileTabs, type WorkView } from "../components/WorkMobileTabs";
 import { FILE_PATH_DRAG_TYPE, readFilePathDrop } from "../file-path-drag";
 import { EMPTY_FILE_EVENTS, parseFileWatcherEvent, type QueuedFileWatcherEvent } from "../file-watcher";
 import { filesystemPathName } from "../filesystem-path";
 import { usePanelTransition } from "../hooks/usePanelTransition";
 import { useSessionConnection } from "../hooks/useSessionConnection";
+import { useTranscriptHistory } from "../hooks/useTranscriptHistory";
 import { useI18n } from "../i18n/useI18n";
 import { buildMessageTreeMeta, versionTarget } from "../message-tree";
 import {
@@ -55,6 +57,7 @@ import {
   syncRunningSubagentTabs,
   temporarySubagentTabKey,
 } from "../subagent-tabs";
+import { prependTranscriptPage } from "../transcript-history";
 
 export interface WorkPageProps {
   id: string;
@@ -253,6 +256,12 @@ function SessionWorkPage({
   const [renameInitialName, setRenameInitialName] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [statisticsOpen, setStatisticsOpen] = useState(false);
+  const [entryDetail, setEntryDetail] = useState<{
+    sessionId: string;
+    childId?: string;
+    entryId: string;
+    hydration: number;
+  } | null>(null);
   const [showApiUsageDetails, setShowApiUsageDetails] = useState(false);
   const [historyInitialQuery, setHistoryInitialQuery] = useState("");
   const [commandError, setCommandError] = useState<string | null>(null);
@@ -272,6 +281,7 @@ function SessionWorkPage({
   const parentOwner = useRef({ id, generation: 1, deleted: false });
   const loadChildRef = useRef<(childId: string, refresh?: boolean) => Promise<void>>(async () => {});
   const commandRequest = useRef(0);
+  const treeRequest = useRef(0);
   const commandGeneration = useRef<{
     sessionId: string;
     hydrationRevision: number;
@@ -597,16 +607,20 @@ function SessionWorkPage({
     }
   }, [hydrationRevision, refreshCommands, runtimeConfigurationGeneration, sessionId]);
 
-  const refreshTree = useCallback(async () => {
-    const owner = parentOwner.current;
-    if (owner.deleted) return;
-    try {
-      const tree = await getSessionTree(sessionId);
-      if (parentOwner.current === owner) setTree(tree);
-    } catch {
-      // Tree metadata is best-effort; the transcript works without it.
-    }
-  }, [sessionId]);
+  const refreshTree = useCallback(
+    async (complete = false) => {
+      const owner = parentOwner.current;
+      if (owner.deleted) return;
+      const request = ++treeRequest.current;
+      try {
+        const tree = await (complete ? getSessionTree(sessionId, false) : getSessionTree(sessionId));
+        if (parentOwner.current === owner && treeRequest.current === request) setTree(tree);
+      } catch {
+        // Tree metadata is best-effort; the transcript works without it.
+      }
+    },
+    [sessionId],
+  );
 
   useEffect(() => {
     void refreshTree();
@@ -736,6 +750,35 @@ function SessionWorkPage({
           )
         : undefined));
   const activeView = activeChildId ? childViews[activeChildId] : undefined;
+  const transcriptView = activeTab === RESEARCH_ASSISTANT_AGENT ? sessionView : activeView;
+  const history = useTranscriptHistory({
+    sessionId,
+    childId: activeChildId,
+    hydrationRevision: transcriptView?.hydrationRevision ?? 0,
+    cursor: transcriptView?.historyCursor,
+    disabled: connection.deleted || !transcriptView,
+    publish(page, cursor, revision) {
+      const merge = (view: SessionViewState) =>
+        view.hydrationRevision === revision && view.historyCursor === cursor
+          ? prependTranscriptPage(view, page, activeChildId ?? sessionId)
+          : view;
+      if (activeChildId)
+        setChildViews((views) =>
+          views[activeChildId] ? { ...views, [activeChildId]: merge(views[activeChildId]) } : views,
+        );
+      else connection.setView(merge);
+    },
+    refresh() {
+      if (activeChildId) void loadChildRef.current(activeChildId, true);
+      else connection.refresh();
+    },
+  });
+  const readEntry = useCallback(
+    (entryId: string) => {
+      setEntryDetail({ sessionId, childId: activeChildId, entryId, hydration: transcriptView?.hydrationRevision ?? 0 });
+    },
+    [sessionId, activeChildId, transcriptView?.hydrationRevision],
+  );
   const activeMessages = activeTab === RESEARCH_ASSISTANT_AGENT ? sessionView.messages : (activeView?.messages ?? []);
   const activeTools =
     activeTab === RESEARCH_ASSISTANT_AGENT ? sessionView.tools : activeChildId ? (activeView?.tools ?? []) : [];
@@ -820,6 +863,7 @@ function SessionWorkPage({
             timeline: snapshot.timeline,
             subagents: snapshot.subagents,
             inlineUsage: snapshot.inlineUsage,
+            history: snapshot.history,
           });
           for (const [key, event] of pendingSupervisorEvents.current) {
             if (event.ownerSessionId !== childId) continue;
@@ -1124,7 +1168,7 @@ function SessionWorkPage({
       if (command.name === "history") {
         setHistoryInitialQuery(args);
         setHistoryOpen(true);
-        void refreshTree();
+        void refreshTree(true);
         return;
       }
       if (command.name === "compact") {
@@ -1370,6 +1414,12 @@ function SessionWorkPage({
                 }
                 showApiUsageDetails={showApiUsageDetails}
                 apiUsage={sessionView.apiUsage}
+                historyCursor={connection.deleted ? undefined : transcriptView?.historyCursor}
+                historyLoading={history.loading}
+                historyError={history.error}
+                onLoadOlder={history.loadOlder}
+                deferredEntries={transcriptView?.deferredEntries}
+                onReadEntry={connection.deleted ? undefined : readEntry}
               />
             </TranscriptFileContext>
           </div>
@@ -1482,6 +1532,17 @@ function SessionWorkPage({
           sessionId={sessionId}
           liveStatistics={sessionView.apiUsage}
           onClose={() => setStatisticsOpen(false)}
+        />
+      ) : null}
+      {entryDetail &&
+      !connection.deleted &&
+      entryDetail.sessionId === sessionId &&
+      entryDetail.childId === activeChildId &&
+      entryDetail.hydration === transcriptView?.hydrationRevision ? (
+        <TranscriptEntryDialog
+          {...entryDetail}
+          key={`${sessionId}:${entryDetail.childId}:${entryDetail.entryId}`}
+          onClose={() => setEntryDetail(null)}
         />
       ) : null}
     </div>

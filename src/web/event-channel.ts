@@ -121,7 +121,7 @@ export class EventChannels {
           break;
         }
         buffered += decoder.decode(value, { stream: true });
-        if (buffered.length > this.maxBytes) throw new Error("Event source frame exceeds budget");
+        if (this.encoder.encode(buffered).byteLength > this.maxBytes) throw new Error("Event source frame exceeds budget");
         let end: number;
         while ((end = buffered.indexOf("\n\n")) >= 0) {
           const lines = buffered.slice(0, end).split("\n");

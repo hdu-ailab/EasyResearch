@@ -104,7 +104,7 @@ describe("buildMessageTreeMeta", () => {
     expect(meta.old).toBeUndefined();
   });
 
-  it("keeps live user ancestry independent of hidden assistant tool calls", () => {
+  it("waits for persisted identity before enabling edits on live user rows", () => {
     const messages = [view("live-u1", "user"), view("live-answer", "assistant"), view("live-u2", "user")];
     const tree = [
       entry("u1", null, "user"),
@@ -113,8 +113,8 @@ describe("buildMessageTreeMeta", () => {
       entry("u2", "answer", "user"),
     ];
     const meta = buildMessageTreeMeta(messages, tree, "u2");
-    expect(meta["live-u1"]).toEqual({ entryId: "u1" });
-    expect(meta["live-u2"]).toEqual({ entryId: "u2" });
+    expect(meta["live-u1"]).toBeUndefined();
+    expect(meta["live-u2"]).toBeUndefined();
   });
 
   // root has two version siblings: m1(user) -> a1(assistant) and
@@ -142,7 +142,7 @@ describe("buildMessageTreeMeta", () => {
   });
 
   it("leaves out version info for single-version messages", () => {
-    const meta = buildMessageTreeMeta([view("k1", "user")], [entry("m1", null, "user")], "m1");
+    const meta = buildMessageTreeMeta([view("k1", "user", "m1")], [entry("m1", null, "user")], "m1");
     expect(meta.k1).toEqual({ entryId: "m1" });
   });
 
@@ -181,6 +181,13 @@ describe("buildMessageTreeMeta", () => {
     const meta = buildMessageTreeMeta(messages, tree, "a2");
     expect(meta.k1).toEqual({ entryId: "m2" });
     expect(meta.k2).toEqual({ entryId: "a2" });
+  });
+
+  it("never maps a new live row after a paged tail to an older user message", () => {
+    const tree = [entry("old", null, "user"), entry("tail", "old", "user")];
+    const meta = buildMessageTreeMeta([view("tail", "user", "tail"), view("live", "user")], tree, "tail");
+    expect(meta.tail).toEqual({ entryId: "tail" });
+    expect(meta.live).toBeUndefined();
   });
 
   it("skips toolResult entries on both sides of the zip", () => {

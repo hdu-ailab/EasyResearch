@@ -713,7 +713,10 @@ describe("api transport", () => {
       ),
     );
     const tree = await getSessionTree("s1");
-    expect(fetchMock).toHaveBeenCalledWith("/api/sessions/s1/tree", expect.objectContaining({ method: "GET" }));
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/sessions/s1/tree?preview=1",
+      expect.objectContaining({ method: "GET" }),
+    );
     expect(tree.leafId).toBe("m2");
     expect(tree.tree).toHaveLength(1);
   });

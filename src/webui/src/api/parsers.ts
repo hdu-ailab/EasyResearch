@@ -52,6 +52,8 @@ import type {
   SubagentSessionSummaryDto,
   SubagentSupervisorEventDto,
   TimelineEntryAppendedEventDto,
+  TranscriptHistoryDto,
+  TranscriptPageDto,
   TranscriptTimelineEntryDto,
   TreeNavigationResultDto,
   UpdateCheckDto,
@@ -672,11 +674,18 @@ export function parseSubagentSupervisorEvent(value: unknown): SubagentSupervisor
   };
 }
 
-function parseTimelineEntry(value: unknown): TranscriptTimelineEntryDto {
+export function parseTimelineEntry(value: unknown): TranscriptTimelineEntryDto {
   const source = record(value, "transcript timeline entry");
   const entryId = requiredIdentityString(source, "entryId");
+  const deferred =
+    source.deferred === undefined
+      ? undefined
+      : {
+          bytes: requiredSafeGeneration(record(source.deferred, "deferred entry"), "bytes", 1),
+        };
+  const preview = deferred === undefined ? {} : { deferred };
   if (source.kind === "subagent-completion") {
-    onlyKeys(source, ["kind", "entryId", "timestamp", "batchId", "outcomes"], "subagent completion");
+    onlyKeys(source, ["kind", "entryId", "timestamp", "batchId", "outcomes", "deferred"], "subagent completion");
     const launchIds = new Set<string>();
     const outcomes = arrayOf<Extract<TranscriptTimelineEntryDto, { kind: "subagent-completion" }>["outcomes"][number]>(
       source.outcomes,
@@ -707,12 +716,13 @@ function parseTimelineEntry(value: unknown): TranscriptTimelineEntryDto {
       timestamp: requiredString(source, "timestamp"),
       batchId: requiredIdentityString(source, "batchId"),
       outcomes,
+      ...preview,
     };
   }
   if (source.kind === "message") {
     const message = record(source.message, "transcript message");
     requiredIdentityString(message, "role");
-    return { kind: "message", entryId, message: message as unknown as AgentMessage };
+    return { kind: "message", entryId, message: message as unknown as AgentMessage, ...preview };
   }
   if (source.kind !== "compaction" && source.kind !== "branch-summary") {
     throw new Error("Invalid API response: transcript timeline entry kind is invalid");
@@ -723,6 +733,7 @@ function parseTimelineEntry(value: unknown): TranscriptTimelineEntryDto {
     entryId,
     timestamp: requiredString(source, "timestamp"),
     ...(summary === undefined ? {} : { summary }),
+    ...preview,
   };
 }
 
@@ -976,6 +987,23 @@ export function parseActiveSession(value: unknown): ActiveSessionDto {
   return parseActiveSessionValue(value);
 }
 
+function parseHistory(value: unknown): TranscriptHistoryDto {
+  const source = record(value, "transcript history");
+  const cursor = optionalIdentityString(source, "cursor");
+  return cursor === undefined ? {} : { cursor };
+}
+
+export function parseTranscriptPage(value: unknown): TranscriptPageDto {
+  const source = record(value, "transcript page");
+  return {
+    timeline: parseTimeline(source.timeline),
+    ...(source.inlineUsage === undefined
+      ? {}
+      : { inlineUsage: arrayOf(source.inlineUsage, "inline API usage", parseApiUsageRecord) }),
+    ...(source.history === undefined ? {} : { history: parseHistory(source.history) }),
+  };
+}
+
 export function parseSessionSnapshot(value: unknown): SessionSnapshotDto {
   const source = record(value, "session snapshot");
   const steering = source.steering;
@@ -988,6 +1016,7 @@ export function parseSessionSnapshot(value: unknown): SessionSnapshotDto {
     session: parseActiveSessionValue(source.session),
     runtimeConfigurationGeneration: requiredSafeGeneration(source, "runtimeConfigurationGeneration", 0),
     timeline: parseTimeline(source.timeline),
+    ...(source.history === undefined ? {} : { history: parseHistory(source.history) }),
     subagents: arrayOf(source.subagents, "subagents", parseSubagentSummary),
     ...(inlineUsage === undefined
       ? {}
@@ -1012,6 +1041,7 @@ export function parseChildSnapshot(value: unknown): ChildSessionSnapshotDto {
       ...(sessionName !== undefined ? { sessionName } : {}),
     },
     timeline: parseTimeline(source.timeline),
+    ...(source.history === undefined ? {} : { history: parseHistory(source.history) }),
     ...(source.inlineUsage === undefined
       ? {}
       : { inlineUsage: arrayOf(source.inlineUsage, "inline API usage", parseApiUsageRecord) }),

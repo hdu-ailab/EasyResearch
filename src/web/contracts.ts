@@ -85,6 +85,7 @@ export interface SessionSnapshotDto {
   session: ActiveSessionDto;
   runtimeConfigurationGeneration: number;
   timeline: TranscriptTimelineEntryDto[];
+  history?: TranscriptHistoryDto;
   subagents: SubagentSessionSummaryDto[];
   /** Present only on an SSE snapshot; scoped to that exact EventSource. */
   fileWatchLeaseId?: string;
@@ -100,11 +101,23 @@ export interface SessionSnapshotDto {
 
 export type SubagentCompletionEntryDto = import("../subagent/notifications").SubagentCompletionEntry;
 
-export type TranscriptTimelineEntryDto =
+export interface TranscriptHistoryDto {
+  /** Opaque, branch-anchored cursor for entries preceding this window. */
+  cursor?: string;
+}
+
+export interface TranscriptPageDto {
+  timeline: TranscriptTimelineEntryDto[];
+  inlineUsage?: ApiUsageRecordDto[];
+  history?: TranscriptHistoryDto;
+}
+
+export type TranscriptTimelineEntryDto = (
   | { kind: "message"; entryId: string; message: AgentMessage }
   | { kind: "compaction"; entryId: string; timestamp: string; summary?: string }
   | { kind: "branch-summary"; entryId: string; timestamp: string; summary?: string }
-  | SubagentCompletionEntryDto;
+  | SubagentCompletionEntryDto
+) & { /** Presentation preview only; the full public entry is available over HTTP. */ deferred?: { bytes: number } };
 
 export interface TimelineEntryAppendedEventDto {
   type: "timeline_entry_appended";
@@ -396,6 +409,7 @@ export interface ChildSessionSnapshotDto {
     sessionName?: string;
   };
   timeline: TranscriptTimelineEntryDto[];
+  history?: TranscriptHistoryDto;
   inlineUsage?: ApiUsageRecordDto[];
   subagents: SubagentSessionSummaryDto[];
 }

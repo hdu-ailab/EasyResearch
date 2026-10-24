@@ -17,6 +17,27 @@ function messageEntry(
 }
 
 describe("flattenMessageTree", () => {
+  it("walks a deep long-running history without recursive stack growth", () => {
+    const root = node(messageEntry("0", null, "user", "start"));
+    let tail = root;
+    for (let index = 1; index < 15_000; index++) {
+      const next = node(messageEntry(String(index), String(index - 1), "assistant", "entry"));
+      tail.children.push(next);
+      tail = next;
+    }
+    const flat = flattenMessageTree([root], { preview: true });
+    expect(flat).toHaveLength(15_000);
+    expect(flat.at(-1)).toMatchObject({ id: "14999", parentId: "14998" });
+  });
+  it("previews tree text without losing ancestry or modifying the full explicit history", () => {
+    const full = "start " + "汉😀".repeat(5000) + " end";
+    const tree = [node(messageEntry("m1", null, "user", full), [node(messageEntry("m2", "m1", "assistant", full))])];
+    const preview = flattenMessageTree(tree, { preview: true });
+    expect(Buffer.byteLength(JSON.stringify(preview))).toBeLessThan(10_000);
+    expect(preview.map(({ id, parentId }) => ({ id, parentId }))).toEqual([{ id: "m1", parentId: null }, { id: "m2", parentId: "m1" }]);
+    expect(preview[0]!.text).toMatch(/^start /);
+    expect(flattenMessageTree(tree)[0]!.text).toBe(full);
+  });
   it("flattens message entries depth-first in order", () => {
     const tree = [
       node(messageEntry("m1", null, "user", "hello"), [

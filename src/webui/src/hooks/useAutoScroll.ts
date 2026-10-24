@@ -121,6 +121,13 @@ export function useAutoScroll(options: UseAutoScrollOptions): AutoScrollControll
     [active, distanceFromBottom, markAuto, scrollElement, scrollToBottomNow, setUserScrolled],
   );
 
+  // An explicit history prepend may start from a page that does not overflow yet.
+  const pause = useCallback(() => {
+    if (userScrolledRef.current) return;
+    setUserScrolled(true);
+    onUserInteractedRef.current?.();
+  }, [setUserScrolled]);
+
   const stop = useCallback(() => {
     const el = scrollElement;
     if (!el) return;
@@ -128,11 +135,8 @@ export function useAutoScroll(options: UseAutoScrollOptions): AutoScrollControll
       if (userScrolledRef.current) setUserScrolled(false);
       return;
     }
-    if (userScrolledRef.current) return;
-
-    setUserScrolled(true);
-    onUserInteractedRef.current?.();
-  }, [canScroll, scrollElement, setUserScrolled]);
+    pause();
+  }, [canScroll, scrollElement, setUserScrolled, pause]);
 
   const handleWheel = useCallback(
     (event: WheelEvent) => {
@@ -257,7 +261,7 @@ export function useAutoScroll(options: UseAutoScrollOptions): AutoScrollControll
     handleScroll,
     handleWheel,
     handleInteraction,
-    pause: stop,
+    pause,
     resume,
     scrollToBottom: useCallback((force?: boolean) => scrollToBottom(force ?? false), [scrollToBottom]),
     forceScrollToBottom: useCallback(() => scrollToBottom(true), [scrollToBottom]),

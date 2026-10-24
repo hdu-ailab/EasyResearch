@@ -75,6 +75,20 @@ afterEach(() => {
 });
 
 describe("useAutoScroll", () => {
+  it("honors an explicit history pause before a short page grows into a scrollable transcript", () => {
+    bottom = 0;
+    const { result } = renderHook(() => useAutoScroll({ working: true }));
+    const el = makeElement();
+    act(() => result.current.scrollRef(el));
+    act(() => result.current.contentRef(document.createElement("div")));
+    act(() => result.current.pause());
+    growContentTo(600);
+    fireContentResize();
+    expect(el.scrollTop).toBe(0);
+    expect(result.current.userScrolled()).toBe(true);
+    act(() => result.current.resume());
+    expect(el.scrollTop).toBe(600);
+  });
   it("starts pinned with userScrolled false", () => {
     const { result } = renderHook(() => useAutoScroll({ working: false }));
     expect(result.current.userScrolled()).toBe(false);

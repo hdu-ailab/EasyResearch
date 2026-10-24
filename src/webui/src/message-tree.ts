@@ -45,7 +45,7 @@ function branchPath(byId: Map<string, WebTreeEntryDto>, leafId: string | null): 
   return pathIds.reverse();
 }
 
-/** Join persisted bubbles by id; only live user rows need an ordered fallback. */
+/** A paged window has no positional relationship to the full branch. */
 export function buildMessageTreeMeta(
   messages: SessionMessageView[],
   tree: WebTreeEntryDto[],
@@ -54,14 +54,10 @@ export function buildMessageTreeMeta(
   const index = indexTree(tree);
   const path = branchPath(index.byId, leafId);
   const activeIds = new Set(path);
-  const userEntries = path.map((id) => index.byId.get(id)).filter((entry) => entry?.role === "user");
   const meta: Record<string, SessionMessageMeta> = {};
-  let userIndex = 0;
   for (const view of messages) {
     if (view.usageOnly || (view.role !== "user" && view.role !== "assistant")) continue;
-    // Tool-only assistant turns have no bubble; they must not shift user edits.
-    const liveUserEntry = view.role === "user" ? userEntries[userIndex++] : undefined;
-    const entry = view.entryId === undefined ? liveUserEntry : index.byId.get(view.entryId);
+    const entry = view.entryId === undefined ? undefined : index.byId.get(view.entryId);
     if (!entry || !activeIds.has(entry.id) || entry.role !== view.role) continue;
     const entryMeta: SessionMessageMeta = { entryId: entry.id };
     if (entry.role === "user") {

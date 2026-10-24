@@ -12,6 +12,8 @@ export interface EventSourceLike {
 interface Subscription extends EventListener {
   path: string;
   ended: boolean;
+  failures: number;
+  retry?: ReturnType<typeof setTimeout>;
 }
 
 /** One physical SSE, with independently owned logical view subscriptions. */
@@ -38,7 +40,7 @@ export class EventConnection {
 
   subscribe(id: string, path: string, listener: EventListener): () => void {
     if (this.subscriptions.has(id)) throw new Error("Duplicate event subscription");
-    const subscription = { ...listener, path, ended: false };
+    const subscription: Subscription = { ...listener, path, ended: false, failures: 0 };
     this.subscriptions.set(id, subscription);
     this.desired += 1;
     if (!this.source && !this.retry) this.start();
@@ -46,6 +48,7 @@ export class EventConnection {
     return () => {
       if (this.subscriptions.get(id) !== subscription) return;
       this.subscriptions.delete(id);
+      clearTimeout(subscription.retry);
       this.desired += 1;
       if (!this.subscriptions.size) this.stop();
       else this.scheduleSync();
@@ -86,6 +89,7 @@ export class EventConnection {
         const subscription = this.subscriptions.get(frame.id);
         if (!subscription || subscription.ended) return;
         if (frame.type === "event") {
+          if ((frame.event as { type?: unknown } | null)?.type !== "error") subscription.failures = 0;
           try {
             subscription.onEvent(frame.event);
           } catch {
@@ -93,7 +97,23 @@ export class EventConnection {
           }
         } else if (frame.type === "end" || frame.type === "stream-error") {
           subscription.ended = true;
-          if (frame.type === "stream-error") subscription.onError();
+          if (frame.type === "stream-error" || !subscription.path.startsWith("/api/auth/flows/")) {
+            try {
+              subscription.onError();
+            } finally {
+              const delay = Math.min(
+                30_000,
+                (this.options.retryMs ?? 1000) * 2 ** Math.min(subscription.failures++, 5),
+              );
+              subscription.retry = setTimeout(() => {
+                subscription.retry = undefined;
+                if (this.subscriptions.get(frame.id) !== subscription || this.epoch !== epoch) return;
+                subscription.ended = false;
+                this.desired += 1;
+                this.scheduleSync();
+              }, delay);
+            }
+          }
         } else throw new Error("Invalid event channel frame");
       } catch {
         this.reconnect();
@@ -146,6 +166,10 @@ export class EventConnection {
   }
 
   private stop(): void {
+    for (const subscription of this.subscriptions.values()) {
+      clearTimeout(subscription.retry);
+      subscription.retry = undefined;
+    }
     this.epoch += 1;
     this.source?.close();
     this.source = undefined;
@@ -174,7 +198,7 @@ export class EventConnection {
       }, this.options.retryMs ?? 1000);
   }
   close(): void {
-    this.subscriptions.clear();
     this.stop();
+    this.subscriptions.clear();
   }
 }

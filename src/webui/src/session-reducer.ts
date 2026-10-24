@@ -157,6 +157,9 @@ export interface SessionViewState {
   compactionState: CompactionStateDto;
   inlineUsage?: ApiUsageRecordDto[];
   apiUsage?: ApiUsageStatisticsDto;
+  historyCursor?: string;
+  /** Full public entry reads are explicit; these bytes describe previewed entries. */
+  deferredEntries?: Record<string, number>;
 }
 
 export interface SteerView {
@@ -464,6 +467,10 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
     compactionState: snapshot.compactionState ?? "idle",
     inlineUsage: [],
     ...(snapshot.apiUsage === undefined ? {} : { apiUsage: snapshot.apiUsage }),
+    ...(snapshot.history?.cursor === undefined ? {} : { historyCursor: snapshot.history.cursor }),
+    deferredEntries: Object.fromEntries(
+      snapshot.timeline.flatMap((entry) => (entry.deferred ? [[entry.entryId, entry.deferred.bytes]] : [])),
+    ),
   };
   const next = () => state.nextOrder++;
   let cursorCandidate: SessionMessageView | undefined;

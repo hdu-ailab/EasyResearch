@@ -30,6 +30,8 @@ vi.mock("../api", async (importOriginal) => {
     ...actual,
     getSnapshot: vi.fn(),
     getChildSnapshot: vi.fn(),
+    getTranscriptPage: vi.fn(),
+    getTranscriptEntry: vi.fn(),
     connectSessionEvents: vi.fn(),
     sendPrompt: vi.fn(),
     openSession: vi.fn(),
@@ -240,6 +242,8 @@ describe("WorkPage", () => {
   beforeEach(() => {
     vi.mocked(api.getSnapshot).mockReset();
     vi.mocked(api.getChildSnapshot).mockReset();
+    vi.mocked(api.getTranscriptPage).mockReset();
+    vi.mocked(api.getTranscriptEntry).mockReset();
     vi.mocked(api.connectSessionEvents).mockReset();
     vi.mocked(api.sendPrompt).mockReset();
     vi.mocked(api.openSession).mockReset();
@@ -408,6 +412,104 @@ describe("WorkPage", () => {
     });
     vi.mocked(api.listEntries).mockResolvedValue([{ kind: "file", name: "notes.md", path: "/p/notes.md" }]);
     stubEvents();
+  });
+
+  it("loads older root history and reads oversized entries only on explicit demand", async () => {
+    const recent = {
+      ...snapshotValue,
+      history: { cursor: "older-root" },
+      timeline: [
+        {
+          kind: "message",
+          entryId: "large",
+          deferred: { bytes: 2_000_000 },
+          message: {
+            role: "user",
+            content: "Large entry preview…",
+            timestamp: 5,
+          },
+        },
+      ],
+    };
+    vi.mocked(api.getSnapshot).mockResolvedValue(recent as never);
+    vi.mocked(api.getTranscriptPage).mockResolvedValue({
+      timeline: [
+        {
+          kind: "message",
+          entryId: "old",
+          message: {
+            role: "user",
+            content: "Older history recovered",
+            timestamp: 1,
+          },
+        },
+      ],
+    });
+    vi.mocked(api.getTranscriptEntry).mockResolvedValue({
+      kind: "message",
+      entryId: "large",
+      message: {
+        role: "user",
+        content: "Complete original content",
+        timestamp: 5,
+      },
+    });
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("Large entry preview…");
+    expect(api.getTranscriptEntry).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Load earlier messages" }));
+    await screen.findByText("Older history recovered");
+    expect(screen.queryByRole("button", { name: "Load earlier messages" })).toBeNull();
+    expect(screen.getByText("Large entry preview…")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Full entry" }));
+    const full = await screen.findByRole("textbox", { name: "Full entry" });
+    await waitFor(() => expect((full as HTMLTextAreaElement).value).toContain("Complete original content"));
+    expect(api.getTranscriptEntry).toHaveBeenCalledWith("s1", "large", undefined, expect.any(AbortSignal));
+    await userEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog", { name: "Full entry" })).toBeNull();
+  });
+
+  it("pages a retained child's own history while keeping its composer read-only", async () => {
+    vi.mocked(api.getSnapshot).mockResolvedValue({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      subagents: [subagentSummary("sub-history", "child-history", "search", { latestMessage: "saved result" })],
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "sub-history", name: "subagent", arguments: { agent: "search" } }],
+        },
+        { role: "toolResult", toolCallId: "sub-history", toolName: "subagent", content: [], isError: false },
+      ],
+    } as never);
+    vi.mocked(api.getChildSnapshot).mockResolvedValue({
+      session: { id: "child-history", cwd: "/p", sessionName: "easyresearch:search" },
+      timeline: [
+        { kind: "message", entryId: "tail", message: { role: "user", content: "Child recent window", timestamp: 10 } },
+      ],
+      subagents: [],
+      history: { cursor: "child-cursor" },
+    });
+    vi.mocked(api.getTranscriptPage).mockResolvedValue({
+      timeline: [
+        {
+          kind: "message",
+          entryId: "old-child",
+          message: {
+            role: "user",
+            content: "Child older page",
+            timestamp: 1,
+          },
+        },
+      ],
+    });
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await userEvent.click(await screen.findByRole("button", { name: "View details" }));
+    await screen.findByText("Child recent window");
+    await userEvent.click(screen.getByRole("button", { name: "Load earlier messages" }));
+    await screen.findByText("Child older page");
+    expect(screen.getByText("Child recent window")).toBeVisible();
+    expect(api.getTranscriptPage).toHaveBeenCalledWith("s1", "child-cursor", "child-history", expect.any(AbortSignal));
+    expect(screen.getByRole("textbox", { name: "Message" })).toBeDisabled();
   });
 
   it.each([
