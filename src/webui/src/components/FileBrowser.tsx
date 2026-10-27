@@ -1,5 +1,5 @@
-import { memo, type Ref, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
-import type { FileContentDto, FileEntryDto } from "../../../web/contracts";
+import { memo, type Ref, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
+import type { FileContentDto, FileEntryDto, FileRenameResultDto } from "../../../web/contracts";
 import { readFileContent } from "../api";
 import { EMPTY_FILE_EVENTS, parentPath, type QueuedFileWatcherEvent } from "../file-watcher";
 import { filesystemPathName } from "../filesystem-path";
@@ -31,7 +31,11 @@ export interface FileBrowserHandle {
  * tab; PDF previews stream the raw bytes and never fetch the bounded text
  * route.
  */
-export const FileBrowser = memo(function FileBrowser({
+export const FileBrowser = memo(function FileBrowser(props: FileBrowserProps) {
+  return <FileBrowserScope key={props.root} {...props} />;
+});
+
+function FileBrowserScope({
   ref,
   root,
   loadEnabled = true,
@@ -50,6 +54,13 @@ export const FileBrowser = memo(function FileBrowser({
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < 820);
   const treeOpened = isMobile ? mobileTreeVisible : treeVisible;
   const consumedFileEvents = useRef({ previews: 0, listings: 0, acknowledged: 0 });
+  const activeRead = useRef<{ path: string } | null>(null);
+  useLayoutEffect(
+    () => () => {
+      activeRead.current = null;
+    },
+    [],
+  );
 
   const consumeFileEvents = useCallback(
     (consumer: "previews" | "listings", through: number) => {
@@ -80,15 +91,14 @@ export const FileBrowser = memo(function FileBrowser({
     const through = pending.at(-1)?.sequence;
     if (through === undefined) return;
     const affected = tabs
-      .filter(
-        (tab) =>
-          previewKind(tab.path) !== "pdf" &&
-          pending.some(
-            ({ event }) => tab.path === event.properties.file || parentPath(tab.path) === event.properties.file,
-          ),
+      .filter((tab) =>
+        pending.some(
+          ({ event }) => tab.path === event.properties.file || parentPath(tab.path) === event.properties.file,
+        ),
       )
       .map((tab) => tab.path);
     if (affected.length > 0) {
+      if (activeRead.current && affected.includes(activeRead.current.path)) activeRead.current = null;
       setContents((current) => {
         if (!affected.some((candidate) => candidate in current)) return current;
         const next = { ...current };
@@ -113,22 +123,23 @@ export const FileBrowser = memo(function FileBrowser({
     if (!activeTab) return;
     if (activeContent) return;
     const kind = previewKind(activeTab);
-    if (kind === "pdf" || kind === "docx") {
+    if (["pdf", "docx", "image", "video", "html"].includes(kind)) {
       setContents((current) => ({
         ...current,
         [activeTab]: { path: activeTab, content: "", byteCount: 0, truncated: false, binary: false },
       }));
       return;
     }
-    let stale = false;
+    const request = { path: activeTab };
+    activeRead.current = request;
     readFileContent(activeTab)
       .then((file) => {
-        if (!stale) {
+        if (activeRead.current === request) {
           setContents((current) => ({ ...current, [activeTab]: file }));
         }
       })
       .catch((e: unknown) => {
-        if (!stale) {
+        if (activeRead.current === request) {
           const message = e instanceof Error ? e.message : String(e);
           setContents((current) => ({
             ...current,
@@ -143,11 +154,12 @@ export const FileBrowser = memo(function FileBrowser({
         }
       });
     return () => {
-      stale = true;
+      if (activeRead.current === request) activeRead.current = null;
     };
   }, [activeTab, activeRevision, activeContent, t]);
 
   const activateTab = useCallback((path: string) => {
+    if (activeRead.current?.path !== path) activeRead.current = null;
     setActiveTab(path);
     setMobileTreeVisible(false);
   }, []);
@@ -169,8 +181,32 @@ export const FileBrowser = memo(function FileBrowser({
 
   useImperativeHandle(ref, () => ({ openPath }), [openPath]);
 
+  const fileRenamed = useCallback(({ oldPath, entry }: FileRenameResultDto) => {
+    if (activeRead.current && [oldPath, entry.path].includes(activeRead.current.path)) activeRead.current = null;
+    setTabs((current) => {
+      const opened = current.some((tab) => tab.path === oldPath);
+      if (!opened) return current;
+      return current.flatMap((tab) => (tab.path === oldPath ? [entry] : tab.path === entry.path ? [] : [tab]));
+    });
+    setActiveTab((current) => (current === oldPath ? entry.path : current));
+    setContents((current) => {
+      const next = { ...current };
+      delete next[oldPath];
+      delete next[entry.path];
+      return next;
+    });
+    setContentRevision((current) => {
+      const next = { ...current };
+      delete next[oldPath];
+      // An already-open destination may be cached by the browser as a former file.
+      next[entry.path] = Math.max(current[oldPath] ?? 0, current[entry.path] ?? 0) + 1;
+      return next;
+    });
+  }, []);
+
   const closeTab = useCallback(
     (path: string) => {
+      if (activeRead.current?.path === path) activeRead.current = null;
       const index = tabs.findIndex((tab) => tab.path === path);
       const next = tabs.filter((tab) => tab.path !== path);
       setTabs(next);
@@ -209,6 +245,7 @@ export const FileBrowser = memo(function FileBrowser({
             sessionId={sessionId}
             fileWatchLeaseId={fileWatchLeaseId}
             onOpenFile={openFile}
+            onFileRenamed={fileRenamed}
             fileEvents={fileEvents}
             onFileEventsConsumed={consumeListingEvents}
           />
@@ -229,4 +266,4 @@ export const FileBrowser = memo(function FileBrowser({
       </FileTreeSplit>
     </div>
   );
-});
+}

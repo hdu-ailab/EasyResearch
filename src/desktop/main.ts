@@ -10,6 +10,7 @@ import {
   type IpcMainEvent,
   type MessageBoxOptions,
   type MessageBoxReturnValue,
+  type WebContents,
   type WebPreferences,
 } from "electron";
 import {
@@ -47,6 +48,7 @@ import {
   writeDesktopPreferenceBlob,
 } from "./preferences-store";
 import {
+  desktopPermissionAllowed,
   desktopRequestHeaders,
   navigationDecision,
 } from "./security";
@@ -71,6 +73,7 @@ import {
   verifyDesktopSmokeSuccessor,
 } from "./smoke-host";
 import { DESKTOP_SMOKE_USER_DATA_ENV } from "./contracts";
+import { verifyDesktopSmokeWorkFiles } from "./smoke-work-files";
 
 configureSmokeUserData();
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
@@ -312,7 +315,30 @@ async function createMainWindow(handle: DesktopSidecarHandle, hash: string): Pro
       });
     },
   );
-  networkSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+  const allowPermission = (
+    requestingWebContents: WebContents | null,
+    permission: string,
+    details: { isMainFrame: boolean; requestingUrl?: string },
+    requestingOrigin?: string,
+  ): boolean => {
+    if (mainWindow !== window || sidecar !== handle || lifecycle.exiting
+      || window.isDestroyed() || window.webContents.isDestroyed()) return false;
+    return desktopPermissionAllowed({
+      requestingWebContents,
+      ownerWebContents: window.webContents,
+      ownerDocumentUrl: window.webContents.getURL(),
+      readyOrigin: handle.ready.origin,
+      permission,
+      details,
+      requestingOrigin,
+    });
+  };
+  networkSession.setPermissionRequestHandler((contents, permission, callback, details) => {
+    callback(allowPermission(contents, permission, details));
+  });
+  networkSession.setPermissionCheckHandler((contents, permission, requestingOrigin, details) => {
+    return allowPermission(contents, permission, details, requestingOrigin);
+  });
   window.webContents.setWindowOpenHandler(({ url }) => {
     const decision = navigationDecision(url, handle.ready.origin);
     if (decision.kind === "external") openExternal(decision.url);
@@ -601,6 +627,14 @@ async function installSmokeLifecycle(
       )) {
         throw new Error("Desktop smoke could not establish the canonical Work route before restart.");
       }
+      emitSmokeEvent(await verifyDesktopSmokeWorkFiles({
+        window,
+        webContents: window.webContents,
+        origin: handle.ready.origin,
+        rendererToken: handle.rendererToken,
+        project,
+        directory,
+      }));
       smokeRestartContext = {
         bootId: prepared.bootId,
         rendererToken: handle.rendererToken,

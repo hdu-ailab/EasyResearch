@@ -16,6 +16,8 @@ interface ParsedHttpAuthority {
 export function rejectDisallowedWebRequest(
   request: Request,
   listener: WebListenerAuthority,
+  /** Set only after renderer authentication AND a valid HTML capability resource check. */
+  options: { allowOpaquePreviewOrigin?: boolean } = {},
 ): Response | undefined {
   const authority = parseHttpAuthority(request.headers.get("host") ?? new URL(request.url).host);
   if (!authority || authority.port !== listener.port) return forbiddenResponse();
@@ -38,6 +40,8 @@ export function rejectDisallowedWebRequest(
 
   const origin = request.headers.get("origin");
   if (origin === null) return undefined;
+  if (origin === "null" && options.allowOpaquePreviewOrigin === true
+    && (request.method === "GET" || request.method === "HEAD")) return undefined;
   try {
     const parsedOrigin = new URL(origin);
     if (

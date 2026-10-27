@@ -1,0 +1,5 @@
+/* Apply to existing and newly mounted frames without changing their documents. */
+[data-resize-iframe-shield] iframe {
+  /* biome-ignore lint/complexity/noImportantStyles: A temporary gesture shield must also override a frame's inline hit-testing style. */
+  pointer-events: none !important;
+}

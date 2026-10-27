@@ -33,6 +33,17 @@ import {
 } from "../../scripts/smoke-desktop-support";
 
 let root: string;
+const workFilesVerified = {
+  type: "desktop-smoke.work-files-verified",
+  opaqueAuthenticatedResources: true,
+  isolatedHtml: true,
+  downloadBytesVerified: true,
+  downloadCancelled: true,
+  sandboxDownloadBlocked: true,
+  videoFullscreenVerified: true,
+  clipboardWriteVerified: true,
+  scopeReleased: true,
+};
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "easyresearch-desktop-smoke-support-"));
@@ -563,6 +574,7 @@ describe("Linux packaged renderer sandbox evidence", () => {
     { type: "desktop-smoke.window-loaded" },
     { type: "desktop-smoke.state-visible" },
     { type: "desktop-smoke.agent-running" },
+    workFilesVerified,
   ];
 
   it("requires actual OS sandbox evidence before accepting a running Linux renderer", () => {
@@ -612,6 +624,53 @@ describe("Linux packaged renderer sandbox evidence", () => {
       .toThrow(/renderer security evidence/i);
     expect(reduceDesktopSmokeEvents([...restarted, security, visible], { target: "linux-arm64" }))
       .toMatchObject({ rendererSecurityVerified: true, successorVisible: true });
+  });
+});
+
+describe("packaged Work Files acceptance milestone", () => {
+  const active = [
+    { type: "desktop-smoke.sidecar-ready", origin: "http://127.0.0.1:43123", bootId: "old", sidecarPid: 41 },
+    { type: "desktop-smoke.renderer-security", osSandboxed: true, sandbox: true, contextIsolation: true, nodeIntegration: false },
+    { type: "desktop-smoke.window-loaded" },
+    { type: "desktop-smoke.state-visible" },
+    { type: "desktop-smoke.agent-running" },
+  ];
+
+  it.each(["windows-x64", "darwin-arm64", "linux-arm64"] as const)("requires real Work Files evidence before %s restart/close", (target) => {
+    for (const next of [
+      { type: "desktop-smoke.restart-api-accepted", bootId: "old", hash: "#/work/fixture" },
+      { type: "desktop-smoke.restart-requested", bootId: "old" },
+      { type: "desktop-smoke.window-hidden", hidden: true, sidecarPid: 41 },
+    ]) {
+      expect(() => reduceDesktopSmokeEvents([...active, next], { target })).toThrow(/Work Files verification/i);
+      expect(reduceDesktopSmokeEvents([...active, workFilesVerified, next], { target }))
+        .toMatchObject({ workFilesVerified: true });
+    }
+  });
+
+  it.each([
+    { opaqueAuthenticatedResources: false }, { isolatedHtml: false },
+    { downloadBytesVerified: false }, { downloadCancelled: undefined },
+    { sandboxDownloadBlocked: false }, { videoFullscreenVerified: false },
+    { videoFullscreenVerified: undefined }, { clipboardWriteVerified: false },
+    { clipboardWriteVerified: undefined }, { scopeReleased: undefined },
+  ])("rejects partial evidence %j", (missing) => {
+    expect(() => reduceDesktopSmokeEvents([...active, { ...workFilesVerified, ...missing }]))
+      .toThrow(/authenticated HTML isolation and native downloads/i);
+  });
+
+  it("rejects premature or duplicate evidence", () => {
+    expect(() => reduceDesktopSmokeEvents([workFilesVerified])).toThrow(/before active Work/i);
+    expect(() => reduceDesktopSmokeEvents([...active, workFilesVerified, workFilesVerified]))
+      .toThrow(/more than once/i);
+  });
+
+  it("preserves a Work Files failure immediately, before restart or close can be accepted", () => {
+    expect(reduceDesktopSmokeEvents([
+      ...active,
+      { type: "desktop-smoke.failure", message: "Desktop Work Files iframe deadline expired." },
+      { type: "desktop-smoke.exit-started" },
+    ])).toMatchObject({ workFilesVerified: false, failure: "Desktop Work Files iframe deadline expired." });
   });
 });
 
@@ -856,6 +915,7 @@ describe("desktop smoke milestones", () => {
       { type: "desktop-smoke.window-loaded" },
       { type: "desktop-smoke.state-visible" },
       { type: "desktop-smoke.agent-running" },
+      workFilesVerified,
       { type: "desktop-smoke.restart-api-accepted", bootId: "boot-old", hash: workHash },
       { type: "desktop-smoke.restart-requested", bootId: "boot-old" },
       { type: "desktop-smoke.old-sidecar-exited", bootId: "boot-old", clean: true },
@@ -909,6 +969,7 @@ describe("desktop smoke milestones", () => {
       { type: "desktop-smoke.window-loaded" },
       { type: "desktop-smoke.state-visible" },
       { type: "desktop-smoke.agent-running" },
+      workFilesVerified,
       { type: "desktop-smoke.restart-api-accepted", bootId: "boot-old", hash: workHash },
       { type: "desktop-smoke.restart-requested", bootId: "boot-old" },
       { type: "desktop-smoke.old-sidecar-exited", bootId: "boot-old", clean: true },
@@ -960,6 +1021,7 @@ describe("desktop smoke milestones", () => {
       { type: "desktop-smoke.window-loaded" },
       { type: "desktop-smoke.state-visible" },
       { type: "desktop-smoke.agent-running" },
+      workFilesVerified,
       { type: "desktop-smoke.restart-api-accepted", bootId: "boot-old", hash: workHash },
       { type: "desktop-smoke.restart-requested", bootId: "boot-old" },
       { type: "desktop-smoke.old-sidecar-exited", bootId: "boot-old", clean: true },
@@ -987,6 +1049,7 @@ describe("desktop smoke milestones", () => {
       { type: "desktop-smoke.window-loaded" },
       { type: "desktop-smoke.state-visible" },
       { type: "desktop-smoke.agent-running" },
+      workFilesVerified,
       { type: "desktop-smoke.window-hidden", hidden: true, sidecarPid: 0 },
     ])).toThrow(/sidecar process/i);
   });
@@ -1009,6 +1072,7 @@ describe("desktop smoke milestones", () => {
       { type: "desktop-smoke.window-loaded" },
       { type: "desktop-smoke.state-visible" },
       { type: "desktop-smoke.agent-running" },
+      workFilesVerified,
       { type: "desktop-smoke.restart-api-accepted", bootId: "boot-old", hash: workHash },
       { type: "desktop-smoke.restart-api-accepted", bootId: "boot-old", hash: workHash },
     ])).toThrow(/duplicate.*restart API/i);
@@ -1026,6 +1090,7 @@ describe("desktop smoke milestones", () => {
       { type: "desktop-smoke.window-loaded" },
       { type: "desktop-smoke.state-visible" },
       { type: "desktop-smoke.agent-running" },
+      workFilesVerified,
       { type: "desktop-smoke.restart-api-accepted", bootId: "boot-old", hash: workHash },
       { type: "desktop-smoke.restart-requested", bootId: "boot-old" },
       { type: "desktop-smoke.restart-requested", bootId: "boot-old" },
@@ -1044,6 +1109,7 @@ describe("desktop smoke milestones", () => {
       { type: "desktop-smoke.window-loaded" },
       { type: "desktop-smoke.state-visible" },
       { type: "desktop-smoke.agent-running" },
+      workFilesVerified,
       { type: "desktop-smoke.restart-requested", bootId: "boot-old" },
       { type: "desktop-smoke.restart-api-accepted", bootId: "boot-old", hash: workHash },
       { type: "desktop-smoke.old-sidecar-exited", bootId: "boot-old", clean: true },
@@ -1066,6 +1132,7 @@ describe("desktop smoke milestones", () => {
       { type: "desktop-smoke.window-loaded" },
       { type: "desktop-smoke.state-visible" },
       { type: "desktop-smoke.agent-running" },
+      workFilesVerified,
       { type: "desktop-smoke.restart-requested", bootId: "boot-old" },
       { type: "desktop-smoke.old-sidecar-exited", bootId: "boot-old", clean: true },
       { type: "desktop-smoke.restart-api-accepted", bootId: "boot-old", hash: workHash },
@@ -1096,6 +1163,7 @@ describe("desktop smoke milestones", () => {
       { type: "desktop-smoke.window-loaded" },
       { type: "desktop-smoke.state-visible" },
       { type: "desktop-smoke.agent-running" },
+      workFilesVerified,
       { type: "desktop-smoke.restart-requested", bootId: "boot-old" },
       { type: "desktop-smoke.old-sidecar-exited", bootId: "boot-old", clean: true },
       {
@@ -1132,6 +1200,7 @@ describe("desktop smoke milestones", () => {
       { type: "desktop-smoke.window-loaded" },
       { type: "desktop-smoke.state-visible" },
       { type: "desktop-smoke.agent-running" },
+      workFilesVerified,
       { type: "desktop-smoke.restart-requested", bootId: "boot-old" },
       { type: "desktop-smoke.old-sidecar-exited", bootId: "boot-old", clean: true },
       {
@@ -1167,6 +1236,7 @@ describe("desktop smoke milestones", () => {
       { type: "desktop-smoke.window-loaded" },
       { type: "desktop-smoke.state-visible" },
       { type: "desktop-smoke.agent-running" },
+      workFilesVerified,
       {
         type: "desktop-smoke.restart-api-accepted",
         bootId: "boot-old",
@@ -1203,6 +1273,7 @@ describe("desktop smoke milestones", () => {
       { type: "desktop-smoke.window-loaded" },
       { type: "desktop-smoke.state-visible" },
       { type: "desktop-smoke.agent-running" },
+      workFilesVerified,
       { type: "desktop-smoke.restart-api-accepted", bootId: "boot-old", hash: workHash },
       { type: "desktop-smoke.restart-requested", bootId: "boot-old" },
       { type: "desktop-smoke.old-sidecar-exited", bootId: "boot-old", clean: true },
@@ -1269,6 +1340,7 @@ describe("desktop smoke milestones", () => {
       { type: "desktop-smoke.window-loaded" },
       { type: "desktop-smoke.state-visible" },
       { type: "desktop-smoke.agent-running" },
+      workFilesVerified,
       { type: "desktop-smoke.restart-api-accepted", bootId: "boot-old", hash: workHash },
       { type: "desktop-smoke.restart-requested", bootId: "boot-old" },
       { type: "desktop-smoke.old-sidecar-exited", bootId: "boot-old", clean: true },

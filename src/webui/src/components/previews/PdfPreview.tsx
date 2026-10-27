@@ -1,12 +1,14 @@
 import { AlertTriangle, ChevronLeft, ChevronRight, Download, FileText, Minus, Plus } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { rawFileUrl } from "../../api";
+import { downloadFileUrl, mediaPreviewUrl } from "../../api";
 import { useI18n } from "../../i18n/useI18n";
 import { ActionGlyph } from "../studio/ActionGlyph";
+import { PreviewDownload } from "./PreviewToolbar";
 import { createPdfLoader, type PdfDocumentHandle, type PdfLoader } from "./pdf-runtime";
 
 export interface PdfPreviewProps {
   path: string;
+  revision?: number;
   loader?: PdfLoader;
 }
 
@@ -29,7 +31,7 @@ const RENDER_BUFFER = 2;
  * Loading and render tasks are cancelled on cleanup; failures surface inline
  * with a Retry action.
  */
-export function PdfPreview({ path, loader }: PdfPreviewProps) {
+export function PdfPreview({ path, revision = 0, loader }: PdfPreviewProps) {
   const { t } = useI18n();
   const effectiveLoader = loader ?? DEFAULT_LOADER;
   const [doc, setDoc] = useState<PdfDocumentHandle | null>(null);
@@ -46,7 +48,6 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
   const loadedDocumentGeneration = useRef(0);
 
   useEffect(() => {
-    void retryToken;
     const generation = ++documentGeneration.current;
     let cancelled = false;
     let loaded: PdfDocumentHandle | null = null;
@@ -63,7 +64,7 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
     setCurrentPage(1);
     setError(null);
     effectiveLoader
-      .load({ url: rawFileUrl(path) })
+      .load({ url: mediaPreviewUrl(path, revision, retryToken) })
       .then(async (document) => {
         if (cancelled || generation !== documentGeneration.current) {
           document.destroy();
@@ -91,7 +92,7 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
       cancelled = true;
       loaded?.destroy();
     };
-  }, [effectiveLoader, path, retryToken]);
+  }, [effectiveLoader, path, retryToken, revision]);
 
   useEffect(() => {
     if (!doc) return;
@@ -202,6 +203,9 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
         <header className="flex shrink-0 items-center gap-2 border-b border-v2-grey-200 px-3 py-1.5">
           <FileText size={14} className="shrink-0 text-v2-icon-icon-muted" aria-hidden />
           <span className="shrink-0 font-mono text-[11px] text-v2-text-text-faint">PDF</span>
+          <div className="ml-auto">
+            <PreviewDownload path={path} label={t("preview.pdf.download")} />
+          </div>
         </header>
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-4">
           <AlertTriangle size={20} className="shrink-0 text-v2-status-error" aria-hidden />
@@ -297,7 +301,7 @@ export function PdfPreview({ path, loader }: PdfPreviewProps) {
           <span className="mx-1 h-4 w-px shrink-0 bg-v2-grey-200" aria-hidden />
 
           <a
-            href={rawFileUrl(path)}
+            href={downloadFileUrl(path)}
             download
             aria-label={t("preview.pdf.download")}
             className="flex h-7 shrink-0 items-center gap-1 rounded-md px-1.5 text-[12px] font-medium text-v2-text-text-muted transition-colors hover:bg-v2-grey-100 hover:text-v2-text-text-base"

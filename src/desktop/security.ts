@@ -25,6 +25,54 @@ export function desktopRequestHeaders(
   return headers;
 }
 
+/** Both Electron permission paths use frame identity and document identity, never an origin-only grant. */
+export function desktopPermissionAllowed(options: {
+  permission: string;
+  requestingWebContents: object | null | undefined;
+  ownerWebContents: object | null | undefined;
+  ownerDocumentUrl: string;
+  readyOrigin: string;
+  requestingOrigin?: string;
+  details?: { isMainFrame?: boolean; requestingUrl?: string } | null;
+}): boolean {
+  if (
+    (options.permission !== "fullscreen" && options.permission !== "clipboard-sanitized-write")
+    || !options.ownerWebContents
+    || options.requestingWebContents !== options.ownerWebContents
+    || options.details?.isMainFrame !== true
+  ) return false;
+  if (options.requestingOrigin !== undefined) {
+    try {
+      if (new URL(options.requestingOrigin).href !== `${options.readyOrigin}/`) return false;
+    } catch {
+      return false;
+    }
+  }
+  const requestingDocument = mainAppDocument(options.details.requestingUrl, options.readyOrigin);
+  return requestingDocument !== undefined
+    && requestingDocument === mainAppDocument(options.ownerDocumentUrl, options.readyOrigin);
+}
+
+function mainAppDocument(value: string | undefined, readyOrigin: string): string | undefined {
+  if (!value) return undefined;
+  try {
+    const document = new URL(value);
+    if (
+      document.origin !== readyOrigin
+      || document.username !== ""
+      || document.password !== ""
+      || document.search !== ""
+      || (document.pathname !== "/" && document.pathname !== "/index.html")
+    ) return undefined;
+    // Hash routing does not change the loaded app document. Different documents
+    // (including root versus index.html) must still match the current owner URL.
+    document.hash = "";
+    return document.href;
+  } catch {
+    return undefined;
+  }
+}
+
 export function navigationDecision(target: string, readyOrigin: string): NavigationDecision {
   let url: URL;
   try {

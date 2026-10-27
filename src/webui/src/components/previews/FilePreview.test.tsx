@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileContentDto } from "../../../../web/contracts";
-import { rawFileUrl } from "../../api";
+import { downloadFileUrl, rawFileUrl } from "../../api";
 import { FilePreview } from "./FilePreview";
 import { PdfPreview } from "./PdfPreview";
 import { type FakePdfRenderCall, fakePdfLoader, type PdfDocumentHandle } from "./pdf-runtime";
@@ -219,7 +219,7 @@ describe("PdfPreview", () => {
     expect(await screen.findByText("1 / 3")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Next page" }));
     expect(screen.getByLabelText("Current page")).toHaveValue(2);
-    expect(screen.getByRole("link", { name: "Download PDF" })).toHaveAttribute("href", rawFileUrl("/p/paper.pdf"));
+    expect(screen.getByRole("link", { name: "Download PDF" })).toHaveAttribute("href", downloadFileUrl("/p/paper.pdf"));
   });
 
   it("switches PDF documents without reusing rendered page metadata", async () => {
@@ -237,7 +237,7 @@ describe("PdfPreview", () => {
 
     await waitFor(() => expect(renderLogB.length).toBeGreaterThan(0));
     expect(destroyA).toHaveBeenCalledOnce();
-    expect(screen.getByRole("link", { name: "Download PDF" })).toHaveAttribute("href", rawFileUrl("/p/b.pdf"));
+    expect(screen.getByRole("link", { name: "Download PDF" })).toHaveAttribute("href", downloadFileUrl("/p/b.pdf"));
   });
 
   it.each(["resolve", "reject"] as const)(
@@ -271,7 +271,7 @@ describe("PdfPreview", () => {
       else rejectA(new Error("stale render failed"));
 
       await waitFor(() => {
-        expect(screen.getByRole("link", { name: "Download PDF" })).toHaveAttribute("href", rawFileUrl("/p/b.pdf"));
+        expect(screen.getByRole("link", { name: "Download PDF" })).toHaveAttribute("href", downloadFileUrl("/p/b.pdf"));
         expect(screen.queryByText(/stale render failed/)).toBeNull();
         expect(renderLogB).toHaveLength(1);
       });
@@ -402,8 +402,24 @@ describe("PdfPreview", () => {
     const failing = { load: vi.fn().mockRejectedValueOnce(new Error("corrupt pdf")) };
     render(<PdfPreview path="/p/bad.pdf" loader={failing} />);
     expect(await screen.findByText(/corrupt pdf/)).toBeVisible();
+    expect(screen.getAllByRole("link", { name: "Download PDF" })).toHaveLength(1);
+    expect(screen.getByRole("link", { name: "Download PDF" })).toHaveAttribute("href", downloadFileUrl("/p/bad.pdf"));
     failing.load.mockResolvedValueOnce(await fakePdfLoader({ pages: 1 }).load({ url: "" }));
     await user.click(screen.getByRole("button", { name: /retry/i }));
     expect(await screen.findByText("1 / 1")).toBeVisible();
+  });
+
+  it("releases an old PDF and reloads its raw URL after a watcher revision", async () => {
+    const oldDocument = await fakePdfLoader({ pages: 1 }).load({ url: "" });
+    const nextDocument = await fakePdfLoader({ pages: 2 }).load({ url: "" });
+    const destroy = vi.spyOn(oldDocument, "destroy");
+    const load = vi.fn().mockResolvedValueOnce(oldDocument).mockResolvedValueOnce(nextDocument);
+    const loader = { load };
+    const { rerender } = render(<PdfPreview path="/p/paper.pdf" revision={0} loader={loader} />);
+    await screen.findByText("1 / 1");
+    rerender(<PdfPreview path="/p/paper.pdf" revision={1} loader={loader} />);
+    await screen.findByText("1 / 2");
+    expect(destroy).toHaveBeenCalledOnce();
+    expect(load).toHaveBeenLastCalledWith({ url: rawFileUrl("/p/paper.pdf", 1) });
   });
 });

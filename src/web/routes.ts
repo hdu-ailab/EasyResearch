@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { bundledFilePath } from "../runtime/bundled-assets";
 import { AGENT_STATUS_TYPE } from "../subagent/notifications";
 import type {
@@ -34,7 +34,9 @@ import type {
 import { createGlobalAgent, listGlobalAgents, readGlobalAgent, writeGlobalAgent, listGlobalSkills, readGlobalSkill, writeGlobalSkill } from "./agent-resources";
 import type { DirectoryService } from "./directories";
 import { DirectoryServiceError, fileServiceError } from "./directories";
-import { parseByteRange, RawFileRangeError, type RawFileDescriptor } from "./raw-file";
+import { rawFileHeaders, parseByteRange, RawFileRangeError, type RawFileDescriptor } from "./raw-file";
+import { FileOperationError, FileOperationService } from "./file-operations";
+import { HTML_PREVIEW_PATH, HtmlPreviewService } from "./html-preview";
 import {
   UnknownSessionError, SessionBusyError, SessionLifecycleConflictError, WorkspaceBusyError,
   SessionRegistryShuttingDownError, type ActiveSessionRegistry,
@@ -57,6 +59,7 @@ import { ModelRequestError } from "../runtime/model-request-error";
 import { ProviderDeletionError, type ProviderDeletionService } from "./provider-deletion";
 import { DAEMON_CONTROL_PATH, DAEMON_TOKEN_HEADER } from "../cli/server-process";
 import {
+  DESKTOP_ACCESS_HEADER,
   rejectUnauthorizedDesktopRequest,
   type DesktopAccessControl,
 } from "./desktop-access";
@@ -121,7 +124,11 @@ export interface RouteServices {
   desktopAccess?: DesktopAccessControl;
 }
 
-export type RouteHandler = ((request: Request) => Promise<Response>) & { close?: () => Promise<void> };
+export type RouteHandler = ((request: Request) => Promise<Response>) & {
+  close?: () => Promise<void>;
+  /** Authenticated scoped GET/HEAD only; the server must still validate Host/authority. */
+  allowsOpaquePreviewOrigin?: (request: Request) => boolean;
+};
 
 const SSE_HEADERS: Record<string, string> = {
   "Content-Type": "text/event-stream",
@@ -134,6 +141,11 @@ const SSE_HEADERS: Record<string, string> = {
  * through injected services so vitest can run every route against fakes.
  */
 export function createRouteHandler(services: RouteServices): RouteHandler {
+  const htmlPreviews = new HtmlPreviewService(services.directories);
+  const files = new FileOperationService({ isKnownCwd: async (cwd) => {
+    if (services.registry.list().some((session) => session.cwd === cwd)) return true;
+    return (await services.listAllSessions()).some((session) => session.cwd === cwd);
+  } });
   const channels = new EventChannels({ bootId: services.bootId, open(path) {
     if (path === "/api/config/events") return configurationEvents(services.bootId, services.configuration, services.configurationProjectWatches);
     const session = path.match(/^\/api\/sessions\/([^/]+)\/events$/);
@@ -313,8 +325,50 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
         return jsonResponse(services.directories.readFile(requireQuery(url, "path")));
       }
 
+      if (req.method === "POST" && path === HTML_PREVIEW_PATH) {
+        fileQuery(url, []);
+        const body = await jsonBody<unknown>(req);
+        if (!isObject(body) || Object.keys(body).length !== 1 || typeof body.path !== "string") {
+          throw new BodyError("HTML preview requires only a path string");
+        }
+        return jsonResponse(htmlPreviews.create(body.path));
+      }
+      const previewRelease = path.match(/^\/api\/file\/preview\/([a-f0-9]{64})$/u);
+      if (req.method === "DELETE" && previewRelease) {
+        fileQuery(url, []);
+        htmlPreviews.release(previewRelease[1]!);
+        return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
+      }
+      if (path.startsWith(`${HTML_PREVIEW_PATH}/`)) {
+        const previewResource = await htmlPreviews.resource(req);
+        if (previewResource) return previewResource;
+      }
+
       if (req.method === "GET" && path === "/api/file/raw") {
-        return await rawFileResponse(services.directories, requireQuery(url, "path"), req.headers.get("range"));
+        fileQuery(url, ["path", "download", "revision"]);
+        const download = url.searchParams.get("download");
+        if (download !== null && download !== "1") throw new BodyError("download must be 1");
+        return await rawFileResponse(services.directories, requireQuery(url, "path"), req.headers.get("range"), download === "1");
+      }
+
+      if (req.method === "PUT" && path === "/api/file/upload") {
+        fileQuery(url, ["cwd", "directory", "name"]);
+        if (req.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/octet-stream") {
+          throw new BodyError("Content-Type must be application/octet-stream", 415);
+        }
+        return jsonResponse(await files.upload({ cwd: requireQuery(url, "cwd"), directory: requireQuery(url, "directory"), name: requireQuery(url, "name") }, {
+          body: req.body, signal: req.signal, contentLength: req.headers.get("content-length"),
+        }), 201);
+      }
+
+      if (req.method === "POST" && path === "/api/file/rename") {
+        fileQuery(url, []);
+        const body = await jsonBody<unknown>(req);
+        if (!isObject(body) || Object.keys(body).some((key) => !["cwd", "path", "name"].includes(key))
+          || typeof body.cwd !== "string" || typeof body.path !== "string" || typeof body.name !== "string") {
+          throw new BodyError("Rename requires cwd, path and name strings");
+        }
+        return jsonResponse(await files.rename({ cwd: body.cwd, path: body.path, name: body.name }, req.signal));
       }
 
       if (req.method === "POST" && path === "/api/sessions") {
@@ -339,9 +393,15 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
           throw new BodyError("Invalid workspace operation");
         }
         if (action === "validate") return jsonResponse(await services.workspaces.validate(body.cwd));
-        if (action === "rename") return jsonResponse(await services.workspaces.rename(body.cwd, body.name as string, body.force === true));
-        if (action === "relocate") return jsonResponse(await services.workspaces.relocate(body.cwd, body.directory as string, body.force === true));
-        return jsonResponse(await services.workspaces.delete(body.cwd, body.force === true));
+        const cwd = body.cwd;
+        const workspaces = services.workspaces;
+        const scopes = action === "rename" ? [cwd, join(dirname(cwd), body.name as string)]
+          : action === "relocate" ? [cwd, body.directory as string] : [cwd];
+        return jsonResponse(await files.withWorkspaceMutation(scopes, () => {
+          if (action === "rename") return workspaces.rename(cwd, body.name as string, body.force === true);
+          if (action === "relocate") return workspaces.relocate(cwd, body.directory as string, body.force === true);
+          return workspaces.delete(cwd, body.force === true);
+        }));
       }
 
       if (req.method === "GET" && path === "/api/active-sessions") {
@@ -670,6 +730,7 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
 
       return new Response("Not found", { status: 404 });
     } catch (error) {
+      if (error instanceof FileOperationError) return errorResponse(error.status, error.message, { code: error.code });
       if (error instanceof WorkspaceError) return errorResponse(error.status, error.message, { code: error.code, cwd: error.cwd });
       if (error instanceof WorkspaceBusyError) return errorResponse(409, error.message, { code: error.code });
       if (error instanceof ConfigPathError) return errorResponse(403, error.message);
@@ -717,7 +778,16 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       return errorResponse(500, "Internal server error");
     }
   };
-  handler.close = () => channels.close();
+  handler.allowsOpaquePreviewOrigin = (request) => services.desktopAccess !== undefined
+    && request.headers.get("origin") === "null"
+    && request.headers.get(DESKTOP_ACCESS_HEADER) === services.desktopAccess.token
+    && htmlPreviews.isValidResourceRequest(request);
+  handler.close = async () => {
+    htmlPreviews.close();
+    const results = await Promise.allSettled([files.close(), channels.close()]);
+    const errors = results.filter((result): result is PromiseRejectedResult => result.status === "rejected").map((result) => result.reason);
+    if (errors.length) throw new AggregateError(errors, "Route cleanup failed");
+  };
   return handler;
 }
 
@@ -770,13 +840,13 @@ class SessionStartError extends Error {
  * from the file it opens. Slicing the body or setting range metadata here would
  * mix an earlier path stat with a replacement file opened after this returns.
  */
-async function rawFileResponse(directories: DirectoryService, path: string, rangeHeader: string | null): Promise<Response> {
+async function rawFileResponse(directories: DirectoryService, path: string, rangeHeader: string | null, download = false): Promise<Response> {
   const descriptor = directories.describeFile(path);
   try {
     parseByteRange(rangeHeader, descriptor.size);
     return new Response(await directories.readFileBody(path, null), {
       headers: {
-        "Content-Type": descriptor.mimeType,
+        ...rawFileHeaders(descriptor.mimeType, basename(path), download),
         // Bun adds this header itself when it applies a Range request.
         ...(rangeHeader === null ? { "Accept-Ranges": "bytes" } : {}),
       },
@@ -1159,6 +1229,14 @@ function requireQuery(url: URL, name: string): string {
   const value = url.searchParams.get(name);
   if (!value) throw new BodyError(`${name} query parameter is required`);
   return value;
+}
+
+function fileQuery(url: URL, allowed: readonly string[]): void {
+  const seen = new Set<string>();
+  for (const key of url.searchParams.keys()) {
+    if (!allowed.includes(key) || seen.has(key)) throw new BodyError("Invalid file query parameters");
+    seen.add(key);
+  }
 }
 
 async function jsonBody<T>(req: Request): Promise<T> {

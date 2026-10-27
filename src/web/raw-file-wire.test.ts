@@ -59,6 +59,264 @@ async function runFileServer<T>(scenario: string, desktopToken?: string): Promis
   }
 }
 
+it("wires production HTML scopes to authenticated Desktop opaque reads without widening other APIs", async () => {
+  const token = "preview-renderer-fixture";
+  const result = await runFileServer<{ created: number; head: number; range: string; lateOpen: number; rejected: number; released: number }>(`
+    const header = ${JSON.stringify(DESKTOP_ACCESS_HEADER)};
+    const auth = { [header]: ${JSON.stringify(token)} };
+    const trusted = { ...auth, Origin: origin, "Content-Type": "application/json" };
+    const opaque = { ...auth, Origin: "null" };
+    const project = join(root, "report");
+    fs.mkdirSync(project);
+    const path = join(project, "report.html");
+    const html = "<script>window.answer=42</script>" + "x".repeat(1024 * 1024 + 7);
+    fs.writeFileSync(path, html);
+    fs.writeFileSync(join(project, "script.mjs"), "export const answer=42");
+    fs.writeFileSync(join(project, "data.json"), '{"answer":42}');
+    const created = await fetch(origin + "/api/file/preview", { method: "POST", proxy: null,
+      headers: trusted, body: JSON.stringify({ path }) });
+    assert.equal(created.status, 200, await created.clone().text());
+    assert.equal(created.headers.get("access-control-allow-origin"), null);
+    const scope = await created.json();
+    const url = origin + scope.url;
+    const scoped = await fetch(url, { proxy: null, headers: opaque });
+    assert.equal(scoped.status, 200);
+    assert.equal(scoped.headers.get("content-length"), String(Buffer.byteLength(html)));
+    assert.equal(scoped.headers.get("access-control-allow-origin"), "*");
+    assert.equal(scoped.headers.get("access-control-allow-credentials"), null);
+    assert.equal(scoped.headers.get("content-security-policy").includes("/" + scope.id + "/"), true);
+    assert.equal(await scoped.text(), html);
+    const head = await fetch(url, { proxy: null, method: "HEAD", headers: opaque });
+    assert.equal(head.status, 200);
+    assert.equal(head.headers.get("content-length"), String(Buffer.byteLength(html)));
+    assert.equal((await head.arrayBuffer()).byteLength, 0);
+    for (const [name, mime, text] of [["script.mjs", "text/javascript", "export const answer=42"], ["data.json", "application/json", '{"answer":42}']]) {
+      const response = await fetch(new URL(name, url), { proxy: null, headers: opaque });
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("content-type").startsWith(mime), true);
+      assert.equal(response.headers.get("access-control-allow-origin"), "*");
+      assert.equal(await response.text(), text);
+    }
+    const ranged = await fetch(url, { proxy: null, headers: { ...opaque, Range: "bytes=2-6" } });
+    assert.equal(ranged.status, 206);
+    assert.equal(ranged.headers.get("content-length"), "5");
+    assert.equal(await ranged.text(), html.slice(2, 7));
+    const range = ranged.headers.get("content-range");
+
+    const unauthorized = await fetch(url, { proxy: null });
+    assert.equal(unauthorized.status, 401);
+    await unauthorized.arrayBuffer();
+    const missingDirectory = join(root, "must-not-create");
+    const negatives = [
+      [url, { headers: { Origin: "null" } }, 403],
+      [url, { headers: { ...opaque, [header]: "wrong-token" } }, 403],
+      [url, { headers: { ...opaque, Host: "attacker.example:" + server.port } }, 403],
+      [url, { headers: { ...opaque, Host: "127.0.0.1:" + (server.port + 1) } }, 403],
+      [url, { headers: { ...auth, Origin: "https://attacker.example" } }, 403],
+      [url, { method: "POST", headers: opaque }, 403],
+      [url, { method: "OPTIONS", headers: opaque }, 403],
+      [origin + "/api/status", { headers: opaque }, 403],
+      [fileUrl(path), { headers: opaque }, 403],
+      [origin + "/api/file/preview", { method: "POST", headers: { ...trusted, Origin: "null" }, body: JSON.stringify({ path }) }, 403],
+      [origin + "/api/file/preview/" + scope.id, { method: "DELETE", headers: opaque }, 403],
+      [origin + "/api/directories", { method: "POST", headers: { ...trusted, Origin: "null" }, body: JSON.stringify({ path: missingDirectory }) }, 403],
+      [origin + "/api/file/preview/" + "0".repeat(64) + "/report.html", { headers: opaque }, 403],
+    ];
+    for (const [target, options, expected] of negatives) {
+      const response = await fetch(target, { ...options, proxy: null });
+      assert.equal(response.status, expected, target);
+      assert.equal(response.headers.get("access-control-allow-origin"), null);
+      assert.equal((await response.text()).includes(${JSON.stringify(token)}), false);
+    }
+    assert.equal(fs.existsSync(missingDirectory), false, "opaque HTML must not mutate an ordinary API");
+    const raw = await fetch(fileUrl(path), { proxy: null, headers: auth });
+    assert.equal(raw.headers.get("content-disposition").startsWith("attachment;"), true);
+    assert.equal(raw.headers.get("content-security-policy").includes("script-src 'none'"), true);
+    assert.equal(raw.headers.get("content-security-policy").includes("allow-scripts"), false);
+    assert.equal(raw.headers.get("x-content-type-options"), "nosniff");
+    assert.equal(raw.headers.get("cache-control"), "no-store");
+    assert.equal(raw.headers.get("access-control-allow-origin"), null);
+    assert.equal(await raw.text(), html, "Source fetch must keep original HTML bytes");
+    const rawRange = await fetch(fileUrl(path), { proxy: null, headers: { ...auth, Range: "bytes=0-4" } });
+    assert.equal(rawRange.status, 206);
+    assert.equal(rawRange.headers.get("content-disposition"), raw.headers.get("content-disposition"));
+    assert.equal(rawRange.headers.get("content-security-policy"), raw.headers.get("content-security-policy"));
+    assert.equal(await rawRange.text(), html.slice(0, 5));
+
+    afterResponse = (request) => {
+      if (new URL(request.url).pathname !== new URL("script.mjs", url).pathname) return;
+      afterResponse = () => {};
+      fs.unlinkSync(join(project, "script.mjs"));
+    };
+    const vanished = await fetch(new URL("script.mjs", url), { proxy: null, headers: opaque });
+    assert.equal(vanished.status, 404, "the existing production native error boundary must cover preview bodies");
+    assert.equal(typeof (await vanished.json()).error, "string");
+    const released = await fetch(origin + "/api/file/preview/" + scope.id, { proxy: null, method: "DELETE", headers: trusted });
+    assert.equal(released.status, 204);
+    assert.equal(await released.text(), "");
+    const unknown = await fetch(url, { proxy: null, headers: trusted });
+    assert.equal(unknown.status, 404);
+    assert.equal(unknown.headers.get("access-control-allow-origin"), null);
+    await unknown.arrayBuffer();
+    const opaqueReleased = await fetch(url, { proxy: null, headers: opaque });
+    assert.equal(opaqueReleased.status, 403);
+    await opaqueReleased.arrayBuffer();
+    await drained(project);
+    return { created: created.status, head: head.status, range, lateOpen: vanished.status, rejected: negatives.length, released: released.status };
+  `, token);
+  expect(result).toMatchObject({ created: 200, head: 200, lateOpen: 404, released: 204 });
+  expect(result.range).toMatch(/^bytes 2-6\/\d+$/u);
+  expect(result.rejected).toBeGreaterThan(10);
+}, 30000);
+
+it("uploads original binary bytes, renames without clobber, and serves attachment MP4 ranges on the real Bun wire", async () => {
+  const result = await runFileServer<{ uploaded: number; conflict: number; renamed: number; bytes: number; mime: string; disposition: string; range: string; rangedBytes: number[] }>(`
+    const workspace = join(root, "workspace");
+    fs.mkdirSync(workspace);
+    const bucket = join(root, "agent", "sessions", "fixture");
+    fs.mkdirSync(bucket, { recursive: true });
+    fs.writeFileSync(join(bucket, "root.jsonl"), JSON.stringify({ type: "session", version: 3,
+      id: crypto.randomUUID(), timestamp: new Date().toISOString(), cwd: workspace }) + "\\n"
+      + JSON.stringify({ type: "message", id: "user", parentId: null, timestamp: new Date().toISOString(),
+        message: { role: "user", content: "fixture", timestamp: Date.now() } }) + "\\n");
+    const bytes = new Uint8Array(17 * 1024 * 1024 + 17);
+    for (let i = 0; i < bytes.length; i++) bytes[i] = i % 256;
+    const upload = (name, body = bytes) => fetch(origin + "/api/file/upload?" + new URLSearchParams({ cwd: workspace, directory: workspace, name }), {
+      method: "PUT", headers: { "Content-Type": "application/octet-stream" }, body, proxy: null,
+    });
+    const created = await upload("研究 🐬.bin");
+    assert.equal(created.status, 201, await created.clone().text());
+    const original = (await created.json()).entry.path;
+    const duplicate = await upload("研究 🐬.bin", new Uint8Array([8, 9]));
+    assert.equal(duplicate.status, 409);
+    assert.equal((await duplicate.json()).code, "FILE_EXISTS");
+    assert.deepEqual(fs.readFileSync(original), Buffer.from(bytes));
+    const renamed = await fetch(origin + "/api/file/rename", { method: "POST", proxy: null,
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cwd: workspace, path: original, name: "报告 🐬.MP4" }) });
+    assert.equal(renamed.status, 200);
+    const target = (await renamed.json()).entry.path;
+    assert.equal(fs.existsSync(original), false);
+    const response = await fetch(fileUrl(target) + "&download=1&revision=ignored", { proxy: null });
+    assert.equal(response.status, 200);
+    const actual = new Uint8Array(await response.arrayBuffer());
+    assert.deepEqual(actual, bytes);
+    assert.equal(response.headers.get("content-length"), String(bytes.byteLength));
+    assert.equal(response.headers.get("transfer-encoding"), null);
+    const ranged = await fetch(fileUrl(target) + "&download=1", { proxy: null, headers: { Range: "bytes=3-9" } });
+    assert.equal(ranged.status, 206);
+    assert.equal(ranged.headers.get("content-length"), "7");
+    assert.equal(ranged.headers.get("content-disposition"), response.headers.get("content-disposition"));
+    const rangedBytes = [...new Uint8Array(await ranged.arrayBuffer())];
+    const invalid = await fetch(fileUrl(target) + "&download=1", { proxy: null, headers: { Range: "bytes=0-1,3-4" } });
+    assert.equal(invalid.status, 416);
+    await invalid.arrayBuffer();
+    const inline = await fetch(fileUrl(target), { proxy: null, headers: { Range: "bytes=0-0" } });
+    assert.equal(inline.headers.get("content-disposition"), null);
+    await inline.arrayBuffer();
+    await drained(workspace);
+    assert.deepEqual(fs.readdirSync(workspace), ["报告 🐬.MP4"]);
+    return { uploaded: created.status, conflict: duplicate.status, renamed: renamed.status, bytes: actual.byteLength,
+      mime: response.headers.get("content-type"), disposition: response.headers.get("content-disposition"),
+      range: ranged.headers.get("content-range"), rangedBytes };
+  `);
+  expect(result).toMatchObject({ uploaded: 201, conflict: 409, renamed: 200, bytes: 17 * 1024 * 1024 + 17,
+    mime: "video/mp4", range: `bytes 3-9/${17 * 1024 * 1024 + 17}`, rangedBytes: [3, 4, 5, 6, 7, 8, 9] });
+  expect(decodeURIComponent(result.disposition.split("filename*=UTF-8''")[1]!)).toBe("报告 🐬.MP4");
+}, 30000);
+
+it("cleans actual chunked uploads on socket cancellation and server shutdown without publishing partial files", async () => {
+  const result = await runFileServer<{ cancelled: number; remaining: number; closed: boolean }>(`
+    const http = await import("node:http");
+    const workspace = join(root, "workspace");
+    fs.mkdirSync(workspace);
+    const bucket = join(root, "agent", "sessions", "fixture");
+    fs.mkdirSync(bucket, { recursive: true });
+    fs.writeFileSync(join(bucket, "root.jsonl"), JSON.stringify({ type: "session", version: 3,
+      id: crypto.randomUUID(), timestamp: new Date().toISOString(), cwd: workspace }) + "\\n"
+      + JSON.stringify({ type: "message", id: "user", parentId: null, timestamp: new Date().toISOString(),
+        message: { role: "user", content: "fixture", timestamp: Date.now() } }) + "\\n");
+    const wait = async (predicate) => {
+      for (let i = 0; i < 300; i++) { if (predicate()) return; await Bun.sleep(10); }
+      throw new Error("upload condition timed out");
+    };
+    const begin = (name) => {
+      const client = http.request(origin + "/api/file/upload?" + new URLSearchParams({ cwd: workspace, directory: workspace, name }), {
+        method: "PUT", agent: false, headers: { "Content-Type": "application/octet-stream", "Transfer-Encoding": "chunked" },
+      });
+      client.on("error", () => {});
+      client.on("response", (response) => response.resume());
+      client.write(Buffer.alloc(256 * 1024, 42));
+      return client;
+    };
+    let cancelled = 0;
+    for (let i = 0; i < 3; i++) {
+      const client = begin("cancelled.bin");
+      try {
+        await wait(() => fs.readdirSync(workspace).some(name => fs.statSync(join(workspace, name)).size > 0));
+        assert.equal(fs.existsSync(join(workspace, "cancelled.bin")), false);
+        client.destroy();
+        await wait(() => fs.readdirSync(workspace).length === 0);
+        await drained(workspace);
+        cancelled++;
+      } finally { client.destroy(); }
+    }
+    const client = begin("shutdown.bin");
+    try {
+      await wait(() => fs.readdirSync(workspace).length > 0);
+      await server.stop();
+      await drained(workspace);
+      return { cancelled, remaining: fs.readdirSync(workspace).length, closed: true };
+    } finally { client.destroy(); }
+  `);
+  expect(result).toEqual({ cancelled: 3, remaining: 0, closed: true });
+}, 30000);
+
+it("streams past Bun's former default body allowance with bounded chunks and exact on-disk bytes", async () => {
+  const result = await runFileServer<{ status: number; bytes: number; sameHash: boolean }>(`
+    const http = await import("node:http");
+    const { once } = await import("node:events");
+    const { createHash } = await import("node:crypto");
+    const workspace = join(root, "workspace");
+    fs.mkdirSync(workspace);
+    const bucket = join(root, "agent", "sessions", "fixture");
+    fs.mkdirSync(bucket, { recursive: true });
+    fs.writeFileSync(join(bucket, "root.jsonl"), JSON.stringify({ type: "session", version: 3,
+      id: crypto.randomUUID(), timestamp: new Date().toISOString(), cwd: workspace }) + "\\n"
+      + JSON.stringify({ type: "message", id: "user", parentId: null, timestamp: new Date().toISOString(),
+        message: { role: "user", content: "fixture", timestamp: Date.now() } }) + "\\n");
+    const client = http.request(origin + "/api/file/upload?" + new URLSearchParams({ cwd: workspace, directory: workspace, name: "large.bin" }), {
+      method: "PUT", agent: false, headers: { "Content-Type": "application/octet-stream", "Transfer-Encoding": "chunked" },
+    });
+    const response = new Promise((resolve, reject) => {
+      client.on("error", reject);
+      client.on("response", (incoming) => {
+        let text = "";
+        incoming.on("data", (chunk) => { text += chunk; });
+        incoming.on("error", reject);
+        incoming.on("end", () => resolve({ status: incoming.statusCode, text }));
+      });
+    });
+    void response.catch(() => {});
+    try {
+      const chunk = Buffer.alloc(1024 * 1024, 0x5a);
+      const expected = createHash("sha256");
+      for (let i = 0; i < 129; i++) {
+        expected.update(chunk);
+        if (!client.write(chunk)) await once(client, "drain");
+      }
+      client.end();
+      const accepted = await response;
+      assert.equal(accepted.status, 201, accepted.text);
+      const path = JSON.parse(accepted.text).entry.path;
+      const actual = createHash("sha256");
+      for await (const chunk of fs.createReadStream(path)) actual.update(chunk);
+      await drained(workspace);
+      return { status: accepted.status, bytes: fs.statSync(path).size, sameHash: actual.digest("hex") === expected.digest("hex") };
+    } finally { client.destroy(); }
+  `);
+  expect(result).toEqual({ status: 201, bytes: 129 * 1024 * 1024, sameHash: true });
+}, 30000);
+
 it("maps filesystem failures during Blob creation and after the raw route returns through the real Bun server", async () => {
   const results = await runFileServer<Array<{
     mode: string; range: string | null; expected: number; status: number;

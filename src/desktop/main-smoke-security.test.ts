@@ -53,8 +53,9 @@ it.each([
     private destroyed = false;
     private url = "";
     webContents: EventEmitter & {
-      session: { webRequest: { onBeforeSendHeaders(): void }; setPermissionRequestHandler(): void };
+      session: { webRequest: { onBeforeSendHeaders(): void }; setPermissionRequestHandler(): void; setPermissionCheckHandler(): void };
       setWindowOpenHandler(): void;
+      isDestroyed(): boolean;
       getURL(): string;
       getOSProcessId(): number;
       executeJavaScript(): Promise<[boolean, boolean]>;
@@ -63,8 +64,9 @@ it.each([
     constructor(private readonly options: { webPreferences: Record<string, unknown> }) {
       super();
       this.webContents = Object.assign(new EventEmitter(), {
-        session: { webRequest: { onBeforeSendHeaders() {} }, setPermissionRequestHandler() {} },
+        session: { webRequest: { onBeforeSendHeaders() {} }, setPermissionRequestHandler() {}, setPermissionCheckHandler() {} },
         setWindowOpenHandler() {},
+        isDestroyed: () => this.destroyed,
         getURL: () => this.url,
         getOSProcessId: () => rendererPid,
         executeJavaScript: () => {
@@ -116,6 +118,9 @@ it.each([
     shell: { openExternal: async () => {}, showItemInFolder() {} },
   }));
   vi.doMock("./update", () => ({ checkDesktopUpdate: async () => undefined }));
+  vi.doMock("./smoke-work-files", () => ({
+    verifyDesktopSmokeWorkFiles: async () => ({ type: "desktop-smoke.work-files-verified" }),
+  }));
   vi.doMock("./main-support", () => ({
     ...mainSupport,
     desktopWindowOptions: (...args: Parameters<typeof mainSupport.desktopWindowOptions>) => {
@@ -178,7 +183,7 @@ it.each([
     resolveUi([true, true]);
     app.emit("before-quit", { preventDefault() {} });
     await vi.waitFor(() => expect(quit).toBe(true));
-    for (const name of ["electron", "./update", "./main-support", "./sidecar", "./smoke-host"]) vi.doUnmock(name);
+    for (const name of ["electron", "./update", "./main-support", "./sidecar", "./smoke-host", "./smoke-work-files"]) vi.doUnmock(name);
     vi.resetModules();
     vi.unstubAllGlobals();
     rmSync(root, { recursive: true, force: true });

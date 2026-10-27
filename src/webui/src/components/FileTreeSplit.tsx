@@ -1,5 +1,6 @@
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useI18n } from "../i18n/useI18n";
+import { shieldResizeIframes, suppressResizeSelection } from "../resize-iframe-shield";
 
 const TREE_MIN_WIDTH = 180;
 const TREE_DEFAULT_WIDTH = 240;
@@ -14,7 +15,7 @@ interface TreeDrag {
   previousWidth: number;
   clientX: number;
   frame: number | null;
-  restoreSelection: () => void;
+  restoreInteraction: () => void;
 }
 
 interface FileTreeSplitProps {
@@ -43,7 +44,7 @@ export function FileTreeSplit({ isMobile, treeOpened, tree, children }: FileTree
     if (!drag) return null;
     dragRef.current = null;
     if (drag.frame !== null) cancelAnimationFrame(drag.frame);
-    drag.restoreSelection();
+    drag.restoreInteraction();
     if (drag.handle.hasPointerCapture(drag.pointerId)) drag.handle.releasePointerCapture(drag.pointerId);
     return drag;
   }, []);
@@ -67,25 +68,33 @@ export function FileTreeSplit({ isMobile, treeOpened, tree, children }: FileTree
     const visibilityChanged = () => {
       if (document.visibilityState === "hidden") cancelResize();
     };
+    const keyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && dragRef.current) {
+        event.preventDefault();
+        cancelResize();
+      }
+    };
     window.addEventListener("blur", cancelResize);
     document.addEventListener("visibilitychange", visibilityChanged);
+    document.addEventListener("keydown", keyDown);
     return () => {
       observer.disconnect();
       window.removeEventListener("blur", cancelResize);
       document.removeEventListener("visibilitychange", visibilityChanged);
+      document.removeEventListener("keydown", keyDown);
       releaseDrag();
     };
   }, [cancelResize, releaseDrag]);
 
   const startResize = (event: React.PointerEvent<HTMLElement>) => {
-    if (event.button !== 0 || !event.isPrimary || dragRef.current) return;
+    if (event.button !== 0 || !event.isPrimary || dragRef.current || isMobile || !treeOpened || !areaRef.current)
+      return;
     const handle = event.currentTarget;
     handle.setPointerCapture(event.pointerId);
     event.preventDefault();
     handle.focus({ preventScroll: true });
-    const style = document.body.style;
-    const selection = style.getPropertyValue("user-select");
-    const priority = style.getPropertyPriority("user-select");
+    const releaseSelection = suppressResizeSelection(document.body.style);
+    const releaseShield = shieldResizeIframes(areaRef.current);
     dragRef.current = {
       handle,
       pointerId: event.pointerId,
@@ -94,9 +103,11 @@ export function FileTreeSplit({ isMobile, treeOpened, tree, children }: FileTree
       previousWidth: treeWidth,
       clientX: event.clientX,
       frame: null,
-      restoreSelection: () => style.setProperty("user-select", selection, priority),
+      restoreInteraction: () => {
+        releaseShield();
+        releaseSelection();
+      },
     };
-    style.setProperty("user-select", "none");
   };
 
   const moveResize = (event: React.PointerEvent<HTMLElement>) => {

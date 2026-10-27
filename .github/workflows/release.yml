@@ -163,7 +163,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
-            xvfb xauth dbus-x11 xfce4-panel xfconf libglib2.0-bin \
+            xvfb xauth dbus-x11 xfce4-panel xfconf xfwm4 x11-utils libglib2.0-bin \
             libnss3 libnspr4 libatk1.0-0t64 libatk-bridge2.0-0t64 \
             libcups2t64 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
             libxfixes3 libxrandr2 libgbm1 libasound2t64 libpango-1.0-0 \
@@ -229,20 +229,38 @@ jobs:
           dbus-run-session -- xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" bash <<'SMOKE'
           set -euo pipefail
           tray_pid=""
+          wm_pid=""
           cleanup() {
             status=$?
             trap - EXIT
-            if [ -n "$tray_pid" ]; then
-              kill -TERM -- "-$tray_pid" 2>/dev/null || true
-              timeout 5s tail --pid="$tray_pid" -f /dev/null || true
-              kill -KILL -- "-$tray_pid" 2>/dev/null || true
-              wait "$tray_pid" 2>/dev/null || true
-            fi
+            for child_pid in "$tray_pid" "$wm_pid"; do
+              if [ -z "$child_pid" ]; then continue; fi
+              kill -TERM -- "-$child_pid" 2>/dev/null || true
+              timeout 5s tail --pid="$child_pid" -f /dev/null || true
+              kill -KILL -- "-$child_pid" 2>/dev/null || true
+              wait "$child_pid" 2>/dev/null || true
+            done
             exit "$status"
           }
           trap cleanup EXIT
           trap 'exit 130' INT
           trap 'exit 143' TERM
+          setsid xfwm4 --replace --compositor=off >"$session_root/window-manager.log" 2>&1 &
+          wm_pid=$!
+          wm_ready=false
+          for attempt in {1..50}; do
+            if ! kill -0 "$wm_pid" 2>/dev/null; then break; fi
+            if xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null | grep -q 'window id #'; then
+              wm_ready=true
+              break
+            fi
+            sleep 0.2
+          done
+          if [ "$wm_ready" != true ]; then
+            cat "$session_root/window-manager.log"
+            echo "Linux desktop smoke requires a ready EWMH window manager" >&2
+            exit 1
+          fi
           xfconf-query --channel xfce4-panel --property /configver --create --type int --set 2
           xfconf-query --channel xfce4-panel --property /panels --create --force-array --type int --set 1
           xfconf-query --channel xfce4-panel --property /panels/panel-1/plugin-ids --create --force-array --type int --set 1

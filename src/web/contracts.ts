@@ -428,6 +428,17 @@ export interface FileEntryDto extends DirectoryEntryDto {
   kind: "file" | "directory";
 }
 
+/** Maximum actual bytes accepted by one Work file upload (1 GiB). */
+export const FILE_UPLOAD_LIMIT = 1024 * 1024 * 1024;
+
+export interface FileUploadResultDto {
+  entry: FileEntryDto & { kind: "file" };
+}
+
+export interface FileRenameResultDto extends FileUploadResultDto {
+  oldPath: string;
+}
+
 export type FileWatcherEventKind = "add" | "change" | "unlink";
 
 export interface FileWatcherEvent {

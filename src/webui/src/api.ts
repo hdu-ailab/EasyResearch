@@ -23,6 +23,8 @@ import type {
   DirectoryListingDto,
   FileContentDto,
   FileEntryDto,
+  FileRenameResultDto,
+  FileUploadResultDto,
   NetworkProxySettingsDto,
   NetworkProxySettingsPatchDto,
   NetworkProxyTestRequestDto,
@@ -67,6 +69,8 @@ import {
   parseDirectoryRoots,
   parseEntries,
   parseFileContent,
+  parseFileRenameResult,
+  parseFileUploadResult,
   parseModels,
   parseNetworkProxySettings,
   parseNetworkProxyTestResult,
@@ -93,8 +97,10 @@ import {
   connectEventStream,
   requestBytes,
   requestJson,
+  requestUpload,
   requestVoid,
   type SessionEventHandlers,
+  type UploadOptions,
 } from "./api/transport";
 
 export type {
@@ -103,6 +109,14 @@ export type {
   ProjectWatchReplacement,
   ProjectWatchReplacementResult,
 } from "../../web/configuration-project-watches";
+export {
+  createHtmlPreview,
+  HTML_SOURCE_MAX_BYTES,
+  type HtmlPreviewCapability,
+  readHtmlPreviewSource,
+  releaseHtmlPreview,
+} from "./api/html-preview";
+export { mediaPreviewUrl } from "./api/preview-routes";
 export type { AuthFlowHandlers, SessionEventHandlers } from "./api/transport";
 export { ApiError, RawFileSizeError } from "./api/transport";
 
@@ -366,8 +380,25 @@ export function readFileContent(path: string): Promise<FileContentDto> {
 }
 
 /** URL for the MIME-correct, Range-capable raw bytes endpoint. */
-export function rawFileUrl(path: string): string {
-  return routes.rawFile(path);
+export function rawFileUrl(path: string, revision?: number): string {
+  return routes.rawFile(path, revision);
+}
+
+export function downloadFileUrl(path: string): string {
+  return routes.downloadFile(path);
+}
+
+export function uploadFile(
+  cwd: string,
+  directory: string,
+  file: File,
+  options?: UploadOptions,
+): Promise<FileUploadResultDto> {
+  return requestUpload(routes.uploadFile(cwd, directory, file.name), file, parseFileUploadResult, options);
+}
+
+export function renameFile(cwd: string, path: string, name: string): Promise<FileRenameResultDto> {
+  return requestJson(routes.renameFile(), parseFileRenameResult, json("POST", { cwd, path, name }));
 }
 
 export function readRawFileBytes(

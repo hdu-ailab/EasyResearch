@@ -9,6 +9,7 @@ import { DirectoryService } from "./directories";
 import { ConfigFileService, ConfigServiceError } from "./config-files";
 import { readWebSessionIdleTimeout } from "./session-settings";
 import type { AgentDto, SessionSummaryDto } from "./contracts";
+import { FILE_UPLOAD_LIMIT } from "./contracts";
 import type { AgentConfig } from "../subagent/agents";
 import { discoverAgents, discoverGlobalAgents, RESEARCH_ASSISTANT_AGENT } from "../subagent/agents";
 import { createLogger } from "../runtime/logger";
@@ -269,14 +270,17 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
   let authStopped = false;
   let modelsDisposed = false;
   let serverStopped = false;
-  let closeEventChannels: (() => Promise<void>) | undefined;
+  let closeRoutes: (() => Promise<void>) | undefined;
 
   const cleanup = async (): Promise<void> => {
+    // Close transfer admission/cancel readers immediately, even if Agent teardown is slow.
+    const routesClosed = closeRoutes?.();
+    void routesClosed?.catch(() => {});
     if (registry && !sessionsStopped) {
       await registry.shutdown();
       sessionsStopped = true;
     }
-    await closeEventChannels?.();
+    await routesClosed;
     if (configurationProjectWatches && !projectWatchesClosed) {
       await configurationProjectWatches.close();
       projectWatchesClosed = true;
@@ -444,7 +448,7 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
       },
     };
     const routeHandler = createRouteHandler(services);
-    closeEventChannels = routeHandler.close;
+    closeRoutes = routeHandler.close;
     const localInterfaceAddresses = options.desktopAccess ? localInterfaceIpAddresses() : undefined;
     const handler = (request: Request): Promise<Response> => {
       // CLI Web trusts the access path, including SSH-forwarded hosts and ports.
@@ -453,7 +457,7 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
           host,
           port: server?.port ?? port,
           localInterfaceAddresses,
-        });
+        }, { allowOpaquePreviewOrigin: routeHandler.allowsOpaquePreviewOrigin?.(request) ?? false });
         if (rejection) return Promise.resolve(rejection);
       }
       return routeHandler(request);
@@ -464,6 +468,7 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
       fetch: handler,
       error: rawFileErrorResponse,
       idleTimeout: 0,
+      maxRequestBodySize: FILE_UPLOAD_LIMIT,
     });
     logger.info("web server started", { host, port: server.port ?? port });
   } catch (error) {
@@ -477,11 +482,10 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
       return () => {
         if (attempt) return attempt;
         logger.info("web server stopping");
-        const current = cleanup();
-        attempt = current;
-        void current.catch(() => {}).finally(() => {
+        const current = cleanup().finally(() => {
           if (attempt === current) attempt = undefined;
         });
+        attempt = current;
         return current;
       };
     })(),

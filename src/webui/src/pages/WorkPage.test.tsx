@@ -13,6 +13,18 @@ import { WorkPage } from "./WorkPage";
 
 const fileQueueProbe = vi.hoisted(() => ({ pending: 0 }));
 
+function startPanelResize(handle: HTMLElement, clientX = 880, pointerId = 1, pointerType = "mouse") {
+  if (!handle.setPointerCapture) {
+    const captured = new Set<number>();
+    Object.defineProperties(handle, {
+      setPointerCapture: { value: (id: number) => captured.add(id) },
+      hasPointerCapture: { value: (id: number) => captured.has(id) },
+      releasePointerCapture: { value: (id: number) => captured.delete(id) },
+    });
+  }
+  fireEvent.pointerDown(handle, { clientX, clientY: 100, pointerId, pointerType, button: 0, isPrimary: true });
+}
+
 vi.mock("../components/FileBrowser", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../components/FileBrowser")>();
   return {
@@ -3986,6 +3998,247 @@ describe("WorkPage", () => {
     expect(screen.getByRole("textbox", { name: "Message" })).toBeVisible();
   });
 
+  async function overlappingResizes(first: "outer" | "inner") {
+    const view = render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+    act(() => panelObserver().__fire(1200));
+    const handles = {
+      outer: screen.getByRole("separator", { name: "Resize panel" }),
+      inner: screen.getByRole("separator", { name: "Resize file tree" }),
+    };
+    const ids = { outer: first === "outer" ? 11 : 22, inner: first === "inner" ? 11 : 22 };
+    const second = first === "outer" ? "inner" : "outer";
+    document.body.style.setProperty("user-select", "text", "important");
+    document.body.style.setProperty("overflow", "scroll", "important");
+    startPanelResize(handles[first], 880, ids[first], "mouse");
+    startPanelResize(handles[second], 880, ids[second], "touch");
+    expect(handles.outer.hasPointerCapture(ids.outer)).toBe(true);
+    expect(handles.inner.hasPointerCapture(ids.inner)).toBe(true);
+    expect(document.querySelectorAll("[data-resize-iframe-shield]")).toHaveLength(2);
+    return { view, handles, ids };
+  }
+
+  const overlapCases = (["outer", "inner"] as const).flatMap((start) =>
+    (["outer", "inner"] as const).flatMap((finish) =>
+      (["release", "cancel-first", "cancel-last"] as const).map((terminal) => ({ start, finish, terminal })),
+    ),
+  );
+  it.each(overlapCases)(
+    "keeps shared selection suppressed for overlapping resize $start/$finish/$terminal",
+    async ({ start, finish, terminal }) => {
+      const { view, handles, ids } = await overlappingResizes(start);
+      const last = finish === "outer" ? "inner" : "outer";
+      const end = (owner: "outer" | "inner", cancel: boolean) => {
+        const input = { pointerId: ids[owner], pointerType: ids[owner] === 11 ? "mouse" : "touch", clientX: 880 };
+        if (cancel) fireEvent.pointerCancel(handles[owner], input);
+        else fireEvent.pointerUp(handles[owner], input);
+      };
+      try {
+        end(finish, terminal === "cancel-first");
+        expect(document.body.style.userSelect).toBe("none");
+        expect(handles[finish].hasPointerCapture(ids[finish])).toBe(false);
+        expect(handles[last].hasPointerCapture(ids[last])).toBe(true);
+        expect(document.querySelectorAll("[data-resize-iframe-shield]")).toHaveLength(1);
+        expect(document.body.style.overflow).toBe(finish === "outer" ? "scroll" : "hidden");
+        end(last, terminal === "cancel-last");
+        expect(document.body.style.userSelect).toBe("text");
+        expect(document.body.style.getPropertyPriority("user-select")).toBe("important");
+        expect(document.body.style.overflow).toBe("scroll");
+        expect(document.body.style.getPropertyPriority("overflow")).toBe("important");
+        expect(document.querySelectorAll("[data-resize-iframe-shield]")).toHaveLength(0);
+        expect(handles[last].hasPointerCapture(ids[last])).toBe(false);
+
+        document.body.style.setProperty("user-select", "all", "important");
+        startPanelResize(handles.outer, 880, 33, "pen");
+        end(finish, false);
+        end(last, true);
+        expect(document.body.style.userSelect).toBe("none");
+        expect(handles.outer.hasPointerCapture(33)).toBe(true);
+        fireEvent.pointerUp(handles.outer, { pointerId: 33, pointerType: "pen", clientX: 880 });
+        expect(document.body.style.userSelect).toBe("all");
+        expect(document.body.style.getPropertyPriority("user-select")).toBe("important");
+      } finally {
+        view.unmount();
+        document.body.style.removeProperty("user-select");
+        document.body.style.removeProperty("overflow");
+      }
+    },
+  );
+
+  it.each(
+    (["outer", "inner"] as const).flatMap((start) =>
+      (["inner", "all"] as const).map((unmount) => ({ start, unmount })),
+    ),
+  )(
+    "releases overlapping resize selection when $unmount unmounts after $start starts first",
+    async ({ start, unmount }) => {
+      const { view, handles, ids } = await overlappingResizes(start);
+      try {
+        if (unmount === "all") view.unmount();
+        else {
+          // The inner divider unmounts while the outer pane and its gesture remain live.
+          fireEvent.click(screen.getByRole("button", { name: "Toggle file tree" }));
+          expect(handles.inner.hasPointerCapture(ids.inner)).toBe(false);
+          expect(handles.outer.hasPointerCapture(ids.outer)).toBe(true);
+          expect(document.body.style.userSelect).toBe("none");
+          expect(document.querySelectorAll("[data-resize-iframe-shield]")).toHaveLength(1);
+          fireEvent.pointerCancel(handles.outer, { pointerId: ids.outer });
+        }
+        expect(document.body.style.userSelect).toBe("text");
+        expect(document.body.style.getPropertyPriority("user-select")).toBe("important");
+        expect(document.body.style.overflow).toBe("scroll");
+        expect(document.body.style.getPropertyPriority("overflow")).toBe("important");
+        expect(document.querySelectorAll("[data-resize-iframe-shield]")).toHaveLength(0);
+      } finally {
+        view.unmount();
+        document.body.style.removeProperty("user-select");
+        document.body.style.removeProperty("overflow");
+      }
+    },
+  );
+
+  it.each([
+    "cancel",
+    "capture",
+    "escape",
+    "blur",
+    "visibility",
+    "close",
+    "pane",
+    "mobile",
+    "rowHidden",
+    "unmount",
+    "buttons",
+  ])("restores outer resize ownership, style priorities and transcript state on %s", async (reason) => {
+    const view = render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+    const panel = screen.getByRole("region", { name: /file browser/i });
+    const observer = panelObserver(panel);
+    act(() => observer.__fire(1200));
+    const handle = screen.getByRole("separator", { name: "Resize panel" });
+    const content = screen
+      .getByRole("tabpanel", { name: /^chat$/i })
+      .querySelector<HTMLElement>(".relative.mx-auto.w-full")!;
+    const rect = vi.spyOn(content, "getBoundingClientRect").mockReturnValue({ width: 568 } as DOMRect);
+    let visibility: ReturnType<typeof vi.spyOn> | undefined;
+    vi.useFakeTimers({ toFake: ["requestAnimationFrame", "cancelAnimationFrame"] });
+    document.body.style.setProperty("user-select", "text", "important");
+    document.body.style.setProperty("overflow", "scroll", "important");
+    try {
+      startPanelResize(handle);
+      expect(handle).toHaveFocus();
+      expect(handle.hasPointerCapture(1)).toBe(true);
+      expect(panel).toHaveAttribute("data-resize-iframe-shield");
+      expect(content).toHaveAttribute("data-resize-snapshot", "true");
+      const frame = document.createElement("iframe");
+      frame.title = "Mounted during resize";
+      panel.append(frame);
+      expect(frame.closest("[data-resize-iframe-shield]")).toBe(panel);
+      fireEvent.pointerMove(document, { pointerId: 1, clientX: 820, buttons: 1 });
+      act(() => vi.advanceTimersToNextFrame());
+      expect(handle).toHaveAttribute("aria-valuenow", "660");
+      fireEvent.pointerMove(document, { pointerId: 1, clientX: 780, buttons: 1 });
+      if (reason === "cancel") fireEvent.pointerCancel(document, { pointerId: 1 });
+      else if (reason === "capture") fireEvent.lostPointerCapture(handle, { pointerId: 1 });
+      else if (reason === "escape") fireEvent.keyDown(document, { key: "Escape" });
+      else if (reason === "blur") fireEvent(window, new Event("blur"));
+      else if (reason === "visibility") {
+        visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+        fireEvent(document, new Event("visibilitychange"));
+      } else if (reason === "close") fireEvent.click(screen.getByRole("button", { name: /files browser/i }));
+      else if (reason === "pane") fireEvent.click(screen.getByRole("button", { name: /agent list/i }));
+      else if (reason === "mobile") {
+        vi.stubGlobal("innerWidth", 390);
+        fireEvent(window, new Event("resize"));
+      } else if (reason === "rowHidden") act(() => observer.__fire(0));
+      else if (reason === "unmount") view.unmount();
+      else fireEvent.pointerMove(document, { pointerId: 1, clientX: 780, buttons: 0 });
+      expect(panel).not.toHaveAttribute("data-resize-iframe-shield");
+      expect(handle.hasPointerCapture(1)).toBe(false);
+      expect(content).not.toHaveAttribute("data-resize-snapshot");
+      expect(document.body.style.getPropertyValue("user-select")).toBe("text");
+      expect(document.body.style.getPropertyPriority("user-select")).toBe("important");
+      expect(document.body.style.getPropertyValue("overflow")).toBe("scroll");
+      expect(document.body.style.getPropertyPriority("overflow")).toBe("important");
+      act(() => vi.advanceTimersToNextFrame());
+      act(() => vi.advanceTimersToNextFrame());
+      if (reason !== "unmount") {
+        act(() => observer.__fire(1200));
+        expect(panel.style.getPropertyValue("--panel-w")).toBe("600px");
+        fireEvent.pointerMove(document, { pointerId: 1, clientX: 300, buttons: 1 });
+        fireEvent.pointerUp(document, { pointerId: 1, clientX: 300 });
+        act(() => vi.advanceTimersToNextFrame());
+        expect(panel.style.getPropertyValue("--panel-w")).toBe("600px");
+      }
+    } finally {
+      view.unmount();
+      visibility?.mockRestore();
+      rect.mockRestore();
+      vi.useRealTimers();
+      document.body.style.removeProperty("user-select");
+      document.body.style.removeProperty("overflow");
+    }
+  });
+
+  it("owns only one primary pointer and commits its final release before a queued frame", async () => {
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+    act(() => panelObserver().__fire(1200));
+    const panel = screen.getByRole("region", { name: /file browser/i });
+    const handle = screen.getByRole("separator", { name: "Resize panel" });
+    for (const input of [
+      { button: 2, isPrimary: true },
+      { button: 0, isPrimary: false },
+    ]) {
+      fireEvent.pointerDown(handle, { ...input, pointerId: 8, clientX: 880 });
+      expect(panel).not.toHaveAttribute("data-resize-iframe-shield");
+    }
+    startPanelResize(handle, 880, 7);
+    const owner = panel.getAttribute("data-resize-iframe-shield");
+    fireEvent.pointerDown(handle, { button: 0, isPrimary: true, pointerId: 8, clientX: 820 });
+    fireEvent.pointerMove(document, { pointerId: 8, clientX: 400, buttons: 1 });
+    fireEvent.pointerCancel(document, { pointerId: 8 });
+    fireEvent.pointerUp(document, { pointerId: 8, clientX: 400 });
+    fireEvent.lostPointerCapture(handle, { pointerId: 8 });
+    expect(panel.getAttribute("data-resize-iframe-shield")).toBe(owner);
+    expect(handle).toHaveAttribute("aria-valuenow", "600");
+    fireEvent.pointerMove(document, { pointerId: 7, clientX: 840, buttons: 1 });
+    fireEvent.pointerUp(document, { pointerId: 7, clientX: 800 });
+    expect(handle).toHaveAttribute("aria-valuenow", "680");
+    expect(handle.hasPointerCapture(7)).toBe(false);
+    expect(panel).not.toHaveAttribute("data-resize-iframe-shield");
+    fireEvent.pointerCancel(document, { pointerId: 7 });
+    fireEvent.lostPointerCapture(handle, { pointerId: 7 });
+    expect(handle).toHaveAttribute("aria-valuenow", "680");
+  });
+
+  it("uses live outer bounds without losing the remembered width on an unmoved clamped click", async () => {
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+    const observer = panelObserver();
+    act(() => observer.__fire(1200));
+    const handle = screen.getByRole("separator", { name: "Resize panel" });
+    startPanelResize(handle);
+    fireEvent.pointerUp(document, { pointerId: 1, clientX: 820 });
+    await waitFor(() => expect(handle).toHaveAttribute("aria-valuenow", "660"));
+    act(() => observer.__fire(900));
+    await waitFor(() => expect(handle).toHaveAttribute("aria-valuenow", "492"));
+    startPanelResize(handle);
+    fireEvent.pointerUp(document, { pointerId: 1, clientX: 880 });
+    act(() => observer.__fire(1200));
+    await waitFor(() => expect(handle).toHaveAttribute("aria-valuenow", "660"));
+    startPanelResize(handle);
+    fireEvent.pointerMove(document, { pointerId: 1, clientX: 300, buttons: 1 });
+    act(() => observer.__fire(900));
+    expect(Number(handle.getAttribute("aria-valuenow"))).toBeLessThanOrEqual(
+      Number(handle.getAttribute("aria-valuemax")),
+    );
+    fireEvent.pointerUp(document, { pointerId: 1, clientX: 300 });
+    expect(handle).toHaveAttribute("aria-valuenow", "492");
+    act(() => observer.__fire(1200));
+    await waitFor(() => expect(handle).toHaveAttribute("aria-valuenow", "492"));
+  });
+
   it("resizes the panel within min/max while dragging", async () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
@@ -4008,8 +4261,8 @@ describe("WorkPage", () => {
       y: 0,
       toJSON: () => ({}),
     } as DOMRect);
-    fireEvent.pointerDown(handle, { clientX: 880, clientY: 100, pointerId: 1 });
-    fireEvent.pointerMove(document, { clientX: 820, clientY: 100, pointerId: 1 });
+    startPanelResize(handle);
+    fireEvent.pointerMove(document, { clientX: 820, clientY: 100, pointerId: 1, buttons: 1 });
     fireEvent.pointerUp(document, { clientX: 820, clientY: 100, pointerId: 1 });
     expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*660px/);
   });
@@ -4027,9 +4280,9 @@ describe("WorkPage", () => {
       return frames.length;
     });
     try {
-      fireEvent.pointerDown(handle, { clientX: 880, clientY: 100, pointerId: 1 });
-      fireEvent.pointerMove(document, { clientX: 840, clientY: 100, pointerId: 1 });
-      fireEvent.pointerMove(document, { clientX: 820, clientY: 100, pointerId: 1 });
+      startPanelResize(handle);
+      fireEvent.pointerMove(document, { clientX: 840, clientY: 100, pointerId: 1, buttons: 1 });
+      fireEvent.pointerMove(document, { clientX: 820, clientY: 100, pointerId: 1, buttons: 1 });
 
       expect(requestFrame).toHaveBeenCalledOnce();
       expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*600px/);
@@ -4058,13 +4311,13 @@ describe("WorkPage", () => {
     });
     let dragging = false;
     try {
-      fireEvent.pointerDown(handle, { clientX: 880, clientY: 100, pointerId: 1 });
+      startPanelResize(handle);
       dragging = true;
-      fireEvent.pointerMove(document, { clientX: 840, clientY: 100, pointerId: 1 });
+      fireEvent.pointerMove(document, { clientX: 840, clientY: 100, pointerId: 1, buttons: 1 });
       act(() => frames[0]?.(performance.now()));
       expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*640px/);
 
-      fireEvent.pointerMove(document, { clientX: 820, clientY: 100, pointerId: 1 });
+      fireEvent.pointerMove(document, { clientX: 820, clientY: 100, pointerId: 1, buttons: 1 });
       view.rerender(
         <WorkPage id="s1" cwd="/p" configurationGeneration={1} onBack={() => {}} onOpenSettings={() => {}} />,
       );
@@ -4096,8 +4349,8 @@ describe("WorkPage", () => {
     });
     const cancelFrame = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
     try {
-      fireEvent.pointerDown(handle, { clientX: 880, clientY: 100, pointerId: 1 });
-      fireEvent.pointerMove(document, { clientX: 820, clientY: 100, pointerId: 1 });
+      startPanelResize(handle);
+      fireEvent.pointerMove(document, { clientX: 820, clientY: 100, pointerId: 1, buttons: 1 });
       fireEvent.pointerUp(document, { clientX: 820, clientY: 100, pointerId: 1 });
 
       expect(cancelFrame).toHaveBeenCalledWith(1);
@@ -4128,10 +4381,10 @@ describe("WorkPage", () => {
       return frames.length;
     });
     try {
-      fireEvent.pointerDown(handle, { clientX: 880, clientY: 100, pointerId: 1 });
+      startPanelResize(handle);
       expect(document.body.style.userSelect).toBe("none");
       expect(document.body.style.overflow).toBe("hidden");
-      fireEvent.pointerMove(document, { clientX: 820, clientY: 100, pointerId: 1 });
+      fireEvent.pointerMove(document, { clientX: 820, clientY: 100, pointerId: 1, buttons: 1 });
       act(() => frames[0]?.(performance.now()));
       expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*660px/);
 
@@ -4157,7 +4410,7 @@ describe("WorkPage", () => {
     const handle = screen.getByRole("separator", { name: /resize panel/i });
     const requestFrame = vi.spyOn(window, "requestAnimationFrame");
     try {
-      fireEvent.pointerDown(handle, { clientX: 880, clientY: 100, pointerId: 1 });
+      startPanelResize(handle);
       expect(document.body.style.userSelect).toBe("none");
       view.unmount();
 
@@ -4199,14 +4452,14 @@ describe("WorkPage", () => {
     });
     let dragging = false;
     try {
-      fireEvent.pointerDown(handle, { clientX: 880, clientY: 100, pointerId: 1 });
+      startPanelResize(handle);
       dragging = true;
       expect(chat).not.toHaveClass("er-chat-resize-snapshot");
       expect(chat.getAttribute("style") ?? "").not.toContain("--chat-snapshot-w");
       expect(transcriptContent).toHaveAttribute("data-resize-snapshot", "true");
       expect(transcriptContent?.getAttribute("style")).toMatch(/--transcript-snapshot-w:\s*568px/);
 
-      fireEvent.pointerMove(document, { clientX: 820, clientY: 100, pointerId: 1 });
+      fireEvent.pointerMove(document, { clientX: 820, clientY: 100, pointerId: 1, buttons: 1 });
       act(() => frames[0]?.(performance.now()));
       expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*660px/);
       expect(transcriptContent?.getAttribute("style")).toMatch(/--transcript-snapshot-w:\s*568px/);
@@ -4277,8 +4530,8 @@ describe("WorkPage", () => {
       y: 0,
       toJSON: () => ({}),
     } as DOMRect);
-    fireEvent.pointerDown(handle, { clientX: 880, clientY: 100, pointerId: 1 });
-    fireEvent.pointerMove(document, { clientX: 820, clientY: 100, pointerId: 1 });
+    startPanelResize(handle);
+    fireEvent.pointerMove(document, { clientX: 820, clientY: 100, pointerId: 1, buttons: 1 });
     fireEvent.pointerUp(document, { clientX: 820, clientY: 100, pointerId: 1 });
     expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*660px/);
     act(() => observer.__fire(1600));
@@ -4305,8 +4558,8 @@ describe("WorkPage", () => {
       y: 0,
       toJSON: () => ({}),
     } as DOMRect);
-    fireEvent.pointerDown(handle, { clientX: 880, clientY: 100, pointerId: 1 });
-    fireEvent.pointerMove(document, { clientX: 1880, clientY: 100, pointerId: 1 });
+    startPanelResize(handle);
+    fireEvent.pointerMove(document, { clientX: 1880, clientY: 100, pointerId: 1, buttons: 1 });
     fireEvent.pointerUp(document, { clientX: 1880, clientY: 100, pointerId: 1 });
     expect(panel.getAttribute("style")).toMatch(/--panel-w:\s*341px/);
   });
@@ -4389,7 +4642,7 @@ describe("WorkPage", () => {
     await screen.findByText("starting research");
     panelObserver().__fire(1000);
     const handle = screen.getByRole("separator", { name: /resize panel/i });
-    fireEvent.pointerDown(handle, { clientX: 880, clientY: 100, pointerId: 1 });
+    startPanelResize(handle);
     const region = screen.getByRole("region", { name: /file browser/i });
     expect(region.className).not.toContain("transition-");
     fireEvent.pointerUp(document, { clientX: 880, clientY: 100, pointerId: 1 });

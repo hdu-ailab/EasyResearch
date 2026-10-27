@@ -148,6 +148,49 @@ describe("Web request admission", () => {
     }
   });
 
+  it.each(["GET", "HEAD"])("allows an explicitly validated opaque preview %s without changing the default", (method) => {
+    const listener = { host: "127.0.0.1", port: 43123 };
+    const request = new Request("http://127.0.0.1:43123/api/file/preview/validated/report.html", {
+      method, headers: { Origin: "null" },
+    });
+    expect(rejectDisallowedWebRequest(request, listener)?.status).toBe(403);
+    expect(rejectDisallowedWebRequest(request, listener, { allowOpaquePreviewOrigin: false })?.status).toBe(403);
+    expect(rejectDisallowedWebRequest(request, listener, { allowOpaquePreviewOrigin: true })).toBeUndefined();
+  });
+
+  it("never applies the opaque-preview exception to another Origin or a write/preflight method", () => {
+    const listener = { host: "127.0.0.1", port: 43123 };
+    const options = { allowOpaquePreviewOrigin: true };
+    for (const origin of ["http://attacker.example:43123", "https://127.0.0.1:43123", "blob:null/id", "NULL"]) {
+      const request = new Request("http://127.0.0.1:43123/api/file/preview/id/report.html", {
+        headers: { Origin: origin },
+      });
+      expect(rejectDisallowedWebRequest(request, listener, options)?.status).toBe(403);
+    }
+    for (const method of ["POST", "PUT", "PATCH", "DELETE", "OPTIONS"]) {
+      const request = new Request("http://127.0.0.1:43123/api/file/preview/id/report.html", {
+        method, headers: { Origin: "null" },
+      });
+      expect(rejectDisallowedWebRequest(request, listener, options)?.status).toBe(403);
+    }
+  });
+
+  it("retains Host, listener port and wildcard authority validation for opted-in opaque reads", async () => {
+    const options = { allowOpaquePreviewOrigin: true };
+    for (const listener of [
+      { host: "127.0.0.1", port: 43123 },
+      { host: "0.0.0.0", port: 43123, localInterfaceAddresses: ["127.0.0.1"] },
+    ]) {
+      for (const host of ["attacker.example:43123", "127.0.0.1:43124", "2130706433:43123", "localhost:invalid"]) {
+        const rejection = rejectDisallowedWebRequest(new Request("http://127.0.0.1:43123/api/file/preview/id/report.html", {
+          headers: { Host: host, Origin: "null", Authorization: "secret-credential" },
+        }), listener, options);
+        expect(rejection?.status).toBe(403);
+        expect(await rejection?.text()).not.toContain("secret-credential");
+      }
+    }
+  });
+
   it("rejects non-HTTP and malformed serialized Origin values", () => {
     const listener = { host: "127.0.0.1", port: 43123 };
     for (const origin of [

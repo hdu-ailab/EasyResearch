@@ -31,6 +31,8 @@ import type {
   DirectoryListingDto,
   FileContentDto,
   FileEntryDto,
+  FileRenameResultDto,
+  FileUploadResultDto,
   NetworkProxySettingsDto,
   NetworkProxySettingsErrorDto,
   NetworkProxySettingsSourceDto,
@@ -981,6 +983,18 @@ export function parseFileContent(value: unknown): FileContentDto {
     truncated: requiredBoolean(source, "truncated"),
     binary: requiredBoolean(source, "binary"),
   };
+}
+
+export function parseFileUploadResult(value: unknown): FileUploadResultDto {
+  const source = record(value, "file upload");
+  const entry = parseFileEntry(source.entry);
+  if (entry.kind !== "file" || !entry.name || !entry.path) throw new Error("Invalid API response: uploaded file");
+  return { entry: { ...entry, kind: "file" } };
+}
+
+export function parseFileRenameResult(value: unknown): FileRenameResultDto {
+  const source = record(value, "file rename");
+  return { oldPath: requiredIdentityString(source, "oldPath"), ...parseFileUploadResult(source) };
 }
 
 export function parseActiveSession(value: unknown): ActiveSessionDto {

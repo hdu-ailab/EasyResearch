@@ -327,7 +327,7 @@ async function runPackagedSmoke(pkg: DesktopSmokePackage, root: string): Promise
     await waitFor("packaged desktop active Agent before restart", () => {
       const state = currentDesktopSmokeState(join(smokeDir, "events.jsonl"));
       if (!state) return false;
-      if (state.agentRunning && state.stateVisible && !state.restartAccepted) runningState = state;
+      if (state.agentRunning && state.stateVisible && state.workFilesVerified && !state.restartAccepted) runningState = state;
       return runningState !== undefined && modelRequestActive;
     }, 120_000);
     const origin = runningState?.origin;

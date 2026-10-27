@@ -1,3 +1,4 @@
+import type { Session, WebContents } from "electron";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -35,17 +36,34 @@ it.each([200, 503])("uses the shell-resolved root for desktop custody and child 
     getVersion: () => "1.2.3",
     quit: () => { quit = true; },
   });
+  let permissionRequest: NonNullable<Parameters<Session["setPermissionRequestHandler"]>[0]> | undefined;
+  let permissionCheck: NonNullable<Parameters<Session["setPermissionCheckHandler"]>[0]> | undefined;
+  let permissionWindow: Window | undefined;
   class Window extends EventEmitter {
+    url = "";
+    destroyed = false;
+    rendererDestroyed = false;
     webContents = Object.assign(new EventEmitter(), {
-      session: { webRequest: { onBeforeSendHeaders() {} }, setPermissionRequestHandler() {} },
+      session: {
+        webRequest: { onBeforeSendHeaders() {} },
+        setPermissionRequestHandler: (handler: Parameters<Session["setPermissionRequestHandler"]>[0]) => {
+          permissionRequest = handler ?? undefined;
+          permissionWindow = this;
+        },
+        setPermissionCheckHandler: (handler: Parameters<Session["setPermissionCheckHandler"]>[0]) => {
+          permissionCheck = handler ?? undefined;
+        },
+      },
       setWindowOpenHandler() {},
+      getURL: () => this.url,
+      isDestroyed: () => this.rendererDestroyed,
     });
-    loadURL = async () => {};
+    loadURL = async (url: string) => { this.url = url; };
     show() {}
     hide() {}
     focus() {}
-    destroy() {}
-    isDestroyed() { return false; }
+    destroy() { this.destroyed = true; }
+    isDestroyed() { return this.destroyed; }
   }
   class Tray extends EventEmitter {
     setToolTip() {}
@@ -109,9 +127,79 @@ it.each([200, 503])("uses the shell-resolved root for desktop custody and child 
     expect(accepted).toBe(healthStatus === 200);
     expect(existsSync(transitionLeasePath(shellRoot))).toBe(false);
     expect(existsSync(transitionLeasePath(hostRoot))).toBe(false);
+    if (healthStatus === 200) {
+      await vi.waitFor(() => {
+        expect(permissionRequest).toBeTypeOf("function");
+        expect(permissionCheck).toBeTypeOf("function");
+        expect(permissionWindow?.url).toBe("http://127.0.0.1:43123/#/");
+      });
+      const window = permissionWindow!;
+      const owner = window.webContents as unknown as WebContents;
+      const origin = "http://127.0.0.1:43123";
+      const details = { isMainFrame: true, requestingUrl: `${origin}/` };
+      const request = (
+        contents: WebContents,
+        permission: Parameters<NonNullable<typeof permissionRequest>>[1],
+        source = details,
+      ) => {
+        const callback = vi.fn();
+        permissionRequest!(contents, permission, callback, source);
+        expect(callback).toHaveBeenCalledOnce();
+        return callback.mock.calls[0]![0];
+      };
+      for (const permission of ["fullscreen", "clipboard-sanitized-write"] as const) {
+        expect(request(owner, permission)).toBe(true);
+        expect(permissionCheck!(owner, permission, origin, details)).toBe(true);
+        expect(request(owner, permission, { ...details, isMainFrame: false })).toBe(false);
+        expect(permissionCheck!(owner, permission, origin, { ...details, isMainFrame: false })).toBe(false);
+        const foreign = { getURL: () => window.url } as WebContents;
+        expect(request(foreign, permission)).toBe(false);
+        expect(permissionCheck!(foreign, permission, origin, details)).toBe(false);
+        expect(permissionCheck!(null, permission, origin, details)).toBe(false);
+        expect(permissionCheck!(owner, permission, "null", details)).toBe(false);
+        expect(permissionCheck!(owner, permission, "http://127.0.0.1:43124", details)).toBe(false);
+        expect(permissionCheck!(owner, permission, origin, { isMainFrame: true })).toBe(false);
+
+        window.url = `${origin}/index.html#/work/session`;
+        expect(request(owner, permission)).toBe(false);
+        expect(permissionCheck!(owner, permission, origin, details)).toBe(false);
+        const index = { ...details, requestingUrl: `${origin}/index.html` };
+        expect(request(owner, permission, index)).toBe(true);
+        expect(permissionCheck!(owner, permission, origin, index)).toBe(true);
+        window.url = `${origin}/api/file/preview/scope/report.html`;
+        const preview = { ...details, requestingUrl: window.url };
+        expect(request(owner, permission, preview)).toBe(false);
+        expect(permissionCheck!(owner, permission, origin, preview)).toBe(false);
+        window.url = `${origin}/#/`;
+
+        window.rendererDestroyed = true;
+        expect(request(owner, permission)).toBe(false);
+        expect(permissionCheck!(owner, permission, origin, details)).toBe(false);
+        window.rendererDestroyed = false;
+        window.destroyed = true;
+        expect(request(owner, permission)).toBe(false);
+        expect(permissionCheck!(owner, permission, origin, details)).toBe(false);
+        window.destroyed = false;
+      }
+      for (const permission of ["clipboard-read", "media", "notifications"] as const) {
+        expect(request(owner, permission)).toBe(false);
+        expect(permissionCheck!(owner, permission, origin, details)).toBe(false);
+      }
+      expect(permissionCheck!(owner, "deprecated-sync-clipboard-read", origin, details)).toBe(false);
+    }
   } finally {
     app.emit("before-quit", { preventDefault() {} });
     await vi.waitFor(() => expect(quit).toBe(true));
+    if (permissionWindow && permissionCheck && permissionRequest) {
+      const owner = permissionWindow.webContents as unknown as WebContents;
+      const details = { isMainFrame: true, requestingUrl: "http://127.0.0.1:43123/" };
+      // Terminal ownership, not only a destroyed BrowserWindow, revokes grants.
+      permissionWindow.destroyed = false;
+      expect(permissionCheck(owner, "fullscreen", "http://127.0.0.1:43123", details)).toBe(false);
+      const callback = vi.fn();
+      permissionRequest(owner, "clipboard-sanitized-write", callback, details);
+      expect(callback).toHaveBeenCalledExactlyOnceWith(false);
+    }
     if (existsSync(transitionLeasePath(shellRoot))) {
       adoptTransitionLease(shellRoot, "desktop", process.pid, hostToken).release();
     }

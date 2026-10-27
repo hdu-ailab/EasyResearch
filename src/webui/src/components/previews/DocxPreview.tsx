@@ -1,6 +1,6 @@
 import { AlertTriangle, Download, FileText, Minus, Plus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { RawFileSizeError, rawFileUrl } from "../../api";
+import { downloadFileUrl, RawFileSizeError } from "../../api";
 import type { MessageKey } from "../../i18n/messages";
 import { useI18n } from "../../i18n/useI18n";
 import { ActionGlyph } from "../studio/ActionGlyph";
@@ -240,7 +240,7 @@ export function DocxPreview({ path, revision = 0, loader }: DocxPreviewProps) {
           </button>
           <span className="mx-1 h-4 w-px shrink-0 bg-v2-grey-200" aria-hidden />
           <a
-            href={rawFileUrl(path)}
+            href={downloadFileUrl(path)}
             download
             aria-label={t("preview.docx.download")}
             className="flex h-7 shrink-0 items-center gap-1 rounded-md px-1.5 text-[12px] font-medium text-v2-text-text-muted transition-colors hover:bg-v2-grey-100 hover:text-v2-text-text-base"

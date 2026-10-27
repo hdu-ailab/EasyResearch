@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { rawFileUrl } from "../../api";
+import { downloadFileUrl } from "../../api";
 import { DocxPreview } from "./DocxPreview";
 import type { DocxLoader } from "./docx-runtime";
 
@@ -34,12 +34,15 @@ afterEach(() => {
 });
 
 describe("DocxPreview", () => {
-  it("loads one document into an isolated iframe and keeps a raw download", async () => {
+  it("loads one document into an isolated iframe and keeps an attachment download", async () => {
     render(<DocxPreview path="/p/paper.docx" loader={fakeLoader()} />);
 
     const controls = screen.getByRole("group", { name: "DOCX controls" });
     expect(controls).toBeVisible();
-    expect(screen.getByRole("link", { name: "Download DOCX" })).toHaveAttribute("href", rawFileUrl("/p/paper.docx"));
+    expect(screen.getByRole("link", { name: "Download DOCX" })).toHaveAttribute(
+      "href",
+      downloadFileUrl("/p/paper.docx"),
+    );
     const frame = screen.getByTitle("DOCX document") as HTMLIFrameElement;
     expect(frame).toHaveAttribute("sandbox", "allow-same-origin");
     expect(frame).toHaveClass("invisible");

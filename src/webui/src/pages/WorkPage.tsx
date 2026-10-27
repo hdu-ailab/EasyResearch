@@ -1,5 +1,5 @@
 import { Bot, FileSearch, Settings } from "lucide-react";
-import { type Ref, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type Ref, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   SessionTreeDto,
   SkillCommandDto,
@@ -39,6 +39,7 @@ import { useSessionConnection } from "../hooks/useSessionConnection";
 import { useTranscriptHistory } from "../hooks/useTranscriptHistory";
 import { useI18n } from "../i18n/useI18n";
 import { buildMessageTreeMeta, versionTarget } from "../message-tree";
+import { shieldResizeIframes, suppressResizeSelection } from "../resize-iframe-shield";
 import {
   fromSnapshot,
   hydrateSubagentSummaryOwner,
@@ -287,7 +288,7 @@ function SessionWorkPage({
     hydrationRevision: number;
     generation: number | null;
   } | null>(null);
-  const activeResizeCleanup = useRef<(() => void) | null>(null);
+  const activeResizeCleanup = useRef<((settle?: boolean) => void) | null>(null);
   const resizing = useRef(false);
   const appliedPanelWidth = useRef<number | null>(null);
   const livePanelWidth = useRef<number | null>(null);
@@ -629,7 +630,11 @@ function SessionWorkPage({
   useEffect(() => {
     const row = rowRef.current;
     if (!row) return;
-    const observer = new ResizeObserver(([entry]) => setAvailable(entry?.contentRect.width));
+    const observer = new ResizeObserver(([entry]) => {
+      const width = entry?.contentRect.width;
+      if (width !== undefined && width <= 0) activeResizeCleanup.current?.();
+      setAvailable(width);
+    });
     observer.observe(row);
     return () => observer.disconnect();
   }, []);
@@ -638,10 +643,10 @@ function SessionWorkPage({
     if (available !== undefined) setPanelMotionReady(true);
   }, [available]);
 
-  useEffect(
+  useLayoutEffect(
     () => () => {
       if (resizeSettleFrame.current !== null) cancelAnimationFrame(resizeSettleFrame.current);
-      activeResizeCleanup.current?.();
+      activeResizeCleanup.current?.(false);
     },
     [],
   );
@@ -654,6 +659,7 @@ function SessionWorkPage({
       wasMobile = mobile;
       setIsMobile(mobile);
       if (mobile) {
+        activeResizeCleanup.current?.();
         setMobileView("chat");
         setPanel(null);
       }
@@ -729,15 +735,27 @@ function SessionWorkPage({
 
   const panelMin = Math.max(PANEL_MIN, window.innerWidth / 3);
   const panelMax = available === undefined ? 480 : Math.max(panelMin, available - CHAT_MIN - 8);
+  const panelBounds = useRef({ min: panelMin, max: panelMax });
+  panelBounds.current = { min: panelMin, max: panelMax };
+  const clampPanelWidth = useCallback((width: number) => {
+    const { min, max } = panelBounds.current;
+    return Math.round(Math.min(max, Math.max(min, width)));
+  }, []);
   const defaultPanelWidth = available === undefined ? PANEL_DEFAULT : Math.max(panelMin, Math.round(available / 2));
   const clampedPanelWidth =
     available === undefined
       ? panelWidth
       : panelWidthTouched
-        ? Math.min(panelWidth, panelMax)
+        ? Math.max(panelMin, Math.min(panelWidth, panelMax))
         : Math.min(defaultPanelWidth, panelMax);
   const renderedPanelWidth =
-    sizing && appliedPanelWidth.current !== null ? appliedPanelWidth.current : clampedPanelWidth;
+    sizing && appliedPanelWidth.current !== null ? clampPanelWidth(appliedPanelWidth.current) : clampedPanelWidth;
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Pane identity and visibility are explicit gesture cancellation boundaries.
+  useLayoutEffect(() => {
+    // Changing or hiding the pane ends its pointer gesture; width preference stays untouched.
+    return () => activeResizeCleanup.current?.();
+  }, [panel, isMobile]);
   const activeTemporaryTab = activeTab.startsWith("tool:")
     ? tabsState.tabs.find((tab) => tab.key === activeTab)
     : undefined;
@@ -1025,36 +1043,50 @@ function SessionWorkPage({
   }, []);
 
   const startResize = useCallback(
-    (event: React.PointerEvent) => {
-      event.preventDefault();
+    (event: React.PointerEvent<HTMLElement>) => {
+      if (event.button !== 0 || !event.isPrimary || activeResizeCleanup.current || isMobile || !panelInteractive)
+        return;
       const handle = event.currentTarget;
       const panelNode = panelRef.current;
       if (!panelNode) return;
+      handle.setPointerCapture(event.pointerId);
+      event.preventDefault();
+      handle.focus({ preventScroll: true });
       if (resizeSettleFrame.current !== null) {
         cancelAnimationFrame(resizeSettleFrame.current);
         resizeSettleFrame.current = null;
       }
-      activeResizeCleanup.current?.();
       resizing.current = true;
+      const pointerId = event.pointerId;
       const startX = event.clientX;
       const startWidth = clampedPanelWidth;
-      transcriptRef.current?.beginResizeSnapshot();
+      const transcript = transcriptRef.current;
+      transcript?.beginResizeSnapshot();
       appliedPanelWidth.current = startWidth;
       livePanelWidth.current = startWidth;
       setSizing(true);
-      document.body.style.userSelect = "none";
-      document.body.style.overflow = "hidden";
+      const bodyStyle = document.body.style;
+      const originalStyles = ["overflow", "overflow-x", "overflow-y"].map((property) => ({
+        property,
+        value: bodyStyle.getPropertyValue(property),
+        priority: bodyStyle.getPropertyPriority(property),
+      }));
+      const releaseShield = shieldResizeIframes(panelNode);
+      const releaseSelection = suppressResizeSelection(bodyStyle);
+      bodyStyle.setProperty("overflow", "hidden");
       let frame: number | null = null;
       let moved = false;
       let released = false;
 
       const applyWidth = () => {
         frame = null;
+        if (released) return;
         const width = livePanelWidth.current;
         if (width === null) return;
-        appliedPanelWidth.current = width;
-        panelNode.style.setProperty("--panel-w", `${width}px`);
-        handle.setAttribute("aria-valuenow", String(width));
+        const bounded = clampPanelWidth(width);
+        appliedPanelWidth.current = bounded;
+        panelNode.style.setProperty("--panel-w", `${bounded}px`);
+        handle.setAttribute("aria-valuenow", String(bounded));
       };
 
       const releaseInteraction = () => {
@@ -1064,14 +1096,20 @@ function SessionWorkPage({
           cancelAnimationFrame(frame);
           frame = null;
         }
-        transcriptRef.current?.endResizeSnapshot();
+        transcript?.endResizeSnapshot();
         resizing.current = false;
-        document.body.style.userSelect = "";
-        document.body.style.overflow = "";
+        releaseShield();
+        releaseSelection();
+        for (const { property, value, priority } of originalStyles) bodyStyle.setProperty(property, value, priority);
         document.removeEventListener("pointermove", move);
         document.removeEventListener("pointerup", stop);
-        document.removeEventListener("pointercancel", cancel);
+        document.removeEventListener("pointercancel", cancelPointer);
+        handle.removeEventListener("lostpointercapture", cancelPointer);
+        document.removeEventListener("keydown", keyDown);
+        document.removeEventListener("visibilitychange", visibilityChanged);
+        window.removeEventListener("blur", blur);
         activeResizeCleanup.current = null;
+        if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
         return true;
       };
 
@@ -1086,8 +1124,10 @@ function SessionWorkPage({
         });
       };
 
-      const stop = () => {
-        if (released) return;
+      const stop = (upEvent: PointerEvent) => {
+        if (released || upEvent.pointerId !== pointerId) return;
+        if (upEvent.clientX !== startX) moved = true;
+        if (moved) livePanelWidth.current = clampPanelWidth(startWidth + startX - upEvent.clientX);
         if (frame !== null) {
           cancelAnimationFrame(frame);
           frame = null;
@@ -1102,32 +1142,55 @@ function SessionWorkPage({
         settleSizing();
       };
 
-      const cancel = () => {
+      const cancel = (settle = true) => {
         if (!releaseInteraction()) return;
-        livePanelWidth.current = startWidth;
-        appliedPanelWidth.current = startWidth;
-        panelNode.style.setProperty("--panel-w", `${startWidth}px`);
-        handle.setAttribute("aria-valuenow", String(startWidth));
-        settleSizing();
+        const restored = clampPanelWidth(startWidth);
+        livePanelWidth.current = restored;
+        appliedPanelWidth.current = restored;
+        panelNode.style.setProperty("--panel-w", `${restored}px`);
+        handle.setAttribute("aria-valuenow", String(restored));
+        if (settle) settleSizing();
+        else {
+          livePanelWidth.current = null;
+          appliedPanelWidth.current = null;
+        }
       };
 
       const move = (moveEvent: PointerEvent) => {
-        const next = Math.round(Math.min(panelMax, Math.max(panelMin, startWidth + startX - moveEvent.clientX)));
+        if (released || moveEvent.pointerId !== pointerId) return;
+        if ((moveEvent.buttons & 1) === 0) {
+          cancel();
+          return;
+        }
+        const next = clampPanelWidth(startWidth + startX - moveEvent.clientX);
         livePanelWidth.current = next;
-        moved = true;
+        moved ||= moveEvent.clientX !== startX;
         if (frame === null) frame = requestAnimationFrame(applyWidth);
+      };
+      const cancelPointer = (pointerEvent: PointerEvent) => {
+        if (pointerEvent.pointerId === pointerId) cancel();
+      };
+      const blur = () => cancel();
+      const visibilityChanged = () => {
+        if (document.visibilityState === "hidden") cancel();
+      };
+      const keyDown = (keyEvent: KeyboardEvent) => {
+        if (keyEvent.key === "Escape") {
+          keyEvent.preventDefault();
+          cancel();
+        }
       };
 
       document.addEventListener("pointermove", move);
       document.addEventListener("pointerup", stop);
-      document.addEventListener("pointercancel", cancel);
-      activeResizeCleanup.current = () => {
-        if (!releaseInteraction()) return;
-        livePanelWidth.current = null;
-        appliedPanelWidth.current = null;
-      };
+      document.addEventListener("pointercancel", cancelPointer);
+      handle.addEventListener("lostpointercapture", cancelPointer);
+      document.addEventListener("keydown", keyDown);
+      document.addEventListener("visibilitychange", visibilityChanged);
+      window.addEventListener("blur", blur);
+      activeResizeCleanup.current = cancel;
     },
-    [panelMax, panelMin, clampedPanelWidth],
+    [clampPanelWidth, clampedPanelWidth, isMobile, panelInteractive],
   );
 
   const resizeWithKeyboard = useCallback(
@@ -1139,6 +1202,7 @@ function SessionWorkPage({
       else if (event.key === "End") next = panelMax;
       if (next === undefined) return;
       event.preventDefault();
+      activeResizeCleanup.current?.();
       setPanelWidth(Math.round(Math.min(panelMax, Math.max(panelMin, next))));
       setPanelWidthTouched(true);
     },
@@ -1464,7 +1528,7 @@ function SessionWorkPage({
             title={t("work.resizePanel")}
             onPointerDown={startResize}
             onKeyDown={resizeWithKeyboard}
-            className="absolute inset-y-0 left-[-0.5rem] z-30 hidden h-auto w-2 cursor-col-resize border-0 transition-colors hover:bg-v2-blue-600/10 focus-visible:bg-v2-blue-600/10 min-[820px]:block"
+            className="absolute inset-y-0 left-[-0.5rem] z-30 hidden h-auto w-2 touch-none cursor-col-resize border-0 transition-colors hover:bg-v2-blue-600/10 focus-visible:bg-v2-blue-600/10 min-[820px]:block"
           />
           <div
             id="work-panel-files"

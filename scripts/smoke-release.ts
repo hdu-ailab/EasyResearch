@@ -69,6 +69,7 @@ import { createWriteRecoverySmoke, runWriteRecoverySmoke } from "./smoke-write-r
 import { smokeEventChannel } from "./smoke-event-channel";
 import { verifyMacOsSignature } from "./macos-signing";
 import { smokeWorkspaceManagement } from "./smoke-workspace-management";
+import { smokeWorkFileOperations } from "./smoke-work-files-api";
 
 const targetName = process.argv[2];
 const target = TARGETS.find((candidate) => candidate.name === targetName);
@@ -2829,6 +2830,7 @@ try {
     body: JSON.stringify({ path: sessionPath }),
   }), "session resume");
   await smokeWorkspaceManagement(base, pi, root, firstRunDeadline);
+  await smokeWorkFileOperations(base, pi, root, firstRunDeadline);
 } catch (error) {
   primaryError = new Error(safeSmokeDiagnostic(error));
   try {

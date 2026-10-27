@@ -176,6 +176,7 @@ export interface DesktopSmokeState {
   rendererSecurityVerified: boolean;
   stateVisible: boolean;
   agentRunning: boolean;
+  workFilesVerified: boolean;
   restartAccepted: boolean;
   restartRequested: boolean;
   oldSidecarExited: boolean;
@@ -731,6 +732,7 @@ export function reduceDesktopSmokeEvents(
     rendererSecurityVerified: false,
     stateVisible: false,
     agentRunning: false,
+    workFilesVerified: false,
     restartAccepted: false,
     restartRequested: false,
     oldSidecarExited: false,
@@ -825,8 +827,27 @@ export function reduceDesktopSmokeEvents(
         );
         state.agentRunning = true;
         break;
+      case "desktop-smoke.work-files-verified":
+        requireMilestone(
+          state.agentRunning && !state.workFilesVerified && !state.restartRequested,
+          "Desktop Work Files evidence arrived before active Work or more than once.",
+        );
+        requireMilestone(
+          event.opaqueAuthenticatedResources === true
+            && event.isolatedHtml === true
+            && event.downloadBytesVerified === true
+            && event.downloadCancelled === true
+            && event.sandboxDownloadBlocked === true
+            && event.videoFullscreenVerified === true
+            && event.clipboardWriteVerified === true
+            && event.scopeReleased === true,
+          "Desktop Work Files evidence did not prove authenticated HTML isolation and native downloads/fullscreen.",
+        );
+        state.workFilesVerified = true;
+        break;
       case "desktop-smoke.restart-api-accepted":
         requireMilestone(state.agentRunning, "Runtime restart was accepted before an Agent was running.");
+        requireMilestone(state.workFilesVerified, "Runtime restart was accepted before Desktop Work Files verification.");
         requireMilestone(!state.restartAccepted, "Invalid duplicate desktop restart API acceptance.");
         requireMilestone(
           typeof event.bootId === "string" && event.bootId === state.initialBootId,
@@ -845,6 +866,7 @@ export function reduceDesktopSmokeEvents(
         break;
       case "desktop-smoke.restart-requested":
         requireMilestone(state.agentRunning, "Desktop restart event arrived before an Agent was running.");
+        requireMilestone(state.workFilesVerified, "Desktop restart arrived before Work Files verification.");
         requireMilestone(!state.restartRequested, "Invalid duplicate desktop restart event.");
         requireMilestone(
           typeof event.bootId === "string" && event.bootId === state.initialBootId,
@@ -948,6 +970,7 @@ export function reduceDesktopSmokeEvents(
         state.failure = "Desktop smoke entered the unexpected-exit recovery path.";
         return state;
       case "desktop-smoke.window-hidden":
+        requireMilestone(state.workFilesVerified, "Window hid before Desktop Work Files verification.");
         requireMilestone(
           state.restartAccepted ? state.successorVisible : state.agentRunning,
           "Window hid before accepted desktop state was visible.",

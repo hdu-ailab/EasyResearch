@@ -1,12 +1,17 @@
-import { ChevronRight, File as FileIcon, Folder, FolderOpen, RefreshCw, Search } from "lucide-react";
+import { ChevronRight, File as FileIcon, Folder, FolderOpen, RefreshCw, Search, Upload } from "lucide-react";
 import { type DragEvent, useEffect, useMemo, useRef, useState } from "react";
-import type { FileEntryDto } from "../../../web/contracts";
+import { createPortal } from "react-dom";
+import type { FileEntryDto, FileRenameResultDto } from "../../../web/contracts";
 import { listEntries, replaceFileWatchDirectories } from "../api";
 import { FILE_PATH_DRAG_TYPE } from "../file-path-drag";
 import { EMPTY_FILE_EVENTS, parentPath, type QueuedFileWatcherEvent } from "../file-watcher";
 import { relativeFilesystemPath } from "../filesystem-path";
+import { useFileUploads } from "../hooks/useFileUploads";
 import { useLazyTree } from "../hooks/useLazyTree";
 import { useI18n } from "../i18n/useI18n";
+import { FileActionMenu } from "./FileActionMenu";
+import { FileRenameDialog } from "./FileRenameDialog";
+import { FileUploads } from "./FileUploads";
 import { ActionGlyph } from "./studio/ActionGlyph";
 
 export interface FilesPanelProps {
@@ -15,6 +20,7 @@ export interface FilesPanelProps {
   sessionId?: string;
   fileWatchLeaseId?: string | null;
   onOpenFile: (entry: FileEntryDto) => void;
+  onFileRenamed?: (result: FileRenameResultDto) => void;
   fileEvents?: readonly QueuedFileWatcherEvent[];
   onFileEventsConsumed?: (through: number) => void;
 }
@@ -24,12 +30,17 @@ interface TreeRow {
   depth: number;
 }
 
-export function FilesPanel({
+export function FilesPanel(props: FilesPanelProps) {
+  return <FilesPanelScope key={props.root} {...props} />;
+}
+
+function FilesPanelScope({
   root,
   loadEnabled = true,
   sessionId,
   fileWatchLeaseId,
   onOpenFile,
+  onFileRenamed,
   fileEvents = EMPTY_FILE_EVENTS,
   onFileEventsConsumed,
 }: FilesPanelProps) {
@@ -40,6 +51,23 @@ export function FilesPanel({
   const handledSequence = useRef(0);
   const watchRevision = useRef({ key: "", revision: 0 });
   const rowRefs = useRef(new Map<string, HTMLElement>());
+  const picker = useRef<HTMLInputElement>(null);
+  const filterInput = useRef<HTMLInputElement>(null);
+  const destination = useRef(root);
+  const [renaming, setRenaming] = useState<{ entry: FileEntryDto; opener: Element | null } | null>(null);
+  const pendingFocus = useRef<{ path: string; opener: Element | null } | null>(null);
+  const uploads = useFileUploads(root, (directory) => {
+    if (tree.status(directory) === "unloaded") tree.retry(directory);
+    else tree.refreshDirectory(directory);
+  });
+  const chooseUpload = (directory: string) => {
+    if (!loadEnabled) return;
+    destination.current = directory;
+    picker.current?.click();
+  };
+  const startRename = (entry: FileEntryDto) => {
+    setRenaming({ entry, opener: document.activeElement });
+  };
 
   const startFileDrag = (event: DragEvent, entry: FileEntryDto) => {
     if (entry.kind !== "file") return;
@@ -137,6 +165,35 @@ export function FilesPanel({
     rowRefs.current.get(path)?.focus();
   };
 
+  useEffect(() => {
+    const cancelMovedFocus = (event: FocusEvent) => {
+      if (pendingFocus.current && event.target !== pendingFocus.current.opener) pendingFocus.current = null;
+    };
+    document.addEventListener("focusin", cancelMovedFocus, true);
+    return () => document.removeEventListener("focusin", cancelMovedFocus, true);
+  }, []);
+
+  useEffect(() => {
+    const pending = pendingFocus.current;
+    if (!pending) return;
+    const { path, opener } = pending;
+    const active = document.activeElement;
+    // Modal close returns to the opener; listing replacement can then detach it.
+    // Any newer focus owner cancels the delayed transfer, even if focus later returns.
+    if (active !== opener && (active !== document.body || opener?.isConnected)) {
+      pendingFocus.current = null;
+      return;
+    }
+    const row = rowRefs.current.get(path);
+    if (row) {
+      pendingFocus.current = null;
+      row.focus();
+    } else if (tree.status(parentPath(path)) === "loaded") {
+      pendingFocus.current = null;
+      filterInput.current?.focus();
+    }
+  }, [tree.status]);
+
   const handleTreeKey = (event: React.KeyboardEvent<HTMLElement>, row: TreeRow) => {
     if (event.target !== event.currentTarget) return;
     const index = displayedRows.findIndex(({ entry }) => entry.path === row.entry.path);
@@ -187,10 +244,22 @@ export function FilesPanel({
 
   return (
     <div className="flex h-full flex-col">
+      <input
+        ref={picker}
+        type="file"
+        multiple
+        className="hidden"
+        aria-label={t("files.upload")}
+        onChange={(event) => {
+          uploads.enqueue(destination.current, Array.from(event.target.files ?? []));
+          event.target.value = "";
+        }}
+      />
       <div className="flex shrink-0 items-center gap-2 px-2 pt-2">
         <div className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 py-1 focus-within:border-v2-blue-600">
           <Search size={12} className="shrink-0 text-v2-text-text-faint" aria-hidden />
           <input
+            ref={filterInput}
             className="min-w-0 flex-1 bg-transparent text-[12px] text-v2-text-text-base outline-none placeholder:text-v2-text-text-faint"
             aria-label={t("files.filter")}
             placeholder={t("files.filterPlaceholder")}
@@ -199,6 +268,16 @@ export function FilesPanel({
             spellCheck={false}
           />
         </div>
+        <button
+          type="button"
+          className="er-icon-button shrink-0"
+          disabled={!loadEnabled}
+          aria-label={t("files.upload")}
+          title={t("files.upload")}
+          onClick={() => chooseUpload(root)}
+        >
+          <Upload size={14} aria-hidden />
+        </button>
         <button
           type="button"
           className="flex size-6 shrink-0 items-center justify-center rounded-md text-v2-icon-icon-muted transition-colors hover:bg-v2-grey-100 hover:text-v2-icon-icon-base"
@@ -211,6 +290,7 @@ export function FilesPanel({
           </ActionGlyph>
         </button>
       </div>
+      <FileUploads uploads={uploads} />
       {rootError && (
         <p role="alert" className="px-2 pt-2 text-[12px] text-v2-status-error">
           {rootError}
@@ -223,37 +303,45 @@ export function FilesPanel({
           ) : (
             <div className="flex flex-col gap-0.5">
               {matches.map(({ entry, rel }) => (
-                <button
-                  key={entry.path}
-                  ref={(element) => {
-                    if (element) rowRefs.current.set(entry.path, element);
-                    else rowRefs.current.delete(entry.path);
-                  }}
-                  type="button"
-                  role="treeitem"
-                  draggable={entry.kind === "file"}
-                  onDragStart={(event) => startFileDrag(event, entry)}
-                  aria-level={1}
-                  aria-expanded={entry.kind === "directory" ? tree.expanded.has(entry.path) : undefined}
-                  tabIndex={rovingPath === entry.path ? 0 : -1}
-                  className={rowClass(entry.kind === "directory")}
-                  onFocus={() => setFocusedPath(entry.path)}
-                  onClick={() => {
-                    setFocusedPath(entry.path);
-                    if (entry.kind === "directory") toggle(entry);
-                    else onOpenFile(entry);
-                  }}
-                  onKeyDown={(event) => handleTreeKey(event, { entry, depth: 0 })}
-                  title={entry.path}
-                >
-                  {entry.kind === "directory" ? (
-                    <Folder size={13} className="shrink-0 text-v2-icon-icon-muted" />
-                  ) : (
-                    <FileIcon size={13} className="shrink-0 text-v2-icon-icon-muted" />
-                  )}
-                  <span className="min-w-0 truncate text-[length:var(--v2-files-font-size)]">{entry.name}</span>
-                  <span className="ml-auto shrink-0 truncate font-mono text-[11px] text-v2-text-text-faint">{rel}</span>
-                </button>
+                <div key={entry.path} className="flex min-w-0 items-center gap-0.5">
+                  <button
+                    ref={(element) => {
+                      if (element) rowRefs.current.set(entry.path, element);
+                      else rowRefs.current.delete(entry.path);
+                    }}
+                    type="button"
+                    role="treeitem"
+                    draggable={entry.kind === "file"}
+                    onDragStart={(event) => startFileDrag(event, entry)}
+                    aria-level={1}
+                    aria-expanded={entry.kind === "directory" ? tree.expanded.has(entry.path) : undefined}
+                    tabIndex={rovingPath === entry.path ? 0 : -1}
+                    className={`${rowClass(entry.kind === "directory")} min-w-0 flex-1`}
+                    onFocus={() => setFocusedPath(entry.path)}
+                    onClick={() => {
+                      setFocusedPath(entry.path);
+                      if (entry.kind === "directory") toggle(entry);
+                      else onOpenFile(entry);
+                    }}
+                    onKeyDown={(event) => handleTreeKey(event, { entry, depth: 0 })}
+                    title={entry.path}
+                  >
+                    {entry.kind === "directory" ? (
+                      <Folder size={13} className="shrink-0 text-v2-icon-icon-muted" />
+                    ) : (
+                      <FileIcon size={13} className="shrink-0 text-v2-icon-icon-muted" />
+                    )}
+                    <span className="min-w-0 truncate text-[length:var(--v2-files-font-size)]">{entry.name}</span>
+                    <span className="ml-auto min-w-0 truncate font-mono text-[11px] text-v2-text-text-faint">
+                      {rel}
+                    </span>
+                  </button>
+                  <FileActionMenu
+                    entry={entry}
+                    onRename={() => startRename(entry)}
+                    onUpload={() => chooseUpload(entry.path)}
+                  />
+                </div>
               ))}
             </div>
           )
@@ -270,92 +358,116 @@ export function FilesPanel({
               const isDirectory = entry.kind === "directory";
               const state = tree.status(entry.path);
               return (
-                <div
-                  key={entry.path}
-                  ref={(element) => {
-                    if (element) rowRefs.current.set(entry.path, element);
-                    else rowRefs.current.delete(entry.path);
-                  }}
-                  role="treeitem"
-                  draggable={!isDirectory}
-                  onDragStart={(event) => startFileDrag(event, entry)}
-                  aria-level={depth + 1}
-                  aria-expanded={isDirectory ? isExpanded : undefined}
-                  tabIndex={rovingPath === entry.path ? 0 : -1}
-                  className="group flex cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-v2-grey-100"
-                  style={{ paddingLeft: `${8 + depth * 14}px` }}
-                  onFocus={() => setFocusedPath(entry.path)}
-                  onClick={() => {
-                    setFocusedPath(entry.path);
-                    if (isDirectory) toggle(entry);
-                    else onOpenFile(entry);
-                  }}
-                  onKeyDown={(event) => handleTreeKey(event, { entry, depth })}
-                  title={entry.path}
-                >
-                  {isDirectory ? (
-                    <button
-                      type="button"
-                      tabIndex={-1}
-                      className="flex size-4 shrink-0 items-center justify-center rounded text-v2-icon-icon-muted hover:bg-v2-grey-200"
-                      aria-label={
-                        state === "loading"
-                          ? t("files.loadingRow").replace("{name}", entry.name)
-                          : isExpanded
-                            ? t("files.collapseRow").replace("{name}", entry.name)
-                            : t("files.expandRow").replace("{name}", entry.name)
-                      }
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        toggle(entry);
-                      }}
-                    >
-                      {state === "loading" ? (
-                        <span className="v2-spinner" aria-hidden />
-                      ) : (
-                        <ActionGlyph
-                          label={t(isExpanded ? "files.collapseRow" : "files.expandRow").replace("{name}", entry.name)}
-                        >
-                          <ChevronRight
-                            size={12}
-                            className={`shrink-0 transition-transform ${isExpanded ? "rotate-90" : ""}`}
-                          />
-                        </ActionGlyph>
-                      )}
-                    </button>
-                  ) : (
-                    <span className="w-4 shrink-0" aria-hidden />
-                  )}
-                  {isDirectory ? (
-                    isExpanded ? (
-                      <FolderOpen size={13} className="shrink-0 text-v2-blue-600" aria-hidden />
+                <div key={entry.path} className="flex min-w-0 items-center gap-0.5">
+                  <div
+                    ref={(element) => {
+                      if (element) rowRefs.current.set(entry.path, element);
+                      else rowRefs.current.delete(entry.path);
+                    }}
+                    role="treeitem"
+                    draggable={!isDirectory}
+                    onDragStart={(event) => startFileDrag(event, entry)}
+                    aria-level={depth + 1}
+                    aria-expanded={isDirectory ? isExpanded : undefined}
+                    tabIndex={rovingPath === entry.path ? 0 : -1}
+                    className="group flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-v2-grey-100"
+                    style={{ paddingLeft: `${8 + depth * 14}px` }}
+                    onFocus={() => setFocusedPath(entry.path)}
+                    onClick={() => {
+                      setFocusedPath(entry.path);
+                      if (isDirectory) toggle(entry);
+                      else onOpenFile(entry);
+                    }}
+                    onKeyDown={(event) => handleTreeKey(event, { entry, depth })}
+                    title={entry.path}
+                  >
+                    {isDirectory ? (
+                      <button
+                        type="button"
+                        tabIndex={-1}
+                        className="flex size-4 shrink-0 items-center justify-center rounded text-v2-icon-icon-muted hover:bg-v2-grey-200"
+                        aria-label={
+                          state === "loading"
+                            ? t("files.loadingRow").replace("{name}", entry.name)
+                            : isExpanded
+                              ? t("files.collapseRow").replace("{name}", entry.name)
+                              : t("files.expandRow").replace("{name}", entry.name)
+                        }
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          toggle(entry);
+                        }}
+                      >
+                        {state === "loading" ? (
+                          <span className="v2-spinner" aria-hidden />
+                        ) : (
+                          <ActionGlyph
+                            label={t(isExpanded ? "files.collapseRow" : "files.expandRow").replace(
+                              "{name}",
+                              entry.name,
+                            )}
+                          >
+                            <ChevronRight
+                              size={12}
+                              className={`shrink-0 transition-transform ${isExpanded ? "rotate-90" : ""}`}
+                            />
+                          </ActionGlyph>
+                        )}
+                      </button>
                     ) : (
-                      <Folder size={13} className="shrink-0 text-v2-icon-icon-muted" aria-hidden />
-                    )
-                  ) : (
-                    <FileIcon size={13} className="shrink-0 text-v2-icon-icon-muted" />
-                  )}
-                  <span className="min-w-0 truncate text-[length:var(--v2-files-font-size)]">{entry.name}</span>
-                  {state === "error" && (
-                    <button
-                      type="button"
-                      tabIndex={-1}
-                      className="ml-auto shrink-0 rounded px-1.5 py-0.5 text-[11px] text-v2-text-text-muted hover:bg-v2-grey-200"
-                      aria-label={t("files.retryRow").replace("{name}", entry.name)}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        tree.retry(entry.path);
-                      }}
-                    >
-                      {t("files.retry")}
-                    </button>
-                  )}
+                      <span className="w-4 shrink-0" aria-hidden />
+                    )}
+                    {isDirectory ? (
+                      isExpanded ? (
+                        <FolderOpen size={13} className="shrink-0 text-v2-blue-600" aria-hidden />
+                      ) : (
+                        <Folder size={13} className="shrink-0 text-v2-icon-icon-muted" aria-hidden />
+                      )
+                    ) : (
+                      <FileIcon size={13} className="shrink-0 text-v2-icon-icon-muted" />
+                    )}
+                    <span className="min-w-0 truncate text-[length:var(--v2-files-font-size)]">{entry.name}</span>
+                    {state === "error" && (
+                      <button
+                        type="button"
+                        tabIndex={-1}
+                        className="ml-auto shrink-0 rounded px-1.5 py-0.5 text-[11px] text-v2-text-text-muted hover:bg-v2-grey-200"
+                        aria-label={t("files.retryRow").replace("{name}", entry.name)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          tree.retry(entry.path);
+                        }}
+                      >
+                        {t("files.retry")}
+                      </button>
+                    )}
+                  </div>
+                  <FileActionMenu
+                    entry={entry}
+                    onRename={() => startRename(entry)}
+                    onUpload={() => chooseUpload(entry.path)}
+                  />
                 </div>
               );
             })}
           </div>
         )}
       </div>
+      {renaming &&
+        createPortal(
+          <FileRenameDialog
+            cwd={root}
+            entry={renaming.entry}
+            onClose={() => setRenaming(null)}
+            onComplete={(result) => {
+              onFileRenamed?.(result);
+              setFocusedPath(result.entry.path);
+              pendingFocus.current = { path: result.entry.path, opener: renaming.opener };
+              tree.refreshDirectory(parentPath(result.oldPath));
+            }}
+          />,
+          document.body,
+        )}
     </div>
   );
 }

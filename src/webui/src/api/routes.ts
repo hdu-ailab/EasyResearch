@@ -35,7 +35,15 @@ export const routes = {
   createDirectory: () => `${API_ROOT}/directories`,
   entries: (path: string) => `${API_ROOT}/entries?${new URLSearchParams({ path }).toString()}`,
   file: (path: string) => `${API_ROOT}/file?${new URLSearchParams({ path }).toString()}`,
-  rawFile: (path: string) => `${API_ROOT}/file/raw?${new URLSearchParams({ path }).toString()}`,
+  rawFile: (path: string, revision?: number) => {
+    const query = new URLSearchParams({ path });
+    if (revision !== undefined) query.set("revision", String(revision));
+    return `${API_ROOT}/file/raw?${query.toString()}`;
+  },
+  downloadFile: (path: string) => `${API_ROOT}/file/raw?${new URLSearchParams({ path, download: "1" }).toString()}`,
+  uploadFile: (cwd: string, directory: string, name: string) =>
+    `${API_ROOT}/file/upload?${new URLSearchParams({ cwd, directory, name }).toString()}`,
+  renameFile: () => `${API_ROOT}/file/rename`,
   createSession: () => `${API_ROOT}/sessions`,
   openSession: () => `${API_ROOT}/sessions/open`,
   snapshot: (id: string) => `${session(id)}/snapshot`,

@@ -65,6 +65,8 @@ const EXTENSION_MIME: Record<string, string> = {
   ".jpeg": "image/jpeg",
   ".gif": "image/gif",
   ".webp": "image/webp",
+  ".avif": "image/avif",
+  ".mp4": "video/mp4",
   ".bmp": "image/bmp",
   ".tif": "image/tiff",
   ".tiff": "image/tiff",
@@ -88,6 +90,34 @@ export function mimeTypeFor(file: string): string {
   const dot = file.lastIndexOf(".");
   if (dot === -1 || dot === file.length - 1) return DEFAULT_MIME_TYPE;
   return EXTENSION_MIME[file.slice(dot).toLowerCase()] ?? DEFAULT_MIME_TYPE;
+}
+
+/** RFC 6266/8187: an ASCII fallback plus the complete UTF-8 filename, without header injection. */
+export function attachmentDisposition(name: string): string {
+  const unicode = new TextDecoder().decode(new TextEncoder().encode(name));
+  const fallback = unicode.replace(/[^\x20-\x7e]|["\\%]/gu, "_") || "download";
+  const encoded = encodeURIComponent(unicode).replace(/[!'()*]/gu, (character) =>
+    `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
+}
+
+/** Raw documents never become an application-origin script context on navigation. */
+export function rawFileHeaders(mimeType: string, name: string, download = false): Record<string, string> {
+  const mediaType = mimeType.split(";", 1)[0]!.trim().toLowerCase();
+  const html = mediaType === "text/html" || mediaType === "application/xhtml+xml";
+  const activeDocument = html || mediaType === "image/svg+xml" || mediaType === "application/xml" || mediaType === "text/xml";
+  return {
+    "Content-Type": mimeType,
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    ...(download || html ? { "Content-Disposition": attachmentDisposition(name) } : {}),
+    ...(activeDocument ? {
+      // Inline SVG styling and embedded image/font data remain usable in <img>.
+      // Script execution, parent-origin identity and external dependencies do not.
+      "Content-Security-Policy": "sandbox; default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; font-src data: blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      "Referrer-Policy": "no-referrer",
+    } : {}),
+  };
 }
 
 /**
